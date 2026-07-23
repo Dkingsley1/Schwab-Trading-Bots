@@ -52,3 +52,32 @@ def test_remote_alert_control_treats_imessage_bridge_as_channel_and_ignores_reso
     assert payload["channels"]["any_configured"] is True
     assert payload["overall_status"] == "ready"
     assert payload["backlog_compaction"]["grouped_active_count"] == 0
+
+
+def test_remote_alert_control_rejects_placeholder_webhook_without_counting_it_as_remote_pager(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("OPS_ALERT_WEBHOOK_URL", "https://example.invalid/pager")
+    monkeypatch.delenv("OPS_ALERT_PUSHOVER_TOKEN", raising=False)
+    monkeypatch.delenv("OPS_ALERT_PUSHOVER_USER_KEY", raising=False)
+    project_root = tmp_path / "project"
+    health = project_root / "governance" / "health"
+    _write_json(
+        health / "mac_notification_watch_state.json",
+        {"imessage_enabled": True, "imessage_recipient_configured": True, "max_alert_age_seconds": 900.0},
+    )
+    _write_json(health / "incident_timeline_latest.json", {"open_surfaces": []})
+
+    payload = src.build_payload(
+        project_root,
+        hours=24,
+        ack_state_path=project_root / "governance" / "watchdog" / "remote_alert_ack_state.json",
+    )
+
+    assert payload["channels"]["webhook"] is False
+    assert payload["channels"]["imessage_bridge"] is True
+    assert payload["channels"]["remote_pager_configured"] is False
+    assert payload["channels"]["any_configured"] is True
+    assert payload["channel_config_errors"]["webhook"] == "placeholder_webhook_url"
+    assert any("placeholder OPS_ALERT_WEBHOOK_URL" in action for action in payload["recommended_actions"])

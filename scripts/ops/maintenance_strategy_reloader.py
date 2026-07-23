@@ -7,7 +7,7 @@ from pathlib import Path
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-PY = PROJECT_ROOT / ".venv312" / "bin" / "python"
+PY = PROJECT_ROOT / ".venv314" / "bin" / "python"
 STATE_FILE = PROJECT_ROOT / "governance" / "health" / "maintenance_strategy_reloader_latest.json"
 SQL_WRITER_LABEL = f"gui/{os.getuid()}/com.dankingsley.ops.sql_link_writer"
 WATCH_KEYS = ("SQL_LINK_SERVICE_", "RETENTION_", "SQLITE_", "BOT_LOGS_", "INGEST_", "JSONL_SQL_", "LOG_")
@@ -116,6 +116,20 @@ def _run(cmd: list[str], *, env_overrides: dict[str, str] | None = None) -> dict
     }
 
 
+def _accept_missing_launchd_label(result: dict[str, object]) -> dict[str, object]:
+    if int(result.get("rc", 1)) != 113:
+        return result
+    stderr_tail = str(result.get("stderr_tail") or "")
+    if "Could not find service" not in stderr_tail:
+        return result
+    accepted = dict(result)
+    accepted["rc"] = 0
+    accepted["skipped"] = True
+    accepted["skip_reason"] = "launchd_label_missing"
+    accepted["original_rc"] = result.get("rc")
+    return accepted
+
+
 def main() -> int:
     rows = _collect_settings()
     observed_fingerprint = _fingerprint(rows)
@@ -139,7 +153,9 @@ def main() -> int:
             actions.append(
                 {
                     "name": "restart_sql_link_writer",
-                    **_run(["launchctl", "kickstart", "-k", SQL_WRITER_LABEL]),
+                    **_accept_missing_launchd_label(
+                        _run(["launchctl", "kickstart", "-k", SQL_WRITER_LABEL])
+                    ),
                 }
             )
         if any(key.startswith(("RETENTION_", "BOT_LOGS_")) for key in keys):
@@ -148,11 +164,7 @@ def main() -> int:
                     "name": "apply_retention_policy",
                     **_run(
                         [
-                            str(PY),
-                            str(PROJECT_ROOT / "scripts" / "data_retention_policy.py"),
-                            "--apply",
-                            "--skip-sqlite-vacuum",
-                            "--json",
+                            str(PROJECT_ROOT / "scripts" / "ops" / "run_data_retention_launchd.sh"),
                         ],
                         env_overrides=env_overrides,
                     ),

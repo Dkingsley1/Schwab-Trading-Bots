@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import sys
+import time
 from pathlib import Path
 
 from scripts.ops import system_drift_autopilot as src
@@ -148,3 +150,78 @@ def test_system_drift_autopilot_caps_nested_repair_timeouts(tmp_path: Path) -> N
     assert payload["max_step_timeout_sec"] == 17
     assert timeouts == [17]
     assert payload["attempts"][0]["timeout_sec"] == 17
+
+
+def test_system_drift_autopilot_skips_recovery_deferred_surfaces(tmp_path: Path) -> None:
+    calls: list[list[str]] = []
+    guards = [
+        {
+            "overall_status": "degraded",
+            "metrics": {"blocked_surface_count": 0, "degraded_surface_count": 2},
+            "surfaces": [
+                {
+                    "name": "adaptive_regression_guard",
+                    "family": "governance_surface",
+                    "status": "degraded",
+                    "recovery_deferred": True,
+                    "recovery_deferred_reason": "pressure_deferred_count=2",
+                    "repair_commands": [["./scripts/ops/opsctl.sh", "adaptive-regression-guard", "--apply", "--json"]],
+                },
+                {
+                    "name": "commands_hygiene",
+                    "family": "command_surface",
+                    "status": "degraded",
+                    "repair_commands": [["./scripts/ops/opsctl.sh", "commands-hygiene", "--apply", "--json"]],
+                },
+            ],
+        },
+        {
+            "overall_status": "degraded",
+            "metrics": {"blocked_surface_count": 0, "degraded_surface_count": 1},
+            "surfaces": [],
+        },
+    ]
+
+    def guard_builder(_project_root: Path) -> dict:
+        return guards.pop(0)
+
+    def runner(cmd: list[str], _project_root: Path, _timeout_sec: int) -> dict:
+        calls.append(list(cmd))
+        return {"cmd": list(cmd), "rc": 0, "payload": {"overall_status": "ready"}, "stdout_tail": "", "stderr_tail": ""}
+
+    payload = src.build_payload(tmp_path, apply=True, guard_builder=guard_builder, runner=runner)
+
+    assert calls == [["./scripts/ops/opsctl.sh", "commands-hygiene", "--apply", "--json"]]
+    assert payload["repair_step_count"] == 1
+    assert payload["skipped_step_count"] == 1
+    assert payload["skipped_steps"][0]["skip_reason"] == "recovery_deferred"
+
+
+def test_system_drift_autopilot_run_timeout_returns_clean_failure(tmp_path: Path) -> None:
+    result = src._run([sys.executable, "-c", "import time; time.sleep(10)"], tmp_path, 1)
+
+    assert result["rc"] == 124
+    assert result["stderr_tail"] == "timeout"
+
+
+def test_system_drift_autopilot_timeout_reaps_known_one_numbers_child(tmp_path: Path) -> None:
+    child = tmp_path / "scripts" / "build_one_numbers_report.py"
+    child.parent.mkdir(parents=True, exist_ok=True)
+    child.write_text("import time\ntime.sleep(20)\n", encoding="utf-8")
+    parent = tmp_path / "spawn_child.py"
+    parent.write_text(
+        "import subprocess, sys, time\n"
+        "subprocess.Popen([sys.executable, sys.argv[1]], start_new_session=True)\n"
+        "time.sleep(20)\n",
+        encoding="utf-8",
+    )
+
+    result = src._run([sys.executable, str(parent), str(child), "one-numbers-regression-guard"], tmp_path, 1)
+
+    assert result["rc"] == 124
+    assert result["timeout_cleanup"]["terminated_processes"]
+    for _ in range(20):
+        if not src._project_processes(tmp_path, ["scripts/build_one_numbers_report.py"]):
+            break
+        time.sleep(0.1)
+    assert src._project_processes(tmp_path, ["scripts/build_one_numbers_report.py"]) == {}

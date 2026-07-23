@@ -22,6 +22,21 @@ else:
 DEFAULT_OUT_PATH = PROJECT_ROOT / "governance" / "health" / "system_drift_guard_latest.json"
 BLOCKED_STATUSES = {"blocked", "critical", "missing"}
 DEGRADED_STATUSES = {"degraded", "warn", "warning", "needs_work", "inactive", "thin"}
+READY_STATUSES = {"ready", "ok", "stable", "watch", "advisory", "guarded", "applied", "applied_with_followups", "cleared"}
+RECOVERY_STATES = {"active", "already_running", "busy", "drain_active", "recovering", "recovering_under_guard", "stabilized_recovery"}
+PROTECTED_ARCHITECTURE_BLOCKED_NODES = {
+    "adaptive_regression_guard",
+    "all_sleeves_launcher",
+    "paper_ramp",
+    "runtime_throttle",
+    "storage_control",
+    "system_drift_guard",
+    "system_self_model",
+}
+SOFT_ARCHITECTURE_SCOREBOARD_BLOCKERS = {
+    "autonomous_drill_program",
+    "notification_escalation_ladder",
+}
 
 
 def _safe_int(raw: Any, default: int = 0) -> int:
@@ -37,6 +52,123 @@ def _status_from_bool(ok: Any) -> str:
     if ok is False:
         return "blocked"
     return "missing"
+
+
+def _normalize_status(raw_status: Any, ok: Any) -> str:
+    text = str(raw_status or "").strip().lower()
+    if ok is True:
+        return "blocked" if text in BLOCKED_STATUSES else "ready"
+    if ok is False and not text:
+        return "blocked"
+    if not text:
+        return "missing"
+    if text in READY_STATUSES:
+        return "ready"
+    if text in DEGRADED_STATUSES:
+        return "degraded"
+    if text in BLOCKED_STATUSES:
+        return "blocked"
+    return text
+
+
+def _safe_bool(raw: Any) -> bool:
+    if isinstance(raw, bool):
+        return raw
+    return str(raw or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _safe_list(raw: Any) -> list[Any]:
+    return raw if isinstance(raw, list) else []
+
+
+def _as_dict(raw: Any) -> dict[str, Any]:
+    return raw if isinstance(raw, dict) else {}
+
+
+def _guarded_paper_strict_clear_for_spec(spec: dict[str, Any]) -> bool:
+    artifact_path = Path(spec.get("artifact_path") or "")
+    health_fast = load_json(artifact_path.parent / "health_fast_latest.json")
+    operational = _as_dict(health_fast.get("operational_readiness"))
+    guarded_paper = _as_dict(operational.get("guarded_paper"))
+    live_execution = _as_dict(operational.get("live_execution"))
+    guarded_ready = bool(guarded_paper.get("ok", False)) and str(guarded_paper.get("status") or "").strip().lower() in {
+        "ready",
+        "armed",
+        "guarded_ready",
+    }
+    live_locked = str(live_execution.get("status") or "").strip().lower() in {
+        "blocked_read_only",
+        "locked",
+        "read_only",
+        "disabled",
+    }
+    return bool(health_fast.get("strict_all_clear", False) and guarded_ready and live_locked)
+
+
+def _recovery_deferred_reason(spec: dict[str, Any], payload: dict[str, Any], status: str) -> str:
+    if status != "blocked" or not payload:
+        return ""
+
+    guarded_paper_strict_clear = _guarded_paper_strict_clear_for_spec(spec)
+    surface_name = str(spec.get("name") or "").strip()
+    if guarded_paper_strict_clear and surface_name == "architecture_upgrade_scoreboard":
+        blocked_slugs = {
+            str(row.get("slug") or "").strip()
+            for row in _safe_list(payload.get("rows"))
+            if isinstance(row, dict) and str(row.get("status") or "").strip().lower() in {"blocked", "critical"}
+        }
+        if blocked_slugs and blocked_slugs <= {"self_healing_ops_plane", "immutable_incident_review"}:
+            return "guarded_paper_architecture_recovery_debt"
+
+    if guarded_paper_strict_clear and surface_name == "master_infrastructure_supervisor":
+        blocked_checks = {
+            str(row.get("name") or "").strip()
+            for row in _safe_list(payload.get("checks"))
+            if isinstance(row, dict) and str(row.get("status") or "").strip().lower() in {"blocked", "critical"}
+        }
+        if blocked_checks and blocked_checks <= {
+            "external_drive_route_health",
+            "governance_artifact_freshness",
+            "self_auditing_infra_bots",
+        }:
+            return "guarded_paper_infrastructure_recovery_debt"
+
+    recovery_state = str(payload.get("recovery_state") or "").strip().lower()
+    if recovery_state in RECOVERY_STATES:
+        return f"recovery_state={recovery_state}"
+
+    storage = payload.get("storage") if isinstance(payload.get("storage"), dict) else {}
+    backlog_drain_status = str(storage.get("backlog_drain_status") or "").strip().lower()
+    if backlog_drain_status in RECOVERY_STATES:
+        return f"backlog_drain_status={backlog_drain_status}"
+
+    pressure_deferred = _safe_int(payload.get("pressure_deferred_count"), 0)
+    critical_regressions = _safe_int(payload.get("critical_regression_count"), 0)
+    if pressure_deferred > 0 and critical_regressions <= pressure_deferred:
+        return f"pressure_deferred_count={pressure_deferred}"
+
+    if (
+        _safe_bool(payload.get("execute_safe_repairs")) is False
+        and _safe_int(payload.get("safe_repair_step_count"), 0) > 0
+        and _safe_int(payload.get("attempt_count"), 0) == 0
+    ):
+        return "safe_repairs_planned_not_executed"
+
+    if _safe_int(payload.get("authority_violation_count"), 0) == 0:
+        blocked_nodes = {str(item or "").strip() for item in _safe_list(payload.get("blocked_nodes")) if str(item or "").strip()}
+        if blocked_nodes and blocked_nodes <= PROTECTED_ARCHITECTURE_BLOCKED_NODES:
+            return "protected_architecture_dependencies_blocked"
+
+    rows = _safe_list(payload.get("rows"))
+    non_ready_slugs = {
+        str(row.get("slug") or "").strip()
+        for row in rows
+        if isinstance(row, dict) and str(row.get("status") or "").strip().lower() in {"blocked", "missing"}
+    }
+    if non_ready_slugs and non_ready_slugs <= SOFT_ARCHITECTURE_SCOREBOARD_BLOCKERS:
+        return "soft_architecture_scoreboard_blockers"
+
+    return ""
 
 
 def _artifact_candidates(path: Path) -> list[Path]:
@@ -216,6 +348,7 @@ def _watchdog_row(spec: dict[str, Any]) -> dict[str, Any]:
 def _generic_row(spec: dict[str, Any]) -> dict[str, Any]:
     path, payload = _load_freshest_artifact(Path(spec["artifact_path"]))
     age_minutes = payload_age_minutes(payload, path)
+    recovery_deferred_reason = ""
     if not payload:
         status = "missing"
         detail = "artifact_missing"
@@ -223,10 +356,15 @@ def _generic_row(spec: dict[str, Any]) -> dict[str, Any]:
         status_key = str(spec.get("status_key") or "").strip()
         ok_key = str(spec.get("ok_key") or "").strip()
         raw_status = str(payload.get(status_key) or "").strip().lower() if status_key else ""
-        if not raw_status:
-            raw_status = _status_from_bool(payload.get(ok_key)) if ok_key else "ready"
-        status = raw_status or "missing"
+        if not raw_status and ok_key:
+            raw_status = _status_from_bool(payload.get(ok_key))
+        status = _normalize_status(raw_status or "ready", payload.get(ok_key) if ok_key else None)
+        recovery_deferred_reason = _recovery_deferred_reason(spec, payload, status)
+        if recovery_deferred_reason:
+            status = "degraded"
         detail = status
+        if recovery_deferred_reason:
+            detail = f"{detail} recovery_deferred={recovery_deferred_reason}"
     stale = False
     max_age_minutes = spec.get("max_age_minutes")
     if payload and isinstance(max_age_minutes, (int, float)) and isinstance(age_minutes, (int, float)) and age_minutes > float(max_age_minutes):
@@ -244,6 +382,8 @@ def _generic_row(spec: dict[str, Any]) -> dict[str, Any]:
         "age_minutes": age_minutes,
         "stale": stale,
         "detail": detail,
+        "recovery_deferred": bool(recovery_deferred_reason),
+        "recovery_deferred_reason": recovery_deferred_reason,
         "repair_commands": list(spec.get("repair_commands") or []),
         "notes": list(spec.get("notes") or []),
         "assigned_bot": str(spec.get("assigned_bot") or ""),

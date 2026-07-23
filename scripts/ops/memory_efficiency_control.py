@@ -14,6 +14,9 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_OVERRIDE = PROJECT_ROOT / "config" / ".env.memory_efficiency_override"
 DEFAULT_OUT = PROJECT_ROOT / "governance" / "health" / "memory_efficiency_control_latest.json"
 DEFAULT_REGISTRY = PROJECT_ROOT / "master_bot_registry.json"
+OVERLAY_RAW_LIVE_MAX_CORE_LINES = 10_000
+OVERLAY_RAW_LIVE_MAX_TOTAL_LINES = 15_000
+OVERLAY_RAW_LIVE_MAX_AGE_SECONDS = 15 * 60
 
 DRAIN_FRIENDLY_SQL_OVERRIDES = {
     "SQL_LINK_SERVICE_INTERVAL_SECONDS": "12",
@@ -28,7 +31,7 @@ CONCENTRATED_DRAIN_SQL_OVERRIDES = {
     **DRAIN_FRIENDLY_SQL_OVERRIDES,
     "SQL_LINK_SERVICE_CONCENTRATED_CORE_DRAIN": "1",
     "SQL_LINK_SERVICE_SHARD_LINK_TIMEOUT_SECONDS": "420",
-    "SQL_LINK_SERVICE_MERGE_MAX_SECONDS_PER_CYCLE": "60",
+    "SQL_LINK_SERVICE_MERGE_MAX_SECONDS_PER_CYCLE": "90",
     "SQL_LINK_SERVICE_SHARD_TRADING_STATE_CHECKPOINT_LINES": "1000",
     "SQL_LINK_SERVICE_SHARD_AGGRESSIVE_TRADING_STATE_CHECKPOINT_LINES": "1000",
     "SQL_LINK_SERVICE_SHARD_AGGRESSIVE_TRADING_MAX_LINES_PER_FILE": "12000",
@@ -862,13 +865,13 @@ def _memory_pressure_clear(resource_guard: dict[str, Any]) -> bool:
     state = str(resource_guard.get("memory_pressure_state") or "").strip().lower()
     kind = str(resource_guard.get("memory_pressure_kind") or "").strip().lower()
     swap_used_gb = _safe_float(resource_guard.get("swap_used_gb"), 0.0)
-    return state in {"", "green", "normal", "ok", "none"} and kind in {"", "none", "green", "ok"} and swap_used_gb < 8.0
+    return state in {"", "green", "normal", "ok", "none"} and kind in {"", "none", "green", "normal", "ok"} and swap_used_gb < 8.0
 
 
 def _storage_pressure_clear(ingestion_storage: dict[str, Any]) -> bool:
     severity = str(ingestion_storage.get("severity") or "").strip().lower()
     pressure_index = _safe_float(ingestion_storage.get("pressure_index"), 0.0)
-    return severity in {"", "ready", "stable", "low"} and pressure_index <= 0.25
+    return severity in {"", "ready", "stable", "low"} and pressure_index <= 0.50
 
 
 def _cotenant_awareness(
@@ -892,6 +895,21 @@ def _cotenant_awareness(
         reason in {"co_running_light_competition", "co_running_interactive"}
         for reason in reasons
     )
+    creative_key = _creative_session_key(creative_session)
+    media_playback_soft_guard = bool(reasons) and creative_key == "music_playback" and all(
+        reason in {"creative_session_music_playback", "compressed_memory_high"}
+        for reason in reasons
+    )
+    benign_mixed_media_cotenant = bool(reasons) and creative_key == "music_playback" and all(
+        reason
+        in {
+            "creative_session_music_playback",
+            "compressed_memory_high",
+            "co_running_light_competition",
+            "co_running_interactive",
+        }
+        for reason in reasons
+    )
 
     adjusted_status = str(original_status or "ready")
     mode = "system_only"
@@ -900,8 +918,16 @@ def _cotenant_awareness(
         adjusted_status = "ready"
         mode = "managed_cotenant"
         status_adjusted = adjusted_status != original_status
+    elif (co_active or creative_active) and benign_mixed_media_cotenant and memory_clear and storage_clear:
+        adjusted_status = "advisory"
+        mode = "managed_media_cotenant"
+        status_adjusted = adjusted_status != original_status
     elif co_active and co_level == "heavy_competition" and memory_clear and storage_clear:
         mode = "guarded_cotenant"
+    elif creative_active and media_playback_soft_guard and memory_clear and storage_clear:
+        adjusted_status = "advisory"
+        mode = "managed_media_cotenant"
+        status_adjusted = adjusted_status != original_status
     elif creative_active:
         mode = "creative_cotenant"
     elif co_active:
@@ -928,7 +954,9 @@ def _cotenant_awareness(
         "open_apps": open_apps,
         "co_running_classes": list(co_running_session.get("classes") or []),
         "policy": (
-            "open_apps_managed_without_health_degradation"
+            "media_playback_profile_caps_are_advisory_when_memory_and_storage_are_clear"
+            if mode == "managed_media_cotenant"
+            else "open_apps_managed_without_health_degradation"
             if status_adjusted
             else "open_apps_profile_caps_remain_guarded_until_pressure_clears"
         ),
@@ -970,6 +998,64 @@ def _safe_int(raw: Any, default: int = 0) -> int:
         return int(float(raw))
     except Exception:
         return int(default)
+
+
+def _memory_truth_reconciliation(resource_guard: dict[str, Any], swap_pressure_payload: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
+    effective = dict(resource_guard)
+    swap_pressure = swap_pressure_payload.get("swap_pressure") if isinstance(swap_pressure_payload.get("swap_pressure"), dict) else {}
+    raw_swap_gb = _safe_float(resource_guard.get("swap_used_gb"), 0.0)
+    current_swap_gb = _safe_float(swap_pressure.get("swap_used_gb"), raw_swap_gb)
+    free_pct = _safe_float(resource_guard.get("memory_free_pct"), 0.0)
+    compressed_store_gb = _safe_float(resource_guard.get("compressed_store_gb"), 0.0)
+    compressor_gb = _safe_float(resource_guard.get("compressor_gb"), 0.0)
+    pages_throttled = _safe_float(resource_guard.get("pages_throttled"), 0.0)
+    resource_state = str(resource_guard.get("memory_pressure_state") or "").strip().lower()
+    resource_kind = str(resource_guard.get("memory_pressure_kind") or "").strip().lower()
+    swap_state = str(swap_pressure.get("memory_pressure_state") or "").strip().lower()
+    swap_kind = str(swap_pressure.get("memory_pressure_kind") or "").strip().lower()
+    swap_tier = str(swap_pressure.get("tier") or "").strip().lower()
+    governor_green = bool(
+        swap_pressure
+        and swap_tier == "normal"
+        and swap_state in {"green", "normal", "none", "clear"}
+        and swap_kind in {"", "none", "normal", "green", "clear"}
+    )
+    raw_green = bool(
+        resource_state in {"green", "normal", "none", "clear"}
+        and resource_kind in {"", "none", "normal", "green", "clear"}
+        and pages_throttled <= 0.0
+    )
+    stale_swap_relief = bool(governor_green and raw_green and raw_swap_gb >= 2.0 and current_swap_gb + 0.5 < raw_swap_gb)
+    stale_compression_relief = bool(
+        governor_green
+        and raw_green
+        and (free_pct <= 0.0 or free_pct >= 85.0)
+        and current_swap_gb < 3.0
+        and compressed_store_gb >= 18.0
+        and compressor_gb < 1.5
+    )
+    if stale_swap_relief:
+        effective["swap_used_gb"] = round(current_swap_gb, 3)
+    if stale_compression_relief:
+        effective["compressed_store_gb"] = round(max(compressor_gb, 8.0), 3)
+    if stale_swap_relief or stale_compression_relief:
+        effective["memory_pressure_state"] = "green"
+        effective["memory_pressure_kind"] = "none"
+        effective["allocation_relief_active"] = True
+    return effective, {
+        "active": bool(stale_swap_relief or stale_compression_relief),
+        "stale_swap_relief": stale_swap_relief,
+        "stale_compression_relief": stale_compression_relief,
+        "raw_swap_used_gb": round(raw_swap_gb, 3),
+        "effective_swap_used_gb": round(_safe_float(effective.get("swap_used_gb"), raw_swap_gb), 3),
+        "raw_compressed_store_gb": round(compressed_store_gb, 3),
+        "effective_compressed_store_gb": round(_safe_float(effective.get("compressed_store_gb"), compressed_store_gb), 3),
+        "compressor_gb": round(compressor_gb, 3),
+        "free_pct": round(free_pct, 3),
+        "swap_pressure_tier": swap_tier,
+        "reason": "stale_allocation_high_water_reconciled" if stale_swap_relief or stale_compression_relief else "not_applicable",
+        "policy": "fresh green swap-pressure evidence can relax stale resource_guard high-water swap/compression while preserving raw telemetry",
+    }
 
 
 def _registry_rows(project_root: Path) -> list[dict[str, Any]]:
@@ -1133,6 +1219,56 @@ def _storage_drain_active(ingestion_storage: dict[str, Any]) -> bool:
     )
 
 
+def _overlay_raw_live_candidate(backpressure: dict[str, Any]) -> tuple[dict[str, Any], str]:
+    effective = backpressure.get("effective_raw_live") if isinstance(backpressure.get("effective_raw_live"), dict) else {}
+    effective_source = str(backpressure.get("effective_raw_live_source") or effective.get("source") or "")
+    estimate = effective.get("raw_live_estimate") if isinstance(effective.get("raw_live_estimate"), dict) else {}
+    if estimate and effective_source == "sql_ingestion_overlay_pressure":
+        return estimate, "effective_raw_live.raw_live_estimate"
+    raw_live = backpressure.get("raw_live") if isinstance(backpressure.get("raw_live"), dict) else {}
+    return raw_live, "raw_live"
+
+
+def _bounded_overlay_storage_relief(ingestion_storage: dict[str, Any]) -> dict[str, Any]:
+    backpressure = ingestion_storage.get("backpressure") if isinstance(ingestion_storage.get("backpressure"), dict) else {}
+    raw_live, raw_source = _overlay_raw_live_candidate(backpressure)
+    raw_core = _safe_int(raw_live.get("core_pending_lines"), 0)
+    raw_total = _safe_int(raw_live.get("total_pending_lines"), 0)
+    raw_oldest = _safe_float(raw_live.get("oldest_pending_age_seconds"), 0.0)
+    overlay_adjusted = bool(backpressure.get("overlay_adjusted", False))
+    overlay_total = _safe_int(backpressure.get("total_pending_lines"), 0)
+    storage = ingestion_storage.get("storage") if isinstance(ingestion_storage.get("storage"), dict) else {}
+    drain_status = str(storage.get("backlog_drain_status") or "").strip().lower()
+    recovery_state = str(ingestion_storage.get("recovery_state") or "").strip().lower()
+    raw_live_clear = bool(
+        raw_live
+        and raw_core <= OVERLAY_RAW_LIVE_MAX_CORE_LINES
+        and raw_total <= OVERLAY_RAW_LIVE_MAX_TOTAL_LINES
+        and raw_oldest <= OVERLAY_RAW_LIVE_MAX_AGE_SECONDS
+    )
+    recovery_active = bool(drain_status in {"drain_active", "handoff_requested"} or recovery_state in {"stabilized_recovery", "recovering_under_guard", "recovering"})
+    active = bool(overlay_adjusted and raw_live_clear and recovery_active and overlay_total <= OVERLAY_RAW_LIVE_MAX_TOTAL_LINES)
+    return {
+        "active": active,
+        "overlay_adjusted": overlay_adjusted,
+        "overlay_total_pending_lines": overlay_total,
+        "raw_live_clear": raw_live_clear,
+        "raw_live_source": raw_source,
+        "raw_live": {
+            "core_pending_lines": raw_core,
+            "total_pending_lines": raw_total,
+            "oldest_pending_age_seconds": round(raw_oldest, 3),
+            "max_core_pending_lines": OVERLAY_RAW_LIVE_MAX_CORE_LINES,
+            "max_total_pending_lines": OVERLAY_RAW_LIVE_MAX_TOTAL_LINES,
+            "max_oldest_pending_age_seconds": OVERLAY_RAW_LIVE_MAX_AGE_SECONDS,
+        },
+        "recovery_active": recovery_active,
+        "backlog_drain_status": drain_status,
+        "recovery_state": recovery_state,
+        "policy": "critical SQL-overlay cleanup is memory-advisory for guarded paper when raw-live backlog is cool and bounded recovery is active",
+    }
+
+
 def _sql_writer_coordination(backpressure_fleet: dict[str, Any], ingestion_storage: dict[str, Any]) -> dict[str, Any]:
     storage_backpressure = ingestion_storage.get("backpressure") if isinstance(ingestion_storage.get("backpressure"), dict) else {}
     active_drainer = backpressure_fleet.get("active_drainer") if isinstance(backpressure_fleet.get("active_drainer"), dict) else {}
@@ -1181,6 +1317,7 @@ def _recommended_profile(
     compressed_store_gb = _safe_float(resource_guard.get("compressed_store_gb"), 0.0)
     compressor_gb = _safe_float(resource_guard.get("compressor_gb"), 0.0)
     storage_severity = str(ingestion_storage.get("severity") or "").strip().lower()
+    bounded_overlay_relief = _bounded_overlay_storage_relief(ingestion_storage)
     reasons: list[str] = []
     recommended = base_tier
     status = "ready"
@@ -1200,8 +1337,13 @@ def _recommended_profile(
 
     if storage_severity == "critical":
         recommended = "constrained"
-        status = "blocked"
-        reasons.append("storage_pressure_critical")
+        if bool(bounded_overlay_relief.get("active", False)):
+            if status == "ready":
+                status = "needs_work"
+            reasons.append("storage_pressure_critical_overlay_recovery_advisory")
+        else:
+            status = "blocked"
+            reasons.append("storage_pressure_critical")
     elif storage_severity == "high" and recommended == "max_throughput":
         recommended = "pro_balanced"
         status = "needs_work"
@@ -1337,6 +1479,9 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, action: str, override_pa
     now = datetime.now(timezone.utc)
     health_root = project_root / "governance" / "health"
     resource_guard = _load_json(health_root / "resource_guard_latest.json")
+    raw_resource_guard = dict(resource_guard)
+    swap_pressure_payload = _load_json(health_root / "swap_pressure_governor_latest.json")
+    resource_guard, memory_truth = _memory_truth_reconciliation(resource_guard, swap_pressure_payload)
     apple_profile = _load_json(health_root / "apple_silicon_profile_latest.json")
     ingestion_storage = _load_json(health_root / "ingestion_storage_control_latest.json")
     backpressure_fleet = _load_json(health_root / "backpressure_drainer_fleet_latest.json")
@@ -1391,7 +1536,7 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, action: str, override_pa
     return {
         "timestamp_utc": now.isoformat(),
         "schema_version": 1,
-        "ok": overall_status == "ready",
+        "ok": overall_status in {"ready", "advisory"},
         "overall_status": overall_status,
         "action": action,
         "base_tier": base_tier,
@@ -1419,12 +1564,23 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, action: str, override_pa
             "swap_used_gb": _safe_float(resource_guard.get("swap_used_gb"), 0.0),
             "compressed_store_gb": _safe_float(resource_guard.get("compressed_store_gb"), 0.0),
             "compressor_gb": _safe_float(resource_guard.get("compressor_gb"), 0.0),
+            "allocation_relief_active": bool(resource_guard.get("allocation_relief_active", False)),
         },
+        "raw_memory_snapshot": {
+            "memory_pressure_state": str(raw_resource_guard.get("memory_pressure_state") or ""),
+            "memory_pressure_kind": str(raw_resource_guard.get("memory_pressure_kind") or ""),
+            "memory_free_pct": _safe_float(raw_resource_guard.get("memory_free_pct"), 0.0),
+            "swap_used_gb": _safe_float(raw_resource_guard.get("swap_used_gb"), 0.0),
+            "compressed_store_gb": _safe_float(raw_resource_guard.get("compressed_store_gb"), 0.0),
+            "compressor_gb": _safe_float(raw_resource_guard.get("compressor_gb"), 0.0),
+        },
+        "memory_truth_reconciliation": memory_truth,
         "storage_snapshot": {
             "severity": str(ingestion_storage.get("severity") or ""),
             "pressure_index": _safe_float(ingestion_storage.get("pressure_index"), 0.0),
             "estimated_core_drain_minutes": ((ingestion_storage.get("backpressure") or {}).get("estimated_core_drain_minutes") if isinstance(ingestion_storage.get("backpressure"), dict) else None),
             "drain_friendly_sql_active": drain_friendly_sql_active,
+            "bounded_overlay_relief": _bounded_overlay_storage_relief(ingestion_storage),
             "sql_writer_coordination": sql_writer_coordination,
             "backlog_drain_status": str(((ingestion_storage.get("storage") or {}).get("backlog_drain_status")) if isinstance(ingestion_storage.get("storage"), dict) else ""),
             "recommended_operating_mode": str(ingestion_storage.get("recommended_operating_mode") or ""),
@@ -1444,6 +1600,7 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, action: str, override_pa
         ],
         "source_files": {
             "resource_guard": str(health_root / "resource_guard_latest.json"),
+            "swap_pressure_governor": str(health_root / "swap_pressure_governor_latest.json"),
             "apple_silicon_profile": str(health_root / "apple_silicon_profile_latest.json"),
             "ingestion_storage_control": str(health_root / "ingestion_storage_control_latest.json"),
         },

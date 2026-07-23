@@ -151,6 +151,34 @@ LIVE_MACRO_CHANNEL_PRESETS: Dict[str, Dict[str, Any]] = {
 }
 
 
+def _runtime_support_nice_target() -> int:
+    raw = (
+        os.getenv("YTDLP_SUPPORT_NICE")
+        or os.getenv("MACRO_YTDLP_SUPPORT_NICE")
+        or os.getenv("OPS_SUPPORT_JOB_NICE")
+        or os.getenv("MACRO_CAPTURE_NICE_LEVEL")
+        or "0"
+    )
+    try:
+        return min(max(int(float(str(raw).strip() or "0")), 0), 20)
+    except Exception:
+        return 0
+
+
+def _runtime_support_preexec() -> Any:
+    target = _runtime_support_nice_target()
+    if target <= 0:
+        return None
+
+    def _apply_nice() -> None:
+        try:
+            os.nice(target)
+        except Exception:
+            pass
+
+    return _apply_nice
+
+
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -475,7 +503,11 @@ def _fetch_caption_snapshot(url: str, work_dir: Path) -> Path:
         str(work_dir / "%(id)s.%(ext)s"),
         str(url),
     ]
-    proc = subprocess.run(cmd, cwd=str(PROJECT_ROOT), capture_output=True, text=True, check=False, timeout=120)
+    kwargs: Dict[str, Any] = {}
+    preexec = _runtime_support_preexec()
+    if preexec is not None:
+        kwargs["preexec_fn"] = preexec
+    proc = subprocess.run(cmd, cwd=str(PROJECT_ROOT), capture_output=True, text=True, check=False, timeout=120, **kwargs)
     if proc.returncode != 0:
         raise RuntimeError((proc.stderr or proc.stdout or "yt-dlp_failed").strip()[-1200:])
     candidates = sorted(work_dir.glob("*.vtt"))
@@ -620,6 +652,10 @@ def _load_json_output(raw: str) -> Optional[Dict[str, Any]]:
 
 
 def _run_yt_dlp_json(args: List[str], *, timeout: int = 90) -> Dict[str, Any]:
+    kwargs: Dict[str, Any] = {}
+    preexec = _runtime_support_preexec()
+    if preexec is not None:
+        kwargs["preexec_fn"] = preexec
     proc = subprocess.run(
         [YT_DLP_BIN, *args],
         cwd=str(PROJECT_ROOT),
@@ -627,6 +663,7 @@ def _run_yt_dlp_json(args: List[str], *, timeout: int = 90) -> Dict[str, Any]:
         text=True,
         check=False,
         timeout=timeout,
+        **kwargs,
     )
     return {
         "returncode": int(proc.returncode),

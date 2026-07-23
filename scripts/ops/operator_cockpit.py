@@ -102,6 +102,17 @@ def _is_storage_steady(storage: dict[str, Any], backlog_drain: dict[str, Any]) -
         or backlog_drain.get("recommended_now", False)
         or backlog_drain.get("material_drain_recommended", False)
     )
+    effective_raw_live = backpressure.get("effective_raw_live") if isinstance(backpressure.get("effective_raw_live"), dict) else {}
+    effective_source = str(backpressure.get("effective_raw_live_source") or effective_raw_live.get("source") or "").strip()
+    overlay_managed_clear = bool(
+        backpressure.get("overlay_adjusted", False)
+        and backpressure.get("overlay_pressure_clear", False)
+        and effective_source in {"fresh_empty_sql_ingestion_overlay", "sql_ingestion_overlay_pressure"}
+        and total_pending <= 15000
+        and core_pending <= 5000
+    )
+    if backlog_recommended and overlay_managed_clear:
+        backlog_recommended = False
     steady_ready = bool(target_status.get("steady_state_ready", False)) if target_status else True
     return (
         status == "ready"
@@ -126,7 +137,12 @@ def _is_memory_healthy(memory: dict[str, Any]) -> bool:
     state = str(snapshot.get("memory_pressure_state") or "").strip().lower()
     kind = str(snapshot.get("memory_pressure_kind") or "").strip().lower()
     swap_used_gb = _safe_float(snapshot.get("swap_used_gb"), 99.0)
-    return status != "blocked" and state in {"green", "normal", "ok"} and kind in {"", "none", "green"} and swap_used_gb <= 8.0
+    return (
+        status != "blocked"
+        and state in {"green", "normal", "ok", "clear"}
+        and kind in {"", "none", "green", "normal", "ok", "clear"}
+        and swap_used_gb <= 8.0
+    )
 
 
 def _lease_status(auth_lease: dict[str, Any]) -> str:

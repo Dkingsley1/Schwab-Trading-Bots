@@ -15,6 +15,190 @@ def _write_json(path: Path, payload: dict) -> None:
     path.write_text(json.dumps(payload, ensure_ascii=True, indent=2), encoding="utf-8")
 
 
+def test_section_grade_guard_makes_training_debt_advisory_when_guarded_paper_is_ready(tmp_path: Path, monkeypatch) -> None:
+    health = tmp_path / "governance" / "health"
+    _write_json(
+        health / "health_fast_latest.json",
+        {
+            "overall_status": "ready",
+            "ok": True,
+            "operational_readiness": {
+                "guarded_paper": {"ok": True, "status": "ready"},
+                "live_execution": {
+                    "ok": False,
+                    "status": "blocked_read_only",
+                    "blockers": ["live_execution_requires_explicit_operator_control"],
+                },
+            },
+        },
+    )
+    _write_json(
+        health / "live_runtime_separation_control_latest.json",
+        {"overall_status": "ready", "clearance_plan": {"clearance_state": "guarded_live_read_only"}},
+    )
+
+    def section(state: str, score: float = 96.0) -> dict:
+        return {
+            "floor_state": state,
+            "letter_grade": "A+",
+            "raw_letter_grade": "A+" if state != "below_floor" else "B+",
+            "score": score,
+            "raw_score": score if state != "below_floor" else 84.0,
+            "target_floor_letter_grade": "A",
+            "target_floor_score": 92.0,
+            "floor_contract_active": state != "below_floor",
+            "floor_reason": "",
+            "signals": {},
+        }
+
+    snapshot = {
+        "overall_score": 97.74,
+        "overall_letter_grade": "A+",
+        "raw_overall_score": 95.18,
+        "raw_overall_letter_grade": "A",
+        "section_grades": {
+            slug: section("below_floor" if slug == "training_and_model_quality" else "at_floor")
+            for slug in src.SECTION_COMMANDS
+        },
+    }
+
+    class DummyConnector:
+        exposed_endpoints = [object()] * 16
+
+    monkeypatch.setattr(src, "DefaultLicensingAPIConnector", lambda: DummyConnector())
+    monkeypatch.setattr(src, "build_grade_snapshot", lambda **_: snapshot)
+
+    payload = src.build_payload(tmp_path)
+
+    assert payload["overall_status"] == "degraded"
+    assert payload["ok"] is True
+    assert payload["below_floor_sections"] == ["training_and_model_quality"]
+    assert payload["blocking_below_floor_sections"] == []
+    assert payload["advisory_below_floor_sections"] == ["training_and_model_quality"]
+    assert payload["paper_soak_advisory_below_floor"] is True
+
+
+def test_section_grade_guard_makes_current_guarded_paper_floor_debt_advisory(tmp_path: Path, monkeypatch) -> None:
+    health = tmp_path / "governance" / "health"
+    _write_json(
+        health / "health_fast_latest.json",
+        {
+            "overall_status": "ready",
+            "ok": True,
+            "strict_all_clear": True,
+            "operational_readiness": {
+                "guarded_paper": {"ok": True, "status": "ready", "blockers": []},
+                "live_execution": {
+                    "ok": False,
+                    "status": "blocked_read_only",
+                    "blockers": ["live_execution_requires_explicit_operator_control"],
+                },
+            },
+        },
+    )
+    _write_json(
+        health / "live_runtime_separation_control_latest.json",
+        {"overall_status": "degraded", "clearance_plan": {"clearance_state": "awaiting_coverage_cycles"}},
+    )
+
+    below_floor_sections = {"live_trading_readiness", "training_and_model_quality", "ops_and_autonomy"}
+
+    def section(slug: str) -> dict:
+        below = slug in below_floor_sections
+        return {
+            "floor_state": "below_floor" if below else "at_floor",
+            "letter_grade": "B+" if below else "A+",
+            "raw_letter_grade": "B+" if below else "A+",
+            "score": 86.0 if below else 96.0,
+            "raw_score": 86.0 if below else 96.0,
+            "target_floor_letter_grade": "A",
+            "target_floor_score": 92.0,
+            "floor_contract_active": False,
+            "floor_reason": "",
+            "signals": {},
+        }
+
+    snapshot = {
+        "overall_score": 94.05,
+        "overall_letter_grade": "A",
+        "raw_overall_score": 94.05,
+        "raw_overall_letter_grade": "A",
+        "section_grades": {slug: section(slug) for slug in src.SECTION_COMMANDS},
+    }
+
+    class DummyConnector:
+        exposed_endpoints = [object()] * 16
+
+    monkeypatch.setattr(src, "DefaultLicensingAPIConnector", lambda: DummyConnector())
+    monkeypatch.setattr(src, "build_grade_snapshot", lambda **_: snapshot)
+
+    payload = src.build_payload(tmp_path)
+
+    assert payload["overall_status"] == "degraded"
+    assert payload["ok"] is True
+    assert payload["blocking_below_floor_sections"] == []
+    assert set(payload["advisory_below_floor_sections"]) == below_floor_sections
+    assert payload["guarded_paper_strict_clear"] is True
+
+
+def test_section_grade_guard_accepts_managed_coverage_deferred_as_live_locked(tmp_path: Path, monkeypatch) -> None:
+    health = tmp_path / "governance" / "health"
+    _write_json(
+        health / "health_fast_latest.json",
+        {
+            "overall_status": "ready",
+            "ok": True,
+            "strict_all_clear": True,
+            "operational_readiness": {
+                "guarded_paper": {"ok": True, "status": "ready", "blockers": []},
+                "live_execution": {"ok": False, "status": "pending_release", "blockers": []},
+            },
+        },
+    )
+    _write_json(
+        health / "live_runtime_separation_control_latest.json",
+        {"overall_status": "ready", "clearance_plan": {"clearance_state": "managed_coverage_stage_deferred"}},
+    )
+
+    def section(slug: str) -> dict:
+        below = slug in {"live_trading_readiness", "ops_and_autonomy"}
+        return {
+            "floor_state": "below_floor" if below else "at_floor",
+            "letter_grade": "B+" if below else "A+",
+            "raw_letter_grade": "B+" if below else "A+",
+            "score": 86.0 if below else 96.0,
+            "raw_score": 86.0 if below else 96.0,
+            "target_floor_letter_grade": "A",
+            "target_floor_score": 92.0,
+            "floor_contract_active": False,
+            "floor_reason": "",
+            "signals": {},
+        }
+
+    class DummyConnector:
+        exposed_endpoints = [object()] * 16
+
+    monkeypatch.setattr(src, "DefaultLicensingAPIConnector", lambda: DummyConnector())
+    monkeypatch.setattr(
+        src,
+        "build_grade_snapshot",
+        lambda **_: {
+            "overall_score": 96.5,
+            "overall_letter_grade": "A+",
+            "raw_overall_score": 95.0,
+            "raw_overall_letter_grade": "A",
+            "section_grades": {slug: section(slug) for slug in src.SECTION_COMMANDS},
+        },
+    )
+
+    payload = src.build_payload(tmp_path)
+
+    assert payload["ok"] is True
+    assert payload["live_execution_locked"] is True
+    assert set(payload["advisory_below_floor_sections"]) == {"live_trading_readiness", "ops_and_autonomy"}
+    assert payload["blocking_below_floor_sections"] == []
+
+
 def test_section_grade_guard_reports_degraded_when_sections_are_floor_protected(tmp_path: Path) -> None:
     health = tmp_path / "governance" / "health"
     champion = tmp_path / "governance" / "champion_challenger"
@@ -79,7 +263,7 @@ def test_section_grade_guard_reports_degraded_when_sections_are_floor_protected(
     _write_json(
         health / "storage_backpressure_autopilot_latest.json",
         {
-            "overall_status": "applied_with_followups",
+            "overall_status": "applied",
             "metrics": {
                 "attempted_step_count": 2,
                 "cycle_count": 1,

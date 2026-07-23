@@ -4,8 +4,8 @@ set -euo pipefail
 PROJECT_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 STAMP="$(date -u +%Y%m%d_%H%M%S)"
 OUT_DIR="$PROJECT_ROOT/exports/env_snapshots/$STAMP"
-PY="$PROJECT_ROOT/.venv312/bin/python"
-PIP="$PROJECT_ROOT/.venv312/bin/pip"
+PY="$PROJECT_ROOT/.venv314/bin/python"
+PIP="$PROJECT_ROOT/.venv314/bin/pip"
 
 mkdir -p "$OUT_DIR"
 

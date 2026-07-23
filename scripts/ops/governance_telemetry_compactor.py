@@ -24,7 +24,9 @@ else:
 DEFAULT_OUT_PATH = PROJECT_ROOT / "governance" / "health" / "governance_telemetry_compactor_latest.json"
 DEFAULT_LOCK_PATH = PROJECT_ROOT / "governance" / "locks" / "governance_telemetry_compactor.lock"
 DEFAULT_ARCHIVE_ROOT = PROJECT_ROOT / "data" / "stale_stage" / "governance_telemetry_compactor"
-DEFAULT_CHANNELS = ("decision",)
+DEFAULT_CHANNELS = ("all",)
+FALLBACK_CHANNELS = ("decision", "risk", "runtime", "gate", "ingress", "api", "loop_state")
+DEFAULT_FAMILIES = ("channels", "events", "master_control", "execution_lanes")
 
 
 def _safe_float(raw: Any, default: float = 0.0) -> float:
@@ -58,6 +60,18 @@ def _parse_csv(raw: str | None, default: tuple[str, ...]) -> list[str]:
     return rows or list(default)
 
 
+def _resolve_channels(project_root: Path, channels: list[str]) -> list[str]:
+    normalized = [part.strip() for part in channels if part and part.strip()]
+    if not normalized or any(part.lower() in {"all", "*"} for part in normalized):
+        root = project_root / "governance" / "channels"
+        try:
+            discovered = sorted(path.name for path in root.iterdir() if path.is_dir())
+        except Exception:
+            discovered = []
+        return discovered or list(FALLBACK_CHANNELS)
+    return normalized
+
+
 def _relative(project_root: Path, path: Path) -> str:
     try:
         return str(path.relative_to(project_root)).replace("\\", "/")
@@ -84,16 +98,80 @@ def _iter_channel_files(project_root: Path, channels: list[str]) -> list[Path]:
     return sorted(files, key=lambda path: (-_safe_int(path.stat().st_size if path.exists() else 0), str(path)))
 
 
+def _iter_master_control_files(project_root: Path) -> list[Path]:
+    root = project_root / "governance"
+    if not root.exists():
+        return []
+    files: list[Path] = []
+    for sleeve_dir in root.glob("shadow_*"):
+        if not sleeve_dir.is_dir():
+            continue
+        files.extend(path for path in sleeve_dir.glob("master_control_*.jsonl") if path.is_file())
+    return files
+
+
+def _iter_execution_lane_files(project_root: Path) -> list[Path]:
+    root = project_root / "governance" / "execution_lanes"
+    if not root.exists():
+        return []
+    return [path for path in root.glob("*.jsonl") if path.is_file()]
+
+
+def _iter_event_files(project_root: Path) -> list[Path]:
+    root = project_root / "governance" / "events"
+    if not root.exists():
+        return []
+    return [path for path in root.glob("*.jsonl") if path.is_file()]
+
+
+def _iter_family_files(project_root: Path, *, channels: list[str], families: list[str]) -> list[Path]:
+    files: list[Path] = []
+    seen: set[str] = set()
+    for family in families:
+        normalized = family.strip().lower().replace("-", "_")
+        if normalized in {"channel", "channels", "governance_channel", "governance_channels"}:
+            candidates = _iter_channel_files(project_root, channels)
+        elif normalized in {"master_control", "master_controls", "sleeve_master_control"}:
+            candidates = _iter_master_control_files(project_root)
+        elif normalized in {"execution_lane", "execution_lanes", "execution"}:
+            candidates = _iter_execution_lane_files(project_root)
+        elif normalized in {"event", "events", "governance_event", "governance_events"}:
+            candidates = _iter_event_files(project_root)
+        else:
+            continue
+        for path in candidates:
+            key = str(path)
+            if key in seen:
+                continue
+            seen.add(key)
+            files.append(path)
+    return sorted(files, key=lambda path: (-_safe_int(path.stat().st_size if path.exists() else 0), str(path)))
+
+
+def _candidate_family(project_root: Path, path: Path) -> str:
+    rel = _relative(project_root, path)
+    if rel.startswith("governance/channels/"):
+        return "channels"
+    if rel.startswith("governance/execution_lanes/"):
+        return "execution_lanes"
+    if rel.startswith("governance/events/"):
+        return "events"
+    if "/master_control_" in rel:
+        return "master_control"
+    return "governance_telemetry"
+
+
 def _candidate_rows(
     *,
     project_root: Path,
     channels: list[str],
+    families: list[str],
     min_file_bytes: int,
     include_current_day: bool,
 ) -> list[dict[str, Any]]:
     today = _today_stamp()
     rows: list[dict[str, Any]] = []
-    for path in _iter_channel_files(project_root, channels):
+    for path in _iter_family_files(project_root, channels=channels, families=families):
         try:
             size_bytes = int(path.stat().st_size)
         except OSError:
@@ -104,14 +182,16 @@ def _candidate_rows(
         is_current_day = bool(day and day >= today)
         if is_current_day and not include_current_day:
             continue
+        family = _candidate_family(project_root, path)
         rows.append(
             {
                 "relative_path": _relative(project_root, path),
+                "family": family,
                 "size_bytes": size_bytes,
                 "size_gb": _gb(size_bytes),
                 "day": day,
                 "current_day": is_current_day,
-                "action": "rotate_and_archive_oversized_governance_channel",
+                "action": f"rotate_and_archive_oversized_governance_{family}",
             }
         )
     rows.sort(key=lambda row: (-int(row.get("size_bytes", 0) or 0), str(row.get("relative_path") or "")))
@@ -200,6 +280,7 @@ def build_payload(
     project_root: Path = PROJECT_ROOT,
     apply: bool = False,
     channels: list[str] | None = None,
+    families: list[str] | None = None,
     min_file_mb: float = 256.0,
     target_free_gb: float = 9.0,
     max_files: int = 8,
@@ -208,14 +289,19 @@ def build_payload(
     compression_level: int = 1,
 ) -> dict[str, Any]:
     project_root = Path(project_root).resolve()
-    channel_list = [part for part in (channels or list(DEFAULT_CHANNELS)) if part]
+    requested_channels = [part for part in (channels or list(DEFAULT_CHANNELS)) if part]
+    channel_list = _resolve_channels(project_root, requested_channels)
+    family_list = [part for part in (families or list(DEFAULT_FAMILIES)) if part]
     min_file_bytes = max(int(float(min_file_mb) * 1024 * 1024), 1)
     target_free_bytes = max(int(float(target_free_gb) * 1024 * 1024 * 1024), 0)
-    archive_base = Path(archive_root or (project_root / "data" / "stale_stage" / "governance_telemetry_compactor")).expanduser()
+    archive_base = Path(
+        archive_root or (project_root / "data" / "stale_stage" / "governance_telemetry_compactor")
+    ).expanduser().resolve(strict=False)
 
     candidates = _candidate_rows(
         project_root=project_root,
         channels=channel_list,
+        families=family_list,
         min_file_bytes=min_file_bytes,
         include_current_day=bool(include_current_day),
     )
@@ -260,7 +346,9 @@ def build_payload(
         "overall_status": overall_status,
         "apply": bool(apply),
         "policy": {
+            "requested_channels": requested_channels,
             "channels": channel_list,
+            "families": family_list,
             "min_file_mb": float(min_file_mb),
             "target_free_gb": float(target_free_gb),
             "max_files": int(max_files),
@@ -318,12 +406,16 @@ def _acquire_lock(path: Path) -> tuple[Any | None, str]:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Rotate and compress oversized governance channel telemetry out of the hot quota lane.")
+    parser = argparse.ArgumentParser(description="Rotate and compress oversized governance telemetry out of the hot quota lane.")
     parser.add_argument("--project-root", default=str(PROJECT_ROOT))
     parser.add_argument("--out-file", default=str(DEFAULT_OUT_PATH))
     parser.add_argument("--lock-path", default=str(DEFAULT_LOCK_PATH))
     parser.add_argument("--archive-root", default=str(DEFAULT_ARCHIVE_ROOT))
     parser.add_argument("--channels", default=",".join(DEFAULT_CHANNELS))
+    parser.add_argument(
+        "--families",
+        default=os.getenv("GOVERNANCE_TELEMETRY_COMPACTOR_FAMILIES", ",".join(DEFAULT_FAMILIES)),
+    )
     parser.add_argument("--min-file-mb", type=float, default=float(os.getenv("GOVERNANCE_TELEMETRY_COMPACTOR_MIN_FILE_MB", "256")))
     parser.add_argument("--target-free-gb", type=float, default=float(os.getenv("GOVERNANCE_TELEMETRY_COMPACTOR_TARGET_FREE_GB", "9")))
     parser.add_argument("--max-files", type=int, default=int(os.getenv("GOVERNANCE_TELEMETRY_COMPACTOR_MAX_FILES", "8")))
@@ -359,6 +451,7 @@ def main() -> int:
             project_root=project_root,
             apply=bool(args.apply),
             channels=_parse_csv(args.channels, DEFAULT_CHANNELS),
+            families=_parse_csv(args.families, DEFAULT_FAMILIES),
             min_file_mb=float(args.min_file_mb),
             target_free_gb=float(args.target_free_gb),
             max_files=int(args.max_files),

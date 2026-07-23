@@ -30,6 +30,14 @@ def _safe_int(raw: Any, default: int = 0) -> int:
         return int(default)
 
 
+def _tail_text(text: str, *, max_lines: int = 10, max_chars: int = 4000) -> str:
+    tail = "\n".join(str(text or "").splitlines()[-max_lines:])
+    if len(tail) <= max_chars:
+        return tail
+    omitted = len(tail) - max_chars
+    return f"...<truncated {omitted} chars>\n{tail[-max_chars:]}"
+
+
 def _run_json(cmd: list[str], *, cwd: Path, timeout_sec: int) -> dict[str, Any]:
     try:
         proc = subprocess.run(
@@ -63,8 +71,8 @@ def _run_json(cmd: list[str], *, cwd: Path, timeout_sec: int) -> dict[str, Any]:
         "rc": rc,
         "timed_out": timed_out,
         "payload": payload,
-        "stdout_tail": "\n".join(stdout.splitlines()[-10:]),
-        "stderr_tail": "\n".join(stderr.splitlines()[-10:]),
+        "stdout_tail": _tail_text(stdout),
+        "stderr_tail": _tail_text(stderr),
     }
 
 
@@ -84,6 +92,7 @@ def build_payload(
     apply: bool = False,
     timeout_sec: int = 900,
 ) -> dict[str, Any]:
+    bounded_timeout_sec = max(min(int(timeout_sec), 120), 1)
     guard = _guard_payload(project_root, timeout_sec=timeout_sec)
     storage_control = load_json(project_root / "governance" / "health" / "ingestion_storage_control_latest.json")
     halt_status = load_json(project_root / "governance" / "health" / "global_risk_killswitch_latest.json")
@@ -95,6 +104,14 @@ def build_payload(
     storage_backpressure = storage_control.get("backpressure") if isinstance(storage_control.get("backpressure"), dict) else {}
     halt_clear_blockers = halt_status.get("clear_blockers") if isinstance(halt_status.get("clear_blockers"), list) else []
     data_plane_status = str(data_plane.get("overall_status") or "")
+    data_plane_recovery_state = str(data_plane.get("recovery_state") or "")
+    data_plane_write_failures = _safe_int(data_plane.get("write_failure_count"), 0)
+    data_plane_hot_path_over_budget = _safe_int(data_plane.get("hot_path_over_budget_bytes"), 0)
+    data_plane_storage_halt_needed = bool(
+        data_plane_status == "blocked"
+        or data_plane_write_failures > 0
+        or data_plane_hot_path_over_budget > 0
+    )
 
     repair_plan: list[dict[str, Any]] = []
 
@@ -106,7 +123,7 @@ def build_payload(
             "storage_reconnect_regression_guard",
             f"missing_contracts={len(guard.get('missing_contracts') or [])}",
             [str(PYTHON_BIN), str(REGRESSION_GUARD), "--project-root", str(project_root), "--json"],
-            120,
+            bounded_timeout_sec,
         )
 
     if not bool(launchd.get("running", False)) or not bool(launchd.get("plist_exists", False)):
@@ -114,15 +131,22 @@ def build_payload(
             "install_storage_eject_guard_launchd",
             "automatic_storage_eject_guard_not_running",
             [str(project_root / "scripts" / "install_storage_eject_guard_launchd.sh")],
-            120,
+            bounded_timeout_sec,
         )
 
     if _safe_int(live.get("split_brain_unresolved_conflicts"), 0) > 0:
         add_plan(
             "split_brain_reconcile",
             "unresolved_storage_split_brain_conflicts",
-            [str(project_root / "scripts" / "ops" / "opsctl.sh"), "split-brain-reconcile", "--force-failback-if-hashes-match", "--json"],
-            180,
+            [
+                str(project_root / "scripts" / "ops" / "opsctl.sh"),
+                "split-brain-reconcile",
+                "--force-failback-if-hashes-match",
+                "--force-failback-timeout-sec",
+                "45",
+                "--json",
+            ],
+            min(bounded_timeout_sec, 75),
         )
 
     storage_status = str(storage_control.get("overall_status") or live.get("storage_control_status") or "")
@@ -143,21 +167,26 @@ def build_payload(
                 "45",
                 "--json",
             ],
-            420,
+            min(max(bounded_timeout_sec, 90), 150),
         )
 
-    if halt_clear_blockers or data_plane_status in {"blocked", "degraded"}:
+    if halt_clear_blockers or data_plane_storage_halt_needed:
         add_plan(
             "global_halt_safe_refresh",
-            f"halt_clear_blockers={len(halt_clear_blockers)} data_plane_status={data_plane_status or 'missing'}",
+            (
+                f"halt_clear_blockers={len(halt_clear_blockers)} "
+                f"data_plane_status={data_plane_status or 'missing'} "
+                f"write_failures={data_plane_write_failures} "
+                f"hot_path_over_budget_bytes={data_plane_hot_path_over_budget}"
+            ),
             [str(project_root / "scripts" / "ops" / "opsctl.sh"), "global-halt-refresh", "--json"],
-            120,
+            min(bounded_timeout_sec, 90),
         )
         add_plan(
             "global_halt_safe_auto_clear",
             "clear_only_when_refreshed_blockers_are_safe",
             [str(project_root / "scripts" / "ops" / "opsctl.sh"), "global-halt-auto-clear", "--json"],
-            120,
+            min(bounded_timeout_sec, 90),
         )
 
     attempts: list[dict[str, Any]] = []
@@ -210,11 +239,16 @@ def build_payload(
         ],
         "metrics": {
             "repair_plan_count": len(repair_plan),
+            "max_repair_step_timeout_sec": max([int(row.get("timeout_sec") or 0) for row in repair_plan] or [0]),
             "missing_contract_count": len(guard.get("missing_contracts") or []),
             "automation_running": bool(launchd.get("running", False)),
             "total_pending_lines": total_pending,
             "halt_clear_blocker_count": len(halt_clear_blockers),
             "data_plane_queue_depth": _safe_int(data_plane.get("queue_depth"), 0),
+            "data_plane_storage_halt_needed": bool(data_plane_storage_halt_needed),
+            "data_plane_recovery_state": data_plane_recovery_state,
+            "data_plane_write_failure_count": data_plane_write_failures,
+            "data_plane_hot_path_over_budget_bytes": data_plane_hot_path_over_budget,
         },
         "infra_bots": [
             "storage_reconnect_infrabot",

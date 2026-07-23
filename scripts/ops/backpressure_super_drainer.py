@@ -214,6 +214,7 @@ def _coordinator_preview(
     command_timeout_seconds: int,
     sql_manager_timeout_cap_seconds: int,
     include_maintenance: bool,
+    force_live_window: bool = False,
 ) -> dict[str, Any]:
     try:
         return coordinator_src.build_payload(
@@ -224,6 +225,7 @@ def _coordinator_preview(
             command_timeout_seconds=int(command_timeout_seconds),
             sql_manager_timeout_cap_seconds=int(sql_manager_timeout_cap_seconds),
             skip_maintenance=not bool(include_maintenance),
+            force_live_window=bool(force_live_window),
         )
     except Exception as exc:
         return {"overall_status": "error", "ok": False, "actionable": False, "error": f"{exc.__class__.__name__}: {exc}"}
@@ -428,6 +430,7 @@ def _coordinator_command(
     sql_manager_timeout_cap_seconds: int,
     include_maintenance: bool,
     stale_progress_minutes: float,
+    force_live_window: bool = False,
 ) -> list[str]:
     cmd = [
         str(PY),
@@ -446,6 +449,8 @@ def _coordinator_command(
         cmd.extend(["--sql-manager-timeout-cap-seconds", str(int(sql_manager_timeout_cap_seconds))])
     if not include_maintenance:
         cmd.append("--skip-maintenance")
+    if force_live_window:
+        cmd.append("--force-live-window")
     cmd.append("--json")
     return cmd
 
@@ -560,6 +565,7 @@ def build_payload(
         command_timeout_seconds=int(command_timeout_seconds),
         sql_manager_timeout_cap_seconds=int(sql_manager_timeout_cap_seconds),
         include_maintenance=bool(include_maintenance),
+        force_live_window=bool(force_live_window),
     )
     writer_before = _writer_snapshot(project_root)
     total_pending = _safe_int(initial_storage.get("total_pending_lines"), 0)
@@ -602,6 +608,7 @@ def build_payload(
                 command_timeout_seconds=int(command_timeout_seconds),
                 sql_manager_timeout_cap_seconds=int(sql_manager_timeout_cap_seconds),
                 include_maintenance=bool(include_maintenance),
+                force_live_window=bool(force_live_window),
             )
             if not wave_live_ready and not bool(wave_coordinator.get("actionable", False)):
                 stop_reason = "no_actionable_drainer"
@@ -616,6 +623,7 @@ def build_payload(
                 sql_manager_timeout_cap_seconds=int(sql_manager_timeout_cap_seconds),
                 include_maintenance=bool(include_maintenance),
                 stale_progress_minutes=float(stale_progress_minutes),
+                force_live_window=bool(force_live_window),
             )
             coordinator_result = _run_json_command(
                 cmd,

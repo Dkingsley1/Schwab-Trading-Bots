@@ -226,6 +226,25 @@ def test_creative_pause_guard_suppresses_shadow_restart_for_music(tmp_path, monk
     assert reason == "creative_audio_pause_guard_active"
 
 
+def test_runtime_pressure_guard_suppresses_coinbase_restart(tmp_path, monkeypatch) -> None:
+    from scripts import shadow_watchdog
+
+    override_path = tmp_path / ".env.runtime_resource_guard_override"
+    override_path.write_text("PAPER_CRYPTO_FEED_RUNTIME_PAUSED_FOR_PRESSURE=1\n", encoding="utf-8")
+    monkeypatch.setattr(shadow_watchdog, "RUNTIME_RESOURCE_OVERRIDE", override_path)
+
+    target = Target(
+        name="coinbase",
+        match="scripts/run_shadow_training_loop.py --broker coinbase",
+        start_cmd=["./scripts/ops/opsctl.sh", "coinbase-start", "--paper", "--live-data"],
+    )
+
+    active, reason = _restart_guard_active_for_target(target)
+
+    assert active is True
+    assert reason == "paper_crypto_feed_pressure_guard_active"
+
+
 def test_live_schwab_watchdog_excludes_simulated_heartbeat_coverage_by_default() -> None:
     assert _schwab_live_heartbeat_exclude_matches(simulate_schwab=False) == ("--simulate",)
     assert _schwab_live_heartbeat_exclude_matches(simulate_schwab=True) == ()

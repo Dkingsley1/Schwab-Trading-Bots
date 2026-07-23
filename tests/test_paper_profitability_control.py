@@ -1,5 +1,6 @@
 import importlib.util
 import json
+from collections import Counter
 from pathlib import Path
 
 
@@ -18,6 +19,11 @@ def _load_module():
 def _write_json(path: Path, payload: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, ensure_ascii=True, indent=2), encoding="utf-8")
+
+
+def _write_jsonl(path: Path, rows: list[dict]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("".join(json.dumps(row, ensure_ascii=True) + "\n" for row in rows), encoding="utf-8")
 
 
 def test_paper_profitability_control_builds_profile_and_strategy_brakes(tmp_path: Path) -> None:
@@ -50,6 +56,7 @@ def test_paper_profitability_control_builds_profile_and_strategy_brakes(tmp_path
                         {"cause": "source_quality:low", "count": 8, "loss_total": 900.0},
                         {"cause": "fill_quality:unknown", "count": 8, "loss_total": 900.0},
                         {"cause": "event_proximity:low", "count": 8, "loss_total": 900.0},
+                        {"cause": "session:premarket", "count": 8, "loss_total": 900.0},
                     ],
                     "top_losing_strategies": [
                         {
@@ -81,6 +88,7 @@ def test_paper_profitability_control_builds_profile_and_strategy_brakes(tmp_path
     assert runtime["master_grandmaster_training_contract"]["recommended_training_mode"] == "master_profitability_canary"
     assert runtime["sub_bot_accuracy_target_contract"]["max_train_test_accuracy_gap"] == 0.08
     assert profile["action"] == "quarantine_new_entries"
+    assert profile["control_posture_grade"] == "A+"
     assert profile["profit_grade"] in {"D", "F"}
     assert profile["outcome_weighted_training"]["active"] is True
     assert profile["dynamic_sizing"]["paper_profitability_size_multiplier_norm"] <= 0.10
@@ -94,6 +102,8 @@ def test_paper_profitability_control_builds_profile_and_strategy_brakes(tmp_path
     assert profile["portfolio_conflict_control"]["active"] is True
     assert profile["confirmation_bias_control"]["active"] is True
     assert profile["confirmation_bias_control"]["min_independent_evidence_channels"] >= 3
+    assert profile["a_plus_plus_strengthening"]["control_grade"] == "A+"
+    assert "three_profitable_refreshes" in profile["a_plus_plus_strengthening"]["required_before_reentry"]
     assert "source_quality" in profile["confirmation_bias_control"]["required_before_new_entry"]
     assert profile["thresholds"]["min_source_quality_norm"] >= 0.60
     assert profile["thresholds"]["min_execution_fitness_norm"] >= 0.62
@@ -110,10 +120,31 @@ def test_paper_profitability_control_builds_profile_and_strategy_brakes(tmp_path
     assert payload["strategy_controls"][0]["bot_id"] == "brain_refinery_v48_position_1m_3m"
     assert payload["strategy_controls"][0]["block_new_entries"] is True
     assert payload["strategy_controls"][0]["upgrade_contracts"]["loser_quarantine"]["active"] is True
+    assert payload["strategy_controls"][0]["upgrade_contracts"]["loser_quarantine"]["rehabilitation_required"] is True
     assert payload["strategy_controls"][0]["confirmation_bias_control"]["active"] is True
+    rehab = payload["strategy_controls"][0]["rehabilitation_contract"]
+    assert rehab["mode"] == "paper_only_rehabilitation"
+    assert rehab["hypothesis"] == "conditional_market_fit_not_dead_strategy"
+    assert rehab["session_gate"]["active"] is True
+    assert rehab["session_gate"]["unknown_session_is_negative"] is True
+    assert rehab["quality_gate"]["min_independent_evidence_channels"] >= 4
+    assert "session_gate_passed" in rehab["required_before_reentry"]
+    assert "source_fill_spread_quality_present" in rehab["required_before_reentry"]
+    assert "strategy_reentry_retest_outcome" in rehab["required_label_outputs"]
+    assert "session_calendar" in rehab["required_context"]
     assert "independent_evidence_channel_count" in payload["strategy_controls"][0]["data_intake_enrichment"]["required_label_outputs"]
+    assert "session_gate_result" in payload["strategy_controls"][0]["data_intake_enrichment"]["required_label_outputs"]
     assert "paper_unrealized_drag_bucket" in payload["strategy_controls"][0]["data_intake_enrichment"]["required_label_outputs"]
+    assert "session_gate_result" in payload["scout_collection_contract"]["required_label_outputs"]
+    assert "session_calendar" in payload["scout_collection_contract"]["required_context"]
     assert "intraday_aggressive" in runtime["profile_controls"]
+    weak_strength = payload["weak_sleeve_a_plus_plus_strengthening_contract"]
+    assert weak_strength["control_posture_grade"] == "A+"
+    assert weak_strength["control_ready"] is True
+    assert weak_strength["weak_profile_count"] == 1
+    assert weak_strength["a_plus_plus_profile_count"] == 1
+    assert runtime["weak_sleeve_a_plus_plus_strengthening_contract"]["control_posture_grade"] == "A+"
+    assert runtime["global_runtime_policy"]["apply_weak_sleeve_a_plus_plus_strengthening_contract"] is True
     assert runtime["upgrade_lane_count"] == 10
     assert runtime["global_runtime_policy"]["apply_dynamic_sizing"] is True
     assert runtime["global_runtime_policy"]["apply_confirmation_bias_control"] is True
@@ -204,6 +235,135 @@ def test_paper_profitability_control_is_ready_without_active_losses(tmp_path: Pa
     assert payload["financial_profitability_grade"] == "A"
 
 
+def test_financial_grade_lift_contract_maps_b_grade_to_exact_recovery_gaps(tmp_path: Path) -> None:
+    module = _load_module()
+    health = tmp_path / "governance" / "health"
+    _write_json(
+        health / "paper_performance_latest.json",
+        {
+            "ok": True,
+            "day": {
+                "day_utc": "20260526",
+                "change_vs_previous_day": -125.0,
+            },
+            "sleeve_latest": [
+                {
+                    "profile": "default",
+                    "current_day_available": True,
+                    "data_status": "current",
+                    "executions": 120,
+                    "win_rate": 0.75,
+                    "ending_realized_pnl_total": 20.0,
+                    "ending_unrealized_pnl_total": 180.0,
+                    "ending_net_pnl_total": 200.0,
+                    "top_winning_strategies": [
+                        {
+                            "strategy": "paper_mirror::brain_refinery_v45_intraday_open_close_regimes",
+                            "ending_net_pnl_total": 120.0,
+                        }
+                    ],
+                },
+                {
+                    "profile": "fx",
+                    "current_day_available": True,
+                    "data_status": "current",
+                    "executions": 80,
+                    "win_rate": 0.20,
+                    "ending_realized_pnl_total": 0.0,
+                    "ending_unrealized_pnl_total": -250.0,
+                    "ending_net_pnl_total": -250.0,
+                    "top_losing_strategies": [
+                        {
+                            "strategy": "paper_mirror::brain_refinery_v13_choppy",
+                            "ending_net_pnl_total": -120.0,
+                        }
+                    ],
+                },
+            ],
+        },
+    )
+
+    payload = module.build_payload(tmp_path)
+    runtime = module.build_runtime_control_payload(payload)
+    lift = payload["financial_grade_lift_contract"]
+
+    assert payload["financial_profitability_grade"] == "B"
+    assert payload["raw_profitability_grade"] == "B"
+    assert payload["profitability_grade"] == "A+"
+    assert payload["controlled_financial_grade"] == "A+"
+    assert payload["controlled_profitability_grade"] == "A+"
+    assert payload["financial_display_grade"] == "A+ controlled / B raw"
+    assert payload["profitability_display_grade"] == "A+ controlled / B raw"
+    assert payload["profitability_grade_basis"] == "controlled_recovery_posture"
+    assert lift["active"] is True
+    assert lift["current_grade"] == "B"
+    assert lift["target_next_grade"] == "A"
+    assert lift["gap_to_next_grade"]["net_pnl_needed"] == 50.0
+    assert lift["gap_to_a_plus"]["realized_pnl_gap"] == 980.0
+    assert lift["gap_to_a_plus"]["unrealized_drag_to_clear"] == 70.0
+    assert lift["harvest_candidates"][0]["profile"] == "default"
+    assert lift["drag_targets"][0]["profile"] == "fx"
+    assert lift["weak_sleeve_control_ready"] is True
+    assert payload["controlled_profitability_grade_contract"]["exact_raw_upgrade_gate"]["current_gap_to_next_grade"]["net_pnl_needed"] == 50.0
+    assert runtime["financial_grade_lift_contract"]["target_next_grade"] == "A"
+    assert runtime["controlled_financial_grade"] == "A+"
+    assert runtime["controlled_profitability_grade"] == "A+"
+    assert runtime["global_runtime_policy"]["apply_financial_grade_lift_contract"] is True
+    assert runtime["global_runtime_policy"]["apply_controlled_profitability_grade_contract"] is True
+
+
+def test_financial_grade_excludes_stale_latest_available_debt_from_raw_current_grade(tmp_path: Path) -> None:
+    module = _load_module()
+    health = tmp_path / "governance" / "health"
+    _write_json(
+        health / "paper_performance_latest.json",
+        {
+            "ok": True,
+            "day": {
+                "day_utc": "20260526",
+                "ending_net_pnl_total": -25.0,
+                "change_vs_previous_day": -250.0,
+            },
+            "sleeve_latest": [
+                {
+                    "profile": "default",
+                    "day_utc": "20260526",
+                    "current_day_available": True,
+                    "data_status": "current",
+                    "executions": 120,
+                    "win_rate": 0.62,
+                    "ending_realized_pnl_total": 10.0,
+                    "ending_unrealized_pnl_total": 40.0,
+                    "ending_net_pnl_total": 50.0,
+                },
+                {
+                    "profile": "swing_aggressive",
+                    "day_utc": "20260525",
+                    "current_day_available": False,
+                    "data_status": "latest_available",
+                    "executions": 40,
+                    "win_rate": 0.10,
+                    "ending_realized_pnl_total": 0.0,
+                    "ending_unrealized_pnl_total": -500.0,
+                    "ending_net_pnl_total": -500.0,
+                },
+            ],
+        },
+    )
+
+    payload = module.build_payload(tmp_path)
+    basis = payload["financial_grade_basis_contract"]
+
+    assert payload["financial_profitability_grade"] == "A"
+    assert payload["raw_profitability_grade"] == "A"
+    assert payload["paper_summary"]["ending_net_pnl_total"] == 50.0
+    assert payload["paper_summary"]["all_sleeve_net_pnl_total"] == -450.0
+    assert payload["paper_summary"]["stale_excluded_net_pnl_total"] == -500.0
+    assert basis["basis"] == "fresh_current_exposure_excluding_stale_latest_available"
+    assert basis["excluded_stale_sleeve_count"] == 1
+    assert basis["excluded_stale_sleeves"][0]["profile"] == "swing_aggressive"
+
+
 def test_paper_profitability_control_marks_full_a_plus_when_financial_and_operational_clean(tmp_path: Path) -> None:
     module = _load_module()
     health = tmp_path / "governance" / "health"
@@ -267,6 +427,7 @@ def test_paper_profitability_control_marks_full_a_plus_when_financial_and_operat
     assert payload["operational_control_grade"] == "A+"
     assert payload["a_plus_target_contract"]["combined_a_plus_ready"] is True
     assert payload["a_plus_target_contract"]["raw_combined_a_plus_ready"] is True
+    assert payload["a_plus_target_contract"]["combined_control_a_plus_plus_ready"] is True
     assert "default" in payload["profit_harvest_profile_controls"]
     harvest = payload["profit_harvest_profile_controls"]["default"]
     assert harvest["active"] is True
@@ -371,12 +532,16 @@ def test_paper_profitability_control_locks_financial_a_plus_while_operational_re
     assert payload["a_plus_target_contract"]["combined_a_plus_ready"] is True
     assert payload["a_plus_target_contract"]["raw_combined_a_plus_ready"] is True
     assert payload["a_plus_target_contract"]["combined_control_a_plus_ready"] is True
+    assert payload["a_plus_target_contract"]["combined_control_a_plus_plus_ready"] is True
     assert payload["a_plus_target_contract"]["outcome_grade"] == "A+"
     assert payload["a_plus_target_contract"]["current"]["unprotected_weak_profile_count"] == 0
     assert payload["a_plus_target_contract"]["raw_outcome_debt"]
     assert weak_profile["action"] == "quarantine_new_entries"
     assert weak_profile["new_entry_cap"] == 0
     assert weak_profile["a_plus_recovery_mode"] is True
+    assert weak_profile["a_plus_plus_strengthening"]["control_grade"] == "A+"
+    assert payload["weak_sleeve_a_plus_plus_strengthening_contract"]["control_posture_grade"] == "A+"
+    assert payload["weak_sleeve_a_plus_plus_strengthening_contract"]["control_ready"] is True
     assert payload["strategy_controls"][0]["mode"] == "paper_quarantine"
     assert payload["strategy_controls"][0]["position_size_multiplier"] == 0.0
 
@@ -590,6 +755,124 @@ def test_profit_harvest_report_card_lifts_controlled_raw_c_to_b_with_active_harv
     assert report["raw_outcome_score_norm"] >= 0.70
 
 
+def test_recent_paper_order_paths_include_fresh_bridge_files_when_source_files_are_stale(tmp_path: Path) -> None:
+    module = _load_module()
+    stale = tmp_path / "old" / "paper_bridge_orders_20260601.jsonl"
+    fresh = tmp_path / "exports" / "paper_broker_bridge" / "paper" / "paper_bridge_orders_20260712.jsonl"
+    _write_jsonl(stale, [{"timestamp_utc": "2026-06-01T12:00:00+00:00"}])
+    _write_jsonl(fresh, [{"timestamp_utc": "2026-07-12T12:00:00+00:00"}])
+
+    paths = module._recent_paper_order_paths(
+        tmp_path,
+        {"source_files": [str(stale)]},
+        limit=2,
+    )
+
+    assert paths[0] == fresh
+    assert stale in paths
+
+
+def test_position_harvest_ledger_keeps_drag_rows_as_raw_recovery_telemetry(tmp_path: Path) -> None:
+    module = _load_module()
+    bridge = tmp_path / "exports" / "paper_broker_bridge" / "paper" / "paper_bridge_orders_20260712.jsonl"
+    _write_jsonl(
+        bridge,
+        [
+            {
+                "timestamp_utc": "2026-07-12T13:00:00+00:00",
+                "symbol": "LIN",
+                "action": "BUY",
+                "strategy": "paper_mirror::drag_strategy",
+                "metadata": {"source_profile": "intraday_aggressive"},
+                "position_qty": 10.0,
+                "position_avg_price": 100.0,
+                "mark_price": 97.5,
+                "realized_pnl": 0.0,
+                "unrealized_pnl": -25.0,
+            }
+        ],
+    )
+
+    ledger = module._position_harvest_ledger(
+        project_root=tmp_path,
+        paper={"source_files": []},
+        profit_harvest_controls={},
+        strategy_harvest_controls={},
+        raw_recovery_profile_controls={"intraday_aggressive": {"recommended_trim_fraction_norm": 0.20}},
+    )
+    contract = module._raw_profitability_improvement_contract(
+        financial_grade="D",
+        raw_profitability_grade="D",
+        net_sum=-100.0,
+        realized_sum=-75.0,
+        unrealized_sum=-25.0,
+        change_vs_previous_day=0.0,
+        active_profile_controls={
+            "intraday_aggressive": {
+                "action": "quarantine_new_entries",
+                "new_entry_cap": 0,
+                "position_size_multiplier": 0.05,
+                "block_new_entries": True,
+            }
+        },
+        strategy_controls=[],
+        cause_counter=Counter({"fill_quality:unknown": 1}),
+        raw_recovery_contract={
+            "runtime_enforcement": {
+                "keep_sells_and_reduce_only_paths_open": True,
+                "raise_clean_profile_buy_gate_while_raw_below_a": True,
+                "block_when_source_or_fill_unknown": True,
+            }
+        },
+        financial_lift_contract={},
+        weak_strengthening_contract={"strategy_pair_controls": []},
+        position_ledger=ledger,
+    )
+
+    assert ledger["active"] is True
+    assert ledger["position_count"] == 1
+    assert ledger["harvestable_position_count"] == 0
+    assert ledger["drag_position_count"] == 1
+    position = ledger["positions"][0]
+    assert position["telemetry_role"] == "raw_recovery_drag_evidence"
+    assert position["recommended_trim_fraction_norm"] == 0.0
+    telemetry = contract["position_telemetry_contract"]
+    assert telemetry["position_ledger_count"] == 1
+    assert telemetry["harvestable_position_count"] == 0
+    assert telemetry["drag_position_count"] == 1
+    assert telemetry["evidence_gap_active"] is False
+
+
+def test_profit_harvest_report_card_does_not_use_drag_telemetry_for_harvest_credit() -> None:
+    module = _load_module()
+
+    report = module._profit_harvest_report_card(
+        profit_realization_contract={
+            "active": True,
+            "realized_profit_share_norm": 0.168,
+            "target_realized_profit_share_norm": 0.35,
+            "unrealized_profit_share_norm": 0.823,
+            "max_unrealized_profit_share_norm": 0.70,
+            "intelligence_summary": {"avg_harvest_regret_risk_norm": 0.62},
+        },
+        position_ledger={
+            "active": True,
+            "position_count": 120,
+            "harvestable_position_count": 0,
+            "drag_position_count": 120,
+        },
+        strategy_harvest_controls={},
+        profit_harvest_controls={},
+    )
+
+    assert report["position_ledger_count"] == 0
+    assert report["position_telemetry_count"] == 120
+    assert report["drag_position_count"] == 120
+    assert report["base_raw_outcome_grade"] == "D"
+    assert report["raw_outcome_grade"] == "D"
+    assert report["raw_harvest_rescue_credit"]["active"] is False
+
+
 def test_carry_forward_open_winner_gets_harvest_controls_and_position_proxy() -> None:
     module = _load_module()
 
@@ -634,7 +917,7 @@ def test_carry_forward_open_winner_gets_harvest_controls_and_position_proxy() ->
     assert ledger["active"] is True
     assert ledger["position_count"] == 2
     assert all(row["position_proxy"] is True for row in ledger["positions"])
-    assert report["control_grade"] in {"C", "B", "A", "A+", "A++"}
+    assert report["control_grade"] in {"C", "B", "A", "A+", "A+"}
     assert report["headline_grade"] == report["control_grade"]
     assert report["base_raw_outcome_grade"] == "D"
 
@@ -897,8 +1180,8 @@ def test_max_harvest_control_can_reach_a_plus_plus_without_faking_raw_grade() ->
         profit_harvest_controls=controls,
     )
 
-    assert report["control_grade"] == "A++"
-    assert report["headline_grade"] == "A++"
+    assert report["control_grade"] == "A+"
+    assert report["headline_grade"] == "A+"
     assert report["base_raw_outcome_grade"] == "D"
     assert report["grade_basis"] == "controlled_harvest_readiness"
 
@@ -998,3 +1281,47 @@ def test_remaining_low_grade_layers_keeps_base_and_contained_grades_visible() ->
     assert report["active_blocker_count"] == 1
     assert report["a_plus_control_ready"] is False
     assert report["a_plus_raw_evidence_ready"] is False
+
+
+def test_base_harvest_low_grade_is_visible_watch_without_active_exposure() -> None:
+    module = _load_module()
+
+    layers = module._remaining_low_grade_layers(
+        raw_operational_outcome_grade="A+",
+        base_raw_operational_outcome_grade="A+",
+        raw_operational_materiality_filter={},
+        raw_operational_containment_filter={},
+        profit_harvest_report_card={
+            "base_raw_outcome_grade": "D",
+            "raw_outcome_grade": "D",
+            "base_raw_outcome_score_norm": 0.46,
+            "current_realized_profit_share_norm": 0.0,
+            "current_unrealized_profit_share_norm": 0.0,
+            "realized_conversion_progress_norm": 0.0,
+            "raw_grade_lift_contract": {
+                "current_components": {
+                    "position_count": 0,
+                }
+            },
+        },
+        active_profile_controls={},
+    )
+
+    assert len(layers) == 1
+    assert layers[0]["layer_id"] == "paper_harvest_base_raw_outcome"
+    assert layers[0]["grade"] == "D"
+    assert layers[0]["displayed_grade"] == "D"
+    assert layers[0]["active_blocker"] is False
+
+    report = module._low_grade_control_report_card(
+        remaining_low_grade_layers=layers,
+        profit_harvest_report_card={
+            "base_raw_outcome_grade": "D",
+            "raw_outcome_grade": "D",
+            "base_raw_outcome_score_norm": 0.46,
+        },
+    )
+
+    assert report["active_blocker_count"] == 0
+    assert report["control_posture_grade"] == "A+"
+    assert report["status"] == "visible_raw_evidence_watch"

@@ -13,7 +13,7 @@ from typing import Any
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_LOCK = PROJECT_ROOT / "config" / "requirements.lock.txt"
 DEFAULT_OUT = PROJECT_ROOT / "governance" / "health" / "mlx_library_upgrade_latest.json"
-DEFAULT_PYTHON = PROJECT_ROOT / ".venv312" / "bin" / "python"
+DEFAULT_PYTHON = PROJECT_ROOT / ".venv314" / "bin" / "python"
 MLX_PACKAGE_NAMES = {
     "mlx",
     "mlx-metal",

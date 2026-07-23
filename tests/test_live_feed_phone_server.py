@@ -73,6 +73,30 @@ def test_html_page_has_phone_reconnect_watchdog() -> None:
     assert 'loadSnapshot({ replace: true });' in phone_server.HTML_PAGE
     assert 'indexOf("\\n"' in phone_server.HTML_PAGE
     assert 'replace(/\\r\\n/g, "\\n")' in phone_server.HTML_PAGE
+    assert "payload.spcx_quote_error" in phone_server.HTML_PAGE
+    assert "payload.imessage_ready" in phone_server.HTML_PAGE
+    assert "payload.watchdog_active_issues" in phone_server.HTML_PAGE
+
+
+def test_html_page_links_latest_system_update_report() -> None:
+    assert 'id="reportLink"' in phone_server.HTML_PAGE
+    assert "/reports/latest-system-update.pdf" in phone_server.HTML_PAGE
+    assert "function updateReportLink()" in phone_server.HTML_PAGE
+    assert "updateReportLink();" in phone_server.HTML_PAGE
+
+
+def test_latest_system_update_pdf_selects_newest(tmp_path: Path) -> None:
+    older = tmp_path / "schwab_system_update_20260629_0900.pdf"
+    newer = tmp_path / "schwab_system_update_20260629_1041.pdf"
+    ignored = tmp_path / "other_report.pdf"
+    older.write_bytes(b"%PDF-older")
+    newer.write_bytes(b"%PDF-newer")
+    ignored.write_bytes(b"%PDF-ignored")
+    os.utime(older, (1000, 1000))
+    os.utime(newer, (2000, 2000))
+    os.utime(ignored, (3000, 3000))
+
+    assert phone_server._latest_system_update_pdf(tmp_path) == newer
 
 
 def test_shape_stream_line_trims_heavy_mode() -> None:
@@ -117,18 +141,60 @@ def test_helper_basics(tmp_path: Path) -> None:
 
 def test_status_summary_includes_expansion_health(tmp_path: Path, monkeypatch) -> None:
     health = tmp_path / "governance" / "health"
+    external = tmp_path / "data" / "external_context"
     (health / "runtime_gate_dashboard_latest.json").parent.mkdir(parents=True, exist_ok=True)
+    external.mkdir(parents=True, exist_ok=True)
     (health / "runtime_gate_dashboard_latest.json").write_text('{"overall":{"status":"ok","attention":[]}}', encoding="utf-8")
     (health / "health_gates_latest.json").write_text('{"data_quality_score":0.87,"hard_gate_triggered":false}', encoding="utf-8")
     (health / "quant_model_control_latest.json").write_text('{"overall_status":"watch","features":{"quant_model_resource_pressure_norm":0.42}}', encoding="utf-8")
     (health / "memory_efficiency_control_latest.json").write_text('{"recommended_profile":"constrained"}', encoding="utf-8")
     (health / "global_killswitch_latest.json").write_text('{"halt_state":"clear_ready","operating_mode":"degraded_collection","expansion_pressure_score":0.2}', encoding="utf-8")
+    (health / "spacex_ipo_downside_watch_latest.json").write_text(
+        '{"overall_status":"waiting_for_first_quote","symbol":"SPCX","quote":{"error":"quote_missing_price"},"alert":{"triggered":false},"policy":"monitoring_only_no_order_instruction"}',
+        encoding="utf-8",
+    )
+    (health / "macro_event_intelligence_latest.json").write_text(
+        '{"overall_status":"ready","market_relevance":"high","calendar_verification":{"status":"unverified"}}',
+        encoding="utf-8",
+    )
+    (external / "live_macro_latest.json").write_text(
+        '{"items":[{"headline":"SpaceX IPO downside watch active"}]}',
+        encoding="utf-8",
+    )
+    (health / "mac_notification_watch_state.json").write_text(
+        '{"imessage_enabled":true,"imessage_recipient_configured":true,"imessage_min_severity":"critical"}',
+        encoding="utf-8",
+    )
+    (health / "remote_alert_control_latest.json").write_text(
+        '{"overall_status":"ready","channels":{"imessage_bridge":true},"critical_backlog":{"unsent_count":0,"unacked_count":1}}',
+        encoding="utf-8",
+    )
+    (health / "process_watchdog_latest.json").write_text(
+        '{"overall_status":"ready","watchdog_intelligence":{"grade":"A","active_issue_count":0}}',
+        encoding="utf-8",
+    )
+    (health / "ingestion_storage_control_latest.json").write_text(
+        '{"overall_status":"ready","pressure_index":0.31}',
+        encoding="utf-8",
+    )
+    (health / "runtime_throttle_control_latest.json").write_text(
+        '{"overall_status":"advisory","throttle_profile":"soft_cap"}',
+        encoding="utf-8",
+    )
 
     monkeypatch.setattr(phone_server, "RUNTIME_DASHBOARD", health / "runtime_gate_dashboard_latest.json")
     monkeypatch.setattr(phone_server, "HEALTH_GATES", health / "health_gates_latest.json")
     monkeypatch.setattr(phone_server, "QUANT_MODEL_CONTROL", health / "quant_model_control_latest.json")
     monkeypatch.setattr(phone_server, "MEMORY_EFFICIENCY", health / "memory_efficiency_control_latest.json")
     monkeypatch.setattr(phone_server, "GLOBAL_KILLSWITCH", health / "global_killswitch_latest.json")
+    monkeypatch.setattr(phone_server, "SPACEX_IPO_WATCH", health / "spacex_ipo_downside_watch_latest.json")
+    monkeypatch.setattr(phone_server, "MACRO_EVENT_INTELLIGENCE", health / "macro_event_intelligence_latest.json")
+    monkeypatch.setattr(phone_server, "LIVE_MACRO", external / "live_macro_latest.json")
+    monkeypatch.setattr(phone_server, "MAC_NOTIFICATION_STATE", health / "mac_notification_watch_state.json")
+    monkeypatch.setattr(phone_server, "REMOTE_ALERT_CONTROL", health / "remote_alert_control_latest.json")
+    monkeypatch.setattr(phone_server, "PROCESS_WATCHDOG", health / "process_watchdog_latest.json")
+    monkeypatch.setattr(phone_server, "INGESTION_STORAGE_CONTROL", health / "ingestion_storage_control_latest.json")
+    monkeypatch.setattr(phone_server, "RUNTIME_THROTTLE_CONTROL", health / "runtime_throttle_control_latest.json")
 
     summary = phone_server._status_summary()
 
@@ -138,4 +204,24 @@ def test_status_summary_includes_expansion_health(tmp_path: Path, monkeypatch) -
     assert summary["quant_status"] == "watch"
     assert summary["quant_resource_pressure"] == 0.42
     assert summary["memory_profile"] == "constrained"
+    assert summary["spcx_status"] == "waiting_for_first_quote"
+    assert summary["spcx_symbol"] == "SPCX"
+    assert summary["spcx_quote_error"] == "quote_missing_price"
+    assert summary["spcx_alert_triggered"] is False
+    assert summary["macro_status"] == "ready"
+    assert summary["macro_relevance"] == "high"
+    assert summary["macro_calendar_status"] == "unverified"
+    assert summary["macro_headline"] == "SpaceX IPO downside watch active"
+    assert summary["imessage_ready"] is True
+    assert summary["imessage_min_severity"] == "critical"
+    assert summary["remote_alert_status"] == "ready"
+    assert summary["remote_alert_imessage"] is True
+    assert summary["remote_alert_unacked_count"] == 1
+    assert summary["watchdog_status"] == "ready"
+    assert summary["watchdog_grade"] == "A"
+    assert summary["watchdog_active_issues"] == 0
+    assert summary["storage_status"] == "ready"
+    assert summary["storage_pressure"] == 0.31
+    assert summary["throttle_status"] == "advisory"
+    assert summary["throttle_profile"] == "soft_cap"
     assert summary["phone_mirror_profile"] == "expanded_system_safe"

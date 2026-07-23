@@ -14,7 +14,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from core.channel_queue import default_queue_db_path
 
-PY = PROJECT_ROOT / '.venv312' / 'bin' / 'python'
+PY = PROJECT_ROOT / '.venv314' / 'bin' / 'python'
 LINK_SCRIPT = PROJECT_ROOT / 'scripts' / 'link_jsonl_to_sql.py'
 HOT_RETENTION_SCRIPT = PROJECT_ROOT / 'scripts' / 'sql_hot_retention.py'
 QUEUE_RETENTION_SCRIPT = PROJECT_ROOT / 'scripts' / 'sql_queue_retention.py'

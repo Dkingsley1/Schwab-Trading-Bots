@@ -48,11 +48,11 @@ def test_storage_reconnect_infrabot_plans_safe_repairs(tmp_path: Path, monkeypat
     )
     _write_json(
         health / "data_plane_recovery_controller_latest.json",
-        '{"overall_status":"degraded","queue_depth":50000}\n',
+        '{"overall_status":"degraded","queue_depth":50000,"write_failure_count":1,"hot_path_over_budget_bytes":4096}\n',
     )
     monkeypatch.setattr(bot_src, "_guard_payload", lambda project_root, timeout_sec: guard_src.load_json(health / "storage_reconnect_regression_guard_latest.json"))
 
-    payload = bot_src.build_payload(project_root, apply=False)
+    payload = bot_src.build_payload(project_root, apply=False, timeout_sec=90)
 
     names = [row["name"] for row in payload["repair_plan"]]
     assert "install_storage_eject_guard_launchd" in names
@@ -61,6 +61,43 @@ def test_storage_reconnect_infrabot_plans_safe_repairs(tmp_path: Path, monkeypat
     assert "global_halt_safe_refresh" in names
     assert "global_halt_safe_auto_clear" in names
     assert payload["metrics"]["repair_plan_count"] == len(names)
+    split_plan = next(row for row in payload["repair_plan"] if row["name"] == "split_brain_reconcile")
+    assert "--force-failback-timeout-sec" in split_plan["cmd"]
+    assert split_plan["timeout_sec"] <= 75
+    assert payload["metrics"]["max_repair_step_timeout_sec"] <= 90
+    assert payload["metrics"]["data_plane_storage_halt_needed"] is True
+
+
+def test_storage_reconnect_infrabot_ignores_non_storage_data_plane_catchup(tmp_path: Path, monkeypatch) -> None:
+    project_root = tmp_path / "project"
+    health = project_root / "governance" / "health"
+    _write_json(
+        health / "storage_reconnect_regression_guard_latest.json",
+        '{"overall_status":"ready","contract_ok":true,"automation":{"launchd":{"running":true,"plist_exists":true}},"live_recovery":{"split_brain_unresolved_conflicts":0,"total_pending_lines":7023}}\n',
+    )
+    _write_json(
+        health / "ingestion_storage_control_latest.json",
+        '{"overall_status":"ready","backpressure":{"total_pending_lines":7023}}\n',
+    )
+    _write_json(health / "global_risk_killswitch_latest.json", '{"clear_blockers":[]}\n')
+    _write_json(
+        health / "data_plane_recovery_controller_latest.json",
+        '{"overall_status":"degraded","recovery_state":"recovering_under_guard","queue_depth":4599,"write_failure_count":0,"hot_path_over_budget_bytes":0}\n',
+    )
+    monkeypatch.setattr(bot_src, "_guard_payload", lambda project_root, timeout_sec: guard_src.load_json(health / "storage_reconnect_regression_guard_latest.json"))
+
+    payload = bot_src.build_payload(project_root, apply=False, timeout_sec=90)
+
+    assert payload["overall_status"] == "ready"
+    assert payload["repair_plan"] == []
+    assert payload["metrics"]["data_plane_storage_halt_needed"] is False
+
+
+def test_storage_reconnect_infrabot_truncates_large_child_output() -> None:
+    tail = bot_src._tail_text("y" * 5000, max_chars=100)
+
+    assert tail.startswith("...<truncated ")
+    assert len(tail) < 140
 
 
 def test_infrastructure_autofix_assigns_storage_reconnect_infrabot(tmp_path: Path, monkeypatch) -> None:

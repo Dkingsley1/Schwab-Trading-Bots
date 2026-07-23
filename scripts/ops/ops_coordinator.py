@@ -51,26 +51,48 @@ def _parse_json_output(text: str) -> dict[str, Any]:
     return {}
 
 
-def _run_json_command(cmd: list[str], *, cwd: Path, payload_path: Path | None = None) -> dict[str, Any]:
+def _run_json_command(
+    cmd: list[str],
+    *,
+    cwd: Path,
+    payload_path: Path | None = None,
+    timeout_seconds: float = 180.0,
+) -> dict[str, Any]:
     started = datetime.now(timezone.utc)
-    proc = subprocess.run(
-        cmd,
-        cwd=str(cwd),
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    payload = _parse_json_output(proc.stdout or "")
+    stdout = ""
+    stderr = ""
+    rc = 1
+    timed_out = False
+    try:
+        proc = subprocess.run(
+            cmd,
+            cwd=str(cwd),
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=max(float(timeout_seconds), 1.0),
+        )
+        stdout = proc.stdout or ""
+        stderr = proc.stderr or ""
+        rc = int(proc.returncode)
+    except subprocess.TimeoutExpired as exc:
+        timed_out = True
+        rc = 124
+        stdout = exc.stdout.decode("utf-8", errors="replace") if isinstance(exc.stdout, bytes) else str(exc.stdout or "")
+        stderr = exc.stderr.decode("utf-8", errors="replace") if isinstance(exc.stderr, bytes) else str(exc.stderr or "")
+        stderr = "\n".join([stderr, f"timed_out_after_seconds={float(timeout_seconds):.1f}"]).strip()
+    payload = _parse_json_output(stdout)
     if not payload and payload_path is not None:
         payload = _load_json(payload_path)
     duration_ms = round((datetime.now(timezone.utc) - started).total_seconds() * 1000.0, 3)
     return {
         "cmd": list(cmd),
-        "rc": int(proc.returncode),
+        "rc": rc,
         "duration_ms": duration_ms,
+        "timed_out": timed_out,
         "payload": payload,
-        "stdout_tail": "\n".join((proc.stdout or "").splitlines()[-12:]),
-        "stderr_tail": "\n".join((proc.stderr or "").splitlines()[-12:]),
+        "stdout_tail": "\n".join(stdout.splitlines()[-12:]),
+        "stderr_tail": "\n".join(stderr.splitlines()[-12:]),
     }
 
 
@@ -78,6 +100,8 @@ def _step_status(result: dict[str, Any]) -> str:
     payload = result.get("payload") if isinstance(result.get("payload"), dict) else {}
     if int(result.get("rc", 1)) != 0 and not payload:
         return "error"
+    if bool(result.get("timed_out", False)) and bool(payload.get("ok", False)):
+        return "degraded"
     if bool(payload.get("busy", False)):
         return "busy"
     if bool(payload.get("skipped", False)):
@@ -291,10 +315,13 @@ def build_ops_coordinator_payload(
         [
             str(PY),
             str(project_root / "scripts" / "ops" / "sql_analytics_mirror.py"),
+            "--lookback-days",
+            "1",
             "--json",
         ],
         cwd=project_root,
         payload_path=project_root / "governance" / "health" / "sql_analytics_mirror_latest.json",
+        timeout_seconds=45.0,
     )
     macro_intelligence = _run_json_command(
         [

@@ -33,7 +33,23 @@ def _write_json(path: Path, payload: dict[str, Any]) -> None:
 
 
 def _audit_quality_failed_ids(audit: dict[str, Any]) -> list[str]:
-    rows = audit.get("active_quality_failed") if isinstance(audit.get("active_quality_failed"), list) else []
+    full_ids = audit.get("active_quality_failed_bot_ids")
+    if isinstance(full_ids, list):
+        out: list[str] = []
+        seen: set[str] = set()
+        for raw in full_ids:
+            bot_id = str(raw or "").strip().lower()
+            if not bot_id or bot_id in seen:
+                continue
+            seen.add(bot_id)
+            out.append(bot_id)
+        return out
+
+    rows = []
+    for key in ("active_quality_failed", "active_quality_probation_isolated"):
+        value = audit.get(key)
+        if isinstance(value, list):
+            rows.extend(value)
     out: list[str] = []
     seen: set[str] = set()
     for row in rows:
@@ -47,6 +63,41 @@ def _audit_quality_failed_ids(audit: dict[str, Any]) -> list[str]:
     return out
 
 
+def _audit_runtime_input_debt_ids(audit: dict[str, Any]) -> list[str]:
+    full_ids = audit.get("active_sample_starved_bot_ids")
+    if isinstance(full_ids, list):
+        out: list[str] = []
+        seen: set[str] = set()
+        for raw in full_ids:
+            bot_id = str(raw or "").strip().lower()
+            if not bot_id or bot_id in seen:
+                continue
+            seen.add(bot_id)
+            out.append(bot_id)
+        return out
+
+    rows = audit.get("active_sample_starved")
+    out: list[str] = []
+    seen: set[str] = set()
+    if isinstance(rows, list):
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            bot_id = str(row.get("bot_id") or "").strip().lower()
+            if not bot_id or bot_id in seen:
+                continue
+            supportability_status = str(row.get("supportability_status") or "").strip().lower()
+            inferred_cause = str(row.get("inferred_cause") or "").strip().lower()
+            if supportability_status != "unsupported_runtime_inputs" and inferred_cause not in {
+                "shared_runtime_input_gap",
+                "sequence_depth_gap",
+            }:
+                continue
+            seen.add(bot_id)
+            out.append(bot_id)
+    return out
+
+
 def build_payload(
     *,
     project_root: Path = PROJECT_ROOT,
@@ -54,10 +105,24 @@ def build_payload(
     audit_path: Path = DEFAULT_AUDIT_PATH,
     apply: bool = False,
     limit: int = 0,
+    include_bot_ids: list[str] | None = None,
+    include_runtime_input_debt: bool = False,
 ) -> dict[str, Any]:
     registry = _load_json(registry_path)
     audit = _load_json(audit_path)
-    target_ids = _audit_quality_failed_ids(audit)
+    explicit_ids = [
+        str(bot_id or "").strip().lower()
+        for bot_id in (include_bot_ids or [])
+        if str(bot_id or "").strip()
+    ]
+    quality_ids = _audit_quality_failed_ids(audit)
+    runtime_input_ids = _audit_runtime_input_debt_ids(audit) if include_runtime_input_debt else []
+    target_reason_by_id = {bot_id: "quality_probation_isolation" for bot_id in quality_ids}
+    for bot_id in runtime_input_ids:
+        target_reason_by_id.setdefault(bot_id, "runtime_input_debt_isolation")
+    target_ids = explicit_ids or list(target_reason_by_id)
+    if explicit_ids:
+        target_reason_by_id = {bot_id: "quality_probation_isolation" for bot_id in explicit_ids}
     if limit > 0:
         target_ids = target_ids[:limit]
 
@@ -65,6 +130,7 @@ def build_payload(
     before = json.loads(json.dumps(registry)) if isinstance(registry, dict) else {}
     isolated: list[dict[str, Any]] = []
     already_isolated: list[dict[str, Any]] = []
+    authority_clamped: list[dict[str, Any]] = []
     missing: list[str] = []
     target_set = set(target_ids)
 
@@ -81,22 +147,38 @@ def build_payload(
             "lifecycle_state": str(row.get("lifecycle_state") or ""),
             "reason": str(row.get("reason") or ""),
             "promotion_reason": str(row.get("promotion_reason") or ""),
+            "was_promoted": bool(row.get("promoted", False)),
+            "promotion_status": str(row.get("promotion_status") or ""),
         }
+        authority_needs_clamp = bool(row.get("promoted", False)) or str(row.get("promotion_status") or "").strip().lower() == "promoted"
+        isolation_reason = target_reason_by_id.get(bot_id, "quality_probation_isolation")
+        if apply and authority_needs_clamp:
+            row["promoted"] = False
+            row["promotion_status"] = "probation"
+            row["promotion_block_reason"] = isolation_reason
+            row["promotion_blocked_reason"] = isolation_reason
+            row["trusted_master_authority"] = False
+            row["master_authority_block_reason"] = isolation_reason
+            row["quality_probation_authority_clamped_at_utc"] = datetime.now(timezone.utc).isoformat()
+            authority_clamped.append(record)
         if was_training_excluded:
             already_isolated.append(record)
             continue
         if apply:
             row["training_excluded"] = True
             row["exclude_from_training"] = True
-            row["training_exclusion_reason"] = "quality_probation_isolation"
-            row["promotion_blocked_reason"] = "quality_probation_isolation"
-            row["quality_probation_isolated_at_utc"] = datetime.now(timezone.utc).isoformat()
+            row["training_exclusion_reason"] = isolation_reason
+            row["promotion_blocked_reason"] = isolation_reason
+            if isolation_reason == "runtime_input_debt_isolation":
+                row["runtime_input_debt_isolated_at_utc"] = datetime.now(timezone.utc).isoformat()
+            else:
+                row["quality_probation_isolated_at_utc"] = datetime.now(timezone.utc).isoformat()
         isolated.append(record)
 
     registry_updated = False
     backup_file = ""
     journal_error = ""
-    if apply and isolated and isinstance(registry, dict):
+    if apply and (isolated or authority_clamped) and isinstance(registry, dict):
         lifecycle_dir = project_root / "governance" / "lifecycle"
         lifecycle_dir.mkdir(parents=True, exist_ok=True)
         stamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
@@ -110,10 +192,14 @@ def build_payload(
             write_registry_mutation_journal(
                 project_root=str(project_root),
                 actor="training_probation_isolation",
-                reason="isolate_quality_probation_bots_from_training",
+                reason="isolate_quality_probation_bots_from_training_and_master_authority",
                 before=before,
                 after=registry,
-                extra={"isolated_bot_ids": sorted(target_set), "isolated_rows": isolated[:80]},
+                extra={
+                    "isolated_bot_ids": sorted(target_set),
+                    "isolated_rows": isolated[:80],
+                    "authority_clamped_rows": authority_clamped[:80],
+                },
             )
         except Exception as exc:
             journal_error = str(exc)
@@ -126,18 +212,23 @@ def build_payload(
         "registry_updated": bool(registry_updated),
         "backup_file": backup_file,
         "target_count": len(target_ids),
+        "quality_target_count": sum(1 for bot_id in target_ids if target_reason_by_id.get(bot_id) == "quality_probation_isolation"),
+        "runtime_input_target_count": sum(1 for bot_id in target_ids if target_reason_by_id.get(bot_id) == "runtime_input_debt_isolation"),
         "newly_isolated_count": len(isolated),
         "already_isolated_count": len(already_isolated),
+        "authority_clamped_count": len(authority_clamped),
         "missing_count": len(missing),
         "target_bot_ids": target_ids,
         "newly_isolated": isolated,
         "already_isolated": already_isolated,
+        "authority_clamped": authority_clamped,
         "missing_bot_ids": missing,
         "journal_error": journal_error,
         "policy": {
             "live_execution_changed": False,
             "paper_collection_allowed": True,
             "training_excluded_until_quality_gate_recovers": True,
+            "weak_promoted_bots_cannot_act_as_master_authority": True,
         },
     }
     return payload
@@ -151,6 +242,8 @@ def main() -> int:
     parser.add_argument("--out-file", default=str(DEFAULT_OUT_PATH))
     parser.add_argument("--apply", action="store_true")
     parser.add_argument("--limit", type=int, default=0)
+    parser.add_argument("--include-bot-ids", default="")
+    parser.add_argument("--include-runtime-input-debt", action="store_true")
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args()
 
@@ -161,6 +254,8 @@ def main() -> int:
         audit_path=Path(args.audit_path).expanduser(),
         apply=bool(args.apply),
         limit=int(args.limit),
+        include_bot_ids=[item for item in str(args.include_bot_ids or "").split(",") if item.strip()],
+        include_runtime_input_debt=bool(args.include_runtime_input_debt),
     )
     _write_json(Path(args.out_file).expanduser(), payload)
     if args.json:
@@ -169,6 +264,7 @@ def main() -> int:
         print(
             "training_probation_isolation "
             f"targets={payload['target_count']} newly_isolated={payload['newly_isolated_count']} "
+            f"authority_clamped={payload['authority_clamped_count']} "
             f"registry_updated={str(payload['registry_updated']).lower()}"
         )
     return 0

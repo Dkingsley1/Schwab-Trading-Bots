@@ -35,6 +35,8 @@ KEY_ARTIFACTS = {
     "ingestion_backpressure": "ingestion_backpressure_latest.json",
     "storage_mount": "storage_mount_guard_latest.json",
     "system_drift": "system_drift_guard_latest.json",
+    "runtime_throttle": "runtime_throttle_control_latest.json",
+    "paper_400_ramp": "paper_400_ramp_latest.json",
 }
 
 NEGATIVE_STATUSES = {"blocked", "critical", "degraded", "red", "halted", "failed"}
@@ -98,6 +100,71 @@ def _load_guard_artifacts(project_root: Path, *, now: datetime) -> dict[str, dic
     return artifacts
 
 
+def _paper_soak_execution_allowed(artifacts: dict[str, dict[str, Any]]) -> bool:
+    runtime = artifacts.get("runtime_throttle", {}).get("payload")
+    runtime = runtime if isinstance(runtime, dict) else {}
+    policy = runtime.get("paper_execution_policy") if isinstance(runtime.get("paper_execution_policy"), dict) else {}
+    capacity = runtime.get("paper_capacity_contract") if isinstance(runtime.get("paper_capacity_contract"), dict) else {}
+    runtime_policy = capacity.get("runtime_policy") if isinstance(capacity.get("runtime_policy"), dict) else {}
+    ramp = artifacts.get("paper_400_ramp", {}).get("payload")
+    ramp = ramp if isinstance(ramp, dict) else {}
+    ramp_armed = bool(ramp.get("armed", False)) or str(ramp.get("stage") or "").strip().lower() == "armed"
+    policy_armed = bool(policy.get("armed", False)) or str(policy.get("stage") or "").strip().lower() == "armed"
+    paper_allowed = bool(policy.get("paper_execution_allowed", False)) and not bool(policy.get("pause_paper_execution", False))
+    pressure_bypassed = bool(policy.get("pressure_pause_bypassed", False)) or "paper_ramp" in str(
+        policy.get("reason") or policy.get("pressure_pause_bypass_reason") or ""
+    ).lower()
+    capacity_ready = bool(capacity.get("ready_for_700_bot_paper", False)) or bool(capacity.get("capacity_limited_paper_execution", False))
+    live_locked = bool(runtime_policy.get("live_execution_blocked", True))
+    return bool(paper_allowed and (ramp_armed or policy_armed or pressure_bypassed) and capacity_ready and live_locked)
+
+
+def _paper_soak_pressure_bypass_active(artifacts: dict[str, dict[str, Any]]) -> bool:
+    runtime = artifacts.get("runtime_throttle", {}).get("payload")
+    runtime = runtime if isinstance(runtime, dict) else {}
+    policy = runtime.get("paper_execution_policy") if isinstance(runtime.get("paper_execution_policy"), dict) else {}
+    capacity = runtime.get("paper_capacity_contract") if isinstance(runtime.get("paper_capacity_contract"), dict) else {}
+    reason = " ".join(
+        str(policy.get(key) or "")
+        for key in ("reason", "pressure_pause_bypass_reason", "capacity_limit_reason")
+    ).lower()
+    return bool(
+        _paper_soak_execution_allowed(artifacts)
+        and (
+            bool(policy.get("pressure_pause_bypassed", False))
+            or bool(capacity.get("attribution_capacity_advisory", False))
+            or "pressure_only" in reason
+            or "full_force" in reason
+        )
+    )
+
+
+def _pressure_relief_advisory_for_paper_soak(artifacts: dict[str, dict[str, Any]]) -> bool:
+    row = artifacts.get("pressure_relief", {})
+    payload = row.get("payload") if isinstance(row.get("payload"), dict) else {}
+    pressure_bypass = _paper_soak_pressure_bypass_active(artifacts)
+    if not payload or not (bool(payload.get("ok", False)) or pressure_bypass) or not _paper_soak_execution_allowed(artifacts):
+        return False
+    tier = str(payload.get("tier") or "").strip().lower()
+    compute = str(payload.get("compute_pressure_level") or "").strip().lower()
+    memory = str(payload.get("memory_pressure_level") or "").strip().lower()
+    storage = payload.get("storage_pressure") if isinstance(payload.get("storage_pressure"), dict) else {}
+    storage_severity = str(storage.get("severity") or "").strip().lower()
+    swap = payload.get("swap_pressure") if isinstance(payload.get("swap_pressure"), dict) else {}
+    swap_tier = str(swap.get("tier") or swap.get("raw_tier") or "").strip().lower()
+    severe_compute = compute in {"high", "critical", "red"} and not pressure_bypass
+    severe_memory = memory in {"high", "critical", "red"}
+    severe_storage = storage_severity in {"critical", "red", "blocked"}
+    severe_swap = swap_tier in {"survival", "pause_research", "constrained"}
+    return bool(
+        (tier in {"observe", "calm", "guarded_relief"} or (tier == "deep_relief" and pressure_bypass))
+        and not severe_compute
+        and not severe_memory
+        and not severe_storage
+        and not severe_swap
+    )
+
+
 def _artifact_status_counts(artifacts: dict[str, dict[str, Any]]) -> dict[str, Any]:
     blockers: list[str] = []
     warnings: list[str] = []
@@ -112,6 +179,9 @@ def _artifact_status_counts(artifacts: dict[str, dict[str, Any]]) -> dict[str, A
         if stale_artifact and name in CORE_STALENESS_ARTIFACTS:
             stale.append(name)
         if status in NEGATIVE_STATUSES or status_rank(status) >= 3:
+            if name == "pressure_relief" and _pressure_relief_advisory_for_paper_soak(artifacts):
+                warnings.append(name)
+                continue
             if stale_artifact or name not in RUNTIME_BLOCKER_ARTIFACTS:
                 warnings.append(name)
             else:
@@ -218,6 +288,7 @@ def _resource_pressure_score(artifacts: dict[str, dict[str, Any]]) -> dict[str, 
 def _storage_pressure_score(artifacts: dict[str, dict[str, Any]]) -> dict[str, Any]:
     scores: list[float] = []
     details: dict[str, Any] = {}
+    pressure_relief_advisory = _pressure_relief_advisory_for_paper_soak(artifacts)
     for name in ("ingestion_backpressure", "storage_backpressure", "pressure_relief", "swap_pressure"):
         payload = artifacts.get(name, {}).get("payload")
         if not isinstance(payload, dict):
@@ -226,12 +297,21 @@ def _storage_pressure_score(artifacts: dict[str, dict[str, Any]]) -> dict[str, A
         status = _status_from_payload(payload)
         score = min(max(pressure_index / 3.0, 0.0), 1.2) if pressure_index else 0.0
         stale = bool(artifacts.get(name, {}).get("stale"))
-        if status in NEGATIVE_STATUSES and not stale:
+        advisory = bool(name == "pressure_relief" and pressure_relief_advisory)
+        if advisory:
+            pressure_bypass = _paper_soak_pressure_bypass_active(artifacts)
+            score = max(score, 0.65 if pressure_bypass else 0.35)
+        elif status in NEGATIVE_STATUSES and not stale:
             score = max(score, 1.05)
         elif status in WARNING_STATUSES and not stale:
             score = max(score, 0.72)
         scores.append(score)
-        details[name] = {"status": status, "pressure_index": round(pressure_index, 3), "score": round(score, 4)}
+        details[name] = {
+            "status": status,
+            "pressure_index": round(pressure_index, 3),
+            "score": round(score, 4),
+            "paper_soak_advisory": advisory,
+        }
     score = max(scores) if scores else 0.0
     return {"score": round(score, 4), "details": details}
 

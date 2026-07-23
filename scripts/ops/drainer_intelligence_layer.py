@@ -22,8 +22,8 @@ DEFAULT_CONTEXT_PATH = PROJECT_ROOT / "governance" / "health" / "drainer_intelli
 DEFAULT_NEEDS_PATH = PROJECT_ROOT / "governance" / "health" / "backlog_drain_needs_latest.json"
 DEFAULT_FIX_LEDGER_PATH = PROJECT_ROOT / "governance" / "system_intelligence" / "backlog_drain_fix_ledger.jsonl"
 DEFAULT_TARGET_PENDING_LINES = 10_000
-GRADE_ORDER = ("F", "D", "C", "B", "A", "A+", "A++")
-GRADE_TARGETS = {"F": 45.0, "D": 60.0, "C": 75.0, "B": 90.0, "A": 97.0, "A+": 99.0, "A++": 100.0}
+GRADE_ORDER = ("F", "D", "C", "B", "A", "A+")
+GRADE_TARGETS = {"F": 45.0, "D": 60.0, "C": 75.0, "B": 90.0, "A": 97.0, "A+": 99.0, "A++": 99.0}
 
 
 def _safe_int(raw: Any, default: int = 0) -> int:
@@ -534,8 +534,6 @@ def _metric_score(value: float, *, green: float, warning: float, critical: float
 
 
 def _grade_from_score(score: float) -> str:
-    if score >= 99.0:
-        return "A++"
     if score >= 97.0:
         return "A+"
     if score >= 90.0:
@@ -568,7 +566,7 @@ def _next_grade(grade: str) -> str:
     except ValueError:
         index = 0
     if index >= len(GRADE_ORDER) - 1:
-        return "A++"
+        return "A+"
     return GRADE_ORDER[index + 1]
 
 
@@ -1410,8 +1408,7 @@ def _backlog_section_scorecard(
         "total_pending_lines": int(total_pending_lines),
         "target_pending_lines": int(target_pending_lines),
         "grade_scale": {
-            "A++": "pristine, tiny backlog, and no active constraint on acceleration",
-            "A+": "clear, green, and not constraining backlog acceleration",
+            "A+": "clear, green, pristine, and not constraining backlog acceleration",
             "A": "green or comfortably contained",
             "B": "stable but watch it",
             "C": "strained and needs scheduled drain time",

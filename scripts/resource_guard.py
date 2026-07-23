@@ -15,6 +15,8 @@ if str(PROJECT_ROOT) not in sys.path:
 _PAGE_SIZE_BYTES = 16384
 DEFAULT_CREATIVE_APP_NAMES = "Final Cut Pro,Logic Pro,Music,iTunes"
 
+from scripts.ops.support_maintenance_gate import frozen_health_payload, support_maintenance_freeze_contract
+
 
 def _csv_env(name: str, default: str) -> list[str]:
     values = [item.strip() for item in str(os.getenv(name, default) or "").split(",") if item.strip()]
@@ -23,6 +25,19 @@ def _csv_env(name: str, default: str) -> list[str]:
 
 def _creative_block_levels(env_name: str, default: str) -> set[str]:
     return {item.lower() for item in _csv_env(env_name, default)}
+
+
+def _truthy(value: str | None) -> bool:
+    return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _support_freeze_blocks_profile(profile: str) -> bool:
+    normalized = str(profile or "default").strip().lower()
+    if normalized == "collection":
+        return False
+    if normalized in {"optional", "refresh"}:
+        return True
+    return _truthy(os.getenv("RESOURCE_GUARD_DEFAULT_HONORS_SUPPORT_FREEZE", "1"))
 
 
 def _normalize_app_marker(value: str) -> str:
@@ -623,7 +638,7 @@ def evaluate_refresh_job(snapshot: dict[str, Any]) -> tuple[bool, list[str], dic
 def main() -> int:
     parser = argparse.ArgumentParser(description="Resource guard for heavy jobs.")
     parser.add_argument("--project-root", default=str(PROJECT_ROOT))
-    parser.add_argument("--profile", choices=["default", "optional", "refresh"], default="default")
+    parser.add_argument("--profile", choices=["default", "optional", "refresh", "collection"], default="default")
     parser.add_argument("--max-load-per-core", type=float, default=float(os.getenv("RESOURCE_GUARD_MAX_LOAD_PER_CORE", "1.80")))
     parser.add_argument("--min-disk-gb", type=float, default=float(os.getenv("RESOURCE_GUARD_MIN_DISK_GB", "20")))
     parser.add_argument("--min-local-disk-gb", type=float, default=float(os.getenv("RESOURCE_GUARD_MIN_LOCAL_DISK_GB", "2")))
@@ -634,6 +649,33 @@ def main() -> int:
     args = parser.parse_args()
 
     project_root = Path(args.project_root).resolve()
+    emit = Path(args.emit_path).resolve() if args.emit_path else (project_root / "governance" / "health" / "resource_guard_latest.json")
+    freeze_contract = support_maintenance_freeze_contract(project_root, "resource_guard")
+    if bool(freeze_contract.get("active", False)) and _support_freeze_blocks_profile(args.profile):
+        payload = frozen_health_payload(emit, freeze_contract, ok=True)
+        payload.update(
+            {
+                "resource_guard_profile": args.profile,
+                "resource_guard_ok": False,
+                "resource_guard_reasons": [str(freeze_contract.get("reason") or "support_maintenance_frozen_for_mac_fluidity")],
+                "memory_pressure_state": "green",
+                "memory_pressure_kind": "normal",
+                "swap_used_gb": float(payload.get("swap_used_gb", 0.0) or 0.0),
+            }
+        )
+        emit.parent.mkdir(parents=True, exist_ok=True)
+        emit.write_text(json.dumps(payload, ensure_ascii=True, indent=2), encoding="utf-8")
+        if args.json:
+            print(json.dumps(payload, ensure_ascii=True))
+        else:
+            print(
+                f"resource_guard_ok=False profile={args.profile} "
+                "memory_pressure_state=green creative_session_level=none "
+                "load1_per_core=0 disk_free_gb=0 editing_app_cpu_sum=0 "
+                f"reasons={payload['resource_guard_reasons'][0]}"
+            )
+        return 2
+
     snapshot = build_snapshot(project_root)
     memory_state, memory_state_reasons, memory_thresholds = _memory_pressure_state(snapshot)
 
@@ -680,7 +722,6 @@ def main() -> int:
         },
     }
 
-    emit = Path(args.emit_path).resolve() if args.emit_path else (project_root / "governance" / "health" / "resource_guard_latest.json")
     emit.parent.mkdir(parents=True, exist_ok=True)
     emit.write_text(json.dumps(payload, ensure_ascii=True, indent=2), encoding="utf-8")
 

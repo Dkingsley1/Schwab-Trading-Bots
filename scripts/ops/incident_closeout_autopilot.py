@@ -25,6 +25,9 @@ RECOVERABLE_RUNTIME_CLEARANCE_STATES = {
     "off_hours_cold_lane_launch_ready",
     "scheduled_off_hours_launch",
 }
+GUARDED_READ_ONLY_RUNTIME_STATES = {
+    "guarded_live_read_only",
+}
 
 
 def _safe_int(value: Any, default: int = 0) -> int:
@@ -55,23 +58,38 @@ def _recoverable_runtime_clearance(runtime: dict[str, Any]) -> bool:
     clearance_state = str(((runtime.get("clearance_plan") or {}).get("clearance_state") or "")).strip().lower()
     runtime_status = str(runtime.get("overall_status") or "").strip().lower()
     return bool(
-        clearance_state in RECOVERABLE_RUNTIME_CLEARANCE_STATES
+        (clearance_state in RECOVERABLE_RUNTIME_CLEARANCE_STATES or _guarded_read_only_runtime(runtime))
         and runtime_status in {"ready", "degraded", "needs_attention"}
     )
+
+
+def _guarded_read_only_runtime(runtime: dict[str, Any]) -> bool:
+    clearance_state = str(((runtime.get("clearance_plan") or {}).get("clearance_state") or "")).strip().lower()
+    return clearance_state in GUARDED_READ_ONLY_RUNTIME_STATES
 
 
 def _recoverable_review_gate(review: dict[str, Any]) -> bool:
     review_status = str(review.get("overall_status") or "").strip().lower()
     closure_contract = review.get("closure_contract") if isinstance(review.get("closure_contract"), dict) else {}
     closure_reason = str(closure_contract.get("closure_reason") or "").strip().lower()
+    open_surfaces = review.get("open_surfaces") if isinstance(review.get("open_surfaces"), list) else []
+    open_incident_count = _safe_int(review.get("open_incident_count"), 0)
     return bool(
         bool(review.get("review_required", False))
-        and review_status in {"degraded", "needs_attention"}
         and closure_reason in {
             "open_surfaces_present",
             "open_surfaces_present_or_no_recent_incidents",
             "watchdog_alerts_present",
         }
+        and (
+            review_status in {"degraded", "needs_attention"}
+            or (
+                review_status == "blocked"
+                and not open_surfaces
+                and 0 < open_incident_count <= 3
+                and closure_reason == "open_surfaces_present"
+            )
+        )
     )
 
 
@@ -117,6 +135,32 @@ def _bounded_auth_lease(auth: dict[str, Any]) -> bool:
     )
 
 
+def _isolated_read_only_watchdog_debt(watchdog: dict[str, Any]) -> bool:
+    isolation = watchdog.get("restart_storm_isolation") if isinstance(watchdog.get("restart_storm_isolation"), dict) else {}
+    if not isolation:
+        intelligence = watchdog.get("watchdog_intelligence") if isinstance(watchdog.get("watchdog_intelligence"), dict) else {}
+        isolation = (
+            intelligence.get("restart_storm_isolation")
+            if isinstance(intelligence.get("restart_storm_isolation"), dict)
+            else {}
+        )
+    isolated_count = _safe_int(isolation.get("isolated_count"), 0)
+    execution_blocking_count = _safe_int(isolation.get("execution_blocking_count"), 0)
+    if isolated_count > 0 and execution_blocking_count <= 0 and bool(isolation.get("all_active_storms_isolated", False)):
+        return True
+
+    storms = watchdog.get("restart_storms") if isinstance(watchdog.get("restart_storms"), list) else []
+    active_storms = [row for row in storms if isinstance(row, dict) and not bool(row.get("resolved", False))]
+    if not active_storms:
+        return False
+    return all(
+        bool(row.get("quarantinable", False))
+        and not bool(row.get("blocks_execution_clear", True))
+        and str(row.get("impact") or "").strip().lower() == "read_only_collection"
+        for row in active_storms
+    )
+
+
 def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
     health_root = project_root / "governance" / "health"
     timeline = load_json(health_root / "incident_timeline_latest.json")
@@ -150,8 +194,10 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
         and str(row.get("watch_reason") or "").strip().lower() == "derived_storage_backpressure"
         for row in watch_surfaces
     )
+    isolated_read_only_watchdog = _isolated_read_only_watchdog_debt(watchdog)
 
     blockers: list[dict[str, Any]] = []
+    guarded_read_only_runtime = _guarded_read_only_runtime(runtime)
     recoverable_runtime_clearance = _recoverable_runtime_clearance(runtime)
     recoverable_review_gate = _recoverable_review_gate(review)
 
@@ -160,7 +206,11 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
             _surface_block(
                 surface="runtime_clearance",
                 severity=("warning" if recoverable_runtime_clearance else "critical"),
-                summary=f"runtime clearance remains {clearance_state or 'unknown'}",
+                summary=(
+                    "runtime is intentionally parked in guarded live read-only for paper soak"
+                    if guarded_read_only_runtime
+                    else f"runtime clearance remains {clearance_state or 'unknown'}"
+                ),
                 artifact_name="live_runtime_separation_control_latest.json",
                 command=["./scripts/ops/opsctl.sh", "live-runtime-separation", "--json"],
             )
@@ -233,10 +283,18 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
         blockers.append(
             _surface_block(
                 surface="process_watchdog",
-                severity=("warning" if derived_storage_watchdog else "critical" if restart_storm_count > 0 else "warning"),
+                severity=(
+                    "warning"
+                    if derived_storage_watchdog or isolated_read_only_watchdog
+                    else "critical"
+                    if restart_storm_count > 0
+                    else "warning"
+                ),
                 summary=(
                     "paper-lane watchdog pressure is being absorbed inside bounded storage recovery"
                     if derived_storage_watchdog
+                    else "read-only collector restart debt is isolated and does not block execution clearance"
+                    if isolated_read_only_watchdog
                     else f"restart_storms={restart_storm_count} alerts={watchdog_alert_count}"
                 ),
                 artifact_name="process_watchdog_latest.json",
@@ -264,7 +322,7 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
                 or (row.get("surface") == "data_plane_recovery" and bounded_data_plane_recovery)
                 or (row.get("surface") == "remote_alert_backlog" and unacked_count <= 0 and unsent_count <= 0)
                 or (row.get("surface") == "incident_review" and recoverable_review_gate)
-                or (row.get("surface") == "process_watchdog" and derived_storage_watchdog)
+                or (row.get("surface") == "process_watchdog" and (derived_storage_watchdog or isolated_read_only_watchdog))
             )
             for row in blockers
         )
@@ -317,6 +375,8 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
         "closeout_score": closeout_score,
         "bounded_data_plane_recovery": bounded_data_plane_recovery,
         "bounded_auth_lease": bounded_auth_lease,
+        "guarded_read_only_runtime": guarded_read_only_runtime,
+        "isolated_read_only_watchdog": isolated_read_only_watchdog,
         "recoverable_runtime_clearance": recoverable_runtime_clearance,
         "recoverable_review_gate": recoverable_review_gate,
         "bounded_warning_closeout_ready": bounded_warning_closeout_ready,

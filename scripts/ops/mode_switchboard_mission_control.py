@@ -187,6 +187,16 @@ def _operator_mode_contract(
             "report_refresh_allowed": bool(computer_budget.get("report_refresh_allowed", budget["report_refresh_allowed"])),
         }
     backlog_intake_active = bool(storage_blocked or total_pending > pending_threshold or core_pending > 15000)
+    if backlog_intake_active:
+        backlog_ratio_cap = 0.20 if hard_pressure or total_pending >= pending_threshold * 2 or core_pending >= pending_threshold else 0.30
+        budget = {
+            **budget,
+            "collector_intake_ratio": f"{min(max(_safe_float(budget.get('collector_intake_ratio'), backlog_ratio_cap), 0.05), backlog_ratio_cap):.2f}",
+            "coinbase_snapshot_workers": "1",
+            "async_pipeline_workers": "1" if hard_pressure else str(min(_safe_int(budget.get("async_pipeline_workers"), 2), 2)),
+            "heavy_collectors_allowed": False,
+            "report_refresh_allowed": False if hard_pressure or total_pending >= pending_threshold * 2 else bool(budget["report_refresh_allowed"]),
+        }
     foreground_guard_active = bool(creative_active or cotenant_active)
     no_training = bool(
         not budget["training_allowed"]

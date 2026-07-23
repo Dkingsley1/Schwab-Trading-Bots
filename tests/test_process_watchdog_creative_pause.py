@@ -9,6 +9,30 @@ if str(PROJECT_ROOT) not in sys.path:
 from scripts.ops import process_watchdog as watchdog
 
 
+def test_soft_music_playback_does_not_suppress_read_only_sleeve_collection() -> None:
+    pause = {
+        "active": True,
+        "creative_session_level": "active",
+        "creative_session_kind": "music_playback",
+        "hard_pause_terminate_processes": False,
+        "hard_pause_action": "lightweight_pause_contract_refresh",
+    }
+
+    assert watchdog._creative_pause_suppresses_target("all_sleeves", pause) is False
+
+
+def test_hard_music_pause_still_suppresses_read_only_sleeve_collection() -> None:
+    pause = {
+        "active": True,
+        "creative_session_level": "active",
+        "creative_session_kind": "music_playback_hot",
+        "hard_pause_terminate_processes": True,
+        "hard_pause_action": "sigterm_optional_heavy_research",
+    }
+
+    assert watchdog._creative_pause_suppresses_target("all_sleeves", pause) is True
+
+
 def test_creative_pause_resolves_and_forgives_coinbase_restart_debt() -> None:
     events = [
         {

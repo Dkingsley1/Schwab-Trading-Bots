@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import shlex
 import sys
 from pathlib import Path
@@ -61,22 +62,55 @@ def _status(payload: dict[str, Any], default: str = "missing") -> str:
 
 def _storage_metrics(storage: dict[str, Any]) -> dict[str, Any]:
     backpressure = _as_dict(storage.get("backpressure"))
-    raw_live = _as_dict(backpressure.get("raw_live"))
+    effective_raw_live = _as_dict(backpressure.get("effective_raw_live"))
+    raw_live = effective_raw_live or _as_dict(backpressure.get("raw_live"))
     truth = _as_dict(storage.get("backlog_truth"))
     sql_overlay = _as_dict(truth.get("sql_overlay"))
+    direct_sql_overlay = _as_dict(storage.get("sql_ingestion_pending_overlay"))
+    storage_plane = _as_dict(storage.get("storage_plane_contract"))
+    allowed_work = _as_dict(storage_plane.get("allowed_work"))
+    p_core_contract = _as_dict(_as_dict(storage.get("backlog_relief_contract")).get("p_core_backlog_allocation_contract"))
+    p_core_intelligence = _as_dict(p_core_contract.get("p_core_burst_intelligence"))
     stale_locator = _as_dict(storage.get("stale_pending_locator"))
     oldest_sources = _as_list(stale_locator.get("oldest_sources"))
-    core = _safe_int(backpressure.get("core_pending_lines") or raw_live.get("core_pending_lines"), 0)
-    total = _safe_int(backpressure.get("total_pending_lines") or raw_live.get("total_pending_lines"), 0)
-    support = _safe_int(backpressure.get("support_pending_lines") or raw_live.get("support_pending_lines"), 0)
-    deferred = _safe_int(backpressure.get("deferred_pending_lines") or raw_live.get("deferred_pending_lines"), 0)
-    oldest_age = _safe_float(backpressure.get("oldest_pending_age_seconds") or raw_live.get("oldest_pending_age_seconds"), 0.0)
-    overlay_pending = _safe_int(sql_overlay.get("total_pending_lines") or truth.get("overlay_pending_lines"), 0)
+    direct_overlay_total = _safe_int(direct_sql_overlay.get("total_pending_lines"), 0)
+    direct_overlay_clear = bool(
+        direct_sql_overlay.get("active", False)
+        and direct_overlay_total == 0
+        and _safe_int(direct_sql_overlay.get("stale_pending_lines"), 0) == 0
+        and _safe_int(direct_sql_overlay.get("files_with_pending"), 0) == 0
+        and not _as_list(direct_sql_overlay.get("top_pending_files"))
+        and _safe_int(direct_sql_overlay.get("fresh_source_count"), 0) > 0
+        and _safe_int(direct_sql_overlay.get("explicit_empty_source_count"), 0) > 0
+        and _safe_float(direct_sql_overlay.get("oldest_pending_age_seconds"), 0.0) <= 120.0
+    )
+    if direct_overlay_clear:
+        core = 0
+        total = 0
+        support = 0
+        deferred = 0
+        oldest_age = 0.0
+    else:
+        core = _safe_int(backpressure.get("core_pending_lines") or raw_live.get("core_pending_lines"), 0)
+        total = _safe_int(backpressure.get("total_pending_lines") or raw_live.get("total_pending_lines"), 0)
+        support = _safe_int(backpressure.get("support_pending_lines") or raw_live.get("support_pending_lines"), 0)
+        deferred = _safe_int(backpressure.get("deferred_pending_lines") or raw_live.get("deferred_pending_lines"), 0)
+        oldest_age = _safe_float(backpressure.get("oldest_pending_age_seconds") or raw_live.get("oldest_pending_age_seconds"), 0.0)
+    overlay_pending = _safe_int(sql_overlay.get("total_pending_lines") or truth.get("overlay_pending_lines") or direct_overlay_total, 0)
     target = _safe_int(backpressure.get("pending_lines_threshold"), 5000) or 5000
     age_green = oldest_age <= BACKLOG_GREEN_AGE_SECONDS
     line_green = core <= target and total <= max(target, core)
     overlay_green = overlay_pending <= target
-    backlog_green = bool(line_green and age_green and overlay_green)
+    storage_training_allowed = bool(allowed_work.get("training", False))
+    backlog_green = bool(
+        (line_green and age_green and overlay_green)
+        or (
+            storage_training_allowed
+            and total <= max(target, 1)
+            and oldest_age <= BACKLOG_GREEN_AGE_SECONDS
+            and overlay_green
+        )
+    )
     if core > max(target * 5, 25000) or oldest_age > 86400 or total > 50000:
         severity = "critical"
     elif core > target or oldest_age > BACKLOG_GREEN_AGE_SECONDS or total > target * 2:
@@ -105,8 +139,14 @@ def _storage_metrics(storage: dict[str, Any]) -> dict[str, Any]:
             "oldest_age_target_seconds": BACKLOG_GREEN_AGE_SECONDS,
             "oldest_age_stale_seconds": BACKLOG_STALE_AGE_SECONDS,
             "reason": "lines_and_age_clear" if backlog_green else "oldest_pending_age_or_overlay_still_needs_catch_up",
+            "storage_training_allowed": storage_training_allowed,
+            "direct_sql_overlay_clear": direct_overlay_clear,
         },
         "oldest_sources": oldest_sources[:6],
+        "p_core_preprocess_worker_recommendation": _safe_int(p_core_contract.get("preprocess_worker_budget"), 0),
+        "p_core_shard_writer_lanes_recommendation": _safe_int(p_core_contract.get("shard_link_writer_lanes"), 0),
+        "p_core_burst_mode": str(p_core_intelligence.get("mode") or ""),
+        "p_core_burst_reason": str(p_core_intelligence.get("reason") or ""),
     }
 
 
@@ -233,9 +273,22 @@ def _p_core_memory_pressure_controller(host: dict[str, Any], runtime: dict[str, 
     level = str(runtime.get("memory_pressure_level") or memory.get("pressure_level") or "normal").strip().lower()
     kind = str(snapshot.get("memory_pressure_kind") or inputs.get("memory_pressure_kind") or "none").strip().lower()
     swap_gb = max(_safe_float(memory.get("swap_used_gb"), 0.0), _safe_float(snapshot.get("swap_used_gb"), 0.0), _safe_float(inputs.get("swap_used_gb"), 0.0))
-    compressed_gb = max(_safe_float(snapshot.get("compressed_store_gb"), 0.0), _safe_float(inputs.get("compressed_store_gb"), 0.0))
+    compressed_store_gb = max(_safe_float(snapshot.get("compressed_store_gb"), 0.0), _safe_float(inputs.get("compressed_store_gb"), 0.0))
+    compressor_gb = max(_safe_float(snapshot.get("compressor_gb"), 0.0), _safe_float(inputs.get("compressor_gb"), 0.0))
+    compressed_pressure_gb = max(
+        _safe_float(snapshot.get("compressed_pressure_gb"), 0.0),
+        _safe_float(inputs.get("compressed_pressure_gb"), 0.0),
+        compressor_gb if compressor_gb > 0.0 else compressed_store_gb,
+    )
     pages_throttled = _safe_float(inputs.get("pages_throttled"), 0.0)
     burst_mode = str(burst.get("mode") or "").strip().lower()
+    allocation_only_compression = bool(
+        level in {"", "normal", "green", "none", "clear"}
+        and kind in {"", "none", "normal", "clear"}
+        and swap_gb < 3.0
+        and pages_throttled <= 0.0
+        and compressed_pressure_gb < 9.0
+    )
     if level in {"red", "high", "critical"} or kind in {"red", "critical"} or pages_throttled > 0:
         cap = 2
         status = "hard_memory_relief"
@@ -244,11 +297,11 @@ def _p_core_memory_pressure_controller(host: dict[str, Any], runtime: dict[str, 
         cap = 2
         status = "swap_relief"
         reason = "swap or runtime burst controller requested memory relief"
-    elif burst_mode.startswith("memory_relief_3") or compressed_gb >= 14.0 or swap_gb >= 4.0:
+    elif (burst_mode.startswith("memory_relief_3") and not allocation_only_compression) or compressed_pressure_gb >= 14.0 or swap_gb >= 4.0:
         cap = 3
         status = "compression_relief"
         reason = "compressed memory or swap is elevated, so P-core preprocess width is capped"
-    elif compressed_gb >= 10.0 or swap_gb >= 2.0:
+    elif compressed_pressure_gb >= 10.0 or swap_gb >= 2.0:
         cap = 4
         status = "soft_memory_guard"
         reason = "unified-memory pressure is soft-elevated"
@@ -274,6 +327,17 @@ def _p_core_memory_pressure_controller(host: dict[str, Any], runtime: dict[str, 
             reason = intelligence_reason or reason
         elif intelligence_status == "clear" and status == "clear":
             reason = intelligence_reason or reason
+    if (
+        allocation_only_compression
+        and burst_mode in {"guarded_backlog_probe_4", "protect_live_backlog_probe_4"}
+        and cap < 4
+    ):
+        cap = 4
+        status = "soft_memory_guard"
+        reason = (
+            "memory is allocation-heavy but active compressor/swap pressure is clear, "
+            "so the backlog pump may borrow one reserved P-core"
+        )
     return {
         "enabled": True,
         "status": status,
@@ -281,7 +345,10 @@ def _p_core_memory_pressure_controller(host: dict[str, Any], runtime: dict[str, 
         "memory_pressure_level": level,
         "memory_pressure_kind": kind,
         "swap_used_gb": round(swap_gb, 3),
-        "compressed_store_gb": round(compressed_gb, 3),
+        "compressed_store_gb": round(compressed_store_gb, 3),
+        "compressor_gb": round(compressor_gb, 3),
+        "compressed_pressure_gb": round(compressed_pressure_gb, 3),
+        "allocation_only_compression": bool(allocation_only_compression),
         "pages_throttled": pages_throttled,
         "runtime_burst_mode": burst_mode,
         "intelligence_layer_status": intelligence_status or "missing",
@@ -306,8 +373,20 @@ def _p_core_memory_pressure_controller(host: dict[str, Any], runtime: dict[str, 
         "batch20_execution_mode": str(intelligence_gate.get("batch20_execution_mode") or ""),
         "batch20_wave_size": _safe_int(intelligence_gate.get("batch20_wave_size"), 0),
         "batch20_requires_between_target_memory_recheck": bool(intelligence_gate.get("batch20_requires_between_target_memory_recheck", False)),
+        "weekend_large_batch_window": bool(intelligence_gate.get("weekend_large_batch_window", False)),
+        "weekend_soft_guard_batch20_wave_training_safe": bool(intelligence_gate.get("weekend_soft_guard_batch20_wave_training_safe", False)),
+        "batch30_training_safe": bool(intelligence_gate.get("batch30_training_safe", False)),
+        "batch30_max_parallel_trainings": _safe_int(intelligence_gate.get("batch30_max_parallel_trainings"), 0),
+        "batch30_profile": str(intelligence_gate.get("batch30_profile") or ""),
+        "batch30_execution_mode": str(intelligence_gate.get("batch30_execution_mode") or ""),
+        "batch30_wave_size": _safe_int(intelligence_gate.get("batch30_wave_size"), 0),
+        "batch30_requires_between_target_memory_recheck": bool(intelligence_gate.get("batch30_requires_between_target_memory_recheck", False)),
+        "weekend_soft_guard_batch30_wave_training_safe": bool(intelligence_gate.get("weekend_soft_guard_batch30_wave_training_safe", False)),
         "training_batch_cap": _safe_int(intelligence_gate.get("training_batch_cap"), 4 if bool(intelligence_gate.get("safe_for_training", False)) else 0),
         "training_profile": str(intelligence_gate.get("training_profile") or ""),
+        "multitasking_training_cap": _safe_int(intelligence_gate.get("multitasking_training_cap"), 30),
+        "foreground_soft_guard_micro_canary_safe": bool(intelligence_gate.get("foreground_soft_guard_micro_canary_safe", False)),
+        "foreground_soft_guard_small_canary_safe": bool(intelligence_gate.get("foreground_soft_guard_small_canary_safe", False)),
         "memory_clear_samples": _safe_int(intelligence_gate.get("consecutive_memory_clear_samples"), 0),
         "reason": reason,
         "policy": "cap_p_core_preprocess_workers_when_unified_memory_or_swap_pressure_rises_and_require_intelligence_soak",
@@ -336,6 +415,40 @@ def _runtime_pressure_attribution_policy(runtime: dict[str, Any]) -> dict[str, A
     protected_hot = bool(attribution.get("protected_work_hot", False))
     dominant_bucket = str(attribution.get("dominant_bucket") or "unknown").strip().lower() or "unknown"
     foreground_app_cpu = _safe_float(attribution.get("foreground_app_cpu_percent"), 0.0)
+    system_cpu = _safe_float(attribution.get("macos_system_cpu_percent"), 0.0)
+    bot_owned_dominant = bool(attribution.get("bot_owned_pressure_dominant", False)) or dominant_bucket == "bot_owned"
+    support_dominant = bool(attribution.get("support_pressure_dominant", False)) or dominant_bucket == "throttle_candidate_support"
+    operator_observability_dominant = (
+        bool(attribution.get("operator_observability_pressure_dominant", False))
+        or dominant_bucket == "operator_observability"
+    )
+    system_dominant = bool(attribution.get("macos_system_pressure_dominant", False)) or dominant_bucket == "macos_system"
+    protected_dominant = bool(attribution.get("protected_pressure_dominant", False)) or dominant_bucket == "protected_live_or_macro"
+    system_secondary_to_bot_owned = bool(attribution.get("system_secondary_to_bot_owned", False))
+    support_trim_required = bool(attribution.get("support_trim_required", False)) or (support_hot and support_dominant)
+    guarded_niced_support_advisory = bool(
+        support_hot
+        and support_low_priority
+        and (support_dominant or bot_owned_dominant)
+        and (not system_hot or system_secondary_to_bot_owned)
+        and not protected_dominant
+        and host_saturation <= 78.0
+        and compute_pressure not in {"high", "critical", "protect_live"}
+        and memory_pressure not in {"high", "red"}
+        and throttle_profile != "protect_live"
+    )
+    foreground_system_guarded = bool(
+        external_dominant
+        and dominant_bucket == "foreground_apps"
+        and system_hot
+        and foreground_app_cpu >= max(system_cpu, 35.0)
+        and not support_hot
+        and not protected_hot
+        and host_saturation <= 52.0
+        and compute_pressure not in {"high", "critical", "protect_live"}
+        and memory_pressure not in {"high", "red"}
+        and throttle_profile != "protect_live"
+    )
     low_pressure_external_advisory = bool(
         external_dominant
         and not system_hot
@@ -349,11 +462,11 @@ def _runtime_pressure_attribution_policy(runtime: dict[str, Any]) -> dict[str, A
     guarded_foreground_advisory = bool(
         external_dominant
         and dominant_bucket == "foreground_apps"
-        and not system_hot
+        and (not system_hot or foreground_system_guarded)
         and not support_hot
         and not protected_hot
-        and host_saturation <= 62.0
-        and compute_pressure not in {"high", "critical", "protect_live"}
+        and host_saturation <= 70.0
+        and compute_pressure not in {"critical", "protect_live"}
         and memory_pressure not in {"high", "red"}
         and throttle_profile != "protect_live"
     )
@@ -387,18 +500,56 @@ def _runtime_pressure_attribution_policy(runtime: dict[str, Any]) -> dict[str, A
         and memory_pressure not in {"high", "red"}
         and throttle_profile != "protect_live"
     )
+    low_pressure_system_advisory = bool(
+        system_hot
+        and not runtime_hot
+        and not support_hot
+        and not protected_hot
+        and host_saturation <= 35.0
+        and compute_pressure not in {"high", "critical", "protect_live"}
+        and memory_pressure not in {"high", "red"}
+        and throttle_profile not in {"protect_live", "sustain"}
+    )
+    guarded_protected_work_advisory = bool(
+        protected_hot
+        and not runtime_hot
+        and not system_hot
+        and not support_hot
+        and host_saturation <= 50.0
+        and compute_pressure not in {"high", "critical", "protect_live"}
+        and memory_pressure not in {"high", "red"}
+        and throttle_profile != "protect_live"
+    )
     if not attribution:
         mode = "legacy_runtime_pressure" if runtime_hot else "clear"
         reason = "runtime pressure attribution is not published yet" if runtime_hot else "runtime pressure is clear"
-    elif system_hot:
-        mode = "macos_system_cooldown"
-        reason = "macOS system services are consuming host headroom"
+    elif low_pressure_system_advisory:
+        mode = "macos_system_advisory"
+        reason = "macOS system activity is visible, but runtime saturation and memory pressure remain training-safe"
+    elif guarded_protected_work_advisory:
+        mode = "protected_work_guarded_advisory"
+        reason = "protected live or macro work is warm, but host saturation and memory pressure remain bounded"
+    elif guarded_niced_support_advisory:
+        mode = "support_maintenance_niced_advisory"
+        reason = "support maintenance is hot but already low-priority, bounded, and safer than blocking training entirely"
+    elif support_trim_required and not protected_dominant:
+        mode = "trim_support_maintenance"
+        reason = "bot-owned support maintenance is the dominant throttleable pressure source"
+    elif guarded_operator_observability_advisory and operator_observability_dominant:
+        mode = "operator_observability_guarded_advisory"
+        reason = "operator/Codex observability is hot but live, support, memory, and storage pressure are bounded"
+    elif protected_dominant and protected_hot:
+        mode = "protect_live_or_macro_hot"
+        reason = "protected live, paper, or macro capture lanes are hot"
     elif low_pressure_external_advisory:
         mode = "operator_foreground_advisory"
         reason = "foreground/operator activity is visible but host saturation and memory pressure remain training-safe"
     elif guarded_foreground_advisory:
         mode = "operator_foreground_guarded_advisory"
         reason = "foreground/operator activity dominates but memory, storage, and protected bot lanes are clear"
+    elif system_hot and not foreground_system_guarded and not system_secondary_to_bot_owned and (system_dominant or external_dominant or not bot_owned_dominant):
+        mode = "macos_system_cooldown"
+        reason = "macOS system services are consuming host headroom"
     elif low_pressure_support_advisory:
         mode = "support_maintenance_advisory"
         reason = "support maintenance is hot but host saturation, compute pressure, and memory pressure remain training-safe"
@@ -429,12 +580,12 @@ def _runtime_pressure_attribution_policy(runtime: dict[str, Any]) -> dict[str, A
         training_allowed = memory_pressure not in {"high", "red"}
     else:
         p_core_widen_allowed = bool(
-            mode in {"clear", "operator_foreground_advisory"}
-            or (mode in {"operator_foreground_guarded_advisory", "operator_observability_guarded_advisory"} and host_saturation <= 56.0)
+            mode in {"clear", "operator_foreground_advisory", "macos_system_advisory", "protected_work_guarded_advisory"}
+            or (mode in {"operator_foreground_guarded_advisory", "operator_observability_guarded_advisory"} and host_saturation <= 64.0)
             or (mode == "runtime_soft_cap" and compute_pressure not in {"high", "critical"})
         )
-        collector_reopen_allowed = bool(mode in {"clear", "runtime_soft_cap", "operator_foreground_advisory", "operator_foreground_guarded_advisory", "operator_observability_guarded_advisory", "support_maintenance_advisory", "support_maintenance_niced_advisory"} and memory_pressure not in {"high", "red"})
-        training_allowed = bool(mode in {"clear", "operator_foreground_advisory", "operator_foreground_guarded_advisory", "operator_observability_guarded_advisory", "support_maintenance_advisory", "support_maintenance_niced_advisory"} and memory_pressure not in {"high", "red"})
+        collector_reopen_allowed = bool(mode in {"clear", "runtime_soft_cap", "operator_foreground_advisory", "operator_foreground_guarded_advisory", "operator_observability_guarded_advisory", "support_maintenance_advisory", "support_maintenance_niced_advisory", "macos_system_advisory", "protected_work_guarded_advisory"} and memory_pressure not in {"high", "red"})
+        training_allowed = bool(mode in {"clear", "operator_foreground_advisory", "operator_foreground_guarded_advisory", "operator_observability_guarded_advisory", "support_maintenance_advisory", "support_maintenance_niced_advisory", "macos_system_advisory", "protected_work_guarded_advisory"} and memory_pressure not in {"high", "red"})
     recommended_command = ["./scripts/ops/opsctl.sh", "runtime-throttle", "--apply", "--json"] if mode != "clear" else []
     return {
         "mode": mode,
@@ -445,8 +596,19 @@ def _runtime_pressure_attribution_policy(runtime: dict[str, Any]) -> dict[str, A
         "host_saturation_score": round(host_saturation, 3),
         "dominant_bucket": dominant_bucket,
         "foreground_app_cpu_percent": round(foreground_app_cpu, 3),
+        "macos_system_cpu_percent": round(system_cpu, 3),
         "external_pressure_dominant": external_dominant,
+        "bot_owned_pressure_dominant": bot_owned_dominant,
+        "support_pressure_dominant": support_dominant,
+        "operator_observability_pressure_dominant": operator_observability_dominant,
+        "macos_system_pressure_dominant": system_dominant,
+        "protected_pressure_dominant": protected_dominant,
+        "system_secondary_to_bot_owned": system_secondary_to_bot_owned,
+        "support_trim_required": support_trim_required,
+        "guarded_niced_support_advisory": guarded_niced_support_advisory,
+        "foreground_system_guarded": foreground_system_guarded,
         "low_pressure_external_advisory": low_pressure_external_advisory,
+        "low_pressure_system_advisory": low_pressure_system_advisory,
         "guarded_foreground_advisory": guarded_foreground_advisory,
         "low_pressure_support_advisory": low_pressure_support_advisory,
         "system_cotenant_hot": system_hot,
@@ -455,11 +617,12 @@ def _runtime_pressure_attribution_policy(runtime: dict[str, Any]) -> dict[str, A
         "guarded_support_advisory": guarded_support_advisory,
         "operator_observability_hot": operator_observability_hot,
         "guarded_operator_observability_advisory": guarded_operator_observability_advisory,
+        "guarded_protected_work_advisory": guarded_protected_work_advisory,
         "protected_work_hot": protected_hot,
         "p_core_widen_allowed": p_core_widen_allowed,
         "collector_reopen_allowed": collector_reopen_allowed,
         "training_allowed": training_allowed,
-        "collector_ratio_cap": 0.35 if low_pressure_external_advisory else 0.28 if guarded_foreground_advisory or guarded_support_advisory or guarded_operator_observability_advisory or low_pressure_support_advisory else 0.20 if system_hot or external_dominant else 0.28 if support_hot or protected_hot else 0.55,
+        "collector_ratio_cap": 0.35 if low_pressure_external_advisory or low_pressure_system_advisory else 0.28 if guarded_foreground_advisory or guarded_operator_observability_advisory or guarded_support_advisory or low_pressure_support_advisory or guarded_protected_work_advisory or support_hot or protected_hot else 0.20 if system_hot or external_dominant else 0.55,
         "recommended_command": recommended_command,
         "reason": reason,
         "attribution": attribution,
@@ -554,13 +717,45 @@ def _p_core_widening_controller(
     runtime_budget = _safe_int(p_feedback.get("preprocess_worker_budget") or p_burst.get("selected_workers"), 0)
     benchmark_limits = _as_dict(benchmark.get("self_tuned_limits"))
     memory_control = _p_core_memory_pressure_controller(host, runtime, memory_intelligence)
+    user_reserve_target = max(
+        _safe_int(
+            os.getenv("AUTONOMIC_PCORE_USER_APP_RESERVE_TARGET"),
+            _safe_int(os.getenv("BACKLOG_PCORE_USER_APP_RESERVE_TARGET"), 0),
+        ),
+        0,
+    )
     max_safe = _safe_int(benchmark_limits.get("recommended_p_core_preprocess_workers"), min(max(host_primary - 2, 1), 6))
     runtime_burst_mode = str(p_burst.get("mode") or "").strip().lower()
     if runtime_burst_mode == "burst_7" and host_primary >= 8:
         max_safe = max(max_safe, min(runtime_budget or 7, 7))
     max_safe = min(max(max_safe, 1), max(host_primary - 1, 1), 8)
     max_safe = min(max_safe, _safe_int(memory_control.get("max_memory_safe_workers"), max_safe))
+    full_budget_requested = str(os.getenv("BACKLOG_PCORE_USE_FULL_PERFORMANCE_CORE_BUDGET") or "").strip().lower() in {"1", "true", "yes", "on"}
+    env_worker_target = max(
+        _safe_int(os.getenv("BACKLOG_PCORE_ACCELERATOR_WORKERS"), 0),
+        _safe_int(os.getenv("BACKLOG_PCORE_PREPROCESS_WORKERS"), 0),
+        _safe_int(os.getenv("SQL_LINK_SERVICE_PREPROCESS_WORKERS"), 0),
+        _safe_int(os.getenv("SQL_LINK_SERVICE_SHARD_WRITER_LANES"), 0),
+    )
+    if full_budget_requested and env_worker_target > 0 and str(memory_control.get("status") or "clear") not in {"hard_relief", "swap_relief"}:
+        max_safe = min(max(max_safe, env_worker_target), max(host_primary - 1, 1), 8)
+    user_reserve_worker_cap = 0
+    elastic_reserve_loan_cap = 0
+    user_reserve = _as_dict(p_burst.get("user_app_reserve"))
+    elastic_reserve_loan_allowed = bool(
+        user_reserve.get("elastic_loan_allowed", False)
+        or runtime_burst_mode in {"guarded_backlog_probe_4", "protect_live_backlog_probe_4"}
+    )
+    if user_reserve_target > 0:
+        user_reserve_worker_cap = max(host_primary - user_reserve_target, 1)
+        if elastic_reserve_loan_allowed:
+            elastic_reserve_loan_cap = max(host_primary - max(user_reserve_target - 1, 1), 1)
+            max_safe = min(max_safe, max(user_reserve_worker_cap, elastic_reserve_loan_cap))
+        else:
+            max_safe = min(max_safe, user_reserve_worker_cap)
     current = runtime_budget or min(max(host_primary - 3, 1), max_safe)
+    if full_budget_requested and env_worker_target > 0 and str(memory_control.get("status") or "clear") not in {"hard_relief", "swap_relief"}:
+        current = max(current, min(env_worker_target, max_safe))
     current = min(max(current, 1), max_safe)
     efficiency_total = _safe_int(cpu.get("efficiency_core_count"), 0)
     writer_is_active = _writer_active(writer)
@@ -568,12 +763,17 @@ def _p_core_widening_controller(
     runtime_status = _status(runtime)
     runtime_clear = runtime_status in {"ready", "advisory", "ok"} and str(runtime.get("memory_pressure_level") or "normal").lower() not in {"high", "red"}
     backlog_green = bool(storage_metrics.get("green", False))
+    storage_worker_target = _safe_int(storage_metrics.get("p_core_preprocess_worker_recommendation"), 0)
+    storage_worker_target = min(max(storage_worker_target, 0), max_safe)
+    storage_burst_mode = str(storage_metrics.get("p_core_burst_mode") or "").strip().lower()
     trend_regressing = bool(stability.get("trend_regressing", False))
     memory_safe_to_widen = bool(memory_control.get("safe_to_widen_p_core_workers", True))
     stable_for_widen = bool(stability.get("p_core_widen_ready", False) and memory_safe_to_widen)
     pressure_policy = _runtime_pressure_attribution_policy(runtime)
     pressure_allows_widen = bool(pressure_policy.get("p_core_widen_allowed", True))
     prearmed_next = min(current + 1, max_safe) if stable_for_widen and progress_positive and current < max_safe else current
+    if storage_worker_target > prearmed_next and progress_positive and not trend_regressing:
+        prearmed_next = storage_worker_target
     memory_capped = str(memory_control.get("status") or "clear") != "clear"
     multitasking_level = str(memory_control.get("multitasking_headroom_level") or "unknown")
     memory_status = str(memory_control.get("status") or "clear")
@@ -594,9 +794,14 @@ def _p_core_widening_controller(
         e_mode = "bounded_background_spillover"
         e_reason = "system is in background mode, so bounded support spillover is allowed"
     if writer_is_active:
-        selected = current
-        mode = "hold_active_writer_memory_cap" if memory_capped else "hold_active_writer"
-        reason = "active writer owns the lane; memory-aware worker cap is pre-armed for the next cycle" if memory_capped else "active writer owns the lane; do not change worker width mid-cycle"
+        if storage_worker_target > current and progress_positive and not trend_regressing and storage_burst_mode.startswith(("protect_live_backlog_probe", "guarded_backlog_probe", "burst_", "daily_driver")):
+            selected = storage_worker_target
+            mode = "hold_active_writer_prearmed_storage_target"
+            reason = "active writer owns the current cycle; storage/backlog control pre-arms the wider P-core pump for the next cycle"
+        else:
+            selected = current
+            mode = "hold_active_writer_memory_cap" if memory_capped else "hold_active_writer"
+            reason = "active writer owns the lane; memory-aware worker cap is pre-armed for the next cycle" if memory_capped else "active writer owns the lane; do not change worker width mid-cycle"
     elif memory_capped and current >= max_safe:
         selected = max_safe
         mode = "memory_pressure_cap"
@@ -656,10 +861,18 @@ def _p_core_widening_controller(
         "policy": "performance_core_primary_single_writer_with_user_app_reserve",
         "p_core_allocation_contract": {
             "system_primary_workers": max(selected, 1),
+            "primary_merge_writer_count": 1,
+            "shard_link_writer_lanes": max(selected, 1),
+            "max_shard_link_writer_lanes": max_safe,
             "user_app_reserved_p_cores": max(host_primary - max(selected, 1), 0),
+            "user_app_reserve_target_p_cores": int(user_reserve_target),
+            "user_reserve_worker_cap": int(user_reserve_worker_cap),
+            "elastic_reserve_loan_allowed": bool(elastic_reserve_loan_allowed),
+            "elastic_reserve_loan_worker_cap": int(elastic_reserve_loan_cap),
             "creative_app_reserved_p_cores": max(host_primary - max(selected, 1), 0) if multitasking_level == "realtime_creative" else 0,
             "foreground_app_policy": "logic_fcp_and_interactive_apps_keep_p_core_reserve_when_open",
             "spillover_policy": "efficiency_cores_are_support_spillover_not_primary_compute",
+            "writer_lane_policy": "parallel_child_shard_writers_on_p_core_budget_single_serial_primary_merge",
         },
         "efficiency_core_pressure_guard": {
             "enabled": True,
@@ -677,11 +890,18 @@ def _p_core_widening_controller(
             "current_workers": current,
             "selected_workers": max(selected, 1),
             "max_safe_workers": max_safe,
+            "user_app_reserve_target_p_cores": int(user_reserve_target),
+            "user_reserve_worker_cap": int(user_reserve_worker_cap),
+            "elastic_reserve_loan_allowed": bool(elastic_reserve_loan_allowed),
+            "elastic_reserve_loan_worker_cap": int(elastic_reserve_loan_cap),
+            "full_p_core_budget_requested": bool(full_budget_requested),
             "backlog_green_required": True,
             "backlog_green": backlog_green,
             "positive_writer_progress_required": True,
             "positive_writer_progress": progress_positive,
             "writer_active": writer_is_active,
+            "storage_requested_workers": int(storage_worker_target),
+            "storage_burst_mode": storage_burst_mode,
             "trend_status": str(trend.get("status") or "unknown"),
             "green_samples": _safe_int(stability.get("consecutive_green_samples"), 0),
             "prearmed_next_workers_when_idle": max(prearmed_next, 1),
@@ -728,6 +948,17 @@ def _collector_reopening_controller(
     memory_cap = _safe_int(memory_control.get("max_memory_safe_workers"), 6)
     pressure_allows_reopen = bool(pressure_policy.get("collector_reopen_allowed", True))
     pressure_ratio_cap = _safe_float(pressure_policy.get("collector_ratio_cap"), 0.55)
+    pressure_mode = str(pressure_policy.get("mode") or "").strip().lower()
+    runtime_degraded_by_guarded_foreground = bool(
+        runtime_status == "degraded"
+        and pressure_mode in {
+            "operator_foreground_guarded_advisory",
+            "operator_observability_guarded_advisory",
+            "operator_foreground_advisory",
+            "support_maintenance_niced_advisory",
+        }
+        and pressure_allows_reopen
+    )
     if memory_cap <= 3:
         ratio = 0.20 if user_active else 0.24
         stage = "memory_guard"
@@ -758,12 +989,18 @@ def _collector_reopening_controller(
         rollback = True
         next_ratio = min(0.35, pressure_ratio_cap)
         reason = str(pressure_policy.get("reason") or "host pressure attribution is not clear enough to reopen collectors")
-    elif runtime_status not in {"ready", "advisory", "ok"}:
+    elif runtime_status not in {"ready", "advisory", "ok"} and not runtime_degraded_by_guarded_foreground:
         ratio = 0.28
         stage = "runtime_cooldown"
         rollback = True
         next_ratio = 0.35
         reason = "runtime pressure needs one clear pass before reopening collectors"
+    elif runtime_degraded_by_guarded_foreground:
+        ratio = min(0.35 if user_active else 0.45, pressure_ratio_cap)
+        stage = "foreground_attributed_reopen"
+        rollback = True
+        next_ratio = min(0.45 if user_active else 0.55, pressure_ratio_cap)
+        reason = "runtime is degraded by foreground-attributed pressure, but memory/storage are clean enough for a bounded collector reopen"
     elif user_active:
         ratio = 0.35
         stage = "user_coexistent_reopen"
@@ -812,13 +1049,65 @@ def _training_reentry_gate(
     memory_safe_for_training = bool(memory_control.get("safe_for_training", memory_pressure not in {"high", "red"}))
     small_canary_memory_safe = bool(memory_control.get("small_canary_training_safe", False))
     small_batch_memory_safe = bool(memory_control.get("small_batch_training_safe", False))
+    multitasking_training_cap = _safe_int(memory_control.get("multitasking_training_cap"), 30)
+    user_active_micro_canary_allowed = bool(user_active and multitasking_training_cap >= 1 and small_canary_memory_safe)
+    user_active_small_canary_allowed = bool(user_active and multitasking_training_cap >= 2 and small_batch_memory_safe)
     batch10_memory_safe = bool(memory_control.get("batch10_training_safe", False))
     batch20_memory_safe = bool(memory_control.get("batch20_training_safe", False))
     batch20_memory_guarded_waves = str(memory_control.get("batch20_execution_mode") or "") == "sequential_memory_guarded_waves"
+    batch30_memory_safe = bool(memory_control.get("batch30_training_safe", False))
+    batch30_memory_guarded_waves = str(memory_control.get("batch30_execution_mode") or "") == "sequential_memory_guarded_waves"
+    weekend_large_batch_window = bool(memory_control.get("weekend_large_batch_window", False))
+    user_active_large_batch_allowed = bool(
+        user_active
+        and weekend_large_batch_window
+        and str(memory_control.get("multitasking_headroom_level") or "").strip().lower() == "media_playback"
+        and multitasking_training_cap >= 10
+        and (batch10_memory_safe or batch20_memory_safe or batch30_memory_safe)
+    )
     host_pressure_allows_training = bool(pressure_policy.get("training_allowed", True))
+    pressure_attribution = _as_dict(pressure_policy.get("attribution"))
+    hot_support_processes = [
+        _as_dict(item)
+        for item in pressure_attribution.get("hot_support_processes", [])
+        if isinstance(item, dict)
+    ]
+    support_hot_is_control_plane = bool(
+        hot_support_processes
+        and all(
+            any(
+                needle in str(item.get("command_excerpt") or "")
+                for needle in ("creative_cotenant_guard.py", "swap_pressure_governor.py")
+            )
+            for item in hot_support_processes
+        )
+    )
+    weekend_control_plane_pressure_allowed = bool(
+        weekend_large_batch_window
+        and support_hot_is_control_plane
+        and memory_pressure not in {"high", "red"}
+        and compute_pressure not in {"high", "critical", "protect_live"}
+        and host_saturation <= 70.0
+        and not bool(pressure_policy.get("protected_work_hot", False))
+    )
+    bounded_micro_pressure_modes = {
+        "external_cotenant_cooldown",
+        "macos_system_cooldown",
+        "operator_foreground_guarded_advisory",
+        "operator_observability_guarded_advisory",
+        "runtime_soft_cap",
+        "trim_support_maintenance",
+    }
+    paper_hot = bool(pressure_attribution.get("paper_execution_pressure_dominant", False))
+    research_hot = bool(pressure_attribution.get("research_pressure_dominant", False))
     writer_idle = not _writer_active(writer)
     writer_state = _writer_state(writer)
     writer_progress_age = _safe_float(writer_state.get("progress_age_minutes"), 0.0)
+    green_gate = _as_dict(storage_metrics.get("green_gate"))
+    storage_total_pending = _safe_int(storage_metrics.get("total_pending_lines"), 0)
+    storage_target_pending = max(_safe_int(storage_metrics.get("target_pending_lines"), 15_000), 1)
+    storage_oldest_age = _safe_float(storage_metrics.get("oldest_pending_age_seconds"), 0.0)
+    storage_severity = str(storage_metrics.get("severity") or "").strip().lower()
     writer_active_green_safe = bool(
         not writer_idle
         and backlog_green
@@ -826,20 +1115,81 @@ def _training_reentry_gate(
         and _safe_float(storage_metrics.get("oldest_pending_age_seconds"), 0.0) <= 120.0
         and writer_progress_age <= 5.0
     )
+    micro_backlog_green = bool(
+        backlog_green
+        or (
+            bool(green_gate.get("line_green", False))
+            and bool(green_gate.get("age_green", False))
+            and storage_total_pending <= storage_target_pending
+            and storage_oldest_age <= 120.0
+            and storage_severity in {"", "ready", "stable", "watch", "advisory"}
+            and (writer_idle or writer_active_green_safe)
+        )
+    )
     green_samples = _safe_int(stability.get("consecutive_green_samples"), 0)
     trend_regressing = bool(stability.get("trend_regressing", False))
     runtime_clear = runtime_status in {"ready", "advisory", "ok"}
-    runtime_micro_clear = runtime_status in {"ready", "advisory", "ok", "degraded"} and memory_pressure not in {"high", "red"}
+    runtime_micro_clear = bool(
+        (runtime_status in {"ready", "advisory", "ok", "degraded"} and memory_pressure not in {"high", "red"})
+        or (
+            small_canary_memory_safe
+            and not memory_safe_for_training
+            and runtime_status == "blocked"
+            and host_saturation <= 97.0
+            and memory_pressure not in {"high", "red"}
+            and not bool(pressure_policy.get("protected_work_hot", False))
+            and (
+                not bool(pressure_policy.get("support_jobs_hot", False))
+                or support_hot_is_control_plane
+            )
+        )
+    )
+    micro_green_samples_ok = bool(
+        green_samples >= 3
+        or (green_samples >= 2 and (writer_idle or writer_active_green_safe))
+        or (
+            backlog_green
+            and writer_idle
+            and storage_total_pending <= min(max(storage_target_pending // 10, 250), 1500)
+            and storage_oldest_age <= 120.0
+        )
+        or (not backlog_green and micro_backlog_green and writer_idle)
+    )
+    micro_host_pressure_allows_training = bool(
+        host_pressure_allows_training
+        or weekend_control_plane_pressure_allowed
+        or (
+            small_canary_memory_safe
+            and not memory_safe_for_training
+            and str(pressure_policy.get("mode") or "") in bounded_micro_pressure_modes
+            and host_saturation <= (97.0 if support_hot_is_control_plane else 80.0)
+            and memory_pressure not in {"high", "red"}
+            and (
+                not bool(pressure_policy.get("support_jobs_hot", False))
+                or support_hot_is_control_plane
+            )
+            and not paper_hot
+            and not research_hot
+            and not bool(pressure_policy.get("protected_work_hot", False))
+        )
+    )
     batch20_runtime_wave_clear = bool(
         batch20_memory_guarded_waves
         and runtime_micro_clear
         and batch20_memory_safe
-        and compute_pressure not in {"high", "critical", "protect_live"}
-        and host_saturation <= 65.0
+        and compute_pressure not in {"critical", "protect_live"}
+        and host_saturation <= 70.0
+    )
+    batch30_runtime_wave_clear = bool(
+        batch30_memory_guarded_waves
+        and runtime_micro_clear
+        and batch30_memory_safe
+        and compute_pressure not in {"critical", "protect_live"}
+        and host_saturation <= 70.0
     )
     writer_active_small_batch_safe = bool(
         writer_active_green_safe
-        and (small_batch_memory_safe or batch10_memory_safe or batch20_memory_safe)
+        and (small_batch_memory_safe or batch10_memory_safe or batch20_memory_safe or batch30_memory_safe)
     )
     full_allowed = bool(
         backlog_green
@@ -848,66 +1198,80 @@ def _training_reentry_gate(
         and mlx_status not in {"blocked", "missing"}
         and memory_pressure not in {"high", "red"}
         and memory_safe_for_training
-        and host_pressure_allows_training
-        and not user_active
+        and (host_pressure_allows_training or weekend_control_plane_pressure_allowed)
+        and (not user_active or user_active_large_batch_allowed)
         and (writer_idle or writer_active_small_batch_safe)
         and not trend_regressing
     )
-    batch20_allowed = bool(
+    batch30_allowed = bool(
         backlog_green
-        and green_samples >= 4
+        and green_samples >= (3 if weekend_large_batch_window else 4)
+        and (runtime_clear or batch30_runtime_wave_clear)
+        and mlx_status not in {"blocked", "missing"}
+        and memory_pressure not in {"high", "red"}
+        and batch30_memory_safe
+        and (host_pressure_allows_training or weekend_control_plane_pressure_allowed)
+        and (not user_active or user_active_large_batch_allowed)
+        and (writer_idle or (batch30_memory_guarded_waves and writer_active_green_safe))
+        and not trend_regressing
+    )
+    batch20_allowed = bool(
+        not batch30_allowed
+        and backlog_green
+        and green_samples >= (3 if weekend_large_batch_window else 4)
         and (runtime_clear or batch20_runtime_wave_clear)
         and mlx_status not in {"blocked", "missing"}
         and memory_pressure not in {"high", "red"}
         and batch20_memory_safe
-        and host_pressure_allows_training
-        and not user_active
+        and (host_pressure_allows_training or weekend_control_plane_pressure_allowed)
+        and (not user_active or user_active_large_batch_allowed)
         and (writer_idle or (batch20_memory_guarded_waves and writer_active_green_safe))
         and not trend_regressing
     )
     batch10_allowed = bool(
-        not batch20_allowed
+        not (batch30_allowed or batch20_allowed)
         and backlog_green
         and green_samples >= 3
         and runtime_clear
         and mlx_status not in {"blocked", "missing"}
         and memory_pressure not in {"high", "red"}
         and batch10_memory_safe
-        and host_pressure_allows_training
-        and not user_active
+        and (host_pressure_allows_training or weekend_control_plane_pressure_allowed)
+        and (not user_active or user_active_large_batch_allowed)
         and writer_idle
         and not trend_regressing
     )
     micro_allowed = bool(
-        not (batch20_allowed or batch10_allowed or full_allowed)
-        and not small_batch_memory_safe
-        and backlog_green
-        and green_samples >= 3
+        not (batch30_allowed or batch20_allowed or batch10_allowed or full_allowed)
+        and micro_backlog_green
+        and micro_green_samples_ok
         and runtime_micro_clear
         and mlx_status not in {"blocked", "missing"}
         and small_canary_memory_safe
-        and host_pressure_allows_training
-        and not user_active
+        and micro_host_pressure_allows_training
+        and (not user_active or user_active_micro_canary_allowed)
         and (writer_idle or writer_active_green_safe)
         and not trend_regressing
     )
     small_allowed = bool(
-        not (batch20_allowed or batch10_allowed or full_allowed)
+        not (batch30_allowed or batch20_allowed or batch10_allowed or full_allowed)
         and backlog_green
         and green_samples >= 3
         and runtime_micro_clear
         and mlx_status not in {"blocked", "missing"}
         and small_batch_memory_safe
         and host_pressure_allows_training
-        and not user_active
+        and (not user_active or user_active_small_canary_allowed)
         and (writer_idle or writer_active_green_safe)
         and not trend_regressing
     )
     allowed = bool(
-        batch20_allowed or batch10_allowed or full_allowed or small_allowed or micro_allowed
+        batch30_allowed or batch20_allowed or batch10_allowed or full_allowed or small_allowed or micro_allowed
     )
     profile = (
-        "coverage_batch20_canary"
+        "coverage_batch30_canary"
+        if batch30_allowed
+        else "coverage_batch20_canary"
         if batch20_allowed
         else "coverage_batch10_canary"
         if batch10_allowed
@@ -920,7 +1284,9 @@ def _training_reentry_gate(
         else "none"
     )
     mode = (
-        "batch20_canary"
+        "batch30_canary"
+        if batch30_allowed
+        else "batch20_canary"
         if batch20_allowed
         else "batch10_canary"
         if batch10_allowed
@@ -932,17 +1298,18 @@ def _training_reentry_gate(
         if micro_allowed
         else "paused"
     )
-    max_parallel = 20 if batch20_allowed else 10 if batch10_allowed else 4 if full_allowed else 2 if small_allowed else 1 if micro_allowed else 0
+    max_parallel = 30 if batch30_allowed else 20 if batch20_allowed else 10 if batch10_allowed else 4 if full_allowed else 2 if small_allowed else 1 if micro_allowed else 0
     blockers = ordered_unique(
         [
-            "backlog_age_not_green" if not backlog_green else "",
-            "green_soak_samples_needed" if backlog_green and green_samples < 3 else "",
+            "backlog_age_not_green" if not backlog_green and not micro_backlog_green else "",
+            "micro_backlog_overlay_not_green" if not backlog_green and not micro_backlog_green else "",
+            "green_soak_samples_needed" if not micro_green_samples_ok else "",
             "runtime_not_clear" if not runtime_clear and not (micro_allowed or runtime_micro_clear) else "",
             "mlx_not_ready" if mlx_status in {"blocked", "missing"} else "",
             "memory_pressure_not_clear" if memory_pressure in {"high", "red"} else "",
-            "host_pressure_attribution_not_clear" if not host_pressure_allows_training else "",
-            "memory_clear_soak_needed" if not memory_safe_for_training and not (batch20_memory_safe or batch10_memory_safe or small_batch_memory_safe or small_canary_memory_safe) else "",
-            "foreground_user_apps_active" if user_active else "",
+            "host_pressure_attribution_not_clear" if not micro_host_pressure_allows_training else "",
+            "memory_clear_soak_needed" if not memory_safe_for_training and not (batch30_memory_safe or batch20_memory_safe or batch10_memory_safe or small_batch_memory_safe or small_canary_memory_safe) else "",
+            "foreground_user_apps_active" if user_active and not (user_active_micro_canary_allowed or user_active_large_batch_allowed) else "",
             "writer_still_active" if not writer_idle and not writer_active_green_safe else "",
             "backlog_trend_regressing" if trend_regressing else "",
         ]
@@ -954,18 +1321,33 @@ def _training_reentry_gate(
         "max_parallel_trainings": max_parallel,
         "requires_backlog_green": True,
         "green_samples": green_samples,
+        "micro_backlog_green": micro_backlog_green,
+        "micro_green_samples_ok": micro_green_samples_ok,
+        "micro_host_pressure_allows_training": micro_host_pressure_allows_training,
+        "support_hot_is_control_plane": support_hot_is_control_plane,
+        "weekend_control_plane_pressure_allowed": weekend_control_plane_pressure_allowed,
         "trend_status": str(trend.get("status") or "unknown"),
         "writer_idle_required": not writer_active_green_safe,
         "writer_active_green_safe": writer_active_green_safe,
         "writer_active_small_batch_safe": writer_active_small_batch_safe,
         "memory_small_canary_safe": small_canary_memory_safe,
         "memory_small_batch_safe": small_batch_memory_safe,
+        "multitasking_training_cap": multitasking_training_cap,
+        "user_active_micro_canary_allowed": user_active_micro_canary_allowed,
+        "user_active_small_canary_allowed": user_active_small_canary_allowed,
+        "user_active_large_batch_allowed": user_active_large_batch_allowed,
+        "weekend_large_batch_window": weekend_large_batch_window,
         "memory_batch10_safe": batch10_memory_safe,
         "memory_batch20_safe": batch20_memory_safe,
+        "memory_batch30_safe": batch30_memory_safe,
         "batch20_runtime_wave_clear": batch20_runtime_wave_clear,
         "batch20_execution_mode": str(memory_control.get("batch20_execution_mode") or ""),
         "batch20_wave_size": _safe_int(memory_control.get("batch20_wave_size"), 0),
         "batch20_requires_between_target_memory_recheck": bool(memory_control.get("batch20_requires_between_target_memory_recheck", False)),
+        "batch30_runtime_wave_clear": batch30_runtime_wave_clear,
+        "batch30_execution_mode": str(memory_control.get("batch30_execution_mode") or ""),
+        "batch30_wave_size": _safe_int(memory_control.get("batch30_wave_size"), 0),
+        "batch30_requires_between_target_memory_recheck": bool(memory_control.get("batch30_requires_between_target_memory_recheck", False)),
         "runtime_micro_clear": runtime_micro_clear,
         "host_pressure_attribution_gate": pressure_policy,
         "blockers": blockers,
@@ -973,18 +1355,61 @@ def _training_reentry_gate(
     }
 
 
+def _watchdog_blocking_needs(watchdog_intelligence: dict[str, Any]) -> list[dict[str, Any]]:
+    blocking: list[dict[str, Any]] = []
+    exact_needs = [need for need in _as_list(watchdog_intelligence.get("exact_needs")) if isinstance(need, dict)]
+    all_sleeves_intentionally_held = any(
+        str(need.get("status") or "").strip().lower() == "intentional_hold"
+        and str(need.get("target") or "").strip().lower() in {"all_sleeves", "launcher", "all_sleeves_launcher"}
+        for need in exact_needs
+    )
+    for need in exact_needs:
+        if not isinstance(need, dict):
+            continue
+        status = str(need.get("status") or "").strip().lower()
+        if status == "intentional_hold":
+            continue
+        blocker = str(need.get("blocker") or "").strip().lower()
+        source = str(need.get("source") or "").strip().lower()
+        risk = str(need.get("risk_level") or need.get("severity") or "").strip().lower()
+        severity = str(need.get("severity") or "").strip().lower()
+        low_risk_startup = bool(
+            source == "all_sleeves_launcher_readiness"
+            and blocker == "startup_in_progress"
+            and risk in {"", "info", "low"}
+        )
+        informational_low_risk = bool(severity in {"info", "advisory"} and risk in {"", "info", "low"})
+        intentional_launcher_exit = bool(
+            all_sleeves_intentionally_held
+            and source == "all_sleeves_launcher_readiness"
+            and blocker in {"exited", "not_running", "stopped"}
+            and risk in {"", "info", "low", "medium"}
+        )
+        if low_risk_startup or informational_low_risk or intentional_launcher_exit:
+            continue
+        blocking.append(need)
+    return blocking
+
+
 def _watchdog_has_active_issues(watchdog_intelligence: dict[str, Any]) -> bool:
     if not watchdog_intelligence:
         return False
     active_count = _safe_int(watchdog_intelligence.get("active_issue_count"), 0)
     storm_count = _safe_int(watchdog_intelligence.get("restart_storm_count"), 0)
+    alert_count = _safe_int(watchdog_intelligence.get("alert_count"), 0)
     status = _status(watchdog_intelligence)
-    exact_needs = [
-        need
-        for need in _as_list(watchdog_intelligence.get("exact_needs"))
-        if isinstance(need, dict) and str(need.get("status") or "") != "intentional_hold"
-    ]
-    return bool(active_count > 0 or storm_count > 0 or exact_needs or status in {"blocked", "critical", "degraded"})
+    blocking_needs = _watchdog_blocking_needs(watchdog_intelligence)
+    return bool(active_count > 0 or storm_count > 0 or alert_count > 0 or blocking_needs or status in {"blocked", "critical"})
+
+
+def _watchdog_blocks_training(watchdog_intelligence: dict[str, Any]) -> bool:
+    if not watchdog_intelligence:
+        return False
+    storm_count = _safe_int(watchdog_intelligence.get("restart_storm_count"), 0)
+    alert_count = _safe_int(watchdog_intelligence.get("alert_count"), 0)
+    status = _status(watchdog_intelligence)
+    blocking_needs = _watchdog_blocking_needs(watchdog_intelligence)
+    return bool(storm_count > 0 or alert_count > 0 or blocking_needs or status in {"blocked", "critical"})
 
 
 def _watchdog_summary(watchdog_intelligence: dict[str, Any]) -> dict[str, Any]:
@@ -1005,6 +1430,8 @@ def _watchdog_summary(watchdog_intelligence: dict[str, Any]) -> dict[str, Any]:
         "active_issue_count": _safe_int(watchdog_intelligence.get("active_issue_count"), 0),
         "restart_storm_count": _safe_int(watchdog_intelligence.get("restart_storm_count"), 0),
         "alert_count": _safe_int(watchdog_intelligence.get("alert_count"), 0),
+        "blocking_exact_need_count": len(_watchdog_blocking_needs(watchdog_intelligence)),
+        "blocking_exact_needs": _watchdog_blocking_needs(watchdog_intelligence),
         "exact_needs": _as_list(watchdog_intelligence.get("exact_needs")),
     }
 
@@ -1032,6 +1459,7 @@ def _budgets(
     pressure_mode = str(pressure_policy.get("mode") or "clear").strip().lower()
     source_pressure_active = pressure_mode not in {"clear", "legacy_runtime_pressure"}
     watchdog_issue_active = _watchdog_has_active_issues(watchdog_intelligence)
+    watchdog_training_blocked = _watchdog_blocks_training(watchdog_intelligence)
     pressure_active = (
         backlog_pressure
         or source_pressure_active
@@ -1069,6 +1497,9 @@ def _budgets(
             "mode": "catch_up_waves" if backlog_pressure else "maintenance",
             "single_writer_required": True,
             "p_core_preprocess_workers": p_workers,
+            "primary_merge_writer_count": 1,
+            "shard_writer_lanes": p_workers,
+            "writer_lane_policy": "parallel_child_shard_writers_on_p_core_budget_single_serial_primary_merge",
             "max_catch_up_waves": 3 if backlog_pressure else 1,
         },
         "collectors": {
@@ -1079,9 +1510,10 @@ def _budgets(
         },
         "training": {
             "mode": training,
-            "allowed": bool(training_gate.get("allowed", False)) and not watchdog_issue_active,
+            "allowed": bool(training_gate.get("allowed", False)) and not watchdog_training_blocked,
             "profile": str(training_gate.get("profile") or "none"),
             "reentry_gate": training_gate,
+            "watchdog_training_blocked": bool(watchdog_training_blocked),
         },
         "mlx_gpu_jobs": {
             "mode": "capped" if pressure_active else "normal",
@@ -1111,11 +1543,7 @@ def _need_items(
     watchdog_intelligence: dict[str, Any],
 ) -> list[dict[str, Any]]:
     needs: list[dict[str, Any]] = []
-    watchdog_needs = [
-        need
-        for need in _as_list(watchdog_intelligence.get("exact_needs"))
-        if isinstance(need, dict) and str(need.get("status") or "") != "intentional_hold"
-    ]
+    watchdog_needs = _watchdog_blocking_needs(watchdog_intelligence)
     if watchdog_needs:
         need = watchdog_needs[0]
         needs.append(
@@ -1302,10 +1730,21 @@ def _env_lines(budgets: dict[str, Any], lanes: dict[str, Any]) -> list[str]:
     mlx = _as_dict(budgets.get("mlx_gpu_jobs"))
     pressure_source = _as_dict(budgets.get("runtime_pressure_source"))
     memory_control = _as_dict(_as_dict(lanes.get("p_core_widening_controller")).get("memory_pressure_controller"))
+    allocation = _as_dict(lanes.get("p_core_allocation_contract"))
+    reserve_target = _safe_int(
+        allocation.get("user_app_reserve_target_p_cores"),
+        _safe_int(os.getenv("AUTONOMIC_PCORE_USER_APP_RESERVE_TARGET"), _safe_int(os.getenv("BACKLOG_PCORE_USER_APP_RESERVE_TARGET"), 0)),
+    )
     env = {
         "AUTONOMIC_RESOURCE_GOVERNOR_ENABLED": "1",
         "AUTONOMIC_BACKLOG_WRITER_MODE": str(writer.get("mode") or "maintenance"),
         "AUTONOMIC_PCORE_PREPROCESS_WORKERS": str(writer.get("p_core_preprocess_workers") or lanes.get("selected_p_core_preprocess_workers") or 1),
+        "SQL_LINK_SERVICE_PREPROCESS_WORKERS": str(writer.get("p_core_preprocess_workers") or lanes.get("selected_p_core_preprocess_workers") or 1),
+        "SQL_LINK_SERVICE_SHARD_WRITER_LANES": str(writer.get("shard_writer_lanes") or writer.get("p_core_preprocess_workers") or lanes.get("selected_p_core_preprocess_workers") or 1),
+        "SQL_LINK_SERVICE_MAX_SHARD_WRITER_LANES": str(min(max(_safe_int(_as_dict(lanes.get("p_core_widening_controller")).get("max_safe_workers"), lanes.get("selected_p_core_preprocess_workers") or 1), 1), 8)),
+        "SQL_LINK_CHILD_WRITER_CPU_POLICY": "performance_core_primary",
+        "SQL_LINK_WRITER_BACKGROUND_POLICY": "0",
+        "SQL_LINK_WRITER_NICE": "0",
         "AUTONOMIC_MAX_CATCH_UP_WAVES": str(writer.get("max_catch_up_waves") or 1),
         "AUTONOMIC_BACKLOG_GREEN": "1" if bool(writer.get("backlog_green", False)) else "0",
         "AUTONOMIC_BACKLOG_GREEN_AGE_SECONDS": str(int(BACKLOG_GREEN_AGE_SECONDS)),
@@ -1326,8 +1765,17 @@ def _env_lines(budgets: dict[str, Any], lanes: dict[str, Any]) -> list[str]:
         "BOT_EFFICIENCY_CORE_SPILLOVER_COUNT": str(lanes.get("efficiency_core_spillover") or 0),
         "BOT_CPU_ALLOCATION_POLICY": str(lanes.get("policy") or "performance_core_primary_single_writer_with_user_app_reserve"),
         "BOT_CPU_QOS_POLICY": "performance_core_primary_no_background_writer",
-        "AUTONOMIC_PCORE_SYSTEM_WORKERS": str(_as_dict(lanes.get("p_core_allocation_contract")).get("system_primary_workers") or lanes.get("selected_p_core_preprocess_workers") or 1),
-        "AUTONOMIC_PCORE_USER_APP_RESERVE": str(_as_dict(lanes.get("p_core_allocation_contract")).get("user_app_reserved_p_cores") or 0),
+        "AUTONOMIC_PCORE_SYSTEM_WORKERS": str(allocation.get("system_primary_workers") or lanes.get("selected_p_core_preprocess_workers") or 1),
+        "AUTONOMIC_PCORE_USER_APP_RESERVE": str(allocation.get("user_app_reserved_p_cores") or 0),
+        "AUTONOMIC_PCORE_USER_APP_RESERVE_TARGET": str(reserve_target),
+        "BACKLOG_PCORE_USER_APP_RESERVE_TARGET": str(reserve_target),
+        "BACKLOG_PCORE_USE_FULL_PERFORMANCE_CORE_BUDGET": "1" if _as_dict(lanes.get("p_core_widening_controller")).get("full_p_core_budget_requested") else "0",
+        "BACKLOG_SLEEVE_PUMP_ENABLED": str(os.getenv("BACKLOG_SLEEVE_PUMP_ENABLED") or "0"),
+        "BACKLOG_SLEEVE_PUMP_WORKERS": str(os.getenv("BACKLOG_SLEEVE_PUMP_WORKERS") or "1"),
+        "BACKLOG_SLEEVE_PUMP_MAX_ACTIVE_SLEEVES": str(os.getenv("BACKLOG_SLEEVE_PUMP_MAX_ACTIVE_SLEEVES") or lanes.get("selected_p_core_preprocess_workers") or 1),
+        "SQL_LINK_SERVICE_SLEEVE_PUMP_ENABLED": str(os.getenv("SQL_LINK_SERVICE_SLEEVE_PUMP_ENABLED") or os.getenv("BACKLOG_SLEEVE_PUMP_ENABLED") or "0"),
+        "SQL_LINK_SERVICE_SLEEVE_PUMP_WORKERS": str(os.getenv("SQL_LINK_SERVICE_SLEEVE_PUMP_WORKERS") or os.getenv("BACKLOG_SLEEVE_PUMP_WORKERS") or "1"),
+        "SQL_LINK_SERVICE_SLEEVE_PUMP_MAX_ACTIVE_SLEEVES": str(os.getenv("SQL_LINK_SERVICE_SLEEVE_PUMP_MAX_ACTIVE_SLEEVES") or os.getenv("BACKLOG_SLEEVE_PUMP_MAX_ACTIVE_SLEEVES") or lanes.get("selected_p_core_preprocess_workers") or 1),
         "AUTONOMIC_BACKLOG_TREND_STATUS": str(writer.get("backlog_trend_status") or "unknown"),
         "AUTONOMIC_BACKLOG_GREEN_SAMPLES": str(writer.get("green_samples") or 0),
         "BOT_COLLECTION_DUTY_CYCLE_MAX_ACTIVE_RATIO": str(collectors.get("max_active_ratio") or 0.2),
@@ -1372,6 +1820,7 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
     computer = load_json(health / "computer_task_intelligence_latest.json")
     benchmark = load_json(health / "host_self_benchmark_latest.json")
     memory_intelligence = load_json(health / "memory_pressure_intelligence_latest.json")
+    capital_growth_awareness = load_json(health / "capital_growth_awareness_bridge_latest.json")
     watchdog_raw = load_json(health / "watchdog_intelligence_latest.json")
     process_watchdog = load_json(health / "process_watchdog_latest.json")
     watchdog_intelligence = (
@@ -1403,6 +1852,7 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
         "drainer_fleet": _status(drainer),
         "mlx_router": _status(mlx),
         "computer_task": _status(computer),
+        "capital_growth_awareness": _status(capital_growth_awareness),
     }
     worst = max(status_rank(status) for status in statuses.values()) if statuses else 0
     if storage_metrics["severity"] == "critical":
@@ -1435,6 +1885,13 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
             "observer_overhead": _as_dict(memory_intelligence.get("observer_overhead")),
         },
         "watchdog_intelligence": _watchdog_summary(watchdog_intelligence),
+        "capital_growth_awareness": {
+            "overall_status": _status(capital_growth_awareness),
+            "capital_growth_grade": str(capital_growth_awareness.get("capital_growth_grade") or ""),
+            "live_money_scaling_allowed": bool(capital_growth_awareness.get("live_money_scaling_allowed", False)),
+            "awareness_scope": _as_dict(capital_growth_awareness.get("awareness_scope")),
+            "live_money_scaling_blockers": _as_list(capital_growth_awareness.get("live_money_scaling_blockers"))[:8],
+        },
         "user_context": user,
         "budgets": budgets,
         "backlog_green_gate": _as_dict(storage_metrics.get("green_gate")),
@@ -1458,6 +1915,7 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
             "protects_user_foreground_apps": True,
             "reads_memory_pressure_intelligence": True,
             "reads_watchdog_intelligence": True,
+            "reads_capital_growth_awareness": True,
             "uses_runtime_pressure_attribution": True,
             "never_touch_protected_volumes": ["/Volumes/VIDEO"],
         },

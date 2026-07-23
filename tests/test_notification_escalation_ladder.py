@@ -28,7 +28,7 @@ def test_notification_escalation_ladder_surfaces_degraded_ack_backlog(tmp_path: 
         health / "remote_alert_control_latest.json",
         {
             "overall_status": "degraded",
-            "channels": {"any_configured": True},
+            "channels": {"any_configured": True, "remote_pager_configured": True},
             "critical_backlog": {"unacked_count": 2, "unsent_count": 0},
             "backlog_compaction": {"grouped_unacked_count": 1, "grouped_unsent_count": 0, "dedupe_ratio": 2.0},
             "recommended_actions": ["acknowledge critical alerts explicitly"],
@@ -68,6 +68,76 @@ def test_notification_escalation_ladder_treats_local_operator_bridge_as_attended
 
     payload = src.build_payload(project_root)
 
-    assert payload["overall_status"] == "degraded"
+    assert payload["overall_status"] == "ready"
+    assert payload["attended_runtime_ready"] is True
+    assert payload["phone_bridge_ready"] is True
+    assert payload["unattended_runtime_ready"] is False
+    assert payload["mobile_operator_coverage_ready"] is False
+
+
+def test_notification_escalation_ladder_does_not_count_imessage_as_remote_pager(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    health = project_root / "governance" / "health"
+    _write_json(health / "portable_brain_contract_latest.json", {"host_contract": {"system": "Darwin"}})
+    _write_json(health / "process_watchdog_latest.json", {"status": [{"name": "mac_notification_watch", "running": 1}]})
+    _write_json(
+        health / "mac_notification_watch_state.json",
+        {"imessage_enabled": True, "imessage_recipient_configured": True},
+    )
+    _write_json(
+        health / "remote_alert_control_latest.json",
+        {
+            "overall_status": "ready",
+            "channels": {"any_configured": True, "imessage_bridge": True, "remote_pager_configured": False},
+            "critical_backlog": {"unacked_count": 0, "unsent_count": 0},
+            "backlog_compaction": {"grouped_unacked_count": 0, "grouped_unsent_count": 0, "dedupe_ratio": 1.0},
+            "recommended_actions": [],
+        },
+    )
+
+    payload = src.build_payload(project_root)
+
+    assert payload["overall_status"] == "ready"
+    assert payload["remote_pager_ready"] is False
+    assert payload["phone_bridge_ready"] is True
     assert payload["attended_runtime_ready"] is True
     assert payload["unattended_runtime_ready"] is False
+
+
+def test_notification_escalation_ladder_detects_mobile_operator_coverage(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    health = project_root / "governance" / "health"
+    _write_json(health / "portable_brain_contract_latest.json", {"host_contract": {"system": "Darwin"}})
+    _write_json(health / "process_watchdog_latest.json", {"status": [{"name": "mac_notification_watch", "running": 1}]})
+    _write_json(
+        health / "mac_notification_watch_state.json",
+        {"imessage_enabled": True, "imessage_recipient_configured": True},
+    )
+    _write_json(
+        health / "remote_alert_control_latest.json",
+        {
+            "overall_status": "ready",
+            "channels": {"any_configured": True, "imessage_bridge": True, "remote_pager_configured": False},
+            "critical_backlog": {"unacked_count": 0, "unsent_count": 0},
+            "backlog_compaction": {"grouped_unacked_count": 0, "grouped_unsent_count": 0, "dedupe_ratio": 1.0},
+            "recommended_actions": [],
+        },
+    )
+    _write_json(
+        health / "livefeed_refresh_guard_latest.json",
+        {
+            "ok": True,
+            "overall_status": "ready",
+            "health": {"ok": True},
+            "blockers": [],
+            "warnings": [],
+        },
+    )
+
+    payload = src.build_payload(project_root)
+
+    assert payload["remote_pager_ready"] is False
+    assert payload["livefeed_remote_viewer_ready"] is True
+    assert payload["mobile_operator_coverage_ready"] is True
+    assert payload["operator_coverage_model"] == "daily_supervised_mobile_operator"
+    assert any(step["step"] == "mobile_operator_coverage" and step["ready"] for step in payload["steps"])

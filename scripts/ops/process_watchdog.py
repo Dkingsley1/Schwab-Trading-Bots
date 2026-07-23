@@ -32,11 +32,16 @@ OPERATOR_STOP_FLAG = HEALTH_DIR / 'OPERATOR_STOP.flag'
 DEFAULT_STORAGE_MOUNT_GUARD_PATH = PROJECT_ROOT / 'governance' / 'health' / 'storage_mount_guard_latest.json'
 FALLBACK_STORAGE_MOUNT_GUARD_PATH = Path('/tmp/storage_mount_guard_latest.json')
 DEFAULT_CREATIVE_PAUSE_PATH = PROJECT_ROOT / 'governance' / 'health' / 'creative_heavy_research_pause_latest.json'
+DEFAULT_RUNTIME_RESOURCE_GUARD_OVERRIDE_PATH = PROJECT_ROOT / 'config' / '.env.runtime_resource_guard_override'
 SNAPSHOT_SCRIPT = PROJECT_ROOT / 'scripts' / 'collect_debug_snapshot.sh'
 ALERT_ROUTER = PROJECT_ROOT / 'scripts' / 'pager_alert_router.py'
 DEFAULT_MAINTENANCE_TIMEOUT_SECONDS = max(
     float(os.getenv('OPS_WATCHDOG_MAINTENANCE_TIMEOUT_SECONDS', '45') or 45.0),
     1.0,
+)
+DEFAULT_CREATIVE_PAUSE_MAX_AGE_SECONDS = max(
+    float(os.getenv('OPS_WATCHDOG_CREATIVE_PAUSE_MAX_AGE_SECONDS', '120') or 120.0),
+    20.0,
 )
 PROCESS_WRAPPER_MATCH_EXCLUDES = (
     'scripts/shadow_watchdog.py',
@@ -44,10 +49,36 @@ PROCESS_WRAPPER_MATCH_EXCLUDES = (
     'scripts/ops/master_infrastructure_supervisor.py',
     'scripts/ops/process_watchdog.py',
 )
+READ_ONLY_COLLECTION_RESTART_STORM_TARGETS = {
+    'all_sleeves',
+    'coinbase_loop',
+    'coinbase_futures_loop',
+}
+RESTART_STORM_IMPACTS = {
+    'execution_lane',
+    'read_only_collection',
+    'storage_writer',
+    'support_or_unknown',
+}
+SECRET_PLACEHOLDER_VALUES = {
+    '',
+    'YOUR_KEY_HERE',
+    'YOUR_SECRET_HERE',
+    'YOUR_REAL_KEY',
+    'YOUR_REAL_SECRET',
+    'YOUR_REAL_CLIENT_ID',
+    '<real_key>',
+    '<real_secret>',
+    '<real_client_id>',
+}
 
 
 def _env_flag(name: str, default: str = '0') -> bool:
     return os.getenv(name, default).strip().lower() in {'1', 'true', 'yes', 'on'}
+
+
+def _placeholder_or_empty(raw: Any) -> bool:
+    return str(raw or '').strip() in SECRET_PLACEHOLDER_VALUES
 
 
 def _safe_int(raw: Any, default: int = 0) -> int:
@@ -55,6 +86,24 @@ def _safe_int(raw: Any, default: int = 0) -> int:
         return int(float(raw))
     except Exception:
         return int(default)
+
+
+def _safe_float(raw: Any, default: float = 0.0) -> float:
+    try:
+        return float(raw)
+    except Exception:
+        return float(default)
+
+
+def _safe_bool(raw: Any, default: bool = False) -> bool:
+    if isinstance(raw, bool):
+        return raw
+    if raw is None:
+        return bool(default)
+    text = str(raw).strip().lower()
+    if not text:
+        return bool(default)
+    return text in {'1', 'true', 'yes', 'on'}
 
 
 def _split_csv(raw: str) -> List[str]:
@@ -81,6 +130,11 @@ def _safety_pause_state() -> Dict[str, Any]:
         pause_reason = 'operator_stop_active'
     elif global_halt_active:
         pause_reason = 'global_halt_active'
+    child_fanout_grace_seconds = max(
+        float(os.getenv('OPS_WATCHDOG_ALL_SLEEVES_CHILD_GRACE_SECONDS', '180') or 180.0),
+        60.0,
+    )
+
     return {
         'operator_stop_active': bool(operator_stop_active),
         'global_halt_active': bool(global_halt_active),
@@ -96,12 +150,42 @@ def _creative_cotenant_pause_state() -> Dict[str, Any]:
     active = bool(payload.get('active', False))
     level = str(payload.get('creative_session_level') or '').strip().lower()
     kind = str(payload.get('creative_session_kind') or '').strip().lower()
+    hard_pause = payload.get('hard_pause') if isinstance(payload.get('hard_pause'), dict) else {}
+    hard_pause_terminate_processes = (
+        _safe_bool(hard_pause.get('terminate_processes'), default=True)
+        if 'terminate_processes' in hard_pause
+        else None
+    )
+    hard_pause_action = str(hard_pause.get('action') or '').strip().lower()
+    timestamp_utc = str(payload.get('timestamp_utc') or '')
+    ts_epoch = _iso_epoch(timestamp_utc)
+    age_seconds = max(time.time() - ts_epoch, 0.0) if ts_epoch is not None else None
+    stale = bool(active and (age_seconds is None or age_seconds > DEFAULT_CREATIVE_PAUSE_MAX_AGE_SECONDS))
+    if stale:
+        return {
+            'active': False,
+            'reason': 'creative_pause_artifact_stale',
+            'creative_session_level': level,
+            'creative_session_kind': kind,
+            'timestamp_utc': timestamp_utc,
+            'age_seconds': round(float(age_seconds), 3) if age_seconds is not None else None,
+            'max_age_seconds': DEFAULT_CREATIVE_PAUSE_MAX_AGE_SECONDS,
+            'stale_active_artifact': True,
+            'raw_active': active,
+            'hard_pause_terminate_processes': hard_pause_terminate_processes,
+            'hard_pause_action': hard_pause_action,
+        }
     return {
         'active': active,
         'reason': str(payload.get('reason') or kind or level or 'creative_cotenant_pause_active'),
         'creative_session_level': level,
         'creative_session_kind': kind,
-        'timestamp_utc': str(payload.get('timestamp_utc') or ''),
+        'timestamp_utc': timestamp_utc,
+        'age_seconds': round(float(age_seconds), 3) if age_seconds is not None else None,
+        'max_age_seconds': DEFAULT_CREATIVE_PAUSE_MAX_AGE_SECONDS,
+        'stale_active_artifact': False,
+        'hard_pause_terminate_processes': hard_pause_terminate_processes,
+        'hard_pause_action': hard_pause_action,
     }
 
 
@@ -119,6 +203,17 @@ def _creative_pause_suppresses_target(target_name: str, pause: Dict[str, Any]) -
     kind = str(pause.get('creative_session_kind') or '').strip().lower()
     level = str(pause.get('creative_session_level') or '').strip().lower()
     if 'music' in kind or 'audio' in kind:
+        hard_pause_terminate_processes = pause.get('hard_pause_terminate_processes')
+        hard_pause_action = str(pause.get('hard_pause_action') or '').strip().lower()
+        soft_audio_pause = bool(
+            level == 'active'
+            and (
+                hard_pause_terminate_processes is False
+                or hard_pause_action in {'soft_pause_optional_heavy_research', 'lightweight_pause_contract_refresh'}
+            )
+        )
+        if soft_audio_pause:
+            return False
         return True
     return level in {'active', 'hot', 'realtime', 'dual_pro'}
 
@@ -139,14 +234,23 @@ def _live_data_excludes(simulate: bool, extra: List[str] | None = None) -> List[
 
 
 def _proc_running(pattern: str, exclude_patterns: List[str] | None = None) -> int:
-    p = subprocess.run(['ps', '-axo', 'command'], capture_output=True, text=True, check=False)
+    p = subprocess.run(['ps', '-axo', 'stat=,command='], capture_output=True, text=True, check=False)
     out = p.stdout or ''
     excludes = _effective_process_excludes(exclude_patterns)
-    return sum(
-        1
-        for line in out.splitlines()
-        if pattern in line and not any(marker in line for marker in excludes)
-    )
+    running = 0
+    for line in out.splitlines():
+        raw = line.strip()
+        if not raw:
+            continue
+        parts = raw.split(maxsplit=1)
+        if len(parts) != 2:
+            continue
+        stat, command = parts
+        if stat.startswith('T'):
+            continue
+        if pattern in command and not any(marker in command for marker in excludes):
+            running += 1
+    return running
 
 
 def _matching_pids(pattern: str, exclude_patterns: List[str] | None = None) -> List[int]:
@@ -190,6 +294,10 @@ def _terminate_matching_processes(
     errors: List[Dict[str, Any]] = []
     for pid in pids:
         try:
+            try:
+                os.kill(pid, signal.SIGCONT)
+            except Exception:
+                pass
             os.kill(pid, signal.SIGTERM)
             terminated.append(pid)
         except ProcessLookupError:
@@ -212,6 +320,25 @@ def _terminate_matching_processes(
             break
         time.sleep(0.2)
 
+    killed: List[int] = []
+    for pid in terminated:
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            continue
+        except Exception:
+            pass
+        try:
+            os.kill(pid, signal.SIGKILL)
+            killed.append(pid)
+        except ProcessLookupError:
+            continue
+        except Exception as exc:
+            errors.append({'pid': int(pid), 'error': f'sigkill_failed:{exc}'})
+
+    if killed:
+        time.sleep(0.2)
+
     still_running: List[int] = []
     for pid in terminated:
         try:
@@ -226,8 +353,102 @@ def _terminate_matching_processes(
         'attempted': bool(patterns),
         'matched_pids': pids,
         'terminated_pids': terminated,
+        'killed_pids': killed,
         'still_running_pids': still_running,
         'errors': errors,
+    }
+
+
+def _trim_duplicate_processes(
+    pattern: str,
+    *,
+    max_running: int,
+    exclude_patterns: List[str] | None = None,
+    grace_seconds: float = 1.0,
+) -> Dict[str, Any]:
+    keep_count = max(int(max_running), 1)
+    pids = sorted(_matching_pids(pattern, exclude_patterns=exclude_patterns))
+    if len(pids) <= keep_count:
+        return {
+            'attempted': False,
+            'matched_pids': pids,
+            'kept_pids': pids,
+            'terminated_pids': [],
+            'still_running_pids': [],
+            'errors': [],
+            'policy': 'single_instance_duplicate_trim_keep_newest',
+        }
+
+    kept = pids[-keep_count:]
+    trim = [pid for pid in pids if pid not in kept]
+    terminated: List[int] = []
+    errors: List[Dict[str, Any]] = []
+    for pid in trim:
+        try:
+            try:
+                os.kill(pid, signal.SIGCONT)
+            except Exception:
+                pass
+            os.kill(pid, signal.SIGTERM)
+            terminated.append(pid)
+        except ProcessLookupError:
+            continue
+        except Exception as exc:
+            errors.append({'pid': int(pid), 'error': str(exc)})
+
+    deadline = time.time() + max(float(grace_seconds), 0.0)
+    while time.time() < deadline:
+        still_running: List[int] = []
+        for pid in terminated:
+            try:
+                os.kill(pid, 0)
+                still_running.append(pid)
+            except ProcessLookupError:
+                continue
+            except Exception:
+                still_running.append(pid)
+        if not still_running:
+            break
+        time.sleep(0.2)
+
+    killed: List[int] = []
+    for pid in terminated:
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            continue
+        except Exception:
+            pass
+        try:
+            os.kill(pid, signal.SIGKILL)
+            killed.append(pid)
+        except ProcessLookupError:
+            continue
+        except Exception as exc:
+            errors.append({'pid': int(pid), 'error': f'sigkill_failed:{exc}'})
+
+    if killed:
+        time.sleep(0.2)
+
+    still_running = []
+    for pid in terminated:
+        try:
+            os.kill(pid, 0)
+            still_running.append(pid)
+        except ProcessLookupError:
+            continue
+        except Exception:
+            still_running.append(pid)
+
+    return {
+        'attempted': True,
+        'matched_pids': pids,
+        'kept_pids': kept,
+        'terminated_pids': terminated,
+        'killed_pids': killed,
+        'still_running_pids': still_running,
+        'errors': errors,
+        'policy': 'single_instance_duplicate_trim_keep_newest',
     }
 
 
@@ -284,8 +505,15 @@ def _spawn(cmd: List[str], log_path: Path) -> int:
     log_path.parent.mkdir(parents=True, exist_ok=True)
     fh = open(log_path, 'a', encoding='utf-8')
     env = dict(os.environ)
+    env.pop('__PYVENV_LAUNCHER__', None)
+    env.setdefault('BOT_RUNTIME_LANE', 'canary314')
+    env.setdefault('BOT_PYTHON_VERSION', '3.14.5')
+    env.setdefault('BOT_TRAINING_RUNTIME_LANE', 'canary314')
+    env.setdefault('BOT_TRAINING_PYTHON_VERSION', '3.14.5')
+    env.setdefault('PY314_RUNTIME_FLIP_APPROVED', '1')
+    env.setdefault('PY314_RETIRE_312_ANCHOR', '1')
     env.setdefault('PYTHONUNBUFFERED', '1')
-    env.setdefault('PAPER_MIRROR_ALL_ACTIVE_SUB_BOTS', '0')
+    env.setdefault('PAPER_MIRROR_ALL_ACTIVE_SUB_BOTS', '1')
     p = subprocess.Popen(
         cmd,
         cwd=str(PROJECT_ROOT),
@@ -355,10 +583,11 @@ def _child_fanout_health(
             'parent_elapsed_seconds': parent_elapsed_seconds,
         }
     if int(running) <= 0:
+        ok = int(alt_running) >= int(min_child_processes)
         return {
             'required': True,
-            'ok': True,
-            'reason': 'parent_missing',
+            'ok': bool(ok),
+            'reason': 'parent_missing_child_fanout_present' if ok else 'parent_missing_child_fanout_below_floor',
             'min_child_processes': int(min_child_processes),
             'child_process_count': int(alt_running),
             'child_fanout_grace_seconds': round(float(grace_seconds), 3),
@@ -403,6 +632,122 @@ def _load_json_payload(path: Path) -> Dict[str, Any]:
     except Exception:
         return {}
     return payload if isinstance(payload, dict) else {}
+
+
+def _iso_epoch(raw: Any) -> float | None:
+    text = str(raw or '').strip()
+    if not text:
+        return None
+    if text.endswith('Z'):
+        text = text[:-1] + '+00:00'
+    try:
+        parsed = datetime.fromisoformat(text)
+    except Exception:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return float(parsed.timestamp())
+
+
+def _all_sleeves_launcher_artifact_health(
+    target: Dict[str, Any],
+    *,
+    now_epoch: float | None = None,
+) -> Dict[str, Any]:
+    raw_path = str(target.get('launcher_health_path') or '').strip()
+    if not raw_path:
+        return {'present': False, 'ok': False, 'reason': 'launcher_health_path_missing'}
+
+    path = Path(raw_path)
+    payload = _load_json_payload(path)
+    if not payload:
+        return {
+            'present': False,
+            'ok': False,
+            'path': str(path),
+            'reason': 'launcher_artifact_missing_or_invalid',
+        }
+
+    current = float(now_epoch if now_epoch is not None else time.time())
+    ts_epoch = _iso_epoch(payload.get('timestamp_utc') or payload.get('updated_at_utc'))
+    age_seconds = 1e12 if ts_epoch is None else max(current - ts_epoch, 0.0)
+    max_age_seconds = max(
+        _safe_float(target.get('heartbeat_max_age_seconds'), 0.0),
+        _safe_float(target.get('child_fanout_grace_seconds'), 0.0),
+        60.0,
+    )
+    overall_status = str(payload.get('overall_status') or payload.get('status') or '').strip().lower()
+    phase = str(payload.get('phase') or payload.get('current_step') or '').strip().lower()
+    expected = _safe_int(payload.get('expected_job_count'), 0)
+    running = _safe_int(payload.get('running_job_count'), 0)
+    missing = _safe_int(payload.get('missing_job_count'), 0)
+    exited = _safe_int(payload.get('exited_job_count'), 0)
+    policy_parked = _safe_int(payload.get('policy_parked_job_count'), 0)
+    clean_exited = _safe_int(payload.get('clean_exited_job_count'), 0)
+    repair_packet = payload.get('repair_packet') if isinstance(payload.get('repair_packet'), dict) else {}
+    readiness_contract = (
+        payload.get('launcher_readiness_contract')
+        if isinstance(payload.get('launcher_readiness_contract'), dict)
+        else {}
+    )
+    problem_default = (
+        _safe_int(repair_packet.get('problem_job_count'), 0)
+        if repair_packet
+        else missing + exited
+    )
+    problem = _safe_int(payload.get('problem_job_count'), problem_default)
+    exact_needs = payload.get('exact_needs') if isinstance(payload.get('exact_needs'), list) else []
+    if not exact_needs:
+        exact_needs = (
+            readiness_contract.get('exact_needs')
+            if isinstance(readiness_contract.get('exact_needs'), list)
+            else []
+        )
+    fresh = bool(age_seconds <= max_age_seconds)
+    complete = bool(expected > 0 and running >= expected and missing == 0 and exited == 0 and problem == 0 and not exact_needs)
+    stable_non_running = bool(
+        expected > 0
+        and running + policy_parked + clean_exited >= expected
+        and missing == 0
+        and problem == 0
+        and not exact_needs
+    )
+    ok = bool(fresh and (complete or stable_non_running) and phase == 'running' and overall_status in {'ready', 'guarded_ready'})
+    if ok and complete:
+        reason = 'fresh_launcher_artifact_certifies_full_fanout'
+    elif ok:
+        reason = 'fresh_launcher_artifact_certifies_stable_fanout'
+    else:
+        reason = 'launcher_artifact_not_certifying_fanout'
+    if not fresh:
+        reason = 'launcher_artifact_stale'
+    elif not (complete or stable_non_running):
+        reason = 'launcher_artifact_jobs_not_all_running'
+    elif phase != 'running':
+        reason = 'launcher_artifact_phase_not_running'
+    elif overall_status not in {'ready', 'guarded_ready'}:
+        reason = 'launcher_artifact_status_not_ready'
+
+    return {
+        'present': True,
+        'ok': ok,
+        'path': str(path),
+        'reason': reason,
+        'timestamp_utc': str(payload.get('timestamp_utc') or payload.get('updated_at_utc') or ''),
+        'age_seconds': round(float(age_seconds), 3) if age_seconds < 1e11 else None,
+        'max_age_seconds': round(float(max_age_seconds), 3),
+        'overall_status': overall_status,
+        'phase': phase,
+        'expected_job_count': int(expected),
+        'running_job_count': int(running),
+        'missing_job_count': int(missing),
+        'exited_job_count': int(exited),
+        'policy_parked_job_count': int(policy_parked),
+        'clean_exited_job_count': int(clean_exited),
+        'problem_job_count': int(problem),
+        'exact_need_count': len(exact_needs),
+        'policy': 'fresh_all_sleeves_launcher_artifact_can_certify_child_fanout_when_wrapper_is_absent',
+    }
 
 
 def _save_state(path: Path, fallback: Path, state: Dict[str, Any]) -> Path:
@@ -453,14 +798,183 @@ def _bootstrap_runtime_env(profile: str) -> None:
         key, value = chunk.split('=', 1)
         if not key:
             continue
-        if key not in os.environ or not str(os.environ.get(key, '')).strip():
+        if key not in os.environ or _placeholder_or_empty(os.environ.get(key, '')):
             os.environ[key] = value
+
+
+def _load_env_override_values(path: Path) -> Dict[str, str]:
+    values: Dict[str, str] = {}
+    try:
+        lines = path.read_text(encoding='utf-8').splitlines()
+    except Exception:
+        return values
+    for raw_line in lines:
+        line = str(raw_line or '').strip()
+        if not line or line.startswith('#'):
+            continue
+        if line.startswith('export '):
+            line = line[len('export '):].strip()
+        if '=' not in line:
+            continue
+        key, value = line.split('=', 1)
+        key = key.strip()
+        if not key or not key.replace('_', '').isalnum():
+            continue
+        value = value.strip()
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
+            value = value[1:-1]
+        elif ' #' in value:
+            value = value.split(' #', 1)[0].strip()
+        values[key] = value
+    return values
+
+
+def _paper_execution_runtime_pause_state(
+    override_path: Path | None = None,
+) -> Dict[str, Any]:
+    path = Path(override_path) if override_path is not None else DEFAULT_RUNTIME_RESOURCE_GUARD_OVERRIDE_PATH
+    override_values = _load_env_override_values(path)
+
+    def _value(name: str, default: str) -> str:
+        if name in override_values:
+            return str(override_values.get(name, default))
+        return os.getenv(name, default)
+
+    consumer_raw = _value('PAPER_EXECUTION_QUEUE_CONSUMER_ENABLED', '1').strip().lower()
+    runtime_paused_raw = _value('PAPER_EXECUTION_RUNTIME_PAUSED_FOR_PRESSURE', '0').strip()
+    ramp_blocked_raw = _value('PAPER_400_RAMP_BLOCKED_RUNTIME_PAUSE', '0').strip()
+    consumer_disabled = consumer_raw in {'0', 'false', 'no', 'off'}
+    runtime_paused = _safe_bool(runtime_paused_raw, default=False)
+    ramp_blocked = _safe_bool(ramp_blocked_raw, default=False)
+    paused = bool(consumer_disabled or runtime_paused or ramp_blocked)
+    reasons: List[str] = []
+    if consumer_disabled:
+        reasons.append('paper_queue_consumer_disabled')
+    if runtime_paused:
+        reasons.append('runtime_pressure_pause')
+    if ramp_blocked:
+        reasons.append('paper_400_ramp_blocked')
+
+    return {
+        'paused': paused,
+        'reason': '+'.join(reasons) if reasons else '',
+        'consumer_enabled': not consumer_disabled,
+        'runtime_paused_for_pressure': runtime_paused,
+        'paper_400_ramp_blocked_runtime_pause': ramp_blocked,
+        'override_file_present': path.exists(),
+        'override_path': str(path),
+        'policy': 'respect_runtime_paper_execution_pause_without_watchdog_restart',
+    }
 
 
 def _within_budget(events: List[Dict[str, Any]], name: str, max_per_hour: int) -> bool:
     cutoff = time.time() - 3600
     recent = [e for e in events if e.get('name') == name and float(e.get('ts_epoch', 0)) >= cutoff]
     return len(recent) < max(max_per_hour, 1)
+
+
+def _last_restart_age_seconds(
+    events: List[Dict[str, Any]],
+    name: str,
+    *,
+    now_epoch: float | None = None,
+) -> float | None:
+    now = float(now_epoch or time.time())
+    latest = 0.0
+    for event in events:
+        if event.get('event') != 'restart' or str(event.get('name') or '') != str(name or ''):
+            continue
+        latest = max(latest, float(event.get('ts_epoch', 0.0) or 0.0))
+    if latest <= 0.0:
+        return None
+    return max(now - latest, 0.0)
+
+
+def _restart_storm_impact(name: str, row: Dict[str, Any] | None = None) -> str:
+    row = row or {}
+    raw = str(row.get('restart_storm_impact') or '').strip().lower()
+    if raw in RESTART_STORM_IMPACTS:
+        return raw
+    if str(name or '').startswith('execution_lane_'):
+        return 'execution_lane'
+    if str(name or '') in READ_ONLY_COLLECTION_RESTART_STORM_TARGETS:
+        return 'read_only_collection'
+    if str(name or '') == 'sql_link_writer':
+        return 'storage_writer'
+    return 'support_or_unknown'
+
+
+def _restart_storm_quarantine_allowed(name: str, row: Dict[str, Any] | None = None) -> bool:
+    row = row or {}
+    impact = _restart_storm_impact(name, row)
+    explicit_allowed = row.get('restart_storm_quarantine_allowed')
+    allowed = _safe_bool(explicit_allowed, default=(impact == 'read_only_collection'))
+    live_execution_critical = _safe_bool(row.get('live_execution_critical'), default=(impact == 'execution_lane'))
+    return bool(impact == 'read_only_collection' and allowed and not live_execution_critical)
+
+
+def _restart_storm_isolation_contract(restart_storms: List[Dict[str, Any]]) -> Dict[str, Any]:
+    isolated: List[str] = []
+    execution_blocking: List[str] = []
+    for storm in restart_storms:
+        if not isinstance(storm, dict) or bool(storm.get('resolved', False)):
+            continue
+        name = str(storm.get('name') or '').strip()
+        if not name:
+            continue
+        quarantinable = _safe_bool(storm.get('quarantinable'), default=False)
+        blocks_execution_clear = _safe_bool(storm.get('blocks_execution_clear'), default=not quarantinable)
+        if quarantinable and not blocks_execution_clear:
+            isolated.append(name)
+        else:
+            execution_blocking.append(name)
+
+    return {
+        'policy': 'isolate_read_only_collection_restart_storms_from_execution_clearance_while_execution_is_off',
+        'isolated_count': len(isolated),
+        'execution_blocking_count': len(execution_blocking),
+        'isolated_targets': sorted(isolated),
+        'execution_blocking_targets': sorted(execution_blocking),
+        'all_active_storms_isolated': bool(isolated and not execution_blocking),
+    }
+
+
+def _restart_budget_alert_metadata(name: str, row: Dict[str, Any]) -> Tuple[str, str]:
+    if _restart_storm_quarantine_allowed(name, row):
+        return 'warn', 'watchdog_restart_budget_exhausted_isolated'
+    return 'critical', 'watchdog_restart_budget_exhausted'
+
+
+def _restart_budget_repair_probe(
+    *,
+    events: List[Dict[str, Any]],
+    name: str,
+    row: Dict[str, Any],
+    cooldown_seconds: int,
+    now_epoch: float | None = None,
+) -> Dict[str, Any]:
+    if not _env_flag('OPS_WATCHDOG_READONLY_BUDGET_REPAIR_PROBE', '1'):
+        return {'allowed': False, 'reason': 'repair_probe_disabled'}
+    if not _restart_storm_quarantine_allowed(name, row):
+        return {'allowed': False, 'reason': 'not_read_only_quarantinable'}
+
+    last_age = _last_restart_age_seconds(events, name, now_epoch=now_epoch)
+    cooldown = max(int(cooldown_seconds), 60)
+    if last_age is not None and last_age < cooldown:
+        return {
+            'allowed': False,
+            'reason': 'repair_probe_cooldown',
+            'last_restart_age_seconds': round(float(last_age), 3),
+            'cooldown_seconds': int(cooldown),
+        }
+
+    return {
+        'allowed': True,
+        'reason': 'read_only_collector_repair_probe_after_restart_budget_exhausted',
+        'last_restart_age_seconds': round(float(last_age), 3) if last_age is not None else None,
+        'cooldown_seconds': int(cooldown),
+        'policy': 'allow_bounded_read_only_collector_restart_probe_without_affecting_live_execution',
+    }
 
 
 def _resolved_restart_storms(
@@ -503,7 +1017,10 @@ def _resolved_restart_storms(
             60,
         )
         if bool(row.get('parent_process_required', False)):
-            running_count = int(row.get('running', 0) or 0)
+            if bool(row.get('effective_process_live', False)) or bool(row.get('launcher_artifact_certified_fanout', False)):
+                running_count = 1
+            else:
+                running_count = int(row.get('running', 0) or 0)
         else:
             running_count = int(row.get('running', 0) or 0) + int(row.get('alt_running', 0) or 0)
         heartbeat_ok = bool(row.get('heartbeat_ok', False))
@@ -511,6 +1028,7 @@ def _resolved_restart_storms(
         heartbeat_max_age_seconds = float(row.get('heartbeat_max_age_seconds', 0.0) or 0.0)
         paused_by_safety_flags = bool(row.get('paused_by_safety_flags', False))
         paused_by_creative_cotenant = bool(row.get('paused_by_creative_cotenant_guard', False))
+        paused_by_runtime_gate = bool(row.get('paused_by_runtime_gate', False))
         last_age = max(now - last_restart_epoch.get(name, now), 0.0)
         unresolved = running_count <= 0 or not heartbeat_ok or last_age < row_settle_seconds
         healthy_and_fresh = (
@@ -520,8 +1038,12 @@ def _resolved_restart_storms(
         )
         if healthy_and_fresh and last_age >= row_min_healthy_seconds:
             unresolved = False
-        if paused_by_safety_flags or paused_by_creative_cotenant:
+        if paused_by_safety_flags or paused_by_creative_cotenant or paused_by_runtime_gate:
             unresolved = False
+        impact = _restart_storm_impact(name, row)
+        quarantinable = _restart_storm_quarantine_allowed(name, row)
+        live_execution_critical = _safe_bool(row.get('live_execution_critical'), default=(impact == 'execution_lane'))
+        blocks_execution_clear = bool(not quarantinable)
         storm = {
             'name': name,
             'count': int(count),
@@ -529,11 +1051,18 @@ def _resolved_restart_storms(
             'last_restart_age_seconds': round(float(last_age), 3),
             'settle_seconds': int(row_settle_seconds),
             'resolved': not unresolved,
+            'impact': impact,
+            'quarantinable': bool(quarantinable),
+            'quarantine_state': 'isolated_read_only_collection' if unresolved and quarantinable else '',
+            'live_execution_critical': bool(live_execution_critical),
+            'blocks_execution_clear': bool(blocks_execution_clear),
         }
         if paused_by_safety_flags:
             storm['resolution_reason'] = str(row.get('safety_pause_reason') or 'paused_by_safety_flags')
         elif paused_by_creative_cotenant:
             storm['resolution_reason'] = str(row.get('creative_pause_reason') or 'creative_cotenant_pause_active')
+        elif paused_by_runtime_gate:
+            storm['resolution_reason'] = str(row.get('runtime_pause_reason') or 'runtime_paper_execution_paused')
         recent.append(storm)
         if unresolved:
             active.append(storm)
@@ -572,10 +1101,78 @@ def _forgive_resolved_restart_debt(
     }
 
 
+def _sql_link_writer_idle_health() -> Dict[str, Any]:
+    cycle_path = HEALTH_DIR / 'writer_cycle_coordinator_latest.json'
+    process_path = HEALTH_DIR / 'writer_process_intelligence_latest.json'
+    cycle_payload = _load_json_payload(cycle_path)
+    process_payload = _load_json_payload(process_path)
+
+    def _fresh(path: Path, max_age_seconds: float = 3600.0) -> bool:
+        try:
+            return (time.time() - float(path.stat().st_mtime)) <= max_age_seconds
+        except Exception:
+            return False
+
+    def _state_idle(state: Dict[str, Any]) -> bool:
+        if not state:
+            return False
+        current_step = str(state.get('effective_current_step') or state.get('current_step') or '').strip()
+        completed_shards = _safe_int(state.get('completed_shard_count'), 0)
+        planned_shards = _safe_int(state.get('planned_shard_count'), 0)
+        pending_shards = _safe_int(state.get('pending_shard_count'), 0)
+        timed_out_shards = _safe_int(state.get('timed_out_shard_count'), 0)
+        return (
+            current_step == 'complete'
+            and not bool(state.get('active', False))
+            and not bool(state.get('running', False))
+            and not bool(state.get('child_writer_active', False))
+            and not bool(state.get('writer_lock_held', False))
+            and pending_shards == 0
+            and timed_out_shards == 0
+            and (planned_shards <= 0 or completed_shards >= planned_shards)
+        )
+
+    cycle_state = {}
+    for key in ('writer_state_after_wait', 'writer_state_after_remediation', 'writer_state_before'):
+        candidate = cycle_payload.get(key)
+        if isinstance(candidate, dict) and candidate:
+            cycle_state = candidate
+            break
+
+    process_health = process_payload.get('writer_health')
+    if not isinstance(process_health, dict):
+        process_health = {}
+
+    cycle_idle = _fresh(cycle_path) and _state_idle(cycle_state)
+    process_idle = _fresh(process_path) and _state_idle(process_health)
+    ok = bool(cycle_idle or process_idle)
+    return {
+        'ok': ok,
+        'reason': 'sql_writer_on_demand_idle_complete' if ok else 'sql_writer_idle_health_not_clear',
+        'cycle_artifact_fresh': _fresh(cycle_path),
+        'process_artifact_fresh': _fresh(process_path),
+        'cycle_idle_complete': bool(cycle_idle),
+        'process_idle_complete': bool(process_idle),
+        'cycle_current_step': str(cycle_state.get('effective_current_step') or cycle_state.get('current_step') or ''),
+        'process_current_step': str(process_health.get('current_step') or ''),
+        'completed_shard_count': _safe_int(
+            cycle_state.get('completed_shard_count', process_health.get('completed_shard_count')),
+            0,
+        ),
+        'planned_shard_count': _safe_int(
+            cycle_state.get('planned_shard_count', process_health.get('planned_shard_count')),
+            0,
+        ),
+        'writer_lock_held': bool(cycle_state.get('writer_lock_held', process_health.get('writer_lock_held', False))),
+        'policy': 'treat_complete_idle_sql_writer_as_healthy_on_demand_service',
+    }
+
+
 INTENTIONAL_RESTART_SKIPS = {
     'paused_by_safety_flags',
     'creative_cotenant_pause_active',
     'network_outage_active',
+    'runtime_paper_execution_paused',
 }
 
 INTENTIONAL_STARTUP_REASONS = {
@@ -594,7 +1191,11 @@ INTENTIONAL_STARTUP_REASONS = {
 def _row_intentionally_held(row: Dict[str, Any]) -> bool:
     skip = str(row.get('restart_skipped') or '').strip()
     reason = str(row.get('reason') or row.get('safety_pause_reason') or row.get('creative_pause_reason') or '').strip()
-    if bool(row.get('paused_by_safety_flags', False)) or bool(row.get('paused_by_creative_cotenant_guard', False)):
+    if (
+        bool(row.get('paused_by_safety_flags', False))
+        or bool(row.get('paused_by_creative_cotenant_guard', False))
+        or bool(row.get('paused_by_runtime_gate', False))
+    ):
         return True
     if skip in INTENTIONAL_RESTART_SKIPS:
         return True
@@ -617,11 +1218,32 @@ def _target_repair_command(name: str, row: Dict[str, Any]) -> List[str]:
     return ['./scripts/ops/opsctl.sh', 'health-fast', '--json']
 
 
+def _row_effective_process_live(row: Dict[str, Any]) -> bool:
+    return bool(
+        row.get('process_live', False)
+        or row.get('effective_process_live', False)
+        or row.get('launcher_artifact_certified_fanout', False)
+    )
+
+
+def _row_effective_heartbeat_ok(row: Dict[str, Any]) -> bool:
+    if bool(row.get('heartbeat_ok', False)):
+        return True
+    return bool(
+        str(row.get('name') or '') == 'all_sleeves'
+        and row.get('launcher_artifact_certified_fanout', False)
+        and _row_effective_process_live(row)
+        and bool(row.get('child_fanout_ok', True))
+    )
+
+
 def _watchdog_need_for_row(row: Dict[str, Any]) -> Dict[str, Any] | None:
     name = str(row.get('name') or 'unknown')
-    heartbeat_ok = bool(row.get('heartbeat_ok', False))
-    process_live = bool(row.get('process_live', False))
+    heartbeat_ok = _row_effective_heartbeat_ok(row)
+    process_live = _row_effective_process_live(row)
     intentionally_held = _row_intentionally_held(row)
+    if name == 'sql_link_writer' and bool(row.get('writer_idle_ok', False)):
+        return None
     if heartbeat_ok and process_live:
         return None
 
@@ -654,16 +1276,25 @@ def _watchdog_need_for_row(row: Dict[str, Any]) -> Dict[str, Any] | None:
         blocker = 'restart_budget_exhausted'
         expected = 'prevent a restart storm by pausing restarts until the target is stable'
 
+    impact = _restart_storm_impact(name, row)
+    quarantinable = _restart_storm_quarantine_allowed(name, row)
+    severity = 'critical' if blocker in {'restart_budget_exhausted', 'process_missing'} else 'warn'
+    if quarantinable:
+        severity = 'warn'
+        expected = 'quarantine the read-only collector while repair runs; do not widen or enable live execution from this signal'
+
     return {
         'target': name,
-        'severity': 'critical' if blocker in {'restart_budget_exhausted', 'process_missing'} else 'warn',
+        'severity': severity,
         'status': 'needs_repair',
         'blocker': blocker,
         'reason': reason,
         'exact_file': str(DEFAULT_OUT_PATH),
         'exact_command': _target_repair_command(name, row),
         'expected_impact': expected,
-        'risk_level': 'medium' if name in {'all_sleeves', 'coinbase_loop', 'coinbase_futures_loop'} else 'low',
+        'risk_level': 'medium' if impact == 'execution_lane' else 'low',
+        'restart_storm_impact': impact,
+        'restart_storm_quarantinable': bool(quarantinable),
         'when_to_stop': 'stop after heartbeat_ok=true and restart_storms=[] for the target',
     }
 
@@ -685,29 +1316,45 @@ def _watchdog_intelligence_contract(
     stale_targets = [
         str(row.get('name') or '')
         for row in status_rows
-        if row.get('heartbeat_fresh') is False and not _row_intentionally_held(row)
+        if row.get('heartbeat_fresh') is False
+        and not _row_effective_heartbeat_ok(row)
+        and not _row_intentionally_held(row)
     ]
     missing_targets = [
         str(row.get('name') or '')
         for row in status_rows
-        if not bool(row.get('process_live', False)) and not _row_intentionally_held(row)
+        if not _row_effective_process_live(row) and not _row_intentionally_held(row)
     ]
     restart_budget_blocks = [
         str(row.get('name') or '')
         for row in status_rows
         if str(row.get('restart_skipped') or '') == 'budget_exhausted'
     ]
+    restart_budget_execution_blocks = [
+        str(row.get('name') or '')
+        for row in status_rows
+        if str(row.get('restart_skipped') or '') == 'budget_exhausted'
+        and not _restart_storm_quarantine_allowed(str(row.get('name') or ''), row)
+    ]
+    restart_budget_isolated_blocks = [
+        str(row.get('name') or '')
+        for row in status_rows
+        if str(row.get('restart_skipped') or '') == 'budget_exhausted'
+        and _restart_storm_quarantine_allowed(str(row.get('name') or ''), row)
+    ]
+    restart_storm_isolation = _restart_storm_isolation_contract(restart_storms)
     score = 100.0
-    score -= min(float(len(restart_storms)) * 28.0, 56.0)
+    score -= min(float(restart_storm_isolation['execution_blocking_count']) * 28.0, 56.0)
+    score -= min(float(restart_storm_isolation['isolated_count']) * 12.0, 24.0)
     score -= min(float(len(alerts)) * 12.0, 36.0)
     score -= min(float(len(active_needs)) * 16.0, 48.0)
     score -= min(float(len(restarts)) * 5.0, 20.0)
     score -= min(float(len(intentional_holds)) * 2.0, 8.0)
     score = max(round(score, 1), 0.0)
 
-    if restart_storms or restart_budget_blocks:
+    if int(restart_storm_isolation['execution_blocking_count']) > 0 or restart_budget_execution_blocks:
         overall_status = 'critical'
-    elif active_needs or alerts:
+    elif restart_storms or restart_budget_blocks or active_needs or alerts:
         overall_status = 'degraded'
     elif intentional_holds or recent_restart_storms:
         overall_status = 'ready'
@@ -738,16 +1385,19 @@ def _watchdog_intelligence_contract(
         'grade': grade,
         'score': score,
         'target_count': len(status_rows),
-        'healthy_target_count': sum(1 for row in status_rows if bool(row.get('heartbeat_ok', False))),
+        'healthy_target_count': sum(1 for row in status_rows if _row_effective_heartbeat_ok(row)),
         'active_issue_count': len(active_needs),
         'intentional_hold_count': len(intentional_holds),
         'restart_count': len(restarts),
         'restart_storm_count': len(restart_storms),
         'recent_restart_storm_count': len(recent_restart_storms),
+        'restart_storm_isolation': restart_storm_isolation,
         'alert_count': len(alerts),
         'stale_targets': [name for name in stale_targets if name],
         'missing_targets': [name for name in missing_targets if name],
         'restart_budget_blocks': [name for name in restart_budget_blocks if name],
+        'restart_budget_execution_blocks': [name for name in restart_budget_execution_blocks if name],
+        'restart_budget_isolated_blocks': [name for name in restart_budget_isolated_blocks if name],
         'exact_needs': needs,
         'recommended_commands': recommended_commands,
         'notification_policy': {
@@ -1050,8 +1700,7 @@ def _all_sleeves_start_ready(broker: str, simulate: bool) -> Tuple[bool, str]:
     if broker == 'schwab' and (not simulate):
         key = os.getenv('SCHWAB_API_KEY', '').strip()
         secret = os.getenv('SCHWAB_SECRET', '').strip()
-        invalid = {'', 'YOUR_KEY_HERE', 'YOUR_SECRET_HERE', 'YOUR_REAL_KEY', 'YOUR_REAL_SECRET', '<real_key>', '<real_secret>'}
-        if key in invalid or secret in invalid:
+        if _placeholder_or_empty(key) or _placeholder_or_empty(secret):
             return False, 'missing_schwab_credentials'
 
     if operator_reason != 'operator_mode_allows_core_sleeve_restart':
@@ -1086,6 +1735,11 @@ def _build_all_sleeves_target(heartbeat_max_age_seconds: int) -> Dict[str, Any]:
         if val:
             cmd.extend([arg, val])
 
+    child_fanout_grace_seconds = max(
+        float(os.getenv('OPS_WATCHDOG_ALL_SLEEVES_CHILD_GRACE_SECONDS', '180') or 180.0),
+        60.0,
+    )
+
     return {
         'name': 'all_sleeves',
         'pattern': 'scripts/run_all_sleeves.py',
@@ -1108,9 +1762,10 @@ def _build_all_sleeves_target(heartbeat_max_age_seconds: int) -> Dict[str, Any]:
         ],
         'orphan_cleanup_grace_seconds': float(os.getenv('OPS_WATCHDOG_ALL_SLEEVES_ORPHAN_CLEANUP_GRACE_SECONDS', '3') or 3),
         'min_child_processes': max(_safe_int(os.getenv('OPS_WATCHDOG_ALL_SLEEVES_MIN_CHILDREN', '4'), 4), 0),
-        'child_fanout_grace_seconds': max(
-            float(os.getenv('OPS_WATCHDOG_ALL_SLEEVES_CHILD_GRACE_SECONDS', '180') or 180.0),
-            60.0,
+        'child_fanout_grace_seconds': child_fanout_grace_seconds,
+        'heartbeat_startup_grace_seconds': max(
+            float(os.getenv('OPS_WATCHDOG_ALL_SLEEVES_HEARTBEAT_STARTUP_GRACE_SECONDS', str(int(child_fanout_grace_seconds))) or child_fanout_grace_seconds),
+            child_fanout_grace_seconds,
         ),
         'launcher_health_path': str(PROJECT_ROOT / 'governance' / 'health' / 'all_sleeves_launcher_latest.json'),
         'repair_infrabots': [
@@ -1129,6 +1784,9 @@ def _build_all_sleeves_target(heartbeat_max_age_seconds: int) -> Dict[str, Any]:
             ['./scripts/ops/opsctl.sh', 'storage-backpressure-autopilot', '--apply', '--json'],
         ],
         'repair_policy': 'restart_read_only_sleeve_collection_and_clean_orphans_without_enabling_live_execution',
+        'restart_storm_impact': 'read_only_collection',
+        'restart_storm_quarantine_allowed': True,
+        'live_execution_critical': False,
         'exclude_patterns': _live_data_excludes(simulate),
         'cmd': cmd,
         'log': PROJECT_ROOT / 'logs' / 'watchdog_all_sleeves.log',
@@ -1172,8 +1830,17 @@ def _build_execution_lane_target(mode: str, *, heartbeat_max_age_seconds: int) -
         'log': PROJECT_ROOT / 'logs' / f'watchdog_execution_lane_{safe_mode}.log',
         'heartbeat_glob': str(PROJECT_ROOT / 'governance' / 'health' / f'execution_lane_{safe_mode}_latest.json'),
         'heartbeat_max_age_seconds': max(int(heartbeat_max_age_seconds), 60),
+        'heartbeat_startup_grace_seconds': max(int(heartbeat_max_age_seconds), 60),
+        'max_running': 1,
+        'duplicate_cleanup_grace_seconds': max(
+            float(os.getenv('OPS_WATCHDOG_EXECUTION_DUPLICATE_CLEANUP_GRACE_SECONDS', '1.0') or 1.0),
+            0.2,
+        ),
         'restart_storm_settle_seconds': max(int(settle_seconds_env or '120'), 60),
         'restart_storm_min_healthy_seconds': max(int(min_healthy_seconds_env or '120'), 60),
+        'restart_storm_impact': 'execution_lane',
+        'restart_storm_quarantine_allowed': False,
+        'live_execution_critical': True,
     }
 
 
@@ -1389,6 +2056,7 @@ def main() -> int:
     parser.add_argument('--restart-storm-settle-seconds', type=int, default=int(os.getenv('OPS_WATCHDOG_RESTART_STORM_SETTLE_SECONDS', '900')))
     parser.add_argument('--alert-suppress-seconds', type=int, default=int(os.getenv('OPS_WATCHDOG_ALERT_SUPPRESS_SECONDS', '600')))
     parser.add_argument('--maintenance-timeout-seconds', type=float, default=DEFAULT_MAINTENANCE_TIMEOUT_SECONDS)
+    parser.add_argument('--readonly-repair-probe-cooldown-seconds', type=int, default=int(os.getenv('OPS_WATCHDOG_READONLY_REPAIR_PROBE_COOLDOWN_SECONDS', '900')))
     parser.add_argument('--json', action='store_true')
     args = parser.parse_args()
 
@@ -1579,6 +2247,9 @@ def main() -> int:
             'alt_patterns': ['scripts/ops/sql_link_writer_service.py'],
             'heartbeat_glob': '',
             'heartbeat_max_age_seconds': 0,
+            'restart_storm_impact': 'storage_writer',
+            'restart_storm_quarantine_allowed': False,
+            'live_execution_critical': False,
         },
     ]
 
@@ -1619,6 +2290,14 @@ def main() -> int:
                 'alt_patterns': [],
                 'heartbeat_glob': str(PROJECT_ROOT / 'governance' / 'health' / 'shadow_loop_default_crypto_coinbase_*.json'),
                 'heartbeat_max_age_seconds': max(int(args.coinbase_heartbeat_stale_seconds), 60),
+                'max_running': 1,
+                'duplicate_cleanup_grace_seconds': max(
+                    float(os.getenv('OPS_WATCHDOG_COINBASE_DUPLICATE_CLEANUP_GRACE_SECONDS', '1.0') or 1.0),
+                    0.2,
+                ),
+                'restart_storm_impact': 'read_only_collection',
+                'restart_storm_quarantine_allowed': True,
+                'live_execution_critical': False,
             }
         )
 
@@ -1655,6 +2334,14 @@ def main() -> int:
                 'alt_patterns': [],
                 'heartbeat_glob': str(PROJECT_ROOT / 'governance' / 'health' / 'shadow_loop_*crypto_futures*_crypto_coinbase_*.json'),
                 'heartbeat_max_age_seconds': max(int(args.coinbase_heartbeat_stale_seconds), 60),
+                'max_running': 1,
+                'duplicate_cleanup_grace_seconds': max(
+                    float(os.getenv('OPS_WATCHDOG_COINBASE_DUPLICATE_CLEANUP_GRACE_SECONDS', '1.0') or 1.0),
+                    0.2,
+                ),
+                'restart_storm_impact': 'read_only_collection',
+                'restart_storm_quarantine_allowed': True,
+                'live_execution_critical': False,
             }
         )
 
@@ -1672,6 +2359,19 @@ def main() -> int:
             for p in t.get('alt_patterns', [])
             if p
         )
+        duplicate_cleanup: Dict[str, Any] = {}
+        max_running = _safe_int(t.get('max_running'), 0)
+        matched_pid_count = 0
+        if max_running > 0:
+            matched_pid_count = len(_matching_pids(str(t['pattern']), exclude_patterns=t.get('exclude_patterns', [])))
+        if max_running > 0 and matched_pid_count > max_running:
+            duplicate_cleanup = _trim_duplicate_processes(
+                str(t['pattern']),
+                max_running=max_running,
+                exclude_patterns=t.get('exclude_patterns', []),
+                grace_seconds=float(t.get('duplicate_cleanup_grace_seconds', 1.0) or 1.0),
+            )
+            running = _proc_running(t['pattern'], exclude_patterns=t.get('exclude_patterns', []))
         heartbeat_glob = str(t.get('heartbeat_glob', '') or '')
         heartbeat_required = bool(heartbeat_glob)
         heartbeat_age = _latest_heartbeat_age_seconds(heartbeat_glob) if heartbeat_required else 0.0
@@ -1679,11 +2379,12 @@ def main() -> int:
         heartbeat_fresh = (not heartbeat_required) or (heartbeat_age <= heartbeat_max_age)
         parent_process_required = bool(t.get('parent_process_required', False))
         child_process_live = alt_running > 0
-        parent_elapsed_seconds = (
+        process_elapsed_seconds = (
             _proc_elapsed_seconds(t['pattern'], exclude_patterns=t.get('exclude_patterns', []))
-            if parent_process_required and running > 0
+            if running > 0
             else None
         )
+        parent_elapsed_seconds = process_elapsed_seconds if parent_process_required else None
         child_fanout = _child_fanout_health(
             t,
             running=int(running),
@@ -1691,7 +2392,31 @@ def main() -> int:
             parent_elapsed_seconds=parent_elapsed_seconds,
         )
         child_fanout_ok = bool(child_fanout.get('ok', True))
+        launcher_artifact_health: Dict[str, Any] = {}
+        launcher_artifact_certified_fanout = False
+        if t.get('name') == 'all_sleeves':
+            launcher_artifact_health = _all_sleeves_launcher_artifact_health(t)
+            launcher_artifact_certified_fanout = bool(
+                parent_process_required
+                and child_process_live
+                and child_fanout_ok
+                and launcher_artifact_health.get('ok', False)
+            )
         process_live = (running > 0) if parent_process_required else ((running > 0) or child_process_live)
+        if launcher_artifact_certified_fanout:
+            process_live = True
+            heartbeat_fresh = True
+        heartbeat_startup_grace_seconds = max(float(t.get('heartbeat_startup_grace_seconds', 0.0) or 0.0), 0.0)
+        heartbeat_startup_grace_active = bool(
+            heartbeat_required
+            and not heartbeat_fresh
+            and process_live
+            and heartbeat_startup_grace_seconds > 0.0
+            and process_elapsed_seconds is not None
+            and float(process_elapsed_seconds) < heartbeat_startup_grace_seconds
+        )
+        if heartbeat_startup_grace_active:
+            heartbeat_fresh = True
         heartbeat_ok = heartbeat_fresh and (process_live or not heartbeat_required) and child_fanout_ok
 
         row: Dict[str, Any] = {
@@ -1700,6 +2425,19 @@ def main() -> int:
             'heartbeat_ok': bool(heartbeat_ok),
             'process_live': bool(process_live),
         }
+        if launcher_artifact_health:
+            row['launcher_artifact_health'] = launcher_artifact_health
+        if launcher_artifact_certified_fanout:
+            row['effective_process_live'] = True
+            row['launcher_artifact_certified_fanout'] = True
+            row['process_live_reason'] = str(launcher_artifact_health.get('reason') or 'launcher_artifact_certified_fanout')
+        if duplicate_cleanup:
+            row['duplicate_cleanup'] = duplicate_cleanup
+        if process_elapsed_seconds is not None:
+            row['process_elapsed_seconds'] = round(float(process_elapsed_seconds), 2)
+        for key in ('restart_storm_impact', 'restart_storm_quarantine_allowed', 'live_execution_critical'):
+            if key in t:
+                row[key] = t[key]
         if t.get('repair_infrabots'):
             row['repair_infrabots'] = list(t.get('repair_infrabots') or [])
             row['repair_policy'] = str(t.get('repair_policy') or '')
@@ -1723,6 +2461,28 @@ def main() -> int:
             row['heartbeat_age_seconds'] = round(float(heartbeat_age), 2)
             row['heartbeat_max_age_seconds'] = float(heartbeat_max_age)
             row['heartbeat_fresh'] = bool(heartbeat_fresh)
+            if heartbeat_startup_grace_active:
+                row['heartbeat_startup_grace_active'] = True
+                row['heartbeat_startup_grace_seconds'] = round(float(heartbeat_startup_grace_seconds), 2)
+                row['heartbeat_fresh_reason'] = 'startup_grace'
+
+        if duplicate_cleanup and duplicate_cleanup.get('still_running_pids'):
+            row['restart_skipped'] = 'duplicate_cleanup_pending'
+            row['reason'] = 'single_instance_duplicate_cleanup_pending'
+            status.append(row)
+            continue
+
+        if t['name'] == 'sql_link_writer' and not process_live:
+            writer_idle_health = _sql_link_writer_idle_health()
+            row['writer_idle_health'] = writer_idle_health
+            if bool(writer_idle_health.get('ok', False)):
+                process_live = True
+                heartbeat_ok = True
+                row['process_live'] = True
+                row['heartbeat_ok'] = True
+                row['writer_idle_ok'] = True
+                row['virtual_process_live'] = True
+                row['process_live_reason'] = str(writer_idle_health.get('reason') or 'sql_writer_on_demand_idle_complete')
 
         if safety_pause['active'] and t['name'] in safety_pause_target_names:
             row['paused_by_safety_flags'] = True
@@ -1742,6 +2502,17 @@ def main() -> int:
             row['reason'] = str(creative_pause.get('reason') or 'creative_cotenant_pause_active')
             status.append(row)
             continue
+
+        if t['name'] == 'execution_lane_paper':
+            runtime_pause = _paper_execution_runtime_pause_state()
+            row['runtime_paper_pause_state'] = runtime_pause
+            if bool(runtime_pause.get('paused', False)):
+                row['paused_by_runtime_gate'] = True
+                row['runtime_pause_reason'] = str(runtime_pause.get('reason') or 'runtime_paper_execution_paused')
+                row['restart_skipped'] = 'runtime_paper_execution_paused'
+                row['reason'] = row['runtime_pause_reason']
+                status.append(row)
+                continue
 
         if process_live and heartbeat_ok:
             status.append(row)
@@ -1774,22 +2545,50 @@ def main() -> int:
             status.append(row)
             continue
 
-        if not _within_budget(events, t['name'], args.max_restarts_per_hour):
-            row['restart_skipped'] = 'budget_exhausted'
-            status.append(row)
-            alerts.append(
-                {
-                    'name': t['name'],
-                    'type': 'budget_exhausted',
-                    'alert': _alert(
-                        'critical',
-                        'watchdog_restart_budget_exhausted',
-                        f"Restart budget exhausted for {t['name']}.",
-                        suppress_seconds=max(args.alert_suppress_seconds, 60),
-                    ),
-                }
+        stale_process_cleanup: Dict[str, Any] = {}
+        if max_running > 0 and running <= 0:
+            stale_process_cleanup = _terminate_matching_processes(
+                [str(t['pattern'])],
+                exclude_patterns=t.get('exclude_patterns', []),
+                grace_seconds=float(t.get('duplicate_cleanup_grace_seconds', 1.0) or 1.0),
             )
-            continue
+            if stale_process_cleanup.get('matched_pids'):
+                row['stale_process_cleanup'] = stale_process_cleanup
+            if stale_process_cleanup.get('still_running_pids'):
+                row['restart_skipped'] = 'stale_process_cleanup_pending'
+                row['reason'] = 'single_instance_stale_process_cleanup_pending'
+                status.append(row)
+                continue
+
+        restart_budget_repair_probe: Dict[str, Any] = {'allowed': False}
+        if not _within_budget(events, t['name'], args.max_restarts_per_hour):
+            restart_budget_repair_probe = _restart_budget_repair_probe(
+                events=events,
+                name=str(t['name']),
+                row=row,
+                cooldown_seconds=int(args.readonly_repair_probe_cooldown_seconds),
+            )
+            if bool(restart_budget_repair_probe.get('allowed', False)):
+                row['restart_budget_repair_probe'] = restart_budget_repair_probe
+                row['restart_budget_probe_active'] = True
+            else:
+                row['restart_budget_repair_probe'] = restart_budget_repair_probe
+                row['restart_skipped'] = 'budget_exhausted'
+                status.append(row)
+                alert_severity, alert_event = _restart_budget_alert_metadata(str(t['name']), row)
+                alerts.append(
+                    {
+                        'name': t['name'],
+                        'type': 'budget_exhausted',
+                        'alert': _alert(
+                            alert_severity,
+                            alert_event,
+                            f"Restart budget exhausted for {t['name']}.",
+                            suppress_seconds=max(args.alert_suppress_seconds, 60),
+                        ),
+                    }
+                )
+                continue
 
         restart_reason = 'process_missing' if not process_live else 'heartbeat_stale'
         if parent_process_required and running > 0 and not child_fanout_ok:
@@ -1840,6 +2639,7 @@ def main() -> int:
             'timestamp_utc': ts,
             'ts_epoch': time.time(),
             'reason': restart_reason,
+            'budget_repair_probe': bool(restart_budget_repair_probe.get('allowed', False)),
         }
         events.append(evt)
         restarts.append(evt)
@@ -1859,14 +2659,17 @@ def main() -> int:
         settle_seconds=max(int(args.restart_storm_settle_seconds), 60),
     )
     for storm in restart_storms:
+        storm_isolated = bool(storm.get('quarantinable', False)) and not bool(storm.get('blocks_execution_clear', True))
+        alert_severity = 'warn' if storm_isolated else 'critical'
+        alert_key = 'watchdog_restart_storm_isolated' if storm_isolated else 'watchdog_restart_storm'
         alerts.append(
             {
                 'name': storm['name'],
                 'type': 'restart_storm',
                 'count': storm['count'],
                 'alert': _alert(
-                    'critical',
-                    'watchdog_restart_storm',
+                    alert_severity,
+                    alert_key,
                     f"Restart storm: {storm['name']} restarted {storm['count']} times in {restart_window_seconds}s.",
                     suppress_seconds=max(args.alert_suppress_seconds, 60),
                 ),
@@ -1927,6 +2730,7 @@ def main() -> int:
         'restarts': restarts,
         'restart_storms': restart_storms,
         'recent_restart_storms': recent_restart_storms,
+        'restart_storm_isolation': _restart_storm_isolation_contract(restart_storms),
         'restart_debt_forgiveness': restart_debt_forgiveness,
         'safety_pause': safety_pause,
         'creative_cotenant_pause': creative_pause,

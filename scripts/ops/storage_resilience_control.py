@@ -22,6 +22,32 @@ DEFAULT_OUT_PATH = PROJECT_ROOT / "governance" / "health" / "storage_resilience_
 CHECKSUM_PATH = PROJECT_ROOT / "governance" / "storage" / "checksum_scrub_latest.json"
 
 
+def _local_fallback_equivalent(path: Path, *, project_root: Path) -> Path:
+    candidate = Path(path).expanduser()
+    local_fallback_root = project_root / "local_fallback_storage"
+    try:
+        rel = candidate.relative_to(project_root)
+    except ValueError:
+        return candidate
+    if rel.parts and rel.parts[0] == local_fallback_root.name:
+        return candidate
+    return local_fallback_root / rel
+
+
+def _is_broken_symlink(path: Path) -> bool:
+    try:
+        return path.is_symlink() and not path.exists()
+    except OSError:
+        return False
+
+
+def _routed_or_local_fallback_path(path: Path, *, project_root: Path) -> Path:
+    candidate = Path(path).expanduser()
+    if _is_broken_symlink(candidate):
+        return _local_fallback_equivalent(candidate, project_root=project_root)
+    return candidate
+
+
 def _safe_float(raw: Any, default: float = 0.0) -> float:
     try:
         return float(raw)
@@ -65,9 +91,10 @@ def _integrity_summary(
     fast: bool,
     max_quick_check_db_gb: float,
 ) -> dict[str, Any]:
-    if path.exists() and fast and max_quick_check_db_gb > 0.0:
-        size_gb = float(path.stat().st_size) / float(1024**3)
-        if size_gb > max_quick_check_db_gb:
+    if path.exists() and fast:
+        size_bytes = int(path.stat().st_size)
+        size_gb = float(size_bytes) / float(1024**3)
+        if max_quick_check_db_gb <= 0.0 or size_gb > max_quick_check_db_gb:
             wal_path = Path(f"{path}-wal")
             shm_path = Path(f"{path}-shm")
             return {
@@ -76,7 +103,7 @@ def _integrity_summary(
                 "ok": True,
                 "quick_check": "skipped_fast_mode_large_db",
                 "check_mode": "fast_skip_large_db",
-                "db_size_bytes": int(path.stat().st_size),
+                "db_size_bytes": size_bytes,
                 "wal_size_bytes": int(wal_path.stat().st_size) if wal_path.exists() else 0,
                 "shm_size_bytes": int(shm_path.stat().st_size) if shm_path.exists() else 0,
             }
@@ -104,9 +131,10 @@ def build_payload(
         health_root / "daily_auto_verify_latest.json",
     ]
     sqlite_targets = [
-        project_root / "data" / "jsonl_link.sqlite3",
+        _routed_or_local_fallback_path(project_root / "data" / "jsonl_link.sqlite3", project_root=project_root),
         project_root / "governance" / "ops_data_plane.sqlite3",
-        project_root / "local_fallback_storage" / "data" / "bot_channel_queue.sqlite3",
+        _routed_or_local_fallback_path(project_root / "data" / "bot_channel_queue.sqlite3", project_root=project_root),
+        _routed_or_local_fallback_path(project_root / "data" / "snapshot_context.sqlite3", project_root=project_root),
     ]
     checksum_rows = []
     for path in checksum_targets:

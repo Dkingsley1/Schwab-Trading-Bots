@@ -167,6 +167,63 @@ def test_promotion_readiness_summary_preserves_zero_fail_share(tmp_path: Path, m
     assert payload["fail_share"] == 0.0
 
 
+def test_promotion_readiness_summary_uses_effective_considered_floor(tmp_path: Path, monkeypatch, capsys) -> None:
+    gate_path = tmp_path / "promotion_gate_latest.json"
+    walk_forward_path = tmp_path / "walk_forward_latest.json"
+    history_path = tmp_path / "promotion_readiness_history.jsonl"
+    latest_path = tmp_path / "promotion_readiness_latest.json"
+    fail_list_path = tmp_path / "promotion_fail_bots_latest.json"
+
+    _write_json(
+        gate_path,
+        {
+            "promote_ok": True,
+            "coverage_ok": True,
+            "considered_bots": 2,
+            "failed_bots": 0,
+            "fail_share": 0.0,
+            "thresholds": {
+                "max_fail_share": 0.25,
+                "min_forward_mean": 0.53,
+                "min_delta": -0.01,
+                "min_runs_per_bot": 12,
+                "min_considered_bots": 4,
+            },
+            "effective_thresholds": {"min_considered_bots": 2},
+            "fail_examples": [],
+            "near_pass_examples": [],
+        },
+    )
+    _write_json(walk_forward_path, {"bots": {}})
+
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "promotion_readiness_summary.py",
+            "--gate-file",
+            str(gate_path),
+            "--walk-forward-file",
+            str(walk_forward_path),
+            "--history-jsonl",
+            str(history_path),
+            "--latest-out",
+            str(latest_path),
+            "--fail-list-out",
+            str(fail_list_path),
+            "--json",
+        ],
+    )
+
+    rc = readiness.main()
+    payload = json.loads(capsys.readouterr().out)
+
+    assert rc == 0
+    assert payload["coverage_shortfall_bots"] == 0
+    assert payload["thresholds"]["min_considered_bots"] == 2
+    assert payload["blocking_reasons"] == []
+
+
 def test_promotion_readiness_summary_emits_coverage_seed_action(tmp_path: Path, monkeypatch, capsys) -> None:
     gate_path = tmp_path / "promotion_gate_latest.json"
     walk_forward_path = tmp_path / "walk_forward_latest.json"

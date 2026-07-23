@@ -215,6 +215,78 @@ def test_build_execution_lane_target_uses_paper_health_file(tmp_path, monkeypatc
     assert target["cmd"][-2:] == ["--mode", "paper"]
     assert str(target["heartbeat_glob"]).endswith("execution_lane_paper_latest.json")
     assert target["heartbeat_max_age_seconds"] == 240
+    assert target["heartbeat_startup_grace_seconds"] == 240
+    assert target["max_running"] == 1
+    assert target["restart_storm_impact"] == "execution_lane"
+    assert target["restart_storm_quarantine_allowed"] is False
+    assert target["live_execution_critical"] is True
+
+
+def test_paper_execution_runtime_pause_state_prefers_override_file(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("PAPER_EXECUTION_QUEUE_CONSUMER_ENABLED", "1")
+    monkeypatch.setenv("PAPER_EXECUTION_RUNTIME_PAUSED_FOR_PRESSURE", "0")
+    monkeypatch.setenv("PAPER_400_RAMP_BLOCKED_RUNTIME_PAUSE", "0")
+    override = tmp_path / ".env.runtime_resource_guard_override"
+    override.write_text(
+        "\n".join(
+            [
+                "PAPER_EXECUTION_QUEUE_CONSUMER_ENABLED=0",
+                "PAPER_EXECUTION_RUNTIME_PAUSED_FOR_PRESSURE=1",
+                "PAPER_400_RAMP_BLOCKED_RUNTIME_PAUSE=1",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    state = pw._paper_execution_runtime_pause_state(override)
+
+    assert state["paused"] is True
+    assert state["consumer_enabled"] is False
+    assert state["runtime_paused_for_pressure"] is True
+    assert state["paper_400_ramp_blocked_runtime_pause"] is True
+    assert state["reason"] == "paper_queue_consumer_disabled+runtime_pressure_pause+paper_400_ramp_blocked"
+
+
+def test_row_intentionally_held_for_runtime_paper_pause() -> None:
+    row = {
+        "name": "execution_lane_paper",
+        "heartbeat_ok": False,
+        "process_live": False,
+        "paused_by_runtime_gate": True,
+        "restart_skipped": "runtime_paper_execution_paused",
+        "runtime_pause_reason": "paper_400_ramp_blocked",
+    }
+
+    need = pw._watchdog_need_for_row(row)
+
+    assert pw._row_intentionally_held(row) is True
+    assert need is not None
+    assert need["status"] == "intentional_hold"
+    assert need["severity"] == "info"
+
+
+def test_trim_duplicate_processes_keeps_newest(monkeypatch) -> None:
+    killed: list[int] = []
+
+    monkeypatch.setattr(pw, "_matching_pids", lambda *_args, **_kwargs: [101, 202, 303])
+
+    def _fake_kill(pid: int, sig: int) -> None:
+        if sig == 0:
+            raise ProcessLookupError
+        killed.append(pid)
+
+    monkeypatch.setattr(pw.os, "kill", _fake_kill)
+
+    payload = pw._trim_duplicate_processes(
+        "scripts/run_execution_lane.py --mode paper",
+        max_running=1,
+    )
+
+    assert payload["attempted"] is True
+    assert payload["kept_pids"] == [303]
+    assert payload["terminated_pids"] == [101, 202]
+    assert killed == [101, 202]
+    assert payload["still_running_pids"] == []
 
 
 def test_default_require_paper_executor_disabled_when_all_sleeves_owns_it(monkeypatch) -> None:
@@ -234,10 +306,14 @@ def test_all_sleeves_target_has_child_fanout_floor(monkeypatch) -> None:
     assert target["parent_process_required"] is True
     assert target["min_child_processes"] >= 4
     assert target["child_fanout_grace_seconds"] >= 60
+    assert target["heartbeat_startup_grace_seconds"] >= target["child_fanout_grace_seconds"]
     assert str(target["launcher_health_path"]).endswith("all_sleeves_launcher_latest.json")
     assert "sleeve_launcher_parent_watchdog" in target["repair_infrabots"]
     assert "sleeve_child_recycler" in target["repair_infrabots"]
     assert target["repair_policy"] == "restart_read_only_sleeve_collection_and_clean_orphans_without_enabling_live_execution"
+    assert target["restart_storm_impact"] == "read_only_collection"
+    assert target["restart_storm_quarantine_allowed"] is True
+    assert target["live_execution_critical"] is False
     assert any("process_watchdog.py" in " ".join(command) for command in target["repair_commands"])
     assert "scripts/run_shadow_training_loop.py --broker schwab" in target["alt_patterns"]
     assert "scripts/run_shadow_training_loop.py --broker schwab" in target["orphan_cleanup_patterns"]
@@ -280,6 +356,130 @@ def test_child_fanout_health_flags_hollow_launcher_after_grace() -> None:
     assert health["ok"] is False
     assert health["reason"] == "child_fanout_below_floor"
     assert health["child_process_count"] == 0
+
+
+def test_child_fanout_health_scores_parent_missing_children_against_floor() -> None:
+    target = {"min_child_processes": 4, "child_fanout_grace_seconds": 180}
+
+    healthy = pw._child_fanout_health(
+        target,
+        running=0,
+        alt_running=6,
+        parent_elapsed_seconds=None,
+    )
+    thin = pw._child_fanout_health(
+        target,
+        running=0,
+        alt_running=2,
+        parent_elapsed_seconds=None,
+    )
+
+    assert healthy["ok"] is True
+    assert healthy["reason"] == "parent_missing_child_fanout_present"
+    assert thin["ok"] is False
+    assert thin["reason"] == "parent_missing_child_fanout_below_floor"
+
+
+def test_all_sleeves_launcher_artifact_health_certifies_fresh_full_fanout(tmp_path: Path) -> None:
+    launcher = tmp_path / "all_sleeves_launcher_latest.json"
+    launcher.write_text(
+        json.dumps(
+            {
+                "timestamp_utc": datetime.fromtimestamp(100.0, timezone.utc).isoformat(),
+                "overall_status": "ready",
+                "phase": "running",
+                "expected_job_count": 100,
+                "running_job_count": 100,
+                "missing_job_count": 0,
+                "exited_job_count": 0,
+                "exact_needs": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    health = pw._all_sleeves_launcher_artifact_health(
+        {
+            "launcher_health_path": str(launcher),
+            "heartbeat_max_age_seconds": 360,
+            "child_fanout_grace_seconds": 180,
+        },
+        now_epoch=120.0,
+    )
+
+    assert health["ok"] is True
+    assert health["reason"] == "fresh_launcher_artifact_certifies_full_fanout"
+    assert health["running_job_count"] == 100
+
+
+def test_all_sleeves_launcher_artifact_health_certifies_policy_parked_fanout(tmp_path: Path) -> None:
+    launcher = tmp_path / "all_sleeves_launcher_latest.json"
+    launcher.write_text(
+        json.dumps(
+            {
+                "timestamp_utc": datetime.fromtimestamp(100.0, timezone.utc).isoformat(),
+                "overall_status": "ready",
+                "phase": "running",
+                "expected_job_count": 101,
+                "running_job_count": 5,
+                "missing_job_count": 0,
+                "exited_job_count": 96,
+                "policy_parked_job_count": 96,
+                "clean_exited_job_count": 0,
+                "repair_packet": {"problem_job_count": 0},
+                "launcher_readiness_contract": {"exact_needs": []},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    health = pw._all_sleeves_launcher_artifact_health(
+        {
+            "launcher_health_path": str(launcher),
+            "heartbeat_max_age_seconds": 360,
+            "child_fanout_grace_seconds": 180,
+        },
+        now_epoch=120.0,
+    )
+
+    assert health["ok"] is True
+    assert health["reason"] == "fresh_launcher_artifact_certifies_stable_fanout"
+    assert health["policy_parked_job_count"] == 96
+    assert health["problem_job_count"] == 0
+
+
+def test_all_sleeves_launcher_artifact_uses_repair_packet_problem_count(tmp_path: Path) -> None:
+    launcher = tmp_path / "all_sleeves_launcher_latest.json"
+    launcher.write_text(
+        json.dumps(
+            {
+                "timestamp_utc": datetime.fromtimestamp(100.0, timezone.utc).isoformat(),
+                "overall_status": "blocked",
+                "phase": "running",
+                "expected_job_count": 101,
+                "running_job_count": 0,
+                "missing_job_count": 0,
+                "exited_job_count": 101,
+                "repair_packet": {"problem_job_count": 26},
+                "launcher_readiness_contract": {"exact_needs": [{"target": "baseline_parallel"}]},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    health = pw._all_sleeves_launcher_artifact_health(
+        {
+            "launcher_health_path": str(launcher),
+            "heartbeat_max_age_seconds": 360,
+            "child_fanout_grace_seconds": 180,
+        },
+        now_epoch=120.0,
+    )
+
+    assert health["ok"] is False
+    assert health["reason"] == "launcher_artifact_jobs_not_all_running"
+    assert health["problem_job_count"] == 26
+    assert health["exact_need_count"] == 1
 
 
 def test_default_require_paper_executor_honors_explicit_override(monkeypatch) -> None:
@@ -412,6 +612,194 @@ def test_resolved_restart_storms_requires_parent_when_marked_parent_required() -
     assert recent[0]["resolved"] is False
 
 
+def test_resolved_restart_storms_accepts_certified_all_sleeves_fanout_without_parent() -> None:
+    active, recent = pw._resolved_restart_storms(
+        events=[
+            {"event": "restart", "name": "all_sleeves", "ts_epoch": 100.0},
+            {"event": "restart", "name": "all_sleeves", "ts_epoch": 200.0},
+            {"event": "restart", "name": "all_sleeves", "ts_epoch": 300.0},
+            {"event": "restart", "name": "all_sleeves", "ts_epoch": 400.0},
+        ],
+        status_rows=[
+            {
+                "name": "all_sleeves",
+                "running": 0,
+                "alt_running": 100,
+                "heartbeat_ok": True,
+                "parent_process_required": True,
+                "effective_process_live": True,
+                "launcher_artifact_certified_fanout": True,
+                "heartbeat_age_seconds": 10.0,
+                "heartbeat_max_age_seconds": 360.0,
+            }
+        ],
+        restart_window_seconds=3600,
+        restart_storm_threshold=4,
+        settle_seconds=120,
+        now_epoch=1000.0,
+    )
+
+    assert active == []
+    assert len(recent) == 1
+    assert recent[0]["resolved"] is True
+
+
+def test_resolved_restart_storms_marks_read_only_collection_as_quarantinable() -> None:
+    active, recent = pw._resolved_restart_storms(
+        events=[
+            {"event": "restart", "name": "all_sleeves", "ts_epoch": 100.0},
+            {"event": "restart", "name": "all_sleeves", "ts_epoch": 200.0},
+            {"event": "restart", "name": "all_sleeves", "ts_epoch": 300.0},
+            {"event": "restart", "name": "all_sleeves", "ts_epoch": 400.0},
+        ],
+        status_rows=[
+            {
+                "name": "all_sleeves",
+                "running": 0,
+                "alt_running": 6,
+                "heartbeat_ok": False,
+                "parent_process_required": True,
+                "restart_storm_impact": "read_only_collection",
+                "restart_storm_quarantine_allowed": True,
+                "live_execution_critical": False,
+            }
+        ],
+        restart_window_seconds=3600,
+        restart_storm_threshold=4,
+        settle_seconds=120,
+        now_epoch=450.0,
+    )
+
+    assert len(active) == 1
+    assert len(recent) == 1
+    assert active[0]["impact"] == "read_only_collection"
+    assert active[0]["quarantinable"] is True
+    assert active[0]["quarantine_state"] == "isolated_read_only_collection"
+    assert active[0]["blocks_execution_clear"] is False
+    assert active[0]["live_execution_critical"] is False
+
+
+def test_watchdog_intelligence_downgrades_isolated_restart_storm_budget() -> None:
+    status_rows = [
+        {
+            "name": "all_sleeves",
+            "running": 0,
+            "heartbeat_ok": False,
+            "process_live": False,
+            "restart_skipped": "budget_exhausted",
+            "restart_storm_impact": "read_only_collection",
+            "restart_storm_quarantine_allowed": True,
+            "live_execution_critical": False,
+        }
+    ]
+    restart_storms = [
+        {
+            "name": "all_sleeves",
+            "count": 4,
+            "resolved": False,
+            "impact": "read_only_collection",
+            "quarantinable": True,
+            "blocks_execution_clear": False,
+        }
+    ]
+
+    payload = pw._watchdog_intelligence_contract(
+        status_rows=status_rows,
+        restarts=[],
+        restart_storms=restart_storms,
+        recent_restart_storms=restart_storms,
+        alerts=[],
+        safety_pause={"active": False},
+        creative_pause={"active": False},
+        network_payload={"outage_active": False},
+    )
+
+    assert payload["overall_status"] == "degraded"
+    assert payload["restart_storm_isolation"]["all_active_storms_isolated"] is True
+    assert payload["restart_budget_isolated_blocks"] == ["all_sleeves"]
+    assert payload["restart_budget_execution_blocks"] == []
+    assert payload["exact_needs"][0]["severity"] == "warn"
+
+
+def test_restart_budget_alert_metadata_downgrades_isolated_collectors() -> None:
+    severity, event = pw._restart_budget_alert_metadata(
+        "coinbase_loop",
+        {
+            "name": "coinbase_loop",
+            "restart_storm_impact": "read_only_collection",
+            "restart_storm_quarantine_allowed": True,
+            "live_execution_critical": False,
+        },
+    )
+
+    assert severity == "warn"
+    assert event == "watchdog_restart_budget_exhausted_isolated"
+
+
+def test_restart_budget_repair_probe_allows_coinbase_after_cooldown(monkeypatch) -> None:
+    monkeypatch.setenv("OPS_WATCHDOG_READONLY_BUDGET_REPAIR_PROBE", "1")
+    events = [
+        {"event": "restart", "name": "coinbase_loop", "ts_epoch": 100.0},
+        {"event": "restart", "name": "coinbase_loop", "ts_epoch": 200.0},
+        {"event": "restart", "name": "coinbase_loop", "ts_epoch": 300.0},
+        {"event": "restart", "name": "coinbase_loop", "ts_epoch": 400.0},
+        {"event": "restart", "name": "coinbase_loop", "ts_epoch": 500.0},
+        {"event": "restart", "name": "coinbase_loop", "ts_epoch": 600.0},
+    ]
+
+    probe = pw._restart_budget_repair_probe(
+        events=events,
+        name="coinbase_loop",
+        row={
+            "name": "coinbase_loop",
+            "restart_storm_impact": "read_only_collection",
+            "restart_storm_quarantine_allowed": True,
+            "live_execution_critical": False,
+        },
+        cooldown_seconds=900,
+        now_epoch=1600.0,
+    )
+
+    assert probe["allowed"] is True
+    assert probe["reason"] == "read_only_collector_repair_probe_after_restart_budget_exhausted"
+    assert probe["last_restart_age_seconds"] == 1000.0
+
+
+def test_restart_budget_repair_probe_denies_execution_lane_and_cooldown(monkeypatch) -> None:
+    monkeypatch.setenv("OPS_WATCHDOG_READONLY_BUDGET_REPAIR_PROBE", "1")
+    events = [{"event": "restart", "name": "coinbase_loop", "ts_epoch": 1000.0}]
+
+    cooldown_probe = pw._restart_budget_repair_probe(
+        events=events,
+        name="coinbase_loop",
+        row={
+            "name": "coinbase_loop",
+            "restart_storm_impact": "read_only_collection",
+            "restart_storm_quarantine_allowed": True,
+            "live_execution_critical": False,
+        },
+        cooldown_seconds=900,
+        now_epoch=1200.0,
+    )
+    execution_probe = pw._restart_budget_repair_probe(
+        events=[{"event": "restart", "name": "execution_lane_live", "ts_epoch": 100.0}],
+        name="execution_lane_live",
+        row={
+            "name": "execution_lane_live",
+            "restart_storm_impact": "execution_lane",
+            "restart_storm_quarantine_allowed": False,
+            "live_execution_critical": True,
+        },
+        cooldown_seconds=900,
+        now_epoch=1600.0,
+    )
+
+    assert cooldown_probe["allowed"] is False
+    assert cooldown_probe["reason"] == "repair_probe_cooldown"
+    assert execution_probe["allowed"] is False
+    assert execution_probe["reason"] == "not_read_only_quarantinable"
+
+
 def test_resolved_restart_storms_respect_target_specific_settle_window() -> None:
     active, recent = pw._resolved_restart_storms(
         events=[
@@ -468,6 +856,38 @@ def test_resolved_restart_storms_resolve_when_target_is_paused_by_safety_flags()
     assert active == []
     assert recent[0]["resolved"] is True
     assert recent[0]["resolution_reason"] == "operator_stop_active"
+
+
+def test_resolved_restart_storms_resolve_when_paper_paused_by_runtime_gate() -> None:
+    active, recent = pw._resolved_restart_storms(
+        events=[
+            {"event": "restart", "name": "execution_lane_paper", "ts_epoch": 100.0},
+            {"event": "restart", "name": "execution_lane_paper", "ts_epoch": 200.0},
+            {"event": "restart", "name": "execution_lane_paper", "ts_epoch": 300.0},
+            {"event": "restart", "name": "execution_lane_paper", "ts_epoch": 400.0},
+        ],
+        status_rows=[
+            {
+                "name": "execution_lane_paper",
+                "running": 0,
+                "heartbeat_ok": False,
+                "paused_by_runtime_gate": True,
+                "runtime_pause_reason": "paper_400_ramp_blocked",
+                "restart_skipped": "runtime_paper_execution_paused",
+                "restart_storm_impact": "execution_lane",
+                "restart_storm_quarantine_allowed": False,
+                "live_execution_critical": True,
+            }
+        ],
+        restart_window_seconds=3600,
+        restart_storm_threshold=4,
+        settle_seconds=900,
+        now_epoch=450.0,
+    )
+
+    assert active == []
+    assert recent[0]["resolved"] is True
+    assert recent[0]["resolution_reason"] == "paper_400_ramp_blocked"
 
 
 def test_forgive_resolved_restart_debt_removes_only_recovered_target_events() -> None:

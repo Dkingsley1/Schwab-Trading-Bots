@@ -111,3 +111,33 @@ def test_storage_transition_coordinator_apply_refreshes_expected_steps(tmp_path:
         "storage_resilience_control.py",
         "ops_coordinator.py",
     ]
+
+
+def test_storage_transition_coordinator_records_child_timeout(tmp_path: Path, monkeypatch) -> None:
+    def _timeout(cmd: list[str], **_kwargs):
+        raise coordinator_src.subprocess.TimeoutExpired(cmd=cmd, timeout=3, output='{"ok": false}\n', stderr="slow child")
+
+    monkeypatch.setattr(coordinator_src.subprocess, "run", _timeout)
+
+    result = coordinator_src._run_json_command(["python", "slow.py"], cwd=tmp_path, timeout_sec=3)
+
+    assert result["rc"] == 124
+    assert result["timed_out"] is True
+    assert result["timeout_sec"] == 3
+    assert result["payload"] == {"ok": False}
+    assert result["stderr_tail"] == "slow child"
+
+
+def test_storage_transition_coordinator_uses_fast_resilience_refresh(tmp_path: Path) -> None:
+    specs = coordinator_src._assistant_specs(tmp_path / "project", "external")
+    resilience = next(row for row in specs if row["name"] == "storage_resilience_control")
+
+    assert "--fast" in resilience["refresh_cmd"]
+    assert resilience["refresh_timeout_sec"] <= 45
+
+
+def test_storage_transition_coordinator_truncates_large_single_line_child_output() -> None:
+    tail = coordinator_src._tail_text("x" * 5000, max_chars=100)
+
+    assert tail.startswith("...<truncated ")
+    assert len(tail) < 140

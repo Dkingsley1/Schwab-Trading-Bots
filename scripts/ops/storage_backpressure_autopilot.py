@@ -5,6 +5,7 @@ import argparse
 import fcntl
 import json
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -15,13 +16,17 @@ if __package__ in {None, ""}:
     if str(PROJECT_ROOT) not in sys.path:
         sys.path.insert(0, str(PROJECT_ROOT))
     from scripts.ops import backpressure_drainer_fleet as drainer_src
+    from scripts.ops import backlog_drain_uniform_process as uniform_src
     from scripts.ops import backpressure_slo_bot as backpressure_src
+    from scripts.ops import raw_training_compaction_intelligence as raw_compaction_src
     from scripts.ops import retention_debt_sheriff as sheriff_src
     from scripts.ops import writer_cycle_coordinator as coordinator_src
     from scripts.ops.long_runtime_common import PROJECT_ROOT, iso_now, load_json, ordered_unique, write_payload
 else:
     from . import backpressure_drainer_fleet as drainer_src
+    from . import backlog_drain_uniform_process as uniform_src
     from . import backpressure_slo_bot as backpressure_src
+    from . import raw_training_compaction_intelligence as raw_compaction_src
     from . import retention_debt_sheriff as sheriff_src
     from . import writer_cycle_coordinator as coordinator_src
     from .long_runtime_common import PROJECT_ROOT, iso_now, load_json, ordered_unique, write_payload
@@ -39,6 +44,7 @@ ACCEPTED_STEP_STATUSES = {
     "ready",
     "stable",
     "handoff_requested",
+    "handoff_released",
     "waiting_for_writer",
 }
 DEFAULT_MAX_CYCLES = 3
@@ -49,6 +55,18 @@ MIN_RETENTION_PROGRESS_GB = 0.05
 CORE_FOCUS_MIN_PENDING_LINES = 30_000
 CORE_FOCUS_MIN_TOP3_LINES = 40_000
 CORE_FOCUS_MIN_SHARE = 0.65
+DEFAULT_RAW_TRAINING_COMPACTION_MAX_FILES = 5
+DEFAULT_RAW_TRAINING_COMPACTION_MAX_GB = 8.0
+DEFAULT_RAW_TRAINING_JUMBO_COMPACTION_GB = 7.0
+DEFAULT_RAW_TRAINING_MIN_CANDIDATE_GB = 8.0
+DEFAULT_RAW_TRAINING_PRESSURE_CEILING = 0.60
+DEFAULT_RAW_TRAINING_BOT_LOGS_MIN_FREE_GB = 32.0
+DEFAULT_RAW_TRAINING_LOCAL_MIN_FREE_GB = 20.0
+RAW_TRAINING_RAW_LIVE_MAX_TOTAL_LINES = 15_000
+RAW_TRAINING_RAW_LIVE_MAX_CORE_LINES = 10_000
+RAW_TRAINING_RAW_LIVE_MAX_AGE_SECONDS = 15 * 60
+DEFAULT_BOTLOGS_SPACE_RECOVERY_MAX_DELETE_GB = 8.0
+DEFAULT_BOTLOGS_SPACE_RECOVERY_TARGET_FREE_GB = 64.0
 
 
 def _safe_float(raw: Any, default: float = 0.0) -> float:
@@ -63,6 +81,26 @@ def _safe_int(raw: Any, default: int = 0) -> int:
         return int(float(raw))
     except Exception:
         return int(default)
+
+
+def _as_dict(raw: Any) -> dict[str, Any]:
+    return raw if isinstance(raw, dict) else {}
+
+
+def _env_flag(name: str, default: bool = False) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return bool(default)
+    return str(raw).strip().lower() in {"1", "true", "yes", "on", "y"}
+
+
+def _disk_free_gb(path: Path) -> float:
+    try:
+        if not path.exists():
+            return 0.0
+        return round(shutil.disk_usage(path).free / (1024.0**3), 3)
+    except Exception:
+        return 0.0
 
 
 def _run_json(cmd: list[str], *, cwd: Path, timeout_sec: int) -> dict[str, Any]:
@@ -100,6 +138,46 @@ def _run_json(cmd: list[str], *, cwd: Path, timeout_sec: int) -> dict[str, Any]:
         "stdout_tail": "\n".join(stdout.splitlines()[-10:]),
         "stderr_tail": "\n".join(stderr.splitlines()[-10:]),
         "payload": payload,
+    }
+
+
+def _uniform_process_refresh(project_root: Path, *, apply: bool) -> dict[str, Any]:
+    if not _env_flag("BACKLOG_DRAIN_UNIFORM_PROCESS_AUTO_REFRESH", True):
+        return {
+            "enabled": False,
+            "reason": "BACKLOG_DRAIN_UNIFORM_PROCESS_AUTO_REFRESH=0",
+            "env_overrides": {},
+            "payload": {},
+            "write_result": {},
+        }
+    try:
+        payload = uniform_src.build_payload(project_root)
+        out_path = project_root / "governance" / "health" / uniform_src.DEFAULT_OUT_PATH.name
+        override_path = project_root / "config" / uniform_src.DEFAULT_OVERRIDE_PATH.name
+        write_result = uniform_src.write_outputs(
+            payload,
+            out_path=out_path,
+            override_path=override_path,
+            apply=bool(apply),
+        )
+        payload["write_result"] = write_result
+        env_overrides = uniform_src.env_dict(payload)
+    except Exception as exc:
+        return {
+            "enabled": False,
+            "reason": f"uniform_process_refresh_failed:{exc}",
+            "env_overrides": {},
+            "payload": {},
+            "write_result": {},
+        }
+    if apply:
+        os.environ.update({str(key): str(value) for key, value in env_overrides.items()})
+    return {
+        "enabled": True,
+        "reason": "refreshed_and_applied" if apply else "preview_only",
+        "env_overrides": env_overrides if apply else {},
+        "payload": payload,
+        "write_result": write_result,
     }
 
 
@@ -143,6 +221,156 @@ def _storage_snapshot(storage_control: dict[str, Any]) -> dict[str, Any]:
         "severity": str(storage_control.get("severity") or ""),
         "total_pending_lines": _safe_int(backpressure.get("total_pending_lines"), 0),
         "retention_debt_gb": round(_safe_float(storage.get("retention_debt_gb"), 0.0), 3),
+    }
+
+
+def _raw_training_root(raw_training_payload: dict[str, Any]) -> Path:
+    roots = raw_training_payload.get("scan_roots") if isinstance(raw_training_payload.get("scan_roots"), list) else []
+    for row in roots:
+        if not isinstance(row, dict):
+            continue
+        path = Path(str(row.get("path") or "")).expanduser()
+        if path and str(path) != "." and not raw_compaction_src._is_under_protected_volume(path):
+            return path
+    return raw_compaction_src.DEFAULT_BOT_LOGS_ROOT
+
+
+def _raw_training_control(
+    *,
+    project_root: Path,
+    storage_control: dict[str, Any],
+    raw_training_payload: dict[str, Any],
+    max_files: int,
+    max_gb: float,
+    min_candidate_gb: float,
+    pressure_ceiling: float,
+    bot_logs_min_free_gb: float,
+    local_min_free_gb: float,
+) -> dict[str, Any]:
+    summary = raw_training_payload.get("raw_summary") if isinstance(raw_training_payload.get("raw_summary"), dict) else {}
+    efficiency_contract = (
+        storage_control.get("storage_efficiency_contract")
+        if isinstance(storage_control.get("storage_efficiency_contract"), dict)
+        else {}
+    )
+    adaptive_wave = (
+        efficiency_contract.get("adaptive_raw_training_wave")
+        if isinstance(efficiency_contract.get("adaptive_raw_training_wave"), dict)
+        else {}
+    )
+    backpressure = storage_control.get("backpressure") if isinstance(storage_control.get("backpressure"), dict) else {}
+    raw_live = backpressure.get("raw_live") if isinstance(backpressure.get("raw_live"), dict) else {}
+    raw_root = _raw_training_root(raw_training_payload)
+    bot_logs_mounted = raw_root.exists() and not raw_compaction_src._is_under_protected_volume(raw_root)
+    bot_logs_free_gb = _disk_free_gb(raw_root)
+    local_free_gb = _disk_free_gb(project_root)
+    compression_candidate_count = _safe_int(summary.get("compression_candidate_count"), 0)
+    compression_candidate_gb = max(_safe_float(summary.get("compression_candidate_gb"), 0.0), 0.0)
+    contract_max_files = _safe_int(adaptive_wave.get("max_files"), 0)
+    contract_max_gb = _safe_float(adaptive_wave.get("max_gb"), 0.0)
+    effective_max_files = max(1, min(max(int(max_files), 1), contract_max_files if contract_max_files > 0 else max(int(max_files), 1)))
+    effective_max_gb = max(0.1, min(max(float(max_gb), 0.1), contract_max_gb if contract_max_gb > 0.0 else max(float(max_gb), 0.1)))
+    contract_manifest_refresh_required = bool(
+        adaptive_wave.get("manifest_refresh_required", False)
+        or efficiency_contract.get("manifest_first_required", False)
+        or efficiency_contract.get("raw_compaction_required", False)
+    )
+    contract_apply_allowed = bool(adaptive_wave.get("compaction_apply_allowed_now", True))
+    pressure_index = max(_safe_float(storage_control.get("pressure_index"), 0.0), 0.0)
+    storage_status = str(storage_control.get("overall_status") or "")
+    storage_severity = str(storage_control.get("severity") or "")
+    overlay_adjusted = bool(backpressure.get("overlay_adjusted", False))
+    raw_live_total = _safe_int(raw_live.get("total_pending_lines"), 0)
+    raw_live_core = _safe_int(raw_live.get("core_pending_lines"), 0)
+    raw_live_oldest = _safe_float(raw_live.get("oldest_pending_age_seconds"), 0.0)
+    raw_live_safe_for_compaction = bool(
+        raw_live
+        and raw_live_total <= RAW_TRAINING_RAW_LIVE_MAX_TOTAL_LINES
+        and raw_live_core <= RAW_TRAINING_RAW_LIVE_MAX_CORE_LINES
+        and raw_live_oldest <= RAW_TRAINING_RAW_LIVE_MAX_AGE_SECONDS
+    )
+    overlay_only_pressure = bool(overlay_adjusted and raw_live_safe_for_compaction)
+    stable_storage = bool(
+        (storage_status == "ready" and storage_severity in {"stable", "elevated", ""})
+        or overlay_only_pressure
+    )
+    pressure_blocked = bool(pressure_index > max(float(pressure_ceiling), 0.0) and not overlay_only_pressure)
+    blockers = ordered_unique(
+        [
+            "raw_training_compaction_health_missing" if not raw_training_payload else "",
+            "bot_logs_root_missing_or_protected" if not bot_logs_mounted else "",
+            "storage_not_ready_for_raw_compaction" if not stable_storage else "",
+            "storage_pressure_above_raw_compaction_ceiling" if pressure_blocked else "",
+            "bot_logs_free_space_below_raw_compaction_reserve" if bot_logs_free_gb < max(float(bot_logs_min_free_gb), 0.0) else "",
+            "local_free_space_below_raw_compaction_reserve" if local_free_gb < max(float(local_min_free_gb), 0.0) else "",
+            "raw_training_candidate_gb_below_wave_floor" if compression_candidate_gb < max(float(min_candidate_gb), 0.0) else "",
+            "raw_training_candidate_count_zero" if compression_candidate_count <= 0 else "",
+        ]
+    )
+    actionable = bool(not blockers)
+    safe_max_gb = max(0.0, min(float(effective_max_gb), max(bot_logs_free_gb - float(bot_logs_min_free_gb), 0.0)))
+    if actionable and safe_max_gb <= 0.0:
+        blockers.append("raw_training_batch_cap_zero_after_reserves")
+        actionable = False
+    if actionable and not contract_apply_allowed:
+        blockers.append("storage_efficiency_contract_apply_not_allowed_now")
+        actionable = False
+    manifest_refresh_actionable = bool(
+        raw_training_payload
+        and bot_logs_mounted
+        and compression_candidate_count > 0
+        and (
+            contract_manifest_refresh_required
+            or not actionable
+            or compression_candidate_gb >= max(float(min_candidate_gb), 0.0)
+        )
+    )
+    return {
+        "overall_status": "ready" if actionable else ("idle" if compression_candidate_count <= 0 else "blocked"),
+        "actionable": actionable,
+        "manifest_refresh_actionable": manifest_refresh_actionable,
+        "storage_efficiency_contract_active": bool(efficiency_contract.get("active", False)),
+        "adaptive_raw_training_wave": adaptive_wave,
+        "root": str(raw_root),
+        "bot_logs_mounted": bool(bot_logs_mounted),
+        "bot_logs_free_gb": bot_logs_free_gb,
+        "local_free_gb": local_free_gb,
+        "storage_status": storage_status,
+        "storage_severity": storage_severity,
+        "pressure_index": round(pressure_index, 3),
+        "pressure_ceiling": round(max(float(pressure_ceiling), 0.0), 3),
+        "pressure_source": "sql_overlay_ignored_for_raw_compaction" if overlay_only_pressure else "effective_storage_pressure",
+        "overlay_adjusted": bool(overlay_adjusted),
+        "overlay_only_pressure": bool(overlay_only_pressure),
+        "raw_live_safe_for_compaction": bool(raw_live_safe_for_compaction),
+        "raw_live": {
+            "total_pending_lines": int(raw_live_total),
+            "core_pending_lines": int(raw_live_core),
+            "oldest_pending_age_seconds": round(float(raw_live_oldest), 3),
+            "max_total_pending_lines": RAW_TRAINING_RAW_LIVE_MAX_TOTAL_LINES,
+            "max_core_pending_lines": RAW_TRAINING_RAW_LIVE_MAX_CORE_LINES,
+            "max_oldest_pending_age_seconds": RAW_TRAINING_RAW_LIVE_MAX_AGE_SECONDS,
+        },
+        "compression_candidate_count": compression_candidate_count,
+        "compression_candidate_gb": round(compression_candidate_gb, 3),
+        "max_files": max(int(effective_max_files), 0),
+        "max_gb": round(safe_max_gb if actionable else float(effective_max_gb), 3),
+        "requested_max_gb": round(max(float(max_gb), 0.0), 3),
+        "effective_max_gb": round(float(effective_max_gb), 3),
+        "contract_apply_allowed_now": bool(contract_apply_allowed),
+        "contract_manifest_refresh_required": bool(contract_manifest_refresh_required),
+        "min_candidate_gb": round(max(float(min_candidate_gb), 0.0), 3),
+        "bot_logs_min_free_gb": round(max(float(bot_logs_min_free_gb), 0.0), 3),
+        "local_min_free_gb": round(max(float(local_min_free_gb), 0.0), 3),
+        "blockers": blockers,
+        "recommended_actions": ordered_unique(
+            [
+                "run one bounded raw-training compaction wave while storage pressure is stable" if actionable else "",
+                "refresh raw-training manifest queues even while compaction is blocked by hot pressure" if manifest_refresh_actionable and not actionable else "",
+                "keep raw-training compaction manifest-only before any raw clear",
+                "stop raw compaction if pressure rises above the ceiling or BOT_LOGS free space falls below reserve",
+            ]
+        )[:5],
     }
 
 
@@ -247,6 +475,11 @@ def _lane_cmd(
     backpressure_command_timeout_seconds: int,
     maintenance_force: bool = False,
     sheriff_force: bool = False,
+    handoff_only: bool = False,
+    raw_training_root: str = "",
+    raw_training_max_files: int = DEFAULT_RAW_TRAINING_COMPACTION_MAX_FILES,
+    raw_training_max_gb: float = DEFAULT_RAW_TRAINING_COMPACTION_MAX_GB,
+    raw_training_jumbo_gb: float = DEFAULT_RAW_TRAINING_JUMBO_COMPACTION_GB,
 ) -> tuple[list[str], int]:
     if lane == "backpressure_slo_bot":
         return (
@@ -267,7 +500,7 @@ def _lane_cmd(
                 str(project_root / "scripts" / "ops" / "backpressure_drainer_fleet.py"),
                 "--apply",
                 "--ttl-seconds",
-                str(max(int(wait_timeout_seconds), 900)),
+                str(max(int(wait_timeout_seconds), 30)),
                 "--json",
             ],
             120,
@@ -277,13 +510,19 @@ def _lane_cmd(
             str(PYTHON_BIN),
             str(project_root / "scripts" / "ops" / "writer_cycle_coordinator.py"),
             "--apply",
-            "--poll-seconds",
-            str(max(float(poll_seconds), 0.1)),
-            "--wait-timeout-seconds",
-            str(max(float(wait_timeout_seconds), 0.0)),
-            "--command-timeout-seconds",
-            str(max(int(command_timeout_seconds), 1)),
         ]
+        if handoff_only:
+            return (cmd + ["--handoff-only", "--json"], 90)
+        cmd.extend(
+            [
+                "--poll-seconds",
+                str(max(float(poll_seconds), 0.1)),
+                "--wait-timeout-seconds",
+                str(max(float(wait_timeout_seconds), 0.0)),
+                "--command-timeout-seconds",
+                str(max(int(command_timeout_seconds), 1)),
+            ]
+        )
         if maintenance_force:
             cmd.append("--maintenance-force")
         cmd.append("--json")
@@ -306,7 +545,73 @@ def _lane_cmd(
         cmd.append("--json")
         timeout_sec = max(int(command_timeout_seconds), int(wait_timeout_seconds) + 240)
         return (cmd, timeout_sec)
+    if lane == "data_collection_storage_guard":
+        cmd = [
+            str(PYTHON_BIN),
+            str(project_root / "scripts" / "ops" / "data_collection_storage_guard.py"),
+            "--cleanup-duplicates",
+            "--json",
+        ]
+        timeout_sec = max(int(command_timeout_seconds), 420)
+        return (cmd, timeout_sec)
+    if lane == "botlogs_space_recovery":
+        cmd = [
+            str(PYTHON_BIN),
+            str(project_root / "scripts" / "ops" / "data_collection_storage_guard.py"),
+            "--cleanup-duplicates",
+            "--space-recovery",
+            "--space-recovery-max-delete-gb",
+            str(DEFAULT_BOTLOGS_SPACE_RECOVERY_MAX_DELETE_GB),
+            "--space-recovery-target-free-gb",
+            str(DEFAULT_BOTLOGS_SPACE_RECOVERY_TARGET_FREE_GB),
+            "--apply",
+            "--json",
+        ]
+        timeout_floor = 180 if int(command_timeout_seconds) < 300 else 900
+        timeout_sec = max(int(command_timeout_seconds), timeout_floor)
+        return (cmd, timeout_sec)
+    if lane in {"raw_training_compaction", "raw_training_manifest_refresh"}:
+        cmd = [
+            str(PYTHON_BIN),
+            str(project_root / "scripts" / "ops" / "raw_training_compaction_intelligence.py"),
+            "--max-files",
+            str(max(int(raw_training_max_files), 1)),
+            "--max-gb",
+            str(max(float(raw_training_max_gb), 0.1)),
+            "--jumbo-gb",
+            str(max(float(raw_training_jumbo_gb), 0.0)),
+        ]
+        if lane == "raw_training_compaction":
+            cmd.insert(2, "--apply")
+        if raw_training_root:
+            cmd.extend(["--bot-logs-root", raw_training_root])
+        cmd.append("--json")
+        timeout_floor = (180 if lane == "raw_training_compaction" else 120) if int(command_timeout_seconds) < 300 else (900 if lane == "raw_training_compaction" else 420)
+        timeout_sec = max(
+            int(command_timeout_seconds),
+            int(float(raw_training_max_gb) * (120.0 if lane == "raw_training_compaction" else 40.0)) + 240,
+            timeout_floor,
+        )
+        return (cmd, timeout_sec)
     raise ValueError(f"unsupported lane: {lane}")
+
+
+def _coordinator_completed_handoff_pending(coordinator_preview: dict[str, Any]) -> bool:
+    state = (
+        _as_dict(coordinator_preview.get("writer_state_after_wait"))
+        or _as_dict(coordinator_preview.get("writer_state_after_remediation"))
+        or _as_dict(coordinator_preview.get("writer_state_before"))
+    )
+    summary = _as_dict(coordinator_preview.get("summary"))
+    if "complete_lock_handoff_needed" in state:
+        return bool(state.get("complete_lock_handoff_needed"))
+    if str(state.get("active_source") or "") == "completed_lock_handoff_needed":
+        return True
+    return bool(
+        not state
+        and summary.get("completed_writer_lock_handoff_needed")
+        and not summary.get("completed_writer_lock_handoff_released")
+    )
 
 
 def _repair_plan(
@@ -317,15 +622,40 @@ def _repair_plan(
     drainer_preview: dict[str, Any],
     coordinator_preview: dict[str, Any],
     sheriff_preview: dict[str, Any],
+    raw_training_control: dict[str, Any],
     project_root: Path,
     poll_seconds: float,
     wait_timeout_seconds: float,
     command_timeout_seconds: int,
     backpressure_command_timeout_seconds: int,
+    raw_training_jumbo_gb: float,
 ) -> list[dict[str, Any]]:
     backpressure = storage_control.get("backpressure") if isinstance(storage_control.get("backpressure"), dict) else {}
     storage = storage_control.get("storage") if isinstance(storage_control.get("storage"), dict) else {}
     integrity = storage_control.get("data_integrity") if isinstance(storage_control.get("data_integrity"), dict) else {}
+    storage_efficiency = (
+        storage_control.get("storage_efficiency_contract")
+        if isinstance(storage_control.get("storage_efficiency_contract"), dict)
+        else {}
+    )
+    storage_plane = (
+        storage_control.get("storage_plane_contract")
+        if isinstance(storage_control.get("storage_plane_contract"), dict)
+        else storage_efficiency.get("storage_plane_phase_contract")
+        if isinstance(storage_efficiency.get("storage_plane_phase_contract"), dict)
+        else {}
+    )
+    storage_plane_phase = str(storage_plane.get("phase") or "")
+    storage_efficiency_metrics = (
+        storage_efficiency.get("metrics")
+        if isinstance(storage_efficiency.get("metrics"), dict)
+        else {}
+    )
+    space_recovery_selected_gb = _safe_float(storage_efficiency_metrics.get("safe_space_recovery_selected_gb"), 0.0)
+    space_recovery_deficit_gb = _safe_float(storage_efficiency_metrics.get("safe_space_recovery_deficit_gb"), 0.0)
+    reserve_rebuild_required = bool(storage_efficiency_metrics.get("storage_reserve_rebuild_required", False)) or bool(
+        storage_plane_phase == "storage_reserve_rebuild"
+    )
     overall_status = str(storage_control.get("overall_status") or "")
     severity = str(storage_control.get("severity") or "")
     pending_threshold = max(_safe_int(backpressure.get("pending_lines_threshold"), 15000), 1)
@@ -374,6 +704,50 @@ def _repair_plan(
             }
         )
 
+    space_recovery_needed = bool(
+        storage_plane_phase == "emergency_disk_guard"
+        or reserve_rebuild_required
+        or (space_recovery_selected_gb > 0.0 and space_recovery_deficit_gb > 0.0)
+    )
+    if space_recovery_needed:
+        cmd, timeout = _lane_cmd(
+            "botlogs_space_recovery",
+            project_root=project_root,
+            poll_seconds=poll_seconds,
+            wait_timeout_seconds=wait_timeout_seconds,
+            command_timeout_seconds=command_timeout_seconds,
+            backpressure_command_timeout_seconds=backpressure_command_timeout_seconds,
+        )
+        plan.append(
+            {
+                "name": "botlogs_space_recovery",
+                "reason": (
+                    f"storage_plane_phase={storage_plane_phase or 'unknown'},"
+                    f"selected_gb={space_recovery_selected_gb:.3f},deficit_gb={space_recovery_deficit_gb:.3f}"
+                ),
+                "cmd": cmd,
+                "timeout_sec": timeout,
+            }
+        )
+
+    if storage_plane_phase == "emergency_disk_guard":
+        cmd, timeout = _lane_cmd(
+            "data_collection_storage_guard",
+            project_root=project_root,
+            poll_seconds=poll_seconds,
+            wait_timeout_seconds=wait_timeout_seconds,
+            command_timeout_seconds=command_timeout_seconds,
+            backpressure_command_timeout_seconds=backpressure_command_timeout_seconds,
+        )
+        plan.append(
+            {
+                "name": "data_collection_storage_guard",
+                "reason": "storage_plane_phase=emergency_disk_guard",
+                "cmd": cmd,
+                "timeout_sec": timeout,
+            }
+        )
+
     if drainer_ready:
         cmd, timeout = _lane_cmd(
             "backpressure_drainer_fleet",
@@ -406,6 +780,9 @@ def _repair_plan(
         ]
     )
     if coordinator_reasons:
+        coordinator_handoff_only = _coordinator_completed_handoff_pending(coordinator_preview)
+        if coordinator_handoff_only:
+            coordinator_reasons = ordered_unique(["completed_writer_lock_handoff_pending"] + coordinator_reasons)
         cmd, timeout = _lane_cmd(
             "writer_cycle_coordinator",
             project_root=project_root,
@@ -414,6 +791,7 @@ def _repair_plan(
             command_timeout_seconds=command_timeout_seconds,
             backpressure_command_timeout_seconds=backpressure_command_timeout_seconds,
             maintenance_force=maintenance_force,
+            handoff_only=coordinator_handoff_only,
         )
         plan.append(
             {
@@ -454,6 +832,55 @@ def _repair_plan(
                 "timeout_sec": timeout,
             }
         )
+    if bool(raw_training_control.get("manifest_refresh_actionable", False)) and not bool(raw_training_control.get("actionable", False)):
+        cmd, timeout = _lane_cmd(
+            "raw_training_manifest_refresh",
+            project_root=project_root,
+            poll_seconds=poll_seconds,
+            wait_timeout_seconds=wait_timeout_seconds,
+            command_timeout_seconds=command_timeout_seconds,
+            backpressure_command_timeout_seconds=backpressure_command_timeout_seconds,
+            raw_training_root=str(raw_training_control.get("root") or ""),
+            raw_training_max_files=_safe_int(raw_training_control.get("max_files"), DEFAULT_RAW_TRAINING_COMPACTION_MAX_FILES),
+            raw_training_max_gb=_safe_float(raw_training_control.get("effective_max_gb"), DEFAULT_RAW_TRAINING_COMPACTION_MAX_GB),
+            raw_training_jumbo_gb=raw_training_jumbo_gb,
+        )
+        plan.append(
+            {
+                "name": "raw_training_manifest_refresh",
+                "reason": (
+                    f"candidate_gb={_safe_float(raw_training_control.get('compression_candidate_gb'), 0.0):.3f},"
+                    f"blocked_by={','.join(list(raw_training_control.get('blockers') or [])[:3]) or 'manifest_refresh_required'}"
+                ),
+                "cmd": cmd,
+                "timeout_sec": timeout,
+            }
+        )
+    if bool(raw_training_control.get("actionable", False)):
+        cmd, timeout = _lane_cmd(
+            "raw_training_compaction",
+            project_root=project_root,
+            poll_seconds=poll_seconds,
+            wait_timeout_seconds=wait_timeout_seconds,
+            command_timeout_seconds=command_timeout_seconds,
+            backpressure_command_timeout_seconds=backpressure_command_timeout_seconds,
+            raw_training_root=str(raw_training_control.get("root") or ""),
+            raw_training_max_files=_safe_int(raw_training_control.get("max_files"), DEFAULT_RAW_TRAINING_COMPACTION_MAX_FILES),
+            raw_training_max_gb=_safe_float(raw_training_control.get("max_gb"), DEFAULT_RAW_TRAINING_COMPACTION_MAX_GB),
+            raw_training_jumbo_gb=raw_training_jumbo_gb,
+        )
+        plan.append(
+            {
+                "name": "raw_training_compaction",
+                "reason": (
+                    f"candidate_gb={_safe_float(raw_training_control.get('compression_candidate_gb'), 0.0):.3f},"
+                    f"pressure={_safe_float(raw_training_control.get('pressure_index'), 0.0):.3f},"
+                    f"bot_logs_free_gb={_safe_float(raw_training_control.get('bot_logs_free_gb'), 0.0):.3f}"
+                ),
+                "cmd": cmd,
+                "timeout_sec": timeout,
+            }
+        )
     return plan
 
 
@@ -465,9 +892,29 @@ def _preview_bundle(
     wait_timeout_seconds: float,
     command_timeout_seconds: int,
     backpressure_command_timeout_seconds: int,
+    raw_training_max_files: int,
+    raw_training_max_gb: float,
+    raw_training_jumbo_gb: float,
+    raw_training_min_candidate_gb: float,
+    raw_training_pressure_ceiling: float,
+    raw_training_bot_logs_min_free_gb: float,
+    raw_training_local_min_free_gb: float,
 ) -> dict[str, Any]:
     health_root = project_root / "governance" / "health"
     backpressure_payload = load_json(health_root / "ingestion_backpressure_latest.json")
+    raw_training_payload = load_json(health_root / "raw_training_compaction_intelligence_latest.json")
+    data_collection_storage_guard = load_json(health_root / "data_collection_storage_guard_latest.json")
+    raw_training_control = _raw_training_control(
+        project_root=project_root,
+        storage_control=storage_control,
+        raw_training_payload=raw_training_payload,
+        max_files=raw_training_max_files,
+        max_gb=raw_training_max_gb,
+        min_candidate_gb=raw_training_min_candidate_gb,
+        pressure_ceiling=raw_training_pressure_ceiling,
+        bot_logs_min_free_gb=raw_training_bot_logs_min_free_gb,
+        local_min_free_gb=raw_training_local_min_free_gb,
+    )
     backpressure_preview = backpressure_src.build_payload(
         project_root,
         apply=False,
@@ -499,14 +946,19 @@ def _preview_bundle(
         drainer_preview=drainer_preview,
         coordinator_preview=coordinator_preview,
         sheriff_preview=sheriff_preview,
+        raw_training_control=raw_training_control,
         project_root=project_root,
         poll_seconds=poll_seconds,
         wait_timeout_seconds=wait_timeout_seconds,
         command_timeout_seconds=command_timeout_seconds,
         backpressure_command_timeout_seconds=backpressure_command_timeout_seconds,
+        raw_training_jumbo_gb=raw_training_jumbo_gb,
     )
     return {
         "backpressure_payload": backpressure_payload,
+        "raw_training_payload": raw_training_payload,
+        "data_collection_storage_guard": data_collection_storage_guard,
+        "raw_training_control": raw_training_control,
         "backpressure_preview": backpressure_preview,
         "drainer_preview": drainer_preview,
         "coordinator_preview": coordinator_preview,
@@ -518,9 +970,16 @@ def _preview_bundle(
 def _attempt_record(result: dict[str, Any]) -> dict[str, Any]:
     payload = result.get("payload") if isinstance(result.get("payload"), dict) else {}
     overall_status = str(payload.get("overall_status") or "")
+    step_name = str(payload.get("bot") or "")
     status = "ok"
     if bool(result.get("timed_out", False)):
         status = "timed_out"
+    elif (
+        step_name == "raw_training_manifest_refresh"
+        and int(result.get("rc", 0)) == 0
+        and overall_status in {"blocked", "needs_work", "idle"}
+    ):
+        status = "deferred"
     elif overall_status in {"applied_with_followups", "waiting_for_writer"}:
         status = "followup"
     elif overall_status and overall_status not in ACCEPTED_STEP_STATUSES:
@@ -528,7 +987,7 @@ def _attempt_record(result: dict[str, Any]) -> dict[str, Any]:
     elif int(result.get("rc", 0)) != 0 and overall_status not in ACCEPTED_STEP_STATUSES:
         status = "error"
     return {
-        "name": str(payload.get("bot") or ""),
+        "name": step_name,
         "status": status,
         "rc": int(result.get("rc", 1)),
         "timed_out": bool(result.get("timed_out", False)),
@@ -549,9 +1008,38 @@ def build_payload(
     max_cycles: int = DEFAULT_MAX_CYCLES,
     target_pending_lines: int = DEFAULT_TARGET_PENDING_LINES,
     target_retention_debt_gb: float = DEFAULT_TARGET_RETENTION_DEBT_GB,
+    raw_training_max_files: int = DEFAULT_RAW_TRAINING_COMPACTION_MAX_FILES,
+    raw_training_max_gb: float = DEFAULT_RAW_TRAINING_COMPACTION_MAX_GB,
+    raw_training_jumbo_gb: float = DEFAULT_RAW_TRAINING_JUMBO_COMPACTION_GB,
+    raw_training_min_candidate_gb: float = DEFAULT_RAW_TRAINING_MIN_CANDIDATE_GB,
+    raw_training_pressure_ceiling: float = DEFAULT_RAW_TRAINING_PRESSURE_CEILING,
+    raw_training_bot_logs_min_free_gb: float = DEFAULT_RAW_TRAINING_BOT_LOGS_MIN_FREE_GB,
+    raw_training_local_min_free_gb: float = DEFAULT_RAW_TRAINING_LOCAL_MIN_FREE_GB,
 ) -> dict[str, Any]:
     health_root = project_root / "governance" / "health"
     storage_control = load_json(health_root / "ingestion_storage_control_latest.json")
+    uniform_process = _uniform_process_refresh(project_root, apply=bool(apply))
+    uniform_env = uniform_process.get("env_overrides") if isinstance(uniform_process.get("env_overrides"), dict) else {}
+    if uniform_env:
+        poll_seconds = min(float(poll_seconds), _safe_float(uniform_env.get("BACKLOG_DRAIN_UNIFORM_WRITER_POLL_SECONDS"), float(poll_seconds)))
+        wait_timeout_seconds = min(
+            float(wait_timeout_seconds),
+            _safe_float(uniform_env.get("BACKLOG_DRAIN_UNIFORM_WAIT_TIMEOUT_SECONDS"), float(wait_timeout_seconds)),
+        )
+        max_cycles = max(int(max_cycles), _safe_int(uniform_env.get("STORAGE_BACKPRESSURE_AUTOPILOT_MAX_CYCLES"), int(max_cycles)))
+        command_timeout_seconds = max(
+            int(command_timeout_seconds),
+            _safe_int(uniform_env.get("SQL_LINK_SERVICE_MERGE_MAX_SECONDS_PER_CYCLE"), int(command_timeout_seconds)),
+        )
+    timing_contract = {
+        "mode": "quick_bounded" if max(float(wait_timeout_seconds), 0.0) <= 90.0 and max(int(command_timeout_seconds), 1) <= 240 else "standard",
+        "poll_seconds": round(max(float(poll_seconds), 0.1), 3),
+        "wait_timeout_seconds": round(max(float(wait_timeout_seconds), 0.0), 3),
+        "command_timeout_seconds": max(int(command_timeout_seconds), 1),
+        "backpressure_command_timeout_seconds": max(int(backpressure_command_timeout_seconds), 1),
+        "max_cycles": max(int(max_cycles), 1),
+        "heartbeat": "writes running/pending/applied JSON before and after apply; child commands have bounded per-lane timeouts",
+    }
 
     if not storage_control:
         return {
@@ -560,8 +1048,10 @@ def build_payload(
             "ok": False,
             "overall_status": "blocked",
             "apply_requested": bool(apply),
+            "timing_contract": timing_contract,
             "repair_plan": [],
             "attempts": [],
+            "uniform_process": uniform_process,
             "storage_control": {},
             "operator_followups": [
                 "refresh ingestion_storage_control first because the autopilot cannot make safe storage decisions without the latest health artifact"
@@ -586,9 +1076,18 @@ def build_payload(
         wait_timeout_seconds=wait_timeout_seconds,
         command_timeout_seconds=command_timeout_seconds,
         backpressure_command_timeout_seconds=backpressure_command_timeout_seconds,
+        raw_training_max_files=raw_training_max_files,
+        raw_training_max_gb=raw_training_max_gb,
+        raw_training_jumbo_gb=raw_training_jumbo_gb,
+        raw_training_min_candidate_gb=raw_training_min_candidate_gb,
+        raw_training_pressure_ceiling=raw_training_pressure_ceiling,
+        raw_training_bot_logs_min_free_gb=raw_training_bot_logs_min_free_gb,
+        raw_training_local_min_free_gb=raw_training_local_min_free_gb,
     )
     backpressure_preview = preview_bundle["backpressure_preview"]
     backpressure_payload = preview_bundle["backpressure_payload"]
+    raw_training_control = preview_bundle["raw_training_control"]
+    data_collection_storage_guard = preview_bundle["data_collection_storage_guard"]
     drainer_preview = preview_bundle["drainer_preview"]
     coordinator_preview = preview_bundle["coordinator_preview"]
     sheriff_preview = preview_bundle["sheriff_preview"]
@@ -679,6 +1178,13 @@ def build_payload(
                 wait_timeout_seconds=wait_timeout_seconds,
                 command_timeout_seconds=command_timeout_seconds,
                 backpressure_command_timeout_seconds=backpressure_command_timeout_seconds,
+                raw_training_max_files=raw_training_max_files,
+                raw_training_max_gb=raw_training_max_gb,
+                raw_training_jumbo_gb=raw_training_jumbo_gb,
+                raw_training_min_candidate_gb=raw_training_min_candidate_gb,
+                raw_training_pressure_ceiling=raw_training_pressure_ceiling,
+                raw_training_bot_logs_min_free_gb=raw_training_bot_logs_min_free_gb,
+                raw_training_local_min_free_gb=raw_training_local_min_free_gb,
             )
             current_repair_plan = current_bundle["repair_plan"]
 
@@ -689,9 +1195,18 @@ def build_payload(
             wait_timeout_seconds=wait_timeout_seconds,
             command_timeout_seconds=command_timeout_seconds,
             backpressure_command_timeout_seconds=backpressure_command_timeout_seconds,
+            raw_training_max_files=raw_training_max_files,
+            raw_training_max_gb=raw_training_max_gb,
+            raw_training_jumbo_gb=raw_training_jumbo_gb,
+            raw_training_min_candidate_gb=raw_training_min_candidate_gb,
+            raw_training_pressure_ceiling=raw_training_pressure_ceiling,
+            raw_training_bot_logs_min_free_gb=raw_training_bot_logs_min_free_gb,
+            raw_training_local_min_free_gb=raw_training_local_min_free_gb,
         )
         backpressure_preview = final_bundle["backpressure_preview"]
         backpressure_payload = final_bundle["backpressure_payload"]
+        raw_training_control = final_bundle["raw_training_control"]
+        data_collection_storage_guard = final_bundle["data_collection_storage_guard"]
         drainer_preview = final_bundle["drainer_preview"]
         coordinator_preview = final_bundle["coordinator_preview"]
         sheriff_preview = final_bundle["sheriff_preview"]
@@ -744,17 +1259,48 @@ def build_payload(
             ]
             + operator_followups
         )[:8]
+    always_armed = bool(
+        _env_flag("STORAGE_BACKPRESSURE_AUTOPILOT_ALWAYS_ARMED")
+        or _env_flag("BACKLOG_ACCELERATOR_ALWAYS_ARMED")
+    )
 
     summary_focus = sheriff_preview.get("focus") if isinstance(sheriff_preview.get("focus"), dict) else {}
+    storage_plane = (
+        storage_control.get("storage_plane_contract")
+        if isinstance(storage_control.get("storage_plane_contract"), dict)
+        else {}
+    )
+    safe_space_recovery = (
+        data_collection_storage_guard.get("safe_space_recovery")
+        if isinstance(data_collection_storage_guard.get("safe_space_recovery"), dict)
+        else {}
+    )
     payload = {
         "timestamp_utc": iso_now(),
         "schema_version": 1,
         "ok": ok,
         "overall_status": overall_status,
         "apply_requested": bool(apply),
+        "timing_contract": timing_contract,
         "repair_plan": repair_plan,
         "attempts": attempts,
         "cycle_records": cycle_records,
+        "uniform_process": uniform_process,
+        "always_armed_contract": {
+            "enabled": always_armed,
+            "policy": "recurring_storage_backpressure_autopilot_with_governed_single_writer_handoff",
+            "accelerators_enabled": bool(_env_flag("BACKLOG_ACCELERATOR_ENABLED", True)),
+            "queue_autodrain_enabled": bool(_env_flag("QUEUE_BACKPRESSURE_AUTODRAIN_ENABLED", True)),
+            "drainer_fleet_enabled": bool(_env_flag("BACKPRESSURE_DRAINER_FLEET_AUTOPILOT_ENABLED", True)),
+            "single_writer_only": True,
+            "uniform_process_enabled": bool(uniform_process.get("enabled", False)),
+            "never_touch_protected_volumes": ["/Volumes/VIDEO"],
+            "hold_conditions": [
+                "another storage autopilot or writer coordinator holds the lock",
+                "memory enters hard or swap relief",
+                "safe storage reserve would be breached",
+            ],
+        },
         "storage_control": storage_control,
         "clearance_targets": clearance_targets,
         "clearance_state": {
@@ -764,6 +1310,7 @@ def build_payload(
             "steady_state_ready": bool((((storage_control.get("steady_state") or {}).get("target_status") or {}).get("steady_state_ready", False))),
         },
         "previews": {
+            "storage_plane": storage_plane,
             "backpressure_slo_bot": {
                 "overall_status": str(backpressure_preview.get("overall_status") or ""),
                 "actionable": bool(backpressure_preview.get("actionable", False)),
@@ -784,6 +1331,19 @@ def build_payload(
                     else ""
                 ),
             },
+            "botlogs_space_recovery": {
+                "enabled": bool(safe_space_recovery.get("enabled", False)),
+                "candidate_count": _safe_int(safe_space_recovery.get("candidate_count"), 0),
+                "candidate_gb": _safe_float(safe_space_recovery.get("candidate_gb"), 0.0),
+                "selected_count": _safe_int(safe_space_recovery.get("selected_count"), 0),
+                "selected_gb": _safe_float(safe_space_recovery.get("selected_gb"), 0.0),
+                "target_free_gb": _safe_float(safe_space_recovery.get("target_free_gb"), 0.0),
+                "target_free_deficit_gb": _safe_float(safe_space_recovery.get("target_free_deficit_gb"), 0.0),
+                "effective_max_delete_gb": _safe_float(safe_space_recovery.get("effective_max_delete_gb"), 0.0),
+                "reserve_rebuild_required": bool(safe_space_recovery.get("reserve_rebuild_required", False)),
+                "deleted_count": _safe_int(safe_space_recovery.get("deleted_count"), 0),
+                "deleted_gb": _safe_float(safe_space_recovery.get("deleted_gb"), 0.0),
+            },
             "retention_debt_sheriff": {
                 "overall_status": str(sheriff_preview.get("overall_status") or ""),
                 "actionable": bool(sheriff_preview.get("actionable", False)),
@@ -791,18 +1351,46 @@ def build_payload(
                 "targeted_retention_debt_gb": round(_safe_float(summary_focus.get("targeted_retention_debt_gb"), 0.0), 3),
                 "severe_focus": bool(summary_focus.get("severe_focus", False)),
             },
+            "raw_training_compaction": {
+                "overall_status": str(raw_training_control.get("overall_status") or ""),
+                "actionable": bool(raw_training_control.get("actionable", False)),
+                "manifest_refresh_actionable": bool(raw_training_control.get("manifest_refresh_actionable", False)),
+                "storage_efficiency_contract_active": bool(raw_training_control.get("storage_efficiency_contract_active", False)),
+                "adaptive_raw_training_wave": (
+                    raw_training_control.get("adaptive_raw_training_wave")
+                    if isinstance(raw_training_control.get("adaptive_raw_training_wave"), dict)
+                    else {}
+                ),
+                "compression_candidate_count": _safe_int(raw_training_control.get("compression_candidate_count"), 0),
+                "compression_candidate_gb": _safe_float(raw_training_control.get("compression_candidate_gb"), 0.0),
+                "max_files": _safe_int(raw_training_control.get("max_files"), 0),
+                "max_gb": _safe_float(raw_training_control.get("max_gb"), 0.0),
+                "effective_max_gb": _safe_float(raw_training_control.get("effective_max_gb"), 0.0),
+                "contract_apply_allowed_now": bool(raw_training_control.get("contract_apply_allowed_now", False)),
+                "contract_manifest_refresh_required": bool(raw_training_control.get("contract_manifest_refresh_required", False)),
+                "bot_logs_free_gb": _safe_float(raw_training_control.get("bot_logs_free_gb"), 0.0),
+                "local_free_gb": _safe_float(raw_training_control.get("local_free_gb"), 0.0),
+                "pressure_source": str(raw_training_control.get("pressure_source") or ""),
+                "overlay_only_pressure": bool(raw_training_control.get("overlay_only_pressure", False)),
+                "raw_live": raw_training_control.get("raw_live") if isinstance(raw_training_control.get("raw_live"), dict) else {},
+                "blockers": list(raw_training_control.get("blockers") or []),
+            },
         },
         "operator_followups": operator_followups,
         "recommended_actions": ordered_unique(
             [
                 "keep the storage backpressure autopilot on a timer so drain, retention, and governor changes stay coordinated",
+                "keep accelerators always armed; let the single-writer and memory guards decide when to apply work" if always_armed else "",
                 "let the autopilot spend multiple repair cycles in one maintenance window so severe backlog and explanation debt are burned down instead of merely nudged",
                 "leave the specialist storage bots available for manual use, but let the autopilot own the recurring lane",
                 "treat explanation shard debt as a separate signal from broad backlog so retention work stays targeted",
                 "when most of the backlog sits in a few core files, keep the writer focused there until concentration comes down instead of pretending the whole plane is equally stuck",
                 "use the backpressure drainer fleet as a request router; keep SQLite concurrency at one writer",
+                "let raw-training compaction run as bounded storage waves only when storage pressure is stable",
+                "run safe BOT_LOGS reserve rebuild before raw compaction whenever the storage plane is below its free-space target",
             ]
             + operator_followups[:3]
+            + list(raw_training_control.get("recommended_actions") or [])[:2]
         )[:8],
         "core_focus": core_focus,
         "metrics": {
@@ -822,6 +1410,20 @@ def build_payload(
             "retention_debt_gb": _safe_float(((storage_control.get("storage") or {}).get("retention_debt_gb")), 0.0),
             "core_focus_top3_share": _safe_float(core_focus.get("top3_share"), 0.0),
             "core_focus_concentrated": bool(core_focus.get("concentrated_core_backlog", False)),
+            "raw_training_actionable": bool(raw_training_control.get("actionable", False)),
+            "raw_training_manifest_refresh_actionable": bool(raw_training_control.get("manifest_refresh_actionable", False)),
+            "storage_plane_phase": str(storage_plane.get("phase") or ""),
+            "storage_emergency_disk_guard": bool(storage_plane.get("phase") == "emergency_disk_guard"),
+            "raw_training_candidate_gb": _safe_float(raw_training_control.get("compression_candidate_gb"), 0.0),
+            "raw_training_candidate_count": _safe_int(raw_training_control.get("compression_candidate_count"), 0),
+            "raw_training_bot_logs_free_gb": _safe_float(raw_training_control.get("bot_logs_free_gb"), 0.0),
+            "botlogs_space_recovery_candidate_gb": _safe_float(safe_space_recovery.get("candidate_gb"), 0.0),
+            "botlogs_space_recovery_selected_gb": _safe_float(safe_space_recovery.get("selected_gb"), 0.0),
+            "botlogs_space_recovery_deleted_gb": _safe_float(safe_space_recovery.get("deleted_gb"), 0.0),
+            "botlogs_space_recovery_target_free_gb": _safe_float(safe_space_recovery.get("target_free_gb"), 0.0),
+            "botlogs_space_recovery_deficit_gb": _safe_float(safe_space_recovery.get("target_free_deficit_gb"), 0.0),
+            "botlogs_space_recovery_reserve_rebuild_required": bool(safe_space_recovery.get("reserve_rebuild_required", False)),
+            "quick_bounded_mode": bool(timing_contract["mode"] == "quick_bounded"),
         },
     }
     return payload
@@ -860,6 +1462,11 @@ def main() -> int:
         default=int(os.getenv("STORAGE_BACKPRESSURE_AUTOPILOT_MAX_CYCLES", str(DEFAULT_MAX_CYCLES))),
     )
     parser.add_argument(
+        "--quick-bounded",
+        action="store_true",
+        help="Use a short operator-facing maintenance pass with tight child timeouts and one cycle.",
+    )
+    parser.add_argument(
         "--target-pending-lines",
         type=int,
         default=int(os.getenv("STORAGE_BACKPRESSURE_AUTOPILOT_TARGET_PENDING_LINES", str(DEFAULT_TARGET_PENDING_LINES))),
@@ -869,8 +1476,49 @@ def main() -> int:
         type=float,
         default=float(os.getenv("STORAGE_BACKPRESSURE_AUTOPILOT_TARGET_RETENTION_DEBT_GB", str(DEFAULT_TARGET_RETENTION_DEBT_GB))),
     )
+    parser.add_argument(
+        "--raw-training-max-files",
+        type=int,
+        default=int(os.getenv("STORAGE_BACKPRESSURE_AUTOPILOT_RAW_TRAINING_MAX_FILES", str(DEFAULT_RAW_TRAINING_COMPACTION_MAX_FILES))),
+    )
+    parser.add_argument(
+        "--raw-training-max-gb",
+        type=float,
+        default=float(os.getenv("STORAGE_BACKPRESSURE_AUTOPILOT_RAW_TRAINING_MAX_GB", str(DEFAULT_RAW_TRAINING_COMPACTION_MAX_GB))),
+    )
+    parser.add_argument(
+        "--raw-training-jumbo-gb",
+        type=float,
+        default=float(os.getenv("STORAGE_BACKPRESSURE_AUTOPILOT_RAW_TRAINING_JUMBO_GB", str(DEFAULT_RAW_TRAINING_JUMBO_COMPACTION_GB))),
+    )
+    parser.add_argument(
+        "--raw-training-min-candidate-gb",
+        type=float,
+        default=float(os.getenv("STORAGE_BACKPRESSURE_AUTOPILOT_RAW_TRAINING_MIN_CANDIDATE_GB", str(DEFAULT_RAW_TRAINING_MIN_CANDIDATE_GB))),
+    )
+    parser.add_argument(
+        "--raw-training-pressure-ceiling",
+        type=float,
+        default=float(os.getenv("STORAGE_BACKPRESSURE_AUTOPILOT_RAW_TRAINING_PRESSURE_CEILING", str(DEFAULT_RAW_TRAINING_PRESSURE_CEILING))),
+    )
+    parser.add_argument(
+        "--raw-training-bot-logs-min-free-gb",
+        type=float,
+        default=float(os.getenv("STORAGE_BACKPRESSURE_AUTOPILOT_RAW_TRAINING_BOT_LOGS_MIN_FREE_GB", str(DEFAULT_RAW_TRAINING_BOT_LOGS_MIN_FREE_GB))),
+    )
+    parser.add_argument(
+        "--raw-training-local-min-free-gb",
+        type=float,
+        default=float(os.getenv("STORAGE_BACKPRESSURE_AUTOPILOT_RAW_TRAINING_LOCAL_MIN_FREE_GB", str(DEFAULT_RAW_TRAINING_LOCAL_MIN_FREE_GB))),
+    )
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args()
+    if bool(args.quick_bounded):
+        args.poll_seconds = min(float(args.poll_seconds), 5.0)
+        args.wait_timeout_seconds = min(float(args.wait_timeout_seconds), 75.0)
+        args.command_timeout_seconds = min(int(args.command_timeout_seconds), 180)
+        args.backpressure_command_timeout_seconds = min(int(args.backpressure_command_timeout_seconds), 120)
+        args.max_cycles = min(int(args.max_cycles), 1)
 
     project_root = Path(args.project_root).resolve()
     out_file = Path(args.out_file).expanduser()
@@ -954,6 +1602,13 @@ def main() -> int:
                 max_cycles=int(args.max_cycles),
                 target_pending_lines=int(args.target_pending_lines),
                 target_retention_debt_gb=float(args.target_retention_debt_gb),
+                raw_training_max_files=int(args.raw_training_max_files),
+                raw_training_max_gb=float(args.raw_training_max_gb),
+                raw_training_jumbo_gb=float(args.raw_training_jumbo_gb),
+                raw_training_min_candidate_gb=float(args.raw_training_min_candidate_gb),
+                raw_training_pressure_ceiling=float(args.raw_training_pressure_ceiling),
+                raw_training_bot_logs_min_free_gb=float(args.raw_training_bot_logs_min_free_gb),
+                raw_training_local_min_free_gb=float(args.raw_training_local_min_free_gb),
             )
             preview_payload["host_lock_file"] = str(host_lock_file)
             preview_payload["route_lock_file"] = str(lock_file)
@@ -968,6 +1623,7 @@ def main() -> int:
                         "overall_status": "running",
                         "busy": True,
                         "apply_requested": True,
+                        "quick_bounded": bool(args.quick_bounded),
                     }
                 )
                 write_payload(out_file, running_payload)
@@ -981,6 +1637,13 @@ def main() -> int:
                     max_cycles=int(args.max_cycles),
                     target_pending_lines=int(args.target_pending_lines),
                     target_retention_debt_gb=float(args.target_retention_debt_gb),
+                    raw_training_max_files=int(args.raw_training_max_files),
+                    raw_training_max_gb=float(args.raw_training_max_gb),
+                    raw_training_jumbo_gb=float(args.raw_training_jumbo_gb),
+                    raw_training_min_candidate_gb=float(args.raw_training_min_candidate_gb),
+                    raw_training_pressure_ceiling=float(args.raw_training_pressure_ceiling),
+                    raw_training_bot_logs_min_free_gb=float(args.raw_training_bot_logs_min_free_gb),
+                    raw_training_local_min_free_gb=float(args.raw_training_local_min_free_gb),
                 )
                 payload["host_lock_file"] = str(host_lock_file)
                 payload["route_lock_file"] = str(lock_file)

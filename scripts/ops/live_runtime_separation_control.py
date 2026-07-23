@@ -17,6 +17,9 @@ else:
 
 
 DEFAULT_OUT_PATH = PROJECT_ROOT / "governance" / "health" / "live_runtime_separation_control_latest.json"
+OVERLAY_RAW_LIVE_MAX_CORE_LINES = 10_000
+OVERLAY_RAW_LIVE_MAX_TOTAL_LINES = 15_000
+OVERLAY_RAW_LIVE_MAX_AGE_SECONDS = 15 * 60
 
 
 def _safe_float(value: Any, default: float = 0.0) -> float:
@@ -24,6 +27,95 @@ def _safe_float(value: Any, default: float = 0.0) -> float:
         return float(value)
     except (TypeError, ValueError):
         return default
+
+
+def _safe_int(value: Any, default: int = 0) -> int:
+    try:
+        return int(float(value))
+    except (TypeError, ValueError):
+        return int(default)
+
+
+def _overlay_only_storage_relief(storage_control: dict[str, Any], runtime_throttle: dict[str, Any]) -> dict[str, Any]:
+    backpressure = storage_control.get("backpressure") if isinstance(storage_control.get("backpressure"), dict) else {}
+    effective_raw_live = backpressure.get("effective_raw_live") if isinstance(backpressure.get("effective_raw_live"), dict) else {}
+    effective_source = str(backpressure.get("effective_raw_live_source") or effective_raw_live.get("source") or "").strip()
+    use_effective = bool(
+        backpressure.get("overlay_adjusted", False)
+        and (backpressure.get("overlay_pressure_clear", False) or effective_source == "fresh_empty_sql_ingestion_overlay")
+        and effective_raw_live
+    )
+    raw_live = effective_raw_live if use_effective else backpressure.get("raw_live") if isinstance(backpressure.get("raw_live"), dict) else {}
+    raw_core = _safe_int(raw_live.get("core_pending_lines"), 0)
+    raw_total = _safe_int(raw_live.get("total_pending_lines"), 0)
+    raw_oldest = _safe_float(raw_live.get("oldest_pending_age_seconds"), 0.0)
+    raw_live_clear = bool(
+        raw_live
+        and raw_core <= OVERLAY_RAW_LIVE_MAX_CORE_LINES
+        and raw_total <= OVERLAY_RAW_LIVE_MAX_TOTAL_LINES
+        and raw_oldest <= OVERLAY_RAW_LIVE_MAX_AGE_SECONDS
+    )
+    overlay_adjusted = bool(backpressure.get("overlay_adjusted", False))
+
+    runtime_snapshot = runtime_throttle.get("runtime_snapshot") if isinstance(runtime_throttle.get("runtime_snapshot"), dict) else {}
+    runtime_storage = runtime_snapshot.get("storage_pressure") if isinstance(runtime_snapshot.get("storage_pressure"), dict) else {}
+    paper_capacity = (
+        runtime_throttle.get("paper_capacity_contract")
+        if isinstance(runtime_throttle.get("paper_capacity_contract"), dict)
+        else {}
+    )
+    capacity_relief = (
+        paper_capacity.get("storage_overlay_capacity_relief")
+        if isinstance(paper_capacity.get("storage_overlay_capacity_relief"), dict)
+        else {}
+    )
+    runtime_relief_active = bool(runtime_storage.get("overlay_capacity_relief", False) or capacity_relief.get("active", False))
+    active = bool((overlay_adjusted and raw_live_clear) or (runtime_relief_active and raw_live_clear))
+    return {
+        "active": active,
+        "overlay_adjusted": overlay_adjusted,
+        "runtime_overlay_capacity_relief": runtime_relief_active,
+        "effective_raw_live_used": use_effective,
+        "effective_raw_live_source": effective_source,
+        "raw_live_clear": raw_live_clear,
+        "raw_live": {
+            "core_pending_lines": raw_core,
+            "total_pending_lines": raw_total,
+            "oldest_pending_age_seconds": round(raw_oldest, 3),
+            "max_core_pending_lines": OVERLAY_RAW_LIVE_MAX_CORE_LINES,
+            "max_total_pending_lines": OVERLAY_RAW_LIVE_MAX_TOTAL_LINES,
+            "max_oldest_pending_age_seconds": OVERLAY_RAW_LIVE_MAX_AGE_SECONDS,
+        },
+        "policy": "treat SQL-overlay-only pressure as bounded for live separation when raw live backlog is cool",
+    }
+
+
+def _near_steady_state_storage_ready(storage_control: dict[str, Any], storage_overlay_relief: dict[str, Any]) -> bool:
+    if str(storage_control.get("overall_status") or "").strip().lower() != "ready":
+        return False
+    if str(storage_control.get("severity") or "").strip().lower() != "stable":
+        return False
+    external_route = storage_control.get("external_route_verification") if isinstance(storage_control.get("external_route_verification"), dict) else {}
+    if str(external_route.get("verification_state") or "").strip().lower() not in {
+        "ready",
+        "verified",
+        "curated_ready",
+        "active_passthrough",
+        "active_local_ready",
+    }:
+        return False
+    steady_state = storage_control.get("steady_state") if isinstance(storage_control.get("steady_state"), dict) else {}
+    target_status = steady_state.get("target_status") if isinstance(steady_state.get("target_status"), dict) else {}
+    target_breaches = {str(item) for item in target_status.get("target_breaches") or []}
+    raw_live_clear = bool((storage_overlay_relief.get("raw_live") or {}) and storage_overlay_relief.get("raw_live_clear", False))
+    return bool(
+        raw_live_clear
+        and target_breaches.issubset({"pressure_index"})
+        and _safe_int(target_status.get("target_breach_count"), len(target_breaches)) <= 1
+        and _safe_float(storage_control.get("backpressure_quality_score"), 0.0) >= 92.0
+        and _safe_float(storage_control.get("recovery_quality_score"), 0.0) >= 88.0
+        and _safe_float(storage_control.get("pressure_index"), 0.0) <= 0.50
+    )
 
 
 def _cold_lane_contract(
@@ -122,6 +214,7 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, live_fresh_minutes: floa
     training_runtime = load_json(health_root / "training_runtime_control_latest.json")
     storage_tier = load_json(health_root / "storage_tier_policy_latest.json")
     storage_control = load_json(health_root / "ingestion_storage_control_latest.json")
+    runtime_throttle = load_json(health_root / "runtime_throttle_control_latest.json")
     resource_guard = load_json(health_root / "resource_guard_latest.json")
     coverage_seed = load_json(walk_root / "coverage_seed_latest.json")
     process_watchdog = load_json(health_root / "process_watchdog_latest.json")
@@ -136,15 +229,20 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, live_fresh_minutes: floa
     hot_path_over_budget_bytes = int(((storage_tier.get("pressure") or {}).get("hot_path_over_budget_bytes", 0)) or 0)
     storage_target_status = storage_control.get("steady_state", {}).get("target_status", {}) if isinstance(storage_control.get("steady_state"), dict) else {}
     external_route = storage_control.get("external_route_verification") if isinstance(storage_control.get("external_route_verification"), dict) else {}
-    storage_steady_state_ready = bool(
+    storage_steady_state_ready_strict = bool(
         str(storage_control.get("overall_status") or "").strip().lower() == "ready"
         and str(storage_control.get("severity") or "").strip().lower() == "stable"
         and bool(storage_target_status.get("steady_state_ready", False))
         and _safe_float(storage_control.get("backpressure_quality_score"), 0.0) >= 95.0
         and _safe_float(storage_control.get("recovery_quality_score"), 0.0) >= 88.0
-        and str(external_route.get("verification_state") or "").strip().lower() in {"ready", "verified", "curated_ready", "active_passthrough"}
+        and str(external_route.get("verification_state") or "").strip().lower()
+        in {"ready", "verified", "curated_ready", "active_passthrough", "active_local_ready"}
     )
-    storage_blocked = bool(storage_blocked_raw and not storage_steady_state_ready)
+    storage_overlay_relief = _overlay_only_storage_relief(storage_control, runtime_throttle)
+    storage_near_steady_state_ready = _near_steady_state_storage_ready(storage_control, storage_overlay_relief)
+    storage_steady_state_ready = bool(storage_steady_state_ready_strict or storage_near_steady_state_ready)
+    storage_bounded_by_control = bool(storage_steady_state_ready or storage_overlay_relief.get("active", False))
+    storage_blocked = bool(storage_blocked_raw and not storage_bounded_by_control)
     coverage_shortfall_bots = int(coverage_seed.get("coverage_shortfall_bots", 0) or 0)
     swap_used_gb = float(resource_guard.get("swap_used_gb", 0.0) or 0.0)
     restart_storms = len(process_watchdog.get("restart_storms") or [])
@@ -152,7 +250,7 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, live_fresh_minutes: floa
     contention_signals = {
         "training_runtime_blocked": training_blocked,
         "storage_hot_path_blocked": storage_blocked,
-        "storage_hot_path_bounded_by_control": bool(storage_blocked_raw and storage_steady_state_ready),
+        "storage_hot_path_bounded_by_control": bool(storage_blocked_raw and storage_bounded_by_control),
         "coverage_shortfall_present": coverage_shortfall_bots > 0,
         "swap_pressure_elevated": swap_used_gb >= 8.0,
         "restart_storm_present": restart_storms > 0,
@@ -189,9 +287,62 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, live_fresh_minutes: floa
     elif coverage_shortfall_bots > 0:
         clearance_state = "coverage_cycles_ready"
 
+    managed_cold_lane_deferred = bool(
+        live_ready
+        and coverage_shortfall_bots > 0
+        and not training_blocked
+        and not storage_blocked
+        and swap_used_gb < 8.0
+        and restart_storms <= 0
+        and str(coverage_clearance.get("overall_status") or "") in {"ready", "degraded"}
+        and int(coverage_clearance.get("stage_candidate_count") or 0) >= min(coverage_shortfall_bots, 1)
+        and str(cold_lane_contract.get("refresh_state") or "") in {"resource_guard_blocked", "already_running"}
+        and bool(cold_lane_contract.get("refresh_required", False))
+    )
+    coverage_launch_contract = (
+        coverage_clearance.get("launch_contract") if isinstance(coverage_clearance.get("launch_contract"), dict) else {}
+    )
+    managed_coverage_stage_deferred = bool(
+        live_ready
+        and coverage_shortfall_bots > 0
+        and not training_blocked
+        and not storage_blocked
+        and swap_used_gb < 8.0
+        and restart_storms <= 0
+        and str(coverage_clearance.get("overall_status") or "") in {"ready", "degraded", "needs_cycles"}
+        and int(coverage_clearance.get("stage_candidate_count") or 0) >= min(coverage_shortfall_bots, 1)
+        and str(cold_lane_contract.get("overall_status") or "") == "ready"
+        and str(cold_lane_contract.get("refresh_state") or "") in {"fresh_strategy_research_reused", "not_required", "auth_success", "ready"}
+        and str(coverage_clearance.get("launch_state") or "") in {"stage_only_training_blocked", "stage_only_off_hours", "stage_only", "manual"}
+        and (
+            bool(coverage_launch_contract.get("training_launch_blocked", False))
+            or bool(coverage_clearance.get("off_hours_preferred", False))
+            or str(coverage_launch_contract.get("launch_guard") or "") == "off_hours_only"
+        )
+    )
+    if managed_cold_lane_deferred or managed_coverage_stage_deferred:
+        clearance_state = "managed_cold_lane_deferred" if managed_cold_lane_deferred else "managed_coverage_stage_deferred"
+        overall_status = "ready"
+
+    guarded_live_read_only = bool(
+        clearance_state == "protect_live"
+        and live_ready
+        and training_blocked
+        and not storage_blocked
+        and coverage_shortfall_bots <= 0
+        and swap_used_gb < 8.0
+        and restart_storms <= 0
+        and str(cold_lane_contract.get("overall_status") or "") == "ready"
+    )
+    if guarded_live_read_only:
+        clearance_state = "guarded_live_read_only"
+        overall_status = "ready"
+
     isolation_grade = "shared_host"
     if contention_score <= 0 and coverage_shortfall_bots <= 0 and not training_blocked and not storage_blocked:
         isolation_grade = "clear"
+    elif managed_cold_lane_deferred or managed_coverage_stage_deferred:
+        isolation_grade = "managed_cold_lane"
     elif bool(cold_lane_contract.get("refresh_required", False)) and str(cold_lane_contract.get("overall_status") or "") == "ready":
         isolation_grade = "soft_cold_lane"
 
@@ -241,6 +392,12 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, live_fresh_minutes: floa
             "swap_used_gb": round(float(swap_used_gb), 3),
             "restart_storms": restart_storms,
             "storage_steady_state_ready": bool(storage_steady_state_ready),
+            "storage_steady_state_strict_ready": bool(storage_steady_state_ready_strict),
+            "storage_near_steady_state_ready": bool(storage_near_steady_state_ready),
+            "storage_overlay_relief": storage_overlay_relief,
+            "guarded_live_read_only": guarded_live_read_only,
+            "managed_cold_lane_deferred": managed_cold_lane_deferred,
+            "managed_coverage_stage_deferred": managed_coverage_stage_deferred,
             "signals": contention_signals,
         },
         "release_contract": {

@@ -30,7 +30,7 @@ ALLOWLIST_SNIPPETS = (
 SKIP_DIRS = {
     ".git",
     ".venv",
-    ".venv312",
+    ".venv314",
     "__pycache__",
     "models",
     "exports",

@@ -134,6 +134,7 @@ def _writer_progress_payload(writer_cycle: dict[str, Any], progress: dict[str, A
     pending_shards = max(_safe_int(current.get("pending_shard_count"), 0), _safe_int(progress.get("pending_shard_count"), 0))
     timed_out_shards = max(_safe_int(current.get("timed_out_shard_count"), 0), _safe_int(progress.get("timed_out_shard_count"), 0))
     shard_link_plan = progress.get("shard_link_plan") if isinstance(progress.get("shard_link_plan"), dict) else {}
+    lane_contract = progress.get("shard_writer_lane_contract") if isinstance(progress.get("shard_writer_lane_contract"), dict) else {}
     lock_held = bool(lock_state.get("held", False) or current.get("writer_lock_held", False))
     current_step = str(current.get("effective_current_step") or current.get("current_step") or progress.get("current_step") or "")
     lock_owner = str(lock_state.get("owner") or "") or str(current.get("writer_lock_owner") or progress.get("writer_lock_owner") or "")
@@ -160,7 +161,17 @@ def _writer_progress_payload(writer_cycle: dict[str, Any], progress: dict[str, A
     if progress_orphaned:
         active = False
 
+    coordinator_summary = _nested(writer_cycle, "summary")
     child_writer_active = bool(current.get("child_writer_active", False))
+    completed_handoff_needed = bool(
+        current.get("complete_lock_handoff_needed")
+        or current.get("completed_lock_handoff_needed")
+        or str(current.get("active_source") or "") == "completed_lock_handoff_needed"
+        or (
+            bool(coordinator_summary.get("completed_writer_lock_handoff_needed", False))
+            and not bool(coordinator_summary.get("completed_writer_lock_handoff_released", False))
+        )
+    )
     service_idle_holding_lock = bool(
         lock_held
         and not running
@@ -171,6 +182,8 @@ def _writer_progress_payload(writer_cycle: dict[str, Any], progress: dict[str, A
 
     if progress_orphaned:
         state = "orphaned_progress"
+    elif completed_handoff_needed:
+        state = "completed_lock_handoff_needed"
     elif service_idle_holding_lock:
         state = "service_idle_holding_lock"
     elif not active:
@@ -182,7 +195,6 @@ def _writer_progress_payload(writer_cycle: dict[str, Any], progress: dict[str, A
     else:
         state = "active_progressing"
 
-    coordinator_summary = _nested(writer_cycle, "summary")
     return {
         "state": state,
         "active": bool(active),
@@ -199,8 +211,13 @@ def _writer_progress_payload(writer_cycle: dict[str, Any], progress: dict[str, A
         "timed_out_shards": list(progress.get("timed_out_shards") or [])[:16],
         "shard_link_plan_policy": str(shard_link_plan.get("policy") or ""),
         "shard_link_plan_order": list(shard_link_plan.get("planned_order") or [])[:32],
+        "shard_writer_lane_contract": lane_contract,
+        "shard_link_writer_lanes": _safe_int(lane_contract.get("selected_shard_writer_lanes"), 0),
+        "primary_merge_writer_count": _safe_int(lane_contract.get("primary_merge_writer_count"), 1),
+        "writer_lane_policy": str(lane_contract.get("policy") or ""),
         "writer_lock_owner": lock_owner,
         "writer_lock_held": bool(lock_held),
+        "completed_lock_handoff_needed": bool(completed_handoff_needed),
         "progress_orphaned": bool(progress_orphaned),
         "child_writer_active": child_writer_active,
         "active_child_writer_count": _safe_int(current.get("active_child_writer_count"), 0),
@@ -399,7 +416,9 @@ def _risk_flags(
 ) -> list[str]:
     risks: list[str] = []
     state = str(writer_health.get("state") or "")
-    if state == "service_idle_holding_lock":
+    if state == "completed_lock_handoff_needed":
+        risks.append("completed_writer_lock_handoff")
+    elif state == "service_idle_holding_lock":
         risks.append("writer_service_idle_lock")
     elif bool(writer_health.get("active", False)):
         risks.append("writer_active")
@@ -437,6 +456,8 @@ def _risk_flags(
 def _decision_action(writer_health: dict[str, Any], process_topology: dict[str, Any], pressure: dict[str, Any], risks: list[str]) -> str:
     if "duplicate_sql_writer_processes" in risks:
         return "enforce_single_writer_process_then_re_score"
+    if "completed_writer_lock_handoff" in risks:
+        return "clear_completed_writer_handoff_then_re_score"
     if "writer_progress_stalled" in risks:
         return "recover_stalled_writer_then_re_score"
     if "writer_progress_stale" in risks:
@@ -463,6 +484,12 @@ def _playbook(action: str) -> list[dict[str, Any]]:
     if action in {"recover_stalled_writer_then_re_score", "verify_writer_progress_then_re_score"}:
         return [
             {"step": "writer_coordinator_recovery", "command": ["./scripts/ops/opsctl.sh", "writer-cycle-coordinator", "--apply", "--skip-maintenance", "--json"]},
+            {"step": "refresh_storage", "command": ["./scripts/ops/opsctl.sh", "ingestion-storage-control", "--json"]},
+            {"step": "refresh_writer_intelligence", "command": ["./scripts/ops/opsctl.sh", "writer-process-intelligence", "--json"]},
+        ]
+    if action == "clear_completed_writer_handoff_then_re_score":
+        return [
+            {"step": "clear_completed_writer_handoff", "command": ["./scripts/ops/opsctl.sh", "writer-cycle-coordinator", "--apply", "--handoff-only", "--json"]},
             {"step": "refresh_storage", "command": ["./scripts/ops/opsctl.sh", "ingestion-storage-control", "--json"]},
             {"step": "refresh_writer_intelligence", "command": ["./scripts/ops/opsctl.sh", "writer-process-intelligence", "--json"]},
         ]

@@ -3,12 +3,17 @@ set -euo pipefail
 
 PROJECT_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 RUNTIME_PY_SCRIPT="$PROJECT_ROOT/scripts/ops/runtime_python.sh"
+RUNTIME_PROFILE="${BOT_RUNTIME_PROFILE:-live}"
+if [[ -f "$PROJECT_ROOT/scripts/ops/load_runtime_env.sh" ]]; then
+  # shellcheck disable=SC1091
+  source "$PROJECT_ROOT/scripts/ops/load_runtime_env.sh" "$RUNTIME_PROFILE" --quiet
+fi
 PYTHON_BIN="$($RUNTIME_PY_SCRIPT)"
 RUN_SCRIPT="$PROJECT_ROOT/scripts/ops/live_macro_auto_watch.py"
 PLIST_PATH="$HOME/Library/LaunchAgents/com.dankingsley.macro_auto_watch.plist"
 LABEL="com.dankingsley.macro_auto_watch"
 UID_NUM="$(id -u)"
-LOG_DIR="$PROJECT_ROOT/logs"
+LOG_DIR="$HOME/Library/Logs/schwab_trading_bot"
 
 mkdir -p "$HOME/Library/LaunchAgents" "$LOG_DIR" "$PROJECT_ROOT/governance/health"
 
@@ -37,6 +42,13 @@ cat > "$PLIST_PATH" <<PLIST
   <key>KeepAlive</key><true/>
   <key>EnvironmentVariables</key>
   <dict>
+    <key>PATH</key><string>/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    <key>HOME</key><string>$HOME</string>
+    <key>BOT_RUNTIME_PROFILE</key><string>$RUNTIME_PROFILE</string>
+    <key>BOT_RUNTIME_LANE</key><string>${BOT_RUNTIME_LANE:-canary314}</string>
+    <key>BOT_PYTHON_VERSION</key><string>${BOT_PYTHON_VERSION:-3.14}</string>
+    <key>MARKET_DATA_ONLY</key><string>1</string>
+    <key>ALLOW_ORDER_EXECUTION</key><string>0</string>
     <key>BOT_LOGS_AUTO_SYNC_PRUNE_LOCAL</key><string>0</string>
     <key>PYTHONUNBUFFERED</key><string>1</string>
   </dict>

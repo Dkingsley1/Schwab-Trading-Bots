@@ -28,6 +28,56 @@ def test_process_fanout_guard_trims_only_optional_schwab_workers(monkeypatch, tm
     assert "TRAINING_RUNTIME_PAUSED_FOR_FANOUT=1" in (tmp_path / "override.env").read_text(encoding="utf-8")
 
 
+def test_process_fanout_guard_trims_optional_workers_on_cpu_pressure(monkeypatch, tmp_path: Path) -> None:
+    rows = [
+        src.ProcRow(101, 1, 2.0, 90.0, 120, "/repo/scripts/run_execution_lane.py --mode paper"),
+        src.ProcRow(201, 1, 65.0, 120.0, 120, "/repo/scripts/run_shadow_training_loop.py --broker schwab --profile fx"),
+        src.ProcRow(
+            301,
+            1,
+            70.0,
+            120.0,
+            120,
+            "/repo/scripts/run_shadow_training_loop.py --broker schwab --profile commodity_inflation",
+        ),
+        src.ProcRow(
+            302,
+            1,
+            60.0,
+            120.0,
+            120,
+            "/repo/scripts/run_shadow_training_loop.py --broker schwab --profile earnings_event",
+        ),
+        src.ProcRow(
+            303,
+            1,
+            40.0,
+            120.0,
+            120,
+            "/repo/scripts/run_specialized_sleeve_shadow.py --broker schwab --profile earnings_event",
+        ),
+    ]
+    monkeypatch.setattr(src, "collect_processes", lambda project_marker=src.DEFAULT_PROJECT_MARKER: rows)
+    monkeypatch.setenv("PROCESS_FANOUT_GUARD_MAX_COUNT", "20")
+    monkeypatch.setenv("PROCESS_FANOUT_GUARD_TARGET_COUNT", "20")
+    monkeypatch.setenv("PROCESS_FANOUT_GUARD_MAX_RSS_MB", "1000")
+    monkeypatch.setenv("PROCESS_FANOUT_GUARD_TARGET_RSS_MB", "1000")
+    monkeypatch.setenv("PROCESS_FANOUT_GUARD_MAX_CPU_PERCENT", "120")
+    monkeypatch.setenv("PROCESS_FANOUT_GUARD_TARGET_CPU_PERCENT", "75")
+
+    payload = src.build_payload(out_path=tmp_path / "out.json", state_path=tmp_path / "state.json", override_path=tmp_path / "override.env")
+
+    assert payload["triggered"] is True
+    assert payload["trigger_reasons"]["targetable_cpu"] is True
+    assert payload["fanout"]["targetable_cpu_percent"] == 170.0
+    assert {row["pid"] for row in payload["kill_plan"]} == {301, 302}
+    protected = {row["pid"] for row in payload["top_processes"] if row["protected"]}
+    assert {101, 201}.issubset(protected)
+    override = (tmp_path / "override.env").read_text(encoding="utf-8")
+    assert "PROCESS_FANOUT_GUARD_REASON=runtime_cpu_pressure" in override
+    assert "TRAINING_RUNTIME_PAUSED_FOR_FANOUT=1" in override
+
+
 def test_process_fanout_guard_trims_orphaned_replay_sanity_checks(monkeypatch, tmp_path: Path) -> None:
     rows = [
         src.ProcRow(101, 1, 1.0, 90.0, 120, "/repo/scripts/run_execution_lane.py --mode paper"),

@@ -6,6 +6,7 @@ import glob
 import html
 import json
 import os
+import signal
 import shutil
 import subprocess
 import sys
@@ -31,20 +32,45 @@ def _env_flag(name: str, default: str = "0") -> bool:
     return str(os.getenv(name, default)).strip().lower() in {"1", "true", "yes", "on"}
 
 
-def _run(cmd: list[str], *, timeout_sec: int | None = None) -> tuple[int, str, str]:
+def _run(cmd: list[str], *, timeout_sec: int | None = None, process_group: bool = False) -> tuple[int, str, str]:
+    proc: subprocess.Popen[str] | None = None
     try:
-        proc = subprocess.run(
+        proc = subprocess.Popen(
             cmd,
             cwd=str(PROJECT_ROOT),
-            capture_output=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             text=True,
-            check=False,
-            timeout=timeout_sec,
+            start_new_session=bool(process_group),
         )
-        return proc.returncode, (proc.stdout or "").strip(), (proc.stderr or "").strip()
-    except subprocess.TimeoutExpired as exc:
-        stdout = exc.stdout.decode("utf-8", errors="ignore") if isinstance(exc.stdout, bytes) else str(exc.stdout or "")
-        stderr = exc.stderr.decode("utf-8", errors="ignore") if isinstance(exc.stderr, bytes) else str(exc.stderr or "")
+        stdout, stderr = proc.communicate(timeout=timeout_sec)
+        return proc.returncode, (stdout or "").strip(), (stderr or "").strip()
+    except subprocess.TimeoutExpired:
+        stdout = ""
+        stderr = ""
+        if proc is not None:
+            if process_group:
+                try:
+                    os.killpg(proc.pid, signal.SIGTERM)
+                except ProcessLookupError:
+                    pass
+                except Exception:
+                    proc.terminate()
+            else:
+                proc.terminate()
+            try:
+                stdout, stderr = proc.communicate(timeout=2)
+            except subprocess.TimeoutExpired:
+                if process_group:
+                    try:
+                        os.killpg(proc.pid, signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
+                    except Exception:
+                        proc.kill()
+                else:
+                    proc.kill()
+                stdout, stderr = proc.communicate()
         return 124, stdout.strip(), stderr.strip() or "timeout"
     except Exception as exc:
         return 1, "", str(exc)
@@ -130,7 +156,7 @@ def _render_pdf_from_html(html_path: Path, pdf_path: Path, *, allow_gui_renderer
                 f"--print-to-pdf={pdf_path}",
                 html_uri,
             ]
-            rc, out, err = _run(cmd, timeout_sec=render_timeout)
+            rc, out, err = _run(cmd, timeout_sec=render_timeout, process_group=True)
         finally:
             shutil.rmtree(profile_dir, ignore_errors=True)
     if pdf_path.exists() and pdf_path.stat().st_size > 0:

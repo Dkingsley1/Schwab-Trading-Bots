@@ -49,6 +49,10 @@ def test_storage_tier_policy_surfaces_hot_path_and_cold_candidates(tmp_path: Pat
         "0.0000001",
         "--cold-candidate-min-mb",
         "0.000001",
+        "--offload-manifest-min-mb",
+        "0.000001",
+        "--offload-manifest-file",
+        str(project_root / "governance" / "health" / "storage_tier_offload_manifest_latest.json"),
     ]
     old_argv = sys.argv
     try:
@@ -62,6 +66,95 @@ def test_storage_tier_policy_surfaces_hot_path_and_cold_candidates(tmp_path: Pat
     assert payload["overall_status"] in {"degraded", "blocked"}
     assert any(row["service_role"] == "artifact_store" for row in payload["cold_path_candidates"])
     assert payload["pressure"]["hot_path_over_budget_bytes"] > 0
+    contract = payload["manifest_backed_offload_contract"]
+    assert contract["status"] == "planned"
+    assert contract["policy_script_is_read_only"] is True
+    assert contract["eligible_offload_files"] >= 2
+    assert "stateful_sql_compaction_only" in contract["never_delete_classes"]
+    manifest = json.loads(Path(contract["manifest_path"]).read_text(encoding="utf-8"))
+    entries = {row["relative_path"]: row for row in manifest["entries"]}
+    assert entries[str(explanations.relative_to(project_root))]["classification"] == "eligible_manifest_backed_offload"
+    assert entries[str(explanations.relative_to(project_root))]["planned_cold_relative_path"].count("decision_explanations/") == 1
+    assert entries[str(content_blob.relative_to(project_root))]["classification"] == "eligible_manifest_backed_offload"
+    sql_entry = entries[str(sql_shard.relative_to(project_root))]
+    assert sql_entry["classification"] == "stateful_sql_compaction_only"
+    assert sql_entry["delete_allowed_by_policy"] is False
+    assert "sqlite_checkpoint" in sql_entry["allowed_actions"]
+    decision_entry = entries[str(decisions.relative_to(project_root))]
+    assert decision_entry["classification"] == "keep_hot_critical"
+    assert decision_entry["delete_allowed_by_policy"] is False
+
+
+def test_storage_tier_policy_controls_fixed_hot_budget_with_continuous_run_margin(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    decisions = project_root / "decisions" / "live_decisions_20260627.jsonl"
+    explanations = project_root / "decision_explanations" / "decision_explanations_20260627.jsonl"
+    for path, content in (
+        (decisions, "decision\n" * 128),
+        (explanations, "explanation\n" * 256),
+    ):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content, encoding="utf-8")
+
+    health = project_root / "governance" / "health"
+    _write_json(
+        health / "storage_retention_unison_latest.json",
+        {
+            "continuous_run_contract": {
+                "status": "ready",
+                "ready": True,
+                "available_margin_gb": 4.0,
+            }
+        },
+    )
+    _write_json(
+        health / "ingestion_storage_control_latest.json",
+        {
+            "continuous_run_soak_contract": {
+                "status": "ready",
+                "ready": True,
+                "inputs": {
+                    "collector_intake_status": "enforced",
+                    "storage_efficiency_status": "ready",
+                    "backlog_relief_active": False,
+                },
+                "forecast": {"continuous_run_margin_gb": 4.0},
+            },
+            "storage_efficiency_contract": {"overall_status": "ready"},
+        },
+    )
+
+    args = [
+        "storage_tier_policy.py",
+        "--project-root",
+        str(project_root),
+        "--hot-budget-gb",
+        "0.0000001",
+        "--cold-candidate-min-mb",
+        "0.000001",
+        "--offload-manifest-min-mb",
+        "0.000001",
+        "--offload-manifest-file",
+        str(project_root / "governance" / "health" / "storage_tier_offload_manifest_latest.json"),
+    ]
+    old_argv = sys.argv
+    try:
+        sys.argv = args
+        rc = storage_tier_src.main()
+    finally:
+        sys.argv = old_argv
+
+    payload = json.loads((health / "storage_tier_policy_latest.json").read_text(encoding="utf-8"))
+    contract = payload["hot_path_budget_contract"]
+
+    assert rc == 0
+    assert payload["overall_status"] == "ready"
+    assert payload["pressure"]["raw_hot_path_over_budget_bytes"] > 0
+    assert payload["pressure"]["hot_path_over_budget_bytes"] == 0
+    assert payload["pressure"]["hot_budget_bytes"] > payload["pressure"]["configured_hot_budget_bytes"]
+    assert contract["status"] == "managed_ready"
+    assert contract["active"] is True
+    assert contract["blockers"] == []
 
 
 def test_training_runtime_control_prioritizes_sequence_timeout_retries(tmp_path: Path) -> None:

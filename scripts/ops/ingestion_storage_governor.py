@@ -36,6 +36,106 @@ def _safe_float(raw: Any, default: float = 0.0) -> float:
         return float(default)
 
 
+def _authoritative_storage_backpressure(storage_control: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(storage_control, dict) or not storage_control:
+        return {"authoritative": False}
+    backpressure = storage_control.get("backpressure") if isinstance(storage_control.get("backpressure"), dict) else {}
+    effective = backpressure.get("effective_raw_live") if isinstance(backpressure.get("effective_raw_live"), dict) else {}
+    data_integrity = storage_control.get("data_integrity") if isinstance(storage_control.get("data_integrity"), dict) else {}
+    source = str(backpressure.get("effective_raw_live_source") or effective.get("source") or "").strip()
+    measured = effective if effective else backpressure
+    storage_ready = bool(
+        str(storage_control.get("overall_status") or "").strip().lower() == "ready"
+        and str(storage_control.get("severity") or "").strip().lower() == "stable"
+    )
+    overlay_clear = bool(backpressure.get("overlay_pressure_clear", False) or source == "fresh_empty_sql_ingestion_overlay")
+    data_clean = bool(
+        _safe_int(data_integrity.get("sql_overlay_invalid_lines"), 0) <= 0
+        and _safe_int(data_integrity.get("sql_overlay_oversize_payloads"), 0) <= 0
+        and _safe_int(data_integrity.get("sql_overlay_ops_write_failures"), 0) <= 0
+    )
+    measured_backpressure_available = bool(
+        measured
+        and any(
+            key in measured
+            for key in (
+                "core_pending_lines",
+                "deferred_pending_lines",
+                "cold_pending_lines",
+                "support_pending_lines",
+                "stale_stage_pending_lines",
+            )
+        )
+    )
+    authoritative = bool(
+        storage_ready
+        and data_clean
+        and measured_backpressure_available
+        and (bool(backpressure.get("overlay_adjusted", False)) and overlay_clear or not bool(backpressure.get("overlay_adjusted", False)))
+    )
+    if not authoritative:
+        return {"authoritative": False, "source": source or "raw_live_backpressure"}
+    return {
+        "authoritative": True,
+        "source": source or "ingestion_storage_control_effective_raw_live",
+        "core_pending_lines": _safe_int(measured.get("core_pending_lines"), _safe_int(backpressure.get("core_pending_lines"), 0)),
+        "deferred_pending_lines": _safe_int(measured.get("deferred_pending_lines"), _safe_int(backpressure.get("deferred_pending_lines"), 0)),
+        "cold_pending_lines": _safe_int(measured.get("cold_pending_lines"), _safe_int(backpressure.get("cold_pending_lines"), 0)),
+        "support_pending_lines": _safe_int(measured.get("support_pending_lines"), _safe_int(backpressure.get("support_pending_lines"), 0)),
+        "stale_stage_pending_lines": _safe_int(measured.get("stale_stage_pending_lines"), _safe_int(backpressure.get("stale_stage_pending_lines"), 0)),
+    }
+
+
+def _guarded_local_sqlite_route(
+    failback: dict[str, Any],
+    *,
+    current_primary_db: str,
+    current_primary_db_realpath: str,
+) -> dict[str, Any]:
+    sqlite_report = failback.get("sqlite_skip_report") if isinstance(failback.get("sqlite_skip_report"), dict) else {}
+    route_verification = (
+        failback.get("route_verification")
+        if isinstance(failback.get("route_verification"), dict)
+        else sqlite_report.get("route_verification")
+        if isinstance(sqlite_report.get("route_verification"), dict)
+        else {}
+    )
+    if str(route_verification.get("verification_state") or "") != "ready":
+        return {"guarded": False, "reason": "route_verification_not_ready"}
+    if _safe_int(failback.get("split_brain_conflicts"), 0) > 0:
+        return {"guarded": False, "reason": "split_brain_conflicts_present"}
+
+    current_candidates = {
+        str(current_primary_db or "").strip(),
+        str(current_primary_db_realpath or "").strip(),
+    }
+    entries = sqlite_report.get("entries") if isinstance(sqlite_report.get("entries"), list) else []
+    for row in entries:
+        if not isinstance(row, dict):
+            continue
+        rel = str(row.get("relative_path") or "").replace("\\", "/").lstrip("./")
+        if rel != "data/jsonl_link.sqlite3":
+            continue
+        row_route = row.get("route_verification") if isinstance(row.get("route_verification"), dict) else {}
+        active_path = str(row.get("active_path") or "").strip()
+        local_path = str(((row.get("local") or {}).get("path") if isinstance(row.get("local"), dict) else "") or "").strip()
+        classification = str(row.get("classification") or "")
+        state = str(row_route.get("state") or "")
+        if (
+            classification == "active_local_route"
+            and state == "active_local_ready"
+            and bool(current_candidates.intersection({active_path, local_path}))
+        ):
+            return {
+                "guarded": True,
+                "relative_path": rel,
+                "classification": classification,
+                "state": state,
+                "reason": "verified_active_local_sqlite_route_keeps_large_primary_db_off_bot_logs",
+            }
+    return {"guarded": False, "reason": "no_matching_verified_local_sqlite_route"}
+
+
 def _queue_watermarks(
     *,
     core_pending_lines: int,
@@ -288,6 +388,9 @@ def _apply_backlog_relief_env(env: dict[str, str], backlog_relief_contract: dict
                 "SHADOW_RESEARCH_PAUSED_FOR_BACKLOG": "1",
                 "HEAVY_COLLECTORS_PAUSED_FOR_BACKLOG": "1",
                 "REPORT_REFRESH_PAUSED_FOR_BACKLOG": "1",
+                "SIGNAL_GENERATION_BAD_SIGNAL_THINNING_ENABLED": "1",
+                "SIGNAL_GENERATION_BAD_SIGNAL_WINDOW_SECONDS": "900",
+                "SIGNAL_GENERATION_BAD_SIGNAL_BATCH_CAP": "64",
             }
         )
     if "stale_old_pending_work" in active:
@@ -297,6 +400,9 @@ def _apply_backlog_relief_env(env: dict[str, str], backlog_relief_contract: dict
         p_core_env = p_core_contract.get("control_env") if isinstance(p_core_contract, dict) else {}
         if isinstance(p_core_env, dict):
             env.update({str(key): str(value) for key, value in p_core_env.items() if str(key).strip()})
+        relief_env = backlog_relief_contract.get("control_env_recommendations")
+        if isinstance(relief_env, dict):
+            env.update({str(key): str(value) for key, value in relief_env.items() if str(key).strip()})
     return env
 
 
@@ -526,26 +632,34 @@ def build_payload(
     health_gates = _load_json(health_root / "health_gates_latest.json")
 
     storage_backpressure = storage_control.get("backpressure") if isinstance(storage_control.get("backpressure"), dict) else {}
-    core_pending_lines = max(
-        _safe_int(backpressure.get("pending_lines"), _safe_int(((queue.get("lane_counts") or {}).get("core") or {}).get("pending_lines"), 0)),
-        _safe_int(storage_backpressure.get("core_pending_lines"), 0),
-    )
-    deferred_pending_lines = max(
-        _safe_int(backpressure.get("pending_lines_deferred"), _safe_int(((queue.get("lane_counts") or {}).get("deferred") or {}).get("pending_lines"), 0)),
-        _safe_int(storage_backpressure.get("deferred_pending_lines"), 0),
-    )
-    cold_pending_lines = max(
-        _safe_int(backpressure.get("pending_lines_cold"), _safe_int(((queue.get("lane_counts") or {}).get("cold") or {}).get("pending_lines"), 0)),
-        _safe_int(storage_backpressure.get("cold_pending_lines"), 0),
-    )
-    support_pending_lines = max(
-        _safe_int(backpressure.get("pending_lines_support_telemetry"), 0),
-        _safe_int(storage_backpressure.get("support_pending_lines"), 0),
-    )
-    stale_stage_pending_lines = max(
-        _safe_int(backpressure.get("pending_lines_stale_stage"), 0),
-        _safe_int(storage_backpressure.get("stale_stage_pending_lines"), 0),
-    )
+    effective_storage_backpressure = _authoritative_storage_backpressure(storage_control)
+    if bool(effective_storage_backpressure.get("authoritative", False)):
+        core_pending_lines = _safe_int(effective_storage_backpressure.get("core_pending_lines"), 0)
+        deferred_pending_lines = _safe_int(effective_storage_backpressure.get("deferred_pending_lines"), 0)
+        cold_pending_lines = _safe_int(effective_storage_backpressure.get("cold_pending_lines"), 0)
+        support_pending_lines = _safe_int(effective_storage_backpressure.get("support_pending_lines"), 0)
+        stale_stage_pending_lines = _safe_int(effective_storage_backpressure.get("stale_stage_pending_lines"), 0)
+    else:
+        core_pending_lines = max(
+            _safe_int(backpressure.get("pending_lines"), _safe_int(((queue.get("lane_counts") or {}).get("core") or {}).get("pending_lines"), 0)),
+            _safe_int(storage_backpressure.get("core_pending_lines"), 0),
+        )
+        deferred_pending_lines = max(
+            _safe_int(backpressure.get("pending_lines_deferred"), _safe_int(((queue.get("lane_counts") or {}).get("deferred") or {}).get("pending_lines"), 0)),
+            _safe_int(storage_backpressure.get("deferred_pending_lines"), 0),
+        )
+        cold_pending_lines = max(
+            _safe_int(backpressure.get("pending_lines_cold"), _safe_int(((queue.get("lane_counts") or {}).get("cold") or {}).get("pending_lines"), 0)),
+            _safe_int(storage_backpressure.get("cold_pending_lines"), 0),
+        )
+        support_pending_lines = max(
+            _safe_int(backpressure.get("pending_lines_support_telemetry"), 0),
+            _safe_int(storage_backpressure.get("support_pending_lines"), 0),
+        )
+        stale_stage_pending_lines = max(
+            _safe_int(backpressure.get("pending_lines_stale_stage"), 0),
+            _safe_int(storage_backpressure.get("stale_stage_pending_lines"), 0),
+        )
     retention_debt_gb = _safe_float(((storage_control.get("storage") or {}).get("retention_debt_gb")), _safe_float(((health_gates.get("storage_pressure") or {}).get("retention_debt_gb")), 0.0))
     pressure_index = _safe_float(storage_control.get("pressure_index"), 0.0)
     storage_severity = str(storage_control.get("severity") or "")
@@ -562,6 +676,14 @@ def build_payload(
             "sql_wal_pressure",
         )
     )
+    hard_gate_suppressed_by_storage_control = bool(
+        storage_hard_gate
+        and bool(effective_storage_backpressure.get("authoritative", False))
+        and str(storage_control.get("overall_status") or "").strip().lower() == "ready"
+        and str(storage_control.get("severity") or "").strip().lower() == "stable"
+    )
+    if hard_gate_suppressed_by_storage_control:
+        storage_hard_gate = False
     hard_gate = bool(
         str(storage_control.get("overall_status") or "") == "blocked"
         or (storage_hard_gate if hard_gate_flags else bool(health_gates.get("hard_gate_triggered", False)))
@@ -575,7 +697,7 @@ def build_payload(
     )
     storage_mode = str(mount.get("storage_mode") or failback.get("certified_mode") or failback.get("mode") or "")
     storage_external = bool(mount.get("external_available", False)) and storage_mode in {"external", "external_curated"}
-    route_drift = bool(
+    raw_route_drift = bool(
         storage_external
         and split_brain_conflicts == 0
         and (
@@ -583,6 +705,12 @@ def build_payload(
             or "/local_fallback_storage/" in current_primary_db_realpath
         )
     )
+    guarded_local_sqlite_route = _guarded_local_sqlite_route(
+        failback,
+        current_primary_db=current_primary_db,
+        current_primary_db_realpath=current_primary_db_realpath,
+    )
+    route_drift = bool(raw_route_drift and not bool(guarded_local_sqlite_route.get("guarded", False)))
 
     profile_name = _storage_profile(
         hard_gate=hard_gate,
@@ -596,18 +724,39 @@ def build_payload(
         pressure_index=pressure_index,
         storage_severity=storage_severity,
     )
+    backlog_relief_contract = (
+        storage_control.get("backlog_relief_contract")
+        if isinstance(storage_control.get("backlog_relief_contract"), dict)
+        else None
+    )
     env_overrides = _profile_env(
         profile_name,
         project_root,
         core_pending_lines=core_pending_lines,
         deferred_pending_lines=deferred_pending_lines,
         route_drift=route_drift,
-        backlog_relief_contract=(
-            storage_control.get("backlog_relief_contract")
-            if isinstance(storage_control.get("backlog_relief_contract"), dict)
-            else None
-        ),
+        backlog_relief_contract=backlog_relief_contract,
     )
+    storage_efficiency_contract = (
+        storage_control.get("storage_efficiency_contract")
+        if isinstance(storage_control.get("storage_efficiency_contract"), dict)
+        else {}
+    )
+    storage_efficiency_env = (
+        storage_efficiency_contract.get("control_env_recommendations")
+        if isinstance(storage_efficiency_contract.get("control_env_recommendations"), dict)
+        else {}
+    )
+    env_overrides.update(
+        {
+            str(key): str(value)
+            for key, value in storage_efficiency_env.items()
+            if str(key).strip()
+        }
+    )
+    # Storage efficiency owns raw/duplicate/fallback cleanup. The backlog relief
+    # contract owns drain-critical worker, p-core, and intake shaping knobs.
+    env_overrides = _apply_backlog_relief_env(env_overrides, backlog_relief_contract)
     queue_watermarks = _queue_watermarks(
         core_pending_lines=core_pending_lines,
         deferred_pending_lines=deferred_pending_lines,
@@ -640,16 +789,17 @@ def build_payload(
     if bool(writer_shedding.get("freeze_cold_lanes", False)):
         top_actions.append("keep cold-lane ingestion frozen while the core queue remains under active protection")
     active_relief_issues = sorted(
-        _active_backlog_relief_issues(
-            storage_control.get("backlog_relief_contract")
-            if isinstance(storage_control.get("backlog_relief_contract"), dict)
-            else None
-        )
+        _active_backlog_relief_issues(backlog_relief_contract)
     )
     if active_relief_issues:
         top_actions.append(
             "apply the backlog relief contract for "
             + ",".join(active_relief_issues)
+        )
+    if bool(storage_efficiency_contract.get("active", False)):
+        top_actions.append(
+            "apply the ingestion storage efficiency contract for "
+            + ",".join(str(row) for row in storage_efficiency_contract.get("active_blockers", []) if str(row).strip())
         )
 
     notes = [
@@ -681,6 +831,8 @@ def build_payload(
         },
         "pressure": {
             "hard_gate": bool(hard_gate),
+            "source": str(effective_storage_backpressure.get("source") or "raw_live_backpressure"),
+            "authoritative_storage_control": bool(effective_storage_backpressure.get("authoritative", False)),
             "core_pending_lines": int(core_pending_lines),
             "deferred_pending_lines": int(deferred_pending_lines),
             "cold_pending_lines": int(cold_pending_lines),
@@ -689,12 +841,15 @@ def build_payload(
             "retention_debt_gb": round(float(retention_debt_gb), 3),
             "pressure_index": round(float(pressure_index), 3),
             "storage_severity": storage_severity,
+            "health_hard_gate_suppressed_by_storage_control": bool(hard_gate_suppressed_by_storage_control),
         },
         "queue_watermarks": queue_watermarks,
         "sql_primary_db": {
             "current_path": current_primary_db,
             "current_realpath": current_primary_db_realpath,
             "target_path": str(project_root / "data" / "jsonl_link.sqlite3"),
+            "raw_route_drift": bool(raw_route_drift),
+            "guarded_local_sqlite_route": guarded_local_sqlite_route,
             "route_drift": bool(route_drift),
         },
         "writer_shedding": writer_shedding,
@@ -733,6 +888,13 @@ def build_payload(
             "ingest_journal_zero_pending_enabled": env_overrides.get("INGEST_JOURNAL_ZERO_PENDING_ENABLED"),
             "backlog_relief_contract_active": env_overrides.get("BACKLOG_RELIEF_CONTRACT_ACTIVE"),
             "backlog_relief_active_issues": env_overrides.get("BACKLOG_RELIEF_ACTIVE_ISSUES"),
+            "raw_live_expansion_guard_active": env_overrides.get("RAW_LIVE_EXPANSION_GUARD_ACTIVE"),
+            "raw_live_expansion_ready": env_overrides.get("RAW_LIVE_EXPANSION_READY"),
+            "raw_live_expansion_tier": env_overrides.get("RAW_LIVE_EXPANSION_TIER"),
+            "raw_live_core_reserve_target": _safe_int(env_overrides.get("RAW_LIVE_CORE_RESERVE_TARGET"), 0),
+            "raw_live_total_reserve_target": _safe_int(env_overrides.get("RAW_LIVE_TOTAL_RESERVE_TARGET"), 0),
+            "raw_live_priority_boost": env_overrides.get("SQL_LINK_SERVICE_RAW_LIVE_PRIORITY_BOOST"),
+            "cold_stage_yields_to_raw_live": env_overrides.get("SQL_LINK_SERVICE_COLD_STAGE_YIELDS_TO_RAW_LIVE"),
             "p_core_backlog_allocation_active": env_overrides.get("BACKLOG_PCORE_ALLOCATION_ACTIVE"),
             "p_core_preprocess_workers": _safe_int(env_overrides.get("BACKLOG_PCORE_PREPROCESS_WORKERS"), 0),
             "single_writer_only": env_overrides.get("BACKLOG_DRAIN_SINGLE_WRITER_ONLY"),
@@ -742,7 +904,30 @@ def build_payload(
             "collection_duty_cycle_max_active_ratio": env_overrides.get("BOT_COLLECTION_DUTY_CYCLE_MAX_ACTIVE_RATIO"),
             "ingest_max_bytes_per_file": _safe_int(env_overrides.get("INGEST_MAX_BYTES_PER_FILE"), 0),
             "sqlite_batch_max_bytes": _safe_int(env_overrides.get("SQLITE_BATCH_MAX_BYTES"), 0),
+            "storage_efficiency_contract_active": env_overrides.get("BOT_INGESTION_STORAGE_EFFICIENCY_CONTRACT_ACTIVE"),
+            "storage_plane_phase": env_overrides.get("BOT_STORAGE_PLANE_PHASE"),
+            "storage_emergency_disk_guard": env_overrides.get("BOT_STORAGE_EMERGENCY_DISK_GUARD"),
+            "storage_external_free_gb": _safe_float(env_overrides.get("BOT_STORAGE_EXTERNAL_FREE_GB"), 0.0),
+            "storage_external_min_free_gb": _safe_float(env_overrides.get("BOT_STORAGE_EXTERNAL_MIN_FREE_GB"), 0.0),
+            "storage_allow_raw_compaction_apply": env_overrides.get("BOT_STORAGE_ALLOW_RAW_COMPACTION_APPLY"),
+            "storage_allow_training": env_overrides.get("BOT_STORAGE_ALLOW_TRAINING"),
+            "storage_allow_expansion": env_overrides.get("BOT_STORAGE_ALLOW_EXPANSION"),
+            "storage_space_recovery_required": env_overrides.get("BOT_STORAGE_SPACE_RECOVERY_REQUIRED"),
+            "storage_reserve_rebuild_required": env_overrides.get("BOT_STORAGE_RESERVE_REBUILD_REQUIRED"),
+            "storage_space_recovery_target_free_gb": _safe_float(env_overrides.get("BOT_STORAGE_SPACE_RECOVERY_TARGET_FREE_GB"), 0.0),
+            "storage_space_recovery_deficit_gb": _safe_float(env_overrides.get("BOT_STORAGE_SPACE_RECOVERY_DEFICIT_GB"), 0.0),
+            "storage_mode": env_overrides.get("BOT_INGESTION_STORAGE_MODE"),
+            "data_capture_mode": env_overrides.get("BOT_DATA_CAPTURE_MODE"),
+            "raw_payload_storage_mode": env_overrides.get("BOT_RAW_PAYLOAD_STORAGE_MODE"),
+            "fallback_duplicate_suppression": env_overrides.get("BOT_FALLBACK_DUPLICATE_SUPPRESSION"),
+            "local_fallback_reconcile_before_expand": env_overrides.get("BOT_LOCAL_FALLBACK_RECONCILE_BEFORE_EXPAND"),
+            "raw_training_manifest_refresh_required": env_overrides.get("BOT_RAW_TRAINING_MANIFEST_REFRESH_REQUIRED"),
+            "raw_training_compaction_required": env_overrides.get("BOT_RAW_TRAINING_COMPACTION_REQUIRED"),
+            "raw_training_compaction_apply_allowed_now": env_overrides.get("BOT_RAW_TRAINING_COMPACTION_APPLY_ALLOWED_NOW"),
+            "raw_training_wave_max_files": _safe_int(env_overrides.get("BOT_RAW_TRAINING_WAVE_MAX_FILES"), 0),
+            "raw_training_wave_max_gb": _safe_float(env_overrides.get("BOT_RAW_TRAINING_WAVE_MAX_GB"), 0.0),
         },
+        "storage_efficiency_contract": storage_efficiency_contract,
         "backlog_relief_contract": (
             storage_control.get("backlog_relief_contract")
             if isinstance(storage_control.get("backlog_relief_contract"), dict)

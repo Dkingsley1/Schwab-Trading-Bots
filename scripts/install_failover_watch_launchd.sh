@@ -2,7 +2,7 @@
 set -euo pipefail
 
 PROJECT_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-PYTHON_BIN="$PROJECT_ROOT/.venv312/bin/python"
+PYTHON_BIN="$PROJECT_ROOT/.venv314/bin/python"
 RUN_SCRIPT="$PROJECT_ROOT/scripts/failover_hot_standby.py"
 PLIST_PATH="$HOME/Library/LaunchAgents/com.dankingsley.failover_hot_standby.plist"
 LABEL="com.dankingsley.failover_hot_standby"

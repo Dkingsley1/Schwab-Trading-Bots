@@ -22,6 +22,15 @@ else:
 DEFAULT_OUT_PATH = PROJECT_ROOT / "governance" / "health" / "data_collection_storage_guard_latest.json"
 DEFAULT_REGISTRY_PATH = PROJECT_ROOT / "master_bot_registry.json"
 DEFAULT_EXTERNAL_ROOT = Path("/Volumes/BOT_LOGS/schwab_trading_bot")
+PROTECTED_VOLUME_PREFIXES = ("/Volumes/VIDEO",)
+SAFE_STALE_SUFFIXES = (".tmp", ".temp", ".part", ".partial", ".incomplete", ".download", ".swap", ".swp")
+SAFE_METADATA_NAMES = {".DS_Store"}
+DEFAULT_SPACE_RECOVERY_MAX_DELETE_GB = 8.0
+DEFAULT_SPACE_RECOVERY_TARGET_FREE_GB = 64.0
+DEFAULT_SPACE_RECOVERY_MIN_AGE_HOURS = 6.0
+DEFAULT_SPACE_RECOVERY_CANDIDATE_LIMIT = 20000
+DEFAULT_SPACE_RECOVERY_SCAN_FILE_LIMIT = 200000
+DEFAULT_SPACE_RECOVERY_JUMBO_DUPLICATE_GB = 12.0
 
 
 def _disk_usage(path: Path) -> dict[str, Any]:
@@ -56,6 +65,19 @@ def _disk_usage(path: Path) -> dict[str, Any]:
 
 def _gb(raw: int | float) -> float:
     return float(raw) / float(1024**3)
+
+
+def _is_protected_volume(path: Path) -> bool:
+    text = str(path.expanduser())
+    return any(text == prefix or text.startswith(prefix + "/") for prefix in PROTECTED_VOLUME_PREFIXES)
+
+
+def _is_within_root(path: Path, root: Path) -> bool:
+    try:
+        path.resolve(strict=False).relative_to(root.resolve(strict=False))
+        return True
+    except Exception:
+        return False
 
 
 def _mode_for_space(*, available_gb: float, used_ratio: float, warn_gb: float, throttle_gb: float, critical_gb: float) -> str:
@@ -210,14 +232,232 @@ def _refresh_summary(payload: dict[str, Any]) -> None:
 
 
 def _duplicate_fallback_files(root: Path, *, limit: int = 50000) -> list[Path]:
-    if not root.exists():
+    if not root.exists() or _is_protected_volume(root):
         return []
     out: list[Path] = []
     for path in root.rglob("*.local_fallback*"):
-        if path.is_file():
+        if path.is_file() and not path.is_symlink() and _is_within_root(path, root) and not _is_protected_volume(path):
             out.append(path)
             if len(out) >= limit:
                 break
+    return out
+
+
+def _space_candidate_record(path: Path, root: Path, *, reason: str, priority: int, now_ts: float) -> dict[str, Any] | None:
+    if path.is_symlink() or _is_protected_volume(path) or not _is_within_root(path, root):
+        return None
+    try:
+        stat = path.stat()
+    except Exception:
+        return None
+    if not path.is_file():
+        return None
+    size_bytes = max(int(stat.st_size), 0)
+    age_hours = max((float(now_ts) - float(stat.st_mtime)) / 3600.0, 0.0)
+    return {
+        "path": str(path),
+        "relative_path": str(path.relative_to(root)) if _is_within_root(path, root) else path.name,
+        "reason": reason,
+        "priority": int(priority),
+        "size_bytes": size_bytes,
+        "size_gb": round(_gb(size_bytes), 6),
+        "age_hours": round(age_hours, 3),
+    }
+
+
+def _canonical_sibling_for_local_fallback(path: Path) -> Path | None:
+    marker = ".local_fallback"
+    name = path.name
+    if marker not in name:
+        return None
+    canonical_name = name.split(marker, 1)[0]
+    if not canonical_name:
+        return None
+    canonical = path.with_name(canonical_name)
+    if canonical.exists():
+        return canonical
+    compressed = path.with_name(f"{canonical_name}.gz")
+    if compressed.exists():
+        return compressed
+    return canonical
+
+
+def _safe_space_recovery_candidates(
+    root: Path,
+    *,
+    duplicate_files: list[Path],
+    min_age_hours: float,
+    candidate_limit: int,
+    scan_file_limit: int,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    if not root.exists() or _is_protected_volume(root):
+        return [], {
+            "scan_root_exists": bool(root.exists()),
+            "protected_volume_blocked": bool(_is_protected_volume(root)),
+            "scanned_files": 0,
+            "scan_limit_reached": False,
+        }
+
+    now_ts = datetime.now(timezone.utc).timestamp()
+    candidates: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    unbacked_duplicate_count = 0
+    unbacked_duplicate_bytes = 0
+    min_age = max(float(min_age_hours), 0.0)
+
+    for path in duplicate_files:
+        key = str(path)
+        if key in seen:
+            continue
+        canonical = _canonical_sibling_for_local_fallback(path)
+        if (
+            canonical is None
+            or not canonical.exists()
+            or canonical.is_symlink()
+            or _is_protected_volume(canonical)
+            or not _is_within_root(canonical, root)
+        ):
+            try:
+                unbacked_duplicate_bytes += int(path.stat().st_size)
+            except Exception:
+                pass
+            unbacked_duplicate_count += 1
+            continue
+        record = _space_candidate_record(path, root, reason="duplicate_local_fallback_artifact", priority=100, now_ts=now_ts)
+        if record is not None:
+            if float(record.get("age_hours") or 0.0) < min_age:
+                continue
+            record["canonical_path"] = str(canonical)
+            record["canonical_relative_path"] = str(canonical.relative_to(root)) if _is_within_root(canonical, root) else canonical.name
+            record["canonical_exists"] = True
+            record["canonical_compressed"] = str(canonical.name).endswith(".gz")
+            candidates.append(record)
+            seen.add(key)
+        if len(candidates) >= max(int(candidate_limit), 1):
+            return candidates, {
+                "scan_root_exists": True,
+                "protected_volume_blocked": False,
+                "scanned_files": 0,
+                "scan_limit_reached": True,
+                "unbacked_duplicate_count": unbacked_duplicate_count,
+                "unbacked_duplicate_gb": round(_gb(unbacked_duplicate_bytes), 3),
+            }
+
+    scanned = 0
+    scan_limit_reached = False
+    excluded_dirs = {".git", ".Spotlight-V100", ".Trashes", ".fseventsd", "__pycache__", "node_modules"}
+    for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
+        current = Path(dirpath)
+        if _is_protected_volume(current):
+            dirnames[:] = []
+            continue
+        dirnames[:] = [
+            name
+            for name in dirnames
+            if name not in excluded_dirs
+            and not (current / name).is_symlink()
+            and not _is_protected_volume(current / name)
+        ]
+        for name in filenames:
+            scanned += 1
+            if scanned > max(int(scan_file_limit), 1):
+                scan_limit_reached = True
+                break
+            path = current / name
+            key = str(path)
+            if key in seen or path.is_symlink():
+                continue
+            lower_name = name.lower()
+            reason = ""
+            priority = 0
+            if name in SAFE_METADATA_NAMES or name.startswith("._"):
+                reason = "safe_os_metadata_artifact"
+                priority = 60
+            elif lower_name.endswith(SAFE_STALE_SUFFIXES):
+                try:
+                    age_hours = max((now_ts - path.stat().st_mtime) / 3600.0, 0.0)
+                except Exception:
+                    continue
+                if age_hours < min_age:
+                    continue
+                reason = "stale_partial_or_temp_artifact"
+                priority = 80
+            else:
+                continue
+            record = _space_candidate_record(path, root, reason=reason, priority=priority, now_ts=now_ts)
+            if record is not None:
+                candidates.append(record)
+                seen.add(key)
+            if len(candidates) >= max(int(candidate_limit), 1):
+                scan_limit_reached = True
+                break
+        if scan_limit_reached:
+            break
+
+    candidates.sort(key=lambda row: (int(row.get("priority", 0)), int(row.get("size_bytes", 0)), float(row.get("age_hours", 0.0))), reverse=True)
+    return candidates, {
+        "scan_root_exists": True,
+        "protected_volume_blocked": False,
+        "scanned_files": scanned,
+        "scan_limit_reached": bool(scan_limit_reached),
+        "unbacked_duplicate_count": unbacked_duplicate_count,
+        "unbacked_duplicate_gb": round(_gb(unbacked_duplicate_bytes), 3),
+    }
+
+
+def _effective_space_recovery_delete_gb(*, available_gb: float, target_free_gb: float, max_delete_gb: float) -> float:
+    max_delete = max(float(max_delete_gb), 0.0)
+    target = max(float(target_free_gb), 0.0)
+    if target <= 0.0:
+        return round(max_delete, 3)
+    deficit = max(target - max(float(available_gb), 0.0), 0.0)
+    return round(min(max_delete, deficit), 3) if deficit > 0.0 else 0.0
+
+
+def _select_space_recovery_candidates(
+    candidates: list[dict[str, Any]],
+    *,
+    max_delete_gb: float,
+    jumbo_duplicate_gb: float,
+) -> list[dict[str, Any]]:
+    max_bytes = int(max(float(max_delete_gb), 0.0) * (1024**3))
+    jumbo_duplicate_bytes = int(max(float(jumbo_duplicate_gb), 0.0) * (1024**3))
+    if max_bytes <= 0:
+        return []
+    selected: list[dict[str, Any]] = []
+    selected_bytes = 0
+    for row in candidates:
+        size_bytes = max(int(row.get("size_bytes") or 0), 0)
+        if size_bytes <= 0:
+            selected.append(row)
+            continue
+        if selected_bytes + size_bytes > max_bytes and selected:
+            continue
+        if selected_bytes + size_bytes > max_bytes and not selected:
+            if (
+                str(row.get("reason") or "") == "duplicate_local_fallback_artifact"
+                and jumbo_duplicate_bytes > 0
+                and size_bytes <= jumbo_duplicate_bytes
+            ):
+                row["selected_over_wave_cap"] = True
+                row["selection_reason"] = "single_jumbo_duplicate_fallback_artifact"
+                selected.append(row)
+                selected_bytes += size_bytes
+            continue
+        selected.append(row)
+        selected_bytes += size_bytes
+    return selected
+
+
+def _reason_counts(rows: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    out: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        reason = str(row.get("reason") or "unknown")
+        size = max(int(row.get("size_bytes") or 0), 0)
+        bucket = out.setdefault(reason, {"count": 0, "bytes": 0, "gb": 0.0})
+        bucket["count"] = int(bucket["count"]) + 1
+        bucket["bytes"] = int(bucket["bytes"]) + size
+        bucket["gb"] = round(_gb(int(bucket["bytes"])), 6)
     return out
 
 
@@ -230,6 +470,13 @@ def build_payload(
     critical_gb: float,
     apply: bool,
     cleanup_duplicates: bool,
+    space_recovery: bool = False,
+    space_recovery_max_delete_gb: float = DEFAULT_SPACE_RECOVERY_MAX_DELETE_GB,
+    space_recovery_target_free_gb: float = DEFAULT_SPACE_RECOVERY_TARGET_FREE_GB,
+    space_recovery_min_age_hours: float = DEFAULT_SPACE_RECOVERY_MIN_AGE_HOURS,
+    space_recovery_candidate_limit: int = DEFAULT_SPACE_RECOVERY_CANDIDATE_LIMIT,
+    space_recovery_scan_file_limit: int = DEFAULT_SPACE_RECOVERY_SCAN_FILE_LIMIT,
+    space_recovery_jumbo_duplicate_gb: float = DEFAULT_SPACE_RECOVERY_JUMBO_DUPLICATE_GB,
 ) -> dict[str, Any]:
     disk = _disk_usage(external_root)
     available_gb = _gb(int(disk.get("available_bytes") or 0))
@@ -289,7 +536,7 @@ def build_payload(
             if apply:
                 row.update(delta)
 
-    duplicate_files = _duplicate_fallback_files(external_root) if cleanup_duplicates else []
+    duplicate_files = _duplicate_fallback_files(external_root) if cleanup_duplicates or space_recovery else []
     duplicate_bytes = 0
     deleted_duplicates: list[str] = []
     for path in duplicate_files:
@@ -297,10 +544,59 @@ def build_payload(
             duplicate_bytes += int(path.stat().st_size)
         except Exception:
             continue
-    if apply and cleanup_duplicates:
-        for path in duplicate_files:
+
+    need_safe_recovery_scan = bool(space_recovery or cleanup_duplicates)
+    space_candidates, space_scan = _safe_space_recovery_candidates(
+        external_root,
+        duplicate_files=duplicate_files,
+        min_age_hours=float(space_recovery_min_age_hours),
+        candidate_limit=max(int(space_recovery_candidate_limit), 1),
+        scan_file_limit=max(int(space_recovery_scan_file_limit), 1),
+    ) if need_safe_recovery_scan else ([], {"scan_root_exists": bool(external_root.exists()), "protected_volume_blocked": bool(_is_protected_volume(external_root)), "scanned_files": 0, "scan_limit_reached": False})
+    target_free_gb = max(float(space_recovery_target_free_gb), 0.0)
+    target_free_deficit_gb = max(target_free_gb - float(available_gb), 0.0) if target_free_gb > 0.0 else 0.0
+    effective_max_delete_gb = _effective_space_recovery_delete_gb(
+        available_gb=float(available_gb),
+        target_free_gb=target_free_gb,
+        max_delete_gb=float(space_recovery_max_delete_gb),
+    )
+    selected_space_candidates = _select_space_recovery_candidates(
+        space_candidates,
+        max_delete_gb=float(effective_max_delete_gb),
+        jumbo_duplicate_gb=float(space_recovery_jumbo_duplicate_gb),
+    )
+    deleted_space: list[dict[str, Any]] = []
+    delete_errors: list[dict[str, Any]] = []
+    if apply and space_recovery:
+        for row in selected_space_candidates:
+            path = Path(str(row.get("path") or "")).expanduser()
+            if _is_protected_volume(path) or not _is_within_root(path, external_root) or path.is_symlink():
+                delete_errors.append({"path": str(path), "reason": "safety_check_failed"})
+                continue
             try:
                 path.unlink()
+                deleted_space.append(row)
+                if str(row.get("reason") or "") == "duplicate_local_fallback_artifact":
+                    deleted_duplicates.append(str(path))
+            except Exception as exc:
+                delete_errors.append({"path": str(path), "reason": type(exc).__name__})
+    elif apply and cleanup_duplicates:
+        selected_duplicate_candidates = _select_space_recovery_candidates(
+            [
+                row
+                for row in space_candidates
+                if str(row.get("reason") or "") == "duplicate_local_fallback_artifact"
+            ],
+            max_delete_gb=float(space_recovery_max_delete_gb),
+            jumbo_duplicate_gb=float(space_recovery_jumbo_duplicate_gb),
+        )
+        for row in selected_duplicate_candidates:
+            path = Path(str(row.get("path") or "")).expanduser()
+            if _is_protected_volume(path) or not _is_within_root(path, external_root) or path.is_symlink():
+                continue
+            try:
+                path.unlink()
+                deleted_space.append(row)
                 deleted_duplicates.append(str(path))
             except Exception:
                 continue
@@ -336,11 +632,53 @@ def build_payload(
             "candidate_bytes": duplicate_bytes,
             "candidate_gb": round(_gb(duplicate_bytes), 3),
             "deleted_count": len(deleted_duplicates),
-            "deleted_gb": round(_gb(duplicate_bytes), 3) if apply else 0.0,
+            "deleted_gb": round(sum(float(row.get("size_gb") or 0.0) for row in deleted_space if str(row.get("reason") or "") == "duplicate_local_fallback_artifact"), 3)
+            if apply
+            else (round(_gb(duplicate_bytes), 3) if apply else 0.0),
+        },
+        "safe_space_recovery": {
+            "enabled": bool(space_recovery),
+            "apply_requested": bool(apply and space_recovery),
+            "root": str(external_root),
+            "max_delete_gb": round(max(float(space_recovery_max_delete_gb), 0.0), 3),
+            "jumbo_duplicate_gb": round(max(float(space_recovery_jumbo_duplicate_gb), 0.0), 3),
+            "target_free_gb": round(target_free_gb, 3),
+            "target_free_deficit_gb": round(target_free_deficit_gb, 3),
+            "effective_max_delete_gb": round(float(effective_max_delete_gb), 3),
+            "reserve_rebuild_required": bool(target_free_deficit_gb > 0.25 and selected_space_candidates),
+            "min_age_hours": round(max(float(space_recovery_min_age_hours), 0.0), 3),
+            "candidate_limit": max(int(space_recovery_candidate_limit), 1),
+            "scan_file_limit": max(int(space_recovery_scan_file_limit), 1),
+            "scan": space_scan,
+            "candidate_count": len(space_candidates),
+            "candidate_bytes": sum(max(int(row.get("size_bytes") or 0), 0) for row in space_candidates),
+            "candidate_gb": round(_gb(sum(max(int(row.get("size_bytes") or 0), 0) for row in space_candidates)), 3),
+            "selected_count": len(selected_space_candidates),
+            "selected_bytes": sum(max(int(row.get("size_bytes") or 0), 0) for row in selected_space_candidates),
+            "selected_gb": round(_gb(sum(max(int(row.get("size_bytes") or 0), 0) for row in selected_space_candidates)), 3),
+            "deleted_count": len(deleted_space),
+            "deleted_bytes": sum(max(int(row.get("size_bytes") or 0), 0) for row in deleted_space),
+            "deleted_gb": round(_gb(sum(max(int(row.get("size_bytes") or 0), 0) for row in deleted_space)), 3),
+            "delete_error_count": len(delete_errors),
+            "delete_errors": delete_errors[:20],
+            "by_reason": _reason_counts(space_candidates),
+            "selected_by_reason": _reason_counts(selected_space_candidates),
+            "top_candidates": [
+                {
+                    "relative_path": str(row.get("relative_path") or ""),
+                    "reason": str(row.get("reason") or ""),
+                    "size_gb": round(float(row.get("size_gb") or 0.0), 6),
+                    "age_hours": round(float(row.get("age_hours") or 0.0), 3),
+                }
+                for row in space_candidates[:20]
+            ],
         },
         "recommended_actions": [
             "keep data-collection-only bots in metadata_only or thin_sample mode until external free space is above the throttle threshold"
             if mode in {"critical", "throttle"}
+            else "",
+            "run safe BOT_LOGS space recovery in bounded apply waves; it only targets duplicate fallback, stale partial/temp, and OS metadata artifacts"
+            if space_recovery and selected_space_candidates and not apply
             else "",
             "remove duplicate .local_fallback files from the external route; they are fallback-copy artifacts, not canonical live files"
             if cleanup_duplicates and duplicate_files and not apply
@@ -359,6 +697,13 @@ def main() -> int:
     parser.add_argument("--throttle-gb", type=float, default=80.0)
     parser.add_argument("--critical-gb", type=float, default=40.0)
     parser.add_argument("--cleanup-duplicates", action="store_true")
+    parser.add_argument("--space-recovery", action="store_true")
+    parser.add_argument("--space-recovery-max-delete-gb", type=float, default=float(os.getenv("BOT_LOGS_SPACE_RECOVERY_MAX_DELETE_GB", str(DEFAULT_SPACE_RECOVERY_MAX_DELETE_GB))))
+    parser.add_argument("--space-recovery-target-free-gb", type=float, default=float(os.getenv("BOT_LOGS_SPACE_RECOVERY_TARGET_FREE_GB", str(DEFAULT_SPACE_RECOVERY_TARGET_FREE_GB))))
+    parser.add_argument("--space-recovery-min-age-hours", type=float, default=float(os.getenv("BOT_LOGS_SPACE_RECOVERY_MIN_AGE_HOURS", str(DEFAULT_SPACE_RECOVERY_MIN_AGE_HOURS))))
+    parser.add_argument("--space-recovery-candidate-limit", type=int, default=int(os.getenv("BOT_LOGS_SPACE_RECOVERY_CANDIDATE_LIMIT", str(DEFAULT_SPACE_RECOVERY_CANDIDATE_LIMIT))))
+    parser.add_argument("--space-recovery-scan-file-limit", type=int, default=int(os.getenv("BOT_LOGS_SPACE_RECOVERY_SCAN_FILE_LIMIT", str(DEFAULT_SPACE_RECOVERY_SCAN_FILE_LIMIT))))
+    parser.add_argument("--space-recovery-jumbo-duplicate-gb", type=float, default=float(os.getenv("BOT_LOGS_SPACE_RECOVERY_JUMBO_DUPLICATE_GB", str(DEFAULT_SPACE_RECOVERY_JUMBO_DUPLICATE_GB))))
     parser.add_argument("--apply", action="store_true")
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args()
@@ -371,6 +716,13 @@ def main() -> int:
         critical_gb=float(args.critical_gb),
         apply=bool(args.apply),
         cleanup_duplicates=bool(args.cleanup_duplicates),
+        space_recovery=bool(args.space_recovery),
+        space_recovery_max_delete_gb=float(args.space_recovery_max_delete_gb),
+        space_recovery_target_free_gb=float(args.space_recovery_target_free_gb),
+        space_recovery_min_age_hours=float(args.space_recovery_min_age_hours),
+        space_recovery_candidate_limit=int(args.space_recovery_candidate_limit),
+        space_recovery_scan_file_limit=int(args.space_recovery_scan_file_limit),
+        space_recovery_jumbo_duplicate_gb=float(args.space_recovery_jumbo_duplicate_gb),
     )
     write_payload(Path(args.out_file).expanduser(), payload)
     if args.json:

@@ -15,6 +15,12 @@ if str(CORE_DIR) not in sys.path:
 import runtime_training_common as rtc
 
 
+def test_safe_int_handles_numeric_strings_and_bad_values() -> None:
+    assert rtc._safe_int("12.9", 5) == 12
+    assert rtc._safe_int("bad", 5) == 5
+    assert rtc._safe_int(float("nan"), 5) == 5
+
+
 def _write_jsonl(path: Path, rows: list[dict]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("\n".join(json.dumps(row) for row in rows) + "\n", encoding="utf-8")
@@ -126,6 +132,43 @@ def test_load_runtime_observation_sequences_prefers_grand_master_bot(tmp_path) -
     assert rows[1]["snapshot_id"] == "snap-2"
 
 
+def test_load_runtime_observation_sequences_honors_max_observation_rows(tmp_path) -> None:
+    ts = datetime.now(timezone.utc)
+    path = tmp_path / "decision_explanations" / "shadow_aggressive_equities" / "decision_explanations_20260313.jsonl"
+
+    _write_jsonl(
+        path,
+        [
+            {
+                "timestamp_utc": ts.isoformat(),
+                "mode": "shadow_aggressive_equities",
+                "symbol": "NVDA",
+                "strategy": "grand_master_bot",
+                "features": {"last_price": 101.0},
+                "metadata": {"layer": "grand_master", "snapshot_id": "snap-1"},
+            },
+            {
+                "timestamp_utc": (ts + timedelta(seconds=90)).isoformat(),
+                "mode": "shadow_aggressive_equities",
+                "symbol": "AAPL",
+                "strategy": "grand_master_bot",
+                "features": {"last_price": 202.0},
+                "metadata": {"layer": "grand_master", "snapshot_id": "snap-2"},
+            },
+        ],
+    )
+
+    sequences = rtc.load_runtime_observation_sequences(
+        tmp_path,
+        lookback_days=2,
+        allow_snapshot=False,
+        max_observation_rows=1,
+    )
+
+    assert ("shadow_aggressive_equities", "NVDA") in sequences
+    assert ("shadow_aggressive_equities", "AAPL") not in sequences
+
+
 def test_load_runtime_observation_sequences_can_use_sqlite_first(tmp_path, monkeypatch) -> None:
     ts = datetime.now(timezone.utc)
     rel = "decision_explanations/shadow_aggressive_equities/decision_explanations_20260313.jsonl"
@@ -182,6 +225,176 @@ def test_load_runtime_observation_sequences_can_use_sqlite_history_without_raw_f
     rows = sequences[("shadow_aggressive_equities", "NVDA")]
     assert len(rows) == 1
     assert rows[0]["snapshot_id"] == "snap-sql-only"
+
+
+def test_load_runtime_observation_sequences_accepts_trade_decision_metadata_mode(tmp_path) -> None:
+    ts = datetime.now(timezone.utc)
+    day = ts.strftime("%Y%m%d")
+    path = tmp_path / "decisions" / "paper" / f"trade_decisions_{day}.jsonl"
+    _write_jsonl(
+        path,
+        [
+            {
+                "timestamp_utc": ts.isoformat(),
+                "symbol": "SOXX",
+                "strategy": "paper_mirror::brain_refinery_v35_dmi_state_machine",
+                "features": {"last_price": 536.51, "pct_from_close": 0.011},
+                "metadata": {
+                    "mode": "paper",
+                    "layer": "sub_bot_paper_mirror",
+                    "snapshot_id": "snap-paper-trade",
+                },
+            }
+        ],
+    )
+
+    sequences = rtc.load_runtime_observation_sequences(tmp_path, lookback_days=2, allow_snapshot=False)
+
+    rows = sequences[("paper", "SOXX")]
+    assert len(rows) == 1
+    assert rows[0]["snapshot_id"] == "snap-paper-trade"
+    assert rows[0]["price"] == 536.51
+
+
+def test_load_runtime_observation_sequences_infers_crypto_channel_modes(tmp_path) -> None:
+    ts = datetime.now(timezone.utc)
+    day = ts.strftime("%Y%m%d")
+    default_path = tmp_path / "decisions" / "shadow_crypto" / f"trade_decisions_{day}.jsonl"
+    futures_path = tmp_path / "decisions" / "shadow_crypto_futures_crypto" / f"trade_decisions_{day}.jsonl"
+    _write_jsonl(
+        default_path,
+        [
+            {
+                "timestamp_utc": ts.isoformat(),
+                "symbol": "BTC-USD",
+                "strategy": "grand_master_bot",
+                "snapshot_id": "btc-default-snap",
+                "features": {"last_price": 62000.0, "pct_from_close": 0.001, "vol_30m": 0.002},
+                "metadata": {
+                    "mode": "shadow",
+                    "layer": "grand_master",
+                    "source_profile": "default",
+                    "shadow_domain": "crypto",
+                    "snapshot_id": "btc-default-snap",
+                },
+            }
+        ],
+    )
+    _write_jsonl(
+        futures_path,
+        [
+            {
+                "timestamp_utc": ts.isoformat(),
+                "symbol": "ETH-USD",
+                "strategy": "grand_master_bot",
+                "snapshot_id": "eth-futures-snap",
+                "features": {"last_price": 1600.0, "pct_from_close": -0.002, "vol_30m": 0.003},
+                "metadata": {
+                    "mode": "shadow",
+                    "layer": "grand_master",
+                    "source_profile": "crypto_futures",
+                    "shadow_domain": "crypto",
+                    "snapshot_id": "eth-futures-snap",
+                },
+            }
+        ],
+    )
+
+    sequences = rtc.load_runtime_observation_sequences(
+        tmp_path,
+        lookback_days=2,
+        mode_allowlist=["shadow_crypto", "shadow_crypto_futures_crypto"],
+        prefer_sqlite=False,
+        allow_snapshot=False,
+    )
+
+    assert ("shadow_crypto", "BTC-USD") in sequences
+    assert ("shadow_crypto_futures_crypto", "ETH-USD") in sequences
+    assert sequences[("shadow_crypto", "BTC-USD")][0]["strategy"] == "grand_master_bot"
+    assert sequences[("shadow_crypto", "BTC-USD")][0]["price"] == 62000.0
+    assert sequences[("shadow_crypto_futures_crypto", "ETH-USD")][0]["features"]["pct_from_close"] == -0.002
+
+
+def test_load_runtime_observation_sequences_recovers_split_channel_price(tmp_path) -> None:
+    ts = datetime.now(timezone.utc)
+    day = ts.strftime("%Y%m%d")
+    channel_path = (
+        tmp_path
+        / "governance"
+        / "channels"
+        / "decision"
+        / "schwab_futures_equities_schwab"
+        / f"decision_{day}.jsonl"
+    )
+    trade_path = tmp_path / "decisions" / "shadow_schwab_futures_equities" / f"trade_decisions_{day}.jsonl"
+    _write_jsonl(
+        channel_path,
+        [
+            {
+                "timestamp_utc": (ts - timedelta(seconds=30)).isoformat(),
+                "symbol": "SPY",
+                "snapshot_id": "SPY-split-snapshot",
+                "market": {"last_price": 753.13},
+            }
+        ],
+    )
+    _write_jsonl(
+        trade_path,
+        [
+            {
+                "timestamp_utc": ts.isoformat(),
+                "symbol": "SPY",
+                "strategy": "master_trend_bot",
+                "features": {"pct_from_close": 0.012},
+                "gates": {"market_data_ok": True},
+                "metadata": {
+                    "mode": "shadow",
+                    "layer": "master_bot",
+                    "snapshot_id": "SPY-split-snapshot",
+                },
+            }
+        ],
+    )
+
+    sequences = rtc.load_runtime_observation_sequences(tmp_path, lookback_days=2, prefer_sqlite=False, allow_snapshot=False)
+
+    rows = sequences[("shadow", "SPY")]
+    assert len(rows) == 1
+    assert rows[0]["snapshot_id"] == "SPY-split-snapshot"
+    assert rows[0]["price"] == 753.13
+    assert rows[0]["features"]["last_price"] == 753.13
+    assert rows[0]["features"]["price_recovered_from_sidecar"] == 1.0
+
+
+def test_load_runtime_observation_sequences_accepts_sqlite_trade_history_without_raw_files(tmp_path, monkeypatch) -> None:
+    ts = datetime.now(timezone.utc)
+    day = ts.strftime("%Y%m%d")
+    rel = f"decisions/paper/trade_decisions_{day}.jsonl.gz"
+    sqlite_path = tmp_path / "data" / "jsonl_link.sqlite3"
+    _write_runtime_sqlite(
+        sqlite_path,
+        rel,
+        [
+            {
+                "timestamp_utc": ts.isoformat(),
+                "symbol": "SOXX",
+                "strategy": "paper_mirror::brain_refinery_v35_dmi_state_machine",
+                "features": {"last_price": 536.51, "pct_from_close": 0.011},
+                "metadata": {
+                    "mode": "paper",
+                    "layer": "sub_bot_paper_mirror",
+                    "snapshot_id": "snap-sql-trade",
+                },
+            }
+        ],
+    )
+
+    monkeypatch.setenv("RUNTIME_TRAIN_SQLITE_PATH", str(sqlite_path))
+    sequences = rtc.load_runtime_observation_sequences(tmp_path, lookback_days=2, prefer_sqlite=True, allow_snapshot=False)
+
+    rows = sequences[("paper", "SOXX")]
+    assert len(rows) == 1
+    assert rows[0]["snapshot_id"] == "snap-sql-trade"
 
 
 def test_load_runtime_observation_sequences_falls_back_to_raw_when_sql_merge_is_busy(tmp_path, monkeypatch) -> None:
@@ -279,6 +492,68 @@ def test_load_runtime_observation_sequences_can_use_snapshot_file(tmp_path, monk
     assert sequences[("shadow_bond_equities", "TLT")][0]["snapshot_id"] == "snap-cache"
 
 
+def test_load_runtime_observation_sequences_snapshot_only_skips_history_fallback(tmp_path, monkeypatch) -> None:
+    now = datetime.now(timezone.utc)
+    rows_path = tmp_path / "exports" / "training" / "runtime_training_snapshot_latest.jsonl"
+    rows_path.parent.mkdir(parents=True, exist_ok=True)
+    rows_path.write_text(
+        json.dumps(
+            {
+                "mode": "shadow_crypto",
+                "symbol": "BTC-USD",
+                "strategy": "grand_master_bot",
+                "strategy_priority": 0,
+                "snapshot_id": "snap-nonmatching",
+                "ts_epoch": float(now.timestamp()),
+                "timestamp_utc": now.isoformat(),
+                "price": 100000.0,
+                "features": {"last_price": 100000.0},
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    health_path = tmp_path / "governance" / "health" / "runtime_training_snapshot_latest.json"
+    health_path.parent.mkdir(parents=True, exist_ok=True)
+    health_path.write_text(
+        json.dumps(
+            {
+                "timestamp_utc": now.isoformat(),
+                "lookback_days": 14,
+                "rows_path": str(rows_path),
+                "row_count": 1,
+                "sequence_count": 1,
+            }
+        ),
+        encoding="utf-8",
+    )
+    _write_jsonl(
+        tmp_path / "decision_explanations" / "shadow_bond_equities" / f"decision_explanations_{now:%Y%m%d}.jsonl",
+        [
+            {
+                "timestamp_utc": now.isoformat(),
+                "mode": "shadow_bond_equities",
+                "symbol": "TLT",
+                "strategy": "grand_master_bot",
+                "features": {"last_price": 101.5},
+                "metadata": {"layer": "grand_master", "snapshot_id": "snap-history"},
+            }
+        ],
+    )
+
+    monkeypatch.setenv("RUNTIME_TRAIN_USE_SNAPSHOT", "1")
+    monkeypatch.setenv("RUNTIME_TRAIN_SNAPSHOT_ONLY", "1")
+    monkeypatch.setenv("RUNTIME_TRAIN_SNAPSHOT_FILE", str(health_path))
+    sequences = rtc.load_runtime_observation_sequences(
+        tmp_path,
+        lookback_days=2,
+        mode_allowlist=["shadow_bond_equities"],
+        symbol_allowlist=["TLT"],
+    )
+
+    assert sequences == {}
+
+
 def test_load_runtime_observation_sequences_reads_gzip_history(tmp_path) -> None:
     ts = datetime.now(timezone.utc)
     path = tmp_path / "decision_explanations" / "shadow_conservative_equities" / "decision_explanations_20260313.jsonl.gz"
@@ -346,6 +621,46 @@ def test_make_runtime_windowed_dataset_builds_chronological_samples(tmp_path) ->
     assert meta["sample_count"] == 3
     assert round(float(meta["positive_rate"]), 4) == 0.6667
     assert list(y[:, 0]) == [1.0, 0.0, 1.0]
+
+
+def test_make_runtime_windowed_dataset_label_repair_can_recover_abstained_samples(tmp_path) -> None:
+    base_ts = datetime.now(timezone.utc)
+    prices = [100.0, 100.4, 100.1, 100.8, 100.2, 101.0]
+    rows = []
+    for i, price in enumerate(prices):
+        rows.append(
+            {
+                "timestamp_utc": (base_ts + timedelta(seconds=90 * i)).isoformat(),
+                "mode": "shadow_crypto",
+                "symbol": "BTC-USD",
+                "strategy": "grand_master_bot",
+                "strategy_priority": 0,
+                "snapshot_id": f"snap-repair-{i}",
+                "ts_epoch": float((base_ts + timedelta(seconds=90 * i)).timestamp()),
+                "price": price,
+                "features": {"last_price": price, "pct_from_close": (price / prices[max(i - 1, 0)]) - 1.0},
+            }
+        )
+    sequences = {("shadow_crypto", "BTC-USD"): rows}
+
+    X, y, meta = rtc.make_runtime_windowed_dataset(
+        sequences=sequences,
+        feature_builder=lambda seq, idx: np.asarray([rtc.observation_feature(seq[idx], "pct_from_close")], dtype=np.float32),
+        label_builder=lambda seq, idx, horizon: None,
+        sample_filter=lambda seq, idx, horizon: False,
+        bypass_sample_filter=True,
+        fallback_direction_label=True,
+        fallback_min_abs_return=0.0001,
+        window=2,
+        horizon=1,
+    )
+
+    assert X.shape[0] == 4
+    assert y.shape == (4, 1)
+    assert meta["label_repair_enabled"] is True
+    assert meta["label_repair_bypassed_filter"] is True
+    assert meta["label_repaired"] == 4
+    assert meta["skipped_filtered"] == 0
 
 
 def test_runtime_feature_registries_include_new_trading_context_keys() -> None:

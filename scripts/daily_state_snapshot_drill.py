@@ -19,6 +19,32 @@ DEFAULT_TARGETS = [
 ]
 
 
+def _local_fallback_equivalent(path: Path, *, project_root: Path) -> Path:
+    candidate = Path(path).expanduser()
+    local_fallback_root = project_root / "local_fallback_storage"
+    try:
+        rel = candidate.relative_to(project_root)
+    except ValueError:
+        return candidate
+    if rel.parts and rel.parts[0] == local_fallback_root.name:
+        return candidate
+    return local_fallback_root / rel
+
+
+def _is_broken_symlink(path: Path) -> bool:
+    try:
+        return path.is_symlink() and not path.exists()
+    except OSError:
+        return False
+
+
+def _routed_or_local_fallback_path(path: Path, *, project_root: Path) -> Path:
+    candidate = Path(path).expanduser()
+    if _is_broken_symlink(candidate):
+        return _local_fallback_equivalent(candidate, project_root=project_root)
+    return candidate
+
+
 def _sha256(path: Path) -> str:
     h = hashlib.sha256()
     with path.open("rb") as f:
@@ -66,9 +92,10 @@ def main() -> int:
     max_copy_bytes = max(int(args.max_copy_bytes), 0)
 
     for target_raw in args.targets:
-        src = Path(target_raw)
+        requested_src = Path(target_raw)
+        src = _routed_or_local_fallback_path(requested_src, project_root=PROJECT_ROOT)
         if not src.exists() or not src.is_file():
-            missing.append(str(src))
+            missing.append(str(requested_src))
             continue
 
         rel_name = src.relative_to(PROJECT_ROOT) if str(src).startswith(str(PROJECT_ROOT)) else Path(src.name)
@@ -110,6 +137,8 @@ def main() -> int:
         manifest_rows.append(
             {
                 "source": str(src),
+                "requested_source": str(requested_src),
+                "effective_source": str(src),
                 "snapshot": str(snap_path) if snap_path is not None else "",
                 "restored": str(restore_path) if restore_path is not None else "",
                 "size_bytes": size_bytes,

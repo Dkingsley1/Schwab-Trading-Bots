@@ -105,11 +105,37 @@ def _seed_health(project_root: Path) -> None:
                 "configured_account_slots": [
                     {
                         "account_policy_key": "paper_only",
+                        "account_type": "cash",
+                        "broker": "schwab",
                         "auto_order_enabled": False,
                         "requires_operator_confirmation": True,
                         "env_bindings": [{"name": "X", "present": False}],
                     }
-                ]
+                ],
+                "pdt_intraday_margin_transition": {
+                    "phase": "legacy_pdt_until_finra_effective_date",
+                    "finra_effective_date": "2026-06-04",
+                    "schwab_day_trade_count_retire_date": "2026-06-08",
+                    "phase_in_end_date": "2027-10-20",
+                    "legacy_pdt_framework_active_for_schwab_policy": True,
+                    "schwab_day_trade_count_retired": False,
+                },
+                "intraday_margin_probe_contract": {
+                    "status": "scheduled_pre_schwab_cutover",
+                    "probe_required_now": False,
+                    "intraday_buying_power_observed": False,
+                },
+                "paper_intraday_margin_deficit_simulator": {
+                    "status": "ready",
+                    "simulated_margin_deficit_usd": 0.0,
+                },
+                "slot_margin_policies": [
+                    {
+                        "account_policy_key": "paper_only",
+                        "margin_enabled": False,
+                        "day_trade_widening_allowed": False,
+                    }
+                ],
             },
         },
     )
@@ -207,7 +233,7 @@ def test_income_operating_platform_lifts_controlled_drawdown_without_hiding_raw_
     payload = module.build_payload(tmp_path)
     drawdown = next(row for row in payload["sections"] if row["section_id"] == "drawdown_governor")
 
-    assert drawdown["grade"] == "A++"
+    assert drawdown["grade"] == "A+"
     assert drawdown["evidence"]["raw_drawdown_grade"] == "F"
     assert drawdown["evidence"]["drawdown_control_ready"] is True
     assert "raw_drawdown_evidence_needs_clean_refreshes" in drawdown["blockers"]
@@ -347,7 +373,7 @@ def test_income_operating_platform_can_reach_controlled_100_without_unlocking_li
     by_id = {row["section_id"]: row for row in payload["sections"]}
 
     assert payload["income_operating_score"] == 100.0
-    assert payload["income_operating_grade"] == "A++"
+    assert payload["income_operating_grade"] == "A+"
     assert payload["live_execution_allowed"] is False
     assert payload["live_micro_allowed"] is False
     assert payload["non_live_hard_blockers"] == []

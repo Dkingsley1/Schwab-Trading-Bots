@@ -55,11 +55,59 @@ def _path_age_minutes(path: Path) -> float:
     return max((datetime.now(timezone.utc) - mtime).total_seconds() / 60.0, 0.0)
 
 
-def _iter_decision_files(project_root: Path) -> list[Path]:
-    root = project_root / "decisions"
-    if not root.exists():
-        return []
-    return sorted((path for path in root.rglob("*.jsonl") if path.is_file()), key=lambda path: str(path))
+def _parse_families(raw: str | list[str] | tuple[str, ...] | None) -> list[str]:
+    if isinstance(raw, (list, tuple)):
+        rows = [str(item).strip() for item in raw if str(item).strip()]
+    else:
+        rows = [part.strip() for part in str(raw or "").split(",") if part.strip()]
+    return rows or ["decisions", "decision_explanations", "paper_bridge", "shadow_pnl_attribution"]
+
+
+def _family_roots(project_root: Path, families: list[str]) -> list[Path]:
+    roots: list[Path] = []
+    for family in families:
+        if family == "decisions":
+            roots.append(project_root / "decisions")
+        elif family == "decision_explanations":
+            roots.append(project_root / "decision_explanations")
+        elif family in {"paper_bridge", "exports_paper_broker_bridge"}:
+            roots.append(project_root / "exports" / "paper_broker_bridge")
+    resolved_roots: list[Path] = []
+    seen: set[str] = set()
+    for root in roots:
+        candidates = [root]
+        try:
+            resolved = root.resolve()
+            if resolved != root:
+                candidates.append(resolved)
+        except Exception:
+            pass
+        for candidate in candidates:
+            key = str(candidate)
+            if key in seen:
+                continue
+            seen.add(key)
+            resolved_roots.append(candidate)
+    return resolved_roots
+
+
+def _iter_family_files(project_root: Path, families: list[str]) -> list[Path]:
+    paths: list[Path] = []
+    for family in families:
+        if family == "shadow_pnl_attribution":
+            governance_root = project_root / "governance"
+            if governance_root.exists():
+                paths.extend(
+                    path
+                    for path in governance_root.glob("shadow*/shadow_pnl_attribution_*.jsonl")
+                    if ".__external_symlink_backup" not in path.parent.name
+                )
+            continue
+        for root in _family_roots(project_root, [family]):
+            if not root.exists():
+                continue
+            paths.extend(path for path in root.rglob("*") if _is_candidate_log_path(path))
+    return sorted(paths, key=lambda path: str(path))
 
 
 def _candidate_rows(
@@ -68,38 +116,68 @@ def _candidate_rows(
     min_file_bytes: int,
     include_current_day: bool,
     min_age_minutes: float,
+    families: list[str],
 ) -> list[dict[str, Any]]:
     today = _today_stamp()
     rows: list[dict[str, Any]] = []
-    for path in _iter_decision_files(project_root):
-        if path.name.endswith(".compact_pending"):
-            continue
-        try:
-            size_bytes = int(path.stat().st_size)
-        except OSError:
-            continue
-        if size_bytes < min_file_bytes:
-            continue
-        age_minutes = _path_age_minutes(path)
-        if age_minutes < float(min_age_minutes):
-            continue
-        day = _file_day(path)
-        is_current_day = bool(day and day >= today)
-        if is_current_day and not include_current_day:
-            continue
-        rows.append(
-            {
-                "relative_path": _relative(project_root, path),
-                "size_bytes": size_bytes,
-                "size_gb": _gb(size_bytes),
-                "day": day,
-                "current_day": is_current_day,
-                "age_minutes": round(age_minutes, 3),
-                "action": "gzip_compact_decision_log_in_place",
-            }
+    for path in _iter_family_files(project_root, families):
+        row = _candidate_row(
+            project_root=project_root,
+            path=path,
+            min_file_bytes=min_file_bytes,
+            include_current_day=include_current_day,
+            min_age_minutes=min_age_minutes,
+            today=today,
         )
+        if row:
+            rows.append(row)
     rows.sort(key=lambda row: (-int(row.get("size_bytes", 0) or 0), str(row.get("relative_path") or "")))
     return rows
+
+
+def _candidate_row(
+    *,
+    project_root: Path,
+    path: Path,
+    min_file_bytes: int,
+    include_current_day: bool,
+    min_age_minutes: float,
+    today: str,
+) -> dict[str, Any] | None:
+    if not _is_candidate_log_path(path):
+        return None
+    try:
+        size_bytes = int(path.stat().st_size)
+    except OSError:
+        return None
+    if size_bytes < min_file_bytes:
+        return None
+    age_minutes = _path_age_minutes(path)
+    if age_minutes < float(min_age_minutes):
+        return None
+    day = _file_day(path)
+    is_current_day = bool(day and day >= today)
+    if is_current_day and not include_current_day:
+        return None
+    return {
+        "relative_path": _relative(project_root, path),
+        "fallback_copy": ".jsonl.local_fallback" in path.name,
+        "size_bytes": size_bytes,
+        "size_gb": _gb(size_bytes),
+        "day": day,
+        "current_day": is_current_day,
+        "age_minutes": round(age_minutes, 3),
+        "action": "gzip_compact_decision_explanation_or_bridge_log_in_place",
+    }
+
+
+def _is_candidate_log_path(path: Path) -> bool:
+    if not path.is_file():
+        return False
+    name = path.name
+    if name.endswith(".gz") or ".tmp." in name or ".compact_pending" in name:
+        return False
+    return name.endswith(".jsonl") or ".jsonl.local_fallback" in name
 
 
 def _select_rows(rows: list[dict[str, Any]], *, target_free_bytes: int, max_files: int) -> list[dict[str, Any]]:
@@ -176,15 +254,18 @@ def build_payload(
     include_current_day: bool = False,
     min_age_minutes: float = 60.0,
     compression_level: int = 1,
+    families: str | list[str] | tuple[str, ...] | None = None,
 ) -> dict[str, Any]:
     project_root = Path(project_root).resolve()
     min_file_bytes = max(int(float(min_file_mb) * 1024 * 1024), 1)
     target_free_bytes = max(int(float(target_free_gb) * 1024 * 1024 * 1024), 0)
+    family_list = _parse_families(families)
     candidates = _candidate_rows(
         project_root=project_root,
         min_file_bytes=min_file_bytes,
         include_current_day=bool(include_current_day),
         min_age_minutes=float(min_age_minutes),
+        families=family_list,
     )
     selected = _select_rows(candidates, target_free_bytes=target_free_bytes, max_files=max(int(max_files), 0))
 
@@ -228,7 +309,8 @@ def build_payload(
             "include_current_day": bool(include_current_day),
             "min_age_minutes": float(min_age_minutes),
             "compression_level": int(compression_level),
-            "compaction_policy": "gzip_old_decision_jsonl_in_place_keep_current_day_hot",
+            "families": family_list,
+            "compaction_policy": "gzip_old_decision_explanation_bridge_and_shadow_pnl_jsonl_in_place_keep_current_day_hot",
         },
         "summary": {
             "candidate_count": len(candidates),
@@ -289,6 +371,13 @@ def main() -> int:
     parser.add_argument("--compression-level", type=int, default=int(os.getenv("DECISION_LOG_COMPACTOR_GZIP_LEVEL", "1")))
     parser.add_argument("--include-current-day", action=argparse.BooleanOptionalAction, default=os.getenv("DECISION_LOG_COMPACTOR_INCLUDE_CURRENT_DAY", "0").strip() == "1")
     parser.add_argument("--min-age-minutes", type=float, default=float(os.getenv("DECISION_LOG_COMPACTOR_MIN_AGE_MINUTES", "60")))
+    parser.add_argument(
+        "--families",
+        default=os.getenv(
+            "DECISION_LOG_COMPACTOR_FAMILIES",
+            "decisions,decision_explanations,paper_bridge,shadow_pnl_attribution",
+        ),
+    )
     parser.add_argument("--apply", action="store_true")
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args()
@@ -319,6 +408,7 @@ def main() -> int:
             include_current_day=bool(args.include_current_day),
             min_age_minutes=float(args.min_age_minutes),
             compression_level=int(args.compression_level),
+            families=args.families,
         )
         write_payload(out_path, payload)
         if args.json:

@@ -17,4 +17,5 @@ fi
   "$PYTHON_BIN" "$PROJECT_ROOT/scripts/ops/system_drift_autopilot.py" \
   --apply \
   --max-steps "${SYSTEM_DRIFT_AUTOPILOT_MAX_STEPS:-12}" \
+  --max-step-timeout-seconds "${SYSTEM_DRIFT_AUTOPILOT_STEP_TIMEOUT_SECONDS:-90}" \
   --json

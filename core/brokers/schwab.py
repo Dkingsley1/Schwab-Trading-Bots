@@ -1,12 +1,49 @@
 from __future__ import annotations
 
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
-
-from schwab.auth import easy_client
+import warnings
 
 from core.brokers.base import BrokerAdapter, BrokerCallSpec
 from core.brokers.models import BrokerAuthRequest, BrokerCapabilities
+
+
+@contextmanager
+def _suppress_schwab_sdk_legacy_websocket_warning():
+    with warnings.catch_warnings():
+        warnings.filterwarnings(
+            "ignore",
+            message=r"websockets\.legacy is deprecated.*",
+            category=DeprecationWarning,
+            module=r"websockets\.legacy",
+        )
+        yield
+
+
+def _schwab_easy_client() -> Any:
+    with _suppress_schwab_sdk_legacy_websocket_warning():
+        from schwab.auth import easy_client
+
+    return easy_client
+
+
+class _SchwabPositionsFieldFallback:
+    def __str__(self) -> str:
+        return "Fields.POSITIONS"
+
+    def __repr__(self) -> str:
+        return "Fields.POSITIONS"
+
+
+def _account_positions_fields() -> Any:
+    try:
+        with _suppress_schwab_sdk_legacy_websocket_warning():
+            from schwab.client import Client
+
+        return Client.Account.Fields.POSITIONS
+    except Exception:
+        return _SchwabPositionsFieldFallback()
 
 
 class SchwabBrokerAdapter(BrokerAdapter):
@@ -44,6 +81,7 @@ class SchwabBrokerAdapter(BrokerAdapter):
     options_chain_strike_count_env_var = "SCHWAB_OPTIONS_CHAIN_STRIKE_COUNT"
 
     def authenticate(self, auth_request: BrokerAuthRequest) -> Any:
+        easy_client = _schwab_easy_client()
         return easy_client(
             api_key=auth_request.credentials.api_key,
             app_secret=auth_request.credentials.app_secret,
@@ -61,10 +99,14 @@ class SchwabBrokerAdapter(BrokerAdapter):
     def accounts_snapshot_candidates(self, *, account_reference: str, allow_global_fallback: bool) -> List[BrokerCallSpec]:
         candidates: List[BrokerCallSpec] = []
         account_reference_value = str(account_reference or "").strip()
+        fields = _account_positions_fields()
         if account_reference_value:
+            candidates.append(("get_account", (account_reference_value,), {"fields": fields}))
             candidates.append(("get_account", (account_reference_value,), {}))
         if (not candidates) or bool(allow_global_fallback):
+            candidates.append(("get_accounts", tuple(), {"fields": fields}))
             candidates.append(("get_accounts", tuple(), {}))
+            candidates.append(("get_account", tuple(), {"fields": fields}))
             candidates.append(("get_account", tuple(), {}))
         return candidates
 

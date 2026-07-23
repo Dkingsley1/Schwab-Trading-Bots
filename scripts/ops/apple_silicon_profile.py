@@ -338,6 +338,8 @@ def _core_allocation_env(hardware: Dict[str, Any], tier: str) -> Dict[str, str]:
         "BOT_CPU_PRIMARY_WORKER_BUDGET": str(primary_budget),
         "BOT_CPU_SUPPORT_SPILLOVER_WORKERS": str(support_workers),
         "BOT_CPU_FOREGROUND_APP_RESERVE": str(_positive_int(contract.get("foreground_app_reserve"), 1)),
+        "SQL_LINK_SERVICE_MAX_SHARD_WRITER_LANES": str(max(min(primary_budget, 8), 1)),
+        "SQL_LINK_CHILD_WRITER_CPU_POLICY": "performance_core_primary",
         "SQL_LINK_WRITER_NICE": "0",
         "SQL_LINK_WRITER_BACKGROUND_POLICY": "0",
         "OPS_SQL_WRITER_NICE": "0",

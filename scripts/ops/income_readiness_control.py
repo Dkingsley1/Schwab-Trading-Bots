@@ -78,7 +78,7 @@ def _round(value: Any, digits: int = 3) -> float:
 def _grade(score: float) -> str:
     score = _safe_float(score)
     if score >= 97.0:
-        return "A++"
+        return "A+"
     if score >= 92.0:
         return "A+"
     if score >= 85.0:
@@ -153,6 +153,7 @@ def _load_sources(project_root: Path, bot_logs_root: Path) -> dict[str, Any]:
         "training_runtime": load_json(health / "training_runtime_control_latest.json"),
         "training_quality": load_json(health / "training_quality_control_latest.json"),
         "promotion_quality": load_json(health / "promotion_quality_gate_latest.json"),
+        "account_policy": load_json(health / "account_policy_context_latest.json"),
         "backpressure": load_json(health / "ingestion_backpressure_latest.json"),
         "process_watchdog": load_json(health / "process_watchdog_latest.json"),
         "runtime_gate": load_json(health / "runtime_gate_dashboard_latest.json"),
@@ -232,7 +233,7 @@ def _drawdown_stats(rows: list[dict[str, Any]]) -> dict[str, Any]:
 
 
 def _grade_at_least(grade: Any, target: str) -> bool:
-    ranks = {"F": 0, "D": 1, "C": 2, "B": 3, "A": 4, "A+": 5, "A++": 6}
+    ranks = {"F": 0, "D": 1, "C": 2, "B": 3, "A": 4, "A+": 5, "A++": 5}
     return ranks.get(str(grade or "").strip().upper(), -1) >= ranks.get(target, 999)
 
 
@@ -515,21 +516,37 @@ def _section_live_micro_readiness(sources: dict[str, Any]) -> dict[str, Any]:
     profitability = sources["paper_profitability"]
     runtime_gate = sources["runtime_gate"]
     process = sources["process_watchdog"]
+    account = sources["account_policy"]
+    account_context = _nested(account, "account_policy_context", default={}) or {}
+    margin_probe = _nested(account_context, "intraday_margin_probe_contract", default={}) or {}
+    margin_sim = _nested(account_context, "paper_intraday_margin_deficit_simulator", default={}) or {}
+    pdt_transition = _nested(account_context, "pdt_intraday_margin_transition", default={}) or {}
     live_execution_allowed = bool(_nested(profitability, "paper_harvest_execution_contract", "live_execution_allowed", default=False))
     halt_active = bool(global_halt.get("halt") or global_halt.get("global_halt") or global_halt.get("global_kill_triggered"))
     process_ready = str(process.get("overall_status") or process.get("status") or "").lower() in {"ready", "ok", "healthy"}
     runtime_overall = str(_nested(runtime_gate, "overall", "status", default=runtime_gate.get("overall_status", "")) or "").lower()
+    margin_probe_status = str(margin_probe.get("status") or "")
+    margin_sim_status = str(margin_sim.get("status") or "")
+    intraday_buying_power_observed = bool(margin_probe.get("intraday_buying_power_observed", False))
+    probe_required_now = bool(margin_probe.get("probe_required_now", False))
+    margin_sim_clear = margin_sim_status in {"", "ready"}
     raw_score = 68.0
     raw_score += 12.0 if process_ready else 0.0
     raw_score += 8.0 if not halt_active else 0.0
     raw_score += 8.0 if runtime_overall in {"ready", "ok", "healthy", ""} else 0.0
     raw_score += 4.0 if not live_execution_allowed else -30.0
+    raw_score += 3.0 if margin_sim_clear else -8.0
     controlled_micro_ready = process_ready and not halt_active and not live_execution_allowed and runtime_overall in {"", "ready", "ok", "healthy", "degraded"}
     score = 100.0 if controlled_micro_ready else raw_score
     blockers = [
         "live_micro_requires_separate_operator_approval",
         "live_execution_must_remain_blocked_until_real_fill_gap_is_proven",
+        "live_micro_intraday_margin_buying_power_requires_broker_confirmation",
     ]
+    if probe_required_now and not intraday_buying_power_observed:
+        blockers.append("schwab_intraday_margin_probe_not_ready")
+    if not margin_sim_clear:
+        blockers.append("paper_intraday_margin_deficit_simulator_not_clear")
     if halt_active:
         blockers.append("global_halt_or_kill_state_active")
     if not process_ready:
@@ -548,17 +565,35 @@ def _section_live_micro_readiness(sources: dict[str, Any]) -> dict[str, Any]:
             "runtime_overall_status": runtime_overall,
             "paper_harvest_live_execution_allowed": live_execution_allowed,
             "current_mode": "paper_only_read_only",
+            "pdt_transition_phase": str(pdt_transition.get("phase") or ""),
+            "schwab_day_trade_count_retired": bool(pdt_transition.get("schwab_day_trade_count_retired", False)),
+            "intraday_margin_probe_status": margin_probe_status,
+            "intraday_buying_power_observed": intraday_buying_power_observed,
+            "paper_intraday_margin_simulator_status": margin_sim_status,
+            "simulated_intraday_margin_deficit_usd": margin_sim.get("simulated_margin_deficit_usd", 0.0),
             "raw_live_micro_readiness_score": round(max(min(raw_score, 100.0), 0.0), 3),
             "controlled_micro_ready": controlled_micro_ready,
+            "future_micro_contract": {
+                "mode": "not_enabled",
+                "reduce_only_until_fill_gap_proven": True,
+                "kill_switch_required": True,
+                "requires_broker_confirmed_intraday_margin_buying_power": True,
+                "broker_developer_platform_order_limit_policy": (
+                    "operator_managed_external_throttle_not_internal_scalability_ceiling"
+                ),
+            },
         },
         controls=[
             "no live-micro execution is enabled by this command",
             "future live-micro requires explicit operator approval and a separate control artifact",
             "micro size starts with broker-fill comparison, not income withdrawal",
+            "broker developer-platform order limits stay operator-managed so the cap can scale later",
+            "Schwab PDT replacement still requires broker-confirmed intraday margin buying power",
         ],
         next_actions=[
             "collect several clean paper sessions with fresh fill reconciliation",
             "define live-micro notional caps only after paper-vs-real gap is green",
+            "refresh account-policy context after Schwab exposes intraday margin buying-power fields",
         ],
     )
 
@@ -760,6 +795,11 @@ def _section_income_readiness_scorecard(section_scores: dict[str, float], blocke
             "paper_realized_pnl_total": _round(paper_summary.get("ending_realized_pnl_total"), 6),
             "paper_unrealized_pnl_total": _round(paper_summary.get("ending_unrealized_pnl_total"), 6),
             "financial_profitability_grade": profitability.get("financial_profitability_grade"),
+            "financial_display_grade": profitability.get("financial_display_grade"),
+            "controlled_financial_grade": profitability.get("controlled_financial_grade"),
+            "profitability_display_grade": profitability.get("profitability_display_grade"),
+            "controlled_profitability_grade": profitability.get("controlled_profitability_grade"),
+            "raw_profitability_grade": profitability.get("raw_profitability_grade"),
             "operational_control_grade": profitability.get("operational_control_grade"),
             "operational_outcome_grade": profitability.get("operational_outcome_grade"),
             "lowest_section_scores": sorted(

@@ -24,6 +24,8 @@ DEFAULT_PLIST = Path.home() / "Library" / "LaunchAgents" / f"{DEFAULT_LABEL}.pli
 
 REQUIRED_GUARD_SNIPPETS = {
     "disk_appearance_handler": "handleObservedDiskAppeared",
+    "disappearance_grace": "confirmDisappearAndRestartLocal",
+    "false_disappear_suppression": "external_still_available_after_disappear",
     "mount_poll_timer": "startMountPollTimer",
     "external_switch": "storage-switch-external --no-refresh",
     "local_switch": "storage-switch-local --no-refresh",

@@ -5,8 +5,10 @@ import argparse
 import json
 import os
 import re
+import signal
 import subprocess
 import sys
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -163,16 +165,12 @@ def _storage_active_root(project_root: Path) -> Path | None:
 
 def _source_scan_roots(project_root: Path) -> list[Path]:
     raw_roots = [
-        project_root / "decision_explanations",
-        project_root / "decisions",
-        project_root / "governance",
-        project_root / "local_fallback_storage" / "decision_explanations",
-        project_root / "local_fallback_storage" / "decisions",
-        project_root / "local_fallback_storage" / "governance",
+        project_root,
+        project_root / "local_fallback_storage",
     ]
     active_root = _storage_active_root(project_root)
     if active_root is not None:
-        raw_roots.extend([active_root / "decision_explanations", active_root / "decisions", active_root / "governance"])
+        raw_roots.append(active_root)
     roots: list[Path] = []
     seen: set[str] = set()
     for root in raw_roots:
@@ -189,31 +187,37 @@ def _source_scan_roots(project_root: Path) -> list[Path]:
 
 def _source_day_set(project_root: Path) -> set[str]:
     limit = max(_safe_int(os.getenv("ONE_NUMBERS_SOURCE_SCAN_FILE_LIMIT"), 50000), 1)
+    patterns = (
+        "decision_explanations/**/decision_explanations_*.jsonl*",
+        "decisions/**/trade_decisions_*.jsonl*",
+        "governance/**/master_control_*.jsonl*",
+    )
     days: set[str] = set()
     scanned = 0
     for root in _source_scan_roots(project_root):
-        try:
-            iterator = root.rglob("*")
-        except Exception:
-            continue
-        for path in iterator:
-            if scanned >= limit:
-                return days
+        for pattern in patterns:
             try:
-                if not path.is_file():
-                    continue
+                iterator = root.glob(pattern)
             except Exception:
                 continue
-            scanned += 1
-            name = path.name
-            if ".jsonl" not in name:
-                continue
-            match = SOURCE_DAY_RE.search(name)
-            if not match:
-                continue
-            day = _normalize_day(match.group(1))
-            if day:
-                days.add(day)
+            for path in iterator:
+                if scanned >= limit:
+                    return days
+                try:
+                    if not path.is_file():
+                        continue
+                except Exception:
+                    continue
+                scanned += 1
+                name = path.name
+                if ".jsonl" not in name:
+                    continue
+                match = SOURCE_DAY_RE.search(name)
+                if not match:
+                    continue
+                day = _normalize_day(match.group(1))
+                if day:
+                    days.add(day)
     return days
 
 
@@ -447,7 +451,94 @@ def _builder_running() -> bool:
         text=True,
         check=False,
     )
-    return proc.returncode == 0 and bool(str(proc.stdout or "").strip())
+    pids = [_safe_int(row.strip(), 0) for row in str(proc.stdout or "").splitlines() if row.strip()]
+    for pid in [pid for pid in pids if pid > 0]:
+        _continue_stopped_process(pid)
+    return proc.returncode == 0 and bool(pids)
+
+
+def _process_stat(pid: int) -> str:
+    proc = subprocess.run(
+        ["ps", "-o", "stat=", "-p", str(pid)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return str(proc.stdout or "").strip()
+
+
+def _continue_stopped_process(pid: int) -> bool:
+    if "T" not in _process_stat(pid):
+        return False
+    try:
+        os.killpg(os.getpgid(pid), signal.SIGCONT)
+    except ProcessLookupError:
+        return False
+    except Exception:
+        try:
+            os.kill(pid, signal.SIGCONT)
+        except Exception:
+            return False
+    return True
+
+
+def _run_repair_command(command: list[str], project_root: Path, timeout_sec: int) -> tuple[int, bool, str, str]:
+    proc: subprocess.Popen[str] | None = None
+    timeout_limit = max(int(timeout_sec), 1)
+    poll_seconds = max(_safe_int(os.getenv("ONE_NUMBERS_REPAIR_POLL_SECONDS"), 5), 1)
+    resume_grace_seconds = max(min(timeout_limit // 3, 300), 60)
+    max_stopped_resumes = max(_safe_int(os.getenv("ONE_NUMBERS_MAX_STOPPED_RESUMES"), 3), 0)
+    stopped_resume_count = 0
+    try:
+        proc = subprocess.Popen(
+            command,
+            cwd=str(project_root),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            start_new_session=True,
+        )
+        deadline = time.monotonic() + timeout_limit
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise subprocess.TimeoutExpired(command, timeout_limit)
+            try:
+                stdout, stderr = proc.communicate(timeout=min(float(poll_seconds), remaining))
+                if stopped_resume_count:
+                    note = f"auto_resumed_stopped_builder={stopped_resume_count}"
+                    stderr = "\n".join(part for part in [stderr or "", note] if part)
+                return int(proc.returncode), False, stdout or "", stderr or ""
+            except subprocess.TimeoutExpired:
+                if (
+                    stopped_resume_count < max_stopped_resumes
+                    and proc.poll() is None
+                    and _continue_stopped_process(proc.pid)
+                ):
+                    stopped_resume_count += 1
+                    deadline = max(deadline, time.monotonic() + resume_grace_seconds)
+                continue
+    except subprocess.TimeoutExpired:
+        stdout = ""
+        stderr = ""
+        if proc is not None:
+            try:
+                os.killpg(proc.pid, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
+            except Exception:
+                proc.terminate()
+            try:
+                stdout, stderr = proc.communicate(timeout=2)
+            except subprocess.TimeoutExpired:
+                try:
+                    os.killpg(proc.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+                except Exception:
+                    proc.kill()
+                stdout, stderr = proc.communicate()
+        return 124, True, stdout or "", (stderr or "timeout")
 
 
 def apply_repairs(project_root: Path, payload: dict[str, Any]) -> dict[str, Any]:
@@ -465,29 +556,12 @@ def apply_repairs(project_root: Path, payload: dict[str, Any]) -> dict[str, Any]
         if isinstance(row, list)
     ]
     commands.append(cmd)
-    timeout_sec = max(_safe_int(os.getenv("ONE_NUMBERS_REPAIR_TIMEOUT_SECONDS"), 1800), 1)
+    timeout_sec = max(_safe_int(os.getenv("ONE_NUMBERS_REPAIR_TIMEOUT_SECONDS"), 900), 1)
     attempts: list[dict[str, Any]] = []
     for command in commands:
         if not command:
             continue
-        try:
-            proc = subprocess.run(
-                command,
-                cwd=str(project_root),
-                capture_output=True,
-                text=True,
-                check=False,
-                timeout=timeout_sec,
-            )
-            timed_out = False
-            rc = int(proc.returncode)
-            stdout = proc.stdout or ""
-            stderr = proc.stderr or ""
-        except subprocess.TimeoutExpired as exc:
-            timed_out = True
-            rc = 124
-            stdout = exc.stdout.decode("utf-8", errors="ignore") if isinstance(exc.stdout, bytes) else str(exc.stdout or "")
-            stderr = exc.stderr.decode("utf-8", errors="ignore") if isinstance(exc.stderr, bytes) else str(exc.stderr or "")
+        rc, timed_out, stdout, stderr = _run_repair_command(command, project_root, timeout_sec)
         attempts.append(
             {
                 "rc": rc,

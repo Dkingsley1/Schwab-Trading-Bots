@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 import sys
+import urllib.parse
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -21,11 +22,37 @@ else:
 
 DEFAULT_OUT_PATH = PROJECT_ROOT / "governance" / "health" / "remote_alert_control_latest.json"
 DEFAULT_ACK_STATE_PATH = PROJECT_ROOT / "governance" / "watchdog" / "remote_alert_ack_state.json"
+PLACEHOLDER_WEBHOOK_HOSTS = {"example.com", "example.invalid", "localhost.invalid"}
+
+
+def _webhook_url() -> str:
+    return str(os.getenv("OPS_ALERT_WEBHOOK_URL", "")).strip()
+
+
+def _webhook_config_error(url: str | None = None) -> str:
+    raw = _webhook_url() if url is None else str(url or "").strip()
+    if not raw:
+        return ""
+    lowered = raw.lower()
+    if any(token in lowered for token in ("<", ">", "your_", "changeme", "placeholder")):
+        return "placeholder_webhook_url"
+    parsed = urllib.parse.urlparse(raw)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        return "invalid_webhook_url"
+    host = (parsed.hostname or "").strip().lower()
+    if host in PLACEHOLDER_WEBHOOK_HOSTS or host.endswith(".invalid"):
+        return "placeholder_webhook_url"
+    return ""
+
+
+def _channel_config_errors() -> dict[str, str]:
+    webhook_error = _webhook_config_error()
+    return {"webhook": webhook_error} if webhook_error else {}
 
 
 def _configured_channels() -> dict[str, bool]:
     return {
-        "webhook": bool(str(os.getenv("OPS_ALERT_WEBHOOK_URL", "")).strip()),
+        "webhook": bool(_webhook_url() and not _webhook_config_error()),
         "pushover": bool(
             str(os.getenv("OPS_ALERT_PUSHOVER_TOKEN", "")).strip() and str(os.getenv("OPS_ALERT_PUSHOVER_USER_KEY", "")).strip()
         ),
@@ -91,9 +118,11 @@ def build_payload(
     ack_state = _load_ack_state(ack_state_path)
     ack_events = ack_state.get("events") if isinstance(ack_state.get("events"), dict) else {}
     channels = _configured_channels()
+    channel_config_errors = _channel_config_errors()
     mac_state = load_json(health_root / "mac_notification_watch_state.json")
     timeline = load_json(health_root / "incident_timeline_latest.json")
     imessage_bridge = bool(mac_state.get("imessage_enabled", False) and mac_state.get("imessage_recipient_configured", False))
+    channels["remote_pager_configured"] = bool(channels.get("webhook", False) or channels.get("pushover", False))
     channels["imessage_bridge"] = imessage_bridge
     open_categories = {
         str((row or {}).get("category") or "").strip().lower()
@@ -191,6 +220,14 @@ def build_payload(
     recommended_actions = ordered_unique(
         [
             "configure at least one remote pager channel before relying on multi-week unattended runtime" if not any_channel else "",
+            "replace placeholder OPS_ALERT_WEBHOOK_URL with a real phone/pager webhook or remove it" if channel_config_errors.get("webhook") else "",
+            (
+                "iMessage bridge is configured for phone delivery; add Pushover or a real webhook only for unattended pager coverage"
+                if imessage_bridge
+                else "configure Pushover or a real webhook for phone delivery"
+            )
+            if not channels.get("remote_pager_configured", False)
+            else "",
             "acknowledge critical alerts explicitly so the escalation backlog does not blur together" if grouped_unacked else "",
             "treat unsent critical alerts as a hard operational blocker" if grouped_unsent else "",
             "compact duplicate alert storms by signature before escalating so pager volume reflects unique incidents" if dedupe_ratio > 1.25 else "",
@@ -203,6 +240,7 @@ def build_payload(
         "ok": overall_status == "ready",
         "overall_status": overall_status,
         "channels": {**channels, "any_configured": any_channel},
+        "channel_config_errors": channel_config_errors,
         "alert_window_hours": int(hours),
         "severity_counts": severity_counts,
         "critical_backlog": {

@@ -67,6 +67,7 @@ CORE_HEALTH_SOURCES: tuple[dict[str, Any], ...] = (
     {"name": "training_quality", "path": "governance/health/training_quality_control_latest.json", "fresh_minutes": 360},
     {"name": "bot_quality", "path": "governance/health/bot_quality_autopilot_latest.json", "fresh_minutes": 360},
     {"name": "paper_profitability", "path": "governance/health/paper_profitability_control_latest.json", "fresh_minutes": 240},
+    {"name": "operating_platform_upgrade", "path": "governance/health/operating_platform_upgrade_latest.json", "fresh_minutes": 240},
     {"name": "paper_runtime_controls", "path": "governance/health/paper_runtime_profitability_controls_latest.json", "fresh_minutes": 240},
     {"name": "auth_lease", "path": "governance/health/auth_lease_manager_latest.json", "fresh_minutes": 240},
     {"name": "global_halt", "path": "governance/health/global_killswitch_latest.json", "fresh_minutes": 120},
@@ -196,7 +197,7 @@ def _effective_source_status(name: str, payload: dict[str, Any], raw_status: str
 
 def _grade(score: float) -> str:
     if score >= 98:
-        return "A++"
+        return "A+"
     if score >= 94:
         return "A+"
     if score >= 90:
@@ -279,6 +280,7 @@ def _exact_next_command(name: str) -> list[str]:
         "training_quality": ["./scripts/ops/opsctl.sh", "training-quality", "--json"],
         "bot_quality": ["./scripts/ops/opsctl.sh", "bot-quality-autopilot", "--json"],
         "paper_profitability": ["./scripts/ops/opsctl.sh", "paper-profitability-control", "--apply", "--json"],
+        "operating_platform_upgrade": ["./scripts/ops/opsctl.sh", "operating-platform-upgrade", "--apply", "--json"],
         "auth_lease": ["./scripts/ops/opsctl.sh", "auth-lease", "--json"],
         "global_halt": ["./scripts/ops/opsctl.sh", "global-halt-status", "--json"],
         "system_needs": ["./scripts/ops/opsctl.sh", "system-needs", "--json"],
@@ -303,6 +305,7 @@ def _expected_impact(name: str) -> str:
         "training_quality": "identifies repair-first bots and quality blockers before pushing more runs",
         "bot_quality": "updates duplicate/timidness/labeling signals used by promotion gates",
         "paper_profitability": "refreshes sleeve-level realized/unrealized controls and profit-harvest intents",
+        "operating_platform_upgrade": "refreshes the 12-lane platform upgrade contracts for capital, harvest, replay, feature lake, sleeve CEOs, storage, income, and host portability",
         "auth_lease": "confirms broker auth lease health without granting live execution authority",
         "global_halt": "confirms safety halt state and clearability",
         "system_needs": "regenerates exact blocker, file, command, impact, risk, and stop-condition guidance",
@@ -376,6 +379,10 @@ def _command_center(project_root: Path, sources: dict[str, dict[str, Any]]) -> d
             "live_execution_authority": False,
             "protect_live_expected": True,
             "paper_profitability_grade": paper.get("profitability_grade", ""),
+            "paper_profitability_display_grade": paper.get("profitability_display_grade", ""),
+            "paper_raw_profitability_grade": paper.get("raw_profitability_grade", ""),
+            "paper_financial_display_grade": paper.get("financial_display_grade", ""),
+            "paper_controlled_financial_grade": paper.get("controlled_financial_grade", ""),
             "raw_operational_outcome_grade": paper.get("raw_operational_outcome_grade", ""),
         },
         "safety_invariants": {
@@ -708,10 +715,20 @@ def _slo_control(sources: dict[str, dict[str, Any]]) -> dict[str, Any]:
             1.0 if bool(_as_dict(training.get("reentry_gate")).get("memory_batch20_safe", training.get("memory_batch20_safe", False))) else 0.0,
             1.0,
             ">=",
-            ["./scripts/ops/opsctl.sh", "training-runtime-control", "--json"],
+            ["./scripts/ops/opsctl.sh", "training-runtime-control", "--limit", "30", "--json"],
             "permits larger batch training only after writer, backlog, memory, and foreground-app gates agree",
             scope="expansion",
             notes=["batch20 is an expansion SLO, not required for current live/paper operating health"],
+        ),
+        _slo_row(
+            "training_batch30_safe",
+            1.0 if bool(_as_dict(training.get("reentry_gate")).get("memory_batch30_safe", training.get("memory_batch30_safe", False))) else 0.0,
+            1.0,
+            ">=",
+            ["./scripts/ops/opsctl.sh", "training-runtime-control", "--limit", "30", "--json"],
+            "permits larger batch training only after writer, backlog, memory, and foreground-app gates agree",
+            scope="expansion",
+            notes=["batch30 is an expansion SLO, not required for current live/paper operating health"],
         ),
         _slo_row(
             "required_provider_context_ready",
@@ -946,7 +963,12 @@ def _paper_execution_truth_layer(sources: dict[str, dict[str, Any]]) -> dict[str
     return {
         "status": "ready" if paper else "missing",
         "profitability_grade": paper.get("profitability_grade", ""),
+        "profitability_display_grade": paper.get("profitability_display_grade", ""),
+        "raw_profitability_grade": paper.get("raw_profitability_grade", ""),
         "financial_profitability_grade": paper.get("financial_profitability_grade", ""),
+        "financial_display_grade": paper.get("financial_display_grade", ""),
+        "controlled_financial_grade": paper.get("controlled_financial_grade", ""),
+        "controlled_profitability_grade": paper.get("controlled_profitability_grade", ""),
         "operational_control_grade": paper.get("operational_control_grade", ""),
         "operational_outcome_grade": paper.get("operational_outcome_grade", ""),
         "raw_operational_outcome_grade": paper.get("raw_operational_outcome_grade", ""),
@@ -994,6 +1016,7 @@ def _release_train(sources: dict[str, dict[str, Any]], slo: dict[str, Any]) -> d
         {"stage": "repair_first", "allowed": len(blocked_reasons) <= 2, "reason": "label and feature repair before training expansion"},
         {"stage": "batch10_training", "allowed": not blocked_reasons and bool(gate.get("memory_batch10_safe", False)), "reason": "requires backlog/writer/memory green"},
         {"stage": "batch20_training", "allowed": not blocked_reasons and bool(gate.get("memory_batch20_safe", False)), "reason": "larger batch requires explicit batch20 lane safe"},
+        {"stage": "batch30_training", "allowed": not blocked_reasons and bool(gate.get("memory_batch30_safe", False)), "reason": "largest local batch requires explicit batch30 lane safe"},
         {"stage": "paper_scale", "allowed": not blocked_reasons, "reason": "paper-only expansion after SLOs clear"},
         {"stage": "master_promotion_review", "allowed": not blocked_reasons, "reason": "quality and paper evidence review only, no live authority"},
     ]

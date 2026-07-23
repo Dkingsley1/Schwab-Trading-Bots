@@ -279,14 +279,14 @@ def test_autonomy_control_plane_normalizes_bounded_watch_states_to_needs_work(tm
     _write_json(
         health_root / "live_runtime_separation_control_latest.json",
         {
-            "overall_status": "degraded",
+            "overall_status": "ready",
             "release_contract": {
                 "live_lane_should_be_read_only": True,
                 "promotions_should_wait_for_cold_lane": True,
                 "shared_host_training_resume_allowed": False,
             },
             "shared_host_pressure": {"contention_score": 1},
-            "clearance_plan": {"clearance_state": "awaiting_coverage_cycles"},
+            "clearance_plan": {"clearance_state": "managed_coverage_stage_deferred"},
         },
     )
     _write_json(health_root / "live_readiness_smoke_latest.json", {"live_lane_running": False})
@@ -306,7 +306,7 @@ def test_autonomy_control_plane_normalizes_bounded_watch_states_to_needs_work(tm
             "autopilot_contract": {
                 "overall_status": "degraded",
                 "stage_candidate_count": 4,
-                "launch_state": "waiting_for_idle",
+                "launch_state": "stage_only_training_blocked",
                 "next_action": "wait for retrain to finish",
             }
         },
@@ -326,11 +326,18 @@ def test_autonomy_control_plane_normalizes_bounded_watch_states_to_needs_work(tm
     _write_json(
         health_root / "live_canary_control_latest.json",
         {
-            "overall_status": "degraded",
-            "recommended_mode": "preapproved_supervised",
+            "overall_status": "blocked",
+            "recommended_mode": "validate_only",
             "supervised_canary_ready": False,
-            "staged_preclearance_ready": True,
-            "preapproved_supervised_ready": True,
+            "staged_preclearance_ready": False,
+            "preapproved_supervised_ready": False,
+            "preclearance_score": 85.0,
+            "blocking_reasons": [
+                "faithful_live_money_contract_not_ready",
+                "runtime_clearance_not_ready",
+                "live_lane_read_only",
+                "promotion_packet_preclearance_only",
+            ],
         },
     )
     _write_json(
@@ -390,10 +397,11 @@ def test_autonomy_control_plane_normalizes_bounded_watch_states_to_needs_work(tm
     payload = autonomy_control_plane.build_payload(project_root)
 
     assert payload["overall_status"] == "ready"
-    assert payload["component_statuses"]["live_research_split"] == "needs_work"
+    assert payload["component_statuses"]["live_research_split"] == "ready"
     assert payload["component_statuses"]["coverage_autopilot"] == "needs_work"
     assert payload["component_statuses"]["auth_lease_workflow"] == "needs_work"
     assert payload["component_statuses"]["data_plane_recovery"] == "needs_work"
+    assert payload["component_statuses"]["live_canary_control"] == "needs_work"
     assert payload["component_statuses"]["incident_timeline"] == "needs_work"
     assert payload["component_statuses"]["runtime_throttle_control"] == "needs_work"
     assert payload["component_statuses"]["chrome_headless_guard"] == "needs_work"

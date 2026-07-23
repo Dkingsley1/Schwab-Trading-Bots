@@ -25,3 +25,34 @@ def test_golden_replay_guard_allows_seed_ready_registry_when_pack_is_missing() -
     assert payload["overall_status"] == "degraded"
     assert payload["seed_ready"] is True
     assert payload["case_count"] == 0
+
+
+def test_golden_replay_guard_is_ready_with_matching_pack_case() -> None:
+    replay = src.replay_src.run_replay(src.replay_src._default_payload())
+    actions = {
+        row["symbol"]: row["action_out"]
+        for row in replay["canonical"]["results"]
+    }
+
+    payload = src.build_payload(
+        golden_pack={
+            "schema_version": 1,
+            "cases": [
+                {
+                    "name": "default_case",
+                    "payload": src.replay_src._default_payload(),
+                    "expected_hash": replay["replay_hash"],
+                    "expected_actions": actions,
+                }
+            ],
+        },
+        replay_hash_registry={
+            "ok": True,
+            "details": {"paper": {"current_hash": "paper-hash"}},
+        },
+    )
+
+    assert payload["ok"] is True
+    assert payload["overall_status"] == "ready"
+    assert payload["case_count"] == 1
+    assert payload["failed_case_count"] == 0

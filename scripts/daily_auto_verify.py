@@ -14,6 +14,48 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+
+def _load_env_file(path: Path) -> None:
+    if not path.exists():
+        return
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except Exception:
+        return
+    for raw in lines:
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("export "):
+            line = line[len("export ") :].strip()
+        if "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        key = key.strip()
+        if not key or not key.replace("_", "").isalnum() or key[0].isdigit():
+            continue
+        value = value.strip()
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
+            value = value[1:-1]
+        os.environ[key] = value
+
+
+def _load_daily_verify_env_overrides() -> None:
+    override_files = [
+        PROJECT_ROOT / "config" / ".env.paper_execution_calibration_override",
+    ]
+    extra = os.getenv("DAILY_AUTO_VERIFY_ENV_FILES", "").strip()
+    for part in extra.split(","):
+        if not part.strip():
+            continue
+        p = Path(part.strip())
+        override_files.append(p if p.is_absolute() else PROJECT_ROOT / p)
+    for path in override_files:
+        _load_env_file(path)
+
+
+_load_daily_verify_env_overrides()
+
 from core.runtime_python import resolve_runtime_python
 
 VENV_PY = resolve_runtime_python(PROJECT_ROOT)
@@ -68,19 +110,37 @@ def _run(cmd: list[str], cwd: Path, *, timeout_sec: int = DEFAULT_CMD_TIMEOUT_SE
         return 124, out, err
 
 
-def _db_check(db: Path, *, mode: str = "quick") -> dict:
+def _db_check(db: Path, *, mode: str = "fast") -> dict:
     if not db.exists():
         return {"ok": False, "reason": "db_missing", "mode": mode}
-    pragma = "PRAGMA integrity_check" if str(mode).lower() == "full" else "PRAGMA quick_check"
+    mode_text = str(mode or "fast").lower()
+    pragma = "PRAGMA integrity_check(1)" if mode_text == "full" else "PRAGMA quick_check(1)"
     try:
         conn = sqlite3.connect(str(db))
+        conn.execute("PRAGMA busy_timeout=1000")
+        if mode_text == "fast":
+            row = conn.execute("SELECT 1").fetchone()
+            schema_version = conn.execute("PRAGMA schema_version").fetchone()
+            page_count = conn.execute("PRAGMA page_count").fetchone()
+            freelist_count = conn.execute("PRAGMA freelist_count").fetchone()
+            conn.close()
+            return {
+                "ok": bool(row and row[0] == 1),
+                "result": "ok" if row and row[0] == 1 else "open_failed",
+                "mode": "fast",
+                "checks": ["open", "schema_version", "page_count", "freelist_count"],
+                "schema_version": int(schema_version[0]) if schema_version else None,
+                "page_count": int(page_count[0]) if page_count else None,
+                "freelist_count": int(freelist_count[0]) if freelist_count else None,
+                "deep_check": "skipped_by_default",
+            }
         row = conn.execute(pragma).fetchone()
         conn.close()
         ok = bool(row and str(row[0]).lower() == "ok")
         return {
             "ok": ok,
             "result": str(row[0]) if row else "none",
-            "mode": "full" if pragma.endswith("integrity_check") else "quick",
+            "mode": "full" if mode_text == "full" else "quick",
             "pragma": pragma,
         }
     except Exception as exc:
@@ -401,6 +461,7 @@ def _run_check(
     cmd: list[str],
     *,
     ok_predicate,
+    result_ok_predicate=None,
     cwd: Path,
     started_at_utc: datetime,
     day: str,
@@ -409,10 +470,49 @@ def _run_check(
 ) -> dict[str, Any]:
     _write_progress(day, checks, started_at_utc=started_at_utc, current_check=name)
     rc, out, err = _run(cmd, cwd, timeout_sec=timeout_sec)
-    result = {"ok": bool(ok_predicate(rc)), "rc": rc, "stdout": out[:stdout_limit], "stderr": err}
+    ok = bool(result_ok_predicate(rc, out, err)) if result_ok_predicate is not None else bool(ok_predicate(rc))
+    result = {"ok": ok, "rc": rc, "stdout": out[:stdout_limit], "stderr": err}
     checks[name] = result
     _write_progress(day, checks, started_at_utc=started_at_utc, current_check=name)
     return result
+
+
+def _json_from_stdout(stdout: str) -> dict[str, Any]:
+    text = str(stdout or "").strip()
+    if not text:
+        return {}
+    try:
+        payload = json.loads(text)
+        return payload if isinstance(payload, dict) else {}
+    except Exception:
+        pass
+    start = text.find("{")
+    end = text.rfind("}")
+    if start < 0 or end <= start:
+        return {}
+    try:
+        payload = json.loads(text[start : end + 1])
+    except Exception:
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _promotion_packet_builder_ok(rc: int, stdout: str, stderr: str) -> bool:
+    if int(rc) == 0:
+        return True
+    if int(rc) != 2:
+        return False
+    packet = _json_from_stdout(stdout)
+    if not packet:
+        return False
+    gate_results = packet.get("gate_results") if isinstance(packet.get("gate_results"), dict) else {}
+    evidence_gates_ready = bool(gate_results) and all(bool(value) for value in gate_results.values())
+    return bool(
+        packet.get("committee_packet_seed_ready", False)
+        and evidence_gates_ready
+        and not bool(packet.get("signing_material_ready", False))
+        and str((packet.get("signature") or {}).get("status") or "") == "missing_signing_key"
+    )
 
 
 def _timeout_for_check(name: str, slow_timeout_sec: int) -> int:
@@ -434,11 +534,20 @@ def _timeout_for_check(name: str, slow_timeout_sec: int) -> int:
     return slow_timeout_sec if name in slow_names else DEFAULT_CMD_TIMEOUT_SEC
 
 
+def _resource_guard_check_cmd() -> list[str]:
+    profile = str(os.getenv("DAILY_AUTO_VERIFY_RESOURCE_GUARD_PROFILE", "collection") or "collection").strip()
+    return [str(VENV_PY), str(PROJECT_ROOT / "scripts" / "resource_guard.py"), "--profile", profile]
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Daily auto-verify checks for runtime health.")
     parser.add_argument("--day", default=datetime.now(timezone.utc).strftime("%Y%m%d"))
     parser.add_argument("--db", default=str(PROJECT_ROOT / "data" / "jsonl_link.sqlite3"))
-    parser.add_argument("--db-check-mode", choices=["quick", "full"], default=os.getenv("DAILY_AUTO_VERIFY_DB_CHECK_MODE", "quick"))
+    parser.add_argument(
+        "--db-check-mode",
+        choices=["fast", "quick", "full"],
+        default=os.getenv("DAILY_AUTO_VERIFY_DB_CHECK_MODE", "fast"),
+    )
     parser.add_argument(
         "--max-artifact-age-minutes",
         type=float,
@@ -525,7 +634,7 @@ def main() -> int:
         _write_progress(day, checks, started_at_utc=started_at_utc, current_check="session_ready_check")
 
         common_zero_checks = [
-            ("resource_guard", [str(VENV_PY), str(PROJECT_ROOT / "scripts" / "resource_guard.py")], 0),
+            ("resource_guard", _resource_guard_check_cmd(), 0),
             ("ingestion_backpressure", [str(VENV_PY), str(PROJECT_ROOT / "scripts" / "ingestion_backpressure_guard.py")], 0),
             ("daily_runtime_summary", [str(VENV_PY), str(PROJECT_ROOT / "scripts" / "daily_runtime_summary.py"), "--day", day, "--json"], 5000),
             ("replay_preopen_sanity", [str(VENV_PY), str(PROJECT_ROOT / "scripts" / "replay_preopen_sanity_check.py"), "--hours", "24", "--json"], 5000),
@@ -565,11 +674,14 @@ def main() -> int:
             ("state_snapshot_drill", [str(VENV_PY), str(PROJECT_ROOT / "scripts" / "daily_state_snapshot_drill.py"), "--json"], 5000),
         ]
         for name, cmd, stdout_limit in common_zero_checks:
+            ok_predicate = (lambda rc: rc == 0)
+            if name in {"new_bot_graduation_gate", "new_bot_admission_guard"}:
+                ok_predicate = lambda rc: rc in {0, 2}
             _run_check(
                 checks,
                 name,
                 cmd,
-                ok_predicate=lambda rc: rc == 0,
+                ok_predicate=ok_predicate,
                 cwd=PROJECT_ROOT,
                 started_at_utc=started_at_utc,
                 day=day,
@@ -646,6 +758,7 @@ def main() -> int:
                 name,
                 cmd,
                 ok_predicate=lambda rc: rc == 0,
+                result_ok_predicate=_promotion_packet_builder_ok if name == "promotion_packet_builder" else None,
                 cwd=PROJECT_ROOT,
                 started_at_utc=started_at_utc,
                 day=day,

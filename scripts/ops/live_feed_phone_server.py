@@ -24,6 +24,15 @@ HEALTH_GATES = PROJECT_ROOT / "governance" / "health" / "health_gates_latest.jso
 QUANT_MODEL_CONTROL = PROJECT_ROOT / "governance" / "health" / "quant_model_control_latest.json"
 MEMORY_EFFICIENCY = PROJECT_ROOT / "governance" / "health" / "memory_efficiency_control_latest.json"
 GLOBAL_KILLSWITCH = PROJECT_ROOT / "governance" / "health" / "global_killswitch_latest.json"
+SPACEX_IPO_WATCH = PROJECT_ROOT / "governance" / "health" / "spacex_ipo_downside_watch_latest.json"
+MACRO_EVENT_INTELLIGENCE = PROJECT_ROOT / "governance" / "health" / "macro_event_intelligence_latest.json"
+LIVE_MACRO = PROJECT_ROOT / "data" / "external_context" / "live_macro_latest.json"
+MAC_NOTIFICATION_STATE = PROJECT_ROOT / "governance" / "health" / "mac_notification_watch_state.json"
+REMOTE_ALERT_CONTROL = PROJECT_ROOT / "governance" / "health" / "remote_alert_control_latest.json"
+PROCESS_WATCHDOG = PROJECT_ROOT / "governance" / "health" / "process_watchdog_latest.json"
+INGESTION_STORAGE_CONTROL = PROJECT_ROOT / "governance" / "health" / "ingestion_storage_control_latest.json"
+RUNTIME_THROTTLE_CONTROL = PROJECT_ROOT / "governance" / "health" / "runtime_throttle_control_latest.json"
+PDF_REPORT_ROOT = PROJECT_ROOT / "output" / "pdf"
 
 
 HTML_PAGE = """<!doctype html>
@@ -95,13 +104,19 @@ HTML_PAGE = """<!doctype html>
       flex-wrap: wrap;
       padding: 12px 14px 0;
     }
-    button, input {
+    button, input, a.reportlink {
       border: 1px solid var(--border);
       background: #122117;
       color: var(--text);
       border-radius: 8px;
       padding: 8px 10px;
       font: inherit;
+    }
+    a.reportlink {
+      display: inline-flex;
+      align-items: center;
+      min-height: 18px;
+      text-decoration: none;
     }
     input {
       min-width: 180px;
@@ -123,6 +138,7 @@ HTML_PAGE = """<!doctype html>
       </div>
       <div class="toolbar">
         <button id="refreshBtn" type="button">Reconnect</button>
+        <a id="reportLink" class="reportlink" href="/reports/latest-system-update.pdf" target="_blank" rel="noopener">Open PDF</a>
         <input id="tokenInput" type="password" placeholder="feed token" autocomplete="off" autocapitalize="none" spellcheck="false" />
         <button id="tokenBtn" type="button">Use Token</button>
       </div>
@@ -141,6 +157,7 @@ HTML_PAGE = """<!doctype html>
     const systemEl = document.getElementById("systemline");
     const tokenEl = document.getElementById("tokenline");
     const refreshBtn = document.getElementById("refreshBtn");
+    const reportLink = document.getElementById("reportLink");
     const tokenInput = document.getElementById("tokenInput");
     const tokenBtn = document.getElementById("tokenBtn");
     tokenInput.value = token;
@@ -159,7 +176,13 @@ HTML_PAGE = """<!doctype html>
     const staleReconnectMs = 25000;
 
     function esc(text) {
-      return String(text || "");
+      return String(text || "").replace(/[&<>"']/g, (ch) => ({
+        "&": "&amp;",
+        "<": "&lt;",
+        ">": "&gt;",
+        '"': "&quot;",
+        "'": "&#39;",
+      }[ch]));
     }
 
     function atBottom() {
@@ -252,6 +275,7 @@ HTML_PAGE = """<!doctype html>
       const nextQuery = nextParams.toString();
       const nextUrl = `${window.location.pathname}${nextQuery ? `?${nextQuery}` : ""}`;
       window.history.replaceState({}, "", nextUrl);
+      updateReportLink();
     }
 
     function authParams(extra = {}) {
@@ -261,6 +285,12 @@ HTML_PAGE = """<!doctype html>
       }
       Object.entries(extra).forEach(([key, value]) => params.set(key, String(value)));
       return params;
+    }
+
+    function updateReportLink() {
+      const params = authParams();
+      const query = params.toString();
+      reportLink.href = `/reports/latest-system-update.pdf${query ? `?${query}` : ""}`;
     }
 
     function setTokenMessage(message, level = "warn") {
@@ -324,10 +354,16 @@ HTML_PAGE = """<!doctype html>
         statusEl.textContent =
           `stream=${payload.stream_connected ? "live" : "idle"} ` +
           `source=${payload.source} lines=${payload.lines} include_decisions=${payload.include_decisions ? "1" : "0"} pid=${payload.server_pid}`;
+        const spcxQuote = payload.spcx_quote_error ? payload.spcx_quote_error : "ok";
+        const notifyState = payload.imessage_ready ? "iMessage" : "no_iMessage";
+        const spcxAlert = payload.spcx_alert_triggered ? "alert" : "watch";
         systemEl.textContent =
           `halt=${payload.halt_state || "unknown"} mode=${payload.operating_mode || "unknown"} ` +
           `quant=${payload.quant_status || "unknown"} q_pressure=${payload.quant_resource_pressure || 0} ` +
-          `memory=${payload.memory_profile || "unknown"}`;
+          `memory=${payload.memory_profile || "unknown"} | ` +
+          `spcx=${payload.spcx_status || "unknown"} quote=${spcxQuote} ${spcxAlert} ` +
+          `macro=${payload.macro_relevance || "unknown"}/${payload.macro_calendar_status || "unknown"} ` +
+          `notify=${notifyState} watchdog=${payload.watchdog_status || "unknown"} issues=${payload.watchdog_active_issues || 0}`;
       } catch (err) {
         statusEl.textContent = `status refresh failed: ${err}`;
       } finally {
@@ -495,6 +531,7 @@ HTML_PAGE = """<!doctype html>
     } else {
       setTokenMessage("loopback mode: token not required", "ok");
     }
+    updateReportLink();
     loadSnapshot({ replace: true });
     connectStream({ preserveBuffer: false });
     refreshStatus();
@@ -520,6 +557,22 @@ def _load_json(path: Path) -> dict[str, Any]:
         return json.loads(path.read_text(encoding="utf-8"))
     except Exception:
         return {}
+
+
+def _latest_system_update_pdf(report_dir: Path = PDF_REPORT_ROOT) -> Path | None:
+    try:
+        candidates = [path for path in report_dir.glob("schwab_system_update_*.pdf") if path.is_file()]
+    except Exception:
+        return None
+
+    def mtime(path: Path) -> float:
+        try:
+            return float(path.stat().st_mtime)
+        except Exception:
+            return 0.0
+
+    candidates.sort(key=mtime, reverse=True)
+    return candidates[0] if candidates else None
 
 
 def _is_loopback_host(host: str) -> bool:
@@ -715,19 +768,85 @@ def _status_summary() -> dict[str, Any]:
     quant = _load_json(QUANT_MODEL_CONTROL)
     memory = _load_json(MEMORY_EFFICIENCY)
     killswitch = _load_json(GLOBAL_KILLSWITCH)
+    spcx = _load_json(SPACEX_IPO_WATCH)
+    macro_intel = _load_json(MACRO_EVENT_INTELLIGENCE)
+    live_macro = _load_json(LIVE_MACRO)
+    mac_notification = _load_json(MAC_NOTIFICATION_STATE)
+    remote_alert = _load_json(REMOTE_ALERT_CONTROL)
+    process_watchdog = _load_json(PROCESS_WATCHDOG)
+    storage = _load_json(INGESTION_STORAGE_CONTROL)
+    throttle = _load_json(RUNTIME_THROTTLE_CONTROL)
+
+    def intish(value: Any) -> int:
+        try:
+            return int(float(value or 0))
+        except Exception:
+            return 0
+
+    def floatish(value: Any) -> float:
+        try:
+            return float(value or 0.0)
+        except Exception:
+            return 0.0
+
     overall = runtime.get("overall") if isinstance(runtime.get("overall"), dict) else {}
     quant_features = quant.get("features") if isinstance(quant.get("features"), dict) else {}
+    spcx_quote = spcx.get("quote") if isinstance(spcx.get("quote"), dict) else {}
+    spcx_alert = spcx.get("alert") if isinstance(spcx.get("alert"), dict) else {}
+    macro_calendar = (
+        macro_intel.get("calendar_verification")
+        if isinstance(macro_intel.get("calendar_verification"), dict)
+        else {}
+    )
+    macro_items = live_macro.get("items") if isinstance(live_macro.get("items"), list) else []
+    macro_item = macro_items[0] if macro_items and isinstance(macro_items[0], dict) else {}
+    remote_backlog = (
+        remote_alert.get("critical_backlog")
+        if isinstance(remote_alert.get("critical_backlog"), dict)
+        else {}
+    )
+    remote_channels = remote_alert.get("channels") if isinstance(remote_alert.get("channels"), dict) else {}
+    watchdog_intel = (
+        process_watchdog.get("watchdog_intelligence")
+        if isinstance(process_watchdog.get("watchdog_intelligence"), dict)
+        else {}
+    )
     return {
         "dashboard_status": str(overall.get("status", "unknown") or "unknown"),
         "dashboard_attention": overall.get("attention") if isinstance(overall.get("attention"), list) else [],
-        "data_quality_score": float(health.get("data_quality_score", 0.0) or 0.0),
+        "data_quality_score": floatish(health.get("data_quality_score", 0.0)),
         "hard_gate_triggered": bool(health.get("hard_gate_triggered", False)),
         "halt_state": str(killswitch.get("halt_state") or "unknown"),
         "operating_mode": str(killswitch.get("operating_mode") or "unknown"),
-        "expansion_pressure_score": float(killswitch.get("expansion_pressure_score", 0.0) or 0.0),
+        "expansion_pressure_score": floatish(killswitch.get("expansion_pressure_score", 0.0)),
         "quant_status": str(quant.get("overall_status") or "unknown"),
-        "quant_resource_pressure": round(float(quant_features.get("quant_model_resource_pressure_norm", 0.0) or 0.0), 3),
+        "quant_resource_pressure": round(floatish(quant_features.get("quant_model_resource_pressure_norm", 0.0)), 3),
         "memory_profile": str(memory.get("recommended_profile") or "unknown"),
+        "spcx_status": str(spcx.get("overall_status") or "unknown"),
+        "spcx_symbol": str(spcx.get("symbol") or "SPCX"),
+        "spcx_quote_error": str(spcx_quote.get("error") or ""),
+        "spcx_alert_triggered": bool(spcx_alert.get("triggered", False)),
+        "spcx_policy": str(spcx.get("policy") or ""),
+        "macro_status": str(macro_intel.get("overall_status") or "unknown"),
+        "macro_relevance": str(macro_intel.get("market_relevance") or "unknown"),
+        "macro_calendar_status": str(macro_calendar.get("status") or "unknown"),
+        "macro_headline": str(macro_item.get("headline") or live_macro.get("headline") or ""),
+        "imessage_ready": bool(
+            mac_notification.get("imessage_enabled")
+            and mac_notification.get("imessage_recipient_configured")
+        ),
+        "imessage_min_severity": str(mac_notification.get("imessage_min_severity") or "unknown"),
+        "remote_alert_status": str(remote_alert.get("overall_status") or "unknown"),
+        "remote_alert_imessage": bool(remote_channels.get("imessage_bridge", False)),
+        "remote_alert_unsent_count": intish(remote_backlog.get("unsent_count", 0)),
+        "remote_alert_unacked_count": intish(remote_backlog.get("unacked_count", 0)),
+        "watchdog_status": str(process_watchdog.get("overall_status") or "unknown"),
+        "watchdog_grade": str(watchdog_intel.get("grade") or ""),
+        "watchdog_active_issues": intish(watchdog_intel.get("active_issue_count", 0)),
+        "storage_status": str(storage.get("overall_status") or "unknown"),
+        "storage_pressure": floatish(storage.get("pressure_index", 0.0)),
+        "throttle_status": str(throttle.get("overall_status") or "unknown"),
+        "throttle_profile": str(throttle.get("throttle_profile") or "unknown"),
         "phone_mirror_profile": "expanded_system_safe",
     }
 
@@ -768,6 +887,20 @@ class _PhoneMirrorHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(payload)
 
+    def _write_file(self, status: int, path: Path, content_type: str, filename: str) -> None:
+        try:
+            payload = path.read_bytes()
+        except OSError:
+            self._write_json(HTTPStatus.NOT_FOUND, {"ok": False, "error": "report_not_found"})
+            return
+        self.send_response(status)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(len(payload)))
+        self.send_header("Content-Disposition", f'inline; filename="{filename}"')
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(payload)
+
     def _write_sse_event(self, event_name: str, payload: dict[str, Any]) -> None:
         body = f"event: {event_name}\ndata: {json.dumps(payload, ensure_ascii=True)}\n\n".encode("utf-8")
         self.wfile.write(body)
@@ -796,6 +929,19 @@ class _PhoneMirrorHandler(BaseHTTPRequestHandler):
             return
 
         if not self._require_auth():
+            return
+
+        if parsed.path == "/reports/latest-system-update.pdf":
+            report_path = _latest_system_update_pdf()
+            if report_path is None:
+                self._write_json(HTTPStatus.NOT_FOUND, {"ok": False, "error": "report_not_found"})
+                return
+            self._write_file(
+                HTTPStatus.OK,
+                report_path,
+                "application/pdf",
+                "schwab_system_update_latest.pdf",
+            )
             return
 
         if parsed.path == "/api/status":

@@ -101,9 +101,20 @@ def payload_age_minutes(payload: dict[str, Any], path: Path | None = None, *, no
     return max((current - ts).total_seconds() / 60.0, 0.0)
 
 
+def standardize_grade_labels(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {key: standardize_grade_labels(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [standardize_grade_labels(item) for item in value]
+    if isinstance(value, str):
+        return value.replace("A++", "A+")
+    return value
+
+
 def write_payload(path: Path, payload: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload, ensure_ascii=True, indent=2), encoding="utf-8")
+    normalized_payload = standardize_grade_labels(payload)
+    path.write_text(json.dumps(normalized_payload, ensure_ascii=True, indent=2), encoding="utf-8")
 
 
 def ordered_unique(items: Iterable[str]) -> list[str]:

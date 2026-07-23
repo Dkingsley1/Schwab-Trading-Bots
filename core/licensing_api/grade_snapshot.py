@@ -40,8 +40,6 @@ def _safe_int(raw: Any, default: int = 0) -> int:
 
 def score_to_letter(score: float) -> str:
     value = max(0.0, min(float(score), 100.0))
-    if value >= 99.0:
-        return "A++"
     if value >= 96.0:
         return "A+"
     if value >= 92.0:
@@ -286,7 +284,7 @@ def build_grade_snapshot(
     )
     storage_follow_through_ready = bool(
         (
-            storage_autopilot_status in {"applied_with_followups", "already_running", "ready", "degraded"}
+            storage_autopilot_status in {"applied", "applied_with_followups", "already_running", "ready", "degraded"}
             and (
                 bool(
                     storage_autopilot_metrics.get("backpressure_actionable", False)

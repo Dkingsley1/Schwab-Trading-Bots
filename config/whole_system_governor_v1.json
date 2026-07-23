@@ -1,5 +1,5 @@
 {
-  "generated_at_utc": "2026-05-06T21:07:13.012422+00:00",
+  "generated_at_utc": "2026-06-22T14:32:33.244530+00:00",
   "whole_system_governor_version": "whole_system_governor_v1",
   "layers": [
     {
@@ -43,6 +43,12 @@
       "title": "Operator Interface",
       "objective": "Compress blockers, safe actions, risk, evidence gaps, and next commands into one packet.",
       "primary_artifact": "governance/whole_system_governor/operator_decision_packet.json"
+    },
+    {
+      "layer_id": "clean_scaling_control",
+      "title": "Clean Scaling Control",
+      "objective": "Require raw/live headroom, overlay debt, storage mode, runtime, provider quality, and admission evidence to agree before growth.",
+      "primary_artifact": "governance/whole_system_governor/clean_scaling_contract.json"
     }
   ],
   "authority_boundary": "advisory_budgeting_and_registry_summary_only_no_execution_no_allocation_no_halt_clearance"

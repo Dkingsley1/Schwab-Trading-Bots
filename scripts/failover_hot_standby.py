@@ -15,7 +15,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from core.runtime_python import resolve_runtime_python
 
-os.environ.setdefault("BOT_RUNTIME_LANE", os.getenv("BOT_SHADOW_RUNTIME_LANE", "shadow"))
+os.environ.setdefault("BOT_RUNTIME_LANE", os.getenv("BOT_SHADOW_RUNTIME_LANE", "canary314"))
 RUNTIME_PY = resolve_runtime_python(PROJECT_ROOT)
 LOG_PATH = PROJECT_ROOT / 'governance' / 'watchdog' / 'failover_events.jsonl'
 FALLBACK_LOG_PATH = Path('/tmp/failover_events.jsonl')
@@ -147,6 +147,74 @@ def _start_cmd(cmd: str) -> bool:
         return False
 
 
+def _build_failover_event(
+    *,
+    primary_alive: bool,
+    live_parent_alive: bool,
+    heartbeat_age_sec: float,
+    max_heartbeat_age_sec: float,
+    swap_pause: dict,
+    standby_cmd: str,
+    allow_simulate: bool,
+    start_cmd=_start_cmd,
+) -> dict:
+    stale = heartbeat_age_sec > max_heartbeat_age_sec
+    event = {
+        'timestamp_utc': _now_iso(),
+        'primary_alive': bool(primary_alive),
+        'live_parent_alive': bool(live_parent_alive),
+        'heartbeat_age_sec': heartbeat_age_sec,
+        'stale': bool(stale),
+        'action': 'none',
+        'swap_pause_active': bool(swap_pause.get('active', False)),
+        'simulate_standby_allowed': bool(allow_simulate),
+    }
+
+    if live_parent_alive:
+        if stale:
+            event['action'] = 'live_parent_active_primary_stale'
+            event['standby_ok'] = False
+            event['standby_cmd'] = standby_cmd
+            event['standby_skip_reason'] = 'live_parent_alive'
+        elif not primary_alive:
+            event['action'] = 'live_parent_active_primary_missing'
+            event['standby_ok'] = False
+            event['standby_cmd'] = standby_cmd
+            event['standby_skip_reason'] = 'live_parent_alive'
+        else:
+            event['action'] = 'live_parent_healthy'
+        return event
+
+    if (not primary_alive) or stale:
+        if swap_pause.get('active', False):
+            event['action'] = 'standby_start_skipped_swap_pause'
+            event['standby_ok'] = False
+            event['standby_cmd'] = standby_cmd
+            event['swap_pause'] = swap_pause
+        elif _simulate_disallowed(standby_cmd, bool(allow_simulate)):
+            event['action'] = 'standby_start_skipped_simulate_disallowed'
+            event['standby_ok'] = False
+            event['standby_cmd'] = standby_cmd
+        else:
+            ok = start_cmd(standby_cmd)
+            event['action'] = 'standby_start_attempt'
+            event['standby_ok'] = ok
+            event['standby_cmd'] = standby_cmd
+    return event
+
+
+def _event_signature(event: dict) -> tuple:
+    return (
+        event.get('action'),
+        bool(event.get('primary_alive', False)),
+        bool(event.get('live_parent_alive', False)),
+        bool(event.get('stale', False)),
+        bool(event.get('swap_pause_active', False)),
+        event.get('standby_ok'),
+        event.get('standby_skip_reason', ''),
+    )
+
+
 
 def main() -> int:
     parser = argparse.ArgumentParser(description='Hot-standby failover monitor for shadow runtime.')
@@ -167,49 +235,49 @@ def main() -> int:
     )
     parser.add_argument('--once', action='store_true')
     parser.add_argument('--interval-seconds', type=int, default=20)
+    parser.add_argument(
+        '--log-unchanged-every-seconds',
+        type=int,
+        default=int(os.getenv('FAILOVER_LOG_UNCHANGED_EVERY_SECONDS', '300')),
+        help='Debounce repeated unchanged failover states while still logging transitions.',
+    )
     args = parser.parse_args()
 
     standby_cmd = args.standby_start_cmd.strip() or _default_standby_cmd()
+    last_logged_signature: tuple | None = None
+    last_logged_ts = 0.0
 
     while True:
         primary_excludes = () if args.allow_simulate_standby else ('--simulate',)
         alive = _proc_alive(args.primary_match, primary_excludes)
         live_parent_alive = _proc_alive(args.live_parent_match, ('--simulate',)) if args.live_parent_match else False
         hb_age = _heartbeat_age_sec(args.primary_heartbeat)
-        stale = hb_age > args.max_heartbeat_age_sec
         swap_pause = _swap_research_pause_state()
-        event = {
-            'timestamp_utc': _now_iso(),
-            'primary_alive': alive,
-            'live_parent_alive': live_parent_alive,
-            'heartbeat_age_sec': hb_age,
-            'stale': stale,
-            'action': 'none',
-            'swap_pause_active': bool(swap_pause.get('active', False)),
-            'simulate_standby_allowed': bool(args.allow_simulate_standby),
-        }
+        event = _build_failover_event(
+            primary_alive=alive,
+            live_parent_alive=live_parent_alive,
+            heartbeat_age_sec=hb_age,
+            max_heartbeat_age_sec=args.max_heartbeat_age_sec,
+            swap_pause=swap_pause,
+            standby_cmd=standby_cmd,
+            allow_simulate=bool(args.allow_simulate_standby),
+        )
 
-        if live_parent_alive and not stale:
-            event['action'] = 'live_parent_healthy'
-        elif (not alive) or stale:
-            if swap_pause.get('active', False):
-                event['action'] = 'standby_start_skipped_swap_pause'
-                event['standby_ok'] = False
-                event['standby_cmd'] = standby_cmd
-                event['swap_pause'] = swap_pause
-            elif _simulate_disallowed(standby_cmd, bool(args.allow_simulate_standby)):
-                event['action'] = 'standby_start_skipped_simulate_disallowed'
-                event['standby_ok'] = False
-                event['standby_cmd'] = standby_cmd
-            else:
-                ok = _start_cmd(standby_cmd)
-                event['action'] = 'standby_start_attempt'
-                event['standby_ok'] = ok
-                event['standby_cmd'] = standby_cmd
-
-        log_file = _append(event)
-        event['log_file'] = log_file
-        print(json.dumps(event, ensure_ascii=True))
+        signature = _event_signature(event)
+        now_ts = time.time()
+        log_unchanged_every = max(int(args.log_unchanged_every_seconds), 0)
+        should_log = (
+            args.once
+            or signature != last_logged_signature
+            or log_unchanged_every == 0
+            or (now_ts - last_logged_ts) >= log_unchanged_every
+        )
+        if should_log:
+            log_file = _append(event)
+            event['log_file'] = log_file
+            print(json.dumps(event, ensure_ascii=True))
+            last_logged_signature = signature
+            last_logged_ts = now_ts
 
         if args.once:
             return 0

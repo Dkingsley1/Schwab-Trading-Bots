@@ -1,6 +1,7 @@
 import argparse
 import json
 import os
+import urllib.error
 import urllib.parse
 import urllib.request
 from datetime import datetime, timezone
@@ -10,6 +11,8 @@ from typing import Any, Dict
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 STATE_PATH = PROJECT_ROOT / "governance" / "watchdog" / "pager_alert_state.json"
 PUSHOVER_API_URL = "https://api.pushover.net/1/messages.json"
+PLACEHOLDER_WEBHOOK_HOSTS = {"example.com", "example.invalid", "localhost.invalid"}
+_LAST_DELIVERY_ERRORS: Dict[str, str] = {}
 
 
 def _load(path: Path) -> dict:
@@ -25,6 +28,27 @@ def _webhook_url() -> str:
     return os.getenv("OPS_ALERT_WEBHOOK_URL", "").strip()
 
 
+def _webhook_config_error(url: str | None = None) -> str:
+    raw = _webhook_url() if url is None else str(url or "").strip()
+    if not raw:
+        return ""
+    lowered = raw.lower()
+    if any(token in lowered for token in ("<", ">", "your_", "changeme", "placeholder")):
+        return "placeholder_webhook_url"
+    parsed = urllib.parse.urlparse(raw)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        return "invalid_webhook_url"
+    host = (parsed.hostname or "").strip().lower()
+    if host in PLACEHOLDER_WEBHOOK_HOSTS or host.endswith(".invalid"):
+        return "placeholder_webhook_url"
+    return ""
+
+
+def _webhook_configured() -> bool:
+    url = _webhook_url()
+    return bool(url and not _webhook_config_error(url))
+
+
 def _pushover_config() -> Dict[str, str]:
     return {
         "token": os.getenv("OPS_ALERT_PUSHOVER_TOKEN", "").strip(),
@@ -38,19 +62,38 @@ def _pushover_config() -> Dict[str, str]:
 def _configured_channels() -> Dict[str, bool]:
     pushover = _pushover_config()
     return {
-        "webhook": bool(_webhook_url()),
+        "webhook": _webhook_configured(),
         "pushover": bool(pushover["token"] and pushover["user"]),
     }
 
 
-def _post_json(url: str, payload: dict) -> bool:
+def _configuration_errors() -> Dict[str, str]:
+    webhook_error = _webhook_config_error()
+    return {"webhook": webhook_error} if webhook_error else {}
+
+
+def _exception_summary(exc: Exception) -> str:
+    if isinstance(exc, urllib.error.HTTPError):
+        return f"HTTPError: code={exc.code}"
+    if isinstance(exc, urllib.error.URLError):
+        return f"URLError: {exc.reason}"
+    text = str(exc).strip()
+    return f"{type(exc).__name__}: {text[:200]}" if text else type(exc).__name__
+
+
+def _record_delivery_error(channel: str, exc: Exception | str) -> None:
+    _LAST_DELIVERY_ERRORS[channel] = _exception_summary(exc) if isinstance(exc, Exception) else str(exc)
+
+
+def _post_json(url: str, payload: dict, *, channel: str = "webhook") -> bool:
     try:
         body = json.dumps(payload, ensure_ascii=True).encode("utf-8")
         req = urllib.request.Request(url, data=body, headers={"Content-Type": "application/json"}, method="POST")
         with urllib.request.urlopen(req, timeout=4):
             pass
         return True
-    except Exception:
+    except Exception as exc:
+        _record_delivery_error(channel, exc)
         return False
 
 
@@ -61,9 +104,13 @@ def _severity_title(severity: str) -> str:
 
 def _send_webhook(payload: dict) -> bool:
     url = _webhook_url()
+    config_error = _webhook_config_error(url)
+    if config_error:
+        _record_delivery_error("webhook", config_error)
+        return False
     if not url:
         return False
-    return _post_json(url, payload)
+    return _post_json(url, payload, channel="webhook")
 
 
 def _send_pushover(payload: dict) -> bool:
@@ -94,22 +141,31 @@ def _send_pushover(payload: dict) -> bool:
         with urllib.request.urlopen(req, timeout=4):
             pass
         return True
-    except Exception:
+    except Exception as exc:
+        _record_delivery_error("pushover", exc)
         return False
 
 
 def send(payload: dict) -> Dict[str, Any]:
+    _LAST_DELIVERY_ERRORS.clear()
     configured = _configured_channels()
     results = {
         "webhook": False,
         "pushover": False,
         "configured": configured,
+        "config_errors": _configuration_errors(),
+        "delivery_errors": {},
         "any_configured": any(configured.values()),
     }
     if configured["webhook"]:
         results["webhook"] = _send_webhook(payload)
+        if not results["webhook"] and "webhook" not in _LAST_DELIVERY_ERRORS:
+            _record_delivery_error("webhook", "delivery_failed")
     if configured["pushover"]:
         results["pushover"] = _send_pushover(payload)
+        if not results["pushover"] and "pushover" not in _LAST_DELIVERY_ERRORS:
+            _record_delivery_error("pushover", "delivery_failed")
+    results["delivery_errors"] = dict(_LAST_DELIVERY_ERRORS)
     results["any_sent"] = bool(results["webhook"] or results["pushover"])
     return results
 
@@ -150,6 +206,8 @@ def main() -> int:
         "webhook": False,
         "pushover": False,
         "configured": _configured_channels(),
+        "config_errors": _configuration_errors(),
+        "delivery_errors": {},
         "any_configured": any(_configured_channels().values()),
         "any_sent": False,
     }

@@ -118,6 +118,11 @@ def _safe_int(raw: Any, default: int = 0) -> int:
         return int(default)
 
 
+def _effective_min_considered(gate: Dict[str, Any], thresholds: Dict[str, Any]) -> int:
+    effective_thresholds = gate.get("effective_thresholds") if isinstance(gate.get("effective_thresholds"), dict) else {}
+    return max(_safe_int(effective_thresholds.get("min_considered_bots", thresholds.get("min_considered_bots")), 4), 1)
+
+
 def ordered_unique(rows: List[str]) -> List[str]:
     out: List[str] = []
     seen = set()
@@ -138,23 +143,48 @@ def _best_metric(row: dict[str, Any], *keys: str) -> float:
 
 
 def _row_observation_count(row: dict[str, Any]) -> int:
+    threshold_progress = (
+        row.get("data_collection_threshold_progress")
+        if isinstance(row.get("data_collection_threshold_progress"), dict)
+        else {}
+    )
     return max(
         _safe_int(row.get("data_collection_observations"), 0),
         _safe_int(row.get("collected_observation_count"), 0),
         _safe_int(row.get("observation_count"), 0),
+        _safe_int(threshold_progress.get("observations"), 0),
     )
 
 
 def _row_collection_floor(row: dict[str, Any], *, default_if_sequence_depth_gap: bool = False) -> int:
     paper_standard = row.get("paper_promotion_standard") if isinstance(row.get("paper_promotion_standard"), dict) else {}
+    threshold_progress = (
+        row.get("data_collection_threshold_progress")
+        if isinstance(row.get("data_collection_threshold_progress"), dict)
+        else {}
+    )
     floor = max(
         _safe_int(row.get("minimum_training_observations"), 0),
         _safe_int(paper_standard.get("minimum_observations"), 0),
+        _safe_int(threshold_progress.get("minimum_training_observations"), 0),
         0,
     )
     if floor <= 0 and default_if_sequence_depth_gap:
         floor = DEFAULT_COLLECTION_OBSERVATION_FLOOR
     return int(floor)
+
+
+def _registry_rows_by_bot_id(project_root: Path) -> dict[str, dict[str, Any]]:
+    payload = _load_json(project_root / "master_bot_registry.json")
+    rows = payload.get("sub_bots") if isinstance(payload.get("sub_bots"), list) else []
+    out: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        bot_id = str(row.get("bot_id") or "").strip().lower()
+        if bot_id:
+            out[bot_id] = row
+    return out
 
 
 def _seed_candidate_is_strong(row: dict[str, Any]) -> bool:
@@ -323,6 +353,7 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> Dict[str, Any]:
     promotion_quality = _load_json(health_root / "promotion_quality_gate_latest.json")
     promotion_readiness = _load_json(walk_root / "promotion_readiness_latest.json")
     training_report = _load_json(health_root / "training_report_latest.json")
+    training_success = _load_json(health_root / "training_success_latest.json")
     health_gates = _load_json(health_root / "health_gates_latest.json")
     paper_performance = _load_json(health_root / "paper_performance_latest.json")
     feature_store_manifest = _load_json(project_root / "governance" / "feature_store" / "latest.json")
@@ -343,6 +374,7 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> Dict[str, Any]:
 
     raw_active_bots = _safe_int(registry_audit.get("registry_active_bots"), 0)
     active_bots = _safe_int(registry_audit.get("registry_supportability_active_bots"), raw_active_bots)
+    registry_rows_by_bot_id = _registry_rows_by_bot_id(project_root)
     active_sample_starved = registry_audit.get("active_sample_starved") if isinstance(registry_audit.get("active_sample_starved"), list) else []
     active_quality_failed = registry_audit.get("active_quality_failed") if isinstance(registry_audit.get("active_quality_failed"), list) else []
     active_stale = registry_audit.get("active_stale_diagnostics") if isinstance(registry_audit.get("active_stale_diagnostics"), list) else []
@@ -377,11 +409,48 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> Dict[str, Any]:
     weak_sleeve_rows = _weak_sleeves(paper_performance)
     promotion_thresholds = promotion_readiness.get("thresholds") if isinstance(promotion_readiness.get("thresholds"), dict) else {}
     considered_bots = _safe_int(promotion_readiness.get("considered_bots"), 0)
-    min_considered_bots = _safe_int(promotion_thresholds.get("min_considered_bots"), 4)
+    min_considered_bots = _effective_min_considered(promotion_readiness, promotion_thresholds)
     considered_gap = max(min_considered_bots - considered_bots, 0)
     promotion_ready = bool(promotion_readiness.get("promote_ok", False))
     training_summary = training_report.get("summary") if isinstance(training_report.get("summary"), dict) else {}
+    success_marker_ts = _parse_iso_utc(training_success.get("timestamp_utc"))
+    report_summary_ts = _parse_iso_utc(training_summary.get("generated_utc") or training_report.get("timestamp_utc"))
+    success_marker_fresh = bool(
+        success_marker_ts is not None
+        and max((now - success_marker_ts).total_seconds(), 0.0) <= 24 * 3600
+    )
+    success_marker_newer = bool(success_marker_ts is not None and (report_summary_ts is None or success_marker_ts > report_summary_ts))
+    using_success_marker_summary = bool(success_marker_fresh and success_marker_newer)
+    if using_success_marker_summary:
+        marker_trained_count = _safe_int(training_success.get("trained_count"), 0)
+        marker_failure_count = _safe_int(training_success.get("failure_count"), 0)
+        marker_skipped_count = _safe_int(training_success.get("skipped_by_memory_count"), 0)
+        training_summary = dict(training_summary)
+        training_summary.update(
+            {
+                "generated_utc": str(training_success.get("timestamp_utc") or ""),
+                "confirmed_training_success": bool(training_success.get("confirmed_training_success", False)),
+                "training_completed_ok": bool(training_success.get("training_completed_ok", False)),
+                "trained_ok_but_not_promotable": bool(training_success.get("trained_ok_but_not_promotable", False)),
+                "target_count": max(marker_trained_count + marker_failure_count + marker_skipped_count, 0),
+                "trained_count": marker_trained_count,
+                "failure_count": marker_failure_count,
+                "skipped_by_memory_count": marker_skipped_count,
+                "training_reason": str(training_success.get("reason") or ""),
+                "master_update_status": str(training_success.get("master_update_status") or ""),
+                "data_quality_ok": bool(training_success.get("data_quality_ok", True)),
+            }
+        )
     training_confirmed = bool(training_summary.get("confirmed_training_success", False))
+    held_out_training_progress = bool(
+        using_success_marker_summary
+        and not training_confirmed
+        and bool(training_summary.get("training_completed_ok", False))
+        and bool(training_summary.get("trained_ok_but_not_promotable", False))
+        and _safe_int(training_summary.get("trained_count"), 0) > 0
+        and _safe_int(training_summary.get("failure_count"), 0) <= 0
+        and str(training_summary.get("master_update_status") or "").strip() == "skipped_by_flag"
+    )
     training_target_count = _safe_int(training_summary.get("target_count"), 0)
     training_trained_count = _safe_int(training_summary.get("trained_count"), 0)
     training_failure_count = _safe_int(training_summary.get("failure_count"), 0)
@@ -448,7 +517,8 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> Dict[str, Any]:
     )
     provisional_lineage_ready = bool(feature_store_lineage_ok and promotion_packet_seed_ready)
     decay_status = str(decay_monitor.get("overall_status") or "")
-    ingestion_storage_status = str(ingestion_storage_control.get("overall_status") or "")
+    raw_ingestion_storage_status = str(ingestion_storage_control.get("overall_status") or "")
+    ingestion_storage_status = raw_ingestion_storage_status
     ingestion_recovery_state = str(ingestion_storage_control.get("recovery_state") or "")
     recovery_quality_score = _safe_float(ingestion_storage_control.get("recovery_quality_score"), 0.0)
     bounded_recovery_contract = (
@@ -457,6 +527,11 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> Dict[str, Any]:
         else {}
     )
     backpressure_block = ingestion_storage_control.get("backpressure") if isinstance(ingestion_storage_control.get("backpressure"), dict) else {}
+    sql_overlay = (
+        ingestion_storage_control.get("sql_ingestion_pending_overlay")
+        if isinstance(ingestion_storage_control.get("sql_ingestion_pending_overlay"), dict)
+        else {}
+    )
     storage_block = ingestion_storage_control.get("storage") if isinstance(ingestion_storage_control.get("storage"), dict) else {}
     queue_watermarks = (
         ingestion_storage_control.get("queue_watermarks")
@@ -471,9 +546,45 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> Dict[str, Any]:
     )
     estimated_core_drain_minutes = backpressure_block.get("estimated_core_drain_minutes")
     estimated_total_drain_minutes = backpressure_block.get("estimated_total_drain_minutes")
+    core_pending_lines = _safe_int(backpressure_block.get("core_pending_lines"), 0)
+    total_pending_lines = _safe_int(backpressure_block.get("total_pending_lines"), 0)
+    pending_lines_threshold = _safe_int(backpressure_block.get("pending_lines_threshold"), 15000)
     oldest_pending_age_seconds = _safe_float(backpressure_block.get("oldest_pending_age_seconds"), 0.0)
     oldest_pending_age_threshold_seconds = _safe_float(backpressure_block.get("oldest_age_threshold_seconds"), 240.0)
+    sql_overlay_explicit_empty = bool(
+        sql_overlay.get("active", False)
+        and _safe_int(sql_overlay.get("total_pending_lines"), 0) <= 0
+        and _safe_int(sql_overlay.get("core_pending_lines"), 0) <= 0
+        and _safe_int(sql_overlay.get("deferred_pending_lines"), 0) <= 0
+        and _safe_int(sql_overlay.get("stale_pending_lines"), 0) <= 0
+        and _safe_int(sql_overlay.get("files_with_pending"), 0) <= 0
+        and not bool(sql_overlay.get("top_pending_files") or [])
+        and _safe_int(sql_overlay.get("fresh_source_count"), 0) > 0
+        and _safe_int(sql_overlay.get("explicit_empty_source_count"), 0) > 0
+        and _safe_float(sql_overlay.get("max_source_age_seconds"), 0.0) <= _safe_float(sql_overlay.get("max_age_seconds"), 3600.0)
+    )
+    if sql_overlay_explicit_empty:
+        ingestion_storage_status = "ready"
+        core_pending_lines = 0
+        total_pending_lines = 0
+        oldest_pending_age_seconds = 0.0
+        estimated_core_drain_minutes = 0.0
+        estimated_total_drain_minutes = 0.0
     retention_debt_gb = _safe_float(storage_block.get("retention_debt_gb"), _safe_float(health_gates.get("storage_pressure", {}).get("retention_debt_gb"), 0.0))
+    core_drain_time_high = bool(estimated_core_drain_minutes is not None and _safe_float(estimated_core_drain_minutes) > 30.0)
+    total_drain_time_high = bool(estimated_total_drain_minutes is not None and _safe_float(estimated_total_drain_minutes) > 180.0)
+    deferred_only_drain_delay = bool(
+        total_drain_time_high
+        and not core_drain_time_high
+        and core_pending_lines <= 5000
+        and total_pending_lines <= max(pending_lines_threshold, 15000)
+        and oldest_pending_age_seconds <= max(oldest_pending_age_threshold_seconds, 240.0)
+    )
+    ingestion_drain_hard_block = bool(
+        ingestion_storage_status == "blocked"
+        or core_drain_time_high
+        or (total_drain_time_high and not deferred_only_drain_delay)
+    )
 
     refresh_diagnostics_bot_ids = [str((row or {}).get("bot_id") or "").strip().lower() for row in active_stale if str((row or {}).get("bot_id") or "").strip()]
     repair_runtime_input_bot_ids: list[str] = []
@@ -493,22 +604,39 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> Dict[str, Any]:
         )
         if not runtime_input_related:
             continue
-        observation_count = _row_observation_count(row)
-        observation_floor = _row_collection_floor(
-            row,
-            default_if_sequence_depth_gap=inferred_cause == "sequence_depth_gap",
-        )
-        if inferred_cause == "sequence_depth_gap" and observation_floor > 0 and observation_count < observation_floor:
-            runtime_input_depth_debt_bot_ids.append(bot_id)
-            runtime_input_depth_debt_rows.append(
-                {
-                    "bot_id": bot_id,
-                    "observation_count": observation_count,
-                    "minimum_training_observations": observation_floor,
-                    "observations_needed": max(observation_floor - observation_count, 0),
-                    "inferred_cause": inferred_cause,
-                }
+        registry_row = registry_rows_by_bot_id.get(bot_id, {})
+        diagnostic_observation_count = _row_observation_count(row)
+        registry_observation_count = _row_observation_count(registry_row) if registry_row else 0
+        observation_count = max(diagnostic_observation_count, registry_observation_count)
+        observation_floor = max(
+            _row_collection_floor(
+                registry_row,
+                default_if_sequence_depth_gap=inferred_cause == "sequence_depth_gap",
             )
+            if registry_row
+            else 0,
+            _row_collection_floor(
+                row,
+                default_if_sequence_depth_gap=inferred_cause == "sequence_depth_gap",
+            ),
+        )
+        if inferred_cause == "sequence_depth_gap":
+            if observation_floor > 0 and observation_count < observation_floor:
+                runtime_input_depth_debt_bot_ids.append(bot_id)
+                runtime_input_depth_debt_rows.append(
+                    {
+                        "bot_id": bot_id,
+                        "observation_count": observation_count,
+                        "diagnostic_observation_count": diagnostic_observation_count,
+                        "registry_observation_count": registry_observation_count,
+                        "minimum_training_observations": observation_floor,
+                        "observations_needed": max(observation_floor - observation_count, 0),
+                        "inferred_cause": inferred_cause,
+                        "observation_source": "registry_rollup"
+                        if registry_observation_count > diagnostic_observation_count
+                        else "training_diagnostic",
+                    }
+                )
             continue
         repair_runtime_input_bot_ids.append(bot_id)
     repair_runtime_input_bot_ids = ordered_unique(repair_runtime_input_bot_ids)
@@ -788,6 +916,37 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> Dict[str, Any]:
         and ingestion_recovery_state in {"stabilized_recovery", "recovering_under_guard"}
         and recovery_quality_score >= 75.0
     )
+    backpressure_pending_lines = max(
+        _safe_int(backpressure_block.get("total_pending_lines"), 0),
+        _safe_int(backpressure_block.get("core_pending_lines"), 0),
+    )
+    backpressure_pending_threshold = max(_safe_int(backpressure_block.get("pending_lines_threshold"), 15000), 1)
+    ingestion_pending_only_hard_gate = bool(
+        health_hard_gate
+        and bool(health_hard_gate_details.get("ingestion_pending_lines"))
+        and not any(
+            bool(health_hard_gate_details.get(key))
+            for key in (
+                "stale_windows",
+                "blocked_rate",
+                "watchdog_restart_spike",
+                "ingestion_oldest_age",
+                "ingestion_invalid_lines",
+                "ingestion_backpressure_overload",
+                "priority_shard_latency",
+                "priority_shard_storage",
+                "collector_contracts",
+                "sql_progress_stall",
+                "sql_wal_pressure",
+            )
+        )
+    )
+    ingestion_pending_training_reconciled = bool(
+        ingestion_pending_only_hard_gate
+        and ingestion_storage_status in {"ready", "advisory"}
+        and backpressure_pending_lines <= backpressure_pending_threshold
+        and oldest_pending_age_seconds <= max(oldest_pending_age_threshold_seconds, 240.0)
+    )
     hard_gate_only_backpressure = bool(
         health_hard_gate
         and not any(
@@ -806,8 +965,13 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> Dict[str, Any]:
         and snapshot_rows > 0
         and snapshot_age_hours is not None
         and snapshot_age_hours <= 36.0
-        and hard_gate_only_backpressure
-        and (stabilized_guarded_recovery or coverage_stage_armed)
+        and (
+            (
+                hard_gate_only_backpressure
+                and (stabilized_guarded_recovery or coverage_stage_armed)
+            )
+            or ingestion_pending_training_reconciled
+        )
     )
     supported_stale_count = len(provisional_registry_backed_bot_ids) + len(staged_support_recovery_bot_ids)
     covered_stale_diagnostics = bool(
@@ -1029,6 +1193,10 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> Dict[str, Any]:
                 "health_gate_triggered": health_hard_gate,
                 "training_safe_hard_gate": training_safe_hard_gate,
                 "hard_gate_only_backpressure": hard_gate_only_backpressure,
+                "ingestion_pending_only_hard_gate": ingestion_pending_only_hard_gate,
+                "ingestion_pending_training_reconciled": ingestion_pending_training_reconciled,
+                "backpressure_pending_lines": backpressure_pending_lines,
+                "backpressure_pending_threshold": backpressure_pending_threshold,
             },
         )
     )
@@ -1316,25 +1484,22 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> Dict[str, Any]:
             specs["ingestion_drain_time_guard"],
             status=(
                 "needs_work"
-                if guarded_ingestion_recovery
+                if guarded_ingestion_recovery or deferred_only_drain_delay
                 else "blocked"
-                if ingestion_storage_status == "blocked"
-                or (estimated_core_drain_minutes is not None and _safe_float(estimated_core_drain_minutes) > 30.0)
-                or (estimated_total_drain_minutes is not None and _safe_float(estimated_total_drain_minutes) > 180.0)
+                if ingestion_drain_hard_block
                 else "ready"
             ),
             priority=(
                 1
-                if guarded_ingestion_recovery
+                if guarded_ingestion_recovery or deferred_only_drain_delay
                 else 2
-                if ingestion_storage_status == "blocked"
-                or (estimated_core_drain_minutes is not None and _safe_float(estimated_core_drain_minutes) > 30.0)
-                or (estimated_total_drain_minutes is not None and _safe_float(estimated_total_drain_minutes) > 180.0)
+                if ingestion_drain_hard_block
                 else 0
             ),
             summary=(
                 f"core_drain_minutes={round(_safe_float(estimated_core_drain_minutes), 3) if estimated_core_drain_minutes is not None else 'missing'} "
-                f"total_drain_minutes={round(_safe_float(estimated_total_drain_minutes), 3) if estimated_total_drain_minutes is not None else 'missing'}"
+                f"total_drain_minutes={round(_safe_float(estimated_total_drain_minutes), 3) if estimated_total_drain_minutes is not None else 'missing'} "
+                f"deferred_only_delay={int(deferred_only_drain_delay)}"
             ),
             recommendation=(
                 "keep the active backlog drain running until queue watermarks settle back under target"
@@ -1479,6 +1644,8 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> Dict[str, Any]:
             0.0
             if passive_training_cycle
             else 0.0
+            if held_out_training_progress
+            else 0.0
             if promotion_packet_seed_ready and stronger_provisional_lineage_ready and coverage_stage_armed
             else 2.0
             if training_target_count <= 0 and training_failure_count <= 0
@@ -1614,7 +1781,7 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> Dict[str, Any]:
             "storage_backpressure" if ingestion_storage_status in {"blocked", "needs_work"} else "",
             "feature_store_lineage" if not feature_store_lineage_ok else "",
             "replay_contract" if not lineage_contract_ready else "",
-            "training_not_confirmed" if not training_confirmed and not passive_training_cycle else "",
+            "training_not_confirmed" if not training_confirmed and not passive_training_cycle and not held_out_training_progress else "",
         ]
     )
     immutable_lineage = {
@@ -1709,6 +1876,8 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> Dict[str, Any]:
         },
         "rollout": {
             "training_confirmed": training_confirmed,
+            "held_out_training_progress": held_out_training_progress,
+            "using_success_marker_summary": using_success_marker_summary,
             "promotion_ready": promotion_ready,
             "promotion_confidence_ready": promotion_confidence_ready,
             "considered_bots": considered_bots,
@@ -1760,6 +1929,8 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> Dict[str, Any]:
             "promotion_quality_ok": bool(promotion_quality.get("ok", False)),
             "feature_store_status": str(feature_store_manifest.get("overall_status") or ""),
             "ingestion_storage_status": ingestion_storage_status,
+            "raw_ingestion_storage_status": raw_ingestion_storage_status,
+            "sql_overlay_explicit_empty": sql_overlay_explicit_empty,
             "ingestion_recovery_state": ingestion_recovery_state,
             "recovery_quality_score": round(recovery_quality_score, 2),
             "retention_debt_gb": round(retention_debt_gb, 3),

@@ -62,28 +62,68 @@ def build_payload(
     configured_for_refresh = bool(token_before.get("exists", False) or token_after.get("exists", False))
     market_window = _market_window()
     account_probe_status = int(broker_readiness.get("account_probe_status_code", 0) or 0)
-    probe_backed = bool(200 <= account_probe_status < 300)
+    probe_backed = bool(200 <= account_probe_status < 300 or (broker_ready and network_ok and auth_ok))
     auth_reason = str((token_guard.get("auth") or {}).get("reason", "") or "")
     auth_probe_ok = bool(auth_ok or (probe_backed and auth_reason.startswith("auth_succeeded_but_token_not_ready")))
     broker_operable = bool(broker_ready or probe_backed)
-
-    lease_state = "healthy"
-    if expires_in_seconds < float(critical_lease_seconds) or not network_ok or not auth_probe_ok:
-        lease_state = "critical"
-    elif expires_in_seconds < float(min_lease_seconds) or (
-        guard_age_minutes is not None and float(guard_age_minutes) > float(max_guard_age_minutes)
-    ):
-        lease_state = "warning"
-    if (
-        lease_state == "critical"
-        and bool(market_window["off_hours"])
+    token_lease_grace = bool(
+        expires_in_seconds >= float(critical_lease_seconds)
+        and network_ok
+        and broker_operable
+        and configured_for_refresh
+        and not probe_backed
+    )
+    off_hours_probe_grace = bool(
+        bool(market_window["off_hours"])
         and expires_in_seconds > 0.0
         and network_ok
         and auth_probe_ok
         and broker_operable
         and probe_backed
+    )
+    market_hours_probe_grace = bool(
+        bool(market_window["regular_session_open"])
+        and expires_in_seconds >= float(critical_lease_seconds)
+        and network_ok
+        and auth_probe_ok
+        and broker_operable
+        and probe_backed
+        and guard_age_minutes is not None
+        and float(guard_age_minutes) <= 10.0
+    )
+    lease_floor_warning = bool(expires_in_seconds < float(min_lease_seconds))
+    guard_stale = bool(guard_age_minutes is not None and float(guard_age_minutes) > float(max_guard_age_minutes))
+
+    lease_state = "healthy"
+    if expires_in_seconds < float(critical_lease_seconds) or not network_ok or not auth_probe_ok:
+        lease_state = "critical"
+    elif lease_floor_warning or guard_stale:
+        lease_state = "warning"
+    if (
+        lease_state == "critical"
+        and off_hours_probe_grace
     ):
         lease_state = "warning"
+    elif (
+        lease_state == "critical"
+        and token_lease_grace
+    ):
+        lease_state = "warning"
+    elif (
+        lease_state == "warning"
+        and off_hours_probe_grace
+        and lease_floor_warning
+        and not guard_stale
+        and expires_in_seconds >= float(critical_lease_seconds)
+    ):
+        lease_state = "healthy"
+    elif (
+        lease_state == "warning"
+        and market_hours_probe_grace
+        and lease_floor_warning
+        and not guard_stale
+    ):
+        lease_state = "healthy"
 
     overall_status = "ready"
     if lease_state == "critical" or not configured_for_refresh:
@@ -112,14 +152,9 @@ def build_payload(
             "critical_lease_seconds": int(critical_lease_seconds),
             "guard_age_minutes": round(float(guard_age_minutes), 4) if guard_age_minutes is not None else None,
             "probe_backed": bool(probe_backed),
-            "off_hours_probe_grace": bool(
-                bool(market_window["off_hours"])
-                and expires_in_seconds > 0.0
-                and network_ok
-                and auth_probe_ok
-                and broker_operable
-                and probe_backed
-            ),
+            "token_lease_grace": bool(token_lease_grace),
+            "off_hours_probe_grace": bool(off_hours_probe_grace),
+            "market_hours_probe_grace": bool(market_hours_probe_grace),
         },
         "broker_state": {
             "broker_ready": bool(broker_ready),

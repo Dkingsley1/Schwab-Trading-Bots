@@ -6,8 +6,8 @@ from functools import lru_cache
 from pathlib import Path
 
 AUTO_RUNTIME_LANES = {"auto", "shadow", "shadow_auto", "native", "mlx", "local"}
-PY312_RUNTIME_LANES = {"production", "py312", "python312"}
-PY314_RUNTIME_LANES = {"shadow314", "py314", "canary314", "python314"}
+LEGACY_PY312_RUNTIME_LANES = {"py312", "python312"}
+PY314_RUNTIME_LANES = {"production", "shadow314", "py314", "canary314", "python314"}
 
 
 def runtime_lane() -> str:
@@ -24,10 +24,8 @@ def runtime_version() -> str | None:
     if explicit:
         return explicit
     lane = runtime_lane()
-    if lane in PY314_RUNTIME_LANES:
+    if lane in PY314_RUNTIME_LANES or lane in LEGACY_PY312_RUNTIME_LANES:
         return "3.14"
-    if lane in PY312_RUNTIME_LANES:
-        return "3.12"
     return None
 
 
@@ -47,7 +45,7 @@ def training_version() -> str:
     lane = training_lane()
     if lane in PY314_RUNTIME_LANES:
         return "3.14"
-    return "3.12"
+    return "3.14"
 
 
 def _candidate_paths(root: Path, version: str) -> list[Path]:
@@ -57,13 +55,11 @@ def _candidate_paths(root: Path, version: str) -> list[Path]:
             [
                 root / ".venv314" / "bin" / "python",
                 root / ".venv313" / "bin" / "python",
-                root / ".venv312" / "bin" / "python",
             ]
         )
     else:
         candidates.extend(
             [
-                root / ".venv312" / "bin" / "python",
                 root / ".venv314" / "bin" / "python",
                 root / ".venv313" / "bin" / "python",
             ]
@@ -100,7 +96,7 @@ def _runtime_prefers_mlx(root: Path) -> bool:
         return True
     if override in {"0", "false", "no", "off"}:
         return False
-    for path in _candidate_paths(root, "3.12"):
+    for path in _candidate_paths(root, "3.14"):
         if _python_supports_module(str(path), "mlx"):
             return True
     return False

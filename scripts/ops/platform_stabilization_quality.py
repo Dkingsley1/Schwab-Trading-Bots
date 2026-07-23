@@ -114,8 +114,10 @@ def _worst_status(rows: list[dict[str, Any]]) -> str:
         return "blocked"
     if statuses & {"degraded"}:
         return "degraded"
-    if statuses & {"needs_work", "watch", "thin", "missing"}:
+    if statuses & {"needs_work"}:
         return "needs_work"
+    if statuses & {"watch", "thin", "missing"}:
+        return "watch"
     return "ready"
 
 
@@ -227,16 +229,26 @@ def _bot_quality(project_root: Path, platform: dict[str, Any]) -> dict[str, Any]
     training_quality = _health(project_root, "training_quality_control_latest.json")
     rollup = _health(project_root, "data_collection_observation_rollup_latest.json")
     average = _safe_float(section.get("average_quality_score"), _safe_float(training_quality.get("training_quality_score"), 0.0))
+    training_score = _safe_float(training_quality.get("training_quality_score"), 0.0)
     zero_obs = _safe_int(rollup.get("zero_observation_count"), 0)
     quality_status = str(quality.get("overall_status") or "missing")
+    recoverable_blocked = len(_as_list(training_quality.get("recoverable_blocked_keys")))
+    probation_count = len(_as_list(_as_dict(quality.get("quality_blockers")).get("quality_probation_bot_ids")))
+    targeted_retrain_count = len(_as_list(_as_dict(quality.get("quality_blockers")).get("targeted_retrain_bot_ids")))
     status = "ready"
-    if quality_status in {"blocked", "degraded", "needs_work"} or average < 55.0 or zero_obs > 0:
+    if zero_obs > 0 or recoverable_blocked > 0 or (average < 55.0 and training_score < 75.0):
         status = "needs_work"
+    elif quality_status in {"blocked", "degraded", "needs_work"} or average < 70.0 or probation_count > 0 or targeted_retrain_count > 0:
+        status = "watch"
     return {
         "overall_status": status,
         "average_quality_score": round(average, 3),
+        "training_quality_score": round(training_score, 3),
         "label_counts": _as_dict(section.get("label_counts")),
         "quality_autopilot_status": quality_status,
+        "quality_probation_count": probation_count,
+        "targeted_retrain_count": targeted_retrain_count,
+        "recoverable_blocked_count": recoverable_blocked,
         "collector_count": _safe_int(rollup.get("collector_count"), 0),
         "bots_with_observations": _safe_int(rollup.get("bots_with_observations"), 0),
         "zero_observation_count": zero_obs,
@@ -338,14 +350,21 @@ def _provider_failover(project_root: Path, platform: dict[str, Any]) -> dict[str
     summary = _as_dict(mesh.get("summary"))
     degraded_count = max(_safe_int(provider.get("degraded_provider_count"), 0), _safe_int(summary.get("required_failure_count"), 0) + _safe_int(summary.get("soft_failure_count"), 0))
     mesh_status = str(mesh.get("overall_status") or "missing")
-    status = "ready" if degraded_count <= 0 and mesh_status == "ready" else "needs_work"
+    required_failures = _safe_int(summary.get("required_failure_count"), 0)
+    soft_failures = _safe_int(summary.get("soft_failure_count"), 0)
+    source_status = str(source.get("overall_status") or provider.get("source_verification_status") or "missing")
+    status = "ready"
+    if required_failures > 0 or mesh_status in {"blocked", "critical"}:
+        status = "needs_work"
+    elif soft_failures > 0 or degraded_count > 0 or mesh_status == "degraded" or source_status == "degraded":
+        status = "watch"
     return {
         "overall_status": status,
         "degraded_provider_count": degraded_count,
         "provider_mesh_status": mesh_status,
-        "required_failure_count": _safe_int(summary.get("required_failure_count"), 0),
-        "soft_failure_count": _safe_int(summary.get("soft_failure_count"), 0),
-        "source_verification_status": str(source.get("overall_status") or provider.get("source_verification_status") or "missing"),
+        "required_failure_count": required_failures,
+        "soft_failure_count": soft_failures,
+        "source_verification_status": source_status,
         "cooldowns": _as_list(mesh.get("cooldowns")),
         "assigned_infrabots": INFRA_ASSIGNMENTS["provider_cooldown_failover_v2"],
         "recommended_commands": [
@@ -439,13 +458,28 @@ def _expansion_gate(project_root: Path, brain_v5: dict[str, Any], backlog: dict[
         if reason
     ]
     gate_closed = bool(gate_closed_reasons)
+    repair_reasons = {
+        "queue_backpressure_active",
+        "storage_or_queue_not_settled",
+        "runtime_not_calm",
+        "swap_not_calm",
+        "collection_floor_not_clean",
+        "settlement_stabilizer_not_clear",
+    }
+    needs_repair = bool(repair_reasons.intersection(gate_closed_reasons))
     status = "ready"
     if gate_closed:
-        status = "blocked" if halt_active or runtime_status in {"blocked", "critical"} else "needs_work"
+        if halt_active or runtime_status in {"blocked", "critical"}:
+            status = "blocked"
+        elif needs_repair:
+            status = "needs_work"
+        else:
+            status = "watch"
     return {
         "overall_status": status,
         "expansion_allowed_now": bool(not gate_closed),
         "gate_closed_reasons": gate_closed_reasons,
+        "repair_required_reasons": [reason for reason in gate_closed_reasons if reason in repair_reasons],
         "scenario_count": _safe_int(rehearsal.get("scenario_count"), 0),
         "scenarios": _as_list(rehearsal.get("scenarios")),
         "pre_expansion_snapshot": {
@@ -630,7 +664,7 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
     payload = {
         "timestamp_utc": iso_now(),
         "schema_version": 1,
-        "ok": overall in {"ready", "needs_work", "degraded"},
+        "ok": overall in {"ready", "watch", "needs_work", "degraded"},
         "overall_status": overall,
         "layer_name": "Platform Stabilization And Quality v1",
         "mode": "guarded_stabilization_quality_before_expansion",

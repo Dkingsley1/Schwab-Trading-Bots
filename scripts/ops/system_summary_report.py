@@ -370,7 +370,7 @@ def _report_catalog(project_root: Path) -> list[dict[str, Any]]:
 
 
 def _refresh_supporting_artifacts(project_root: Path) -> list[dict[str, Any]]:
-    py = str(project_root / ".venv312" / "bin" / "python")
+    py = str(project_root / ".venv314" / "bin" / "python")
     steps = [
         {
             "name": "architecture_upgrade_scoreboard",

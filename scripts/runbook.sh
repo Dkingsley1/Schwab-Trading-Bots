@@ -21,7 +21,7 @@ resolve_section() {
   local raw="${1:-}"
   case "$raw" in
     live) print -r -- "Live Feed Views" ;;
-    refresh) print -r -- "Live Feed Refreshes" ;;
+    refresh) print -r -- "Most Used" ;;
     health) print -r -- "Status And Health" ;;
     retrain) print -r -- "Retrain" ;;
     analysis) print -r -- "Strategy Research" ;;

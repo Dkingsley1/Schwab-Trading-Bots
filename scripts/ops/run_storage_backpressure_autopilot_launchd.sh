@@ -2,7 +2,7 @@
 set -euo pipefail
 
 PROJECT_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
-PYTHON_BIN="$PROJECT_ROOT/.venv312/bin/python"
+PYTHON_BIN="$PROJECT_ROOT/.venv314/bin/python"
 PROFILE="${BOT_RUNTIME_PROFILE:-live}"
 
 cd "$PROJECT_ROOT"
@@ -13,6 +13,13 @@ if [[ -f "$PROJECT_ROOT/scripts/ops/load_runtime_env.sh" ]]; then
 fi
 
 export BOT_RUNTIME_PROFILE="${BOT_RUNTIME_PROFILE:-$PROFILE}"
+
+"$PYTHON_BIN" "$PROJECT_ROOT/scripts/ops/backlog_drain_uniform_process.py" --apply --json >/dev/null 2>&1 || true
+
+if [[ -f "$PROJECT_ROOT/scripts/ops/load_runtime_env.sh" ]]; then
+  # shellcheck disable=SC1091
+  source "$PROJECT_ROOT/scripts/ops/load_runtime_env.sh" "$PROFILE" --quiet
+fi
 
 "$PROJECT_ROOT/scripts/ops/run_guarded_maintenance.sh" storage_backpressure_autopilot \
   "$PYTHON_BIN" "$PROJECT_ROOT/scripts/ops/storage_backpressure_autopilot.py" \

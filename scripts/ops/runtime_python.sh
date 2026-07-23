@@ -3,6 +3,25 @@ set -euo pipefail
 
 PROJECT_ROOT="${PROJECT_ROOT:-$(cd "$(dirname "$0")/../.." && pwd)}"
 
+load_python314_runtime_override() {
+  local override_file="$PROJECT_ROOT/config/.env.python314_runtime_override"
+  [[ -f "$override_file" ]] || return 0
+  [[ "${BOT_RUNTIME_SKIP_PY314_OVERRIDE:-0}" == "1" ]] && return 0
+
+  local runtime_explicit="${BOT_PYTHON_BIN:-}${BOT_PYTHON_VERSION:-}${BOT_RUNTIME_LANE:-}${BOT_PYTHON_RUNTIME:-}"
+  local training_explicit="${BOT_TRAINING_PYTHON_BIN:-}${BOT_TRAINING_PYTHON_VERSION:-}${BOT_TRAINING_RUNTIME_LANE:-}${BOT_TRAINING_PYTHON_RUNTIME:-}"
+  if [[ -n "$runtime_explicit" || -n "$training_explicit" ]]; then
+    return 0
+  fi
+
+  set -a
+  # shellcheck disable=SC1090
+  source "$override_file"
+  set +a
+}
+
+load_python314_runtime_override
+
 runtime_lane() {
   local lane="${BOT_RUNTIME_LANE:-${BOT_PYTHON_RUNTIME:-auto}}"
   lane="${lane:l}"
@@ -20,11 +39,8 @@ runtime_version() {
   local lane
   lane="$(runtime_lane)"
   case "$lane" in
-    shadow314|py314|canary314|python314)
+    production|shadow314|py314|canary314|python314|py312|python312)
       print -r -- "3.14"
-      ;;
-    production|py312|python312)
-      print -r -- "3.12"
       ;;
     *)
       return 1
@@ -53,7 +69,7 @@ training_version() {
       print -r -- "3.14"
       ;;
     *)
-      print -r -- "3.12"
+      print -r -- "3.14"
       ;;
   esac
 }
@@ -69,11 +85,11 @@ resolve_runtime_python() {
   if version="$(runtime_version 2>/dev/null)"; then
     :
   elif [[ "${BOT_PREFER_MLX_RUNTIME:-}" =~ ^(1|true|yes|on)$ ]]; then
-    version="3.12"
+    version="3.14"
   elif [[ ! "${BOT_PREFER_MLX_RUNTIME:-}" =~ ^(0|false|no|off)$ ]] \
-    && [[ -x "$PROJECT_ROOT/.venv312/bin/python" ]] \
-    && "$PROJECT_ROOT/.venv312/bin/python" -c 'import importlib.util, sys; raise SystemExit(0 if importlib.util.find_spec(sys.argv[1]) else 1)' mlx >/dev/null 2>&1; then
-    version="3.12"
+    && [[ -x "$PROJECT_ROOT/.venv314/bin/python" ]] \
+    && "$PROJECT_ROOT/.venv314/bin/python" -c 'import importlib.util, sys; raise SystemExit(0 if importlib.util.find_spec(sys.argv[1]) else 1)' mlx >/dev/null 2>&1; then
+    version="3.14"
   else
     version="3.14"
   fi
@@ -82,12 +98,11 @@ resolve_runtime_python() {
     candidates=(
       "$PROJECT_ROOT/.venv314/bin/python"
       "$PROJECT_ROOT/.venv313/bin/python"
-      "$PROJECT_ROOT/.venv312/bin/python"
     )
   else
     candidates=(
-      "$PROJECT_ROOT/.venv312/bin/python"
       "$PROJECT_ROOT/.venv314/bin/python"
+      "$PROJECT_ROOT/.venv313/bin/python"
     )
   fi
 
@@ -115,11 +130,9 @@ resolve_training_python() {
     candidates=(
       "$PROJECT_ROOT/.venv314/bin/python"
       "$PROJECT_ROOT/.venv313/bin/python"
-      "$PROJECT_ROOT/.venv312/bin/python"
     )
   else
     candidates=(
-      "$PROJECT_ROOT/.venv312/bin/python"
       "$PROJECT_ROOT/.venv314/bin/python"
       "$PROJECT_ROOT/.venv313/bin/python"
     )

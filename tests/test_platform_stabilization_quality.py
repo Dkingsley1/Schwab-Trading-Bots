@@ -174,6 +174,124 @@ def test_platform_stabilization_marks_duplicate_alpha_as_watch_when_novelty_cont
     assert duplicate["high_overlap_cluster_count"] == 26
 
 
+def test_platform_stabilization_marks_optional_provider_failures_as_watch(tmp_path: Path) -> None:
+    _seed_project(tmp_path)
+    _write_json(
+        tmp_path / "governance" / "health" / "provider_mesh_latest.json",
+        {
+            "overall_status": "degraded",
+            "summary": {
+                "required_failure_count": 0,
+                "soft_failure_count": 3,
+            },
+            "cooldowns": [],
+        },
+    )
+    _write_json(
+        tmp_path / "governance" / "health" / "source_verification_latest.json",
+        {"overall_status": "degraded"},
+    )
+
+    payload = src.build_payload(tmp_path)
+    provider = payload["sections"]["provider_cooldown_failover_v2"]
+
+    assert provider["overall_status"] == "watch"
+    assert provider["required_failure_count"] == 0
+    assert provider["soft_failure_count"] == 3
+
+
+def test_platform_stabilization_marks_quality_repair_queue_as_watch_when_training_quality_is_strong(tmp_path: Path) -> None:
+    _seed_project(tmp_path)
+    _write_json(
+        tmp_path / "governance" / "health" / "platform_intelligence_expansion_latest.json",
+        {
+            "overall_status": "needs_work",
+            "sections": {
+                "bot_data_quality_scores": {"overall_status": "needs_work", "average_quality_score": 42.0, "label_counts": {"cold_start": 10}},
+                "duplicate_alpha_overlap_detector": {"overall_status": "ready", "overlap_cluster_count": 0},
+                "execution_paper_trade_realism_layer": {"overall_status": "ready", "mae_bps": 12.0},
+                "provider_rotation_failover_mesh": {"overall_status": "ready", "degraded_provider_count": 0},
+            },
+        },
+    )
+    _write_json(
+        tmp_path / "governance" / "health" / "bot_quality_autopilot_latest.json",
+        {
+            "overall_status": "needs_work",
+            "quality_blockers": {
+                "quality_probation_bot_ids": ["bot_a"],
+                "targeted_retrain_bot_ids": ["bot_a"],
+            },
+        },
+    )
+    _write_json(
+        tmp_path / "governance" / "health" / "training_quality_control_latest.json",
+        {
+            "overall_status": "needs_attention",
+            "training_quality_score": 85.0,
+            "recoverable_blocked_keys": [],
+        },
+    )
+
+    payload = src.build_payload(tmp_path)
+    quality = payload["sections"]["bot_data_quality_governor"]
+
+    assert quality["overall_status"] == "watch"
+    assert quality["training_quality_score"] == 85.0
+    assert quality["quality_probation_count"] == 1
+    assert quality["targeted_retrain_count"] == 1
+
+
+def test_platform_stabilization_rolls_all_watch_sections_to_watch(tmp_path: Path) -> None:
+    rows = [
+        {"section": "backlog_drain_stabilizer", "overall_status": "ready"},
+        {"section": "bot_data_quality_governor", "overall_status": "watch"},
+        {"section": "duplicate_alpha_compression", "overall_status": "watch"},
+        {"section": "paper_trade_realism_v2", "overall_status": "watch"},
+        {"section": "provider_cooldown_failover_v2", "overall_status": "watch"},
+        {"section": "ready_only_microtraining", "overall_status": "ready"},
+        {"section": "expansion_rehearsal_gate", "overall_status": "ready"},
+    ]
+
+    assert src._worst_status(rows) == "watch"
+
+
+def test_expansion_gate_clear_blocker_only_is_watch_not_repair_failure(tmp_path: Path) -> None:
+    health = tmp_path / "governance" / "health"
+    _write_json(
+        health / "runtime_throttle_control_latest.json",
+        {"overall_status": "advisory", "host_saturation_score": 28.0, "compute_pressure_level": "normal", "memory_pressure_level": "normal"},
+    )
+    _write_json(
+        health / "ingestion_storage_control_latest.json",
+        {
+            "overall_status": "ready",
+            "severity": "stable",
+            "pressure_index": 0.025,
+            "backpressure": {"total_pending_lines": 100, "pending_lines_threshold": 15000},
+        },
+    )
+    _write_json(
+        health / "platform_settlement_stabilization_latest.json",
+        {"overall_status": "watch", "sections": {"queue_decay_meter": {"queue_backpressure_active": False}}},
+    )
+    _write_json(health / "data_collection_observation_rollup_latest.json", {"collector_count": 10, "bots_with_observations": 10, "zero_observation_count": 0})
+    _write_json(health / "global_halt_auto_clear_latest.json", {"halt": False, "clear_blockers": ["write_path_recovery_pending"]})
+    _write_json(health / "swap_pressure_governor_latest.json", {"swap_pressure": {"tier": "normal", "swap_used_gb": 1.0}})
+    brain = {
+        "sections": {
+            "strategic_roadmap_synthesizer": {"expansion_allowed_now": True},
+            "scenario_rehearsal_lab": {"scenario_count": 5, "scenarios": []},
+        }
+    }
+
+    gate = src._expansion_gate(tmp_path, brain, {"queue_backpressure_active": False})
+
+    assert gate["overall_status"] == "watch"
+    assert gate["repair_required_reasons"] == []
+    assert gate["expansion_allowed_now"] is False
+
+
 def test_platform_stabilization_quality_requires_true_calm_before_expansion(tmp_path: Path) -> None:
     _seed_project(tmp_path)
     _write_json(

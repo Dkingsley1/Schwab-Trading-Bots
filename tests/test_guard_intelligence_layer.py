@@ -114,6 +114,133 @@ def test_guard_intelligence_live_budget_overrides_stale_trigger_bit(monkeypatch,
     assert payload["policy_mode"] == "full_schwab_observe"
 
 
+def test_guard_intelligence_keeps_paper_soak_sleeves_on_during_guarded_pressure_relief(tmp_path: Path) -> None:
+    health = tmp_path / "governance" / "health"
+    _write_json(
+        health / "process_fanout_guard_latest.json",
+        {
+            "overall_status": "ready",
+            "ok": True,
+            "triggered": False,
+            "thresholds": {"max_count": 120, "target_count": 80, "max_rss_mb": 12288.0, "target_rss_mb": 8192.0},
+            "fanout": {"process_count": 34, "total_rss_mb": 2600.0},
+        },
+    )
+    _write_json(
+        health / "resource_guard_latest.json",
+        {"overall_status": "ready", "ok": True, "memory_pressure_state": "green", "memory_free_pct": 90.0},
+    )
+    _write_json(
+        health / "pressure_relief_control_latest.json",
+        {
+            "overall_status": "degraded",
+            "ok": True,
+            "tier": "guarded_relief",
+            "compute_pressure_level": "elevated",
+            "memory_pressure_level": "normal",
+            "storage_pressure": {"severity": "stable", "pressure_index": 0.0},
+            "swap_pressure": {"tier": "normal", "raw_tier": "normal"},
+        },
+    )
+    _write_json(
+        health / "runtime_throttle_control_latest.json",
+        {
+            "overall_status": "advisory",
+            "paper_execution_policy": {
+                "paper_execution_allowed": True,
+                "pause_paper_execution": False,
+                "stage": "armed",
+                "armed": True,
+            },
+            "paper_capacity_contract": {
+                "ready_for_700_bot_paper": True,
+                "runtime_policy": {"live_execution_blocked": True},
+            },
+        },
+    )
+    _write_json(health / "paper_400_ramp_latest.json", {"overall_status": "ready", "armed": True, "stage": "armed"})
+
+    payload = src.build_payload(
+        tmp_path,
+        apply=True,
+        collect_live=False,
+        out_path=health / "guard_intelligence_latest.json",
+        state_path=health / "guard_intelligence_state.json",
+        override_path=tmp_path / "config" / ".env.guard_intelligence_override",
+    )
+
+    assert payload["policy_mode"] == "full_schwab_observe"
+    assert payload["signals"]["guard_status_counts"]["blockers"] == []
+    assert "pressure_relief" in payload["signals"]["guard_status_counts"]["warnings"]
+    assert payload["signals"]["storage_pressure"]["details"]["pressure_relief"]["paper_soak_advisory"] is True
+    assert payload["recommended_env_overrides"]["RUN_ALL_SLEEVES_WITH_SPECIALIZED_SLEEVES"] == "1"
+    assert payload["recommended_env_overrides"]["PROCESS_FANOUT_GUARD_ACTIVE"] == "0"
+
+
+def test_guard_intelligence_treats_deep_relief_pressure_only_paper_bypass_as_advisory(tmp_path: Path) -> None:
+    health = tmp_path / "governance" / "health"
+    _write_json(
+        health / "process_fanout_guard_latest.json",
+        {
+            "overall_status": "ready",
+            "ok": True,
+            "triggered": False,
+            "thresholds": {"max_count": 180, "target_count": 140, "max_rss_mb": 12288.0, "target_rss_mb": 8192.0},
+            "fanout": {"process_count": 67, "total_rss_mb": 5450.0},
+        },
+    )
+    _write_json(
+        health / "resource_guard_latest.json",
+        {"overall_status": "ready", "ok": True, "memory_pressure_state": "green", "memory_free_pct": 79.0, "swap_used_gb": 1.0},
+    )
+    _write_json(
+        health / "pressure_relief_control_latest.json",
+        {
+            "overall_status": "blocked",
+            "ok": False,
+            "tier": "deep_relief",
+            "compute_pressure_level": "high",
+            "memory_pressure_level": "normal",
+            "storage_pressure": {"severity": "stable", "pressure_index": 0.0},
+            "swap_pressure": {"tier": "normal", "raw_tier": "normal"},
+        },
+    )
+    _write_json(
+        health / "runtime_throttle_control_latest.json",
+        {
+            "overall_status": "ready",
+            "paper_execution_policy": {
+                "paper_execution_allowed": True,
+                "pause_paper_execution": False,
+                "reason": "paper_ramp_pressure_only_blocker_bypassed_for_full_force_soak",
+                "pressure_pause_bypassed": True,
+            },
+            "paper_capacity_contract": {
+                "ready_for_700_bot_paper": True,
+                "attribution_capacity_advisory": True,
+                "runtime_policy": {"live_execution_blocked": True},
+            },
+        },
+    )
+    _write_json(health / "paper_400_ramp_latest.json", {"overall_status": "ready", "armed": True, "stage": "armed"})
+
+    payload = src.build_payload(
+        tmp_path,
+        apply=True,
+        collect_live=False,
+        out_path=health / "guard_intelligence_latest.json",
+        state_path=health / "guard_intelligence_state.json",
+        override_path=tmp_path / "config" / ".env.guard_intelligence_override",
+    )
+
+    assert payload["policy_mode"] == "full_schwab_observe"
+    assert payload["pressure_score"] == 0.65
+    assert payload["signals"]["guard_status_counts"]["blockers"] == []
+    assert "pressure_relief" in payload["signals"]["guard_status_counts"]["warnings"]
+    assert payload["signals"]["storage_pressure"]["details"]["pressure_relief"]["paper_soak_advisory"] is True
+    assert payload["recommended_env_overrides"]["RUN_ALL_SLEEVES_WITH_SPECIALIZED_SLEEVES"] == "1"
+
+
 def test_guard_intelligence_is_loaded_after_pressure_relief_override() -> None:
     text = (src.PROJECT_ROOT / "scripts" / "ops" / "load_runtime_env.sh").read_text(encoding="utf-8")
 

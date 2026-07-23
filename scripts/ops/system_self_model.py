@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import errno
 import hashlib
 import json
 import os
@@ -19,6 +20,7 @@ DEFAULT_FAILURE_MEMORY_PATH = PROJECT_ROOT / "governance" / "health" / "system_f
 DEFAULT_REGISTRY_DIFF_PATH = PROJECT_ROOT / "governance" / "health" / "system_registry_diff_latest.json"
 DEFAULT_UPGRADE_PLAN_PATH = PROJECT_ROOT / "governance" / "health" / "system_upgrade_optimizer_latest.json"
 SELF_MODEL_VERSION = "system_self_model_v2"
+FALLBACK_ROOT_NAMES = {"data", "exports", "governance", "logs"}
 
 
 STATUS_ORDER = {
@@ -79,6 +81,37 @@ def _load_json(path: Path) -> dict[str, Any]:
 def _write_json(path: Path, payload: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, ensure_ascii=True, indent=2) + "\n", encoding="utf-8")
+
+
+def _local_fallback_path(path: Path) -> Path | None:
+    try:
+        rel_path = path.relative_to(PROJECT_ROOT)
+    except Exception:
+        return None
+    if not rel_path.parts or rel_path.parts[0] not in FALLBACK_ROOT_NAMES:
+        return None
+    return PROJECT_ROOT / "local_fallback_storage" / rel_path
+
+
+def _write_text_with_local_fallback(path: Path, text: str) -> dict[str, str]:
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8")
+        return {"storage_mode": "primary", "path": str(path)}
+    except OSError as exc:
+        if exc.errno not in {errno.ENOSPC, getattr(errno, "EDQUOT", errno.ENOSPC)}:
+            raise
+        fallback = _local_fallback_path(path)
+        if fallback is None:
+            raise
+        fallback.parent.mkdir(parents=True, exist_ok=True)
+        fallback.write_text(text, encoding="utf-8")
+        return {
+            "storage_mode": "local_fallback",
+            "path": str(fallback),
+            "primary_path": str(path),
+            "fallback_reason": errno.errorcode.get(exc.errno or 0, str(exc.errno)),
+        }
 
 
 def _json_sha256(payload: Any) -> str:
@@ -229,6 +262,7 @@ def _surface_matrix(health_root: Path, project_root: Path, *, now: datetime | No
         "system_process_contracts": health_root / "system_process_contracts_latest.json",
         "system_self_intelligence": health_root / "system_self_intelligence_latest.json",
         "codex_handoff": health_root / "codex_handoff_latest.json",
+        "codex_operator_bridge": health_root / "codex_operator_bridge_latest.json",
         "storage_backpressure_autopilot": health_root / "storage_backpressure_autopilot_latest.json",
         "mlx_runtime": health_root / "mlx_runtime_audit_latest.json",
         "mlx_library": health_root / "mlx_library_upgrade_latest.json",
@@ -244,6 +278,11 @@ def _surface_matrix(health_root: Path, project_root: Path, *, now: datetime | No
         "artifact_freshness": health_root / "artifact_freshness_slo_latest.json",
         "training_quality": health_root / "training_quality_control_latest.json",
         "bot_quality": health_root / "bot_quality_autopilot_latest.json",
+        "capital_growth_intelligence": health_root / "capital_growth_intelligence_latest.json",
+        "capital_growth_awareness": health_root / "capital_growth_awareness_bridge_latest.json",
+        "capital_rotation_control": health_root / "capital_rotation_control_latest.json",
+        "schwab_indicator_intelligence": health_root / "schwab_indicator_intelligence_latest.json",
+        "system_expansion_execution": health_root / "system_expansion_execution_layer_latest.json",
         "provider_mesh": health_root / "provider_mesh_latest.json",
         "core_materialization": health_root / "core_bot_materialization_guard_latest.json",
         "runtime_gate_dashboard": health_root / "runtime_gate_dashboard_latest.json",
@@ -656,6 +695,44 @@ def _system_self_intelligence_awareness(self_intelligence: dict[str, Any]) -> di
     }
 
 
+def _codex_operator_bridge_awareness(bridge: dict[str, Any]) -> dict[str, Any]:
+    attention = bridge.get("attention_packet") if isinstance(bridge.get("attention_packet"), dict) else {}
+    sections = bridge.get("sections") if isinstance(bridge.get("sections"), dict) else {}
+    paper = sections.get("paper_trading") if isinstance(sections.get("paper_trading"), dict) else {}
+    training = sections.get("training") if isinstance(sections.get("training"), dict) else {}
+    writer = sections.get("writer") if isinstance(sections.get("writer"), dict) else {}
+    memory = sections.get("memory") if isinstance(sections.get("memory"), dict) else {}
+    livefeed = sections.get("livefeed") if isinstance(sections.get("livefeed"), dict) else {}
+    day = paper.get("day") if isinstance(paper.get("day"), dict) else {}
+    return {
+        "status": _status(bridge),
+        "needs_codex": [str(item) for item in list(attention.get("needs_codex") or [])],
+        "needs_codex_count": len(list(attention.get("needs_codex") or [])),
+        "active_blocker_count": len(list(attention.get("active_blockers") or [])),
+        "safe_next_command_count": len(list(attention.get("safe_next_commands") or [])),
+        "paper_day_utc": str(day.get("day_utc") or ""),
+        "paper_day_executions": _safe_int(day.get("executions"), 0),
+        "paper_day_net_pnl": _safe_float(day.get("ending_net_pnl_total"), 0.0),
+        "paper_day_change": _safe_float(day.get("change_vs_previous_day"), 0.0),
+        "training_launch_allowed": bool(training.get("launch_allowed", False)),
+        "training_recommended_batch_size": _safe_int(training.get("recommended_batch_size"), 0),
+        "training_launch_blockers": [str(item) for item in list(training.get("launch_blockers") or [])],
+        "writer_active": bool(writer.get("active", False)),
+        "writer_completed_shards": _safe_int(writer.get("completed_shard_count"), 0),
+        "writer_planned_shards": _safe_int(writer.get("planned_shard_count"), 0),
+        "memory_classification": str(memory.get("classification") or ""),
+        "memory_safe_for_training": bool(memory.get("safe_for_training", False)),
+        "livefeed_alive": bool(livefeed.get("alive", False)),
+        "communication_contract": attention.get("communication_contract")
+        if isinstance(attention.get("communication_contract"), dict)
+        else {
+            "delivery_channel": "artifact_handoff",
+            "proactive_delivery_to_codex": False,
+        },
+        "control_contract": "codex_operator_bridge_packages_trade_state_training_gates_writer_memory_livefeed_notifications_safe_commands_and_guardrails_for_fast_codex_handoffs",
+    }
+
+
 def _bot_awareness(identity: dict[str, Any], core_materialization: dict[str, Any]) -> dict[str, Any]:
     materialization_summary = core_materialization.get("summary") if isinstance(core_materialization.get("summary"), dict) else {}
     missing_modules = _safe_int(materialization_summary.get("missing_core_module_count"), 0)
@@ -892,6 +969,17 @@ def _dependency_edges() -> list[dict[str, str]]:
         {"from": "system_brain", "to": "codex_handoff", "reason": "safe next action and do-not-do rules become a Codex attention packet"},
         {"from": "system_self_intelligence", "to": "codex_handoff", "reason": "uncertainty, causal root, action effect, route owner, and self-questions sharpen the Codex attention packet"},
         {"from": "whole_system_intelligence", "to": "system_self_model", "reason": "whole-system brain becomes a first-class self-model awareness domain"},
+        {"from": "capital_growth_intelligence", "to": "capital_growth_awareness", "reason": "money-tree policy normalized into role-specific awareness packets"},
+        {"from": "capital_growth_awareness", "to": "grand_master", "reason": "portfolio-level money-growth arbitration and live-money block state"},
+        {"from": "capital_growth_awareness", "to": "masters", "reason": "per-sleeve growth, repair, and quarantine rules"},
+        {"from": "capital_growth_awareness", "to": "sub_bots", "reason": "evidence, label, precision, and disconfirmation collection rules"},
+        {"from": "capital_growth_awareness", "to": "master_infra", "reason": "storage, training, fill, attribution, and position-ledger freshness enforcement"},
+        {"from": "capital_growth_awareness", "to": "system_self_model", "reason": "money-tree awareness becomes part of the shared self-model bus"},
+        {"from": "schwab_indicator_intelligence", "to": "system_expansion_execution", "reason": "Schwab study and strategy catalog feeds the indicator-to-feature bridge lane"},
+        {"from": "capital_rotation_control", "to": "system_expansion_execution", "reason": "paper-only sleeve rotation pressure feeds capital simulator v2"},
+        {"from": "system_architecture_contract_graph", "to": "system_expansion_execution", "reason": "blocked, degraded, and stale nodes feed self-healing and stale-surface expansion lanes"},
+        {"from": "runtime_throttle", "to": "system_expansion_execution", "reason": "runtime pressure feeds predictive stability, collector utility, and sleeve safe modes"},
+        {"from": "system_expansion_execution", "to": "system_self_model", "reason": "12-lane expansion execution becomes a first-class self-model awareness surface"},
         {"from": "global_halt", "to": "operator_cockpit", "reason": "live collection clearance"},
         {"from": "master_infra", "to": "operator_cockpit", "reason": "process lane ownership"},
         {"from": "system_self_model", "to": "grand_master", "reason": "compressed self-state packet"},
@@ -1805,6 +1893,7 @@ def _render_self_brief(payload: dict[str, Any]) -> str:
         f"- Drainer intelligence: `{((domains.get('drainer_intelligence') or {}).get('status') or '')}` active lane `{((domains.get('drainer_intelligence') or {}).get('active_drainer') or 'none')}`",
         f"- Whole-system brain: `{((domains.get('whole_system_intelligence') or {}).get('status') or '')}` action `{((domains.get('whole_system_intelligence') or {}).get('action') or 'none')}`",
         f"- Self-intelligence: `{((domains.get('system_self_intelligence') or {}).get('status') or '')}` reflex `{((domains.get('system_self_intelligence') or {}).get('reflex_action') or 'none')}` uncertainty `{((domains.get('system_self_intelligence') or {}).get('uncertainty_level') or '')}` root `{((domains.get('system_self_intelligence') or {}).get('causal_root') or 'none')}` effect `{((domains.get('system_self_intelligence') or {}).get('action_effect_verdict') or 'none')}` route `{((domains.get('system_self_intelligence') or {}).get('integration_route_mode') or 'none')}`",
+        f"- Codex operator bridge: `{((domains.get('codex_operator_bridge') or {}).get('status') or '')}` needs `{((domains.get('codex_operator_bridge') or {}).get('needs_codex_count') or 0)}` paper day PnL `{((domains.get('codex_operator_bridge') or {}).get('paper_day_net_pnl') or 0.0)}` training batch `{((domains.get('codex_operator_bridge') or {}).get('training_recommended_batch_size') or 0)}`",
         f"- Core materialization: `{((domains.get('bot_awareness') or {}).get('materialization_status') or '')}`",
         f"- Global halt active: `{global_halt_active}`",
         f"- Registry diff memory: `{registry_diff.get('diff_status', '')}`",
@@ -1853,6 +1942,7 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
     writer_process = _load_json(health_root / "writer_process_intelligence_latest.json")
     whole_system = _load_json(health_root / "whole_system_intelligence_latest.json")
     system_self_intelligence = _load_json(health_root / "system_self_intelligence_latest.json")
+    codex_operator_bridge = _load_json(health_root / "codex_operator_bridge_latest.json")
     storage_autopilot = _load_json(health_root / "storage_backpressure_autopilot_latest.json")
     mlx_router = _load_json(health_root / "mlx_intelligence_router_latest.json")
     library_router = _load_json(health_root / "library_utilization_router_latest.json")
@@ -1893,6 +1983,7 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
         "writer_process_intelligence": _writer_process_awareness(writer_process, writer_cycle, process_watchdog, process_fanout),
         "whole_system_intelligence": _whole_system_intelligence_awareness(whole_system),
         "system_self_intelligence": _system_self_intelligence_awareness(system_self_intelligence),
+        "codex_operator_bridge": _codex_operator_bridge_awareness(codex_operator_bridge),
         "bot_awareness": _bot_awareness(identity, core_materialization),
         "failure_memory": _failure_memory(global_halt, incident, cockpit),
         "halt_recovery_intelligence": _halt_recovery_intelligence(global_halt, process_watchdog, auth_lease, data_plane, live_runtime, storage),
@@ -1933,6 +2024,9 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
         f"root {domains['system_self_intelligence']['causal_root'] or 'none'} "
         f"effect {domains['system_self_intelligence']['action_effect_verdict'] or 'none'} "
         f"route {domains['system_self_intelligence']['integration_route_mode'] or 'none'}, "
+        f"Codex bridge mode {domains['codex_operator_bridge']['status']} "
+        f"needs={domains['codex_operator_bridge']['needs_codex_count']} "
+        f"trade_day_pnl={domains['codex_operator_bridge']['paper_day_net_pnl']:.2f}, "
         f"halt recovery mode {domains['halt_recovery_intelligence']['status']} "
         f"next={ ' '.join(domains['halt_recovery_intelligence']['next_safe_command']) if domains['halt_recovery_intelligence'].get('next_safe_command') else 'none' }, "
         f"growth pressure {domains['growth_awareness']['pressure_level']}, "
@@ -1980,7 +2074,13 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
                 "system_self_intelligence",
                 "system_self_intelligence_memory",
                 "codex_handoff",
+                "codex_operator_bridge",
                 "backpressure_super_drainer_memory",
+                "capital_growth_intelligence",
+                "capital_growth_awareness",
+                "capital_rotation_control",
+                "schwab_indicator_intelligence",
+                "system_expansion_execution",
             ],
         },
         "source_files": {
@@ -2001,12 +2101,16 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
             "system_self_intelligence": str(health_root / "system_self_intelligence_latest.json"),
             "system_self_intelligence_memory": str(project_root / "governance" / "system_intelligence" / "self_intelligence_memory.jsonl"),
             "codex_handoff": str(health_root / "codex_handoff_latest.json"),
+            "codex_operator_bridge": str(health_root / "codex_operator_bridge_latest.json"),
             "storage_backpressure_autopilot": str(health_root / "storage_backpressure_autopilot_latest.json"),
             "mlx_runtime": str(health_root / "mlx_runtime_audit_latest.json"),
             "mlx_library": str(health_root / "mlx_library_upgrade_latest.json"),
             "mlx_intelligence_router": str(health_root / "mlx_intelligence_router_latest.json"),
             "library_utilization_router": str(health_root / "library_utilization_router_latest.json"),
             "quant_model_control": str(health_root / "quant_model_control_latest.json"),
+            "capital_rotation_control": str(health_root / "capital_rotation_control_latest.json"),
+            "schwab_indicator_intelligence": str(health_root / "schwab_indicator_intelligence_latest.json"),
+            "system_expansion_execution": str(health_root / "system_expansion_execution_layer_latest.json"),
             "global_halt": str(health_root / "global_killswitch_latest.json"),
             "process_watchdog": str(health_root / "process_watchdog_latest.json"),
             "process_fanout_guard": str(health_root / "process_fanout_guard_latest.json"),
@@ -2033,11 +2137,13 @@ def write_outputs(
 ) -> None:
     public_payload = _public_payload(payload)
     _write_json(out_path, public_payload)
-    markdown_path.parent.mkdir(parents=True, exist_ok=True)
-    markdown_path.write_text(_render_markdown(public_payload), encoding="utf-8")
+    report_outputs: dict[str, dict[str, str]] = {}
+    report_outputs["markdown"] = _write_text_with_local_fallback(markdown_path, _render_markdown(public_payload))
     if brief_path is not None:
-        brief_path.parent.mkdir(parents=True, exist_ok=True)
-        brief_path.write_text(_render_self_brief(public_payload), encoding="utf-8")
+        report_outputs["brief"] = _write_text_with_local_fallback(brief_path, _render_self_brief(public_payload))
+    if any(result.get("storage_mode") == "local_fallback" for result in report_outputs.values()):
+        public_payload["report_outputs"] = report_outputs
+        _write_json(out_path, public_payload)
     if dependency_memory_path is not None:
         _write_json(dependency_memory_path, payload.get("dependency_memory") if isinstance(payload.get("dependency_memory"), dict) else {})
     if failure_memory_path is not None:

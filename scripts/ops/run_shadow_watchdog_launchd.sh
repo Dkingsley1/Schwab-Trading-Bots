@@ -2,7 +2,13 @@
 set -euo pipefail
 
 PROJECT_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
-export BOT_RUNTIME_LANE="${BOT_RUNTIME_LANE:-${BOT_SHADOW_RUNTIME_LANE:-shadow}}"
+export BOT_RUNTIME_LANE="${BOT_RUNTIME_LANE:-${BOT_SHADOW_RUNTIME_LANE:-canary314}}"
+export BOT_PYTHON_VERSION="${BOT_PYTHON_VERSION:-3.14.5}"
+export BOT_TRAINING_RUNTIME_LANE="${BOT_TRAINING_RUNTIME_LANE:-canary314}"
+export BOT_TRAINING_PYTHON_VERSION="${BOT_TRAINING_PYTHON_VERSION:-3.14.5}"
+export PY314_RUNTIME_FLIP_APPROVED="${PY314_RUNTIME_FLIP_APPROVED:-1}"
+export PY314_RETIRE_312_ANCHOR="${PY314_RETIRE_312_ANCHOR:-1}"
+unset __PYVENV_LAUNCHER__
 BOOT_LOG="${SHADOW_WATCHDOG_BOOT_LOG:-$PROJECT_ROOT/logs/launchd_watchdog/shadow_watchdog.boot.log}"
 mkdir -p "$(dirname "$BOOT_LOG")"
 printf 'timestamp_utc=%s pid=%s ppid=%s profile=%s xpc=%s\n' \
@@ -12,8 +18,8 @@ PROFILE="${BOT_RUNTIME_PROFILE:-live}"
 
 cd "$PROJECT_ROOT"
 
-"$PROJECT_ROOT/.venv312/bin/python" "$PROJECT_ROOT/scripts/ops/apple_silicon_profile.py" apply >/dev/null 2>&1 || true
-"$PROJECT_ROOT/.venv312/bin/python" "$PROJECT_ROOT/scripts/ops/computer_task_intelligence.py" --apply --json >/dev/null 2>&1 || true
+"$PROJECT_ROOT/.venv314/bin/python" "$PROJECT_ROOT/scripts/ops/apple_silicon_profile.py" apply >/dev/null 2>&1 || true
+"$PROJECT_ROOT/.venv314/bin/python" "$PROJECT_ROOT/scripts/ops/computer_task_intelligence.py" --apply --json >/dev/null 2>&1 || true
 
 if [[ -f "$PROJECT_ROOT/scripts/ops/load_runtime_env.sh" ]]; then
   # shellcheck disable=SC1091

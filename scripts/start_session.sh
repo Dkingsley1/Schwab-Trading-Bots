@@ -3,7 +3,7 @@ set -euo pipefail
 
 PROJECT_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 RUNTIME_PY_HELPER="$PROJECT_ROOT/scripts/ops/runtime_python.sh"
-OPS_PY="$PROJECT_ROOT/.venv312/bin/python"
+OPS_PY="$PROJECT_ROOT/.venv314/bin/python"
 SHADOW_PY="$PROJECT_ROOT/.venv314/bin/python"
 DAY_UTC="$(date -u +%Y%m%d)"
 FORCE=0
@@ -12,13 +12,14 @@ FORCE=0
 cd "$PROJECT_ROOT"
 
 [[ -f "$PROJECT_ROOT/scripts/load_ops_thresholds_env.sh" ]] && source "$PROJECT_ROOT/scripts/load_ops_thresholds_env.sh"
+[[ -f "$PROJECT_ROOT/scripts/ops/load_runtime_env.sh" ]] && source "$PROJECT_ROOT/scripts/ops/load_runtime_env.sh" live --quiet
 
 if [[ -x "$RUNTIME_PY_HELPER" ]]; then
   OPS_PY="$(
-    BOT_RUNTIME_LANE="${BOT_OPS_RUNTIME_LANE:-production}" /bin/zsh "$RUNTIME_PY_HELPER"
+    BOT_RUNTIME_LANE="${BOT_OPS_RUNTIME_LANE:-${BOT_RUNTIME_LANE:-canary314}}" /bin/zsh "$RUNTIME_PY_HELPER"
   )"
   SHADOW_PY="$(
-    BOT_RUNTIME_LANE="${BOT_SHADOW_RUNTIME_LANE:-${BOT_RUNTIME_LANE:-shadow}}" /bin/zsh "$RUNTIME_PY_HELPER"
+    BOT_RUNTIME_LANE="${BOT_SHADOW_RUNTIME_LANE:-${BOT_RUNTIME_LANE:-canary314}}" /bin/zsh "$RUNTIME_PY_HELPER"
   )"
 fi
 

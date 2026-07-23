@@ -71,6 +71,18 @@ def test_optional_job_allows_green_pressure(monkeypatch) -> None:
     assert reasons == []
 
 
+def test_support_freeze_blocks_support_profiles_but_not_collection(monkeypatch) -> None:
+    monkeypatch.setenv("RESOURCE_GUARD_DEFAULT_HONORS_SUPPORT_FREEZE", "1")
+
+    assert resource_guard._support_freeze_blocks_profile("optional") is True
+    assert resource_guard._support_freeze_blocks_profile("refresh") is True
+    assert resource_guard._support_freeze_blocks_profile("default") is True
+    assert resource_guard._support_freeze_blocks_profile("collection") is False
+
+    monkeypatch.setenv("RESOURCE_GUARD_DEFAULT_HONORS_SUPPORT_FREEZE", "0")
+    assert resource_guard._support_freeze_blocks_profile("default") is False
+
+
 def test_default_guard_uses_runtime_disk_but_keeps_local_floor(monkeypatch) -> None:
     monkeypatch.setenv("RESOURCE_GUARD_MIN_LOCAL_DISK_GB", "2")
     snapshot = {

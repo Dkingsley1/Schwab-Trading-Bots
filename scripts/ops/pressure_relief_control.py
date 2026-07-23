@@ -145,15 +145,28 @@ def _sql_writer_coordination(backpressure_fleet: dict[str, Any]) -> dict[str, An
 
 
 def _concentrated_sql_drain_overrides() -> dict[str, str]:
+    worker_budget = str(
+        max(
+            _safe_int(os.getenv("AUTONOMIC_PCORE_PREPROCESS_WORKERS"), 0),
+            _safe_int(os.getenv("BACKLOG_PCORE_PREPROCESS_WORKERS"), 0),
+            _safe_int(os.getenv("SQL_LINK_SERVICE_PREPROCESS_WORKERS"), 1),
+            1,
+        )
+    )
     return {
         "SQL_LINK_SERVICE_INTERVAL_SECONDS": "12",
         "SQL_LINK_SERVICE_HOT_MIN_INTERVAL_SECONDS": "30",
         "SQL_LINK_SERVICE_QUEUE_MIN_INTERVAL_SECONDS": "180",
         "SQL_LINK_SERVICE_HOT_BATCH_SIZE": "240000",
         "SQL_LINK_SERVICE_QUEUE_BATCH_SIZE": "180000",
+        "BACKLOG_PCORE_PREPROCESS_WORKERS": worker_budget,
+        "SQL_LINK_SERVICE_PREPROCESS_WORKERS": worker_budget,
+        "SQL_LINK_SERVICE_SHARD_WRITER_LANES": worker_budget,
         "SQL_LINK_SERVICE_CONCENTRATED_CORE_DRAIN": "1",
+        "SQL_LINK_WRITER_NICE": "0",
+        "SQL_LINK_WRITER_BACKGROUND_POLICY": "0",
         "SQL_LINK_SERVICE_SHARD_LINK_TIMEOUT_SECONDS": "420",
-        "SQL_LINK_SERVICE_MERGE_MAX_SECONDS_PER_CYCLE": "60",
+        "SQL_LINK_SERVICE_MERGE_MAX_SECONDS_PER_CYCLE": "90",
         "SQL_LINK_SERVICE_SHARD_TRADING_STATE_CHECKPOINT_LINES": "1000",
         "SQL_LINK_SERVICE_SHARD_AGGRESSIVE_TRADING_STATE_CHECKPOINT_LINES": "1000",
         "SQL_LINK_SERVICE_SHARD_AGGRESSIVE_TRADING_MAX_LINES_PER_FILE": "12000",
@@ -349,11 +362,23 @@ def _support_hot_stabilization_overrides(runtime: dict[str, Any], tier: str, env
         collector_cap = min(collector_cap, 0.22)
     current_ratio = _safe_float(env.get("BOT_COLLECTION_DUTY_CYCLE_MAX_ACTIVE_RATIO"), 1.0)
     support_nice = "16" if system_hot or external_hot else "14"
+    collector_mode = "protect" if tier == "deep_relief" or system_hot or external_hot else "guarded"
+    min_interval = "900" if collector_mode == "protect" else "600"
+    fx_outputsize = "12" if collector_mode == "protect" else "24"
     overrides = {
         "OPS_SUPPORT_MAINTENANCE_STABILIZER_ACTIVE": "1",
         "OPS_SUPPORT_MAINTENANCE_FREEZE": "1" if system_hot or external_hot else "0",
         "OPS_SUPPORT_MAINTENANCE_COOLDOWN_SECONDS": "1800" if system_hot or external_hot else "900",
         "OPS_SUPPORT_JOB_NICE": support_nice,
+        "CONTEXT_COLLECTOR_PRESSURE_GOVERNOR_ENABLED": "1",
+        "MARKET_CONTEXT_COLLECTOR_MAX_CONCURRENT": "1",
+        "MARKET_CONTEXT_COLLECTOR_MIN_INTERVAL_SECONDS": min_interval,
+        "FX_MARKET_CONTEXT_PRESSURE_MODE": collector_mode,
+        "FX_MARKET_CONTEXT_MIN_INTERVAL_SECONDS": min_interval,
+        "FX_MARKET_CONTEXT_TIMEOUT_CAP_SECONDS": "8" if collector_mode == "protect" else "10",
+        "FX_TWELVE_DATA_MAX_PAIRS_PER_RUN": "1",
+        "FX_TWELVE_DATA_OUTPUTSIZE": fx_outputsize,
+        "FX_MARKET_CONTEXT_ALPHA_VANTAGE_ENABLED": "0",
         "BOT_COLLECTION_DUTY_CYCLE_MAX_ACTIVE_RATIO": f"{min(current_ratio, collector_cap):.2f}",
         "COLD_START_COLLECTOR_SAMPLE_RATE": "0.12" if tier == "deep_relief" else "0.25",
         "REPORT_REFRESH_DEBOUNCE_SECONDS": "2400",
@@ -429,7 +454,18 @@ def _renice_matching_processes(env: dict[str, str], *, apply: bool) -> dict[str,
         command = parts[1]
         if pid <= 0 or not any(pattern in command for pattern in patterns):
             continue
-        nice_level = env.get("MACRO_CAPTURE_NICE_LEVEL", "12") if ("yt-dlp" in command or "ffmpeg" in command) else env.get("OPS_SUPPORT_JOB_NICE", "12")
+        writer_process = any(
+            pattern in command
+            for pattern in (
+                "scripts/ops/sql_link_shard_manager.py",
+                "scripts/ops/sql_link_writer_service.py",
+                "scripts/link_jsonl_to_sql.py",
+            )
+        )
+        if writer_process:
+            nice_level = env.get("SQL_LINK_WRITER_NICE", "0")
+        else:
+            nice_level = env.get("MACRO_CAPTURE_NICE_LEVEL", "12") if ("yt-dlp" in command or "ffmpeg" in command) else env.get("OPS_SUPPORT_JOB_NICE", "12")
         row = {"pid": pid, "nice": nice_level, "command_excerpt": command[:220], "changed": False}
         if apply and _process_exists(pid):
             rc = subprocess.run(["renice", "-n", str(nice_level), "-p", str(pid)], check=False, capture_output=True, text=True, timeout=5).returncode
@@ -455,6 +491,18 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
     env.update({str(key): str(value) for key, value in (support_stabilization.get("env_overrides") or {}).items()})
     if bool(sql_writer_coordination.get("concentrated_core_drain", False)):
         env.update(_concentrated_sql_drain_overrides())
+    sql_writer_fluidity_contract = (
+        runtime.get("sql_writer_fluidity_contract")
+        if isinstance(runtime.get("sql_writer_fluidity_contract"), dict)
+        else {}
+    )
+    sql_writer_fluidity_env = (
+        sql_writer_fluidity_contract.get("env_overrides")
+        if isinstance(sql_writer_fluidity_contract.get("env_overrides"), dict)
+        else {}
+    )
+    if bool(sql_writer_fluidity_contract.get("active", False)) and sql_writer_fluidity_env:
+        env.update({str(key): str(value) for key, value in sql_writer_fluidity_env.items()})
     hour = _now_hour_local()
     quiet_start = _safe_int(env.get("MAINTENANCE_SLOT_QUIET_LOCAL_START_HOUR"), 21)
     quiet_end = _safe_int(env.get("MAINTENANCE_SLOT_QUIET_LOCAL_END_HOUR"), 6)
@@ -479,6 +527,11 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
             "pressure_index": _safe_float(ingestion.get("pressure_index"), 0.0),
             "backpressure": ingestion.get("backpressure") if isinstance(ingestion.get("backpressure"), dict) else {},
             "sql_writer_coordination": sql_writer_coordination,
+            "sql_writer_fluidity_contract": {
+                "active": bool(sql_writer_fluidity_contract.get("active", False)),
+                "tier": str(sql_writer_fluidity_contract.get("tier") or ""),
+                "env_override_count": len(sql_writer_fluidity_env),
+            },
         },
         "support_maintenance_stabilization": support_stabilization,
         "quiet_window": {

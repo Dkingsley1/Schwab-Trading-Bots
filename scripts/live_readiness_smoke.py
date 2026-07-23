@@ -86,7 +86,18 @@ def main() -> int:
     network_ok = bool(broker.get("network_ok", token_guard.get("network", {}).get("ok", False)))
     auth_ok = bool(broker.get("auth_ok", token_guard.get("auth", {}).get("ok", False)))
     token_warning_level = str(broker.get("token_warning_level") or "")
-    swap_only_pressure = str(resource_guard.get("memory_pressure_kind") or "") == "swap_only"
+    resource_guard_status = str(resource_guard.get("overall_status") or "").strip().lower()
+    resource_guard_payload_ok = bool(resource_guard.get("ok", False)) or resource_guard_status in {"ready", "advisory"}
+    resource_guard_flag_ok = bool(resource_guard.get("resource_guard_ok", resource_guard_payload_ok))
+    memory_pressure_state = str(resource_guard.get("memory_pressure_state") or "").strip().lower()
+    memory_pressure_kind = str(resource_guard.get("memory_pressure_kind") or "").strip().lower()
+    memory_pressure_clear = memory_pressure_state in {"", "green", "normal"} and memory_pressure_kind in {"", "normal", "none"}
+    resource_guard_pressure = bool(
+        resource_guard
+        and not resource_guard_flag_ok
+        and not (resource_guard_payload_ok and memory_pressure_clear)
+    )
+    swap_only_pressure = memory_pressure_kind == "swap_only"
     canary_submit_enabled = bool(args.allow_live_canary_submit)
     canary_ready = bool(live_canary.get("supervised_canary_ready", False))
     canary_preclearance_ready = bool(live_canary.get("staged_preclearance_ready", False))
@@ -115,8 +126,9 @@ def main() -> int:
         target_name = str(row.get("name") or "").strip().lower()
         running_count = int(row.get("running", 0) or 0) + int(row.get("alt_running", 0) or 0)
         heartbeat_ok = bool(row.get("heartbeat_ok", False))
+        virtual_process_live = bool(row.get("virtual_process_live", False) or row.get("writer_idle_ok", False))
         creative_paused = bool(row.get("paused_by_creative_cotenant_guard", False))
-        if running_count > 0 and heartbeat_ok:
+        if heartbeat_ok and (running_count > 0 or virtual_process_live):
             watchdog_running_targets += 1
             if target_name in {"all_sleeves", "live_lane"}:
                 watchdog_live_lane_running = True
@@ -205,7 +217,7 @@ def main() -> int:
             "watchdog_payload_missing" if not watchdog_targets else "",
             "watchdog_payload_stale" if watchdog_age_seconds is not None and watchdog_age_seconds > 900.0 else "",
             "swap_only_pressure" if swap_only_pressure else "",
-            "resource_guard_not_ok" if resource_guard and not bool(resource_guard.get("resource_guard_ok", False)) else "",
+            "resource_guard_not_ok" if resource_guard_pressure else "",
         ]
     )
 
@@ -236,7 +248,7 @@ def main() -> int:
         readiness_score -= 10.0
     if swap_only_pressure:
         readiness_score -= 4.0
-    if resource_guard and not bool(resource_guard.get("resource_guard_ok", False)):
+    if resource_guard_pressure:
         readiness_score -= 8.0
     if args.allow_live_broker_submit and not live_lane_running:
         readiness_score -= 6.0
@@ -309,7 +321,11 @@ def main() -> int:
             "bounded_paper_lane_watchdog": bool(bounded_paper_lane_watchdog),
         },
         "memory_hygiene": {
-            "resource_guard_ok": bool(resource_guard.get("resource_guard_ok", False)),
+            "resource_guard_present": bool(resource_guard),
+            "resource_guard_ok": not bool(resource_guard_pressure),
+            "resource_guard_raw_ok": bool(resource_guard.get("resource_guard_ok", resource_guard_flag_ok)),
+            "resource_guard_effective_ok": not bool(resource_guard_pressure),
+            "resource_guard_status": resource_guard_status,
             "memory_pressure_state": str(resource_guard.get("memory_pressure_state") or ""),
             "memory_pressure_kind": str(resource_guard.get("memory_pressure_kind") or ""),
             "swap_used_gb": resource_guard.get("swap_used_gb"),

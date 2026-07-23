@@ -12,7 +12,7 @@ from typing import Any
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_OUT = PROJECT_ROOT / "governance" / "health" / "sql_access_runtime_audit_latest.json"
 DEFAULT_LOCK = PROJECT_ROOT / "config" / "requirements.lock.txt"
-DEFAULT_PYTHON = PROJECT_ROOT / ".venv312" / "bin" / "python"
+DEFAULT_PYTHON = PROJECT_ROOT / ".venv314" / "bin" / "python"
 DEFAULT_PROFILE_DIR = PROJECT_ROOT / "config" / "runtime_profiles"
 DEFAULT_PACKAGES = (
     "duckdb",

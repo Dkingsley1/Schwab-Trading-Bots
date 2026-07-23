@@ -29,7 +29,7 @@ def test_quant_strategy_storage_backlog_accommodation_refreshes_from_current_sto
             },
             "backlog_truth": {
                 "raw_live": {
-                    "grade": "A++",
+                    "grade": "A+",
                     "pressure_ratio": 0.005,
                     "core_pending_lines": 68,
                     "total_pending_lines": 77,
@@ -43,7 +43,7 @@ def test_quant_strategy_storage_backlog_accommodation_refreshes_from_current_sto
     payload = accommodation.build_payload(tmp_path)
 
     assert payload["overall_status"] == "ready"
-    assert payload["storage_snapshot"]["backlog_letter_grade"] == "A++"
+    assert payload["storage_snapshot"]["backlog_letter_grade"] == "A+"
     assert payload["storage_snapshot"]["total_pending_lines"] == 77
     assert payload["grade"]["letter_grade"] == "A+"
     assert payload["grade"]["target_met"] is True

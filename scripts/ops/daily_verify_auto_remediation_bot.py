@@ -50,6 +50,7 @@ def _remediation_map() -> dict[str, list[str]]:
         "new_bot_graduation_gate": [str(PY), str(PROJECT_ROOT / "scripts" / "new_bot_graduation_gate.py"), "--json"],
         "replay_hash_registry_guard": [str(PY), str(PROJECT_ROOT / "scripts" / "replay_hash_registry_guard.py"), "--json"],
         "paper_reconciliation_slo_guard": [str(PY), str(PROJECT_ROOT / "scripts" / "paper_reconciliation_slo_guard.py"), "--json"],
+        "paper_execution_calibration_report": [str(PY), str(PROJECT_ROOT / "scripts" / "paper_execution_calibration_report.py"), "--hours", "24", "--json"],
         "promotion_quality_gate": [str(PY), str(PROJECT_ROOT / "scripts" / "promotion_quality_gate.py"), "--json"],
         "state_snapshot_drill": [str(PY), str(PROJECT_ROOT / "scripts" / "daily_state_snapshot_drill.py"), "--json"],
         "db_integrity": [str(PY), str(PROJECT_ROOT / "scripts" / "sqlite_performance_maintenance.py"), "--checkpoint-only", "--json"],

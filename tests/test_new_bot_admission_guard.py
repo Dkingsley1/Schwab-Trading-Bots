@@ -207,6 +207,46 @@ def test_new_bot_admission_guard_ignores_paper_live_data_without_explicit_promot
     assert payload["blocking_candidate_count"] == 0
 
 
+def test_new_bot_admission_guard_ignores_guarded_paper_soak_rows_without_explicit_promotion(tmp_path: Path) -> None:
+    diagnostics_root = tmp_path / "governance" / "training_diagnostics"
+    _write_json(
+        diagnostics_root / "brain_refinery_v36_guarded_paper_latest.json",
+        {"status": "deferred_sample_starved", "sample_count": 0, "eligible_sequences": 0, "sequence_count": 0},
+    )
+
+    payload = src.build_payload(
+        registry={
+            "sub_bots": [
+                {
+                    "bot_id": "brain_refinery_v36_guarded_paper",
+                    "active": True,
+                    "lifecycle_state": "active",
+                    "paper_live_data_enabled": True,
+                    "paper_trading_enabled": True,
+                    "paper_trade_lock_policy": "market_data_and_paper_only_until_explicit_graduation",
+                    "direct_execution_allowed": False,
+                    "trading_enabled": False,
+                    "live_trading_enabled": False,
+                    "execution_enabled": False,
+                    "allocation_enabled": False,
+                }
+            ]
+        },
+        walk_forward={"bots": {"brain_refinery_v36_guarded_paper": {"runs": 0, "status": "insufficient_runs"}}},
+        feature_store_manifest={"ok": False, "point_in_time_contract": {"complete": False}, "contract_hashes": {}},
+        replay_hash_registry_guard={"ok": False, "details": {}},
+        ownership_payload={},
+        diagnostics_root=diagnostics_root,
+        min_training_sample_count=40,
+        min_eligible_sequences=4,
+        min_walk_forward_runs=12,
+    )
+
+    assert payload["ok"] is True
+    assert payload["candidate_bot_count"] == 0
+    assert payload["blocking_candidate_count"] == 0
+
+
 def test_new_bot_admission_guard_targeted_advisory_scope_does_not_block_coverage_repair(tmp_path: Path) -> None:
     diagnostics_root = tmp_path / "governance" / "training_diagnostics"
     _write_json(

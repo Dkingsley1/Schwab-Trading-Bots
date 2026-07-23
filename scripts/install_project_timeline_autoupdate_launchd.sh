@@ -2,7 +2,7 @@
 set -euo pipefail
 
 PROJECT_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-PYTHON_BIN="$PROJECT_ROOT/.venv312/bin/python"
+PYTHON_BIN="$PROJECT_ROOT/.venv314/bin/python"
 RUN_SCRIPT="$PROJECT_ROOT/scripts/ops/run_project_timeline_autoupdate_launchd.sh"
 PLIST_PATH="$HOME/Library/LaunchAgents/com.dankingsley.project_timeline_autoupdate.plist"
 PRUNE_DAYS="${PROJECT_TIMELINE_PRUNE_OLDER_DAYS:-7}"

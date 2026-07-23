@@ -57,7 +57,7 @@ def _safe_float(raw: Any, default: float = 0.0) -> float:
 
 def _grade(score: float) -> str:
     if score >= 99:
-        return "A++"
+        return "A+"
     if score >= 97:
         return "A+"
     if score >= 93:

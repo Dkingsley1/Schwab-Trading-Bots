@@ -141,6 +141,212 @@ def test_live_runtime_separation_uses_storage_control_steady_state_to_bound_hot_
     assert payload["shared_host_pressure"]["signals"]["storage_hot_path_bounded_by_control"] is True
 
 
+def test_live_runtime_separation_bounds_near_steady_state_storage_when_raw_live_is_clear(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    health = project_root / "governance" / "health"
+    _write_json(
+        health / "live_readiness_smoke_latest.json",
+        {
+            "timestamp_utc": separation_src.iso_now(),
+            "ok": True,
+            "broker_ready": True,
+            "session_ready": True,
+            "live_lane_running": True,
+        },
+    )
+    _write_json(health / "training_runtime_control_latest.json", {"overall_status": "ready", "snapshot_ready": True, "precompute_targets": []})
+    _write_json(project_root / "governance" / "walk_forward" / "coverage_seed_latest.json", {"coverage_shortfall_bots": 0})
+    _write_json(
+        health / "storage_tier_policy_latest.json",
+        {"overall_status": "blocked", "pressure": {"hot_path_over_budget_bytes": 38_954_508_830}},
+    )
+    _write_json(
+        health / "ingestion_storage_control_latest.json",
+        {
+            "overall_status": "ready",
+            "severity": "stable",
+            "pressure_index": 0.297,
+            "backpressure_quality_score": 93.42,
+            "recovery_quality_score": 96.0,
+            "steady_state": {
+                "target_status": {
+                    "steady_state_ready": False,
+                    "target_breach_count": 1,
+                    "target_breaches": ["pressure_index"],
+                }
+            },
+            "external_route_verification": {"verification_state": "ready"},
+            "backpressure": {
+                "raw_live": {
+                    "core_pending_lines": 4462,
+                    "total_pending_lines": 5018,
+                    "oldest_pending_age_seconds": 0.021,
+                }
+            },
+        },
+    )
+    _write_json(health / "runtime_throttle_control_latest.json", {"runtime_snapshot": {"storage_pressure": {"overlay_capacity_relief": False}}})
+    _write_json(health / "resource_guard_latest.json", {"swap_used_gb": 0.0, "memory_pressure_state": "green"})
+    _write_json(health / "process_watchdog_latest.json", {"restart_storms": []})
+
+    payload = separation_src.build_payload(project_root)
+
+    assert payload["overall_status"] == "ready"
+    assert payload["clearance_plan"]["clearance_state"] == "ready"
+    assert payload["shared_host_pressure"]["storage_steady_state_strict_ready"] is False
+    assert payload["shared_host_pressure"]["storage_near_steady_state_ready"] is True
+    assert payload["shared_host_pressure"]["signals"]["storage_hot_path_blocked"] is False
+    assert payload["shared_host_pressure"]["signals"]["storage_hot_path_bounded_by_control"] is True
+
+
+def test_live_runtime_separation_treats_cool_raw_live_sql_overlay_as_guarded_read_only(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    health = project_root / "governance" / "health"
+    _write_json(
+        health / "live_readiness_smoke_latest.json",
+        {
+            "timestamp_utc": separation_src.iso_now(),
+            "ok": True,
+            "broker_ready": True,
+            "session_ready": True,
+            "live_lane_running": True,
+        },
+    )
+    _write_json(health / "training_runtime_control_latest.json", {"overall_status": "blocked", "snapshot_ready": False, "precompute_targets": []})
+    _write_json(project_root / "governance" / "walk_forward" / "coverage_seed_latest.json", {"coverage_shortfall_bots": 0})
+    _write_json(
+        health / "storage_tier_policy_latest.json",
+        {"overall_status": "blocked", "pressure": {"hot_path_over_budget_bytes": 25}},
+    )
+    _write_json(
+        health / "ingestion_storage_control_latest.json",
+        {
+            "overall_status": "blocked",
+            "severity": "critical",
+            "backpressure": {
+                "overlay_adjusted": True,
+                "raw_live": {
+                    "core_pending_lines": 374,
+                    "total_pending_lines": 374,
+                    "oldest_pending_age_seconds": 0.0,
+                },
+            },
+        },
+    )
+    _write_json(
+        health / "runtime_throttle_control_latest.json",
+        {
+            "throttle_profile": "sustain",
+            "runtime_snapshot": {"storage_pressure": {"overlay_capacity_relief": True}},
+        },
+    )
+    _write_json(health / "cold_lane_refresh_latest.json", {"ok": True, "reason": "fresh_strategy_research_reused"})
+    _write_json(health / "resource_guard_latest.json", {"swap_used_gb": 0.0, "memory_pressure_state": "green"})
+    _write_json(health / "process_watchdog_latest.json", {"restart_storms": []})
+
+    payload = separation_src.build_payload(project_root)
+
+    assert payload["overall_status"] == "ready"
+    assert payload["clearance_plan"]["clearance_state"] == "guarded_live_read_only"
+    assert payload["shared_host_pressure"]["signals"]["storage_hot_path_blocked"] is False
+    assert payload["shared_host_pressure"]["signals"]["storage_hot_path_bounded_by_control"] is True
+    assert payload["shared_host_pressure"]["storage_overlay_relief"]["active"] is True
+    assert payload["release_contract"]["shared_host_training_resume_allowed"] is False
+
+
+def test_live_runtime_separation_treats_staged_cold_lane_defer_as_managed(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    health = project_root / "governance" / "health"
+    walk = project_root / "governance" / "walk_forward"
+    _write_json(
+        health / "live_readiness_smoke_latest.json",
+        {
+            "timestamp_utc": separation_src.iso_now(),
+            "ok": True,
+            "broker_ready": True,
+            "session_ready": True,
+            "live_lane_running": True,
+        },
+    )
+    _write_json(health / "training_runtime_control_latest.json", {"overall_status": "degraded", "snapshot_ready": True, "precompute_targets": []})
+    _write_json(health / "storage_tier_policy_latest.json", {"overall_status": "ready", "pressure": {"hot_path_over_budget_bytes": 0}})
+    _write_json(health / "resource_guard_latest.json", {"swap_used_gb": 0.9, "memory_pressure_state": "green"})
+    _write_json(health / "process_watchdog_latest.json", {"restart_storms": []})
+    _write_json(health / "cold_lane_refresh_latest.json", {"ok": True, "reason": "resource_guard_blocked", "skipped": True})
+    _write_json(walk / "coverage_seed_latest.json", {"coverage_shortfall_bots": 4})
+    _write_json(
+        walk / "coverage_gap_closer_latest.json",
+        {
+            "staged_candidate_count": 4,
+            "autopilot_contract": {
+                "overall_status": "degraded",
+                "launch_state": "stage_only_training_blocked",
+                "can_launch_now": False,
+                "can_auto_launch_off_hours": False,
+                "next_action": "keep candidates staged until the cold lane opens",
+            },
+        },
+    )
+
+    payload = separation_src.build_payload(project_root)
+
+    assert payload["overall_status"] == "ready"
+    assert payload["ok"] is True
+    assert payload["clearance_plan"]["clearance_state"] == "managed_cold_lane_deferred"
+    assert payload["shared_host_pressure"]["managed_cold_lane_deferred"] is True
+    assert payload["release_contract"]["live_lane_should_be_read_only"] is True
+    assert payload["release_contract"]["shared_host_training_resume_allowed"] is False
+
+
+def test_live_runtime_separation_treats_staged_coverage_budget_wait_as_managed(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    health = project_root / "governance" / "health"
+    walk = project_root / "governance" / "walk_forward"
+    _write_json(
+        health / "live_readiness_smoke_latest.json",
+        {
+            "timestamp_utc": separation_src.iso_now(),
+            "ok": True,
+            "broker_ready": True,
+            "session_ready": True,
+            "live_lane_running": True,
+        },
+    )
+    _write_json(health / "training_runtime_control_latest.json", {"overall_status": "degraded", "snapshot_ready": True, "precompute_targets": []})
+    _write_json(health / "storage_tier_policy_latest.json", {"overall_status": "ready", "pressure": {"hot_path_over_budget_bytes": 0}})
+    _write_json(health / "resource_guard_latest.json", {"swap_used_gb": 0.0, "memory_pressure_state": "green"})
+    _write_json(health / "process_watchdog_latest.json", {"restart_storms": []})
+    _write_json(health / "cold_lane_refresh_latest.json", {"ok": True, "reason": "fresh_strategy_research_reused", "skipped": True})
+    _write_json(walk / "coverage_seed_latest.json", {"coverage_shortfall_bots": 4})
+    _write_json(
+        walk / "coverage_gap_closer_latest.json",
+        {
+            "staged_candidate_count": 4,
+            "autopilot_contract": {
+                "overall_status": "degraded",
+                "launch_state": "stage_only_training_blocked",
+                "can_launch_now": False,
+                "can_auto_launch_off_hours": False,
+                "off_hours_preferred": True,
+                "launch_contract": {
+                    "training_launch_blocked": True,
+                    "launch_guard": "off_hours_only",
+                },
+                "next_action": "keep candidates staged until the cold lane opens",
+            },
+        },
+    )
+
+    payload = separation_src.build_payload(project_root)
+
+    assert payload["overall_status"] == "ready"
+    assert payload["ok"] is True
+    assert payload["clearance_plan"]["clearance_state"] == "managed_coverage_stage_deferred"
+    assert payload["shared_host_pressure"]["managed_coverage_stage_deferred"] is True
+    assert payload["release_contract"]["live_lane_should_be_read_only"] is True
+    assert payload["release_contract"]["shared_host_training_resume_allowed"] is False
+
+
 def test_blackstart_treats_warning_lease_as_operable_when_broker_is_ready(tmp_path: Path) -> None:
     project_root = tmp_path / "project"
     health = project_root / "governance" / "health"
@@ -195,6 +401,39 @@ def test_auth_lease_default_accepts_fresh_schwab_half_hour_token(tmp_path: Path)
     assert auth["lease_budget"]["min_lease_seconds"] == 1200
 
 
+def test_auth_lease_treats_probe_denied_but_token_operable_as_warning(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    health = project_root / "governance" / "health"
+    _write_json(
+        health / "premarket_token_guard_latest.json",
+        {
+            "timestamp_utc": auth_src.iso_now(),
+            "ok": True,
+            "network": {"ok": True},
+            "auth": {"ok": False, "reason": "account_probe_failed:403"},
+            "token_before": {"exists": True, "expires_in_seconds": 1365},
+            "token_after": {"exists": True, "expires_in_seconds": 1365},
+        },
+    )
+    _write_json(
+        health / "broker_readiness_latest.json",
+        {
+            "ready_for_open": True,
+            "auth_ok": False,
+            "network_ok": True,
+            "account_probe_status_code": 403,
+        },
+    )
+    _write_json(health / "process_watchdog_latest.json", {"restart_storms": []})
+
+    auth = auth_src.build_payload(project_root)
+
+    assert auth["overall_status"] == "degraded"
+    assert auth["lease_state"] == "warning"
+    assert auth["lease_budget"]["token_lease_grace"] is True
+    assert auth["broker_state"]["auth_ok"] is False
+
+
 def test_auth_lease_uses_off_hours_probe_grace_for_short_schwab_lease(tmp_path: Path, monkeypatch) -> None:
     project_root = tmp_path / "project"
     health = project_root / "governance" / "health"
@@ -228,6 +467,40 @@ def test_auth_lease_uses_off_hours_probe_grace_for_short_schwab_lease(tmp_path: 
     assert auth["lease_state"] == "warning"
     assert auth["lease_budget"]["off_hours_probe_grace"] is True
     assert auth["broker_state"]["auth_probe_ok"] is True
+
+
+def test_auth_lease_treats_off_hours_probe_backed_comfort_floor_as_ready(tmp_path: Path, monkeypatch) -> None:
+    project_root = tmp_path / "project"
+    health = project_root / "governance" / "health"
+    monkeypatch.setattr(
+        auth_src,
+        "_market_window",
+        lambda: {
+            "timezone": "America/New_York",
+            "local_time": "2026-05-02T18:15:00-04:00",
+            "is_weekend": True,
+            "regular_session_open": False,
+            "off_hours": True,
+        },
+    )
+    _write_json(
+        health / "premarket_token_guard_latest.json",
+        {
+            "timestamp_utc": auth_src.iso_now(),
+            "token_before": {"exists": True},
+            "token_after": {"exists": True, "expires_in_seconds": 900},
+            "network": {"ok": True},
+            "auth": {"ok": True, "reason": "auth_success"},
+        },
+    )
+    _write_json(health / "broker_readiness_latest.json", {"ready_for_open": True, "account_probe_status_code": 200})
+    _write_json(health / "process_watchdog_latest.json", {"restart_storms": []})
+
+    auth = auth_src.build_payload(project_root)
+
+    assert auth["overall_status"] == "ready"
+    assert auth["lease_state"] == "healthy"
+    assert auth["lease_budget"]["off_hours_probe_grace"] is True
 
 
 def test_long_runtime_storage_and_freshness_controls(tmp_path: Path) -> None:
@@ -433,6 +706,36 @@ def test_alert_freeze_roster_and_chaos_controls(tmp_path: Path) -> None:
     assert chaos["overall_status"] == "blocked"
     assert chaos["restore_discipline"]["snapshot_restore_present"] is True
     assert chaos["schedule_contract"]["weekly_drill_installer_present"] is True
+
+
+def test_chaos_drill_coordinator_degrades_overdue_drills_when_discipline_is_ready(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    health = project_root / "governance" / "health"
+    state_path = project_root / "governance" / "runtime" / "chaos_drill_state.json"
+    old_stamp = "2026-03-20T00:00:00+00:00"
+
+    _write_json(state_path, {"drills": {}})
+    _write_json(project_root / "exports" / "state_snapshot_drills" / "latest.json", {"timestamp_utc": old_stamp})
+    _write_json(health / "reboot_resilience_latest.json", {"timestamp_utc": old_stamp})
+    _write_json(health / "storage_resilience_control_latest.json", {"timestamp_utc": old_stamp})
+    _write_json(health / "premarket_token_guard_latest.json", {"timestamp_utc": old_stamp})
+    _write_json(health / "process_watchdog_latest.json", {"timestamp_utc": old_stamp})
+    backup_events = project_root / "governance" / "watchdog" / "backup_restore_events.jsonl"
+    backup_events.parent.mkdir(parents=True, exist_ok=True)
+    backup_events.write_text("{}\n", encoding="utf-8")
+
+    scripts_dir = project_root / "scripts"
+    scripts_dir.mkdir(parents=True, exist_ok=True)
+    (scripts_dir / "install_weekly_dr_drill_launchd.sh").write_text("#!/bin/zsh\n", encoding="utf-8")
+    (scripts_dir / "daily_state_snapshot_drill.py").write_text("print('ok')\n", encoding="utf-8")
+    (scripts_dir / "backup_restore_verify.py").write_text("print('ok')\n", encoding="utf-8")
+
+    payload = chaos_src.build_payload(project_root, state_path=state_path, overdue_days=7.0)
+
+    assert payload["overall_status"] == "degraded"
+    assert len(payload["overdue_drills"]) >= 2
+    assert payload["restore_discipline"]["restore_proof_ready"] is True
+    assert payload["schedule_contract"]["discipline_ready"] is True
 
 
 def test_operator_cockpit_and_dashboard_include_long_runtime_lanes(tmp_path: Path) -> None:

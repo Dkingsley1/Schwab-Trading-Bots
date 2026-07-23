@@ -189,6 +189,68 @@ def _grade_from_score(score: float) -> str:
     return "F"
 
 
+def _restart_storm_isolation(contract: dict[str, Any]) -> dict[str, int | bool]:
+    isolation = contract.get("restart_storm_isolation") if isinstance(contract.get("restart_storm_isolation"), dict) else {}
+    isolated_count = _safe_int(isolation.get("isolated_count"), 0)
+    execution_blocking_count = _safe_int(isolation.get("execution_blocking_count"), 0)
+    restart_storm_count = _safe_int(contract.get("restart_storm_count"), 0)
+    if not isolation and restart_storm_count > 0:
+        execution_blocking_count = restart_storm_count
+    return {
+        "isolated_count": isolated_count,
+        "execution_blocking_count": execution_blocking_count,
+        "all_active_storms_isolated": bool(
+            isolated_count > 0
+            and execution_blocking_count <= 0
+            and bool(isolation.get("all_active_storms_isolated", False))
+        ),
+    }
+
+
+def _all_sleeves_watchdog_ready(process_watchdog: dict[str, Any]) -> tuple[bool, dict[str, Any]]:
+    status_rows = process_watchdog.get("status") if isinstance(process_watchdog.get("status"), list) else []
+    for row in status_rows:
+        if not isinstance(row, dict) or str(row.get("name") or "") != "all_sleeves":
+            continue
+        child_fanout = row.get("child_fanout") if isinstance(row.get("child_fanout"), dict) else {}
+        child_count = _safe_int(child_fanout.get("child_process_count"), _safe_int(row.get("alt_running"), 0))
+        parent_live = bool(row.get("launcher_live", False))
+        effective_live = bool(
+            row.get("effective_process_live", False)
+            or row.get("process_live", False)
+            or row.get("launcher_live", False)
+        )
+        fanout_ok = bool(row.get("child_fanout_ok", child_fanout.get("ok", True)))
+        heartbeat_ok = bool(row.get("heartbeat_ok", False))
+        launcher_artifact_health = (
+            row.get("launcher_artifact_health")
+            if isinstance(row.get("launcher_artifact_health"), dict)
+            else {}
+        )
+        ready = bool(effective_live and fanout_ok and heartbeat_ok and child_count > 0)
+        return ready, {
+            "active": ready,
+            "source": "process_watchdog_all_sleeves",
+            "parent_live": parent_live,
+            "effective_live": effective_live,
+            "launcher_artifact_certified_fanout": bool(row.get("launcher_artifact_certified_fanout", False)),
+            "heartbeat_ok": heartbeat_ok,
+            "child_fanout_ok": fanout_ok,
+            "child_process_count": child_count,
+            "launcher_artifact_reason": str(launcher_artifact_health.get("reason") or ""),
+            "reason": "live_process_watchdog_fanout_verified" if ready else "process_watchdog_fanout_not_ready",
+        }
+    return False, {
+        "active": False,
+        "source": "process_watchdog_all_sleeves",
+        "parent_live": False,
+        "heartbeat_ok": False,
+        "child_fanout_ok": False,
+        "child_process_count": 0,
+        "reason": "all_sleeves_row_missing",
+    }
+
+
 def build_report(
     *,
     process_watchdog: dict[str, Any],
@@ -234,7 +296,16 @@ def build_report(
         if isinstance(all_sleeves_launcher.get("launcher_readiness_contract"), dict)
         else {}
     )
-    for need in launcher_readiness_contract.get("exact_needs", []) if isinstance(launcher_readiness_contract.get("exact_needs"), list) else []:
+    all_sleeves_ready, launcher_reconciliation = _all_sleeves_watchdog_ready(process_watchdog)
+    launcher_exact_needs = (
+        launcher_readiness_contract.get("exact_needs")
+        if isinstance(launcher_readiness_contract.get("exact_needs"), list)
+        else []
+    )
+    if all_sleeves_ready and launcher_exact_needs:
+        launcher_reconciliation["suppressed_launcher_need_count"] = len(launcher_exact_needs)
+        launcher_reconciliation["policy"] = "prefer_live_process_watchdog_child_fanout_over_stale_launcher_wrapper_rows"
+    for need in launcher_exact_needs if not all_sleeves_ready else []:
         if isinstance(need, dict) and need.get("status") != "intentional_hold":
             exact_needs.append(
                 {
@@ -246,11 +317,22 @@ def build_report(
     process_age = payload_age_minutes(process_watchdog, PROCESS_WATCHDOG_PATH, now=current)
     fanout_age = payload_age_minutes(fanout_guard, PROCESS_FANOUT_PATH, now=current)
     notification_age = payload_age_minutes(mac_notification_state, MAC_NOTIFICATION_STATE_PATH, now=current)
-    launcher_readiness_score = float(launcher_readiness_contract.get("readiness_score", 100.0) or 100.0)
+    readiness_raw = launcher_readiness_contract.get("readiness_score", 100.0)
+    try:
+        launcher_readiness_score = float(readiness_raw) if readiness_raw not in {None, ""} else 100.0
+    except Exception:
+        launcher_readiness_score = 100.0
+    if all_sleeves_ready:
+        launcher_readiness_score = max(launcher_readiness_score, 94.0)
+    storm_isolation = _restart_storm_isolation(contract)
+    isolated_storm_count = _safe_int(storm_isolation.get("isolated_count"), 0)
+    execution_blocking_storm_count = _safe_int(storm_isolation.get("execution_blocking_count"), 0)
 
     section_scores = {
         "target_health": float(contract.get("score", 100.0) or 100.0),
-        "restart_storm_control": 100.0 - min(float(_safe_int(contract.get("restart_storm_count"), 0)) * 30.0, 70.0),
+        "restart_storm_control": 100.0
+        - min(float(execution_blocking_storm_count) * 30.0, 70.0)
+        - min(float(isolated_storm_count) * 8.0, 24.0),
         "notification_noise": 100.0 - min(float(len(supervisors.get("duplicates", []) or [])) * 20.0, 60.0),
         "guard_coordination": 94.0 if fanout_active or fanout_hold_active else 100.0,
         "sleeve_launcher_readiness": max(min(launcher_readiness_score, 100.0), 0.0),
@@ -282,7 +364,7 @@ def build_report(
 
     overall_score = round(sum(section_scores.values()) / max(len(section_scores), 1), 1)
     active_need_count = sum(1 for need in exact_needs if need.get("status") != "intentional_hold")
-    if _safe_int(contract.get("restart_storm_count"), 0) > 0:
+    if execution_blocking_storm_count > 0:
         overall_status = "critical"
     elif active_need_count > 0:
         overall_status = "degraded"
@@ -306,6 +388,12 @@ def build_report(
             for name, score in section_scores.items()
         },
         "process_watchdog_contract": contract,
+        "restart_storm_isolation": {
+            "isolated_count": isolated_storm_count,
+            "execution_blocking_count": execution_blocking_storm_count,
+            "all_active_storms_isolated": bool(storm_isolation.get("all_active_storms_isolated", False)),
+            "policy": "isolated_read_only_collection_restart_debt_is_advisory_not_critical",
+        },
         "supervisors": supervisors,
         "fanout_guard": {
             "active": fanout_active,
@@ -319,6 +407,7 @@ def build_report(
             "policy_parked_job_count": _safe_int(all_sleeves_launcher.get("policy_parked_job_count"), 0),
             "clean_exited_job_count": _safe_int(all_sleeves_launcher.get("clean_exited_job_count"), 0),
             "readiness_contract": launcher_readiness_contract,
+            "process_watchdog_reconciliation": launcher_reconciliation,
         },
         "artifact_ages_minutes": {
             "process_watchdog": round(float(process_age), 3) if process_age is not None else None,

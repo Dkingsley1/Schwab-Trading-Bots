@@ -40,6 +40,16 @@ class IngestionBackpressureGuardTests(unittest.TestCase):
         )
         self.assertTrue(
             module._should_ignore_backpressure_file(
+                "governance/training/raw_training_source_queue_latest.jsonl"
+            )
+        )
+        self.assertTrue(
+            module._should_ignore_backpressure_file(
+                "governance/training/raw_training_eligible_source_queue_latest.jsonl"
+            )
+        )
+        self.assertTrue(
+            module._should_ignore_backpressure_file(
                 "governance/shadow_aggressive_equities/runtime_telemetry.jsonl"
             )
         )

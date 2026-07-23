@@ -2,6 +2,13 @@
 set -euo pipefail
 
 PROJECT_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+export BOT_RUNTIME_LANE="${BOT_RUNTIME_LANE:-${BOT_SHADOW_RUNTIME_LANE:-canary314}}"
+export BOT_PYTHON_VERSION="${BOT_PYTHON_VERSION:-3.14.5}"
+export BOT_TRAINING_RUNTIME_LANE="${BOT_TRAINING_RUNTIME_LANE:-canary314}"
+export BOT_TRAINING_PYTHON_VERSION="${BOT_TRAINING_PYTHON_VERSION:-3.14.5}"
+export PY314_RUNTIME_FLIP_APPROVED="${PY314_RUNTIME_FLIP_APPROVED:-1}"
+export PY314_RETIRE_312_ANCHOR="${PY314_RETIRE_312_ANCHOR:-1}"
+unset __PYVENV_LAUNCHER__
 RUNNER_SCRIPT="$PROJECT_ROOT/scripts/ops/run_shadow_watchdog_launchd.sh"
 PLIST_PATH="$HOME/Library/LaunchAgents/com.dankingsley.shadow_watchdog.plist"
 LABEL="com.dankingsley.shadow_watchdog"
@@ -158,7 +165,12 @@ cat > "$PLIST_PATH" <<PLIST
     <key>PATH</key><string>/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
     <key>HOME</key><string>$HOME</string>
     <key>BOT_RUNTIME_PROFILE</key><string>$RUNTIME_PROFILE</string>
-    <key>BOT_RUNTIME_LANE</key><string>${BOT_RUNTIME_LANE:-${BOT_SHADOW_RUNTIME_LANE:-shadow}}</string>
+    <key>BOT_RUNTIME_LANE</key><string>${BOT_RUNTIME_LANE:-${BOT_SHADOW_RUNTIME_LANE:-canary314}}</string>
+    <key>BOT_PYTHON_VERSION</key><string>${BOT_PYTHON_VERSION:-3.14.5}</string>
+    <key>BOT_TRAINING_RUNTIME_LANE</key><string>${BOT_TRAINING_RUNTIME_LANE:-canary314}</string>
+    <key>BOT_TRAINING_PYTHON_VERSION</key><string>${BOT_TRAINING_PYTHON_VERSION:-3.14.5}</string>
+    <key>PY314_RUNTIME_FLIP_APPROVED</key><string>${PY314_RUNTIME_FLIP_APPROVED:-1}</string>
+    <key>PY314_RETIRE_312_ANCHOR</key><string>${PY314_RETIRE_312_ANCHOR:-1}</string>
     <key>MARKET_SESSION_START_HOUR</key><string>$MARKET_OPEN_HOUR</string>
     <key>MARKET_DATA_ONLY</key><string>1</string>
     <key>ALLOW_ORDER_EXECUTION</key><string>0</string>

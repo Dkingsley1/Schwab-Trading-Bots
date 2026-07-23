@@ -75,6 +75,40 @@ class TrainingGuardTests(unittest.TestCase):
             snap = details.get("snapshot_training_guard") if isinstance(details.get("snapshot_training_guard"), dict) else {}
             self.assertTrue(bool(snap.get("all_snapshot_data_incorporated", False)))
 
+    def test_confirmed_training_success_repairs_legacy_absent_data_quality_marker(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            marker = root / "governance" / "health" / "training_success_latest.json"
+            marker_ts = datetime.now(timezone.utc)
+            _write_json(
+                marker,
+                {
+                    "timestamp_utc": marker_ts.isoformat(),
+                    "confirmed_training_success": False,
+                    "training_completed_ok": True,
+                    "promotion_applied": True,
+                    "trained_count": 1,
+                    "failure_count": 0,
+                    "master_update_status": "updated_registry:1",
+                    "reason": "data_quality_not_ok",
+                },
+            )
+            _write_snapshot_training_coverage(
+                root,
+                timestamp_utc=(marker_ts + timedelta(minutes=1)).isoformat(),
+            )
+
+            ok, reason, details = check_confirmed_training_success(
+                project_root=str(root),
+                marker_path=str(marker),
+                scorecard_path=str(root / "governance" / "health" / "retrain_scorecard_latest.json"),
+                max_age_hours=24.0,
+            )
+
+            self.assertTrue(ok)
+            self.assertEqual(reason, "ok")
+            self.assertTrue(details.get("legacy_absent_data_quality_repaired"))
+
     def test_confirmed_training_success_marker_stale_fails(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)

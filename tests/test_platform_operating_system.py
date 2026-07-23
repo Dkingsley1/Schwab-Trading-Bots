@@ -110,8 +110,8 @@ def _seed_project(project_root: Path) -> None:
             "realized_pnl_total": 25.0,
             "unrealized_pnl_total": 75.0,
             "profit_harvest_report_card": {
-                "headline_grade": "A++",
-                "control_grade": "A++",
+                "headline_grade": "A+",
+                "control_grade": "A+",
                 "raw_outcome_grade": "D",
                 "control_score_norm": 0.999,
             },
@@ -149,8 +149,8 @@ def test_platform_operating_system_builds_all_eight_sections(tmp_path: Path) -> 
 
     assert payload["section_count"] == 8
     assert payload["all_eight_sections_active"] is True
-    assert payload["raw_platform_grade"] in {"A", "A+", "A++", "B", "C", "D"}
-    assert payload["platform_grade"] in {"A", "A+", "A++"}
+    assert payload["raw_platform_grade"] in {"A", "A+", "A+", "B", "C", "D"}
+    assert payload["platform_grade"] in {"A", "A+", "A+"}
     assert payload["control_credit"]["points"] > 0
     assert set(payload["sections"]) == set(src.SECTION_ARTIFACTS)
     assert payload["invariants"]["live_execution_authority_added"] is False
@@ -158,12 +158,12 @@ def test_platform_operating_system_builds_all_eight_sections(tmp_path: Path) -> 
     assert "/Volumes/VIDEO" in payload["invariants"]["protected_volume_denylist"]
     assert payload["sections"]["slo_control"]["breach_count"] >= 2
     assert payload["sections"]["slo_control"]["status"] == "guarded"
-    assert payload["sections"]["slo_control"]["section_grade"] in {"A+", "A++"}
+    assert payload["sections"]["slo_control"]["section_grade"] in {"A+", "A+"}
     assert payload["sections"]["slo_control"]["all_sections_a_plus"] is True
     assert payload["sections"]["slo_control"]["low_section_cards"] == []
     assert payload["sections"]["slo_control"]["section_report_card"]
     assert all(
-        row["section_grade"] in {"A+", "A++"}
+        row["section_grade"] in {"A+", "A+"}
         for row in payload["sections"]["slo_control"]["section_report_card"]
     )
     assert payload["sections"]["slo_control"]["outcome_grade"] in {"C", "D", "F"}

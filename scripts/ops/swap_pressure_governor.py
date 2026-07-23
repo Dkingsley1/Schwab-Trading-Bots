@@ -20,11 +20,13 @@ if __package__ in {None, ""}:
     from scripts.ops import memory_efficiency_control as memory_src
     from scripts.ops import runtime_throttle_control as runtime_src
     from scripts.ops.long_runtime_common import load_json, parse_iso_utc, write_payload
+    from scripts.ops.support_maintenance_gate import frozen_health_payload, support_maintenance_freeze_contract
 else:
     from .. import resource_guard as resource_src
     from . import memory_efficiency_control as memory_src
     from . import runtime_throttle_control as runtime_src
     from .long_runtime_common import PROJECT_ROOT, load_json, parse_iso_utc, write_payload
+    from .support_maintenance_gate import frozen_health_payload, support_maintenance_freeze_contract
 
 
 DEFAULT_OUT_PATH = PROJECT_ROOT / "governance" / "health" / "swap_pressure_governor_latest.json"
@@ -65,6 +67,14 @@ HEAVY_RESEARCH_PATTERNS = [
     "project_timeline_report.py",
     "report-bundle-pdf-open",
 ]
+
+PROTECTED_MANUAL_TRAINING_PROFILES = {
+    "coverage_micro_canary",
+    "coverage_small_canary",
+    "coverage_canary",
+    "coverage_batch10_canary",
+    "coverage_batch20_canary",
+}
 
 RESTART_CANDIDATE_MARKERS = [
     ("PyCharm", "PyCharm.app"),
@@ -391,6 +401,17 @@ def _command_for_pid(pid: int) -> str:
     return (completed.stdout or "").strip()
 
 
+def _is_protected_manual_training(command: str) -> bool:
+    text = " ".join(str(command or "").split())
+    if "scripts/weekly_retrain.py" not in text:
+        return False
+    if "--include-bot-ids" not in text or "--skip-master-update" not in text:
+        return False
+    if "--force-all-targets" in text or "full_overnight" in text:
+        return False
+    return any(f"--retrain-profile {profile}" in text for profile in PROTECTED_MANUAL_TRAINING_PROFILES)
+
+
 def _pause_heavy_research(tier: str, *, apply: bool, patterns: list[str] | None = None) -> dict[str, Any]:
     active = _research_pause_active(tier)
     selected_patterns = patterns or HEAVY_RESEARCH_PATTERNS
@@ -404,6 +425,8 @@ def _pause_heavy_research(tier: str, *, apply: bool, patterns: list[str] | None 
                     continue
                 seen.add(pid)
                 command = _command_for_pid(pid)
+                if _is_protected_manual_training(command):
+                    continue
                 matches.append({"pid": pid, "pattern": pattern, "command": command[:500]})
                 if apply:
                     try:
@@ -650,6 +673,7 @@ def build_payload(
         "runtime_apply": {},
     }
     if apply:
+        runtime_apply_needed = _pressure_active(tier)
         apply_result["applied"] = True
         apply_result["swap_override_changed"] = _write_override(override_path, overrides)
         apply_result["memory_override_changed"] = memory_src._write_override(
@@ -657,13 +681,20 @@ def build_payload(
             str(memory_payload.get("recommended_profile") or "air_safe"),
             memory_payload.get("recommended_env_overrides") if isinstance(memory_payload.get("recommended_env_overrides"), dict) else {},
         )
-        apply_result["runtime_apply"] = runtime_src.apply_runtime_guard(
-            project_root,
-            runtime_payload,
-            override_path=runtime_override_path,
-            registry_path=registry_path,
-            max_renice_processes=4,
-        )
+        if runtime_apply_needed:
+            apply_result["runtime_apply"] = runtime_src.apply_runtime_guard(
+                project_root,
+                runtime_payload,
+                override_path=runtime_override_path,
+                registry_path=registry_path,
+                max_renice_processes=4,
+            )
+        else:
+            apply_result["runtime_apply"] = {
+                "applied": False,
+                "skipped": True,
+                "reason": "swap_tier_normal_runtime_apply_not_needed",
+            }
 
     notification = _notification(
         now=current,
@@ -769,6 +800,19 @@ def main() -> int:
     args = parser.parse_args()
 
     project_root = Path(args.project_root).resolve()
+    out_path = Path(args.out_file).expanduser()
+    freeze_contract = support_maintenance_freeze_contract(project_root, "swap_pressure_governor")
+    if bool(freeze_contract.get("active", False)):
+        payload = frozen_health_payload(out_path, freeze_contract)
+        payload.setdefault("swap_pressure", {"tier": "deferred_for_mac_fluidity", "swap_used_gb": 0.0})
+        payload.setdefault("controller_contract", {"mode": "support_maintenance_frozen", "safe_while_live": True})
+        write_payload(out_path, payload)
+        if args.json:
+            print(json.dumps(payload, ensure_ascii=True))
+        else:
+            print("swap_pressure_governor status=ready tier=deferred_for_mac_fluidity swap_used_gb=0.000")
+        return 0
+
     payload = build_payload(
         project_root,
         apply=args.action == "apply",
@@ -778,7 +822,6 @@ def main() -> int:
         runtime_override_path=Path(args.runtime_override_file).expanduser(),
         registry_path=Path(args.registry).expanduser(),
     )
-    out_path = Path(args.out_file).expanduser()
     write_payload(out_path, payload)
     if args.json:
         print(json.dumps(payload, ensure_ascii=True))

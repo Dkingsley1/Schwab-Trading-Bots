@@ -420,9 +420,34 @@ def _scorecard(
         task_fit_score = min(task_fit_score, 55.0)
 
     rows = [row for row in _as_list(process_watchdog.get("status")) if isinstance(row, dict)]
-    down = [row for row in rows if _safe_int(row.get("running"), 1) <= 0 and str(row.get("action") or "") not in {"suppressed", "none"}]
-    alert_count = len(_as_list(process_watchdog.get("alerts")))
-    restart_score = 96.0 if not down and alert_count == 0 else 68.0 if alert_count <= 2 else 45.0
+    watchdog_intelligence = _as_dict(process_watchdog.get("watchdog_intelligence"))
+    intentional_hold_markers = {
+        "creative_cotenant_pause_active",
+        "safety_pause_active",
+        "network_outage_active",
+    }
+
+    def _intentional_hold(row: dict[str, Any]) -> bool:
+        return bool(
+            row.get("paused_by_creative_cotenant_guard", False)
+            or str(row.get("restart_skipped") or "") in intentional_hold_markers
+            or str(row.get("status") or "") == "intentional_hold"
+        )
+
+    intentional_hold_count = max(
+        _safe_int(watchdog_intelligence.get("intentional_hold_count"), 0),
+        sum(1 for row in rows if _safe_int(row.get("running"), 1) <= 0 and _intentional_hold(row)),
+    )
+    down = [
+        row
+        for row in rows
+        if _safe_int(row.get("running"), 1) <= 0
+        and str(row.get("action") or "") not in {"suppressed", "none"}
+        and not _intentional_hold(row)
+    ]
+    alert_count = max(len(_as_list(process_watchdog.get("alerts"))), _safe_int(watchdog_intelligence.get("alert_count"), 0))
+    active_issue_count = max(_safe_int(watchdog_intelligence.get("active_issue_count"), 0), len(down))
+    restart_score = 96.0 if active_issue_count == 0 and alert_count == 0 else 68.0 if alert_count <= 2 else 45.0
 
     sections = [
         _section(
@@ -463,7 +488,7 @@ def _scorecard(
             restart_score,
             "watchdog/process alerts can disrupt normal use" if restart_score < 90 else "restart posture is quiet",
             "leave heavy sleeve restarts suppressed while daily-driver or backlog guard is active" if restart_score < 90 else "no restart action needed",
-            [f"alert_count={alert_count}", f"down_process_count={len(down)}"],
+            [f"alert_count={alert_count}", f"active_issue_count={active_issue_count}", f"down_process_count={len(down)}", f"intentional_hold_count={intentional_hold_count}"],
         ),
     ]
     weights = {
@@ -675,8 +700,14 @@ def _env_overrides(task: dict[str, Any], budget: dict[str, Any], scorecard: dict
     backlog_score = _section_score(scorecard, "backlog_interference")
     hardening_active = bool(foreground_score < 75.0 or backlog_score < 75.0)
     ratio_cap = 0.35 if primary_task in {"audio_production", "video_editing", "music_playback", "virtualization"} else 0.40
+    if backlog_score < 60.0:
+        ratio_cap = min(ratio_cap, 0.20)
+    elif backlog_score < 75.0:
+        ratio_cap = min(ratio_cap, 0.25)
+    elif primary_task == "backlog_drain":
+        ratio_cap = min(ratio_cap, 0.30)
     ratio = _tighten_ratio(budget.get("collector_intake_ratio"), ratio_cap) if hardening_active else str(budget.get("collector_intake_ratio") or "0.45")
-    async_workers = "1" if hardening_active and primary_task in {"audio_production", "video_editing", "music_playback", "virtualization"} else str(budget.get("async_pipeline_workers") or "2")
+    async_workers = "1" if hardening_active and (primary_task in {"audio_production", "video_editing", "music_playback", "virtualization"} or backlog_score < 75.0) else str(budget.get("async_pipeline_workers") or "2")
     feed_lines = "20" if hardening_active and primary_task in {"audio_production", "video_editing", "music_playback"} else str(budget.get("live_feed_lines") or "30")
     feed_files = "5" if hardening_active and primary_task in {"audio_production", "video_editing", "music_playback"} else str(budget.get("live_feed_follow_files") or "8")
     creative_protected = primary_task in {"audio_production", "video_editing", "virtualization"}
@@ -735,7 +766,7 @@ def _env_overrides(task: dict[str, Any], budget: dict[str, Any], scorecard: dict
         "TRAINING_RUNTIME_PAUSED_FOR_COMPUTER_TASK": "0" if training_allowed else "1",
         "SHADOW_RESEARCH_PAUSED_FOR_COMPUTER_TASK": "0" if training_allowed else "1",
         "HEAVY_COLLECTORS_PAUSED_FOR_COMPUTER_TASK": "0" if heavy_allowed else "1",
-        "REPORT_REFRESH_PAUSED_FOR_COMPUTER_TASK": "0" if reports_allowed else "1",
+        "REPORT_REFRESH_PAUSED_FOR_COMPUTER_TASK": "0" if reports_allowed and backlog_score >= 75.0 else "1",
         "ROSTER_EXPANSION_ALLOWED": "1" if training_allowed and heavy_allowed else "0",
         "LIVE_FEED_HEAVY_DEFAULT_LINES": feed_lines,
         "LIVE_FEED_HEAVY_MAX_FOLLOW_FILES": feed_files,
@@ -959,6 +990,56 @@ def _coordinate_background_processes(policy: dict[str, Any], *, apply: bool) -> 
     }
 
 
+def _sync_mode_switchboard(project_root: Path, env_overrides: dict[str, Any] | None = None) -> dict[str, Any]:
+    command = [
+        sys.executable,
+        str(project_root / "scripts" / "ops" / "mode_switchboard_mission_control.py"),
+        "--project-root",
+        str(project_root),
+        "--apply",
+        "--json",
+    ]
+    child_env = os.environ.copy()
+    for key, value in _as_dict(env_overrides).items():
+        child_env[str(key)] = str(value)
+    try:
+        result = subprocess.run(
+            command,
+            cwd=str(project_root),
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=20,
+            env=child_env,
+        )
+    except Exception as exc:
+        return {
+            "command": command,
+            "returncode": None,
+            "ok": False,
+            "error": f"{type(exc).__name__}:{exc}",
+        }
+    stdout = (result.stdout or "").strip()
+    payload: dict[str, Any] = {}
+    if stdout:
+        try:
+            payload = json.loads(stdout)
+        except json.JSONDecodeError:
+            payload = {}
+    operator_mode = _as_dict(payload.get("operator_mode"))
+    return {
+        "command": command,
+        "returncode": int(result.returncode),
+        "ok": result.returncode == 0,
+        "overall_status": str(payload.get("overall_status") or ""),
+        "selected_mode": str(operator_mode.get("selected_mode") or ""),
+        "requested_mode": str(operator_mode.get("requested_mode") or ""),
+        "computer_task_profile": str(operator_mode.get("computer_task_profile") or ""),
+        "stdout_tail": stdout[-600:],
+        "stderr_tail": (result.stderr or "").strip()[-600:],
+    }
+
+
 def build_payload(project_root: Path = PROJECT_ROOT, *, refresh_computer: bool = True) -> dict[str, Any]:
     health = project_root / "governance" / "health"
     resource_guard = resource_src.build_snapshot(project_root) if refresh_computer else load_json(health / "resource_guard_latest.json")
@@ -1070,6 +1151,9 @@ def main() -> int:
     args = parser.parse_args()
 
     project_root = Path(args.project_root).resolve()
+    out_path = Path(args.out_file).expanduser()
+    if not out_path.is_absolute():
+        out_path = project_root / out_path
     payload = build_payload(project_root, refresh_computer=not args.skip_refresh)
     if args.apply:
         override_path = Path(args.override_file).expanduser()
@@ -1077,16 +1161,20 @@ def main() -> int:
             override_path = project_root / override_path
         changed = _write_override(override_path, payload.get("recommended_env_overrides", {}))
         process_result = _coordinate_background_processes(_as_dict(payload.get("process_coordination")), apply=True)
+        # Publish the fresh task artifact before syncing so mode-switchboard reads the current computer posture.
+        write_payload(out_path, payload)
+        mode_switchboard_sync = _sync_mode_switchboard(project_root, payload.get("recommended_env_overrides", {}))
+        if bool(mode_switchboard_sync.get("ok", False)):
+            payload = build_payload(project_root, refresh_computer=not args.skip_refresh)
+            changed = bool(_write_override(override_path, payload.get("recommended_env_overrides", {}))) or bool(changed)
         payload["apply_result"] = {
             "override_path": str(override_path),
             "changed": bool(changed),
             "loaded_by": "scripts/ops/load_runtime_env.sh",
             "process_coordination": process_result,
+            "mode_switchboard_sync": mode_switchboard_sync,
         }
 
-    out_path = Path(args.out_file).expanduser()
-    if not out_path.is_absolute():
-        out_path = project_root / out_path
     write_payload(out_path, payload)
 
     if args.json:

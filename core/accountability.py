@@ -28,6 +28,302 @@ def current_correlation() -> Dict[str, str]:
     }
 
 
+def _clean_label(value: Any) -> str:
+    text = str(value or "").strip().lower()
+    out: list[str] = []
+    prev_sep = False
+    for ch in text:
+        if ch.isalnum():
+            out.append(ch)
+            prev_sep = False
+        elif ch in {"-", "_", ".", "/", " ", ":"} and not prev_sep:
+            out.append("_")
+            prev_sep = True
+    return "".join(out).strip("_")
+
+
+def _first_text(*values: Any) -> str:
+    for value in values:
+        text = str(value or "").strip()
+        if text:
+            return text
+    return ""
+
+
+def _nested_dict(value: Any) -> Dict[str, Any]:
+    return dict(value) if isinstance(value, dict) else {}
+
+
+def _path_hint_text(out: Dict[str, Any], path_hint: str = "") -> str:
+    metadata = _nested_dict(out.get("metadata"))
+    candidates = [
+        path_hint,
+        out.get("source_path"),
+        out.get("target_path"),
+        out.get("file_path"),
+        out.get("path"),
+        metadata.get("source_path"),
+        metadata.get("target_path"),
+    ]
+    return " ".join(str(item or "") for item in candidates if str(item or "").strip()).lower()
+
+
+def _symbol_text(out: Dict[str, Any]) -> str:
+    return str(out.get("symbol") or out.get("underlying_symbol") or "").strip().upper()
+
+
+def _infer_source_broker(out: Dict[str, Any], *, path_hint: str = "") -> str:
+    route = _nested_dict(out.get("data_route"))
+    direct = _clean_label(
+        _first_text(
+            out.get("source_broker"),
+            route.get("source_broker"),
+            out.get("broker"),
+            route.get("broker"),
+        )
+    )
+    if direct:
+        return direct
+    haystack = " ".join(
+        [
+            str(out.get("source") or ""),
+            str(out.get("provider") or ""),
+            str(out.get("source_provider") or ""),
+            str(out.get("endpoint") or ""),
+            _path_hint_text(out, path_hint),
+        ]
+    ).lower()
+    if "coinbase" in haystack:
+        return "coinbase"
+    if "schwab" in haystack or "charles_schwab" in haystack:
+        return "schwab"
+    if "crypto" not in haystack and ("equities" in haystack or "equity" in haystack):
+        return "schwab"
+    return ""
+
+
+def _infer_source_provider(out: Dict[str, Any], *, broker: str, path_hint: str = "") -> str:
+    route = _nested_dict(out.get("data_route"))
+    direct = _clean_label(
+        _first_text(
+            out.get("source_provider"),
+            route.get("source_provider"),
+            out.get("provider"),
+            out.get("source"),
+            route.get("provider"),
+        )
+    )
+    if direct:
+        return direct
+    haystack = _path_hint_text(out, path_hint)
+    for token in (
+        "schwab_crypto",
+        "coinbase",
+        "schwab",
+        "kraken",
+        "binance",
+        "okx",
+        "deribit",
+        "coingecko",
+        "coinmetrics",
+        "hyperliquid",
+    ):
+        if token in haystack:
+            return token
+    if broker == "schwab" or ("crypto" not in haystack and ("equities" in haystack or "equity" in haystack)):
+        return "schwab"
+    return broker or "unknown"
+
+
+def _infer_source_venue(out: Dict[str, Any], *, broker: str, provider: str, path_hint: str = "") -> str:
+    route = _nested_dict(out.get("data_route"))
+    direct = _clean_label(_first_text(out.get("source_venue"), route.get("source_venue"), out.get("venue")))
+    if direct:
+        return direct
+    haystack = " ".join([provider, broker, _path_hint_text(out, path_hint)]).lower()
+    if "schwab_crypto" in haystack:
+        return "schwab_crypto_bridge"
+    if "coinbase" in haystack:
+        return "coinbase"
+    if "schwab" in haystack:
+        return "schwab"
+    if provider == "schwab" or broker == "schwab":
+        return "schwab"
+    return provider or broker or "unknown"
+
+
+def _infer_asset_class(out: Dict[str, Any], *, broker: str, provider: str, path_hint: str = "") -> str:
+    route = _nested_dict(out.get("data_route"))
+    direct = _clean_label(
+        _first_text(
+            out.get("asset_class"),
+            route.get("asset_class"),
+            out.get("market_kind"),
+            out.get("instrument_class"),
+        )
+    )
+    if direct:
+        return "equities" if direct == "equity" else direct
+
+    symbol = _symbol_text(out)
+    profile = _clean_label(out.get("profile") or out.get("shadow_profile"))
+    domain = _clean_label(out.get("domain") or out.get("shadow_domain"))
+    haystack = " ".join([symbol, profile, domain, broker, provider, _path_hint_text(out, path_hint)]).lower()
+    if symbol.startswith("/"):
+        return "futures"
+    if "schwab_futures" in haystack or "_futures" in haystack:
+        return "futures"
+    if "crypto" in haystack or broker == "coinbase" or symbol.endswith(("-USD", "-USDT", "-USDC", "-BTC", "-ETH")):
+        return "crypto"
+    if "option" in haystack or (" C00" in symbol or " P00" in symbol):
+        return "options"
+    if "fx" in haystack or "forex" in haystack:
+        return "fx"
+    if "equities" in haystack or "equity" in haystack:
+        return "equities"
+    if domain:
+        return "equities" if domain == "equity" else domain
+    return "unknown"
+
+
+def _infer_routing_lane(
+    out: Dict[str, Any],
+    *,
+    broker: str,
+    provider: str,
+    venue: str,
+    asset_class: str,
+    path_hint: str = "",
+) -> str:
+    route = _nested_dict(out.get("data_route"))
+    direct = _clean_label(_first_text(out.get("routing_lane"), route.get("routing_lane")))
+    if direct:
+        return direct
+    haystack = _path_hint_text(out, path_hint)
+    if "paper_broker_bridge" in haystack:
+        return "paper_broker_bridge"
+    if venue == "schwab_crypto_bridge" or provider == "schwab_crypto":
+        return "schwab_crypto_bridge"
+    if broker and asset_class and asset_class != "unknown":
+        return f"{broker}_{asset_class}"
+    if provider and asset_class and asset_class != "unknown":
+        return f"{provider}_{asset_class}"
+    channel = _clean_label(out.get("channel"))
+    return channel or "unclassified"
+
+
+def _source_quality(label_seed: str) -> tuple[str, float]:
+    seed = _clean_label(label_seed)
+    if "schwab_crypto_bridge" in seed:
+        return "broker_bridge", 0.80
+    if seed in {"schwab", "schwab_equities", "schwab_futures", "schwab_options"} or seed.startswith("schwab_"):
+        return "broker_native", 0.95
+    if seed in {"coinbase", "coinbase_crypto"} or seed.startswith("coinbase_"):
+        return "exchange_native", 0.92
+    if "crypto_market_context" in seed or "cross_provider" in seed:
+        return "multi_source_context", 0.82
+    if "public" in seed or "news" in seed or "external_context" in seed:
+        return "public_context", 0.65
+    if "sim" in seed or "synthetic" in seed:
+        return "synthetic_or_simulated", 0.50
+    return "unclassified", 0.50
+
+
+def _merge_labels(existing: Any, additions: Sequence[str]) -> list[str]:
+    labels: list[str] = []
+    if isinstance(existing, (list, tuple, set)):
+        labels.extend(str(item) for item in existing if str(item or "").strip())
+    elif str(existing or "").strip():
+        labels.append(str(existing).strip())
+    labels.extend(str(item) for item in additions if str(item or "").strip())
+    seen: set[str] = set()
+    out: list[str] = []
+    for label in labels:
+        cleaned = _clean_label(label)
+        if cleaned and cleaned not in seen:
+            seen.add(cleaned)
+            out.append(cleaned)
+    return out
+
+
+def _enrich_data_route(out: Dict[str, Any], *, path_hint: str = "", channel: str = "") -> None:
+    if channel and not str(out.get("channel") or "").strip():
+        out["channel"] = channel
+
+    broker = _infer_source_broker(out, path_hint=path_hint)
+    provider = _infer_source_provider(out, broker=broker, path_hint=path_hint)
+    venue = _infer_source_venue(out, broker=broker, provider=provider, path_hint=path_hint)
+    asset_class = _infer_asset_class(out, broker=broker, provider=provider, path_hint=path_hint)
+    lane = _infer_routing_lane(
+        out,
+        broker=broker,
+        provider=provider,
+        venue=venue,
+        asset_class=asset_class,
+        path_hint=path_hint,
+    )
+
+    explicit_quality_label = _clean_label(out.get("source_quality_label"))
+    explicit_quality_score = out.get("source_quality_score")
+    inferred_quality_label, inferred_quality_score = _source_quality(" ".join([lane, venue, provider, broker]))
+    quality_label = explicit_quality_label or inferred_quality_label
+    try:
+        quality_score = float(explicit_quality_score)
+    except Exception:
+        quality_score = inferred_quality_score
+
+    channel_label = _clean_label(out.get("channel"))
+    profile = _clean_label(out.get("profile") or out.get("shadow_profile"))
+    domain = _clean_label(out.get("domain") or out.get("shadow_domain"))
+    additions = [
+        f"broker:{broker}" if broker else "",
+        f"provider:{provider}" if provider else "",
+        f"venue:{venue}" if venue else "",
+        f"asset:{asset_class}" if asset_class else "",
+        f"lane:{lane}" if lane else "",
+        f"channel:{channel_label}" if channel_label else "",
+        f"profile:{profile}" if profile else "",
+        f"domain:{domain}" if domain else "",
+        f"quality:{quality_label}" if quality_label else "",
+    ]
+    labels = _merge_labels(out.get("data_labels") or out.get("labels"), additions)
+
+    if broker and not str(out.get("source_broker") or "").strip():
+        out["source_broker"] = broker
+    if provider and not str(out.get("source_provider") or "").strip():
+        out["source_provider"] = provider
+    if venue and not str(out.get("source_venue") or "").strip():
+        out["source_venue"] = venue
+    if asset_class and not str(out.get("asset_class") or "").strip():
+        out["asset_class"] = asset_class
+    if lane and not str(out.get("routing_lane") or "").strip():
+        out["routing_lane"] = lane
+    if quality_label and not str(out.get("source_quality_label") or "").strip():
+        out["source_quality_label"] = quality_label
+    if "source_quality_score" not in out:
+        out["source_quality_score"] = round(float(quality_score), 3)
+    out["data_labels"] = labels
+
+    route = _nested_dict(out.get("data_route"))
+    route.setdefault("schema_version", 1)
+    route.setdefault("source_broker", broker)
+    route.setdefault("source_provider", provider)
+    route.setdefault("source_venue", venue)
+    route.setdefault("asset_class", asset_class)
+    route.setdefault("routing_lane", lane)
+    route.setdefault("channel", channel_label)
+    route.setdefault("profile", profile)
+    route.setdefault("domain", domain)
+    route.setdefault("source_quality_label", quality_label)
+    route.setdefault("source_quality_score", round(float(quality_score), 3))
+    route.setdefault("route_key", ":".join(part for part in (lane, channel_label, provider) if part))
+    route.setdefault("labels", labels)
+    linked_provider = _clean_label(_first_text(out.get("linked_provider"), route.get("linked_provider")))
+    if linked_provider:
+        route.setdefault("linked_provider", linked_provider)
+    out["data_route"] = route
+
+
 def _ensure_message_contract(out: Dict[str, Any]) -> None:
     msg_id = str(out.get("message_id") or "").strip()
     if not msg_id:
@@ -48,6 +344,8 @@ def enrich_log_row(
     *,
     include_correlation: bool = True,
     include_schema: bool = True,
+    path_hint: str = "",
+    channel: str = "",
 ) -> Dict[str, Any]:
     out = dict(row or {})
     if include_schema and ("log_schema_version" not in out):
@@ -60,6 +358,7 @@ def enrich_log_row(
         if corr.get("iter_id") and ("iter_id" not in out):
             out["iter_id"] = corr["iter_id"]
 
+    _enrich_data_route(out, path_hint=path_hint, channel=channel)
     _ensure_message_contract(out)
     return out
 
@@ -126,6 +425,53 @@ def _low_signal_execution_guard_window_seconds() -> float:
 
 def _schema_violation_window_seconds() -> float:
     return max(float(os.getenv("CHANNEL_SCHEMA_VIOLATION_WINDOW_SECONDS", "300") or 300.0), 1.0)
+
+
+def _signal_generation_bad_signal_thinning_enabled() -> bool:
+    return os.getenv("SIGNAL_GENERATION_BAD_SIGNAL_THINNING_ENABLED", "1").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
+
+def _signal_generation_bad_signal_window_seconds() -> float:
+    return max(float(os.getenv("SIGNAL_GENERATION_BAD_SIGNAL_WINDOW_SECONDS", "300") or 300.0), 1.0)
+
+
+def _signal_generation_bad_signal_batch_cap() -> int:
+    try:
+        return max(int(os.getenv("SIGNAL_GENERATION_BAD_SIGNAL_BATCH_CAP", "128") or 128), 0)
+    except Exception:
+        return 128
+
+
+def _should_emit_signal_generation_event(
+    payload: Dict[str, Any],
+    *,
+    classification: str,
+    reason: str,
+    emitted_bad_count: int = 0,
+) -> bool:
+    if classification != "bad_signal" or not _signal_generation_bad_signal_thinning_enabled():
+        return True
+    batch_cap = _signal_generation_bad_signal_batch_cap()
+    if batch_cap > 0 and int(emitted_bad_count) >= batch_cap:
+        return False
+    now_ts = time.time()
+    window = _signal_generation_bad_signal_window_seconds()
+    symbol = str(payload.get("symbol") or "UNKNOWN").strip()
+    action = str(payload.get("action") or "UNKNOWN").strip().upper()
+    strategy = str(payload.get("strategy") or payload.get("bot_id") or "UNKNOWN").strip()
+    status = str(payload.get("status") or "").strip().upper()
+    signature = f"signal_generation:{classification}:{reason}:{symbol}:{action}:{strategy}:{status}"
+    with _LOW_SIGNAL_RECENT_LOCK:
+        last_seen = _LOW_SIGNAL_RECENT.get(signature)
+        if last_seen is not None and (now_ts - float(last_seen)) < window:
+            return False
+        _LOW_SIGNAL_RECENT[signature] = now_ts
+    return True
 
 
 def _schema_violation_signature(
@@ -304,12 +650,22 @@ def _signal_generation_events(
     day = datetime.now(timezone.utc).strftime("%Y%m%d")
     out_path = os.path.join(project_root, "governance", "events", f"signal_generation_{day}.jsonl")
     lines: list[str] = []
+    emitted_bad_count = 0
     for payload in payloads:
         status = str(payload.get("status") or "").strip().upper()
         action = str(payload.get("action") or "").strip().upper()
         if status and status not in SIGNAL_GENERATION_STATUSES and action not in {"BUY", "SELL", "HOLD"}:
             continue
         classification, reason = _signal_generation_classification(payload)
+        if not _should_emit_signal_generation_event(
+            payload,
+            classification=classification,
+            reason=reason,
+            emitted_bad_count=emitted_bad_count,
+        ):
+            continue
+        if classification == "bad_signal":
+            emitted_bad_count += 1
         row: Dict[str, Any] = {
             "timestamp_utc": now_utc_iso(),
             "event": "signal_generation",
@@ -369,7 +725,7 @@ def safe_append_jsonl_batch(
     project_root: str = "",
     source: str = "",
 ) -> int:
-    payloads = [enrich_log_row(dict(r or {})) for r in rows]
+    payloads = [enrich_log_row(dict(r or {}), path_hint=path) for r in rows]
     if not payloads:
         return 0
 
@@ -505,9 +861,9 @@ def safe_append_channel_batch(
 
     valid_payloads: List[Dict[str, Any]] = []
     for raw in raw_payloads:
-        payload = enrich_log_row(raw)
-        if ch and ("channel" not in payload):
-            payload["channel"] = ch
+        if ch and ("channel" not in raw):
+            raw["channel"] = ch
+        payload = enrich_log_row(raw, path_hint=path, channel=ch)
         errors = _schema_errors(payload, schema=sch)
         if errors:
             _schema_violation_log(

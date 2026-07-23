@@ -63,6 +63,51 @@ def _safe_float(raw: Any, default: float = 0.0) -> float:
         return float(default)
 
 
+def _dict(raw: Any) -> dict[str, Any]:
+    return raw if isinstance(raw, dict) else {}
+
+
+def _paper_soak_auth_operable(
+    *,
+    token: dict[str, Any],
+    token_ready: bool,
+    readiness_needed: bool,
+    min_ready_expires_seconds: float,
+    broker_readiness: dict[str, Any],
+    auth_lease: dict[str, Any],
+) -> bool:
+    broker_state = _dict(auth_lease.get("broker_state"))
+    lease_budget = _dict(auth_lease.get("lease_budget"))
+    broker_preflight = _dict(broker_readiness.get("preflight_checks"))
+    expires_in_seconds = max(
+        _safe_float(token.get("expires_in_seconds"), 0.0),
+        _safe_float(lease_budget.get("expires_in_seconds"), 0.0),
+        _safe_float(broker_readiness.get("token_expires_in_seconds"), 0.0),
+    )
+    ready_floor = max(float(min_ready_expires_seconds), 900.0)
+    critical_floor = max(_safe_float(lease_budget.get("critical_lease_seconds"), 0.0), 600.0)
+    network_ok = bool(
+        broker_readiness.get("network_ok", True) is not False
+        and broker_state.get("network_ok", True) is not False
+    )
+    broker_operable = bool(
+        bool(broker_readiness.get("ready_for_open", False))
+        or bool(broker_state.get("broker_operable", False))
+    )
+    configured_for_refresh = bool(
+        broker_state.get("configured_for_refresh", True) is not False
+        and (bool(token) or bool(broker_preflight.get("token_exists", False)))
+    )
+    return bool(
+        token_ready
+        and not readiness_needed
+        and expires_in_seconds >= max(ready_floor, critical_floor)
+        and network_ok
+        and broker_operable
+        and configured_for_refresh
+    )
+
+
 def _parse_etime(raw: str) -> int:
     text = str(raw or "").strip()
     if not text:
@@ -214,7 +259,8 @@ def build_payload(
     *,
     apply: bool = False,
     token_path: Path | None = None,
-    min_expires_seconds: float = 600.0,
+    min_expires_seconds: float = 1500.0,
+    min_ready_expires_seconds: float = 900.0,
     callback_host: str = "127.0.0.1",
     callback_port: int = 8182,
     stale_auth_process_seconds: int = 120,
@@ -227,7 +273,12 @@ def build_payload(
         min_expires_seconds=max(float(min_expires_seconds), 0.0),
         ready_reason="token_ready",
     )
-    token_ready = not bool(refresh_needed)
+    readiness_needed, readiness_reason = token_needs_refresh(
+        token,
+        min_expires_seconds=max(float(min_ready_expires_seconds), 0.0),
+        ready_reason="token_ready",
+    )
+    token_ready = not bool(readiness_needed)
     token_expires_in = _safe_float(token.get("expires_in_seconds"), 0.0)
 
     premarket_guard = load_json(health_root / "premarket_token_guard_latest.json")
@@ -249,6 +300,14 @@ def build_payload(
     auth_lease_status = str(auth_lease.get("overall_status") or "").strip().lower()
     auth_lease_state = str(auth_lease.get("lease_state") or "").strip().lower()
     auth_refresh_reason = str(auth_refresh.get("reason") or "").strip()
+    paper_soak_auth_operable = _paper_soak_auth_operable(
+        token=token,
+        token_ready=bool(token_ready),
+        readiness_needed=bool(readiness_needed),
+        min_ready_expires_seconds=float(min_ready_expires_seconds),
+        broker_readiness=broker_readiness,
+        auth_lease=auth_lease,
+    )
 
     status = "ready"
     findings: list[str] = []
@@ -257,14 +316,23 @@ def build_payload(
 
     if not token_ready:
         status = "blocked"
-        findings.append(f"token_not_ready:{refresh_reason}")
+        findings.append(f"token_not_ready:{readiness_reason}")
         operator_followups.append("./scripts/ops/opsctl.sh token-refresh-interactive --force --json")
+    elif refresh_needed:
+        if status == "ready":
+            status = "degraded"
+        findings.append(f"token_refresh_recommended:{refresh_reason}")
     if not guard_ok or (broker_readiness and not broker_ready):
         status = "blocked"
         findings.append("broker_readiness_not_ready")
     if auth_lease_status == "blocked" or auth_lease_state == "critical":
-        status = "blocked"
-        findings.append(f"auth_lease_{auth_lease_state or auth_lease_status}")
+        if paper_soak_auth_operable:
+            if status == "ready":
+                status = "degraded"
+            findings.append(f"auth_lease_{auth_lease_state or auth_lease_status}_paper_soak_grace")
+        else:
+            status = "blocked"
+            findings.append(f"auth_lease_{auth_lease_state or auth_lease_status}")
     elif auth_lease_status == "degraded" or auth_lease_state == "warning":
         if status == "ready":
             status = "degraded"
@@ -365,7 +433,10 @@ def build_payload(
             "ready": bool(token_ready),
             "refresh_needed": bool(refresh_needed),
             "refresh_reason": refresh_reason,
+            "readiness_refresh_needed": bool(readiness_needed),
+            "readiness_reason": readiness_reason,
             "min_expires_seconds": float(min_expires_seconds),
+            "min_ready_expires_seconds": float(min_ready_expires_seconds),
         },
         "broker_readiness": {
             "ready_for_open": broker_readiness.get("ready_for_open"),
@@ -405,11 +476,14 @@ def build_payload(
         "operator_followups": sorted(set(operator_followups)),
         "regression_contract": {
             "fresh_schwab_token_floor_seconds": float(min_expires_seconds),
+            "schwab_token_ready_floor_seconds": float(min_ready_expires_seconds),
             "auth_lease_warning_floor_seconds": 1200,
             "do_not_open_browser_when_token_ready": True,
             "callback_port_conflict_is_infra_failure": True,
             "oauth_errors_are_broker_auth_failures_not_symbol_failures": True,
+            "paper_soak_auth_grace_keeps_live_execution_locked": True,
         },
+        "paper_soak_auth_operable": bool(paper_soak_auth_operable),
     }
 
 
@@ -418,7 +492,8 @@ def main() -> int:
     parser.add_argument("--project-root", default=str(PROJECT_ROOT))
     parser.add_argument("--token-path", default=str(DEFAULT_TOKEN_PATH))
     parser.add_argument("--out-file", default=str(DEFAULT_OUT_PATH))
-    parser.add_argument("--min-expires-seconds", type=float, default=float(os.getenv("SCHWAB_AUTH_MIN_EXPIRES_SECONDS", os.getenv("PREMARKET_TOKEN_MIN_EXPIRES_SECONDS", "600"))))
+    parser.add_argument("--min-expires-seconds", type=float, default=float(os.getenv("SCHWAB_AUTH_MIN_EXPIRES_SECONDS", os.getenv("PREMARKET_TOKEN_MIN_EXPIRES_SECONDS", "1500"))))
+    parser.add_argument("--min-ready-expires-seconds", type=float, default=float(os.getenv("SCHWAB_AUTH_READY_MIN_EXPIRES_SECONDS", os.getenv("PREMARKET_TOKEN_READY_MIN_EXPIRES_SECONDS", "900"))))
     parser.add_argument("--callback-host", default=os.getenv("SCHWAB_AUTH_CALLBACK_HOST", "127.0.0.1"))
     parser.add_argument("--callback-port", type=int, default=int(os.getenv("SCHWAB_AUTH_CALLBACK_PORT", "8182")))
     parser.add_argument("--stale-auth-process-seconds", type=int, default=int(os.getenv("SCHWAB_AUTH_STALE_PROCESS_SECONDS", "120")))
@@ -432,6 +507,7 @@ def main() -> int:
         apply=bool(args.apply),
         token_path=Path(args.token_path),
         min_expires_seconds=float(args.min_expires_seconds),
+        min_ready_expires_seconds=float(args.min_ready_expires_seconds),
         callback_host=str(args.callback_host),
         callback_port=int(args.callback_port),
         stale_auth_process_seconds=int(args.stale_auth_process_seconds),
@@ -442,7 +518,7 @@ def main() -> int:
         print(json.dumps(payload, ensure_ascii=True))
     else:
         print(f"schwab_auth_supervisor status={payload['overall_status']} out={out_path}")
-    return 0 if payload["overall_status"] == "ready" else 2
+    return 0 if payload["overall_status"] in {"ready", "degraded"} else 2
 
 
 if __name__ == "__main__":

@@ -150,6 +150,104 @@ def test_writer_cycle_coordinator_marks_progressing_writer_wait_as_healthy(tmp_p
     assert payload["summary"]["writer_merged_rows_delta"] == 1500
 
 
+def test_writer_cycle_coordinator_rechecks_stale_writer_after_timeout(tmp_path: Path, monkeypatch) -> None:
+    project_root = tmp_path / "project"
+    (project_root / "governance" / "health").mkdir(parents=True, exist_ok=True)
+
+    initial_state = {
+        "active": True,
+        "running": True,
+        "writer_lock_held": True,
+        "writer_lock_owner": "pid=123 started=old cmd=sql_link_shard_manager",
+        "current_step": "merge_primary",
+        "progress_age_minutes": 2.0,
+        "cycle_age_minutes": 10.0,
+        "completed_shard_count": 18,
+        "planned_shard_count": 18,
+        "completed_merge_count": 0,
+        "merged_rows_this_cycle": 0,
+    }
+    stale_after_wait = dict(initial_state, progress_age_minutes=45.0, cycle_age_minutes=55.0)
+    recovered_state = {
+        "active": False,
+        "running": False,
+        "writer_lock_held": False,
+        "writer_lock_owner": "",
+        "current_step": "complete",
+        "progress_age_minutes": 0.0,
+        "completed_merge_count": 0,
+        "merged_rows_this_cycle": 0,
+    }
+    states = [initial_state, recovered_state]
+
+    def _fake_writer_state(*args, **kwargs) -> dict:
+        if states:
+            return states.pop(0)
+        return recovered_state
+
+    monkeypatch.setattr(src, "writer_state_snapshot", _fake_writer_state)
+    monkeypatch.setattr(
+        src,
+        "_wait_for_writer_idle",
+        lambda *args, **kwargs: {
+            "requested": True,
+            "completed": False,
+            "timed_out": True,
+            "waited_seconds": 900.0,
+            "attempts": 45,
+            "final_state": stale_after_wait,
+        },
+    )
+    monkeypatch.setattr(
+        src,
+        "_terminate_stale_writer",
+        lambda *args, **kwargs: {
+            "attempted": True,
+            "needed": True,
+            "pid": 123,
+            "terminated": True,
+            "lock_released": True,
+            "reason": "terminated",
+        },
+    )
+    monkeypatch.setattr(
+        src.drain_src,
+        "build_payload",
+        lambda *args, **kwargs: {
+            "overall_status": "idle",
+            "recommended_now": False,
+            "blocked_reasons": [],
+            "top_actions": [],
+            "off_hours_window": {"active": False},
+            "aged_candidate_files": 0,
+            "writer_busy": False,
+        },
+    )
+    monkeypatch.setattr(
+        src.drainer_src,
+        "build_payload",
+        lambda *args, **kwargs: {
+            "overall_status": "idle",
+            "ready_drainer_count": 0,
+            "blocked_reasons": [],
+            "recommended_actions": [],
+            "active_drainer": {},
+        },
+    )
+    monkeypatch.setattr(
+        src.maintenance_src,
+        "_priority_retention_focus",
+        lambda *args, **kwargs: {"enabled": False, "focus_shards": [], "top_actions": []},
+    )
+
+    payload = src.build_payload(project_root, apply=True, poll_seconds=0.0, wait_timeout_seconds=900.0)
+
+    assert payload["post_wait_stale_writer_remediation"]["attempted"] is True
+    assert payload["summary"]["post_wait_stale_writer_detected"] is True
+    assert payload["summary"]["post_wait_stale_writer_terminated"] is True
+    assert payload["writer_state_after_wait"]["active"] is False
+
+
 def test_writer_drain_effectiveness_suppresses_no_progress_when_backlog_is_calm() -> None:
     before = {
         "pressure_index": 0.03,
@@ -578,6 +676,74 @@ def test_writer_cycle_coordinator_runs_live_safe_drainer_handoff(tmp_path: Path,
     assert "external_backlog_drain" not in payload["steps"]
 
 
+def test_writer_cycle_coordinator_force_live_window_handoffs_protected_drainer(tmp_path: Path, monkeypatch) -> None:
+    project_root = tmp_path / "project"
+    (project_root / "governance" / "health").mkdir(parents=True, exist_ok=True)
+
+    monkeypatch.setattr(src, "writer_state_snapshot", lambda *args, **kwargs: {"active": False, "running": False, "current_step": "complete"})
+    monkeypatch.setattr(
+        src.drain_src,
+        "build_payload",
+        lambda *args, **kwargs: {"overall_status": "blocked", "recommended_now": False, "blocked_reasons": ["market_hours_guard"], "top_actions": []},
+    )
+    seen_drainer_kwargs: list[dict] = []
+
+    def _drainer_payload(*args, **kwargs):
+        seen_drainer_kwargs.append(kwargs)
+        return {
+            "overall_status": "handoff_requested" if kwargs.get("apply") else "ready",
+            "ready_drainer_count": 1,
+            "blocked_reasons": [] if kwargs.get("force_live_window") else ["market_hours_guard"],
+            "recommended_actions": [],
+            "active_drainer": {"name": "cold_stage_drainer", "status": "ready", "live_window_safe": False},
+            "service_request": {
+                "active": True,
+                "env_overrides": {"SQL_LINK_SERVICE_SHARDS": "data,explanations,crypto_explanations,health_fast"},
+            } if kwargs.get("apply") else {},
+        }
+
+    monkeypatch.setattr(src.drainer_src, "build_payload", _drainer_payload)
+    monkeypatch.setattr(src.maintenance_src, "_priority_retention_focus", lambda *args, **kwargs: {"enabled": False, "focus_shards": [], "top_actions": []})
+
+    commands: list[list[str]] = []
+
+    def _fake_run(cmd: list[str], *, cwd: Path, payload_path: Path | None = None, timeout_sec: int) -> dict:
+        commands.append(cmd)
+        joined = " ".join(cmd)
+        if "backpressure_drainer_fleet.py" in joined:
+            payload = {
+                "ok": True,
+                "overall_status": "handoff_requested",
+                "service_request": {
+                    "active": True,
+                    "env_overrides": {"SQL_LINK_SERVICE_SHARDS": "data,explanations,crypto_explanations,health_fast"},
+                },
+            }
+        elif "sql_link_shard_manager.py" in joined:
+            payload = {"ok": True, "merged_rows_this_cycle": 44000}
+        elif "ingestion_storage_control.py" in joined:
+            payload = {"overall_status": "needs_work"}
+        elif "runtime_gate_dashboard.py" in joined:
+            payload = {"overall": {"status": "ready"}}
+        elif "operator_cockpit.py" in joined:
+            payload = {"overall_status": "ready"}
+        else:
+            raise AssertionError(f"unexpected command: {cmd}")
+        if payload_path is not None:
+            _write_json(payload_path, payload)
+        return {"cmd": cmd, "rc": 0, "duration_ms": 5.0, "payload": payload, "stdout_tail": "", "stderr_tail": "", "timed_out": False}
+
+    monkeypatch.setattr(src, "_run_json_command", _fake_run)
+
+    payload = src.build_payload(project_root, apply=True, poll_seconds=0.0, wait_timeout_seconds=30.0, force_live_window=True)
+
+    assert payload["live_drainer_ready"] is True
+    assert payload["summary"]["active_drainer"] == "cold_stage_drainer"
+    assert payload["settings"]["force_live_window"] is True
+    assert any("--force-live-window" in command for command in commands if "backpressure_drainer_fleet.py" in " ".join(command))
+    assert any(kwargs.get("force_live_window") is True for kwargs in seen_drainer_kwargs)
+
+
 def test_writer_cycle_coordinator_surfaces_catch_up_followup_from_writer(tmp_path: Path, monkeypatch) -> None:
     project_root = tmp_path / "project"
     (project_root / "governance" / "health").mkdir(parents=True, exist_ok=True)
@@ -759,6 +925,29 @@ def test_writer_cycle_coordinator_keeps_sparse_jsonl_catch_up_waves_alive(tmp_pa
     )
 
 
+def test_writer_cycle_coordinator_uses_storage_accelerator_wave_limit(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    health = project_root / "governance" / "health"
+    health.mkdir(parents=True, exist_ok=True)
+    _write_json(
+        health / "ingestion_storage_control_latest.json",
+        {
+            "backlog_relief_contract": {
+                "active": True,
+                "active_issue_ids": ["single_writer_merge_speed", "sparse_huge_jsonl_files"],
+                "p_core_backlog_allocation_contract": {
+                    "catch_up_wave_controller": {"enabled": True, "max_waves": 5}
+                },
+                "accelerator_contract": {
+                    "enabled": True,
+                    "catch_up_wave_controller": {"enabled": True, "max_waves": 6},
+                },
+            }
+        },
+    )
+
+    assert src._storage_catch_up_wave_limit(project_root) == 6
+
 
 def test_writer_cycle_coordinator_treats_bounded_shard_timeout_as_partial_progress(tmp_path: Path, monkeypatch) -> None:
     project_root = tmp_path / "project"
@@ -900,3 +1089,105 @@ def test_writer_cycle_coordinator_already_running_payload_includes_writer_snapsh
     assert payload["summary"]["writer_process_action"] == "wait_for_active_writer_progress"
     assert payload["summary"]["expanded_writer_lane_count"] == 25
     assert payload["previous_coordinator"]["summary"]["active_drainer"] == "core_decision_drainer"
+
+
+def test_writer_cycle_coordinator_handoff_only_releases_completed_lock_without_drain(tmp_path: Path, monkeypatch) -> None:
+    project_root = tmp_path / "project"
+    (project_root / "governance" / "health").mkdir(parents=True, exist_ok=True)
+    writer_states = [
+        {
+            "active": True,
+            "active_source": "completed_lock_handoff_needed",
+            "running": False,
+            "status": "ok",
+            "current_step": "complete",
+            "writer_lock_held": True,
+            "child_writer_active": False,
+            "completed_shard_count": 4,
+            "planned_shard_count": 4,
+        },
+        {
+            "active": False,
+            "running": False,
+            "status": "ok",
+            "current_step": "complete",
+            "writer_lock_held": False,
+            "child_writer_active": False,
+            "completed_shard_count": 4,
+            "planned_shard_count": 4,
+        },
+    ]
+
+    def _fake_writer_state(*args, **kwargs) -> dict:
+        if writer_states:
+            return writer_states.pop(0)
+        return {
+            "active": False,
+            "running": False,
+            "status": "ok",
+            "current_step": "complete",
+            "writer_lock_held": False,
+        }
+
+    def _fake_release(project_root_arg: Path, state: dict, *, grace_seconds: float = 3.0) -> dict:
+        assert project_root_arg == project_root
+        assert state["current_step"] == "complete"
+        assert grace_seconds == 0.25
+        return {
+            "attempted": True,
+            "needed": True,
+            "pid": 1234,
+            "owner": "pid=1234",
+            "terminated": True,
+            "lock_released": True,
+            "reason": "completed_writer_handoff_released",
+        }
+
+    monkeypatch.setattr(src, "writer_state_snapshot", _fake_writer_state)
+    monkeypatch.setattr(src, "_release_completed_writer_lock", _fake_release)
+    monkeypatch.setattr(
+        src,
+        "_run_json_command",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("handoff-only must not run drain commands")),
+    )
+
+    payload = src.build_handoff_payload(project_root, apply=True, grace_seconds=0.25)
+
+    assert payload["overall_status"] == "handoff_released"
+    assert payload["handoff_only"] is True
+    assert payload["summary"]["completed_writer_lock_handoff_initial_needed"] is True
+    assert payload["summary"]["completed_writer_lock_handoff_needed"] is False
+    assert payload["summary"]["completed_writer_lock_handoff_released"] is True
+    assert payload["summary"]["writer_active_after_wait"] is False
+    assert payload["steps"] == {}
+    assert payload["refresh_steps"] == {}
+
+
+def test_writer_cycle_coordinator_handoff_only_does_not_release_active_child_writer(tmp_path: Path, monkeypatch) -> None:
+    project_root = tmp_path / "project"
+    (project_root / "governance" / "health").mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(
+        src,
+        "writer_state_snapshot",
+        lambda *args, **kwargs: {
+            "active": True,
+            "running": True,
+            "status": "ok",
+            "current_step": "complete",
+            "writer_lock_held": True,
+            "child_writer_active": True,
+            "completed_shard_count": 4,
+            "planned_shard_count": 4,
+        },
+    )
+    monkeypatch.setattr(
+        src,
+        "_release_completed_writer_lock",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("active child writer must not be terminated")),
+    )
+
+    payload = src.build_handoff_payload(project_root, apply=True)
+
+    assert payload["overall_status"] == "writer_active"
+    assert payload["completed_writer_lock_handoff"]["needed"] is False
+    assert payload["summary"]["completed_writer_lock_handoff_attempted"] is False

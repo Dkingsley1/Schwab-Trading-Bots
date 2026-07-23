@@ -93,11 +93,11 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
     restart_storms = len(process_watchdog.get("restart_storms") or [])
     platform_status = str((platform_control.get("institutional_readiness") or {}).get("overall_status") or "")
     control_status = "ready"
-    if ops_coordinator and not bool(ops_coordinator.get("ok", False)):
-        control_status = "blocked"
-    elif restart_storms > 0:
+    if restart_storms > 0:
         control_status = "blocked"
     elif not ops_coordinator or not process_watchdog:
+        control_status = "degraded"
+    elif not bool(ops_coordinator.get("ok", False)):
         control_status = "degraded"
     elif platform_status and platform_status not in {"ready", "advancing"}:
         control_status = "degraded"

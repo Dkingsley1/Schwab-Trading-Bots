@@ -2,7 +2,7 @@
 set -euo pipefail
 
 PROJECT_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
-PYTHON_BIN="$PROJECT_ROOT/.venv312/bin/python"
+PYTHON_BIN="$PROJECT_ROOT/.venv314/bin/python"
 PROFILE="${BOT_RUNTIME_PROFILE:-live}"
 SUMMARY_PATH="$PROJECT_ROOT/exports/one_numbers/one_numbers_summary.json"
 BACKPRESSURE_PATH="$PROJECT_ROOT/governance/health/ingestion_backpressure_latest.json"

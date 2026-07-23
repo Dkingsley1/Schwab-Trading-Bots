@@ -4,6 +4,8 @@ import json
 import sys
 from pathlib import Path
 
+import pytest
+
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
@@ -292,6 +294,20 @@ def test_guard_flags_source_days_missing_from_rollup(tmp_path: Path, monkeypatch
     assert payload["repair_plan"]["backfill_commands"][0][-2:] == ["--day", "20260421"]
 
 
+def test_source_day_set_ignores_unrelated_dated_governance_events(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(guard, "PROJECT_ROOT", tmp_path)
+    event_dir = tmp_path / "governance" / "events"
+    decision_dir = tmp_path / "decision_explanations" / "paper"
+    event_dir.mkdir(parents=True, exist_ok=True)
+    decision_dir.mkdir(parents=True, exist_ok=True)
+    (event_dir / "jsonl_ingest_batches_runtime_20260421.jsonl").write_text("{}\n", encoding="utf-8")
+    (decision_dir / "decision_explanations_20260422.jsonl").write_text("{}\n", encoding="utf-8")
+
+    days = guard._source_day_set(tmp_path)
+
+    assert days == {"20260422"}
+
+
 def test_guard_flags_decision_rows_missing_when_governance_exists(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr(guard, "PROJECT_ROOT", tmp_path)
     monkeypatch.setenv("ONE_NUMBERS_ORIGINAL_START_DAY", "20260422")
@@ -337,3 +353,38 @@ def test_guard_flags_decision_rows_missing_when_governance_exists(tmp_path: Path
 
     assert payload["overall_status"] == "degraded"
     assert "decision_rows_missing_with_governance_activity" in weakness_names
+
+
+def test_one_numbers_repair_command_timeout_returns_clean_failure(tmp_path: Path) -> None:
+    rc, timed_out, stdout, stderr = guard._run_repair_command(
+        [sys.executable, "-c", "import time; time.sleep(10)"],
+        tmp_path,
+        1,
+    )
+
+    assert rc == 124
+    assert timed_out is True
+    assert stdout == ""
+    assert stderr == "timeout"
+
+
+def test_one_numbers_repair_command_resumes_stopped_builder(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("ONE_NUMBERS_REPAIR_POLL_SECONDS", "1")
+    rc, timed_out, stdout, stderr = guard._run_repair_command(
+        [
+            sys.executable,
+            "-c",
+            (
+                "import os, signal; "
+                "os.kill(os.getpid(), signal.SIGSTOP); "
+                "print('resumed')"
+            ),
+        ],
+        tmp_path,
+        5,
+    )
+
+    assert rc == 0
+    assert timed_out is False
+    assert stdout.strip() == "resumed"
+    assert "auto_resumed_stopped_builder=1" in stderr

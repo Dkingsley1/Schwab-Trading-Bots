@@ -166,6 +166,42 @@ def _autopilot_active(autopilot: dict[str, Any]) -> bool:
     return bool(autopilot.get("busy", False)) or status in ACTIVE_AUTOPILOT_STATUSES
 
 
+def _effective_storage_backpressure(storage_control: dict[str, Any]) -> dict[str, Any]:
+    backpressure = storage_control.get("backpressure") if isinstance(storage_control.get("backpressure"), dict) else {}
+    effective = backpressure.get("effective_raw_live") if isinstance(backpressure.get("effective_raw_live"), dict) else {}
+    data_integrity = storage_control.get("data_integrity") if isinstance(storage_control.get("data_integrity"), dict) else {}
+    source = str(backpressure.get("effective_raw_live_source") or effective.get("source") or "").strip()
+    storage_ready = bool(
+        str(storage_control.get("overall_status") or "").strip().lower() == "ready"
+        and str(storage_control.get("severity") or "").strip().lower() == "stable"
+    )
+    overlay_clear = bool(backpressure.get("overlay_pressure_clear", False) or source == "fresh_empty_sql_ingestion_overlay")
+    data_clean = bool(
+        _safe_int(data_integrity.get("sql_overlay_invalid_lines"), 0) <= 0
+        and _safe_int(data_integrity.get("sql_overlay_oversize_payloads"), 0) <= 0
+        and _safe_int(data_integrity.get("sql_overlay_ops_write_failures"), 0) <= 0
+    )
+    authoritative = bool(
+        storage_ready
+        and bool(backpressure.get("overlay_adjusted", False))
+        and overlay_clear
+        and data_clean
+    )
+    total = _safe_int(effective.get("total_pending_lines"), _safe_int(backpressure.get("total_pending_lines"), 0))
+    core = _safe_int(effective.get("core_pending_lines"), _safe_int(backpressure.get("core_pending_lines"), total))
+    oldest = _safe_float(effective.get("oldest_pending_age_seconds"), _safe_float(backpressure.get("oldest_pending_age_seconds"), 0.0))
+    return {
+        "authoritative": authoritative,
+        "source": source or "ingestion_storage_control_effective_raw_live",
+        "core_pending_lines": int(core),
+        "total_pending_lines": int(total),
+        "oldest_pending_age_seconds": round(oldest, 3),
+        "storage_ready": storage_ready,
+        "overlay_clear": overlay_clear,
+        "data_clean": data_clean,
+    }
+
+
 def _storage_metrics(artifacts: dict[str, dict[str, Any]]) -> dict[str, Any]:
     storage_control = artifacts.get("storage_control") or {}
     health_gates = artifacts.get("health_gates") or {}
@@ -184,10 +220,18 @@ def _storage_metrics(artifacts: dict[str, dict[str, Any]]) -> dict[str, Any]:
     thresholds = health_gates.get("thresholds") if isinstance(health_gates.get("thresholds"), dict) else {}
     inputs = health_gates.get("inputs") if isinstance(health_gates.get("inputs"), dict) else {}
 
-    core_pending_lines = max(_safe_int(backpressure.get("core_pending_lines"), 0), 0)
+    effective_backpressure = _effective_storage_backpressure(storage_control)
+    authoritative_backpressure = bool(effective_backpressure.get("authoritative", False))
+    core_pending_lines = max(
+        _safe_int(effective_backpressure.get("core_pending_lines"), 0)
+        if authoritative_backpressure
+        else _safe_int(backpressure.get("core_pending_lines"), 0),
+        0,
+    )
     total_pending_lines = max(
-        _safe_int(backpressure.get("total_pending_lines"), 0),
-        _safe_int(inputs.get("backpressure_pending_lines"), 0),
+        _safe_int(effective_backpressure.get("total_pending_lines"), 0)
+        if authoritative_backpressure
+        else max(_safe_int(backpressure.get("total_pending_lines"), 0), _safe_int(inputs.get("backpressure_pending_lines"), 0)),
         0,
     )
     pressure_index = max(_safe_float(storage_control.get("pressure_index"), 0.0), 0.0)
@@ -219,13 +263,19 @@ def _storage_metrics(artifacts: dict[str, dict[str, Any]]) -> dict[str, Any]:
     )
 
     hard_gate_names = _active_hard_gate_names(health_gates)
+    stale_hard_gate_suppressed: list[str] = []
+    if authoritative_backpressure and "ingestion_backpressure_overload" in hard_gate_names:
+        hard_gate_names = [name for name in hard_gate_names if name != "ingestion_backpressure_overload"]
+        stale_hard_gate_suppressed.append("ingestion_backpressure_overload")
     active_reasons = ordered_unique(
         [
             "sql_wal_pressure" if sqlite_wal_size_gb > wal_limit_gb else "",
             "core_pending_above_target" if core_pending_lines > core_target else "",
             "total_pending_above_gate_limit" if total_pending_lines > pending_limit else "",
             "pressure_index_above_target" if pressure_index > pressure_target else "",
-            "backpressure_overload_severe" if _safe_bool(inputs.get("backpressure_overload_severe"), False) else "",
+            "backpressure_overload_severe"
+            if _safe_bool(inputs.get("backpressure_overload_severe"), False) and not authoritative_backpressure
+            else "",
             "storage_control_blocked" if str(storage_control.get("overall_status") or "").strip().lower() == "blocked" else "",
         ]
     )
@@ -266,6 +316,8 @@ def _storage_metrics(artifacts: dict[str, dict[str, Any]]) -> dict[str, Any]:
         "recoverable_hard_gate_only": recoverable_hard_gate_only,
         "active_storage_pressure": active_storage_pressure,
         "active_pressure_reasons": active_reasons,
+        "effective_backpressure": effective_backpressure,
+        "stale_hard_gate_suppressed": stale_hard_gate_suppressed,
         "stale_gate_candidate": stale_gate_candidate,
         "clearance_ready": clearance_ready,
         "route_verified": route_verified,

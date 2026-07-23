@@ -68,6 +68,61 @@ def test_behavior_feature_schema_includes_core_sleeve_overlay_features() -> None
         assert key in loop._BEHAVIOR_FEATURE_NAMES_V2
 
 
+def test_channel_decision_rows_are_canonicalized_for_behavior_dataset() -> None:
+    row = {
+        "timestamp_utc": "2026-05-28T12:00:00+00:00",
+        "symbol": "SPY",
+        "snapshot_id": "snap-123",
+        "shadow_profile": "aggressive",
+        "market": {"last_price": 500.0, "pct_from_close": 0.01, "spread_bps": 1.5},
+        "master_action": "BUY",
+        "master_score": 0.71,
+        "master_outputs": {
+            "trend": {
+                "master_meta": {
+                    "paper_profitability_master_awareness": 1.0,
+                    "paper_profitability_master_profit_score": 0.72,
+                    "paper_profitability_master_drag": 0.18,
+                    "paper_profitability_master_risk": 0.22,
+                    "paper_profitability_master_size_multiplier": 0.44,
+                }
+            },
+            "shock": {
+                "master_meta": {
+                    "paper_profitability_master_awareness": 1.0,
+                    "paper_profitability_master_profit_score": 0.62,
+                    "paper_profitability_master_drag": 0.28,
+                    "paper_profitability_master_risk": 0.32,
+                    "paper_profitability_master_size_multiplier": 0.34,
+                }
+            },
+        },
+        "grand_master_meta": {
+            "paper_profitability_grandmaster_awareness": 1.0,
+            "paper_profitability_grandmaster_profit_score": 0.69,
+            "paper_profitability_grandmaster_drag": 0.21,
+            "paper_profitability_grandmaster_risk": 0.25,
+            "paper_profitability_grandmaster_size_multiplier": 0.39,
+            "paper_profitability_grandmaster_exit_pressure": 0.14,
+            "paper_profitability_grandmaster_execution_discount": 0.08,
+            "specialist_conflict": 0.17,
+        },
+    }
+
+    canonical = behavior_ds._canonical_behavior_decision_row(row)
+
+    assert canonical is not None
+    assert canonical["strategy"] == "grand_master_bot"
+    assert canonical["action"] == "BUY"
+    assert canonical["mode"] == "aggressive"
+    assert canonical["metadata"]["snapshot_id"] == "snap-123"
+    assert canonical["features"]["last_price"] == 500.0
+    assert canonical["features"]["paper_profitability_master_awareness_active_norm"] == 1.0
+    assert round(canonical["features"]["paper_profitability_master_profit_score_norm"], 4) == 0.67
+    assert canonical["features"]["paper_profitability_grandmaster_profit_score_norm"] == 0.69
+    assert canonical["features"]["paper_profitability_grandmaster_conflict_cap_norm"] == 0.83
+
+
 def test_load_paper_trade_context_joins_snapshot_and_symbol_history() -> None:
     since_utc = datetime.now(timezone.utc) - timedelta(hours=2)
     ts = datetime.now(timezone.utc)

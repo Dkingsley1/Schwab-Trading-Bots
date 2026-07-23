@@ -43,6 +43,28 @@ def _capability_recovering(status: str, *, recovering_when: bool) -> str:
     return status
 
 
+def _as_dict(raw: Any) -> dict[str, Any]:
+    return raw if isinstance(raw, dict) else {}
+
+
+def _guarded_paper_strict_clear(health_fast: dict[str, Any]) -> bool:
+    operational = _as_dict(health_fast.get("operational_readiness"))
+    guarded_paper = _as_dict(operational.get("guarded_paper"))
+    live_execution = _as_dict(operational.get("live_execution"))
+    guarded_ready = bool(guarded_paper.get("ok", False)) and str(guarded_paper.get("status") or "").strip().lower() in {
+        "ready",
+        "armed",
+        "guarded_ready",
+    }
+    live_locked = str(live_execution.get("status") or "").strip().lower() in {
+        "blocked_read_only",
+        "locked",
+        "read_only",
+        "disabled",
+    }
+    return bool(health_fast.get("strict_all_clear", False) and guarded_ready and live_locked)
+
+
 def _event_trade_status(project_root: Path) -> tuple[str, str, str]:
     intelligence_path = project_root / "governance" / "health" / "macro_event_intelligence_latest.json"
     payload = load_json(intelligence_path)
@@ -90,8 +112,10 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
     notifications = load_json(health_root / "notification_escalation_ladder_latest.json")
     drills = load_json(health_root / "chaos_drill_coordinator_latest.json")
     incident_review = load_json(health_root / "incident_review_packet_latest.json")
+    incident_closeout = load_json(health_root / "incident_closeout_autopilot_latest.json")
     lane_thaw = load_json(health_root / "lane_thaw_controller_latest.json")
     data_plane = load_json(health_root / "data_plane_recovery_controller_latest.json")
+    health_fast = load_json(health_root / "health_fast_latest.json")
 
     event_status, event_proof, event_source = _event_trade_status(project_root)
     portable_host = portable.get("host_contract") if isinstance(portable.get("host_contract"), dict) else {}
@@ -124,9 +148,36 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
     )
     autonomy_score = float(autonomy.get("autonomy_score", 0.0) or 0.0)
     autonomy_recovering_contract = bool(
-        autonomy_score >= 75.0
-        and int((autonomy.get("autonomous_repair_path_count", 0) or 0)) > 0
-        and str(data_plane.get("overall_status") or "").strip().lower() in {"ready", "degraded"}
+        (
+            autonomy_score >= 75.0
+            and int((autonomy.get("autonomous_repair_path_count", 0) or 0)) > 0
+            and str(data_plane.get("overall_status") or "").strip().lower() in {"ready", "degraded"}
+        )
+        or (
+            _guarded_paper_strict_clear(health_fast)
+            and int((autonomy.get("autonomous_repair_path_count", 0) or 0)) > 0
+        )
+    )
+    bounded_incident_closeout = bool(
+        incident_closeout.get("bounded_closeout_path_ready", False)
+        or (
+            str(incident_closeout.get("overall_status") or "").strip().lower() == "degraded"
+            and int(incident_closeout.get("open_incident_count", 0) or 0) <= 3
+            and not any(
+                str(row.get("severity") or "").strip().lower() == "critical"
+                for row in incident_closeout.get("blocking_surfaces") or []
+                if isinstance(row, dict)
+            )
+        )
+        or (
+            _guarded_paper_strict_clear(health_fast)
+            and int(incident_closeout.get("open_incident_count", 0) or 0) <= 3
+            and not any(
+                str(row.get("severity") or "").strip().lower() == "critical"
+                for row in incident_closeout.get("blocking_surfaces") or []
+                if isinstance(row, dict)
+            )
+        )
     )
 
     rows = [
@@ -200,7 +251,7 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
             "notification_escalation_ladder",
             "Notification Escalation Ladder",
             str(notifications.get("overall_status") or "missing"),
-            f"remote_pager_ready={int(bool(notifications.get('remote_pager_ready', False)))} unacked={int(((notifications.get('critical_backlog') or {}).get('unacked_count', 0) or 0))}",
+            f"attended={int(bool(notifications.get('attended_runtime_ready', False)))} remote_pager_ready={int(bool(notifications.get('remote_pager_ready', False)))} unacked={int(((notifications.get('critical_backlog') or {}).get('unacked_count', 0) or 0))}",
             str(health_root / "notification_escalation_ladder_latest.json"),
         ),
         _score_row(
@@ -213,8 +264,13 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
         _score_row(
             "immutable_incident_review",
             "Immutable Incident Review",
-            str(incident_review.get("overall_status") or "missing"),
-            f"review_required={int(bool(incident_review.get('review_required', False)))} packet_sha256={str(incident_review.get('packet_sha256') or '')[:12]}",
+            _capability_recovering(
+                str(incident_review.get("overall_status") or "missing"),
+                recovering_when=bounded_incident_closeout,
+            ),
+            f"review_required={int(bool(incident_review.get('review_required', False)))} "
+            f"packet_sha256={str(incident_review.get('packet_sha256') or '')[:12]} "
+            f"bounded_closeout={int(bounded_incident_closeout)}",
             str(health_root / "incident_review_packet_latest.json"),
         ),
     ]

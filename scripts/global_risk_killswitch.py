@@ -22,6 +22,7 @@ RECOVERABLE_HEALTH_GATES = {
 }
 THAW_SAFE_RUNTIME_STATES = {
     "ready",
+    "guarded_live_read_only",
     "coverage_cycles_ready",
     "scheduled_off_hours_launch",
     "off_hours_cold_lane_launch_ready",
@@ -81,6 +82,41 @@ def _current_backpressure_is_clear(payload: dict[str, Any]) -> bool:
     )
 
 
+def _effective_storage_backpressure(storage_control: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(storage_control, dict) or not storage_control:
+        return {"authoritative": False}
+    backpressure = storage_control.get("backpressure") if isinstance(storage_control.get("backpressure"), dict) else {}
+    effective = backpressure.get("effective_raw_live") if isinstance(backpressure.get("effective_raw_live"), dict) else {}
+    data_integrity = storage_control.get("data_integrity") if isinstance(storage_control.get("data_integrity"), dict) else {}
+    source = str(backpressure.get("effective_raw_live_source") or effective.get("source") or "").strip()
+    storage_ready = bool(
+        str(storage_control.get("overall_status") or "").strip().lower() == "ready"
+        and str(storage_control.get("severity") or "").strip().lower() == "stable"
+    )
+    overlay_clear = bool(backpressure.get("overlay_pressure_clear", False) or source == "fresh_empty_sql_ingestion_overlay")
+    data_clean = bool(
+        int(data_integrity.get("sql_overlay_invalid_lines", 0) or 0) <= 0
+        and int(data_integrity.get("sql_overlay_oversize_payloads", 0) or 0) <= 0
+        and int(data_integrity.get("sql_overlay_ops_write_failures", 0) or 0) <= 0
+    )
+    authoritative = bool(
+        storage_ready
+        and bool(backpressure.get("overlay_adjusted", False))
+        and overlay_clear
+        and data_clean
+    )
+    total = int(float(effective.get("total_pending_lines", backpressure.get("total_pending_lines", 0)) or 0))
+    core = int(float(effective.get("core_pending_lines", backpressure.get("core_pending_lines", total)) or 0))
+    oldest = float(effective.get("oldest_pending_age_seconds", backpressure.get("oldest_pending_age_seconds", 0.0)) or 0.0)
+    return {
+        "authoritative": authoritative,
+        "source": source or "ingestion_storage_control_effective_raw_live",
+        "core_pending_lines": core,
+        "total_pending_lines": total,
+        "oldest_pending_age_seconds": round(oldest, 3),
+    }
+
+
 def _watchdog_restart_storm_recovered(payload: dict[str, Any]) -> bool:
     storms = payload.get("restart_storms")
     if not isinstance(storms, list) or not storms:
@@ -104,6 +140,49 @@ def _watchdog_restart_storm_recovered(payload: dict[str, Any]) -> bool:
         if running_count <= 0 or not process_live or not heartbeat_ok:
             return False
     return True
+
+
+def _watchdog_restart_storm_isolation(
+    payload: dict[str, Any],
+    *,
+    execution_expected: bool,
+) -> dict[str, Any]:
+    storms = payload.get("restart_storms")
+    if not isinstance(storms, list) or not storms:
+        return {
+            "isolated_count": 0,
+            "execution_blocking_count": 0,
+            "isolated_targets": [],
+            "execution_blocking_targets": [],
+            "safe_to_clear_when_not_executing": False,
+            "execution_expected": bool(execution_expected),
+            "policy": "no_active_restart_storms",
+        }
+
+    isolated_targets: list[str] = []
+    execution_blocking_targets: list[str] = []
+    for storm in storms:
+        if not isinstance(storm, dict) or bool(storm.get("resolved", False)):
+            continue
+        name = str(storm.get("name") or "").strip()
+        if not name:
+            continue
+        quarantinable = bool(storm.get("quarantinable", False))
+        blocks_execution_clear = bool(storm.get("blocks_execution_clear", not quarantinable))
+        if quarantinable and not blocks_execution_clear and not execution_expected:
+            isolated_targets.append(name)
+        else:
+            execution_blocking_targets.append(name)
+
+    return {
+        "isolated_count": len(isolated_targets),
+        "execution_blocking_count": len(execution_blocking_targets),
+        "isolated_targets": sorted(isolated_targets),
+        "execution_blocking_targets": sorted(execution_blocking_targets),
+        "safe_to_clear_when_not_executing": bool(isolated_targets and not execution_blocking_targets and not execution_expected),
+        "execution_expected": bool(execution_expected),
+        "policy": "read_only_collection_restart_storms_may_be_quarantined_only_while_order_execution_is_off",
+    }
 
 
 def _backpressure_pressure_ratio(payload: dict[str, Any]) -> float:
@@ -180,6 +259,53 @@ def _operating_mode(
     if degraded_hard_gates or stale_hard_gates or degraded_clear_blockers:
         return "degraded_collection"
     return "normal"
+
+
+def _halt_posture(
+    *,
+    halt_latched: bool,
+    halt_required: bool,
+    clear_ready: bool,
+    clear_blockers: list[str],
+    degraded_hard_gates: list[str],
+    stale_hard_gates: list[str],
+    degraded_clear_blockers: list[str],
+) -> str:
+    if halt_latched and halt_required:
+        return "latched_halt_required"
+    if halt_latched and clear_ready:
+        return "latched_clear_ready"
+    if halt_latched:
+        return "latched_clear_blocked"
+    if halt_required:
+        return "unlatched_halt_required"
+    if clear_blockers:
+        return "unlatched_clear_blocked"
+    if degraded_hard_gates or stale_hard_gates or degraded_clear_blockers:
+        return "unlatched_degraded_collection"
+    return "unlatched_clear"
+
+
+def _operator_status_line(
+    *,
+    halt_latched: bool,
+    halt_required: bool,
+    clear_ready: bool,
+    degraded_hard_gates: list[str],
+    stale_hard_gates: list[str],
+    degraded_clear_blockers: list[str],
+) -> str:
+    if halt_latched and halt_required:
+        return "global halt is latched and still required by hard gates"
+    if halt_latched and clear_ready:
+        return "global halt is latched but safe-clear gates are ready"
+    if halt_latched:
+        return "global halt is latched and waiting on safe-clear blockers"
+    if halt_required:
+        return "global halt flag is clear, but halt pressure remains and would re-trigger under enforcement"
+    if degraded_hard_gates or stale_hard_gates or degraded_clear_blockers:
+        return "global halt flag is clear; system remains degraded/read-only while soft blockers settle"
+    return "global halt is clear"
 
 
 def _parse_json_output(text: str) -> dict[str, Any]:
@@ -275,6 +401,20 @@ def main() -> int:
     health = _load(health_root / 'health_gates_latest.json')
     hard_gate_names = _active_hard_gates(health)
     backpressure = _load(health_root / "ingestion_backpressure_latest.json")
+    storage_control = _load(health_root / "ingestion_storage_control_latest.json")
+    effective_backpressure = _effective_storage_backpressure(storage_control)
+    if bool(effective_backpressure.get("authoritative", False)):
+        backpressure = {
+            **backpressure,
+            "overload": False,
+            "line_pressure": False,
+            "file_pressure": False,
+            "age_pressure": False,
+            "pending_lines": int(effective_backpressure.get("core_pending_lines", 0) or 0),
+            "pending_lines_total": int(effective_backpressure.get("total_pending_lines", 0) or 0),
+            "oldest_pending_age_seconds": float(effective_backpressure.get("oldest_pending_age_seconds", 0.0) or 0.0),
+            "storage_control_override": effective_backpressure,
+        }
     auth = _load(health_root / 'auth_lease_manager_latest.json')
     data_plane = _load(health_root / 'data_plane_recovery_controller_latest.json')
     watchdog = _load(health_root / 'process_watchdog_latest.json')
@@ -283,7 +423,8 @@ def main() -> int:
     execution_expected = _execution_expected()
     live_lane_running = bool((runtime.get("live_plane") or {}).get("live_lane_running", False)) if isinstance(runtime.get("live_plane"), dict) else False
     operator_stop_active = operator_stop_flag.exists()
-    global_halt_payload = _load(halt_flag) if halt_flag.exists() else {}
+    halt_latched_before = halt_flag.exists()
+    global_halt_payload_before = _load(halt_flag) if halt_latched_before else {}
     operator_stop_payload = _load(operator_stop_flag) if operator_stop_flag.exists() else {}
 
     blocked_rate = float(one.get('combined_blocked_rate', 0.0) or 0.0)
@@ -312,8 +453,14 @@ def main() -> int:
     write_failures = int(data_plane.get('write_failure_count', 0) or 0)
     snapshot_failures = int(data_plane.get('account_snapshot_failure_count', 0) or 0)
     queue_depth = int(data_plane.get('queue_depth', 0) or 0)
+    if bool(effective_backpressure.get("authoritative", False)):
+        queue_depth = min(queue_depth, int(effective_backpressure.get("total_pending_lines", queue_depth) or 0))
     restart_storms = len(watchdog.get('restart_storms') or [])
     restart_storm_recovered = _watchdog_restart_storm_recovered(watchdog)
+    restart_storm_isolation = _watchdog_restart_storm_isolation(
+        watchdog,
+        execution_expected=execution_expected,
+    )
     clearance_state = _clearance_state(runtime)
     clear_blockers = []
     if operator_stop_active:
@@ -324,6 +471,8 @@ def main() -> int:
     if restart_storms > 0:
         if restart_storm_recovered:
             degraded_clear_blockers.append('restart_storm_recovered_waiting_settle')
+        elif bool(restart_storm_isolation.get('safe_to_clear_when_not_executing', False)):
+            degraded_clear_blockers.append('restart_storm_isolated_read_only_collection')
         else:
             clear_blockers.append('restart_storm_active')
     if snapshot_failures > 0:
@@ -334,7 +483,10 @@ def main() -> int:
     if write_failures > 0:
         clear_blockers.append('write_path_recovery_pending')
     if queue_depth >= 10000:
-        clear_blockers.append('queue_backpressure_active')
+        if _current_backpressure_is_clear(backpressure) and not execution_expected:
+            degraded_clear_blockers.append('queue_depth_recovered_waiting_backlog_drain')
+        else:
+            clear_blockers.append('queue_backpressure_active')
     if clearance_state and clearance_state not in THAW_SAFE_RUNTIME_STATES:
         runtime_blocker = f'runtime_clearance={clearance_state}'
         if execution_expected:
@@ -366,8 +518,9 @@ def main() -> int:
         execution_expected=execution_expected,
     )
 
-    if reasons and args.auto_clear and halt_flag.exists():
-        action = 'clear_blocked'
+    halt_required = bool(reasons)
+    if reasons and args.auto_clear:
+        action = 'clear_blocked' if halt_latched_before else 'halt_required_unlatched'
     elif reasons and not args.status_only:
         halt_flag.parent.mkdir(parents=True, exist_ok=True)
         write_halt_flag_atomic(
@@ -389,22 +542,63 @@ def main() -> int:
         else:
             action = 'clear_blocked'
 
+    halt_latched_after = halt_flag.exists()
+    global_halt_payload_after = _load(halt_flag) if halt_latched_after else {}
+    legacy_halt_state = 'active' if halt_latched_after else 'clear_ready' if clear_ready else 'clear_blocked'
+    halt_posture = _halt_posture(
+        halt_latched=halt_latched_after,
+        halt_required=halt_required,
+        clear_ready=clear_ready,
+        clear_blockers=clear_blockers,
+        degraded_hard_gates=degraded_hard_gates,
+        stale_hard_gates=stale_hard_gates,
+        degraded_clear_blockers=degraded_clear_blockers,
+    )
+    status_line = _operator_status_line(
+        halt_latched=halt_latched_after,
+        halt_required=halt_required,
+        clear_ready=clear_ready,
+        degraded_hard_gates=degraded_hard_gates,
+        stale_hard_gates=stale_hard_gates,
+        degraded_clear_blockers=degraded_clear_blockers,
+    )
+
     payload = {
         'timestamp_utc': now,
         'action': action,
-        'halt': halt_flag.exists(),
-        'halt_state': 'active' if halt_flag.exists() else 'clear_ready' if clear_ready else 'clear_blocked',
+        'halt': halt_latched_after,
+        'halt_state': legacy_halt_state,
+        'halt_posture': halt_posture,
+        'halt_latched': halt_latched_after,
+        'halt_latched_before': halt_latched_before,
+        'halt_required': halt_required,
+        'would_rehalt': bool(halt_required and not halt_latched_after),
+        'status_line': status_line,
         'clear_ready': clear_ready,
         'clear_blockers': clear_blockers,
         'clear_blocker_refresh_attempts': blocker_refresh_attempts,
         'operator_stop': operator_stop_active,
         'operator_stop_payload': operator_stop_payload,
-        'global_halt_payload': global_halt_payload,
+        'global_halt_payload': global_halt_payload_after,
+        'previous_global_halt_payload': global_halt_payload_before,
         'hard_gate_names': hard_gate_names,
         'critical_hard_gate_names': critical_hard_gates,
         'degraded_hard_gate_names': degraded_hard_gates,
         'stale_hard_gate_names': stale_hard_gates,
         'degraded_clear_blockers': degraded_clear_blockers,
+        'halt_pressure': {
+            'required': halt_required,
+            'reasons': reasons,
+            'critical_hard_gates': critical_hard_gates,
+            'degraded_hard_gates': degraded_hard_gates,
+            'stale_hard_gates': stale_hard_gates,
+        },
+        'safe_clear': {
+            'ready': clear_ready,
+            'hard_blockers': clear_blockers,
+            'degraded_blockers': degraded_clear_blockers,
+            'operator_stop': operator_stop_active,
+        },
         'operating_mode': operating_mode,
         'expansion_pressure_score': expansion_pressure_score,
         'sleeve_throttle_recommended': bool(degraded_hard_gates or stale_hard_gates or degraded_clear_blockers),
@@ -437,11 +631,15 @@ def main() -> int:
             'watchdog_restarts': restarts,
             'restart_storms': restart_storms,
             'restart_storm_recovered': restart_storm_recovered,
+            'restart_storm_isolation': restart_storm_isolation,
             'operator_stop_active': operator_stop_active,
             'auth_state': auth_state,
             'write_failure_count': write_failures,
             'account_snapshot_failure_count': snapshot_failures,
             'queue_depth': queue_depth,
+            'raw_queue_depth': int(data_plane.get('raw_queue_depth', queue_depth) or 0),
+            'queue_depth_source': str(data_plane.get('queue_depth_source') or ""),
+            'storage_backpressure_override': effective_backpressure,
             'runtime_clearance_state': clearance_state,
             'execution_expected': execution_expected,
             'live_lane_running': live_lane_running,
@@ -459,7 +657,8 @@ def main() -> int:
                 'reduce sleeve fanout or collector cadence until expansion pressure score falls below 0.35' if expansion_pressure_score >= 0.35 and not reasons else '',
                 'run quant-model-control and memory-efficiency before clearing if quant resource pressure is elevated' if quant_resource_pressure >= 0.80 else '',
                 'allow halt clear while recovered restart storms settle; keep watching process heartbeats' if restart_storms > 0 and restart_storm_recovered else '',
-                'do not clear the halt while restart storms are still active' if restart_storms > 0 and not restart_storm_recovered else '',
+                'keep isolated read-only restart storms quarantined; do not widen or enable live execution until they settle' if bool(restart_storm_isolation.get('safe_to_clear_when_not_executing', False)) else '',
+                'do not clear the halt while execution-impacting restart storms are still active' if restart_storms > 0 and not restart_storm_recovered and not bool(restart_storm_isolation.get('safe_to_clear_when_not_executing', False)) else '',
                 'release OPERATOR_STOP before attempting a safe global halt clear' if operator_stop_active else '',
                 'refresh broker auth before clearing if auth lease is critical' if auth_state == 'critical' else '',
                 'wait for runtime clearance to return to a thaw-safe state before clearing the halt' if clearance_state and clearance_state not in THAW_SAFE_RUNTIME_STATES and execution_expected else '',

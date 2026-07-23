@@ -137,6 +137,36 @@ def test_platform_brain_v5_builds_all_twelve_reflex_sections(tmp_path: Path) -> 
     assert payload["recommended_env_overrides"]["PAPER_TRADE_LOCK"] == "1"
 
 
+def test_platform_brain_v5_rolls_thin_inputs_to_watch(tmp_path: Path) -> None:
+    _write_json(
+        tmp_path / "governance" / "health" / "platform_intelligence_expansion_latest.json",
+        {"overall_status": "watch", "expansion_count": 12, "control_count": 12},
+    )
+    _write_json(tmp_path / "master_bot_registry.json", {"sub_bots": []})
+
+    payload = src.build_payload(tmp_path)
+
+    assert payload["overall_status"] == "watch"
+    assert payload["ok"] is True
+    assert payload["sections"]["temporal_self_model"]["overall_status"] == "thin"
+    assert payload["sections"]["data_contract_negotiator"]["overall_status"] == "thin"
+
+
+def test_platform_brain_v5_low_data_contract_score_is_watch_not_repair_failure() -> None:
+    contract = src._data_contract(
+        {
+            "sections": {
+                "data_value_engine": {"data_value_score": 35},
+                "causal_world_model": {"current_world_state": {"provider_status": "watch"}},
+            }
+        },
+        {"overall_status": "watch"},
+    )
+
+    assert contract["overall_status"] == "watch"
+    assert contract["data_value_score"] == 35
+
+
 def test_platform_brain_v5_writes_artifacts_and_reflex_memory(tmp_path: Path) -> None:
     _seed_project(tmp_path)
 

@@ -70,6 +70,50 @@ def test_ingestion_storage_governor_marks_route_drift_and_targets_routed_paths(t
     assert payload["writer_shedding"]["freeze_cold_lanes"] is True
 
 
+def test_ingestion_storage_governor_accepts_verified_guarded_local_sqlite_route(tmp_path: Path) -> None:
+    health = tmp_path / "governance" / "health"
+    local_primary = tmp_path / "local_fallback_storage" / "data" / "jsonl_link.sqlite3"
+    _write_json(health / "ingestion_storage_control_latest.json", {"overall_status": "ready"})
+    _write_json(
+        health / "ingestion_backpressure_latest.json",
+        {"pending_lines": 0, "pending_lines_deferred": 0, "pending_lines_cold": 0},
+    )
+    _write_json(health / "ingestion_priority_queue_latest.json", {"lane_counts": {}})
+    _write_json(health / "storage_mount_guard_latest.json", {"external_available": True, "storage_mode": "external"})
+    _write_json(
+        health / "storage_failback_sync_latest.json",
+        {
+            "mode": "external",
+            "split_brain_conflicts": 0,
+            "route_verification": {"verification_state": "ready"},
+            "sqlite_skip_report": {
+                "route_verification": {"verification_state": "ready"},
+                "entries": [
+                    {
+                        "relative_path": "data/jsonl_link.sqlite3",
+                        "classification": "active_local_route",
+                        "active_path": str(local_primary),
+                        "route_verification": {"state": "active_local_ready"},
+                        "local": {"path": str(local_primary)},
+                    }
+                ],
+            },
+        },
+    )
+    _write_json(health / "storage_split_brain_reconciler_latest.json", {"summary": {"unresolved_conflicts": 0}})
+    _write_json(health / "sql_link_service_latest.json", {"primary_db": str(local_primary)})
+    _write_json(health / "sql_link_service_progress_latest.json", {})
+    _write_json(health / "health_gates_latest.json", {"hard_gate_triggered": False, "storage_pressure": {"retention_debt_gb": 0.0}})
+
+    payload = src.build_payload(tmp_path, action="status")
+
+    assert payload["profile"] == "steady_state"
+    assert payload["sql_primary_db"]["raw_route_drift"] is True
+    assert payload["sql_primary_db"]["route_drift"] is False
+    assert payload["sql_primary_db"]["guarded_local_sqlite_route"]["guarded"] is True
+    assert not any("normalize SQL linker" in action for action in payload["top_actions"])
+
+
 def test_ingestion_storage_governor_allows_small_deferred_trickle_when_core_is_low(tmp_path: Path) -> None:
     health = tmp_path / "governance" / "health"
     _write_json(
@@ -98,6 +142,73 @@ def test_ingestion_storage_governor_allows_small_deferred_trickle_when_core_is_l
     assert payload["env_overrides"]["INGEST_MAX_DEFERRED_FILES"] == "2"
     assert payload["env_overrides"]["SQL_LINK_SERVICE_SHARD_EXPLANATIONS_MAX_FILES"] == "4"
     assert payload["env_overrides"]["RETENTION_STALE_PURGE_MAX_FILES"] == "8000"
+
+
+def test_ingestion_storage_governor_uses_ready_storage_control_over_stale_health_gate(tmp_path: Path) -> None:
+    health = tmp_path / "governance" / "health"
+    _write_json(
+        health / "ingestion_storage_control_latest.json",
+        {
+            "overall_status": "ready",
+            "severity": "stable",
+            "pressure_index": 0.007,
+            "backpressure": {
+                "core_pending_lines": 74,
+                "deferred_pending_lines": 1906,
+                "cold_pending_lines": 0,
+                "support_pending_lines": 0,
+                "stale_stage_pending_lines": 0,
+                "effective_raw_live_source": "raw_live_backpressure",
+            },
+            "data_integrity": {
+                "sql_overlay_invalid_lines": 0,
+                "sql_overlay_oversize_payloads": 0,
+                "sql_overlay_ops_write_failures": 0,
+            },
+            "storage_efficiency_contract": {
+                "active": False,
+                "overall_status": "ready",
+                "control_env_recommendations": {
+                    "BOT_INGESTION_STORAGE_EFFICIENCY_CONTRACT_ACTIVE": "0",
+                    "BOT_STORAGE_PLANE_PHASE": "steady_state",
+                    "BOT_STORAGE_ALLOW_TRAINING": "1",
+                    "BOT_STORAGE_ALLOW_EXPANSION": "1",
+                },
+            },
+        },
+    )
+    _write_json(
+        health / "ingestion_backpressure_latest.json",
+        {"pending_lines": 74, "pending_lines_deferred": 1906, "pending_lines_cold": 0},
+    )
+    _write_json(health / "ingestion_priority_queue_latest.json", {"lane_counts": {}})
+    _write_json(health / "storage_mount_guard_latest.json", {"external_available": False, "storage_mode": "local_fallback"})
+    _write_json(
+        health / "storage_failback_sync_latest.json",
+        {"mode": "local_fallback", "split_brain_conflicts": 0, "route_verification": {"verification_state": "active_local_ready"}},
+    )
+    _write_json(health / "storage_split_brain_reconciler_latest.json", {"summary": {"unresolved_conflicts": 0}})
+    _write_json(health / "sql_link_service_latest.json", {"primary_db": str(tmp_path / "data" / "jsonl_link.sqlite3")})
+    _write_json(health / "sql_link_service_progress_latest.json", {})
+    _write_json(
+        health / "health_gates_latest.json",
+        {
+            "hard_gate_triggered": True,
+            "hard_gates": {"ingestion_backpressure_overload": True},
+            "ingestion_pressure": {"severe_backpressure_overload": True},
+            "storage_pressure": {"retention_debt_gb": 0.0},
+        },
+    )
+
+    payload = src.build_payload(tmp_path, action="status")
+
+    assert payload["profile"] == "steady_state"
+    assert payload["pressure"]["hard_gate"] is False
+    assert payload["pressure"]["authoritative_storage_control"] is True
+    assert payload["pressure"]["health_hard_gate_suppressed_by_storage_control"] is True
+    assert payload["writer_shedding"]["level"] == "normal"
+    assert payload["env_overrides"]["BOT_STORAGE_PLANE_PHASE"] == "steady_state"
+    assert not any("maintenance priority" in action for action in payload["top_actions"])
 
 
 def test_ingestion_storage_governor_treats_stale_stage_as_archive_debt_not_critical_pressure(tmp_path: Path) -> None:
@@ -287,8 +398,20 @@ def test_ingestion_storage_governor_applies_backlog_relief_contract_env(tmp_path
                     "storage_write_latency",
                     "sparse_huge_jsonl_files",
                     "intake_outpaces_drain",
+                    "raw_live_expansion_headroom",
                     "stale_old_pending_work",
                 ],
+                "control_env_recommendations": {
+                    "RAW_LIVE_EXPANSION_GUARD_ACTIVE": "1",
+                    "RAW_LIVE_EXPANSION_READY": "0",
+                    "RAW_LIVE_EXPANSION_TIER": "blocked_until_raw_live_cools",
+                    "RAW_LIVE_CORE_RESERVE_TARGET": "4000",
+                    "RAW_LIVE_TOTAL_RESERVE_TARGET": "5500",
+                    "BOT_COLLECTION_DUTY_CYCLE_ENABLED": "1",
+                    "BOT_COLLECTION_DUTY_CYCLE_MAX_ACTIVE_RATIO": "0.16",
+                    "SQL_LINK_SERVICE_RAW_LIVE_PRIORITY_BOOST": "1",
+                    "SQL_LINK_SERVICE_COLD_STAGE_YIELDS_TO_RAW_LIVE": "1",
+                },
                 "p_core_backlog_allocation_contract": {
                     "active": True,
                     "control_env": {
@@ -325,13 +448,174 @@ def test_ingestion_storage_governor_applies_backlog_relief_contract_env(tmp_path
     assert env["SQL_LINK_SERVICE_MERGE_MAX_SECONDS_PER_CYCLE"] == "90"
     assert env["SQLITE_CACHE_SIZE_KB"] == "32768"
     assert env["INGEST_MAX_BYTES_PER_FILE"] == str(128 * 1024 * 1024)
-    assert env["BOT_COLLECTION_DUTY_CYCLE_MAX_ACTIVE_RATIO"] == "0.20"
+    assert env["BOT_COLLECTION_DUTY_CYCLE_MAX_ACTIVE_RATIO"] == "0.16"
     assert env["BOT_COLLECTION_DUTY_CYCLE_A_PLUS_PLUS_TARGET"] == "1"
+    assert env["RAW_LIVE_EXPANSION_GUARD_ACTIVE"] == "1"
+    assert env["RAW_LIVE_EXPANSION_TIER"] == "blocked_until_raw_live_cools"
+    assert env["SQL_LINK_SERVICE_RAW_LIVE_PRIORITY_BOOST"] == "1"
+    assert env["SQL_LINK_SERVICE_COLD_STAGE_YIELDS_TO_RAW_LIVE"] == "1"
     assert env["WRITER_CYCLE_MAX_CATCH_UP_WAVES"] == "3"
     assert env["BACKLOG_PCORE_ALLOCATION_ACTIVE"] == "1"
     assert env["BACKLOG_DRAIN_SINGLE_WRITER_ONLY"] == "1"
     assert env["SQL_LINK_SERVICE_PREPROCESS_WORKERS"] == "4"
     assert env["TRAINING_PCORE_ALLOWED_WHEN_BACKLOG_GREEN"] == "1"
     assert payload["throttle_controls"]["backlog_relief_contract_active"] == "1"
+    assert payload["throttle_controls"]["raw_live_expansion_guard_active"] == "1"
+    assert payload["throttle_controls"]["raw_live_core_reserve_target"] == 4000
     assert payload["throttle_controls"]["p_core_backlog_allocation_active"] == "1"
     assert payload["throttle_controls"]["p_core_preprocess_workers"] == 4
+
+
+def test_ingestion_storage_governor_applies_storage_efficiency_contract_env(tmp_path: Path) -> None:
+    health = tmp_path / "governance" / "health"
+    _write_json(
+        health / "ingestion_storage_control_latest.json",
+        {
+            "overall_status": "blocked",
+            "severity": "critical",
+            "pressure_index": 3.4,
+            "storage_efficiency_contract": {
+                "active": True,
+                "active_blockers": [
+                    "duplicate_fallback_artifacts",
+                    "raw_training_compaction_debt",
+                    "fallback_route_reconciliation",
+                ],
+                "control_env_recommendations": {
+                    "BOT_INGESTION_STORAGE_EFFICIENCY_CONTRACT_ACTIVE": "1",
+                    "BOT_STORAGE_PLANE_PHASE": "emergency_disk_guard",
+                    "BOT_STORAGE_EMERGENCY_DISK_GUARD": "1",
+                    "BOT_STORAGE_EXTERNAL_FREE_GB": "1.5",
+                    "BOT_STORAGE_EXTERNAL_MIN_FREE_GB": "32.0",
+                    "BOT_STORAGE_ALLOW_RAW_COMPACTION_APPLY": "0",
+                    "BOT_STORAGE_ALLOW_TRAINING": "0",
+                    "BOT_STORAGE_ALLOW_EXPANSION": "0",
+                    "BOT_INGESTION_STORAGE_MODE": "fallback_reconcile_first",
+                    "BOT_DATA_CAPTURE_MODE": "manifest_only_hot_path",
+                    "BOT_RAW_PAYLOAD_STORAGE_MODE": "manifest_first",
+                    "BOT_FALLBACK_DUPLICATE_SUPPRESSION": "1",
+                    "BOT_LOCAL_FALLBACK_RECONCILE_BEFORE_EXPAND": "1",
+                    "BOT_RAW_TRAINING_MANIFEST_REFRESH_REQUIRED": "1",
+                    "BOT_RAW_TRAINING_COMPACTION_REQUIRED": "1",
+                    "BOT_RAW_TRAINING_COMPACTION_APPLY_ALLOWED_NOW": "0",
+                    "BOT_RAW_TRAINING_WAVE_MAX_FILES": "4",
+                    "BOT_RAW_TRAINING_WAVE_MAX_GB": "2.0",
+                    "BOT_COLLECTION_DUTY_CYCLE_ENABLED": "1",
+                    "BOT_COLLECTION_DUTY_CYCLE_MAX_ACTIVE_RATIO": "0.15",
+                },
+            },
+        },
+    )
+    _write_json(
+        health / "ingestion_backpressure_latest.json",
+        {"pending_lines": 38000, "pending_lines_deferred": 7000, "pending_lines_cold": 0},
+    )
+    _write_json(health / "ingestion_priority_queue_latest.json", {"lane_counts": {}})
+    _write_json(health / "storage_mount_guard_latest.json", {"external_available": True, "storage_mode": "external"})
+    _write_json(health / "storage_failback_sync_latest.json", {"mode": "external", "split_brain_conflicts": 0})
+    _write_json(health / "storage_split_brain_reconciler_latest.json", {"summary": {"unresolved_conflicts": 0}})
+    _write_json(health / "sql_link_service_latest.json", {"primary_db": str(tmp_path / "data" / "jsonl_link.sqlite3")})
+    _write_json(health / "sql_link_service_progress_latest.json", {})
+    _write_json(health / "health_gates_latest.json", {"hard_gate_triggered": True, "hard_gates": {"ingestion_backpressure_overload": True}, "storage_pressure": {"retention_debt_gb": 0.0}})
+
+    payload = src.build_payload(tmp_path, action="status")
+
+    env = payload["env_overrides"]
+    assert env["BOT_INGESTION_STORAGE_EFFICIENCY_CONTRACT_ACTIVE"] == "1"
+    assert env["BOT_DATA_CAPTURE_MODE"] == "manifest_only_hot_path"
+    assert env["BOT_RAW_PAYLOAD_STORAGE_MODE"] == "manifest_first"
+    assert env["BOT_LOCAL_FALLBACK_RECONCILE_BEFORE_EXPAND"] == "1"
+    assert env["BOT_RAW_TRAINING_MANIFEST_REFRESH_REQUIRED"] == "1"
+    assert env["BOT_STORAGE_PLANE_PHASE"] == "emergency_disk_guard"
+    assert payload["throttle_controls"]["storage_efficiency_contract_active"] == "1"
+    assert payload["throttle_controls"]["storage_plane_phase"] == "emergency_disk_guard"
+    assert payload["throttle_controls"]["storage_emergency_disk_guard"] == "1"
+    assert payload["throttle_controls"]["storage_external_free_gb"] == 1.5
+    assert payload["throttle_controls"]["storage_allow_raw_compaction_apply"] == "0"
+    assert payload["throttle_controls"]["storage_allow_training"] == "0"
+    assert payload["throttle_controls"]["storage_allow_expansion"] == "0"
+    assert payload["throttle_controls"]["data_capture_mode"] == "manifest_only_hot_path"
+    assert payload["throttle_controls"]["raw_payload_storage_mode"] == "manifest_first"
+    assert payload["throttle_controls"]["raw_training_wave_max_files"] == 4
+    assert payload["throttle_controls"]["raw_training_wave_max_gb"] == 2.0
+    assert payload["storage_efficiency_contract"]["active"] is True
+    assert any("storage efficiency contract" in action for action in payload["top_actions"])
+
+
+def test_ingestion_storage_governor_keeps_backlog_relief_authoritative_after_storage_efficiency(tmp_path: Path) -> None:
+    health = tmp_path / "governance" / "health"
+    _write_json(
+        health / "ingestion_storage_control_latest.json",
+        {
+            "overall_status": "blocked",
+            "severity": "critical",
+            "pressure_index": 4.2,
+            "backlog_relief_contract": {
+                "active": True,
+                "active_issue_ids": [
+                    "single_writer_merge_speed",
+                    "sparse_huge_jsonl_files",
+                    "intake_outpaces_drain",
+                    "stale_old_pending_work",
+                ],
+                "p_core_backlog_allocation_contract": {
+                    "active": True,
+                    "control_env": {
+                        "BACKLOG_PCORE_ALLOCATION_ACTIVE": "1",
+                        "BACKLOG_DRAIN_SINGLE_WRITER_ONLY": "1",
+                        "SQL_LINK_SERVICE_SINGLE_WRITER_ONLY": "1",
+                        "BACKLOG_PCORE_PREPROCESS_WORKERS": "3",
+                        "BACKLOG_PCORE_USER_APP_RESERVE_TARGET": "5",
+                        "BACKLOG_PCORE_BURST_MODE": "protect_live_backlog_probe_3",
+                        "SQL_LINK_SERVICE_PREPROCESS_WORKERS": "3",
+                        "SQL_LINK_SERVICE_SHARD_WRITER_LANES": "3",
+                        "SQL_LINK_SERVICE_MAX_SHARD_WRITER_LANES": "7",
+                    },
+                },
+            },
+            "storage_efficiency_contract": {
+                "active": True,
+                "active_blockers": ["raw_training_compaction_debt"],
+                "control_env_recommendations": {
+                    "BOT_INGESTION_STORAGE_EFFICIENCY_CONTRACT_ACTIVE": "1",
+                    "BOT_STORAGE_PLANE_PHASE": "manifest_only_recovery",
+                    "BOT_COLLECTION_DUTY_CYCLE_ENABLED": "1",
+                    "BOT_COLLECTION_DUTY_CYCLE_MAX_ACTIVE_RATIO": "0.15",
+                    "BACKLOG_PCORE_PREPROCESS_WORKERS": "4",
+                    "BACKLOG_PCORE_USER_APP_RESERVE_TARGET": "0",
+                    "BACKLOG_PCORE_BURST_MODE": "stale_service_request_4",
+                    "SQL_LINK_SERVICE_PREPROCESS_WORKERS": "4",
+                    "SQL_LINK_SERVICE_SHARD_WRITER_LANES": "4",
+                    "BOT_RAW_TRAINING_COMPACTION_REQUIRED": "1",
+                },
+            },
+        },
+    )
+    _write_json(
+        health / "ingestion_backpressure_latest.json",
+        {"pending_lines": 68000, "pending_lines_deferred": 9000, "pending_lines_cold": 0},
+    )
+    _write_json(health / "ingestion_priority_queue_latest.json", {"lane_counts": {}})
+    _write_json(health / "storage_mount_guard_latest.json", {"external_available": True, "storage_mode": "external"})
+    _write_json(health / "storage_failback_sync_latest.json", {"mode": "external", "split_brain_conflicts": 0})
+    _write_json(health / "storage_split_brain_reconciler_latest.json", {"summary": {"unresolved_conflicts": 0}})
+    _write_json(health / "sql_link_service_latest.json", {"primary_db": str(tmp_path / "data" / "jsonl_link.sqlite3")})
+    _write_json(health / "sql_link_service_progress_latest.json", {})
+    _write_json(
+        health / "health_gates_latest.json",
+        {"hard_gate_triggered": True, "hard_gates": {"ingestion_backpressure_overload": True}, "storage_pressure": {"retention_debt_gb": 0.0}},
+    )
+
+    payload = src.build_payload(tmp_path, action="status")
+
+    env = payload["env_overrides"]
+    assert env["BOT_INGESTION_STORAGE_EFFICIENCY_CONTRACT_ACTIVE"] == "1"
+    assert env["BOT_RAW_TRAINING_COMPACTION_REQUIRED"] == "1"
+    assert env["BOT_COLLECTION_DUTY_CYCLE_MAX_ACTIVE_RATIO"] == "0.20"
+    assert env["BACKLOG_PCORE_PREPROCESS_WORKERS"] == "3"
+    assert env["BACKLOG_PCORE_USER_APP_RESERVE_TARGET"] == "5"
+    assert env["BACKLOG_PCORE_BURST_MODE"] == "protect_live_backlog_probe_3"
+    assert env["SQL_LINK_SERVICE_PREPROCESS_WORKERS"] == "3"
+    assert env["SQL_LINK_SERVICE_SHARD_WRITER_LANES"] == "3"
+    assert payload["throttle_controls"]["p_core_preprocess_workers"] == 3
+    assert payload["throttle_controls"]["collection_duty_cycle_max_active_ratio"] == "0.20"

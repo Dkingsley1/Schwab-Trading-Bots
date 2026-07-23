@@ -309,6 +309,39 @@ def test_build_options_plan_emits_put_calendar_spread_for_bearish_term_structure
     assert len(decision["plan"]["legs"]) == 2
 
 
+def test_options_roll_manager_flags_assignment_risk_from_type_key(monkeypatch) -> None:
+    monkeypatch.setenv("OPTIONS_ROLL_DTE_DAYS", "3")
+    decision = {
+        "action": "SELL_TO_OPEN",
+        "score": 0.61,
+        "threshold": 0.58,
+        "reasons": ["covered_call_income_setup"],
+        "plan": {
+            "symbol": "AAPL",
+            "options_style": "COVERED_CALL",
+            "underlying_price": 100.0,
+            "dte_days": 21,
+            "contracts": 1,
+            "legs": [
+                {"side": "SELL_TO_OPEN", "type": "CALL", "strike": 100.5, "expiry_days": 21, "quantity": 1}
+            ],
+        },
+    }
+
+    out, meta = loop._options_roll_manager(
+        decision=decision,
+        features={
+            "last_price": 100.0,
+            "calendar_event_proximity_norm": 0.1,
+            "options_vol_expectation_norm": 0.4,
+        },
+    )
+
+    assert out["action"] == "ROLL"
+    assert meta["directive"] == "roll_forward"
+    assert meta["assignment_risk"] is True
+
+
 def test_build_options_plan_emits_iron_butterfly_for_neutral_high_vol_setup(monkeypatch) -> None:
     monkeypatch.setenv("OPTIONS_WHEEL_ENABLED", "0")
     decision = loop._build_options_plan(

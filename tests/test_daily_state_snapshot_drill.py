@@ -84,6 +84,43 @@ class DailyStateSnapshotDrillTests(unittest.TestCase):
             self.assertNotEqual(row["restored"], "")
             self.assertTrue(row["restore_ok"])
 
+    def test_broken_routed_sqlite_uses_local_fallback_source(self) -> None:
+        module = _load_module()
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            module.PROJECT_ROOT = root
+            (root / "governance" / "watchdog").mkdir(parents=True, exist_ok=True)
+
+            routed_db = root / "data" / "jsonl_link.sqlite3"
+            missing_external_db = Path(td) / "missing_bot_logs" / "data" / "jsonl_link.sqlite3"
+            fallback_db = root / "local_fallback_storage" / "data" / "jsonl_link.sqlite3"
+            routed_db.parent.mkdir(parents=True, exist_ok=True)
+            fallback_db.parent.mkdir(parents=True, exist_ok=True)
+            routed_db.symlink_to(missing_external_db)
+            fallback_db.write_text("sqlite copy", encoding="utf-8")
+
+            out_root = root / "exports" / "state_snapshot_drills"
+            argv = [
+                "daily_state_snapshot_drill.py",
+                "--out-root",
+                str(out_root),
+                "--targets",
+                str(routed_db),
+                "--max-copy-bytes",
+                "1024",
+                "--json",
+            ]
+            with mock.patch.object(sys, "argv", argv):
+                rc = module.main()
+
+            self.assertEqual(rc, 0)
+            latest = json.loads((out_root / "latest.json").read_text(encoding="utf-8"))
+            row = latest["rows"][0]
+            self.assertEqual(row["requested_source"], str(routed_db))
+            self.assertEqual(row["effective_source"], str(fallback_db))
+            self.assertEqual(row["source"], str(fallback_db))
+            self.assertTrue(row["restore_ok"])
+
 
 if __name__ == "__main__":
     unittest.main()

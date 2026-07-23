@@ -21,6 +21,8 @@ DEFAULT_MAX_CANARY_WEIGHT = 0.12
 RECOVERABLE_RUNTIME_CLEARANCE_STATES = {
     "awaiting_cold_lane",
     "awaiting_coverage_cycles",
+    "managed_cold_lane_deferred",
+    "managed_coverage_stage_deferred",
     "staged_preclearance",
     "coverage_cycles_ready",
     "off_hours_cold_lane_launch_ready",
@@ -46,6 +48,7 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, max_canary_weight: float
     promotion_autopilot = load_json(project_root / "governance" / "champion_challenger" / "promotion_autopilot_packet_latest.json")
     canary_auto_tuner = load_json(health_root / "canary_auto_tuner_latest.json")
     canary_rollout = load_json(health_root / "canary_rollout_latest.json")
+    live_money_contract = load_json(health_root / "live_money_readiness_contract_latest.json")
 
     broker_ready = bool(broker.get("ready_for_open", False))
     session_ready = bool(session.get("ready", session.get("ok", False)))
@@ -106,10 +109,16 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, max_canary_weight: float
         (canary_rollout.get("eligible", False) and canary_rollout.get("promote_canary", False))
         or canary_signal_seed_ready
     )
+    live_money_contract_enforced = bool(live_money_contract.get("policy_id"))
+    live_money_contract_ready = bool(
+        not live_money_contract_enforced
+        or live_money_contract.get("faithful_live_money_ready", live_money_contract.get("ok", False))
+    )
     prereq_ready = bool(broker_ready and session_ready and storage_ok and storage_mode == "external")
 
     blocking_reasons = ordered_unique(
         [
+            "faithful_live_money_contract_not_ready" if live_money_contract_enforced and not live_money_contract_ready else "",
             "broker_not_ready" if not broker_ready else "",
             "session_not_ready" if not session_ready else "",
             "storage_not_ready" if not storage_ok else "",
@@ -144,7 +153,7 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, max_canary_weight: float
     preapproved_supervised_ready = bool(
         staged_preclearance_ready
         and packet_preclearance_ready
-        and runtime_clearance_recoverable
+        and (runtime_clearance_recoverable or clearance_ready)
         and all(
             reason
             in {
@@ -213,13 +222,23 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, max_canary_weight: float
         if staged_preclearance_ready
         else "validate_only"
     )
-    overall_status = "ready" if supervised_canary_ready else ("degraded" if staged_preclearance_ready or (broker_ready and session_ready and storage_ok) else "blocked")
+    contract_hard_block = bool(live_money_contract_enforced and not live_money_contract_ready)
+    overall_status = (
+        "ready"
+        if supervised_canary_ready
+        else "blocked"
+        if contract_hard_block
+        else "degraded"
+        if staged_preclearance_ready or (broker_ready and session_ready and storage_ok)
+        else "blocked"
+    )
 
     recommended_actions = ordered_unique(
         [
             "run the live canary only after the promotion packet reaches a signed awaiting-approval or canary-ready state" if not packet_ready else "",
             "treat the current promotion packet as canary-seeded only; finish the remaining promotion repairs before supervised submit" if packet_preclearance_ready and not packet_ready else "",
             "clear runtime separation blockers before allowing even a supervised canary write path" if not clearance_ready or live_lane_should_be_read_only else "",
+            "keep live money locked until the A/A+ faithful-live contract clears" if live_money_contract_enforced and not live_money_contract_ready else "",
             "refresh the canary rollout guard so supervised canary permission is backed by recent paper evidence" if not canary_signal_ready else "",
             "the canary package is runnable once the runtime release window opens; the remaining blockers are only the cold-lane/runtime release protections" if runnable_after_release_window else "",
             f"keep the canary weight at or under {float(max_canary_weight):.2f} before supervised live submit" if not weight_ok else "",
@@ -252,6 +271,11 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, max_canary_weight: float
         "promotion_packet_preclearance_ready": packet_preclearance_ready,
         "canary_signal_ready": canary_signal_ready,
         "canary_signal_seed_ready": canary_signal_seed_ready,
+        "live_money_contract_enforced": live_money_contract_enforced,
+        "live_money_contract_ready": live_money_contract_ready,
+        "live_money_contract_hard_block": contract_hard_block,
+        "live_money_contract_target_date": live_money_contract.get("target_date", ""),
+        "live_money_contract_days_remaining": live_money_contract.get("days_remaining"),
         "target_canary_weight": round(target_canary_weight, 6),
         "applied_canary_weight": round(canary_weight, 6),
         "max_canary_weight": round(float(max_canary_weight), 6),
@@ -268,6 +292,7 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, max_canary_weight: float
             "promotion_autopilot_packet": str(project_root / "governance" / "champion_challenger" / "promotion_autopilot_packet_latest.json"),
             "canary_auto_tuner": str(health_root / "canary_auto_tuner_latest.json"),
             "canary_rollout_guard": str(health_root / "canary_rollout_latest.json"),
+            "live_money_readiness_contract": str(health_root / "live_money_readiness_contract_latest.json"),
         },
     }
 

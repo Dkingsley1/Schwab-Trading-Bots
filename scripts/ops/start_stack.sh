@@ -20,6 +20,14 @@ PROFILE="${BOT_RUNTIME_PROFILE:-}"
 ORCHESTRATOR_MODE="${STACK_ORCHESTRATOR_MODE:-watchdog}"
 DRY_RUN=0
 
+load_stack_runtime_env() {
+  if [[ -f "$PROJECT_ROOT/scripts/ops/load_runtime_env.sh" ]]; then
+    # shellcheck disable=SC1091
+    source "$PROJECT_ROOT/scripts/ops/load_runtime_env.sh" "$PROFILE" --quiet
+  fi
+  PY="$(resolve_runtime_python)"
+}
+
 flag_reason() {
   local path="$1"
   "$PY" - "$path" <<'PY'
@@ -121,6 +129,7 @@ if [[ -z "$PROFILE" ]]; then
   fi
 fi
 
+load_stack_runtime_env
 abort_for_safety_flags
 
 if [[ "$DRY_RUN" == "1" ]]; then
@@ -142,10 +151,7 @@ fi
 "$PY" "$PROJECT_ROOT/scripts/ops/memory_efficiency_control.py" apply >/dev/null 2>&1 || true
 "$PY" "$PROJECT_ROOT/scripts/ops/computer_task_intelligence.py" --apply --json >/dev/null 2>&1 || true
 
-if [[ -f "$PROJECT_ROOT/scripts/ops/load_runtime_env.sh" ]]; then
-  # shellcheck disable=SC1091
-  source "$PROJECT_ROOT/scripts/ops/load_runtime_env.sh" "$PROFILE" --quiet
-fi
+load_stack_runtime_env
 
 if [[ "${PAPER_400_RAMP_AUTO_APPLY:-1}" != "0" && -f "$PROJECT_ROOT/scripts/ops/paper_400_ramp_control.py" ]]; then
   "$PY" "$PROJECT_ROOT/scripts/ops/paper_400_ramp_control.py" --apply --json >/dev/null 2>&1 || true
@@ -209,7 +215,7 @@ export MARKET_DATA_ONLY="${MARKET_DATA_ONLY:-1}"
 export ALLOW_ORDER_EXECUTION="${ALLOW_ORDER_EXECUTION:-0}"
 export TOP_BOT_PAPER_TRADING_ENABLED="${TOP_BOT_PAPER_TRADING_ENABLED:-1}"
 export TOP_BOT_PAPER_TRADING_OPTIONS_ENABLED="${TOP_BOT_PAPER_TRADING_OPTIONS_ENABLED:-1}"
-export PAPER_MIRROR_ALL_ACTIVE_SUB_BOTS="${PAPER_MIRROR_ALL_ACTIVE_SUB_BOTS:-0}"
+export PAPER_MIRROR_ALL_ACTIVE_SUB_BOTS="${PAPER_MIRROR_ALL_ACTIVE_SUB_BOTS:-1}"
 export PAPER_BROKER_BRIDGE_ENABLED="${PAPER_BROKER_BRIDGE_ENABLED:-1}"
 export PAPER_BROKER_BRIDGE_MODE="${PAPER_BROKER_BRIDGE_MODE:-jsonl}"
 export LOG_SUB_BOT_DECISIONS="${LOG_SUB_BOT_DECISIONS:-1}"

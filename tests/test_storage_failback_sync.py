@@ -1,6 +1,7 @@
 import importlib.util
 import fcntl
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -163,6 +164,45 @@ def test_build_sqlite_skip_report_certifies_curated_external_mode(monkeypatch, t
     assert payload['route_verification']['ready_count'] == 3
 
 
+def test_build_sqlite_skip_report_certifies_active_local_nested_links(monkeypatch, tmp_path):
+    project_root = tmp_path / 'project'
+    local_root = project_root / 'local_fallback_storage'
+    external_root = tmp_path / 'external'
+    repo_data = project_root / 'data'
+    local_data = local_root / 'data'
+    external_data = external_root / 'data'
+    repo_data.mkdir(parents=True, exist_ok=True)
+    local_data.mkdir(parents=True, exist_ok=True)
+    external_data.mkdir(parents=True, exist_ok=True)
+
+    (local_data / 'jsonl_link.sqlite3').write_text('local-primary', encoding='utf-8')
+    (local_data / 'snapshot_context.sqlite3').write_text('snapshot-local', encoding='utf-8')
+    (external_data / 'bot_channel_queue.sqlite3').write_text('queue-external', encoding='utf-8')
+    (repo_data / 'jsonl_link.sqlite3').symlink_to(local_data / 'jsonl_link.sqlite3')
+    (repo_data / 'snapshot_context.sqlite3').symlink_to(local_data / 'snapshot_context.sqlite3')
+    (repo_data / 'bot_channel_queue.sqlite3').symlink_to(external_data / 'bot_channel_queue.sqlite3')
+
+    monkeypatch.setenv('BOT_LOGS_LOCAL_FALLBACK_ROOT', str(local_root))
+    monkeypatch.setenv('BOT_CHANNEL_QUEUE_DB', str(repo_data / 'bot_channel_queue.sqlite3'))
+
+    payload = storage_failback_sync._build_sqlite_skip_report(
+        project_root,
+        external_root,
+        mode='local_fallback',
+        active_root=local_root,
+    )
+
+    by_rel = {row['relative_path']: row for row in payload['entries']}
+    assert by_rel['data/jsonl_link.sqlite3']['classification'] == 'active_local_route'
+    assert by_rel['data/jsonl_link.sqlite3']['route_verification']['state'] == 'active_local_ready'
+    assert by_rel['data/snapshot_context.sqlite3']['route_verification']['state'] == 'active_local_ready'
+    assert by_rel['data/bot_channel_queue.sqlite3']['route_verification']['state'] == 'verified'
+    assert payload['summary']['verification_state'] == 'active_local_ready'
+    assert payload['route_verification']['verification_state'] == 'active_local_ready'
+    assert payload['route_verification']['ready_count'] == 3
+    assert payload['route_verification']['mismatches'] == []
+
+
 def test_build_sqlite_skip_report_treats_smaller_standby_copy_as_curated(monkeypatch, tmp_path):
     project_root = tmp_path / 'project'
     local_root = project_root / 'local_fallback_storage'
@@ -191,6 +231,45 @@ def test_build_sqlite_skip_report_treats_smaller_standby_copy_as_curated(monkeyp
     assert by_rel['data/jsonl_link.sqlite3']['route_verification']['state'] == 'curated_standby'
     assert payload['summary']['verification_state'] == 'curated_ready'
     assert payload['certified_mode'] == 'external_curated'
+
+
+def test_build_sqlite_skip_report_verifies_newer_active_external_smaller_than_standby(monkeypatch, tmp_path):
+    project_root = tmp_path / 'project'
+    local_root = project_root / 'local_fallback_storage'
+    external_root = tmp_path / 'external'
+    local_data = local_root / 'data'
+    external_data = external_root / 'data'
+    local_data.mkdir(parents=True, exist_ok=True)
+    external_data.mkdir(parents=True, exist_ok=True)
+    project_root.mkdir(parents=True, exist_ok=True)
+    (project_root / 'data').symlink_to(external_data, target_is_directory=True)
+
+    local_jsonl = local_data / 'jsonl_link.sqlite3'
+    external_jsonl = external_data / 'jsonl_link.sqlite3'
+    local_jsonl.write_text('local-standby-is-larger-than-current-external-route', encoding='utf-8')
+    external_jsonl.write_text('external-live', encoding='utf-8')
+    (external_data / 'bot_channel_queue.sqlite3').write_text('queue-external', encoding='utf-8')
+    (external_data / 'snapshot_context.sqlite3').write_text('snapshot-external', encoding='utf-8')
+
+    os.utime(local_jsonl, (100.0, 100.0))
+    os.utime(external_jsonl, (200.0, 200.0))
+
+    monkeypatch.setenv('BOT_LOGS_LOCAL_FALLBACK_ROOT', str(local_root))
+    monkeypatch.setenv('BOT_CHANNEL_QUEUE_DB', str(project_root / 'data' / 'bot_channel_queue.sqlite3'))
+
+    payload = storage_failback_sync._build_sqlite_skip_report(
+        project_root,
+        external_root,
+        mode='external',
+        active_root=external_root,
+    )
+
+    by_rel = {row['relative_path']: row for row in payload['entries']}
+    assert by_rel['data/jsonl_link.sqlite3']['classification'] == 'active_external_route'
+    assert by_rel['data/jsonl_link.sqlite3']['route_verification']['state'] == 'active_external_newer_than_standby'
+    assert payload['summary']['verification_state'] == 'ready'
+    assert payload['route_verification']['ready_count'] == 3
+    assert payload['route_verification']['mismatches'] == []
 
 
 def test_build_sqlite_skip_report_treats_routed_queue_db_as_external(monkeypatch, tmp_path):
@@ -264,3 +343,79 @@ def test_build_sqlite_skip_report_verifies_repo_passthrough_queue_db(monkeypatch
     assert payload['summary']['active_passthrough_count'] == 1
     assert payload['summary']['verification_mismatch_count'] == 0
     assert payload['route_verification']['ready_count'] == 3
+
+
+def test_refresh_frozen_sqlite_skip_report_updates_stale_queue_metadata(monkeypatch, tmp_path):
+    project_root = tmp_path / 'project'
+    local_root = project_root / 'local_fallback_storage'
+    external_root = tmp_path / 'external'
+    repo_data = project_root / 'data'
+    local_data = local_root / 'data'
+    external_data = external_root / 'data'
+    repo_data.mkdir(parents=True, exist_ok=True)
+    local_data.mkdir(parents=True, exist_ok=True)
+    external_data.mkdir(parents=True, exist_ok=True)
+
+    (local_data / 'jsonl_link.sqlite3').write_text('local-primary', encoding='utf-8')
+    (local_data / 'snapshot_context.sqlite3').write_text('snapshot-local', encoding='utf-8')
+    queue_target = external_data / 'bot_channel_queue.sqlite3'
+    queue_target.write_text('small-valid-queue', encoding='utf-8')
+    (repo_data / 'jsonl_link.sqlite3').symlink_to(local_data / 'jsonl_link.sqlite3')
+    (repo_data / 'snapshot_context.sqlite3').symlink_to(local_data / 'snapshot_context.sqlite3')
+    (repo_data / 'bot_channel_queue.sqlite3').symlink_to(queue_target)
+
+    monkeypatch.setattr(storage_failback_sync, 'PROJECT_ROOT', project_root)
+    monkeypatch.setenv('BOT_LOGS_LOCAL_FALLBACK_ROOT', str(local_root))
+    monkeypatch.setenv('BOT_CHANNEL_QUEUE_DB', str(repo_data / 'bot_channel_queue.sqlite3'))
+    payload = {
+        'mode': 'local_fallback_split_brain',
+        'active_root': str(local_root),
+        'sqlite_skip_report': {
+            'entries': [
+                {
+                    'relative_path': 'data/bot_channel_queue.sqlite3',
+                    'external': {'size_bytes': 268620754944},
+                }
+            ]
+        },
+    }
+
+    refreshed = storage_failback_sync._refresh_frozen_sqlite_skip_report(payload, external_root)
+
+    by_rel = {row['relative_path']: row for row in refreshed['sqlite_skip_report']['entries']}
+    assert by_rel['data/bot_channel_queue.sqlite3']['external']['size_bytes'] == len('small-valid-queue')
+    assert by_rel['data/bot_channel_queue.sqlite3']['route_verification']['state'] == 'verified'
+    assert refreshed['frozen_lightweight_refresh']['sqlite_skip_report'] is True
+
+
+def test_support_freeze_bypass_reason_requires_real_routing_when_previous_not_external(monkeypatch, tmp_path):
+    previous_path = tmp_path / 'storage_failback_sync_latest.json'
+    previous_path.write_text(
+        json.dumps({'mode': 'local_fallback_split_brain', 'split_brain_conflicts': 3}),
+        encoding='utf-8',
+    )
+
+    reason = storage_failback_sync._support_freeze_bypass_reason(previous_path, tmp_path / 'external')
+
+    assert reason == 'previous_route_not_external:local_fallback_split_brain'
+
+
+def test_support_freeze_bypass_reason_allows_freeze_when_external_is_healthy(monkeypatch, tmp_path):
+    previous_path = tmp_path / 'storage_failback_sync_latest.json'
+    previous_path.write_text(
+        json.dumps({'mode': 'external', 'certified_mode': 'external', 'split_brain_conflicts': 0}),
+        encoding='utf-8',
+    )
+    monkeypatch.setattr(
+        storage_failback_sync,
+        '_probe_external_storage',
+        lambda _external_root: {
+            'mount_present': True,
+            'external_root_exists': True,
+            'external_root_writable': True,
+        },
+    )
+
+    reason = storage_failback_sync._support_freeze_bypass_reason(previous_path, tmp_path / 'external')
+
+    assert reason == ''

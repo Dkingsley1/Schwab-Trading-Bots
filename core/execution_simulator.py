@@ -29,6 +29,15 @@ class ExecutionSimResult:
     latency_bucket: str = ""
     session: str = ""
     order_type: str = ""
+    effective_fill_ratio: float = 1.0
+    paper_execution_status: str = "simulated_fill"
+    paper_execution_score: float = 100.0
+    reject_probability: float = 0.0
+    stale_quote_probability: float = 0.0
+    queue_fill_probability: float = 1.0
+    market_impact_bps: float = 0.0
+    option_liquidity_penalty_bps: float = 0.0
+    asset_class: str = ""
 
 
 def _env_float(name: str, default: float) -> float:
@@ -88,6 +97,12 @@ def simulate_execution(
     session: str = "regular",
     order_type: str = "market",
     live_fill_slippage_bps: float = 0.0,
+    asset_class: str = "",
+    sleeve: str = "",
+    quote_age_ms: float = 0.0,
+    market_volume: float = 0.0,
+    avg_daily_volume: float = 0.0,
+    open_interest: float = 0.0,
 ) -> ExecutionSimResult:
     action = (action or "HOLD").upper()
     buy_like_actions = {"BUY", "BUY_TO_COVER", "BUY_TO_OPEN", "BUY_TO_CLOSE"}
@@ -99,6 +114,10 @@ def simulate_execution(
     resolved_market_kind = str(market_kind or "").strip().lower()
     if not resolved_market_kind:
         resolved_market_kind = "crypto" if str(broker or "").strip().lower() == "coinbase" else "equities"
+    resolved_asset_class = str(asset_class or "").strip().lower()
+    if not resolved_asset_class:
+        resolved_asset_class = "options" if resolved_market_kind == "options" else resolved_market_kind
+    sleeve_key = str(sleeve or "").strip().lower()
     venue = _resolve_venue(broker, resolved_market_kind)
     short_side = action in {"SELL_SHORT", "SELL_TO_OPEN"}
     session_key = str(session or "regular").strip().lower()
@@ -231,6 +250,15 @@ def simulate_execution(
             latency_bucket="none",
             session=session_key,
             order_type=order_type_key,
+            effective_fill_ratio=1.0,
+            paper_execution_status="no_trade",
+            paper_execution_score=100.0,
+            reject_probability=0.0,
+            stale_quote_probability=0.0,
+            queue_fill_probability=1.0,
+            market_impact_bps=0.0,
+            option_liquidity_penalty_bps=0.0,
+            asset_class=resolved_asset_class,
         )
 
     is_buy_like = action in buy_like_actions
@@ -262,6 +290,36 @@ def simulate_execution(
         max(depth_impact - 4.0, 0.0) * 0.45 + max(live_fill_slippage_bps, 0.0) * 0.25,
         18.0,
     )
+    option_liquidity_penalty_bps = 0.0
+    stale_quote_probability = 0.0
+    if resolved_asset_class == "options" or sleeve_key in {"covered_call", "options"}:
+        quote_age = max(float(quote_age_ms or 0.0), 0.0)
+        same_side_depth = max(depth_same_side, 0.0)
+        oi = max(float(open_interest or 0.0), 0.0)
+        session_volume = max(float(market_volume or 0.0), 0.0)
+        adv = max(float(avg_daily_volume or 0.0), 0.0)
+        depth_shortfall = max((size / max(same_side_depth, 1e-6)) - 1.0, 0.0)
+        volume_shortfall = max((size / max(session_volume, 1e-6)) - 0.5, 0.0) if session_volume > 0.0 else 0.75
+        open_interest_shortfall = max((25.0 - oi) / 25.0, 0.0)
+        adv_shortfall = max((250.0 - adv) / 250.0, 0.0) if adv > 0.0 else 0.5
+        option_liquidity_penalty_bps = min(
+            max(spread - 20.0, 0.0) * 0.35
+            + depth_shortfall * 8.0
+            + volume_shortfall * 10.0
+            + open_interest_shortfall * 12.0
+            + adv_shortfall * 6.0,
+            55.0,
+        )
+        stale_quote_probability = min(
+            max(quote_age / 6000.0, 0.0)
+            + max(spread - 45.0, 0.0) / 120.0
+            + open_interest_shortfall * 0.20,
+            1.0,
+        )
+    else:
+        quote_age = max(float(quote_age_ms or 0.0), 0.0)
+        stale_quote_probability = min(max((quote_age - 1500.0) / 10000.0, 0.0), 0.45)
+
     queue_priority_score = max(0.0, min((1.0 - queue_position_ratio) * max(1.0 - min(spread / 40.0, 1.0), 0.0), 1.0))
     cancel_probability = max(
         0.0,
@@ -284,6 +342,16 @@ def simulate_execution(
             0.85,
         ),
     )
+    reject_probability = max(
+        0.0,
+        min(
+            (0.08 * queue_position_ratio)
+            + (0.20 * requote_probability)
+            + (0.65 * stale_quote_probability)
+            + (0.01 * option_liquidity_penalty_bps),
+            0.99,
+        ),
+    )
     total_bps = (
         half_spread
         + fee_bps
@@ -296,6 +364,7 @@ def simulate_execution(
         + depth_impact
         + crowding_penalty_bps
         + spread_jump_penalty_bps
+        + option_liquidity_penalty_bps
         + max(live_fill_slippage_bps, 0.0)
     ) * symbol_curve_multiplier
     if depth_same_side <= 0.0:
@@ -310,6 +379,43 @@ def simulate_execution(
         fill_quality_bucket = "fair"
     else:
         fill_quality_bucket = "poor"
+    queue_fill_probability = max(
+        0.0,
+        min(queue_priority_score * (1.0 - cancel_probability) * (1.0 - reject_probability), 1.0),
+    )
+    effective_fill_ratio = max(
+        0.0,
+        min(
+            partial_fill_ratio
+            * (1.0 - (0.40 * cancel_probability))
+            * (1.0 - (0.25 * requote_probability))
+            * (1.0 - reject_probability),
+            1.0,
+        ),
+    )
+    if stale_quote_probability >= 0.95:
+        paper_execution_status = "stale_quote_rejected"
+        effective_fill_ratio = 0.0
+    elif reject_probability >= 0.90:
+        paper_execution_status = "rejected"
+        effective_fill_ratio = 0.0
+    elif effective_fill_ratio < 0.50:
+        paper_execution_status = "partial_fill_watch"
+    else:
+        paper_execution_status = "simulated_fill"
+    market_impact_bps = float(depth_impact + crowding_penalty_bps + option_liquidity_penalty_bps)
+    paper_execution_score = max(
+        0.0,
+        min(
+            100.0
+            - min(total_bps, 100.0) * 0.35
+            - cancel_probability * 10.0
+            - requote_probability * 8.0
+            - reject_probability * 25.0
+            + effective_fill_ratio * 12.0,
+            100.0,
+        ),
+    )
     spread_regime = "wide" if spread >= 20.0 else ("normal" if spread >= 6.0 else "tight")
     latency_bucket = "slow" if latency_ms >= 400.0 else ("watch" if latency_ms >= 180.0 else "fast")
 
@@ -344,4 +450,13 @@ def simulate_execution(
         latency_bucket=latency_bucket,
         session=session_key,
         order_type=order_type_key,
+        effective_fill_ratio=float(effective_fill_ratio),
+        paper_execution_status=paper_execution_status,
+        paper_execution_score=float(paper_execution_score),
+        reject_probability=float(reject_probability),
+        stale_quote_probability=float(stale_quote_probability),
+        queue_fill_probability=float(queue_fill_probability),
+        market_impact_bps=float(market_impact_bps),
+        option_liquidity_penalty_bps=float(option_liquidity_penalty_bps),
+        asset_class=resolved_asset_class,
     )

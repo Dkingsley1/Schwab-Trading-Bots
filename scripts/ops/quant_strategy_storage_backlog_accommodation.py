@@ -49,7 +49,7 @@ def _score_from_backlog(*, pressure_ratio: float, oldest_age_seconds: float, tar
 
 def _grade_from_score(score: float) -> str:
     if score >= 98.0:
-        return "A++"
+        return "A+"
     if score >= 92.0:
         return "A+"
     if score >= 82.0:

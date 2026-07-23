@@ -159,16 +159,50 @@ def _queue_decay_meter(project_root: Path, previous: dict[str, Any]) -> dict[str
     }
 
 
+def _writer_single_primary_contract(project_root: Path) -> dict[str, Any]:
+    intelligence = _health(project_root, "writer_process_intelligence_latest.json")
+    writer_health = _as_dict(intelligence.get("writer_health"))
+    lane_contract = _as_dict(writer_health.get("shard_writer_lane_contract"))
+    primary_merge_writer_count = max(
+        _safe_int(lane_contract.get("primary_merge_writer_count"), 0),
+        _safe_int(writer_health.get("primary_merge_writer_count"), 0),
+    )
+    sqlite_primary_writer_count = _safe_int(lane_contract.get("sqlite_primary_writer_count"), primary_merge_writer_count)
+    active_child_writer_count = _safe_int(writer_health.get("active_child_writer_count"), 0)
+    lock_held = _bool(writer_health.get("writer_lock_held"))
+    single_primary_merge_writer = bool(
+        _bool(lane_contract.get("single_primary_merge_writer"))
+        and primary_merge_writer_count <= 1
+        and sqlite_primary_writer_count <= 1
+        and lock_held
+    )
+    return {
+        "overall_status": str(intelligence.get("overall_status") or "missing"),
+        "single_primary_merge_writer": single_primary_merge_writer,
+        "primary_merge_writer_count": primary_merge_writer_count,
+        "sqlite_primary_writer_count": sqlite_primary_writer_count,
+        "active_child_writer_count": active_child_writer_count,
+        "writer_lock_held": lock_held,
+        "writer_lane_policy": str(writer_health.get("writer_lane_policy") or lane_contract.get("policy") or ""),
+    }
+
+
 def _single_writer_guard(project_root: Path, queue: dict[str, Any]) -> dict[str, Any]:
     process = _health(project_root, "process_watchdog_latest.json")
     drainer = _health(project_root, "backpressure_drainer_fleet_latest.json")
+    writer_contract = _writer_single_primary_contract(project_root)
     statuses = [row for row in _as_list(process.get("status")) if isinstance(row, dict)]
     writer_rows = [row for row in statuses if str(row.get("name") or "") == "sql_link_writer"]
     raw_running = sum(_safe_int(row.get("running"), 0) for row in writer_rows)
     writer_active = _bool(drainer.get("writer_active"))
     lock_held = _bool(drainer.get("writer_lock_held"))
     wrapper_chain_only = bool(raw_running > 1 and not writer_active and not lock_held)
-    running = 1 if wrapper_chain_only else raw_running
+    guarded_single_writer_chain = bool(
+        raw_running > 1
+        and (writer_active or lock_held)
+        and _bool(writer_contract.get("single_primary_merge_writer"))
+    )
+    running = 1 if (wrapper_chain_only or guarded_single_writer_chain) else raw_running
     queue_active = _bool(queue.get("queue_backpressure_active"))
     status = "ready"
     if running > 1:
@@ -182,6 +216,8 @@ def _single_writer_guard(project_root: Path, queue: dict[str, Any]) -> dict[str,
         "sql_link_writer_running_count": running,
         "raw_sql_link_writer_running_count": raw_running,
         "wrapper_chain_only": wrapper_chain_only,
+        "guarded_single_writer_chain": guarded_single_writer_chain,
+        "writer_single_primary_contract": writer_contract,
         "writer_active": writer_active,
         "writer_lock_held": lock_held,
         "queue_backpressure_active": queue_active,

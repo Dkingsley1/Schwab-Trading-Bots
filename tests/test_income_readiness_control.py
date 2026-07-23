@@ -99,6 +99,27 @@ def _seed_health(project_root: Path) -> None:
     _write_json(health / "training_quality_control_latest.json", {"overall_status": "ready", "training_quality_score": 100.0})
     _write_json(health / "training_runtime_control_latest.json", {"overall_status": "ready"})
     _write_json(health / "promotion_quality_gate_latest.json", {"ok": True, "failed_checks": []})
+    _write_json(
+        health / "account_policy_context_latest.json",
+        {
+            "timestamp_utc": "2999-01-01T00:00:00+00:00",
+            "account_policy_context": {
+                "pdt_intraday_margin_transition": {
+                    "phase": "legacy_pdt_until_finra_effective_date",
+                    "schwab_day_trade_count_retired": False,
+                },
+                "intraday_margin_probe_contract": {
+                    "status": "scheduled_pre_schwab_cutover",
+                    "probe_required_now": False,
+                    "intraday_buying_power_observed": False,
+                },
+                "paper_intraday_margin_deficit_simulator": {
+                    "status": "ready",
+                    "simulated_margin_deficit_usd": 0.0,
+                },
+            },
+        },
+    )
     _write_json(health / "global_killswitch_latest.json", {"halt": False})
 
 
@@ -136,7 +157,7 @@ def test_income_readiness_runtime_control_is_paper_only(tmp_path: Path) -> None:
     assert control["paper_only"] is True
     assert control["live_execution_allowed"] is False
     assert control["live_micro_allowed"] is False
-    assert control["section_controls"]["realized_profit_discipline"]["grade"] in {"D", "C", "B", "A", "A+", "A++"}
+    assert control["section_controls"]["realized_profit_discipline"]["grade"] in {"D", "C", "B", "A", "A+", "A+"}
 
 
 def test_income_readiness_controlled_100_keeps_raw_debt_visible(tmp_path: Path) -> None:
@@ -152,7 +173,7 @@ def test_income_readiness_controlled_100_keeps_raw_debt_visible(tmp_path: Path) 
                 "ending_unrealized_pnl_total": 250.0,
             },
             "profit_harvest_report_card": {
-                "grade": "A++",
+                "grade": "A+",
                 "raw_outcome_grade": "A",
                 "current_realized_profit_share_norm": 1.0,
                 "current_unrealized_profit_share_norm": 0.0,
@@ -239,7 +260,7 @@ def test_income_readiness_controlled_100_keeps_raw_debt_visible(tmp_path: Path) 
     by_id = {row["section_id"]: row for row in payload["sections"]}
 
     assert payload["income_readiness_score"] == 100.0
-    assert payload["income_readiness_grade"] == "A++"
+    assert payload["income_readiness_grade"] == "A+"
     assert payload["live_execution_allowed"] is False
     assert payload["live_micro_allowed"] is False
     assert by_id["drawdown_governor"]["evidence"]["raw_drawdown_grade"] == "F"

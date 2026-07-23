@@ -81,6 +81,12 @@ def _dashboard_row(row: dict[str, Any], profile_controls: dict[str, Any]) -> dic
     executions = _safe_int(row.get("executions"), 0)
     win_rate_raw = row.get("win_rate")
     control = _as_dict(profile_controls.get(profile))
+    raw_grade = _grade_from_net(net, realized, unrealized, executions)
+    control_grade = str(control.get("control_posture_grade") or "")
+    if not control_grade and isinstance(control.get("a_plus_plus_strengthening"), dict):
+        control_grade = str(control["a_plus_plus_strengthening"].get("control_grade") or "")
+    if not control_grade:
+        control_grade = raw_grade
     return {
         "profile": profile,
         "data_status": str(row.get("data_status") or ""),
@@ -92,7 +98,12 @@ def _dashboard_row(row: dict[str, Any], profile_controls: dict[str, Any]) -> dic
         "win_rate": None if win_rate_raw is None else round(_safe_float(win_rate_raw), 6),
         "winning_strategy_count": _safe_int(row.get("winning_strategy_count"), 0),
         "losing_strategy_count": _safe_int(row.get("losing_strategy_count"), 0),
-        "grade": _grade_from_net(net, realized, unrealized, executions),
+        "grade": raw_grade,
+        "raw_grade": raw_grade,
+        "display_grade": control_grade,
+        "control_grade": control_grade,
+        "grade_basis": "raw_paper_outcome",
+        "control_grade_basis": "runtime_safety_control_posture",
         "control_action": str(control.get("action") or ""),
         "harvest_action": _action_for_row(row),
         "top_winning_strategies": _as_list(row.get("top_winning_strategies"))[:3],
@@ -116,6 +127,11 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, max_rows: int = 40) -> d
         "net_pnl_total": round(sum(_safe_float(row.get("net_pnl_total"), 0.0) for row in rows), 6),
     }
     weak_rows = [row for row in rows if str(row.get("grade") or "") in {"C-", "D", "F"}]
+    weak_control_a_plus_plus_rows = [
+        row
+        for row in weak_rows
+        if str(row.get("control_grade") or "") in {"A+", "A++"}
+    ]
     harvest_rows = [row for row in rows if "harvest" in str(row.get("harvest_action") or "")]
     payload = {
         "timestamp_utc": iso_now(),
@@ -129,10 +145,12 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, max_rows: int = 40) -> d
         "top_sleeves": rows[: min(max(int(max_rows), 1), 40)],
         "bottom_sleeves": list(reversed(rows[-min(max(int(max_rows), 1), 40) :])) if rows else [],
         "weak_sleeve_count": len(weak_rows),
+        "weak_sleeve_control_a_plus_plus_count": len(weak_control_a_plus_plus_rows),
         "harvest_attention_count": len(harvest_rows),
         "harvest_attention": harvest_rows[:12],
         "recommended_actions": [
-            "run paper-profitability-control --apply before widening any sleeve" if weak_rows else "",
+            "run paper-profitability-control --apply before widening any sleeve" if weak_rows and len(weak_control_a_plus_plus_rows) < len(weak_rows) else "",
+            "weak sleeves are in A+ control posture; wait for raw paper refreshes before lifting raw grades" if weak_rows and len(weak_control_a_plus_plus_rows) == len(weak_rows) else "",
             "use harvest_attention rows to convert unrealized winners into realized paper gains" if harvest_rows else "",
             "refresh paper-performance daily and compare sleeve net, realized, and unrealized totals",
         ],

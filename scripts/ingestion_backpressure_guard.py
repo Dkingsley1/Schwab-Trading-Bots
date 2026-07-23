@@ -9,6 +9,8 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 IGNORED_BACKPRESSURE_PREFIXES = (
     "governance/health/jsonl_ingest_batch_journal",
     "governance/events/jsonl_ingest_batches_",
+    "governance/training/raw_training_source_queue_latest.jsonl",
+    "governance/training/raw_training_eligible_source_queue_latest.jsonl",
 )
 SUPPORT_BACKPRESSURE_PREFIXES = (
     "governance/watchdog/",
@@ -197,7 +199,10 @@ def _last_line_for_state(rel: str, stat, progress: dict) -> int:
     prev_size = int(float(progress.get("file_size_bytes", 0) or 0))
 
     if prev_inode > 0 and int(stat.st_ino) != prev_inode:
-        return 0
+        same_size = bool(prev_size > 0 and int(stat.st_size) == prev_size)
+        same_mtime = bool(prev_mtime > 0.0 and abs(float(stat.st_mtime) - prev_mtime) <= 1.0)
+        if not (same_size and same_mtime):
+            return 0
     if prev_size > 0 and int(stat.st_size) < prev_size:
         return 0
     # Some filesystems/reporting paths round mtimes differently than the

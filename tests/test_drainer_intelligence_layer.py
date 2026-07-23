@@ -369,7 +369,7 @@ def test_backlog_section_scorecard_grades_sparse_core_pressure() -> None:
     assert sections["core_decision"]["grade"] == "F"
     assert sections["crypto_sparse_decision"]["grade"] == "F"
     assert sections["writer_merge_health"]["grade"] == "D"
-    assert sections["support_watchdog"]["grade"] == "A++"
+    assert sections["support_watchdog"]["grade"] == "A+"
     assert scorecard["operator_next_focus"][0]["section_id"] in {"core_decision", "crypto_sparse_decision"}
     assert "writer_progress_orphaned" in payload["decision_packet"]["risk_flags"]
 
@@ -530,11 +530,11 @@ def test_backlog_section_scorecard_grades_clean_backlog_green() -> None:
 
     scorecard = payload["backlog_section_scorecard"]
     sections = {row["section_id"]: row for row in scorecard["sections"]}
-    assert scorecard["overall_grade"] == "A++"
+    assert scorecard["overall_grade"] == "A+"
     assert scorecard["overall_score"] >= 95
     assert sections["writer_merge_health"]["grade"] == "A+"
-    assert sections["runtime_capacity"]["grade"] == "A++"
-    assert {row["grade"] for row in scorecard["sections"]} <= {"A++", "A+", "A", "B"}
+    assert sections["runtime_capacity"]["grade"] == "A+"
+    assert {row["grade"] for row in scorecard["sections"]} <= {"A+", "A+", "A", "B"}
     assert payload["backlog_needs_packet"]["overall_status"] == "clear"
     assert payload["backlog_needs_packet"]["needs"] == []
 
@@ -568,8 +568,8 @@ def test_runtime_capacity_scores_cool_soft_degraded_host_as_backlog_safe() -> No
     )
 
     sections = {row["section_id"]: row for row in payload["backlog_section_scorecard"]["sections"]}
-    assert sections["runtime_capacity"]["grade"] == "A++"
-    assert payload["backlog_section_scorecard"]["overall_grade"] == "A++"
+    assert sections["runtime_capacity"]["grade"] == "A+"
+    assert payload["backlog_section_scorecard"]["overall_grade"] == "A+"
     assert "runtime_pressure_high" not in payload["decision_packet"]["risk_flags"]
     assert payload["backlog_needs_packet"]["overall_status"] == "clear"
 

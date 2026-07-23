@@ -12,6 +12,49 @@ if str(PROJECT_ROOT) not in sys.path:
 from core.runtime_python import resolve_runtime_python
 
 PY = resolve_runtime_python(PROJECT_ROOT)
+PROMOTION_GATE_PATH = PROJECT_ROOT / 'governance' / 'walk_forward' / 'promotion_gate_latest.json'
+CANDIDATE_ADMISSION_PATH = PROJECT_ROOT / 'governance' / 'health' / 'new_bot_admission_guard_promotion_pipeline_latest.json'
+
+
+def _load_json(path: Path) -> dict:
+    try:
+        payload = json.loads(path.read_text(encoding='utf-8'))
+    except Exception:
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _promotion_candidate_ids(promotion_gate: dict) -> list[str]:
+    ids = {
+        str(raw or '').strip()
+        for raw in (promotion_gate.get('considered_bot_ids') or [])
+        if str(raw or '').strip()
+    }
+    for key in ('pass_examples', 'near_pass_examples', 'fail_examples'):
+        rows = promotion_gate.get(key) if isinstance(promotion_gate.get(key), list) else []
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            bot_id = str(row.get('bot_id') or '').strip()
+            if bot_id:
+                ids.add(bot_id)
+    return sorted(ids)
+
+
+def _candidate_scoped_admission_cmd(base_cmd: list[str]) -> tuple[list[str], list[str]]:
+    candidate_ids = _promotion_candidate_ids(_load_json(PROMOTION_GATE_PATH))
+    if not candidate_ids:
+        return base_cmd, candidate_ids
+    cmd = [
+        str(PY),
+        str(PROJECT_ROOT / 'scripts' / 'new_bot_admission_guard.py'),
+        '--include-bot-ids',
+        ','.join(candidate_ids),
+        '--out-file',
+        str(CANDIDATE_ADMISSION_PATH),
+        '--json',
+    ]
+    return cmd, candidate_ids
 
 
 def _run(step: str, cmd: list[str]) -> dict:
@@ -74,8 +117,17 @@ def main() -> int:
 
     results = []
     hard_fail = False
+    promotion_candidate_ids: list[str] = []
+    candidate_scoped_new_bot_admission = False
     for step, cmd, required_zero in steps:
+        if step == 'new_bot_admission_guard':
+            cmd, promotion_candidate_ids = _candidate_scoped_admission_cmd(cmd)
+            candidate_scoped_new_bot_admission = bool(promotion_candidate_ids)
         row = _run(step, cmd)
+        if step == 'new_bot_admission_guard':
+            row['promotion_candidate_ids'] = promotion_candidate_ids
+            row['candidate_scoped'] = candidate_scoped_new_bot_admission
+            row['candidate_scoped_out_file'] = str(CANDIDATE_ADMISSION_PATH) if candidate_scoped_new_bot_admission else ''
         results.append(row)
         if required_zero and row['rc'] != 0:
             hard_fail = True
@@ -84,6 +136,9 @@ def main() -> int:
         'timestamp_utc': datetime.now(timezone.utc).isoformat(),
         'ok': not hard_fail,
         'hard_fail': hard_fail,
+        'promotion_candidate_ids': promotion_candidate_ids,
+        'candidate_scoped_new_bot_admission': candidate_scoped_new_bot_admission,
+        'candidate_scoped_new_bot_admission_file': str(CANDIDATE_ADMISSION_PATH) if candidate_scoped_new_bot_admission else '',
         'steps': results,
     }
 

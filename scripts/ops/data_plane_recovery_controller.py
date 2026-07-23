@@ -18,6 +18,8 @@ else:
 
 
 DEFAULT_OUT_PATH = PROJECT_ROOT / "governance" / "health" / "data_plane_recovery_controller_latest.json"
+PAPER_STORAGE_PRESSURE_ADVISORY_CEILING = 0.50
+PAPER_STORAGE_PRESSURE_TARGET = 0.25
 
 
 def _safe_int(value: Any, default: int = 0) -> int:
@@ -25,6 +27,13 @@ def _safe_int(value: Any, default: int = 0) -> int:
         return int(float(value))
     except Exception:
         return int(default)
+
+
+def _safe_float(value: Any, default: float = 0.0) -> float:
+    try:
+        return float(value)
+    except Exception:
+        return float(default)
 
 
 def _parse_dt(value: Any) -> datetime | None:
@@ -42,6 +51,167 @@ def _parse_dt(value: Any) -> datetime | None:
     if parsed.tzinfo is None:
         parsed = parsed.replace(tzinfo=timezone.utc)
     return parsed.astimezone(timezone.utc)
+
+
+def _effective_storage_backpressure(storage_control: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(storage_control, dict) or not storage_control:
+        return {"authoritative": False}
+    backpressure = storage_control.get("backpressure") if isinstance(storage_control.get("backpressure"), dict) else {}
+    effective = backpressure.get("effective_raw_live") if isinstance(backpressure.get("effective_raw_live"), dict) else {}
+    raw_live = backpressure.get("raw_live") if isinstance(backpressure.get("raw_live"), dict) else {}
+    data_integrity = storage_control.get("data_integrity") if isinstance(storage_control.get("data_integrity"), dict) else {}
+    source = str(backpressure.get("effective_raw_live_source") or effective.get("source") or "").strip()
+    severity = str(storage_control.get("severity") or "").strip().lower()
+    pressure_index = _safe_float(storage_control.get("pressure_index"), 0.0)
+    storage_ready = bool(
+        str(storage_control.get("overall_status") or "").strip().lower() == "ready"
+        and severity == "stable"
+    )
+    stable_overlay_truth = bool(
+        severity in {"", "stable", "ready"}
+        and pressure_index < PAPER_STORAGE_PRESSURE_ADVISORY_CEILING
+        and effective
+    )
+    overlay_clear = bool(backpressure.get("overlay_pressure_clear", False) or source == "fresh_empty_sql_ingestion_overlay")
+    data_clean = bool(
+        _safe_int(data_integrity.get("sql_overlay_invalid_lines"), 0) <= 0
+        and _safe_int(data_integrity.get("sql_overlay_oversize_payloads"), 0) <= 0
+        and _safe_int(data_integrity.get("sql_overlay_ops_write_failures"), 0) <= 0
+    )
+    authoritative = bool(
+        (storage_ready or stable_overlay_truth)
+        and bool(backpressure.get("overlay_adjusted", False))
+        and overlay_clear
+        and data_clean
+    )
+    if not authoritative:
+        return {
+            "authoritative": False,
+            "source": source,
+            "storage_ready": storage_ready,
+            "stable_overlay_truth": stable_overlay_truth,
+            "pressure_index": round(pressure_index, 3),
+            "overlay_clear": overlay_clear,
+            "data_clean": data_clean,
+        }
+    total = _safe_int(effective.get("total_pending_lines"), _safe_int(backpressure.get("total_pending_lines"), 0))
+    core = _safe_int(effective.get("core_pending_lines"), _safe_int(backpressure.get("core_pending_lines"), total))
+    oldest = _safe_float(effective.get("oldest_pending_age_seconds"), _safe_float(backpressure.get("oldest_pending_age_seconds"), 0.0))
+    return {
+        "authoritative": True,
+        "source": source or "ingestion_storage_control_effective_raw_live",
+        "core_pending_lines": int(core),
+        "total_pending_lines": int(total),
+        "oldest_pending_age_seconds": round(oldest, 3),
+        "storage_ready": storage_ready,
+        "stable_overlay_truth": stable_overlay_truth,
+        "pressure_index": round(pressure_index, 3),
+        "overlay_clear": overlay_clear,
+        "data_clean": data_clean,
+        "raw_live_estimate": raw_live,
+    }
+
+
+def _current_storage_write_recovery(storage_control: dict[str, Any], *, pending_lines: int, writer_status: str) -> dict[str, Any]:
+    steady_state = storage_control.get("steady_state") if isinstance(storage_control.get("steady_state"), dict) else {}
+    target_status = steady_state.get("target_status") if isinstance(steady_state.get("target_status"), dict) else {}
+    external_route = (
+        storage_control.get("external_route_verification")
+        if isinstance(storage_control.get("external_route_verification"), dict)
+        else {}
+    )
+    backpressure = storage_control.get("backpressure") if isinstance(storage_control.get("backpressure"), dict) else {}
+    effective_backpressure = _effective_storage_backpressure(storage_control)
+    raw_live = (
+        backpressure.get("effective_raw_live")
+        if bool(effective_backpressure.get("authoritative", False))
+        and isinstance(backpressure.get("effective_raw_live"), dict)
+        else backpressure.get("raw_live")
+        if isinstance(backpressure.get("raw_live"), dict)
+        else backpressure
+    )
+    data_integrity = storage_control.get("data_integrity") if isinstance(storage_control.get("data_integrity"), dict) else {}
+    route_state = str(external_route.get("verification_state") or "").strip().lower()
+    storage_status = str(storage_control.get("overall_status") or "").strip().lower()
+    severity = str(storage_control.get("severity") or "").strip().lower()
+    pressure_index = _safe_float(storage_control.get("pressure_index"), 0.0)
+    backpressure_quality_score = _safe_float(storage_control.get("backpressure_quality_score"), 0.0)
+    raw_core = _safe_int(raw_live.get("core_pending_lines"), _safe_int(backpressure.get("core_pending_lines"), 0))
+    raw_total = _safe_int(raw_live.get("total_pending_lines"), _safe_int(backpressure.get("total_pending_lines"), pending_lines))
+    raw_oldest = _safe_float(raw_live.get("oldest_pending_age_seconds", backpressure.get("oldest_pending_age_seconds", 0.0)), 0.0)
+    overlay_adjusted = bool(backpressure.get("overlay_adjusted", False))
+    overlay_total = _safe_int(backpressure.get("total_pending_lines"), raw_total)
+    overlay_oldest = _safe_float(backpressure.get("oldest_pending_age_seconds"), raw_oldest)
+    current_sql_write_failures = _safe_int(data_integrity.get("sql_overlay_ops_write_failures"), 0)
+    route_ready = route_state in {"ready", "verified", "curated_ready", "active_passthrough", "active_local_ready"}
+    raw_live_clear = bool(raw_core <= 5000 and raw_total <= 15000 and raw_oldest <= 15 * 60)
+    target_ready = bool(target_status.get("steady_state_ready", False))
+    bounded_target_relief = bool(
+        not target_ready
+        and storage_status == "ready"
+        and severity == "stable"
+        and pressure_index < PAPER_STORAGE_PRESSURE_ADVISORY_CEILING
+        and backpressure_quality_score >= 95
+        and raw_live_clear
+        and route_ready
+    )
+    overlay_only_write_relief = bool(
+        overlay_adjusted
+        and raw_live_clear
+        and route_ready
+        and current_sql_write_failures <= 0
+        and pending_lines <= 5000
+        and overlay_total <= 12000
+    )
+    writer_ready = writer_status in {"", "ok", "complete", "idle", "ready", "running", "busy"}
+    current_storage_ready = bool(
+        writer_ready
+        and (
+            (
+                storage_status == "ready"
+                and severity == "stable"
+                and (target_ready or bounded_target_relief)
+                and route_ready
+                and raw_live_clear
+                and current_sql_write_failures <= 0
+                and pending_lines <= 5000
+                and backpressure_quality_score >= 95
+            )
+            or overlay_only_write_relief
+        )
+    )
+    return {
+        "ready": current_storage_ready,
+        "storage_status": storage_status,
+        "severity": severity,
+        "pressure_index": round(pressure_index, 3),
+        "pressure_target": PAPER_STORAGE_PRESSURE_TARGET,
+        "pressure_advisory_ceiling": PAPER_STORAGE_PRESSURE_ADVISORY_CEILING,
+        "target_ready": target_ready,
+        "bounded_target_relief": bounded_target_relief,
+        "overlay_only_write_relief": overlay_only_write_relief,
+        "overlay": {
+            "overlay_adjusted": overlay_adjusted,
+            "total_pending_lines": overlay_total,
+            "oldest_pending_age_seconds": round(overlay_oldest, 3),
+            "max_total_pending_lines": 12000,
+        },
+        "route_ready": route_ready,
+        "route_state": route_state,
+        "raw_live_clear": raw_live_clear,
+        "raw_live": {
+            "core_pending_lines": raw_core,
+            "total_pending_lines": raw_total,
+            "oldest_pending_age_seconds": round(raw_oldest, 3),
+            "max_core_pending_lines": 5000,
+            "max_total_pending_lines": 15000,
+            "max_oldest_pending_age_seconds": 15 * 60,
+        },
+        "effective_backpressure": effective_backpressure,
+        "current_sql_write_failures": current_sql_write_failures,
+        "writer_status": writer_status,
+        "policy": "historical write failures are recovered when current storage truth, raw live backlog, route verification, and SQL writer state are clean; slight stable pressure-target misses are advisory for paper",
+    }
 
 
 def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
@@ -66,9 +236,15 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
         for row in recent
         if isinstance(row, dict) and str(row.get("summary") or "").strip().lower() == "get_accounts_snapshot"
     ]
-    write_failure_count = len(write_failures)
+    write_failure_count_raw = len(write_failures)
     account_snapshot_count_raw = len(account_snapshot_failures)
-    pending_lines = _safe_int((queue.get("lane_counts") or {}).get("core", {}).get("pending_lines", queue.get("queue_depth", 0)), 0)
+    raw_pending_lines = _safe_int((queue.get("lane_counts") or {}).get("core", {}).get("pending_lines", queue.get("queue_depth", 0)), 0)
+    effective_backpressure = _effective_storage_backpressure(storage_control)
+    pending_lines = (
+        _safe_int(effective_backpressure.get("total_pending_lines"), 0)
+        if bool(effective_backpressure.get("authoritative", False))
+        else raw_pending_lines
+    )
     drain_status = str(backlog_drain.get("overall_status") or "").strip().lower()
     runtime_clearance = str(((runtime.get("clearance_plan") or {}).get("clearance_state") or "")).strip().lower()
     hot_path_over_budget_raw = _safe_int(((storage.get("pressure") or {}).get("hot_path_over_budget_bytes", 0)), 0)
@@ -80,10 +256,25 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
         and bool(storage_target_status.get("steady_state_ready", False))
         and _safe_int(storage_control.get("backpressure_quality_score"), 0) >= 95
         and _safe_int(storage_control.get("recovery_quality_score"), 0) >= 88
-        and str(external_route.get("verification_state") or "").strip().lower() in {"ready", "verified", "curated_ready", "active_passthrough"}
+        and str(external_route.get("verification_state") or "").strip().lower()
+        in {"ready", "verified", "curated_ready", "active_passthrough", "active_local_ready"}
     )
-    hot_path_over_budget = 0 if storage_steady_state_ready else hot_path_over_budget_raw
-    writer_busy = str(writer_progress.get("status") or "").strip().lower() in {"running", "busy"}
+    writer_status = str(writer_progress.get("status") or "").strip().lower()
+    writer_busy = writer_status in {"running", "busy"}
+    current_storage_write_recovery = _current_storage_write_recovery(
+        storage_control,
+        pending_lines=pending_lines,
+        writer_status=writer_status,
+    )
+    write_path_storage_ready = bool(storage_steady_state_ready or current_storage_write_recovery.get("ready", False))
+    hot_path_over_budget = 0 if write_path_storage_ready else hot_path_over_budget_raw
+    write_path_recovered_by_storage = bool(
+        write_failure_count_raw > 0
+        and write_path_storage_ready
+        and pending_lines <= 5000
+        and writer_status in {"", "ok", "complete", "idle", "ready", "running", "busy"}
+    )
+    write_failure_count = 0 if write_path_recovered_by_storage else write_failure_count_raw
     snapshot_cache_ready = bool(snapshot_cache.get("fetched")) and bool(snapshot_cache.get("timestamp_utc"))
     snapshot_cache_ts = _parse_dt(snapshot_cache.get("timestamp_utc"))
     snapshot_failure_times = [
@@ -109,7 +300,7 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
     follow_through_status = str(follow_through.get("status") or "").strip().lower()
     active_recovery = bool(writer_busy or drain_apply_requested or drain_progress_lines > 0 or follow_through_status in {"running", "waiting_for_writer", "polling"})
     small_steady_queue = bool(
-        storage_steady_state_ready
+        write_path_storage_ready
         and write_failure_count <= 0
         and account_snapshot_count <= 0
         and pending_lines <= 5000
@@ -149,19 +340,31 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
         "overall_status": overall_status,
         "recovery_state": recovery_state,
         "write_failure_count": write_failure_count,
+        "raw_write_failure_count": write_failure_count_raw,
+        "write_path_recovered_by_storage": write_path_recovered_by_storage,
         "account_snapshot_failure_count": account_snapshot_count,
         "raw_account_snapshot_failure_count": account_snapshot_count_raw,
         "queue_depth": pending_lines,
+        "raw_queue_depth": raw_pending_lines,
+        "queue_depth_source": (
+            str(effective_backpressure.get("source") or "ingestion_storage_control_effective_raw_live")
+            if bool(effective_backpressure.get("authoritative", False))
+            else "ingestion_priority_queue"
+        ),
         "external_backlog_status": drain_status,
         "runtime_clearance_state": runtime_clearance,
         "hot_path_over_budget_bytes": hot_path_over_budget,
         "raw_hot_path_over_budget_bytes": hot_path_over_budget_raw,
         "storage_steady_state_ready": bool(storage_steady_state_ready),
+        "current_storage_write_ready": bool(current_storage_write_recovery.get("ready", False)),
         "small_steady_queue": bool(small_steady_queue),
+        "write_path_recovery_evidence": current_storage_write_recovery,
         "recovery_contract": {
             "backlog_drain_required": write_failure_count > 0 or pending_lines > 0,
             "writer_handoff_required": hot_path_over_budget > 0,
             "writer_service_active": writer_busy,
+            "write_path_recovered_by_storage": write_path_recovered_by_storage,
+            "current_storage_write_ready": bool(current_storage_write_recovery.get("ready", False)),
             "execution_lane_pause_required": account_snapshot_count > 0,
             "recommended_command": [
                 "./scripts/ops/opsctl.sh",

@@ -303,3 +303,43 @@ def test_writer_process_intelligence_distinguishes_idle_service_lock_from_active
     assert payload["decision_packet"]["action"] == "request_writer_service_handoff_then_re_score"
     assert "writer_service_idle_lock" in payload["decision_packet"]["risk_flags"]
     assert "writer_active" not in payload["decision_packet"]["risk_flags"]
+
+
+def test_writer_process_intelligence_recommends_fast_completed_handoff_clear(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    health = project_root / "governance" / "health"
+    health.mkdir(parents=True, exist_ok=True)
+    _write_json(
+        health / "writer_cycle_coordinator_latest.json",
+        {
+            "overall_status": "handoff_needed",
+            "writer_state_before": {
+                "active": True,
+                "active_source": "completed_lock_handoff_needed",
+                "running": False,
+                "current_step": "complete",
+                "complete_lock_handoff_needed": True,
+                "writer_lock_owner": "pid=123 cmd=sql_link_shard_manager",
+                "writer_lock_held": True,
+                "child_writer_active": False,
+            },
+            "summary": {"completed_writer_lock_handoff_needed": True},
+        },
+    )
+    _write_json(
+        health / "process_watchdog_latest.json",
+        {"overall_status": "ready", "status": [{"name": "sql_link_writer", "running": 1, "raw_running": 1}]},
+    )
+    _write_json(
+        health / "ingestion_storage_control_latest.json",
+        {"overall_status": "ready", "severity": "stable", "backpressure": {"total_pending_lines": 25000}},
+    )
+
+    payload = src.build_payload(project_root)
+
+    assert payload["writer_health"]["state"] == "completed_lock_handoff_needed"
+    assert payload["writer_health"]["completed_lock_handoff_needed"] is True
+    assert payload["decision_packet"]["action"] == "clear_completed_writer_handoff_then_re_score"
+    assert "completed_writer_lock_handoff" in payload["decision_packet"]["risk_flags"]
+    assert payload["process_playbook"][0]["command"][-3:] == ["--apply", "--handoff-only", "--json"]
+    assert "writer_active" not in payload["decision_packet"]["risk_flags"]

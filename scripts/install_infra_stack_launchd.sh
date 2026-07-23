@@ -11,6 +11,10 @@ RUN_ALL_LAUNCHER="$PROJECT_ROOT/scripts/ops/run_all_sleeves_launchd.sh"
 ALL_SLEEVES_PLIST="$AGENTS_DIR/com.dankingsley.all_sleeves.plist"
 ALL_SLEEVES_LABEL="com.dankingsley.all_sleeves"
 RUNTIME_PROFILE="${BOT_RUNTIME_PROFILE:-live}"
+BOT_RUNTIME_LANE_VALUE="${BOT_RUNTIME_LANE:-${BOT_SHADOW_RUNTIME_LANE:-canary314}}"
+BOT_PYTHON_VERSION_VALUE="${BOT_PYTHON_VERSION:-3.14.5}"
+BOT_TRAINING_RUNTIME_LANE_VALUE="${BOT_TRAINING_RUNTIME_LANE:-canary314}"
+BOT_TRAINING_PYTHON_VERSION_VALUE="${BOT_TRAINING_PYTHON_VERSION:-3.14.5}"
 MARKET_OPEN_HOUR="${MARKET_SESSION_START_HOUR:-4}"
 LAUNCHD_LOG_DIR="$HOME/Library/Logs/schwab_trading_bot"
 OUT_LOG="$LAUNCHD_LOG_DIR/all_sleeves.out.log"
@@ -38,6 +42,12 @@ if [[ "$ORCHESTRATOR_MODE" == "all_sleeves" ]]; then
     <key>PATH</key><string>/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
     <key>HOME</key><string>$HOME</string>
     <key>BOT_RUNTIME_PROFILE</key><string>$RUNTIME_PROFILE</string>
+    <key>BOT_RUNTIME_LANE</key><string>$BOT_RUNTIME_LANE_VALUE</string>
+    <key>BOT_PYTHON_VERSION</key><string>$BOT_PYTHON_VERSION_VALUE</string>
+    <key>BOT_TRAINING_RUNTIME_LANE</key><string>$BOT_TRAINING_RUNTIME_LANE_VALUE</string>
+    <key>BOT_TRAINING_PYTHON_VERSION</key><string>$BOT_TRAINING_PYTHON_VERSION_VALUE</string>
+    <key>PY314_RUNTIME_FLIP_APPROVED</key><string>1</string>
+    <key>PY314_RETIRE_312_ANCHOR</key><string>1</string>
     <key>MARKET_SESSION_START_HOUR</key><string>$MARKET_OPEN_HOUR</string>
     <key>MARKET_DATA_ONLY</key><string>1</string>
     <key>ALLOW_ORDER_EXECUTION</key><string>0</string>

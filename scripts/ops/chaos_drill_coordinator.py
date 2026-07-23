@@ -84,8 +84,20 @@ def build_payload(
         if is_overdue:
             overdue.append(row)
 
+    restore_discipline = {
+        "snapshot_restore_present": bool(snapshot_drill),
+        "storage_resilience_present": bool(storage_resilience),
+        "backup_restore_event_log_count": len(backup_restore_events),
+        "restore_proof_ready": bool(snapshot_drill) and bool(storage_resilience) and bool(backup_restore_events),
+    }
+    schedule_contract = {
+        "weekly_drill_installer_present": weekly_drill_installer.exists(),
+        "snapshot_drill_script_present": snapshot_drill_script.exists(),
+        "backup_restore_script_present": backup_restore_script.exists(),
+        "discipline_ready": weekly_drill_installer.exists() and snapshot_drill_script.exists() and backup_restore_script.exists(),
+    }
     overall_status = "ready"
-    if len(overdue) >= 2:
+    if overdue and (not schedule_contract["discipline_ready"] or not restore_discipline["restore_proof_ready"]):
         overall_status = "blocked"
     elif overdue:
         overall_status = "degraded"
@@ -99,18 +111,6 @@ def build_payload(
             else "",
         ]
     )
-    restore_discipline = {
-        "snapshot_restore_present": bool(snapshot_drill),
-        "storage_resilience_present": bool(storage_resilience),
-        "backup_restore_event_log_count": len(backup_restore_events),
-        "restore_proof_ready": bool(snapshot_drill) and bool(storage_resilience) and bool(backup_restore_events),
-    }
-    schedule_contract = {
-        "weekly_drill_installer_present": weekly_drill_installer.exists(),
-        "snapshot_drill_script_present": snapshot_drill_script.exists(),
-        "backup_restore_script_present": backup_restore_script.exists(),
-        "discipline_ready": weekly_drill_installer.exists() and snapshot_drill_script.exists() and backup_restore_script.exists(),
-    }
     program_score = max(0.0, round(100.0 - (18.0 * len(overdue)), 2))
     if restore_discipline["restore_proof_ready"]:
         program_score = min(program_score + 8.0, 100.0)

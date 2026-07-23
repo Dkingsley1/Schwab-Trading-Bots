@@ -177,6 +177,96 @@ def test_provider_rotation_treats_session_gate_as_paused_not_degraded(tmp_path: 
     assert provider["providers"][0]["failover_route"] == "session_gate_last_good_cache"
 
 
+def test_provider_cooldown_and_soft_failures_are_watch_not_repair_failure(tmp_path: Path) -> None:
+    _seed_project(tmp_path)
+    health = tmp_path / "governance" / "health"
+    _write_json(
+        health / "provider_mesh_latest.json",
+        {
+            "overall_status": "degraded",
+            "summary": {"required_failure_count": 0, "soft_failure_count": 2},
+            "required_failures": [],
+            "soft_failures": ["sec_edgar_context", "extended_quant_context"],
+        },
+    )
+    _write_json(
+        health / "source_verification_latest.json",
+        {
+            "overall_status": "degraded",
+            "overall": {
+                "unverified_sources": ["sec_edgar_context"],
+                "stale_sources": ["extended_quant_context"],
+            },
+        },
+    )
+
+    provider = src.build_payload(tmp_path, max_rows=10)["sections"]["provider_rotation_failover_mesh"]
+
+    assert provider["overall_status"] == "watch"
+    assert provider["required_failure_count"] == 0
+    assert provider["soft_failure_count"] == 2
+
+
+def test_quality_debt_is_watch_unless_low_quality_live_execution_is_allowed() -> None:
+    rows = [
+        {"bot_id": f"cold_{idx}", "quality_label": "cold_start", "quality_score": 20.0, "direct_execution_allowed": False}
+        for idx in range(30)
+    ]
+
+    quality = src._quality_system(rows, max_rows=5)
+    assert quality["overall_status"] == "watch"
+    assert quality["quality_debt_count"] == 30
+
+    rows[0]["direct_execution_allowed"] = True
+    quality = src._quality_system(rows, max_rows=5)
+    assert quality["overall_status"] == "needs_work"
+    assert quality["unsafe_live_candidate_count"] == 1
+
+
+def test_execution_realism_capacity_constraints_are_watch_not_failure(tmp_path: Path) -> None:
+    health = tmp_path / "governance" / "health"
+    _write_json(health / "paper_execution_calibration_latest.json", {"metrics": {"mae_bps": 19.0}})
+    _write_json(health / "execution_lab_latest.json", {"top_worst_case_scenarios": [{"slippage_bps": 35.0}]})
+    _write_json(
+        tmp_path / "governance" / "allocator" / "portfolio_capacity_curve_latest.json",
+        {"summary": {"constrained_curve_count": 4}},
+    )
+
+    realism = src._execution_realism(tmp_path)
+
+    assert realism["overall_status"] == "watch"
+    assert realism["watch_reasons"] == ["capacity_curves_constrained"]
+
+
+def test_self_healing_auto_playbooks_are_watch_manual_auth_is_needs_work(tmp_path: Path) -> None:
+    health = tmp_path / "governance" / "health"
+    _write_json(health / "global_halt_auto_clear_latest.json", {"halt": False, "clear_ready": True})
+    _write_json(health / "process_watchdog_latest.json", {"alerts": [{"id": "collector_restart_storm"}]})
+    _write_json(health / "auth_lease_manager_latest.json", {"overall_status": "ready"})
+    _write_json(health / "ingestion_storage_control_latest.json", {"overall_status": "ready"})
+
+    playbooks = src._self_healing_incident_playbooks(
+        tmp_path,
+        {},
+        {"overall_status": "ready", "degraded_provider_count": 0},
+        {"overall_status": "ready"},
+        max_rows=10,
+    )
+    assert playbooks["overall_status"] == "watch"
+    assert playbooks["manual_triggered_count"] == 0
+
+    _write_json(health / "auth_lease_manager_latest.json", {"overall_status": "warning"})
+    playbooks = src._self_healing_incident_playbooks(
+        tmp_path,
+        {},
+        {"overall_status": "ready", "degraded_provider_count": 0},
+        {"overall_status": "ready"},
+        max_rows=10,
+    )
+    assert playbooks["overall_status"] == "needs_work"
+    assert playbooks["manual_triggered_count"] == 1
+
+
 def test_admission_downshifts_collection_and_blocks_training_under_swap(tmp_path: Path) -> None:
     _seed_project(tmp_path)
 
@@ -206,5 +296,19 @@ def test_sleeve_masters_research_pipeline_decay_and_black_box_are_written(tmp_pa
     assert any(row["sleeve"] == "intraday_aggressive" for row in masters)
     assert payload["sections"]["research_to_strategy_pipeline"]["stage_counts"]["paper_only_collecting"] >= 1
     assert payload["sections"]["model_decay_detector"]["decaying_bot_count"] >= 1
-    assert payload["sections"]["cross_sleeve_correlation_governor"]["overall_status"] == "needs_work"
+    assert payload["sections"]["cross_sleeve_correlation_governor"]["overall_status"] == "watch"
     assert payload["sections"]["system_black_box_recorder"]["captured_file_count"] > 0
+
+
+def test_watch_sections_roll_up_to_watch_dashboard() -> None:
+    dashboard = src._system_dashboard(
+        {
+            "quality": {"overall_status": "watch"},
+            "backpressure": {"overall_status": "ready"},
+            "black_box": {"overall_status": "thin"},
+        },
+        bot_count=3,
+        sleeve_count=2,
+    )
+
+    assert dashboard["overall_status"] == "watch"

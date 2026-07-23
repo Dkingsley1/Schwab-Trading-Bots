@@ -50,6 +50,11 @@ def _safe_int(raw: Any, default: int = 0) -> int:
         return int(default)
 
 
+def _effective_min_considered(gate: dict[str, Any], thresholds: dict[str, Any]) -> int:
+    effective_thresholds = gate.get("effective_thresholds") if isinstance(gate.get("effective_thresholds"), dict) else {}
+    return max(_safe_int(effective_thresholds.get("min_considered_bots", thresholds.get("min_considered_bots")), 4), 1)
+
+
 def _safe_float(raw: Any, default: float = 0.0) -> float:
     try:
         return float(raw)
@@ -116,7 +121,28 @@ def _autopilot_contract(
     training_runtime_blocked = str(training_runtime.get("overall_status") or "").strip().lower() == "blocked"
     training_quality = training_runtime.get("training_quality") if isinstance(training_runtime.get("training_quality"), dict) else {}
     training_quality_blocked = str(training_quality.get("overall_status") or "").strip().lower() == "blocked"
-    training_launch_blocked = bool(training_runtime_blocked or training_quality_blocked)
+    training_launch_contract = (
+        training_runtime.get("training_launch_contract")
+        if isinstance(training_runtime.get("training_launch_contract"), dict)
+        else {}
+    )
+    training_launch_contract_present = bool(training_launch_contract)
+    training_launch_contract_blockers = _ordered_unique(
+        [
+            str(raw or "").strip()
+            for raw in list(training_launch_contract.get("launch_blockers") or [])
+            if str(raw or "").strip()
+        ]
+    )
+    training_launch_contract_blocked = bool(
+        training_launch_contract_present
+        and (
+            not bool(training_launch_contract.get("launch_allowed", False))
+            or _safe_int(training_launch_contract.get("recommended_batch_size"), 0) <= 0
+            or bool(training_launch_contract_blockers)
+        )
+    )
+    training_launch_blocked = bool(training_runtime_blocked or training_quality_blocked or training_launch_contract_blocked)
     coverage_repair_ready = bool(training_runtime.get("coverage_repair_ready", False))
     swap_used_gb = _safe_float(resource_guard.get("swap_used_gb"), 0.0)
     swap_pressure_elevated = swap_used_gb >= 8.0
@@ -144,6 +170,7 @@ def _autopilot_contract(
         "coverage_shortfall_present": shortfall > 0,
         "snapshot_ready": snapshot_ready,
         "training_runtime_blocked": training_runtime_blocked,
+        "training_launch_contract_blocked": training_launch_contract_blocked,
         "training_quality_blocked": training_quality_blocked,
         "coverage_repair_ready": coverage_repair_ready,
         "swap_pressure_elevated": swap_pressure_elevated,
@@ -161,6 +188,8 @@ def _autopilot_contract(
             "coverage_preflight_repair_required" if shortfall > 0 and stage_count > 0 and preflight_repair_required_count > 0 else "",
             "waiting_for_idle" if inflight_retrain_count > 0 else "",
             "training_runtime_blocked" if training_runtime_blocked else "",
+            "training_launch_contract_blocked" if training_launch_contract_blocked else "",
+            *training_launch_contract_blockers,
             "training_quality_blocked" if training_quality_blocked else "",
             "swap_pressure_elevated" if swap_pressure_elevated else "",
             "live_runtime_blocked" if runtime_separation_status == "blocked" else "",
@@ -531,10 +560,8 @@ def _candidate_pool(project_root: Path, *, candidate_limit: int, stage_count: in
         if promoted_backups:
             active_stage = promoted_backups
             backups = remaining_backups
-    min_considered_bots = max(
-        _safe_int((readiness.get("thresholds") or {}).get("min_considered_bots"), 4),
-        1,
-    )
+    readiness_thresholds = readiness.get("thresholds") if isinstance(readiness.get("thresholds"), dict) else {}
+    min_considered_bots = _effective_min_considered(readiness, readiness_thresholds)
     return {
         "coverage_seed": coverage_seed,
         "promotion_readiness": readiness,

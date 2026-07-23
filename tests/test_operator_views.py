@@ -47,7 +47,20 @@ def test_sleeve_profitability_dashboard_summarizes_totals_and_harvest_attention(
             ],
         },
     )
-    _write_json(health / "paper_profitability_control_latest.json", {"overall_status": "protective_tightening", "profitability_grade": "B"})
+    _write_json(
+        health / "paper_profitability_control_latest.json",
+        {
+            "overall_status": "protective_tightening",
+            "profitability_grade": "B",
+            "active_profile_controls": {
+                "aggressive": {
+                    "action": "quarantine_new_entries",
+                    "control_posture_grade": "A+",
+                    "a_plus_plus_strengthening": {"active": True, "control_grade": "A+"},
+                }
+            },
+        },
+    )
 
     payload = sleeve_src.build_payload(tmp_path)
 
@@ -56,6 +69,10 @@ def test_sleeve_profitability_dashboard_summarizes_totals_and_harvest_attention(
     assert payload["top_sleeves"][0]["profile"] == "bond"
     assert payload["harvest_attention"][0]["profile"] == "bond"
     assert payload["weak_sleeve_count"] == 1
+    assert payload["weak_sleeve_control_a_plus_plus_count"] == 1
+    assert payload["bottom_sleeves"][0]["raw_grade"] == "C-"
+    assert payload["bottom_sleeves"][0]["control_grade"] == "A+"
+    assert payload["bottom_sleeves"][0]["display_grade"] == "A+"
 
 
 def test_system_done_for_today_reports_stop_chasing_when_core_green(tmp_path: Path) -> None:

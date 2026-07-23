@@ -233,10 +233,15 @@ def _completed_writer_lock_handoff_needed(state: dict[str, Any]) -> bool:
     planned = _safe_int(state.get("planned_shard_count"), 0)
     completed = _safe_int(state.get("completed_shard_count"), 0)
     complete_enough = planned <= 0 or completed >= planned
+    status_complete_enough = status in {"ok", "complete", "idle"} or (
+        status == "error"
+        and complete_enough
+        and _safe_int(state.get("timed_out_shard_count"), 0) <= 0
+    )
     return bool(
         state.get("writer_lock_held", False)
         and current_step == "complete"
-        and status in {"ok", "complete", "idle"}
+        and status_complete_enough
         and complete_enough
         and not bool(state.get("child_writer_active", False))
     )
@@ -364,11 +369,17 @@ def writer_state_snapshot(project_root: Path = PROJECT_ROOT, *, now_utc: datetim
     complete_lock_handoff_needed = bool(
         lock_held
         and current_step == "complete"
-        and status in {"ok", "complete", "idle"}
         and not child_writer_active
         and (
             _safe_int(progress.get("planned_shard_count"), 0) <= 0
             or _safe_int(progress.get("completed_shard_count"), 0) >= _safe_int(progress.get("planned_shard_count"), 0)
+        )
+        and (
+            status in {"ok", "complete", "idle"}
+            or (
+                status == "error"
+                and _safe_int(progress.get("timed_out_shard_count"), 0) <= 0
+            )
         )
     )
     active = bool(lock_held) or bool(
@@ -615,13 +626,141 @@ def _already_running_payload(project_root: Path, *, previous_path: Path) -> dict
     return payload
 
 
-def _live_safe_drainer_ready(preview: dict[str, Any]) -> bool:
+def build_handoff_payload(
+    project_root: Path = PROJECT_ROOT,
+    *,
+    apply: bool,
+    grace_seconds: float = 1.0,
+) -> dict[str, Any]:
+    writer_before = writer_state_snapshot(project_root)
+    completed_lock_handoff = {
+        "attempted": False,
+        "needed": _completed_writer_lock_handoff_needed(writer_before),
+        "reason": "preview_only" if not apply else "writer_not_complete_or_lock_not_held",
+        "lock_released": False,
+        "terminated": False,
+    }
+    writer_after = writer_before
+    if apply and bool(completed_lock_handoff.get("needed", False)):
+        completed_lock_handoff = _release_completed_writer_lock(
+            project_root,
+            writer_before,
+            grace_seconds=float(grace_seconds),
+        )
+        writer_after = writer_state_snapshot(project_root)
+
+    handoff_needed = bool(completed_lock_handoff.get("needed", False))
+    handoff_released = bool(completed_lock_handoff.get("lock_released", False))
+    handoff_pending_after = _completed_writer_lock_handoff_needed(writer_after)
+    if handoff_needed and apply and handoff_released:
+        overall_status = "handoff_released"
+        ok = True
+    elif handoff_needed and apply:
+        overall_status = "handoff_release_pending"
+        ok = False
+    elif handoff_needed:
+        overall_status = "handoff_needed"
+        ok = True
+    elif bool(writer_before.get("active", False)):
+        overall_status = "writer_active"
+        ok = True
+    else:
+        overall_status = "idle"
+        ok = True
+
+    recommended_actions = _ordered_unique(
+        (
+            ["completed SQL writer lock handoff was reconciled so the next writer/drainer cycle can start"]
+            if handoff_released
+            else []
+        )
+        + (
+            ["run writer-cycle-coordinator --apply --handoff-only --json to release the completed SQL writer lock before heavier drain work"]
+            if handoff_needed and not apply
+            else []
+        )
+        + (
+            ["the SQL writer is still active; wait for the active writer to reach complete before using handoff-only mode"]
+            if not handoff_needed and bool(writer_before.get("active", False))
+            else []
+        )
+        + (
+            ["no completed writer lock handoff is present; keep the coordinator idle until the next writer cycle needs service"]
+            if not handoff_needed and not bool(writer_before.get("active", False))
+            else []
+        )
+        + (
+            ["handoff release was attempted but the lock is still held; recheck the writer owner before heavier drain work"]
+            if handoff_needed and apply and not handoff_released
+            else []
+        )
+    )[:6]
+
+    wait_result = {
+        "requested": False,
+        "completed": not bool(writer_after.get("active", False)),
+        "timed_out": False,
+        "attempts": 0,
+        "waited_seconds": 0.0,
+        "final_state": writer_after,
+    }
+    return {
+        "timestamp_utc": _utc_now(),
+        "schema_version": 1,
+        "ok": ok,
+        "overall_status": overall_status,
+        "apply": bool(apply),
+        "handoff_only": True,
+        "actionable": bool(handoff_needed),
+        "drain_ready": False,
+        "live_drainer_ready": False,
+        "maintenance_ready": False,
+        "settings": {
+            "handoff_grace_seconds": float(grace_seconds),
+            "policy": "completed_sql_writer_lock_handoff_only_no_drain_no_maintenance",
+        },
+        "writer_state_before": writer_before,
+        "writer_state_after_remediation": writer_after,
+        "writer_state_after_wait": writer_after,
+        "completed_writer_lock_handoff": completed_lock_handoff,
+        "wait_for_writer": wait_result,
+        "steps": {},
+        "refresh_steps": {},
+        "recommended_actions": recommended_actions,
+        "summary": {
+            "handoff_only": True,
+            "writer_active_initial": bool(writer_before.get("active", False)),
+            "writer_active_after_wait": bool(writer_after.get("active", False)),
+            "writer_current_step": str(
+                writer_after.get("effective_current_step")
+                or writer_after.get("current_step")
+                or writer_before.get("effective_current_step")
+                or writer_before.get("current_step")
+                or ""
+            ),
+            "completed_writer_lock_handoff_initial_needed": handoff_needed,
+            "completed_writer_lock_handoff_needed": handoff_pending_after,
+            "completed_writer_lock_handoff_attempted": bool(completed_lock_handoff.get("attempted", False)),
+            "completed_writer_lock_handoff_released": handoff_released,
+            "wait_completed": bool(wait_result.get("completed", False)),
+            "wait_timed_out": False,
+            "waited_seconds": 0.0,
+            "drain_applied": False,
+            "maintenance_applied": False,
+        },
+    }
+
+
+def _live_safe_drainer_ready(preview: dict[str, Any], *, force_live_window: bool = False) -> bool:
     active = preview.get("active_drainer") if isinstance(preview.get("active_drainer"), dict) else {}
+    blocked = [str(item) for item in list(preview.get("blocked_reasons") or [])]
+    if force_live_window:
+        blocked = [item for item in blocked if item != "market_hours_guard"]
     return bool(
         str(preview.get("overall_status") or "") in {"ready", "handoff_requested"}
         and str(active.get("status") or "") == "ready"
-        and bool(active.get("live_window_safe", False))
-        and not list(preview.get("blocked_reasons") or [])
+        and (bool(active.get("live_window_safe", False)) or bool(force_live_window))
+        and not blocked
     )
 
 
@@ -672,7 +811,7 @@ def _service_request_env(drainer_payload: dict[str, Any]) -> dict[str, str]:
 def _catch_up_wave_limit(drainer_payload: dict[str, Any]) -> int:
     overrides = _service_request_env(drainer_payload)
     raw = overrides.get("WRITER_CYCLE_MAX_CATCH_UP_WAVES") or os.getenv("WRITER_CYCLE_MAX_CATCH_UP_WAVES")
-    return max(1, min(_safe_int(raw, 1), 5))
+    return max(1, min(_safe_int(raw, 1), 7))
 
 
 def _storage_catch_up_wave_limit(project_root: Path) -> int:
@@ -680,9 +819,15 @@ def _storage_catch_up_wave_limit(project_root: Path) -> int:
     contract = storage.get("backlog_relief_contract") if isinstance(storage.get("backlog_relief_contract"), dict) else {}
     p_core = contract.get("p_core_backlog_allocation_contract") if isinstance(contract.get("p_core_backlog_allocation_contract"), dict) else {}
     wave = p_core.get("catch_up_wave_controller") if isinstance(p_core.get("catch_up_wave_controller"), dict) else {}
-    if not bool(contract.get("active", False)) and not bool(wave.get("enabled", False)):
+    accelerator = contract.get("accelerator_contract") if isinstance(contract.get("accelerator_contract"), dict) else {}
+    accelerator_wave = (
+        accelerator.get("catch_up_wave_controller")
+        if isinstance(accelerator.get("catch_up_wave_controller"), dict)
+        else {}
+    )
+    if not bool(contract.get("active", False)) and not bool(wave.get("enabled", False)) and not bool(accelerator_wave.get("enabled", False)):
         return 1
-    return max(1, min(_safe_int(wave.get("max_waves"), 1), 5))
+    return max(1, min(max(_safe_int(wave.get("max_waves"), 1), _safe_int(accelerator_wave.get("max_waves"), 1)), 7))
 
 
 def _storage_followup_issues(project_root: Path) -> set[str]:
@@ -802,12 +947,13 @@ def build_payload(
     skip_maintenance: bool = False,
     maintenance_force: bool = False,
     maintenance_vacuum: bool = False,
+    force_live_window: bool = False,
 ) -> dict[str, Any]:
     storage_before = _load_json(project_root / "governance" / "health" / "ingestion_storage_control_latest.json")
     drain_preview = drain_src.build_payload(project_root, apply=False)
-    drainer_preview = drainer_src.build_payload(project_root, apply=False)
+    drainer_preview = drainer_src.build_payload(project_root, apply=False, force_live_window=bool(force_live_window))
     maintenance_focus = maintenance_src._priority_retention_focus(project_root, {})
-    live_drainer_ready = bool(not skip_drain and _live_safe_drainer_ready(drainer_preview))
+    live_drainer_ready = bool(not skip_drain and _live_safe_drainer_ready(drainer_preview, force_live_window=bool(force_live_window)))
     drain_ready = bool(
         not live_drainer_ready
         and not skip_drain
@@ -860,6 +1006,38 @@ def build_payload(
         )
         writer_after = wait_result.get("final_state") if isinstance(wait_result.get("final_state"), dict) else writer_after_remediation
     writer_progress = _writer_progress_summary(writer_after_remediation, writer_after)
+    post_wait_stale_writer_remediation = {
+        "attempted": False,
+        "needed": False,
+        "reason": "wait_not_timed_out_or_progress_observed",
+        "lock_released": False,
+        "terminated": False,
+    }
+    if (
+        apply
+        and bool(wait_result.get("timed_out", False))
+        and bool(writer_after.get("active", False))
+        and not bool(writer_progress.get("progress_observed", False))
+    ):
+        post_wait_stale_writer_remediation["needed"] = _stale_writer_detected(
+            writer_after,
+            stale_progress_minutes=float(stale_progress_minutes),
+        )
+        post_wait_stale_writer_remediation["reason"] = (
+            "post_wait_writer_stale"
+            if bool(post_wait_stale_writer_remediation.get("needed", False))
+            else "post_wait_timeout_below_stale_threshold"
+        )
+        if bool(post_wait_stale_writer_remediation.get("needed", False)):
+            post_wait_stale_writer_remediation = _terminate_stale_writer(
+                project_root,
+                writer_after,
+                stale_progress_minutes=float(stale_progress_minutes),
+            )
+            writer_after = writer_state_snapshot(project_root)
+            wait_result["final_state"] = writer_after
+            wait_result["completed"] = not bool(writer_after.get("active", False))
+            writer_progress = _writer_progress_summary(writer_after_remediation, writer_after)
 
     steps: dict[str, Any] = {}
     refresh_steps: dict[str, Any] = {}
@@ -874,15 +1052,18 @@ def build_payload(
 
     if apply and actionable:
         if live_drainer_ready:
+            drainer_cmd = [
+                str(PY),
+                str(project_root / "scripts" / "ops" / "backpressure_drainer_fleet.py"),
+                "--apply",
+                "--ttl-seconds",
+                str(max(int(wait_timeout_seconds), 900)),
+            ]
+            if force_live_window:
+                drainer_cmd.append("--force-live-window")
+            drainer_cmd.append("--json")
             drainer_apply = _run_json_command(
-                [
-                    str(PY),
-                    str(project_root / "scripts" / "ops" / "backpressure_drainer_fleet.py"),
-                    "--apply",
-                    "--ttl-seconds",
-                    str(max(int(wait_timeout_seconds), 900)),
-                    "--json",
-                ],
+                drainer_cmd,
                 cwd=project_root,
                 payload_path=project_root / "governance" / "health" / "backpressure_drainer_fleet_latest.json",
                 timeout_sec=120,
@@ -1067,6 +1248,12 @@ def build_payload(
             else []
         )
         + (
+            ["post-wait stale SQL writer was restarted after the coordinator timeout"]
+            if bool(post_wait_stale_writer_remediation.get("terminated", False))
+            or bool(post_wait_stale_writer_remediation.get("lock_released", False))
+            else []
+        )
+        + (
             ["completed SQL writer lock handoff was reconciled so the next writer/drainer cycle can start"]
             if bool(completed_lock_handoff.get("terminated", False)) or bool(completed_lock_handoff.get("lock_released", False))
             else []
@@ -1084,6 +1271,14 @@ def build_payload(
         + (
             ["give the writer cycle coordinator a quieter off-hours window if the handoff keeps timing out"]
             if bool(wait_result.get("timed_out", False))
+            else []
+        )
+        + (
+            ["writer handoff timed out but remained below the stale-writer threshold; keep the timeout visible instead of forcing SQLite"]
+            if bool(wait_result.get("timed_out", False))
+            and bool(writer_after.get("active", False))
+            and not bool(writer_progress.get("progress_observed", False))
+            and not bool(post_wait_stale_writer_remediation.get("needed", False))
             else []
         )
         + (
@@ -1130,6 +1325,7 @@ def build_payload(
             "command_timeout_seconds": int(command_timeout_seconds),
             "sql_manager_timeout_cap_seconds": int(sql_manager_timeout_cap_seconds),
             "stale_progress_minutes": float(stale_progress_minutes),
+            "force_live_window": bool(force_live_window),
         },
         "actionable": actionable,
         "drain_ready": drain_ready,
@@ -1138,6 +1334,7 @@ def build_payload(
         "writer_state_before": writer_before,
         "writer_state_after_remediation": writer_after_remediation,
         "stale_writer_remediation": stale_writer_remediation,
+        "post_wait_stale_writer_remediation": post_wait_stale_writer_remediation,
         "completed_writer_lock_handoff": completed_lock_handoff,
         "writer_state_after_wait": writer_after,
         "writer_progress": writer_progress,
@@ -1156,6 +1353,7 @@ def build_payload(
             "active_drainer": _drainer_active_name(drainer_preview),
             "live_window_safe": bool((drainer_preview.get("active_drainer") if isinstance(drainer_preview.get("active_drainer"), dict) else {}).get("live_window_safe", False)),
             "blocked_reasons": list(drainer_preview.get("blocked_reasons") or []),
+            "force_live_window": bool(force_live_window),
         },
         "maintenance_focus": maintenance_focus,
         "steps": steps,
@@ -1182,6 +1380,10 @@ def build_payload(
             "stale_writer_restart_attempted": bool(stale_writer_remediation.get("attempted", False)),
             "stale_writer_terminated": bool(stale_writer_remediation.get("terminated", False)),
             "stale_writer_lock_released": bool(stale_writer_remediation.get("lock_released", False)),
+            "post_wait_stale_writer_detected": bool(post_wait_stale_writer_remediation.get("needed", False)),
+            "post_wait_stale_writer_restart_attempted": bool(post_wait_stale_writer_remediation.get("attempted", False)),
+            "post_wait_stale_writer_terminated": bool(post_wait_stale_writer_remediation.get("terminated", False)),
+            "post_wait_stale_writer_lock_released": bool(post_wait_stale_writer_remediation.get("lock_released", False)),
             "completed_writer_lock_handoff_needed": bool(completed_lock_handoff.get("needed", False)),
             "completed_writer_lock_handoff_attempted": bool(completed_lock_handoff.get("attempted", False)),
             "completed_writer_lock_handoff_released": bool(completed_lock_handoff.get("lock_released", False)),
@@ -1230,10 +1432,13 @@ def main() -> int:
     parser.add_argument("--command-timeout-seconds", type=int, default=DEFAULT_COMMAND_TIMEOUT_SECONDS)
     parser.add_argument("--sql-manager-timeout-cap-seconds", type=int, default=int(os.getenv("WRITER_CYCLE_SQL_MANAGER_TIMEOUT_CAP_SECONDS", "0")))
     parser.add_argument("--stale-progress-minutes", type=float, default=float(os.getenv("WRITER_CYCLE_STALE_PROGRESS_MINUTES", str(DEFAULT_STALE_PROGRESS_MINUTES))))
+    parser.add_argument("--handoff-only", "--fast-handoff", action="store_true")
+    parser.add_argument("--handoff-grace-seconds", type=float, default=float(os.getenv("WRITER_CYCLE_HANDOFF_GRACE_SECONDS", "1.0")))
     parser.add_argument("--skip-drain", action="store_true")
     parser.add_argument("--skip-maintenance", action="store_true")
     parser.add_argument("--maintenance-force", action="store_true")
     parser.add_argument("--maintenance-vacuum", action="store_true")
+    parser.add_argument("--force-live-window", action="store_true")
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args()
 
@@ -1261,21 +1466,29 @@ def main() -> int:
                 print("writer_cycle_coordinator overall_status=already_running")
             return 0
 
-        payload = build_payload(
-            project_root,
-            apply=bool(args.apply),
-            poll_seconds=float(args.poll_seconds),
-            wait_timeout_seconds=float(args.wait_timeout_seconds),
-            command_timeout_seconds=int(args.command_timeout_seconds),
-            sql_manager_timeout_cap_seconds=int(args.sql_manager_timeout_cap_seconds),
-            stale_progress_minutes=float(args.stale_progress_minutes),
-            skip_drain=bool(args.skip_drain),
-            skip_maintenance=bool(args.skip_maintenance),
-            maintenance_force=bool(args.maintenance_force),
-            maintenance_vacuum=bool(args.maintenance_vacuum),
-        )
+        if bool(args.handoff_only):
+            payload = build_handoff_payload(
+                project_root,
+                apply=bool(args.apply),
+                grace_seconds=float(args.handoff_grace_seconds),
+            )
+        else:
+            payload = build_payload(
+                project_root,
+                apply=bool(args.apply),
+                poll_seconds=float(args.poll_seconds),
+                wait_timeout_seconds=float(args.wait_timeout_seconds),
+                command_timeout_seconds=int(args.command_timeout_seconds),
+                sql_manager_timeout_cap_seconds=int(args.sql_manager_timeout_cap_seconds),
+                stale_progress_minutes=float(args.stale_progress_minutes),
+                skip_drain=bool(args.skip_drain),
+                skip_maintenance=bool(args.skip_maintenance),
+                maintenance_force=bool(args.maintenance_force),
+                maintenance_vacuum=bool(args.maintenance_vacuum),
+                force_live_window=bool(args.force_live_window),
+            )
         _write_json(out_file, payload)
-        if bool(args.apply):
+        if bool(args.apply) and not bool(args.handoff_only):
             payload["post_write_refresh_steps"] = _refresh_surface_artifacts(project_root)
             _write_json(out_file, payload)
 
@@ -1287,7 +1500,16 @@ def main() -> int:
             f"overall_status={payload.get('overall_status', '')} "
             f"actionable={int(bool(payload.get('actionable', False)))}"
         )
-    return 0 if bool(payload.get("ok", False) or str(payload.get("overall_status") or "") in {"already_running", "waiting_for_writer", "progressing_waiting_for_writer", "idle"}) else 2
+    healthy_statuses = {
+        "already_running",
+        "waiting_for_writer",
+        "progressing_waiting_for_writer",
+        "idle",
+        "handoff_needed",
+        "writer_active",
+        "handoff_released",
+    }
+    return 0 if bool(payload.get("ok", False) or str(payload.get("overall_status") or "") in healthy_statuses) else 2
 
 
 if __name__ == "__main__":

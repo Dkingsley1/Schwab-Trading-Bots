@@ -90,6 +90,7 @@ data/*.sqlite3-shm
 local_fallback_storage/
 
 # Local Codex / auth / scratch cleanup
+$CODEX_HOME/
 .codex_write_probe*
 .codex_write_test*
 master_bot_registry.json.bak

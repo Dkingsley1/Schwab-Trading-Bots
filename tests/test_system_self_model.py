@@ -154,6 +154,25 @@ def test_system_self_model_builds_awareness_domains_and_optimizations(tmp_path: 
             "self_questions": ["No blocking self-question; continue monitoring outcome after the next safe action."],
         },
     )
+    _write_json(
+        health / "codex_operator_bridge_latest.json",
+        {
+            "overall_status": "advisory",
+            "attention_packet": {
+                "needs_codex": ["review_trade_digest"],
+                "active_blockers": ["host_training_headroom_not_clear"],
+                "safe_next_commands": [["./scripts/ops/opsctl.sh", "training-runtime-control", "--json"]],
+                "communication_contract": {"delivery_channel": "artifact_handoff", "proactive_delivery_to_codex": True},
+            },
+            "sections": {
+                "paper_trading": {"day": {"day_utc": "20260614", "executions": 120, "ending_net_pnl_total": 12.5, "change_vs_previous_day": 8.0}},
+                "training": {"launch_allowed": False, "recommended_batch_size": 0, "launch_blockers": ["host_training_headroom_not_clear"]},
+                "writer": {"active": True, "completed_shard_count": 2, "planned_shard_count": 4},
+                "memory": {"classification": "soft_guard", "safe_for_training": False},
+                "livefeed": {"alive": True},
+            },
+        },
+    )
     _write_json(health / "storage_backpressure_autopilot_latest.json", {"overall_status": "ready", "metrics": {"backpressure_actionable": False}})
     _write_json(
         health / "mlx_intelligence_router_latest.json",
@@ -165,7 +184,7 @@ def test_system_self_model_builds_awareness_domains_and_optimizations(tmp_path: 
             "runtime_caps": {
                 "profile": "foreground_safe",
                 "max_concurrent_mlx_jobs": 2,
-                "compile_mode": "canary_first",
+                "compile_mode": "direct_stable",
                 "heavy_vlm_enabled": True,
                 "cpu_pressure_level": "watch",
                 "memory_pressure_level": "normal",
@@ -282,6 +301,10 @@ def test_system_self_model_builds_awareness_domains_and_optimizations(tmp_path: 
     assert payload["awareness_domains"]["system_self_intelligence"]["causal_root"] == "stable_or_observing"
     assert payload["awareness_domains"]["system_self_intelligence"]["action_effect_verdict"] == "effective"
     assert payload["awareness_domains"]["system_self_intelligence"]["integration_route_mode"] == "observe_and_refresh"
+    assert payload["awareness_domains"]["codex_operator_bridge"]["status"] == "advisory"
+    assert payload["awareness_domains"]["codex_operator_bridge"]["needs_codex_count"] == 1
+    assert payload["awareness_domains"]["codex_operator_bridge"]["paper_day_executions"] == 120
+    assert payload["awareness_domains"]["codex_operator_bridge"]["training_launch_blockers"] == ["host_training_headroom_not_clear"]
     assert payload["awareness_domains"]["bot_awareness"]["status"] == "ready"
     assert payload["awareness_domains"]["failure_memory"]["status"] == "ready"
     assert payload["awareness_domains"]["halt_recovery_intelligence"]["status"] == "ready"

@@ -2,7 +2,7 @@
 set -euo pipefail
 
 PROJECT_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
-PYTHON_BIN="$PROJECT_ROOT/.venv312/bin/python"
+PYTHON_BIN="$PROJECT_ROOT/.venv314/bin/python"
 RUN_SCRIPT="$PROJECT_ROOT/scripts/ops/project_timeline_report.py"
 GUARD_ARTIFACT="$PROJECT_ROOT/governance/health/chrome_headless_guard_latest.json"
 

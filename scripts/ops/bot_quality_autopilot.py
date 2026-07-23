@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -33,6 +34,42 @@ def _safe_int(raw: Any, default: int = 0) -> int:
         return int(float(raw))
     except Exception:
         return int(default)
+
+
+def _env_flag(name: str, default: bool = False) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return bool(default)
+    return str(raw).strip().lower() in {"1", "true", "yes", "on", "y"}
+
+
+def _writer_active(writer_cycle: dict[str, Any]) -> bool:
+    for key in ("writer_state_before", "writer_state_after_wait", "writer_state_after_remediation"):
+        state = writer_cycle.get(key)
+        if not isinstance(state, dict):
+            continue
+        if bool(state.get("active", False)) or bool(state.get("running", False)):
+            return True
+    return False
+
+
+def _storage_pressure_hot(storage_control: dict[str, Any]) -> bool:
+    status = str(storage_control.get("overall_status") or "").strip().lower()
+    severity = str(storage_control.get("severity") or "").strip().lower()
+    backpressure = storage_control.get("backpressure") if isinstance(storage_control.get("backpressure"), dict) else {}
+    pending = _safe_int(backpressure.get("total_pending_lines"), 0)
+    threshold = max(_safe_int(backpressure.get("pending_lines_threshold"), 15000), 15000)
+    return bool(status in {"blocked", "critical"} or severity in {"critical", "high"} or pending > threshold)
+
+
+def _runtime_snapshot_command(project_root: Path, *, writer_active: bool, storage_hot: bool) -> list[str]:
+    cmd = [str(PYTHON_BIN), str(project_root / "scripts" / "build_runtime_training_snapshot.py")]
+    light_when_hot = _env_flag("BOT_QUALITY_SNAPSHOT_LIGHT_WHEN_PRESSURE_HOT", True)
+    reuse_minutes = max(_safe_int(os.getenv("BOT_QUALITY_SNAPSHOT_REUSE_IF_FRESH_MINUTES"), 1440), 0)
+    if light_when_hot and (writer_active or storage_hot):
+        cmd.extend(["--light-refresh-existing", "--reuse-if-fresh-minutes", str(reuse_minutes)])
+    cmd.append("--json")
+    return cmd
 
 
 def _load_registry_roles(project_root: Path) -> dict[str, str]:
@@ -116,6 +153,8 @@ def build_payload(
     requalification = load_json(health_root / "training_requalification_latest.json")
     coverage_seed = load_json(project_root / "governance" / "walk_forward" / "coverage_seed_latest.json")
     runtime_control = load_json(health_root / "training_runtime_control_latest.json")
+    writer_cycle = load_json(health_root / "writer_cycle_coordinator_latest.json")
+    storage_control = load_json(health_root / "ingestion_storage_control_latest.json")
     role_by_bot = _load_registry_roles(project_root)
     coverage_seed_rows = coverage_seed.get("seed_queue") if isinstance(coverage_seed.get("seed_queue"), list) else []
 
@@ -231,7 +270,13 @@ def build_payload(
     if apply:
         apply_steps: list[list[str]] = []
         if repair_ids or not snapshot_ready:
-            apply_steps.append([str(PYTHON_BIN), str(project_root / "scripts" / "build_runtime_training_snapshot.py"), "--json"])
+            apply_steps.append(
+                _runtime_snapshot_command(
+                    project_root,
+                    writer_active=_writer_active(writer_cycle),
+                    storage_hot=_storage_pressure_hot(storage_control),
+                )
+            )
             apply_steps.append([str(PYTHON_BIN), str(project_root / "scripts" / "ops" / "training_runtime_control.py"), "--json"])
         apply_steps.extend(
             [
@@ -239,6 +284,7 @@ def build_payload(
                 [str(PYTHON_BIN), str(project_root / "scripts" / "distill_new_bots.py"), "--json"],
                 [str(PYTHON_BIN), str(project_root / "scripts" / "ops" / "training_requalification_lane.py"), "--write-queue", "--json"],
                 [str(PYTHON_BIN), str(project_root / "scripts" / "ops" / "walk_forward_coverage_seed.py"), "--write-queue", "--json"],
+                [str(PYTHON_BIN), str(project_root / "scripts" / "training_registry_audit.py"), "--json"],
                 [str(PYTHON_BIN), str(project_root / "scripts" / "ops" / "supportability_control.py"), "--json"],
                 [str(PYTHON_BIN), str(project_root / "scripts" / "ops" / "training_quality_control.py"), "--json"],
             ]
@@ -328,6 +374,7 @@ def build_payload(
             "training_requalification_lane",
             "walk_forward_coverage_seed",
             "retrain_lane_scheduler",
+            "training_registry_audit",
             "supportability_control",
             "training_quality_control",
         ],

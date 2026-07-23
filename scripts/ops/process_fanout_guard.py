@@ -44,7 +44,9 @@ ORPHAN_CLEANUP_MARKERS = (
     "scripts/snapshot_coverage_sentinel.py",
     "scripts/canary_diagnostics_loop.py",
     "scripts/collect_market_crypto_correlation_context.py",
+    "scripts/collect_fx_market_context.py",
     "scripts/collect_dividend_drip_state.py",
+    "scripts/ingestion_backpressure_guard.py",
     "scripts/ops/canary_auto_tuner.py",
     "scripts/ops/storage_failback_sync.py",
 )
@@ -239,6 +241,11 @@ def _priority(row: ProcRow) -> tuple[int, float, int]:
     return (base, -float(row.rss_mb), -int(row.etimes))
 
 
+def _runtime_pressure_priority(row: ProcRow) -> tuple[int, float, float, int]:
+    base, rss_priority, age_priority = _priority(row)
+    return (-float(row.cpu_percent), base, rss_priority, age_priority)
+
+
 def _status(triggered: bool, terminated_count: int) -> str:
     if triggered and terminated_count <= 0:
         return "degraded"
@@ -268,17 +275,24 @@ def _write_override(
     target_count: int,
     max_rss_mb: float,
     target_rss_mb: float,
+    max_cpu_percent: float,
+    target_cpu_percent: float,
     core_sleeve_restart_allowed: bool = False,
 ) -> bool:
     values = {
         "PROCESS_FANOUT_GUARD_ACTIVE": "1" if active else "0",
         "PROCESS_FANOUT_GUARD_CORE_SLEEVE_RESTART_ALLOWED": "1" if core_sleeve_restart_allowed else "0",
         "PROCESS_FANOUT_GUARD_MAX_COUNT": str(int(max_count)),
+        "PROCESS_FANOUT_GUARD_MAX_CPU_PERCENT": f"{float(max_cpu_percent):.1f}",
         "PROCESS_FANOUT_GUARD_MAX_RSS_MB": f"{float(max_rss_mb):.1f}",
+        "PROCESS_FANOUT_GUARD_HOLD_SECONDS": os.getenv("PROCESS_FANOUT_GUARD_HOLD_SECONDS", "600"),
         "PROCESS_FANOUT_GUARD_MODE": mode,
+        "PROCESS_FANOUT_GUARD_PRESERVE_CLEAR_COOLDOWN": os.getenv("PROCESS_FANOUT_GUARD_PRESERVE_CLEAR_COOLDOWN", "1"),
         "PROCESS_FANOUT_GUARD_REASON": reason,
         "PROCESS_FANOUT_GUARD_TARGET_COUNT": str(int(target_count)),
+        "PROCESS_FANOUT_GUARD_TARGET_CPU_PERCENT": f"{float(target_cpu_percent):.1f}",
         "PROCESS_FANOUT_GUARD_TARGET_RSS_MB": f"{float(target_rss_mb):.1f}",
+        "GUARD_INTELLIGENCE_AUTO_APPLY": os.getenv("GUARD_INTELLIGENCE_AUTO_APPLY", "1"),
         "TRAINING_RUNTIME_PAUSED_FOR_FANOUT": "1" if active else "0",
         "SHADOW_RESEARCH_PAUSED_FOR_FANOUT": "1" if active else "0",
         "OPS_WATCHDOG_ALL_SLEEVES_WITH_AGGRESSIVE": "0" if active else "1",
@@ -317,6 +331,8 @@ def build_payload(
     target_count = _env_int("PROCESS_FANOUT_GUARD_TARGET_COUNT", 80)
     max_rss_mb = _env_float("PROCESS_FANOUT_GUARD_MAX_RSS_MB", 5120.0)
     target_rss_mb = _env_float("PROCESS_FANOUT_GUARD_TARGET_RSS_MB", 4096.0)
+    max_cpu_percent = _env_float("PROCESS_FANOUT_GUARD_MAX_CPU_PERCENT", 180.0)
+    target_cpu_percent = _env_float("PROCESS_FANOUT_GUARD_TARGET_CPU_PERCENT", 80.0)
     hold_seconds = _env_int("PROCESS_FANOUT_GUARD_HOLD_SECONDS", 600)
     orphan_cleanup_enabled = _env_flag("PROCESS_FANOUT_GUARD_ORPHAN_CLEANUP_ENABLED", "1")
     orphan_grace_seconds = _env_int("PROCESS_FANOUT_GUARD_ORPHAN_GRACE_SECONDS", 900)
@@ -351,7 +367,13 @@ def build_payload(
     protected = [row for row in rows if _is_protected(row, keep_profiles)]
     total_rss_mb = round(sum(row.rss_mb for row in rows), 3)
     targetable_rss_mb = round(sum(row.rss_mb for row in targetable), 3)
-    triggered = bool(len(rows) > max_count or total_rss_mb > max_rss_mb)
+    total_cpu_percent = round(sum(row.cpu_percent for row in rows), 3)
+    targetable_cpu_percent = round(sum(row.cpu_percent for row in targetable), 3)
+    protected_cpu_percent = round(sum(row.cpu_percent for row in protected), 3)
+    count_triggered = bool(len(rows) > max_count)
+    rss_triggered = bool(total_rss_mb > max_rss_mb)
+    cpu_triggered = bool(targetable_cpu_percent > max_cpu_percent)
+    triggered = bool(count_triggered or rss_triggered or cpu_triggered)
     if triggered:
         hold_until = now + timedelta(seconds=max(hold_seconds, 0))
     else:
@@ -362,15 +384,24 @@ def build_payload(
     kill_plan: list[ProcRow] = []
     projected_count = len(rows)
     projected_rss = total_rss_mb
+    projected_targetable_cpu = targetable_cpu_percent
     if triggered:
-        for row in sorted(targetable, key=_priority):
-            if projected_count <= target_count and projected_rss <= target_rss_mb:
+        sort_key = _runtime_pressure_priority if cpu_triggered else _priority
+        for row in sorted(targetable, key=sort_key):
+            if (
+                projected_count <= target_count
+                and projected_rss <= target_rss_mb
+                and (not cpu_triggered or projected_targetable_cpu <= target_cpu_percent)
+            ):
                 break
             kill_plan.append(row)
             projected_count -= 1
             projected_rss = round(projected_rss - row.rss_mb, 3)
+            projected_targetable_cpu = round(max(projected_targetable_cpu - row.cpu_percent, 0.0), 3)
     orphan_kill_plan = sorted(orphan_candidates, key=_priority)
-    core_sleeve_restart_allowed = bool(triggered and not targetable and not kill_plan and not orphan_kill_plan)
+    core_sleeve_restart_allowed = bool(
+        triggered and not cpu_triggered and not targetable and not kill_plan and not orphan_kill_plan
+    )
 
     terminated: list[dict[str, Any]] = []
     if apply:
@@ -383,7 +414,14 @@ def build_payload(
             except Exception as exc:
                 terminated.append({"pid": row.pid, "ok": False, "rss_mb": row.rss_mb, "command": row.command[:500], "error": str(exc)})
 
-    reason = "fanout_pressure" if triggered else "within_budget"
+    if cpu_triggered:
+        reason = "runtime_cpu_pressure"
+    elif rss_triggered:
+        reason = "fanout_rss_pressure"
+    elif count_triggered:
+        reason = "fanout_count_pressure"
+    else:
+        reason = "within_budget"
     override_changed = _write_override(
         override_path,
         active=override_active,
@@ -393,6 +431,8 @@ def build_payload(
         target_count=target_count,
         max_rss_mb=max_rss_mb,
         target_rss_mb=target_rss_mb,
+        max_cpu_percent=max_cpu_percent,
+        target_cpu_percent=target_cpu_percent,
         core_sleeve_restart_allowed=core_sleeve_restart_allowed,
     )
     write_payload(
@@ -403,6 +443,8 @@ def build_payload(
             "last_triggered_utc": now.isoformat() if triggered else str(state.get("last_triggered_utc") or ""),
             "last_process_count": len(rows),
             "last_total_rss_mb": total_rss_mb,
+            "last_total_cpu_percent": total_cpu_percent,
+            "last_targetable_cpu_percent": targetable_cpu_percent,
         },
     )
     terminated_count = sum(1 for row in terminated if bool(row.get("ok", False)))
@@ -418,6 +460,11 @@ def build_payload(
         "process_fanout_guard wrote a runtime override to stop aggressive all-sleeves relaunch while pressure is active"
         if triggered
         else "process fanout is within configured budget",
+        "optional shadow research CPU is over the runtime fanout budget"
+        if cpu_triggered and kill_plan and not apply
+        else "optional shadow research CPU was trimmed"
+        if cpu_triggered and apply and any(row.get("pid") not in orphan_candidate_pids for row in terminated if bool(row.get("ok", False)))
+        else "",
         "clear stale orphaned helper processes"
         if orphan_kill_plan and not apply
         else "stale orphaned helper processes were cleared" if orphan_terminated_count else "",
@@ -439,6 +486,8 @@ def build_payload(
             "target_count": target_count,
             "max_rss_mb": max_rss_mb,
             "target_rss_mb": target_rss_mb,
+            "max_cpu_percent": max_cpu_percent,
+            "target_cpu_percent": target_cpu_percent,
             "hold_seconds": hold_seconds,
             "orphan_cleanup_enabled": bool(orphan_cleanup_enabled),
             "orphan_grace_seconds": int(orphan_grace_seconds),
@@ -447,11 +496,19 @@ def build_payload(
         "fanout": {
             "process_count": len(rows),
             "total_rss_mb": total_rss_mb,
+            "total_cpu_percent": total_cpu_percent,
             "targetable_count": len(targetable),
             "targetable_rss_mb": targetable_rss_mb,
+            "targetable_cpu_percent": targetable_cpu_percent,
+            "protected_cpu_percent": protected_cpu_percent,
             "orphan_cleanup_candidate_count": len(orphan_candidates),
             "orphan_cleanup_rss_mb": round(sum(row.rss_mb for row in orphan_candidates), 3),
             "protected_count": len(protected),
+        },
+        "trigger_reasons": {
+            "count": count_triggered,
+            "rss": rss_triggered,
+            "targetable_cpu": cpu_triggered,
         },
         "triggered": triggered,
         "override": {

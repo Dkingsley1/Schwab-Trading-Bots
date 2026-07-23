@@ -159,14 +159,14 @@ def main() -> int:
                 'issue': name,
                 'severity': 'high',
                 'fix': 'Run retention prune before startup.',
-                'command': './.venv312/bin/python scripts/data_retention_policy.py --apply --json',
+                'command': './.venv314/bin/python scripts/data_retention_policy.py --apply --json',
             })
         elif name == 'storage_route_writable':
             suggestions.append({
                 'issue': name,
                 'severity': 'critical',
                 'fix': 'Storage route was not writable. Verify SSD mount or local fallback permissions.',
-                'command': './.venv312/bin/python scripts/ops/storage_failback_sync.py --json',
+                'command': './.venv314/bin/python scripts/ops/storage_failback_sync.py --json',
             })
         elif name == 'no_duplicate_parallel_launcher':
             pids = _find_pids(

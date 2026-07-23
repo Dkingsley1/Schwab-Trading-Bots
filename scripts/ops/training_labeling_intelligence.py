@@ -24,6 +24,11 @@ MINIMUM_COLLECTION_DAYS = 180
 SAMPLE_RATE = 0.01
 MAX_DAILY_MB_PER_BOT = 1
 DEFAULT_COLLECT_ONLY_DIAGNOSTIC_MIN_VERSION = 700
+COLLECT_ONLY_USABLE_SAMPLE_GOAL = 200
+COLLECT_ONLY_ELIGIBLE_SEQUENCE_GOAL = 4
+COLLECT_ONLY_OBSERVATIONS_PER_SAMPLE_TARGET = 5
+OPTIONS_CONTEXT_SOURCE_ID = "options_context_mesh"
+OPTIONS_CONTEXT_LEGACY_SOURCE_ID = "polygon_unusual_whales_options_context"
 
 
 INTELLIGENCE_SYSTEMS: list[dict[str, Any]] = [
@@ -91,6 +96,123 @@ BASE_DATA_INTAKES = [
     "whole_system_governor_trace",
     "codex_handoff_trace",
 ]
+
+FREE_LABEL_CONTEXT_SOURCE_MAP: dict[str, list[str]] = {
+    "price_bars": ["free_equity_reference_context", "market_quote_profiles"],
+    "daily_bars": ["free_equity_reference_context", "market_quote_profiles"],
+    "total_return_bars": ["free_equity_reference_context", "market_quote_profiles"],
+    "volume": ["free_equity_reference_context", "market_quote_profiles"],
+    "relative_volume": ["free_equity_reference_context", "market_micro_context"],
+    "market_context": ["free_equity_reference_context", "market_quote_profiles", "ticker_news_context"],
+    "sector_context": ["free_equity_reference_context", "ticker_news_context", "sec_edgar_context"],
+    "overnight_gap": ["free_equity_reference_context", "market_quote_profiles"],
+    "one_minute_bars": ["market_micro_context", "market_quote_profiles"],
+    "vwap": ["market_micro_context", "market_quote_profiles"],
+    "spread_quality": ["market_micro_context", "extended_quant_context"],
+    "market_micro_features": ["market_micro_context", "extended_quant_context"],
+    "market_micro_context": ["market_micro_context"],
+    "liquidity_state": ["market_micro_context", "extended_quant_context", "public_policy_context"],
+    "execution_cost_context": ["market_micro_context", "extended_quant_context"],
+    "execution_quality": ["market_micro_context", "extended_quant_context"],
+    "fill_quality": ["market_micro_context", "extended_quant_context"],
+    "fill_realism_context": ["market_micro_context", "extended_quant_context"],
+    "latency_trace": ["market_micro_context"],
+    "queue_position_context": ["market_micro_context"],
+    "slippage_trace": ["market_micro_context", "extended_quant_context"],
+    "spread_queue_response": ["market_micro_context", "extended_quant_context"],
+    "transaction_cost_surface": ["market_micro_context", "extended_quant_context"],
+    "vpin_order_flow_toxicity": ["market_micro_context", "extended_quant_context"],
+    "dark_pool_off_exchange_volume": ["market_micro_context"],
+    "options_chain": [OPTIONS_CONTEXT_SOURCE_ID],
+    "iv_surface": [OPTIONS_CONTEXT_SOURCE_ID, "extended_quant_context"],
+    "listed_option_surface": [OPTIONS_CONTEXT_SOURCE_ID, "extended_quant_context"],
+    "open_interest": [OPTIONS_CONTEXT_SOURCE_ID, "extended_quant_context"],
+    "bid_ask_spread": [OPTIONS_CONTEXT_SOURCE_ID, "market_micro_context"],
+    "greeks": [OPTIONS_CONTEXT_SOURCE_ID],
+    "skew": [OPTIONS_CONTEXT_SOURCE_ID, "extended_quant_context"],
+    "realized_vol": ["free_equity_reference_context", "extended_quant_context"],
+    "realized_volatility": ["free_equity_reference_context", "extended_quant_context"],
+    "vix_term_structure": ["extended_quant_context"],
+    "crypto_bars": ["crypto_market_context"],
+    "order_book_proxy": ["crypto_market_context"],
+    "funding_context": ["crypto_market_context", "fx_market_context"],
+    "basis": ["crypto_market_context", "fx_market_context", "extended_quant_context"],
+    "basis_context": ["crypto_market_context", "fx_market_context", "extended_quant_context"],
+    "cross_asset_correlation": ["crypto_market_context", "fx_market_context", "extended_quant_context"],
+    "rates_context": ["fx_market_context", "official_macro_context", "public_policy_context"],
+    "rate_context": ["fx_market_context", "official_macro_context", "public_policy_context"],
+    "rates_curve": ["fx_market_context", "official_macro_context", "extended_quant_context"],
+    "duration_context": ["official_macro_context", "extended_quant_context"],
+    "inflation_context": ["official_macro_context", "public_macro_feeds"],
+    "macro_context": ["macro_crossstack", "official_macro_context", "public_macro_feeds", "public_policy_context"],
+    "macro_calendar": ["official_macro_context", "public_macro_feeds"],
+    "macro_event_window": ["official_macro_context", "public_macro_feeds", "ticker_news_context"],
+    "market_breadth": ["free_equity_reference_context", "market_quote_profiles", "market_micro_context"],
+    "credit_spread_context": ["extended_quant_context", "public_policy_context"],
+    "credit_stress": ["extended_quant_context", "public_policy_context"],
+    "news_source_consensus": ["ticker_news_context", "schwab_symbol_news"],
+    "sec_filing_context": ["sec_edgar_context"],
+    "earnings_calendar": ["ticker_news_context", "sec_edgar_context"],
+    "ex_dividend_calendar": ["free_equity_reference_context", "sec_edgar_context"],
+    "payout_metrics": ["sec_edgar_context", "free_equity_reference_context"],
+    "balance_sheet_quality": ["sec_edgar_context"],
+    "source_scores": ["source_verification", "collector_contracts"],
+    "source_confidence": ["source_verification", "collector_contracts"],
+    "source_quality": ["source_verification", "collector_contracts"],
+    "correlation_matrix": ["free_equity_reference_context", "crypto_market_context", "fx_market_context", "extended_quant_context"],
+    "session_calendar": ["market_quote_profiles", "official_macro_context", "public_macro_feeds"],
+    "runtime_health": ["source_verification", "collector_contracts"],
+    "incident_log": ["source_verification"],
+    # Verified proxy routes for contexts whose raw authorities are live-tape,
+    # broker, or research-specific. These are label evidence only.
+    "feed_latency_schema_health": ["market_micro_context", "source_verification", "collector_contracts"],
+    "futures_bars": ["market_quote_profiles", "extended_quant_context", "official_macro_context"],
+    "mbo_mbp_depth_snapshot": ["market_micro_context", "extended_quant_context"],
+    "model_price_sensitivity_grid": ["extended_quant_context", "source_verification"],
+    "opra_nbbo_taq_sip_normalized_events": [OPTIONS_CONTEXT_SOURCE_ID, "market_micro_context", "extended_quant_context"],
+    "quant_model_feature_surface": ["extended_quant_context", "source_verification"],
+    "state_filter_diagnostics": ["source_verification", "collector_contracts", "market_micro_context"],
+}
+
+LABEL_CONTEXT_CLASSIFICATION_MAP: dict[str, dict[str, str]] = {
+    "codex_handoff_trace": {"class": "internal_trace", "route": "codex_operator_bridge", "authority": "internal_governance"},
+    "constraint_violation_trace": {"class": "internal_trace", "route": "optimization_search_trace", "authority": "internal_research"},
+    "coverage_gap_closer_trace": {"class": "internal_trace", "route": "coverage_gap_closer", "authority": "internal_governance"},
+    "coverage_gap_trace": {"class": "internal_trace", "route": "training_label_audit", "authority": "internal_governance"},
+    "coverage_repair_orchestrator_effect_trace": {"class": "internal_trace", "route": "coverage_repair_orchestrator", "authority": "internal_governance"},
+    "dark_pool_off_exchange_volume": {"class": "public_proxy_available", "route": "market_micro_context", "authority": "free_public_proxy"},
+    "feature_store_lineage": {"class": "internal_trace", "route": "feature_store_lineage_trace", "authority": "internal_lineage"},
+    "feature_store_lineage_trace": {"class": "internal_trace", "route": "feature_store_lineage", "authority": "internal_lineage"},
+    "feed_latency_schema_health": {"class": "broker_or_live_tape_required", "route": "market_data_tape_normalization", "authority": "live_tape_or_adapter"},
+    "futures_bars": {"class": "broker_or_live_tape_required", "route": "broker_market_data", "authority": "broker_or_exchange"},
+    "kelly_fraction_trace": {"class": "internal_trace", "route": "optimization_search_trace", "authority": "internal_research"},
+    "label_contract_normalizer_effect_trace": {"class": "internal_trace", "route": "label_contract_normalizer", "authority": "internal_governance"},
+    "lane_balance_scheduler_effect_trace": {"class": "internal_trace", "route": "lane_balance_scheduler", "authority": "internal_governance"},
+    "mbo_mbp_depth_snapshot": {"class": "broker_or_live_tape_required", "route": "depth_snapshot_collector", "authority": "live_tape_or_adapter"},
+    "model_price_sensitivity_grid": {"class": "research_only", "route": "quant_model_feature_surface", "authority": "internal_research"},
+    "objective_value_trace": {"class": "internal_trace", "route": "optimization_search_trace", "authority": "internal_research"},
+    "operator_context": {"class": "internal_trace", "route": "operator_cockpit", "authority": "internal_governance"},
+    "opra_nbbo_taq_sip_normalized_events": {"class": "broker_or_live_tape_required", "route": "market_data_tape_normalization", "authority": "opra_sip_tape"},
+    "optimization_search_trace": {"class": "internal_trace", "route": "optimization_search", "authority": "internal_research"},
+    "point_in_time_label_guard_effect_trace": {"class": "internal_trace", "route": "point_in_time_label_guard", "authority": "internal_governance"},
+    "portfolio_exposure": {"class": "broker_truth_required", "route": "broker_truth_reconcile_v2", "authority": "broker_truth"},
+    "promotion_gate_trace": {"class": "internal_trace", "route": "promotion_gate", "authority": "internal_governance"},
+    "proxy_data_source_lineage": {"class": "internal_trace", "route": "source_verification", "authority": "internal_governance"},
+    "quant_model_feature_surface": {"class": "research_only", "route": "quant_model_feature_surface", "authority": "internal_research"},
+    "regime_transition_trace": {"class": "internal_trace", "route": "state_space_filter_diagnostics", "authority": "internal_research"},
+    "retrain_outcome_memory_effect_trace": {"class": "internal_trace", "route": "retrain_outcome_memory", "authority": "internal_governance"},
+    "risk_budget": {"class": "broker_truth_required", "route": "capital_rotation_control", "authority": "broker_truth"},
+    "runtime_feature_history": {"class": "internal_trace", "route": "runtime_training_snapshot_trace", "authority": "internal_governance"},
+    "runtime_snapshot_trace": {"class": "internal_trace", "route": "runtime_training_snapshot", "authority": "internal_governance"},
+    "runtime_training_snapshot_trace": {"class": "internal_trace", "route": "runtime_training_snapshot", "authority": "internal_governance"},
+    "schema_lineage_gatekeeper_effect_trace": {"class": "internal_trace", "route": "schema_lineage_gatekeeper", "authority": "internal_lineage"},
+    "state_filter_diagnostics": {"class": "research_only", "route": "state_space_filter_diagnostics", "authority": "internal_research"},
+    "training_label_audit_trace": {"class": "internal_trace", "route": "training_label_audit", "authority": "internal_governance"},
+    "training_quality_trace": {"class": "internal_trace", "route": "training_quality_control", "authority": "internal_governance"},
+    "training_runtime_trace": {"class": "internal_trace", "route": "training_runtime_control", "authority": "internal_governance"},
+    "walk_forward_trace": {"class": "internal_trace", "route": "walk_forward_validate", "authority": "internal_training"},
+    "whole_system_governor_trace": {"class": "internal_trace", "route": "whole_system_governor", "authority": "internal_governance"},
+}
 
 
 REQUIRED_LABELS = [
@@ -224,6 +346,260 @@ def _ordered_unique(items: list[Any]) -> list[str]:
         seen.add(text)
         out.append(text)
     return out
+
+
+def _free_source_candidates_for_contexts(contexts: list[Any]) -> dict[str, list[str]]:
+    out: dict[str, list[str]] = {}
+    for raw in contexts:
+        context = str(raw or "").strip()
+        if not context:
+            continue
+        mapped = FREE_LABEL_CONTEXT_SOURCE_MAP.get(context)
+        if not mapped:
+            continue
+        out[context] = list(mapped)
+    return out
+
+
+def _context_classification(context: str, candidate_ids: list[str]) -> dict[str, str]:
+    mapped = LABEL_CONTEXT_CLASSIFICATION_MAP.get(str(context or "").strip())
+    if mapped:
+        return dict(mapped)
+    if candidate_ids:
+        return {"class": "free_public_or_verified_proxy", "route": "source_verification", "authority": "free_public_or_verified_proxy"}
+    return {"class": "unclassified", "route": "manual_context_triage", "authority": "unknown"}
+
+
+def _context_weight_multiplier(coverage_status: str, context_class: str, confidence: float) -> float:
+    if coverage_status == "verified":
+        return round(max(0.65, min(1.0, 0.70 + confidence * 0.30)), 6)
+    if context_class in {"internal_trace", "broker_truth_required"}:
+        return 0.78
+    if context_class == "public_proxy_available":
+        return 0.70
+    if context_class == "broker_or_live_tape_required":
+        return 0.52
+    if context_class == "research_only":
+        return 0.48
+    return 0.40
+
+
+def _label_materialization_contract(context: str, classification: dict[str, str], coverage_status: str) -> dict[str, Any]:
+    context_class = str(classification.get("class") or "unclassified")
+    route = str(classification.get("route") or "")
+    join_mode = "point_in_time_only"
+    if context_class == "broker_or_live_tape_required":
+        join_mode = "broker_or_tape_timestamp_only"
+    elif context_class == "research_only":
+        join_mode = "research_snapshot_id_only"
+    elif context_class == "internal_trace":
+        join_mode = "internal_event_timestamp_only"
+    return {
+        "context": str(context),
+        "context_class": context_class,
+        "materialization_route": route,
+        "required_join_mode": join_mode,
+        "required_join_keys": ["bot_id", "symbol", "timestamp_utc", "snapshot_id"],
+        "required_outputs": [
+            "sample_eligibility_reason",
+            "side_specific_outcome",
+            "abstention_outcome",
+            "counterfactual_opportunity_trace",
+            "label_source_confidence_norm",
+        ],
+        "eligible_for_training": bool(coverage_status == "verified" or context_class in {"internal_trace", "broker_truth_required"}),
+        "policy": "materialize_labels_before_training_use; never join future context into historical samples",
+    }
+
+
+def _source_status_aliases(source_id: str, row: dict[str, Any]) -> list[str]:
+    aliases = [str(item or "").strip() for item in row.get("aliases") or [] if str(item or "").strip()]
+    if source_id == OPTIONS_CONTEXT_SOURCE_ID:
+        aliases.append(OPTIONS_CONTEXT_LEGACY_SOURCE_ID)
+    elif source_id == OPTIONS_CONTEXT_LEGACY_SOURCE_ID:
+        aliases.append(OPTIONS_CONTEXT_SOURCE_ID)
+    return _ordered_unique(aliases)
+
+
+def _source_verification_statuses(project_root: Path) -> dict[str, dict[str, Any]]:
+    payload = _load_json(project_root / "governance" / "health" / "source_verification_latest.json")
+    rows = payload.get("sources") if isinstance(payload.get("sources"), list) else []
+    statuses: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        source_id = str(row.get("source_id") or "").strip()
+        if not source_id:
+            continue
+        verified = str(row.get("verification_status") or "").strip() != "single_source_unverified"
+        status_row = {
+            "source_id": source_id,
+            "title": str(row.get("title") or source_id),
+            "category": str(row.get("category") or ""),
+            "verification_status": str(row.get("verification_status") or ""),
+            "ok": bool(row.get("ok", False)),
+            "fresh": bool(row.get("fresh", False)),
+            "verified": bool(verified and row.get("ok", False) and row.get("fresh", False)),
+            "source_confidence_score": _safe_float(row.get("source_confidence_score"), 1.0 if verified and row.get("ok", False) and row.get("fresh", False) else 0.0),
+            "confidence_components": row.get("confidence_components") if isinstance(row.get("confidence_components"), dict) else {},
+            "evidence": row.get("evidence") if isinstance(row.get("evidence"), dict) else {},
+            "aliases": _source_status_aliases(source_id, row),
+        }
+        statuses[source_id] = status_row
+        for alias in status_row["aliases"]:
+            alias_row = dict(status_row)
+            alias_row["source_id"] = alias
+            alias_row["canonical_source_id"] = source_id
+            statuses.setdefault(alias, alias_row)
+    if bool(payload.get("ok", False)):
+        statuses.setdefault(
+            "source_verification",
+            {
+                "source_id": "source_verification",
+                "title": "Source Verification",
+                "category": "governance",
+                "verification_status": str(payload.get("overall_status") or "ready"),
+                "ok": True,
+                "fresh": True,
+                "verified": True,
+            },
+        )
+    collector_contracts = _load_json(project_root / "governance" / "health" / "collector_contracts_latest.json")
+    if collector_contracts:
+        statuses.setdefault(
+            "collector_contracts",
+            {
+                "source_id": "collector_contracts",
+                "title": "Collector Contracts",
+                "category": "governance",
+                "verification_status": str(collector_contracts.get("overall_status") or collector_contracts.get("status") or ""),
+                "ok": bool(collector_contracts.get("ok", True)),
+                "fresh": True,
+                "verified": bool(collector_contracts.get("ok", True)),
+            },
+        )
+    return statuses
+
+
+def _free_label_source_enrichment(project_root: Path, rows: list[dict[str, Any]]) -> dict[str, Any]:
+    source_statuses = _source_verification_statuses(project_root)
+    required_context_counts: Counter[str] = Counter()
+    label_family_contexts: dict[str, set[str]] = {}
+    for row in rows:
+        contract = _existing_contract(row) or _universal_contract(row)
+        label_family = str(contract.get("label_family") or "unknown")
+        contexts = [str(item or "").strip() for item in contract.get("required_context") or [] if str(item or "").strip()]
+        for context in contexts:
+            required_context_counts[context] += 1
+            label_family_contexts.setdefault(label_family, set()).add(context)
+
+    context_rows: list[dict[str, Any]] = []
+    for context, required_count in sorted(required_context_counts.items()):
+        candidate_ids = list(FREE_LABEL_CONTEXT_SOURCE_MAP.get(context) or [])
+        verified_ids = [
+            source_id
+            for source_id in candidate_ids
+            if bool(source_statuses.get(source_id, {}).get("verified", False))
+        ]
+        confidence_scores = [
+            _safe_float(source_statuses.get(source_id, {}).get("source_confidence_score"), 0.0)
+            for source_id in candidate_ids
+        ]
+        verified_confidence_scores = [
+            _safe_float(source_statuses.get(source_id, {}).get("source_confidence_score"), 0.0)
+            for source_id in verified_ids
+        ]
+        source_confidence = max(verified_confidence_scores or confidence_scores or [0.0])
+        coverage_status = "verified" if verified_ids else "unmapped" if not candidate_ids else "unverified"
+        classification = _context_classification(context, candidate_ids)
+        context_class = str(classification.get("class") or "unclassified")
+        context_rows.append(
+            {
+                "context": context,
+                "required_by_bot_count": int(required_count),
+                "candidate_source_ids": candidate_ids,
+                "verified_source_ids": verified_ids,
+                "coverage_status": coverage_status,
+                "context_class": context_class,
+                "authority": str(classification.get("authority") or ""),
+                "materialization_route": str(classification.get("route") or ""),
+                "source_confidence_norm": round(max(0.0, min(float(source_confidence), 1.0)), 6),
+                "label_weight_multiplier": _context_weight_multiplier(coverage_status, context_class, float(source_confidence)),
+                "materialization_contract": _label_materialization_contract(context, classification, coverage_status),
+            }
+        )
+
+    verified_contexts = [row["context"] for row in context_rows if row["coverage_status"] == "verified"]
+    unmapped_contexts = [row["context"] for row in context_rows if row["coverage_status"] == "unmapped"]
+    unverified_contexts = [row["context"] for row in context_rows if row["coverage_status"] == "unverified"]
+    classification_counts = dict(sorted(Counter(str(row.get("context_class") or "unclassified") for row in context_rows).items()))
+    low_confidence_contexts = [
+        str(row["context"])
+        for row in context_rows
+        if _safe_float(row.get("label_weight_multiplier"), 1.0) < 0.60
+    ]
+    materialization_ready_contexts = [
+        str(row["context"])
+        for row in context_rows
+        if bool((row.get("materialization_contract") or {}).get("eligible_for_training", False))
+    ]
+    return {
+        "timestamp_utc": _utc_now(),
+        "schema_version": 1,
+        "policy": "free_public_sources_are_label_context_evidence_only_not_execution_authority",
+        "source_status_count": len(source_statuses),
+        "free_context_mapping_count": len(FREE_LABEL_CONTEXT_SOURCE_MAP),
+        "required_context_count": len(context_rows),
+        "verified_context_count": len(verified_contexts),
+        "unverified_context_count": len(unverified_contexts),
+        "unmapped_context_count": len(unmapped_contexts),
+        "classification_counts": classification_counts,
+        "low_confidence_context_count": len(low_confidence_contexts),
+        "low_confidence_contexts": low_confidence_contexts[:250],
+        "materialization_ready_context_count": len(materialization_ready_contexts),
+        "materialization_ready_contexts": materialization_ready_contexts[:250],
+        "verified_contexts": verified_contexts[:250],
+        "unverified_contexts": unverified_contexts[:250],
+        "unmapped_contexts": unmapped_contexts[:250],
+        "context_sources": context_rows,
+        "label_family_context_sources": {
+            family: _free_source_candidates_for_contexts(sorted(contexts))
+            for family, contexts in sorted(label_family_contexts.items())
+        },
+        "source_statuses": source_statuses,
+    }
+
+
+def _label_materialization_plan(source_enrichment: dict[str, Any]) -> dict[str, Any]:
+    context_rows = source_enrichment.get("context_sources") if isinstance(source_enrichment.get("context_sources"), list) else []
+    contracts = [
+        row.get("materialization_contract")
+        for row in context_rows
+        if isinstance(row, dict) and isinstance(row.get("materialization_contract"), dict)
+    ]
+    ready = [row for row in contracts if bool(row.get("eligible_for_training", False))]
+    blocked = [row for row in contracts if not bool(row.get("eligible_for_training", False))]
+    by_class = Counter(str(row.get("context_class") or "unclassified") for row in contracts)
+    return {
+        "timestamp_utc": _utc_now(),
+        "schema_version": 1,
+        "overall_status": "ready" if not blocked else "needs_materialization",
+        "contract_count": len(contracts),
+        "ready_contract_count": len(ready),
+        "blocked_contract_count": len(blocked),
+        "contract_counts_by_class": dict(sorted(by_class.items())),
+        "required_outputs": [
+            "sample_eligibility_reason",
+            "side_specific_outcome",
+            "abstention_outcome",
+            "counterfactual_opportunity_trace",
+            "label_source_confidence_norm",
+        ],
+        "ready_contexts": [str(row.get("context") or "") for row in ready[:250]],
+        "blocked_contexts": [str(row.get("context") or "") for row in blocked[:250]],
+        "materialization_queue": contracts[:500],
+        "policy": "materialization_plan_is_required_before_any_collect_only_bot_graduates_to_training",
+    }
 
 
 def _registry_rows(registry: dict[str, Any]) -> list[dict[str, Any]]:
@@ -374,13 +750,20 @@ def _training_lane_for_family(label_family: str) -> str:
     return "general_balanced"
 
 
+def _with_free_source_context(contract: dict[str, Any]) -> dict[str, Any]:
+    out = dict(contract)
+    out["free_source_context_candidates"] = _free_source_candidates_for_contexts(list(out.get("required_context") or []))
+    out["free_source_context_policy"] = "point_in_time_verified_free_public_sources_only"
+    return out
+
+
 def _universal_contract(row: dict[str, Any]) -> dict[str, Any]:
     existing = _existing_contract(row)
     bot_id = str(row.get("bot_id") or "").strip()
     override = TARGETED_LABEL_CONTRACT_OVERRIDES.get(bot_id)
     if override:
         label_family = str(override["label_family"])
-        return {
+        return _with_free_source_context({
             "version": UNIVERSAL_LABEL_CONTRACT_VERSION,
             "label_family": label_family,
             "primary_horizon": str(override["primary_horizon"]),
@@ -392,7 +775,7 @@ def _universal_contract(row: dict[str, Any]) -> dict[str, Any]:
             "quality_floor": _safe_float(existing.get("quality_floor"), 0.84),
             "training_lane": _training_lane_for_family(label_family),
             "source": "targeted_labeling_repair_override",
-        }
+        })
     family, primary, aux, context = _infer_label_family(row)
     existing_family = str(existing.get("label_family") or existing.get("family") or "").strip()
     existing_primary = str(existing.get("primary_horizon") or existing.get("primary_label_horizon") or "").strip()
@@ -400,7 +783,7 @@ def _universal_contract(row: dict[str, Any]) -> dict[str, Any]:
     existing_context = existing.get("required_context") or existing.get("required_label_context")
     required_labels = existing.get("required_labels") if isinstance(existing.get("required_labels"), list) else REQUIRED_LABELS
     label_family = existing_family or family
-    return {
+    return _with_free_source_context({
         "version": UNIVERSAL_LABEL_CONTRACT_VERSION,
         "label_family": label_family,
         "primary_horizon": existing_primary or primary,
@@ -412,7 +795,7 @@ def _universal_contract(row: dict[str, Any]) -> dict[str, Any]:
         "quality_floor": _safe_float(existing.get("quality_floor"), 0.84),
         "training_lane": _training_lane_for_family(label_family),
         "source": "preserved_existing_contract" if existing else "inferred_from_registry_identity",
-    }
+    })
 
 
 def _apply_universal_label_contracts(rows: list[dict[str, Any]], now: str) -> dict[str, Any]:
@@ -474,6 +857,214 @@ def _apply_universal_label_contracts(rows: list[dict[str, Any]], now: str) -> di
         "label_family_counts": dict(sorted(family_counts.items())),
         "training_lane_counts": dict(sorted(lane_counts.items())),
         "coverage_ratio_after": 1.0 if rows else 0.0,
+    }
+
+
+def _is_training_labeling_bot_identity(row: dict[str, Any]) -> bool:
+    bot_id = str(row.get("bot_id") or "").strip()
+    slot_kind = str(row.get("slot_kind") or "").strip()
+    return bool(
+        "_training_labeling_" in bot_id
+        or str(row.get("sleeve_family") or "").strip() == SLEEVE_FAMILY
+        or str(row.get("capability_pack_slug") or "").strip() == PACK_SLUG
+        or slot_kind.startswith(f"{PACK_SLUG}_")
+    )
+
+
+def _is_training_labeling_structured_pack_row(row: dict[str, Any]) -> bool:
+    slot_kind = str(row.get("slot_kind") or "").strip()
+    return bool(
+        str(row.get("capability_pack_slug") or "").strip() == PACK_SLUG
+        or slot_kind.startswith(f"{PACK_SLUG}_")
+    )
+
+
+def _training_labeling_collection_guard_ready(row: dict[str, Any]) -> bool:
+    return bool(
+        row.get("active", False) is True
+        and str(row.get("lifecycle_state") or "").strip() == "data_collection_only"
+        and row.get("data_collection_active", False) is True
+        and row.get("training_excluded", False) is True
+        and row.get("exclude_from_training", False) is True
+        and row.get("rotation_blocked", False) is True
+        and _safe_float(row.get("weight"), 0.0) == 0.0
+        and _safe_float(row.get("preference_score"), 0.0) == 0.0
+        and row.get("trading_enabled", False) is False
+        and row.get("paper_trading_enabled", False) is False
+        and row.get("live_trading_enabled", False) is False
+        and row.get("execution_enabled", False) is False
+        and row.get("allocation_enabled", False) is False
+    )
+
+
+def _training_labeling_collection_guard_preview(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    matched = [row for row in rows if _is_training_labeling_bot_identity(row)]
+    noncompliant = [row for row in matched if not _training_labeling_collection_guard_ready(row)]
+    legacy = [row for row in matched if not _is_training_labeling_structured_pack_row(row)]
+    return {
+        "schema_version": 1,
+        "mode": "preview",
+        "matched_bot_count": len(matched),
+        "structured_pack_bot_count": len(matched) - len(legacy),
+        "legacy_training_labeling_bot_count": len(legacy),
+        "noncompliant_before_count": len(noncompliant),
+        "noncompliant_bot_ids": [str(row.get("bot_id") or "") for row in noncompliant[:250]],
+        "policy": "training_labeling_bots_are_collection_only_zero_weight_excluded_until_threshold_clearance",
+    }
+
+
+def _apply_training_labeling_collection_guard(rows: list[dict[str, Any]], now: str) -> dict[str, Any]:
+    matched_count = 0
+    structured_pack_count = 0
+    legacy_count = 0
+    noncompliant_before: list[str] = []
+    updated_bot_ids: list[str] = []
+    legacy_repaired_bot_ids: list[str] = []
+
+    def set_if_changed(row: dict[str, Any], key: str, value: Any) -> bool:
+        if row.get(key) == value:
+            return False
+        row[key] = value
+        return True
+
+    for row in rows:
+        if not _is_training_labeling_bot_identity(row):
+            continue
+        matched_count += 1
+        structured_pack_row = _is_training_labeling_structured_pack_row(row)
+        if structured_pack_row:
+            structured_pack_count += 1
+        else:
+            legacy_count += 1
+        guard_ready_before = _training_labeling_collection_guard_ready(row)
+        if not guard_ready_before:
+            noncompliant_before.append(str(row.get("bot_id") or ""))
+
+        changed = False
+        changed |= set_if_changed(row, "active", True)
+        changed |= set_if_changed(row, "lifecycle_state", "data_collection_only")
+        changed |= set_if_changed(row, "data_collection_active", True)
+        changed |= set_if_changed(row, "data_collection_mode", "active_observer")
+        if not str(row.get("data_collection_started_utc") or "").strip():
+            row["data_collection_started_utc"] = now
+            changed = True
+        changed |= set_if_changed(
+            row,
+            "data_collection_reason",
+            "training_labeling_intelligence_collect_only_until_label_and_training_effect_gates_clear",
+        )
+        changed |= set_if_changed(row, "weight", 0.0)
+        changed |= set_if_changed(row, "preference_score", 0.0)
+        changed |= set_if_changed(row, "promoted", False)
+        changed |= set_if_changed(row, "trading_enabled", False)
+        changed |= set_if_changed(row, "paper_trading_enabled", False)
+        changed |= set_if_changed(row, "live_trading_enabled", False)
+        changed |= set_if_changed(row, "allocation_enabled", False)
+        changed |= set_if_changed(row, "execution_enabled", False)
+        changed |= set_if_changed(row, "rotation_blocked", True)
+        changed |= set_if_changed(row, "rotation_block_reason", "training_labeling_intelligence_collection_only_zero_weight")
+        changed |= set_if_changed(row, "training_excluded", True)
+        changed |= set_if_changed(row, "exclude_from_training", True)
+        changed |= set_if_changed(row, "training_candidate_after_threshold", True)
+        changed |= set_if_changed(row, "training_exclusion_reason", "collecting_training_labeling_effect_evidence_before_training")
+        changed |= set_if_changed(row, "training_exclusion_until", "minimum_data_collection_threshold_met")
+        changed |= set_if_changed(row, "data_collection_storage_guarded", True)
+        changed |= set_if_changed(row, "data_collection_capture_mode", "thin_digest_with_heartbeat_fallback")
+        changed |= set_if_changed(row, "data_collection_sample_rate", SAMPLE_RATE)
+        changed |= set_if_changed(row, "data_collection_max_daily_storage_mb", MAX_DAILY_MB_PER_BOT)
+        changed |= set_if_changed(row, "data_collection_max_daily_mb", float(MAX_DAILY_MB_PER_BOT))
+        changed |= set_if_changed(row, "data_collection_compute_guard_mode", "pressure_self_accommodating")
+        changed |= set_if_changed(row, "data_collection_training_ready", False)
+        changed |= set_if_changed(row, "eligible_for_master_vote", False)
+        changed |= set_if_changed(row, "direct_execution_allowed", False)
+        changed |= set_if_changed(row, "paper_trade_lock_required", True)
+        changed |= set_if_changed(row, "sleeve_family", SLEEVE_FAMILY)
+        changed |= set_if_changed(row, "strategy_family", "training_and_labeling_governance")
+        changed |= set_if_changed(row, "training_labeling_collection_guard_version", PACK_VERSION)
+        if not str(row.get("training_labeling_collection_guarded_utc") or "").strip():
+            row["training_labeling_collection_guarded_utc"] = now
+            changed = True
+        if not structured_pack_row:
+            changed |= set_if_changed(row, "legacy_training_labeling_collection_guard_version", PACK_VERSION)
+            if not guard_ready_before:
+                legacy_repaired_bot_ids.append(str(row.get("bot_id") or ""))
+
+        current_min_observations = _safe_int(row.get("minimum_training_observations"), 0)
+        if current_min_observations < MINIMUM_TRAINING_OBSERVATIONS:
+            row["minimum_training_observations"] = MINIMUM_TRAINING_OBSERVATIONS
+            changed = True
+        current_min_days = _safe_int(row.get("minimum_data_collection_days"), 0)
+        if current_min_days < MINIMUM_COLLECTION_DAYS:
+            row["minimum_data_collection_days"] = MINIMUM_COLLECTION_DAYS
+            changed = True
+
+        threshold_policy = row.get("training_threshold_policy") if isinstance(row.get("training_threshold_policy"), dict) else {}
+        updated_policy = {
+            **threshold_policy,
+            "minimum_observations": max(_safe_int(threshold_policy.get("minimum_observations"), 0), MINIMUM_TRAINING_OBSERVATIONS),
+            "minimum_collection_days": max(_safe_int(threshold_policy.get("minimum_collection_days"), 0), MINIMUM_COLLECTION_DAYS),
+            "requires_label_contract_clearance": True,
+            "requires_runtime_pressure_clearance": True,
+            "requires_backpressure_clearance": True,
+            "requires_schema_lineage_clearance": True,
+            "requires_paper_live_separation_clearance": True,
+            "requires_global_halt_clear": True,
+        }
+        changed |= set_if_changed(row, "training_threshold_policy", updated_policy)
+
+        progress = row.get("data_collection_threshold_progress") if isinstance(row.get("data_collection_threshold_progress"), dict) else {}
+        observations = max(
+            _safe_int(progress.get("observations"), 0),
+            _safe_int(row.get("data_collection_observations"), 0),
+            _safe_int(row.get("observations"), 0),
+        )
+        updated_progress = {
+            **_threshold_progress(),
+            **progress,
+            "observations": observations,
+            "minimum_training_observations": max(
+                _safe_int(progress.get("minimum_training_observations"), 0),
+                MINIMUM_TRAINING_OBSERVATIONS,
+            ),
+            "observations_ready": False,
+            "minimum_data_collection_days": max(
+                _safe_int(progress.get("minimum_data_collection_days"), 0),
+                MINIMUM_COLLECTION_DAYS,
+            ),
+            "days_ready": False,
+            "training_ready": False,
+        }
+        changed |= set_if_changed(row, "data_collection_threshold_progress", updated_progress)
+
+        existing_tags = row.get("labeling_tags") if isinstance(row.get("labeling_tags"), list) else []
+        updated_tags = _ordered_unique(
+            [
+                *existing_tags,
+                "research_only",
+                "collection_only",
+                "execution_blocked",
+                f"sleeve_family:{SLEEVE_FAMILY}",
+                f"collection_guard:{PACK_VERSION}",
+            ]
+        )
+        changed |= set_if_changed(row, "labeling_tags", updated_tags)
+
+        if changed:
+            updated_bot_ids.append(str(row.get("bot_id") or ""))
+
+    return {
+        "schema_version": 1,
+        "mode": "applied",
+        "matched_bot_count": matched_count,
+        "structured_pack_bot_count": structured_pack_count,
+        "legacy_training_labeling_bot_count": legacy_count,
+        "noncompliant_before_count": len(noncompliant_before),
+        "updated_bot_count": len(updated_bot_ids),
+        "legacy_repaired_bot_count": len(legacy_repaired_bot_ids),
+        "noncompliant_before_bot_ids": noncompliant_before[:250],
+        "updated_bot_ids": updated_bot_ids[:250],
+        "legacy_repaired_bot_ids": legacy_repaired_bot_ids[:250],
+        "policy": "training_labeling_bots_are_collection_only_zero_weight_excluded_until_threshold_clearance",
     }
 
 
@@ -584,6 +1175,86 @@ def _collection_age_days_for_row(row: dict[str, Any], now: datetime) -> float:
         return 0.0
 
 
+def _label_depth_contract(
+    row: dict[str, Any],
+    contract: dict[str, Any],
+    *,
+    observations: int,
+    minimum_observations: int,
+) -> dict[str, Any]:
+    paper_standard = row.get("paper_promotion_standard") if isinstance(row.get("paper_promotion_standard"), dict) else {}
+    training_policy = row.get("training_threshold_policy") if isinstance(row.get("training_threshold_policy"), dict) else {}
+    usable_sample_goal = max(
+        _safe_int(row.get("minimum_training_samples"), 0),
+        _safe_int(paper_standard.get("minimum_samples"), 0),
+        _safe_int(training_policy.get("minimum_samples"), 0),
+        COLLECT_ONLY_USABLE_SAMPLE_GOAL,
+    )
+    eligible_sequence_goal = max(
+        _safe_int(row.get("minimum_training_sequences"), 0),
+        _safe_int(paper_standard.get("minimum_sequences"), 0),
+        _safe_int(training_policy.get("minimum_sequences"), 0),
+        COLLECT_ONLY_ELIGIBLE_SEQUENCE_GOAL,
+    )
+    estimated_capacity = min(
+        usable_sample_goal,
+        max(int(observations) // COLLECT_ONLY_OBSERVATIONS_PER_SAMPLE_TARGET, 0),
+    )
+    observation_gap = max(int(minimum_observations) - int(observations), 0)
+    needs_label_materialization = bool(observations > 0 and estimated_capacity < usable_sample_goal)
+    if observation_gap > 0 and needs_label_materialization:
+        status = "collect_and_materialize_label_depth"
+        next_action = "collect_more_raw_observations_while_materializing_point_in_time_label_depth"
+    elif observation_gap > 0:
+        status = "collect_more_observations"
+        next_action = "collect_more_raw_observations_before_training"
+    elif needs_label_materialization:
+        status = "materialize_label_depth"
+        next_action = "materialize_point_in_time_label_depth_from_existing_observations"
+    else:
+        status = "label_depth_ready_for_real_diagnostic_refresh"
+        next_action = "refresh_with_real_samples"
+    label_family = str(contract.get("label_family") or "generic_directional")
+    primary_horizon = str(contract.get("primary_horizon") or "1d_forward_return")
+    return {
+        "version": "collect_only_label_depth_bridge_v1",
+        "status": status,
+        "next_action": next_action,
+        "label_family": label_family,
+        "primary_horizon": primary_horizon,
+        "true_sample_count": 0,
+        "usable_sample_goal": usable_sample_goal,
+        "estimated_usable_sample_capacity": estimated_capacity,
+        "usable_sample_gap": max(usable_sample_goal - estimated_capacity, 0),
+        "eligible_sequence_goal": eligible_sequence_goal,
+        "eligible_sequence_gap": eligible_sequence_goal,
+        "observation_count": int(observations),
+        "minimum_observations": int(minimum_observations),
+        "observation_gap": observation_gap,
+        "observations_per_usable_sample_target": COLLECT_ONLY_OBSERVATIONS_PER_SAMPLE_TARGET,
+        "needs_more_raw_observations": observation_gap > 0,
+        "needs_label_materialization": needs_label_materialization,
+        "required_depth_events": [
+            "accepted_candidate_trace",
+            "rejected_candidate_trace",
+            "abstained_candidate_trace",
+            "counterfactual_opportunity_trace",
+            "paper_live_outcome",
+            "forward_return_bucket",
+            "side_specific_outcome",
+            "sample_eligibility_reason",
+        ],
+        "required_join_keys": ["bot_id", "symbol", "mode", "timestamp_utc", "snapshot_id", "decision_id"],
+        "collection_actions": [
+            "route every accepted, rejected, and abstained candidate through label_outcome_join",
+            "write sample_eligibility_reason for filtered rows so conversion failures are visible",
+            "keep neutral and counter-side examples instead of dropping them before training",
+            "materialize side_specific_outcome and lane_balance_bucket before the next canary",
+        ],
+        "safe_training_policy": "diagnostic_only_until_real_sample_count_and_eligible_sequences_clear",
+    }
+
+
 def _collect_only_diagnostic_payload(row: dict[str, Any], *, now: datetime) -> dict[str, Any]:
     bot_id = str(row.get("bot_id") or "").strip()
     contract = row.get("universal_label_contract") if isinstance(row.get("universal_label_contract"), dict) else {}
@@ -599,10 +1270,17 @@ def _collect_only_diagnostic_payload(row: dict[str, Any], *, now: datetime) -> d
     required_labels = list(contract.get("required_labels") or [])
     label_family = str(contract.get("label_family") or "generic_directional")
     primary_horizon = str(contract.get("primary_horizon") or "1d_forward_return")
+    label_depth = _label_depth_contract(
+        row,
+        contract,
+        observations=observations,
+        minimum_observations=minimum_observations,
+    )
     return {
         "timestamp_utc": now.isoformat(),
         "schema_version": 1,
         "status": "collect_only_label_contract_ready",
+        "label_depth_status": label_depth["status"],
         "bot_id": bot_id,
         "bot_role": str(row.get("bot_role") or ""),
         "lifecycle_state": str(row.get("lifecycle_state") or ""),
@@ -658,7 +1336,15 @@ def _collect_only_diagnostic_payload(row: dict[str, Any], *, now: datetime) -> d
                 "training_ready": bool(observations_ready and days_ready),
             },
             "diagnostic_kind": "collect_only_label_contract_bootstrap",
-            "safe_next_step": "collect_more_data" if minimum_observations > observations else "refresh_with_real_samples",
+            "label_depth_contract": label_depth,
+            "usable_sample_bridge": {
+                "true_sample_count": 0,
+                "estimated_usable_sample_capacity": label_depth["estimated_usable_sample_capacity"],
+                "usable_sample_goal": label_depth["usable_sample_goal"],
+                "usable_sample_gap": label_depth["usable_sample_gap"],
+                "policy": "do_not_count_estimated_capacity_as_real_training_samples",
+            },
+            "safe_next_step": label_depth["next_action"],
         },
         "diagnostic_contract": {
             "purpose": "Make collect-only high-numbered bots explain their label contract and collection threshold before canary training.",
@@ -718,10 +1404,12 @@ def _collect_only_diagnostic_candidates(rows: list[dict[str, Any]], *, min_versi
             continue
         if not bool(row.get("active", False)) or not bool(row.get("data_collection_active", False)):
             continue
-        if not (bool(row.get("training_excluded", False)) or bool(row.get("exclude_from_training", False))):
-            continue
         lifecycle_state = str(row.get("lifecycle_state") or "").strip()
         if lifecycle_state not in {"data_collection_only", "paper_live_data"}:
+            continue
+        if lifecycle_state != "data_collection_only" and not (
+            bool(row.get("training_excluded", False)) or bool(row.get("exclude_from_training", False))
+        ):
             continue
         candidates.append(row)
     candidates.sort(key=lambda item: _version_from_bot_id(str(item.get("bot_id") or "")) or 0)
@@ -772,7 +1460,7 @@ def _row_for_bot(bot: dict[str, Any], bot_id: str, assigned_ids: dict[str, str],
     contract = _pack_contract(assigned_ids)
     system_slug = str(system["slug"])
     layer = str(system["layer"])
-    label_contract = {
+    label_contract = _with_free_source_context({
         "version": UNIVERSAL_LABEL_CONTRACT_VERSION,
         "label_family": "training_process_quality",
         "primary_horizon": f"{system_slug}_improves_training_or_labeling_gate_status",
@@ -783,7 +1471,7 @@ def _row_for_bot(bot: dict[str, Any], bot_id: str, assigned_ids: dict[str, str],
         "forbidden_join_modes": ["future_leakage", "lookahead_join", "unbounded_raw_feed_join"],
         "quality_floor": 0.89,
         "training_lane": "governance_effect",
-    }
+    })
     return {
         "bot_id": bot_id,
         "bot_role": bot["bot_role"],
@@ -1090,6 +1778,16 @@ def _refresh_summary(registry: dict[str, Any], label_summary: dict[str, Any]) ->
     inactive = [row for row in rows if not bool(row.get("active"))]
     signal_active = [row for row in active if str(row.get("bot_role") or "") == "signal_sub_bot"]
     infra_active = [row for row in active if str(row.get("bot_role") or "") == "infrastructure_sub_bot"]
+    data_collection_only = [row for row in rows if str(row.get("lifecycle_state") or "") == "data_collection_only"]
+    zero_weight_research = [
+        row
+        for row in rows
+        if _safe_float(row.get("weight"), 0.0) == 0.0
+        and (
+            str(row.get("lifecycle_state") or "") == "data_collection_only"
+            or "research_only" in [str(tag or "") for tag in row.get("labeling_tags") or []]
+        )
+    ]
     structured = [row for row in rows if str(row.get("capability_pack_version") or "")]
     pack_rows = [row for row in rows if str(row.get("training_labeling_intelligence_version") or "") == PACK_VERSION and str(row.get("capability_pack_slug") or "") == PACK_SLUG]
     universal_rows = [row for row in rows if str(row.get("universal_label_contract_version") or "") == UNIVERSAL_LABEL_CONTRACT_VERSION]
@@ -1109,6 +1807,8 @@ def _refresh_summary(registry: dict[str, Any], label_summary: dict[str, Any]) ->
             "active_signal_sub_bots": len(signal_active),
             "active_infrastructure_sub_bots": len(infra_active),
             "data_collection_active_bots": sum(1 for row in rows if bool(row.get("data_collection_active"))),
+            "data_collection_only_bots": len(data_collection_only),
+            "zero_weight_research_bots": len(zero_weight_research),
             "training_excluded_bots": sum(1 for row in rows if bool(row.get("training_excluded")) or bool(row.get("exclude_from_training"))),
             "structured_capability_pack_bot_count": len(structured),
             "training_labeling_intelligence_bot_count": len(pack_rows),
@@ -1137,6 +1837,9 @@ def build_payload(
     plan = plan_registry_expansion(registry)
     missing_contracts = sum(1 for row in rows if not (_existing_contract(row) or row.get("data_label_contract_version")))
     incomplete_contracts = sum(1 for row in rows if (_existing_contract(row) or row.get("data_label_contract_version")) and not _contract_complete(row))
+    source_enrichment = _free_label_source_enrichment(project_root, rows)
+    materialization_plan = _label_materialization_plan(source_enrichment)
+    collection_guard = _training_labeling_collection_guard_preview(rows)
     return {
         "ok": True,
         "generated_at_utc": plan["generated_at_utc"],
@@ -1156,6 +1859,9 @@ def build_payload(
         "missing_label_contract_count": missing_contracts,
         "incomplete_label_contract_count": incomplete_contracts,
         "pack": plan["pack"],
+        "free_label_source_enrichment": source_enrichment,
+        "label_materialization_plan": materialization_plan,
+        "training_labeling_collection_guard": collection_guard,
         "training_process_intelligence": _training_process_intelligence(project_root),
         "collect_only_diagnostics": _collect_only_diagnostic_preview(
             project_root,
@@ -1188,6 +1894,7 @@ def apply_registry(
     now = _utc_now()
     if added_rows:
         rows.extend(added_rows)
+    collection_guard = _apply_training_labeling_collection_guard(rows, now)
     label_summary = _apply_universal_label_contracts(rows, now)
     registry["sub_bots"] = rows
     registry["updated_at_utc"] = now
@@ -1195,6 +1902,8 @@ def apply_registry(
     _write_json(registry_path, registry)
 
     process = _training_process_intelligence(project_root)
+    source_enrichment = _free_label_source_enrichment(project_root, rows)
+    materialization_plan = _label_materialization_plan(source_enrichment)
     collect_only_diagnostics = (
         _materialize_collect_only_diagnostics(
             project_root,
@@ -1227,6 +1936,9 @@ def apply_registry(
             "target_platform_total_bots_met": len(rows) >= TARGET_PLATFORM_TOTAL_BOTS,
             "storage_targets_ready": storage_targets_ready,
             "label_contract_summary": label_summary,
+            "free_label_source_enrichment": source_enrichment,
+            "label_materialization_plan": materialization_plan,
+            "training_labeling_collection_guard": collection_guard,
             "training_process_intelligence": process,
             "collect_only_diagnostics": collect_only_diagnostics,
         }
@@ -1240,6 +1952,8 @@ def apply_registry(
     _write_json(project_root / "config" / "training_labeling_intelligence_v1.json", config_payload)
     _write_json(project_root / "governance" / "health" / "training_labeling_intelligence_latest.json", payload)
     _write_json(project_root / "governance" / "training_labeling_intelligence" / "label_coverage_latest.json", label_summary)
+    _write_json(project_root / "governance" / "training_labeling_intelligence" / "free_label_source_enrichment_latest.json", source_enrichment)
+    _write_json(project_root / "governance" / "training_labeling_intelligence" / "label_materialization_plan_latest.json", materialization_plan)
     _write_json(project_root / "governance" / "training_labeling_intelligence" / "training_process_intelligence_latest.json", process)
     return payload
 

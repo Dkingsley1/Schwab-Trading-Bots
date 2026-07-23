@@ -131,8 +131,10 @@ def _worst_status(rows: list[dict[str, Any]]) -> str:
         return "blocked"
     if any(str(row.get("overall_status")) == "degraded" for row in rows):
         return "degraded"
-    if any(str(row.get("overall_status")) in {"needs_work", "watch", "thin"} for row in rows):
+    if any(str(row.get("overall_status")) == "needs_work" for row in rows):
         return "needs_work"
+    if any(str(row.get("overall_status")) in {"watch", "thin"} for row in rows):
+        return "watch"
     return "ready"
 
 
@@ -351,10 +353,18 @@ def _resource_budget(v4: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _data_contract(v4: dict[str, Any]) -> dict[str, Any]:
+def _data_contract(v4: dict[str, Any], platform: dict[str, Any]) -> dict[str, Any]:
     data_value = _as_dict(_as_dict(v4.get("sections")).get("data_value_engine"))
     provider = _as_dict(_as_dict(v4.get("sections")).get("causal_world_model")).get("current_world_state", {})
     score = _safe_float(data_value.get("data_value_score"), 0.0)
+    if not v4:
+        status = "thin"
+    elif score < 25.0 and str(_as_dict(provider).get("provider_status") or "") in {"blocked", "critical"}:
+        status = "needs_work"
+    elif score < 55.0:
+        status = "watch"
+    else:
+        status = "ready"
     contracts = [
         {"source_family": "provider_health", "priority": "high", "reason": "reduces false halts and failed collection"},
         {"source_family": "execution_realism", "priority": "high", "reason": "discounts paper PnL before promotion"},
@@ -362,9 +372,10 @@ def _data_contract(v4: dict[str, Any]) -> dict[str, Any]:
         {"source_family": "unique_alpha_features", "priority": "medium", "reason": "reduces duplicate-alpha load"},
     ]
     return {
-        "overall_status": "needs_work" if score < 55.0 else "ready",
+        "overall_status": status,
         "data_value_score": round(score, 3),
         "provider_status": _as_dict(provider).get("provider_status", "unknown"),
+        "platform_intelligence_status": platform.get("overall_status", "missing"),
         "data_contracts": contracts,
         "contract_policy": "collect_high_value_quality_evidence_before_more_volume",
     }
@@ -507,7 +518,7 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
     boundary = _safe_autonomy_boundary(v4, reflex)
     critics = _critic_fusion(v4, reflex)
     resources = _resource_budget(v4)
-    data_contracts = _data_contract(v4)
+    data_contracts = _data_contract(v4, platform)
     curriculum = _bot_curriculum(v4, registry)
     dependencies = _dependency_map(v4)
     roadmap = _roadmap(v4, reflex, scenarios)
@@ -530,7 +541,7 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
     payload = {
         "timestamp_utc": iso_now(),
         "schema_version": 1,
-        "ok": overall in {"ready", "needs_work", "degraded"},
+        "ok": overall in {"ready", "watch", "needs_work", "degraded"},
         "overall_status": overall,
         "brain_name": "Platform Brain v5 Reflex Cortex",
         "mode": "reflex_advisory_read_only",

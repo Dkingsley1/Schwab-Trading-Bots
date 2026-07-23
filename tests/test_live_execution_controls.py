@@ -14,6 +14,11 @@ def _cfg(**overrides):
         trade_min_interval_global_seconds=1.0,
         max_slippage_bps=35.0,
         max_fill_deviation_bps=45.0,
+        min_execution_realism_score=25.0,
+        min_effective_fill_ratio=0.50,
+        max_reject_probability=0.80,
+        max_cancel_probability=0.85,
+        max_stale_quote_probability=0.80,
     )
     for key, value in overrides.items():
         setattr(base, key, value)
@@ -193,6 +198,36 @@ def test_fill_quality_can_fail_deviation_threshold():
     assert quality["ok"] is False
     assert quality["reason"] == "fill_deviation_limit"
     assert float(quality["fill_deviation_bps"]) > 5.0
+
+
+def test_live_pre_trade_realism_guard_blocks_stale_option_quote():
+    guard = LiveExecutionGuard(_cfg(trade_min_interval_seconds=0.0, trade_min_interval_global_seconds=0.0))
+
+    decision = guard.pre_trade_check(
+        symbol="NVDA_covered_call",
+        action="SELL_TO_OPEN",
+        quantity=10.0,
+        reference_price=4.0,
+        now_ts=1010.0,
+        enforce_execution_realism=True,
+        spread_bps=60.0,
+        volatility_1m=0.02,
+        latency_ms=500.0,
+        bid_size=5.0,
+        ask_size=5.0,
+        broker="schwab",
+        market_kind="options",
+        session="regular",
+        order_type="limit",
+        asset_class="options",
+        sleeve="covered_call",
+        quote_age_ms=6000.0,
+        open_interest=0.0,
+    )
+
+    assert decision.ok is False
+    assert decision.gate == "execution_realism_guard"
+    assert "simulated_stale_quote_rejected" in decision.details["reasons"]
 
 
 def test_reconcile_order_lifecycle_detects_mismatch_and_position_break():

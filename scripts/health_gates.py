@@ -4,9 +4,10 @@ import os
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Any, Dict, List, Tuple
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+STORAGE_CONTROL_BACKPRESSURE_OVERRIDE_MAX_AGE_SECONDS = 1800.0
 
 
 def _load_json(path: Path) -> dict:
@@ -133,6 +134,86 @@ def _to_int(value, default: int = 0) -> int:
         return int(float(value))
     except Exception:
         return int(default)
+
+
+def _storage_control_backpressure_override(storage_control: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(storage_control, dict) or not storage_control:
+        return {"active": False}
+    timestamp = _parse_iso_utc(storage_control.get("timestamp_utc"))
+    if timestamp is None:
+        return {"active": False, "reason": "missing_storage_control_timestamp"}
+    age_seconds = max((datetime.now(timezone.utc) - timestamp).total_seconds(), 0.0)
+    backpressure = storage_control.get("backpressure") if isinstance(storage_control.get("backpressure"), dict) else {}
+    effective = backpressure.get("effective_raw_live") if isinstance(backpressure.get("effective_raw_live"), dict) else {}
+    data_integrity = storage_control.get("data_integrity") if isinstance(storage_control.get("data_integrity"), dict) else {}
+    steady_state = storage_control.get("steady_state") if isinstance(storage_control.get("steady_state"), dict) else {}
+    targets = steady_state.get("targets") if isinstance(steady_state.get("targets"), dict) else {}
+    source = str(backpressure.get("effective_raw_live_source") or effective.get("source") or "").strip()
+    overlay_adjusted = bool(backpressure.get("overlay_adjusted", False))
+    overlay_clear = bool(backpressure.get("overlay_pressure_clear", False) or source == "fresh_empty_sql_ingestion_overlay")
+    storage_ready = bool(
+        str(storage_control.get("overall_status") or "").strip().lower() == "ready"
+        and str(storage_control.get("severity") or "").strip().lower() == "stable"
+    )
+    data_clean = bool(
+        _to_int(data_integrity.get("sql_overlay_invalid_lines"), 0) <= 0
+        and _to_int(data_integrity.get("sql_overlay_oversize_payloads"), 0) <= 0
+        and _to_int(data_integrity.get("sql_overlay_ops_write_failures"), 0) <= 0
+    )
+    total_pending = _to_int(effective.get("total_pending_lines"), _to_int(backpressure.get("total_pending_lines"), 0))
+    core_pending = _to_int(effective.get("core_pending_lines"), _to_int(backpressure.get("core_pending_lines"), total_pending))
+    oldest_age = _to_float(effective.get("oldest_pending_age_seconds"), _to_float(backpressure.get("oldest_pending_age_seconds"), 0.0))
+    total_target = _to_int(targets.get("total_pending_lines"), _to_int(backpressure.get("total_pending_lines_threshold"), 15000)) or 15000
+    core_target = _to_int(targets.get("core_pending_lines"), _to_int(backpressure.get("pending_lines_threshold"), 5000)) or 5000
+    oldest_target = _to_float(targets.get("oldest_pending_age_seconds"), 600.0) or 600.0
+    queue_clear = bool(total_pending <= total_target and core_pending <= core_target)
+    age_reconciled = bool(
+        effective.get("age_reconciled_from_stale_locator", False)
+        or effective.get("oldest_age_reconciled", False)
+        or "fresh_empty_sql" in source
+    )
+    age_clear = bool(oldest_age <= oldest_target and (oldest_age > 0.0 or age_reconciled or overlay_clear))
+    authoritative_clear = bool(storage_ready and overlay_adjusted and overlay_clear)
+    effective_queue_clear = bool(queue_clear and age_clear and age_reconciled)
+    if not (
+        (authoritative_clear or effective_queue_clear)
+        and data_clean
+        and age_seconds <= STORAGE_CONTROL_BACKPRESSURE_OVERRIDE_MAX_AGE_SECONDS
+    ):
+        return {
+            "active": False,
+            "reason": "storage_control_not_authoritative_clear",
+            "storage_ready": storage_ready,
+            "overlay_adjusted": overlay_adjusted,
+            "overlay_clear": overlay_clear,
+            "queue_clear": queue_clear,
+            "age_clear": age_clear,
+            "age_reconciled": age_reconciled,
+            "data_clean": data_clean,
+            "age_seconds": round(age_seconds, 3),
+            "pending_lines": int(core_pending),
+            "pending_lines_total": int(total_pending),
+            "oldest_pending_age_seconds": round(oldest_age, 3),
+        }
+    return {
+        "active": True,
+        "source": source or "ingestion_storage_control_effective_raw_live",
+        "age_seconds": round(age_seconds, 3),
+        "pending_lines": int(core_pending),
+        "pending_lines_total": int(total_pending),
+        "oldest_pending_age_seconds": round(oldest_age, 3),
+        "overload": False,
+        "line_pressure": False,
+        "file_pressure": False,
+        "age_pressure": False,
+        "storage_ready": storage_ready,
+        "overlay_adjusted": overlay_adjusted,
+        "overlay_clear": overlay_clear,
+        "queue_clear": queue_clear,
+        "age_clear": age_clear,
+        "age_reconciled": age_reconciled,
+        "reason": "fresh_sql_overlay_clear" if authoritative_clear else "fresh_storage_control_queue_clear",
+    }
 
 
 def _effective_blocked_rate(data_blocked_rate: float, risk_blocked_rate: float, *, risk_weight: float = 0.25) -> float:
@@ -335,6 +416,7 @@ def main() -> int:
     args = parser.parse_args()
 
     project_root = Path(args.project_root).resolve()
+    health_root = project_root / 'governance' / 'health'
     day = datetime.now(timezone.utc).strftime('%Y%m%d')
 
     one_numbers_paths = [
@@ -367,10 +449,33 @@ def main() -> int:
     ingestion_health, ingestion_health_source = _freshest_non_empty_json(ingestion_health_paths)
 
     backpressure_paths = [
-        project_root / 'governance' / 'health' / 'ingestion_backpressure_latest.json',
+        health_root / 'ingestion_backpressure_latest.json',
     ]
     backpressure, backpressure_source = _freshest_non_empty_json(backpressure_paths)
-    sql_link_service_path = project_root / 'governance' / 'health' / 'sql_link_service_latest.json'
+    storage_control_path = health_root / 'ingestion_storage_control_latest.json'
+    storage_control = _load_json(storage_control_path)
+    backpressure_override = _storage_control_backpressure_override(storage_control)
+    if bool(backpressure_override.get("active", False)):
+        raw_backpressure = dict(backpressure)
+        backpressure = {
+            **backpressure,
+            "overload": bool(backpressure_override.get("overload", False)),
+            "line_pressure": bool(backpressure_override.get("line_pressure", False)),
+            "file_pressure": bool(backpressure_override.get("file_pressure", False)),
+            "age_pressure": bool(backpressure_override.get("age_pressure", False)),
+            "pending_lines": _to_int(backpressure_override.get("pending_lines"), 0),
+            "pending_lines_total": _to_int(backpressure_override.get("pending_lines_total"), 0),
+            "oldest_pending_age_seconds": _to_float(backpressure_override.get("oldest_pending_age_seconds"), 0.0),
+            "storage_control_override": backpressure_override,
+            "raw_backpressure_estimate": {
+                "pending_lines": _to_int(raw_backpressure.get("pending_lines"), 0),
+                "pending_lines_total": _to_int(raw_backpressure.get("pending_lines_total"), 0),
+                "oldest_pending_age_seconds": _to_float(raw_backpressure.get("oldest_pending_age_seconds"), 0.0),
+                "overload": bool(raw_backpressure.get("overload", False)),
+            },
+        }
+        backpressure_source = f"{backpressure_source} + {storage_control_path}"
+    sql_link_service_path = health_root / 'sql_link_service_latest.json'
     sql_link_service = _load_json(sql_link_service_path)
     priority_shards = _priority_shard_summary(
         project_root,
@@ -572,6 +677,7 @@ def main() -> int:
             'sql_progress_step': str(sql_progress.get('current_step') or ''),
             'sql_progress_age_seconds': round(sql_progress_age_seconds, 3),
             'sql_wal_size_gb_live': round(sql_wal_size_gb_live, 3),
+            'backpressure_storage_control_override': backpressure_override,
         },
         'priority_shards': priority_shards,
         'recommended_operating_mode': recommended_operating_mode,

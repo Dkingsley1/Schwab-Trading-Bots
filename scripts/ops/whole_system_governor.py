@@ -61,12 +61,20 @@ LAYERS: list[dict[str, Any]] = [
         "objective": "Compress blockers, safe actions, risk, evidence gaps, and next commands into one packet.",
         "primary_artifact": "governance/whole_system_governor/operator_decision_packet.json",
     },
+    {
+        "layer_id": "clean_scaling_control",
+        "title": "Clean Scaling Control",
+        "objective": "Require raw/live headroom, overlay debt, storage mode, runtime, provider quality, and admission evidence to agree before growth.",
+        "primary_artifact": "governance/whole_system_governor/clean_scaling_contract.json",
+    },
 ]
 
 
 SURFACE_FILES: dict[str, str] = {
     "system_self_model": "governance/health/system_self_model_latest.json",
     "whole_system_intelligence": "governance/health/whole_system_intelligence_latest.json",
+    "distributed_cell_architecture": "governance/health/distributed_cell_architecture_latest.json",
+    "cell_federation_intelligence": "governance/health/cell_federation_intelligence_latest.json",
     "quant_operational_intelligence": "governance/health/quant_operational_intelligence_latest.json",
     "memory_efficiency": "governance/health/memory_efficiency_control_latest.json",
     "runtime_throttle": "governance/health/runtime_throttle_control_latest.json",
@@ -84,6 +92,10 @@ SURFACE_FILES: dict[str, str] = {
     "process_fanout": "governance/health/process_fanout_guard_latest.json",
     "training_quality": "governance/health/training_quality_control_latest.json",
     "bot_quality": "governance/health/bot_quality_autopilot_latest.json",
+    "expansion_capacity": "governance/health/expansion_capacity_planner_latest.json",
+    "provider_mesh": "governance/health/provider_mesh_latest.json",
+    "source_verification": "governance/health/source_verification_latest.json",
+    "data_collection_observation_rollup": "governance/health/data_collection_observation_rollup_latest.json",
 }
 
 
@@ -417,6 +429,43 @@ def _memory_triage(pressure: dict[str, Any], budgets: list[dict[str, Any]]) -> d
     }
 
 
+def _clean_scaling_control(surfaces: dict[str, dict[str, Any]], identity: dict[str, Any]) -> dict[str, Any]:
+    expansion = surfaces.get("expansion_capacity", {})
+    payload = expansion.get("payload") if isinstance(expansion.get("payload"), dict) else {}
+    contract = payload.get("clean_scaling_contract") if isinstance(payload.get("clean_scaling_contract"), dict) else {}
+    status = str(contract.get("overall_status") or expansion.get("status") or "missing").strip().lower()
+    blocked = contract.get("blocked_dimensions") if isinstance(contract.get("blocked_dimensions"), list) else []
+    watch = contract.get("watch_dimensions") if isinstance(contract.get("watch_dimensions"), list) else []
+    max_wave = _safe_int(contract.get("max_clean_wave_size_now"), 0)
+    total_bots = _safe_int(identity.get("total_bots"), 0)
+    collection_bots = _safe_int(identity.get("data_collection_active_bots"), 0)
+    if not contract:
+        next_action = "run ./scripts/ops/opsctl.sh expansion-capacity --json so the whole-system governor has a current clean-scaling contract"
+    elif status == "ready":
+        next_action = "allow only bounded collection-only waves sized by the clean-scaling contract"
+    else:
+        next_action = str(contract.get("next_action") or "clear clean-scaling blockers before expansion")
+    return {
+        "control_version": "clean_scaling_control_v1",
+        "overall_status": status,
+        "grade": str(contract.get("grade") or "missing"),
+        "mode": str(contract.get("mode") or "missing"),
+        "max_clean_wave_size_now": int(max_wave),
+        "blocked_dimensions": [str(item) for item in blocked],
+        "watch_dimensions": [str(item) for item in watch],
+        "dimension_count": _safe_int(contract.get("dimension_count"), 0),
+        "next_action": next_action,
+        "source_surface_status": str(expansion.get("status") or "missing"),
+        "source_path": str(expansion.get("path") or SURFACE_FILES.get("expansion_capacity", "")),
+        "fleet_scale": {
+            "total_bots": int(total_bots),
+            "data_collection_active_bots": int(collection_bots),
+            "collection_density": round(collection_bots / max(total_bots, 1), 4),
+        },
+        "invariants": list(contract.get("clean_scaling_invariants") or []),
+    }
+
+
 def _backlog_outcome(project_root: Path, surfaces: dict[str, dict[str, Any]], apply: bool) -> dict[str, Any]:
     storage_payload = surfaces["ingestion_storage"]["payload"]
     drainer_payload = surfaces["backpressure_drainer_fleet"]["payload"]
@@ -480,7 +529,12 @@ def _self_model_upgrade(surfaces: dict[str, dict[str, Any]], identity: dict[str,
     }
 
 
-def _operator_packet(pressure: dict[str, Any], budgets: list[dict[str, Any]], surfaces: dict[str, dict[str, Any]]) -> dict[str, Any]:
+def _operator_packet(
+    pressure: dict[str, Any],
+    budgets: list[dict[str, Any]],
+    surfaces: dict[str, dict[str, Any]],
+    clean_scaling: dict[str, Any],
+) -> dict[str, Any]:
     attention: list[dict[str, Any]] = []
     if pressure["pressure_tier"] != "steady":
         attention.append(
@@ -489,6 +543,15 @@ def _operator_packet(pressure: dict[str, Any], budgets: list[dict[str, Any]], su
                 "title": "Pressure-aware capture downgrade active",
                 "reason": f"pressure_tier={pressure['pressure_tier']} pending_lines={pressure['pending_lines_estimate']}",
                 "safe_command": "./scripts/ops/opsctl.sh whole-system-governor --apply --json",
+            }
+        )
+    if str(clean_scaling.get("overall_status") or "") != "ready":
+        attention.append(
+            {
+                "priority": 1,
+                "title": "Clean scaling gate is not ready",
+                "reason": f"status={clean_scaling.get('overall_status')} blocked={','.join(clean_scaling.get('blocked_dimensions') or [])}",
+                "safe_command": "./scripts/ops/opsctl.sh expansion-capacity --json",
             }
         )
     for name, surface in surfaces.items():
@@ -519,6 +582,7 @@ def _operator_packet(pressure: dict[str, Any], budgets: list[dict[str, Any]], su
             "do_not_enable_live_execution_from_governor_or_expansion_packs",
             "do_not_promote_collect_only_bots_without_evidence_packet",
             "do_not_raise_raw_trace_capture_under_memory_or_storage_pressure",
+            "do_not_expand_when_clean_scaling_contract_is_blocked",
         ],
         "recommended_next_commands": [
             "./scripts/ops/opsctl.sh memory-efficiency status --json",
@@ -528,7 +592,12 @@ def _operator_packet(pressure: dict[str, Any], budgets: list[dict[str, Any]], su
     }
 
 
-def _governor_decision(pressure: dict[str, Any], identity: dict[str, Any], budgets: list[dict[str, Any]]) -> dict[str, Any]:
+def _governor_decision(
+    pressure: dict[str, Any],
+    identity: dict[str, Any],
+    budgets: list[dict[str, Any]],
+    clean_scaling: dict[str, Any],
+) -> dict[str, Any]:
     mode = pressure["pressure_tier"]
     constrained_count = sum(1 for budget in budgets if budget["capture_tier"] in {"heartbeat", "thin_digest"})
     return {
@@ -539,8 +608,10 @@ def _governor_decision(pressure: dict[str, Any], identity: dict[str, Any], budge
         "pressure": pressure,
         "budgeted_group_count": len(budgets),
         "constrained_group_count": constrained_count,
+        "clean_scaling": clean_scaling,
         "policy": {
             "new_expansion_default": "collect_only_thin_digest",
+            "expansion_requires_clean_scaling_contract": True,
             "promotion_requires_evidence_court": True,
             "operator_packet_required_for_attention": True,
             "codex_communication_surface": "governance/health/codex_handoff_latest.json",
@@ -557,6 +628,7 @@ def _render_markdown(payload: dict[str, Any]) -> str:
         "",
         f"- Version: `{payload['whole_system_governor_version']}`",
         f"- Mode: `{governor['mode']}`",
+        f"- Clean scaling: `{payload['clean_scaling_control']['overall_status']}` / `{payload['clean_scaling_control']['grade']}`",
         f"- Total bots: `{governor['registry_identity']['total_bots']}`",
         f"- Active bots: `{governor['registry_identity']['active_bots']}`",
         f"- Data-collection-active bots: `{governor['registry_identity']['data_collection_active_bots']}`",
@@ -589,6 +661,7 @@ def _artifact_payloads(payload: dict[str, Any]) -> dict[Path, dict[str, Any]]:
         root / "governance" / "whole_system_governor" / "backlog_outcome_learning.json": payload["backlog_outcome_learning"],
         root / "governance" / "whole_system_governor" / "self_model_upgrade.json": payload["self_model_upgrade"],
         root / "governance" / "whole_system_governor" / "operator_decision_packet.json": payload["operator_decision_packet"],
+        root / "governance" / "whole_system_governor" / "clean_scaling_contract.json": payload["clean_scaling_control"],
         CONFIG_PATH: {
             "generated_at_utc": payload["generated_at_utc"],
             "whole_system_governor_version": GOVERNOR_VERSION,
@@ -617,8 +690,9 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, apply: bool = False) -> 
     triage = _memory_triage(pressure, budgets)
     backlog = _backlog_outcome(project_root, surfaces, apply)
     self_model = _self_model_upgrade(surfaces, identity, groups)
-    operator_packet = _operator_packet(pressure, budgets, surfaces)
-    governor = _governor_decision(pressure, identity, budgets)
+    clean_scaling = _clean_scaling_control(surfaces, identity)
+    operator_packet = _operator_packet(pressure, budgets, surfaces, clean_scaling)
+    governor = _governor_decision(pressure, identity, budgets, clean_scaling)
     payload = {
         "ok": True,
         "generated_at_utc": generated_at,
@@ -632,6 +706,7 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, apply: bool = False) -> 
         "sleeve_budgets": budgets,
         "evidence_court": evidence,
         "memory_triage_policy": triage,
+        "clean_scaling_control": clean_scaling,
         "backlog_outcome_learning": backlog,
         "self_model_upgrade": self_model,
         "operator_decision_packet": operator_packet,
@@ -669,6 +744,8 @@ def apply_governor(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
                 "whole_system_governor_budgeted_group_count": len(payload["sleeve_budgets"]),
                 "whole_system_governor_attention_count": len(payload["operator_decision_packet"]["attention_queue"]),
                 "whole_system_governor_memory_triage_default": payload["memory_triage_policy"]["default_capture_tier"],
+                "whole_system_governor_clean_scaling_status": payload["clean_scaling_control"]["overall_status"],
+                "whole_system_governor_clean_scaling_grade": payload["clean_scaling_control"]["grade"],
                 "whole_system_governor_applied_at_utc": payload["generated_at_utc"],
             }
         )

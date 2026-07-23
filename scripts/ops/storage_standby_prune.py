@@ -158,7 +158,7 @@ def _build_candidate_rows(
     if not isinstance(sqlite_report, dict):
         return [], 0
 
-    allowed_states = {"verified"}
+    allowed_states = {"verified", "active_external_newer_than_standby"}
     if include_curated_standby:
         allowed_states.add("curated_standby")
 
@@ -182,8 +182,9 @@ def _build_candidate_rows(
         local_exists = bool(local.get("exists", False))
         classification = str(raw.get("classification") or "").strip()
         verification_state = str(route_verification.get("state") or "").strip()
+        eligible_classification = classification in {"warm_standby_retained", "active_external_route"}
         eligible = (
-            classification == "warm_standby_retained"
+            eligible_classification
             and local_exists
             and verification_state in allowed_states
             and route_soak_ok
@@ -204,8 +205,8 @@ def _build_candidate_rows(
 
         if verification_state not in allowed_states:
             reason = "Standby pruning is limited to externally verified copies by default."
-        elif classification != "warm_standby_retained":
-            reason = "This tracked path is not a retained local standby copy."
+        elif not eligible_classification:
+            reason = "This tracked path is not a retained local standby copy behind the external route."
         elif not local_exists:
             reason = "No retained local standby copy exists for this tracked path."
         elif not route_soak_ok:

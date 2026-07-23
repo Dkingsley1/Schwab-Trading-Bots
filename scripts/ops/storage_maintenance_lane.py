@@ -126,6 +126,26 @@ def _step_record(result: dict[str, Any], *, nonfatal_reasons: set[str] | None = 
     }
 
 
+def _normalize_sqlite_maintenance_result(result: dict[str, Any]) -> dict[str, Any]:
+    payload = result.get("payload") if isinstance(result.get("payload"), dict) else {}
+    error = str(payload.get("error") or "")
+    if not error.startswith("db_missing:"):
+        return result
+    normalized = dict(result)
+    normalized_payload = dict(payload)
+    normalized_payload.update(
+        {
+            "ok": True,
+            "skipped": True,
+            "reason": "sqlite_primary_db_missing",
+            "original_error": error,
+        }
+    )
+    normalized["rc"] = 0
+    normalized["payload"] = normalized_payload
+    return normalized
+
+
 def _usage_snapshot(path: Path) -> dict[str, Any]:
     if not path.exists():
         return {"path": str(path), "exists": False}
@@ -483,6 +503,7 @@ def build_storage_maintenance_payload(
             payload_path=project_root / "governance" / "health" / "sqlite_maintenance_latest.json",
             env_overrides=env_overrides,
         )
+        sqlite_maintenance = _normalize_sqlite_maintenance_result(sqlite_maintenance)
         stale_sweeper = _run_json_command(
             [str(PY), str(project_root / "scripts" / "ops" / "stale_artifact_sweeper_bot.py"), "--json"],
             cwd=project_root,

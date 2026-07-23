@@ -162,6 +162,51 @@ def test_build_payload_surfaces_blockers_and_targeted_actions(tmp_path: Path) ->
     assert "runtime_input_depth_debt" in payload["failure_taxonomy"]["failure_buckets"]
 
 
+def test_build_payload_uses_registry_rollup_to_clear_sequence_depth_debt(tmp_path: Path) -> None:
+    health_root = tmp_path / "governance" / "health"
+    bot_id = "brain_refinery_v13_choppy"
+
+    _write_json(
+        health_root / "training_registry_audit_latest.json",
+        {
+            "registry_active_bots": 1,
+            "supportability_counts": {"unsupported_runtime_inputs": 1},
+            "tier_counts": {"active_repair": 1},
+            "active_sample_starved": [
+                {
+                    "bot_id": bot_id,
+                    "supportability_status": "unsupported_runtime_inputs",
+                    "inferred_cause": "sequence_depth_gap",
+                    "observation_count": 509,
+                    "minimum_training_observations": 1000,
+                }
+            ],
+            "active_quality_failed": [],
+            "active_stale_diagnostics": [],
+        },
+    )
+    _write_json(
+        tmp_path / "master_bot_registry.json",
+        {
+            "sub_bots": [
+                {
+                    "bot_id": bot_id,
+                    "data_collection_threshold_progress": {
+                        "observations": 1090,
+                        "minimum_training_observations": 1000,
+                    },
+                }
+            ]
+        },
+    )
+
+    payload = src.build_payload(tmp_path)
+
+    assert payload["targeted_actions"]["runtime_input_depth_debt_bot_ids"] == []
+    assert payload["targeted_actions"]["repair_runtime_input_bot_ids"] == []
+    assert "runtime_input_depth_debt" not in payload["failure_taxonomy"]["failure_buckets"]
+
+
 def test_build_payload_marks_ready_when_training_surface_is_healthy(tmp_path: Path) -> None:
     now = datetime.now(timezone.utc)
     health_root = tmp_path / "governance" / "health"
@@ -891,6 +936,145 @@ def test_build_payload_treats_guarded_ingestion_and_signed_replay_bundle_as_reco
     assert payload["training_quality_score"] >= 80.0
 
 
+def test_build_payload_trusts_sql_overlay_and_held_out_canary_progress(tmp_path: Path) -> None:
+    now = datetime.now(timezone.utc)
+    health_root = tmp_path / "governance" / "health"
+    walk_root = tmp_path / "governance" / "walk_forward"
+    champion_root = tmp_path / "governance" / "champion_challenger"
+
+    _write_json(
+        health_root / "training_registry_audit_latest.json",
+        {
+            "registry_active_bots": 12,
+            "registry_supportability_active_bots": 12,
+            "supportability_counts": {},
+            "tier_counts": {"active": 12},
+            "active_sample_starved": [],
+            "active_quality_failed": [],
+            "active_stale_diagnostics": [],
+        },
+    )
+    _write_json(health_root / "training_label_audit_latest.json", {"top_actions": [], "recommendation_counts": {}})
+    _write_json(
+        health_root / "runtime_training_snapshot_latest.json",
+        {
+            "timestamp_utc": now.isoformat(),
+            "row_count": 2400,
+            "sequence_count": 24,
+            "coverage": {
+                "top_modes": [{"mode": "shadow_aggressive_equities", "row_count": 360}],
+                "top_symbols": [{"symbol": "SPY", "row_count": 90}],
+            },
+        },
+    )
+    _write_json(walk_root / "promotion_readiness_latest.json", {"promote_ok": False, "considered_bots": 2, "thresholds": {"min_considered_bots": 4}})
+    _write_json(health_root / "promotion_quality_gate_latest.json", {"ok": True})
+    _write_json(
+        champion_root / "promotion_packet_latest.json",
+        {"packet_sha256": "packet-sha", "dataset": {"rows_sha256": "rows-hash"}},
+    )
+    _write_json(
+        tmp_path / "governance" / "feature_store" / "latest.json",
+        {
+            "ok": True,
+            "lineage_schema_version": 1,
+            "dataset_contract": {"rows_sha256": "rows-hash"},
+            "point_in_time_contract": {"dataset_join_keys": ["snapshot_id", "symbol"]},
+        },
+    )
+    _write_json(tmp_path / "governance" / "research" / "multiple_testing_guard_latest.json", {"ok": True, "overall_status": "ready", "family_size": 8, "correction_method": "bonferroni"})
+    _write_json(tmp_path / "governance" / "research" / "decay_monitor_latest.json", {"overall_status": "ready", "weak_sleeve_count": 0})
+    _write_json(health_root / "replay_hash_registry_guard_latest.json", {"ok": True})
+    _write_json(
+        health_root / "training_lineage_manifest_latest.json",
+        {
+            "lineage_contract_ready": True,
+            "feature_store_lineage_ok": True,
+            "exact_replay_ready": True,
+            "replay_hash_registry_ok": True,
+            "multiple_testing_ready": True,
+            "decay_monitor_ready": True,
+            "lineage_score": 98.0,
+        },
+    )
+    _write_json(
+        health_root / "ingestion_storage_control_latest.json",
+        {
+            "overall_status": "blocked",
+            "severity": "critical",
+            "backpressure": {
+                "core_pending_lines": 7686,
+                "total_pending_lines": 12585,
+                "oldest_pending_age_seconds": 62368.944,
+                "pending_lines_threshold": 15000,
+                "oldest_age_threshold_seconds": 240.0,
+                "estimated_core_drain_minutes": None,
+                "estimated_total_drain_minutes": None,
+            },
+            "sql_ingestion_pending_overlay": {
+                "active": True,
+                "max_age_seconds": 3600.0,
+                "max_source_age_seconds": 120.0,
+                "fresh_source_count": 18,
+                "explicit_empty_source_count": 18,
+                "total_pending_lines": 0,
+                "core_pending_lines": 0,
+                "deferred_pending_lines": 0,
+                "stale_pending_lines": 0,
+                "files_with_pending": 0,
+                "top_pending_files": [],
+            },
+            "storage": {"retention_debt_gb": 0.0},
+        },
+    )
+    _write_json(
+        health_root / "training_report_latest.json",
+        {
+            "overall_status": "blocked",
+            "summary": {
+                "generated_utc": "2026-06-21T05:00:00+00:00",
+                "confirmed_training_success": False,
+                "target_count": 0,
+                "trained_count": 0,
+                "failure_count": 0,
+            },
+        },
+    )
+    _write_json(
+        health_root / "training_success_latest.json",
+        {
+            "timestamp_utc": now.isoformat(),
+            "confirmed_training_success": False,
+            "training_completed_ok": True,
+            "trained_ok_but_not_promotable": True,
+            "reason": "trained_ok_but_not_promotable:skipped_by_flag",
+            "trained_count": 1,
+            "failure_count": 0,
+            "skipped_by_memory_count": 0,
+            "master_update_status": "skipped_by_flag",
+            "data_quality_ok": True,
+        },
+    )
+    _write_json(health_root / "health_gates_latest.json", {"hard_gate_triggered": False})
+    _write_json(health_root / "paper_performance_latest.json", {"sleeve_latest": []})
+    _write_json(health_root / "roster_resilience_planner_latest.json", {"bench": {"bench_depth": 5}, "a_plus_contract": {"a_plus_ready": True}})
+    _write_json(health_root / "calibration_abstention_control_latest.json", {"overall_status": "ready"})
+
+    payload = src.build_payload(tmp_path)
+    improvement_by_key = {row["key"]: row for row in payload["improvements"]}
+    failure_buckets = payload["failure_taxonomy"]["failure_buckets"]
+
+    assert payload["overall_status"] in {"needs_attention", "ready"}
+    assert payload["data_ops"]["ingestion_storage_status"] == "ready"
+    assert payload["data_ops"]["raw_ingestion_storage_status"] == "blocked"
+    assert payload["data_ops"]["sql_overlay_explicit_empty"] is True
+    assert improvement_by_key["ingestion_drain_time_guard"]["status"] != "blocked"
+    assert payload["rollout"]["held_out_training_progress"] is True
+    assert payload["rollout"]["using_success_marker_summary"] is True
+    assert "storage_backpressure" not in failure_buckets
+    assert "training_not_confirmed" not in failure_buckets
+
+
 def test_build_payload_counts_artifact_backed_active_supportability(tmp_path: Path) -> None:
     now = datetime.now(timezone.utc)
     health_root = tmp_path / "governance" / "health"
@@ -1294,3 +1478,88 @@ def test_build_payload_uses_stronger_provisional_accuracy_floor(tmp_path: Path) 
     payload = src.build_payload(tmp_path)
 
     assert payload["targeted_actions"]["provisional_registry_backed_bot_ids"] == ["bot_b", "bot_c"]
+
+
+def test_build_payload_reconciles_ingestion_pending_hard_gate_when_backpressure_is_green(tmp_path: Path) -> None:
+    now = datetime.now(timezone.utc)
+    health_root = tmp_path / "governance" / "health"
+    walk_root = tmp_path / "governance" / "walk_forward"
+    champion_root = tmp_path / "governance" / "champion_challenger"
+
+    _write_json(health_root / "training_registry_audit_latest.json", {"registry_active_bots": 4, "supportability_counts": {}, "tier_counts": {}})
+    _write_json(health_root / "training_label_audit_latest.json", {"top_actions": []})
+    _write_json(
+        health_root / "runtime_training_snapshot_latest.json",
+        {
+            "timestamp_utc": now.isoformat(),
+            "row_count": 1200,
+            "sequence_count": 12,
+            "coverage": {"top_modes": [{"mode": "shadow_crypto", "row_count": 500}], "top_symbols": [{"symbol": "BTC-USD", "row_count": 100}]},
+        },
+    )
+    _write_json(walk_root / "promotion_readiness_latest.json", {"promote_ok": True, "considered_bots": 4, "thresholds": {"min_considered_bots": 4}})
+    _write_json(health_root / "promotion_quality_gate_latest.json", {"ok": True})
+    _write_json(champion_root / "promotion_packet_latest.json", {"packet_sha256": "packet", "dataset": {"rows_sha256": "rows"}})
+    _write_json(
+        tmp_path / "governance" / "feature_store" / "latest.json",
+        {"ok": True, "dataset_contract": {"rows_sha256": "rows"}, "point_in_time_contract": {"dataset_join_keys": ["snapshot_id"]}},
+    )
+    _write_json(tmp_path / "governance" / "research" / "multiple_testing_guard_latest.json", {"ok": True, "overall_status": "ready", "family_size": 8, "correction_method": "benjamini_hochberg_fdr"})
+    _write_json(tmp_path / "governance" / "research" / "decay_monitor_latest.json", {"overall_status": "ready", "weak_sleeve_count": 0})
+    _write_json(health_root / "replay_hash_registry_guard_latest.json", {"ok": True})
+    _write_json(
+        health_root / "training_lineage_manifest_latest.json",
+        {
+            "lineage_contract_ready": True,
+            "exact_replay_ready": True,
+            "feature_store_lineage_ok": True,
+            "multiple_testing_ready": True,
+            "decay_monitor_ready": True,
+            "lineage_score": 100.0,
+        },
+    )
+    _write_json(
+        health_root / "ingestion_storage_control_latest.json",
+        {
+            "overall_status": "ready",
+            "backpressure": {
+                "total_pending_lines": 5400,
+                "core_pending_lines": 1234,
+                "pending_lines_threshold": 15000,
+                "oldest_pending_age_seconds": 60.0,
+                "oldest_age_threshold_seconds": 240.0,
+            },
+            "storage": {"retention_debt_gb": 0.0},
+        },
+    )
+    _write_json(health_root / "training_report_latest.json", {"overall_status": "ready", "summary": {"confirmed_training_success": True}})
+    _write_json(
+        health_root / "health_gates_latest.json",
+        {
+            "hard_gate_triggered": True,
+            "hard_gates": {
+                "ingestion_pending_lines": True,
+                "stale_windows": False,
+                "blocked_rate": False,
+                "watchdog_restart_spike": False,
+                "ingestion_oldest_age": False,
+                "ingestion_invalid_lines": False,
+                "ingestion_backpressure_overload": False,
+                "priority_shard_latency": False,
+                "priority_shard_storage": False,
+                "collector_contracts": False,
+                "sql_progress_stall": False,
+                "sql_wal_pressure": False,
+            },
+        },
+    )
+    _write_json(health_root / "paper_performance_latest.json", {"sleeve_latest": []})
+    _write_json(health_root / "roster_resilience_planner_latest.json", {"bench": {"bench_depth": 5}, "a_plus_contract": {"a_plus_ready": True}})
+    _write_json(health_root / "calibration_abstention_control_latest.json", {"overall_status": "ready"})
+
+    payload = src.build_payload(tmp_path)
+    improvement_by_key = {row["key"]: row for row in payload["improvements"]}
+
+    assert improvement_by_key["ingestion_health_guard"]["status"] == "ready"
+    assert improvement_by_key["ingestion_health_guard"]["metric"]["ingestion_pending_training_reconciled"] is True
+    assert "ingestion_health_guard" not in payload["top_priorities"]

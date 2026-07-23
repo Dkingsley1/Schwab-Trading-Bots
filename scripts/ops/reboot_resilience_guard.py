@@ -25,6 +25,17 @@ CORE_REQUIRED_LABELS = [
     'com.dankingsley.failover_hot_standby',
 ]
 
+PRESSURE_RELIEF_ENV_FILES = [
+    PROJECT_ROOT / 'config' / '.env.pressure_relief_override',
+    PROJECT_ROOT / 'config' / '.env.runtime_resource_guard_override',
+]
+
+PRESSURE_SENSITIVE_LABELS = [
+    'com.dankingsley.shadow_watchdog',
+    'com.dankingsley.failover_hot_standby',
+    'com.dankingsley.all_sleeves',
+]
+
 
 def _default_required_labels() -> List[str]:
     mode = str(os.getenv('STACK_ORCHESTRATOR_MODE', 'watchdog') or 'watchdog').strip().lower()
@@ -55,6 +66,47 @@ def _write_payload(path: Path, fallback: Path, payload: Dict[str, Any]) -> str:
 
 def _split_csv(raw: str) -> List[str]:
     return [x.strip() for x in (raw or '').split(',') if x.strip()]
+
+
+def _load_key_values(paths: List[Path]) -> Dict[str, str]:
+    values: Dict[str, str] = {}
+    for path in paths:
+        if not path.exists():
+            continue
+        try:
+            lines = path.read_text(encoding='utf-8').splitlines()
+        except Exception:
+            continue
+        for line in lines:
+            stripped = line.strip()
+            if not stripped or stripped.startswith('#') or '=' not in stripped:
+                continue
+            key, raw_value = stripped.split('=', 1)
+            values[key.strip()] = raw_value.strip().strip('"').strip("'")
+    return values
+
+
+def _pressure_relief_context() -> Dict[str, Any]:
+    values = _load_key_values(PRESSURE_RELIEF_ENV_FILES)
+    env_values = {key: os.getenv(key, '') for key in values.keys()}
+    merged = {**values, **{k: v for k, v in env_values.items() if v}}
+    active_keys = [
+        'PRESSURE_RELIEF_ACTIVE',
+        'TRAINING_RUNTIME_PAUSED_FOR_HOST_HEADROOM',
+        'MAC_FLUIDITY_RESEARCH_PAUSE',
+        'OPS_SUPPORT_MAINTENANCE_FREEZE',
+    ]
+    active = any(str(merged.get(key, '')).strip() == '1' for key in active_keys)
+    skip_labels = _split_csv(
+        os.getenv('REBOOT_GUARD_PRESSURE_SKIP_LABELS', ','.join(PRESSURE_SENSITIVE_LABELS))
+    )
+    return {
+        'active': bool(active),
+        'skip_labels': skip_labels,
+        'source_files': [str(path) for path in PRESSURE_RELIEF_ENV_FILES if path.exists()],
+        'active_keys': {key: merged.get(key, '') for key in active_keys if merged.get(key, '')},
+        'policy': 'do_not_recover fanout watchdogs while host pressure relief is active',
+    }
 
 
 
@@ -161,17 +213,33 @@ def main() -> int:
     domain = f'gui/{uid}'
     required = _split_csv(args.required_labels)
     critical = _split_csv(args.critical_labels) if args.critical_labels.strip() else list(required)
+    pressure_relief = _pressure_relief_context()
+    pressure_skip_labels = set(str(label) for label in pressure_relief.get('skip_labels', []))
 
     recovered: List[Dict[str, Any]] = []
     healthy: List[Dict[str, Any]] = []
+    skipped: List[Dict[str, Any]] = []
 
     for label in required:
+        if bool(pressure_relief.get('active', False)) and label in pressure_skip_labels:
+            skipped.append(
+                {
+                    'label': label,
+                    'loaded_before': _is_loaded(domain, label),
+                    'loaded_after': _is_loaded(domain, label),
+                    'ok': True,
+                    'skipped': True,
+                    'reason': 'pressure_relief_active',
+                    'actions': [],
+                }
+            )
+            continue
         if _is_loaded(domain, label):
             healthy.append({'label': label, 'loaded_before': True, 'loaded_after': True, 'ok': True, 'actions': []})
             continue
         recovered.append(_recover_label(domain, label))
 
-    all_rows = healthy + recovered
+    all_rows = healthy + skipped + recovered
     failed = [r for r in all_rows if not bool(r.get('ok'))]
     failed_critical = [r for r in failed if r.get('label') in critical]
 
@@ -210,7 +278,9 @@ def main() -> int:
         'domain': domain,
         'required_labels': required,
         'critical_labels': critical,
+        'pressure_relief': pressure_relief,
         'healthy': healthy,
+        'skipped': skipped,
         'recovered': recovered,
         'failed': failed,
         'alerts': alerts,

@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import signal
 import subprocess
 import sys
 from pathlib import Path
@@ -23,6 +24,26 @@ else:
 DEFAULT_OUT_PATH = PROJECT_ROOT / "governance" / "health" / "system_drift_autopilot_latest.json"
 Runner = Callable[[list[str], Path, int], dict[str, Any]]
 GuardBuilder = Callable[[Path], dict[str, Any]]
+LEAK_CLEANUP_ROUTE_MARKERS = {
+    "one-numbers-regression-guard": (
+        "scripts/ops/one_numbers_regression_guard.py",
+        "scripts/build_one_numbers_report.py",
+    ),
+    "one_numbers_regression_guard.py": (
+        "scripts/ops/one_numbers_regression_guard.py",
+        "scripts/build_one_numbers_report.py",
+    ),
+    "report-pdfs": (
+        "report-bundle-pdf",
+        "--headless",
+        "--print-to-pdf=",
+    ),
+    "report_pdf": (
+        "report-bundle-pdf",
+        "--headless",
+        "--print-to-pdf=",
+    ),
+}
 
 
 def _parse_json_output(text: str) -> dict[str, Any]:
@@ -48,32 +69,166 @@ def _bounded_timeout(raw: Any, *, max_step_timeout_sec: int) -> int:
     return max(1, min(timeout, max(int(max_step_timeout_sec), 1)))
 
 
-def _run(cmd: list[str], project_root: Path, timeout_sec: int) -> dict[str, Any]:
+def _cleanup_markers(cmd: list[str]) -> list[str]:
+    cmd_text = " ".join(str(part) for part in cmd)
+    markers: list[str] = []
+    for route_marker, child_markers in LEAK_CLEANUP_ROUTE_MARKERS.items():
+        if route_marker in cmd_text:
+            markers.extend(child_markers)
+    return ordered_unique(markers)
+
+
+def _project_processes(project_root: Path, markers: list[str]) -> dict[int, int]:
+    if not markers:
+        return {}
     try:
         proc = subprocess.run(
-            cmd,
-            cwd=str(project_root),
+            ["ps", "-ax", "-o", "pid=,pgid=,command="],
             capture_output=True,
             text=True,
             check=False,
-            timeout=max(int(timeout_sec), 1),
+            timeout=3,
         )
+    except Exception:
+        return {}
+    root_text = str(project_root)
+    current_pid = os.getpid()
+    current_pgid = os.getpgrp()
+    rows: dict[int, int] = {}
+    for raw_line in (proc.stdout or "").splitlines():
+        line = raw_line.strip()
+        if not line or root_text not in line:
+            continue
+        if not any(marker in line for marker in markers):
+            continue
+        parts = line.split(None, 2)
+        if len(parts) < 3:
+            continue
+        try:
+            pid = int(parts[0])
+            pgid = int(parts[1])
+        except Exception:
+            continue
+        if pid == current_pid or pgid == current_pgid:
+            continue
+        rows[pid] = pgid
+    return rows
+
+
+def _terminate_leaked_processes(
+    project_root: Path,
+    markers: list[str],
+    before_pids: set[int],
+    *,
+    sig: int = signal.SIGTERM,
+) -> list[int]:
+    leaked = {
+        pid: pgid
+        for pid, pgid in _project_processes(project_root, markers).items()
+        if pid not in before_pids
+    }
+    if not leaked:
+        return []
+    terminated: list[int] = []
+    pgids = ordered_unique([str(pgid) for pgid in leaked.values() if pgid > 0])
+    for raw_pgid in pgids:
+        pgid = int(raw_pgid)
+        try:
+            os.killpg(pgid, sig)
+            terminated.append(-pgid)
+        except ProcessLookupError:
+            continue
+        except Exception:
+            continue
+    remaining = {
+        pid: pgid
+        for pid, pgid in _project_processes(project_root, markers).items()
+        if pid not in before_pids
+    }
+    if remaining:
+        for pid in remaining:
+            try:
+                os.kill(pid, sig)
+                terminated.append(pid)
+            except ProcessLookupError:
+                pass
+            except Exception:
+                pass
+    return terminated
+
+
+def _run(cmd: list[str], project_root: Path, timeout_sec: int) -> dict[str, Any]:
+    timeout_sec = max(int(timeout_sec), 1)
+    proc: subprocess.Popen[str] | None = None
+    cleanup_markers = _cleanup_markers(cmd)
+    preexisting_cleanup_pids = set(_project_processes(project_root, cleanup_markers))
+    cleanup_pids: list[int] = []
+    try:
+        proc = subprocess.Popen(
+            cmd,
+            cwd=str(project_root),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            start_new_session=True,
+        )
+        stdout, stderr = proc.communicate(timeout=timeout_sec)
         return {
             "cmd": list(cmd),
             "rc": int(proc.returncode),
-            "payload": _parse_json_output(proc.stdout or ""),
-            "stdout_tail": "\n".join((proc.stdout or "").splitlines()[-12:]),
-            "stderr_tail": "\n".join((proc.stderr or "").splitlines()[-12:]),
+            "payload": _parse_json_output(stdout or ""),
+            "stdout_tail": "\n".join((stdout or "").splitlines()[-12:]),
+            "stderr_tail": "\n".join((stderr or "").splitlines()[-12:]),
         }
-    except subprocess.TimeoutExpired as exc:
-        stdout = exc.stdout.decode("utf-8", errors="ignore") if isinstance(exc.stdout, bytes) else str(exc.stdout or "")
-        stderr = exc.stderr.decode("utf-8", errors="ignore") if isinstance(exc.stderr, bytes) else str(exc.stderr or "")
+    except subprocess.TimeoutExpired:
+        stdout = ""
+        stderr = ""
+        if proc is not None:
+            try:
+                os.killpg(proc.pid, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
+            except Exception:
+                proc.terminate()
+            cleanup_pids.extend(_terminate_leaked_processes(project_root, cleanup_markers, preexisting_cleanup_pids))
+            try:
+                stdout, stderr = proc.communicate(timeout=2)
+            except subprocess.TimeoutExpired:
+                try:
+                    os.killpg(proc.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+                except Exception:
+                    proc.kill()
+                cleanup_pids.extend(
+                    _terminate_leaked_processes(
+                        project_root,
+                        cleanup_markers,
+                        preexisting_cleanup_pids,
+                        sig=signal.SIGKILL,
+                    )
+                )
+                try:
+                    stdout, stderr = proc.communicate(timeout=2)
+                except subprocess.TimeoutExpired:
+                    if proc.stdout is not None:
+                        proc.stdout.close()
+                    if proc.stderr is not None:
+                        proc.stderr.close()
+                    try:
+                        proc.wait(timeout=1)
+                    except Exception:
+                        pass
         return {
             "cmd": list(cmd),
             "rc": 124,
             "payload": _parse_json_output(stdout),
             "stdout_tail": "\n".join(stdout.splitlines()[-12:]),
             "stderr_tail": "\n".join(stderr.splitlines()[-12:]) or "timeout",
+            "timeout_cleanup": {
+                "markers": cleanup_markers,
+                "terminated_processes": cleanup_pids,
+            },
         }
 
 
@@ -108,11 +263,32 @@ def _repair_plan(guard_payload: dict[str, Any], *, max_steps: int) -> list[dict[
                     "reason": status,
                     "cmd": [str(part) for part in cmd],
                     "timeout_sec": 1200,
+                    "recovery_deferred": bool(row.get("recovery_deferred", False)),
+                    "recovery_deferred_reason": str(row.get("recovery_deferred_reason") or ""),
                 }
             )
             if len(plan) >= max(int(max_steps), 1):
                 return plan
     return plan
+
+
+def _filter_plan_for_recovery_safety(
+    repair_plan: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    filtered: list[dict[str, Any]] = []
+    skipped: list[dict[str, Any]] = []
+    for step in repair_plan:
+        if bool(step.get("recovery_deferred", False)):
+            skipped.append(
+                {
+                    **step,
+                    "skip_reason": "recovery_deferred",
+                    "recovery_deferred_reason": str(step.get("recovery_deferred_reason") or ""),
+                }
+            )
+            continue
+        filtered.append(step)
+    return filtered, skipped
 
 
 def _surface_status(guard_payload: dict[str, Any], surface_name: str) -> str:
@@ -162,10 +338,13 @@ def build_payload(
     initial_guard = build_guard(project_root)
     planned_repair_steps = _repair_plan(initial_guard, max_steps=max_steps)
     chrome_guard_status = _surface_status(initial_guard, "chrome_headless_guard")
-    repair_plan, skipped_steps = _filter_plan_for_workstation_safety(
+    repair_plan, workstation_skipped_steps = _filter_plan_for_workstation_safety(
         planned_repair_steps,
         chrome_guard_status=chrome_guard_status,
     )
+    skipped_steps = list(workstation_skipped_steps)
+    repair_plan, recovery_skipped_steps = _filter_plan_for_recovery_safety(repair_plan)
+    skipped_steps.extend(recovery_skipped_steps)
     attempts: list[dict[str, Any]] = []
     if apply:
         for step in repair_plan:
@@ -193,6 +372,7 @@ def build_payload(
                     },
                     "stdout_tail": str(result.get("stdout_tail") or ""),
                     "stderr_tail": str(result.get("stderr_tail") or ""),
+                    "timeout_cleanup": result.get("timeout_cleanup") if isinstance(result.get("timeout_cleanup"), dict) else {},
                 }
             )
 
@@ -208,7 +388,10 @@ def build_payload(
             if apply and repair_plan
             else "",
             "defer PDF/report repairs until the Chrome headless guard is ready so workstation recovery does not respawn the browser storm"
-            if skipped_steps
+            if workstation_skipped_steps
+            else "",
+            "leave recovery-deferred drift surfaces to their owning guards instead of spending the drift repair budget on active bounded recovery"
+            if recovery_skipped_steps
             else "",
             "review operator-gated or no-repair drift surfaces manually because the autopilot intentionally will not invent destructive fixes"
             if operator_followups

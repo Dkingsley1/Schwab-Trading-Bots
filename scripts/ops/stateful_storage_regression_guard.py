@@ -6,6 +6,7 @@ import json
 import os
 import plistlib
 import shutil
+import sqlite3
 import subprocess
 import sys
 from pathlib import Path
@@ -47,6 +48,25 @@ def _external_project_root(project_root: Path, raw: str = "") -> Path:
     mount = Path(os.getenv("BOT_LOGS_EXTERNAL_MOUNT", "/Volumes/BOT_LOGS")).expanduser()
     project_dir = os.getenv("BOT_LOGS_EXTERNAL_PROJECT_DIR", "schwab_trading_bot").strip() or project_root.name
     return mount / project_dir
+
+
+def _writable_or_creatable_directory(path: Path) -> bool:
+    try:
+        if path.exists():
+            return path.is_dir() and os.access(path, os.W_OK)
+        parent = path.parent
+        while parent != parent.parent and not parent.exists():
+            parent = parent.parent
+        return parent.exists() and parent.is_dir() and os.access(parent, os.W_OK)
+    except OSError:
+        return False
+
+
+def _stateful_target_project_root(project_root: Path, external: Path) -> tuple[Path, str]:
+    if _writable_or_creatable_directory(external):
+        return external, "external"
+    fallback = project_root / "local_fallback_storage"
+    return fallback, "local_fallback"
 
 
 def _path_size_bytes(path: Path) -> int:
@@ -166,14 +186,20 @@ def _repair_stateful_path(
     target.mkdir(parents=True, exist_ok=True)
 
     if local.is_symlink():
-        status = "ready" if _same_target(local, target) else "degraded"
+        target_match = _same_target(local, target)
+        if apply and not target_match:
+            local.unlink()
+            local.symlink_to(target, target_is_directory=True)
+            actions.append({"action": "relink_symlink", "local_path": str(local), "target_path": str(target)})
+            target_match = _same_target(local, target)
+        status = "ready" if target_match else "degraded"
         return {
             "name": name,
             "local_path": str(local),
             "target_path": str(target),
             "local_bytes": 0,
             "is_symlink": True,
-            "target_match": _same_target(local, target),
+            "target_match": target_match,
             "active_process": False,
             "open_handles": False,
             "status": status,
@@ -216,6 +242,103 @@ def _repair_stateful_path(
         local.parent.mkdir(parents=True, exist_ok=True)
         local.symlink_to(target, target_is_directory=True)
         actions.append({"action": "create_symlink", "local_path": str(local), "target_path": str(target)})
+
+    target_match = _same_target(local, target)
+    local_bytes = _path_size_bytes(local)
+    if target_match:
+        status = "ready"
+    elif local_bytes > max_local_bytes:
+        status = "blocked"
+    else:
+        status = "degraded"
+
+    return {
+        "name": name,
+        "local_path": str(local),
+        "target_path": str(target),
+        "local_bytes": local_bytes,
+        "local_gb": round(local_bytes / (1024**3), 3),
+        "max_local_bytes": max_local_bytes,
+        "is_symlink": local.is_symlink(),
+        "target_match": target_match,
+        "active_process": active,
+        "open_handles": open_handles,
+        "status": status,
+        "actions": actions,
+    }
+
+
+def _repair_stateful_file(
+    *,
+    name: str,
+    local: Path,
+    target: Path,
+    apply: bool,
+    max_local_bytes: int,
+    active_patterns: tuple[str, ...],
+) -> dict[str, Any]:
+    actions: list[dict[str, Any]] = []
+    target.parent.mkdir(parents=True, exist_ok=True)
+
+    def ensure_sqlite_target() -> None:
+        if target.exists() or target.suffix != ".sqlite3":
+            return
+        with sqlite3.connect(target) as conn:
+            conn.execute("PRAGMA user_version = 0")
+        actions.append({"action": "initialize_sqlite_target", "target_path": str(target)})
+
+    if local.is_symlink():
+        target_match = _same_target(local, target)
+        if apply and not target_match:
+            local.unlink()
+            local.symlink_to(target)
+            actions.append({"action": "relink_symlink", "local_path": str(local), "target_path": str(target)})
+            target_match = _same_target(local, target)
+        if apply and target_match:
+            ensure_sqlite_target()
+        return {
+            "name": name,
+            "local_path": str(local),
+            "target_path": str(target),
+            "local_bytes": 0,
+            "is_symlink": True,
+            "target_match": target_match,
+            "active_process": False,
+            "open_handles": False,
+            "status": "ready" if target_match else "degraded",
+            "actions": actions,
+        }
+
+    local_bytes = _path_size_bytes(local)
+    active = _active_process(active_patterns)
+    open_handles = _has_open_handles(local)
+
+    if apply and local.exists() and local.is_file() and not active and not open_handles:
+        if not target.exists():
+            shutil.move(str(local), str(target))
+            actions.append({"action": "move", "source": str(local), "target": str(target)})
+        else:
+            try:
+                same_size = local.stat().st_size == target.stat().st_size
+            except Exception:
+                same_size = False
+            if same_size:
+                local.unlink()
+                actions.append({"action": "remove_duplicate", "source": str(local), "target": str(target)})
+            else:
+                _move_conflict(local, target.parent, actions)
+        local.parent.mkdir(parents=True, exist_ok=True)
+        if not local.exists():
+            local.symlink_to(target)
+            actions.append({"action": "replace_local_file_with_symlink", "local_path": str(local), "target_path": str(target)})
+
+    if apply and not local.exists() and not local.is_symlink():
+        local.parent.mkdir(parents=True, exist_ok=True)
+        local.symlink_to(target)
+        actions.append({"action": "create_symlink", "local_path": str(local), "target_path": str(target)})
+
+    if apply and _same_target(local, target):
+        ensure_sqlite_target()
 
     target_match = _same_target(local, target)
     local_bytes = _path_size_bytes(local)
@@ -301,13 +424,15 @@ def build_payload(
 ) -> dict[str, Any]:
     project_root = project_root.resolve()
     external = _external_project_root(project_root, external_root)
+    target_root, target_mode = _stateful_target_project_root(project_root, external)
     max_sql_bytes = _safe_int(os.getenv("STATEFUL_STORAGE_SQL_LOCAL_MAX_BYTES"), 64 * 1024 * 1024)
     max_lane_bytes = _safe_int(os.getenv("STATEFUL_STORAGE_EXECUTION_LANE_LOCAL_MAX_BYTES"), 256 * 1024 * 1024)
+    max_stateful_db_bytes = _safe_int(os.getenv("STATEFUL_STORAGE_DB_LOCAL_MAX_BYTES"), 256 * 1024 * 1024)
     route_checks = [
         _repair_stateful_path(
             name="sql_link_shards",
             local=project_root / "data" / "sql_link_shards",
-            target=external / "data" / "sql_link_shards",
+            target=target_root / "data" / "sql_link_shards",
             apply=apply,
             max_local_bytes=max_sql_bytes,
             active_patterns=("scripts/ops/sql_link_shard_manager.py", "scripts/ops/sql_link_writer_service.py", "scripts/link_jsonl_to_sql.py"),
@@ -315,10 +440,26 @@ def build_payload(
         _repair_stateful_path(
             name="execution_lanes",
             local=project_root / "governance" / "execution_lanes",
-            target=external / "governance" / "execution_lanes",
+            target=target_root / "governance" / "execution_lanes",
             apply=apply,
             max_local_bytes=max_lane_bytes,
             active_patterns=("scripts/run_execution_lane.py",),
+        ),
+        _repair_stateful_file(
+            name="bot_channel_queue_sqlite",
+            local=project_root / "data" / "bot_channel_queue.sqlite3",
+            target=target_root / "data" / "bot_channel_queue.sqlite3",
+            apply=apply,
+            max_local_bytes=max_stateful_db_bytes,
+            active_patterns=("bot_channel_queue.sqlite3", "bot_channel_queue", "channel_queue"),
+        ),
+        _repair_stateful_file(
+            name="snapshot_context_sqlite",
+            local=project_root / "data" / "snapshot_context.sqlite3",
+            target=target_root / "data" / "snapshot_context.sqlite3",
+            apply=apply,
+            max_local_bytes=max_stateful_db_bytes,
+            active_patterns=("snapshot_context.sqlite3", "snapshot_context"),
         ),
     ]
     launchd_check = _launchd_log_check(apply=apply)
@@ -335,6 +476,8 @@ def build_payload(
         "apply": bool(apply),
         "project_root": str(project_root),
         "external_project_root": str(external),
+        "stateful_target_project_root": str(target_root),
+        "stateful_target_mode": target_mode,
         "checks": checks,
         "metrics": {
             "local_stateful_bytes": local_total_bytes,

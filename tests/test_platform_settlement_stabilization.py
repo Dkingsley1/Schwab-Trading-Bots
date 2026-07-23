@@ -108,6 +108,61 @@ def test_single_writer_guard_treats_launchd_wrapper_chain_as_one_writer(tmp_path
     assert guard["wrapper_chain_only"] is True
 
 
+def test_single_writer_guard_treats_active_guarded_chain_as_one_writer(tmp_path: Path) -> None:
+    _seed_project(tmp_path)
+    _write_json(
+        tmp_path / "governance" / "health" / "process_watchdog_latest.json",
+        {"status": [{"name": "sql_link_writer", "running": 2, "heartbeat_ok": True}]},
+    )
+    _write_json(
+        tmp_path / "governance" / "health" / "backpressure_drainer_fleet_latest.json",
+        {"writer_active": True, "writer_lock_held": True, "ready_drainer_count": 1},
+    )
+    _write_json(
+        tmp_path / "governance" / "health" / "writer_process_intelligence_latest.json",
+        {
+            "overall_status": "ready",
+            "writer_health": {
+                "writer_lock_held": True,
+                "active_child_writer_count": 1,
+                "shard_writer_lane_contract": {
+                    "primary_merge_writer_count": 1,
+                    "sqlite_primary_writer_count": 1,
+                    "single_primary_merge_writer": True,
+                },
+            },
+        },
+    )
+
+    payload = src.build_payload(tmp_path)
+    guard = payload["sections"]["single_writer_guard"]
+
+    assert guard["overall_status"] == "ready"
+    assert guard["raw_sql_link_writer_running_count"] == 2
+    assert guard["sql_link_writer_running_count"] == 1
+    assert guard["wrapper_chain_only"] is False
+    assert guard["guarded_single_writer_chain"] is True
+
+
+def test_single_writer_guard_blocks_active_chain_without_single_primary_proof(tmp_path: Path) -> None:
+    _seed_project(tmp_path)
+    _write_json(
+        tmp_path / "governance" / "health" / "process_watchdog_latest.json",
+        {"status": [{"name": "sql_link_writer", "running": 2, "heartbeat_ok": True}]},
+    )
+    _write_json(
+        tmp_path / "governance" / "health" / "backpressure_drainer_fleet_latest.json",
+        {"writer_active": True, "writer_lock_held": True, "ready_drainer_count": 1},
+    )
+
+    payload = src.build_payload(tmp_path)
+    guard = payload["sections"]["single_writer_guard"]
+
+    assert guard["overall_status"] == "blocked"
+    assert guard["sql_link_writer_running_count"] == 2
+    assert guard["guarded_single_writer_chain"] is False
+
+
 def test_platform_settlement_stabilization_writes_artifacts(tmp_path: Path) -> None:
     _seed_project(tmp_path)
 

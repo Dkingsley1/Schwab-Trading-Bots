@@ -17,6 +17,32 @@ else:
 
 
 DEFAULT_OUT_PATH = PROJECT_ROOT / "governance" / "health" / "autonomy_control_plane_latest.json"
+BOUNDED_RUNTIME_CLEARANCE_STATES = {
+    "awaiting_cold_lane",
+    "awaiting_coverage_cycles",
+    "managed_cold_lane_deferred",
+    "managed_coverage_stage_deferred",
+    "staged_preclearance",
+    "coverage_cycles_ready",
+    "off_hours_cold_lane_launch_ready",
+    "scheduled_off_hours_launch",
+}
+BOUNDED_LIVE_CANARY_BLOCKERS = {
+    "faithful_live_money_contract_not_ready",
+    "live_lane_not_running",
+    "runtime_clearance_not_ready",
+    "live_lane_read_only",
+    "promotion_packet_preclearance_only",
+    "canary_rollout_not_ready",
+    "canary_weight_not_ready",
+}
+BOUNDED_COVERAGE_LAUNCH_STATES = {
+    "waiting_for_idle",
+    "stage_only_off_hours",
+    "stage_only_training_blocked",
+    "queued",
+    "staged",
+}
 
 
 def _safe_int(value: Any, default: int = 0) -> int:
@@ -424,14 +450,7 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
     if (
         live_research_status in {"blocked", "degraded"}
         and str(live_research_split.get("clearance_state") or "")
-        in {
-            "awaiting_cold_lane",
-            "awaiting_coverage_cycles",
-            "staged_preclearance",
-            "coverage_cycles_ready",
-            "off_hours_cold_lane_launch_ready",
-            "scheduled_off_hours_launch",
-        }
+        in BOUNDED_RUNTIME_CLEARANCE_STATES
         and bool(
             live_canary_summary.get("staged_preclearance_ready", False)
             or live_canary_summary.get("preapproved_supervised_ready", False)
@@ -448,7 +467,7 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
         coverage_autopilot_status == "degraded"
         and _safe_int(coverage_autopilot.get("coverage_shortfall_bots"), 0) > 0
         and _safe_int(coverage_autopilot.get("gap_closer_stage_count"), 0) >= _safe_int(coverage_autopilot.get("coverage_shortfall_bots"), 0)
-        and str(coverage_autopilot.get("launch_state") or "") in {"waiting_for_idle", "stage_only_off_hours", "queued", "staged"}
+        and str(coverage_autopilot.get("launch_state") or "") in BOUNDED_COVERAGE_LAUNCH_STATES
     ):
         coverage_autopilot_status = "needs_work"
     auth_workflow_status = str(auth_workflow.get("overall_status") or "missing")
@@ -463,10 +482,10 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
     if (
         data_plane_component_status == "degraded"
         and str(data_plane_summary.get("recovery_state") or "") in {"recovering_under_guard", "stabilized_recovery"}
-        and bool(data_plane_summary.get("writer_service_active", False))
         and _safe_int(data_plane_summary.get("write_failure_count"), 0) <= 0
         and (
-            abs(_safe_int(data_plane_summary.get("drain_progress_lines"), 0)) > 0
+            bool(data_plane_summary.get("writer_service_active", False))
+            or abs(_safe_int(data_plane_summary.get("drain_progress_lines"), 0)) > 0
             or _safe_int(data_plane_summary.get("queue_depth"), 0) > 0
             or _safe_int(data_plane_summary.get("account_snapshot_failure_count"), 0) > 0
         )
@@ -478,6 +497,11 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
     elif bool(
         live_canary_summary.get("preapproved_supervised_ready", False)
         or live_canary_summary.get("staged_preclearance_ready", False)
+        or (
+            live_canary_summary.get("blocking_reasons")
+            and set(live_canary_summary.get("blocking_reasons") or []).issubset(BOUNDED_LIVE_CANARY_BLOCKERS)
+            and _safe_float(live_canary_summary.get("preclearance_score"), 0.0) >= 70.0
+        )
     ):
         live_canary_status = "needs_work"
     incident_timeline_status = str(incident_summary.get("overall_status") or "missing")
@@ -552,14 +576,7 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
 
     bounded_live_release_contention = bool(
         bool(live_canary_summary.get("preapproved_supervised_ready", False))
-        and str(live_research_split.get("clearance_state") or "") in {
-            "awaiting_cold_lane",
-            "awaiting_coverage_cycles",
-            "staged_preclearance",
-            "coverage_cycles_ready",
-            "off_hours_cold_lane_launch_ready",
-            "scheduled_off_hours_launch",
-        }
+        and str(live_research_split.get("clearance_state") or "") in BOUNDED_RUNTIME_CLEARANCE_STATES
         and bool(live_research_split.get("live_lane_should_be_read_only", False))
     )
     bounded_coverage_stage = bool(
@@ -567,7 +584,7 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
         and _safe_int(coverage_autopilot.get("coverage_shortfall_bots"), 0) > 0
         and _safe_int(coverage_autopilot.get("gap_closer_stage_count"), 0)
         >= _safe_int(coverage_autopilot.get("coverage_shortfall_bots"), 0)
-        and str(coverage_autopilot.get("launch_state") or "") in {"waiting_for_idle", "stage_only_off_hours", "queued", "staged"}
+        and str(coverage_autopilot.get("launch_state") or "") in BOUNDED_COVERAGE_LAUNCH_STATES
     )
     bounded_promotion_repair = bool(
         promotion_component_status == "needs_work"

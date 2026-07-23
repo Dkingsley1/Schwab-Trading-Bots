@@ -1,0 +1,112 @@
+{
+  "schema_version": 1,
+  "updated_at_utc": "2026-06-29T04:28:32.809651+00:00",
+  "enabled": true,
+  "read_only": true,
+  "invariants": [
+    "live_order_execution_requires_explicit_operator_gate",
+    "guarded_paper_readiness_must_match_current_global_halt_and_paper_ramp_truth",
+    "sql_writer_must_have_single_primary_merge_writer_proof",
+    "runtime_capacity_debt_must_not_be_promoted_to_live_readiness",
+    "isolated_read_only_collector_repairs_must_not_block_guarded_paper",
+    "platform_watch_states_must_not_roll_up_as_hard_degradation",
+    "training_and_provider_evidence_must_back_promotion_readiness",
+    "opsctl_command_spine_must_reach_all_core_control_planes",
+    "body_strength_requires_guarded_paper_runtime_and_training_evidence_alignment",
+    "skeleton_strength_requires_command_spine_truth_source_and_single_writer_proof",
+    "heart_strength_requires_writer_pump_collector_quarantine_and_runtime_circulation",
+    "mind_strength_requires_evidence_source_confidence_and_watch_semantics"
+  ],
+  "anatomy_layers": {
+    "body": {
+      "role": "whole-system posture, guarded paper readiness, runtime capacity, and evidence coverage",
+      "sections": [
+        "safety_execution_boundary",
+        "truth_source_consistency",
+        "runtime_capacity_partition",
+        "training_evidence_contract"
+      ],
+      "contract": "the whole platform can stand up in guarded paper without stale halt, runtime, or evidence contradictions"
+    },
+    "skeleton": {
+      "role": "command spine, artifact truth contracts, and single-writer/data-plane structure",
+      "sections": [
+        "opsctl_command_spine",
+        "truth_source_consistency",
+        "storage_writer_data_plane"
+      ],
+      "contract": "control commands, current artifacts, and the SQL writer frame agree before the platform widens"
+    },
+    "organs": {
+      "role": "storage, runtime, collectors, providers, and training subsystems doing their work",
+      "sections": [
+        "storage_writer_data_plane",
+        "runtime_capacity_partition",
+        "collector_process_quarantine",
+        "provider_source_mesh",
+        "training_evidence_contract"
+      ],
+      "contract": "the major subsystems stay functional, isolated, and replaceable without poisoning guarded paper"
+    },
+    "skin": {
+      "role": "external boundary, live execution lock, source confidence, and provider exposure",
+      "sections": [
+        "safety_execution_boundary",
+        "provider_source_mesh",
+        "runtime_capacity_partition"
+      ],
+      "contract": "the outside world can degrade at optional edges without opening live execution or corrupting core readiness"
+    },
+    "heart": {
+      "role": "writer pump, backlog flow, collector heartbeat, and runtime circulation",
+      "sections": [
+        "storage_writer_data_plane",
+        "collector_process_quarantine",
+        "runtime_capacity_partition"
+      ],
+      "contract": "the platform keeps pumping data through one writer while heartbeat repairs stay quarantined"
+    },
+    "brain": {
+      "role": "platform intelligence, stabilization, settlement, and command reachability",
+      "sections": [
+        "platform_watch_semantics",
+        "truth_source_consistency",
+        "opsctl_command_spine"
+      ],
+      "contract": "the control planes can reason, route commands, and preserve watch semantics without hard-failing the system"
+    },
+    "mind": {
+      "role": "evidence, source confidence, training quality, and cross-layer self-awareness",
+      "sections": [
+        "training_evidence_contract",
+        "platform_watch_semantics",
+        "provider_source_mesh",
+        "truth_source_consistency"
+      ],
+      "contract": "strategy confidence comes from evidence and source quality rather than raw activity or wishful readiness"
+    }
+  },
+  "required_opsctl_commands": [
+    "health-fast",
+    "paper-400-ramp",
+    "global-halt-refresh",
+    "runtime-throttle",
+    "writer-process-intelligence",
+    "platform-intelligence",
+    "platform-brain-v5",
+    "platform-stabilization",
+    "platform-settlement-stabilization",
+    "process-watchdog",
+    "system-plumbing-control",
+    "provider-mesh",
+    "training-quality",
+    "system-architecture-hardening"
+  ],
+  "live_enable_flags": [
+    "ALLOW_ORDER_EXECUTION",
+    "EXECUTION_LANE_LIVE_ENABLED",
+    "INLINE_PAPER_EXECUTION_ENABLED",
+    "RUN_ALL_SLEEVES_WITH_LIVE_EXECUTOR",
+    "TOP_BOT_ENABLE_LIVE_EXECUTION"
+  ]
+}

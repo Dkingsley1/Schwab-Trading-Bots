@@ -24,6 +24,7 @@ final class StorageEjectGuard {
     let targetVolumeName: String
     let targetVolumeUUIDHint: String
     let targetDiskIdentifierHint: String
+    let disappearanceGraceSeconds: TimeInterval
     let logPath: URL
     let overridePath: URL
     let serial = DispatchQueue(label: "com.dankingsley.storage_eject_guard")
@@ -34,6 +35,7 @@ final class StorageEjectGuard {
     var lastRestoreHandledAt = Date.distantPast
     var lastMountAttemptAt = Date.distantPast
     var mountPollTimer: DispatchSourceTimer?
+    var pendingDisappearWorkItem: DispatchWorkItem?
 
     init(projectRoot: URL, mountRoot: String) {
         self.projectRoot = projectRoot
@@ -44,6 +46,7 @@ final class StorageEjectGuard {
         self.targetVolumeName = ProcessInfo.processInfo.environment["BOT_LOGS_EXTERNAL_VOLUME_NAME"] ?? URL(fileURLWithPath: mountRoot).lastPathComponent
         self.targetVolumeUUIDHint = ProcessInfo.processInfo.environment["BOT_LOGS_EXTERNAL_VOLUME_UUID"] ?? ""
         self.targetDiskIdentifierHint = ProcessInfo.processInfo.environment["BOT_LOGS_EXTERNAL_DISK_IDENTIFIER"] ?? ""
+        self.disappearanceGraceSeconds = StorageEjectGuard.envTimeInterval("BOT_LOGS_DISAPPEAR_GRACE_SECONDS", defaultValue: 15.0)
         self.mountRoot = mountRoot
         let home = FileManager.default.homeDirectoryForCurrentUser
         let logDir = home.appendingPathComponent("Library/Logs/schwab_trading_bot", isDirectory: true)
@@ -93,6 +96,8 @@ final class StorageEjectGuard {
     func handleAppeared(_ disk: DADisk) {
         guard matchesMountPath(disk) else { return }
         serial.sync {
+            pendingDisappearWorkItem?.cancel()
+            pendingDisappearWorkItem = nil
             if let volumeURL = StorageEjectGuard.volumeURL(for: disk) {
                 mountRoot = volumeURL.path
             }
@@ -130,17 +135,24 @@ final class StorageEjectGuard {
 
     func handleDisappeared(_ disk: DADisk) {
         guard matchesTargetDisk(disk) else { return }
-        let shouldRestartLocal = serial.sync { () -> Bool in
-            let mode = currentStorageMode()
-            log("disk disappeared mountRoot=\(mountRoot) volumeBSD=\(targetVolumeBSDName ?? "none") wholeBSD=\(targetWholeBSDName ?? "none") mode=\(mode)")
-            targetVolumeBSDName = nil
-            targetWholeBSDName = nil
-            return shouldRestartLocalOnDisappear(mode: mode)
-        }
-        if shouldRestartLocal {
-            serial.async {
-                self.restartLocalCollectionAfterEject()
+        let disappearedBSD = StorageEjectGuard.bsdName(for: disk) ?? "unknown"
+        serial.async {
+            let mode = self.currentStorageMode()
+            self.log("disk disappeared mountRoot=\(self.mountRoot) volumeBSD=\(self.targetVolumeBSDName ?? "none") wholeBSD=\(self.targetWholeBSDName ?? "none") disk=\(disappearedBSD) mode=\(mode)")
+            self.targetVolumeBSDName = nil
+            self.targetWholeBSDName = nil
+
+            guard self.shouldRestartLocalOnDisappear(mode: mode) else {
+                return
             }
+
+            self.pendingDisappearWorkItem?.cancel()
+            let workItem = DispatchWorkItem { [weak self] in
+                self?.confirmDisappearAndRestartLocal(originalMode: mode, disappearedBSD: disappearedBSD)
+            }
+            self.pendingDisappearWorkItem = workItem
+            self.log("scheduled disappearance verification grace_seconds=\(self.disappearanceGraceSeconds) disk=\(disappearedBSD) mode=\(mode)")
+            self.serial.asyncAfter(deadline: .now() + self.disappearanceGraceSeconds, execute: workItem)
         }
     }
 
@@ -437,6 +449,40 @@ final class StorageEjectGuard {
         return localOverrideActive()
     }
 
+    func confirmDisappearAndRestartLocal(originalMode: String, disappearedBSD: String) {
+        pendingDisappearWorkItem = nil
+        maybeMountTargetVolume(reason: "disappear_grace")
+        if externalMountAvailableNow() {
+            log("external_still_available_after_disappear disk=\(disappearedBSD) originalMode=\(originalMode) mountRoot=\(mountRoot); skipping local fallback")
+            return
+        }
+
+        let mode = currentStorageMode()
+        guard shouldRestartLocalOnDisappear(mode: originalMode) || shouldRestartLocalOnDisappear(mode: mode) else {
+            log("disappearance verification skipped disk=\(disappearedBSD) originalMode=\(originalMode) currentMode=\(mode)")
+            return
+        }
+        log("confirmed external unavailable after disappearance grace disk=\(disappearedBSD) originalMode=\(originalMode) currentMode=\(mode)")
+        restartLocalCollectionAfterEject()
+    }
+
+    func externalMountAvailableNow() -> Bool {
+        for candidate in candidateMountRoots {
+            let volumeURL = URL(fileURLWithPath: candidate)
+            if StorageEjectGuard.projectRootExists(on: volumeURL, projectDir: expectedProjectDir) {
+                mountRoot = candidate
+                return true
+            }
+        }
+        guard let target = discoverTargetVolume(), target.isMounted else {
+            return false
+        }
+        if let mountPoint = target.mountPoint, !mountPoint.isEmpty {
+            mountRoot = mountPoint
+        }
+        return true
+    }
+
     func externalPreferredByConfig() -> Bool {
         let raw = ProcessInfo.processInfo.environment["BOT_LOGS_PREFER_EXTERNAL"] ?? "1"
         return !["0", "false", "no", "off"].contains(raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased())
@@ -711,6 +757,14 @@ final class StorageEjectGuard {
             appendUnique(String(token))
         }
         return out
+    }
+
+    static func envTimeInterval(_ name: String, defaultValue: TimeInterval) -> TimeInterval {
+        let raw = ProcessInfo.processInfo.environment[name] ?? ""
+        guard let parsed = Double(raw), parsed >= 0 else {
+            return defaultValue
+        }
+        return parsed
     }
 
     static func iso8601Now() -> String {

@@ -34,6 +34,42 @@ BOOTSTRAP_COHORT = "legacy_bootstrap"
 PROMOTED_COHORT = "standard_promoted"
 COLLECTION_COHORT = "collection_until_standard_met"
 DELETED_COHORT = "deleted_preserved"
+PAPER_PROFILE_DISABLED_SENTINEL = "__paper_profile_disabled_by_profitability_quarantine__"
+COINBASE_PROBATIONARY_SPOT_PROFILES = ("default",)
+COINBASE_PROBATIONARY_FUTURES_PROFILES = ("crypto_futures",)
+COINBASE_PROBATIONARY_SPOT_TOP_N = 50
+COINBASE_PROBATIONARY_FUTURES_TOP_N = 30
+CLEAN_SCHWAB_RUNTIME_PROFILES = (
+    "volatility",
+    "pairs_correlation",
+    "stat_arb_market_neutral",
+    "earnings_event",
+    "commodity_inflation",
+    "international_macro",
+    "market_making_liquidity",
+    "short_bias_hedge",
+    "single_name_options_event",
+    "rates_credit_macro",
+    "cash_rotation_tactical",
+    "futures_index_intraday",
+    "futures_rates_curve",
+    "futures_commodity_macro",
+    "crypto_futures_basis",
+    "futures_event_reaction",
+    "options_on_futures_aggressive",
+)
+CLEAN_SCHWAB_OPTIONS_PROFILES = (
+    "single_name_options_event",
+    "options_on_futures_aggressive",
+)
+CLEAN_SCHWAB_FUTURES_PROFILES = (
+    "schwab_futures",
+    "futures_index_intraday",
+    "futures_rates_curve",
+    "futures_commodity_macro",
+    "crypto_futures_basis",
+    "futures_event_reaction",
+)
 
 
 def _resolve_path(path: Path, project_root: Path) -> Path:
@@ -89,6 +125,64 @@ def _safe_int(value: Any, default: int = 0) -> int:
         return int(float(value))
     except Exception:
         return int(default)
+
+
+def _csv_profiles(raw: Any) -> list[str]:
+    return ordered_unique(str(item).strip().lower() for item in str(raw or "").split(",") if str(item).strip())
+
+
+def _weak_profiles_from_profitability_controls(project_root: Path) -> set[str]:
+    health_root = project_root / "governance" / "health"
+    weak: set[str] = set()
+    for name in (
+        "paper_runtime_profitability_controls_latest.json",
+        "paper_profitability_control_latest.json",
+    ):
+        payload = load_json(health_root / name)
+        if not isinstance(payload, dict):
+            continue
+        recovery = payload.get("raw_profitability_a_recovery_contract")
+        if isinstance(recovery, dict):
+            for profile in recovery.get("weak_profiles") if isinstance(recovery.get("weak_profiles"), list) else []:
+                value = str(profile or "").strip().lower()
+                if value:
+                    weak.add(value)
+        improvement = payload.get("raw_profitability_improvement_contract")
+        if isinstance(improvement, dict):
+            weak_contract = improvement.get("weak_sleeve_zero_entry_contract")
+            if isinstance(weak_contract, dict):
+                for row in weak_contract.get("profiles") if isinstance(weak_contract.get("profiles"), list) else []:
+                    if isinstance(row, dict) and bool(row.get("block_new_entries", False)):
+                        value = str(row.get("profile") or "").strip().lower()
+                        if value:
+                            weak.add(value)
+        active_controls = payload.get("active_profile_controls")
+        if isinstance(active_controls, dict):
+            for profile, control in active_controls.items():
+                if isinstance(control, dict) and (
+                    str(control.get("action") or "").strip().lower() == "quarantine_new_entries"
+                    or bool(control.get("block_new_entries", False))
+                ):
+                    value = str(profile or "").strip().lower()
+                    if value:
+                        weak.add(value)
+        profile_controls = payload.get("profile_controls")
+        if isinstance(profile_controls, dict):
+            for profile, control in profile_controls.items():
+                if isinstance(control, dict) and (
+                    str(control.get("action") or "").strip().lower() == "quarantine_new_entries"
+                    or bool(control.get("block_new_entries", False))
+                ):
+                    value = str(profile or "").strip().lower()
+                    if value:
+                        weak.add(value)
+    return weak
+
+
+def _clean_profile_csv(raw: Any, weak_profiles: set[str], *, allow_weak_profiles: set[str] | None = None) -> str:
+    allowed = allow_weak_profiles or set()
+    cleaned = [profile for profile in _csv_profiles(raw) if profile not in weak_profiles or profile in allowed]
+    return ",".join(cleaned) if cleaned else PAPER_PROFILE_DISABLED_SENTINEL
 
 
 def _bot_version(row: dict[str, Any]) -> int | None:
@@ -349,6 +443,24 @@ def _override_lines(payload: dict[str, Any]) -> list[str]:
     target = payload.get("paper_lane_target") if isinstance(payload.get("paper_lane_target"), dict) else {}
     paper_count = max(_safe_int(counts.get("paper_live_data_enabled_bots"), 0), 0)
     core_top_n = max(paper_count, TARGET_PAPER_BOTS if paper_count >= MIN_PAPER_BOTS else MIN_PAPER_BOTS)
+    registry_path = Path(str(payload.get("registry_path") or DEFAULT_REGISTRY_PATH))
+    project_root = registry_path.parent if registry_path.name == "master_bot_registry.json" else PROJECT_ROOT
+    weak_profiles = _weak_profiles_from_profitability_controls(project_root)
+    schwab_profiles = _clean_profile_csv(",".join(CLEAN_SCHWAB_RUNTIME_PROFILES), weak_profiles)
+    schwab_options_profiles = _clean_profile_csv(",".join(CLEAN_SCHWAB_OPTIONS_PROFILES), weak_profiles)
+    schwab_futures_profiles = _clean_profile_csv(",".join(CLEAN_SCHWAB_FUTURES_PROFILES), weak_profiles)
+    coinbase_profiles = _clean_profile_csv(
+        ",".join(COINBASE_PROBATIONARY_SPOT_PROFILES),
+        weak_profiles,
+        allow_weak_profiles=set(COINBASE_PROBATIONARY_SPOT_PROFILES),
+    )
+    coinbase_futures_profiles = _clean_profile_csv(
+        ",".join(COINBASE_PROBATIONARY_FUTURES_PROFILES),
+        weak_profiles,
+        allow_weak_profiles=set(COINBASE_PROBATIONARY_FUTURES_PROFILES),
+    )
+    coinbase_top_n = COINBASE_PROBATIONARY_SPOT_TOP_N
+    coinbase_futures_top_n = COINBASE_PROBATIONARY_FUTURES_TOP_N
     values = {
         "PAPER_LIVE_DATA_STANDARD_ENABLED": "1",
         "PAPER_LIVE_DATA_STANDARD_VERSION": STANDARD_VERSION,
@@ -362,22 +474,41 @@ def _override_lines(payload: dict[str, Any]) -> list[str]:
         "TOP_BOT_PAPER_TRADING_ENABLED": "1",
         "TOP_BOT_PAPER_TRADING_TOP_N": str(core_top_n),
         "TOP_BOT_PAPER_TRADING_MIN_ACC": "0.0",
+        "TOP_BOT_PAPER_TRADING_PROFILES": schwab_profiles,
         "TOP_BOT_PAPER_TRADING_OPTIONS_ENABLED": "1",
-        "TOP_BOT_PAPER_TRADING_OPTIONS_TOP_N": "5",
+        "TOP_BOT_PAPER_TRADING_OPTIONS_TOP_N": str(core_top_n),
         "TOP_BOT_PAPER_TRADING_OPTIONS_MIN_ACC": "0.0",
+        "TOP_BOT_PAPER_TRADING_OPTIONS_PROFILES": schwab_options_profiles,
         "SCHWAB_TOP_BOT_PAPER_TRADING_TOP_N": str(core_top_n),
         "SCHWAB_TOP_BOT_PAPER_TRADING_MIN_ACC": "0.0",
-        "SCHWAB_OPTIONS_TOP_BOT_PAPER_TRADING_TOP_N": "5",
+        "SCHWAB_TOP_BOT_PAPER_TRADING_PROFILES": schwab_profiles,
+        "SCHWAB_OPTIONS_TOP_BOT_PAPER_TRADING_TOP_N": str(core_top_n),
         "SCHWAB_OPTIONS_TOP_BOT_PAPER_TRADING_MIN_ACC": "0.0",
-        "SCHWAB_FUTURES_TOP_BOT_PAPER_TRADING_TOP_N": "3",
+        "SCHWAB_OPTIONS_TOP_BOT_PAPER_TRADING_PROFILES": schwab_options_profiles,
+        "SCHWAB_FUTURES_TOP_BOT_PAPER_TRADING_TOP_N": str(core_top_n),
         "SCHWAB_FUTURES_TOP_BOT_PAPER_TRADING_MIN_ACC": "0.0",
-        "COINBASE_TOP_BOT_PAPER_TRADING_TOP_N": "5",
+        "SCHWAB_FUTURES_TOP_BOT_PAPER_TRADING_PROFILES": schwab_futures_profiles,
+        "COINBASE_TOP_BOT_PAPER_TRADING_TOP_N": str(coinbase_top_n),
         "COINBASE_TOP_BOT_PAPER_TRADING_MIN_ACC": "0.0",
-        "COINBASE_FUTURES_TOP_BOT_PAPER_TRADING_TOP_N": "3",
+        "COINBASE_TOP_BOT_PAPER_TRADING_PROFILES": coinbase_profiles,
+        "COINBASE_FUTURES_TOP_BOT_PAPER_TRADING_TOP_N": str(coinbase_futures_top_n),
         "COINBASE_FUTURES_TOP_BOT_PAPER_TRADING_MIN_ACC": "0.0",
-        "PAPER_MIRROR_ALL_ACTIVE_SUB_BOTS": "0",
+        "COINBASE_FUTURES_TOP_BOT_PAPER_TRADING_PROFILES": coinbase_futures_profiles,
+        "COINBASE_PAPER_PROBATION_ENABLED": "1",
+        "COINBASE_PAPER_PROBATION_REASON": "weak_profiles_allowed_for_guarded_paper_only_retest",
+        "COINBASE_PAPER_PROBATIONARY_PROFILES": ",".join(
+            COINBASE_PROBATIONARY_SPOT_PROFILES + COINBASE_PROBATIONARY_FUTURES_PROFILES
+        ),
+        "COINBASE_PAPER_PROBATION_SPOT_TOP_N": str(COINBASE_PROBATIONARY_SPOT_TOP_N),
+        "COINBASE_PAPER_PROBATION_FUTURES_TOP_N": str(COINBASE_PROBATIONARY_FUTURES_TOP_N),
+        "PAPER_PROFILE_DISABLED_SENTINEL": PAPER_PROFILE_DISABLED_SENTINEL,
+        "PAPER_PROFITABILITY_WEAK_PROFILES": ",".join(sorted(weak_profiles)),
+        "PAPER_MIRROR_ALL_ACTIVE_SUB_BOTS": "1",
         "PAPER_BROKER_BRIDGE_ENABLED": "1",
         "PAPER_BROKER_BRIDGE_MODE": "jsonl",
+        "PAPER_SOAK_SPECIALIZED_ALLOWLIST_BYPASS_FANOUT": "1",
+        "RUN_ALL_SLEEVES_WITH_SPECIALIZED_SLEEVES": "1",
+        "RUN_ALL_SLEEVES_SPECIALIZED_PROFILE_ALLOWLIST": schwab_profiles,
         "PAPER_TRADE_LOCK": "1",
         "MARKET_DATA_ONLY": "1",
         "ALLOW_ORDER_EXECUTION": "0",
@@ -472,15 +603,15 @@ def build_payload(
             "allow_order_execution": "0",
             "market_data_only": "1",
             "paper_trade_lock": "1",
-            "paper_mirror_all_active_sub_bots": "0",
+            "paper_mirror_all_active_sub_bots": "1",
             "live_execution_allowed": False,
             "deleted_bots_reactivated": False,
-            "policy": "every non-deleted bot collects live data; 30-50 legacy/tested bots may paper trade on live data; new bots need the promotion standard first",
+            "policy": "every non-deleted bot collects live data; every eligible paper-live-data bot may paper trade on live data; live/direct execution remains disabled",
         },
         "standard_rules": [
             "non-deleted registry rows are active live-data collectors",
             "legacy active rows stay in the paper-live-data cohort",
-            "legacy v1-v99 rows with real test history bootstrap the 30-50 bot paper-live-data lane",
+            "legacy v1-v99 rows with real test history bootstrap the initial paper-live-data lane",
             "new and restored rows collect only until the paper standard is met",
             "collection-only rows promote into paper-live-data when observation, age, label, and quality gates are ready",
             "deleted_from_rotation rows stay inactive and cannot paper trade",
@@ -546,6 +677,34 @@ def apply_payload(
     return payload
 
 
+def preview_payload(
+    project_root: Path,
+    payload: dict[str, Any],
+    *,
+    registry_path: Path = DEFAULT_REGISTRY_PATH,
+    out_path: Path = DEFAULT_OUT_PATH,
+    override_path: Path = DEFAULT_OVERRIDE_PATH,
+) -> dict[str, Any]:
+    registry_out = _resolve_path(registry_path, project_root)
+    health_out = _resolve_path(out_path, project_root)
+    override_out = _resolve_path(override_path, project_root)
+    payload = {
+        key: value
+        for key, value in payload.items()
+        if key != "projected_registry"
+    }
+    payload["apply_result"] = {
+        "applied": False,
+        "registry_path": str(registry_out),
+        "health_path": str(health_out),
+        "override_path": str(override_out),
+        "mode": "preview_no_registry_change",
+    }
+    payload["out_path"] = str(health_out)
+    write_payload(health_out, payload)
+    return payload
+
+
 def _print_human(payload: dict[str, Any]) -> None:
     counts = payload.get("counts_after") if isinstance(payload.get("counts_after"), dict) else {}
     print(
@@ -579,18 +738,13 @@ def main(argv: list[str] | None = None) -> int:
             backup_dir=args.backup_dir,
         )
     else:
-        payload = {
-            key: value
-            for key, value in payload.items()
-            if key != "projected_registry"
-        }
-        payload["apply_result"] = {
-            "applied": False,
-            "registry_path": str(_resolve_path(args.registry, PROJECT_ROOT)),
-            "health_path": str(_resolve_path(args.out, PROJECT_ROOT)),
-            "override_path": str(_resolve_path(args.override, PROJECT_ROOT)),
-        }
-        payload["out_path"] = str(_resolve_path(args.out, PROJECT_ROOT))
+        payload = preview_payload(
+            PROJECT_ROOT,
+            payload,
+            registry_path=args.registry,
+            out_path=args.out,
+            override_path=args.override,
+        )
 
     if args.json:
         print(json.dumps(payload, ensure_ascii=True, indent=2))

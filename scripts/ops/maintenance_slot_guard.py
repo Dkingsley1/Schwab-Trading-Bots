@@ -12,10 +12,11 @@ from pathlib import Path
 from typing import Any
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-RUNTIME_ROOT = Path(os.getenv("MAINTENANCE_SLOT_RUNTIME_ROOT", "/tmp/schwab_trading_bot/maintenance_slots"))
+RUNTIME_ROOT = Path(os.getenv("MAINTENANCE_SLOT_RUNTIME_ROOT", str(PROJECT_ROOT / "runtime" / "maintenance_slots")))
 LOCK_ROOT = RUNTIME_ROOT / "locks"
 STATE_ROOT = RUNTIME_ROOT / "state"
 HEALTH_PATH = PROJECT_ROOT / "governance" / "health" / "maintenance_slot_guard_latest.json"
+RUNTIME_THROTTLE_HEALTH_PATH = PROJECT_ROOT / "governance" / "health" / "runtime_throttle_control_latest.json"
 EXTERNAL_HEALTH_PATH = Path("/Volumes/BOT_LOGS/schwab_trading_bot/governance/health/maintenance_slot_guard_latest.json")
 MACRO_STATUS_CANDIDATES = (
     PROJECT_ROOT / "governance" / "health" / "macro_auto_watch_status.json",
@@ -36,6 +37,19 @@ SLOT_MIN_INTERVAL_SECONDS = {
     "storage_backpressure_autopilot": 1800,
     "sql_link_writer": 900,
 }
+DEFAULT_SMOOTH_GATE_EXEMPT_SLOTS = {
+    "sql_link_writer",
+    "storage_backpressure_autopilot",
+    "storage_pressure_clearance",
+    "storage_reconnect_infrabot",
+    "storage_eject_guard",
+    "runtime_smooth_mode",
+    "failover_watch",
+    "shadow_watchdog",
+    "mac_notification_watch",
+    "observability_exporter",
+    "premarket_token_guard",
+}
 
 
 def _now_iso() -> str:
@@ -54,6 +68,16 @@ def _safe_int(value: Any, default: int = 0) -> int:
         return int(float(value))
     except Exception:
         return int(default)
+
+
+def _env_flag(name: str, default: bool = False) -> bool:
+    raw = str(os.getenv(name, "1" if default else "0")).strip().lower()
+    return raw in {"1", "true", "yes", "on"}
+
+
+def _csv_set(raw: str, default: set[str] | None = None) -> set[str]:
+    values = {item.strip() for item in str(raw or "").split(",") if item.strip()}
+    return values if values else set(default or set())
 
 
 def _write_json(path: Path, payload: dict[str, Any]) -> None:
@@ -207,6 +231,70 @@ def _host_pressure(max_load_ratio: float, max_five_min_load_ratio: float, max_on
     }
 
 
+def _smooth_mode_blocked(
+    slot: str,
+    *,
+    max_saturation_score: float,
+    exempt_slots: set[str],
+    runtime_path: Path = RUNTIME_THROTTLE_HEALTH_PATH,
+) -> tuple[bool, str, dict[str, Any]]:
+    normalized_slot = str(slot or "").strip()
+    if normalized_slot in exempt_slots:
+        return False, "smooth_gate_exempt", {"enabled": True, "exempt": True, "slot": normalized_slot}
+
+    payload = _read_json(runtime_path)
+    if not payload:
+        return False, "runtime_throttle_missing", {"enabled": True, "runtime_health_path": str(runtime_path), "artifact_present": False}
+
+    mac = payload.get("mac_fluidity_contract") if isinstance(payload.get("mac_fluidity_contract"), dict) else {}
+    measurements = mac.get("measurements") if isinstance(mac.get("measurements"), dict) else {}
+    governor = payload.get("runtime_saturation_governor_v2") if isinstance(payload.get("runtime_saturation_governor_v2"), dict) else {}
+    host_saturation_score = _safe_float(
+        payload.get("host_saturation_score"),
+        _safe_float(governor.get("host_saturation_score"), _safe_float(measurements.get("host_saturation_score"), 0.0)),
+    )
+    fluidity_band = str(mac.get("fluidity_band") or os.getenv("MAC_FLUIDITY_BAND", "")).strip().lower()
+    fluidity_status = str(mac.get("overall_status") or os.getenv("MAC_FLUIDITY_STATUS", "")).strip().lower()
+    compute_pressure = str(payload.get("compute_pressure_level") or measurements.get("compute_pressure_level") or "").strip().lower()
+    memory_pressure = str(payload.get("memory_pressure_level") or measurements.get("memory_pressure_level") or "").strip().lower()
+    support_pause = bool(mac.get("support_pause_recommended", False)) or _env_flag("MAC_FLUIDITY_SUPPORT_PAUSE", False)
+
+    reason = ""
+    if fluidity_band in {"protect", "strained"}:
+        reason = f"fluidity_band={fluidity_band}"
+    elif fluidity_status == "needs_work":
+        reason = "fluidity_status=needs_work"
+    elif memory_pressure == "high":
+        reason = "memory_pressure=high"
+    elif host_saturation_score >= max(float(max_saturation_score), 0.0):
+        reason = f"host_saturation_score={host_saturation_score:.2f}>={float(max_saturation_score):.2f}"
+    elif compute_pressure == "high" and host_saturation_score >= max(float(max_saturation_score) * 0.85, 1.0):
+        reason = f"compute_pressure=high host_saturation_score={host_saturation_score:.2f}"
+    elif support_pause:
+        reason = "support_pause_recommended"
+
+    snapshot = {
+        "enabled": True,
+        "exempt": False,
+        "slot": normalized_slot,
+        "runtime_health_path": str(runtime_path),
+        "artifact_present": True,
+        "blocked": bool(reason),
+        "reason": reason,
+        "host_saturation_score": round(host_saturation_score, 3),
+        "max_saturation_score": float(max_saturation_score),
+        "fluidity_band": fluidity_band,
+        "fluidity_status": fluidity_status,
+        "compute_pressure_level": compute_pressure,
+        "memory_pressure_level": memory_pressure,
+        "support_pause_recommended": support_pause,
+        "policy": "defer_nonessential_maintenance_when_runtime_smooth_mode_is_strained",
+    }
+    if reason:
+        return True, f"runtime_smooth_gate:{reason}", snapshot
+    return False, "runtime_smooth_gate_clear", snapshot
+
+
 def _in_quiet_window(start_hour: int, end_hour: int) -> tuple[bool, dict[str, Any]]:
     now = datetime.now()
     hour = int(now.hour)
@@ -258,16 +346,25 @@ def _begin(args: argparse.Namespace) -> int:
     min_interval_seconds = _slot_min_interval(args.slot, args.min_interval_seconds)
     cooldown_blocked, cooldown_reason, slot_state = _cooldown_blocked(args.slot, min_interval_seconds)
     reasons: list[str] = []
-    if pressure_blocked:
+    if pressure_blocked and args.slot != "sql_link_writer":
         reasons.append("host_pressure")
     if quiet_enabled and (not quiet_allowed) and bool(args.defer_outside_quiet_window) and args.slot != "sql_link_writer":
         reasons.append("outside_quiet_window")
     if macro_blocked and not args.allow_during_macro_event:
         reasons.append(macro_reason)
-    if cooldown_blocked:
+    if cooldown_blocked and args.slot != "sql_link_writer":
         reasons.append(cooldown_reason)
     if bool(args.defer_while_sql_link_active) and args.slot != "sql_link_writer" and _process_running(("scripts/ops/sql_link_shard_manager.py", "scripts/link_jsonl_to_sql.py", "scripts/ops/sql_link_writer_service.py")):
         reasons.append("sql_link_active")
+    smooth_gate_payload: dict[str, Any] = {"enabled": bool(args.smooth_gate_enabled)}
+    if bool(args.smooth_gate_enabled):
+        smooth_blocked, smooth_reason, smooth_gate_payload = _smooth_mode_blocked(
+            args.slot,
+            max_saturation_score=float(args.smooth_gate_max_saturation_score),
+            exempt_slots=_csv_set(str(args.smooth_gate_exempt_slots), DEFAULT_SMOOTH_GATE_EXEMPT_SLOTS),
+        )
+        if smooth_blocked:
+            reasons.append(smooth_reason)
     for label, lock_path in (("bundle", bundle_lock), ("slot", slot_lock)):
         age = _lock_age_seconds(lock_path)
         if age is not None:
@@ -293,6 +390,7 @@ def _begin(args: argparse.Namespace) -> int:
             "reason": cooldown_reason,
             "last_end_utc": slot_state.get("last_end_utc", ""),
         },
+        "smooth_mode_gate": smooth_gate_payload,
         "runtime_root": str(RUNTIME_ROOT),
         "defer_while_sql_link_active": bool(args.defer_while_sql_link_active),
         "pid": os.getpid(),
@@ -379,6 +477,12 @@ def main() -> int:
     parser.add_argument("--defer-outside-quiet-window", action=argparse.BooleanOptionalAction, default=os.getenv("MAINTENANCE_SLOT_DEFER_OUTSIDE_QUIET_WINDOW", "0").strip().lower() in {"1", "true", "yes", "on"})
     parser.add_argument("--quiet-start-hour", type=int, default=_safe_int(os.getenv("MAINTENANCE_SLOT_QUIET_LOCAL_START_HOUR"), 21))
     parser.add_argument("--quiet-end-hour", type=int, default=_safe_int(os.getenv("MAINTENANCE_SLOT_QUIET_LOCAL_END_HOUR"), 6))
+    parser.add_argument("--smooth-gate-enabled", action=argparse.BooleanOptionalAction, default=_env_flag("MAINTENANCE_SLOT_SMOOTH_GATE_ENABLED", False))
+    parser.add_argument("--smooth-gate-max-saturation-score", type=float, default=_safe_float(os.getenv("MAINTENANCE_SLOT_SMOOTH_GATE_MAX_SATURATION_SCORE"), 68.0))
+    parser.add_argument(
+        "--smooth-gate-exempt-slots",
+        default=os.getenv("MAINTENANCE_SLOT_SMOOTH_GATE_EXEMPT_SLOTS", ",".join(sorted(DEFAULT_SMOOTH_GATE_EXEMPT_SLOTS))),
+    )
     parser.add_argument("--skip-exit-code", type=int, default=_safe_int(os.getenv("MAINTENANCE_SLOT_SKIP_EXIT_CODE"), 75))
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args()

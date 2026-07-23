@@ -17,7 +17,7 @@ def _load_module(path: Path):
     return module
 
 
-def test_shadow_launchers_default_to_local_mlx_runtime_when_available(monkeypatch) -> None:
+def test_shadow_launchers_default_to_python314_after_runtime_flip(monkeypatch) -> None:
     monkeypatch.delenv("BOT_RUNTIME_LANE", raising=False)
     monkeypatch.delenv("BOT_SHADOW_RUNTIME_LANE", raising=False)
     monkeypatch.delenv("BOT_PYTHON_VERSION", raising=False)
@@ -53,10 +53,10 @@ def test_shadow_launchers_default_to_local_mlx_runtime_when_available(monkeypatc
 
     for path in launcher_paths:
         module = _load_module(path)
-        assert ".venv312/bin/python" in str(module.VENV_PY)
+        assert ".venv314/bin/python" in str(module.VENV_PY)
 
     failover_module = _load_module(PROJECT_ROOT / "scripts" / "failover_hot_standby.py")
-    assert ".venv312/bin/python" in str(failover_module.RUNTIME_PY)
+    assert ".venv314/bin/python" in str(failover_module.RUNTIME_PY)
 
 
 def test_shadow_launchers_honor_explicit_portable_override(monkeypatch) -> None:
@@ -99,3 +99,24 @@ def test_failover_hot_standby_respects_swap_research_pause(monkeypatch, tmp_path
     assert state["active"] is True
     assert state["tier"] == "pause_research"
     assert state["swap_used_gb"] == "19.059"
+
+
+def test_failover_hot_standby_suppresses_standby_when_live_parent_is_active() -> None:
+    module = _load_module(PROJECT_ROOT / "scripts" / "failover_hot_standby.py")
+    start_attempts: list[str] = []
+
+    event = module._build_failover_event(
+        primary_alive=False,
+        live_parent_alive=True,
+        heartbeat_age_sec=999.0,
+        max_heartbeat_age_sec=150.0,
+        swap_pause={"active": False},
+        standby_cmd="scripts/ops/opsctl.sh feed-refresh --source schwab --paper",
+        allow_simulate=False,
+        start_cmd=start_attempts.append,
+    )
+
+    assert event["action"] == "live_parent_active_primary_stale"
+    assert event["standby_skip_reason"] == "live_parent_alive"
+    assert event["standby_ok"] is False
+    assert start_attempts == []

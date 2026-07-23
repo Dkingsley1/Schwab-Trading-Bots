@@ -126,6 +126,54 @@ def test_incident_closeout_autopilot_degrades_when_runtime_and_review_are_recove
     assert any(row["surface"] == "incident_review" and row["severity"] == "warning" for row in payload["blocking_surfaces"])
 
 
+def test_incident_closeout_autopilot_bounds_blocked_review_when_no_open_surfaces_remain(tmp_path: Path) -> None:
+    health = tmp_path / "governance" / "health"
+    _write_json(
+        health / "incident_timeline_latest.json",
+        {
+            "overall_status": "blocked",
+            "open_incident_count": 2,
+            "auto_close_contract": {
+                "closure_ready": False,
+                "candidate_count": 0,
+                "review_required": True,
+                "closure_reason": "open_surfaces_present",
+            },
+            "watch_surfaces": [],
+        },
+    )
+    _write_json(
+        health / "incident_review_packet_latest.json",
+        {
+            "overall_status": "blocked",
+            "review_required": True,
+            "open_incident_count": 2,
+            "open_surfaces": [],
+            "closure_contract": {
+                "closure_ready": False,
+                "candidate_count": 0,
+                "review_required": True,
+                "closure_reason": "open_surfaces_present",
+            },
+        },
+    )
+    _write_json(health / "live_runtime_separation_control_latest.json", {"overall_status": "ready", "clearance_plan": {"clearance_state": "ready"}})
+    _write_json(health / "auth_lease_manager_latest.json", {"lease_state": "healthy"})
+    _write_json(health / "remote_alert_control_latest.json", {"critical_backlog": {"unacked_count": 0, "unsent_count": 0}})
+    _write_json(health / "lane_thaw_controller_latest.json", {"paused_lane_count": 0, "blocked_count": 0})
+    _write_json(health / "data_plane_recovery_controller_latest.json", {"write_failure_count": 0, "account_snapshot_failure_count": 0})
+    _write_json(health / "process_watchdog_latest.json", {"restart_storms": [], "alerts": []})
+
+    payload = src.build_payload(tmp_path)
+
+    assert payload["overall_status"] == "degraded"
+    assert payload["recoverable_review_gate"] is True
+    assert payload["bounded_incident_backlog"] is True
+    assert payload["bounded_closeout_path_ready"] is True
+    assert payload["closeout_ready"] is False
+    assert any(row["surface"] == "incident_review" and row["severity"] == "warning" for row in payload["blocking_surfaces"])
+
+
 def test_incident_closeout_autopilot_accepts_coverage_cycles_ready_as_bounded_runtime(tmp_path: Path) -> None:
     health = tmp_path / "governance" / "health"
     _write_json(health / "incident_timeline_latest.json", {"open_incident_count": 0, "auto_close_contract": {"closure_ready": True}})
@@ -166,6 +214,29 @@ def test_incident_closeout_autopilot_accepts_coverage_cycles_ready_as_bounded_ru
     assert payload["bounded_warning_closeout_ready"] is True
     assert payload["closeout_ready"] is True
     assert payload["closeout_score"] >= 90.0
+
+
+def test_incident_closeout_autopilot_accepts_guarded_read_only_for_paper_soak(tmp_path: Path) -> None:
+    health = tmp_path / "governance" / "health"
+    _write_json(health / "incident_timeline_latest.json", {"open_incident_count": 0, "auto_close_contract": {"closure_ready": True}})
+    _write_json(health / "incident_review_packet_latest.json", {"review_required": False, "closure_contract": {"closure_ready": True}})
+    _write_json(
+        health / "live_runtime_separation_control_latest.json",
+        {"overall_status": "ready", "clearance_plan": {"clearance_state": "guarded_live_read_only"}},
+    )
+    _write_json(health / "auth_lease_manager_latest.json", {"lease_state": "healthy"})
+    _write_json(health / "remote_alert_control_latest.json", {"critical_backlog": {"unacked_count": 0, "unsent_count": 0}})
+    _write_json(health / "lane_thaw_controller_latest.json", {"paused_lane_count": 0, "blocked_count": 0})
+    _write_json(health / "data_plane_recovery_controller_latest.json", {"write_failure_count": 0, "account_snapshot_failure_count": 0})
+    _write_json(health / "process_watchdog_latest.json", {"restart_storms": [], "alerts": []})
+
+    payload = src.build_payload(tmp_path)
+
+    assert payload["overall_status"] == "ready"
+    assert payload["closeout_ready"] is True
+    assert payload["guarded_read_only_runtime"] is True
+    assert payload["recoverable_runtime_clearance"] is True
+    assert any(row["surface"] == "runtime_clearance" and row["severity"] == "warning" for row in payload["blocking_surfaces"])
 
 
 def test_incident_closeout_autopilot_softens_process_watchdog_when_timeline_marks_storage_backpressure_watch(tmp_path: Path) -> None:
@@ -217,3 +288,48 @@ def test_incident_closeout_autopilot_softens_process_watchdog_when_timeline_mark
     assert payload["overall_status"] == "ready"
     assert any(row["surface"] == "process_watchdog" and row["severity"] == "warning" for row in payload["blocking_surfaces"])
     assert payload["closeout_score"] >= 90.0
+
+
+def test_incident_closeout_autopilot_softens_isolated_read_only_watchdog_debt(tmp_path: Path) -> None:
+    health = tmp_path / "governance" / "health"
+    _write_json(health / "incident_timeline_latest.json", {"open_incident_count": 0, "auto_close_contract": {"closure_ready": True}})
+    _write_json(health / "incident_review_packet_latest.json", {"review_required": False, "closure_contract": {"closure_ready": True}})
+    _write_json(health / "live_runtime_separation_control_latest.json", {"overall_status": "ready", "clearance_plan": {"clearance_state": "cleared"}})
+    _write_json(
+        health / "auth_lease_manager_latest.json",
+        {
+            "lease_state": "warning",
+            "broker_state": {"broker_ready": True, "auth_ok": True, "configured_for_refresh": True},
+            "lease_budget": {"expires_in_seconds": 900, "critical_lease_seconds": 300},
+        },
+    )
+    _write_json(health / "remote_alert_control_latest.json", {"critical_backlog": {"unacked_count": 0, "unsent_count": 0}})
+    _write_json(health / "lane_thaw_controller_latest.json", {"paused_lane_count": 0, "blocked_count": 0})
+    _write_json(health / "data_plane_recovery_controller_latest.json", {"write_failure_count": 0, "account_snapshot_failure_count": 0})
+    _write_json(
+        health / "process_watchdog_latest.json",
+        {
+            "restart_storms": [
+                {
+                    "name": "coinbase_loop",
+                    "impact": "read_only_collection",
+                    "quarantinable": True,
+                    "blocks_execution_clear": False,
+                }
+            ],
+            "restart_storm_isolation": {
+                "isolated_count": 1,
+                "execution_blocking_count": 0,
+                "all_active_storms_isolated": True,
+            },
+            "alerts": [{"name": "coinbase_loop", "type": "restart_storm"}],
+        },
+    )
+
+    payload = src.build_payload(tmp_path)
+    watchdog = next(row for row in payload["blocking_surfaces"] if row["surface"] == "process_watchdog")
+
+    assert payload["overall_status"] == "ready"
+    assert payload["isolated_read_only_watchdog"] is True
+    assert watchdog["severity"] == "warning"
+    assert "read-only collector restart debt is isolated" in watchdog["summary"]

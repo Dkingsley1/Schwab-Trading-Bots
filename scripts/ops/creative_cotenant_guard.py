@@ -58,6 +58,9 @@ PROTECTED_MANUAL_TRAINING_PROFILES = {
     "coverage_micro_canary",
     "coverage_small_canary",
     "coverage_canary",
+    "coverage_batch10_canary",
+    "coverage_batch20_canary",
+    "coverage_batch30_canary",
 }
 
 
@@ -203,6 +206,107 @@ def _refresh_resource_guard_snapshot(
                 "current_state": current_kind,
                 "cooldown_until_utc": cooldown_until.isoformat() if cooldown_until else "",
                 "last_active_apps": snapshot.get("creative_apps") if isinstance(snapshot.get("creative_apps"), list) else [],
+                "last_notification": notification,
+            },
+        )
+    return snapshot
+
+
+def _process_name_running(name: str) -> bool:
+    try:
+        completed = subprocess.run(
+            ["pgrep", "-x", name],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=1,
+        )
+    except Exception:
+        return False
+    return completed.returncode == 0
+
+
+def _refresh_lightweight_creative_snapshot(
+    *,
+    apply: bool,
+    state_path: Path,
+    cooldown_seconds: int,
+    now: datetime,
+) -> dict[str, Any]:
+    running_apps: list[str] = []
+    logic_active = _process_name_running("Logic Pro")
+    final_cut_active = _process_name_running("Final Cut Pro")
+    music_active = _process_name_running("Music") or _process_name_running("iTunes")
+
+    if logic_active:
+        running_apps.append("Logic Pro")
+    if final_cut_active:
+        running_apps.append("Final Cut Pro")
+    if music_active:
+        running_apps.append("Music")
+
+    if logic_active and final_cut_active:
+        current_kind = "dual_pro"
+        current_level = "dual_pro"
+    elif logic_active:
+        current_kind = "logic_pro"
+        current_level = "active"
+    elif final_cut_active:
+        current_kind = "final_cut_pro"
+        current_level = "active"
+    elif music_active:
+        current_kind = "music_playback"
+        current_level = "active"
+    else:
+        current_kind = "none"
+        current_level = "none"
+
+    state = load_json(state_path)
+    previous_kind = str(state.get("current_state") or "none").strip().lower()
+    cooldown_until = _parse_utc(state.get("cooldown_until_utc"))
+    if running_apps:
+        cooldown_until = now + timedelta(seconds=max(int(cooldown_seconds), 0))
+    elif cooldown_until is not None and cooldown_until > now:
+        current_kind = "cooldown"
+        current_level = "cooldown"
+    else:
+        cooldown_until = None
+
+    remaining = round((cooldown_until - now).total_seconds(), 3) if cooldown_until else 0.0
+    snapshot = {
+        "timestamp_utc": now.isoformat(),
+        "resource_guard_profile": "creative_cotenant_guard_lightweight",
+        "resource_guard_ok": True,
+        "resource_guard_reasons": [],
+        "creative_apps": running_apps,
+        "creative_apps_active": bool(running_apps),
+        "creative_session_level": current_level,
+        "creative_session_kind": current_kind,
+        "creative_cooldown_active": bool(current_kind == "cooldown"),
+        "creative_cooldown_until_utc": cooldown_until.isoformat() if cooldown_until else "",
+        "creative_cooldown_remaining_seconds": remaining,
+        "memory_pressure_state": "unknown",
+        "memory_pressure_reasons": [],
+        "memory_pressure_kind": "unknown",
+        "lightweight": True,
+    }
+    notification = _notification_for_transition(previous_kind, current_kind, snapshot, now) if apply else {}
+    snapshot["creative_guard_state"] = {
+        "previous_state": previous_kind,
+        "current_state": current_kind,
+        "cooldown_seconds": max(int(cooldown_seconds), 0),
+        "cooldown_until_utc": cooldown_until.isoformat() if cooldown_until else "",
+        "notification": notification,
+    }
+    if apply:
+        write_payload(
+            state_path,
+            {
+                "timestamp_utc": now.isoformat(),
+                "previous_state": previous_kind,
+                "current_state": current_kind,
+                "cooldown_until_utc": cooldown_until.isoformat() if cooldown_until else "",
+                "last_active_apps": running_apps,
                 "last_notification": notification,
             },
         )
@@ -435,19 +539,108 @@ def build_payload(
     override_path: Path,
     state_path: Path = DEFAULT_STATE_PATH,
     cooldown_seconds: int = 600,
+    lightweight: bool = False,
 ) -> dict[str, Any]:
     now = datetime.now(timezone.utc)
-    resource_snapshot = _refresh_resource_guard_snapshot(
-        project_root,
-        apply=apply,
-        state_path=state_path,
-        cooldown_seconds=cooldown_seconds,
-        now=now,
-    )
+    if lightweight:
+        resource_snapshot = _refresh_lightweight_creative_snapshot(
+            apply=apply,
+            state_path=state_path,
+            cooldown_seconds=cooldown_seconds,
+            now=now,
+        )
+    else:
+        resource_snapshot = _refresh_resource_guard_snapshot(
+            project_root,
+            apply=apply,
+            state_path=state_path,
+            cooldown_seconds=cooldown_seconds,
+            now=now,
+        )
     load1, load5, load15 = os.getloadavg()
+    runtime_throttle = load_json(project_root / "governance" / "health" / "runtime_throttle_control_latest.json")
+    if lightweight:
+        previous = load_json(DEFAULT_OUT_PATH)
+        previous_memory = previous.get("memory_efficiency") if isinstance(previous.get("memory_efficiency"), dict) else {}
+        previous_paper = previous.get("paper_execution_lane") if isinstance(previous.get("paper_execution_lane"), dict) else {}
+        level = _creative_level(resource_snapshot)
+        kind = _creative_kind(resource_snapshot)
+        creative_active = bool(
+            _creative_active(resource_snapshot)
+            or bool(resource_snapshot.get("creative_cooldown_active", False))
+            or level == "cooldown"
+            or kind == "cooldown"
+        )
+        heavy_pause = {
+            "active": creative_active,
+            "apply": False,
+            "terminate_processes": False,
+            "action": "lightweight_pause_contract_refresh" if creative_active else "observe",
+            "patterns": [],
+            "match_count": 0,
+            "matches": [],
+            "remaining_match_count": 0,
+            "remaining_matches": [],
+            "terminated": [],
+            "terminated_count": 0,
+            "lightweight": True,
+        }
+        pause_contract = _pause_contract(project_root, snapshot=resource_snapshot, pause_result=heavy_pause, now=now)
+        load1_per_core = float(load1) / max(os.cpu_count() or 1, 1)
+        return {
+            "timestamp_utc": iso_now(),
+            "schema_version": 1,
+            "ok": True,
+            "overall_status": "ready",
+            "apply_mode": bool(apply),
+            "lightweight": True,
+            "host_load": {
+                "cpu_count": max(os.cpu_count() or 1, 1),
+                "load1": round(float(load1), 3),
+                "load5": round(float(load5), 3),
+                "load15": round(float(load15), 3),
+                "load1_per_core": round(load1_per_core, 3),
+            },
+            "memory_efficiency": previous_memory,
+            "creative_mode": {
+                "active": creative_active,
+                "level": level,
+                "kind": kind,
+                "apps": resource_snapshot.get("creative_apps") if isinstance(resource_snapshot.get("creative_apps"), list) else [],
+                "cooldown_active": bool(resource_snapshot.get("creative_cooldown_active", False)),
+                "cooldown_remaining_seconds": float(resource_snapshot.get("creative_cooldown_remaining_seconds", 0.0) or 0.0),
+                "audio_regression_guard_active": False,
+                "audio_regression_guard_reason": "",
+            },
+            "heavy_research_pause": heavy_pause,
+            "pause_contract": pause_contract,
+            "notification": (
+                (resource_snapshot.get("creative_guard_state") or {}).get("notification")
+                if isinstance(resource_snapshot.get("creative_guard_state"), dict)
+                else {}
+            ),
+            "paper_execution_lane": previous_paper,
+            "runtime_throttle": {
+                "overall_status": str(runtime_throttle.get("overall_status") or ""),
+                "throttle_profile": str(runtime_throttle.get("throttle_profile") or ""),
+                "host_saturation_score": float(runtime_throttle.get("host_saturation_score") or 0.0),
+            },
+            "actions": ["lightweight_pause_contract_refreshed"],
+            "controller_contract": {
+                "mode": "assistive",
+                "safe_while_live": True,
+                "lightweight_refresh": True,
+            },
+            "source_files": {
+                "resource_guard": str(DEFAULT_RESOURCE_GUARD_PATH),
+                "memory_efficiency_control": str(project_root / "governance" / "health" / "memory_efficiency_control_latest.json"),
+                "runtime_throttle_control": str(project_root / "governance" / "health" / "runtime_throttle_control_latest.json"),
+                "creative_guard_state": str(state_path),
+                "heavy_research_pause": str(DEFAULT_PAUSE_PATH),
+            },
+        }
     memory_efficiency = _memory_efficiency_snapshot(project_root, override_path=override_path, apply=apply)
     paper_lane = _paper_lane_snapshot(project_root, apply=apply)
-    runtime_throttle = load_json(project_root / "governance" / "health" / "runtime_throttle_control_latest.json")
     load1_per_core = float(load1) / max(os.cpu_count() or 1, 1)
     host_saturation_score = float(runtime_throttle.get("host_saturation_score") or 0.0)
     creative_session = memory_efficiency.get("creative_session") if isinstance(memory_efficiency.get("creative_session"), dict) else {}
@@ -577,6 +770,7 @@ def main() -> int:
     parser.add_argument("--state-file", default=str(DEFAULT_STATE_PATH))
     parser.add_argument("--cooldown-seconds", type=int, default=int(os.getenv("CREATIVE_COTENANT_COOLDOWN_SECONDS", "600")))
     parser.add_argument("--out-file", default=str(DEFAULT_OUT_PATH))
+    parser.add_argument("--lightweight", action="store_true")
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args()
 
@@ -587,6 +781,7 @@ def main() -> int:
         override_path=override_path,
         state_path=Path(args.state_file).expanduser(),
         cooldown_seconds=int(args.cooldown_seconds),
+        lightweight=bool(args.lightweight),
     )
     out_path = Path(args.out_file).expanduser()
     write_payload(out_path, payload)

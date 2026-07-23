@@ -1,3 +1,4 @@
+import json
 import os
 from pathlib import Path
 
@@ -19,6 +20,54 @@ def _reset_base_storage_override_cache() -> None:
             "values": {},
         }
     )
+
+
+def _reset_paper_profitability_guard_cache() -> None:
+    base_src._PAPER_PROFITABILITY_GUARD_CACHE.clear()
+    base_src._PAPER_PROFITABILITY_GUARD_CACHE.update(
+        {
+            "checked_at_monotonic": 0.0,
+            "fingerprint": (),
+            "payload": {},
+        }
+    )
+
+
+def _write_paper_profitability_control(tmp_path: Path, *, weak_profile: str = "default") -> None:
+    health = tmp_path / "governance" / "health"
+    health.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "timestamp_utc": "2026-07-13T17:36:52+00:00",
+        "controlled_profitability_grade": "A+",
+        "raw_profitability_grade": "D",
+        "raw_profitability_a_recovery_contract": {
+            "active": True,
+            "current_raw_profitability_grade": "D",
+            "weak_profiles": [weak_profile],
+            "runtime_enforcement": {
+                "block_new_entries_on_weak_profiles": True,
+            },
+        },
+        "raw_profitability_improvement_contract": {
+            "active": True,
+            "runtime_enforcement": {
+                "block_new_entries_on_weak_profiles": True,
+            },
+            "weak_sleeve_zero_entry_contract": {
+                "profiles": [
+                    {
+                        "profile": weak_profile,
+                        "block_new_entries": True,
+                    }
+                ],
+            },
+        },
+    }
+    (health / "paper_runtime_profitability_controls_latest.json").write_text(
+        json.dumps(payload),
+        encoding="utf-8",
+    )
+    _reset_paper_profitability_guard_cache()
 
 
 def test_execute_decision_can_skip_explanations_via_storage_override(tmp_path: Path, monkeypatch) -> None:
@@ -146,6 +195,7 @@ def test_discover_live_account_hash_populates_hash_from_account_numbers(monkeypa
 def test_live_fetch_accounts_payload_prefers_account_hash_endpoint_when_discovered(monkeypatch):
     monkeypatch.delenv("SCHWAB_ACCOUNT_HASH", raising=False)
     monkeypatch.delenv("LIVE_ACCOUNTS_SNAPSHOT_ALLOW_GLOBAL_FALLBACK", raising=False)
+    monkeypatch.delenv("LIVE_ACCOUNTS_SNAPSHOT_AGGREGATE_CONNECTED", raising=False)
     trader = _mk_trader("live")
     trader.client = _AccountNumbersClient()
 
@@ -155,7 +205,31 @@ def test_live_fetch_accounts_payload_prefers_account_hash_endpoint_when_discover
     assert trader.live_account_hash == "hash-123"
     assert trader.client.get_account_numbers_calls == 1
     assert trader.client.get_account_calls == [("hash-123",)]
+    assert str(trader.client.get_account_kwargs[0]["fields"]) == "Fields.POSITIONS"
     assert trader.client.get_accounts_calls == 0
+
+
+def test_live_fetch_accounts_payload_can_aggregate_connected_accounts(monkeypatch):
+    monkeypatch.delenv("SCHWAB_ACCOUNT_HASH", raising=False)
+    monkeypatch.setenv("LIVE_ACCOUNTS_SNAPSHOT_AGGREGATE_CONNECTED", "1")
+    trader = _mk_trader("live")
+    trader.client = _MultiAccountNumbersClient()
+
+    out = trader._live_fetch_accounts_payload()
+
+    assert out["ok"] is True
+    assert out["account_snapshot_mode"] == "connected_account_aggregate"
+    assert out["account_count"] == 2
+    assert trader.client.get_account_numbers_calls == 1
+    assert trader.client.get_account_calls == [("hash-111",), ("hash-222",)]
+    payload = out["payload"]
+    assert payload["account_snapshot_mode"] == "connected_account_aggregate"
+    assert len(payload["accounts"]) == 2
+    assert payload["accounts"][0]["_broker_account"]["account_number_tail"] == "1111"
+    rows = trader._extract_all_positions_from_payload(payload)
+    by_symbol = {r["symbol"]: r for r in rows}
+    assert by_symbol["AAPL"]["quantity"] == 5.0
+    assert by_symbol["MSFT"]["quantity"] == 3.0
 
 
 
@@ -215,6 +289,7 @@ class _AccountNumbersClient:
     def __init__(self):
         self.get_account_numbers_calls = 0
         self.get_account_calls = []
+        self.get_account_kwargs = []
         self.get_accounts_calls = 0
 
     def get_account_numbers(self):
@@ -230,14 +305,51 @@ class _AccountNumbersClient:
         )
 
     def get_account(self, *args, **kwargs):
-        _ = kwargs
         self.get_account_calls.append(args)
+        self.get_account_kwargs.append(kwargs)
         return _DummyResponse(200, {"securitiesAccount": {"positions": []}})
 
     def get_accounts(self, *args, **kwargs):
         _ = (args, kwargs)
         self.get_accounts_calls += 1
         raise AssertionError("global get_accounts fallback should not be used when account hash is discovered")
+
+
+class _MultiAccountNumbersClient:
+    def __init__(self):
+        self.get_account_numbers_calls = 0
+        self.get_account_calls = []
+        self.get_account_kwargs = []
+
+    def get_account_numbers(self):
+        self.get_account_numbers_calls += 1
+        return _DummyListResponse(
+            200,
+            [
+                {"accountNumber": "111111111", "hashValue": "hash-111"},
+                {"accountNumber": "222222222", "hashValue": "hash-222"},
+            ],
+        )
+
+    def get_account(self, *args, **kwargs):
+        self.get_account_calls.append(args)
+        self.get_account_kwargs.append(kwargs)
+        symbol = "AAPL" if args and args[0] == "hash-111" else "MSFT"
+        qty = 5 if symbol == "AAPL" else 3
+        return _DummyResponse(
+            200,
+            {
+                "securitiesAccount": {
+                    "positions": [
+                        {
+                            "instrument": {"symbol": symbol, "assetType": "EQUITY"},
+                            "longQuantity": qty,
+                            "shortQuantity": 0,
+                        }
+                    ]
+                }
+            },
+        )
 
 
 def _sample_option_chain_payload():
@@ -646,11 +758,14 @@ def test_live_execute_uses_futures_roll_legs(monkeypatch, tmp_path: Path):
     assert placed["orderLegCollection"][1]["instrument"]["symbol"] == "/ESU26"
 
 
-def test_paper_execute_uses_guard_and_fill_modeling(monkeypatch):
+def test_paper_execute_uses_guard_and_fill_modeling(tmp_path: Path, monkeypatch):
     monkeypatch.setenv("ALLOW_ORDER_EXECUTION", "1")
     monkeypatch.setenv("MARKET_DATA_ONLY", "0")
+    monkeypatch.setenv("PAPER_EXECUTION_USE_EXPECTED_FILL_PRICE", "1")
 
     trader = _mk_trader("paper")
+    trader.project_root = str(tmp_path)
+    trader.set_mode("paper")
     trader.execution_enabled = True
     trader.market_data_only = False
 
@@ -671,13 +786,83 @@ def test_paper_execute_uses_guard_and_fill_modeling(monkeypatch):
     assert "paper_fill_model" in out
     assert "order_lifecycle_reconcile" in out
     assert out["order_lifecycle_reconcile"].get("ok") is True
+    paper = out["paper_order"]
+    assert paper["paper_fill_source"] == "expected_fill_model"
+    assert paper["fill_price"] == paper["expected_fill_price"]
+    assert abs(paper["realized_slippage_bps"] - paper["expected_slippage_bps"]) < 1e-6
 
 
-def test_paper_execute_can_block_on_guard(monkeypatch):
+def test_paper_profitability_guard_blocks_weak_profile_new_buy_entries(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("ALLOW_ORDER_EXECUTION", "1")
+    monkeypatch.setenv("MARKET_DATA_ONLY", "0")
+    _write_paper_profitability_control(tmp_path, weak_profile="default")
+
+    trader = _mk_trader("paper")
+    trader.project_root = str(tmp_path)
+    trader.set_mode("paper")
+    trader.execution_enabled = True
+    trader.market_data_only = False
+
+    out = trader.execute_decision(
+        symbol="PEPE-USD",
+        action="BUY",
+        quantity=100.0,
+        model_score=0.62,
+        threshold=0.55,
+        features={"last_price": 0.00001, "tradeability_score": 0.0},
+        gates={"model_gate": True, "market_data_ok": True},
+        reasons=["unit_test"],
+        strategy="paper_profitability_guard_test",
+        metadata={"source_profile": "default", "shadow_domain": "crypto"},
+    )
+
+    assert out.get("status") == "PAPER_PROFITABILITY_GUARD_BLOCKED"
+    decision = out.get("live_guard_decision", {})
+    assert decision.get("gate") == "paper_profitability_weak_profile_new_entry"
+    assert decision.get("reason") == "paper_profitability_weak_profile_new_entry_block"
+    assert decision.get("details", {}).get("source_profile") == "default"
+    paper_log = Path(trader.paper_log_path)
+    assert not paper_log.exists() or paper_log.read_text(encoding="utf-8").strip() == ""
+    event_files = sorted((tmp_path / "governance" / "events").glob("paper_execution_guard_*.jsonl"))
+    assert event_files
+    assert "paper_profitability_weak_profile_new_entry_block" in event_files[-1].read_text(encoding="utf-8")
+
+
+def test_paper_profitability_guard_keeps_weak_profile_sells_open(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("ALLOW_ORDER_EXECUTION", "1")
+    monkeypatch.setenv("MARKET_DATA_ONLY", "0")
+    _write_paper_profitability_control(tmp_path, weak_profile="default")
+
+    trader = _mk_trader("paper")
+    trader.project_root = str(tmp_path)
+    trader.set_mode("paper")
+    trader.execution_enabled = True
+    trader.market_data_only = False
+
+    out = trader.execute_decision(
+        symbol="PEPE-USD",
+        action="SELL",
+        quantity=100.0,
+        model_score=0.62,
+        threshold=0.55,
+        features={"last_price": 0.00001, "tradeability_score": 0.0},
+        gates={"model_gate": True, "market_data_ok": True},
+        reasons=["unit_test"],
+        strategy="paper_profitability_guard_test",
+        metadata={"source_profile": "default", "shadow_domain": "crypto"},
+    )
+
+    assert out.get("status") == "PAPER_EXECUTED"
+    assert Path(trader.paper_log_path).exists()
+
+
+def test_paper_execute_can_block_on_guard(tmp_path: Path, monkeypatch):
     monkeypatch.setenv("ALLOW_ORDER_EXECUTION", "1")
     monkeypatch.setenv("MARKET_DATA_ONLY", "0")
 
     trader = _mk_trader("paper")
+    trader.project_root = str(tmp_path)
+    trader.set_mode("paper")
     trader.execution_enabled = True
     trader.market_data_only = False
 

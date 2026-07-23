@@ -37,7 +37,9 @@ def build_payload(
     sequence_count = int(snapshot.get("sequence_count", 0) or 0)
     row_count = int(snapshot.get("row_count", 0) or 0)
     coverage_top_sequences = ((snapshot.get("coverage") or {}).get("top_sequences")) if isinstance(snapshot.get("coverage"), dict) else []
-    snapshot_ready = bool(training_runtime.get("snapshot_ready", False))
+    snapshot_intrinsic_ready = bool(snapshot_exists and sequence_count > 0 and row_count > 0)
+    training_runtime_snapshot_ready = bool(training_runtime.get("snapshot_ready", False))
+    snapshot_ready = bool(training_runtime_snapshot_ready or snapshot_intrinsic_ready)
     freshness_ok = snapshot_age_minutes is not None and float(snapshot_age_minutes) <= float(fresh_minutes)
     stale = snapshot_age_minutes is None or float(snapshot_age_minutes) > float(stale_minutes)
     coverage_shortfall_bots = int(coverage_seed.get("coverage_shortfall_bots", 0) or 0)
@@ -65,6 +67,9 @@ def build_payload(
         "cache_health": {
             "snapshot_exists": bool(snapshot_exists),
             "snapshot_ready": bool(snapshot_ready),
+            "snapshot_ready_source": "training_runtime_control" if training_runtime_snapshot_ready else "snapshot_payload" if snapshot_intrinsic_ready else "none",
+            "training_runtime_snapshot_ready": bool(training_runtime_snapshot_ready),
+            "snapshot_intrinsic_ready": bool(snapshot_intrinsic_ready),
             "snapshot_age_minutes": round(float(snapshot_age_minutes), 4) if snapshot_age_minutes is not None else None,
             "fresh_minutes": float(fresh_minutes),
             "stale_minutes": float(stale_minutes),

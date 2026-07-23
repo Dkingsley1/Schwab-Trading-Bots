@@ -11,7 +11,7 @@ from typing import Any
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_OUT = PROJECT_ROOT / "governance" / "health" / "onnx_runtime_audit_latest.json"
-DEFAULT_PYTHON = PROJECT_ROOT / ".venv312" / "bin" / "python"
+DEFAULT_PYTHON = PROJECT_ROOT / ".venv314" / "bin" / "python"
 DEFAULT_PACKAGES = (
     "onnx",
     "onnxruntime",

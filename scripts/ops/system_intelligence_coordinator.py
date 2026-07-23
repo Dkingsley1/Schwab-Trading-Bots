@@ -82,6 +82,9 @@ SIGNAL_SOURCES: tuple[dict[str, str], ...] = (
     {"name": "data_plane_recovery", "category": "data_plane", "path": "governance/health/data_plane_recovery_controller_latest.json"},
     {"name": "live_runtime_separation", "category": "data_plane", "path": "governance/health/live_runtime_separation_control_latest.json"},
     {"name": "paper_live_data_standard", "category": "paper", "path": "governance/health/paper_live_data_standard_latest.json"},
+    {"name": "operating_platform_upgrade", "category": "platform", "path": "governance/health/operating_platform_upgrade_latest.json", "optional": "true"},
+    {"name": "distributed_cell_architecture", "category": "platform", "path": "governance/health/distributed_cell_architecture_latest.json", "optional": "true"},
+    {"name": "cell_federation_intelligence", "category": "platform", "path": "governance/health/cell_federation_intelligence_latest.json", "optional": "true"},
     {"name": "sleeve_ticker_universe", "category": "market_universe", "path": "governance/health/sleeve_ticker_universe_latest.json"},
     {"name": "mlx_intelligence_router", "category": "compute", "path": "governance/health/mlx_intelligence_router_latest.json"},
     {"name": "library_utilization_router", "category": "compute", "path": "governance/health/library_utilization_router_latest.json"},
@@ -117,9 +120,12 @@ SIGNAL_REFRESH_COMMANDS: dict[str, list[str]] = {
     "storage_quota_guard": ["./scripts/ops/opsctl.sh", "storage-quota-guard", "--json"],
     "bot_logs_cleanup": ["./scripts/ops/opsctl.sh", "bot-logs-cleanup-intelligence", "--json"],
     "training_quality": ["./scripts/ops/opsctl.sh", "training-quality", "--json"],
-    "training_runtime": ["./scripts/ops/opsctl.sh", "training-runtime-control", "--limit", "20", "--json"],
+    "training_runtime": ["./scripts/ops/opsctl.sh", "training-runtime-control", "--limit", "30", "--json"],
     "training_data_intake": ["./scripts/ops/opsctl.sh", "training-data-intake", "--json"],
     "bot_quality": ["./scripts/ops/opsctl.sh", "bot-quality-autopilot", "--json"],
+    "operating_platform_upgrade": ["./scripts/ops/opsctl.sh", "operating-platform-upgrade", "--apply", "--json"],
+    "distributed_cell_architecture": ["./scripts/ops/opsctl.sh", "distributed-cell-architecture", "--apply", "--json"],
+    "cell_federation_intelligence": ["./scripts/ops/opsctl.sh", "cell-federation-intelligence", "--apply", "--json"],
     "writer_process_intelligence": ["./scripts/ops/opsctl.sh", "writer-process-intelligence", "--json"],
     "drainer_intelligence": ["./scripts/ops/opsctl.sh", "drainer-intelligence-layer", "--apply", "--json"],
     "guard_intelligence": ["./scripts/ops/opsctl.sh", "guard-intelligence", "--apply", "--json"],
@@ -144,6 +150,7 @@ STALE_SIGNAL_LIMITS: dict[str, float] = {
     "training_runtime": 90.0,
     "training_data_intake": 240.0,
     "bot_quality": 240.0,
+    "operating_platform_upgrade": 240.0,
     "system_self_model": 240.0,
     "bot_intelligence_mesh": 240.0,
     "operator_cockpit": 240.0,
@@ -592,6 +599,8 @@ def _training_runtime_metrics(payload: dict[str, Any]) -> dict[str, Any]:
         "profile": str(host_gate.get("selected_training_profile") or host_gate.get("governor_profile") or ""),
         "batch20_execution_mode": str(host_gate.get("batch20_execution_mode") or ""),
         "batch20_wave_size": _safe_int(host_gate.get("batch20_wave_size"), 0),
+        "batch30_execution_mode": str(host_gate.get("batch30_execution_mode") or ""),
+        "batch30_wave_size": _safe_int(host_gate.get("batch30_wave_size"), 0),
         "recommended_command": [str(item) for item in _as_list(contract.get("recommended_retrain_command"))],
         "next_prep_command": [str(item) for item in _as_list((_as_list(contract.get("recommended_prep_commands")) or [[]])[0])],
     }
@@ -1043,6 +1052,7 @@ def build_signal_bus(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
                 "stale_limit_minutes": _stale_limit_minutes(name),
                 "refresh_command": _refresh_command_for_signal(name) if stale else [],
                 "loaded": loaded,
+                "optional": str(source.get("optional") or "").strip().lower() in {"1", "true", "yes", "on"},
                 "age_minutes": age_minutes,
                 "path": str(path),
                 "payload_hash_short": _json_hash(payload)[:12] if payload else "",
@@ -1446,7 +1456,7 @@ def build_system_brain(signal_bus: dict[str, Any], process_contracts: dict[str, 
         playbook = [
             {"step": "guarded_training_recovery_canary", "command": training_runtime_command},
             {"step": "refresh_training_quality", "command": ["./scripts/ops/opsctl.sh", "training-quality", "--json"]},
-            {"step": "refresh_training_runtime", "command": ["./scripts/ops/opsctl.sh", "training-runtime-control", "--limit", "20", "--json"]},
+            {"step": "refresh_training_runtime", "command": ["./scripts/ops/opsctl.sh", "training-runtime-control", "--limit", "30", "--json"]},
             {"step": "rebuild_system_intelligence", "command": ["./scripts/ops/opsctl.sh", "system-intelligence", "--json"]},
         ]
     else:
@@ -1955,7 +1965,7 @@ def _integration_routing(
         refresh_order = [
             training_command,
             ["./scripts/ops/opsctl.sh", "training-quality", "--json"],
-            ["./scripts/ops/opsctl.sh", "training-runtime-control", "--limit", "20", "--json"],
+            ["./scripts/ops/opsctl.sh", "training-runtime-control", "--limit", "30", "--json"],
             ["./scripts/ops/opsctl.sh", "system-intelligence", "--json"],
         ]
     else:
@@ -2271,7 +2281,7 @@ def _awareness_degradation_forecast(
                 "risk": "training_readiness_claims_must_stay_closed",
                 "severity_score": 54,
                 "watch": "training.launch_allowed",
-                "mitigation": ["./scripts/ops/opsctl.sh", "training-runtime-control", "--limit", "20", "--json"],
+                "mitigation": ["./scripts/ops/opsctl.sh", "training-runtime-control", "--limit", "30", "--json"],
             }
         )
     if _safe_int(senses.get("stale_signal_count"), 0) > 0:
@@ -2892,14 +2902,14 @@ def build_self_intelligence(
     missing_signals = [
         str(row.get("name") or "")
         for row in _as_list(signal_bus.get("signals"))
-        if isinstance(row, dict) and not bool(row.get("loaded", False))
+        if isinstance(row, dict) and not bool(row.get("loaded", False)) and not bool(row.get("optional", False))
     ]
     conflicts = _signal_conflicts(signal_bus)
     violations = _contract_violations(process_contracts, signal_bus)
     memory_summary = _memory_summary(memory_events, str(decision.get("action") or ""))
     uncertainty_score = min(
         100,
-        len(missing_signals) * 6 + len(stale_signals) * 8 + len(conflicts) * 12 + len(violations) * 20,
+        len(missing_signals) * 4 + len(stale_signals) * 8 + len(conflicts) * 12 + len(violations) * 20,
     )
     uncertainty = {
         "score": int(uncertainty_score),

@@ -21,7 +21,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from scripts.ops.live_macro_auto_watch import YT_DLP_BIN, _classify_text
+from scripts.ops.live_macro_auto_watch import YT_DLP_BIN, _classify_text, _runtime_support_preexec
 from scripts.ops.live_macro_bulletin import DEFAULT_OUT_PATH, LIVE_MACRO_TEMPLATES, append_live_macro_event, build_live_macro_payload
 from core.transcript_cleanup import (
     clean_transcript_text as _shared_clean_transcript_text,
@@ -468,7 +468,11 @@ def _extract_video_metadata(youtube_url: str, *, cookies_from_browser: str) -> t
             ["--dump-single-json", "--no-playlist", "--no-warnings", str(youtube_url)],
             cookies_from_browser=active_cookies,
         )
-        proc = subprocess.run(cmd, cwd=str(PROJECT_ROOT), capture_output=True, text=True, check=False, timeout=180)
+        kwargs: Dict[str, Any] = {}
+        preexec = _runtime_support_preexec()
+        if preexec is not None:
+            kwargs["preexec_fn"] = preexec
+        proc = subprocess.run(cmd, cwd=str(PROJECT_ROOT), capture_output=True, text=True, check=False, timeout=180, **kwargs)
         if proc.returncode != 0:
             errors.append(
                 f"{_cookie_mode_label(active_cookies)}:{_format_yt_error(proc.stderr or proc.stdout or 'yt_dlp_metadata_failed', cookies_from_browser=active_cookies)}"
@@ -534,7 +538,11 @@ def _capture_audio(
                 ],
                 cookies_from_browser=active_cookies,
             )
-            proc = subprocess.run(cmd, cwd=str(PROJECT_ROOT), capture_output=True, text=True, check=False, timeout=7200)
+            kwargs: Dict[str, Any] = {}
+            preexec = _runtime_support_preexec()
+            if preexec is not None:
+                kwargs["preexec_fn"] = preexec
+            proc = subprocess.run(cmd, cwd=str(PROJECT_ROOT), capture_output=True, text=True, check=False, timeout=7200, **kwargs)
             if proc.returncode == 0:
                 captured = _captured_outputs(audio_dir, video_id)
                 if captured:

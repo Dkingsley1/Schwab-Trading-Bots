@@ -54,6 +54,21 @@ REGULATORY_REFERENCES = [
         "reason": "margin, day-trading buying power, and account equity constraints",
     },
     {
+        "source": "FINRA Regulatory Notice 26-10",
+        "url": "https://business.cch.com/srd/RegulatoryNotice26-10_FINRAorg042126.pdf",
+        "reason": "new intraday margin standards replacing PDT/day-trading margin requirements effective 2026-06-04 with broker phase-in",
+    },
+    {
+        "source": "SEC Release No. 34-105226",
+        "url": "https://www.sec.gov/files/rules/sro/finra/2026/34-105226.pdf",
+        "reason": "SEC approval order for FINRA Rule 4210 intraday margin amendments",
+    },
+    {
+        "source": "Schwab day-trading rule update",
+        "url": "https://www.schwab.com/learn/story/schwab-changes-rules-around-day-trading",
+        "reason": "Schwab-specific June 8 implementation and intraday buying-power treatment",
+    },
+    {
         "source": "FINRA Day Trading",
         "url": "https://www.finra.org/investors/investing/investment-products/stocks/day-trading",
         "reason": "day-trading risk and broker execution awareness",
@@ -87,7 +102,7 @@ def _clamp(value: float, lo: float = 0.0, hi: float = 1.0) -> float:
 def _grade(score: float) -> str:
     score = _safe_float(score)
     if score >= 97.0:
-        return "A++"
+        return "A+"
     if score >= 92.0:
         return "A+"
     if score >= 85.0:
@@ -191,7 +206,7 @@ def _profit_summary(sources: dict[str, Any]) -> dict[str, Any]:
 
 
 def _grade_at_least(grade: Any, target: str) -> bool:
-    ranks = {"F": 0, "D": 1, "C": 2, "B": 3, "A": 4, "A+": 5, "A++": 6}
+    ranks = {"F": 0, "D": 1, "C": 2, "B": 3, "A": 4, "A+": 5, "A++": 5}
     return ranks.get(str(grade or "").strip().upper(), -1) >= ranks.get(target, 999)
 
 
@@ -545,23 +560,39 @@ def _section_live_micro_lane(sources: dict[str, Any]) -> dict[str, Any]:
     process = sources["process_watchdog"]
     runtime = sources["runtime_gate"]
     calibration = sources["paper_calibration"]
+    account = sources["account_policy"]
+    account_context = _nested(account, "account_policy_context", default={}) or {}
+    margin_probe = _nested(account_context, "intraday_margin_probe_contract", default={}) or {}
+    margin_sim = _nested(account_context, "paper_intraday_margin_deficit_simulator", default={}) or {}
+    pdt_transition = _nested(account_context, "pdt_intraday_margin_transition", default={}) or {}
     execution = _nested(profitability, "paper_harvest_execution_contract", default={}) or {}
     live_allowed = bool(execution.get("live_execution_allowed"))
     process_ready = str(process.get("overall_status") or process.get("status") or "").lower() in {"ready", "ok", "healthy"}
     runtime_status = str(_nested(runtime, "overall", "status", default=runtime.get("overall_status", "")) or "").lower()
     runtime_ready = runtime_status in {"", "ready", "ok", "healthy"}
     calibration_ready = bool(calibration)
+    margin_probe_status = str(margin_probe.get("status") or "")
+    margin_sim_status = str(margin_sim.get("status") or "")
+    intraday_buying_power_observed = bool(margin_probe.get("intraday_buying_power_observed", False))
+    probe_required_now = bool(margin_probe.get("probe_required_now", False))
+    margin_sim_clear = margin_sim_status in {"", "ready"}
     raw_score = 78.0
     raw_score += 8.0 if process_ready else 0.0
     raw_score += 4.0 if runtime_ready else 2.0 if runtime_status == "degraded" else 0.0
     raw_score += 5.0 if calibration_ready else 0.0
     raw_score += 5.0 if not live_allowed else -40.0
+    raw_score += 3.0 if margin_sim_clear else -8.0
     controlled_micro_safety_ready = process_ready and calibration_ready and not live_allowed and runtime_status in {"", "ready", "ok", "healthy", "degraded"}
     score = 100.0 if controlled_micro_safety_ready else raw_score
     blockers = [
         "live_micro_requires_separate_operator_approval",
         "live_execution_must_remain_blocked_until_real_fill_gap_is_proven",
+        "live_micro_intraday_margin_buying_power_requires_broker_confirmation",
     ]
+    if probe_required_now and not intraday_buying_power_observed:
+        blockers.append("schwab_intraday_margin_probe_not_ready")
+    if not margin_sim_clear:
+        blockers.append("paper_intraday_margin_deficit_simulator_not_clear")
     if live_allowed:
         blockers.append("unexpected_live_execution_allowed")
     if not process_ready:
@@ -579,20 +610,30 @@ def _section_live_micro_lane(sources: dict[str, Any]) -> dict[str, Any]:
             "process_watchdog_ready": process_ready,
             "runtime_status": runtime_status,
             "paper_execution_calibration_ready": calibration_ready,
+            "pdt_transition_phase": str(pdt_transition.get("phase") or ""),
+            "schwab_day_trade_count_retired": bool(pdt_transition.get("schwab_day_trade_count_retired", False)),
+            "intraday_margin_probe_status": margin_probe_status,
+            "intraday_buying_power_observed": intraday_buying_power_observed,
+            "paper_intraday_margin_simulator_status": margin_sim_status,
+            "simulated_intraday_margin_deficit_usd": margin_sim.get("simulated_margin_deficit_usd", 0.0),
             "raw_live_micro_lane_score": round(max(min(raw_score, 100.0), 0.0), 3),
             "controlled_micro_safety_ready": controlled_micro_safety_ready,
-            "controlled_score_basis": "future live-micro lane is fully specified and safely locked off until separate approval",
+            "controlled_score_basis": "future live-micro lane is locked off while broker margin, fill gap, and separate approval remain explicit gates",
             "future_micro_contract": {
                 "mode": "not_enabled",
                 "reduce_only_until_fill_gap_proven": True,
                 "initial_notional_cap_policy": "operator_defined_tiny_notional_only",
                 "kill_switch_required": True,
+                "requires_broker_confirmed_intraday_margin_buying_power": True,
+                "broker_developer_platform_order_limit_policy": "operator_managed_external_throttle_not_internal_scalability_ceiling",
             },
         },
         controls=[
             "this command cannot enable live execution",
             "future live-micro has to be a separate approval artifact",
             "micro lane starts as fill validation, not income dependence",
+            "Schwab PDT replacement is not treated as permission to widen without intraday margin proof",
+            "broker developer-platform order limits remain operator-managed and can scale intentionally later",
         ],
         exact_commands=[["./scripts/ops/opsctl.sh", "income-operating-platform", "--apply", "--json"]],
         stop_conditions=[
@@ -668,11 +709,29 @@ def _section_account_rules_layer(sources: dict[str, Any]) -> dict[str, Any]:
     raw_score += 6.0 if fresh else 0.0
     raw_score += 3.0 if slots and confirmation_count == len(slots) and auto_order_enabled_count == 0 else 0.0
     redaction = context.get("redaction_contract") if isinstance(context.get("redaction_contract"), dict) else {}
+    pdt_transition = (
+        context.get("pdt_intraday_margin_transition")
+        if isinstance(context.get("pdt_intraday_margin_transition"), dict)
+        else {}
+    )
+    slot_margin_policies = [
+        row for row in _as_list(context.get("slot_margin_policies")) if isinstance(row, dict)
+    ]
+    day_trade_widening_allowed_count = sum(1 for row in slot_margin_policies if bool(row.get("day_trade_widening_allowed", False)))
+    intraday_margin_aware = str(pdt_transition.get("phase") or "").strip() != ""
     redaction_safe = (
         not bool(redaction.get("account_numbers_exposed_in_policy", False))
         and not bool(redaction.get("account_hashes_exposed_in_policy", False))
     )
-    controlled_account_ready = bool(slots) and fresh and auto_order_enabled_count == 0 and confirmation_count == len(slots) and redaction_safe
+    controlled_account_ready = (
+        bool(slots)
+        and fresh
+        and auto_order_enabled_count == 0
+        and confirmation_count == len(slots)
+        and redaction_safe
+        and intraday_margin_aware
+        and day_trade_widening_allowed_count == 0
+    )
     score = 100.0 if controlled_account_ready else raw_score
     blockers: list[str] = []
     if not slots:
@@ -681,6 +740,10 @@ def _section_account_rules_layer(sources: dict[str, Any]) -> dict[str, Any]:
         blockers.append("account_policy_allows_auto_ordering")
     if not fresh:
         blockers.append("account_policy_context_stale")
+    if not intraday_margin_aware:
+        blockers.append("pdt_intraday_margin_transition_missing")
+    if day_trade_widening_allowed_count > 0:
+        blockers.append("day_trade_widening_enabled_without_live_review")
     return _section(
         "account_rules_layer",
         title="Tax/Compliance/Account Rules Layer",
@@ -696,13 +759,23 @@ def _section_account_rules_layer(sources: dict[str, Any]) -> dict[str, Any]:
             "raw_account_rules_score": round(max(min(raw_score, 100.0), 0.0), 3),
             "controlled_account_ready": controlled_account_ready,
             "redaction_safe": redaction_safe,
-            "controlled_score_basis": "fresh paper-only account policy has explicit slots, operator confirmation, no auto-ordering, and safe redaction",
+            "pdt_transition_phase": str(pdt_transition.get("phase") or ""),
+            "finra_intraday_margin_effective_date": str(pdt_transition.get("finra_effective_date") or ""),
+            "schwab_day_trade_count_retire_date": str(pdt_transition.get("schwab_day_trade_count_retire_date") or ""),
+            "intraday_margin_phase_in_end_date": str(pdt_transition.get("phase_in_end_date") or ""),
+            "legacy_pdt_framework_active_for_schwab_policy": bool(
+                pdt_transition.get("legacy_pdt_framework_active_for_schwab_policy", False)
+            ),
+            "schwab_day_trade_count_retired": bool(pdt_transition.get("schwab_day_trade_count_retired", False)),
+            "day_trade_widening_allowed_count": day_trade_widening_allowed_count,
+            "controlled_score_basis": "fresh paper-only account policy has explicit slots, operator confirmation, safe redaction, and PDT/intraday-margin transition awareness",
             "regulatory_references": REGULATORY_REFERENCES,
         },
         controls=[
             "account policies are visibility and safety controls, not permission to trade live",
             "taxable and tax-advantaged accounts need separate risk and withdrawal accounting",
-            "margin/day-trading constraints must be modeled before live-micro sizing",
+            "FINRA PDT replacement is broker-implementation aware, not an automatic live day-trading permission",
+            "margin/day-trading constraints must use broker-reported intraday buying power before live-micro sizing",
         ],
         exact_commands=[["./scripts/ops/opsctl.sh", "account-policy-context", "--json"]],
         stop_conditions=[

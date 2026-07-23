@@ -1,4 +1,5 @@
 import json
+import sqlite3
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -50,6 +51,46 @@ def test_storage_resilience_control_fast_mode_skips_large_db_quick_check(tmp_pat
 
     assert payload["integrity_mode"] == "fast"
     assert payload["database_integrity_checks"][0]["quick_check"] == "skipped_fast_mode_large_db"
+
+
+def test_storage_resilience_control_fast_zero_threshold_skips_db_quick_check(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    (project_root / "data").mkdir(parents=True, exist_ok=True)
+    (project_root / "local_fallback_storage").mkdir(parents=True, exist_ok=True)
+    _write_json(project_root / "governance" / "health" / "storage_mount_guard_latest.json", {"external_available": True})
+    _write_json(project_root / "governance" / "health" / "storage_failback_sync_latest.json", {"mode": "external"})
+    _write_json(project_root / "governance" / "health" / "storage_split_brain_reconciler_latest.json", {"summary": {"unresolved_conflicts": 0}})
+    _write_json(project_root / "exports" / "state_snapshot_drills" / "latest.json", {"timestamp_utc": datetime.now(timezone.utc).isoformat(), "ok": True})
+    _write_json(project_root / "governance" / "health" / "daily_auto_verify_latest.json", {"ok": True})
+    (project_root / "data" / "jsonl_link.sqlite3").write_bytes(b"tiny")
+
+    payload = resilience_src.build_payload(project_root, fast=True, max_quick_check_db_gb=0)
+
+    assert payload["integrity_mode"] == "fast"
+    assert payload["database_integrity_checks"][0]["quick_check"] == "skipped_fast_mode_large_db"
+
+
+def test_storage_resilience_control_uses_local_fallback_for_broken_routed_sqlite(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    routed_db = project_root / "data" / "jsonl_link.sqlite3"
+    missing_external_db = tmp_path / "missing_bot_logs" / "data" / "jsonl_link.sqlite3"
+    fallback_db = project_root / "local_fallback_storage" / "data" / "jsonl_link.sqlite3"
+    routed_db.parent.mkdir(parents=True, exist_ok=True)
+    fallback_db.parent.mkdir(parents=True, exist_ok=True)
+    routed_db.symlink_to(missing_external_db)
+    with sqlite3.connect(fallback_db) as conn:
+        conn.execute("CREATE TABLE rows(id INTEGER PRIMARY KEY)")
+    _write_json(project_root / "governance" / "health" / "storage_mount_guard_latest.json", {"external_available": False})
+    _write_json(project_root / "governance" / "health" / "storage_failback_sync_latest.json", {"mode": "local_fallback"})
+    _write_json(project_root / "governance" / "health" / "storage_split_brain_reconciler_latest.json", {"summary": {"unresolved_conflicts": 0}})
+    _write_json(project_root / "governance" / "health" / "daily_auto_verify_latest.json", {"ok": True})
+
+    payload = resilience_src.build_payload(project_root)
+
+    primary_check = payload["database_integrity_checks"][0]
+    assert primary_check["db_path"] == str(fallback_db)
+    assert primary_check["present"] is True
+    assert primary_check["ok"] is True
 
 
 def test_operator_cockpit_aggregates_upgrade_surfaces(tmp_path: Path) -> None:
@@ -250,6 +291,98 @@ def test_operator_cockpit_keeps_expanded_collection_green_with_adaptive_followup
     assert payload["surfaces"]["artifact_freshness_slo"]["status"] == "advisory"
     assert "external_backlog_drain_recommended" not in payload["recommended_actions"]
     assert "memory_efficiency_control_needs_work" not in payload["recommended_actions"]
+
+
+def test_operator_cockpit_keeps_storage_steady_when_sql_overlay_clears_raw_backlog(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    health = project_root / "governance" / "health"
+    _write_json(
+        health / "runtime_gate_dashboard_latest.json",
+        {"overall": {"status": "ready", "ok": True, "attention": ["external_backlog_drain_recommended"]}},
+    )
+    _write_json(health / "training_report_latest.json", {"overall_status": "blocked"})
+    _write_json(health / "training_quality_control_latest.json", {"overall_status": "blocked"})
+    _write_json(
+        health / "ingestion_storage_control_latest.json",
+        {
+            "overall_status": "ready",
+            "severity": "stable",
+            "pressure_index": 0.0,
+            "steady_state": {"target_status": {"steady_state_ready": True}},
+            "queue_watermarks": {"breaches": {"hard": [], "elevated": []}},
+            "backpressure": {
+                "core_pending_lines": 0,
+                "total_pending_lines": 0,
+                "estimated_total_drain_minutes": 15.0,
+                "overlay_adjusted": True,
+                "overlay_pressure_clear": True,
+                "effective_raw_live_source": "fresh_empty_sql_ingestion_overlay",
+                "effective_raw_live": {
+                    "source": "fresh_empty_sql_ingestion_overlay",
+                    "core_pending_lines": 0,
+                    "total_pending_lines": 0,
+                    "raw_live_estimate": {
+                        "core_pending_lines": 20318,
+                        "total_pending_lines": 1413269,
+                    },
+                },
+            },
+            "storage": {"backlog_drain_recommended_now": True},
+            "writer_shedding": {"active": False},
+        },
+    )
+    _write_json(
+        health / "external_backlog_drain_latest.json",
+        {"overall_status": "drain_active", "recommended_now": True, "material_drain_recommended": True},
+    )
+    _write_json(
+        health / "memory_efficiency_control_latest.json",
+        {
+            "overall_status": "ready",
+            "memory_snapshot": {"memory_pressure_state": "green", "memory_pressure_kind": "normal", "swap_used_gb": 0.4},
+            "expansion_session": {
+                "total_bots": 1771,
+                "active_bots": 1732,
+                "data_collection_active_bots": 1732,
+                "sleeve_profile_count": 6,
+                "pressure_level": "massive",
+            },
+        },
+    )
+    _write_json(project_root / "master_bot_registry.json", {"summary": {"total_bots": 1771, "active_bots": 1732, "data_collection_active_bots": 1732, "sleeve_profile_count": 6}})
+    _write_json(health / "global_killswitch_latest.json", {"halt": False, "action": "none", "reasons": []})
+    _write_json(health / "storage_tier_policy_latest.json", {"overall_status": "ready"})
+    _write_json(health / "live_runtime_separation_control_latest.json", {"overall_status": "ready"})
+    _write_json(health / "runtime_snapshot_cache_control_latest.json", {"overall_status": "ready", "cache_health": {"snapshot_ready": True}})
+    _write_json(health / "auth_lease_manager_latest.json", {"overall_status": "ready"})
+    _write_json(health / "rolling_restart_controller_latest.json", {"overall_status": "ready"})
+    _write_json(health / "artifact_freshness_slo_latest.json", {"overall_status": "ready", "sla_summary": {"stale_required": 0}})
+    _write_json(health / "blackstart_recovery_latest.json", {"overall_status": "ready"})
+    _write_json(health / "sleeve_isolation_guard_latest.json", {"overall_status": "ready"})
+    _write_json(health / "remote_alert_control_latest.json", {"overall_status": "ready"})
+    _write_json(health / "storage_quota_guard_latest.json", {"overall_status": "ready"})
+    _write_json(health / "chaos_drill_coordinator_latest.json", {"overall_status": "ready"})
+    _write_json(
+        health / "master_infrastructure_supervisor_latest.json",
+        {
+            "overall_status": "ready",
+            "operator_followups": [],
+            "hardening_scorecard": {
+                "truth_layer_ready": True,
+                "storage_route_certified": True,
+                "process_ownership_canonical": True,
+                "command_surface_clean": True,
+                "launchd_jobs_installed": True,
+            },
+            "checks": [{"name": "process_lane_ownership", "status": "ready"}],
+        },
+    )
+
+    payload = cockpit_src.build_payload(project_root)
+
+    assert payload["overall_status"] == "ready"
+    assert payload["adaptive_posture"]["storage_steady"] is True
+    assert payload["readiness_domains"]["storage_backpressure"]["status"] == "ready"
 
 
 def test_daily_verify_auto_remediation_bot_builds_actionable_plan(tmp_path: Path) -> None:

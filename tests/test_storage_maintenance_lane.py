@@ -146,6 +146,70 @@ def test_build_storage_maintenance_payload_runs_all_steps(tmp_path, monkeypatch)
     assert shard_env["SQL_LINK_SERVICE_SHARD_EXPLANATIONS_MAX_FILES"] == "8"
 
 
+def test_storage_maintenance_treats_missing_sqlite_primary_as_skipped(tmp_path, monkeypatch) -> None:
+    project_root = tmp_path / "project"
+    (project_root / "governance" / "health").mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(storage_maintenance_lane, "PY", Path("/usr/bin/python3"))
+    monkeypatch.setattr(
+        storage_maintenance_lane,
+        "_usage_snapshot",
+        lambda path: {"path": str(path), "exists": True, "free_gb": 120.0, "used_gb": 80.0, "total_gb": 200.0},
+    )
+
+    def _fake_run(cmd: list[str], *, cwd: Path, payload_path: Path | None = None, env_overrides: dict[str, str] | None = None) -> dict:
+        joined = " ".join(cmd)
+        if "ingestion_storage_governor.py" in joined:
+            payload = {"ok": True, "profile": "critical_backpressure", "sql_primary_db": {"route_drift": False}, "env_overrides": {}}
+            rc = 0
+        elif "maintenance_strategy_reloader.py" in joined:
+            payload = {"changed": False, "deferred": False}
+            rc = 0
+        elif "resource_guard.py" in joined:
+            payload = {"ok": True, "memory_pressure_kind": "none"}
+            rc = 0
+        elif "storage_failback_sync.py" in joined:
+            payload = {"ok": True, "mode": "local_fallback", "autosync": {"copied_files": 0}, "low_space_autoprune": {"deleted_count": 0}}
+            rc = 0
+        elif "sql_link_shard_manager.py" in joined:
+            payload = {"ok": True, "reason": "ok"}
+            rc = 0
+        elif "sqlite_performance_maintenance.py" in joined:
+            payload = {
+                "ok": False,
+                "error": f"db_missing:{project_root / 'data' / 'jsonl_link.sqlite3'}",
+                "vacuum_ran": False,
+            }
+            rc = 2
+        elif "stale_artifact_sweeper_bot.py" in joined:
+            payload = {"ok": True, "summary": {"candidate_files": 0, "staged_files": 0, "staged_bytes": 0, "delete_errors": 0}}
+            rc = 0
+        elif "stale_artifact_reaper_bot.py" in joined:
+            payload = {"ok": True, "summary": {"candidate_files": 0, "deleted_files": 0, "deleted_bytes": 0, "delete_errors": 0}}
+            rc = 0
+        elif "data_retention_policy.py" in joined:
+            payload = {"deleted": 0, "delete_errors": 0}
+            rc = 0
+        elif "content_addressed_artifact_store.py" in joined:
+            payload = {"ok": True, "skipped_blob_count": 0, "gc": {"deleted_blob_count": 0, "deleted_bytes": 0}}
+            rc = 0
+        else:
+            raise AssertionError(f"unexpected command: {cmd}")
+        return {"cmd": cmd, "rc": rc, "duration_ms": 5.0, "payload": payload, "stdout_tail": "", "stderr_tail": ""}
+
+    monkeypatch.setattr(storage_maintenance_lane, "_run_json_command", _fake_run)
+
+    payload = storage_maintenance_lane.build_storage_maintenance_payload(
+        project_root,
+        resource_profile="optional",
+        force=False,
+        vacuum=False,
+    )
+
+    assert payload["ok"] is True
+    assert payload["reason"] == "ok"
+    assert payload["steps"]["sqlite_maintenance"]["status"] == "skipped"
+
+
 def test_build_storage_maintenance_payload_skips_heavy_steps_when_guard_blocks(tmp_path, monkeypatch) -> None:
     project_root = tmp_path / "project"
     (project_root / "governance" / "health").mkdir(parents=True, exist_ok=True)

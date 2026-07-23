@@ -2,7 +2,7 @@
 set -uo pipefail
 
 PROJECT_ROOT="/Users/dankingsley/PycharmProjects/schwab_trading_bot"
-PYTHON_BIN="$PROJECT_ROOT/.venv312/bin/python"
+PYTHON_BIN="$PROJECT_ROOT/.venv314/bin/python"
 EXPORT_SCRIPT="$PROJECT_ROOT/scripts/export_logs_to_csv.py"
 AUTOMATION_LOG_DIR="$HOME/Library/Logs/schwab_trading_bot"
 HEALTH_FILE="$PROJECT_ROOT/governance/health/finder_log_refresh_latest.json"

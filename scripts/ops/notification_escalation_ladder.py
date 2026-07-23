@@ -24,12 +24,22 @@ def _process_names(process_watchdog: dict[str, Any]) -> list[str]:
     return [str((row or {}).get("name") or "").strip().lower() for row in rows if isinstance(row, dict)]
 
 
+def _livefeed_remote_viewer_ready(livefeed_guard: dict[str, Any]) -> bool:
+    if not livefeed_guard:
+        return False
+    health = livefeed_guard.get("health") if isinstance(livefeed_guard.get("health"), dict) else {}
+    blockers = livefeed_guard.get("blockers") if isinstance(livefeed_guard.get("blockers"), list) else []
+    status = str(livefeed_guard.get("overall_status") or livefeed_guard.get("status") or "").strip().lower()
+    return bool(livefeed_guard.get("ok", health.get("ok", False))) and status in {"ready", "running"} and not blockers
+
+
 def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
     health_root = project_root / "governance" / "health"
     remote_alert = load_json(health_root / "remote_alert_control_latest.json")
     portable = load_json(health_root / "portable_brain_contract_latest.json")
     process_watchdog = load_json(health_root / "process_watchdog_latest.json")
     mac_notification_state = load_json(health_root / "mac_notification_watch_state.json")
+    livefeed_guard = load_json(health_root / "livefeed_refresh_guard_latest.json")
 
     names = _process_names(process_watchdog)
     host_contract = portable.get("host_contract") if isinstance(portable.get("host_contract"), dict) else {}
@@ -39,7 +49,8 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
     imessage_recipient_configured = bool(mac_notification_state.get("imessage_recipient_configured", False))
     imessage_ready = bool((imessage_enabled and imessage_recipient_configured) or any(token in name for name in names for token in ("mac_notification", "notification")))
     channels = remote_alert.get("channels") if isinstance(remote_alert.get("channels"), dict) else {}
-    pager_ready = bool(channels.get("any_configured", False))
+    pager_ready = bool(channels.get("remote_pager_configured", False) or channels.get("webhook", False) or channels.get("pushover", False))
+    phone_bridge_ready = bool(pager_ready or imessage_ready)
     backlog = remote_alert.get("critical_backlog") if isinstance(remote_alert.get("critical_backlog"), dict) else {}
     compaction = remote_alert.get("backlog_compaction") if isinstance(remote_alert.get("backlog_compaction"), dict) else {}
     unacked = int(backlog.get("unacked_count", 0) or 0)
@@ -49,6 +60,22 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
     dedupe_ratio = float(compaction.get("dedupe_ratio", 1.0) or 1.0)
     attended_runtime_ready = bool(desktop_ready and imessage_ready and grouped_unsent == 0)
     unattended_runtime_ready = bool(pager_ready and grouped_unsent == 0 and grouped_unacked == 0)
+    livefeed_remote_viewer_ready = _livefeed_remote_viewer_ready(livefeed_guard)
+    mobile_operator_coverage_ready = bool(
+        phone_bridge_ready
+        and livefeed_remote_viewer_ready
+        and grouped_unsent == 0
+        and grouped_unacked == 0
+    )
+    operator_coverage_model = (
+        "zero_touch_remote_pager"
+        if unattended_runtime_ready
+        else (
+            "daily_supervised_mobile_operator"
+            if mobile_operator_coverage_ready
+            else ("attended_alerts_only" if attended_runtime_ready else "not_ready")
+        )
+    )
 
     steps = [
         {"step": "desktop_banner", "ready": desktop_ready, "status": ("ready" if desktop_ready else "missing"), "reason": "local_desktop_path_available" if desktop_ready else "desktop_notification_path_missing"},
@@ -62,14 +89,41 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
                 else ("mac_notification_watch_present" if imessage_ready else "local_operator_bridge_not_detected")
             ),
         },
-        {"step": "remote_pager", "ready": pager_ready, "status": ("ready" if pager_ready else "blocked"), "reason": "remote_channel_configured" if pager_ready else "no_remote_channel_configured"},
+        {
+            "step": "remote_pager",
+            "ready": pager_ready,
+            "status": ("ready" if pager_ready else ("advisory" if phone_bridge_ready else "blocked")),
+            "reason": (
+                "remote_channel_configured"
+                if pager_ready
+                else (
+                    "imessage_operator_bridge_configured_for_attended_phone_delivery"
+                    if phone_bridge_ready
+                    else "no_remote_channel_configured"
+                )
+            ),
+        },
+        {
+            "step": "mobile_operator_coverage",
+            "ready": mobile_operator_coverage_ready,
+            "status": ("ready" if mobile_operator_coverage_ready else ("advisory" if phone_bridge_ready else "blocked")),
+            "reason": (
+                "phone_notifications_and_remote_livefeed_ready_for_daily_supervised_soak"
+                if mobile_operator_coverage_ready
+                else (
+                    "livefeed_remote_viewer_missing_or_degraded"
+                    if phone_bridge_ready
+                    else "phone_notification_bridge_missing"
+                )
+            ),
+        },
         {"step": "ack_backlog", "ready": grouped_unsent == 0, "status": ("ready" if grouped_unsent == 0 and grouped_unacked == 0 else "degraded"), "reason": f"grouped_unacked={grouped_unacked} grouped_unsent={grouped_unsent} dedupe_ratio={dedupe_ratio:.2f}"},
     ]
 
     overall_status = "ready"
-    if grouped_unsent > 0 or (not pager_ready and not attended_runtime_ready):
+    if grouped_unsent > 0 or not desktop_ready or not phone_bridge_ready:
         overall_status = "blocked"
-    elif grouped_unacked > 0 or not desktop_ready or not imessage_ready or not pager_ready:
+    elif grouped_unacked > 0:
         overall_status = "degraded"
 
     recommended_actions = ordered_unique(
@@ -78,7 +132,10 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
             "keep the Mac notification watcher alive so local desktop and iMessage alerts stay part of the ladder" if not imessage_ready else "",
             "run notify-start with iMessage enabled so the operator bridge can act as the attended fallback pager on macOS" if not imessage_ready else "",
             "treat unsent remote critical alerts as a hard blocker for unattended runtime" if grouped_unsent > 0 else "",
-            "configure at least one remote pager channel before relying on unattended runtime even if the local operator bridge is healthy" if not pager_ready else "",
+            "iMessage is configured for attended phone delivery; add Pushover or a webhook only before relying on unattended runtime" if not pager_ready and imessage_ready else "",
+            "configure at least one remote pager channel before relying on unattended runtime" if not pager_ready and not imessage_ready else "",
+            "keep the livefeed local mirror and remote viewer healthy so Codex Mobile remains a practical action path" if not livefeed_remote_viewer_ready else "",
+            "zero-touch unattended paging still needs Pushover or a webhook if you want runtime without a daily mobile operator check" if mobile_operator_coverage_ready and not pager_ready else "",
             "route duplicate alert storms through the grouped backlog view before paging so operator load tracks unique incidents" if dedupe_ratio > 1.25 else "",
         ]
     )
@@ -91,9 +148,13 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
         "steps": steps,
         "desktop_ready": desktop_ready,
         "imessage_ready": imessage_ready,
+        "phone_bridge_ready": phone_bridge_ready,
         "remote_pager_ready": pager_ready,
         "attended_runtime_ready": attended_runtime_ready,
         "unattended_runtime_ready": unattended_runtime_ready,
+        "livefeed_remote_viewer_ready": livefeed_remote_viewer_ready,
+        "mobile_operator_coverage_ready": mobile_operator_coverage_ready,
+        "operator_coverage_model": operator_coverage_model,
         "critical_backlog": {
             "unacked_count": unacked,
             "unsent_count": unsent,

@@ -78,7 +78,7 @@ def test_package_rows_detect_drift_states() -> None:
     ]
 
 
-def test_recommendations_highlight_compile_canary_when_safe() -> None:
+def test_recommendations_highlight_direct_stable_compile_when_safe() -> None:
     recommendations = src._recommendations(
         [
             {
@@ -96,7 +96,7 @@ def test_recommendations_highlight_compile_canary_when_safe() -> None:
         },
     )
 
-    assert "candidate_mlx_compile_canary_before_enabling_training_jit" in recommendations
+    assert "candidate_mlx_compile_direct_stable_after_smoke" in recommendations
     assert "mlx_metal_jit_default_off" in recommendations
 
 

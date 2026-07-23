@@ -96,6 +96,12 @@ _DYNAMIC_STORAGE_OVERRIDE_CACHE: Dict[str, Any] = {
     "values": {},
 }
 _DYNAMIC_STORAGE_OVERRIDE_POLL_SECONDS = 2.0
+_PAPER_PROFITABILITY_GUARD_CACHE: Dict[str, Any] = {
+    "checked_at_monotonic": 0.0,
+    "fingerprint": (),
+    "payload": {},
+}
+_PAPER_PROFITABILITY_GUARD_POLL_SECONDS = 2.0
 
 
 def _parse_env_override_file(path: Path) -> Dict[str, str]:
@@ -244,6 +250,9 @@ class BaseTrader:
         self.live_accounts_snapshot_allow_global_fallback = (
             os.getenv("LIVE_ACCOUNTS_SNAPSHOT_ALLOW_GLOBAL_FALLBACK", "0").strip() == "1"
         )
+        self.live_accounts_snapshot_aggregate_connected = (
+            os.getenv("LIVE_ACCOUNTS_SNAPSHOT_AGGREGATE_CONNECTED", "0").strip() == "1"
+        )
         self._live_account_hash_last_refresh_ts = 0.0
         self.live_position_reconcile_tolerance = max(
             float(os.getenv("LIVE_POSITION_RECONCILE_TOLERANCE", "0.0001")),
@@ -375,6 +384,108 @@ class BaseTrader:
             "direct_execution_allowed": False,
         }
         return True, "exotic_derivative_proxy_only_no_direct_execution", details
+
+    def _paper_profitability_control_payload(self) -> Dict[str, Any]:
+        cache = _PAPER_PROFITABILITY_GUARD_CACHE
+        now_monotonic = time.monotonic()
+        if (now_monotonic - float(cache.get("checked_at_monotonic", 0.0) or 0.0)) < _PAPER_PROFITABILITY_GUARD_POLL_SECONDS:
+            payload = cache.get("payload")
+            if isinstance(payload, dict):
+                return dict(payload)
+
+        health_root = Path(self.project_root) / "governance" / "health"
+        paths = (
+            health_root / "paper_runtime_profitability_controls_latest.json",
+            health_root / "paper_profitability_control_latest.json",
+        )
+        fingerprint: List[Tuple[str, int, int]] = []
+        for path in paths:
+            try:
+                stat = path.stat()
+                fingerprint.append((str(path), int(stat.st_mtime_ns), int(stat.st_size)))
+            except Exception:
+                fingerprint.append((str(path), 0, 0))
+
+        if tuple(fingerprint) == tuple(cache.get("fingerprint") or ()):
+            cache["checked_at_monotonic"] = now_monotonic
+            payload = cache.get("payload")
+            return dict(payload) if isinstance(payload, dict) else {}
+
+        payload: Dict[str, Any] = {}
+        for path in paths:
+            try:
+                with path.open("r", encoding="utf-8") as handle:
+                    raw = json.load(handle)
+            except Exception:
+                continue
+            if isinstance(raw, dict) and raw:
+                payload = raw
+                payload["_control_artifact_path"] = str(path)
+                break
+
+        cache["checked_at_monotonic"] = now_monotonic
+        cache["fingerprint"] = tuple(fingerprint)
+        cache["payload"] = dict(payload)
+        return payload
+
+    def _paper_profitability_new_entry_blocked(
+        self,
+        *,
+        action: str,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> Tuple[bool, str, Dict[str, Any]]:
+        normalized_action = str(action or "").strip().upper()
+        if normalized_action not in {"BUY", "BUY_TO_OPEN"}:
+            return False, "not_new_entry_buy", {}
+
+        control = self._paper_profitability_control_payload()
+        if not control:
+            return False, "paper_profitability_control_missing", {}
+
+        raw_recovery = control.get("raw_profitability_a_recovery_contract")
+        if not isinstance(raw_recovery, dict):
+            raw_recovery = {}
+        raw_improvement = control.get("raw_profitability_improvement_contract")
+        if not isinstance(raw_improvement, dict):
+            raw_improvement = {}
+        enforcement = raw_improvement.get("runtime_enforcement")
+        if not isinstance(enforcement, dict):
+            enforcement = raw_recovery.get("runtime_enforcement") if isinstance(raw_recovery.get("runtime_enforcement"), dict) else {}
+
+        if not bool(raw_recovery.get("active", False)) and not bool(raw_improvement.get("active", False)):
+            return False, "raw_profitability_recovery_inactive", {}
+        if not bool(enforcement.get("block_new_entries_on_weak_profiles", False)):
+            return False, "weak_profile_new_entry_block_inactive", {}
+
+        weak_profiles = {
+            str(item or "").strip().lower()
+            for item in (raw_recovery.get("weak_profiles") if isinstance(raw_recovery.get("weak_profiles"), list) else [])
+            if str(item or "").strip()
+        }
+        weak_contract = raw_improvement.get("weak_sleeve_zero_entry_contract")
+        if isinstance(weak_contract, dict):
+            for row in weak_contract.get("profiles") if isinstance(weak_contract.get("profiles"), list) else []:
+                if isinstance(row, dict) and bool(row.get("block_new_entries", False)):
+                    profile = str(row.get("profile") or "").strip().lower()
+                    if profile:
+                        weak_profiles.add(profile)
+
+        source_profile = self._metadata_sleeve_profile(metadata)
+        if not source_profile or source_profile not in weak_profiles:
+            return False, "profile_not_quarantined", {
+                "source_profile": source_profile,
+                "weak_profiles": sorted(weak_profiles),
+            }
+
+        return True, "paper_profitability_weak_profile_new_entry_block", {
+            "source_profile": source_profile,
+            "weak_profiles": sorted(weak_profiles),
+            "raw_profitability_grade": str(control.get("raw_profitability_grade") or raw_recovery.get("current_raw_profitability_grade") or ""),
+            "controlled_profitability_grade": str(control.get("controlled_profitability_grade") or ""),
+            "control_timestamp_utc": str(control.get("timestamp_utc") or ""),
+            "control_artifact_path": str(control.get("_control_artifact_path") or ""),
+            "policy": "weak profiles may only hold, sell, or reduce until raw profitability recovery clears reentry requirements",
+        }
 
     def _resolve_shadow_domain(self) -> str:
         raw = os.getenv("SHADOW_DOMAIN", "").strip().lower()
@@ -734,6 +845,33 @@ class BaseTrader:
             if val > 0.0:
                 return val
         return max(self._as_float(features.get("last_price"), 0.0), 0.0)
+
+    def _paper_expected_fill_enabled(self) -> bool:
+        return str(os.getenv("PAPER_EXECUTION_USE_EXPECTED_FILL_PRICE", "1") or "1").strip().lower() not in {
+            "0",
+            "false",
+            "no",
+            "off",
+        }
+
+    def _paper_fill_metadata(
+        self,
+        *,
+        metadata: Dict[str, Any],
+        expected_fill: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        out = dict(metadata or {})
+        explicit_fill = any(self._as_float(out.get(key), 0.0) > 0.0 for key in ("fill_price", "execution_price"))
+        expected_price = self._as_float(expected_fill.get("expected_fill_price"), 0.0)
+        if self._paper_expected_fill_enabled() and not explicit_fill and expected_price > 0.0:
+            out["fill_price"] = float(expected_price)
+            out["paper_fill_source"] = "expected_fill_model"
+            out["paper_fill_expected_slippage_bps"] = self._as_float(expected_fill.get("expected_slippage_bps"), 0.0)
+        elif explicit_fill:
+            out.setdefault("paper_fill_source", "explicit_fill")
+        else:
+            out.setdefault("paper_fill_source", "mark_price")
+        return out
 
     def _paper_execution_model_inputs(
         self,
@@ -2958,9 +3096,125 @@ class BaseTrader:
 
         return sorted(order_ids)
 
+    def _account_snapshot_metadata(self, payload: Any, *, default_mode: str = "") -> Dict[str, Any]:
+        mode = str(default_mode or "").strip()
+        account_count = 0
+        failed_account_count = 0
+        discovered_account_count = 0
+        partial = False
+
+        if isinstance(payload, dict):
+            accounts = payload.get("accounts")
+            if isinstance(accounts, list):
+                account_count = len([row for row in accounts if isinstance(row, dict)])
+                if not mode:
+                    mode = str(payload.get("account_snapshot_mode") or "connected_account_aggregate")
+            elif isinstance(payload.get("securitiesAccount"), dict):
+                account_count = 1
+                if not mode:
+                    mode = "single_account"
+            elif any(key in payload for key in ("positions", "orderStrategies", "orders")):
+                account_count = 1
+                if not mode:
+                    mode = "single_account"
+            account_count = max(self._as_int(payload.get("account_count", account_count), account_count), account_count)
+            discovered_account_count = self._as_int(payload.get("discovered_account_count", account_count), account_count)
+            failed_account_count = self._as_int(payload.get("failed_account_count", 0), 0)
+            partial = bool(payload.get("partial", False))
+        elif isinstance(payload, list):
+            account_count = len([row for row in payload if isinstance(row, dict)])
+            discovered_account_count = account_count
+            if not mode:
+                mode = "account_list"
+
+        return {
+            "account_snapshot_mode": mode,
+            "account_count": int(account_count),
+            "discovered_account_count": int(discovered_account_count),
+            "failed_account_count": int(failed_account_count),
+            "account_snapshot_partial": bool(partial or failed_account_count > 0),
+        }
+
+    def _live_fetch_connected_accounts_payload(self) -> Dict[str, Any]:
+        accounts = self.fetch_connected_accounts()
+        if not accounts:
+            return {
+                "ok": False,
+                "operation": "get_accounts_snapshot",
+                "error": "no_connected_accounts_discovered",
+                "account_snapshot_mode": "connected_account_aggregate",
+                "account_count": 0,
+                "discovered_account_count": 0,
+                "failed_account_count": 0,
+            }
+
+        account_payloads: List[Dict[str, Any]] = []
+        failures: List[Dict[str, Any]] = []
+        for account in accounts:
+            account_reference = str(account.account_reference or "").strip()
+            account_number = str(account.account_number or "").strip()
+            candidates = self.broker_adapter.accounts_snapshot_candidates(
+                account_reference=account_reference,
+                allow_global_fallback=False,
+            )
+            out = self._invoke_client_candidates(
+                operation="get_accounts_snapshot",
+                candidates=candidates,
+                context={
+                    "account_hash_configured": bool(account_reference),
+                    "account_snapshot_mode": "connected_account_aggregate",
+                },
+            )
+            if not bool(out.get("ok", False)):
+                failures.append(
+                    {
+                        "account_number_tail": account_number[-4:] if account_number else "",
+                        "account_reference_present": bool(account_reference),
+                        "error": str(out.get("error") or "account_snapshot_failed"),
+                        "status_code": self._as_int(out.get("status_code", 0), 0),
+                        "soft_failure": bool(out.get("soft_failure", False)),
+                    }
+                )
+                continue
+            payload = self._coerce_json_obj_or_list(out.get("response"))
+            account_payload = dict(payload) if isinstance(payload, dict) else {"payload": payload}
+            account_payload["_broker_account"] = {
+                "account_number_tail": account_number[-4:] if account_number else "",
+                "account_reference_present": bool(account_reference),
+            }
+            account_payloads.append(account_payload)
+
+        aggregate_payload = {
+            "account_snapshot_mode": "connected_account_aggregate",
+            "accounts": account_payloads,
+            "account_count": len(account_payloads),
+            "discovered_account_count": len(accounts),
+            "failed_account_count": len(failures),
+            "partial": bool(failures),
+            "failures": failures[:10],
+        }
+        return {
+            "ok": bool(account_payloads),
+            "payload": aggregate_payload,
+            "operation": "get_accounts_snapshot",
+            "account_snapshot_mode": "connected_account_aggregate",
+            "account_count": len(account_payloads),
+            "discovered_account_count": len(accounts),
+            "failed_account_count": len(failures),
+            "account_snapshot_partial": bool(failures),
+            "error": "" if account_payloads else "all_connected_account_snapshots_failed",
+            "failures": failures[:10],
+        }
+
     def _live_fetch_accounts_payload(self) -> Dict[str, Any]:
         if not self._supports_broker_capability("supports_account_snapshot"):
             return self._unsupported_broker_operation("get_accounts_snapshot", "supports_account_snapshot")
+        if self.live_accounts_snapshot_aggregate_connected and self._supports_broker_capability("supports_account_discovery"):
+            aggregate = self._live_fetch_connected_accounts_payload()
+            if bool(aggregate.get("ok", False)):
+                return aggregate
+            if not self.live_accounts_snapshot_allow_global_fallback:
+                return aggregate
         if not self.live_account_hash:
             self._discover_live_account_hash(force=True)
 
@@ -2995,10 +3249,15 @@ class BaseTrader:
             return out
 
         payload = self._coerce_json_obj_or_list(out.get("response"))
+        meta = self._account_snapshot_metadata(
+            payload,
+            default_mode="single_account_hash" if self.live_account_hash else "global_account_snapshot",
+        )
         return {
             "ok": True,
             "payload": payload,
             "operation": "get_accounts_snapshot",
+            **meta,
         }
 
     def cancel_all_live_open_orders(self, *, max_orders: int = 200) -> Dict[str, Any]:
@@ -3420,6 +3679,42 @@ class BaseTrader:
             )
 
             if self._is_trade_action(action):
+                blocked, reason, details = self._paper_profitability_new_entry_blocked(
+                    action=action,
+                    metadata=paper_metadata,
+                )
+                if blocked:
+                    status = "PAPER_PROFITABILITY_GUARD_BLOCKED"
+                    guard_payload = {
+                        "gate": "paper_profitability_weak_profile_new_entry",
+                        "reason": reason,
+                        "details": details,
+                    }
+                    self._log_live_guard_event(
+                        event="pre_trade_check",
+                        status="blocked",
+                        reason=reason,
+                        details={
+                            "symbol": str(symbol).upper(),
+                            "action": str(action).upper(),
+                            "quantity": float(quantity),
+                            **guard_payload,
+                        },
+                    )
+                    result = {
+                        "status": status,
+                        "mode": self.mode,
+                        "decision": decision_entry,
+                        "live_guard_decision": guard_payload,
+                        "live_guard": self.live_guard.snapshot(),
+                    }
+                    self._emit_decision_explanation(
+                        status=status,
+                        decision_entry=decision_entry,
+                        safety=safety,
+                    )
+                    return result
+
                 paper_guard = self.live_guard.pre_trade_check(
                     symbol=symbol,
                     action=action,
@@ -3461,14 +3756,6 @@ class BaseTrader:
 
                 self.live_guard.mark_trade_submitted(symbol=symbol)
 
-            paper_pnl = self._paper_pnl_fields(
-                symbol=symbol,
-                action=action,
-                quantity=quantity,
-                features=features,
-                metadata=paper_metadata,
-            )
-
             expected_fill: Dict[str, float] = {}
             model_inputs: Dict[str, float] = {}
             if self._is_trade_action(action) and ref_price > 0.0:
@@ -3487,6 +3774,14 @@ class BaseTrader:
                     bid_size=float(model_inputs.get("bid_size", 1000.0)),
                     ask_size=float(model_inputs.get("ask_size", 1000.0)),
                 )
+            paper_fill_metadata = self._paper_fill_metadata(metadata=paper_metadata, expected_fill=expected_fill)
+            paper_pnl = self._paper_pnl_fields(
+                symbol=symbol,
+                action=action,
+                quantity=quantity,
+                features=features,
+                metadata=paper_fill_metadata,
+            )
             realized_fill_price = self._as_float(paper_pnl.get("fill_price"), 0.0)
             realized_slippage_bps = 0.0
             if self._is_trade_action(action) and ref_price > 0.0 and realized_fill_price > 0.0:
@@ -3528,6 +3823,7 @@ class BaseTrader:
                     "expected_fill_quality_bucket": str(expected_fill.get("fill_quality_bucket") or ""),
                     "realized_slippage_bps": float(realized_slippage_bps),
                     "slippage_gap_bps": round(float(realized_slippage_bps - float(expected_fill.get("expected_slippage_bps", 0.0) or 0.0)), 6),
+                    "paper_fill_source": str(paper_fill_metadata.get("paper_fill_source") or ""),
                     "model_spread_bps": model_spread_bps,
                     "model_latency_ms": float(model_inputs.get("latency_ms", 0.0) or 0.0),
                     "model_bid_size": float(model_inputs.get("bid_size", 0.0) or 0.0),

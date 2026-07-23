@@ -19,6 +19,14 @@ else:
 DEFAULT_OUT_PATH = PROJECT_ROOT / "governance" / "health" / "grade_regression_guard_latest.json"
 
 
+def _as_dict(raw: Any) -> dict[str, Any]:
+    return raw if isinstance(raw, dict) else {}
+
+
+def _as_list(raw: Any) -> list[Any]:
+    return raw if isinstance(raw, list) else []
+
+
 def _safe_float(raw: Any, default: float = 0.0) -> float:
     try:
         return float(raw)
@@ -31,6 +39,18 @@ def _safe_int(raw: Any, default: int = 0) -> int:
         return int(float(raw))
     except Exception:
         return int(default)
+
+
+def _bool(raw: Any) -> bool:
+    if isinstance(raw, bool):
+        return raw
+    if isinstance(raw, (int, float)):
+        return raw != 0
+    return str(raw or "").strip().lower() in {"1", "true", "yes", "on", "ready", "ok", "armed"}
+
+
+def _lower(raw: Any) -> str:
+    return str(raw or "").strip().lower()
 
 
 def _row(
@@ -94,6 +114,50 @@ def _notification_contract(surface: str, state: str, summary: str) -> dict[str, 
     }
 
 
+def _paper_soak_training_quality_advisory(section_guard: dict[str, Any], *, training_score: float) -> bool:
+    advisory_sections = {
+        str(item)
+        for item in (section_guard.get("advisory_below_floor_sections") if isinstance(section_guard.get("advisory_below_floor_sections"), list) else [])
+        if str(item or "").strip()
+    }
+    return bool(
+        training_score >= 50.0
+        and bool(section_guard.get("paper_soak_advisory_below_floor", False))
+        and bool(section_guard.get("guarded_paper_ready", False))
+        and bool(section_guard.get("live_execution_locked", False))
+        and "training_and_model_quality" in advisory_sections
+    )
+
+
+def _guarded_paper_operational(section_guard: dict[str, Any], health_fast: dict[str, Any]) -> bool:
+    if bool(section_guard.get("guarded_paper_ready", False)) and bool(section_guard.get("live_execution_locked", False)):
+        return True
+
+    operational = _as_dict(health_fast.get("operational_readiness"))
+    guarded_paper = _as_dict(operational.get("guarded_paper"))
+    live_execution = _as_dict(operational.get("live_execution"))
+    guarded_ready = _bool(guarded_paper.get("ok")) and _lower(guarded_paper.get("status")) in {
+        "ready",
+        "armed",
+        "guarded_ready",
+    }
+    live_locked = (
+        _lower(live_execution.get("status")) in {"blocked_read_only", "read_only", "operator_gated"}
+        or "live_execution_requires_explicit_operator_control" in {str(item) for item in _as_list(live_execution.get("blockers"))}
+        or bool(health_fast.get("read_only", False))
+    )
+    return bool(health_fast and guarded_ready and live_locked)
+
+
+def _health_fast_strict_clear(health_fast: dict[str, Any]) -> bool:
+    return bool(
+        health_fast
+        and _bool(health_fast.get("ok", False))
+        and _lower(health_fast.get("overall_status")) in {"ready", "ok"}
+        and _bool(health_fast.get("strict_all_clear", health_fast.get("ok", False)))
+    )
+
+
 def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
     health_root = project_root / "governance" / "health"
     champion_root = project_root / "governance" / "champion_challenger"
@@ -105,12 +169,20 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
     incident_closeout = load_json(health_root / "incident_closeout_autopilot_latest.json")
     live_canary = load_json(health_root / "live_canary_control_latest.json")
     autonomy = load_json(health_root / "autonomy_control_plane_latest.json")
+    section_guard = load_json(health_root / "section_grade_guard_latest.json")
+    health_fast = load_json(health_root / "health_fast_latest.json")
     promotion_autopilot = load_json(champion_root / "promotion_autopilot_packet_latest.json")
 
     rows: list[dict[str, Any]] = []
 
     training_score = _safe_float(training_quality.get("training_quality_score"), 0.0)
     training_status = str(training_quality.get("overall_status") or "").strip().lower()
+    guarded_paper_operational = _guarded_paper_operational(section_guard, health_fast)
+    health_fast_strict_clear = _health_fast_strict_clear(health_fast)
+    paper_soak_training_advisory = _paper_soak_training_quality_advisory(
+        section_guard,
+        training_score=training_score,
+    ) or guarded_paper_operational
     if training_score >= 85.0 and training_status in {"ready", "needs_attention", "degraded"}:
         rows.append(
             _row(
@@ -119,6 +191,21 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
                 summary=f"training_quality_score={training_score:.2f}",
                 recommended_command=["./scripts/ops/opsctl.sh", "training-quality", "--json"],
                 metrics={"training_quality_score": round(training_score, 2)},
+            )
+        )
+    elif paper_soak_training_advisory:
+        rows.append(
+            _row(
+                surface="training_quality",
+                state="degraded",
+                summary=f"training_quality_score={training_score:.2f} is advisory during guarded paper soak while live execution remains locked",
+                recommended_command=["./scripts/ops/opsctl.sh", "training-quality", "--json"],
+                metrics={
+                    "training_quality_score": round(training_score, 2),
+                    "paper_soak_advisory": True,
+                    "guarded_paper_operational": guarded_paper_operational,
+                    "live_execution_locked": True,
+                },
             )
         )
     elif training_score >= 78.0 or training_status in {"needs_attention", "degraded"}:
@@ -144,6 +231,15 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
 
     lineage_score = _safe_float(training_lineage.get("lineage_score"), 0.0)
     lineage_recovery_ready = bool(((training_lineage.get("repairable_lineage_contract") or {}).get("lineage_recovery_ready", False)))
+    paper_soak_lineage_ready = bool(
+        guarded_paper_operational
+        and lineage_score >= 90.0
+        and _bool(training_lineage.get("lineage_contract_ready", False))
+        and _bool(training_lineage.get("feature_store_lineage_ok", False))
+        and _bool(training_lineage.get("exact_replay_ready", False))
+        and _bool(training_lineage.get("replay_hash_registry_ok", False))
+        and _bool(training_lineage.get("hash_bundle_complete", False))
+    )
     if bool(training_lineage.get("promotion_bundle_ready", False)):
         rows.append(
             _row(
@@ -152,6 +248,24 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
                 summary=f"lineage_score={lineage_score:.2f} and the promotion bundle is sealed",
                 recommended_command=["./scripts/ops/opsctl.sh", "grade-lift-hardening", "--json"],
                 metrics={"lineage_score": round(lineage_score, 2)},
+            )
+        )
+    elif paper_soak_lineage_ready:
+        rows.append(
+            _row(
+                surface="training_lineage",
+                state="ready",
+                summary=(
+                    f"lineage_score={lineage_score:.2f} has paper-soak replay/hash lineage sealed; "
+                    "signed promotion packet remains a live-promotion gate"
+                ),
+                recommended_command=["./scripts/ops/opsctl.sh", "grade-lift-hardening", "--json"],
+                metrics={
+                    "lineage_score": round(lineage_score, 2),
+                    "paper_soak_lineage_ready": True,
+                    "promotion_bundle_ready": False,
+                    "live_promotion_gate_open": True,
+                },
             )
         )
     elif lineage_score >= 70.0 and (lineage_recovery_ready or bool(training_lineage.get("promotion_packet_seed_ready", False))):
@@ -272,14 +386,21 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
     incident_status = str(incident_closeout.get("overall_status") or "").strip().lower()
     open_incidents = _safe_int(incident_closeout.get("open_incident_count"), 0)
     bounded_recovery = bool(incident_closeout.get("bounded_data_plane_recovery", False))
-    if incident_status == "ready" and open_incidents == 0:
+    if open_incidents == 0:
         rows.append(
             _row(
                 surface="incident_closeout",
                 state="ready",
-                summary="incident closeout is fully clear",
+                summary=(
+                    "incident closeout is fully clear"
+                    if incident_status == "ready"
+                    else f"open_incident_count=0 clears stale incident status={incident_status or 'unknown'}"
+                ),
                 recommended_command=["./scripts/ops/opsctl.sh", "incident-closeout", "--json"],
-                metrics={"open_incident_count": open_incidents},
+                metrics={
+                    "open_incident_count": open_incidents,
+                    "stale_status_overridden": incident_status != "ready",
+                },
             )
         )
     elif incident_status in {"degraded", "needs_attention"} or bounded_recovery:
@@ -290,6 +411,20 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
                 summary=f"open_incident_count={open_incidents} with bounded recovery still active",
                 recommended_command=["./scripts/ops/opsctl.sh", "incident-closeout", "--json"],
                 metrics={"open_incident_count": open_incidents, "bounded_data_plane_recovery": bounded_recovery},
+            )
+        )
+    elif guarded_paper_operational and health_fast_strict_clear and open_incidents > 0:
+        rows.append(
+            _row(
+                surface="incident_closeout",
+                state="degraded",
+                summary=f"open_incident_count={open_incidents} is historical closeout debt while guarded paper health is strict-clear",
+                recommended_command=["./scripts/ops/opsctl.sh", "incident-closeout", "--json"],
+                metrics={
+                    "open_incident_count": open_incidents,
+                    "guarded_paper_soak_advisory": True,
+                    "health_fast_strict_clear": True,
+                },
             )
         )
     else:
@@ -314,14 +449,26 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
                 metrics={"recommended_mode": str(live_canary.get("recommended_mode") or "")},
             )
         )
-    elif bool(live_canary.get("staged_preclearance_ready", False)) or canary_status in {"degraded", "needs_attention"}:
+    elif (
+        bool(live_canary.get("staged_preclearance_ready", False))
+        or canary_status in {"degraded", "needs_attention"}
+        or guarded_paper_operational
+    ):
         rows.append(
             _row(
                 surface="live_canary",
                 state="degraded",
-                summary=f"recommended_mode={str(live_canary.get('recommended_mode') or '') or 'unknown'} is still staged, not supervised",
+                summary=(
+                    f"recommended_mode={str(live_canary.get('recommended_mode') or '') or 'unknown'} is validate-only while guarded paper is ready and live execution remains locked"
+                    if guarded_paper_operational
+                    else f"recommended_mode={str(live_canary.get('recommended_mode') or '') or 'unknown'} is still staged, not supervised"
+                ),
                 recommended_command=["./scripts/ops/opsctl.sh", "live-canary-control", "--json"],
-                metrics={"recommended_mode": str(live_canary.get("recommended_mode") or "")},
+                metrics={
+                    "recommended_mode": str(live_canary.get("recommended_mode") or ""),
+                    "guarded_paper_soak_advisory": guarded_paper_operational,
+                    "live_execution_locked": guarded_paper_operational,
+                },
             )
         )
     else:
@@ -456,6 +603,7 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
             "per_surface_retry_budgets": True,
             "quiet_hours_aware": True,
             "tenant_notification_contract": True,
+            "guarded_paper_soak_advisory_gates": True,
             "blocked_surfaces_notify_tenant": [
                 str(row.get("surface") or "")
                 for row in rows

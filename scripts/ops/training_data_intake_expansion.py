@@ -374,6 +374,7 @@ ROLE_CONTEXT_EXTRAS: dict[str, list[str]] = {
 
 WEAKNESS_CONTEXT: dict[str, list[str]] = {
     "sample_starved": ["decision_explanations", "paper_live_outcome", "feature_lineage"],
+    "label_depth_gap": ["label_outcome_join", "sample_eligibility_reason", "rejected_candidate_trace", "abstained_candidate_trace"],
     "sequence_starved": ["runtime_training_snapshot", "sequence_history", "feature_lineage"],
     "label_imbalanced": ["lane_balance_bucket", "action_effect_bucket", "side_specific_outcome"],
     "overacting": ["confidence_trace", "abstention_threshold_trace", "side_specific_outcome"],
@@ -418,6 +419,15 @@ ENRICHMENT_CONTEXT_BY_WEAKNESS: dict[str, list[str]] = {
         "confidence_trace",
         "symbol_session_bucket",
         "decision_reason_taxonomy",
+    ],
+    "label_depth_gap": [
+        "label_outcome_join",
+        "sample_eligibility_reason",
+        "abstained_candidate_trace",
+        "rejected_candidate_trace",
+        "neutral_examples",
+        "counterfactual_opportunity_trace",
+        "point_in_time_label_quality",
     ],
     "sequence_starved": [
         "longer_lookback_sequences",
@@ -637,8 +647,17 @@ def _is_active_collector(row: dict[str, Any]) -> bool:
     )
 
 
+def _is_explicit_intake_target(row: dict[str, Any]) -> bool:
+    state = str(row.get("lifecycle_state") or "").strip().lower()
+    return bool(
+        _bot_id(row)
+        and bool(row.get("active", False))
+        and state not in {"retired", "deleted", "deactivated"}
+    )
+
+
 def _csv_set(raw: str) -> set[str]:
-    return {item.strip() for item in str(raw or "").split(",") if item.strip()}
+    return {item.strip().lower() for item in str(raw or "").split(",") if item.strip()}
 
 
 def _label_contract(row: dict[str, Any], diagnostic: dict[str, Any]) -> dict[str, Any]:
@@ -707,7 +726,7 @@ def _index_bot_needs(payload: dict[str, Any]) -> dict[str, dict[str, Any]]:
     for row in _as_list(payload.get("bot_needs")):
         if not isinstance(row, dict):
             continue
-        bot_id = str(row.get("bot_id") or "").strip()
+        bot_id = str(row.get("bot_id") or "").strip().lower()
         if bot_id:
             indexed[bot_id] = row
     return indexed
@@ -797,7 +816,7 @@ def _advanced_quant_section_contract(
                 "weakness_repair_focus": [
                     weakness
                     for weakness in weaknesses
-                    if weakness.startswith("advanced_quant_") or weakness in {"sample_starved", "sequence_starved", "label_imbalanced"}
+                    if weakness.startswith("advanced_quant_") or weakness in {"sample_starved", "label_depth_gap", "sequence_starved", "label_imbalanced"}
                 ],
             }
         )
@@ -860,6 +879,8 @@ def _weaknesses(
         sample_count < SAMPLE_FLOOR or observation_count < minimum_observations
     ):
         out.append("sample_starved")
+    if sample_count < SAMPLE_FLOOR and observation_count > 0:
+        out.append("label_depth_gap")
     if eligible_sequences < ELIGIBLE_SEQUENCE_FLOOR:
         out.append("sequence_starved")
     if sample_count > 0 and positive_rate >= 0.0 and (positive_rate < 0.25 or positive_rate > 0.75):
@@ -957,7 +978,7 @@ def _sample_enrichment_plan(
     advanced_targets = ADVANCED_QUANT_SAMPLE_TARGETS.get(label_family, {}) if _is_advanced_quant_family(label_family) else {}
     base_sample_goal = max(USABLE_SAMPLE_GOAL, _safe_int(advanced_targets.get("sample"), USABLE_SAMPLE_GOAL))
     base_sequence_goal = max(ELIGIBLE_SEQUENCE_GOAL, _safe_int(advanced_targets.get("sequence"), ELIGIBLE_SEQUENCE_GOAL))
-    sample_goal = base_sample_goal if ("sample_starved" in weaknesses or "advanced_quant_depth_debt" in weaknesses) else SAMPLE_FLOOR
+    sample_goal = base_sample_goal if ("sample_starved" in weaknesses or "label_depth_gap" in weaknesses or "advanced_quant_depth_debt" in weaknesses) else SAMPLE_FLOOR
     eligible_goal = base_sequence_goal if ("sequence_starved" in weaknesses or "advanced_quant_depth_debt" in weaknesses) else ELIGIBLE_SEQUENCE_FLOOR
     observation_goal = max(minimum_observations, observation_count)
     if advanced_targets:
@@ -974,6 +995,9 @@ def _sample_enrichment_plan(
     if sample_gap:
         actions.append("materialize accepted and rejected candidate rows into point-in-time decision explanations")
         actions.append("persist label_outcome_join fields so raw observations become usable samples")
+    if "label_depth_gap" in weaknesses:
+        actions.append("run the label-depth bridge over existing raw observations before requiring another blind collection pass")
+        actions.append("keep abstained and neutral candidates as eligible calibration examples instead of discarding them")
     if sequence_gap:
         actions.append("increase sequence history coverage across session buckets and related symbols")
     if "label_imbalanced" in weaknesses:
@@ -1104,6 +1128,64 @@ def _label_repair_plan(
     }
 
 
+def _label_depth_bridge(
+    *,
+    bot_id: str,
+    label_family: str,
+    sample_count: int,
+    observation_count: int,
+    eligible_sequences: int,
+    sample_plan: dict[str, Any],
+    label_repair_plan: dict[str, Any],
+) -> dict[str, Any]:
+    sample_goal = _safe_int(sample_plan.get("usable_sample_goal"), USABLE_SAMPLE_GOAL)
+    sequence_goal = _safe_int(sample_plan.get("eligible_sequence_goal"), ELIGIBLE_SEQUENCE_GOAL)
+    observation_goal = _safe_int(sample_plan.get("observation_goal"), max(observation_count, OBSERVATION_FLOOR_DEFAULT))
+    status = "ready"
+    if sample_count < sample_goal and observation_count > 0:
+        status = "materialize_from_existing_observations"
+    if observation_count < observation_goal:
+        status = "collect_and_materialize"
+    if sample_count >= sample_goal and eligible_sequences >= sequence_goal:
+        status = "depth_ready"
+    return {
+        "version": "label_depth_bridge_v1",
+        "bot_id": bot_id,
+        "label_family": label_family,
+        "status": status,
+        "current_sample_count": sample_count,
+        "current_observation_count": observation_count,
+        "current_eligible_sequences": eligible_sequences,
+        "usable_sample_goal": sample_goal,
+        "eligible_sequence_goal": sequence_goal,
+        "observation_goal": observation_goal,
+        "usable_sample_gap": max(sample_goal - sample_count, 0),
+        "eligible_sequence_gap": max(sequence_goal - eligible_sequences, 0),
+        "observation_gap": max(observation_goal - observation_count, 0),
+        "conversion_target_min": 0.12,
+        "required_join_mode": "point_in_time_only",
+        "required_join_keys": list(label_repair_plan.get("required_join_keys") or []),
+        "required_label_outputs": list(label_repair_plan.get("required_label_outputs") or []),
+        "required_event_mix": [
+            "accepted_candidate_trace",
+            "rejected_candidate_trace",
+            "abstained_candidate_trace",
+            "neutral_examples",
+            "counter_side_examples",
+            "paper_live_outcome",
+        ],
+        "next_action": (
+            "materialize label_outcome_join and sample_eligibility_reason from the existing observation pool"
+            if observation_count > 0
+            else "collect point-in-time observations before materializing label depth"
+        ),
+        "stop_when": (
+            f"real sample_count >= {sample_goal}, eligible_sequences >= {sequence_goal}, "
+            f"and observation_count >= {observation_goal}"
+        ),
+    }
+
+
 def _priority(
     *,
     need: dict[str, Any],
@@ -1121,6 +1203,8 @@ def _priority(
         priority += 18.0
     if "confirmation_bias" in weaknesses:
         priority += 16.0
+    if "label_depth_gap" in weaknesses:
+        priority += 14.0
     if "sample_starved" in weaknesses:
         priority += min(max(minimum_observations - observation_count, SAMPLE_FLOOR - sample_count, 0) / 25.0, 30.0)
     if "quality_weak" in weaknesses:
@@ -1221,6 +1305,15 @@ def _row_record(
         extra_required_outputs=scout_required_outputs,
         extra_collection_actions=scout_collection_rules,
     )
+    label_depth_bridge = _label_depth_bridge(
+        bot_id=bot_id,
+        label_family=label_family,
+        sample_count=sample_count,
+        observation_count=observation_count,
+        eligible_sequences=eligible_sequences,
+        sample_plan=enrichment_plan,
+        label_repair_plan=label_repair_plan,
+    )
     advanced_quant_section_contract = _advanced_quant_section_contract(
         bot_id=bot_id,
         label_family=label_family,
@@ -1259,6 +1352,7 @@ def _row_record(
         "enrichment_context": enrichment_plan["enrichment_context"],
         "sample_enrichment_plan": enrichment_plan,
         "label_repair_plan": label_repair_plan,
+        "label_depth_bridge": label_depth_bridge,
         "advanced_quant_collection_contract": advanced_quant_section_contract,
         "diagnostic_path": str(_diagnostic_path(project_root, bot_id)),
         "next_action": _next_action(primary_need, weaknesses),
@@ -1267,6 +1361,8 @@ def _row_record(
 
 
 def _next_action(primary_need: str, weaknesses: list[str]) -> str:
+    if primary_need == "materialize_label_depth" or "label_depth_gap" in weaknesses:
+        return "materialize point-in-time label joins and sample eligibility reasons from existing observations"
     if primary_need == "collect_more_data" or "sample_starved" in weaknesses:
         return "route more point-in-time observations through the focus_context before another canary"
     if "overacting" in weaknesses:
@@ -1361,6 +1457,7 @@ def _apply_focus_to_registry(
             "enrichment_context": record.get("enrichment_context"),
             "sample_enrichment_plan": record.get("sample_enrichment_plan"),
             "label_repair_plan": record.get("label_repair_plan"),
+            "label_depth_bridge": record.get("label_depth_bridge"),
             "advanced_quant_collection_contract": record.get("advanced_quant_collection_contract"),
             "stop_when": record.get("stop_when"),
             "source_artifact": str(DEFAULT_OUT_PATH.relative_to(PROJECT_ROOT)),
@@ -1372,6 +1469,7 @@ def _apply_focus_to_registry(
             row["data_collection_enrichment_context"] = list(record.get("enrichment_context") or [])
             row["data_collection_sample_enrichment_plan"] = dict(record.get("sample_enrichment_plan") or {})
             row["data_collection_label_repair_plan"] = dict(record.get("label_repair_plan") or {})
+            row["data_collection_label_depth_bridge"] = dict(record.get("label_depth_bridge") or {})
             row["data_collection_advanced_quant_contract"] = dict(record.get("advanced_quant_collection_contract") or {})
             row["data_collection_paper_loss_controls"] = list(record.get("paper_loss_controls") or [])
             row["data_collection_profitability_scout_contract"] = dict(record.get("profitability_scout_collection") or {})
@@ -1436,11 +1534,15 @@ def build_payload(
     paper_loss_controls_by_bot = _paper_loss_index(paper_profitability)
     paper_scout_collection_by_bot = _paper_scout_collection_index(paper_profitability)
     records: list[dict[str, Any]] = []
+    explicit_include = bool(include_bot_ids)
     for row in _registry_rows(registry):
-        bot_id = _bot_id(row)
+        bot_id = _bot_id(row).lower()
         if include_bot_ids and bot_id not in include_bot_ids:
             continue
-        if not _is_active_collector(row):
+        if explicit_include:
+            if not _is_explicit_intake_target(row):
+                continue
+        elif not _is_active_collector(row):
             continue
         records.append(
             _row_record(
@@ -1551,6 +1653,8 @@ def main() -> int:
                 "usable_sample_goal": USABLE_SAMPLE_GOAL,
                 "eligible_sequence_floor": ELIGIBLE_SEQUENCE_FLOOR,
                 "eligible_sequence_goal": ELIGIBLE_SEQUENCE_GOAL,
+                "label_depth_bridge_version": "label_depth_bridge_v1",
+                "conversion_target_min": 0.12,
             },
             "label_repair_policy": {
                 "version": "label_repair_v1",

@@ -15,13 +15,13 @@ if __package__ in {None, ""}:
     from core.licensing_api.default_connector import DefaultLicensingAPIConnector
     from core.licensing_api.grade_snapshot import build_grade_snapshot
     from core.licensing_api.models import LicensingTenantContext
-    from scripts.ops.long_runtime_common import PROJECT_ROOT, iso_now, ordered_unique, write_payload
+    from scripts.ops.long_runtime_common import PROJECT_ROOT, iso_now, load_json, ordered_unique, write_payload
 else:
     from core.brokers import BrokerRuntimeConfig
     from core.licensing_api.default_connector import DefaultLicensingAPIConnector
     from core.licensing_api.grade_snapshot import build_grade_snapshot
     from core.licensing_api.models import LicensingTenantContext
-    from .long_runtime_common import PROJECT_ROOT, iso_now, ordered_unique, write_payload
+    from .long_runtime_common import PROJECT_ROOT, iso_now, load_json, ordered_unique, write_payload
 
 
 DEFAULT_OUT_PATH = PROJECT_ROOT / "governance" / "health" / "section_grade_guard_latest.json"
@@ -83,6 +83,16 @@ SECTION_COMMANDS: dict[str, list[list[str]]] = {
         ["./scripts/ops/opsctl.sh", "training-quality", "--json"],
     ],
 }
+PAPER_SOAK_ADVISORY_BELOW_FLOOR_SECTIONS = {
+    "live_trading_readiness",
+    "training_and_model_quality",
+    "ops_and_autonomy",
+}
+GUARDED_READ_ONLY_RUNTIME_STATES = {
+    "guarded_live_read_only",
+    "managed_cold_lane_deferred",
+    "managed_coverage_stage_deferred",
+}
 
 
 def _row_from_section(slug: str, row: dict[str, Any]) -> dict[str, Any]:
@@ -103,7 +113,28 @@ def _row_from_section(slug: str, row: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _guarded_paper_ready(health_fast: dict[str, Any]) -> bool:
+    operational = health_fast.get("operational_readiness") if isinstance(health_fast.get("operational_readiness"), dict) else {}
+    guarded_paper = operational.get("guarded_paper") if isinstance(operational.get("guarded_paper"), dict) else {}
+    return bool(
+        guarded_paper.get("ok", False)
+        and str(guarded_paper.get("status") or "").strip().lower() in {"ready", "armed", "guarded_ready"}
+    )
+
+
+def _live_execution_locked(health_fast: dict[str, Any], runtime: dict[str, Any]) -> bool:
+    operational = health_fast.get("operational_readiness") if isinstance(health_fast.get("operational_readiness"), dict) else {}
+    live_execution = operational.get("live_execution") if isinstance(operational.get("live_execution"), dict) else {}
+    clearance_state = str(((runtime.get("clearance_plan") or {}).get("clearance_state") or "")).strip().lower()
+    return bool(
+        clearance_state in GUARDED_READ_ONLY_RUNTIME_STATES
+        or str(live_execution.get("status") or "").strip().lower() in {"blocked_read_only", "read_only", "operator_gated"}
+        or "live_execution_requires_explicit_operator_control" in set(live_execution.get("blockers") or [])
+    )
+
+
 def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
+    health_root = project_root / "governance" / "health"
     connector = DefaultLicensingAPIConnector()
     snapshot = build_grade_snapshot(
         project_root=project_root,
@@ -111,11 +142,25 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
         tenant=LOCAL_TENANT,
         endpoint_count=len(connector.exposed_endpoints),
     )
+    health_fast = load_json(health_root / "health_fast_latest.json")
+    runtime = load_json(health_root / "live_runtime_separation_control_latest.json")
     section_rows = [_row_from_section(slug, row) for slug, row in (snapshot.get("section_grades") or {}).items()]
     below_floor = [row["section"] for row in section_rows if row["state"] == "below_floor"]
     protected_by_floor = [row["section"] for row in section_rows if row["state"] == "protected_by_floor"]
     at_floor = [row["section"] for row in section_rows if row["state"] == "at_floor"]
-    overall_status = "blocked" if below_floor else ("degraded" if protected_by_floor else "ready")
+    guarded_paper_ready = _guarded_paper_ready(health_fast)
+    live_execution_locked = _live_execution_locked(health_fast, runtime)
+    guarded_paper_strict_clear = bool(health_fast.get("strict_all_clear", False) and guarded_paper_ready and live_execution_locked)
+    paper_soak_advisory_below_floor = bool(
+        below_floor
+        and set(below_floor).issubset(PAPER_SOAK_ADVISORY_BELOW_FLOOR_SECTIONS)
+        and guarded_paper_ready
+        and live_execution_locked
+        and (guarded_paper_strict_clear or float(snapshot.get("overall_score", 0.0) or 0.0) >= 96.0)
+    )
+    advisory_below_floor = below_floor if paper_soak_advisory_below_floor else []
+    blocking_below_floor = [section for section in below_floor if section not in set(advisory_below_floor)]
+    overall_status = "blocked" if blocking_below_floor else ("degraded" if protected_by_floor or advisory_below_floor else "ready")
     recommended_actions = ordered_unique(
         [
             "keep the section-grade floor bot active so A-/A sections stay protected even when raw live artifacts dip during bounded recovery"
@@ -124,8 +169,11 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
             "run the targeted repair commands for the floor-protected sections so their raw grades catch back up to the protected floor"
             if protected_by_floor
             else "",
+            "keep training collection, rebalancing, and coverage staging active; training quality debt is advisory while guarded paper is ready and live execution remains locked"
+            if advisory_below_floor
+            else "",
             "focus on the sections below floor first; they are the only grades not meeting the current A-/A contract"
-            if below_floor
+            if blocking_below_floor
             else "",
         ]
         + [row["floor_reason"] for row in section_rows if row["state"] == "protected_by_floor" and row["floor_reason"]]
@@ -133,7 +181,7 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
     return {
         "timestamp_utc": iso_now(),
         "schema_version": 1,
-        "ok": not below_floor,
+        "ok": not blocking_below_floor,
         "overall_status": overall_status,
         "overall_letter_grade": str(snapshot.get("overall_letter_grade") or ""),
         "raw_overall_letter_grade": str(snapshot.get("raw_overall_letter_grade") or ""),
@@ -141,13 +189,21 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
         "raw_overall_score": float(snapshot.get("raw_overall_score", 0.0) or 0.0),
         "section_count": len(section_rows),
         "below_floor_count": len(below_floor),
+        "blocking_below_floor_count": len(blocking_below_floor),
+        "advisory_below_floor_count": len(advisory_below_floor),
         "protected_by_floor_count": len(protected_by_floor),
         "at_floor_count": len(at_floor),
         "below_floor_sections": below_floor,
+        "blocking_below_floor_sections": blocking_below_floor,
+        "advisory_below_floor_sections": advisory_below_floor,
         "protected_sections": protected_by_floor,
         "at_floor_sections": at_floor,
         "sections": section_rows,
         "grade_snapshot": snapshot,
+        "guarded_paper_ready": guarded_paper_ready,
+        "live_execution_locked": live_execution_locked,
+        "guarded_paper_strict_clear": guarded_paper_strict_clear,
+        "paper_soak_advisory_below_floor": paper_soak_advisory_below_floor,
         "upgrade_track": {
             "family": "infrabots",
             "upgradeable": True,

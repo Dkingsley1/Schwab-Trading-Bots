@@ -130,6 +130,61 @@ class StorageRouterTests(unittest.TestCase):
                 (local_root / 'logs').resolve(strict=False),
             )
 
+    def test_passthrough_data_dir_reconciles_existing_nested_sqlite_links_to_active_root(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td) / 'repo'
+            root.mkdir()
+            (root / 'data').mkdir()
+            external_root = Path(td) / 'external'
+            external_root.mkdir(parents=True, exist_ok=True)
+            local_root = root / 'local_fallback_storage'
+            self._write_text(local_root / 'data' / 'jsonl_link.sqlite3', 'local-primary')
+            self._write_text(local_root / 'data' / 'snapshot_context.sqlite3', 'local-snapshot')
+            self._write_text(external_root / 'data' / 'bot_channel_queue.sqlite3', 'external-queue')
+            (root / 'data' / 'jsonl_link.sqlite3').symlink_to(external_root / 'data' / 'jsonl_link.sqlite3')
+            (root / 'data' / 'jsonl_link.sqlite3-wal').symlink_to(external_root / 'data' / 'jsonl_link.sqlite3-wal')
+            (root / 'data' / 'snapshot_context.sqlite3').symlink_to(external_root / 'data' / 'snapshot_context.sqlite3')
+            (root / 'data' / 'bot_channel_queue.sqlite3').symlink_to(external_root / 'data' / 'bot_channel_queue.sqlite3')
+
+            previous = self._set_env(
+                {
+                    'BOT_LOGS_EXTERNAL_PROJECT_ROOT': str(external_root),
+                    'BOT_LOGS_LOCAL_FALLBACK_ROOT': str(local_root),
+                    'BOT_LOGS_AUTO_SYNC_ON_RECONNECT': '0',
+                    'BOT_LOGS_EXTERNAL_MIN_FREE_BYTES': '100',
+                }
+            )
+            usage = shutil.disk_usage(td)
+            try:
+                with mock.patch.object(
+                    storage_router.shutil,
+                    'disk_usage',
+                    return_value=type(usage)(usage.total, usage.used, 50),
+                ):
+                    result = storage_router.route_runtime_storage(root, link_dirs=('logs',))
+            finally:
+                self._restore_env(previous)
+
+            self.assertEqual(result.mode, 'local_fallback')
+            self.assertEqual(
+                storage_router._resolve_link_target(root / 'data' / 'jsonl_link.sqlite3'),
+                (local_root / 'data' / 'jsonl_link.sqlite3').resolve(strict=False),
+            )
+            self.assertEqual(
+                storage_router._resolve_link_target(root / 'data' / 'jsonl_link.sqlite3-wal'),
+                (local_root / 'data' / 'jsonl_link.sqlite3-wal').resolve(strict=False),
+            )
+            self.assertEqual(
+                storage_router._resolve_link_target(root / 'data' / 'snapshot_context.sqlite3'),
+                (local_root / 'data' / 'snapshot_context.sqlite3').resolve(strict=False),
+            )
+            self.assertEqual(
+                storage_router._resolve_link_target(root / 'data' / 'bot_channel_queue.sqlite3'),
+                (external_root / 'data' / 'bot_channel_queue.sqlite3').resolve(strict=False),
+            )
+            self.assertIn('data/jsonl_link.sqlite3', result.switched_links)
+            self.assertIn('nested_sqlite_skipped:data/bot_channel_queue.sqlite3', result.passthrough_paths)
+
     def test_auto_sync_records_copy_error_details(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)

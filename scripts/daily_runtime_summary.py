@@ -1,6 +1,7 @@
 import argparse
 import glob
 import json
+import os
 from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
@@ -10,20 +11,29 @@ from typing import Any, Dict, Iterable, Iterator, List, Optional
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 
-def _iter_jsonl(path: Path) -> Iterator[Dict[str, Any]]:
+def _iter_jsonl(path: Path, *, tail_bytes: int = 0) -> Iterator[Dict[str, Any]]:
     if not path.exists():
         return
-    with path.open("r", encoding="utf-8") as f:
-        for line in f:
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                obj = json.loads(line)
-            except Exception:
-                continue
-            if isinstance(obj, dict):
-                yield obj
+    if tail_bytes > 0 and path.stat().st_size > tail_bytes:
+        with path.open("rb") as f:
+            f.seek(-tail_bytes, os.SEEK_END)
+            data = f.read().decode("utf-8", errors="ignore")
+        lines = data.splitlines()
+        if lines:
+            # The first line can be partial when a huge file is tail-sampled.
+            lines = lines[1:]
+    else:
+        lines = path.read_text(encoding="utf-8", errors="ignore").splitlines()
+    for line in lines:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            obj = json.loads(line)
+        except Exception:
+            continue
+        if isinstance(obj, dict):
+            yield obj
 
 
 def _parse_ts(row: Dict[str, Any]) -> Optional[datetime]:
@@ -135,6 +145,12 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Daily runtime ops summary (watchdog + decisions + governance).")
     parser.add_argument("--day", default=datetime.now(timezone.utc).strftime("%Y%m%d"), help="UTC day in YYYYMMDD")
     parser.add_argument("--stale-seconds", type=int, default=180)
+    parser.add_argument(
+        "--tail-bytes",
+        type=int,
+        default=int(os.getenv("DAILY_RUNTIME_SUMMARY_TAIL_BYTES", str(16 * 1024 * 1024))),
+        help="Tail window per JSONL file; keeps daily verify bounded on huge same-day logs.",
+    )
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args()
 
@@ -146,17 +162,17 @@ def main() -> None:
     retrain_files = list(_iter_files(str(PROJECT_ROOT / "governance" / "shadow*" / f"auto_retrain_events_{day}.jsonl")))
 
     skipped_statuses = {"BLOCKED", "DATA_ONLY_BLOCKED"}
-    watchdog_summary = _summarize_watchdog(row for f in watchdog_files for row in _iter_jsonl(f))
+    watchdog_summary = _summarize_watchdog(row for f in watchdog_files for row in _iter_jsonl(f, tail_bytes=args.tail_bytes))
     decision_summary = _summarize_status_rows(
-        (row for f in decision_files for row in _iter_jsonl(f)),
+        (row for f in decision_files for row in _iter_jsonl(f, tail_bytes=args.tail_bytes)),
         stale_seconds=args.stale_seconds,
         skipped_statuses=skipped_statuses,
     )
     governance_summary = _summarize_rows(
-        (row for f in governance_files for row in _iter_jsonl(f)),
+        (row for f in governance_files for row in _iter_jsonl(f, tail_bytes=args.tail_bytes)),
         stale_seconds=args.stale_seconds,
     )
-    retrain_summary = _summarize_events(row for f in retrain_files for row in _iter_jsonl(f))
+    retrain_summary = _summarize_events(row for f in retrain_files for row in _iter_jsonl(f, tail_bytes=args.tail_bytes))
 
     payload = {
         "day": day,
@@ -184,6 +200,10 @@ def main() -> None:
             "rows": retrain_summary["rows"],
             "event_counts": retrain_summary["event_counts"],
             "files": [str(x) for x in retrain_files],
+        },
+        "scan_policy": {
+            "tail_bytes_per_file": int(args.tail_bytes),
+            "bounded_tail_scan": True,
         },
     }
 

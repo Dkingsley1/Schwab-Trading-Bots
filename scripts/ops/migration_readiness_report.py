@@ -106,10 +106,10 @@ def _migration_items(host: dict[str, Any], adapter: dict[str, Any], target: dict
             },
             {
                 "area": "python_runtime",
-                "status": "needs_rebuild",
-                "current": "local .venv312",
-                "target": "host-native venv with runtime dependency profiles",
-                "action": "Recreate the virtualenv and run runtime audits before launch.",
+                "status": "needs_verify",
+                "current": "local .venv314",
+                "target": "host-native Python 3.14.5 venv with runtime dependency profiles",
+                "action": "Verify the Python 3.14.5 virtualenv and run runtime audits before launch.",
             },
         ]
     )

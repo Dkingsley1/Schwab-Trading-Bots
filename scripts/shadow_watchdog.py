@@ -42,6 +42,7 @@ TRIPWIRE_EVENTS = WATCHDOG_DIR / "shadow_watchdog_tripwire_events.jsonl"
 PROCESS_FANOUT_OVERRIDE = PROJECT_ROOT / "config" / ".env.process_fanout_guard_override"
 OPERATOR_MODE_OVERRIDE = PROJECT_ROOT / "config" / ".env.operator_mode_override"
 COMPUTER_TASK_OVERRIDE = PROJECT_ROOT / "config" / ".env.computer_task_override"
+RUNTIME_RESOURCE_OVERRIDE = PROJECT_ROOT / "config" / ".env.runtime_resource_guard_override"
 CREATIVE_PAUSE_LATEST = HEALTH_DIR / "creative_heavy_research_pause_latest.json"
 
 
@@ -126,6 +127,21 @@ def _computer_task_guard_active() -> bool:
     return any(marker in text for marker in active_markers)
 
 
+def _paper_crypto_feed_pressure_guard_active() -> bool:
+    if _env_flag("PAPER_CRYPTO_FEED_RUNTIME_PAUSED_FOR_PRESSURE", "0"):
+        return True
+    try:
+        text = RUNTIME_RESOURCE_OVERRIDE.read_text(encoding="utf-8")
+    except Exception:
+        text = ""
+    active_markers = (
+        "PAPER_CRYPTO_FEED_RUNTIME_PAUSED_FOR_PRESSURE=1",
+        "PAPER_CRYPTO_FEED_RUNTIME_PAUSED_FOR_PRESSURE='1'",
+        'PAPER_CRYPTO_FEED_RUNTIME_PAUSED_FOR_PRESSURE="1"',
+    )
+    return any(marker in text for marker in active_markers)
+
+
 def _creative_pause_guard_active(max_age_seconds: int = 900) -> bool:
     if (
         _env_flag("TRAINING_RUNTIME_PAUSED_FOR_CREATIVE", "0")
@@ -156,6 +172,13 @@ def _target_suppressed_by_fanout_guard(target: Target) -> bool:
     if target.name in {"all_sleeves", "aggressive_modes"}:
         return True
     command = _format_start_cmd(target.start_cmd)
+    if _paper_crypto_feed_pressure_guard_active() and (
+        target.name in {"coinbase", "coinbase_futures"}
+        or "coinbase-start" in command
+        or "coinbase-futures-start" in command
+        or "scripts/run_shadow_training_loop.py --broker coinbase" in command
+    ):
+        return True
     return "scripts/run_all_sleeves.py" in command or "scripts/run_parallel_aggressive_modes.py" in command
 
 
@@ -182,6 +205,14 @@ def _target_suppressed_by_creative_guard(target: Target) -> bool:
 
 
 def _restart_guard_active_for_target(target: Target) -> tuple[bool, str]:
+    command = _format_start_cmd(target.start_cmd)
+    if _paper_crypto_feed_pressure_guard_active() and (
+        target.name in {"coinbase", "coinbase_futures"}
+        or "coinbase-start" in command
+        or "coinbase-futures-start" in command
+        or "scripts/run_shadow_training_loop.py --broker coinbase" in command
+    ):
+        return True, "paper_crypto_feed_pressure_guard_active"
     if (_process_fanout_guard_active() or _operator_mode_guard_active() or _computer_task_guard_active()) and _target_suppressed_by_fanout_guard(target):
         return True, "process_fanout_operator_or_computer_task_guard_active"
     if _creative_pause_guard_active() and _target_suppressed_by_creative_guard(target):
@@ -190,6 +221,8 @@ def _restart_guard_active_for_target(target: Target) -> tuple[bool, str]:
 
 
 def _restart_guard_note() -> str:
+    if _paper_crypto_feed_pressure_guard_active():
+        return "paper_crypto_feed_pressure_guard_active"
     if _creative_pause_guard_active():
         return "creative_audio_pause_guard_active"
     if _process_fanout_guard_active() or _operator_mode_guard_active() or _computer_task_guard_active():
@@ -262,8 +295,8 @@ def _start_cmd_executable_hints() -> tuple[str, ...]:
 
 def _start_cmd_executable_suffixes() -> tuple[str, ...]:
     return (
-        ".venv312/bin/python",
         ".venv314/bin/python",
+        ".venv312/bin/python",
         "/scripts/ops/opsctl.sh",
     )
 
@@ -314,7 +347,7 @@ def _decode_start_cmd(start_cmd: str | Sequence[str] | None) -> list[str]:
         if not executable:
             continue
         remainder = raw[len(executable):].lstrip()
-        if executable.endswith((".venv312/bin/python", ".venv314/bin/python")) and remainder:
+        if executable.endswith("/bin/python") and remainder:
             for script_suffix in _start_cmd_python_script_suffixes():
                 script_end = remainder.find(script_suffix)
                 if script_end < 0:

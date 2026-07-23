@@ -85,6 +85,37 @@ def _write_json(path: Path, payload: dict[str, Any]) -> None:
     path.write_text(json.dumps(payload, ensure_ascii=True, indent=2), encoding="utf-8")
 
 
+def _parse_iso_utc(raw: Any) -> datetime | None:
+    text = str(raw or "").strip()
+    if not text:
+        return None
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except Exception:
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _preservable_service_request(path: Path, *, now_utc: datetime) -> dict[str, Any]:
+    payload = _load_json(path)
+    if not payload or payload.get("active") is False:
+        return {}
+    if str(payload.get("request_kind") or "") != "backpressure_drainer_fleet":
+        return {}
+    expires_utc = _parse_iso_utc(payload.get("expires_utc"))
+    if expires_utc is not None and expires_utc <= now_utc:
+        return {}
+    env = payload.get("env_overrides") if isinstance(payload.get("env_overrides"), dict) else {}
+    if not str(env.get("SQL_LINK_SERVICE_SHARDS") or "").strip():
+        return {}
+    preserved = dict(payload)
+    preserved["preserved_existing_request"] = True
+    preserved["preserved_by"] = "external_backlog_drain"
+    return preserved
+
+
 def _safe_int(raw: Any, default: int = 0) -> int:
     try:
         return int(float(raw))
@@ -458,6 +489,25 @@ def _aggressive_trading_focus_paths(core_focus: dict[str, Any] | None) -> list[s
     return focus_paths
 
 
+def _sparse_focus_shards(rows: list[dict[str, Any]]) -> set[str]:
+    shards: set[str] = set()
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        shard = str(row.get("shard") or "").strip()
+        if shard:
+            shards.add(shard)
+            continue
+        source_rel = str(row.get("source_rel") or "").strip()
+        if _is_crypto_decision_source(source_rel):
+            shards.add("crypto_trading")
+        elif _is_aggressive_decision_source(source_rel):
+            shards.add("aggressive_trading")
+        elif source_rel.startswith("governance/channels/decision/") or source_rel.startswith("decisions/"):
+            shards.add("trading")
+    return shards or {"trading", "aggressive_trading", "crypto_trading"}
+
+
 def _is_crypto_decision_source(source_rel: str) -> bool:
     rel = str(source_rel or "")
     if not (rel.startswith("decisions/") or rel.startswith("governance/channels/decision/")):
@@ -477,6 +527,8 @@ def _is_crypto_decision_source(source_rel: str) -> bool:
 
 def _is_crypto_explanation_source(source_rel: str) -> bool:
     rel = str(source_rel or "")
+    if rel == "crypto_explanations" or "crypto_explanations" in rel:
+        return True
     return any(
         part in rel
         for part in (
@@ -506,19 +558,26 @@ def _deferred_focus_paths(
     backpressure: dict[str, Any] | None,
     *,
     predicate,
+    row_predicate=None,
+    exclude_row_predicate=None,
     min_pending_lines: int = 5_000,
     min_age_seconds: float = 15 * 60,
 ) -> list[str]:
     if not isinstance(backpressure, dict):
         return []
     focus_paths: list[str] = []
-    for key in ("top_deferred_pending_files", "top_cold_pending_files"):
+    for key in ("top_deferred_pending_files", "top_cold_pending_files", "top_pending_files", "_storage_overlay_sources"):
         rows = backpressure.get(key) if isinstance(backpressure.get(key), list) else []
         for row in rows[:8]:
             if not isinstance(row, dict):
                 continue
             source_rel = str(row.get("source_rel") or "").strip()
-            if not source_rel or not predicate(source_rel):
+            if not source_rel:
+                continue
+            if key == "_storage_overlay_sources" and exclude_row_predicate is not None and bool(exclude_row_predicate(row)):
+                continue
+            row_match = bool(row_predicate(row)) if row_predicate is not None and key == "_storage_overlay_sources" else False
+            if not (predicate(source_rel) or row_match):
                 continue
             pending_lines = max(_safe_int(row.get("pending_lines"), 0), 0)
             age_seconds = max(_safe_float(row.get("oldest_pending_age_seconds"), 0.0), 0.0)
@@ -533,11 +592,16 @@ def _explanation_focus_paths(backpressure: dict[str, Any] | None) -> list[str]:
     return _deferred_focus_paths(
         backpressure,
         predicate=lambda source: source.startswith("decision_explanations/") and not _is_crypto_explanation_source(source),
+        exclude_row_predicate=lambda row: str(row.get("shard") or "").strip() == "crypto_explanations",
     )
 
 
 def _crypto_explanation_focus_paths(backpressure: dict[str, Any] | None) -> list[str]:
-    return _deferred_focus_paths(backpressure, predicate=_is_crypto_explanation_source)
+    return _deferred_focus_paths(
+        backpressure,
+        predicate=_is_crypto_explanation_source,
+        row_predicate=lambda row: str(row.get("shard") or "").strip() == "crypto_explanations",
+    )
 
 
 def _insert_priority_shards(base_shards: list[str], priority_shards: list[str]) -> list[str]:
@@ -681,6 +745,20 @@ def _backpressure_with_storage_overlay(
     return base
 
 
+def _drop_empty_shard_path_filters(env: dict[str, str]) -> dict[str, str]:
+    cleaned: dict[str, str] = {}
+    for key, value in env.items():
+        key_text = str(key)
+        is_shard_path_filter = (
+            key_text.startswith("SQL_LINK_SERVICE_SHARD_")
+            and (key_text.endswith("_PATH_CONTAINS") or key_text.endswith("_PATH_NOT_CONTAINS"))
+        )
+        if is_shard_path_filter and not str(value).strip():
+            continue
+        cleaned[key_text] = str(value)
+    return cleaned
+
+
 def _drain_env(
     base_env: dict[str, str],
     *,
@@ -753,7 +831,9 @@ def _drain_env(
             "INGEST_JOURNAL_CHECKPOINT_ENABLED": "0" if critical else "1",
             "INGEST_JOURNAL_ZERO_PENDING_ENABLED": "0",
             "INGEST_JOURNAL_ERRORS_ALWAYS": "1",
+            "RESOURCE_GUARD_OPTIONAL_MAX_LOAD_PER_CORE": "12.0" if (critical or off_hours_active) else "4.0",
             "SQL_LINK_SERVICE_INTERVAL_SECONDS": "12" if critical else "15",
+            "SQL_LINK_SERVICE_IGNORE_ACTIVE_REQUEST": "1",
             "SQL_LINK_SERVICE_SHARD_LINK_TIMEOUT_SECONDS": "420" if critical else "240",
             "SQL_LINK_SERVICE_SHARDS": ",".join(prioritized_shards),
             "SQL_LINK_SERVICE_MERGE_MAX_SECONDS_PER_CYCLE": "90" if critical else "60",
@@ -807,21 +887,38 @@ def _drain_env(
         }
     )
     if sparse_focus_active:
+        sparse_shards = _sparse_focus_shards(sparse_focus_rows)
         env.update(
             {
                 "SQL_LINK_SERVICE_SPARSE_LARGE_DECISION_DRAIN": "1",
                 "SQL_LINK_SERVICE_SPARSE_LARGE_DECISION_FILE_COUNT": str(len(sparse_focus_rows)),
                 "INGEST_MAX_BYTES_PER_FILE": str(SPARSE_LARGE_DECISION_MAX_BYTES_PER_FILE),
                 "SQLITE_BATCH_MAX_BYTES": str(SPARSE_LARGE_DECISION_SQLITE_BATCH_MAX_BYTES),
-                "SQL_LINK_SERVICE_SHARD_TRADING_STATE_CHECKPOINT_LINES": "250",
-                "SQL_LINK_SERVICE_SHARD_AGGRESSIVE_TRADING_STATE_CHECKPOINT_LINES": "500",
-                "SQL_LINK_SERVICE_SHARD_CRYPTO_TRADING_STATE_CHECKPOINT_LINES": "500",
-                "SQL_LINK_SERVICE_SHARD_TRADING_MERGE_MAX_JSONL_ROWS": "250",
-                "SQL_LINK_SERVICE_SHARD_AGGRESSIVE_TRADING_MERGE_MAX_JSONL_ROWS": "250",
-                "SQL_LINK_SERVICE_SHARD_CRYPTO_TRADING_MERGE_MAX_JSONL_ROWS": "250",
+                "SQL_LINK_SERVICE_SPARSE_LARGE_DECISION_SHARDS": ",".join(sorted(sparse_shards)),
             }
         )
-    return "offhours_external_backlog_drain", env
+        if "trading" in sparse_shards:
+            env.update(
+                {
+                    "SQL_LINK_SERVICE_SHARD_TRADING_STATE_CHECKPOINT_LINES": "250",
+                    "SQL_LINK_SERVICE_SHARD_TRADING_MERGE_MAX_JSONL_ROWS": "250",
+                }
+            )
+        if "aggressive_trading" in sparse_shards:
+            env.update(
+                {
+                    "SQL_LINK_SERVICE_SHARD_AGGRESSIVE_TRADING_STATE_CHECKPOINT_LINES": "500",
+                    "SQL_LINK_SERVICE_SHARD_AGGRESSIVE_TRADING_MERGE_MAX_JSONL_ROWS": "250",
+                }
+            )
+        if "crypto_trading" in sparse_shards:
+            env.update(
+                {
+                    "SQL_LINK_SERVICE_SHARD_CRYPTO_TRADING_STATE_CHECKPOINT_LINES": "500",
+                    "SQL_LINK_SERVICE_SHARD_CRYPTO_TRADING_MERGE_MAX_JSONL_ROWS": "250",
+                }
+            )
+    return "offhours_external_backlog_drain", _drop_empty_shard_path_filters(env)
 
 
 def _write_service_request(
@@ -832,6 +929,10 @@ def _write_service_request(
     wait_timeout_seconds: float,
     now_utc: datetime,
 ) -> dict[str, Any]:
+    preserved = _preservable_service_request(path, now_utc=now_utc)
+    if preserved:
+        return preserved
+
     expires_utc = now_utc.timestamp() + max(float(wait_timeout_seconds), 900.0)
     payload = {
         "timestamp_utc": now_utc.isoformat(),
@@ -1469,6 +1570,10 @@ def build_payload(
             "auto_hot_retention": str(drain_env.get("SQL_LINK_SERVICE_AUTO_HOT_RETENTION") or ""),
             "auto_queue_retention": str(drain_env.get("SQL_LINK_SERVICE_AUTO_QUEUE_RETENTION") or ""),
             "hot_batch_size": _safe_int(drain_env.get("SQL_LINK_SERVICE_HOT_BATCH_SIZE"), 0),
+            "resource_guard_optional_max_load_per_core": _safe_float(
+                drain_env.get("RESOURCE_GUARD_OPTIONAL_MAX_LOAD_PER_CORE"),
+                0.0,
+            ),
             "sparse_large_decision_drain": str(drain_env.get("SQL_LINK_SERVICE_SPARSE_LARGE_DECISION_DRAIN") or "") == "1",
             "sparse_large_decision_file_count": _safe_int(drain_env.get("SQL_LINK_SERVICE_SPARSE_LARGE_DECISION_FILE_COUNT"), 0),
             "ingest_max_bytes_per_file": _safe_int(drain_env.get("INGEST_MAX_BYTES_PER_FILE"), 0),

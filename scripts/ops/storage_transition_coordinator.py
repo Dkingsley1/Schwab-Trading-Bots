@@ -54,27 +54,47 @@ def _parse_json_output(text: str) -> dict[str, Any]:
     return {}
 
 
+def _tail_text(text: str, *, max_lines: int = 12, max_chars: int = 4000) -> str:
+    tail = "\n".join(str(text or "").splitlines()[-max_lines:])
+    if len(tail) <= max_chars:
+        return tail
+    omitted = len(tail) - max_chars
+    return f"...<truncated {omitted} chars>\n{tail[-max_chars:]}"
+
+
 def _run_json_command(cmd: list[str], *, cwd: Path, payload_path: Path | None = None, timeout_sec: int = 120) -> dict[str, Any]:
     started = datetime.now(timezone.utc)
-    proc = subprocess.run(
-        cmd,
-        cwd=str(cwd),
-        capture_output=True,
-        text=True,
-        check=False,
-        timeout=max(int(timeout_sec), 1),
-    )
-    payload = _parse_json_output(proc.stdout or "")
+    try:
+        proc = subprocess.run(
+            cmd,
+            cwd=str(cwd),
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=max(int(timeout_sec), 1),
+        )
+        stdout = proc.stdout or ""
+        stderr = proc.stderr or ""
+        rc = int(proc.returncode)
+        timed_out = False
+    except subprocess.TimeoutExpired as exc:
+        stdout = exc.stdout.decode("utf-8", errors="ignore") if isinstance(exc.stdout, bytes) else str(exc.stdout or "")
+        stderr = exc.stderr.decode("utf-8", errors="ignore") if isinstance(exc.stderr, bytes) else str(exc.stderr or "")
+        rc = 124
+        timed_out = True
+    payload = _parse_json_output(stdout)
     if not payload and payload_path is not None:
         payload = _load_json(payload_path)
     duration_ms = round((datetime.now(timezone.utc) - started).total_seconds() * 1000.0, 3)
     return {
         "cmd": list(cmd),
-        "rc": int(proc.returncode),
+        "rc": rc,
+        "timed_out": timed_out,
+        "timeout_sec": max(int(timeout_sec), 1),
         "duration_ms": duration_ms,
         "payload": payload,
-        "stdout_tail": "\n".join((proc.stdout or "").splitlines()[-12:]),
-        "stderr_tail": "\n".join((proc.stderr or "").splitlines()[-12:]),
+        "stdout_tail": _tail_text(stdout),
+        "stderr_tail": _tail_text(stderr),
     }
 
 
@@ -131,7 +151,7 @@ def _assistant_specs(project_root: Path, transition_mode: str) -> list[dict[str,
                 str(project_root / "scripts" / "ops" / "storage_split_brain_reconciler.py"),
                 "--json",
             ],
-            "refresh_timeout_sec": 120,
+            "refresh_timeout_sec": 45,
         },
         {
             "name": "storage_resilience_control",
@@ -141,9 +161,12 @@ def _assistant_specs(project_root: Path, transition_mode: str) -> list[dict[str,
             "refresh_cmd": [
                 str(PY),
                 str(project_root / "scripts" / "ops" / "storage_resilience_control.py"),
+                "--fast",
+                "--max-quick-check-db-gb",
+                "0",
                 "--json",
             ],
-            "refresh_timeout_sec": 120,
+            "refresh_timeout_sec": 45,
         },
     ]
     if transition_mode == "local":
@@ -159,7 +182,7 @@ def _assistant_specs(project_root: Path, transition_mode: str) -> list[dict[str,
                         str(project_root / "scripts" / "ops" / "storage_quota_guard.py"),
                         "--json",
                     ],
-                    "refresh_timeout_sec": 120,
+                    "refresh_timeout_sec": 45,
                 },
                 {
                     "name": "storage_backpressure_autopilot",
@@ -171,7 +194,7 @@ def _assistant_specs(project_root: Path, transition_mode: str) -> list[dict[str,
                         str(project_root / "scripts" / "ops" / "storage_backpressure_autopilot.py"),
                         "--json",
                     ],
-                    "refresh_timeout_sec": 120,
+                    "refresh_timeout_sec": 60,
                 },
             ]
         )
@@ -187,7 +210,7 @@ def _assistant_specs(project_root: Path, transition_mode: str) -> list[dict[str,
                     str(project_root / "scripts" / "ops" / "ops_coordinator.py"),
                     "--json",
                 ],
-                "refresh_timeout_sec": 180,
+                "refresh_timeout_sec": 60,
             }
         )
     return specs
@@ -288,12 +311,14 @@ def _apply_refresh(project_root: Path, *, transition_mode: str) -> list[dict[str
         watchdog_cmd,
         cwd=project_root,
         payload_path=project_root / "governance" / "health" / "process_watchdog_latest.json",
-        timeout_sec=120,
+        timeout_sec=45,
     )
     attempts.append(
         {
             "name": "process_watchdog",
             "rc": int(watchdog_result.get("rc", 1)),
+            "timed_out": bool(watchdog_result.get("timed_out", False)),
+            "timeout_sec": int(watchdog_result.get("timeout_sec", 45) or 45),
             "duration_ms": float(watchdog_result.get("duration_ms", 0.0) or 0.0),
             "stdout_tail": str(watchdog_result.get("stdout_tail") or ""),
             "stderr_tail": str(watchdog_result.get("stderr_tail") or ""),
@@ -310,6 +335,8 @@ def _apply_refresh(project_root: Path, *, transition_mode: str) -> list[dict[str
             {
                 "name": spec["name"],
                 "rc": int(result.get("rc", 1)),
+                "timed_out": bool(result.get("timed_out", False)),
+                "timeout_sec": int(result.get("timeout_sec", spec["refresh_timeout_sec"]) or spec["refresh_timeout_sec"]),
                 "duration_ms": float(result.get("duration_ms", 0.0) or 0.0),
                 "stdout_tail": str(result.get("stdout_tail") or ""),
                 "stderr_tail": str(result.get("stderr_tail") or ""),

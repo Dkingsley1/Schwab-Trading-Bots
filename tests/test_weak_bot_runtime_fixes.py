@@ -1,4 +1,6 @@
+import json
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -18,9 +20,13 @@ from core import brain_refinery_v43_intraday_ultrafast_proxy as v43
 from core import brain_refinery_v48_position_1m_3m as v48
 from core import brain_refinery_v51_vol_regime_transition as v51
 from core import brain_refinery_v56_meta_ranker as v56
+from core import brain_refinery_v58_ensemble_diversity_controller as v58
 from core import brain_refinery_v75_model_drift_guard as v75
+from core import brain_refinery_v80_execution_feasibility_sentinel as v80
+from core import brain_refinery_v86_risk_budget_allocator_v2 as v86
 from core import brain_refinery_v98_crypto_execution_throttle_reentry as v98
 from core import brain_refinery_v100_stock_crypto_overlap_context as v100
+from scripts import weekly_retrain
 
 
 def _obs(symbol="SPY", last_price=100.0, **overrides):
@@ -413,6 +419,183 @@ def test_v75_train_brain_exposes_balanced_runtime_guards(monkeypatch) -> None:
     assert captured["min_long_acted_count"] == 5
     assert captured["min_short_acted_count"] == 5
     assert captured["max_acted_coverage"] == 0.22
+
+
+def test_v86_train_brain_uses_collection_stage_runtime_contract(monkeypatch) -> None:
+    captured = {}
+
+    def _fake_train_runtime_indicator_bot(**kwargs):
+        captured.update(kwargs)
+        return "ok"
+
+    monkeypatch.setattr(v86, "train_runtime_indicator_bot", _fake_train_runtime_indicator_bot)
+
+    assert v86.train_brain() == "ok"
+    assert v86.RUNTIME_PRESSURE_FLOOR == 0.20
+    assert captured["window"] == 4
+    assert captured["horizon"] == 1
+    assert captured["min_samples"] == 80
+    assert captured["min_sequences"] == 8
+    assert captured["min_positive_samples"] == 24
+    assert captured["min_negative_samples"] == 24
+    assert captured["batch_size"] == 32
+    assert captured["allow_fallback_on_insufficient_data"] is False
+    assert captured["defer_on_quality_failure"] is True
+
+
+def test_v58_train_brain_defers_quality_guard(monkeypatch) -> None:
+    captured = {}
+
+    def _fake_train_price_indicator_bot(**kwargs):
+        captured.update(kwargs)
+        return "ok"
+
+    monkeypatch.setattr(v58, "train_price_indicator_bot", _fake_train_price_indicator_bot)
+
+    assert v58.train_brain() == "ok"
+    assert captured["run_tag"] == "brain_refinery_v58_ensemble_diversity_controller"
+    assert captured["dataset_builder"] == v58._build_ensemble_diversity_dataset
+    assert captured["window"] == v58.WINDOW
+    assert captured["horizon"] == v58.HORIZON
+    assert captured["defer_on_quality_failure"] is True
+
+
+def test_weekly_retrain_detects_synthetic_quality_deferral() -> None:
+    assert weekly_retrain._failure_is_deferred_quality_guard(
+        "RuntimeError: defer_training_quality_guard run_tag=brain_refinery_v58_ensemble_diversity_controller"
+    )
+    assert weekly_retrain._failure_is_deferred_quality_guard(
+        "RuntimeError: runtime_training_quality_guard_failed run_tag=brain_refinery_v100_stock_crypto_overlap_context"
+    )
+
+
+def test_weekly_retrain_detects_runtime_quality_deferral_from_diagnostic_state() -> None:
+    assert weekly_retrain._diagnostic_state_is_deferred_quality_guard(
+        {
+            "status": "deferred_quality_guard",
+            "quality_deferred": True,
+            "failure_categories": ["quality_guard_failure", "defer_until_more_data"],
+        }
+    )
+
+
+def test_weekly_retrain_prefilter_uses_bot_needs_evidence_to_avoid_stale_zero(monkeypatch, tmp_path: Path) -> None:
+    project_root = tmp_path
+    diag_dir = project_root / "governance" / "training_diagnostics"
+    health_dir = project_root / "governance" / "health"
+    target_dir = project_root / "core"
+    diag_dir.mkdir(parents=True)
+    health_dir.mkdir(parents=True)
+    target_dir.mkdir(parents=True)
+    bot_id = "brain_refinery_v4_simple"
+    target = target_dir / f"{bot_id}.py"
+    target.write_text("def train_brain():\n    return 'ok'\n", encoding="utf-8")
+    now = datetime.now(timezone.utc).isoformat()
+    (diag_dir / f"{bot_id}_latest.json").write_text(
+        json.dumps(
+            {
+                "timestamp_utc": now,
+                "status": "deferred_sample_starved",
+                "sample_count": 0,
+                "eligible_sequences": 0,
+                "observation_count": 0,
+                "insufficiency_reason": "sample_count",
+            }
+        ),
+        encoding="utf-8",
+    )
+    (health_dir / "bot_needs_intelligence_latest.json").write_text(
+        json.dumps(
+            {
+                "timestamp_utc": now,
+                "bot_needs": [
+                    {
+                        "bot_id": bot_id,
+                        "primary_need": "targeted_quality_retrain",
+                        "evidence": {
+                            "sample_count": 1782,
+                            "eligible_sequences": 47,
+                            "observation_count": 1782,
+                        },
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(weekly_retrain, "PROJECT_ROOT", str(project_root))
+    monkeypatch.setattr(weekly_retrain, "TRAINING_DIAGNOSTICS_DIR", str(diag_dir))
+    monkeypatch.setattr(weekly_retrain, "_BOT_NEEDS_EVIDENCE_CACHE", None)
+    monkeypatch.setattr(weekly_retrain, "_BOT_NEEDS_EVIDENCE_CACHE_SOURCE", "")
+    monkeypatch.setenv("RETRAIN_BATCH_READINESS_PREFILTER", "1")
+
+    assert weekly_retrain._sample_starved_prefilter_decision(str(target), "coverage_batch30_canary") is None
+
+
+def test_weekly_retrain_writes_quality_repair_queue(monkeypatch, tmp_path: Path) -> None:
+    diag_dir = tmp_path / "governance" / "training_diagnostics"
+    queue_path = diag_dir / "training_quality_repair_queue_latest.json"
+    monkeypatch.setattr(weekly_retrain, "TRAINING_DIAGNOSTICS_DIR", str(diag_dir))
+    monkeypatch.setattr(weekly_retrain, "TRAINING_QUALITY_REPAIR_QUEUE_LATEST", str(queue_path))
+
+    payload = weekly_retrain._write_quality_repair_queue(
+        target_outcomes=[
+            {
+                "bot_id": "brain_refinery_v100_stock_crypto_overlap_context",
+                "target": "/tmp/brain_refinery_v100_stock_crypto_overlap_context.py",
+                "status": "deferred_quality_guard",
+                "reason": "runtime_training_quality_guard_failed long_precision=0.0000 acted_coverage=0.7465 best_val_loss=0.7200",
+                "sample_count": 263,
+                "eligible_sequences": 22,
+                "quality_failures": [
+                    "long_precision=0.0000 < min_long_precision=0.5200",
+                    "acted_coverage=0.7465 > max_acted_coverage=0.2400",
+                    "best_val_loss=0.7200 > max_best_val_loss=0.6940",
+                ],
+                "failure_categories": ["threshold_calibration", "symbol_narrowing"],
+                "diagnostics_path": "/tmp/diag.json",
+            }
+        ],
+        dry_run=False,
+    )
+
+    assert payload is not None
+    assert queue_path.exists()
+    written = json.loads(queue_path.read_text(encoding="utf-8"))
+    assert written["quality_repair_count"] == 1
+    assert written["axis_counts"]["side_balanced_label_depth"] == 1
+    assert written["axis_counts"]["acted_coverage_tuning"] == 1
+    assert written["axis_counts"]["symbol_scope_or_feature_narrowing"] == 1
+    assert written["recommended_commands"]["targeted_data_intake"][:4] == [
+        "./scripts/ops/opsctl.sh",
+        "training-data-intake",
+        "--apply",
+        "--include-bot-ids",
+    ]
+
+
+def test_weekly_retrain_detects_crypto_runtime_wrapper_targets(tmp_path: Path) -> None:
+    target = tmp_path / "brain_refinery_v999_crypto_runtime_wrapper.py"
+    target.write_text("from crypto_runtime_bot_common import train_crypto_runtime_bot\nlookback_days=60\n", encoding="utf-8")
+
+    assert weekly_retrain._target_runtime_snapshot_lookback_days(str(target)) >= 60
+
+
+def test_v80_train_brain_uses_feasibility_dataset(monkeypatch) -> None:
+    captured = {}
+
+    def _fake_train_price_indicator_bot(**kwargs):
+        captured.update(kwargs)
+        return "ok"
+
+    monkeypatch.setattr(v80, "train_price_indicator_bot", _fake_train_price_indicator_bot)
+
+    assert v80.train_brain() == "ok"
+    assert captured["run_tag"] == "brain_refinery_v80_execution_feasibility_sentinel"
+    assert captured["window"] == v80.WINDOW
+    assert captured["horizon"] == v80.HORIZON
+    assert callable(captured["dataset_builder"])
+    assert "feasibility_score" in captured["feature_names"]
 
 
 def test_v75_runtime_label_skips_unconfirmed_short_regime() -> None:
