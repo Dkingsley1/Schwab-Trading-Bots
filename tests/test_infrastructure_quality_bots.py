@@ -458,6 +458,41 @@ def test_infrastructure_autofix_refreshes_required_collector_failures(tmp_path: 
     assert "schwab_education_refresh" in names
 
 
+def test_infrastructure_autofix_routes_raw_control_plane_and_library_surfaces(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    health = project_root / "governance" / "health"
+    _write_json(health / "remote_alert_control_latest.json", {"channels": {"any_configured": True}, "critical_backlog": {"unsent_count": 0}})
+    _write_json(health / "runtime_paper_regression_guard_latest.json", {"overall_status": "ready", "failed_guard_count": 0})
+    _write_json(health / "host_capability_contract_latest.json", {"overall_status": "blocked"})
+    _write_json(health / "library_utilization_router_latest.json", {"overall_status": "blocked"})
+    _write_json(health / "mlx_intelligence_router_latest.json", {"overall_status": "ready", "library_coverage": {"coverage_ratio": 0.75}})
+    _write_json(health / "library_upgrade_route_control_latest.json", {"overall_status": "blocked", "upgrade_plan": {"hard_blocker_count": 1}})
+    _write_json(
+        health / "coordination_state_latest.json",
+        {
+            "overall_status": "blocked",
+            "artifact_issues": [
+                {"name": "required_artifact_stale:halt_trigger_control_plane"},
+                {"name": "optional_artifact_stale:shadow_watchdog_tripwire"},
+                {"name": "optional_artifact_stale:heavy_livefeed"},
+            ],
+        },
+    )
+
+    payload = infra_src.build_payload(project_root, apply=False)
+    names = [row["name"] for row in payload["repair_plan"]]
+    advisory_names = [row["name"] for row in payload["advisory_repair_plan"]]
+
+    assert "host_capability_contract" in names
+    assert "library_utilization_router" in names
+    assert "mlx_intelligence_router" in names
+    assert "library_upgrade_route_control" in names
+    assert "halt_trigger_control_plane" in names
+    assert "shadow_watchdog_tripwire_refresh" in advisory_names
+    assert "live_feed_heavy_guard_refresh" in advisory_names
+    assert "coordination_state_control" in names
+
+
 def test_infrastructure_autofix_bounds_system_drift_autopilot_timeout(tmp_path: Path) -> None:
     project_root = tmp_path / "project"
     health = project_root / "governance" / "health"

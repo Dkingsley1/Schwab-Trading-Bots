@@ -35,6 +35,15 @@ STATEFUL_STORAGE_REGRESSION_GUARD_SCRIPT = Path(__file__).resolve().with_name("s
 RUNTIME_PAPER_REGRESSION_GUARD_SCRIPT = Path(__file__).resolve().with_name("runtime_paper_regression_guard.py")
 MASTER_INFRA_SUPERVISOR_SCRIPT = Path(__file__).resolve().with_name("master_infrastructure_supervisor.py")
 STALE_SURFACE_AUTOHEALER_SCRIPT = Path(__file__).resolve().with_name("stale_surface_autohealer.py")
+HOST_CAPABILITY_SCRIPT = Path(__file__).resolve().with_name("host_capability_contract.py")
+HALT_TRIGGER_CONTROL_SCRIPT = Path(__file__).resolve().with_name("halt_trigger_control_plane.py")
+COORDINATION_STATE_CONTROL_SCRIPT = Path(__file__).resolve().with_name("coordination_state_control.py")
+WHOLE_SYSTEM_GOVERNOR_SCRIPT = Path(__file__).resolve().with_name("whole_system_governor.py")
+LIBRARY_UTILIZATION_ROUTER_SCRIPT = Path(__file__).resolve().with_name("library_utilization_router.py")
+MLX_INTELLIGENCE_ROUTER_SCRIPT = Path(__file__).resolve().with_name("mlx_intelligence_router.py")
+LIBRARY_UPGRADE_ROUTE_CONTROL_SCRIPT = Path(__file__).resolve().with_name("library_upgrade_route_control.py")
+SHADOW_WATCHDOG_SCRIPT = PROJECT_ROOT / "scripts" / "shadow_watchdog.py"
+HEAVY_FEED_GUARD_SCRIPT = PROJECT_ROOT / "scripts" / "ops" / "live_feed_heavy_guarded.sh"
 REQUIRED_COLLECTOR_REFRESH_NAMES = {
     "official_macro_context",
     "market_micro_context",
@@ -327,6 +336,13 @@ def build_payload(
     one_numbers_guard = _load_freshest_json(project_root, "governance/health/one_numbers_regression_guard_latest.json")
     stateful_storage_guard = _load_freshest_json(project_root, "governance/health/stateful_storage_regression_guard_latest.json")
     runtime_paper_guard = _load_freshest_json(project_root, "governance/health/runtime_paper_regression_guard_latest.json")
+    host_capability = _load_freshest_json(project_root, "governance/health/host_capability_contract_latest.json")
+    halt_trigger = _load_freshest_json(project_root, "governance/health/halt_trigger_control_plane_latest.json")
+    coordination_state = _load_freshest_json(project_root, "governance/health/coordination_state_latest.json")
+    whole_system_governor = _load_freshest_json(project_root, "governance/health/whole_system_governor_latest.json")
+    library_utilization = _load_freshest_json(project_root, "governance/health/library_utilization_router_latest.json")
+    mlx_intelligence = _load_freshest_json(project_root, "governance/health/mlx_intelligence_router_latest.json")
+    library_upgrade_route = _load_freshest_json(project_root, "governance/health/library_upgrade_route_control_latest.json")
     storage_reconnect = _load_freshest_json(project_root, "governance/health/storage_reconnect_infrabot_latest.json")
     storage_reconnect_guard = _load_freshest_json(project_root, "governance/health/storage_reconnect_regression_guard_latest.json")
     core_bot_materialization = _load_freshest_json(project_root, "governance/health/core_bot_materialization_infrabot_latest.json")
@@ -379,6 +395,94 @@ def build_payload(
             "runtime_paper_regression_guard",
             f"runtime_paper_guard_status={runtime_paper_status or 'missing'} failed_guards={runtime_paper_failed}",
             [str(PYTHON_BIN), str(RUNTIME_PAPER_REGRESSION_GUARD_SCRIPT), "--json"],
+        )
+
+    host_capability_status = str(host_capability.get("overall_status") or "")
+    if not host_capability or host_capability_status in {"blocked", "degraded", "needs_work"}:
+        add_plan(
+            "host_capability_contract",
+            f"host_capability_status={host_capability_status or 'missing'}",
+            [str(PYTHON_BIN), str(HOST_CAPABILITY_SCRIPT), "--json"],
+        )
+
+    library_status = str(library_utilization.get("overall_status") or "")
+    if not library_utilization or library_status in {"blocked", "degraded", "needs_work"}:
+        add_plan(
+            "library_utilization_router",
+            f"library_utilization_status={library_status or 'missing'}",
+            [str(PYTHON_BIN), str(LIBRARY_UTILIZATION_ROUTER_SCRIPT), "--apply", "--json"],
+        )
+
+    mlx_status = str(mlx_intelligence.get("overall_status") or "")
+    mlx_coverage = mlx_intelligence.get("library_coverage") if isinstance(mlx_intelligence.get("library_coverage"), dict) else {}
+    if (
+        not mlx_intelligence
+        or mlx_status in {"blocked", "degraded", "needs_work"}
+        or _safe_float(mlx_coverage.get("coverage_ratio"), 0.0) < 1.0
+    ):
+        add_plan(
+            "mlx_intelligence_router",
+            f"mlx_intelligence_status={mlx_status or 'missing'} coverage={_safe_float(mlx_coverage.get('coverage_ratio'), 0.0):.4f}",
+            [str(PYTHON_BIN), str(MLX_INTELLIGENCE_ROUTER_SCRIPT), "--apply", "--json"],
+        )
+
+    upgrade_status = str(library_upgrade_route.get("overall_status") or "")
+    upgrade_plan = library_upgrade_route.get("upgrade_plan") if isinstance(library_upgrade_route.get("upgrade_plan"), dict) else {}
+    if (
+        not library_upgrade_route
+        or upgrade_status in {"blocked", "degraded", "needs_work"}
+        or _safe_int(upgrade_plan.get("hard_blocker_count"), 0) > 0
+    ):
+        add_plan(
+            "library_upgrade_route_control",
+            f"library_upgrade_route_status={upgrade_status or 'missing'} hard_blockers={_safe_int(upgrade_plan.get('hard_blocker_count'), 0)}",
+            [str(PYTHON_BIN), str(LIBRARY_UPGRADE_ROUTE_CONTROL_SCRIPT), "--apply", "--json"],
+        )
+
+    halt_status = str(halt_trigger.get("overall_status") or halt_trigger.get("status") or "")
+    coordination_status = str(coordination_state.get("overall_status") or "")
+    coordination_issue_names = [
+        str(row.get("name") or row.get("source") or "")
+        for row in coordination_state.get("artifact_issues", [])
+        if isinstance(row, dict)
+    ]
+    if (
+        not halt_trigger
+        or halt_status in {"stale", "missing", "invalid_json"}
+        or any("halt_trigger_control_plane" in name for name in coordination_issue_names)
+    ):
+        add_plan(
+            "halt_trigger_control_plane",
+            f"halt_trigger_status={halt_status or 'missing'}",
+            [str(PYTHON_BIN), str(HALT_TRIGGER_CONTROL_SCRIPT), "--json"],
+        )
+    if any("shadow_watchdog_tripwire" in name for name in coordination_issue_names):
+        add_plan(
+            "shadow_watchdog_tripwire_refresh",
+            "coordination_state_reports_shadow_watchdog_tripwire_stale",
+            [str(PYTHON_BIN), str(SHADOW_WATCHDOG_SCRIPT), "--once", "--dry-run", "--json"],
+            advisory=True,
+        )
+    if any("heavy_livefeed" in name or "live_feed_heavy_guarded" in name for name in coordination_issue_names):
+        add_plan(
+            "live_feed_heavy_guard_refresh",
+            "coordination_state_reports_heavy_livefeed_guard_stale",
+            [str(HEAVY_FEED_GUARD_SCRIPT), "--check-only", "--no-color"],
+            advisory=True,
+        )
+    if not coordination_state or coordination_status in {"blocked", "degraded", "needs_work"}:
+        add_plan(
+            "coordination_state_control",
+            f"coordination_state_status={coordination_status or 'missing'}",
+            [str(PYTHON_BIN), str(COORDINATION_STATE_CONTROL_SCRIPT), "--json"],
+        )
+
+    whole_system_status = str(whole_system_governor.get("overall_status") or whole_system_governor.get("status") or "")
+    if not whole_system_governor or whole_system_status in {"blocked", "degraded", "needs_work", "missing"}:
+        add_plan(
+            "whole_system_governor",
+            f"whole_system_governor_status={whole_system_status or 'missing'}",
+            [str(PYTHON_BIN), str(WHOLE_SYSTEM_GOVERNOR_SCRIPT), "--apply", "--json"],
         )
 
     storage_reconnect_status = str(storage_reconnect.get("overall_status") or "")
@@ -713,10 +817,29 @@ def build_payload(
         if bool(row.get("timed_out", False)) or int(row.get("rc", 1)) not in {0, 2}
     ]
     degraded_attempts = [row for row in attempts if int(row.get("rc", 1)) == 2 and not bool(row.get("timed_out", False))]
+    remaining_repair_plan = list(repair_plan)
+    remaining_advisory_repair_plan = list(advisory_repair_plan)
+    post_apply_recheck: dict[str, Any] = {
+        "enabled": False,
+        "status": "",
+        "repair_count": None,
+        "advisory_count": None,
+    }
+    if apply and repair_plan and not hard_failed_attempts and not degraded_attempts and not timeout_budget_exhausted:
+        recheck_payload = build_payload(project_root, apply=False, timeout_sec=timeout_sec)
+        remaining_repair_plan = list(recheck_payload.get("repair_plan") or [])
+        remaining_advisory_repair_plan = list(recheck_payload.get("advisory_repair_plan") or [])
+        post_apply_recheck = {
+            "enabled": True,
+            "status": str(recheck_payload.get("overall_status") or ""),
+            "repair_count": len(remaining_repair_plan),
+            "advisory_count": len(remaining_advisory_repair_plan),
+        }
+
     overall_status = "ready"
     if operator_followups or hard_failed_attempts:
         overall_status = "blocked"
-    elif repair_plan or degraded_attempts:
+    elif remaining_repair_plan or degraded_attempts:
         overall_status = "degraded"
 
     recommended_actions = ordered_unique(
@@ -725,7 +848,7 @@ def build_payload(
             "let the bot run in apply mode for safe fixes, but keep destructive retention or credential changes operator-gated",
             "configure remote alert delivery so degraded states page you instead of silently accumulating" if operator_followups else "",
             "use the bot-quality autopilot alongside the infrastructure autofix bot so system health and bot quality improve together"
-            if repair_plan or advisory_repair_plan
+            if remaining_repair_plan or remaining_advisory_repair_plan
             else "",
         ]
     )
@@ -736,8 +859,11 @@ def build_payload(
         "ok": overall_status == "ready",
         "overall_status": overall_status,
         "apply": bool(apply),
-        "repair_plan": repair_plan,
-        "advisory_repair_plan": advisory_repair_plan,
+        "repair_plan": remaining_repair_plan,
+        "advisory_repair_plan": remaining_advisory_repair_plan,
+        "pre_apply_repair_plan": repair_plan if apply else [],
+        "pre_apply_advisory_repair_plan": advisory_repair_plan if apply else [],
+        "post_apply_recheck": post_apply_recheck,
         "attempts": [
             {
                 "cmd": list(row.get("cmd") or []),
@@ -749,10 +875,13 @@ def build_payload(
             }
             for row in attempts
         ],
-        "applyable_repair_count": len(repair_plan),
-        "advisory_repair_count": len(advisory_repair_plan),
+        "applyable_repair_count": len(remaining_repair_plan),
+        "advisory_repair_count": len(remaining_advisory_repair_plan),
         "operator_followups": operator_followups,
         "metrics": {
+            "pre_apply_repair_count": len(repair_plan),
+            "pre_apply_advisory_repair_count": len(advisory_repair_plan),
+            "post_apply_recheck_enabled": bool(post_apply_recheck.get("enabled", False)),
             "daily_verify_failed_checks": len(failed_checks),
             "retention_debt_gb": retention_debt_gb,
             "auth_expires_in_seconds": _safe_float(((auth_lease.get("lease_budget") or {}).get("expires_in_seconds")), 0.0),
@@ -790,6 +919,13 @@ def build_payload(
             "storage_backpressure_autopilot",
             "stateful_storage_regression_guard",
             "runtime_paper_regression_guard",
+            "host_capability_contract",
+            "halt_trigger_control_plane",
+            "coordination_state_control",
+            "whole_system_governor",
+            "library_utilization_router",
+            "mlx_intelligence_router",
+            "library_upgrade_route_control",
             "stale_surface_autohealer",
             "one_numbers_regression_guard",
             "master_infrastructure_supervisor",

@@ -24,6 +24,7 @@ else:
 
 
 DEFAULT_LOCK = PROJECT_ROOT / "config" / "requirements.lock.txt"
+DEFAULT_CANDIDATE_ROUTES = PROJECT_ROOT / "config" / "library_candidate_routes_v1.json"
 DEFAULT_OUT_PATH = PROJECT_ROOT / "governance" / "health" / "library_utilization_router_latest.json"
 DEFAULT_EXTERNAL_CONTEXT_PATH = PROJECT_ROOT / "exports" / "external_context" / "library_utilization_router_latest.json"
 DEFAULT_MARKDOWN_PATH = PROJECT_ROOT / "exports" / "reports" / "operator" / "library_utilization_router_latest.md"
@@ -277,6 +278,7 @@ PACKAGE_LANE_OVERRIDES: dict[str, str] = {
     "setuptools": "testing_dev_tooling",
     "wheel": "testing_dev_tooling",
     "packaging": "system_runtime_primitives",
+    "pip": "system_runtime_primitives",
     "platformdirs": "system_runtime_primitives",
     "python-dateutil": "system_runtime_primitives",
     "pytz": "system_runtime_primitives",
@@ -627,7 +629,75 @@ def _library_utilization_matrix(package_rows: list[dict[str, Any]], routes: list
     }
 
 
-def _recommended_actions(coverage: dict[str, Any], caps: dict[str, Any]) -> list[str]:
+def _candidate_library_rows(
+    project_root: Path,
+    lock_versions: dict[str, str],
+    installed_versions: dict[str, str],
+    *,
+    candidate_file: Path | None = None,
+) -> list[dict[str, Any]]:
+    payload = load_json(candidate_file or project_root / "config" / "library_candidate_routes_v1.json")
+    raw_rows = payload.get("candidate_libraries") if isinstance(payload.get("candidate_libraries"), list) else []
+    rows: list[dict[str, Any]] = []
+    for raw in raw_rows:
+        if not isinstance(raw, dict):
+            continue
+        package = _norm_package(str(raw.get("package") or ""))
+        if not package:
+            continue
+        lane = str(raw.get("lane") or "").strip() or _infer_lane(package)
+        locked = lock_versions.get(package)
+        installed = installed_versions.get(package)
+        if locked and installed:
+            status = "installed_locked"
+        elif installed:
+            status = "installed_runtime_only"
+        elif locked:
+            status = "locked_missing_runtime"
+        else:
+            status = "candidate_only"
+        rows.append(
+            {
+                "package": package,
+                "lane": lane,
+                "status": status,
+                "priority": str(raw.get("priority") or "medium").strip().lower(),
+                "reason": str(raw.get("reason") or "").strip(),
+                "install_window": str(raw.get("install_window") or "maintenance").strip().lower(),
+                "locked_version": locked,
+                "installed_version": installed,
+                "soak_policy": "do_not_count_candidate_only_as_missing_runtime",
+            }
+        )
+    return sorted(rows, key=lambda row: (str(row.get("lane") or ""), str(row.get("priority") or ""), str(row.get("package") or "")))
+
+
+def _candidate_library_matrix(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    package_to_lane = {str(row.get("package") or ""): str(row.get("lane") or "") for row in rows}
+    lane_to_packages: dict[str, list[str]] = {}
+    for row in rows:
+        package = str(row.get("package") or "")
+        if not package:
+            continue
+        lane_to_packages.setdefault(str(row.get("lane") or "runtime_support_misc"), []).append(package)
+    unmapped = [package for package, lane in package_to_lane.items() if not lane]
+    candidate_only = [row for row in rows if str(row.get("status") or "") == "candidate_only"]
+    installed = [row for row in rows if str(row.get("status") or "").startswith("installed")]
+    return {
+        "candidate_package_count": len(rows),
+        "mapped_candidate_count": len(rows) - len(unmapped),
+        "mapped_candidate_ratio": round((len(rows) - len(unmapped)) / max(len(rows), 1), 4),
+        "candidate_only_count": len(candidate_only),
+        "installed_candidate_count": len(installed),
+        "unmapped_candidate_packages": unmapped,
+        "package_to_lane": package_to_lane,
+        "lane_to_packages": {lane: sorted(set(packages)) for lane, packages in lane_to_packages.items()},
+        "soak_scoring_policy": "candidate_only_packages_are_stageable_not_missing_runtime",
+    }
+
+
+def _recommended_actions(coverage: dict[str, Any], caps: dict[str, Any], candidate_matrix: dict[str, Any] | None = None) -> list[str]:
+    candidate_matrix = candidate_matrix if isinstance(candidate_matrix, dict) else {}
     return ordered_unique(
         [
             "route every non-MLX runtime package through library-utilization-router before adding more dependency weight",
@@ -646,6 +716,9 @@ def _recommended_actions(coverage: dict[str, Any], caps: dict[str, Any]) -> list
             else "",
             "keep optional library fallbacks routed until the pinned package can be installed in a maintenance window"
             if _safe_int(coverage.get("optional_fallback_active_count"), 0)
+            else "",
+            "stage candidate libraries through config/library_candidate_routes_v1.json and promote them only after compatibility smoke"
+            if _safe_int(candidate_matrix.get("candidate_package_count"), 0)
             else "",
             "./scripts/ops/opsctl.sh runtime-throttle --apply --json",
         ]
@@ -693,6 +766,8 @@ def build_payload(
     routes = _lane_routes(rows)
     coverage = _coverage(rows)
     matrix = _library_utilization_matrix(rows, routes)
+    candidate_rows = _candidate_library_rows(project_root, lock_versions, installed)
+    candidate_matrix = _candidate_library_matrix(candidate_rows)
     runtime_caps = _runtime_caps(
         load_json(health_root / "memory_efficiency_control_latest.json"),
         load_json(health_root / "runtime_throttle_control_latest.json"),
@@ -709,7 +784,6 @@ def build_payload(
         or _safe_int(coverage.get("runtime_ahead_of_lock_count"), 0)
         or _safe_int(coverage.get("optional_fallback_active_count"), 0)
         or _safe_int(coverage.get("runtime_only_package_count"), 0)
-        or str(runtime_caps.get("profile") or "") != "max_library_coverage"
     ):
         status = "advisory"
     return {
@@ -721,6 +795,8 @@ def build_payload(
         "runtime_caps": runtime_caps,
         "recommended_runtime_env": env,
         "workload_routes": routes,
+        "candidate_library_routes": candidate_rows,
+        "candidate_library_matrix": candidate_matrix,
         "library_utilization_matrix": matrix,
         "package_inventory": rows,
         "control_contract": {
@@ -732,12 +808,14 @@ def build_payload(
             "portable_ml_policy": "pytorch_onnx_transformers_stay_canary_or_off_hours_when_live_collection_is_active",
             "lock_drift_policy": "newer_runtime_versions_are_routed_as_advisory_until_canary_reconciles_the_lock",
             "optional_fallback_policy": "optional_missing_packages_use_declared_fallback_routes_without blocking the soak",
+            "candidate_add_policy": "stage_candidates_without_dependency_mutation_then_install_only_in_maintenance_after_smoke",
         },
-        "recommended_actions": _recommended_actions(coverage, runtime_caps),
+        "recommended_actions": _recommended_actions(coverage, runtime_caps, candidate_matrix),
         "artifact_paths": {
             "json": str(DEFAULT_OUT_PATH),
             "external_context": str(DEFAULT_EXTERNAL_CONTEXT_PATH),
             "markdown": str(DEFAULT_MARKDOWN_PATH),
+            "candidate_routes": str(DEFAULT_CANDIDATE_ROUTES),
             "env_override": str(DEFAULT_OVERRIDE_PATH),
         },
     }
@@ -745,6 +823,7 @@ def build_payload(
 
 def render_markdown(payload: dict[str, Any]) -> str:
     coverage = payload.get("coverage") if isinstance(payload.get("coverage"), dict) else {}
+    candidate_matrix = payload.get("candidate_library_matrix") if isinstance(payload.get("candidate_library_matrix"), dict) else {}
     caps = payload.get("runtime_caps") if isinstance(payload.get("runtime_caps"), dict) else {}
     lines = [
         "# Library Utilization Router",
@@ -759,6 +838,12 @@ def render_markdown(payload: dict[str, Any]) -> str:
         f"- Mapped package coverage: `{coverage.get('coverage_ratio', 0.0)}`",
         f"- Locked runtime OK ratio: `{coverage.get('locked_runtime_ok_ratio', 0.0)}`",
         f"- Missing locked packages: `{', '.join(coverage.get('missing_runtime_packages') or []) or 'none'}`",
+        "",
+        "## Candidate Routes",
+        "",
+        f"- Candidate packages staged: `{candidate_matrix.get('candidate_package_count', 0)}`",
+        f"- Candidate route coverage: `{candidate_matrix.get('mapped_candidate_ratio', 0.0)}`",
+        f"- Candidate-only packages: `{candidate_matrix.get('candidate_only_count', 0)}`",
         "",
         "## Runtime Caps",
         "",

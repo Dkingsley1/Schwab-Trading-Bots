@@ -1,16 +1,16 @@
 # Intelligence Layers PyCharm Index
 
-- Updated UTC: `2026-07-27T16:28:54.726882+00:00`
+- Updated UTC: `2026-07-27T20:50:17.290832+00:00`
 - Whole-System Status: `advisory`
-- Top Risk: `system_self_model`
-- Safe Next Command: `./scripts/ops/opsctl.sh backpressure-super-drainer --apply --max-waves 1 --target-pending-lines 5000 --json`
+- Top Risk: `operator_cockpit`
+- Safe Next Command: `./scripts/ops/opsctl.sh expansion-capacity --json`
 
 ## Bot Activity Snapshot
 
-- Active Bots: `1732`
-- Data-Collection Bots: `1732`
+- Active Bots: `1742`
+- Data-Collection Bots: `1742`
 - Paper-Live-Data Bots: `1584`
-- Sleeve Profiles: `6`
+- Sleeve Profiles: `7`
 - Active Marker: <span style="color:#0b5cad;font-weight:700">ACTIVE</span>
 - PyCharm Note: bots can be running under launchd or Terminal even when PyCharm's Run panel is empty.
 
@@ -36,15 +36,15 @@
 - Memory Pressure High: `False`
 - Runtime Pressure High: `False`
 - Storage Critical: `False`
-- Writer Active: `False`
+- Writer Active: `True`
 - Guard Policy Mode: `full_schwab_observe`
 
 ## Docs Commands Reporting
 
-- Layer Status: `advisory`
-- Action: `run_report_quality_guard_repair`
-- Command Contract Entries: `154`
-- Command Issues: `0`
+- Layer Status: `blocked`
+- Action: `run_commands_hygiene_apply`
+- Command Contract Entries: `155`
+- Command Issues: `2`
 - Report Bundle Entries: `38`
 - Report Bundle Errors: `0`
 - Report Permission Errors: `0`
@@ -58,15 +58,15 @@
 
 ## Intelligence Layers
 
-- `super_intelligence`: status `advisory`, mode `rethink`, action `run_outcome_verified_micro_drain`
-- `outcome_learning`: status `advisory`, verdict `ineffective_so_far`
+- `super_intelligence`: status `advisory`, mode `expand`, action `cautious_expansion_rehearsal`
+- `outcome_learning`: status `ready`, verdict `effective`
 - `paper_lane_governor`: status `ready`, mode `full_eligible_paper_soak_active`, score `1584`
-- `symbol_universe_intelligence`: status `degraded`, score `0.0`
-- `cognitive_twin_counterfactuals`: status `degraded`, score `62`, next `base_case`
-- `recursive_policy_evolution`: status `advisory`, score `58.0`, next `cognitive_twin_counterfactual_simulator`
+- `symbol_universe_intelligence`: status `ready`, score `100.0`
+- `cognitive_twin_counterfactuals`: status `ready`, score `38`, next `base_case`
+- `recursive_policy_evolution`: status `ready`, score `72.0`, next `cognitive_twin_counterfactual_simulator`
 - `deeper_self_awareness_layers`: status `advisory`, mode `advisory_control_plane_with_constitutional_lockout_attestation`, score `8`, next `causal_world_model,belief_ledger_confidence`
 - `codex_handoff`: status `advisory`
-- `documentation_reporting_intelligence`: status `advisory`, action `run_report_quality_guard_repair`, score `154`
+- `documentation_reporting_intelligence`: status `blocked`, action `run_commands_hygiene_apply`, score `155`
 
 ## PyCharm Open Paths
 

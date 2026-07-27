@@ -67,3 +67,61 @@ def test_creative_pause_resolves_and_forgives_coinbase_restart_debt() -> None:
     assert recent[0]["resolution_reason"] == "music_playback"
     assert kept == []
     assert forgiveness["removed_event_count"] == 6
+
+
+def test_sql_writer_active_progress_resolves_restart_storm_debt() -> None:
+    events = [
+        {
+            "name": "sql_link_writer",
+            "event": "restart",
+            "ts_epoch": float(100 + index),
+        }
+        for index in range(5)
+    ]
+    status_rows = [
+        {
+            "name": "sql_link_writer",
+            "running": 1,
+            "heartbeat_ok": True,
+            "heartbeat_age_seconds": 15,
+            "heartbeat_max_age_seconds": 120,
+            "writer_recovered_ok": True,
+            "live_execution_critical": False,
+        }
+    ]
+
+    active, recent = watchdog._resolved_restart_storms(
+        events=events,
+        status_rows=status_rows,
+        restart_window_seconds=3600,
+        restart_storm_threshold=4,
+        settle_seconds=900,
+        now_epoch=1000.0,
+    )
+
+    assert active == []
+    assert recent[0]["resolved"] is True
+    assert recent[0]["impact"] == "storage_writer"
+    assert recent[0]["blocks_execution_clear"] is False
+    assert recent[0]["resolution_reason"] == "sql_writer_active_progress_recovered"
+
+
+def test_restart_storm_isolation_follows_explicit_execution_clearance_flag() -> None:
+    contract = watchdog._restart_storm_isolation_contract(
+        [
+            {
+                "name": "sql_link_writer",
+                "quarantinable": False,
+                "blocks_execution_clear": False,
+            },
+            {
+                "name": "execution_lane_live",
+                "quarantinable": False,
+                "blocks_execution_clear": True,
+            },
+        ]
+    )
+
+    assert contract["isolated_targets"] == ["sql_link_writer"]
+    assert contract["execution_blocking_targets"] == ["execution_lane_live"]
+    assert contract["all_active_storms_isolated"] is False

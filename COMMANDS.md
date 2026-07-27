@@ -4,7 +4,7 @@ Use these exact commands as the current source of truth.
 
 This file is generated from the curated operator inventory in `scripts/ops/commands_hygiene_bot.py`.
 Rebuild it with `./scripts/ops/opsctl.sh commands-hygiene --apply` after changing that inventory.
-Command contract hash: `f76b96d54d61c1b87d09b4f3d1e593e3c745d1f125a481fe420ad6fdb3e09236`.
+Command contract hash: `31dede7e0af2dbef9d57529d85c9344291965423e905e01201e168ab4ad1001e`.
 Command contract artifact: `governance/health/commands_contract_latest.json`.
 
 This file is intentionally trimmed down with Most Used pinned first and the remaining sections alphabetized by section and command title:
@@ -23,7 +23,7 @@ Fast search tokens: `start` `stop` `paper` `profitability` `soak` `halt` `auth` 
 
 Useful compound searches: `paper profitability`, `global halt`, `token refresh`, `livefeed heavy`, `storage prune`, `soak readiness`.
 
-Search coverage: `154` generated command entries from the current command contract.
+Search coverage: `155` generated command entries from the current command contract.
 
 <datalist id="command-search-index-options">
   <option value="Keep the Mac awake (Most Used)"></option>
@@ -137,6 +137,7 @@ Search coverage: `154` generated command entries from the current command contra
   <option value="Guarded retrain orchestrator (Retrain)"></option>
   <option value="Training and labeling intelligence (Retrain)"></option>
   <option value="Interactive Schwab authorization re-consent (Schwab Auth)"></option>
+  <option value="Local Schwab credential setup (Schwab Auth)"></option>
   <option value="Schwab auth recovery plus lane restart (Schwab Auth)"></option>
   <option value="Schwab auth supervisor (Schwab Auth)"></option>
   <option value="Schwab authorization refresh (Schwab Auth)"></option>
@@ -183,7 +184,7 @@ Search coverage: `154` generated command entries from the current command contra
 </datalist>
 
 <details>
-<summary>Generated command search index (154 commands; rebuilt by commands-hygiene)</summary>
+<summary>Generated command search index (155 commands; rebuilt by commands-hygiene)</summary>
 
 Each row is generated from `governance/health/commands_contract_latest.json`, so added, removed, renamed, or cleaned-up commands change this index automatically.
 
@@ -298,6 +299,7 @@ Each row is generated from `governance/health/commands_contract_latest.json`, so
 - search-entry:924904d5a4869f0f6b635462ae55c10a8a46d96069d9ad3ce35b3ac2b3a51c39 section:`Retrain` section_key:`retrain` title:Guarded retrain orchestrator title_key:`guarded-retrain-orchestrator` opsctl:`retrain-orchestrate` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
 - search-entry:5823b776d532c4dfce081019db8a1139e845594715a1e658fa528cd44344f63e section:`Retrain` section_key:`retrain` title:Training and labeling intelligence title_key:`training-and-labeling-intelligence` opsctl:`training-labeling-intelligence` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
 - search-entry:9ab5fdd6ad5064cfef401d806513ff95f45fd4b7069af991a89747c8ef41508f section:`Schwab Auth` section_key:`schwab-auth` title:Interactive Schwab authorization re-consent title_key:`interactive-schwab-authorization-re-consent` opsctl:`token-refresh-interactive` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
+- search-entry:23929daa96c42f8741b1e768b7af0231359f3cbea301068c42803824f339c114 section:`Schwab Auth` section_key:`schwab-auth` title:Local Schwab credential setup title_key:`local-schwab-credential-setup` opsctl:`schwab-credentials` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
 - search-entry:e1ac0f0b1b5f955d4f613f59a62c79ecf7cf0cac383b7743e562fbb72c754717 section:`Schwab Auth` section_key:`schwab-auth` title:Schwab auth recovery plus lane restart title_key:`schwab-auth-recovery-plus-lane-restart` opsctl:`token-refresh, feed-refresh` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
 - search-entry:8c2b9aa5192eb1ae1ec1c2c040374e72647ae04889c5068e9ad5e7154bd379c6 section:`Schwab Auth` section_key:`schwab-auth` title:Schwab auth supervisor title_key:`schwab-auth-supervisor` opsctl:`schwab-auth-supervisor` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
 - search-entry:b0b4bec38680f7144f2510a8062b06afeb67ef3918928b99de950d48d9232d8a section:`Schwab Auth` section_key:`schwab-auth` title:Schwab authorization refresh title_key:`schwab-authorization-refresh` opsctl:`token-refresh` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
@@ -1295,6 +1297,16 @@ cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
 ```
 
 Run this when you need to update the browser handshake after changing credentials, renewing consent, or clearing stale callback/token state.
+
+### Local Schwab credential setup
+```bash
+cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
+./scripts/ops/opsctl.sh schwab-credentials --check --json
+./scripts/ops/opsctl.sh schwab-credentials --interactive --store keychain --json
+```
+
+Prompts locally for Schwab API credentials and stores them in macOS Keychain by default; no secret values are printed or written to tracked files.
+This command does not open Chrome or a headless browser. Run the interactive token refresh after credentials are stored if OAuth consent needs renewal.
 
 ### Schwab auth recovery plus lane restart
 ```bash

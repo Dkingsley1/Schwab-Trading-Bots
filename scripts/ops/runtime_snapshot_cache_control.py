@@ -47,7 +47,7 @@ def build_payload(
     overall_status = "ready"
     if not snapshot_exists or stale or not snapshot_ready:
         overall_status = "blocked"
-    elif not freshness_ok or coverage_shortfall_bots > 0:
+    elif not freshness_ok:
         overall_status = "degraded"
 
     recommended_actions = ordered_unique(

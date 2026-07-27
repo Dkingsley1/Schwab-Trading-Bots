@@ -1,0 +1,133 @@
+{
+  "schema_version": 1,
+  "purpose": "Stage useful dependency candidates without breaking the unattended soak by marking uninstalled packages as missing runtime blockers.",
+  "soak_policy": "candidate_only_routes_do_not_mutate_dependencies_or_score_as_missing_runtime",
+  "candidate_libraries": [
+    {
+      "package": "exchange-calendars",
+      "lane": "broker_market_data",
+      "priority": "high",
+      "reason": "More exact market-session, holiday, half-day, and exchange-calendar handling for collection and paper-trading evidence.",
+      "install_window": "maintenance"
+    },
+    {
+      "package": "pandas-market-calendars",
+      "lane": "broker_market_data",
+      "priority": "medium",
+      "reason": "Calendar fallback for simple session gates when the heavier exchange calendar route is unavailable.",
+      "install_window": "maintenance"
+    },
+    {
+      "package": "pandera",
+      "lane": "dataframe_feature_engine",
+      "priority": "high",
+      "reason": "DataFrame schema validation for raw collection, feature tables, and promotion evidence contracts.",
+      "install_window": "maintenance"
+    },
+    {
+      "package": "hypothesis",
+      "lane": "testing_dev_tooling",
+      "priority": "high",
+      "reason": "Property-based regression guards for parsers, order-routing invariants, and artifact classifiers.",
+      "install_window": "maintenance"
+    },
+    {
+      "package": "freezegun",
+      "lane": "testing_dev_tooling",
+      "priority": "medium",
+      "reason": "Deterministic time-window tests for token leases, soak windows, stale-artifact gates, and scheduler logic.",
+      "install_window": "maintenance"
+    },
+    {
+      "package": "responses",
+      "lane": "testing_dev_tooling",
+      "priority": "medium",
+      "reason": "HTTP mocking for broker/provider auth and market-data regression tests without touching live endpoints.",
+      "install_window": "maintenance"
+    },
+    {
+      "package": "ruptures",
+      "lane": "statistical_ml",
+      "priority": "medium",
+      "reason": "Change-point detection for regime shifts, raw profitability drift, and data-quality step changes.",
+      "install_window": "off_hours"
+    },
+    {
+      "package": "hmmlearn",
+      "lane": "statistical_ml",
+      "priority": "medium",
+      "reason": "Hidden-state regime modeling for market posture and sleeve activation research.",
+      "install_window": "off_hours"
+    },
+    {
+      "package": "filterpy",
+      "lane": "statistical_ml",
+      "priority": "medium",
+      "reason": "Kalman and Bayesian filters for smoother microstructure, spread, and rate-curve state estimates.",
+      "install_window": "off_hours"
+    },
+    {
+      "package": "river",
+      "lane": "statistical_ml",
+      "priority": "medium",
+      "reason": "Online-learning and drift-aware models for incremental paper-trading feedback loops.",
+      "install_window": "off_hours"
+    },
+    {
+      "package": "shap",
+      "lane": "statistical_ml",
+      "priority": "low",
+      "reason": "Explainability packets for model decisions after runtime and memory budgets are stable.",
+      "install_window": "off_hours"
+    },
+    {
+      "package": "cvxpy",
+      "lane": "quant_derivatives_risk",
+      "priority": "medium",
+      "reason": "Convex optimization for portfolio constraints, capital allocation, and risk-budget experiments.",
+      "install_window": "maintenance"
+    },
+    {
+      "package": "PyPortfolioOpt",
+      "lane": "quant_derivatives_risk",
+      "priority": "low",
+      "reason": "Portfolio optimization research wrapper around existing return, covariance, and constraint evidence.",
+      "install_window": "off_hours"
+    },
+    {
+      "package": "riskfolio-lib",
+      "lane": "quant_derivatives_risk",
+      "priority": "low",
+      "reason": "Alternative risk-budget and portfolio construction research, kept out of hot runtime lanes.",
+      "install_window": "off_hours"
+    },
+    {
+      "package": "lightgbm",
+      "lane": "statistical_ml",
+      "priority": "low",
+      "reason": "Fast gradient boosting candidate for tabular alpha ranking if Apple Silicon wheels pass compatibility smoke.",
+      "install_window": "off_hours"
+    },
+    {
+      "package": "catboost",
+      "lane": "statistical_ml",
+      "priority": "low",
+      "reason": "Categorical-feature boosting candidate for event and symbol-context models after resource canaries pass.",
+      "install_window": "off_hours"
+    },
+    {
+      "package": "skops",
+      "lane": "serialization_compression",
+      "priority": "medium",
+      "reason": "Safer scikit-learn model serialization and inspection before promotion artifacts are trusted.",
+      "install_window": "maintenance"
+    },
+    {
+      "package": "skrub",
+      "lane": "dataframe_feature_engine",
+      "priority": "low",
+      "reason": "Messy tabular feature cleaning for alternate datasets and external research feeds.",
+      "install_window": "off_hours"
+    }
+  ]
+}

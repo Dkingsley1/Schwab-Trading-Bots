@@ -924,13 +924,13 @@ def _restart_storm_isolation_contract(restart_storms: List[Dict[str, Any]]) -> D
             continue
         quarantinable = _safe_bool(storm.get('quarantinable'), default=False)
         blocks_execution_clear = _safe_bool(storm.get('blocks_execution_clear'), default=not quarantinable)
-        if quarantinable and not blocks_execution_clear:
+        if not blocks_execution_clear:
             isolated.append(name)
         else:
             execution_blocking.append(name)
 
     return {
-        'policy': 'isolate_read_only_collection_restart_storms_from_execution_clearance_while_execution_is_off',
+        'policy': 'isolate_non_execution_restart_storms_from_execution_clearance_while_execution_is_off',
         'isolated_count': len(isolated),
         'execution_blocking_count': len(execution_blocking),
         'isolated_targets': sorted(isolated),
@@ -1050,7 +1050,14 @@ def _resolved_restart_storms(
         impact = _restart_storm_impact(name, row)
         quarantinable = _restart_storm_quarantine_allowed(name, row)
         live_execution_critical = _safe_bool(row.get('live_execution_critical'), default=(impact == 'execution_lane'))
-        blocks_execution_clear = bool(not quarantinable)
+        sql_writer_recovered = bool(
+            name == 'sql_link_writer'
+            and row.get('writer_recovered_ok', False)
+            and not live_execution_critical
+        )
+        if sql_writer_recovered:
+            unresolved = False
+        blocks_execution_clear = bool(live_execution_critical or impact == 'execution_lane')
         storm = {
             'name': name,
             'count': int(count),
@@ -1072,6 +1079,8 @@ def _resolved_restart_storms(
             storm['resolution_reason'] = str(row.get('runtime_pause_reason') or 'runtime_paper_execution_paused')
         elif sql_writer_idle_complete:
             storm['resolution_reason'] = 'sql_writer_on_demand_idle_complete'
+        elif sql_writer_recovered:
+            storm['resolution_reason'] = 'sql_writer_active_progress_recovered'
         recent.append(storm)
         if unresolved:
             active.append(storm)
@@ -1174,6 +1183,79 @@ def _sql_link_writer_idle_health() -> Dict[str, Any]:
         ),
         'writer_lock_held': bool(cycle_state.get('writer_lock_held', process_health.get('writer_lock_held', False))),
         'policy': 'treat_complete_idle_sql_writer_as_healthy_on_demand_service',
+    }
+
+
+def _sql_link_writer_recovery_health() -> Dict[str, Any]:
+    cycle_path = HEALTH_DIR / 'writer_cycle_coordinator_latest.json'
+    process_path = HEALTH_DIR / 'writer_process_intelligence_latest.json'
+    cycle_payload = _load_json_payload(cycle_path)
+    process_payload = _load_json_payload(process_path)
+
+    def _fresh(path: Path, max_age_seconds: float = 600.0) -> bool:
+        try:
+            return (time.time() - float(path.stat().st_mtime)) <= max_age_seconds
+        except Exception:
+            return False
+
+    cycle_state: Dict[str, Any] = {}
+    for key in ('writer_state_after_wait', 'writer_state_after_remediation', 'writer_state_before'):
+        candidate = cycle_payload.get(key)
+        if isinstance(candidate, dict) and candidate:
+            cycle_state = candidate
+            break
+
+    process_health = process_payload.get('writer_health')
+    if not isinstance(process_health, dict):
+        process_health = {}
+
+    state = cycle_state if cycle_state else process_health
+    artifact_fresh = _fresh(cycle_path) or _fresh(process_path)
+    current_step = str(state.get('effective_current_step') or state.get('current_step') or process_health.get('state') or '').strip()
+    progress_age_minutes = _safe_float(
+        state.get('progress_age_minutes', process_health.get('progress_age_minutes')),
+        999.0,
+    )
+    active = bool(
+        state.get('active', False)
+        or state.get('running', False)
+        or process_health.get('active', False)
+        or str(process_health.get('state') or '').strip().lower() == 'active_progressing'
+    )
+    orphaned = bool(state.get('progress_orphaned', process_health.get('progress_orphaned', False)))
+    handoff_needed = bool(
+        state.get('complete_lock_handoff_needed', state.get('completed_lock_handoff_needed', False))
+        or process_health.get('complete_lock_handoff_needed', False)
+    )
+    ok = bool(
+        artifact_fresh
+        and active
+        and not orphaned
+        and not handoff_needed
+        and progress_age_minutes <= 10.0
+        and current_step not in {'', 'stalled', 'stale_progress'}
+    )
+    return {
+        'ok': ok,
+        'reason': 'sql_writer_active_progress_recovered' if ok else 'sql_writer_active_progress_not_clear',
+        'cycle_artifact_fresh': _fresh(cycle_path),
+        'process_artifact_fresh': _fresh(process_path),
+        'current_step': current_step,
+        'active': bool(active),
+        'progress_age_minutes': round(float(progress_age_minutes), 3),
+        'progress_orphaned': bool(orphaned),
+        'complete_lock_handoff_needed': bool(handoff_needed),
+        'writer_lock_held': bool(state.get('writer_lock_held', process_health.get('writer_lock_held', False))),
+        'child_writer_active': bool(state.get('child_writer_active', process_health.get('child_writer_active', False))),
+        'completed_shard_count': _safe_int(
+            state.get('completed_shard_count', process_health.get('completed_shard_count')),
+            0,
+        ),
+        'planned_shard_count': _safe_int(
+            state.get('planned_shard_count', process_health.get('planned_shard_count')),
+            0,
+        ),
+        'policy': 'fresh_active_sql_writer_progress_forgives_restart_storm_debt_without_enabling_live_execution',
     }
 
 
@@ -2492,6 +2574,28 @@ def main() -> int:
                 row['writer_idle_ok'] = True
                 row['virtual_process_live'] = True
                 row['process_live_reason'] = str(writer_idle_health.get('reason') or 'sql_writer_on_demand_idle_complete')
+            else:
+                writer_recovery_health = _sql_link_writer_recovery_health()
+                row['writer_recovery_health'] = writer_recovery_health
+                if bool(writer_recovery_health.get('ok', False)):
+                    process_live = True
+                    heartbeat_ok = True
+                    row['process_live'] = True
+                    row['heartbeat_ok'] = True
+                    row['writer_recovered_ok'] = True
+                    row['virtual_process_live'] = True
+                    row['process_live_reason'] = str(
+                        writer_recovery_health.get('reason') or 'sql_writer_active_progress_recovered'
+                    )
+
+        if t['name'] == 'sql_link_writer' and process_live and heartbeat_ok:
+            writer_recovery_health = row.get('writer_recovery_health')
+            if not isinstance(writer_recovery_health, dict):
+                writer_recovery_health = _sql_link_writer_recovery_health()
+            row['writer_recovery_health'] = writer_recovery_health
+            if bool(writer_recovery_health.get('ok', False)):
+                row['writer_recovered_ok'] = True
+                row['process_live_reason'] = str(writer_recovery_health.get('reason') or 'sql_writer_active_progress_recovered')
 
         if safety_pause['active'] and t['name'] in safety_pause_target_names:
             row['paused_by_safety_flags'] = True

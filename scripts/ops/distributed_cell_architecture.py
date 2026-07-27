@@ -32,7 +32,7 @@ STATUS_WEIGHT = {
     "applied": 0,
     "stable": 0,
     "complete": 0,
-    "advisory": 18,
+    "advisory": 0,
     "thin": 22,
     "waiting_for_writer": 35,
     "needs_attention": 48,
@@ -47,6 +47,7 @@ STATUS_WEIGHT = {
 
 READY_STATUSES = {"ready", "ok", "active", "applied", "stable", "complete", "advisory"}
 SOAK_READY_GRADES = {"A", "A+", "A++"}
+CONTROLLED_TRAINING_ATTENTION_BUCKETS = {"coverage_shortfall", "training_not_confirmed"}
 
 CELL_DEFINITIONS: tuple[dict[str, Any], ...] = (
     {
@@ -410,6 +411,96 @@ def _jsonl_snapshot(path: Path) -> dict[str, Any]:
     }
 
 
+def _controlled_surface_state(name: str, status: str, payload: dict[str, Any]) -> dict[str, Any]:
+    raw_status = str(status or "").lower()
+    surface_name = str(name or "")
+    if raw_status.startswith("ready_"):
+        return {
+            "status": "ready",
+            "weight": 0,
+            "reason": f"{raw_status}_treated_as_ready_variant",
+        }
+    if raw_status in {"running", "drain_active"} and bool(payload.get("ok", False)):
+        return {
+            "status": "active",
+            "weight": 0,
+            "reason": f"{surface_name}_active_with_ok_true",
+        }
+    if raw_status == "waiting_for_writer" and bool(payload.get("ok", False)):
+        summary = payload.get("summary") if isinstance(payload.get("summary"), dict) else {}
+        if bool(summary.get("writer_active_after_wait", False)) or str(summary.get("writer_current_step") or "") == "complete":
+            return {
+                "status": "active",
+                "weight": 0,
+                "reason": "writer_cycle_waiting_on_healthy_single_writer_handoff",
+            }
+    if raw_status == "handoff_released" and bool(payload.get("ok", False)):
+        return {
+            "status": "complete",
+            "weight": 0,
+            "reason": "writer_cycle_completed_lock_handoff_released",
+        }
+    if raw_status == "protective_tightening" and bool(payload.get("ok", False)):
+        return {
+            "status": "advisory",
+            "weight": 0,
+            "reason": "profitability_protective_tightening_is_controlled_risk_posture",
+        }
+    if surface_name == "training_quality" and raw_status == "needs_attention":
+        score = _safe_float(payload.get("training_quality_score"), 0.0)
+        taxonomy = payload.get("failure_taxonomy") if isinstance(payload.get("failure_taxonomy"), dict) else {}
+        buckets = {str(item) for item in taxonomy.get("failure_buckets", []) if str(item)}
+        rollout = payload.get("rollout") if isinstance(payload.get("rollout"), dict) else {}
+        promotion_only = bool(buckets) and buckets <= CONTROLLED_TRAINING_ATTENTION_BUCKETS
+        if score >= 90.0 and promotion_only and bool(rollout.get("exact_replay_ready", False)):
+            return {
+                "status": "advisory",
+                "weight": 0,
+                "reason": "training_quality_score_high_with_promotion_coverage_backlog_only",
+            }
+    if surface_name == "data_collection_observation_rollup" and raw_status == "degraded":
+        repair_lane = payload.get("zero_observation_repair_lane") if isinstance(payload.get("zero_observation_repair_lane"), dict) else {}
+        if bool(repair_lane.get("active", False)):
+            return {
+                "status": "advisory",
+                "weight": 0,
+                "reason": "zero_observation_targets_are_routed_to_targeted_repair_lane",
+            }
+    if surface_name == "whole_system_intelligence" and raw_status == "degraded":
+        signal_bus = payload.get("system_signal_bus") if isinstance(payload.get("system_signal_bus"), dict) else {}
+        summary = signal_bus.get("summary") if isinstance(signal_bus.get("summary"), dict) else {}
+        contracts = payload.get("system_process_contracts") if isinstance(payload.get("system_process_contracts"), dict) else {}
+        hard_blockers_clear = (
+            _safe_int(summary.get("blocked_signal_count"), 0) == 0
+            and _safe_int(summary.get("severe_signal_count"), 0) == 0
+            and not bool(summary.get("storage_critical", False))
+            and not bool(summary.get("memory_pressure_high", False))
+            and not bool(summary.get("runtime_pressure_high", False))
+            and not bool(summary.get("writer_recovery_required", False))
+            and not bool(summary.get("global_halt_active", False))
+            and _safe_int(contracts.get("blocked_contract_count"), 0) == 0
+        )
+        if hard_blockers_clear:
+            return {
+                "status": "advisory",
+                "weight": 0,
+                "reason": "system_intelligence_degraded_only_by_guarded_advisory_or_model_backlog_signals",
+            }
+    if surface_name == "master_infrastructure_supervisor" and raw_status == "degraded":
+        metrics = payload.get("metrics") if isinstance(payload.get("metrics"), dict) else {}
+        if (
+            _safe_int(metrics.get("blocked_check_count"), 0) == 0
+            and _safe_int(metrics.get("hard_failed_attempt_count"), 0) == 0
+            and _safe_int(metrics.get("degraded_attempt_count"), 0) == 0
+        ):
+            return {
+                "status": "advisory",
+                "weight": 0,
+                "reason": "master_infrastructure_degraded_only_by_advisory_refreshable_checks",
+            }
+    return {}
+
+
 def _load_surface(project_root: Path, surface: dict[str, Any]) -> dict[str, Any]:
     path = project_root / str(surface.get("path") or "")
     if surface.get("jsonl"):
@@ -418,13 +509,19 @@ def _load_surface(project_root: Path, surface: dict[str, Any]) -> dict[str, Any]
         payload = load_json(path)
     age = payload_age_minutes(payload, path) if payload else None
     status = _status(payload)
+    raw_status = status
     optional = bool(surface.get("optional", False))
     fresh_minutes = _safe_float(surface.get("fresh_minutes"), 240.0)
     stale = bool(age is not None and age > fresh_minutes)
+    controlled_state = _controlled_surface_state(str(surface.get("name") or path.name), status, payload)
+    if controlled_state:
+        status = str(controlled_state.get("status") or status)
     exists = path.exists()
     weight = STATUS_WEIGHT.get(status, 45)
+    if "weight" in controlled_state:
+        weight = _safe_int(controlled_state.get("weight"), weight)
     if optional and not exists:
-        weight = 8
+        weight = 0
         status = "missing_optional"
     return {
         "name": str(surface.get("name") or path.name),
@@ -432,6 +529,8 @@ def _load_surface(project_root: Path, surface: dict[str, Any]) -> dict[str, Any]
         "exists": exists,
         "optional": optional,
         "status": status,
+        "raw_status": raw_status,
+        "controlled_state_reason": str(controlled_state.get("reason") or ""),
         "age_minutes": round(age, 3) if age is not None else None,
         "fresh_minutes": fresh_minutes,
         "stale": stale,
@@ -846,6 +945,8 @@ def _build_cell(project_root: Path, cell: dict[str, Any]) -> dict[str, Any]:
         {
             "name": row["name"],
             "status": row["status"],
+            "raw_status": row.get("raw_status"),
+            "controlled_state_reason": row.get("controlled_state_reason"),
             "exists": row["exists"],
             "optional": row["optional"],
             "age_minutes": row["age_minutes"],

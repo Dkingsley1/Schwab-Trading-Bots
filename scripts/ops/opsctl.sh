@@ -1333,6 +1333,9 @@ case "$cmd" in
   schwab-auth-supervisor|schwab-auth-guard|auth-supervisor)
     exec "$PY" "$PROJECT_ROOT/scripts/ops/schwab_auth_supervisor.py" "$@"
     ;;
+  schwab-credentials|schwab-creds|schwab-credentials-setup|schwab-auth-creds)
+    exec "$PY" "$PROJECT_ROOT/scripts/ops/schwab_credentials_setup.py" "$@"
+    ;;
   auth-lease|auth-lease-manager|lease-manager)
     exec "$PY" "$PROJECT_ROOT/scripts/ops/auth_lease_manager.py" "$@"
     ;;
@@ -2915,6 +2918,7 @@ opsctl commands:
   live-runtime-separation [--live-fresh-minutes N] [--json]
   rolling-restart [--max-session-age-minutes N] [--swap-restart-gb N] [--json]
   schwab-auth-supervisor [--apply] [--json]
+  schwab-credentials|schwab-creds [--check|--interactive] [--store keychain|env-file] [--force] [--json]
   auth-lease [--min-lease-seconds N] [--critical-lease-seconds N] [--json]
   incident-timeline [--files-per-pattern N] [--rows-per-file N] [--recent-limit N] [--json]
   promotion-autopilot [--json]
@@ -3136,6 +3140,7 @@ opsctl commands:
   regime-validate [--out-file PATH]
   timeline-install-autoupdate
   token-refresh [--always-auth] [--json]
+  schwab-credentials|schwab-creds [--check|--interactive] [--store keychain|env-file] [--force] [--json]
   token-refresh-interactive [--force] [--callback-timeout-seconds N] [--requested-browser BROWSER] [--prompt-before-browser] [--skip-account-probe] [--json]
   token-install-autorefresh
   account-position-study [--json] [--day YYYYMMDD] [--profiles CSV]

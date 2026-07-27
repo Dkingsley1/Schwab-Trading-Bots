@@ -728,6 +728,29 @@ def test_long_runtime_storage_and_freshness_controls(tmp_path: Path) -> None:
     assert quota["overall_status"] == "blocked"
 
 
+def test_runtime_snapshot_cache_treats_coverage_topoff_as_advisory_when_cache_ready(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    health = project_root / "governance" / "health"
+    _write_json(
+        health / "runtime_training_snapshot_latest.json",
+        {
+            "timestamp_utc": "2026-04-06T00:00:00+00:00",
+            "row_count": 10,
+            "sequence_count": 2,
+            "coverage": {"top_sequences": []},
+        },
+    )
+    _write_json(health / "training_runtime_control_latest.json", {"snapshot_ready": True, "precompute_targets": [{"bot_id": "bot_a"}]})
+    _write_json(health / "retrain_artifact_freshness_latest.json", {"ok": True})
+    _write_json(project_root / "governance" / "walk_forward" / "coverage_seed_latest.json", {"coverage_shortfall_bots": 4})
+
+    payload = snapshot_cache_src.build_payload(project_root, fresh_minutes=10_000_000, stale_minutes=10_000_000)
+
+    assert payload["overall_status"] == "ready"
+    assert payload["upstream_inputs"]["coverage_shortfall_bots"] == 4
+    assert "precompute sequence-heavy retrain targets before asking the live host to retrain again" in payload["recommended_actions"]
+
+
 def test_sleeve_isolation_excludes_session_pauses_and_resolves_repaired_daily_checks(tmp_path: Path) -> None:
     project_root = tmp_path / "project"
     health = project_root / "governance" / "health"

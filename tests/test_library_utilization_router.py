@@ -51,7 +51,7 @@ def test_library_utilization_router_maps_all_non_mlx_packages_and_keeps_mlx_defa
 
     lanes = payload["library_utilization_matrix"]["package_to_lane"]
 
-    assert payload["overall_status"] == "advisory"
+    assert payload["overall_status"] == "ready"
     assert payload["coverage"]["coverage_ratio"] == 1.0
     assert payload["coverage"]["locked_non_mlx_package_count"] == 8
     assert "mlx" not in lanes
@@ -129,3 +129,48 @@ def test_library_utilization_router_routes_runtime_ahead_and_optional_fallback_a
     assert rows["pandas-ta"]["status"] == "optional_fallback_active"
     assert rows["pandas-ta"]["available_fallback_packages"] == ["ta", "pandas", "numpy"][:2]
     assert "adopt newer runtime packages into the lock after canary evidence instead of marking active routes failed" in payload["recommended_actions"]
+
+
+def test_library_utilization_router_stages_candidate_libraries_without_missing_runtime_debt(tmp_path: Path) -> None:
+    lock = tmp_path / "config" / "requirements.lock.txt"
+    lock.parent.mkdir(parents=True, exist_ok=True)
+    lock.write_text("pandas==3.0.1\n", encoding="utf-8")
+    candidate_routes = tmp_path / "config" / "library_candidate_routes_v1.json"
+    candidate_routes.write_text(
+        json.dumps(
+            {
+                "candidate_libraries": [
+                    {
+                        "package": "pandera",
+                        "lane": "dataframe_feature_engine",
+                        "priority": "high",
+                        "reason": "schema checks",
+                        "install_window": "maintenance",
+                    },
+                    {
+                        "package": "hypothesis",
+                        "lane": "testing_dev_tooling",
+                        "priority": "high",
+                        "reason": "property tests",
+                        "install_window": "maintenance",
+                    },
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    payload = src.build_payload(
+        tmp_path,
+        lock_file=lock,
+        installed_versions={"pandas": "3.0.1"},
+    )
+    candidates = {row["package"]: row for row in payload["candidate_library_routes"]}
+
+    assert payload["overall_status"] == "ready"
+    assert payload["coverage"]["missing_runtime_count"] == 0
+    assert payload["candidate_library_matrix"]["candidate_package_count"] == 2
+    assert payload["candidate_library_matrix"]["mapped_candidate_ratio"] == 1.0
+    assert candidates["pandera"]["status"] == "candidate_only"
+    assert candidates["pandera"]["soak_policy"] == "do_not_count_candidate_only_as_missing_runtime"
+    assert payload["control_contract"]["candidate_add_policy"] == "stage_candidates_without_dependency_mutation_then_install_only_in_maintenance_after_smoke"

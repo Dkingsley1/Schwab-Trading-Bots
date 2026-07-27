@@ -173,6 +173,8 @@ def test_commands_hygiene_bot_authors_commands_surface_and_runbook(tmp_path: Pat
     assert "## Schwab Auth" in commands_text
     assert "### Schwab auth supervisor" in commands_text
     assert "./scripts/ops/opsctl.sh schwab-auth-supervisor --json" in commands_text
+    assert "### Local Schwab credential setup" in commands_text
+    assert "./scripts/ops/opsctl.sh schwab-credentials --interactive --store keychain --json" in commands_text
     assert "### Schwab authorization refresh" in commands_text
     assert "./scripts/ops/opsctl.sh token-refresh --always-auth" in commands_text
     assert "### Interactive Schwab authorization re-consent" in commands_text
@@ -216,7 +218,7 @@ def test_commands_hygiene_bot_authors_commands_surface_and_runbook(tmp_path: Pat
     assert 'refresh) print -r -- "Most Used" ;;' in runbook_text
     assert 'refresh) print -r -- "Live Feed Refreshes" ;;' not in runbook_text
     assert contract_payload["schema_version"] == commands_src.COMMAND_CONTRACT_SCHEMA_VERSION
-    assert contract_payload["entry_count"] == 150
+    assert contract_payload["entry_count"] == 155
     assert contract_payload["contract_hash"] in commands_text
 
 
@@ -286,7 +288,7 @@ def test_render_commands_markdown_places_new_entries_in_expected_sections(tmp_pa
     assert "### Dry-run the startup Yes/No bot start prompt" in notifications
     assert "./scripts/ops/opsctl.sh startup-start-prompt-test --dry-run --delay-seconds 0" in notifications
     assert "### Review remote alert control" in notifications
-    assert "### Arm or promote the guarded 400 bot paper ramp" in paper_trading
+    assert "### Arm or candidate-promote the guarded 400 bot paper ramp" in paper_trading
     assert "./scripts/ops/opsctl.sh paper-400-ramp --apply --promote-roster --json" in paper_trading
     assert "### Check paper runtime regression guard" in paper_trading
     assert "### Apply the paper live-data standard" in paper_trading
@@ -294,6 +296,9 @@ def test_render_commands_markdown_places_new_entries_in_expected_sections(tmp_pa
     assert "### Schwab authorization refresh" in schwab_auth
     assert "### Schwab auth supervisor" in schwab_auth
     assert "./scripts/ops/opsctl.sh schwab-auth-supervisor --json" in schwab_auth
+    assert "### Local Schwab credential setup" in schwab_auth
+    assert "./scripts/ops/opsctl.sh schwab-credentials --interactive --store keychain --json" in schwab_auth
+    assert "does not open Chrome or a headless browser" in schwab_auth
     assert "### Interactive Schwab authorization re-consent" in schwab_auth
     assert "### Schwab auth recovery plus lane restart" in schwab_auth
     assert "### Refresh runtime dashboard contracts" in status_health

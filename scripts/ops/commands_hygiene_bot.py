@@ -1282,6 +1282,18 @@ def _commands_inventory(project_root: Path) -> list[dict[str, Any]]:
             ),
             _command_entry(
                 project_root,
+                "Local Schwab credential setup",
+                [
+                    "./scripts/ops/opsctl.sh schwab-credentials --check --json",
+                    "./scripts/ops/opsctl.sh schwab-credentials --interactive --store keychain --json",
+                ],
+                notes=[
+                    "Prompts locally for Schwab API credentials and stores them in macOS Keychain by default; no secret values are printed or written to tracked files.",
+                    "This command does not open Chrome or a headless browser. Run the interactive token refresh after credentials are stored if OAuth consent needs renewal.",
+                ],
+            ),
+            _command_entry(
+                project_root,
                 "Schwab authorization refresh",
                 ["./scripts/ops/opsctl.sh token-refresh --always-auth"],
                 notes=[
