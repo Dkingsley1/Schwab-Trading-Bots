@@ -43,6 +43,10 @@ HARD_PAPER_BLOCKERS = {
     "session_not_ready",
     "market_data_not_ready",
 }
+PAPER_EXPANSION_ONLY_BLOCKERS = {
+    "ingestion_or_backpressure_above_paper_400_gate",
+    "memory_pressure_above_paper_400_gate",
+}
 LIVE_AUTHORITY_KEYS = [
     "TOP_BOT_ENABLE_LIVE_EXECUTION",
     "EXECUTION_LANE_LIVE_ENABLED",
@@ -198,6 +202,33 @@ def _paper_lane_eligible(runtime: dict[str, Any], paper: dict[str, Any]) -> bool
         or _bool(paper_policy.get("paper_execution_allowed"))
         or _bool(live_policy.get("paper_execution_allowed"))
     )
+
+
+def _paper_and_gate_blockers(paper: dict[str, Any]) -> list[str]:
+    paper_blockers = [str(item) for item in _as_list(paper.get("blockers"))]
+    paper_gate = _as_dict(_as_dict(paper.get("gates")).get("runtime")) if paper else {}
+    paper_gate_blockers = [str(item) for item in _as_list(paper_gate.get("blockers"))]
+    return ordered_unique(paper_blockers + paper_gate_blockers)
+
+
+def _paper_execution_open(runtime: dict[str, Any], env_values: dict[str, str]) -> bool:
+    paper_policy = _as_dict(runtime.get("paper_execution_policy"))
+    live_policy = _as_dict(_as_dict(runtime.get("runtime_saturation_governor_v2")).get("paper_live_data_policy"))
+    return bool(
+        _bool(paper_policy.get("paper_execution_allowed", False))
+        and not _bool(paper_policy.get("pause_paper_execution", False))
+        and _bool(live_policy.get("paper_execution_allowed", False))
+        and not _bool(live_policy.get("paper_execution_consumer_paused", False))
+        and not _paper_env_pause_keys(env_values)
+    )
+
+
+def _expansion_only_blockers(blockers: list[str]) -> list[str]:
+    return [item for item in blockers if item in PAPER_EXPANSION_ONLY_BLOCKERS]
+
+
+def _fail_closed_blockers(blockers: list[str]) -> list[str]:
+    return [item for item in blockers if item in HARD_PAPER_BLOCKERS and item not in PAPER_EXPANSION_ONLY_BLOCKERS]
 
 
 def _capacity_limited_paper_gate_safe(paper_gate: dict[str, Any]) -> bool:
@@ -648,6 +679,30 @@ def _paper_execution_pause_guard(runtime: dict[str, Any], paper: dict[str, Any],
 
     paper_policy = _as_dict(runtime.get("paper_execution_policy"))
     live_policy = _as_dict(_as_dict(runtime.get("runtime_saturation_governor_v2")).get("paper_live_data_policy"))
+    all_blockers = _paper_and_gate_blockers(paper)
+    expansion_blockers = _expansion_only_blockers(all_blockers)
+    fail_closed_blockers = _fail_closed_blockers(all_blockers)
+    existing_paper_open = _paper_execution_open(runtime, env_values)
+    if expansion_blockers and not fail_closed_blockers and existing_paper_open:
+        return _guard_row(
+            "blocked_paper_execution_pause_contract",
+            True,
+            severity="high",
+            expected="400-paper expansion blockers may pause widening while existing paper execution remains open",
+            actual={
+                "paper_blocked": paper_blocked,
+                "paper_policy_pause_paper_execution": _bool(paper_policy.get("pause_paper_execution")),
+                "live_policy_consumer_paused": _bool(live_policy.get("paper_execution_consumer_paused")),
+                "expansion_only_blockers": expansion_blockers,
+                "fail_closed_blockers": fail_closed_blockers,
+                "existing_paper_execution_open": True,
+            },
+            evidence=[
+                f"paper_stage={paper.get('stage', '')}",
+                f"paper_blockers={','.join(all_blockers)}",
+                "existing_paper_soak_must_fail_open_when_only_expansion_is_paused",
+            ],
+        )
     policy_paused = _bool(paper_policy.get("pause_paper_execution")) and _bool(live_policy.get("paper_execution_consumer_paused"))
     env_mismatches = {
         key: env_values.get(key, "<missing>")
@@ -830,10 +885,10 @@ def _production_grade_authority_guard(
     paper_policy = _as_dict(runtime.get("paper_execution_policy"))
     live_policy = _as_dict(_as_dict(runtime.get("runtime_saturation_governor_v2")).get("paper_live_data_policy"))
     all_sleeves = _all_sleeves_runtime_state(process)
-    paper_blockers = [str(item) for item in _as_list(paper.get("blockers"))]
-    paper_gate = _as_dict(_as_dict(paper.get("gates")).get("runtime")) if paper else {}
-    paper_gate_blockers = [str(item) for item in _as_list(paper_gate.get("blockers"))]
-    hard_blockers = ordered_unique([item for item in paper_blockers + paper_gate_blockers if item in HARD_PAPER_BLOCKERS])
+    all_paper_blockers = _paper_and_gate_blockers(paper)
+    hard_blockers = ordered_unique([item for item in all_paper_blockers if item in HARD_PAPER_BLOCKERS])
+    expansion_blockers = _expansion_only_blockers(all_paper_blockers)
+    fail_closed_blockers = _fail_closed_blockers(all_paper_blockers)
     env_pause_keys = _paper_env_pause_keys(env_values)
     stale_artifacts = [row for row in artifact_snapshots if bool(row.get("stale", False))]
     paper_lock_active = _paper_trade_lock_active(project_root, env_values)
@@ -886,15 +941,9 @@ def _production_grade_authority_guard(
         )
     )
     controlled_profitability_enforced = bool(controlled_profitability_enforced and raw_improvement_ready)
-    paper_open = bool(
-        _bool(paper_policy.get("paper_execution_allowed", False))
-        and not _bool(paper_policy.get("pause_paper_execution", False))
-        and _bool(live_policy.get("paper_execution_allowed", False))
-        and not _bool(live_policy.get("paper_execution_consumer_paused", False))
-        and not env_pause_keys
-    )
+    paper_open = _paper_execution_open(runtime, env_values)
     hard_blocker_fail_closed = bool(
-        not hard_blockers
+        not fail_closed_blockers
         or (
             _paper_is_blocked(paper)
             and (
@@ -906,7 +955,7 @@ def _production_grade_authority_guard(
     )
     paper_fail_open_when_safe = bool(
         not eligible
-        or hard_blockers
+        or fail_closed_blockers
         or (
             paper_open
             and bool(all_sleeves.get("ok", False))
@@ -949,6 +998,8 @@ def _production_grade_authority_guard(
             "paper_lane_eligible": eligible,
             "blockers": ordered_unique(blockers),
             "hard_paper_blockers": hard_blockers,
+            "expansion_only_blockers": expansion_blockers,
+            "fail_closed_blockers": fail_closed_blockers,
             "paper_open": paper_open,
             "hard_blocker_fail_closed": hard_blocker_fail_closed,
             "paper_fail_open_when_safe": paper_fail_open_when_safe,
@@ -1013,6 +1064,9 @@ def _soak_30_day_continuity_guard(
     paper_policy = _as_dict(runtime.get("paper_execution_policy"))
     live_policy = _as_dict(_as_dict(runtime.get("runtime_saturation_governor_v2")).get("paper_live_data_policy"))
     paper_gate = _as_dict(_as_dict(paper.get("gates")).get("runtime")) if paper else {}
+    all_paper_blockers = _paper_and_gate_blockers(paper)
+    expansion_blockers = _expansion_only_blockers(all_paper_blockers)
+    fail_closed_blockers = _fail_closed_blockers(all_paper_blockers)
     runtime_capacity = _as_dict(runtime.get("paper_capacity_contract"))
     all_sleeves = _all_sleeves_runtime_state(process)
     stale_artifacts = [row for row in artifact_snapshots if bool(row.get("stale", False))]
@@ -1052,13 +1106,20 @@ def _soak_30_day_continuity_guard(
     session_ready = _session_ready(session)
     capacity_limited_gate_safe = _capacity_limited_paper_gate_safe(paper_gate)
     runtime_status_ready = bool(_lower(runtime.get("overall_status")) in READY_LIKE_STATUSES or capacity_limited_gate_safe)
-    paper_ramp_open = bool(
+    strict_paper_ramp_open = bool(
         paper
         and _bool(paper.get("ok", False))
         and _bool(paper.get("armed", False))
         and _lower(paper.get("stage")) == "armed"
         and not _as_list(paper.get("blockers"))
     )
+    existing_paper_execution_open = _paper_execution_open(runtime, env_values)
+    expansion_pause_existing_paper_open = bool(
+        expansion_blockers
+        and not fail_closed_blockers
+        and existing_paper_execution_open
+    )
+    paper_ramp_open = bool(strict_paper_ramp_open or expansion_pause_existing_paper_open)
     runtime_gate_ready = bool(
         not paper_gate
         or (
@@ -1129,6 +1190,10 @@ def _soak_30_day_continuity_guard(
             "runtime_status_ready": runtime_status_ready,
             "paper_stage": paper.get("stage") if paper else "missing",
             "paper_ramp_open": paper_ramp_open,
+            "strict_paper_ramp_open": strict_paper_ramp_open,
+            "expansion_pause_existing_paper_open": expansion_pause_existing_paper_open,
+            "expansion_only_blockers": expansion_blockers,
+            "fail_closed_blockers": fail_closed_blockers,
             "runtime_gate_ready": runtime_gate_ready,
             "capacity_ready": capacity_ready,
             "capacity_limited_paper_gate_safe": capacity_limited_gate_safe,

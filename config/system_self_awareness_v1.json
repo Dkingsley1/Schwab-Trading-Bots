@@ -1,5 +1,5 @@
 {
-  "generated_at_utc": "2026-05-03T15:27:18.334330+00:00",
+  "generated_at_utc": "2026-07-27T19:29:17.026130+00:00",
   "system_self_awareness_version": "system_self_awareness_v1",
   "pack": {
     "slug": "system_self_awareness",
@@ -9,16 +9,16 @@
     "objective": "Add operational self-awareness infrabots that maintain identity, resource, dependency, failure-memory, growth, and self-reporting context.",
     "bot_count": 10,
     "bot_ids": [
-      "brain_refinery_v894_self_model_identity_cartographer_bot",
-      "brain_refinery_v895_resource_cotenant_awareness_guard_bot",
-      "brain_refinery_v896_bot_roster_drift_mapper_bot",
-      "brain_refinery_v897_incident_failure_memory_linker_bot",
-      "brain_refinery_v898_dependency_graph_surface_mapper_bot",
-      "brain_refinery_v899_growth_pressure_forecaster_bot",
-      "brain_refinery_v900_self_reporting_narrator_bot",
-      "brain_refinery_v901_optimization_recommendation_ranker_bot",
-      "brain_refinery_v902_self_model_regression_guard_bot",
-      "brain_refinery_v903_grandmaster_self_awareness_bridge_bot"
+      "brain_refinery_v1781_self_model_identity_cartographer_bot",
+      "brain_refinery_v1782_resource_cotenant_awareness_guard_bot",
+      "brain_refinery_v1783_bot_roster_drift_mapper_bot",
+      "brain_refinery_v1784_incident_failure_memory_linker_bot",
+      "brain_refinery_v1785_dependency_graph_surface_mapper_bot",
+      "brain_refinery_v1786_growth_pressure_forecaster_bot",
+      "brain_refinery_v1787_self_reporting_narrator_bot",
+      "brain_refinery_v1788_optimization_recommendation_ranker_bot",
+      "brain_refinery_v1789_self_model_regression_guard_bot",
+      "brain_refinery_v1790_grandmaster_self_awareness_bridge_bot"
     ],
     "dedicated_data_intake": [
       "system_self_model_snapshot",
@@ -55,8 +55,8 @@
       "graduation_requires_minimum_observations": 5000,
       "graduation_requires_collection_days": 21
     },
-    "sleeve_master_bot_id": "brain_refinery_v894_self_model_identity_cartographer_bot",
-    "regression_guard_bot_id": "brain_refinery_v902_self_model_regression_guard_bot",
+    "sleeve_master_bot_id": "brain_refinery_v1781_self_model_identity_cartographer_bot",
+    "regression_guard_bot_id": "brain_refinery_v1789_self_model_regression_guard_bot",
     "self_awareness_depth": [
       "resource_awareness",
       "bot_identity_awareness",

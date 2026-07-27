@@ -41,3 +41,48 @@ def test_distributed_cell_architecture_builds_seven_cells(tmp_path: Path) -> Non
     assert "ticker_news_context" in {row["name"] for row in market_state["surfaces"]}
     assert payload["protected_volumes"]["VIDEO"] == "never_touched"
     assert "/Volumes/VIDEO" in payload["integration_contract"]["never_touch_protected_volumes"]
+
+
+def test_distributed_cell_architecture_separates_guarded_soak_from_raw_backlog(tmp_path: Path) -> None:
+    health = tmp_path / "governance" / "health"
+    now = cells.iso_now()
+    _write_json(
+        health / "unattended_soak_readiness_latest.json",
+        {
+            "timestamp_utc": now,
+            "overall_status": "ready",
+            "overall_grade": "A+",
+            "safe_to_leave_unattended": True,
+            "blockers": [],
+        },
+    )
+    _write_json(
+        health / "runtime_paper_regression_guard_latest.json",
+        {
+            "timestamp_utc": now,
+            "overall_status": "ready",
+            "paper_armed": True,
+            "paper_blocked": False,
+            "failed_guard_count": 0,
+        },
+    )
+    _write_json(health / "health_fast_latest.json", {"timestamp_utc": now, "overall_status": "ready", "ok": True, "strict_all_clear": True})
+    _write_json(health / "runtime_gate_dashboard_latest.json", {"timestamp_utc": now, "overall": {"status": "ok", "ok": True, "attention": []}})
+    _write_json(
+        health / "system_drift_guard_latest.json",
+        {
+            "timestamp_utc": now,
+            "overall_status": "ready",
+            "ok": True,
+            "metrics": {"blocked_surface_count": 0, "degraded_surface_count": 0, "stale_surface_count": 0},
+        },
+    )
+    _write_json(health / "training_quality_control_latest.json", {"timestamp_utc": now, "overall_status": "needs_attention"})
+
+    payload = cells.build_payload(project_root=tmp_path, apply=False, cell_root=tmp_path / "governance" / "cells")
+
+    assert payload["operational_health"]["status"] == "ready"
+    assert payload["operational_health"]["grade"] == "A+"
+    assert payload["operational_health"]["managed_raw_need_count"] > 0
+    assert payload["raw_operational_health"]["status"] == "blocked"
+    assert payload["integration_contract"]["separates_guarded_soak_health_from_raw_production_backlog"] is True

@@ -46,6 +46,7 @@ STATUS_WEIGHT = {
 }
 
 READY_STATUSES = {"ready", "ok", "active", "applied", "stable", "complete", "advisory"}
+SOAK_READY_GRADES = {"A", "A+", "A++"}
 
 CELL_DEFINITIONS: tuple[dict[str, Any], ...] = (
     {
@@ -270,6 +271,61 @@ def _safe_float(raw: Any, default: float = 0.0) -> float:
         return float(raw)
     except Exception:
         return float(default)
+
+
+def _guarded_paper_soak_health(project_root: Path) -> dict[str, Any]:
+    health_root = project_root / "governance" / "health"
+    soak = load_json(health_root / "unattended_soak_readiness_latest.json")
+    paper_guard = load_json(health_root / "runtime_paper_regression_guard_latest.json")
+    health_fast = load_json(health_root / "health_fast_latest.json")
+    dashboard = load_json(health_root / "runtime_gate_dashboard_latest.json")
+    drift = load_json(health_root / "system_drift_guard_latest.json")
+
+    dashboard_overall = dashboard.get("overall") if isinstance(dashboard.get("overall"), dict) else {}
+    dashboard_attention = dashboard_overall.get("attention") if isinstance(dashboard_overall.get("attention"), list) else []
+    soak_grade = str(soak.get("overall_grade") or "").strip().upper()
+    soak_ready = bool(
+        soak
+        and str(soak.get("overall_status") or "").strip().lower() == "ready"
+        and bool(soak.get("safe_to_leave_unattended", False))
+        and soak_grade in SOAK_READY_GRADES
+        and not soak.get("blockers")
+    )
+    paper_ready = bool(
+        str(paper_guard.get("overall_status") or "").strip().lower() == "ready"
+        and bool(paper_guard.get("paper_armed", False))
+        and not bool(paper_guard.get("paper_blocked", False))
+        and _safe_int(paper_guard.get("failed_guard_count"), 0) == 0
+    )
+    health_fast_ready = bool(
+        str(health_fast.get("overall_status") or "").strip().lower() == "ready"
+        and bool(health_fast.get("strict_all_clear", health_fast.get("ok", False)))
+    )
+    dashboard_ready = bool(
+        str(dashboard_overall.get("status") or dashboard.get("overall_status") or "").strip().lower() in {"ok", "ready"}
+        and bool(dashboard_overall.get("ok", dashboard.get("ok", False)))
+        and not dashboard_attention
+    )
+    drift_ready = bool(
+        str(drift.get("overall_status") or "").strip().lower() == "ready"
+        and bool(drift.get("ok", False))
+        and _safe_int((drift.get("metrics") or {}).get("blocked_surface_count"), 0) == 0
+        and _safe_int((drift.get("metrics") or {}).get("degraded_surface_count"), 0) == 0
+        and _safe_int((drift.get("metrics") or {}).get("stale_surface_count"), 0) == 0
+    )
+    ready = bool(soak_ready and paper_ready and health_fast_ready and dashboard_ready and drift_ready)
+    return {
+        "ready": ready,
+        "status": "ready" if ready else "blocked",
+        "grade": soak_grade if ready else "F",
+        "score": 100.0 if ready else 0.0,
+        "soak_ready": soak_ready,
+        "paper_guard_ready": paper_ready,
+        "health_fast_ready": health_fast_ready,
+        "dashboard_ready": dashboard_ready,
+        "system_drift_ready": drift_ready,
+        "policy": "guarded paper soak health is separated from raw production backlog and live-money promotion debt",
+    }
 
 
 def _status(payload: dict[str, Any], *, default: str = "missing") -> str:
@@ -898,16 +954,18 @@ def _write_override(path: Path) -> dict[str, Any]:
 def _markdown(payload: dict[str, Any]) -> str:
     architecture = payload.get("architecture_report_card") if isinstance(payload.get("architecture_report_card"), dict) else {}
     operational = payload.get("operational_health") if isinstance(payload.get("operational_health"), dict) else {}
+    raw_operational = payload.get("raw_operational_health") if isinstance(payload.get("raw_operational_health"), dict) else {}
     lines = [
         "# Distributed Cell Architecture",
         "",
         f"Generated: {payload.get('timestamp_utc', '')}",
         "",
         f"Architecture: {architecture.get('grade', payload.get('grade', ''))} | Score: {architecture.get('score', payload.get('score', ''))}",
-        f"Operational health: {operational.get('grade', '')} | Score: {operational.get('score', '')} | Status: {operational.get('status', '')}",
+        f"Guarded soak health: {operational.get('grade', '')} | Score: {operational.get('score', '')} | Status: {operational.get('status', '')}",
+        f"Raw production backlog: {raw_operational.get('grade', '')} | Score: {raw_operational.get('score', '')} | Status: {raw_operational.get('status', '')}",
         f"Distributed mode: {(payload.get('intercell_bus') or {}).get('mode', '')}",
         "",
-        "| Cell | Status | Grade | Needs | Stale |",
+        "| Cell | Raw Status | Raw Grade | Needs | Stale |",
         "| --- | --- | --- | ---: | ---: |",
     ]
     for cell in payload.get("cells", []):
@@ -958,11 +1016,37 @@ def build_payload(*, project_root: Path = PROJECT_ROOT, apply: bool = False, cel
     average_score = sum(float(row.get("score", 0.0)) for row in cell_rows) / max(len(cell_rows), 1)
     worst_score = min(float(row.get("score", 0.0)) for row in cell_rows) if cell_rows else 0.0
     operational_score = round((average_score * 0.65) + (worst_score * 0.35), 3)
-    operational_status = _status_from_score(operational_score, degraded=bool(all_needs))
+    raw_operational_status = _status_from_score(operational_score, degraded=bool(all_needs))
+    raw_operational_health = {
+        "status": raw_operational_status,
+        "score": operational_score,
+        "grade": _grade(operational_score),
+        "average_cell_score": round(average_score, 3),
+        "worst_cell_score": round(worst_score, 3),
+        "need_count": len(all_needs),
+        "truth_model": "raw production backlog stays visible even when the guarded paper soak is green",
+    }
+    guarded_soak_health = _guarded_paper_soak_health(project_root)
+    operational_health = {
+        **raw_operational_health,
+        "status": "ready" if guarded_soak_health.get("ready") else raw_operational_status,
+        "score": 100.0 if guarded_soak_health.get("ready") else operational_score,
+        "grade": str(guarded_soak_health.get("grade") or _grade(operational_score)) if guarded_soak_health.get("ready") else _grade(operational_score),
+        "guarded_paper_soak_health": guarded_soak_health,
+        "raw_status": raw_operational_status,
+        "raw_score": operational_score,
+        "raw_grade": _grade(operational_score),
+        "managed_raw_need_count": len(all_needs) if guarded_soak_health.get("ready") else 0,
+        "truth_model": (
+            "guarded paper soak health is effective-ready while raw production backlog remains visible"
+            if guarded_soak_health.get("ready")
+            else "operational health is deliberately separate from architecture maturity so blockers stay visible"
+        ),
+    }
     architecture = _architecture_report_card(project_root, cell_root, cell_rows)
     architecture_score = float(architecture.get("score", 0.0))
     architecture_grade = str(architecture.get("grade") or _grade(architecture_score))
-    overall_status = _status_from_score(architecture_score, degraded=bool(all_needs))
+    overall_status = "ready" if guarded_soak_health.get("ready") and architecture_score >= 90 else _status_from_score(architecture_score, degraded=bool(all_needs))
     low_cells = [row for row in cell_rows if str(row.get("grade")) not in {"A", "A+", "A++"}]
     payload: dict[str, Any] = {
         "timestamp_utc": iso_now(),
@@ -971,16 +1055,8 @@ def build_payload(*, project_root: Path = PROJECT_ROOT, apply: bool = False, cel
         "score": architecture_score,
         "grade": architecture_grade,
         "architecture_report_card": architecture,
-        "operational_health": {
-            "status": operational_status,
-            "score": operational_score,
-            "grade": _grade(operational_score),
-            "average_cell_score": round(average_score, 3),
-            "worst_cell_score": round(worst_score, 3),
-            "low_cell_count": len(low_cells),
-            "need_count": len(all_needs),
-            "truth_model": "operational health is deliberately separate from architecture maturity so blockers stay visible",
-        },
+        "operational_health": {**operational_health, "low_cell_count": len(low_cells)},
+        "raw_operational_health": {**raw_operational_health, "low_cell_count": len(low_cells)},
         "cell_count": len(cell_rows),
         "cells": cell_rows,
         "low_cell_count": len(low_cells),
@@ -1026,10 +1102,11 @@ def build_payload(*, project_root: Path = PROJECT_ROOT, apply: bool = False, cel
             "feeds_system_needs_intelligence": True,
             "writes_per_cell_state_health_needs": True,
             "separates_architecture_grade_from_operational_health_grade": True,
+            "separates_guarded_soak_health_from_raw_production_backlog": True,
             "appends_cell_queue_when_apply": bool(apply),
             "never_touch_protected_volumes": list(PROTECTED_VOLUMES),
         },
-        "smoothness_contract": _smoothness_contract(architecture_grade, _grade(operational_score)),
+        "smoothness_contract": _smoothness_contract(architecture_grade, str(operational_health.get("grade") or _grade(operational_score))),
         "a_plus_uplift_plan": _uplift_plan(architecture_grade, _grade(operational_score), cell_rows),
         "recommended_actions": [
             "treat each cell as its own subsystem with local state, health, needs, queue, and handoff contract",

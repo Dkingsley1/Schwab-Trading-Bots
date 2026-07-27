@@ -1277,6 +1277,7 @@ def _ingestion_storage_degradation_floor_surface(project_root: Path, loader: Art
                 "storage_backpressure_quality_below_target",
                 "collector_intake_enforcement_partial",
                 "raw_live_backpressure_stale_without_overlay_reconciliation",
+                "backpressure_drainer_fleet_stale",
             }
         )
     )
@@ -1387,7 +1388,21 @@ def _backlog_pcore_contract_surface(project_root: Path, loader: ArtifactLoader, 
             "p_core_worker_budget_below_deep_green_target" if contract and selected < 6 else "",
         ]
     )
-    state = "blocked" if blockers else "degraded" if warnings else "ready"
+    pcore_contract_operationally_clear = bool(
+        contract
+        and _bool(contract.get("active", False))
+        and control_env.get("BACKLOG_PCORE_ALLOCATION_ACTIVE") == "1"
+        and _bool(contract.get("single_writer_only", False))
+        and selected >= 6
+        and (not max_shard_lanes or shard_lanes <= max_shard_lanes)
+        and not blockers
+    )
+    stale_support_advisory_only = bool(
+        warnings
+        and pcore_contract_operationally_clear
+        and set(warnings).issubset({"backpressure_drainer_fleet_stale", "backlog_pcore_accelerator_stale"})
+    )
+    state = "blocked" if blockers else "ready" if stale_support_advisory_only else "degraded" if warnings else "ready"
     return _contract_row(
         surface_id="guard:backlog_pcore_contract",
         surface="backlog_pcore_contract",
@@ -1406,6 +1421,8 @@ def _backlog_pcore_contract_surface(project_root: Path, loader: ArtifactLoader, 
             "max_shard_link_writer_lanes": max_shard_lanes,
             "backlog_pcore_allocation_env": control_env.get("BACKLOG_PCORE_ALLOCATION_ACTIVE"),
             "sql_link_writer_background_policy": control_env.get("SQL_LINK_WRITER_BACKGROUND_POLICY"),
+            "pcore_contract_operationally_clear": pcore_contract_operationally_clear,
+            "stale_support_advisory_only": stale_support_advisory_only,
             "blockers": blockers,
             "warnings": warnings,
         },

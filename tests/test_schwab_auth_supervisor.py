@@ -52,7 +52,7 @@ def test_schwab_auth_supervisor_ready_for_fresh_token(tmp_path: Path, monkeypatc
     assert payload["regression_contract"]["do_not_open_browser_when_token_ready"] is True
 
 
-def test_schwab_auth_supervisor_recommends_refresh_without_blocking_above_ready_floor(tmp_path: Path, monkeypatch) -> None:
+def test_schwab_auth_supervisor_keeps_refresh_watch_ready_above_ready_floor(tmp_path: Path, monkeypatch) -> None:
     project_root = tmp_path / "project"
     health = project_root / "governance" / "health"
     token_path = project_root / "token.json"
@@ -73,11 +73,13 @@ def test_schwab_auth_supervisor_recommends_refresh_without_blocking_above_ready_
         min_ready_expires_seconds=900,
     )
 
-    assert payload["overall_status"] == "degraded"
+    assert payload["overall_status"] == "ready"
     assert payload["token"]["ready"] is True
     assert payload["token"]["refresh_needed"] is True
     assert payload["token"]["readiness_refresh_needed"] is False
     assert any(row.startswith("token_refresh_recommended:") for row in payload["findings"])
+    assert "token_refresh_watch_paper_soak_ready" in payload["findings"]
+    assert payload["regression_contract"]["refresh_recommendation_above_ready_floor_is_advisory"] is True
 
 
 def test_schwab_auth_supervisor_keeps_probe_denied_paper_soak_operable_degraded(tmp_path: Path, monkeypatch) -> None:

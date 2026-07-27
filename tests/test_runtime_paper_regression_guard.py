@@ -707,6 +707,53 @@ def test_production_authority_contract_accepts_hard_storage_blocker_only_when_pa
     assert production["actual"]["hard_blocker_fail_closed"] is True
 
 
+def test_paper_soak_keeps_existing_execution_open_when_only_400_expansion_is_paused(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    health = project_root / "governance" / "health"
+    override = project_root / "config" / ".env.runtime_resource_guard_override"
+    _write_json(health / "runtime_throttle_control_latest.json", _runtime_payload(blocked_paper=False))
+    _write_json(
+        health / "paper_400_ramp_latest.json",
+        _paper_payload(blockers=["ingestion_or_backpressure_above_paper_400_gate"], armed=False),
+    )
+    _write_soak_lane_artifacts(project_root)
+    _ready_override(override)
+
+    payload = src.build_payload(project_root)
+
+    assert payload["overall_status"] == "ready"
+    assert payload["failed_guards"] == []
+    pause = next(row for row in payload["regression_guards"] if row["name"] == "blocked_paper_execution_pause_contract")
+    production = next(row for row in payload["regression_guards"] if row["name"] == "production_grade_paper_live_authority_contract")
+    continuity = next(row for row in payload["regression_guards"] if row["name"] == "soak_30_day_continuity_contract")
+    assert pause["actual"]["existing_paper_execution_open"] is True
+    assert production["actual"]["expansion_only_blockers"] == ["ingestion_or_backpressure_above_paper_400_gate"]
+    assert production["actual"]["fail_closed_blockers"] == []
+    assert continuity["actual"]["expansion_pause_existing_paper_open"] is True
+
+
+def test_paper_soak_still_fails_closed_for_global_halt_blocker(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    health = project_root / "governance" / "health"
+    override = project_root / "config" / ".env.runtime_resource_guard_override"
+    _write_json(health / "runtime_throttle_control_latest.json", _runtime_payload(blocked_paper=False))
+    _write_json(
+        health / "paper_400_ramp_latest.json",
+        _paper_payload(blockers=["global_halt_or_clear_blocker_active"], armed=False),
+    )
+    _write_soak_lane_artifacts(project_root)
+    _ready_override(override)
+
+    payload = src.build_payload(project_root)
+
+    assert payload["overall_status"] == "blocked"
+    assert "blocked_paper_execution_pause_contract" in payload["failed_guards"]
+    assert "production_grade_paper_live_authority_contract" in payload["failed_guards"]
+    production = next(row for row in payload["regression_guards"] if row["name"] == "production_grade_paper_live_authority_contract")
+    assert production["actual"]["fail_closed_blockers"] == ["global_halt_or_clear_blocker_active"]
+    assert "hard_safety_blocker_without_paper_fail_closed" in production["actual"]["blockers"]
+
+
 def test_soak_continuity_blocks_eligible_paper_when_override_pauses_queue(tmp_path: Path) -> None:
     project_root = tmp_path / "project"
     health = project_root / "governance" / "health"

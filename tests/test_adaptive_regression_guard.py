@@ -1531,6 +1531,48 @@ def test_adaptive_regression_guard_blocks_inactive_pcore_backlog_contract(tmp_pa
     assert ["./scripts/ops/opsctl.sh", "backlog-pcore-accelerator", "--apply", "--json"] in payload["recommended_commands"]
 
 
+def test_adaptive_regression_guard_treats_stale_pcore_support_artifacts_as_advisory_when_contract_is_clear(tmp_path: Path) -> None:
+    _seed_ready_artifacts(tmp_path)
+    health = tmp_path / "governance" / "health"
+    stale = (datetime.now(timezone.utc) - timedelta(hours=2)).isoformat()
+    contract = {
+        "active": True,
+        "single_writer_only": True,
+        "performance_core_primary": True,
+        "preprocess_worker_budget": 7,
+        "shard_link_writer_lanes": 7,
+        "max_shard_link_writer_lanes": 8,
+        "p_core_burst_intelligence": {"selected_workers": 7},
+        "control_env": {"BACKLOG_PCORE_ALLOCATION_ACTIVE": "1", "SQL_LINK_WRITER_BACKGROUND_POLICY": "0"},
+    }
+    _write_json(
+        health / "backpressure_drainer_fleet_latest.json",
+        {
+            "timestamp_utc": stale,
+            "ok": True,
+            "overall_status": "handoff_requested",
+            "service_request": {"active": True, "p_core_backlog_allocation_contract": contract},
+        },
+    )
+    _write_json(
+        health / "backlog_pcore_accelerator_latest.json",
+        {"timestamp_utc": stale, "ok": True, "overall_status": "ready"},
+    )
+
+    payload = src.build_payload(
+        tmp_path,
+        grade_guard_builder=lambda _: {"overall_status": "ready", "blocked_surface_count": 0, "degraded_surface_count": 0, "surfaces": []},
+        state_path=tmp_path / "governance" / "health" / "adaptive_regression_guard_state.json",
+    )
+    pcore = next(row for row in payload["surfaces"] if row["surface_id"] == "guard:backlog_pcore_contract")
+
+    assert payload["overall_status"] == "ready"
+    assert pcore["state"] == "ready"
+    assert pcore["metrics"]["pcore_contract_operationally_clear"] is True
+    assert pcore["metrics"]["stale_support_advisory_only"] is True
+    assert pcore["metrics"]["blockers"] == []
+
+
 def test_adaptive_regression_guard_blocks_ingestion_storage_past_floor(tmp_path: Path) -> None:
     _seed_ready_artifacts(tmp_path)
     now = datetime.now(timezone.utc).isoformat()

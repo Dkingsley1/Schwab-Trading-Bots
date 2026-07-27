@@ -438,6 +438,67 @@ def test_live_runtime_separation_treats_ok_cold_lane_refresh_as_managed_stage(tm
     assert payload["clearance_plan"]["clearance_state"] == "managed_coverage_stage_deferred"
 
 
+def test_live_runtime_separation_accepts_guarded_paper_soak_when_live_lane_is_intentionally_off(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    health = project_root / "governance" / "health"
+    walk = project_root / "governance" / "walk_forward"
+    _write_json(
+        health / "live_readiness_smoke_latest.json",
+        {
+            "timestamp_utc": separation_src.iso_now(),
+            "ok": False,
+            "broker_ready": True,
+            "session_ready": True,
+            "live_lane_running": False,
+        },
+    )
+    _write_json(
+        health / "unattended_soak_readiness_latest.json",
+        {
+            "overall_status": "ready",
+            "overall_grade": "A+",
+            "safe_to_leave_unattended": True,
+        },
+    )
+    _write_json(
+        health / "runtime_paper_regression_guard_latest.json",
+        {
+            "overall_status": "ready",
+            "paper_armed": True,
+            "paper_blocked": False,
+        },
+    )
+    _write_json(health / "paper_400_ramp_latest.json", {"stage": "armed", "armed": True, "blockers": []})
+    _write_json(health / "health_fast_latest.json", {"overall_status": "ready", "strict_all_clear": True})
+    _write_json(health / "training_runtime_control_latest.json", {"overall_status": "ready", "snapshot_ready": True})
+    _write_json(health / "storage_tier_policy_latest.json", {"overall_status": "ready", "pressure": {"hot_path_over_budget_bytes": 0}})
+    _write_json(health / "resource_guard_latest.json", {"swap_used_gb": 0.0})
+    _write_json(health / "process_watchdog_latest.json", {"restart_storms": []})
+    _write_json(health / "cold_lane_refresh_latest.json", {"ok": True, "reason": "ok", "ran": True})
+    _write_json(walk / "coverage_seed_latest.json", {"coverage_shortfall_bots": 4})
+    _write_json(
+        walk / "coverage_gap_closer_latest.json",
+        {
+            "staged_candidate_count": 4,
+            "autopilot_contract": {
+                "overall_status": "degraded",
+                "launch_state": "stage_only_training_blocked",
+                "off_hours_preferred": True,
+                "launch_contract": {"training_launch_blocked": True, "launch_guard": "off_hours_only"},
+            },
+        },
+    )
+
+    payload = separation_src.build_payload(project_root)
+
+    assert payload["overall_status"] == "ready"
+    assert payload["ok"] is True
+    assert payload["live_plane"]["ready"] is False
+    assert payload["live_plane"]["guarded_paper_soak_ready"] is True
+    assert payload["clearance_plan"]["clearance_state"] == "managed_coverage_stage_deferred"
+    assert payload["shared_host_pressure"]["managed_coverage_stage_deferred"] is True
+
+
 def test_blackstart_treats_warning_lease_as_operable_when_broker_is_ready(tmp_path: Path) -> None:
     project_root = tmp_path / "project"
     health = project_root / "governance" / "health"

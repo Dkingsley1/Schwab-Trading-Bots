@@ -20,6 +20,7 @@ DEFAULT_OUT_PATH = PROJECT_ROOT / "governance" / "health" / "live_runtime_separa
 OVERLAY_RAW_LIVE_MAX_CORE_LINES = 10_000
 OVERLAY_RAW_LIVE_MAX_TOTAL_LINES = 15_000
 OVERLAY_RAW_LIVE_MAX_AGE_SECONDS = 15 * 60
+SOAK_READY_GRADES = {"A", "A+", "A++"}
 
 
 def _safe_float(value: Any, default: float = 0.0) -> float:
@@ -116,6 +117,44 @@ def _near_steady_state_storage_ready(storage_control: dict[str, Any], storage_ov
         and _safe_float(storage_control.get("recovery_quality_score"), 0.0) >= 88.0
         and _safe_float(storage_control.get("pressure_index"), 0.0) <= 0.50
     )
+
+
+def _guarded_paper_soak_ready(project_root: Path) -> dict[str, Any]:
+    health_root = project_root / "governance" / "health"
+    soak = load_json(health_root / "unattended_soak_readiness_latest.json")
+    paper_guard = load_json(health_root / "runtime_paper_regression_guard_latest.json")
+    paper_ramp = load_json(health_root / "paper_400_ramp_latest.json")
+    health_fast = load_json(health_root / "health_fast_latest.json")
+
+    soak_ready = bool(
+        soak
+        and str(soak.get("overall_status") or "").strip().lower() == "ready"
+        and bool(soak.get("safe_to_leave_unattended", False))
+        and str(soak.get("overall_grade") or "").strip().upper() in SOAK_READY_GRADES
+    )
+    paper_guard_ready = bool(
+        str(paper_guard.get("overall_status") or "").strip().lower() == "ready"
+        and bool(paper_guard.get("paper_armed", False))
+        and not bool(paper_guard.get("paper_blocked", False))
+    )
+    paper_ramp_armed = bool(
+        str(paper_ramp.get("stage") or "").strip().lower() == "armed"
+        and bool(paper_ramp.get("armed", False))
+        and not paper_ramp.get("blockers")
+    )
+    health_fast_ready = bool(
+        str(health_fast.get("overall_status") or "").strip().lower() == "ready"
+        and bool(health_fast.get("strict_all_clear", health_fast.get("ok", False)))
+    )
+    ready = bool((soak_ready or paper_guard_ready) and paper_ramp_armed and health_fast_ready)
+    return {
+        "ready": ready,
+        "soak_ready": soak_ready,
+        "paper_guard_ready": paper_guard_ready,
+        "paper_ramp_armed": paper_ramp_armed,
+        "health_fast_ready": health_fast_ready,
+        "policy": "guarded paper soak can certify read-only live-plane separation without enabling live orders",
+    }
 
 
 def _cold_lane_contract(
@@ -224,6 +263,8 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, live_fresh_minutes: floa
     live_ready = bool(live_readiness.get("ok", False)) and (
         live_age_minutes is None or float(live_age_minutes) <= max(float(live_fresh_minutes), 1.0)
     )
+    guarded_paper_soak = _guarded_paper_soak_ready(project_root)
+    live_or_guarded_paper_ready = bool(live_ready or guarded_paper_soak.get("ready", False))
     training_blocked = str(training_runtime.get("overall_status") or "") == "blocked"
     storage_blocked_raw = str(storage_tier.get("overall_status") or "") == "blocked"
     hot_path_over_budget_bytes = int(((storage_tier.get("pressure") or {}).get("hot_path_over_budget_bytes", 0)) or 0)
@@ -318,7 +359,7 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, live_fresh_minutes: floa
         clearance_state = "coverage_cycles_ready"
 
     managed_cold_lane_deferred = bool(
-        live_ready
+        live_or_guarded_paper_ready
         and coverage_shortfall_bots > 0
         and not training_blocked
         and not storage_blocked
@@ -333,7 +374,7 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, live_fresh_minutes: floa
         coverage_clearance.get("launch_contract") if isinstance(coverage_clearance.get("launch_contract"), dict) else {}
     )
     managed_coverage_stage_deferred = bool(
-        live_ready
+        live_or_guarded_paper_ready
         and coverage_shortfall_bots > 0
         and not training_blocked
         and not storage_blocked
@@ -356,7 +397,7 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, live_fresh_minutes: floa
 
     guarded_live_read_only = bool(
         clearance_state == "protect_live"
-        and live_ready
+        and live_or_guarded_paper_ready
         and training_blocked
         and not storage_blocked
         and coverage_shortfall_bots <= 0
@@ -405,6 +446,8 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, live_fresh_minutes: floa
         "overall_status": overall_status,
         "live_plane": {
             "ready": bool(live_ready),
+            "guarded_paper_soak_ready": bool(guarded_paper_soak.get("ready", False)),
+            "guarded_paper_soak": guarded_paper_soak,
             "broker_ready": bool(live_readiness.get("broker_ready", False)),
             "session_ready": bool(live_readiness.get("session_ready", False)),
             "live_lane_running": bool(live_readiness.get("live_lane_running", False)),

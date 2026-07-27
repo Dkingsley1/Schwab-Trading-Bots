@@ -319,9 +319,11 @@ def build_payload(
         findings.append(f"token_not_ready:{readiness_reason}")
         operator_followups.append("./scripts/ops/opsctl.sh token-refresh-interactive --force --json")
     elif refresh_needed:
-        if status == "ready":
-            status = "degraded"
         findings.append(f"token_refresh_recommended:{refresh_reason}")
+        if paper_soak_auth_operable:
+            findings.append("token_refresh_watch_paper_soak_ready")
+        elif status == "ready":
+            status = "degraded"
     if not guard_ok or (broker_readiness and not broker_ready):
         status = "blocked"
         findings.append("broker_readiness_not_ready")
@@ -479,6 +481,7 @@ def build_payload(
             "schwab_token_ready_floor_seconds": float(min_ready_expires_seconds),
             "auth_lease_warning_floor_seconds": 1200,
             "do_not_open_browser_when_token_ready": True,
+            "refresh_recommendation_above_ready_floor_is_advisory": True,
             "callback_port_conflict_is_infra_failure": True,
             "oauth_errors_are_broker_auth_failures_not_symbol_failures": True,
             "paper_soak_auth_grace_keeps_live_execution_locked": True,
