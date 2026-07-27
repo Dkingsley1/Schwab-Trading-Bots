@@ -183,6 +183,81 @@ def test_runtime_artifact_refresh_tracks_paper_soak_proof_debt_as_managed(tmp_pa
     ]
 
 
+def test_runtime_artifact_refresh_manages_stateful_sql_soft_quota_during_green_soak(tmp_path: Path) -> None:
+    health = tmp_path / "governance" / "health"
+    _write_json(
+        health / "unattended_soak_readiness_latest.json",
+        {"ok": True, "overall_status": "ready", "safe_to_leave_unattended": True},
+    )
+    _write_json(health / "runtime_paper_regression_guard_latest.json", {"ok": True, "overall_status": "ready"})
+    _write_json(
+        health / "ingestion_storage_control_latest.json",
+        {
+            "overall_status": "ready",
+            "severity": "stable",
+            "backpressure": {
+                "raw_live": {
+                    "core_pending_lines": 28,
+                    "total_pending_lines": 28,
+                    "oldest_pending_age_seconds": 0.0,
+                }
+            },
+        },
+    )
+    _write_json(
+        health / "storage_retention_unison_latest.json",
+        {
+            "overall_status": "ready",
+            "continuous_run_contract": {"ready": True, "storage_controls": {"quota_ready": True}},
+            "storage_growth_forecast": {"status": "stable_or_improving", "days_until_pressure_free": 45},
+            "integration_contract": {"stateful_sql_compaction_only": True},
+        },
+    )
+    _write_json(
+        health / "storage_tier_policy_latest.json",
+        {
+            "overall_status": "advisory",
+            "manifest_backed_offload_contract": {
+                "stateful_sql_policy": "checkpoint and compact stateful SQL; never source-delete from this policy"
+            },
+        },
+    )
+    specs = [
+        {"name": "storage_quota_guard", "payload_path": health / "storage_quota_guard_latest.json", "cmd": ["quota"]},
+    ]
+
+    def runner(spec: dict, project_root: Path) -> dict:
+        payload = {
+            "ok": False,
+            "overall_status": "degraded",
+            "quota_summary": {
+                "hard_breaches": 0,
+                "soft_breaches": 1,
+                "blocked_families": [],
+                "degraded_families": ["sql_link_shards"],
+                "worst_over_hard_gb": 0.0,
+                "worst_hard_ratio": 0.855,
+            },
+            "lanes": [
+                {
+                    "family": "sql_link_shards",
+                    "status": "degraded",
+                    "over_hard_gb": 0.0,
+                    "hard_ratio": 0.855,
+                }
+            ],
+        }
+        _write_json(Path(spec["payload_path"]), payload)
+        return {"cmd": list(spec["cmd"]), "rc": 2, "payload": payload, "stdout_tail": "", "stderr_tail": "", "duration_ms": 1.0}
+
+    payload = runtime_artifact_refresh.build_payload(tmp_path, specs=specs, runner=runner)
+
+    assert payload["overall_status"] == "ready"
+    assert payload["degraded_step_count"] == 0
+    assert payload["managed_paper_soak_step_count"] == 1
+    assert payload["steps"][0]["status"] == "managed_paper_soak"
+
+
 def test_runtime_artifact_refresh_step_specs_include_training_storage_and_hardening_contracts(tmp_path: Path) -> None:
     specs = runtime_artifact_refresh._step_specs(tmp_path)
     names = [row["name"] for row in specs]

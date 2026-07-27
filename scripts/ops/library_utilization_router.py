@@ -25,6 +25,7 @@ else:
 
 DEFAULT_LOCK = PROJECT_ROOT / "config" / "requirements.lock.txt"
 DEFAULT_CANDIDATE_ROUTES = PROJECT_ROOT / "config" / "library_candidate_routes_v1.json"
+DEFAULT_ACTIVATION_PROFILES = PROJECT_ROOT / "config" / "library_activation_profiles_v1.json"
 DEFAULT_OUT_PATH = PROJECT_ROOT / "governance" / "health" / "library_utilization_router_latest.json"
 DEFAULT_EXTERNAL_CONTEXT_PATH = PROJECT_ROOT / "exports" / "external_context" / "library_utilization_router_latest.json"
 DEFAULT_MARKDOWN_PATH = PROJECT_ROOT / "exports" / "reports" / "operator" / "library_utilization_router_latest.md"
@@ -44,6 +45,8 @@ MLX_ROUTED_PACKAGES = {
     "mlx-audio",
     "mlx-embeddings",
     "mlx-embedding-models",
+    "mlx-diffuser",
+    "mlxvm",
     "parakeet-mlx",
     "esig",
     "roughpy",
@@ -80,6 +83,96 @@ LANE_SPECS: dict[str, dict[str, Any]] = {
         "workload_family": "classical_ml_optimization_stats_regime_filters_and_boosted_models",
         "priority": "off_hours_preferred",
         "target_surfaces": ["training_quality", "model_lifecycle", "regime_control"],
+    },
+    "time_series_forecasting": {
+        "workload_family": "time_series_forecasting_feature_generation_matrix_profiles_and_temporal_cross_validation",
+        "priority": "off_hours_preferred",
+        "target_surfaces": ["training_quality", "regime_control", "walk_forward", "profitability_forecasts"],
+    },
+    "anomaly_drift_detection": {
+        "workload_family": "data_quality_model_drift_outlier_detection_and_label_issue_triage",
+        "priority": "protected_when_training",
+        "target_surfaces": ["observation_rollup", "training_quality", "provider_mesh", "promotion_gate"],
+    },
+    "vector_memory_retrieval": {
+        "workload_family": "embedding_indexes_vector_search_research_memory_and_duplicate_alpha_detection",
+        "priority": "throttle_first",
+        "target_surfaces": ["research_memory", "alpha_overlap", "bot_similarity", "external_context"],
+    },
+    "provider_rate_limit_cache": {
+        "workload_family": "provider_rate_limits_response_caching_backoff_and_fetch_deduplication",
+        "priority": "protected_when_collecting",
+        "target_surfaces": ["provider_mesh", "macro_context", "symbol_news", "livefeed_refresh"],
+    },
+    "financial_filings_macro": {
+        "workload_family": "sec_filings_macro_factors_economic_data_and_public_fundamental_context",
+        "priority": "protected_if_live",
+        "target_surfaces": ["macro_context", "symbol_news", "research_pipeline", "fundamental_context"],
+    },
+    "sql_lineage_contracts": {
+        "workload_family": "sql_parsing_lineage_dialect_translation_and_query_contract_validation",
+        "priority": "protected_when_writing",
+        "target_surfaces": ["duckdb_analytics", "sql_link_writer", "feature_store", "report_quality"],
+    },
+    "graph_network_analysis": {
+        "workload_family": "graph_algorithms_bot_lineage_dependency_maps_and_cross_asset_network_research",
+        "priority": "off_hours_preferred",
+        "target_surfaces": ["dependency_memory", "sleeve_masters", "system_architecture", "spillover_graphs"],
+    },
+    "causal_survival_research": {
+        "workload_family": "causal_inference_survival_analysis_counterfactuals_and_time_to_event_models",
+        "priority": "research_only_or_guarded_paper",
+        "target_surfaces": ["cognitive_twin", "no_trade_counterfactuals", "risk_service", "strategy_research"],
+    },
+    "simulation_sensitivity": {
+        "workload_family": "discrete_event_simulation_sensitivity_analysis_and_execution_rehearsal",
+        "priority": "off_hours_preferred",
+        "target_surfaces": ["execution_rehearsal", "risk_service", "strategy_research", "walk_forward"],
+    },
+    "data_contract_validation": {
+        "workload_family": "dataset_contracts_schema_validation_deep_diff_and_artifact_quality_gates",
+        "priority": "protected_when_training",
+        "target_surfaces": ["feature_store", "health_artifacts", "governance", "training_samples"],
+    },
+    "telemetry_tracing": {
+        "workload_family": "opentelemetry_metrics_traces_instrumentation_and_exporters",
+        "priority": "protected_when_live",
+        "target_surfaces": ["local_api", "provider_mesh", "sql_link_writer", "runtime_throttle", "operator_cockpit"],
+    },
+    "runtime_performance_profiling": {
+        "workload_family": "cpu_memory_benchmarking_hotpath_and_allocation_profiling",
+        "priority": "off_hours_or_manual",
+        "target_surfaces": ["memory_efficiency", "runtime_throttle", "training_quality", "livefeed_refresh"],
+    },
+    "production_quality_gates": {
+        "workload_family": "static_analysis_type_checking_dependency_architecture_and_dead_code_gates",
+        "priority": "off_hours_or_ci",
+        "target_surfaces": ["regression_guard", "commands_hygiene", "codex_project_guard", "release_gate"],
+    },
+    "security_supply_chain": {
+        "workload_family": "source_security_dependency_audit_secret_scan_sbom_and_license_controls",
+        "priority": "protected_if_auth",
+        "target_surfaces": ["secret_scan", "dependency_audit", "release_gate", "runtime_env"],
+    },
+    "load_resilience_testing": {
+        "workload_family": "api_load_contract_fuzzing_benchmark_and_flake_resilience_tests",
+        "priority": "off_hours_or_ci",
+        "target_surfaces": ["local_api", "operator_cockpit", "provider_mesh", "regression_guard"],
+    },
+    "queue_job_orchestration": {
+        "workload_family": "durable_background_jobs_retries_worker_queues_and_deferred_execution",
+        "priority": "protected_when_draining",
+        "target_surfaces": ["ops_coordinator", "retrain_schedule", "reporting_layer", "provider_mesh"],
+    },
+    "config_release_controls": {
+        "workload_family": "typed_settings_env_layering_feature_flags_and_release_configuration",
+        "priority": "protected_if_auth",
+        "target_surfaces": ["runtime_env", "operator_overrides", "release_gate", "config_governance"],
+    },
+    "async_flow_control": {
+        "workload_family": "asyncio_task_concurrency_streams_and_backpressure_helpers",
+        "priority": "protected_when_collecting",
+        "target_surfaces": ["livefeed_refresh", "provider_mesh", "macro_context_sync", "backpressure_drainers"],
     },
     "portable_ml_replay": {
         "workload_family": "pytorch_onnx_transformers_replay_canaries_and_model_interop",
@@ -138,6 +231,53 @@ LANE_SPECS: dict[str, dict[str, Any]] = {
     },
 }
 
+DEFAULT_PROFILE_ORDER = ("live", "ops", "research", "media")
+
+DEFAULT_LANE_ACTIVATION_PROFILES: dict[str, list[str]] = {
+    "broker_market_data": ["live"],
+    "provider_rate_limit_cache": ["live"],
+    "sql_lineage_contracts": ["live", "research"],
+    "data_contract_validation": ["live", "ops"],
+    "async_flow_control": ["live"],
+    "telemetry_tracing": ["ops", "live"],
+    "runtime_performance_profiling": ["ops"],
+    "production_quality_gates": ["ops"],
+    "security_supply_chain": ["ops"],
+    "load_resilience_testing": ["ops"],
+    "queue_job_orchestration": ["ops"],
+    "config_release_controls": ["ops"],
+    "observability_ops": ["ops"],
+    "testing_dev_tooling": ["ops"],
+    "security_auth_config": ["ops", "live"],
+    "visualization_reporting": ["ops"],
+    "web_api_ui": ["ops"],
+    "dataframe_feature_engine": ["live", "research"],
+    "storage_sql": ["live", "research"],
+    "quant_derivatives_risk": ["research"],
+    "statistical_ml": ["research"],
+    "time_series_forecasting": ["research"],
+    "anomaly_drift_detection": ["research"],
+    "vector_memory_retrieval": ["research"],
+    "graph_network_analysis": ["research"],
+    "causal_survival_research": ["research"],
+    "simulation_sensitivity": ["research"],
+    "financial_filings_macro": ["research", "ops"],
+    "portable_ml_replay": ["research"],
+    "nlp_tokenization_research": ["research"],
+    "language_reasoning": ["research"],
+    "vision_vlm_intelligence": ["media", "research"],
+    "audio_media_non_mlx": ["media"],
+    "system_runtime_primitives": ["ops", "live"],
+    "runtime_support_misc": ["ops"],
+}
+
+DEFAULT_PROFILE_ACTIVATION_MODES: dict[str, str] = {
+    "live": "installed_disabled_by_default_until_runtime_smoke_and_feature_gate",
+    "ops": "installed_available_to_release_gates_and_operator_commands",
+    "research": "installed_off_hours_or_replay_only",
+    "media": "installed_off_hours_media_or_visual_fixture_only",
+}
+
 PACKAGE_LANE_OVERRIDES: dict[str, str] = {
     "apscheduler": "observability_ops",
     "authlib": "security_auth_config",
@@ -160,6 +300,12 @@ PACKAGE_LANE_OVERRIDES: dict[str, str] = {
     "peewee": "storage_sql",
     "redis": "storage_sql",
     "pyarrow": "storage_sql",
+    "deltalake": "storage_sql",
+    "ibis-framework": "storage_sql",
+    "connectorx": "storage_sql",
+    "diskcache": "storage_sql",
+    "sqlglot": "sql_lineage_contracts",
+    "sqlparse": "sql_lineage_contracts",
     "polars": "dataframe_feature_engine",
     "polars-runtime-32": "dataframe_feature_engine",
     "pandas": "dataframe_feature_engine",
@@ -183,6 +329,39 @@ PACKAGE_LANE_OVERRIDES: dict[str, str] = {
     "optuna": "statistical_ml",
     "numba": "statistical_ml",
     "llvmlite": "statistical_ml",
+    "linearmodels": "statistical_ml",
+    "pymoo": "statistical_ml",
+    "nevergrad": "statistical_ml",
+    "statsforecast": "time_series_forecasting",
+    "mlforecast": "time_series_forecasting",
+    "sktime": "time_series_forecasting",
+    "tsfresh": "time_series_forecasting",
+    "stumpy": "time_series_forecasting",
+    "tslearn": "time_series_forecasting",
+    "pyod": "anomaly_drift_detection",
+    "alibi-detect": "anomaly_drift_detection",
+    "evidently": "anomaly_drift_detection",
+    "cleanlab": "anomaly_drift_detection",
+    "lancedb": "vector_memory_retrieval",
+    "qdrant-client": "vector_memory_retrieval",
+    "sqlite-vec": "vector_memory_retrieval",
+    "hnswlib": "vector_memory_retrieval",
+    "usearch": "vector_memory_retrieval",
+    "fastembed": "vector_memory_retrieval",
+    "mlxvm": "vector_memory_retrieval",
+    "networkx": "graph_network_analysis",
+    "igraph": "graph_network_analysis",
+    "leidenalg": "graph_network_analysis",
+    "python-louvain": "graph_network_analysis",
+    "scikit-network": "graph_network_analysis",
+    "dowhy": "causal_survival_research",
+    "econml": "causal_survival_research",
+    "causal-learn": "causal_survival_research",
+    "doubleml": "causal_survival_research",
+    "lifelines": "causal_survival_research",
+    "simpy": "simulation_sensitivity",
+    "salib": "simulation_sensitivity",
+    "chaospy": "simulation_sensitivity",
     "torch": "portable_ml_replay",
     "onnx": "portable_ml_replay",
     "onnxruntime": "portable_ml_replay",
@@ -195,6 +374,9 @@ PACKAGE_LANE_OVERRIDES: dict[str, str] = {
     "tiktoken": "nlp_tokenization_research",
     "tokenizers": "nlp_tokenization_research",
     "regex": "nlp_tokenization_research",
+    "rapidfuzz": "nlp_tokenization_research",
+    "dateparser": "nlp_tokenization_research",
+    "trafilatura": "nlp_tokenization_research",
     "aiohttp": "async_networking",
     "aiodns": "async_networking",
     "aiofiles": "async_networking",
@@ -205,6 +387,12 @@ PACKAGE_LANE_OVERRIDES: dict[str, str] = {
     "httpcore": "async_networking",
     "httpx": "async_networking",
     "requests": "broker_market_data",
+    "aiolimiter": "provider_rate_limit_cache",
+    "asynciolimiter": "provider_rate_limit_cache",
+    "cachetools": "provider_rate_limit_cache",
+    "requests-cache": "provider_rate_limit_cache",
+    "requests-ratelimiter": "provider_rate_limit_cache",
+    "limits": "provider_rate_limit_cache",
     "urllib3": "async_networking",
     "websockets": "async_networking",
     "uvloop": "async_networking",
@@ -217,6 +405,12 @@ PACKAGE_LANE_OVERRIDES: dict[str, str] = {
     "yfinance": "broker_market_data",
     "beautifulsoup4": "broker_market_data",
     "soupsieve": "broker_market_data",
+    "selectolax": "broker_market_data",
+    "feedparser": "broker_market_data",
+    "pandas-datareader": "financial_filings_macro",
+    "edgartools": "financial_filings_macro",
+    "sec-edgar-downloader": "financial_filings_macro",
+    "sec-cik-mapper": "financial_filings_macro",
     "certifi": "async_networking",
     "charset-normalizer": "async_networking",
     "idna": "async_networking",
@@ -251,6 +445,54 @@ PACKAGE_LANE_OVERRIDES: dict[str, str] = {
     "protobuf": "serialization_compression",
     "zstandard": "serialization_compression",
     "xxhash": "serialization_compression",
+    "jsonschema": "security_auth_config",
+    "great-expectations": "data_contract_validation",
+    "frictionless": "data_contract_validation",
+    "deepdiff": "data_contract_validation",
+    "jsonpath-ng": "data_contract_validation",
+    "opentelemetry-api": "telemetry_tracing",
+    "opentelemetry-sdk": "telemetry_tracing",
+    "opentelemetry-exporter-otlp": "telemetry_tracing",
+    "opentelemetry-instrumentation": "telemetry_tracing",
+    "opentelemetry-instrumentation-fastapi": "telemetry_tracing",
+    "opentelemetry-instrumentation-httpx": "telemetry_tracing",
+    "opentelemetry-instrumentation-requests": "telemetry_tracing",
+    "opentelemetry-instrumentation-sqlalchemy": "telemetry_tracing",
+    "opentelemetry-instrumentation-sqlite3": "telemetry_tracing",
+    "opentelemetry-semantic-conventions": "telemetry_tracing",
+    "prometheus-fastapi-instrumentator": "telemetry_tracing",
+    "scalene": "runtime_performance_profiling",
+    "memray": "runtime_performance_profiling",
+    "pyperf": "runtime_performance_profiling",
+    "ruff": "production_quality_gates",
+    "mypy": "production_quality_gates",
+    "pyright": "production_quality_gates",
+    "import-linter": "production_quality_gates",
+    "deptry": "production_quality_gates",
+    "vulture": "production_quality_gates",
+    "bandit": "security_supply_chain",
+    "pip-audit": "security_supply_chain",
+    "cyclonedx-bom": "security_supply_chain",
+    "detect-secrets": "security_supply_chain",
+    "pip-licenses": "security_supply_chain",
+    "locust": "load_resilience_testing",
+    "schemathesis": "load_resilience_testing",
+    "pytest-benchmark": "load_resilience_testing",
+    "pytest-socket": "load_resilience_testing",
+    "pytest-rerunfailures": "load_resilience_testing",
+    "arq": "queue_job_orchestration",
+    "rq": "queue_job_orchestration",
+    "dramatiq": "queue_job_orchestration",
+    "huey": "queue_job_orchestration",
+    "dynaconf": "config_release_controls",
+    "hydra-core": "config_release_controls",
+    "omegaconf": "config_release_controls",
+    "python-decouple": "config_release_controls",
+    "environs": "config_release_controls",
+    "aiometer": "async_flow_control",
+    "aiostream": "async_flow_control",
+    "asyncstdlib": "async_flow_control",
+    "httptools": "async_flow_control",
     "cryptography": "security_auth_config",
     "python-dotenv": "security_auth_config",
     "pydantic": "security_auth_config",
@@ -271,6 +513,11 @@ PACKAGE_LANE_OVERRIDES: dict[str, str] = {
     "pyinstrument": "observability_ops",
     "tqdm": "observability_ops",
     "pytest": "testing_dev_tooling",
+    "pytest-xdist": "testing_dev_tooling",
+    "pytest-timeout": "testing_dev_tooling",
+    "respx": "testing_dev_tooling",
+    "vcrpy": "testing_dev_tooling",
+    "hypothesis-jsonschema": "testing_dev_tooling",
     "pluggy": "testing_dev_tooling",
     "iniconfig": "testing_dev_tooling",
     "autopep8": "testing_dev_tooling",
@@ -323,6 +570,11 @@ CRITICAL_RUNTIME_LANES = {
     "security_auth_config",
     "serialization_compression",
     "system_runtime_primitives",
+    "telemetry_tracing",
+    "security_supply_chain",
+    "queue_job_orchestration",
+    "config_release_controls",
+    "async_flow_control",
 }
 
 
@@ -342,6 +594,87 @@ def _safe_int(value: Any, default: int = 0) -> int:
 
 def _norm_package(name: str) -> str:
     return str(name or "").strip().lower().replace("_", "-")
+
+
+def _string_list(value: Any) -> list[str]:
+    if isinstance(value, list):
+        return [str(item).strip() for item in value if str(item).strip()]
+    if isinstance(value, str) and value.strip():
+        return [value.strip()]
+    return []
+
+
+def _load_activation_config(project_root: Path) -> dict[str, Any]:
+    payload = load_json(project_root / "config" / "library_activation_profiles_v1.json")
+    return payload if isinstance(payload, dict) else {}
+
+
+def _profile_order(activation_config: dict[str, Any]) -> list[str]:
+    configured = _string_list(activation_config.get("profile_order"))
+    return configured or list(DEFAULT_PROFILE_ORDER)
+
+
+def _lane_activation_profiles(activation_config: dict[str, Any]) -> dict[str, list[str]]:
+    lane_to_profiles: dict[str, list[str]] = {
+        lane: list(profiles)
+        for lane, profiles in DEFAULT_LANE_ACTIVATION_PROFILES.items()
+    }
+    profile_lanes = activation_config.get("profile_lanes")
+    if isinstance(profile_lanes, dict):
+        for profile, lanes in profile_lanes.items():
+            profile_name = str(profile or "").strip()
+            if not profile_name:
+                continue
+            for lane in _string_list(lanes):
+                lane_to_profiles[lane] = ordered_unique([*lane_to_profiles.get(lane, []), profile_name])
+    return lane_to_profiles
+
+
+def _package_activation_profiles(package: str, lane: str, runtime_family: str, activation_config: dict[str, Any]) -> list[str]:
+    raw_overrides = activation_config.get("package_profile_overrides")
+    overrides = {_norm_package(str(key)): value for key, value in raw_overrides.items()} if isinstance(raw_overrides, dict) else {}
+    if package in overrides:
+        return _ordered_profiles(_string_list(overrides.get(package)), activation_config)
+    lane_profiles = _lane_activation_profiles(activation_config)
+    profiles = lane_profiles.get(lane)
+    if not profiles:
+        profiles = ["research"] if runtime_family == "mlx" else ["ops"]
+    return _ordered_profiles(profiles, activation_config)
+
+
+def _ordered_profiles(profiles: list[str], activation_config: dict[str, Any]) -> list[str]:
+    profile_order = _profile_order(activation_config)
+    profile_rank = {profile: index for index, profile in enumerate(profile_order)}
+    return sorted(ordered_unique(profiles), key=lambda profile: profile_rank.get(profile, len(profile_rank)))
+
+
+def _candidate_activation_state(status: str, activation_profiles: list[str]) -> str:
+    if status in {"installed_locked", "installed_runtime_only"}:
+        return "active_runtime"
+    if status == "locked_missing_runtime":
+        return "active_lock_missing_runtime"
+    if activation_profiles:
+        return "profile_eligible_pending_install"
+    return "candidate_only_no_activation_profile"
+
+
+def _activation_modes(activation_profiles: list[str], activation_config: dict[str, Any]) -> dict[str, str]:
+    configured = activation_config.get("profile_activation_modes")
+    profile_modes = configured if isinstance(configured, dict) else {}
+    return {
+        profile: str(profile_modes.get(profile) or DEFAULT_PROFILE_ACTIVATION_MODES.get(profile) or "profile_scoped_install")
+        for profile in activation_profiles
+    }
+
+
+def _activation_batch(package: str, activation_config: dict[str, Any]) -> str:
+    batches = activation_config.get("initial_activation_batches")
+    if not isinstance(batches, dict):
+        return ""
+    for batch_name, packages in batches.items():
+        if package in {_norm_package(item) for item in _string_list(packages)}:
+            return str(batch_name or "").strip()
+    return ""
 
 
 def _parse_version_lines(lines: list[str]) -> dict[str, str]:
@@ -429,6 +762,22 @@ def _infer_lane(package: str) -> str:
         return "security_auth_config"
     if any(token in normalized for token in ("json", "msg", "flat", "proto", "zstandard", "safetensor")):
         return "serialization_compression"
+    if "opentelemetry" in normalized or normalized in {"prometheus-fastapi-instrumentator"}:
+        return "telemetry_tracing"
+    if any(token in normalized for token in ("scalene", "memray", "pyperf", "benchmark")):
+        return "runtime_performance_profiling"
+    if any(token in normalized for token in ("ruff", "mypy", "pyright", "linter", "deptry", "vulture")):
+        return "production_quality_gates"
+    if any(token in normalized for token in ("bandit", "audit", "cyclonedx", "secret", "license")):
+        return "security_supply_chain"
+    if any(token in normalized for token in ("locust", "schemathesis", "rerun", "socket")):
+        return "load_resilience_testing"
+    if normalized in {"arq", "rq", "dramatiq", "huey"} or "queue" in normalized:
+        return "queue_job_orchestration"
+    if any(token in normalized for token in ("dynaconf", "hydra", "omegaconf", "decouple", "environs")):
+        return "config_release_controls"
+    if any(token in normalized for token in ("aiometer", "aiostream", "asyncstdlib", "httptools")):
+        return "async_flow_control"
     if any(token in normalized for token in ("profile", "sentry", "prometheus", "psutil", "log", "tqdm")):
         return "observability_ops"
     if any(token in normalized for token in ("pytest", "pep", "pluggy", "setuptools", "wheel")):
@@ -635,7 +984,9 @@ def _candidate_library_rows(
     installed_versions: dict[str, str],
     *,
     candidate_file: Path | None = None,
+    activation_config: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
+    activation_config = activation_config if isinstance(activation_config, dict) else {}
     payload = load_json(candidate_file or project_root / "config" / "library_candidate_routes_v1.json")
     raw_rows = payload.get("candidate_libraries") if isinstance(payload.get("candidate_libraries"), list) else []
     rows: list[dict[str, Any]] = []
@@ -656,14 +1007,33 @@ def _candidate_library_rows(
             status = "locked_missing_runtime"
         else:
             status = "candidate_only"
+        runtime_family = str(raw.get("runtime_family") or ("mlx" if _is_mlx_routed(package) else "python")).strip().lower()
+        activation_profiles = _package_activation_profiles(package, lane, runtime_family, activation_config)
+        activation_state = _candidate_activation_state(status, activation_profiles)
+        activation_batch = _activation_batch(package, activation_config)
         rows.append(
             {
                 "package": package,
                 "lane": lane,
                 "status": status,
+                "runtime_family": runtime_family,
                 "priority": str(raw.get("priority") or "medium").strip().lower(),
                 "reason": str(raw.get("reason") or "").strip(),
                 "install_window": str(raw.get("install_window") or "maintenance").strip().lower(),
+                "target_surfaces": _string_list(raw.get("target_surfaces")),
+                "target_functions": _string_list(raw.get("target_functions")),
+                "compatibility_notes": _string_list(raw.get("compatibility_notes")),
+                "promotion_gate": str(
+                    raw.get("promotion_gate") or "compatibility_smoke_then_canary_before_lock_or_runtime_mutation"
+                ).strip(),
+                "activation_profiles": activation_profiles,
+                "activation_state": activation_state,
+                "activation_modes": _activation_modes(activation_profiles, activation_config),
+                "initial_activation_batch": activation_batch,
+                "activation_policy": str(
+                    activation_config.get("activation_policy")
+                    or "profile_scoped_activation_with_smoke_before_lock_mutation"
+                ),
                 "locked_version": locked,
                 "installed_version": installed,
                 "soak_policy": "do_not_count_candidate_only_as_missing_runtime",
@@ -675,29 +1045,53 @@ def _candidate_library_rows(
 def _candidate_library_matrix(rows: list[dict[str, Any]]) -> dict[str, Any]:
     package_to_lane = {str(row.get("package") or ""): str(row.get("lane") or "") for row in rows}
     lane_to_packages: dict[str, list[str]] = {}
+    profile_to_packages: dict[str, list[str]] = {}
+    batch_to_packages: dict[str, list[str]] = {}
     for row in rows:
         package = str(row.get("package") or "")
         if not package:
             continue
         lane_to_packages.setdefault(str(row.get("lane") or "runtime_support_misc"), []).append(package)
+        for profile in _string_list(row.get("activation_profiles")):
+            profile_to_packages.setdefault(profile, []).append(package)
+        batch = str(row.get("initial_activation_batch") or "").strip()
+        if batch:
+            batch_to_packages.setdefault(batch, []).append(package)
     unmapped = [package for package, lane in package_to_lane.items() if not lane]
     candidate_only = [row for row in rows if str(row.get("status") or "") == "candidate_only"]
     installed = [row for row in rows if str(row.get("status") or "").startswith("installed")]
+    runtime_family_counts: dict[str, int] = {}
+    activation_state_counts: dict[str, int] = {}
+    target_functions: dict[str, list[str]] = {}
+    for row in rows:
+        family = str(row.get("runtime_family") or "python")
+        runtime_family_counts[family] = runtime_family_counts.get(family, 0) + 1
+        state = str(row.get("activation_state") or "unknown")
+        activation_state_counts[state] = activation_state_counts.get(state, 0) + 1
+        for function_name in _string_list(row.get("target_functions")):
+            target_functions.setdefault(function_name, []).append(str(row.get("package") or ""))
     return {
         "candidate_package_count": len(rows),
         "mapped_candidate_count": len(rows) - len(unmapped),
         "mapped_candidate_ratio": round((len(rows) - len(unmapped)) / max(len(rows), 1), 4),
         "candidate_only_count": len(candidate_only),
         "installed_candidate_count": len(installed),
+        "runtime_family_counts": dict(sorted(runtime_family_counts.items())),
+        "activation_state_counts": dict(sorted(activation_state_counts.items())),
         "unmapped_candidate_packages": unmapped,
         "package_to_lane": package_to_lane,
         "lane_to_packages": {lane: sorted(set(packages)) for lane, packages in lane_to_packages.items()},
+        "activation_profile_to_packages": {profile: sorted(set(packages)) for profile, packages in sorted(profile_to_packages.items())},
+        "initial_activation_batch_to_packages": {batch: sorted(set(packages)) for batch, packages in sorted(batch_to_packages.items())},
+        "target_function_to_packages": {name: sorted(set(packages)) for name, packages in sorted(target_functions.items())},
         "soak_scoring_policy": "candidate_only_packages_are_stageable_not_missing_runtime",
     }
 
 
 def _recommended_actions(coverage: dict[str, Any], caps: dict[str, Any], candidate_matrix: dict[str, Any] | None = None) -> list[str]:
     candidate_matrix = candidate_matrix if isinstance(candidate_matrix, dict) else {}
+    activation_batches = candidate_matrix.get("initial_activation_batch_to_packages")
+    has_activation_batches = bool(activation_batches) if isinstance(activation_batches, dict) else False
     return ordered_unique(
         [
             "route every non-MLX runtime package through library-utilization-router before adding more dependency weight",
@@ -719,6 +1113,9 @@ def _recommended_actions(coverage: dict[str, Any], caps: dict[str, Any], candida
             else "",
             "stage candidate libraries through config/library_candidate_routes_v1.json and promote them only after compatibility smoke"
             if _safe_int(candidate_matrix.get("candidate_package_count"), 0)
+            else "",
+            "activate staged candidates by profile batch, then freeze the lock and rerun smoke before enabling any live feature gate"
+            if has_activation_batches
             else "",
             "./scripts/ops/opsctl.sh runtime-throttle --apply --json",
         ]
@@ -766,7 +1163,8 @@ def build_payload(
     routes = _lane_routes(rows)
     coverage = _coverage(rows)
     matrix = _library_utilization_matrix(rows, routes)
-    candidate_rows = _candidate_library_rows(project_root, lock_versions, installed)
+    activation_config = _load_activation_config(project_root)
+    candidate_rows = _candidate_library_rows(project_root, lock_versions, installed, activation_config=activation_config)
     candidate_matrix = _candidate_library_matrix(candidate_rows)
     runtime_caps = _runtime_caps(
         load_json(health_root / "memory_efficiency_control_latest.json"),
@@ -809,6 +1207,11 @@ def build_payload(
             "lock_drift_policy": "newer_runtime_versions_are_routed_as_advisory_until_canary_reconciles_the_lock",
             "optional_fallback_policy": "optional_missing_packages_use_declared_fallback_routes_without blocking the soak",
             "candidate_add_policy": "stage_candidates_without_dependency_mutation_then_install_only_in_maintenance_after_smoke",
+            "candidate_activation_policy": str(
+                activation_config.get("activation_policy")
+                or "profile_scoped_activation_with_smoke_before_lock_mutation"
+            ),
+            "candidate_activation_state": "profile_eligible_is_not_live_enabled_until_installed_smoked_and_feature_gated",
         },
         "recommended_actions": _recommended_actions(coverage, runtime_caps, candidate_matrix),
         "artifact_paths": {
@@ -816,6 +1219,7 @@ def build_payload(
             "external_context": str(DEFAULT_EXTERNAL_CONTEXT_PATH),
             "markdown": str(DEFAULT_MARKDOWN_PATH),
             "candidate_routes": str(DEFAULT_CANDIDATE_ROUTES),
+            "activation_profiles": str(DEFAULT_ACTIVATION_PROFILES),
             "env_override": str(DEFAULT_OVERRIDE_PATH),
         },
     }
@@ -844,6 +1248,11 @@ def render_markdown(payload: dict[str, Any]) -> str:
         f"- Candidate packages staged: `{candidate_matrix.get('candidate_package_count', 0)}`",
         f"- Candidate route coverage: `{candidate_matrix.get('mapped_candidate_ratio', 0.0)}`",
         f"- Candidate-only packages: `{candidate_matrix.get('candidate_only_count', 0)}`",
+        f"- Runtime families: `{json.dumps(candidate_matrix.get('runtime_family_counts') or {}, sort_keys=True)}`",
+        f"- Activation states: `{json.dumps(candidate_matrix.get('activation_state_counts') or {}, sort_keys=True)}`",
+        f"- Activation profiles: `{json.dumps({profile: len(packages) for profile, packages in (candidate_matrix.get('activation_profile_to_packages') or {}).items()}, sort_keys=True)}`",
+        f"- Initial activation batches: `{json.dumps({batch: len(packages) for batch, packages in (candidate_matrix.get('initial_activation_batch_to_packages') or {}).items()}, sort_keys=True)}`",
+        f"- Target functions covered: `{len(candidate_matrix.get('target_function_to_packages') or {})}`",
         "",
         "## Runtime Caps",
         "",

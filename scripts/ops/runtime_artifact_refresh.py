@@ -65,6 +65,10 @@ PAPER_SOAK_MANAGED_STATUSES = {
     "thin",
     "warn",
 }
+RAW_LIVE_SOAK_MAX_CORE_LINES = 10000
+RAW_LIVE_SOAK_MAX_TOTAL_LINES = 15000
+RAW_LIVE_SOAK_MAX_AGE_SECONDS = 900.0
+STATEFUL_SQL_SOFT_QUOTA_MAX_HARD_RATIO = 0.92
 
 
 RefreshRunner = Callable[[dict[str, Any], Path], dict[str, Any]]
@@ -76,6 +80,30 @@ def _load_json(path: Path) -> dict[str, Any]:
     except Exception:
         return {}
     return payload if isinstance(payload, dict) else {}
+
+
+def _as_dict(value: Any) -> dict[str, Any]:
+    return value if isinstance(value, dict) else {}
+
+
+def _safe_int(value: Any, default: int = 0) -> int:
+    try:
+        return int(float(value))
+    except Exception:
+        return int(default)
+
+
+def _safe_float(value: Any, default: float = 0.0) -> float:
+    try:
+        return float(value)
+    except Exception:
+        return float(default)
+
+
+def _string_set(value: Any) -> set[str]:
+    if not isinstance(value, list):
+        return set()
+    return {str(item or "").strip() for item in value if str(item or "").strip()}
 
 
 def _parse_json_output(text: str) -> dict[str, Any]:
@@ -515,12 +543,80 @@ def _core_storage_ready(project_root: Path) -> bool:
     )
 
 
+def _raw_live_backlog_clear(ingestion: dict[str, Any]) -> bool:
+    backpressure = _as_dict(ingestion.get("backpressure"))
+    raw_live = _as_dict(backpressure.get("effective_raw_live")) or _as_dict(backpressure.get("raw_live"))
+    return bool(
+        _safe_int(raw_live.get("core_pending_lines"), 0) <= RAW_LIVE_SOAK_MAX_CORE_LINES
+        and _safe_int(raw_live.get("total_pending_lines"), 0) <= RAW_LIVE_SOAK_MAX_TOTAL_LINES
+        and _safe_float(raw_live.get("oldest_pending_age_seconds"), 0.0) <= RAW_LIVE_SOAK_MAX_AGE_SECONDS
+    )
+
+
+def _stateful_sql_soft_quota_managed_for_paper_soak(project_root: Path, payload: dict[str, Any]) -> bool:
+    quota_summary = _as_dict(payload.get("quota_summary"))
+    hard_breaches = _safe_int(quota_summary.get("hard_breaches"), 0)
+    soft_breaches = _safe_int(quota_summary.get("soft_breaches"), 0)
+    if hard_breaches > 0 or soft_breaches != 1:
+        return False
+    if _string_set(quota_summary.get("blocked_families")):
+        return False
+    degraded_families = _string_set(quota_summary.get("degraded_families"))
+    lanes = payload.get("lanes") if isinstance(payload.get("lanes"), list) else []
+    if not degraded_families:
+        degraded_families = {
+            str(row.get("family") or "").strip()
+            for row in lanes
+            if isinstance(row, dict) and str(row.get("status") or "").strip().lower() in {"blocked", "degraded"}
+        }
+        degraded_families.discard("")
+    if degraded_families != {"sql_link_shards"}:
+        return False
+    sql_lane = next((row for row in lanes if isinstance(row, dict) and str(row.get("family") or "") == "sql_link_shards"), {})
+    over_hard_gb = _safe_float(sql_lane.get("over_hard_gb"), _safe_float(quota_summary.get("worst_over_hard_gb"), 0.0))
+    hard_ratio = _safe_float(sql_lane.get("hard_ratio"), _safe_float(quota_summary.get("worst_hard_ratio"), 0.0))
+    if over_hard_gb > 0.0 or hard_ratio > STATEFUL_SQL_SOFT_QUOTA_MAX_HARD_RATIO:
+        return False
+
+    health_root = project_root / "governance" / "health"
+    ingestion = _load_json(health_root / "ingestion_storage_control_latest.json")
+    ingestion_status = str(ingestion.get("overall_status") or ingestion.get("status") or "").strip().lower()
+    severity = str(ingestion.get("severity") or "").strip().lower()
+    if ingestion_status not in {"ready", "ok", "advisory"} or severity not in {"", "stable", "ready", "low", "normal"}:
+        return False
+    if not _raw_live_backlog_clear(ingestion):
+        return False
+
+    unison = _load_json(health_root / "storage_retention_unison_latest.json")
+    continuous = _as_dict(unison.get("continuous_run_contract"))
+    controls = _as_dict(continuous.get("storage_controls"))
+    forecast = _as_dict(unison.get("storage_growth_forecast"))
+    forecast_status = str(forecast.get("status") or "").strip()
+    days_until_pressure = forecast.get("days_until_pressure_free")
+    forecast_ready = bool(
+        forecast_status in {"stable_or_improving", "forecast_ready", "ready"}
+        and (days_until_pressure is None or _safe_float(days_until_pressure, 0.0) >= 30.0)
+    )
+    continuous_ready = bool(continuous.get("ready", False) or continuous.get("status") == "ready" or forecast_ready)
+    quota_ready = bool(controls.get("quota_ready", False)) or not bool(quota_summary.get("external_free_below_target", False))
+    tier = _load_json(health_root / "storage_tier_policy_latest.json")
+    manifest_contract = _as_dict(tier.get("manifest_backed_offload_contract"))
+    integration = _as_dict(unison.get("integration_contract"))
+    stateful_policy = str(manifest_contract.get("stateful_sql_policy") or "").lower()
+    compaction_only = bool(integration.get("stateful_sql_compaction_only", False)) or (
+        "never source-delete" in stateful_policy and "checkpoint" in stateful_policy
+    )
+    return bool(continuous_ready and quota_ready and compaction_only)
+
+
 def _paper_soak_managed_step(name: str, payload: dict[str, Any], *, project_root: Path, paper_soak_ready: bool) -> bool:
     if not paper_soak_ready:
         return False
     status = str(payload.get("overall_status") or payload.get("status") or "").strip().lower()
     if name == "storage_pressure_clearance":
         return bool(status in PAPER_SOAK_MANAGED_STATUSES and _core_storage_ready(project_root))
+    if name == "storage_quota_guard":
+        return bool(status in PAPER_SOAK_MANAGED_STATUSES and _stateful_sql_soft_quota_managed_for_paper_soak(project_root, payload))
     if name not in PAPER_SOAK_MANAGED_STEPS:
         return False
     if status in PAPER_SOAK_MANAGED_STATUSES:

@@ -259,6 +259,13 @@ def _guarded_paper_management_context(health_root: Path) -> dict[str, Any]:
         "paper_stage": paper_stage,
         "health_fast_status": health_fast_status,
         "raw_attention": _ordered_unique(overall.get("raw_attention") if isinstance(overall.get("raw_attention"), list) else []),
+        "forensic_attention": _ordered_unique(
+            overall.get("forensic_attention")
+            if isinstance(overall.get("forensic_attention"), list)
+            else overall.get("raw_attention")
+            if isinstance(overall.get("raw_attention"), list)
+            else []
+        ),
     }
 
 

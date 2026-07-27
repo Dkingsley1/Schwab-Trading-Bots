@@ -20,6 +20,7 @@ DEFAULT_OUT_PATH = PROJECT_ROOT / "governance" / "health" / "mlx_intelligence_ro
 DEFAULT_EXTERNAL_CONTEXT_PATH = PROJECT_ROOT / "exports" / "external_context" / "mlx_intelligence_router_latest.json"
 DEFAULT_MARKDOWN_PATH = PROJECT_ROOT / "exports" / "reports" / "operator" / "mlx_intelligence_router_latest.md"
 DEFAULT_OVERRIDE_PATH = PROJECT_ROOT / "config" / ".env.mlx_intelligence_router_override"
+DEFAULT_CANDIDATE_ROUTES = PROJECT_ROOT / "config" / "library_candidate_routes_v1.json"
 
 REQUIRED_PACKAGES = (
     "mlx",
@@ -169,6 +170,7 @@ LANE_SPECS: tuple[dict[str, Any], ...] = (
         "priority": "research_only",
     },
 )
+MLX_CANDIDATE_LANES = {str(spec.get("lane") or "") for spec in LANE_SPECS}
 
 
 def _safe_float(value: Any, default: float = 0.0) -> float:
@@ -193,6 +195,14 @@ def _truthy(value: Any) -> bool:
 
 def _norm_package(name: str) -> str:
     return str(name or "").strip().lower().replace("_", "-")
+
+
+def _string_list(value: Any) -> list[str]:
+    if isinstance(value, list):
+        return [str(item).strip() for item in value if str(item).strip()]
+    if isinstance(value, str) and value.strip():
+        return [value.strip()]
+    return []
 
 
 def _status(payload: dict[str, Any], default: str = "missing") -> str:
@@ -885,6 +895,52 @@ def _library_utilization_matrix(routes: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
+def _mlx_candidate_routes(project_root: Path) -> list[dict[str, Any]]:
+    payload = load_json(project_root / "config" / "library_candidate_routes_v1.json")
+    raw_rows = payload.get("candidate_libraries") if isinstance(payload.get("candidate_libraries"), list) else []
+    rows: list[dict[str, Any]] = []
+    for raw in raw_rows:
+        if not isinstance(raw, dict):
+            continue
+        package = _norm_package(str(raw.get("package") or ""))
+        lane = str(raw.get("lane") or "").strip()
+        runtime_family = str(raw.get("runtime_family") or "").strip().lower()
+        is_mlx_candidate = bool(runtime_family == "mlx" or package.startswith("mlx-") or lane in MLX_CANDIDATE_LANES)
+        if not package or not is_mlx_candidate:
+            continue
+        rows.append(
+            {
+                "package": package,
+                "lane": lane or "mlx_candidate_misc",
+                "priority": str(raw.get("priority") or "medium").strip().lower(),
+                "reason": str(raw.get("reason") or "").strip(),
+                "install_window": str(raw.get("install_window") or "off_hours").strip().lower(),
+                "target_surfaces": _string_list(raw.get("target_surfaces")),
+                "target_functions": _string_list(raw.get("target_functions")),
+                "compatibility_notes": _string_list(raw.get("compatibility_notes")),
+                "promotion_gate": str(
+                    raw.get("promotion_gate") or "off_hours_import_smoke_before_lock_mutation"
+                ).strip(),
+                "soak_policy": "staged_mlx_candidates_do_not_count_as_missing_runtime",
+            }
+        )
+    return sorted(rows, key=lambda row: (str(row.get("lane") or ""), str(row.get("priority") or ""), str(row.get("package") or "")))
+
+
+def _mlx_candidate_matrix(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    lane_to_packages: dict[str, list[str]] = {}
+    for row in rows:
+        lane_to_packages.setdefault(str(row.get("lane") or "mlx_candidate_misc"), []).append(str(row.get("package") or ""))
+    return {
+        "candidate_package_count": len(rows),
+        "lane_count": len(lane_to_packages),
+        "lane_to_packages": {lane: sorted(set(packages)) for lane, packages in sorted(lane_to_packages.items())},
+        "off_hours_count": sum(1 for row in rows if str(row.get("install_window") or "") == "off_hours"),
+        "maintenance_count": sum(1 for row in rows if str(row.get("install_window") or "") == "maintenance"),
+        "candidate_policy": "mlx_candidates_are_stageable_optional_packages_until_operator_approved_smoke_and_lock_promotion",
+    }
+
+
 def _lane_optimization_summary(routes: list[dict[str, Any]], caps: dict[str, Any]) -> dict[str, Any]:
     profiles = [
         row.get("optimization_profile")
@@ -1226,6 +1282,8 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
     routes = _lane_routes(statuses, caps)
     route_coverage = _route_coverage(routes)
     library_matrix = _library_utilization_matrix(routes)
+    candidate_routes = _mlx_candidate_routes(project_root)
+    candidate_matrix = _mlx_candidate_matrix(candidate_routes)
     lane_optimization = _lane_optimization_summary(routes, caps)
     adaptive_reopen = _adaptive_reopen_controller(caps, lane_optimization, previous_payload)
     env = _recommended_env(caps, lane_optimization, adaptive_reopen)
@@ -1256,6 +1314,8 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
         "recommended_runtime_env": env,
         "workload_routes": routes,
         "library_utilization_matrix": library_matrix,
+        "staged_mlx_candidate_routes": candidate_routes,
+        "staged_mlx_candidate_matrix": candidate_matrix,
         "lane_optimization_summary": lane_optimization,
         "adaptive_reopen_controller": adaptive_reopen,
         "quant_model_status": _status(quant),
@@ -1290,6 +1350,8 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
             "paper_path_policy": "respect_paper_trade_lock_and_runtime_caps",
             "mlx_reopen_mode": str(mlx_reopen.get("mode") or ""),
             "mlx_reopen_allowed": bool(mlx_reopen.get("allowed", False)),
+            "staged_mlx_candidate_count": _safe_int(candidate_matrix.get("candidate_package_count"), 0),
+            "staged_mlx_candidate_policy": str(candidate_matrix.get("candidate_policy") or ""),
         },
         "recommended_actions": ordered_unique(
             [str(readiness_repair.get("next_action") or "")]
@@ -1300,6 +1362,7 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
             "external_context": str(DEFAULT_EXTERNAL_CONTEXT_PATH),
             "markdown": str(DEFAULT_MARKDOWN_PATH),
             "env_override": str(DEFAULT_OVERRIDE_PATH),
+            "candidate_routes": str(DEFAULT_CANDIDATE_ROUTES),
         },
     }
 
@@ -1311,6 +1374,7 @@ def render_markdown(payload: dict[str, Any]) -> str:
     caps = payload.get("runtime_caps") if isinstance(payload.get("runtime_caps"), dict) else {}
     lane_summary = payload.get("lane_optimization_summary") if isinstance(payload.get("lane_optimization_summary"), dict) else {}
     adaptive = payload.get("adaptive_reopen_controller") if isinstance(payload.get("adaptive_reopen_controller"), dict) else {}
+    candidate_matrix = payload.get("staged_mlx_candidate_matrix") if isinstance(payload.get("staged_mlx_candidate_matrix"), dict) else {}
     lines = [
         "# MLX Intelligence Router",
         "",
@@ -1325,6 +1389,13 @@ def render_markdown(payload: dict[str, Any]) -> str:
         f"- Compatibility-excluded packages: `{', '.join(coverage.get('compatibility_excluded_packages') or []) or 'none'}`",
         f"- Compatibility-excluded lanes: `{', '.join(route_coverage.get('excluded_lanes') or []) or 'none'}`",
         f"- Readiness repair: `{repair.get('status', '')}`",
+        "",
+        "## Staged MLX Candidates",
+        "",
+        f"- Candidate packages: `{candidate_matrix.get('candidate_package_count', 0)}`",
+        f"- Candidate lanes: `{candidate_matrix.get('lane_count', 0)}`",
+        f"- Maintenance-window candidates: `{candidate_matrix.get('maintenance_count', 0)}`",
+        f"- Off-hours candidates: `{candidate_matrix.get('off_hours_count', 0)}`",
         "",
         "## Runtime Caps",
         "",

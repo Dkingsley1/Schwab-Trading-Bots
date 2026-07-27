@@ -2195,13 +2195,15 @@ def build_dashboard(project_root: Path = PROJECT_ROOT) -> Dict[str, Any]:
                 }
                 artifacts["session_ready"] = session_ready_artifact
 
-    raw_attention = list(attention)
+    forensic_attention = list(attention)
     soak_management_context = _dashboard_soak_context(project_root)
     attention, managed_controls = _split_green_soak_managed_attention(
         attention,
         artifacts,
         soak_management_context,
     )
+    raw_attention = list(attention)
+    managed_attention = [row["attention"] for row in managed_controls if isinstance(row.get("attention"), str)]
     attention_tiers = _attention_tiers(attention)
     remediation_actions = _remediation_actions(attention)
     severity = _severity_from_attention(attention)
@@ -2259,8 +2261,10 @@ def build_dashboard(project_root: Path = PROJECT_ROOT) -> Dict[str, Any]:
             "ok": severity == 0,
             "attention": attention,
             "raw_attention": raw_attention,
+            "forensic_attention": forensic_attention,
             "attention_tiers": attention_tiers,
             "remediation_actions": remediation_actions,
+            "managed_attention": managed_attention,
             "managed_controls": managed_controls,
             "soak_management_context": soak_management_context,
         },

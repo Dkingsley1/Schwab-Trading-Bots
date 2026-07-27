@@ -353,7 +353,9 @@ def test_runtime_gate_dashboard_manages_paper_soak_cold_lane_degradations(tmp_pa
         "storage_quota_guard_needs_work",
         "external_backlog_retry_bot_followups",
     }.issubset(managed)
-    assert "daily_auto_verify_not_ok" in payload["overall"]["raw_attention"]
+    assert payload["overall"]["raw_attention"] == []
+    assert "daily_auto_verify_not_ok" in payload["overall"]["forensic_attention"]
+    assert "daily_auto_verify_not_ok" in payload["overall"]["managed_attention"]
 
 
 def test_runtime_gate_dashboard_resolves_recovered_nightly_resilience_and_artifact_freshness(tmp_path: Path) -> None:
@@ -1198,7 +1200,8 @@ def test_runtime_gate_dashboard_manages_soak_deferred_controls_when_paper_guard_
     assert payload["overall"]["status"] == "ok"
     assert payload["overall"]["ok"] is True
     assert payload["overall"]["attention"] == []
-    assert set(payload["overall"]["raw_attention"]) >= {
+    assert payload["overall"]["raw_attention"] == []
+    assert set(payload["overall"]["forensic_attention"]) >= {
         "promotion_not_ready",
         "daily_auto_verify_not_ok",
         "bot_quality_autopilot_blocked",
@@ -1331,7 +1334,9 @@ def test_runtime_gate_dashboard_manages_stateful_sql_soft_quota_when_soak_storag
     assert payload["overall"]["status"] == "ok"
     assert payload["overall"]["ok"] is True
     assert payload["overall"]["attention"] == []
-    assert "storage_quota_guard_needs_work" in payload["overall"]["raw_attention"]
+    assert payload["overall"]["raw_attention"] == []
+    assert "storage_quota_guard_needs_work" in payload["overall"]["forensic_attention"]
+    assert "storage_quota_guard_needs_work" in payload["overall"]["managed_attention"]
     assert managed["storage_quota_guard_needs_work"] == "soft_storage_quota_pressure_managed_by_ingestion_soak_contract"
 
 

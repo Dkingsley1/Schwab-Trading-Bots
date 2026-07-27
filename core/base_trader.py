@@ -22,7 +22,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from core.decision_logger import DecisionLogger
 from core.derivatives_features import _days_to_expiry, _extract_option_rows, _option_row_strike, _option_side
 from core.exotic_derivatives_plumbing import exotic_direct_execution_allowed, is_exotic_derivative_sleeve
-from core.live_execution_controls import LiveExecutionGuard, LiveRiskConfig
+from core.live_execution_controls import LiveExecutionGuard, LiveRiskConfig, production_order_firewall_check
 from core.path_registry import auth_events_path, decision_explanations_paths, execution_guard_path, live_softguard_path
 from core.brokers import (
     BrokerAdapter,
@@ -2793,6 +2793,41 @@ class BaseTrader:
     ) -> Dict[str, Any]:
         if not self._supports_broker_capability("supports_order_place"):
             return self._unsupported_broker_operation("place_order", "supports_order_place")
+        firewall = production_order_firewall_check(
+            project_root=self.project_root,
+            symbol=symbol,
+            action=action,
+            quantity=quantity,
+            order_spec=order_spec,
+        )
+        if not firewall.ok:
+            details = {
+                **firewall.details,
+                "order_spec": order_spec,
+            }
+            self._log_live_guard_event(
+                event="place_order",
+                status="blocked",
+                reason=firewall.reason,
+                details=details,
+            )
+            self._log_softguard_event(
+                event="production_order_firewall",
+                status="blocked",
+                reason=firewall.reason,
+                details=details,
+            )
+            return {
+                "ok": False,
+                "operation": "place_order",
+                "error": firewall.reason,
+                "production_order_firewall": {
+                    "ok": False,
+                    "gate": firewall.gate,
+                    "reason": firewall.reason,
+                    "details": firewall.details,
+                },
+            }
         order_request = self._build_live_order_request(
             symbol=symbol,
             action=action,

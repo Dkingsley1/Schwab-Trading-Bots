@@ -988,6 +988,15 @@ case "$cmd" in
   library-utilization-router|library-router|non-mlx-library-router|dependency-utilization)
     run_then_refresh_self_model "$PY" "$PROJECT_ROOT/scripts/ops/library_utilization_router.py" "$@"
     ;;
+  dependency-activation-smoke|dependency-smoke|library-activation-smoke)
+    run_then_refresh_self_model "$PY" "$PROJECT_ROOT/scripts/ops/dependency_activation_smoke.py" "$@"
+    ;;
+  production-readiness|prod-readiness|production-readiness-control|production-quality-control)
+    run_then_refresh_self_model "$PY" "$PROJECT_ROOT/scripts/ops/production_readiness_control.py" "$@"
+    ;;
+  production-soak-enhancement|prod-soak|soak-enhancement|soak-quality)
+    run_then_refresh_self_model "$PY" "$PROJECT_ROOT/scripts/ops/production_soak_enhancement.py" "$@"
+    ;;
   library-upgrade-route|upgrade-route-libraries|library-upgrade-router|dependency-upgrade-router)
     run_then_refresh_self_model "$PY" "$PROJECT_ROOT/scripts/ops/library_upgrade_route_control.py" "$@"
     ;;
@@ -2794,6 +2803,9 @@ opsctl commands:
   mlx-audio-audit [--json]
   mlx-intelligence-router|mlx-compute-brain|mlx-utilization [--apply] [--json]
   library-utilization-router|library-router|non-mlx-library-router [--apply] [--json]
+  dependency-activation-smoke|dependency-smoke|library-activation-smoke [--batch NAME] [--profile NAME] [--import-smoke] [--json]
+  production-readiness|prod-readiness|production-readiness-control [--apply] [--json]
+  production-soak-enhancement|prod-soak|soak-enhancement [--apply] [--dependency-batch NAME] [--json]
   library-upgrade-route|upgrade-route-libraries [--apply] [--json]
   library-efficiency-deepening|library-1-10 [--apply] [--json]
   safety-bounded-advancement-frontier|safe-frontier-push [--apply] [--json]
@@ -3028,6 +3040,9 @@ opsctl commands:
   adaptive-intelligence-kernel|intelligence-kernel [--apply] [--json]
   mlx-intelligence-router|mlx-compute-brain|mlx-utilization [--apply] [--json]
   library-utilization-router|library-router|non-mlx-library-router [--apply] [--json]
+  dependency-activation-smoke|dependency-smoke|library-activation-smoke [--batch NAME] [--profile NAME] [--import-smoke] [--json]
+  production-readiness|prod-readiness|production-readiness-control [--apply] [--json]
+  production-soak-enhancement|prod-soak|soak-enhancement [--apply] [--dependency-batch NAME] [--json]
   library-upgrade-route|upgrade-route-libraries [--apply] [--json]
   big-platform-brain|platform-brain|system-self-model|self-model|self-awareness [--json]
   self-awareness-infrabots|system-self-awareness [--apply] [--json]

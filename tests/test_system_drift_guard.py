@@ -501,3 +501,74 @@ def test_system_drift_guard_marks_guarded_self_reference_loop_ready(monkeypatch,
     assert reasons["system_architecture_autopilot"] == "guarded_paper_architecture_autopilot_self_reference_debt"
     assert reasons["infrastructure_autofix"] == "guarded_paper_infrastructure_autofix_advisory_debt"
     assert reasons["master_infrastructure_supervisor"] == "guarded_paper_infrastructure_self_reference_debt"
+
+
+def test_system_drift_guard_marks_blocked_architecture_self_reference_loop_ready(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    health_root = tmp_path / "governance" / "health"
+    _write_guarded_paper_health_fast(health_root)
+    graph = health_root / "system_architecture_contract_graph_latest.json"
+    autopilot = health_root / "system_architecture_autopilot_latest.json"
+    _write_json(
+        graph,
+        {
+            "overall_status": "blocked",
+            "ok": False,
+            "blocked_node_count": 1,
+            "blocked_edge_count": 0,
+            "authority_violation_count": 0,
+            "blocked_nodes": ["system_drift_guard"],
+            "degraded_nodes": [],
+            "timestamp_utc": "2099-04-23T20:00:00+00:00",
+        },
+    )
+    _write_json(
+        autopilot,
+        {
+            "overall_status": "blocked",
+            "ok": False,
+            "final_graph": {
+                "blocked_node_count": 1,
+                "blocked_edge_count": 0,
+                "blocked_nodes": ["system_drift_guard"],
+            },
+            "repair_plan": [{"node_id": "system_drift_guard"}],
+            "timestamp_utc": "2099-04-23T20:00:00+00:00",
+        },
+    )
+
+    monkeypatch.setattr(
+        src,
+        "surface_specs",
+        lambda _root: [
+            {
+                "name": "system_architecture_contract_graph",
+                "family": "architecture_surface",
+                "artifact_path": graph,
+                "status_key": "overall_status",
+                "ok_key": "ok",
+                "max_age_minutes": 30,
+                "repair_commands": [["./scripts/ops/opsctl.sh", "system-architecture-contract-graph", "--json"]],
+            },
+            {
+                "name": "system_architecture_autopilot",
+                "family": "architecture_surface",
+                "artifact_path": autopilot,
+                "status_key": "overall_status",
+                "ok_key": "ok",
+                "max_age_minutes": 30,
+                "repair_commands": [["./scripts/ops/opsctl.sh", "system-architecture-autopilot", "--json"]],
+            },
+        ],
+    )
+
+    payload = src.build_payload(tmp_path)
+    reasons = {row["name"]: row["recovery_deferred_reason"] for row in payload["surfaces"]}
+
+    assert payload["overall_status"] == "ready"
+    assert payload["metrics"]["blocked_surface_count"] == 0
+    assert payload["metrics"]["degraded_surface_count"] == 0
+    assert reasons["system_architecture_contract_graph"] == "guarded_paper_architecture_self_reference_debt"
+    assert reasons["system_architecture_autopilot"] == "guarded_paper_architecture_autopilot_self_reference_debt"

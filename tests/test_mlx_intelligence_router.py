@@ -43,6 +43,30 @@ def test_mlx_intelligence_router_maps_every_mlx_library_to_a_lane(tmp_path: Path
     )
     _write_json(health / "runtime_throttle_control_latest.json", {"overall_status": "advisory", "throttle_profile": "soft_cap", "memory_pressure_level": "normal"})
     _write_json(health / "quant_model_control_latest.json", {"overall_status": "ready"})
+    _write_json(
+        tmp_path / "config" / "library_candidate_routes_v1.json",
+        {
+            "candidate_libraries": [
+                {
+                    "package": "mlxvm",
+                    "lane": "language_reasoning",
+                    "runtime_family": "mlx",
+                    "priority": "medium",
+                    "reason": "pin model revisions",
+                    "install_window": "maintenance",
+                    "target_functions": ["mlx_model_revision_pinning"],
+                },
+                {
+                    "package": "statsforecast",
+                    "lane": "time_series_forecasting",
+                    "runtime_family": "python",
+                    "priority": "high",
+                    "reason": "forecasting",
+                    "install_window": "off_hours",
+                },
+            ]
+        },
+    )
 
     payload = src.build_payload(tmp_path)
 
@@ -60,6 +84,10 @@ def test_mlx_intelligence_router_maps_every_mlx_library_to_a_lane(tmp_path: Path
     assert payload["recommended_runtime_env"]["MLX_INTELLIGENCE_SCHEDULER_MODE"] == "bounded_direct_stable"
     assert payload["adaptive_reopen_controller"]["enabled"] is True
     assert payload["recommended_runtime_env"]["MLX_INTELLIGENCE_HYSTERESIS_ENABLED"] == "1"
+    assert payload["staged_mlx_candidate_matrix"]["candidate_package_count"] == 1
+    assert payload["staged_mlx_candidate_routes"][0]["package"] == "mlxvm"
+    assert payload["staged_mlx_candidate_routes"][0]["target_functions"] == ["mlx_model_revision_pinning"]
+    assert payload["control_contract"]["staged_mlx_candidate_count"] == 1
 
 
 def test_mlx_intelligence_router_counts_runtime_ahead_packages_as_available(tmp_path: Path) -> None:

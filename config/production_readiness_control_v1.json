@@ -1,0 +1,129 @@
+{
+  "schema_version": 1,
+  "control_policy": "production_grade_controls_before_live_feature_enablement",
+  "default_dependency_activation_batch": "production_core_safe",
+  "live_execution_risk_firewall": {
+    "market_data_only_default": true,
+    "allow_order_execution_env": "ALLOW_ORDER_EXECUTION",
+    "market_data_only_env": "MARKET_DATA_ONLY",
+    "max_single_order_notional": 1000.0,
+    "max_daily_loss": 250.0,
+    "max_order_quantity": 100,
+    "max_quote_age_seconds": 15.0,
+    "max_spread_bps": 75.0,
+    "required_safety_flags": [
+      "governance/health/PAPER_TRADE_LOCK.flag"
+    ],
+    "halt_flags": [
+      "governance/health/OPERATOR_STOP.flag",
+      "governance/health/GLOBAL_TRADING_HALT.flag"
+    ],
+    "order_intent_path": "governance/health/live_order_intents_latest.json",
+    "policy": "reject_by_default_unless_live_execution_is_explicitly_armed_and_every_order_intent_passes_limits"
+  },
+  "deterministic_replay": {
+    "required_artifacts": [
+      "governance/health/golden_replay_regression_latest.json",
+      "governance/health/shadow_replay_diff_latest.json",
+      "governance/health/replay_hash_registry_guard_latest.json"
+    ],
+    "fingerprint_paths": [
+      "config/requirements.lock.txt",
+      "config/library_candidate_routes_v1.json",
+      "config/library_activation_profiles_v1.json",
+      "config/production_readiness_control_v1.json"
+    ],
+    "baseline_path": "governance/health/production_readiness_replay_baseline.json",
+    "policy": "same_inputs_same_replay_hashes_before_promotion"
+  },
+  "observability_redaction": {
+    "enabled_by_default": false,
+    "allowed_export_modes": ["disabled", "local_only", "otlp_local"],
+    "redaction_patterns": [
+      "(?i)bearer\\s+[a-z0-9._-]+",
+      "(?i)(access[_-]?token|refresh[_-]?token|api[_-]?key|secret)\\s*[:=]\\s*['\\\"]?[^,\\s'\\\"]+",
+      "(?i)(account|acct|account_id)\\s*[:=]\\s*['\\\"]?[a-z0-9-]{6,}",
+      "(?i)(order[_-]?id)\\s*[:=]\\s*['\\\"]?[a-z0-9-]{6,}"
+    ],
+    "redaction_samples": [
+      {
+        "name": "bearer_token",
+        "input": "Authorization: Bearer abc123.private-token",
+        "must_not_contain": ["abc123.private-token"]
+      },
+      {
+        "name": "account_id",
+        "input": "account_id=123456789 strategy=intraday",
+        "must_not_contain": ["123456789"]
+      },
+      {
+        "name": "order_id",
+        "input": "order_id=ORD-123456789 symbol=SPY",
+        "must_not_contain": ["ORD-123456789"]
+      }
+    ],
+    "policy": "telemetry_may_not_export_account_tokens_order_ids_or_high_cardinality_labels"
+  },
+  "release_gates": {
+    "required_scripts": [
+      "scripts/ops/dependency_activation_smoke.py",
+      "scripts/ops/library_utilization_router.py",
+      "scripts/ops/mlx_intelligence_router.py",
+      "scripts/ops/promotion_pipeline.py",
+      "scripts/secret_scan.py"
+    ],
+    "required_artifacts": [
+      "governance/health/library_utilization_router_latest.json",
+      "governance/health/mlx_intelligence_router_latest.json",
+      "governance/health/live_readiness_smoke_latest.json",
+      "governance/health/promotion_quality_gate_latest.json"
+    ],
+    "policy": "release_requires_static_security_dependency_router_and_smoke_artifacts"
+  },
+  "data_integrity_gates": {
+    "required_artifacts": [
+      "governance/health/point_in_time_event_store_latest.json",
+      "governance/health/retrain_schema_compatibility_latest.json",
+      "governance/health/jsonl_sql_ingestion_health_schema_violations_latest.json",
+      "governance/health/provider_mesh_latest.json",
+      "governance/health/artifact_freshness_slo_latest.json"
+    ],
+    "policy": "point_in_time_schema_provider_freshness_and_no_lookahead_checks_before_signal_promotion"
+  },
+  "incident_rollback": {
+    "snapshot_paths": [
+      "config/requirements.lock.txt",
+      "config/library_candidate_routes_v1.json",
+      "config/library_activation_profiles_v1.json",
+      "config/production_readiness_control_v1.json",
+      "config/.env.library_utilization_router_override",
+      "config/runtime_profiles/live.lock.txt",
+      "config/runtime_profiles/ops.lock.txt",
+      "config/runtime_profiles/research.lock.txt"
+    ],
+    "promotion_packet_paths": [
+      "governance/champion_challenger/promotion_packet_latest.json",
+      "governance/health/promotion_quality_gate_latest.json",
+      "governance/health/incident_review_packet_latest.json"
+    ],
+    "rollback_manifest_path": "governance/rollback/production_rollback_manifest_latest.json",
+    "rollback_commands": [
+      "./scripts/ops/opsctl.sh global-halt-status --json",
+      "./scripts/ops/opsctl.sh library-utilization-router --apply --json",
+      "./scripts/ops/opsctl.sh live-readiness-smoke --json"
+    ],
+    "policy": "every_promotion_needs_hashable_inputs_artifacts_and_operator_rollback_steps"
+  },
+  "slo_error_budget": {
+    "target_success_ratio": 0.999,
+    "max_single_incident_budget_burn": 0.2,
+    "required_artifacts": [
+      "governance/health/production_quality_slo_guard_latest.json",
+      "governance/health/live_reconciliation_slo_latest.json",
+      "governance/health/paper_reconciliation_slo_latest.json",
+      "governance/health/backpressure_slo_bot_latest.json",
+      "governance/health/artifact_freshness_slo_latest.json"
+    ],
+    "policy": "freeze_feature_promotion_when_reliability_budget_is_burned_or_reconciliation_is_blocked"
+  }
+}

@@ -138,6 +138,37 @@ def test_operator_cockpit_aggregates_upgrade_surfaces(tmp_path: Path) -> None:
     assert payload["surfaces"]["daily_verify_auto_remediation_bot"]["status"] == "pending"
 
 
+def test_operator_cockpit_surfaces_production_readiness_and_soak_controls(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    health = project_root / "governance" / "health"
+    _write_json(
+        health / "production_readiness_control_latest.json",
+        {
+            "overall_status": "guarded",
+            "domain_count": 8,
+            "blocked_domain_count": 0,
+            "live_runtime_promotion_allowed": False,
+        },
+    )
+    _write_json(
+        health / "production_soak_enhancement_latest.json",
+        {
+            "overall_status": "guarded",
+            "control_count": 8,
+            "blocked_control_count": 0,
+        },
+    )
+
+    payload = cockpit_src.build_payload(project_root)
+
+    assert payload["upgrade_lanes"]["production_readiness"]["status"] == "guarded"
+    assert payload["upgrade_lanes"]["production_readiness"]["summary"] == "domains=8 blocked=0 live_allowed=0"
+    assert payload["upgrade_lanes"]["production_soak"]["status"] == "guarded"
+    assert payload["upgrade_lanes"]["production_soak"]["summary"] == "controls=8 blocked=0"
+    assert payload["surfaces"]["production_readiness_control"]["status"] == "guarded"
+    assert payload["surfaces"]["production_soak_enhancement"]["status"] == "guarded"
+
+
 def test_operator_cockpit_keeps_expanded_collection_green_with_adaptive_followups(tmp_path: Path) -> None:
     project_root = tmp_path / "project"
     health = project_root / "governance" / "health"

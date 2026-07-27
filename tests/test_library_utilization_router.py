@@ -143,16 +143,24 @@ def test_library_utilization_router_stages_candidate_libraries_without_missing_r
                     {
                         "package": "pandera",
                         "lane": "dataframe_feature_engine",
+                        "runtime_family": "python",
                         "priority": "high",
                         "reason": "schema checks",
                         "install_window": "maintenance",
+                        "target_surfaces": ["feature_store"],
+                        "target_functions": ["schema_validation"],
+                        "compatibility_notes": ["import smoke first"],
                     },
                     {
-                        "package": "hypothesis",
-                        "lane": "testing_dev_tooling",
+                        "package": "mlxvm",
+                        "lane": "language_reasoning",
+                        "runtime_family": "mlx",
                         "priority": "high",
-                        "reason": "property tests",
+                        "reason": "model pinning",
                         "install_window": "maintenance",
+                        "target_surfaces": ["research_pipeline"],
+                        "target_functions": ["mlx_model_revision_pinning"],
+                        "promotion_gate": "sandbox_model_cache_smoke",
                     },
                 ]
             }
@@ -172,5 +180,44 @@ def test_library_utilization_router_stages_candidate_libraries_without_missing_r
     assert payload["candidate_library_matrix"]["candidate_package_count"] == 2
     assert payload["candidate_library_matrix"]["mapped_candidate_ratio"] == 1.0
     assert candidates["pandera"]["status"] == "candidate_only"
+    assert candidates["pandera"]["runtime_family"] == "python"
+    assert candidates["pandera"]["target_surfaces"] == ["feature_store"]
+    assert candidates["pandera"]["target_functions"] == ["schema_validation"]
+    assert candidates["pandera"]["compatibility_notes"] == ["import smoke first"]
+    assert candidates["pandera"]["activation_profiles"] == ["live", "research"]
+    assert candidates["pandera"]["activation_state"] == "profile_eligible_pending_install"
+    assert candidates["mlxvm"]["runtime_family"] == "mlx"
+    assert candidates["mlxvm"]["promotion_gate"] == "sandbox_model_cache_smoke"
+    assert candidates["mlxvm"]["activation_profiles"] == ["research"]
+    assert payload["candidate_library_matrix"]["runtime_family_counts"] == {"mlx": 1, "python": 1}
+    assert payload["candidate_library_matrix"]["activation_state_counts"] == {"profile_eligible_pending_install": 2}
+    assert payload["candidate_library_matrix"]["activation_profile_to_packages"]["live"] == ["pandera"]
+    assert payload["candidate_library_matrix"]["activation_profile_to_packages"]["research"] == ["mlxvm", "pandera"]
+    assert payload["candidate_library_matrix"]["target_function_to_packages"]["mlx_model_revision_pinning"] == ["mlxvm"]
     assert candidates["pandera"]["soak_policy"] == "do_not_count_candidate_only_as_missing_runtime"
     assert payload["control_contract"]["candidate_add_policy"] == "stage_candidates_without_dependency_mutation_then_install_only_in_maintenance_after_smoke"
+    assert payload["control_contract"]["candidate_activation_state"] == "profile_eligible_is_not_live_enabled_until_installed_smoked_and_feature_gated"
+
+
+def test_library_utilization_router_maps_new_candidate_lanes() -> None:
+    assert src._infer_lane("statsforecast") == "time_series_forecasting"
+    assert src._infer_lane("pyod") == "anomaly_drift_detection"
+    assert src._infer_lane("lancedb") == "vector_memory_retrieval"
+    assert src._infer_lane("aiolimiter") == "provider_rate_limit_cache"
+    assert src._infer_lane("pandas-datareader") == "financial_filings_macro"
+    assert src._infer_lane("sqlglot") == "sql_lineage_contracts"
+    assert src._infer_lane("networkx") == "graph_network_analysis"
+    assert src._infer_lane("lifelines") == "causal_survival_research"
+    assert src._infer_lane("simpy") == "simulation_sensitivity"
+    assert src._infer_lane("deepdiff") == "data_contract_validation"
+    assert src._infer_lane("opentelemetry-sdk") == "telemetry_tracing"
+    assert src._infer_lane("scalene") == "runtime_performance_profiling"
+    assert src._infer_lane("ruff") == "production_quality_gates"
+    assert src._infer_lane("bandit") == "security_supply_chain"
+    assert src._infer_lane("locust") == "load_resilience_testing"
+    assert src._infer_lane("arq") == "queue_job_orchestration"
+    assert src._infer_lane("dynaconf") == "config_release_controls"
+    assert src._infer_lane("aiometer") == "async_flow_control"
+    assert src._infer_lane("rapidfuzz") == "nlp_tokenization_research"
+    assert src._infer_lane("feedparser") == "broker_market_data"
+    assert src._is_mlx_routed("mlxvm") is True

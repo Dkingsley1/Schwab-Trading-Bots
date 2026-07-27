@@ -484,6 +484,8 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
     process_watchdog = _load_json(health_root / "process_watchdog_latest.json")
     soak_readiness = _load_json(health_root / "unattended_soak_readiness_latest.json")
     paper_regression_guard = _load_json(health_root / "runtime_paper_regression_guard_latest.json")
+    production_readiness = _load_json(health_root / "production_readiness_control_latest.json")
+    production_soak = _load_json(health_root / "production_soak_enhancement_latest.json")
     registry = _load_json(project_root / "master_bot_registry.json")
 
     attention = runtime.get("overall", {}).get("attention") if isinstance(runtime.get("overall"), dict) else []
@@ -827,6 +829,25 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
             "status": overall_status,
             "summary": "unified control plane",
         },
+        "production_readiness": {
+            "status": str(production_readiness.get("overall_status") or "missing"),
+            "summary": (
+                f"domains={int(production_readiness.get('domain_count', 0) or 0)} "
+                f"blocked={int(production_readiness.get('blocked_domain_count', 0) or 0)} "
+                f"live_allowed={int(bool(production_readiness.get('live_runtime_promotion_allowed', False)))}"
+                if production_readiness
+                else ""
+            ),
+        },
+        "production_soak": {
+            "status": str(production_soak.get("overall_status") or "missing"),
+            "summary": (
+                f"controls={int(production_soak.get('control_count', 0) or 0)} "
+                f"blocked={int(production_soak.get('blocked_control_count', 0) or 0)}"
+                if production_soak
+                else ""
+            ),
+        },
         "master_infrastructure_supervisor": {
             "status": master_infra_lane_status,
             "summary": (
@@ -1009,6 +1030,8 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
             "paper_execution_calibration": {"status": str(paper_calibration.get("overall_status") or "missing") if paper_calibration else "missing"},
             "daily_verify_auto_remediation_bot": {"status": _paper_soak_managed_status(str(remediation.get("overall_status") or ""), paper_soak_ready=paper_soak_ready)},
             "memory_efficiency_control": {"status": str(memory_efficiency.get("overall_status") or "missing") if memory_efficiency else "missing"},
+            "production_readiness_control": {"status": str(production_readiness.get("overall_status") or "missing") if production_readiness else "missing"},
+            "production_soak_enhancement": {"status": str(production_soak.get("overall_status") or "missing") if production_soak else "missing"},
             "system_self_model": {"status": _paper_soak_managed_status(str(system_self_model.get("overall_status") or "missing") if system_self_model else "missing", paper_soak_ready=paper_soak_ready)},
             "global_killswitch": {"status": "ready" if global_halt_clear else "blocked"},
             "master_infrastructure_supervisor": {"status": master_infra_lane_status if master_infra else "missing"},

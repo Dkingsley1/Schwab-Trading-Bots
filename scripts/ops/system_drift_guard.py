@@ -127,8 +127,23 @@ def _recovery_deferred_reason(spec: dict[str, Any], payload: dict[str, Any], sta
 
     guarded_paper_strict_clear = _guarded_paper_strict_clear_for_spec(spec)
     surface_name = str(spec.get("name") or "").strip()
-    if guarded_paper_strict_clear and status == "degraded" and surface_name == "system_architecture_contract_graph":
+    if guarded_paper_strict_clear and status in {"blocked", "degraded"} and surface_name == "system_architecture_contract_graph":
+        blocked_nodes = {str(item or "").strip() for item in _safe_list(payload.get("blocked_nodes")) if str(item or "").strip()}
         degraded_nodes = {str(item or "").strip() for item in _safe_list(payload.get("degraded_nodes")) if str(item or "").strip()}
+        if (
+            blocked_nodes
+            and blocked_nodes
+            <= {
+                "system_drift_guard",
+                "system_self_model",
+                "master_infrastructure_supervisor",
+                "infrastructure_autofix",
+                "system_architecture_autopilot",
+            }
+            and _safe_int(payload.get("blocked_edge_count"), 0) == 0
+            and _safe_int(payload.get("authority_violation_count"), 0) == 0
+        ):
+            return "guarded_paper_architecture_self_reference_debt"
         if (
             _safe_int(payload.get("blocked_node_count"), 0) == 0
             and _safe_int(payload.get("blocked_edge_count"), 0) == 0
@@ -144,7 +159,7 @@ def _recovery_deferred_reason(spec: dict[str, Any], payload: dict[str, Any], sta
         ):
             return "guarded_paper_architecture_self_reference_debt"
 
-    if guarded_paper_strict_clear and status == "degraded" and surface_name == "system_architecture_autopilot":
+    if guarded_paper_strict_clear and status in {"blocked", "degraded"} and surface_name == "system_architecture_autopilot":
         final_graph = _as_dict(payload.get("final_graph"))
         repair_nodes = {
             str(row.get("node_id") or "").strip()
@@ -152,7 +167,11 @@ def _recovery_deferred_reason(spec: dict[str, Any], payload: dict[str, Any], sta
             if isinstance(row, dict) and str(row.get("node_id") or "").strip()
         }
         if (
-            _safe_int(final_graph.get("blocked_node_count"), 0) == 0
+            (
+                _safe_int(final_graph.get("blocked_node_count"), 0) == 0
+                or set(_safe_list(final_graph.get("blocked_nodes")))
+                <= {"system_drift_guard", "system_self_model", "master_infrastructure_supervisor", "system_architecture_contract_graph"}
+            )
             and _safe_int(final_graph.get("blocked_edge_count"), 0) == 0
             and repair_nodes
             and repair_nodes
