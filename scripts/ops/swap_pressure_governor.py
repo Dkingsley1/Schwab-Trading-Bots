@@ -61,6 +61,7 @@ HEAVY_RESEARCH_PATTERNS = [
     "scripts/build_one_numbers_report.py",
     "scripts/ops/source_verification_report.py",
     "scripts/ops/strategy_inventory_report.py",
+    "scripts/strategy_research_lane.py",
     "scripts/sql_hot_retention.py",
     "scripts/sql_queue_retention.py",
     "scripts/data_retention_policy.py",
@@ -122,7 +123,7 @@ def _thresholds() -> dict[str, float]:
         "restart_candidate_rss_mb": float(os.getenv("SWAP_PRESSURE_RESTART_CANDIDATE_RSS_MB", "512")),
         "reboot_recommend_swap_gb": float(os.getenv("SWAP_PRESSURE_REBOOT_RECOMMEND_GB", "18")),
         "reboot_recommend_persistent_minutes": float(os.getenv("SWAP_PRESSURE_REBOOT_RECOMMEND_MINUTES", "30")),
-        "stale_swap_relief_enabled": float(os.getenv("SWAP_PRESSURE_STALE_SWAP_RELIEF_ENABLED", "0")),
+        "stale_swap_relief_enabled": float(os.getenv("SWAP_PRESSURE_STALE_SWAP_RELIEF_ENABLED", "1")),
         "stale_swap_relief_free_pct": float(os.getenv("SWAP_PRESSURE_STALE_SWAP_RELIEF_FREE_PCT", "85")),
         "stale_swap_relief_compressor_gb": float(os.getenv("SWAP_PRESSURE_STALE_SWAP_RELIEF_COMPRESSOR_GB", "1.0")),
     }

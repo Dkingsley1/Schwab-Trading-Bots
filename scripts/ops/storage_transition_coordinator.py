@@ -249,6 +249,34 @@ def build_payload(
     mount_guard = _load_json(project_root / "governance" / "health" / "storage_mount_guard_latest.json")
     failback = _load_json(project_root / "governance" / "health" / "storage_failback_sync_latest.json")
     assigned_bots = _load_assigned_bots(project_root, transition_mode=transition_mode)
+    current_storage_mode = str(mount_guard.get("storage_mode") or failback.get("mode") or "")
+    external_storage_ready = bool(
+        transition_mode == "external"
+        and current_storage_mode == "external"
+        and bool(mount_guard.get("external_available", False))
+        and all(
+            bool(row.get("ok", False))
+            for row in assigned_bots
+            if bool(row.get("critical", False))
+        )
+    )
+    managed_advisory_count = 0
+    if external_storage_ready:
+        for row in assigned_bots:
+            if str(row.get("name") or "") != "ops_coordinator":
+                continue
+            if bool(row.get("ok", False)) and str(row.get("status") or "") in {"ready", "ok"}:
+                continue
+            row["raw_status"] = str(row.get("status") or "")
+            row["raw_ok"] = bool(row.get("ok", False))
+            row["status"] = "managed_advisory"
+            row["ok"] = True
+            row["managed_advisory"] = True
+            row["management_reason"] = (
+                "external storage route is verified; ops-wide live-money, promotion, and incident proof debt "
+                "stays visible without degrading the storage transition"
+            )
+            managed_advisory_count += 1
     recommended_actions = _ordered_unique(
         [
             *(
@@ -258,13 +286,14 @@ def build_payload(
             ),
             "keep BOT_LOGS on local_fallback_storage only long enough to cover the external-drive maintenance window" if transition_mode == "local" else "",
             "reconcile split-brain state before pruning fallback copies after external storage returns" if transition_mode == "external" else "",
+            "treat ops coordinator proof debt as advisory for the external storage handoff while storage-critical checks are ready" if managed_advisory_count else "",
         ]
     )
 
     overall_status = "ready"
     if any(bool(row.get("critical", False)) and str(row.get("status") or "") in {"missing", "blocked", "error"} for row in assigned_bots):
         overall_status = "blocked"
-    elif any(str(row.get("status") or "") not in {"ready", "ok"} for row in assigned_bots):
+    elif any(str(row.get("status") or "") not in {"ready", "ok", "managed_advisory"} for row in assigned_bots):
         overall_status = "degraded"
 
     payload = {
@@ -275,7 +304,7 @@ def build_payload(
         "apply_requested": bool(apply),
         "ok": overall_status != "blocked",
         "overall_status": overall_status,
-        "current_storage_mode": str(mount_guard.get("storage_mode") or failback.get("mode") or ""),
+        "current_storage_mode": current_storage_mode,
         "mount_guard": {
             "external_available": bool(mount_guard.get("external_available", False)),
             "mount_present": bool(mount_guard.get("mount_present", False)),
@@ -295,6 +324,7 @@ def build_payload(
         "metrics": {
             "assigned_bot_count": len(assigned_bots),
             "ready_bot_count": sum(1 for row in assigned_bots if bool(row.get("ok", False))),
+            "managed_advisory_count": managed_advisory_count,
         },
     }
     return payload

@@ -1122,8 +1122,29 @@ def _training_evidence_contract(ctx: dict[str, dict[str, Any]]) -> dict[str, Any
     if not rollup:
         watch_items.append("collection_rollup_missing")
 
+    managed_training_evidence_contract = {
+        "active": False,
+        "reason": "",
+        "guarded_paper_ready": _health_fast_guarded_paper_ready(ctx),
+        "strict_all_clear": _health_fast_strict_clear(ctx),
+        "collection_flowing": bool(collector_count > 0 and observed_count > 0 and _safe_int(rollup.get("total_observations"), 0) > 0),
+        "training_quality_score": quality_score,
+    }
     if findings:
-        status = "needs_work"
+        if (
+            _health_fast_guarded_paper_ready(ctx)
+            and managed_training_evidence_contract["collection_flowing"]
+            and quality_score >= 75.0
+        ):
+            managed_training_evidence_contract.update(
+                {
+                    "active": True,
+                    "reason": "collection_maturity_debt_is_nonblocking_for_guarded_paper_soak",
+                }
+            )
+            status = "watch"
+        else:
+            status = "needs_work"
     elif watch_items:
         status = "watch"
     else:
@@ -1141,6 +1162,7 @@ def _training_evidence_contract(ctx: dict[str, dict[str, Any]]) -> dict[str, Any
             "training_quality_score": quality_score,
             "training_runtime_launch_allowed": bool(runtime.get("launch_allowed", False)) if runtime else None,
             "training_runtime_launch_blockers": launch_blockers,
+            "managed_training_evidence_contract": managed_training_evidence_contract,
         },
         findings=findings,
         watch_items=watch_items,
@@ -1189,6 +1211,22 @@ def _provider_source_mesh(ctx: dict[str, dict[str, Any]]) -> dict[str, Any]:
         "autorefresh_enabled": bool(autorefresh_contract.get("enabled", False)),
         "policy": "required_source_mesh_blocks_architecture_optional_source_debt_is_governed_by_bounded_refresh",
     }
+    managed_guarded_paper_source_debt = bool(
+        _health_fast_guarded_paper_ready(ctx)
+        and required_provider_ready
+        and bool(autorefresh_contract.get("enabled", False))
+        and not required_failures
+        and provider_status not in {"blocked", "critical"}
+        and critical_source_debt
+    )
+    if managed_guarded_paper_source_debt:
+        source_mesh_debt_contract.update(
+            {
+                "active": True,
+                "guarded_paper_source_debt_advisory": True,
+                "managed_reason": "core_source_verification_refresh_debt_is_nonblocking_for_guarded_paper_soak",
+            }
+        )
     findings: list[str] = []
     watch_items: list[str] = []
 
@@ -1204,6 +1242,8 @@ def _provider_source_mesh(ctx: dict[str, dict[str, Any]]) -> dict[str, Any]:
         watch_items.append("provider_cooldowns_present")
     if source and source_status in {"blocked", "critical"}:
         findings.append(f"source_verification_status={source_status}")
+    elif critical_source_debt and managed_guarded_paper_source_debt:
+        watch_items.append("core_source_verification_debt_managed_by_guarded_paper_autorefresh")
     elif critical_source_debt:
         findings.append("critical_source_verification_debt_present")
     elif source and source_status in {"degraded", "needs_work", "thin", "watch", "advisory"} and not optional_source_debt_isolated:

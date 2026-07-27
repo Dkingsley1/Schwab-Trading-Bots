@@ -418,9 +418,19 @@ def _memory_pressure_level(resource_guard: dict[str, Any], memory_efficiency: di
     efficiency_status = str(memory_efficiency.get("overall_status") or "").strip().lower()
     efficiency_snapshot = memory_efficiency.get("memory_snapshot") if isinstance(memory_efficiency.get("memory_snapshot"), dict) else {}
     cotenant = memory_efficiency.get("cotenant_awareness") if isinstance(memory_efficiency.get("cotenant_awareness"), dict) else {}
+    compression_relief = (
+        memory_efficiency.get("compressed_memory_relief_contract")
+        if isinstance(memory_efficiency.get("compressed_memory_relief_contract"), dict)
+        else {}
+    )
+    memory_truth = (
+        memory_efficiency.get("memory_truth_reconciliation")
+        if isinstance(memory_efficiency.get("memory_truth_reconciliation"), dict)
+        else {}
+    )
     efficiency_state = str(efficiency_snapshot.get("memory_pressure_state") or "").strip().lower()
     efficiency_kind = str(efficiency_snapshot.get("memory_pressure_kind") or "").strip().lower()
-    swap_used_gb = _safe_float(resource_guard.get("swap_used_gb"), 0.0)
+    raw_swap_used_gb = _safe_float(resource_guard.get("swap_used_gb"), 0.0)
     efficiency_swap_used_gb = _safe_float(efficiency_snapshot.get("swap_used_gb"), 0.0)
     efficiency_free_pct = _safe_float(efficiency_snapshot.get("memory_free_pct"), 0.0)
     efficiency_compressor_gb = _safe_float(efficiency_snapshot.get("compressor_gb"), 0.0)
@@ -437,10 +447,20 @@ def _memory_pressure_level(resource_guard: dict[str, Any], memory_efficiency: di
         and (efficiency_free_pct <= 0.0 or efficiency_free_pct >= 50.0)
         and 0.0 < efficiency_compressor_gb < 14.0
     )
+    managed_compression_relief = bool(compression_relief.get("managed", False))
+    stale_swap_reconciled = bool(memory_truth.get("stale_swap_relief", False)) or managed_compression_relief
+    swap_used_gb = (
+        efficiency_swap_used_gb
+        if stale_swap_reconciled and efficiency_swap_used_gb + 0.5 < raw_swap_used_gb
+        else raw_swap_used_gb
+    )
     effective_memory_reasons = [
         reason
         for reason in memory_reasons
-        if not (reason == "compressed_memory_high" and allocation_only_compression)
+        if not (
+            reason in {"compressed_memory_high", "compressed_memory_critical"}
+            and (allocation_only_compression or managed_compression_relief)
+        )
     ]
     memory_clear_by_efficiency = bool(
         efficiency_state in {"green", "none", "normal", "clear"}
@@ -1187,6 +1207,33 @@ def _soft_cap_low_pressure_advisory(
         and not thermal_warning_active
         and not performance_warning_active
     )
+    full_force_paper_research_mix_guarded_advisory = bool(
+        overall_status == "degraded"
+        and throttle_profile in {"soft_cap", "sustain"}
+        and compute_pressure_level in {"normal", "elevated"}
+        and memory_pressure_level == "normal"
+        and storage_ready_for_runtime_advisory
+        and bool(live_read_only)
+        and paper_execution_allowed
+        and not paper_execution_paused
+        and paper_ramp_armed
+        and bool(host_pressure_attribution.get("paper_execution_hot", False))
+        and bool(host_pressure_attribution.get("paper_hot_low_priority", False))
+        and bool(host_pressure_attribution.get("research_training_hot", False))
+        and bool(host_pressure_attribution.get("research_hot_low_priority", False))
+        and paper_cpu <= 125.0
+        and research_cpu <= 220.0
+        and bot_owned_cpu <= 340.0
+        and support_cpu <= 80.0
+        and protected_cpu < 20.0
+        and operator_cpu < 45.0
+        and saturation_score < 75.0
+        and not bool(host_pressure_attribution.get("support_jobs_hot", False))
+        and not bool(host_pressure_attribution.get("storage_writer_hot", False))
+        and not protected_work_hot
+        and not thermal_warning_active
+        and not performance_warning_active
+    )
     bounded_bot_owned_runtime_guarded_ready = bool(
         overall_status == "degraded"
         and throttle_profile in {"soft_cap", "sustain"}
@@ -1304,6 +1351,7 @@ def _soft_cap_low_pressure_advisory(
             or external_cotenant_guarded
             or external_high_compute_guarded
             or paper_lane_low_priority_guarded
+            or full_force_paper_research_mix_guarded_advisory
             or storage_writer_cooling_guarded_advisory
             or runtime_ready_guarded
             or storage_writer_cooling_guarded_ready
@@ -1339,6 +1387,7 @@ def _soft_cap_low_pressure_advisory(
             or research_low_priority_guarded
             or operator_observability_high_compute_guarded
             or paper_lane_low_priority_guarded
+            or full_force_paper_research_mix_guarded_advisory
             or storage_writer_cooling_guarded_advisory
             or external_cotenant_guarded
             or external_high_compute_guarded
@@ -1405,6 +1454,8 @@ def _soft_cap_low_pressure_advisory(
         reason = "research_training_pressure_is_already_niced_and_guarded_advisory"
     elif active and paper_lane_low_priority_guarded:
         reason = "low_priority_paper_execution_pressure_is_guarded_advisory"
+    elif active and full_force_paper_research_mix_guarded_advisory:
+        reason = "full_force_paper_and_research_pressure_is_soak_guarded_advisory"
     elif active and storage_writer_cooling_guarded_advisory:
         reason = "bounded_storage_writer_after_green_backpressure_is_guarded_advisory"
     elif active and protected_work_guarded:
@@ -1497,6 +1548,7 @@ def _soft_cap_low_pressure_advisory(
             "bounded_writer_with_paper_shadow_guarded_ready": bounded_writer_with_paper_shadow_guarded_ready,
             "full_force_paper_ramp_guarded_ready": full_force_paper_ramp_guarded_ready,
             "paper_lane_low_priority_guarded": paper_lane_low_priority_guarded,
+            "full_force_paper_research_mix_guarded_advisory": full_force_paper_research_mix_guarded_advisory,
             "paper_ramp_memory_guarded": paper_ramp_memory_guarded,
             "bounded_bot_owned_runtime_guarded_ready": bounded_bot_owned_runtime_guarded_ready,
             "bounded_writer_support_protected_guarded_ready": bounded_writer_support_protected_guarded_ready,
@@ -1626,6 +1678,7 @@ def _paper_capacity_contract(
             "support_pressure_is_already_niced_and_guarded_advisory",
             "support_pressure_is_throttle_pending_guarded_advisory",
             "research_training_pressure_is_already_niced_and_guarded_advisory",
+            "full_force_paper_and_research_pressure_is_soak_guarded_advisory",
         }
         and (
             bool(advisory_measurements.get("external_high_compute_guarded", False))
@@ -1640,6 +1693,7 @@ def _paper_capacity_contract(
             or bool(advisory_measurements.get("support_low_priority_guarded", False))
             or bool(advisory_measurements.get("support_throttle_pending_guarded", False))
             or bool(advisory_measurements.get("research_low_priority_guarded", False))
+            or bool(advisory_measurements.get("full_force_paper_research_mix_guarded_advisory", False))
             or bool(advisory_measurements.get("operator_observability_high_compute_guarded", False))
         )
         and bool(advisory_measurements.get("storage_ready_for_runtime_advisory", False))
@@ -2179,37 +2233,52 @@ def _sql_overrides_for_runtime_pressure(
             return _idle_sql_writer_cooling_overrides(throttle_profile)
         return {}
     concentrated_core = bool(sql_writer_coordination.get("concentrated_core_drain", False))
-    if throttle_profile in {"protect_live", "sustain", "soft_cap"} and not _storage_drain_requires_acceleration(
+    if not _storage_drain_requires_acceleration(
         storage_pressure,
         sql_writer_coordination,
     ):
-        if writer_worker_budget is not None and _safe_int(writer_worker_budget, 0) > 1:
-            return _drain_friendly_sql_overrides(
-                concentrated_core=concentrated_core,
-                writer_worker_budget=writer_worker_budget,
-                max_writer_lanes=max_writer_lanes,
-            )
-        return {
-            "SQL_LINK_SERVICE_HOST_COOLING_ACTIVE": "1",
-            "BACKLOG_PCORE_PREPROCESS_WORKERS": "1",
-            "SQL_LINK_SERVICE_PREPROCESS_WORKERS": "1",
-            "SQL_LINK_SERVICE_SHARD_WRITER_LANES": "1",
-            "SQL_LINK_SERVICE_MAX_SHARD_WRITER_LANES": "1",
-            "SQL_LINK_SERVICE_PROGRESS_HEARTBEAT_SECONDS": "20",
-            "SQL_LINK_SERVICE_SMART_SHARD_PARALLELISM": "1",
-            "SQL_LINK_SERVICE_SENTINEL_SHARD_LANE_CAP": "1",
-            "SQL_LINK_SERVICE_HOT_SHARD_LANE_CAP": "1",
-            "SQL_LINK_SERVICE_WARM_SHARD_LANE_CAP": "1",
-            "SQL_LINK_SERVICE_COLD_SHARD_LANE_CAP": "1",
-            "SQL_LINK_SERVICE_SHARD_GOVERNANCE_MAX_FILES": "8",
-            "SQL_LINK_SERVICE_SHARD_GOVERNANCE_MAX_BYTES_PER_FILE": str(128 * 1024 * 1024),
-            "SQL_LINK_SERVICE_SHARD_GOVERNANCE_SQLITE_BATCH_MAX_BYTES": str(12 * 1024 * 1024),
-            "SQL_LINK_SERVICE_SHARD_GOVERNANCE_TIMEOUT_SECONDS": "180",
-            "INGEST_HOST_LOAD_SOFT_CAP": "6.0",
-            "INGEST_HOST_LOAD_SLEEP_SECONDS": "0.50",
-            "INGEST_FLUSH_SLEEP_SECONDS": "0.05",
-            "INGEST_FILE_SLEEP_SECONDS": "0.25",
-        }
+        coordination_pending = max(
+            _safe_int(sql_writer_coordination.get("total_pending_lines"), 0),
+            _safe_int(sql_writer_coordination.get("core_pending_lines"), 0),
+        )
+        clean_backlog = bool(
+            _safe_int(storage_pressure.get("total_pending_lines"), 0) <= 0
+            and _safe_int(storage_pressure.get("core_pending_lines"), 0) <= 0
+            and coordination_pending <= 25
+            and _safe_float(storage_pressure.get("pressure_index"), 0.0) <= 0.05
+            and _safe_float(storage_pressure.get("oldest_pending_age_seconds"), 0.0) <= 30.0
+        )
+        if str(throttle_profile or "").strip().lower() == "protect_live":
+            return {
+                "SQL_LINK_SERVICE_HOST_COOLING_ACTIVE": "1",
+                "BACKLOG_PCORE_PREPROCESS_WORKERS": "1",
+                "SQL_LINK_SERVICE_PREPROCESS_WORKERS": "1",
+                "SQL_LINK_SERVICE_SHARD_WRITER_LANES": "1",
+                "SQL_LINK_SERVICE_MAX_SHARD_WRITER_LANES": "1",
+                "SQL_LINK_SERVICE_PROGRESS_HEARTBEAT_SECONDS": "20",
+                "SQL_LINK_SERVICE_SMART_SHARD_PARALLELISM": "1",
+                "SQL_LINK_SERVICE_SENTINEL_SHARD_LANE_CAP": "1",
+                "SQL_LINK_SERVICE_HOT_SHARD_LANE_CAP": "1",
+                "SQL_LINK_SERVICE_WARM_SHARD_LANE_CAP": "1",
+                "SQL_LINK_SERVICE_COLD_SHARD_LANE_CAP": "1",
+                "SQL_LINK_SERVICE_SHARD_GOVERNANCE_MAX_FILES": "8",
+                "SQL_LINK_SERVICE_SHARD_GOVERNANCE_MAX_BYTES_PER_FILE": str(128 * 1024 * 1024),
+                "SQL_LINK_SERVICE_SHARD_GOVERNANCE_SQLITE_BATCH_MAX_BYTES": str(12 * 1024 * 1024),
+                "SQL_LINK_SERVICE_SHARD_GOVERNANCE_TIMEOUT_SECONDS": "180",
+                "INGEST_HOST_LOAD_SOFT_CAP": "6.0",
+                "INGEST_HOST_LOAD_SLEEP_SECONDS": "0.50",
+                "INGEST_FLUSH_SLEEP_SECONDS": "0.05",
+                "INGEST_FILE_SLEEP_SECONDS": "0.25",
+            }
+        if clean_backlog and str(throttle_profile or "").strip().lower() in {"protect_live", "sustain", "soft_cap"}:
+            return _idle_sql_writer_cooling_overrides(throttle_profile)
+        overrides = _drain_friendly_sql_overrides(
+            concentrated_core=concentrated_core,
+            writer_worker_budget=1,
+            max_writer_lanes=1,
+        )
+        overrides["SQL_LINK_SERVICE_HOST_COOLING_ACTIVE"] = "1"
+        return overrides
     return _drain_friendly_sql_overrides(
         concentrated_core=concentrated_core,
         writer_worker_budget=writer_worker_budget,
@@ -2894,6 +2963,27 @@ def _support_maintenance_pause_requested(payload: dict[str, Any]) -> tuple[bool,
     return False, "support_maintenance_ready"
 
 
+def _support_pause_exempt_for_storage_recovery(row: dict[str, Any], payload: dict[str, Any]) -> bool:
+    command = str(row.get("command") or "")
+    storage_recovery_markers = {
+        "scripts/ops/storage_backpressure_autopilot.py",
+        "scripts/ops/ingestion_storage_governor.py",
+        "scripts/ops/sql_link_shard_manager.py",
+        "scripts/ops/sql_link_writer_service.py",
+        "scripts/link_jsonl_to_sql.py",
+    }
+    if not any(marker in command for marker in storage_recovery_markers):
+        return False
+    runtime_snapshot = payload.get("runtime_snapshot") if isinstance(payload.get("runtime_snapshot"), dict) else {}
+    storage_pressure = runtime_snapshot.get("storage_pressure") if isinstance(runtime_snapshot.get("storage_pressure"), dict) else {}
+    storage_stabilization = payload.get("storage_stabilization") if isinstance(payload.get("storage_stabilization"), dict) else {}
+    return bool(
+        bool(storage_stabilization.get("drain_friendly_sql_required", False))
+        or _safe_float(storage_pressure.get("pressure_index"), 0.0) >= 0.20
+        or _safe_int(storage_pressure.get("total_pending_lines"), 0) > 0
+    )
+
+
 def _apply_support_maintenance_pause(
     project_root: Path,
     candidates: list[dict[str, Any]],
@@ -2915,6 +3005,7 @@ def _apply_support_maintenance_pause(
             if str(row.get("category") or "") == "support_maintenance"
             and _safe_int(row.get("pid"), 0) > 0
             and _safe_float(row.get("cpu_percent"), 0.0) >= APPLY_CPU_THRESHOLD
+            and not _support_pause_exempt_for_storage_recovery(row, payload)
         ]
         pause_limit = max(1, _safe_int(os.getenv("RUNTIME_SUPPORT_MAINTENANCE_PAUSE_LIMIT", "2"), 2))
         for row in eligible[:pause_limit]:
@@ -4988,7 +5079,7 @@ def main() -> int:
         "registry_path": str(Path(args.registry).expanduser()),
     }
     if args.apply:
-        payload["apply_result"] = apply_runtime_guard(
+        apply_result = apply_runtime_guard(
             project_root,
             payload,
             override_path=Path(args.override_file).expanduser(),
@@ -4998,6 +5089,8 @@ def main() -> int:
             allow_source_registry_write=args.allow_source_registry_write,
             max_renice_processes=args.max_renice_processes,
         )
+        payload = build_payload(project_root)
+        payload["apply_result"] = apply_result
         payload["controller_contract"]["mode"] = "applied"
     out_path = Path(args.out_file).expanduser()
     write_payload(out_path, payload)

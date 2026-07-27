@@ -110,6 +110,60 @@ def test_backlog_organizer_ready_when_gates_are_clear(tmp_path: Path) -> None:
     assert payload["ok"] is True
 
 
+def test_backlog_organizer_keeps_green_paper_soak_lanes_advisory(tmp_path: Path) -> None:
+    _write_json(tmp_path / "master_bot_registry.json", {"sub_bots": []})
+    health = tmp_path / "governance" / "health"
+    _write_json(
+        health / "health_fast_latest.json",
+        {
+            "strict_all_clear": True,
+            "operational_readiness": {
+                "guarded_paper": {"ok": True, "status": "ready", "blockers": []},
+                "live_execution": {"ok": False, "status": "blocked_read_only"},
+            },
+        },
+    )
+    _write_json(health / "unattended_soak_readiness_latest.json", {"overall_status": "ready", "ok": True})
+    _write_json(health / "runtime_paper_regression_guard_latest.json", {"overall_status": "ready", "ok": True})
+    _write_json(health / "runtime_throttle_control_latest.json", {"overall_status": "ready"})
+    _write_json(health / "expansion_capacity_planner_latest.json", {"capacity_contract": {"rollout_mode": "collection_only_wave_allowed"}})
+    _write_json(health / "new_bot_admission_guard_latest.json", {"candidate_bot_count": 0, "blocking_candidate_count": 0})
+    _write_json(health / "runtime_gate_dashboard_latest.json", {"overall": {"status": "ok", "ok": True, "attention": []}})
+    _write_json(health / "auth_lease_manager_latest.json", {"overall_status": "ready"})
+    _write_json(health / "training_quality_control_latest.json", {"overall_status": "blocked"})
+    _write_json(health / "bot_quality_autopilot_latest.json", {"overall_status": "blocked"})
+    _write_json(health / "live_runtime_separation_control_latest.json", {"overall_status": "degraded"})
+    _write_json(
+        health / "ingestion_storage_control_latest.json",
+        {
+            "overall_status": "ready",
+            "pressure_index": 0.18,
+            "backpressure": {
+                "total_pending_lines": 9000,
+                "estimated_total_drain_minutes": 5000.0,
+                "raw_live": {
+                    "core_pending_lines": 2000,
+                    "total_pending_lines": 9000,
+                    "oldest_pending_age_seconds": 0,
+                },
+            },
+            "continuous_run_soak_contract": {"soak_ready": True, "blockers": []},
+        },
+    )
+    _write_json(health / "backpressure_drainer_fleet_latest.json", {"overall_status": "handoff_requested", "ready_drainer_count": 7})
+
+    payload = src.build_payload(tmp_path)
+    lanes = {row["lane_id"]: row for row in payload["lanes"]}
+
+    assert payload["overall_status"] == "ready"
+    assert payload["ok"] is True
+    assert payload["summary"]["guarded_paper_soak_green"] is True
+    assert lanes["promotion_training_quality"]["status"] == "advisory"
+    assert lanes["storage_backlog"]["status"] == "advisory"
+    assert lanes["drainer_self_accommodation"]["status"] == "advisory"
+    assert lanes["auth_runtime_separation"]["status"] == "advisory"
+
+
 def test_backlog_organizer_allocates_drainer_self_accommodation_lane(tmp_path: Path) -> None:
     _write_json(tmp_path / "master_bot_registry.json", {"sub_bots": []})
     health = tmp_path / "governance" / "health"

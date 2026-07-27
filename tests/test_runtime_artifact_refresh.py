@@ -118,6 +118,71 @@ def test_runtime_artifact_refresh_treats_managed_production_locks_as_ready(tmp_p
     assert [row["status"] for row in payload["steps"]] == ["ready_locked", "ready_seeded", "ready_seeded"]
 
 
+def test_runtime_artifact_refresh_treats_protective_profitability_control_as_ready(tmp_path: Path) -> None:
+    health = tmp_path / "governance" / "health"
+    specs = [
+        {"name": "paper_profitability_control", "payload_path": health / "paper_profitability_control_latest.json", "cmd": ["paper-profit"]},
+    ]
+
+    def runner(spec: dict, project_root: Path) -> dict:
+        payload = {
+            "ok": True,
+            "overall_status": "protective_tightening",
+            "controlled_profitability_grade": "A+",
+            "profitability_display_grade": "A+ controlled / D raw",
+            "raw_profitability_grade": "D",
+        }
+        _write_json(Path(spec["payload_path"]), payload)
+        return {"cmd": list(spec["cmd"]), "rc": 0, "payload": payload, "stdout_tail": "", "stderr_tail": "", "duration_ms": 1.0}
+
+    payload = runtime_artifact_refresh.build_payload(tmp_path, specs=specs, runner=runner)
+
+    assert payload["overall_status"] == "ready"
+    assert payload["degraded_step_count"] == 0
+    assert payload["steps"][0]["status"] == "ready_protective"
+    assert payload["steps"][0]["payload_summary"]["raw_profitability_grade"] == "D"
+
+
+def test_runtime_artifact_refresh_tracks_paper_soak_proof_debt_as_managed(tmp_path: Path) -> None:
+    health = tmp_path / "governance" / "health"
+    _write_json(
+        health / "unattended_soak_readiness_latest.json",
+        {"ok": True, "overall_status": "ready", "safe_to_leave_unattended": True},
+    )
+    _write_json(
+        health / "runtime_paper_regression_guard_latest.json",
+        {"ok": True, "overall_status": "ready"},
+    )
+    specs = [
+        {"name": "training_quality_control", "payload_path": health / "training_quality_control_latest.json", "cmd": ["training"]},
+        {"name": "paper_execution_truth", "payload_path": health / "paper_execution_truth_layer_latest.json", "cmd": ["truth"]},
+        {"name": "promotion_packet_builder", "payload_path": tmp_path / "governance" / "champion_challenger" / "promotion_packet_latest.json", "cmd": ["packet"]},
+        {"name": "canary_rollout_guard", "payload_path": health / "canary_rollout_latest.json", "cmd": ["canary"], "optional": True},
+    ]
+
+    def runner(spec: dict, project_root: Path) -> dict:
+        if spec["name"] == "canary_rollout_guard":
+            return {"cmd": list(spec["cmd"]), "rc": 124, "payload": {}, "stdout_tail": "", "stderr_tail": "timeout", "duration_ms": 1.0}
+        if spec["name"] == "promotion_packet_builder":
+            payload = {"ok": False, "committee_packet_seed_ready": True, "signing_material_ready": True}
+            _write_json(Path(spec["payload_path"]), payload)
+            return {"cmd": list(spec["cmd"]), "rc": 2, "payload": payload, "stdout_tail": "", "stderr_tail": "", "duration_ms": 1.0}
+        payload = {"ok": False, "overall_status": "blocked", "failed_checks": ["future_live_money_proof"]}
+        _write_json(Path(spec["payload_path"]), payload)
+        return {"cmd": list(spec["cmd"]), "rc": 2, "payload": payload, "stdout_tail": "", "stderr_tail": "", "duration_ms": 1.0}
+
+    payload = runtime_artifact_refresh.build_payload(tmp_path, specs=specs, runner=runner)
+
+    assert payload["overall_status"] == "ready"
+    assert payload["managed_paper_soak_step_count"] == 4
+    assert [row["status"] for row in payload["steps"]] == [
+        "managed_paper_soak",
+        "managed_paper_soak",
+        "managed_paper_soak",
+        "managed_paper_soak",
+    ]
+
+
 def test_runtime_artifact_refresh_step_specs_include_training_storage_and_hardening_contracts(tmp_path: Path) -> None:
     specs = runtime_artifact_refresh._step_specs(tmp_path)
     names = [row["name"] for row in specs]

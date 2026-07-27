@@ -378,32 +378,44 @@ def promote_paper_roster(
 
 def _memory_gate(memory: dict[str, Any]) -> dict[str, Any]:
     snapshot = memory.get("memory_snapshot") if isinstance(memory.get("memory_snapshot"), dict) else {}
+    relief = (
+        memory.get("compressed_memory_relief_contract")
+        if isinstance(memory.get("compressed_memory_relief_contract"), dict)
+        else {}
+    )
+    relief_managed = bool(
+        relief.get("managed", False)
+        and relief.get("pressure_clear", False)
+        and relief.get("storage_clear", False)
+        and relief.get("compressor_bounded", False)
+    )
     compressed_store_gb = _safe_float(snapshot.get("compressed_store_gb"), 0.0)
     compressor_gb = _safe_float(snapshot.get("compressor_gb"), 0.0)
     swap_used_gb = _safe_float(snapshot.get("swap_used_gb"), 0.0)
     free_pct = _safe_float(snapshot.get("memory_free_pct"), 100.0)
     status = str(memory.get("overall_status") or "missing").strip().lower()
     recommended_profile = str(memory.get("recommended_profile") or "").strip().lower()
+    compression_hard = bool((compressed_store_gb >= 28.0 or compressor_gb >= 16.0) and not relief_managed)
     hard_block = bool(
         status == "blocked"
-        or compressed_store_gb >= 28.0
-        or compressor_gb >= 16.0
+        or compression_hard
         or swap_used_gb >= 12.0
         or free_pct < 12.0
     )
     advisory = bool(
-        (compressed_store_gb >= 18.0 or compressor_gb >= 9.0 or swap_used_gb >= 4.0)
+        (relief_managed or compressed_store_gb >= 18.0 or compressor_gb >= 9.0 or swap_used_gb >= 4.0)
         and not hard_block
     )
     return {
         "ok": not hard_block,
-        "status": "blocked" if hard_block else ("advisory" if advisory else "ready"),
+        "status": "blocked" if hard_block else ("managed_memory_advisory" if relief_managed else "advisory" if advisory else "ready"),
         "overall_status": status,
         "recommended_profile": recommended_profile,
         "compressed_store_gb": compressed_store_gb,
         "compressor_gb": compressor_gb,
         "swap_used_gb": swap_used_gb,
         "memory_free_pct": free_pct,
+        "compressed_memory_relief_managed": relief_managed,
     }
 
 
@@ -450,13 +462,33 @@ def _overlay_only_storage_relief(backpressure: dict[str, Any]) -> dict[str, Any]
     }
 
 
-def _storage_gate(storage: dict[str, Any]) -> dict[str, Any]:
+def _managed_stateful_sql_storage_relief(memory: dict[str, Any]) -> dict[str, Any]:
+    snapshot = memory.get("storage_snapshot") if isinstance(memory.get("storage_snapshot"), dict) else {}
+    relief = (
+        snapshot.get("stateful_sql_soft_quota_relief")
+        if isinstance(snapshot.get("stateful_sql_soft_quota_relief"), dict)
+        else {}
+    )
+    if relief:
+        return relief
+    compressed = (
+        memory.get("compressed_memory_relief_contract")
+        if isinstance(memory.get("compressed_memory_relief_contract"), dict)
+        else {}
+    )
+    nested = compressed.get("stateful_sql_soft_quota_relief") if isinstance(compressed.get("stateful_sql_soft_quota_relief"), dict) else {}
+    return nested
+
+
+def _storage_gate(storage: dict[str, Any], memory: dict[str, Any] | None = None) -> dict[str, Any]:
     backpressure = storage.get("backpressure") if isinstance(storage.get("backpressure"), dict) else {}
     severity = str(storage.get("severity") or storage.get("overall_status") or "missing").strip().lower()
     pressure_index = _safe_float(storage.get("pressure_index"), 0.0)
     core_pending = _safe_int(backpressure.get("core_pending_lines"), 0)
     total_pending = _safe_int(backpressure.get("total_pending_lines"), 0)
     overlay_relief = _overlay_only_storage_relief(backpressure)
+    soft_quota_relief = _managed_stateful_sql_storage_relief(memory or {})
+    soft_quota_managed = bool(soft_quota_relief.get("managed", False))
     pressure_advisory = bool(
         severity in {"stable", "ready", ""}
         and pressure_index >= 0.25
@@ -466,6 +498,7 @@ def _storage_gate(storage: dict[str, Any]) -> dict[str, Any]:
     )
     hard_block = bool(
         not bool(overlay_relief.get("active", False))
+        and not soft_quota_managed
         and (
             severity in {"high", "critical", "blocked"}
             or pressure_index >= 0.50
@@ -474,7 +507,17 @@ def _storage_gate(storage: dict[str, Any]) -> dict[str, Any]:
         )
         and not pressure_advisory
     )
-    status = "blocked" if hard_block else ("overlay_drain_advisory" if bool(overlay_relief.get("active", False)) else ("storage_pressure_advisory" if pressure_advisory else "ready"))
+    status = (
+        "blocked"
+        if hard_block
+        else "stateful_sql_soft_quota_advisory"
+        if soft_quota_managed
+        else "overlay_drain_advisory"
+        if bool(overlay_relief.get("active", False))
+        else "storage_pressure_advisory"
+        if pressure_advisory
+        else "ready"
+    )
     return {
         "ok": not hard_block,
         "status": status,
@@ -486,6 +529,7 @@ def _storage_gate(storage: dict[str, Any]) -> dict[str, Any]:
         "core_pending_lines": core_pending,
         "total_pending_lines": total_pending,
         "overlay_only_relief": overlay_relief,
+        "stateful_sql_soft_quota_relief": soft_quota_relief,
     }
 
 
@@ -958,7 +1002,7 @@ def build_payload(
         },
         "global_halt": _halt_gate(project_root, global_halt, data_plane, plumbing),
         "memory": _memory_gate(memory),
-        "storage": _storage_gate(storage),
+        "storage": _storage_gate(storage, memory),
         "runtime": _runtime_gate(runtime, registry_counts),
     }
     blockers = _blocker_list(gates)

@@ -36,6 +36,7 @@ COMMAND_TIMEOUT_CAPS = {
 }
 MACRO_CROSSCHECK_STALE_DEPENDENCIES = {"public_macro_feeds", "market_micro_context"}
 COMMAND_MARKER_SOURCE_IDS = {
+    "fx-market-sync": "fx_market_context",
     "macro-crosscheck": "macro_crossstack",
     "macro-context-sync": "public_macro_feeds",
     "market-micro-sync": "market_micro_context",
@@ -271,6 +272,11 @@ def build_payload(
         command for command in unique_commands if not any(str(part) == "source-verification" for part in command)
     ]
     degraded_sources = [str(item) for item in (before.get("degraded_artifacts") or []) if str(item)]
+    source_rows = {
+        str(row.get("source_id") or ""): row
+        for row in (before.get("sources") if isinstance(before.get("sources"), list) else [])
+        if isinstance(row, dict) and str(row.get("source_id") or "").strip()
+    }
     source_by_command: dict[tuple[str, ...], str] = {}
     for source_id in degraded_sources:
         try:
@@ -295,6 +301,24 @@ def build_payload(
                     "reason": "dependent_stale_sources_waiting",
                     "source_id": source_id,
                     "stale_dependencies": sorted(stale_sources.intersection(MACRO_CROSSCHECK_STALE_DEPENDENCIES)),
+                    "policy": policy,
+                }
+            )
+            continue
+        source_row = source_rows.get(source_id, {}) if source_id else {}
+        if (
+            source_id
+            and stale_sources
+            and source_id not in stale_sources
+            and bool(source_row.get("fresh", False))
+            and bool(source_row.get("ok", False))
+        ):
+            skipped.append(
+                {
+                    "command": command,
+                    "reason": "fresh_ok_source_confidence_debt_waiting",
+                    "source_id": source_id,
+                    "waiting_stale_sources": sorted(stale_sources),
                     "policy": policy,
                 }
             )

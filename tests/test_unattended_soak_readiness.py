@@ -136,6 +136,47 @@ def test_unattended_soak_readiness_blocks_storage_margin_and_host_sleep(tmp_path
     assert payload["safe_to_leave_unattended"] is False
 
 
+def test_unattended_soak_readiness_accepts_approved_cold_archive_spillover(tmp_path: Path, monkeypatch) -> None:
+    project_root = tmp_path / "project"
+    external_root = tmp_path / "BOT_LOGS" / "schwab_trading_bot"
+    external_root.mkdir(parents=True)
+    _ready_artifacts(project_root, external_root)
+    health = project_root / "governance" / "health"
+    _write_json(
+        health / "storage_retention_unison_latest.json",
+        {
+            "timestamp_utc": src.iso_now(),
+            "continuous_run_contract": {
+                "status": "watch",
+                "ready": True,
+                "pressure_free_gb": 64.0,
+                "safety_buffer_gb": 32.0,
+                "effective_daily_growth_gb": 0.5,
+                "cold_archive_spillover_ready": True,
+                "cold_archive_spillover_capacity_gb": 64.0,
+                "cold_archive_adjusted_margin_gb": 58.0,
+                "cold_archive_primary_pressure_buffer_gb": 16.0,
+            },
+        },
+    )
+    monkeypatch.setattr(src.platform, "system", lambda: "Darwin")
+
+    payload = src.build_payload(
+        project_root,
+        pmset_custom_text="AC Power:\n sleep 0\n disksleep 0\n standby 0\n autopoweroff 0\n",
+        pmset_batt_text="Now drawing from 'AC Power'\n -InternalBattery-0; AC attached; not charging present: true",
+        process_text="",
+        disk_snapshot_fn=lambda path: {"path": str(path), "exists": True, "free_gb": 105.0, "used_pct": 88.0},
+    )
+
+    assert payload["overall_status"] == "ready"
+    assert payload["sections"]["storage"]["available_margin_gb"] == -6.0
+    assert payload["sections"]["storage"]["cold_archive_spillover_ready"] is True
+    assert payload["sections"]["storage"]["cold_archive_adjusted_margin_gb"] == 58.0
+    assert "approved_cold_archive_spillover" in payload["managed_controls"]
+    assert "storage_margin_not_30_day_ready" not in payload["blockers"]
+
+
 def test_unattended_soak_readiness_tracks_caffeinate_guard_as_managed_control(tmp_path: Path, monkeypatch) -> None:
     project_root = tmp_path / "project"
     external_root = tmp_path / "BOT_LOGS" / "schwab_trading_bot"
@@ -250,6 +291,59 @@ def test_unattended_soak_readiness_treats_paper_soak_live_read_only_cold_lane_de
     assert payload["overall_status"] == "ready"
     assert "live_runtime_separation_degraded" not in payload["warnings"]
     assert "paper_soak_live_money_locked_cold_lane_deferred" in payload["managed_controls"]
+
+
+def test_unattended_soak_readiness_treats_isolated_read_only_restart_storms_as_managed(
+    tmp_path: Path, monkeypatch
+) -> None:
+    project_root = tmp_path / "project"
+    external_root = tmp_path / "BOT_LOGS" / "schwab_trading_bot"
+    external_root.mkdir(parents=True)
+    _ready_artifacts(project_root, external_root)
+    _write_json(
+        project_root / "governance" / "health" / "process_watchdog_latest.json",
+        {
+            "timestamp_utc": src.iso_now(),
+            "overall_status": "degraded",
+            "restart_storms": [
+                {
+                    "name": "coinbase_loop",
+                    "impact": "read_only_collection",
+                    "quarantinable": True,
+                    "blocks_execution_clear": False,
+                }
+            ],
+            "restart_storm_isolation": {
+                "isolated_count": 1,
+                "execution_blocking_count": 0,
+                "isolated_targets": ["coinbase_loop"],
+                "execution_blocking_targets": [],
+                "all_active_storms_isolated": True,
+            },
+            "alerts": [{"name": "coinbase_loop", "type": "restart_storm"}],
+        },
+    )
+    _write_json(
+        project_root / "governance" / "health" / "live_runtime_separation_control_latest.json",
+        {"timestamp_utc": src.iso_now(), "overall_status": "degraded", "clearance_plan": {"clearance_state": "protect_live"}},
+    )
+    monkeypatch.setattr(src.platform, "system", lambda: "Darwin")
+
+    payload = src.build_payload(
+        project_root,
+        pmset_custom_text="AC Power:\n sleep 0\n disksleep 0\n standby 0\n",
+        pmset_batt_text="Now drawing from 'AC Power'\n -InternalBattery-0; AC attached; not charging present: true",
+        process_text="",
+        disk_snapshot_fn=lambda path: {"path": str(path), "exists": True, "free_gb": 160.0, "used_pct": 60.0},
+    )
+
+    runtime = payload["sections"]["runtime_loops"]
+    assert payload["overall_status"] == "ready"
+    assert "process_watchdog_not_ready" not in payload["blockers"]
+    assert "restart_storms_present" not in payload["blockers"]
+    assert "process_watchdog_alerts_present" not in payload["warnings"]
+    assert runtime["isolated_read_only_restart_storms"] is True
+    assert "read_only_collection_restart_storms_isolated" in payload["managed_controls"]
 
 
 def test_unattended_soak_readiness_allows_paper_soak_auth_grace(tmp_path: Path, monkeypatch) -> None:

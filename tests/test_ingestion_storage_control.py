@@ -201,6 +201,76 @@ def test_continuous_ingestion_soak_contract_allows_bounded_drain_time_only_watch
     assert "bounded_drain_time_backlog_allowed_for_soak" in payload["non_blocking_conditions"]
 
 
+def test_continuous_ingestion_soak_contract_marks_a_plus_raw_live_drain_time_clear_ready() -> None:
+    payload = src._continuous_ingestion_soak_contract(
+        horizon_days=30.0,
+        overall_status="ready",
+        severity="stable",
+        steady_state={
+            "target_status": {
+                "steady_state_ready": False,
+                "target_breaches": ["estimated_total_drain_minutes"],
+                "estimated_total_drain_minutes_ok": False,
+            },
+            "ratios": {
+                "pressure_index": 0.604,
+                "core_pending_lines": 0.452,
+                "estimated_total_drain_minutes": 506.827,
+            },
+        },
+        recovery_scorecard={"score": 75.0},
+        backlog_relief_contract={
+            "active": False,
+            "overall_grade": "A+",
+            "active_issue_ids": [],
+            "raw_live_expansion_headroom": {
+                "active": False,
+                "grade": "A+",
+                "expansion_ready": True,
+                "hard_block": False,
+                "raw_live": {
+                    "core_pending_lines": 2261,
+                    "total_pending_lines": 4098,
+                    "oldest_pending_age_seconds": 0.0,
+                },
+                "targets": {
+                    "absolute_core_target_lines": 5000,
+                    "absolute_total_threshold_lines": 15000,
+                    "absolute_age_threshold_seconds": 240.0,
+                },
+            },
+        },
+        collector_intake_audit={"status": "enforced"},
+        storage_efficiency_contract={"overall_status": "ready", "grade": "A+"},
+        storage_growth_forecast={"status": "forecast_ready", "days_until_pressure_free": 676.24},
+        storage_retention_unison={"continuous_run_contract": {"status": "ready", "ready": True, "available_margin_gb": 108.808}},
+        route_verified=True,
+        resilience_status="ready",
+        unresolved_split_brain_conflicts=0,
+        retention_debt_gb=0.0,
+        drain_minutes_total=7602.404,
+        data_integrity={
+            "sql_invalid_lines": 0,
+            "sql_overlay_invalid_lines": 0,
+            "sql_overlay_ops_write_failures": 0,
+            "sql_overlay_oversize_payloads": 0,
+        },
+    )
+
+    assert payload["status"] == "ready"
+    assert payload["ready"] is True
+    assert payload["soak_ready"] is True
+    assert payload["grade"] == "A+"
+    assert payload["blockers"] == []
+    assert payload["warnings"] == []
+    assert "a_plus_raw_live_drain_time_estimate_clear_for_soak" in payload["non_blocking_conditions"]
+    assert "a_plus_total_drain_time_estimate_above_target_allowed_for_soak" in payload["non_blocking_conditions"]
+    assert payload["inputs"]["a_plus_drain_time_only_soak_clear"] is True
+    assert payload["inputs"]["a_plus_drain_time_horizon_ok"] is True
+    assert payload["control_env"]["BOT_CONTINUOUS_COLLECTION_READY"] == "1"
+    assert payload["control_env"]["TRAINING_RUNTIME_PAUSED_FOR_BACKLOG"] == "0"
+
+
 def test_continuous_ingestion_soak_contract_allows_pressure_only_reserve_headroom_with_training_pause_mismatch() -> None:
     payload = src._continuous_ingestion_soak_contract(
         horizon_days=30.0,
@@ -274,6 +344,70 @@ def test_continuous_ingestion_soak_contract_allows_pressure_only_reserve_headroo
     assert "training_pause_mismatch_allowed_for_pressure_index_soak" in payload["non_blocking_conditions"]
     assert payload["inputs"]["collector_intake_soak_safe"] is True
     assert payload["inputs"]["collector_partial_reserve_pressure_soak_safe"] is True
+
+
+def test_continuous_ingestion_soak_contract_allows_pressure_only_watch_when_backlog_relief_clear() -> None:
+    payload = src._continuous_ingestion_soak_contract(
+        horizon_days=30.0,
+        overall_status="ready",
+        severity="stable",
+        steady_state={
+            "target_status": {
+                "steady_state_ready": False,
+                "target_breaches": ["pressure_index"],
+            },
+            "ratios": {
+                "pressure_index": 1.788,
+                "core_pending_lines": 0.27,
+                "estimated_total_drain_minutes": 0.04,
+            },
+        },
+        recovery_scorecard={"score": 82.0},
+        backlog_relief_contract={
+            "active": False,
+            "overall_grade": "A+",
+            "active_issue_ids": [],
+            "raw_live_expansion_headroom": {
+                "active": False,
+                "grade": "A+",
+                "hard_block": False,
+                "raw_live": {
+                    "core_pending_lines": 1348,
+                    "total_pending_lines": 1348,
+                    "oldest_pending_age_seconds": 107.396,
+                },
+                "targets": {
+                    "absolute_total_threshold_lines": 15000,
+                    "absolute_age_threshold_seconds": 240,
+                },
+            },
+        },
+        collector_intake_audit={"status": "enforced"},
+        storage_efficiency_contract={"overall_status": "ready", "grade": "A+"},
+        storage_growth_forecast={"status": "stable_or_improving", "days_until_pressure_free": None},
+        storage_retention_unison={
+            "continuous_run_contract": {"status": "watch", "ready": True, "available_margin_gb": 19.809}
+        },
+        route_verified=True,
+        resilience_status="ready",
+        unresolved_split_brain_conflicts=0,
+        retention_debt_gb=0.0,
+        drain_minutes_total=0.602,
+        data_integrity={
+            "sql_invalid_lines": 0,
+            "sql_overlay_invalid_lines": 0,
+            "sql_overlay_ops_write_failures": 0,
+            "sql_overlay_oversize_payloads": 0,
+        },
+    )
+
+    assert payload["status"] == "watch"
+    assert payload["ready"] is False
+    assert payload["soak_ready"] is True
+    assert payload["blockers"] == []
+    assert "steady_state_pressure_index_in_bounded_soak_watch" in payload["warnings"]
+    assert "pressure_index_only_clear_backlog_under_soak_controls" in payload["non_blocking_conditions"]
+    assert payload["inputs"]["pressure_only_clear_backlog_soak_watch"] is True
 
 
 def test_continuous_ingestion_soak_contract_tolerates_reserve_only_headroom() -> None:
@@ -489,6 +623,72 @@ def test_continuous_ingestion_soak_contract_allows_pressure_only_writer_lag_watc
     assert "steady_state_pressure_index_in_bounded_soak_watch" in payload["warnings"]
     assert "pressure_index_only_writer_lag_under_soak_controls" in payload["non_blocking_conditions"]
     assert payload["inputs"]["pressure_only_writer_lag_soak_watch"] is True
+    assert payload["control_env"]["BOT_CONTINUOUS_COLLECTION_READY"] == "1"
+
+
+def test_continuous_ingestion_soak_contract_allows_sparse_reserve_watch_under_deep_cold_controls() -> None:
+    payload = src._continuous_ingestion_soak_contract(
+        horizon_days=30.0,
+        overall_status="ready",
+        severity="stable",
+        steady_state={
+            "target_status": {
+                "steady_state_ready": False,
+                "target_breaches": ["pressure_index", "estimated_total_drain_minutes"],
+            },
+            "ratios": {
+                "pressure_index": 1.172,
+                "core_pending_lines": 0.88,
+                "estimated_total_drain_minutes": 133.327,
+            },
+        },
+        recovery_scorecard={"score": 72.0},
+        backlog_relief_contract={
+            "active": True,
+            "overall_grade": "F",
+            "active_issue_ids": ["sparse_huge_jsonl_files", "raw_live_expansion_headroom"],
+            "raw_live_expansion_headroom": {
+                "hard_block": False,
+                "raw_live": {
+                    "core_pending_lines": 4400,
+                    "total_pending_lines": 11669,
+                    "oldest_pending_age_seconds": 0.0,
+                },
+                "targets": {
+                    "absolute_total_threshold_lines": 15000,
+                    "absolute_age_threshold_seconds": 240.0,
+                },
+            },
+        },
+        collector_intake_audit={"status": "enforced"},
+        storage_efficiency_contract={
+            "overall_status": "ready",
+            "grade": "A+",
+            "deep_cold_managed_relief": True,
+            "deep_cold_layer": {"ready": True},
+        },
+        storage_growth_forecast={"status": "stable_or_improving", "days_until_pressure_free": None},
+        storage_retention_unison={"continuous_run_contract": {"status": "watch", "ready": True, "available_margin_gb": 52.6}},
+        route_verified=True,
+        resilience_status="ready",
+        unresolved_split_brain_conflicts=0,
+        retention_debt_gb=0.0,
+        drain_minutes_total=1999.911,
+        data_integrity={
+            "sql_invalid_lines": 0,
+            "sql_overlay_invalid_lines": 0,
+            "sql_overlay_ops_write_failures": 0,
+            "sql_overlay_oversize_payloads": 0,
+        },
+    )
+
+    assert payload["status"] == "watch"
+    assert payload["soak_ready"] is True
+    assert payload["blockers"] == []
+    assert "steady_state_sparse_reserve_in_bounded_soak_watch" in payload["warnings"]
+    assert "backlog_relief_contract_active" not in payload["blockers"]
+    assert "sparse_jsonl_and_raw_live_reserve_under_soak_controls" in payload["non_blocking_conditions"]
+    assert payload["inputs"]["bounded_sparse_reserve_soak_watch"] is True
     assert payload["control_env"]["BOT_CONTINUOUS_COLLECTION_READY"] == "1"
 
 
@@ -1030,6 +1230,128 @@ def test_ingestion_storage_control_reports_green_steady_state_targets(tmp_path: 
     assert payload["writer_shedding"]["active"] is False
     assert payload["storage_efficiency_contract"]["overall_status"] == "ready"
     assert payload["storage_efficiency_contract"]["grade"] == "A+"
+
+
+def test_ingestion_storage_control_decays_stale_overload_gate_when_measured_backpressure_is_clear(tmp_path: Path) -> None:
+    now = datetime.now(timezone.utc)
+    config = tmp_path / "config"
+    config.mkdir()
+    (config / ".env.storage_pressure_override").write_text(
+        "\n".join(
+            [
+                "BOT_COLLECTION_DUTY_CYCLE_ENABLED=1",
+                "BOT_COLLECTION_DUTY_CYCLE_MAX_ACTIVE_RATIO=0.16",
+                "BOT_COLLECTION_DUTY_CYCLE_A_PLUS_PLUS_TARGET=0",
+                "TRAINING_RUNTIME_PAUSED_FOR_BACKLOG=1",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    health = tmp_path / "governance" / "health"
+    _write_json(
+        health / "ingestion_backpressure_latest.json",
+        {
+            "timestamp_utc": (now - timedelta(minutes=4)).isoformat(),
+            "pending_lines": 2315,
+            "pending_lines_total": 9168,
+            "pending_lines_deferred": 6853,
+            "pending_lines_cold": 0,
+            "pending_lines_support_telemetry": 23,
+            "pending_lines_stale_stage": 0,
+            "pending_lines_threshold": 15000,
+            "oldest_pending_age_seconds": 0.0,
+            "oldest_age_threshold_seconds": 240.0,
+            "overload": True,
+        },
+    )
+    _write_json(
+        health / "sql_link_service_progress_latest.json",
+        {
+            "cycle_started_utc": (now - timedelta(minutes=5)).isoformat(),
+            "merged_rows_this_cycle": 90000,
+        },
+    )
+    _write_json(health / "sql_link_service_latest.json", {"sqlite_wal_size_gb": 0.0})
+    _write_json(
+        health / "health_gates_latest.json",
+        {
+            "hard_gate_triggered": True,
+            "recommended_operating_mode": "shadow_only",
+            "hard_gates": {"ingestion_backpressure_overload": True},
+            "storage_pressure": {"retention_debt_gb": 0.0, "severe_backpressure_overload": False},
+            "ingestion_pressure": {"severe_backpressure_overload": True},
+        },
+    )
+    _write_json(health / "storage_maintenance_latest.json", {"reason": "ok"})
+    _write_json(
+        health / "ingestion_storage_governor_latest.json",
+        {
+            "profile": "critical_backpressure",
+            "sql_primary_db": {"route_drift": False},
+            "queue_watermarks": {"overall_status": "ready"},
+            "writer_shedding": {"active": True, "level": "protect_core"},
+            "throttle_controls": {"deferred_files_budget": 2, "cold_files_budget": 0},
+        },
+    )
+    _write_json(health / "external_backlog_drain_latest.json", {"overall_status": "blocked", "recommended_now": False, "aged_candidate_files": 0})
+    _write_json(
+        health / "storage_failback_sync_latest.json",
+        {"route_verification": {"verification_state": "ready", "ready_count": 3, "tracked_count": 3, "coverage_ratio": 1.0, "mismatches": []}},
+    )
+    _write_json(
+        health / "storage_resilience_control_latest.json",
+        {
+            "overall_status": "ready",
+            "resilience_score": 100,
+            "restore_drill_fresh": True,
+            "dual_root_ready": True,
+            "warm_standby_ready": True,
+            "unresolved_split_brain_conflicts": 0,
+        },
+    )
+    _write_json(
+        health / "data_collection_storage_guard_latest.json",
+        {
+            "disk": {"available_gb": 220.0, "used_percent": 77.0},
+            "safe_space_recovery": {"candidate_count": 0, "candidate_gb": 0.0, "target_free_gb": 64.0, "target_free_deficit_gb": 0.0},
+            "duplicate_cleanup": {"candidate_count": 0, "candidate_gb": 0.0},
+        },
+    )
+    _write_json(
+        health / "raw_training_compaction_intelligence_latest.json",
+        {
+            "raw_summary": {
+                "raw_jsonl_count": 736,
+                "eligible_training_source_count": 597,
+                "compression_candidate_count": 0,
+                "compression_candidate_gb": 0.0,
+                "local_fallback_reconciliation_count": 0,
+                "current_day_protected_count": 617,
+            }
+        },
+    )
+    _write_json(health / "storage_quota_guard_latest.json", {"quota_summary": {"hard_breaches": 0, "soft_breaches": 0}, "lanes": []})
+    _write_json(health / "storage_growth_forecast_latest.json", {"status": "forecast_ready", "days_until_pressure_free": 90.0})
+    _write_json(
+        health / "storage_retention_unison_latest.json",
+        {"continuous_run_contract": {"status": "ready", "ready": True, "available_margin_gb": 120.0}},
+    )
+    _write_json(
+        health / "jsonl_sql_ingestion_health_trading_latest.json",
+        {"timestamp_utc": now.isoformat(), "files_discovered": 4, "sqlite": {"invalid": 0}, "pending_lines": 0, "files_with_pending": 0},
+    )
+
+    payload = src.build_payload(tmp_path, now_utc=now)
+
+    assert payload["overall_status"] == "ready"
+    assert payload["severity"] == "stable"
+    assert payload["steady_state"]["target_status"]["steady_state_ready"] is True
+    assert payload["bounded_recovery_contract"]["effective_hard_gate_active"] is False
+    assert "ingestion_backpressure_overload" in payload["bounded_recovery_contract"]["stale_hard_gate_suppressed"]
+    assert "ingestion_backpressure_latest.overload" in payload["stabilization_contract"]["stale_backpressure_overload_suppressed"]
+    assert payload["storage_efficiency_contract"]["overall_status"] == "ready"
+    assert payload["continuous_run_soak_contract"]["soak_ready"] is True
 
 
 def test_ingestion_storage_control_builds_manifest_first_storage_efficiency_contract(tmp_path: Path) -> None:

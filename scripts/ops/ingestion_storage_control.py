@@ -947,11 +947,24 @@ def _continuous_ingestion_soak_contract(
     pressure_ratio = _safe_float(steady_ratios.get("pressure_index"), 0.0)
     core_ratio = _safe_float(steady_ratios.get("core_pending_lines"), 0.0)
     drain_ratio = _safe_float(steady_ratios.get("estimated_total_drain_minutes"), 0.0)
+    a_plus_drain_ratio_ceiling = max(_safe_float(os.getenv("BOT_SOAK_A_PLUS_DRAIN_TIME_ONLY_MAX_RATIO"), 720.0), 1.0)
+    a_plus_drain_horizon_fraction = min(
+        max(_safe_float(os.getenv("BOT_SOAK_A_PLUS_DRAIN_TIME_HORIZON_FRACTION"), 0.50), 0.05),
+        1.0,
+    )
+    a_plus_drain_horizon_minutes = horizon * 24.0 * 60.0 * a_plus_drain_horizon_fraction
+    a_plus_drain_time_horizon_ok = bool(
+        drain_minutes_total is None
+        or drain_ratio <= a_plus_drain_ratio_ceiling
+        or float(drain_minutes_total) <= a_plus_drain_horizon_minutes
+    )
     raw_live_snapshot = raw_live_expansion.get("raw_live") if isinstance(raw_live_expansion.get("raw_live"), dict) else {}
     raw_live_targets = raw_live_expansion.get("targets") if isinstance(raw_live_expansion.get("targets"), dict) else {}
+    raw_live_grade = str(raw_live_expansion.get("grade") or "")
     raw_live_core = _safe_int(raw_live_snapshot.get("core_pending_lines"), 0)
     raw_live_total = _safe_int(raw_live_snapshot.get("total_pending_lines"), 0)
     raw_live_oldest_age = _safe_float(raw_live_snapshot.get("oldest_pending_age_seconds"), 0.0)
+    raw_live_core_ceiling = max(_safe_float(raw_live_targets.get("absolute_core_target_lines"), 5000.0), 1.0)
     raw_live_total_ceiling = max(_safe_float(raw_live_targets.get("absolute_total_threshold_lines"), 15000.0), 1.0)
     raw_live_age_ceiling = max(_safe_float(raw_live_targets.get("absolute_age_threshold_seconds"), 240.0), 1.0)
     steady_target_breaches = {
@@ -1027,6 +1040,28 @@ def _continuous_ingestion_soak_contract(
         and pressure_ratio <= max(_safe_float(os.getenv("BOT_SOAK_PRESSURE_INDEX_ONLY_MAX_RATIO"), 4.0), 1.0)
         and _safe_float(recovery_scorecard.get("score"), 0.0) >= 90.0
     )
+    pressure_only_clear_backlog_soak_watch = bool(
+        not steady_state_ready
+        and steady_target_breaches
+        and steady_target_breaches.issubset({"pressure_index"})
+        and not relief_active
+        and relief_grade in {"A+", "A++", "A"}
+        and storage_efficiency_ready
+        and route_verified
+        and str(resilience_status or "").strip().lower() in {"", "ready"}
+        and unresolved_split_brain_conflicts == 0
+        and collector_status == "enforced"
+        and str(overall_status or "") == "ready"
+        and str(severity or "") in {"stable", "elevated"}
+        and retention_debt_gb <= retention_target
+        and forecast_ready
+        and raw_live_total > 0
+        and raw_live_total <= raw_live_total_ceiling
+        and raw_live_oldest_age <= raw_live_age_ceiling
+        and core_ratio <= 1.0
+        and (drain_minutes_total is not None and drain_ratio <= 1.0)
+        and pressure_ratio <= max(_safe_float(os.getenv("BOT_SOAK_PRESSURE_INDEX_ONLY_MAX_RATIO"), 4.0), 1.0)
+    )
     drain_time_only_soak_watch = bool(
         not steady_state_ready
         and steady_target_breaches
@@ -1049,6 +1084,77 @@ def _continuous_ingestion_soak_contract(
         and _safe_float(recovery_scorecard.get("score"), 0.0) >= 85.0
         and (not relief_active or relief_grade in {"A+", "A++", "A"} or relief_is_expansion_reserve_only)
     )
+    a_plus_drain_time_only_soak_clear = bool(
+        not steady_state_ready
+        and steady_target_breaches
+        and steady_target_breaches.issubset({"estimated_total_drain_minutes"})
+        and not relief_active
+        and not relief_issue_ids
+        and relief_grade in {"A+", "A++"}
+        and raw_live_grade in {"A+", "A++"}
+        and bool(raw_live_expansion.get("expansion_ready", False))
+        and not bool(raw_live_expansion.get("hard_block", False))
+        and storage_efficiency_ready
+        and route_verified
+        and str(resilience_status or "").strip().lower() in {"", "ready"}
+        and unresolved_split_brain_conflicts == 0
+        and collector_status == "enforced"
+        and str(overall_status or "") == "ready"
+        and str(severity or "") == "stable"
+        and retention_debt_gb <= retention_target
+        and forecast_ready
+        and invalid_sql <= 0
+        and overlay_invalid <= 0
+        and ops_write_failures <= 0
+        and raw_live_total > 0
+        and raw_live_core <= raw_live_core_ceiling
+        and raw_live_total <= raw_live_total_ceiling
+        and raw_live_oldest_age <= raw_live_age_ceiling
+        and pressure_ratio <= 1.0
+        and core_ratio <= 1.0
+        and a_plus_drain_time_horizon_ok
+        and _safe_float(recovery_scorecard.get("score"), 0.0) >= 70.0
+    )
+    storage_efficiency_metrics = (
+        storage_efficiency_contract.get("metrics")
+        if isinstance(storage_efficiency_contract.get("metrics"), dict)
+        else {}
+    )
+    deep_cold_layer = (
+        storage_efficiency_contract.get("deep_cold_layer")
+        if isinstance(storage_efficiency_contract.get("deep_cold_layer"), dict)
+        else {}
+    )
+    deep_cold_ready = bool(deep_cold_layer.get("ready", False) or storage_efficiency_metrics.get("deep_cold_ready", False))
+    deep_cold_managed_relief = bool(
+        storage_efficiency_contract.get("deep_cold_managed_relief", False)
+        or storage_efficiency_metrics.get("deep_cold_managed_relief", False)
+    )
+    bounded_sparse_reserve_soak_watch = bool(
+        not steady_state_ready
+        and steady_target_breaches
+        and steady_target_breaches.issubset({"pressure_index", "estimated_total_drain_minutes"})
+        and relief_active
+        and relief_issue_ids
+        and set(relief_issue_ids).issubset({"sparse_huge_jsonl_files", "raw_live_expansion_headroom"})
+        and storage_efficiency_ready
+        and deep_cold_ready
+        and deep_cold_managed_relief
+        and route_verified
+        and str(resilience_status or "").strip().lower() in {"", "ready"}
+        and unresolved_split_brain_conflicts == 0
+        and collector_status == "enforced"
+        and str(overall_status or "") == "ready"
+        and str(severity or "") in {"stable", "elevated"}
+        and retention_debt_gb <= retention_target
+        and forecast_ready
+        and raw_live_total > 0
+        and raw_live_total <= raw_live_total_ceiling
+        and raw_live_oldest_age <= raw_live_age_ceiling
+        and core_ratio <= 1.0
+        and pressure_ratio <= max(_safe_float(os.getenv("BOT_SOAK_SPARSE_RESERVE_PRESSURE_MAX_RATIO"), 1.5), 1.0)
+        and _safe_float(recovery_scorecard.get("score"), 0.0) >= 70.0
+    )
 
     blockers: list[str] = []
     warnings: list[str] = []
@@ -1058,15 +1164,20 @@ def _continuous_ingestion_soak_contract(
     if str(severity or "") not in {"stable", "elevated"}:
         blockers.append("ingestion_severity_not_stable")
     if not steady_state_ready:
-        if bounded_soak_backlog_relief:
+        if a_plus_drain_time_only_soak_clear:
+            non_blocking_conditions.append("a_plus_raw_live_drain_time_estimate_clear_for_soak")
+        elif bounded_soak_backlog_relief:
             warnings.append("steady_state_targets_in_bounded_soak_watch")
             non_blocking_conditions.append("bounded_steady_state_backlog_allowed_for_soak")
-        elif pressure_only_writer_lag_soak_watch:
+        elif pressure_only_writer_lag_soak_watch or pressure_only_clear_backlog_soak_watch:
             warnings.append("steady_state_pressure_index_in_bounded_soak_watch")
             non_blocking_conditions.append("bounded_pressure_index_writer_lag_allowed_for_soak")
         elif drain_time_only_soak_watch:
             warnings.append("steady_state_drain_time_in_bounded_soak_watch")
             non_blocking_conditions.append("bounded_drain_time_backlog_allowed_for_soak")
+        elif bounded_sparse_reserve_soak_watch:
+            warnings.append("steady_state_sparse_reserve_in_bounded_soak_watch")
+            non_blocking_conditions.append("bounded_sparse_and_raw_reserve_backlog_allowed_for_soak")
         else:
             blockers.append("steady_state_targets_not_clear")
     if relief_is_expansion_reserve_only:
@@ -1081,8 +1192,12 @@ def _continuous_ingestion_soak_contract(
         non_blocking_conditions.append("bounded_intake_and_expansion_backlog_relief_under_soak_controls")
     if pressure_only_writer_lag_soak_watch:
         non_blocking_conditions.append("pressure_index_only_writer_lag_under_soak_controls")
+    if pressure_only_clear_backlog_soak_watch:
+        non_blocking_conditions.append("pressure_index_only_clear_backlog_under_soak_controls")
     if drain_time_only_soak_watch:
         non_blocking_conditions.append("drain_time_only_writer_lag_under_soak_controls")
+    if bounded_sparse_reserve_soak_watch:
+        non_blocking_conditions.append("sparse_jsonl_and_raw_live_reserve_under_soak_controls")
 
     managed_sparse_jsonl_relief = bool(
         relief_active
@@ -1126,6 +1241,7 @@ def _continuous_ingestion_soak_contract(
         and not relief_is_expansion_reserve_only
         and not managed_sparse_jsonl_relief
         and not bounded_soak_backlog_relief
+        and not bounded_sparse_reserve_soak_watch
     ):
         blockers.append("backlog_relief_contract_active")
     if retention_debt_gb > retention_target:
@@ -1138,7 +1254,9 @@ def _continuous_ingestion_soak_contract(
         else:
             warnings.append("drain_time_unknown")
     elif float(drain_minutes_total) > float(targets.get("estimated_total_drain_minutes", DEFAULT_TARGET_TOTAL_DRAIN_MINUTES)):
-        if drain_time_only_soak_watch:
+        if a_plus_drain_time_only_soak_clear:
+            non_blocking_conditions.append("a_plus_total_drain_time_estimate_above_target_allowed_for_soak")
+        elif drain_time_only_soak_watch or bounded_sparse_reserve_soak_watch:
             non_blocking_conditions.append("bounded_total_drain_time_above_target_allowed_for_soak")
         else:
             blockers.append("drain_time_above_target")
@@ -1215,6 +1333,12 @@ def _continuous_ingestion_soak_contract(
             "managed_sparse_jsonl_relief_soak_safe": bool(managed_sparse_jsonl_relief),
             "bounded_soak_backlog_relief": bool(bounded_soak_backlog_relief),
             "pressure_only_writer_lag_soak_watch": bool(pressure_only_writer_lag_soak_watch),
+            "pressure_only_clear_backlog_soak_watch": bool(pressure_only_clear_backlog_soak_watch),
+            "a_plus_drain_time_only_soak_clear": bool(a_plus_drain_time_only_soak_clear),
+            "a_plus_drain_time_horizon_ok": bool(a_plus_drain_time_horizon_ok),
+            "a_plus_drain_ratio_ceiling": round(float(a_plus_drain_ratio_ceiling), 3),
+            "a_plus_drain_horizon_minutes": round(float(a_plus_drain_horizon_minutes), 3),
+            "bounded_sparse_reserve_soak_watch": bool(bounded_sparse_reserve_soak_watch),
             "recovery_score": _safe_float(recovery_scorecard.get("score"), 0.0),
         },
         "control_env": {
@@ -2903,12 +3027,14 @@ def _backlog_relief_contract(
                 "ops_write_failures": int(ops_failures),
                 "route_drift": bool(route_drift),
             },
-            next_action="apply SQLite cache/mmap and WAL checkpoint relief before widening collectors",
+            next_action="apply SQLite cache and WAL checkpoint relief before widening collectors",
             control_env={
                 "SQLITE_CACHE_SIZE_KB": "32768",
-                "SQLITE_MMAP_SIZE_MB": "512",
+                "SQLITE_MMAP_SIZE_MB": "0",
+                "SQLITE_ALLOW_MMAP": "0",
                 "BOT_OPS_SQLITE_CACHE_SIZE_KB": "8192",
-                "BOT_OPS_SQLITE_MMAP_SIZE_MB": "96",
+                "BOT_OPS_SQLITE_MMAP_SIZE_MB": "0",
+                "BOT_OPS_SQLITE_ALLOW_MMAP": "0",
                 "SQLITE_WAL_AUTOCHECKPOINT_PAGES": "4000",
             },
         ),
@@ -3771,14 +3897,21 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, now_utc: datetime | None
         else {}
     )
     health_gate_backpressure_clear = bool(
-        not bool(hard_gate_flags.get("ingestion_backpressure_overload", False))
-        and not bool(health_ingestion_pressure.get("severe_backpressure_overload", False))
+        not bool(health_ingestion_pressure.get("severe_backpressure_overload", False))
         and not bool(health_storage_pressure.get("severe_backpressure_overload", False))
+    )
+    measured_live_backpressure_clear = bool(
+        live_backpressure_metrics_clear
+        and str(stale_pending_locator.get("status") or "") == "clear"
+        and _safe_int(sql_ingestion.get("sqlite", {}).get("invalid"), 0) <= 0
+        and _safe_int(sql_pending_overlay.get("invalid_lines"), 0) <= 0
+        and _safe_int(sql_pending_overlay.get("ops_write_failures"), 0) <= 0
+        and float(retention_debt_gb) <= float(_steady_state_targets().get("retention_debt_gb", DEFAULT_TARGET_RETENTION_DEBT_GB))
     )
     if (
         bool(backpressure.get("overload", False))
         and live_backpressure_metrics_clear
-        and health_gate_backpressure_clear
+        and (health_gate_backpressure_clear or measured_live_backpressure_clear)
         and str(stale_pending_locator.get("status") or "") == "clear"
     ):
         stale_backpressure_overload_suppressed.append("ingestion_backpressure_latest.overload")

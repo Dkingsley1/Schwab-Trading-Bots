@@ -531,6 +531,76 @@ def test_paper_400_ramp_uses_reconciled_raw_live_estimate_for_overlay_relief(tmp
     assert payload["gates"]["storage"]["overlay_only_relief"]["raw_live"]["total_pending_lines"] == 380
 
 
+def test_paper_400_ramp_accepts_managed_memory_and_sql_soft_quota(tmp_path: Path) -> None:
+    _seed_ready_project(tmp_path)
+    health = tmp_path / "governance" / "health"
+    _write_json(
+        health / "memory_efficiency_control_latest.json",
+        {
+            "overall_status": "advisory",
+            "recommended_profile": "constrained",
+            "memory_snapshot": {
+                "memory_pressure_state": "green",
+                "memory_pressure_kind": "none",
+                "memory_free_pct": 26.0,
+                "swap_used_gb": 0.024,
+                "compressed_store_gb": 36.521,
+                "compressor_gb": 9.661,
+            },
+            "compressed_memory_relief_contract": {
+                "managed": True,
+                "pressure_clear": True,
+                "storage_clear": True,
+                "compressor_bounded": True,
+                "stateful_sql_soft_quota_relief": {
+                    "managed": True,
+                    "hard_breaches": 0,
+                    "soft_breaches": 1,
+                    "degraded_families": ["sql_link_shards"],
+                },
+            },
+            "storage_snapshot": {
+                "stateful_sql_soft_quota_relief": {
+                    "managed": True,
+                    "hard_breaches": 0,
+                    "soft_breaches": 1,
+                    "degraded_families": ["sql_link_shards"],
+                }
+            },
+        },
+    )
+    _write_json(
+        health / "ingestion_storage_control_latest.json",
+        {
+            "overall_status": "ready",
+            "severity": "stable",
+            "pressure_index": 0.667,
+            "backpressure": {
+                "core_pending_lines": 598,
+                "total_pending_lines": 598,
+                "raw_live": {
+                    "core_pending_lines": 598,
+                    "total_pending_lines": 598,
+                    "oldest_pending_age_seconds": 160.133,
+                },
+            },
+        },
+    )
+
+    payload = src.build_payload(
+        tmp_path,
+        today=date(2026, 5, 11),
+        registry_path=tmp_path / "master_bot_registry.json",
+    )
+
+    assert payload["stage"] == "armed"
+    assert payload["armed"] is True
+    assert "memory_pressure_above_paper_400_gate" not in payload["blockers"]
+    assert "ingestion_or_backpressure_above_paper_400_gate" not in payload["blockers"]
+    assert payload["gates"]["memory"]["status"] == "managed_memory_advisory"
+    assert payload["gates"]["storage"]["status"] == "stateful_sql_soft_quota_advisory"
+
+
 def test_paper_400_ramp_allows_stable_storage_pressure_hysteresis_band(tmp_path: Path) -> None:
     _seed_ready_project(tmp_path)
     health = tmp_path / "governance" / "health"

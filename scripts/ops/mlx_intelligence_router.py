@@ -227,7 +227,11 @@ def _package_statuses(mlx_runtime: dict[str, Any], mlx_library: dict[str, Any]) 
 
 
 def _available_packages(statuses: dict[str, str]) -> set[str]:
-    return {package for package, status in statuses.items() if status in {"ok", "missing_lock"}}
+    return {
+        package
+        for package, status in statuses.items()
+        if status in {"ok", "missing_lock", "runtime_ahead_of_lock"}
+    }
 
 
 def _coverage(statuses: dict[str, str]) -> dict[str, Any]:

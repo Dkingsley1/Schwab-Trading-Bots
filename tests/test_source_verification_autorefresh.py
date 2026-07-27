@@ -153,3 +153,31 @@ def test_source_verification_autorefresh_refreshes_macro_dependencies_before_cro
         "market_micro_context",
         "public_macro_feeds",
     ]
+
+
+def test_source_verification_autorefresh_does_not_pin_on_fresh_confidence_debt(tmp_path: Path, monkeypatch) -> None:
+    _seed_runtime(tmp_path, ready=True)
+    opsctl = "/repo/scripts/ops/opsctl.sh"
+    source_payload = {
+        "ok": False,
+        "overall_status": "degraded",
+        "unverified_sources": ["fx_market_context", "public_macro_feeds"],
+        "stale_artifacts": ["public_macro_feeds"],
+        "degraded_artifacts": ["fx_market_context", "public_macro_feeds"],
+        "sources": [
+            {"source_id": "fx_market_context", "fresh": True, "ok": True},
+            {"source_id": "public_macro_feeds", "fresh": False, "ok": False},
+        ],
+        "recommended_refresh_commands": [
+            [opsctl, "fx-market-sync", "--json"],
+            [opsctl, "macro-context-sync", "--json"],
+            [opsctl, "source-verification", "--json"],
+        ],
+    }
+    monkeypatch.setattr(src.report_src, "build_source_verification_payload", lambda _root: source_payload)
+
+    payload = src.build_payload(tmp_path, apply=False, max_commands=1, timeout_seconds=180, max_heavy_commands=1)
+
+    assert [cmd[1] for cmd in payload["selected_commands"]] == ["macro-context-sync"]
+    skipped_by_reason = {row["reason"]: row for row in payload["skipped_commands"]}
+    assert skipped_by_reason["fresh_ok_source_confidence_debt_waiting"]["source_id"] == "fx_market_context"

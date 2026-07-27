@@ -8,6 +8,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+try:
+    from packaging.version import InvalidVersion, Version
+except Exception:  # pragma: no cover - packaging is pinned, but keep the audit bootable.
+    InvalidVersion = Exception
+    Version = None
+
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_OUT = PROJECT_ROOT / "governance" / "health" / "mlx_runtime_audit_latest.json"
@@ -153,14 +159,14 @@ def _package_rows(
         if name in COMPATIBILITY_EXCLUDED_PACKAGES and not installed:
             status = "compatibility_excluded"
         elif locked and installed:
-            status = "ok" if locked == installed else "version_mismatch"
+            status = "ok" if locked == installed else _version_drift_status(locked, installed)
         elif installed:
             status = "missing_lock"
         elif locked:
             status = "missing_runtime"
         else:
             status = "missing_both"
-        ok = ok and (status in {"ok", "compatibility_excluded"})
+        ok = ok and (status in {"ok", "compatibility_excluded", "runtime_ahead_of_lock"})
         row = {
             "package": name,
             "locked_version": locked,
@@ -171,6 +177,21 @@ def _package_rows(
             row["compatibility_exclusion_reason"] = COMPATIBILITY_EXCLUDED_PACKAGES[name]
         rows.append(row)
     return rows, ok
+
+
+def _version_drift_status(locked: str, installed: str) -> str:
+    if Version is None:
+        return "version_mismatch"
+    try:
+        locked_version = Version(str(locked))
+        installed_version = Version(str(installed))
+    except InvalidVersion:
+        return "version_mismatch"
+    if installed_version > locked_version:
+        return "runtime_ahead_of_lock"
+    if installed_version < locked_version:
+        return "runtime_behind_lock"
+    return "version_mismatch"
 
 
 def _runtime_snapshot_step(python_bin: Path) -> tuple[dict[str, Any], dict[str, Any]]:
@@ -255,9 +276,13 @@ def _recommendations(package_rows: list[dict[str, Any]], runtime: dict[str, Any]
     for row in package_rows:
         package = str(row["package"])
         status = str(row["status"])
-        if status == "version_mismatch":
+        if status == "runtime_ahead_of_lock":
             recommendations.append(
                 f"align_lock:{package}:{row['locked_version']}->{row['installed_version']}"
+            )
+        elif status in {"runtime_behind_lock", "version_mismatch"}:
+            recommendations.append(
+                f"upgrade_runtime:{package}:{row['installed_version']}->{row['locked_version']}"
             )
         elif status == "missing_lock":
             recommendations.append(f"lock_missing:{package}")

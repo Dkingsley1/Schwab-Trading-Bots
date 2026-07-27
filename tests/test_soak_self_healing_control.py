@@ -149,8 +149,9 @@ def test_repairable_daily_failure_runs_remediation_and_recheck(tmp_path: Path, m
     assert sum(1 for call in calls if "daily_auto_verify.py" in call) == 2
 
 
-def test_storage_soak_blocker_runs_bounded_retention_only_in_apply_mode(tmp_path: Path, monkeypatch) -> None:
+def test_storage_soak_blocker_runs_compaction_retention_and_cold_offload(tmp_path: Path, monkeypatch) -> None:
     _write_daily(tmp_path, ok=True, failed_checks=[])
+    monkeypatch.setenv("BOT_SECOND_COLD_ROOT", str(tmp_path / "BOT_COLD" / "schwab_trading_bot"))
     calls: list[str] = []
     monkeypatch.setattr(
         src,
@@ -183,9 +184,17 @@ def test_storage_soak_blocker_runs_bounded_retention_only_in_apply_mode(tmp_path
     )
 
     retention_calls = [call for call in calls if "storage-retention-unison" in call]
+    raw_compaction_calls = [call for call in calls if "raw-training-compaction" in call]
+    offload_calls = [call for call in calls if "manifest-backed-offload" in call]
     assert payload["ok"] is True
     assert payload["overall_status"] == "guarded_storage_capacity"
     assert payload["storage"]["retention_attempted"] is True
+    assert payload["storage"]["recovery"]["raw_compaction_attempted"] is True
+    assert payload["storage"]["recovery"]["manifest_cold_offload_attempted"] is True
+    assert raw_compaction_calls
+    assert "--jumbo-gb 12.0" in raw_compaction_calls[0]
+    assert offload_calls
+    assert "--release-source-after-verify" in offload_calls[0]
     assert retention_calls
     assert "--cleanup-max-delete-gb 16.0" in retention_calls[0]
     assert "--target-free-gb 125.0" in retention_calls[0]

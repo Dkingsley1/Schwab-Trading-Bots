@@ -13,6 +13,7 @@ from scripts.ops import swap_pressure_governor as src
 
 def test_swap_pressure_governor_pauses_shadow_training_loops_under_swap() -> None:
     assert "scripts/run_shadow_training_loop.py" in src.HEAVY_RESEARCH_PATTERNS
+    assert "scripts/strategy_research_lane.py" in src.HEAVY_RESEARCH_PATTERNS
 
 
 def _write_json(path: Path, payload: dict) -> None:
@@ -154,7 +155,6 @@ def test_swap_pressure_governor_recommends_reboot_after_persistent_massive_press
 
 
 def test_swap_pressure_governor_relaxes_stale_swap_allocation_with_headroom(monkeypatch, tmp_path: Path) -> None:
-    monkeypatch.setenv("SWAP_PRESSURE_STALE_SWAP_RELIEF_ENABLED", "1")
     resource_snapshot = {
         "memory_pressure_state": "red",
         "memory_pressure_kind": "swap_only",

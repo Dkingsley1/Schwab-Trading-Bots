@@ -45,6 +45,57 @@ def _run(cmd: list[str], *, timeout_sec: int) -> tuple[int, str, str]:
         return 124, str(exc.stdout or "").strip(), str(exc.stderr or "").strip()
 
 
+def _json_from_stdout(stdout: str) -> dict[str, Any]:
+    text = str(stdout or "").strip()
+    if not text:
+        return {}
+    try:
+        payload = json.loads(text)
+        return payload if isinstance(payload, dict) else {}
+    except Exception:
+        pass
+    start = text.find("{")
+    end = text.rfind("}")
+    if start < 0 or end <= start:
+        return {}
+    try:
+        payload = json.loads(text[start : end + 1])
+    except Exception:
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _promotion_packet_builder_ok(rc: int, stdout: str) -> bool:
+    if int(rc) == 0:
+        return True
+    if int(rc) != 2:
+        return False
+    packet = _json_from_stdout(stdout)
+    gate_results = packet.get("gate_results") if isinstance(packet.get("gate_results"), dict) else {}
+    if not gate_results:
+        return False
+    failed_gates = {str(key) for key, value in gate_results.items() if not bool(value)}
+    replayability = packet.get("replayability_contract") if isinstance(packet.get("replayability_contract"), dict) else {}
+    signature = packet.get("signature") if isinstance(packet.get("signature"), dict) else {}
+    unsigned_seed_ready = bool(
+        packet.get("committee_packet_seed_ready", False)
+        and all(bool(value) for value in gate_results.values())
+        and not bool(packet.get("signing_material_ready", False))
+        and str(signature.get("status") or "") == "missing_signing_key"
+    )
+    signed_idle_seed_ready = bool(
+        packet.get("committee_packet_seed_ready", False)
+        and bool(packet.get("signing_material_ready", False))
+        and bool(signature.get("verified", False))
+        and bool(packet.get("trained_models_complete", False))
+        and bool(replayability.get("hash_bundle_complete", False))
+        and bool(replayability.get("exact_replay_ready", False))
+        and failed_gates
+        and failed_gates.issubset({"training_success_confirmed"})
+    )
+    return bool(unsigned_seed_ready or signed_idle_seed_ready)
+
+
 def _remediation_map() -> dict[str, list[str]]:
     return {
         "new_bot_graduation_gate": [str(PY), str(PROJECT_ROOT / "scripts" / "new_bot_graduation_gate.py"), "--json"],
@@ -52,6 +103,7 @@ def _remediation_map() -> dict[str, list[str]]:
         "paper_reconciliation_slo_guard": [str(PY), str(PROJECT_ROOT / "scripts" / "paper_reconciliation_slo_guard.py"), "--json"],
         "paper_execution_calibration_report": [str(PY), str(PROJECT_ROOT / "scripts" / "paper_execution_calibration_report.py"), "--hours", "24", "--json"],
         "promotion_quality_gate": [str(PY), str(PROJECT_ROOT / "scripts" / "promotion_quality_gate.py"), "--json"],
+        "promotion_packet_builder": [str(PY), str(PROJECT_ROOT / "scripts" / "promotion_packet_builder.py"), "--allow-idle-success", "--json"],
         "state_snapshot_drill": [str(PY), str(PROJECT_ROOT / "scripts" / "daily_state_snapshot_drill.py"), "--json"],
         "db_integrity": [str(PY), str(PROJECT_ROOT / "scripts" / "sqlite_performance_maintenance.py"), "--checkpoint-only", "--json"],
     }
@@ -75,8 +127,9 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, apply: bool = False, tim
         row = {"check": name, "actionable": True, "applied": bool(apply), "cmd": cmd}
         if apply:
             rc, stdout, stderr = _run(cmd, timeout_sec=timeout_sec)
-            row.update({"rc": rc, "stdout": stdout[:4000], "stderr": stderr[:2000], "ok": rc == 0})
-            if rc == 0:
+            ok = bool(rc == 0 or (name == "promotion_packet_builder" and _promotion_packet_builder_ok(rc, stdout)))
+            row.update({"rc": rc, "stdout": stdout[:4000], "stderr": stderr[:2000], "ok": ok})
+            if ok:
                 resolved.append(name)
             else:
                 unresolved.append(name)

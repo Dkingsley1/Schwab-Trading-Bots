@@ -78,9 +78,9 @@ def resolve_sqlite_runtime_settings(project_root: Path) -> dict[str, Any]:
         pressure_level = "yellow"
 
     defaults = {
-        "green": {"temp_store_mode": "MEMORY", "cache_size_kb": 8192, "mmap_size_mb": 64},
-        "yellow": {"temp_store_mode": "FILE", "cache_size_kb": 4096, "mmap_size_mb": 24},
-        "red": {"temp_store_mode": "FILE", "cache_size_kb": 2048, "mmap_size_mb": 8},
+        "green": {"temp_store_mode": "MEMORY", "cache_size_kb": 8192, "mmap_size_mb": 0},
+        "yellow": {"temp_store_mode": "FILE", "cache_size_kb": 4096, "mmap_size_mb": 0},
+        "red": {"temp_store_mode": "FILE", "cache_size_kb": 2048, "mmap_size_mb": 0},
     }[pressure_level]
     temp_store_mode = normalize_temp_store_mode(
         _env_value("BOT_OPS_SQLITE_TEMP_STORE_MODE", "SQLITE_TEMP_STORE_MODE", defaults["temp_store_mode"]),
@@ -93,13 +93,15 @@ def resolve_sqlite_runtime_settings(project_root: Path) -> dict[str, Any]:
         ),
         1024,
     )
-    mmap_size_mb = max(
+    requested_mmap_size_mb = max(
         _safe_int(
             _env_value("BOT_OPS_SQLITE_MMAP_SIZE_MB", "SQLITE_MMAP_SIZE_MB", str(defaults["mmap_size_mb"])),
             defaults["mmap_size_mb"],
         ),
         0,
     )
+    mmap_explicitly_allowed = _truthy(_env_value("BOT_OPS_SQLITE_ALLOW_MMAP", "SQLITE_ALLOW_MMAP", "0"), False)
+    mmap_size_mb = requested_mmap_size_mb if mmap_explicitly_allowed else 0
     busy_timeout_ms = max(_safe_int(_env_value("BOT_OPS_SQLITE_BUSY_TIMEOUT_MS", "", "30000"), 30000), 1000)
     cache_spill = _truthy(_env_value("BOT_OPS_SQLITE_CACHE_SPILL", "SQLITE_CACHE_SPILL", "1"), True)
     wal_autocheckpoint_pages = max(
@@ -115,6 +117,9 @@ def resolve_sqlite_runtime_settings(project_root: Path) -> dict[str, Any]:
         "temp_store_mode": temp_store_mode,
         "cache_size_kb": cache_size_kb,
         "cache_size_pragma": -cache_size_kb,
+        "mmap_requested_mb": requested_mmap_size_mb,
+        "mmap_enabled": bool(mmap_explicitly_allowed and mmap_size_mb > 0),
+        "mmap_disabled_reason": "" if mmap_explicitly_allowed or requested_mmap_size_mb <= 0 else "ops_sqlite_mmap_opt_in_required",
         "mmap_size_mb": mmap_size_mb,
         "mmap_size_bytes": int(mmap_size_mb * 1024 * 1024),
         "busy_timeout_ms": busy_timeout_ms,

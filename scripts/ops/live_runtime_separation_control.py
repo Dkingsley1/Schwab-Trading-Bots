@@ -245,7 +245,35 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, live_fresh_minutes: floa
     storage_blocked = bool(storage_blocked_raw and not storage_bounded_by_control)
     coverage_shortfall_bots = int(coverage_seed.get("coverage_shortfall_bots", 0) or 0)
     swap_used_gb = float(resource_guard.get("swap_used_gb", 0.0) or 0.0)
-    restart_storms = len(process_watchdog.get("restart_storms") or [])
+    restart_storm_rows = process_watchdog.get("restart_storms") if isinstance(process_watchdog.get("restart_storms"), list) else []
+    restart_storms = len(restart_storm_rows)
+    restart_storm_isolation = (
+        process_watchdog.get("restart_storm_isolation")
+        if isinstance(process_watchdog.get("restart_storm_isolation"), dict)
+        else {}
+    )
+    if not restart_storm_isolation:
+        watchdog_intelligence = (
+            process_watchdog.get("watchdog_intelligence")
+            if isinstance(process_watchdog.get("watchdog_intelligence"), dict)
+            else {}
+        )
+        restart_storm_isolation = (
+            watchdog_intelligence.get("restart_storm_isolation")
+            if isinstance(watchdog_intelligence.get("restart_storm_isolation"), dict)
+            else {}
+        )
+    isolated_read_only_restart_storms = bool(
+        restart_storms > 0
+        and restart_storm_isolation
+        and bool(restart_storm_isolation.get("all_active_storms_isolated", False))
+        and _safe_int(restart_storm_isolation.get("execution_blocking_count"), 0) == 0
+    )
+    restart_storm_contention_count = (
+        _safe_int(restart_storm_isolation.get("execution_blocking_count"), 0)
+        if isolated_read_only_restart_storms
+        else restart_storms
+    )
 
     contention_signals = {
         "training_runtime_blocked": training_blocked,
@@ -253,9 +281,11 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, live_fresh_minutes: floa
         "storage_hot_path_bounded_by_control": bool(storage_blocked_raw and storage_bounded_by_control),
         "coverage_shortfall_present": coverage_shortfall_bots > 0,
         "swap_pressure_elevated": swap_used_gb >= 8.0,
-        "restart_storm_present": restart_storms > 0,
+        "restart_storm_present": restart_storm_contention_count > 0,
+        "isolated_read_only_restart_storms": isolated_read_only_restart_storms,
     }
-    contention_score = sum(1 for key, value in contention_signals.items() if key != "storage_hot_path_bounded_by_control" and value)
+    non_contention_signals = {"storage_hot_path_bounded_by_control", "isolated_read_only_restart_storms"}
+    contention_score = sum(1 for key, value in contention_signals.items() if key not in non_contention_signals and value)
 
     overall_status = "ready"
     if contention_score >= 3:
@@ -312,7 +342,7 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, live_fresh_minutes: floa
         and str(coverage_clearance.get("overall_status") or "") in {"ready", "degraded", "needs_cycles"}
         and int(coverage_clearance.get("stage_candidate_count") or 0) >= min(coverage_shortfall_bots, 1)
         and str(cold_lane_contract.get("overall_status") or "") == "ready"
-        and str(cold_lane_contract.get("refresh_state") or "") in {"fresh_strategy_research_reused", "not_required", "auth_success", "ready"}
+        and str(cold_lane_contract.get("refresh_state") or "") in {"fresh_strategy_research_reused", "not_required", "auth_success", "ready", "ok"}
         and str(coverage_clearance.get("launch_state") or "") in {"stage_only_training_blocked", "stage_only_off_hours", "stage_only", "manual"}
         and (
             bool(coverage_launch_contract.get("training_launch_blocked", False))
@@ -391,6 +421,8 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, live_fresh_minutes: floa
             "hot_path_over_budget_bytes": hot_path_over_budget_bytes,
             "swap_used_gb": round(float(swap_used_gb), 3),
             "restart_storms": restart_storms,
+            "restart_storm_contention_count": restart_storm_contention_count,
+            "restart_storm_isolation": restart_storm_isolation,
             "storage_steady_state_ready": bool(storage_steady_state_ready),
             "storage_steady_state_strict_ready": bool(storage_steady_state_ready_strict),
             "storage_near_steady_state_ready": bool(storage_near_steady_state_ready),

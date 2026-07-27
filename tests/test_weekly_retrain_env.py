@@ -1,4 +1,5 @@
 import argparse
+import json
 import os
 import runpy
 import sys
@@ -123,3 +124,59 @@ def test_configured_runtime_snapshot_summary_falls_back_to_coverage_canary_snaps
 
     assert path == str(fallback_path)
     assert summary["health_path"] == "fallback"
+
+
+def test_weekly_retrain_memory_gate_allows_green_advisory_swap_relief(monkeypatch, tmp_path: Path) -> None:
+    resource_guard = tmp_path / "resource_guard_latest.json"
+    resource_guard.write_text(
+        json.dumps(
+            {
+                "resource_guard_ok": False,
+                "memory_pressure_state": "green",
+                "resource_guard_reasons": ["support_maintenance_frozen_for_mac_fluidity"],
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(retrain, "RESOURCE_GUARD_LATEST", str(resource_guard))
+    monkeypatch.setenv("RETRAIN_GREEN_MEMORY_SWAP_RELIEF", "1")
+    monkeypatch.setattr(
+        retrain,
+        "_memory_snapshot",
+        lambda: {"free_pct": 22.0, "available_pct": 40.0, "swap_used_gb": 8.0},
+    )
+
+    ok, reason, snapshot = retrain._memory_ready(min_free_pct=18.0, max_swap_gb=2.5)
+
+    assert ok is True
+    assert "swap_relaxed_by_resource_guard" in reason
+    assert snapshot["swap_relief_by_resource_guard"] == 1.0
+
+
+def test_coverage_micro_profile_caps_memory_and_ops_waits(monkeypatch) -> None:
+    monkeypatch.setattr(retrain.os.path, "exists", lambda path: True if path == retrain.RUNTIME_TRAINING_SNAPSHOT_LATEST else False)
+    args = argparse.Namespace(
+        retrain_profile="coverage_micro_canary",
+        counterfactual_replay=True,
+        paper_hard_example_pack=True,
+        require_sample_quotas=True,
+        new_bot_boost=True,
+        build_runtime_training_snapshot=True,
+        runtime_training_snapshot_prefer_sqlite=True,
+        runtime_train_use_snapshot=False,
+        runtime_train_prefer_sqlite=False,
+        runtime_train_fast_fail_zero_sample_attempts=0,
+        target_timeout_seconds=0,
+        memory_max_wait_seconds=1800,
+        ops_timeout_seconds=900,
+        cold_lane_retrain_extras=True,
+        auto_insufficient_data_retry=True,
+    )
+
+    profile = retrain._apply_retrain_profile_defaults(args)
+
+    assert profile == "coverage_micro_canary"
+    assert args.target_timeout_seconds == 600
+    assert args.memory_max_wait_seconds == 120
+    assert args.ops_timeout_seconds == 120
+    assert args.cold_lane_retrain_extras is False

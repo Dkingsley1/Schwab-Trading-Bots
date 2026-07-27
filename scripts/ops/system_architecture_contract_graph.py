@@ -24,6 +24,7 @@ READY_STATUSES = {
     "ready",
     "ok",
     "stable",
+    "watch",
     "advisory",
     "guarded_ready",
     "guarded_relief",

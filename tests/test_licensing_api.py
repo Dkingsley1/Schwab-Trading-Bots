@@ -11,12 +11,99 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+from core.brokers import BrokerRuntimeConfig
 from core.licensing_api import available_connector_names, build_partner_api
+from core.licensing_api.grade_snapshot import build_grade_snapshot
+from core.licensing_api.models import LicensingTenantContext
 
 
 def _write_json(path: Path, payload: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, ensure_ascii=True), encoding="utf-8")
+
+
+def test_grade_snapshot_uses_a_plus_continuous_storage_soak_contract(tmp_path: Path) -> None:
+    health = tmp_path / "governance" / "health"
+    _write_json(
+        health / "platform_control_plane_latest.json",
+        {
+            "institutional_readiness": {"overall_score": 100.0},
+            "institutional_domains_by_slug": {
+                "developer_process": {"score": 100.0},
+                "formal_model_governance": {"score": 100.0},
+                "high_fidelity_simulator": {"score": 100.0},
+                "immutable_experiment_tracking": {"score": 100.0},
+                "independent_risk_services": {"score": 100.0},
+                "observability_and_slo": {"score": 100.0},
+                "point_in_time_data_lineage": {"score": 100.0},
+                "portfolio_construction": {"score": 100.0},
+                "reliability_engineering": {"score": 100.0},
+                "security_and_compliance": {"score": 100.0},
+                "statistical_research_discipline": {"score": 100.0},
+                "transaction_cost_and_capacity": {"score": 100.0},
+            },
+        },
+    )
+    _write_json(health / "live_readiness_smoke_latest.json", {"readiness_score": 100.0})
+    _write_json(health / "live_canary_control_latest.json", {"preclearance_score": 100.0})
+    _write_json(health / "incident_closeout_autopilot_latest.json", {"closeout_score": 100.0, "open_incident_count": 0})
+    _write_json(health / "portable_brain_contract_latest.json", {"portability_score": 100.0})
+    _write_json(
+        health / "cost_telemetry_latest.json",
+        {
+            "overall_status": "ready",
+            "storage_cost_proxy": {"tracked_sqlite_gb": 183.034},
+            "portable_backend_cost_proxy": {"proof_present_count": 3},
+        },
+    )
+    _write_json(
+        health / "ingestion_storage_control_latest.json",
+        {
+            "overall_status": "ready",
+            "severity": "stable",
+            "recovery_state": "steady_state",
+            "recovery_quality_score": 75.0,
+            "backpressure_quality_score": 99.0,
+            "pressure_index": 0.151,
+            "continuous_run_soak_contract": {
+                "status": "ready",
+                "ready": True,
+                "soak_ready": True,
+                "grade": "A+",
+                "blockers": [],
+            },
+            "backlog_truth": {
+                "raw_live": {"grade": "A+", "core_pending_lines": 2261, "total_pending_lines": 4098},
+                "sql_overlay": {"grade": "A+", "core_pending_lines": 0, "total_pending_lines": 0},
+            },
+            "raw_live_expansion_contract": {
+                "grade": "A+",
+                "expansion_ready": True,
+                "hard_block": False,
+            },
+        },
+    )
+    _write_json(
+        health / "storage_backpressure_autopilot_latest.json",
+        {
+            "overall_status": "applied_with_followups",
+            "metrics": {"backpressure_actionable": True, "attempted_step_count": 1},
+        },
+    )
+
+    snapshot = build_grade_snapshot(
+        project_root=tmp_path,
+        runtime_config=BrokerRuntimeConfig.from_env(),
+        tenant=LicensingTenantContext(tenant_id="local", company_name="Local", connector_name="default"),
+        endpoint_count=18,
+    )
+    storage = snapshot["section_grades"]["data_ingestion_and_storage"]
+
+    assert storage["letter_grade"] == "A+"
+    assert storage["raw_letter_grade"] == "A+"
+    assert storage["raw_score"] >= 96.0
+    assert storage["floor_state"] == "at_floor"
+    assert storage["signals"]["continuous_storage_soak_a_plus_ready"] is True
 
 
 def test_partner_api_overview_is_tenant_aware(monkeypatch, tmp_path: Path) -> None:

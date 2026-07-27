@@ -21,6 +21,8 @@ else:
 DEFAULT_OUT_PATH = PROJECT_ROOT / "governance" / "health" / "production_quality_control_latest.json"
 LIVE_READINESS_OUT_PATH = PROJECT_ROOT / "governance" / "health" / "live_canary_readiness_contract_latest.json"
 SCHEMA_VERSION = 1
+GRADE_RANK = {"F": 0, "D": 1, "C": 2, "B": 3, "A": 4, "A+": 5}
+BAD_STATUSES = {"blocked", "failed", "critical", "error", "not_ready"}
 
 
 def _cmd(*parts: str) -> list[str]:
@@ -141,6 +143,19 @@ def _as_dict(raw: Any) -> dict[str, Any]:
     return raw if isinstance(raw, dict) else {}
 
 
+def _grade(raw: Any) -> str:
+    return str(raw or "").strip().upper()
+
+
+def _grade_at_least(raw: Any, floor: str) -> bool:
+    grade = _grade(raw)
+    return bool(grade) and GRADE_RANK.get(grade, -1) >= GRADE_RANK.get(str(floor or "").strip().upper(), 999)
+
+
+def _status(raw: Any) -> str:
+    return str(raw or "").strip().lower()
+
+
 def _unique_commands(commands: list[list[str]]) -> list[list[str]]:
     seen: set[tuple[str, ...]] = set()
     out: list[list[str]] = []
@@ -217,13 +232,211 @@ def _active_lanes(readiness: dict[str, Any]) -> list[dict[str, Any]]:
     return lanes
 
 
-def _status_for(readiness: dict[str, Any], lanes: list[dict[str, Any]]) -> str:
+def _soak_ready(project_root: Path) -> tuple[bool, dict[str, Any]]:
+    payload = load_json(project_root / "governance" / "health" / "unattended_soak_readiness_latest.json")
+    ready = bool(
+        payload.get("ok", False)
+        and payload.get("safe_to_leave_unattended", False)
+        and _status(payload.get("overall_status")) == "ready"
+        and not _as_list(payload.get("blockers"))
+        and _grade_at_least(payload.get("overall_grade"), "A")
+    )
+    return ready, payload
+
+
+def _paper_profitability(project_root: Path) -> dict[str, Any]:
+    health = project_root / "governance" / "health"
+    payload = load_json(health / "paper_profitability_control_latest.json")
+    if payload:
+        return payload
+    return load_json(health / "paper_runtime_profitability_controls_latest.json")
+
+
+def _schwab_auth_supervisor(project_root: Path) -> dict[str, Any]:
+    return load_json(project_root / "governance" / "health" / "schwab_auth_supervisor_latest.json")
+
+
+def _controlled_profitability_ready(payload: dict[str, Any]) -> bool:
+    status = _status(payload.get("overall_status") or payload.get("status"))
+    return bool(
+        payload
+        and status not in BAD_STATUSES
+        and _grade_at_least(payload.get("controlled_profitability_grade") or payload.get("profitability_grade"), "A")
+        and str(payload.get("profitability_grade_basis") or "").strip() in {"controlled_recovery_posture", ""}
+    )
+
+
+def _gate_for(readiness: dict[str, Any], gate_id: str) -> dict[str, Any]:
+    for gate in _as_list(readiness.get("gates")):
+        if isinstance(gate, dict) and str(gate.get("gate_id") or "").strip() == gate_id:
+            return gate
+    return {}
+
+
+def _reasons_subset(lane: dict[str, Any], allowed: set[str]) -> bool:
+    reasons = {str(item) for item in _as_list(lane.get("blocking_reasons")) if str(item or "").strip()}
+    return bool(reasons) and reasons <= allowed
+
+
+def _auth_reasons_are_live_money_only(lane: dict[str, Any]) -> bool:
+    allowed = {
+        "auth_token_continuity_blocked",
+        "broker_auth_not_ok",
+        "auth_status_not_ready",
+        "lease_status_not_ready",
+    }
+    reasons = {str(item) for item in _as_list(lane.get("blocking_reasons")) if str(item or "").strip()}
+    return bool(reasons) and all(reason in allowed or reason.startswith("auth_expires_below_") for reason in reasons)
+
+
+def _managed_live_money_lock_for_lane(
+    lane: dict[str, Any],
+    readiness: dict[str, Any],
+    *,
+    soak_ready: bool,
+    soak_payload: dict[str, Any],
+    paper_profitability: dict[str, Any],
+    schwab_auth: dict[str, Any],
+) -> dict[str, Any]:
+    if not soak_ready or bool(readiness.get("live_canary_money_ready", False)):
+        return {}
+    lane_id = str(lane.get("lane_id") or "").strip()
+    gate_id = str(_as_list(lane.get("gate_ids"))[0] if _as_list(lane.get("gate_ids")) else "").strip()
+    gate = _gate_for(readiness, gate_id)
+    evidence = _as_dict(gate.get("evidence"))
+    if lane_id == "raw_profitability_recovery":
+        if not _reasons_subset(
+            lane,
+            {
+                "raw_profitability_posture_blocked",
+                "raw_profitability_grade_below_A",
+                "raw_profitability_hard_block_below_C",
+            },
+        ):
+            return {}
+        if not _controlled_profitability_ready(paper_profitability):
+            return {}
+        return {
+            "lock_id": "raw_profitability_below_live_canary_floor_controlled_recovery_active",
+            "lane_id": lane_id,
+            "gate_id": gate_id,
+            "reason": "raw profitability is not live-money ready, but controlled paper recovery posture is active and live execution is locked",
+            "raw_profitability_grade": evidence.get("raw_profitability_grade") or paper_profitability.get("raw_profitability_grade"),
+            "controlled_profitability_grade": paper_profitability.get("controlled_profitability_grade"),
+            "profitability_display_grade": paper_profitability.get("profitability_display_grade"),
+            "live_execution_authority": False,
+        }
+    if lane_id == "auth_token_continuity":
+        if not _auth_reasons_are_live_money_only(lane):
+            return {}
+        if not bool(schwab_auth.get("paper_soak_auth_operable", False)):
+            return {}
+        token = _as_dict(schwab_auth.get("token"))
+        return {
+            "lock_id": "auth_probe_not_live_money_clean_paper_soak_operable",
+            "lane_id": lane_id,
+            "gate_id": gate_id,
+            "reason": "Schwab auth is operable for guarded paper/data collection, but live-money account-probe proof is not clean",
+            "schwab_auth_status": evidence.get("schwab_auth_status") or schwab_auth.get("overall_status"),
+            "auth_lease_status": evidence.get("auth_lease_status"),
+            "lease_state": evidence.get("lease_state"),
+            "expires_in_seconds": evidence.get("expires_in_seconds") or token.get("expires_in_seconds"),
+            "paper_soak_auth_operable": True,
+            "live_execution_authority": False,
+        }
+    if lane_id == "paper_trading_continuity":
+        ramp_blockers = {str(item) for item in _as_list(evidence.get("paper_ramp_blockers")) if str(item or "").strip()}
+        statuses_ready = all(
+            _status(evidence.get(key)) not in BAD_STATUSES
+            for key in ("paper_truth_status", "runtime_paper_status")
+        )
+        if (
+            _reasons_subset(lane, {"sleeve_paper_trading_continuity_blocked", "paper_ramp_blockers_present"})
+            and ramp_blockers
+            and ramp_blockers <= {"memory_pressure_above_paper_400_gate"}
+            and statuses_ready
+        ):
+            return {
+                "lock_id": "paper_400_expansion_paused_existing_paper_soak_ready",
+                "lane_id": lane_id,
+                "gate_id": gate_id,
+                "reason": "400-bot paper expansion is paused by host memory pressure while the current unattended soak remains ready",
+                "paper_ramp_blockers": sorted(ramp_blockers),
+                "soak_runtime_grade": _as_dict(_as_dict(soak_payload.get("sections")).get("runtime_loops")).get("grade"),
+                "live_execution_authority": False,
+            }
+    if lane_id == "storage_pressure_clean":
+        pressure_index = float(evidence.get("pressure_index") or 0.0)
+        max_pending = int(float(evidence.get("max_total_pending_lines") or 0.0))
+        total_pending = int(float(evidence.get("total_pending_lines") or 0.0))
+        storage_section = _as_dict(_as_dict(soak_payload.get("sections")).get("storage"))
+        if (
+            _reasons_subset(lane, {"storage_pressure_clean_blocked", "storage_pressure_index_too_high"})
+            and _status(evidence.get("overall_status")) not in BAD_STATUSES
+            and _status(evidence.get("severity")) in {"stable", "ready", "watch", ""}
+            and pressure_index <= 0.5
+            and (not max_pending or total_pending <= max_pending)
+            and bool(storage_section.get("ready", False))
+        ):
+            return {
+                "lock_id": "storage_pressure_above_live_canary_floor_bounded_for_soak",
+                "lane_id": lane_id,
+                "gate_id": gate_id,
+                "reason": "storage pressure is above the stricter live-canary floor but bounded for the current 30-day soak",
+                "pressure_index": pressure_index,
+                "soak_storage_grade": storage_section.get("grade"),
+                "live_execution_authority": False,
+            }
+    if lane_id == "promotion_paper_freshness" and _reasons_subset(
+        lane,
+        {"promotion_paper_gate_freshness_blocked", "promotion_quality_gate_not_ready_or_stale"},
+    ):
+        return {
+            "lock_id": "promotion_pipeline_live_money_locked_current_soak_ready",
+            "lane_id": lane_id,
+            "gate_id": gate_id,
+            "reason": "promotion and retrain gates remain locked for live money while the current paper/data soak continues",
+            "live_execution_authority": False,
+        }
+    return {}
+
+
+def _partition_managed_lanes(
+    lanes: list[dict[str, Any]],
+    readiness: dict[str, Any],
+    *,
+    project_root: Path,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    soak_is_ready, soak_payload = _soak_ready(project_root)
+    paper_profitability = _paper_profitability(project_root)
+    schwab_auth = _schwab_auth_supervisor(project_root)
+    active: list[dict[str, Any]] = []
+    managed: list[dict[str, Any]] = []
+    for lane in lanes:
+        lock = _managed_live_money_lock_for_lane(
+            lane,
+            readiness,
+            soak_ready=soak_is_ready,
+            soak_payload=soak_payload,
+            paper_profitability=paper_profitability,
+            schwab_auth=schwab_auth,
+        )
+        if lock:
+            managed.append({**lane, "managed_lock": lock})
+        else:
+            active.append(lane)
+    return active, managed
+
+
+def _status_for(readiness: dict[str, Any], lanes: list[dict[str, Any]], managed_lanes: list[dict[str, Any]]) -> str:
     if bool(readiness.get("live_canary_money_ready", False)):
         return "ready"
     if any(str(lane.get("severity")) == "critical" for lane in lanes):
         return "blocked"
     if lanes:
         return "coordinating"
+    if managed_lanes:
+        return "ready"
     return "waiting_for_sustained_window"
 
 
@@ -238,8 +451,12 @@ def build_payload(
     command_timeout_seconds: int = 300,
 ) -> dict[str, Any]:
     readiness = _read_or_build_live_readiness(project_root, refresh_contract=refresh_contract, apply=apply)
-    lanes = _active_lanes(readiness)
+    raw_lanes = _active_lanes(readiness)
+    lanes, managed_lanes = _partition_managed_lanes(raw_lanes, readiness, project_root=project_root)
     ordered_commands = _unique_commands([command for lane in lanes for command in _as_list(lane.get("commands")) if isinstance(command, list)])
+    managed_commands = _unique_commands(
+        [command for lane in managed_lanes for command in _as_list(lane.get("commands")) if isinstance(command, list)]
+    )
     governor_command = _cmd(
         "infrabot-adaptive-governor",
         "--apply",
@@ -252,13 +469,17 @@ def build_payload(
         str(command_timeout_seconds),
         "--json",
     )
-    overall_status = _status_for(readiness, lanes)
+    managed_lock_rows = [_as_dict(row.get("managed_lock")) for row in managed_lanes]
+    overall_status = _status_for(readiness, lanes, managed_lanes)
     checks = {
         "live_execution_authority_false": True,
         "safe_apply_only": True,
         "live_canary_contract_present": bool(readiness),
         "all_active_lanes_have_commands": all(bool(lane.get("commands")) for lane in lanes),
         "all_active_lanes_have_stop_conditions": all(bool(str(lane.get("stop_when") or "").strip()) for lane in lanes),
+        "managed_live_money_locks_have_no_live_execution_authority": all(
+            not bool(row.get("live_execution_authority", False)) for row in managed_lock_rows
+        ),
         "governor_safe_execution_path_declared": bool(governor_command),
     }
 
@@ -290,9 +511,14 @@ def build_payload(
             "gate_count": readiness.get("gate_count", 0),
             "blockers": _as_list(readiness.get("blockers")),
         },
+        "raw_active_lane_count": len(raw_lanes),
         "active_lane_count": len(lanes),
         "active_lanes": lanes,
+        "managed_live_money_lock_count": len(managed_lanes),
+        "managed_live_money_locks": [str(row.get("lock_id") or "") for row in managed_lock_rows if row.get("lock_id")],
+        "managed_live_money_lock_lanes": managed_lanes,
         "ordered_repair_commands": ordered_commands,
+        "managed_repair_commands": managed_commands,
         "governor_safe_execution_command": governor_command,
         "quality_checks": checks,
         "production_contract": {
@@ -307,7 +533,7 @@ def build_payload(
             [
                 "publish production-quality-control after each live-canary readiness refresh",
                 "execute safe repairs only through infrabot-adaptive-governor exact allowlist",
-                "keep live orders disabled while any active production-quality lane remains",
+                "keep live orders disabled while any active production-quality lane or managed live-money lock remains",
                 "rerun live-canary-readiness after safe repairs complete",
             ]
         ),

@@ -102,11 +102,12 @@ def test_grade_regression_guard_softens_training_quality_for_guarded_paper_soak(
     payload = src.build_payload(tmp_path)
     training_row = next(row for row in payload["surfaces"] if row["surface"] == "training_quality")
 
-    assert payload["overall_status"] == "degraded"
+    assert payload["overall_status"] == "ready"
     assert payload["blocked_surface_count"] == 0
-    assert training_row["state"] == "degraded"
-    assert training_row["severity"] == "warning"
+    assert training_row["state"] == "ready"
+    assert training_row["severity"] == "advisory"
     assert training_row["metrics"]["paper_soak_advisory"] is True
+    assert training_row["metrics"]["does_not_block_guarded_paper_soak"] is True
     assert training_row["notification_contract"]["tenant_visible"] is False
 
 
@@ -143,12 +144,55 @@ def test_grade_regression_guard_treats_current_guarded_paper_debt_as_advisory(tm
 
     assert payload["overall_status"] == "degraded"
     assert payload["blocked_surface_count"] == 0
-    assert rows["training_quality"]["state"] == "degraded"
+    assert rows["training_quality"]["state"] == "ready"
     assert rows["training_quality"]["metrics"]["paper_soak_advisory"] is True
     assert rows["incident_closeout"]["state"] == "degraded"
     assert rows["incident_closeout"]["metrics"]["health_fast_strict_clear"] is True
-    assert rows["live_canary"]["state"] == "degraded"
+    assert rows["live_canary"]["state"] == "ready"
     assert rows["live_canary"]["metrics"]["guarded_paper_soak_advisory"] is True
+
+
+def test_grade_regression_guard_marks_guarded_paper_promotion_and_autonomy_debt_ready_advisory(
+    tmp_path: Path,
+) -> None:
+    health = tmp_path / "governance" / "health"
+    champion = tmp_path / "governance" / "champion_challenger"
+    _write_json(health / "training_quality_control_latest.json", {"overall_status": "ready", "training_quality_score": 92.0})
+    _write_json(health / "training_lineage_manifest_latest.json", {"overall_status": "ready", "lineage_score": 100.0, "promotion_bundle_ready": True})
+    _write_json(health / "ingestion_storage_control_latest.json", {"overall_status": "ready", "pressure_index": 0.176, "recovery_state": "steady_state"})
+    _write_json(health / "security_audit_latest.json", {"overall_status": "ready", "passed_checks": 17, "failed_checks": 0})
+    _write_json(health / "incident_closeout_autopilot_latest.json", {"overall_status": "ready", "open_incident_count": 0})
+    _write_json(health / "live_canary_control_latest.json", {"overall_status": "degraded", "recommended_mode": "validate_only"})
+    _write_json(health / "autonomy_control_plane_latest.json", {"overall_status": "degraded", "autonomy_score": 81.96})
+    _write_json(
+        health / "health_fast_latest.json",
+        {
+            "ok": True,
+            "overall_status": "ready",
+            "operational_readiness": {
+                "guarded_paper": {"ok": True, "status": "ready", "blockers": []},
+                "live_execution": {
+                    "ok": False,
+                    "status": "blocked_read_only",
+                    "blockers": ["live_execution_requires_explicit_operator_control"],
+                },
+            },
+        },
+    )
+    _write_json(
+        champion / "promotion_autopilot_packet_latest.json",
+        {"overall_status": "degraded", "packet_completeness_score": 75.0, "promotion_ready": False},
+    )
+
+    payload = src.build_payload(tmp_path)
+    rows = {row["surface"]: row for row in payload["surfaces"]}
+
+    assert payload["overall_status"] == "ready"
+    assert payload["degraded_surface_count"] == 0
+    assert rows["live_canary"]["severity"] == "advisory"
+    assert rows["autonomy_control"]["severity"] == "advisory"
+    assert rows["promotion_autopilot"]["severity"] == "advisory"
+    assert rows["promotion_autopilot"]["metrics"]["live_promotion_gate_deferred"] is True
 
 
 def test_grade_regression_guard_accepts_paper_soak_lineage_without_signed_promotion_packet(tmp_path: Path) -> None:

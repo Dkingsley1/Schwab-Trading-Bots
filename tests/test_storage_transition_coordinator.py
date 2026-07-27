@@ -113,6 +113,35 @@ def test_storage_transition_coordinator_apply_refreshes_expected_steps(tmp_path:
     ]
 
 
+def test_storage_transition_coordinator_keeps_external_handoff_ready_with_ops_advisory_debt(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    health = project_root / "governance" / "health"
+    _write_json(health / "storage_mount_guard_latest.json", {"storage_mode": "external", "external_available": True, "mount_present": True})
+    _write_json(health / "storage_failback_sync_latest.json", {"mode": "external"})
+    _write_json(health / "storage_split_brain_reconciler_latest.json", {"summary": {"unresolved_conflicts": 0}})
+    _write_json(health / "storage_resilience_control_latest.json", {"overall_status": "ready", "ok": True})
+    _write_json(
+        health / "ops_coordinator_latest.json",
+        {
+            "ok": False,
+            "overall_status": "blocked",
+            "summary": {
+                "live_readiness_status": "blocked",
+                "promotion_status": "held_out",
+            },
+        },
+    )
+
+    payload = coordinator_src.build_payload(project_root, transition_mode="external", apply=False)
+
+    ops_row = next(row for row in payload["assigned_bots"] if row["name"] == "ops_coordinator")
+    assert payload["overall_status"] == "ready"
+    assert payload["metrics"]["managed_advisory_count"] == 1
+    assert ops_row["status"] == "managed_advisory"
+    assert ops_row["raw_status"] == "blocked"
+    assert ops_row["ok"] is True
+
+
 def test_storage_transition_coordinator_records_child_timeout(tmp_path: Path, monkeypatch) -> None:
     def _timeout(cmd: list[str], **_kwargs):
         raise coordinator_src.subprocess.TimeoutExpired(cmd=cmd, timeout=3, output='{"ok": false}\n', stderr="slow child")

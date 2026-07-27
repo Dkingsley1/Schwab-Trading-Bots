@@ -174,6 +174,7 @@ def build_payload(
     quarantine_payload: dict[str, Any] = {}
     drain_follow_through_status = ""
     drain_follow_through_progress_state = ""
+    drain_follow_through_completed = False
     applied = False
     quarantine_applied = False
 
@@ -199,6 +200,7 @@ def build_payload(
         follow_through = drain_payload.get("follow_through") if isinstance(drain_payload.get("follow_through"), dict) else {}
         drain_follow_through_status = str(follow_through.get("status") or "")
         drain_follow_through_progress_state = str(follow_through.get("progress_state") or "")
+        drain_follow_through_completed = bool(follow_through.get("completed", False))
         applied = int(result.get("rc", 1)) == 0
         refresh_steps = _refresh_surface_artifacts(project_root)
     elif apply and quarantine_actionable:
@@ -239,8 +241,14 @@ def build_payload(
     elif not apply:
         overall_status = "ready"
         ok = True
-    elif drain_follow_through_status == "completed" and not bool(drain_payload.get("writer_busy", False)):
+    elif (
+        drain_follow_through_status in {"completed", "not_needed"}
+        or drain_follow_through_completed
+    ) and not bool(drain_payload.get("writer_busy", False)):
         overall_status = "applied"
+        ok = True
+    elif applied and drain_follow_through_completed and bool(drain_payload.get("writer_busy", False)):
+        overall_status = "applied_progressing"
         ok = True
     elif applied and drain_follow_through_status == "timed_out" and drain_follow_through_progress_state == "progressing":
         overall_status = "applied_progressing"
@@ -307,6 +315,7 @@ def build_payload(
             "writer_busy": bool(drain_payload.get("writer_busy", False)),
             "follow_through_status": drain_follow_through_status,
             "follow_through_progress_state": drain_follow_through_progress_state,
+            "follow_through_completed": drain_follow_through_completed,
             "follow_through_progress_observed": bool(((drain_payload.get("follow_through") or {}).get("progress_observed"))),
             "follow_through_progress_events": _safe_int(((drain_payload.get("follow_through") or {}).get("progress_events")), 0),
             "follow_through_attempts": _safe_int(((drain_payload.get("follow_through") or {}).get("attempts")), 0),

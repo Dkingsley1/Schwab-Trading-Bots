@@ -28,6 +28,7 @@ DEFAULT_EXTERNAL_ROOT = Path("/Volumes/BOT_LOGS/schwab_trading_bot")
 DiskSnapshotFn = Callable[[Path], dict[str, Any]]
 MANAGED_WARNING_NAMES = {
     "host_not_on_ac_power_operator_approved_battery_override",
+    "storage_margin_managed_by_approved_cold_archive_spillover",
     "zero_touch_remote_pager_missing_mobile_operator_coverage_active",
 }
 
@@ -245,16 +246,28 @@ def _storage_contract(
     projected_free = _safe_float(cleanup.get("projected_free_gb"), current_free)
     margin = round(current_free - required_free, 3)
     projected_margin = round(projected_free - required_free, 3)
+    cold_archive_spillover_ready = bool(retention_contract.get("cold_archive_spillover_ready", False))
+    cold_archive_adjusted_margin = _safe_float(retention_contract.get("cold_archive_adjusted_margin_gb"), margin)
+    cold_archive_capacity = _safe_float(retention_contract.get("cold_archive_spillover_capacity_gb"), 0.0)
+    primary_pressure_buffer = _safe_float(retention_contract.get("cold_archive_primary_pressure_buffer_gb"), 16.0)
+    primary_above_pressure_guard = bool(current_free >= pressure_free + primary_pressure_buffer)
+    storage_margin_ready = bool(
+        current_free >= required_free
+        or (cold_archive_spillover_ready and cold_archive_adjusted_margin >= 0.0 and primary_above_pressure_guard)
+    )
 
     blockers: list[str] = []
     warnings: list[str] = []
     managed_controls: list[str] = []
     if current_free <= 0.0:
         blockers.append("external_free_space_unknown")
-    if current_free < required_free:
+    if not storage_margin_ready:
         blockers.append("storage_margin_not_30_day_ready")
         if projected_margin >= 0.0 and _safe_float(cleanup.get("selected_reclaimable_gb"), 0.0) > 0.0:
             warnings.append("storage_cleanup_plan_available_not_applied")
+    elif current_free < required_free and cold_archive_spillover_ready:
+        warnings.append("storage_margin_managed_by_approved_cold_archive_spillover")
+        managed_controls.append("approved_cold_archive_spillover")
     if not bool(retention_contract.get("ready", False)):
         blockers.append("storage_retention_contract_not_ready")
     ingestion_soak_ready = bool(ingestion_contract.get("ready", False) or ingestion_contract.get("soak_ready", False))
@@ -286,6 +299,11 @@ def _storage_contract(
         "current_external_free_gb": round(current_free, 3),
         "available_margin_gb": margin,
         "projected_margin_gb": projected_margin,
+        "cold_archive_spillover_ready": cold_archive_spillover_ready,
+        "cold_archive_spillover_capacity_gb": round(cold_archive_capacity, 3),
+        "cold_archive_adjusted_margin_gb": round(cold_archive_adjusted_margin, 3),
+        "primary_above_pressure_guard": primary_above_pressure_guard,
+        "primary_pressure_buffer_gb": round(primary_pressure_buffer, 3),
         "effective_daily_growth_gb": round(effective_daily, 4),
         "retention_status": str(retention_contract.get("status") or ""),
         "ingestion_status": str(ingestion_contract.get("status") or ""),
@@ -294,6 +312,7 @@ def _storage_contract(
         "failed_database_integrity_checks": failed_db_checks,
         "blockers": ordered_unique(blockers),
         "warnings": ordered_unique(warnings),
+        "managed_controls": ordered_unique(managed_controls),
     }
 
 
@@ -356,12 +375,32 @@ def _runtime_contract(project_root: Path) -> dict[str, Any]:
     blockers: list[str] = []
     warnings: list[str] = []
     managed_controls: list[str] = []
+    restart_storms = process.get("restart_storms") if isinstance(process.get("restart_storms"), list) else []
+    isolation = process.get("restart_storm_isolation") if isinstance(process.get("restart_storm_isolation"), dict) else {}
+    if not isolation:
+        intelligence = process.get("watchdog_intelligence") if isinstance(process.get("watchdog_intelligence"), dict) else {}
+        isolation = intelligence.get("restart_storm_isolation") if isinstance(intelligence.get("restart_storm_isolation"), dict) else {}
+    isolated_read_only_storms = bool(
+        restart_storms
+        and isolation
+        and bool(isolation.get("all_active_storms_isolated", False))
+        and _safe_int(isolation.get("execution_blocking_count"), 0) == 0
+    )
     if str(process.get("overall_status") or "").lower() != "ready":
-        blockers.append("process_watchdog_not_ready")
-    if process.get("restart_storms"):
-        blockers.append("restart_storms_present")
+        if isolated_read_only_storms:
+            managed_controls.append("process_watchdog_degraded_only_by_isolated_read_only_collection")
+        else:
+            blockers.append("process_watchdog_not_ready")
+    if restart_storms:
+        if isolated_read_only_storms:
+            managed_controls.append("read_only_collection_restart_storms_isolated")
+        else:
+            blockers.append("restart_storms_present")
     if process.get("alerts"):
-        warnings.append("process_watchdog_alerts_present")
+        if isolated_read_only_storms:
+            managed_controls.append("process_watchdog_alerts_isolated_read_only_collection")
+        else:
+            warnings.append("process_watchdog_alerts_present")
     live_runtime_status = str(live_runtime.get("overall_status") or "").lower()
     live_plane = live_runtime.get("live_plane") if isinstance(live_runtime.get("live_plane"), dict) else {}
     clearance_plan = live_runtime.get("clearance_plan") if isinstance(live_runtime.get("clearance_plan"), dict) else {}
@@ -410,6 +449,7 @@ def _runtime_contract(project_root: Path) -> dict[str, Any]:
         "broker_ready_for_open": bool(broker.get("ready_for_open", False)),
         "restart_storm_count": len(process.get("restart_storms") or []),
         "alert_count": len(process.get("alerts") or []),
+        "isolated_read_only_restart_storms": bool(isolated_read_only_storms),
         "blockers": blockers,
         "warnings": warnings,
         "managed_controls": managed_controls,
@@ -560,7 +600,8 @@ def build_payload(
     scored_warnings = [item for item in warnings if not _warning_is_managed_for_soak(item)]
     managed_warnings = [item for item in warnings if _warning_is_managed_for_soak(item)]
     managed_controls = ordered_unique(
-        list(host.get("managed_controls") or [])
+        list(storage.get("managed_controls") or [])
+        + list(host.get("managed_controls") or [])
         + list(runtime.get("managed_controls") or [])
         + list(alerting.get("managed_controls") or [])
     )

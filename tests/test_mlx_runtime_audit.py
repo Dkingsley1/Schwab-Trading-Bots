@@ -37,7 +37,7 @@ def test_package_rows_detect_drift_states() -> None:
             "package": "mlx",
             "locked_version": "0.30.6",
             "installed_version": "0.31.0",
-            "status": "version_mismatch",
+            "status": "runtime_ahead_of_lock",
         },
         {
             "package": "mlx-data",

@@ -232,7 +232,29 @@ def test_resolve_sqlite_runtime_settings_downshift_ops_plane_under_pressure(tmp_
     assert settings["pressure_level"] == "red"
     assert settings["temp_store_mode"] == "FILE"
     assert settings["cache_size_kb"] == 2048
-    assert settings["mmap_size_mb"] == 8
+    assert settings["mmap_requested_mb"] == 0
+    assert settings["mmap_size_mb"] == 0
+    assert settings["mmap_enabled"] is False
+
+
+def test_resolve_sqlite_runtime_settings_requires_explicit_mmap_opt_in(tmp_path: Path, monkeypatch) -> None:
+    project_root = tmp_path / "project"
+    monkeypatch.setenv("BOT_OPS_SQLITE_MMAP_SIZE_MB", "96")
+    monkeypatch.delenv("BOT_OPS_SQLITE_ALLOW_MMAP", raising=False)
+
+    settings = src.resolve_sqlite_runtime_settings(project_root)
+
+    assert settings["mmap_requested_mb"] == 96
+    assert settings["mmap_size_mb"] == 0
+    assert settings["mmap_enabled"] is False
+    assert settings["mmap_disabled_reason"] == "ops_sqlite_mmap_opt_in_required"
+
+    monkeypatch.setenv("BOT_OPS_SQLITE_ALLOW_MMAP", "1")
+    opted_in = src.resolve_sqlite_runtime_settings(project_root)
+
+    assert opted_in["mmap_requested_mb"] == 96
+    assert opted_in["mmap_size_mb"] == 96
+    assert opted_in["mmap_enabled"] is True
 
 
 def test_emit_materialized_summaries_rolls_up_stream_and_symbol_daily(tmp_path: Path) -> None:

@@ -85,16 +85,21 @@ def resolve_runtime_settings(project_root: Path = PROJECT_ROOT) -> dict[str, Any
         pressure_level = "yellow"
 
     defaults = {
-        "green": {"temp_store_mode": "MEMORY", "cache_size_kb": 20000, "mmap_size_mb": 256, "analyze_enabled": True},
-        "yellow": {"temp_store_mode": "FILE", "cache_size_kb": 12000, "mmap_size_mb": 128, "analyze_enabled": True},
-        "red": {"temp_store_mode": "FILE", "cache_size_kb": 4096, "mmap_size_mb": 32, "analyze_enabled": False},
+        "green": {"temp_store_mode": "MEMORY", "cache_size_kb": 20000, "mmap_size_mb": 0, "analyze_enabled": True},
+        "yellow": {"temp_store_mode": "FILE", "cache_size_kb": 12000, "mmap_size_mb": 0, "analyze_enabled": True},
+        "red": {"temp_store_mode": "FILE", "cache_size_kb": 4096, "mmap_size_mb": 0, "analyze_enabled": False},
     }[pressure_level]
     temp_store_mode = _normalize_temp_store_mode(
         os.getenv("SQLITE_TEMP_STORE_MODE", defaults["temp_store_mode"]),
         default=defaults["temp_store_mode"],
     )
     cache_size_kb = max(_safe_int(os.getenv("SQLITE_CACHE_SIZE_KB", str(defaults["cache_size_kb"])), defaults["cache_size_kb"]), 1024)
-    mmap_size_mb = max(_safe_int(os.getenv("SQLITE_MMAP_SIZE_MB", str(defaults["mmap_size_mb"])), defaults["mmap_size_mb"]), 0)
+    requested_mmap_size_mb = max(
+        _safe_int(os.getenv("SQLITE_MMAP_SIZE_MB", str(defaults["mmap_size_mb"])), defaults["mmap_size_mb"]),
+        0,
+    )
+    mmap_explicitly_allowed = _truthy(os.getenv("SQLITE_ALLOW_MMAP", "0"), False)
+    mmap_size_mb = requested_mmap_size_mb if mmap_explicitly_allowed else 0
     cache_spill = _truthy(os.getenv("SQLITE_CACHE_SPILL", "1"), True)
     analyze_enabled = _truthy(
         os.getenv("SQLITE_ANALYZE_ENABLED", "1" if defaults["analyze_enabled"] else "0"),
@@ -111,6 +116,9 @@ def resolve_runtime_settings(project_root: Path = PROJECT_ROOT) -> dict[str, Any
         "temp_store_mode": temp_store_mode,
         "cache_size_kb": cache_size_kb,
         "cache_size_pragma": -cache_size_kb,
+        "mmap_requested_mb": requested_mmap_size_mb,
+        "mmap_enabled": bool(mmap_explicitly_allowed and mmap_size_mb > 0),
+        "mmap_disabled_reason": "" if mmap_explicitly_allowed or requested_mmap_size_mb <= 0 else "sqlite_mmap_opt_in_required",
         "mmap_size_mb": mmap_size_mb,
         "mmap_size_bytes": int(mmap_size_mb * 1024 * 1024),
         "cache_spill": cache_spill,

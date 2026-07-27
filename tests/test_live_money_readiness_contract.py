@@ -329,6 +329,42 @@ def test_live_money_contract_treats_replay_rows_low_collecting_as_managed_ready(
     assert sections["decision_replay_harness"]["evidence"]["managed_collection_ready"] is True
 
 
+def test_live_money_contract_grades_managed_coverage_stage_read_only_as_ready(tmp_path: Path) -> None:
+    _write_ready_sources(tmp_path)
+    health = tmp_path / "governance" / "health"
+
+    _write_json(
+        health / "live_runtime_separation_control_latest.json",
+        {
+            "overall_status": "ready",
+            "clearance_plan": {"clearance_state": "managed_coverage_stage_deferred"},
+            "release_contract": {"live_lane_should_be_read_only": True},
+        },
+    )
+    _write_json(
+        health / "global_killswitch_latest.json",
+        {
+            "timestamp_utc": "2026-08-26T11:00:00+00:00",
+            "halt": False,
+            "halt_latched": False,
+            "halt_required": False,
+            "clear_ready": True,
+            "operating_mode": "degraded_collection",
+            "clear_blockers": [],
+            "critical_hard_gate_names": [],
+            "degraded_clear_blockers": ["runtime_clearance=managed_coverage_stage_deferred"],
+        },
+    )
+
+    payload = src.build_payload(tmp_path, as_of_date="2026-08-25")
+    sections = {row["section_id"]: row for row in payload["sections"]}
+
+    assert sections["live_runtime_release"]["grade"] == "A+"
+    assert sections["live_runtime_release"]["ready"] is True
+    assert sections["risk_controls"]["grade"] == "A+"
+    assert sections["risk_controls"]["ready"] is True
+
+
 def test_live_money_contract_grades_idle_seed_ready_promotion_packet_without_unlocking_live_money(
     tmp_path: Path,
 ) -> None:
@@ -389,3 +425,58 @@ def test_live_money_contract_grades_idle_seed_ready_promotion_packet_without_unl
     assert at_target["live_money_locked"] is True
     assert at_target["operator_execution_release_required"] is True
     assert at_target["blocking_reasons"] == ["live_execution_operator_release_required"]
+
+
+def test_live_money_contract_accepts_signed_seed_packet_when_only_training_success_is_pending(
+    tmp_path: Path,
+) -> None:
+    _write_ready_sources(tmp_path)
+    health = tmp_path / "governance" / "health"
+    promotion_quality = json.loads((health / "promotion_quality_gate_latest.json").read_text(encoding="utf-8"))
+    promotion_quality["details"]["promotion_packet_ok"] = False
+    promotion_quality["details"]["promotion"] = {
+        "promotion_scope_active": False,
+        "promote_ok": False,
+        "considered_bots": 0,
+    }
+    _write_json(health / "promotion_quality_gate_latest.json", promotion_quality)
+    _write_json(
+        tmp_path / "governance" / "champion_challenger" / "promotion_packet_latest.json",
+        {
+            "ok": False,
+            "packet_complete": False,
+            "ready_for_committee": False,
+            "committee_packet_seed_ready": True,
+            "signing_material_ready": True,
+            "trained_models_complete": True,
+            "dataset": {"rows_sha256": "a" * 64},
+            "replayability_contract": {
+                "hash_bundle_complete": True,
+                "exact_replay_ready": True,
+                "trained_models_contract_ready": True,
+            },
+            "gate_results": {
+                "training_success_confirmed": False,
+                "feature_store_manifest_strict_ok": True,
+                "bot_support_owner_guard_ok": True,
+                "new_bot_admission_ok": True,
+                "retrain_schema_compatibility_ok": True,
+                "golden_replay_regression_ok": True,
+                "cohort_drift_baseline_ok": True,
+                "champion_challenger_probation_ok": True,
+                "replay_hash_registry_ok": True,
+                "content_store_manifest_present": True,
+            },
+            "committee": {"seed_ready": True, "signature_verified": True},
+            "packet_sha256": "b" * 64,
+        },
+    )
+
+    payload = src.build_payload(tmp_path, as_of_date="2026-08-25")
+    sections = {row["section_id"]: row for row in payload["sections"]}
+
+    assert payload["blocking_reasons"] == ["target_window_not_complete"]
+    assert sections["promotion_packet"]["ready"] is True
+    assert sections["promotion_packet"]["grade"] == "A+"
+    assert sections["promotion_packet"]["evidence"]["core_gate_blockers"] == ["training_success_confirmed"]
+    assert sections["promotion_packet"]["evidence"]["managed_idle_preclearance"] is True

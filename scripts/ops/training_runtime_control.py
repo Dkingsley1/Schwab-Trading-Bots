@@ -31,6 +31,7 @@ TRAINING_BATCH_PROFILES = {
     "coverage_batch30_canary",
 }
 TRAINING_BATCH_MAX = 30
+TRAINING_TIMEOUT_FALLBACK_WINDOW_MINUTES = 24 * 60
 SUPPORT_MAINTENANCE_FREEZE_REASON = "support_maintenance_frozen_for_mac_fluidity"
 CREATIVE_SESSION_ACTIVE_REASON = "creative_session_active"
 
@@ -93,6 +94,100 @@ def _ordered_unique(items: list[str]) -> list[str]:
         seen.add(text)
         out.append(text)
     return out
+
+
+def _command_option(command: list[Any], flag: str) -> str:
+    parts = [str(part) for part in command]
+    try:
+        index = parts.index(flag)
+    except ValueError:
+        return ""
+    if index + 1 >= len(parts):
+        return ""
+    return parts[index + 1].strip()
+
+
+def _recent_small_canary_timeout(autopilot: dict[str, Any]) -> dict[str, Any]:
+    launch_result = autopilot.get("last_launch_result") if isinstance(autopilot.get("last_launch_result"), dict) else {}
+    gate = autopilot.get("last_training_gate") if isinstance(autopilot.get("last_training_gate"), dict) else {}
+    command = gate.get("recommended_command") if isinstance(gate.get("recommended_command"), list) else []
+    profile = _command_option(command, "--retrain-profile")
+    bot_arg = _command_option(command, "--include-bot-ids")
+    bot_ids = [part.strip() for part in bot_arg.split(",") if part.strip()]
+    age_minutes = _age_minutes(autopilot.get("timestamp_utc"))
+    fresh = bool(
+        age_minutes is not None
+        and age_minutes <= TRAINING_TIMEOUT_FALLBACK_WINDOW_MINUTES
+    )
+    timed_out = bool(launch_result.get("timed_out", False))
+    timeout_profiles = {"coverage_micro_canary", "coverage_small_canary"}
+    active = bool(timed_out and fresh and profile in timeout_profiles and len(bot_ids) >= 1)
+    return {
+        "active": active,
+        "fresh": fresh,
+        "timed_out": timed_out,
+        "age_minutes": round(float(age_minutes), 3) if age_minutes is not None else None,
+        "window_minutes": TRAINING_TIMEOUT_FALLBACK_WINDOW_MINUTES,
+        "profile": profile,
+        "bot_ids": bot_ids,
+        "returncode": launch_result.get("returncode"),
+        "command": [str(part) for part in command],
+        "source": "training_drain_autopilot",
+    }
+
+
+def _recent_retrain_launch_timeout(launch: dict[str, Any]) -> dict[str, Any]:
+    profile = str(launch.get("retrain_profile") or "").strip()
+    selector = launch.get("selector_summary") if isinstance(launch.get("selector_summary"), dict) else {}
+    bot_ids = [str(item).strip() for item in selector.get("include_bot_ids") or [] if str(item).strip()]
+    final_status = str(launch.get("final_status") or "").strip().lower()
+    exit_code = _safe_int(launch.get("exit_code"), _safe_int(launch.get("returncode"), 0))
+    age_minutes = (
+        _age_minutes(launch.get("ended_utc"))
+        or _age_minutes(launch.get("finished_utc"))
+        or _age_minutes(launch.get("timestamp_utc"))
+        or _age_minutes(launch.get("started_utc"))
+    )
+    fresh = bool(
+        age_minutes is not None
+        and age_minutes <= TRAINING_TIMEOUT_FALLBACK_WINDOW_MINUTES
+    )
+    timeout_profiles = {"coverage_micro_canary", "coverage_small_canary"}
+    timed_out = bool(exit_code == 124 or "timed_out" in final_status or "timeout" in final_status)
+    active = bool(timed_out and fresh and profile in timeout_profiles and len(bot_ids) >= 1)
+    return {
+        "active": active,
+        "fresh": fresh,
+        "timed_out": timed_out,
+        "age_minutes": round(float(age_minutes), 3) if age_minutes is not None else None,
+        "window_minutes": TRAINING_TIMEOUT_FALLBACK_WINDOW_MINUTES,
+        "profile": profile,
+        "bot_ids": bot_ids,
+        "returncode": exit_code,
+        "command": [str(part) for part in launch.get("argv") or []],
+        "source": "retrain_launch_latest",
+        "final_status": final_status,
+        "timeout_phase": str(launch.get("timeout_phase") or launch.get("phase") or ""),
+        "timeout_progress": launch.get("timeout_progress") if isinstance(launch.get("timeout_progress"), dict) else {},
+    }
+
+
+def _select_timeout_fallback(candidates: list[dict[str, Any]]) -> dict[str, Any]:
+    active = [row for row in candidates if bool(row.get("active", False))]
+    if active:
+        return sorted(active, key=lambda row: _safe_float(row.get("age_minutes"), 999999.0))[0]
+    return candidates[0] if candidates else {
+        "active": False,
+        "fresh": False,
+        "timed_out": False,
+        "age_minutes": None,
+        "window_minutes": TRAINING_TIMEOUT_FALLBACK_WINDOW_MINUTES,
+        "profile": "",
+        "bot_ids": [],
+        "returncode": None,
+        "command": [],
+        "source": "",
+    }
 
 
 def _support_maintenance_freeze_only(reasons: list[str]) -> bool:
@@ -498,6 +593,8 @@ def _build_backpressure_training_gate(
         else {}
     )
     super_summary = super_drainer.get("summary") if isinstance(super_drainer.get("summary"), dict) else {}
+    super_drainer_age_minutes = _age_minutes(super_drainer.get("timestamp_utc")) if super_drainer else None
+    super_drainer_fresh = bool(super_drainer and super_drainer_age_minutes is not None and super_drainer_age_minutes <= 30.0)
     storage_overlay_reconciled_downward = bool(
         storage_bp.get("overlay_adjusted", False)
         and storage_overlay.get("used_for_pressure", False)
@@ -578,8 +675,8 @@ def _build_backpressure_training_gate(
             _safe_int(storage_bp.get("total_pending_lines"), 0),
             _safe_int(ingestion_backpressure.get("pending_lines_total"), 0),
             _safe_int(ingestion_backpressure.get("pending_lines"), 0),
-            _safe_int(super_drainer.get("final_pending_lines"), 0),
-            _safe_int(super_summary.get("final_pending_lines"), 0),
+            _safe_int(super_drainer.get("final_pending_lines"), 0) if super_drainer_fresh else 0,
+            _safe_int(super_summary.get("final_pending_lines"), 0) if super_drainer_fresh else 0,
         )
         oldest_age = max(
             _safe_float(inputs.get("backpressure_oldest_pending_age_seconds"), 0.0),
@@ -631,8 +728,10 @@ def _build_backpressure_training_gate(
         sources.append("health_gate_storage_control_override")
     if ingestion_backpressure:
         sources.append("ingestion_backpressure")
-    if super_drainer:
+    if super_drainer_fresh:
         sources.append("backpressure_super_drainer")
+    elif super_drainer:
+        sources.append("stale_backpressure_super_drainer_ignored")
     return {
         "severe": severe,
         "cooling_down": cooling_down,
@@ -655,6 +754,9 @@ def _build_backpressure_training_gate(
         "storage_status_backpressure_ignored": bool(storage_status in {"blocked", "critical"} and storage_numeric_clear),
         "storage_severity_backpressure_ignored": bool(storage_severity in {"blocked", "critical"} and storage_numeric_clear),
         "storage_control_override_clear": bool(override_clear),
+        "super_drainer_fresh": bool(super_drainer_fresh),
+        "super_drainer_age_minutes": round(float(super_drainer_age_minutes), 3) if super_drainer_age_minutes is not None else None,
+        "stale_super_drainer_ignored": bool(super_drainer and not super_drainer_fresh),
         "sources": _ordered_unique(sources),
     }
 
@@ -723,6 +825,8 @@ def _build_pretraining_drain_buffer(
         # conservative warm buffer.
         warm_pending = max(warm_pending, min(5_000, int(pending_threshold * 0.35)))
         warm_age = max(warm_age, min(180.0, age_threshold))
+        hold_pending = max(hold_pending, warm_pending)
+        hold_age = max(hold_age, warm_age)
     accel_score = _safe_int((backlog_accelerator.get("bulletproof_score") or {}).get("score"), 100)
     accel_status = str(backlog_accelerator.get("overall_status") or "").strip().lower()
     reasons: list[str] = []
@@ -1164,6 +1268,16 @@ def _build_training_launch_contract(
 ) -> dict[str, Any]:
     backpressure_severe = bool(backpressure_gate.get("severe", False))
     backpressure_cooling_down = bool(backpressure_gate.get("cooling_down", False))
+    timeout_fallback = _select_timeout_fallback(
+        [
+            _recent_small_canary_timeout(
+                _load_json(project_root / "governance" / "health" / "training_drain_autopilot_latest.json")
+            ),
+            _recent_retrain_launch_timeout(
+                _load_json(project_root / "governance" / "health" / "retrain_launch_latest.json")
+            ),
+        ]
+    )
     repair_first = [_public_target(row) for row in precompute_targets if str(row.get("training_stage") or "") == "repair_first"]
     canary_pool = [
         _public_target(row)
@@ -1219,6 +1333,16 @@ def _build_training_launch_contract(
     host_batch_cap = min(max(_safe_int(host_headroom_gate.get("batch_cap"), 4), 0), TRAINING_BATCH_MAX)
     launch_pool = recovery_pool if quality_recovery_canary and not canary_pool else canary_pool
     batch_size = min(requested_batch, drain_batch_cap, host_batch_cap, len(launch_pool))
+    original_selected_profile = selected_profile
+    original_batch_size = batch_size
+    timeout_fallback_active = bool(
+        timeout_fallback.get("active", False)
+        and batch_size > 1
+        and selected_profile in TRAINING_BATCH_PROFILES
+    )
+    if timeout_fallback_active:
+        selected_profile = "coverage_micro_canary"
+        batch_size = 1
     canary_batch = launch_pool[:batch_size]
     prep_allowed = bool(snapshot_fresh and resource_guard_ok and parity_state not in {"missing_runtime_python", "runtime_probe_failed", "native_backend_missing"} and not mlx_failure_active and precompute_targets)
     launch_allowed = bool(not launch_blockers and canary_batch)
@@ -1304,6 +1428,16 @@ def _build_training_launch_contract(
         "drain_batch_cap": int(drain_batch_cap),
         "host_batch_cap": int(host_batch_cap),
         "recommended_batch_size": len(canary_batch) if launch_allowed else 0,
+        "recommended_retrain_profile": selected_profile if launch_allowed else "",
+        "timeout_fallback": {
+            **timeout_fallback,
+            "applied": timeout_fallback_active,
+            "original_recommended_profile": original_selected_profile,
+            "original_recommended_batch_size": int(original_batch_size),
+            "fallback_profile": "coverage_micro_canary" if timeout_fallback_active else "",
+            "fallback_batch_size": 1 if timeout_fallback_active else 0,
+            "reason": "recent_coverage_canary_timeout" if timeout_fallback_active else "",
+        },
         "recommended_retrain_command": retrain_command,
         "recommended_prep_commands": recommended_prep_commands,
     }
@@ -1421,6 +1555,14 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, fresh_minutes: int = 360
         batch_limit=limit,
     )
 
+    training_launch_allowed = bool(training_launch_contract.get("launch_allowed", False))
+    training_prep_allowed = bool(training_launch_contract.get("prep_allowed", False))
+    training_launch_blockers = [
+        str(item)
+        for item in (training_launch_contract.get("launch_blockers") if isinstance(training_launch_contract.get("launch_blockers"), list) else [])
+        if str(item or "").strip()
+    ]
+
     overall_status = "ready"
     if not snapshot_fresh or not resource_guard_training_ok:
         overall_status = "constrained"
@@ -1428,6 +1570,8 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, fresh_minutes: int = 360
         overall_status = "blocked"
     elif parity_state in {"missing_runtime_python", "runtime_probe_failed", "native_backend_missing"} or mlx_failure_active:
         overall_status = "blocked"
+    elif training_launch_allowed and not training_launch_blockers:
+        overall_status = "ready"
     elif training_quality_blocked:
         overall_status = "degraded" if coverage_repair_ready else "blocked"
     elif not bool(host_headroom_gate.get("safe_for_training", True)):
@@ -1474,7 +1618,10 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, fresh_minutes: int = 360
     if training_launch_contract["mode"] == "prep_only":
         recommended_actions.append("keep training in prep-only mode until the launch blockers clear")
     elif training_launch_contract["mode"] == "canary_training_allowed":
-        if bool(training_launch_contract.get("training_quality_recovery_canary", False)):
+        timeout_fallback = training_launch_contract.get("timeout_fallback") if isinstance(training_launch_contract.get("timeout_fallback"), dict) else {}
+        if bool(timeout_fallback.get("applied", False)):
+            recommended_actions.append("retry the timed-out coverage canary as a one-bot coverage_micro_canary before widening training again")
+        elif bool(training_launch_contract.get("training_quality_recovery_canary", False)):
             recommended_actions.append("run only the guarded recovery canary with --skip-master-update while quality control is blocked")
         else:
             recommended_actions.append("run only the recommended coverage_canary batch before widening training")
@@ -1508,7 +1655,20 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, fresh_minutes: int = 360
         "timestamp_utc": datetime.now(timezone.utc).isoformat(),
         "schema_version": 1,
         "overall_status": overall_status,
+        "ok": overall_status == "ready",
         "snapshot_ready": snapshot_fresh,
+        "launch_allowed": training_launch_allowed,
+        "prep_allowed": training_prep_allowed,
+        "launch_blockers": training_launch_blockers,
+        "prep_blockers": [
+            str(item)
+            for item in (training_launch_contract.get("prep_blockers") if isinstance(training_launch_contract.get("prep_blockers"), list) else [])
+            if str(item or "").strip()
+        ],
+        "training_quality_score": round(_safe_float(training_quality.get("training_quality_score"), 0.0), 3),
+        "recommended_batch_size": _safe_int(training_launch_contract.get("recommended_batch_size"), 0),
+        "recommended_retrain_profile": str(training_launch_contract.get("recommended_retrain_profile") or ""),
+        "recommended_retrain_command": list(training_launch_contract.get("recommended_retrain_command") or []),
         "snapshot_age_minutes": round(float(snapshot_age_minutes), 3) if snapshot_age_minutes is not None else None,
         "fresh_window_minutes": int(max(int(fresh_minutes), 1)),
         "snapshot": {

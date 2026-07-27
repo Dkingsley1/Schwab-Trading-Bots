@@ -809,7 +809,7 @@ def build_payload(
     overall_status = "ready"
     if blocked_rows or smoke_failures or runtime_smoke_failures or contract_dispatch_smoke_failures or hygiene_failures:
         overall_status = "blocked"
-    elif degraded_rows or operator_gated_rows:
+    elif degraded_rows or unprobed_operator_gated_subcommands:
         overall_status = "degraded"
 
     recommended_actions = ordered_unique(

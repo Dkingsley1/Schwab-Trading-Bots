@@ -273,6 +273,8 @@ def test_trim_duplicate_processes_keeps_newest(monkeypatch) -> None:
     def _fake_kill(pid: int, sig: int) -> None:
         if sig == 0:
             raise ProcessLookupError
+        if sig == pw.signal.SIGCONT:
+            return
         killed.append(pid)
 
     monkeypatch.setattr(pw.os, "kill", _fake_kill)
@@ -580,6 +582,38 @@ def test_resolved_restart_storms_drop_healthy_settled_services() -> None:
     assert active == []
     assert len(recent) == 1
     assert recent[0]["resolved"] is True
+
+
+def test_resolved_restart_storms_accepts_idle_complete_sql_writer() -> None:
+    active, recent = pw._resolved_restart_storms(
+        events=[
+            {"event": "restart", "name": "sql_link_writer", "ts_epoch": 100.0},
+            {"event": "restart", "name": "sql_link_writer", "ts_epoch": 200.0},
+            {"event": "restart", "name": "sql_link_writer", "ts_epoch": 300.0},
+            {"event": "restart", "name": "sql_link_writer", "ts_epoch": 400.0},
+        ],
+        status_rows=[
+            {
+                "name": "sql_link_writer",
+                "running": 0,
+                "heartbeat_ok": True,
+                "process_live": True,
+                "writer_idle_ok": True,
+                "live_execution_critical": False,
+                "restart_storm_impact": "storage_writer",
+                "restart_storm_quarantine_allowed": False,
+            }
+        ],
+        restart_window_seconds=3600,
+        restart_storm_threshold=4,
+        settle_seconds=900,
+        now_epoch=450.0,
+    )
+
+    assert active == []
+    assert len(recent) == 1
+    assert recent[0]["resolved"] is True
+    assert recent[0]["resolution_reason"] == "sql_writer_on_demand_idle_complete"
 
 
 def test_resolved_restart_storms_requires_parent_when_marked_parent_required() -> None:

@@ -8,6 +8,7 @@ import os
 import shutil
 import subprocess
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -47,6 +48,17 @@ ACCEPTED_STEP_STATUSES = {
     "handoff_released",
     "waiting_for_writer",
 }
+WRITER_TIMEOUT_FOLLOWUP_STATUSES = {
+    "already_running",
+    "waiting_for_writer",
+    "progressing_waiting_for_writer",
+    "writer_active",
+    "applied_with_followups",
+    "ready",
+}
+FALLBACK_PAYLOAD_BY_SCRIPT = {
+    "writer_cycle_coordinator.py": "writer_cycle_coordinator_latest.json",
+}
 DEFAULT_MAX_CYCLES = 3
 DEFAULT_TARGET_PENDING_LINES = 20000
 DEFAULT_TARGET_RETENTION_DEBT_GB = 0.25
@@ -85,6 +97,35 @@ def _safe_int(raw: Any, default: int = 0) -> int:
 
 def _as_dict(raw: Any) -> dict[str, Any]:
     return raw if isinstance(raw, dict) else {}
+
+
+def _age_seconds_from_timestamp(raw: Any) -> float | None:
+    text = str(raw or "").strip().replace("Z", "+00:00")
+    if not text:
+        return None
+    try:
+        dt = datetime.fromisoformat(text)
+    except Exception:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return max((datetime.now(timezone.utc) - dt.astimezone(timezone.utc)).total_seconds(), 0.0)
+
+
+def _fresh_payload(payload: dict[str, Any], *, max_age_seconds: float = 600.0) -> bool:
+    age = _age_seconds_from_timestamp(payload.get("timestamp_utc"))
+    return bool(age is None or age <= max(float(max_age_seconds), 0.0))
+
+
+def _fallback_payload_for_cmd(cmd: list[str], *, cwd: Path) -> dict[str, Any]:
+    script_names = {Path(str(part)).name for part in cmd if str(part).strip()}
+    for script_name, artifact_name in FALLBACK_PAYLOAD_BY_SCRIPT.items():
+        if script_name not in script_names:
+            continue
+        payload = load_json(cwd / "governance" / "health" / artifact_name)
+        if payload:
+            return payload
+    return {}
 
 
 def _env_flag(name: str, default: bool = False) -> bool:
@@ -131,6 +172,8 @@ def _run_json(cmd: list[str], *, cwd: Path, timeout_sec: int) -> dict[str, Any]:
         if isinstance(parsed, dict):
             payload = parsed
             break
+    if not payload:
+        payload = _fallback_payload_for_cmd(cmd, cwd=cwd)
     return {
         "cmd": list(cmd),
         "rc": rc,
@@ -967,13 +1010,44 @@ def _preview_bundle(
     }
 
 
+def _writer_timeout_followup(payload: dict[str, Any]) -> bool:
+    if not payload or not _fresh_payload(payload):
+        return False
+    overall_status = str(payload.get("overall_status") or "")
+    summary = _as_dict(payload.get("summary"))
+    wait_result = _as_dict(payload.get("wait_for_writer"))
+    writer_after = _as_dict(payload.get("writer_state_after_wait")) or _as_dict(wait_result.get("final_state"))
+    writer_process = _as_dict(payload.get("writer_process_intelligence"))
+    decision = _as_dict(writer_process.get("decision_packet"))
+    writer_health = _as_dict(writer_process.get("writer_health"))
+    active_progressing = bool(
+        writer_after.get("active", False)
+        and not bool(writer_after.get("progress_orphaned", False))
+        and _safe_float(writer_after.get("progress_age_minutes"), 999.0) <= 5.0
+    )
+    return bool(
+        overall_status in WRITER_TIMEOUT_FOLLOWUP_STATUSES
+        or (
+            bool(summary.get("writer_active_after_wait", False))
+            and not bool(summary.get("wait_timed_out", False))
+            and not bool(summary.get("post_wait_stale_writer_detected", False))
+        )
+        or str(decision.get("action") or "") == "wait_for_active_writer_progress"
+        or str(writer_health.get("state") or "") == "active_progressing"
+        or active_progressing
+    )
+
+
 def _attempt_record(result: dict[str, Any]) -> dict[str, Any]:
     payload = result.get("payload") if isinstance(result.get("payload"), dict) else {}
     overall_status = str(payload.get("overall_status") or "")
     step_name = str(payload.get("bot") or "")
     status = "ok"
     if bool(result.get("timed_out", False)):
-        status = "timed_out"
+        if step_name == "writer_cycle_coordinator" and _writer_timeout_followup(payload):
+            status = "followup"
+        else:
+            status = "timed_out"
     elif (
         step_name == "raw_training_manifest_refresh"
         and int(result.get("rc", 0)) == 0
@@ -991,6 +1065,7 @@ def _attempt_record(result: dict[str, Any]) -> dict[str, Any]:
         "status": status,
         "rc": int(result.get("rc", 1)),
         "timed_out": bool(result.get("timed_out", False)),
+        "timeout_managed": bool(status == "followup" and result.get("timed_out", False)),
         "overall_status": overall_status,
         "stdout_tail": str(result.get("stdout_tail") or ""),
         "stderr_tail": str(result.get("stderr_tail") or ""),
@@ -1227,11 +1302,11 @@ def build_payload(
     elif "error" in attempt_statuses or "timed_out" in attempt_statuses:
         overall_status = "apply_failed"
         ok = False
-    elif clearance_after["cleared"]:
-        overall_status = "applied"
-        ok = True
     elif "followup" in attempt_statuses:
         overall_status = "applied_with_followups"
+        ok = True
+    elif clearance_after["cleared"]:
+        overall_status = "applied"
         ok = True
     else:
         overall_status = "applied_with_followups"

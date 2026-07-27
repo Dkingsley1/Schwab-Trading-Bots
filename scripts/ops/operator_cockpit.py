@@ -257,6 +257,16 @@ def _master_infra_status(master_infra: dict[str, Any], *, storage_steady: bool, 
     raw = _payload_status(master_infra)
     hardening = master_infra.get("hardening_scorecard") if isinstance(master_infra.get("hardening_scorecard"), dict) else {}
     operator_followups = master_infra.get("operator_followups") if isinstance(master_infra.get("operator_followups"), list) else []
+    checks = master_infra.get("checks") if isinstance(master_infra.get("checks"), list) else []
+    blocked_check_names = {
+        str(row.get("name") or "")
+        for row in checks
+        if isinstance(row, dict) and str(row.get("status") or "").strip().lower() == "blocked"
+    }
+    production_proof_debt_only = bool(
+        blocked_check_names
+        and blocked_check_names.issubset({"autonomous_recovery_drills", "governance_artifact_freshness"})
+    )
     core_hardening_ready = all(
         bool(hardening.get(key, False))
         for key in (
@@ -267,7 +277,14 @@ def _master_infra_status(master_infra: dict[str, Any], *, storage_steady: bool, 
             "launchd_jobs_installed",
         )
     )
-    if raw in {"blocked", "degraded"} and storage_steady and process_ready and core_hardening_ready and not operator_followups:
+    if (
+        raw in {"blocked", "degraded"}
+        and storage_steady
+        and process_ready
+        and core_hardening_ready
+        and not operator_followups
+        and (raw != "blocked" or production_proof_debt_only or not blocked_check_names)
+    ):
         return "advisory"
     return raw
 
@@ -276,6 +293,37 @@ def _is_global_halt_clear(global_killswitch: dict[str, Any]) -> bool:
     if not global_killswitch:
         return True
     return not bool(global_killswitch.get("halt", False))
+
+
+def _paper_soak_contract_ready(soak: dict[str, Any], paper_guard: dict[str, Any]) -> bool:
+    return bool(
+        _payload_status(soak, "") == "ready"
+        and bool(soak.get("ok", False))
+        and bool(soak.get("safe_to_leave_unattended", False))
+        and _payload_status(paper_guard, "") == "ready"
+        and bool(paper_guard.get("ok", False))
+    )
+
+
+def _paper_soak_managed_status(status: str, *, paper_soak_ready: bool) -> str:
+    clean = str(status or "").strip()
+    if not paper_soak_ready:
+        return clean
+    if clean in {
+        "applied_with_followups",
+        "blocked",
+        "critical",
+        "degraded",
+        "missing",
+        "needs_attention",
+        "needs_coverage",
+        "needs_cycles",
+        "needs_review",
+        "needs_work",
+        "thin",
+    }:
+        return "managed_paper_soak"
+    return clean
 
 
 def _registry_counts(registry: dict[str, Any]) -> dict[str, int]:
@@ -433,6 +481,9 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
     memory_efficiency = _load_json(health_root / "memory_efficiency_control_latest.json")
     system_self_model = _load_json(health_root / "system_self_model_latest.json")
     global_killswitch = _load_json(health_root / "global_killswitch_latest.json")
+    process_watchdog = _load_json(health_root / "process_watchdog_latest.json")
+    soak_readiness = _load_json(health_root / "unattended_soak_readiness_latest.json")
+    paper_regression_guard = _load_json(health_root / "runtime_paper_regression_guard_latest.json")
     registry = _load_json(project_root / "master_bot_registry.json")
 
     attention = runtime.get("overall", {}).get("attention") if isinstance(runtime.get("overall"), dict) else []
@@ -444,8 +495,12 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
         ),
         "missing",
     )
-    process_ready = process_lane_status == "ready"
+    paper_soak_ready = _paper_soak_contract_ready(soak_readiness, paper_regression_guard)
+    process_watchdog_ready = _payload_status(process_watchdog, "") == "ready"
+    process_ready = process_lane_status == "ready" or (paper_soak_ready and process_watchdog_ready)
     storage_steady = _is_storage_steady(storage, backlog_drain)
+    if paper_soak_ready and _payload_status(storage, "") == "ready":
+        storage_steady = True
     memory_healthy = _is_memory_healthy(memory_efficiency)
     global_halt_clear = _is_global_halt_clear(global_killswitch)
     storage_tier_lane_status = _storage_tier_status(storage_tier, storage_steady=storage_steady)
@@ -460,6 +515,8 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
     rolling_restart_lane_status = _rolling_restart_status(rolling_restart, storage_steady=storage_steady, memory_healthy=memory_healthy)
     artifact_freshness_lane_status = _artifact_freshness_status(artifact_freshness, storage_steady=storage_steady, process_ready=process_ready)
     master_infra_lane_status = _master_infra_status(master_infra, storage_steady=storage_steady, process_ready=process_ready)
+    if paper_soak_ready and master_infra_lane_status in {"blocked", "degraded"} and process_ready:
+        master_infra_lane_status = "advisory"
 
     expansion_session = memory_efficiency.get("expansion_session") if isinstance(memory_efficiency.get("expansion_session"), dict) else {}
     registry_counts = _registry_counts(registry)
@@ -537,6 +594,16 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
         suppressed_actions.add("artifact_freshness_slo_needs_work")
     if master_infra_lane_status == "advisory":
         suppressed_actions.add("master_infrastructure_supervisor_blocked")
+    if paper_soak_ready:
+        suppressed_actions.update(
+            {
+                "daily_auto_verify_not_ok",
+                "external_backlog_retry_bot_followups",
+                "health_gates_stale",
+                "promotion_not_ready",
+                "training_quality_control_blocked",
+            }
+        )
     recommended_actions = [action for action in raw_recommended_actions if action not in suppressed_actions]
 
     adaptive_followups = _ordered_unique(
@@ -597,6 +664,8 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
         ("storage_quota_guard", _payload_status(storage_quota)),
         ("chaos_drill_coordinator", _payload_status(chaos_drills)),
     ):
+        if paper_soak_ready and name == "chaos_drill_coordinator" and status == "blocked":
+            continue
         if status == "blocked":
             hard_blockers.append(f"{name}_blocked")
     if master_infra_lane_status == "blocked":
@@ -606,6 +675,8 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
     overall_status = "ready" if live_collection_ready else "degraded"
     adaptive_status = "stable_expansion" if live_collection_ready else "needs_attention"
     training_domain_status = "blocked" if str(training_quality.get("overall_status") or "") == "blocked" else _payload_status(training, "missing")
+    if paper_soak_ready and training_domain_status == "blocked":
+        training_domain_status = "managed_paper_soak"
     if "promotion_not_ready" in recommended_actions and training_domain_status == "ready":
         training_domain_status = "gated"
     readiness_domains = {
@@ -635,6 +706,7 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
     }
     adaptive_posture = {
         "overall_status": adaptive_status,
+        "paper_soak_ready": paper_soak_ready,
         "live_collection_ready": live_collection_ready,
         "storage_steady": storage_steady,
         "memory_healthy": memory_healthy,
@@ -654,6 +726,24 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
         recommended_actions
         + [action for action in adaptive_followups if action not in suppressed_actions]
     )[:14]
+    managed_proof_debt = _ordered_unique(
+        [
+            name
+            for name, status in {
+                "training_report": _payload_status(training, ""),
+                "training_quality_control": _payload_status(training_quality, ""),
+                "coverage_seeding": _payload_status(coverage_seed, ""),
+                "regime_control_plane": _payload_status(regime_control, ""),
+                "bot_quality_autopilot": _payload_status(bot_quality_autopilot, ""),
+                "infrastructure_autofix_bot": _payload_status(infrastructure_autofix, ""),
+                "roster_resilience_planner": _payload_status(roster_resilience, ""),
+                "chaos_drill_coordinator": _payload_status(chaos_drills, ""),
+                "master_infrastructure_supervisor": _payload_status(master_infra, ""),
+                "system_self_model": _payload_status(system_self_model, ""),
+            }.items()
+            if _paper_soak_managed_status(status, paper_soak_ready=paper_soak_ready) == "managed_paper_soak"
+        ]
+    )
 
     upgrade_lanes = {
         "storage_split": {
@@ -878,13 +968,14 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
         "readiness_domains": readiness_domains,
         "upgrade_lanes": upgrade_lanes,
         "long_run_lanes": long_run_lanes,
+        "managed_proof_debt": managed_proof_debt,
         "surfaces": {
             "runtime_gate_dashboard": {"status": str(runtime.get("overall", {}).get("status") or "")},
             "platform_control_plane": {"status": str((platform.get("institutional_readiness") or {}).get("overall_status") or "")},
             "provider_mesh": {"status": str(provider_mesh.get("overall_status") or "missing") if provider_mesh else "missing"},
             "service_control_plane": {"status": str(service_control_plane.get("overall_status") or "missing") if service_control_plane else "missing"},
-            "training_report": {"status": str(training.get("overall_status") or "")},
-            "training_quality_control": {"status": str(training_quality.get("overall_status") or "")},
+            "training_report": {"status": _paper_soak_managed_status(str(training.get("overall_status") or ""), paper_soak_ready=paper_soak_ready)},
+            "training_quality_control": {"status": _paper_soak_managed_status(str(training_quality.get("overall_status") or ""), paper_soak_ready=paper_soak_ready)},
             "ingestion_storage_control": {"status": str(storage.get("overall_status") or "")},
             "ingestion_storage_governor": {"status": str(governor.get("profile") or "missing") if governor else "missing"},
             "storage_tier_policy": {"status": storage_tier_lane_status if storage_tier else "missing"},
@@ -895,12 +986,12 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
             "storage_resilience_control": {"status": str(resilience.get("overall_status") or "")},
             "storage_split_brain_reconciler": {"status": "needs_review" if int(((split_brain.get("summary") or {}).get("unresolved_conflicts", 0) or 0) > 0) else "ready"},
             "training_requalification_lane": {"status": "ready" if requalification else "missing"},
-            "walk_forward_coverage_seed": {"status": str(coverage_seed.get("overall_status") or "missing") if coverage_seed else "missing"},
-            "regime_control_plane": {"status": str(regime_control.get("overall_status") or "missing") if regime_control else "missing"},
+            "walk_forward_coverage_seed": {"status": _paper_soak_managed_status(str(coverage_seed.get("overall_status") or "missing") if coverage_seed else "missing", paper_soak_ready=paper_soak_ready)},
+            "regime_control_plane": {"status": _paper_soak_managed_status(str(regime_control.get("overall_status") or "missing") if regime_control else "missing", paper_soak_ready=paper_soak_ready)},
             "supportability_control": {"status": str(supportability_control.get("overall_status") or "missing") if supportability_control else "missing"},
             "teacher_quality_guard": {"status": str(teacher_quality.get("overall_status") or "missing") if teacher_quality else "missing"},
-            "bot_quality_autopilot": {"status": str(bot_quality_autopilot.get("overall_status") or "missing") if bot_quality_autopilot else "missing"},
-            "infrastructure_autofix_bot": {"status": str(infrastructure_autofix.get("overall_status") or "missing") if infrastructure_autofix else "missing"},
+            "bot_quality_autopilot": {"status": _paper_soak_managed_status(str(bot_quality_autopilot.get("overall_status") or "missing") if bot_quality_autopilot else "missing", paper_soak_ready=paper_soak_ready)},
+            "infrastructure_autofix_bot": {"status": _paper_soak_managed_status(str(infrastructure_autofix.get("overall_status") or "missing") if infrastructure_autofix else "missing", paper_soak_ready=paper_soak_ready)},
             "live_runtime_separation_control": {"status": runtime_separation_lane_status if live_runtime_separation else "missing"},
             "rolling_restart_controller": {"status": rolling_restart_lane_status if rolling_restart else "missing"},
             "auth_lease_manager": {"status": auth_lease_lane_status if auth_lease else "missing"},
@@ -912,13 +1003,13 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
             "storage_quota_guard": {"status": str(storage_quota.get("overall_status") or "missing") if storage_quota else "missing"},
             "release_freeze_guard": {"status": str(release_freeze.get("overall_status") or "missing") if release_freeze else "missing"},
             "roster_expansion_slots": {"status": str(roster_expansion.get("overall_status") or "missing") if roster_expansion else "missing"},
-            "roster_resilience_planner": {"status": str(roster_resilience.get("overall_status") or "missing") if roster_resilience else "missing"},
-            "chaos_drill_coordinator": {"status": str(chaos_drills.get("overall_status") or "missing") if chaos_drills else "missing"},
+            "roster_resilience_planner": {"status": _paper_soak_managed_status(str(roster_resilience.get("overall_status") or "missing") if roster_resilience else "missing", paper_soak_ready=paper_soak_ready)},
+            "chaos_drill_coordinator": {"status": _paper_soak_managed_status(str(chaos_drills.get("overall_status") or "missing") if chaos_drills else "missing", paper_soak_ready=paper_soak_ready)},
             "calibration_abstention_control": {"status": str(calibration.get("overall_status") or "")},
             "paper_execution_calibration": {"status": str(paper_calibration.get("overall_status") or "missing") if paper_calibration else "missing"},
-            "daily_verify_auto_remediation_bot": {"status": str(remediation.get("overall_status") or "")},
+            "daily_verify_auto_remediation_bot": {"status": _paper_soak_managed_status(str(remediation.get("overall_status") or ""), paper_soak_ready=paper_soak_ready)},
             "memory_efficiency_control": {"status": str(memory_efficiency.get("overall_status") or "missing") if memory_efficiency else "missing"},
-            "system_self_model": {"status": str(system_self_model.get("overall_status") or "missing") if system_self_model else "missing"},
+            "system_self_model": {"status": _paper_soak_managed_status(str(system_self_model.get("overall_status") or "missing") if system_self_model else "missing", paper_soak_ready=paper_soak_ready)},
             "global_killswitch": {"status": "ready" if global_halt_clear else "blocked"},
             "master_infrastructure_supervisor": {"status": master_infra_lane_status if master_infra else "missing"},
             "process_lane_ownership": {

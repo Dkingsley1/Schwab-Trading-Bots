@@ -73,6 +73,187 @@ def test_production_quality_control_ready_when_live_canary_ready(tmp_path: Path)
     assert payload["active_lane_count"] == 0
 
 
+def test_production_quality_control_manages_live_money_locks_when_soak_is_ready(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    health = project_root / "governance" / "health"
+    _write_readiness(
+        project_root,
+        {
+            "overall_status": "blocked",
+            "live_canary_money_ready": False,
+            "ready_gate_count": 3,
+            "gate_count": 7,
+            "blockers": [
+                "raw_profitability_posture_blocked",
+                "sleeve_paper_trading_continuity_blocked",
+                "storage_pressure_clean_blocked",
+                "promotion_paper_gate_freshness_blocked",
+            ],
+            "gates": [
+                {
+                    "gate_id": "raw_profitability_posture",
+                    "ready": False,
+                    "blockers": ["raw_profitability_grade_below_A", "raw_profitability_hard_block_below_C"],
+                    "evidence": {"raw_profitability_grade": "D"},
+                },
+                {
+                    "gate_id": "sleeve_paper_trading_continuity",
+                    "ready": False,
+                    "blockers": ["paper_ramp_blockers_present"],
+                    "evidence": {
+                        "paper_truth_status": "ready",
+                        "runtime_paper_status": "ready",
+                        "paper_ramp_blockers": ["memory_pressure_above_paper_400_gate"],
+                    },
+                },
+                {
+                    "gate_id": "storage_pressure_clean",
+                    "ready": False,
+                    "blockers": ["storage_pressure_index_too_high"],
+                    "evidence": {
+                        "overall_status": "ready",
+                        "severity": "stable",
+                        "pressure_index": 0.447,
+                        "total_pending_lines": 1348,
+                        "max_total_pending_lines": 15000,
+                    },
+                },
+                {
+                    "gate_id": "promotion_paper_gate_freshness",
+                    "ready": False,
+                    "blockers": ["promotion_quality_gate_not_ready_or_stale"],
+                    "evidence": {},
+                },
+            ],
+        },
+    )
+    _write_json(
+        health / "unattended_soak_readiness_latest.json",
+        {
+            "ok": True,
+            "overall_status": "ready",
+            "overall_grade": "A+",
+            "safe_to_leave_unattended": True,
+            "blockers": [],
+            "sections": {
+                "runtime_loops": {"ready": True, "grade": "A+"},
+                "storage": {"ready": True, "grade": "A+"},
+            },
+        },
+    )
+    _write_json(
+        health / "paper_profitability_control_latest.json",
+        {
+            "ok": True,
+            "overall_status": "protective_tightening",
+            "profitability_grade_basis": "controlled_recovery_posture",
+            "raw_profitability_grade": "D",
+            "controlled_profitability_grade": "A+",
+            "profitability_display_grade": "A+ controlled / D raw",
+        },
+    )
+
+    payload = src.build_payload(project_root)
+
+    assert payload["overall_status"] == "ready"
+    assert payload["ok"] is True
+    assert payload["live_orders_must_remain_disabled"] is True
+    assert payload["raw_active_lane_count"] == 4
+    assert payload["active_lane_count"] == 0
+    assert set(payload["managed_live_money_locks"]) == {
+        "raw_profitability_below_live_canary_floor_controlled_recovery_active",
+        "paper_400_expansion_paused_existing_paper_soak_ready",
+        "storage_pressure_above_live_canary_floor_bounded_for_soak",
+        "promotion_pipeline_live_money_locked_current_soak_ready",
+    }
+    assert payload["quality_checks"]["managed_live_money_locks_have_no_live_execution_authority"] is True
+
+
+def test_production_quality_control_does_not_manage_unexplained_paper_dropout(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    health = project_root / "governance" / "health"
+    _write_readiness(
+        project_root,
+        {
+            "overall_status": "blocked",
+            "live_canary_money_ready": False,
+            "blockers": ["sleeve_paper_trading_continuity_blocked"],
+            "gates": [
+                {
+                    "gate_id": "sleeve_paper_trading_continuity",
+                    "ready": False,
+                    "blockers": ["runtime_paper_failed_checks_present"],
+                    "evidence": {
+                        "paper_truth_status": "ready",
+                        "runtime_paper_status": "blocked",
+                        "runtime_paper_failed_checks": ["paper_trading_inactive_for_eligible_sleeve"],
+                    },
+                }
+            ],
+        },
+    )
+    _write_json(
+        health / "unattended_soak_readiness_latest.json",
+        {"ok": True, "overall_status": "ready", "overall_grade": "A+", "safe_to_leave_unattended": True, "blockers": []},
+    )
+
+    payload = src.build_payload(project_root)
+
+    assert payload["overall_status"] == "blocked"
+    assert payload["active_lane_count"] == 1
+    assert payload["managed_live_money_locks"] == []
+
+
+def test_production_quality_control_manages_auth_probe_drift_when_paper_soak_operable(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    health = project_root / "governance" / "health"
+    _write_readiness(
+        project_root,
+        {
+            "overall_status": "blocked",
+            "live_canary_money_ready": False,
+            "blockers": ["auth_token_continuity_blocked"],
+            "gates": [
+                {
+                    "gate_id": "auth_token_continuity",
+                    "ready": False,
+                    "blockers": ["broker_auth_not_ok", "auth_status_not_ready", "auth_expires_below_1800s"],
+                    "evidence": {
+                        "broker_ready": True,
+                        "broker_auth_ok": False,
+                        "broker_network_ok": True,
+                        "schwab_auth_status": "degraded",
+                        "auth_lease_status": "degraded",
+                        "lease_state": "warning",
+                        "expires_in_seconds": 1324,
+                    },
+                }
+            ],
+        },
+    )
+    _write_json(
+        health / "unattended_soak_readiness_latest.json",
+        {"ok": True, "overall_status": "ready", "overall_grade": "A+", "safe_to_leave_unattended": True, "blockers": []},
+    )
+    _write_json(
+        health / "schwab_auth_supervisor_latest.json",
+        {
+            "overall_status": "degraded",
+            "paper_soak_auth_operable": True,
+            "token": {"ready": True, "expires_in_seconds": 1324},
+        },
+    )
+
+    payload = src.build_payload(project_root)
+
+    assert payload["overall_status"] == "ready"
+    assert payload["ok"] is True
+    assert payload["active_lane_count"] == 0
+    assert payload["live_orders_must_remain_disabled"] is True
+    assert payload["managed_live_money_locks"] == ["auth_probe_not_live_money_clean_paper_soak_operable"]
+    assert payload["managed_live_money_lock_lanes"][0]["managed_lock"]["paper_soak_auth_operable"] is True
+
+
 def test_production_quality_control_delegates_safe_execution_to_governor(tmp_path: Path, monkeypatch) -> None:
     project_root = tmp_path / "project"
     calls: dict[str, object] = {}

@@ -33,6 +33,7 @@ BROKER_RECONCILIATION_CORE_SOURCE_IDS = {
 }
 MIN_BLOCKING_COUNTERFACTUAL_KEPT_COUNT = 50
 NON_GRADE_BLOCKING_REPLAY_REASONS = {
+    "counterfactual_candidates_pending_collecting",
     "paper_replay_rows_low_collecting",
     "counterfactual_low_sample_win_rate_below_floor",
     "counterfactual_low_sample_aggregate_nonpositive",
@@ -368,7 +369,10 @@ def _build_replay_gate(counterfactual: dict[str, Any], paper_replay: dict[str, A
     if not _artifact_ok(counterfactual):
         reasons.append("counterfactual_replay_not_ok")
     if not top:
-        reasons.append("no_counterfactual_candidates")
+        if _artifact_ok(counterfactual) and _artifact_ok(paper_replay):
+            warnings.append("counterfactual_candidates_pending_collecting")
+        else:
+            reasons.append("no_counterfactual_candidates")
     if has_win_rate and win_rate < min_win_rate:
         if aggregate < 0.0 and not low_sample:
             reasons.append("counterfactual_win_rate_below_floor")

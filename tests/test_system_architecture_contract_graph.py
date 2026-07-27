@@ -60,6 +60,27 @@ def test_architecture_contract_graph_treats_guarded_ready_as_ready(tmp_path: Pat
     assert health_node["raw_status"] == "ready"
 
 
+def test_architecture_contract_graph_treats_watch_as_ready_observation(tmp_path: Path) -> None:
+    _seed_contract_artifacts(tmp_path)
+    _write_json(
+        tmp_path / "governance" / "health" / "system_architecture_hardening_latest.json",
+        {
+            "timestamp_utc": src.iso_now(),
+            "overall_status": "watch",
+            "ok": True,
+            "hard_section_count": 0,
+            "watch_section_count": 4,
+        },
+    )
+
+    payload = src.build_payload(tmp_path)
+    architecture_node = next(row for row in payload["nodes"] if row["node_id"] == "architecture_hardening")
+
+    assert payload["overall_status"] == "ready"
+    assert architecture_node["status"] == "ready"
+    assert architecture_node["raw_status"] == "ready"
+
+
 def test_architecture_contract_graph_blocks_live_authority_violation(tmp_path: Path) -> None:
     _seed_contract_artifacts(tmp_path)
     _write_json(

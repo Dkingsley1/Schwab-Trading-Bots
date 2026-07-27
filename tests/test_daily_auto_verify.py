@@ -50,6 +50,25 @@ def test_daily_auto_verify_accepts_unsigned_seed_ready_promotion_packet_as_non_o
     assert daily_auto_verify._promotion_packet_builder_ok(2, stdout, "") is True
 
 
+def test_daily_auto_verify_accepts_signed_seed_ready_promotion_packet_as_non_operational() -> None:
+    stdout = json.dumps(
+        {
+            "committee_packet_seed_ready": True,
+            "signing_material_ready": True,
+            "trained_models_complete": True,
+            "signature": {"status": "verified", "verified": True},
+            "replayability_contract": {"hash_bundle_complete": True, "exact_replay_ready": True},
+            "gate_results": {
+                "training_success_confirmed": False,
+                "feature_store_manifest_strict_ok": True,
+                "new_bot_admission_ok": True,
+            },
+        }
+    )
+
+    assert daily_auto_verify._promotion_packet_builder_ok(2, stdout, "") is True
+
+
 def test_daily_auto_verify_keeps_bad_promotion_packet_blocking() -> None:
     stdout = json.dumps(
         {

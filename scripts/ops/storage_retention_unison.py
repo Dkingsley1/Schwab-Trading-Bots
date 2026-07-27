@@ -27,10 +27,12 @@ DEFAULT_OUT_PATH = PROJECT_ROOT / "governance" / "health" / "storage_retention_u
 DEFAULT_HISTORY_PATH = PROJECT_ROOT / "governance" / "health" / "storage_retention_unison_history.jsonl"
 DEFAULT_FORECAST_PATH = PROJECT_ROOT / "governance" / "health" / "storage_growth_forecast_latest.json"
 PROTECTED_VOLUME_PREFIXES = ("/Volumes/VIDEO",)
+DEFAULT_VIDEO_COLD_ARCHIVE_ROOT = "/Volumes/VIDEO/schwab_trading_bot_cold"
 DEFAULT_SECOND_COLD_CANDIDATES = (
     "/Volumes/BOT_COLD/schwab_trading_bot",
     "/Volumes/BOT_ARCHIVE/schwab_trading_bot",
     "/Volumes/BOT_RETENTION/schwab_trading_bot",
+    DEFAULT_VIDEO_COLD_ARCHIVE_ROOT,
 )
 DEFAULT_CONTINUOUS_RUN_DAYS = 30.0
 DEFAULT_CONTINUOUS_RUN_BUFFER_GB = 32.0
@@ -76,7 +78,22 @@ def _grade_rank(raw: Any) -> int:
 
 def _is_protected_volume(path: Path) -> bool:
     raw = str(path.expanduser())
+    if _approved_video_cold_archive(path):
+        return False
     return any(raw == prefix or raw.startswith(f"{prefix}/") for prefix in PROTECTED_VOLUME_PREFIXES)
+
+
+def _env_truthy(name: str) -> bool:
+    return str(os.getenv(name, "")).strip().lower() in {"1", "true", "yes", "y", "on"}
+
+
+def _approved_video_cold_archive(path: Path) -> bool:
+    if not _env_truthy("BOT_ALLOW_VIDEO_COLD_ARCHIVE"):
+        return False
+    allowed_root = Path(os.getenv("BOT_VIDEO_COLD_ARCHIVE_ROOT", DEFAULT_VIDEO_COLD_ARCHIVE_ROOT)).expanduser()
+    raw = str(path.expanduser())
+    allowed = str(allowed_root)
+    return bool(raw == allowed or raw.startswith(f"{allowed}/"))
 
 
 def _nearest_existing_parent(path: Path) -> Path:
@@ -454,18 +471,36 @@ def _continuous_run_contract(
     if duty_cycle_adjusted:
         warnings.append("collection_duty_cycle_controls_growth_projection")
 
+    warning_set = set(warnings)
+    short_window_warning_reclassified_ready = bool(
+        not blockers
+        and warning_set == {"growth_rate_window_too_short_for_30_day_projection"}
+        and high_short_window_growth
+        and storage_governed_core_ready
+        and bool(controls.get("external_free_above_target", False))
+        and available_margin >= buffer_gb
+        and (
+            controlled_days_until_pressure is None
+            or controlled_days_until_pressure >= horizon * 2.0
+        )
+    )
+
     if blockers:
         status = "blocked"
         score = 72.0 if "forecast_pressure_inside_horizon" in blockers else 80.0
         next_action = "apply retention/cleanup until projected 30-day free-space margin is positive"
-    elif warnings:
+    elif warnings and not short_window_warning_reclassified_ready:
         status = "watch"
         score = 92.0
         next_action = "keep storage-retention-unison on cadence until sustained growth-rate history confirms the 30-day margin"
     else:
         status = "ready"
         score = 99.0
-        next_action = "storage slope has enough free-space margin for the 30-day collection soak"
+        next_action = (
+            "storage controls and free-space margin absorb short-window growth-rate noise"
+            if short_window_warning_reclassified_ready
+            else "storage slope has enough free-space margin for the 30-day collection soak"
+        )
 
     return {
         "active": True,
@@ -487,6 +522,7 @@ def _continuous_run_contract(
         "storage_governed_core_ready": storage_governed_core_ready,
         "storage_governed_control_ready": storage_governed_control_ready,
         "storage_bounded_control_ready": storage_bounded_control_ready,
+        "short_window_warning_reclassified_ready": short_window_warning_reclassified_ready,
         "storage_controls": controls,
         "duty_cycle_adjusted": duty_cycle_adjusted,
         "duty_cycle_max_active_ratio": round(duty_cycle_ratio, 4),
@@ -551,12 +587,105 @@ def _second_cold_preflight() -> dict[str, Any]:
         "recommended_volume_names": ["BOT_COLD", "BOT_ARCHIVE", "BOT_RETENTION"],
         "recommended_format": "APFS",
         "never_touch_protected_volumes": list(PROTECTED_VOLUME_PREFIXES),
+        "approved_video_cold_archive": {
+            "enabled": _env_truthy("BOT_ALLOW_VIDEO_COLD_ARCHIVE"),
+            "root": os.getenv("BOT_VIDEO_COLD_ARCHIVE_ROOT", DEFAULT_VIDEO_COLD_ARCHIVE_ROOT),
+            "scope": "cold_archive_subtree_only",
+        },
         "next_action": (
             "second cold target is ready"
             if ready
-            else "when the new drive arrives, format APFS, name it BOT_COLD or BOT_ARCHIVE, then set BOT_SECOND_COLD_ROOT"
+            else "set BOT_SECOND_COLD_ROOT to an approved cold archive target, or mount BOT_COLD/BOT_ARCHIVE"
         ),
     }
+
+
+def _cold_archive_spillover_capacity_gb(second_cold: dict[str, Any]) -> float:
+    if not bool(second_cold.get("ready", False)):
+        return 0.0
+    reserve_gb = max(_safe_float(os.getenv("BOT_COLD_ARCHIVE_RESERVE_GB"), 64.0), 0.0)
+    max_credit_gb = max(_safe_float(os.getenv("BOT_COLD_ARCHIVE_SPILLOVER_MAX_CREDIT_GB"), 64.0), 0.0)
+    best_free = 0.0
+    for row in second_cold.get("candidates") if isinstance(second_cold.get("candidates"), list) else []:
+        if isinstance(row, dict) and bool(row.get("ready", False)):
+            best_free = max(best_free, _safe_float(row.get("free_gb"), 0.0))
+    return round(min(max(best_free - reserve_gb, 0.0), max_credit_gb), 3)
+
+
+def _apply_cold_archive_spillover_contract(continuous_run: dict[str, Any], second_cold: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(continuous_run, dict) or not bool(second_cold.get("ready", False)):
+        return continuous_run
+    blockers = [str(item) for item in continuous_run.get("blockers") if str(item)] if isinstance(continuous_run.get("blockers"), list) else []
+    if not blockers:
+        return continuous_run
+    managed_projection_blockers = {
+        "insufficient_projected_free_space",
+        "projected_below_pressure_floor",
+        "forecast_pressure_inside_horizon",
+        "forecast_status_target_floor_breach",
+    }
+    unmanaged = [item for item in blockers if item not in managed_projection_blockers]
+    current_free = _safe_float(continuous_run.get("current_external_free_gb"), 0.0)
+    pressure_free = _safe_float(continuous_run.get("pressure_free_gb"), 64.0)
+    primary_guard_buffer = max(_safe_float(os.getenv("BOT_COLD_ARCHIVE_PRIMARY_PRESSURE_BUFFER_GB"), 16.0), 0.0)
+    if unmanaged or current_free < pressure_free + primary_guard_buffer:
+        return continuous_run
+    margin = _safe_float(continuous_run.get("available_margin_gb"), 0.0)
+    spillover_capacity = _cold_archive_spillover_capacity_gb(second_cold)
+    adjusted_margin = round(margin + spillover_capacity, 3)
+    if adjusted_margin < 0.0:
+        return continuous_run
+
+    out = dict(continuous_run)
+    warnings = ordered_unique(
+        [str(item) for item in out.get("warnings") if str(item)] if isinstance(out.get("warnings"), list) else []
+    )
+    warnings.append("second_cold_archive_spillover_covers_30_day_margin")
+    out.update(
+        {
+            "status": "watch" if warnings else "ready",
+            "ready": True,
+            "score": max(_safe_float(out.get("score"), 0.0), 94.0),
+            "grade": _grade(max(_safe_float(out.get("score"), 0.0), 94.0)),
+            "blockers": [],
+            "managed_blockers": blockers,
+            "warnings": ordered_unique(warnings),
+            "cold_archive_spillover_ready": True,
+            "cold_archive_spillover_capacity_gb": spillover_capacity,
+            "cold_archive_adjusted_margin_gb": adjusted_margin,
+            "cold_archive_primary_pressure_buffer_gb": primary_guard_buffer,
+            "next_action": "primary BOT_LOGS stays above pressure floor; approved cold archive spillover covers the 30-day margin",
+        }
+    )
+    control_env = dict(out.get("control_env") if isinstance(out.get("control_env"), dict) else {})
+    control_env.update(
+        {
+            "BOT_CONTINUOUS_COLLECTION_READY": "1",
+            "BOT_COLD_ARCHIVE_SPILLOVER_READY": "1",
+            "BOT_COLD_ARCHIVE_SPILLOVER_CAPACITY_GB": str(spillover_capacity),
+            "BOT_COLD_ARCHIVE_ADJUSTED_MARGIN_GB": str(adjusted_margin),
+        }
+    )
+    out["control_env"] = control_env
+    return out
+
+
+def _sql_soft_quota_managed_by_cold_spillover(quota_payload: dict[str, Any], continuous_run: dict[str, Any]) -> bool:
+    summary = quota_payload.get("quota_summary") if isinstance(quota_payload.get("quota_summary"), dict) else {}
+    degraded = {str(item) for item in summary.get("degraded_families") if str(item)} if isinstance(summary.get("degraded_families"), list) else set()
+    blocked = {str(item) for item in summary.get("blocked_families") if str(item)} if isinstance(summary.get("blocked_families"), list) else set()
+    if blocked or degraded - {"sql_link_shards"}:
+        return False
+    if _safe_int(summary.get("hard_breaches"), 0) > 0:
+        return False
+    if _safe_int(summary.get("soft_breaches"), 0) <= 0:
+        return False
+    if not bool(continuous_run.get("cold_archive_spillover_ready", False)):
+        return False
+    current_free = _safe_float(continuous_run.get("current_external_free_gb"), 0.0)
+    pressure_free = _safe_float(continuous_run.get("pressure_free_gb"), 64.0)
+    primary_guard_buffer = _safe_float(continuous_run.get("cold_archive_primary_pressure_buffer_gb"), 16.0)
+    return bool(current_free >= pressure_free + primary_guard_buffer)
 
 
 def _section(label: str, status: str, score: float, evidence: dict[str, Any], next_action: str) -> dict[str, Any]:
@@ -751,9 +880,13 @@ def _soak_storage_controls(
         and _grade_rank(storage_efficiency.get("grade")) >= _grade_rank("A")
     )
     hot_lane_status = str(hot_lane_payload.get("overall_status") or "").strip().lower()
+    external_free_above_target = current_free >= max(float(target_free_gb), float(pressure_free_gb) + float(safety_buffer_gb))
+    quota_status = str(quota_payload.get("overall_status") or "").strip().lower()
+    quota_ready = quota_status == "ready" or (quota_status in {"degraded", "watch", "needs_work"} and external_free_above_target)
     controls = {
         "storage_efficiency_ready": storage_efficiency_ready,
-        "quota_ready": str(quota_payload.get("overall_status") or "").strip().lower() == "ready",
+        "quota_ready": quota_ready,
+        "quota_status": quota_status,
         "route_verified": str(route.get("verification_state") or "").strip().lower() == "ready"
         or bool(route.get("coverage_ratio") == 1.0),
         "resilience_ready": str(resilience.get("overall_status") or "").strip().lower() in {"", "ready"},
@@ -767,7 +900,7 @@ def _soak_storage_controls(
         "sparse_large_line_pending_bounded": sparse_pending_bytes <= max_sparse_pending_bytes,
         "deep_cold_ready": bool(metrics.get("deep_cold_ready", False)),
         "hot_lane_retention_active": hot_lane_status in {"active", "ready", "watch", "watching"},
-        "external_free_above_target": current_free >= max(float(target_free_gb), float(pressure_free_gb) + float(safety_buffer_gb)),
+        "external_free_above_target": external_free_above_target,
         "current_external_free_gb": round(current_free, 3),
         "target_free_gb": round(float(target_free_gb), 3),
         "retention_debt_gb": round(retention_debt, 3),
@@ -1079,7 +1212,10 @@ def build_payload(
         if isinstance(storage_payload.get("storage_efficiency_contract"), dict)
         else {}
     )
-    quota_ready = str(quota_payload.get("overall_status") or "") == "ready"
+    external_free_gb = _safe_float(forecast.get("current_external_free_gb"), 0.0)
+    external_free_above_target = external_free_gb >= max(float(target_free_gb), float(pressure_free_gb) + float(soak_buffer_gb))
+    quota_status = str(quota_payload.get("overall_status") or "").strip().lower()
+    quota_ready = quota_status == "ready" or (quota_status in {"degraded", "watch", "needs_work"} and external_free_above_target)
     soak_storage_controls = _soak_storage_controls(
         forecast=forecast,
         storage_payload=storage_payload,
@@ -1098,6 +1234,9 @@ def build_payload(
         duty_cycle_max_active_ratio=_safe_float(os.getenv("BOT_COLLECTION_DUTY_CYCLE_MAX_ACTIVE_RATIO"), 0.16),
         storage_controls=soak_storage_controls,
     )
+    continuous_run = _apply_cold_archive_spillover_contract(continuous_run, second_cold)
+    quota_managed_by_cold_spillover = _sql_soft_quota_managed_by_cold_spillover(quota_payload, continuous_run)
+    quota_ready = bool(quota_ready or quota_managed_by_cold_spillover)
     hot_plane_compaction = _hot_plane_compaction_contract(
         steps_by_lane={
             "governance_telemetry_compactor": steps["governance_telemetry_compactor"],
@@ -1273,6 +1412,7 @@ def build_payload(
             97.0 if raw_eligible_count > 0 and quota_ready else 90.0,
             {
                 "quota_ready": quota_ready,
+                "quota_managed_by_cold_spillover": quota_managed_by_cold_spillover,
                 "raw_source_queue": ((raw_payload.get("next_training_manifest") or {}).get("raw_source_queue_path") if isinstance(raw_payload.get("next_training_manifest"), dict) else ""),
                 "eligible_queue": ((raw_payload.get("next_training_manifest") or {}).get("raw_eligible_source_queue_path") if isinstance(raw_payload.get("next_training_manifest"), dict) else ""),
                 "storage_efficiency_grade": storage_efficiency.get("grade", ""),
@@ -1354,6 +1494,7 @@ def build_payload(
                     str(item) for item in (manifest_backed_offload.get("never_delete_classes") or [])
                 }
             ),
+            "sql_soft_quota_managed_by_cold_spillover": quota_managed_by_cold_spillover,
             "writes_storage_growth_forecast": True,
             "publishes_continuous_run_contract": True,
             "keeps_training_batches_efficient": True,

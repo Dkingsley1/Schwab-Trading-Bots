@@ -70,7 +70,10 @@ SAFE_ENV = {
     "ALLOW_ORDER_EXECUTION": "0",
     "BOT_LIVE_MONEY_LOCKED_DURING_SOAK": "1",
     "BOT_UNATTENDED_SOAK_ACTIVE": "1",
+    "BOT_ALLOW_VIDEO_COLD_ARCHIVE": "1",
+    "BOT_VIDEO_COLD_ARCHIVE_ROOT": "/Volumes/VIDEO/schwab_trading_bot_cold",
 }
+DEFAULT_VIDEO_COLD_ARCHIVE_ROOT = Path("/Volumes/VIDEO/schwab_trading_bot_cold")
 
 
 def _utc_now() -> datetime:
@@ -101,6 +104,55 @@ def _safe_float(raw: Any, default: float = 0.0) -> float:
         return float(raw)
     except Exception:
         return float(default)
+
+
+def _path_under(path: Path, root: Path) -> bool:
+    raw = str(path.expanduser())
+    base = str(root.expanduser())
+    return bool(raw == base or raw.startswith(f"{base}/"))
+
+
+def _configure_cold_archive_env(env: dict[str, str], *, apply: bool) -> dict[str, Any]:
+    video_root = Path(env.get("BOT_VIDEO_COLD_ARCHIVE_ROOT", str(DEFAULT_VIDEO_COLD_ARCHIVE_ROOT))).expanduser()
+    env["BOT_VIDEO_COLD_ARCHIVE_ROOT"] = str(video_root)
+    configured = str(env.get("BOT_SECOND_COLD_ROOT") or "").strip()
+    auto_selected = False
+    if configured:
+        target = Path(configured).expanduser()
+    elif video_root.parent.exists():
+        target = video_root
+        env["BOT_SECOND_COLD_ROOT"] = str(target)
+        auto_selected = True
+    else:
+        return {
+            "configured": False,
+            "path": "",
+            "auto_selected": False,
+            "created": False,
+            "approved_video_cold_archive": False,
+        }
+
+    approved_video = _path_under(target, video_root)
+    if approved_video:
+        env.setdefault("BOT_ALLOW_VIDEO_COLD_ARCHIVE", "1")
+    created = False
+    create_error = ""
+    if apply and approved_video and target.parent.exists():
+        try:
+            target.mkdir(parents=True, exist_ok=True)
+            created = True
+        except Exception as exc:
+            create_error = str(exc)
+    return {
+        "configured": True,
+        "path": str(target),
+        "auto_selected": auto_selected,
+        "created": created,
+        "create_error": create_error,
+        "approved_video_cold_archive": approved_video
+        and str(env.get("BOT_ALLOW_VIDEO_COLD_ARCHIVE") or "").strip().lower() in {"1", "true", "yes", "y", "on"},
+        "scope": "cold_archive_subtree_only" if approved_video else "explicit_non_video_cold_target",
+    }
 
 
 def _parse_json_output(text: str) -> dict[str, Any]:
@@ -463,6 +515,7 @@ def build_payload(
     env.update(SAFE_ENV)
     env.setdefault("BOT_RUNTIME_PROFILE", "live")
     env.setdefault("PYTHONUNBUFFERED", "1")
+    cold_archive_env = _configure_cold_archive_env(env, apply=apply)
     state = _load_state(project_root, state_path)
     steps: list[dict[str, Any]] = []
 
@@ -767,7 +820,34 @@ def build_payload(
     soak_payload = _as_dict(soak_row.get("parsed")) or load_json(health_root / "unattended_soak_readiness_latest.json")
 
     storage_retention_payload: dict[str, Any] = {}
+    storage_recovery_payloads: dict[str, Any] = {}
     if apply and _storage_blockers(soak_payload):
+        raw_compaction_row = _run_step(
+            steps,
+            name="storage_raw_training_compaction",
+            cmd=_cmd(
+                opsctl,
+                "raw-training-compaction",
+                "--apply",
+                "--max-files",
+                "24",
+                "--max-gb",
+                str(round(max(min(float(storage_cleanup_max_delete_gb), 12.0), 4.0), 3)),
+                "--jumbo-gb",
+                "12.0",
+                "--min-age-hours",
+                "12",
+                "--write-history",
+                "--json",
+            ),
+            project_root=project_root,
+            timeout_sec=max(int(step_timeout_sec), 240),
+            env=env,
+            state=state,
+            cooldown_seconds=int(max(float(storage_cooldown_minutes), 1.0) * 60),
+            respect_cooldowns=respect_cooldowns,
+        )
+        storage_recovery_payloads["raw_training_compaction"] = _as_dict(raw_compaction_row.get("parsed"))
         retention_row = _run_step(
             steps,
             name="storage_retention_unison",
@@ -795,6 +875,59 @@ def build_payload(
             respect_cooldowns=respect_cooldowns,
         )
         storage_retention_payload = _as_dict(retention_row.get("parsed"))
+        cold_archive_root = str(env.get("BOT_SECOND_COLD_ROOT") or "").strip()
+        if cold_archive_root:
+            offload_row = _run_step(
+                steps,
+                name="storage_manifest_backed_cold_offload",
+                cmd=_cmd(
+                    opsctl,
+                    "manifest-backed-offload",
+                    "--apply",
+                    "--target-root",
+                    cold_archive_root,
+                    "--max-files",
+                    "16",
+                    "--max-gb",
+                    str(round(max(min(float(storage_cleanup_max_delete_gb), 16.0), 4.0), 3)),
+                    "--release-source-after-verify",
+                    "--json",
+                ),
+                project_root=project_root,
+                timeout_sec=max(int(step_timeout_sec), 300),
+                env=env,
+                state=state,
+                cooldown_seconds=int(max(float(storage_cooldown_minutes), 1.0) * 60),
+                respect_cooldowns=respect_cooldowns,
+            )
+            storage_recovery_payloads["manifest_backed_cold_offload"] = _as_dict(offload_row.get("parsed"))
+            retention_recheck_row = _run_step(
+                steps,
+                name="storage_retention_unison_after_cold_offload",
+                cmd=_cmd(
+                    opsctl,
+                    "storage-retention-unison",
+                    "--apply",
+                    "--soak-days",
+                    str(round(float(target_days), 3)),
+                    "--cleanup-max-delete-gb",
+                    str(round(float(storage_cleanup_max_delete_gb), 3)),
+                    "--telemetry-max-gb",
+                    "16",
+                    "--decision-max-gb",
+                    "8",
+                    "--target-free-gb",
+                    str(round(float(storage_target_free_gb), 3)),
+                    "--json",
+                ),
+                project_root=project_root,
+                timeout_sec=max(int(step_timeout_sec), 240),
+                env=env,
+                state=state,
+                cooldown_seconds=0,
+                respect_cooldowns=False,
+            )
+            storage_recovery_payloads["retention_after_cold_offload"] = _as_dict(retention_recheck_row.get("parsed"))
         soak_recheck = _run_step(
             steps,
             name="unattended_soak_recheck",
@@ -972,6 +1105,7 @@ def build_payload(
             "allow_order_execution": False,
             "live_money_locked_during_soak": True,
             "bounded_storage_retention_only": True,
+            "approved_video_cold_archive_subtree_only": True,
             "destructive_manual_delete_allowed": False,
             "promotion_gate_autounlock_allowed": False,
         },
@@ -987,6 +1121,30 @@ def build_payload(
             "available_margin_gb": round(storage_gap, 3),
             "blockers": _storage_blockers(soak_payload),
             "retention_attempted": bool(storage_retention_payload),
+            "cold_archive": cold_archive_env,
+            "recovery": {
+                "raw_compaction_attempted": bool(storage_recovery_payloads.get("raw_training_compaction")),
+                "raw_gb_cleared": _safe_float(
+                    _as_dict(storage_recovery_payloads.get("raw_training_compaction")).get("raw_gb_cleared")
+                    or _as_dict(_as_dict(storage_recovery_payloads.get("raw_training_compaction")).get("raw_summary")).get(
+                        "raw_gb_cleared"
+                    ),
+                    0.0,
+                ),
+                "manifest_cold_offload_attempted": bool(storage_recovery_payloads.get("manifest_backed_cold_offload")),
+                "manifest_released_gb": _safe_float(
+                    _as_dict(
+                        _as_dict(storage_recovery_payloads.get("manifest_backed_cold_offload")).get("apply_result")
+                    ).get("released_gb"),
+                    0.0,
+                ),
+                "manifest_offload_status": str(
+                    _as_dict(storage_recovery_payloads.get("manifest_backed_cold_offload")).get("overall_status") or ""
+                ),
+                "retention_recheck_status": str(
+                    _as_dict(storage_recovery_payloads.get("retention_after_cold_offload")).get("overall_status") or ""
+                ),
+            },
         },
         "ingestion_soak_repair": {
             "attempted": bool(ingestion_repair_payloads),

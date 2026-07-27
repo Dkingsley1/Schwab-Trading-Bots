@@ -988,6 +988,9 @@ case "$cmd" in
   library-utilization-router|library-router|non-mlx-library-router|dependency-utilization)
     run_then_refresh_self_model "$PY" "$PROJECT_ROOT/scripts/ops/library_utilization_router.py" "$@"
     ;;
+  library-upgrade-route|upgrade-route-libraries|library-upgrade-router|dependency-upgrade-router)
+    run_then_refresh_self_model "$PY" "$PROJECT_ROOT/scripts/ops/library_upgrade_route_control.py" "$@"
+    ;;
   library-efficiency-deepening|library-efficiency-layers|efficiency-layers|library-1-10|dual-mode-library-efficiency)
     exec "$PY" "$PROJECT_ROOT/scripts/ops/library_efficiency_deepening.py" "$@"
     ;;
@@ -1776,7 +1779,7 @@ case "$cmd" in
   health-gates|health-gate-refresh)
     exec "$PY" "$PROJECT_ROOT/scripts/health_gates.py" "$@"
     ;;
-  health)
+  health|daily-auto-verify|daily-verify)
     exec "$PY" "$PROJECT_ROOT/scripts/daily_auto_verify.py" --json "$@"
     ;;
   health-fast|fast-health)
@@ -2667,6 +2670,8 @@ case "$cmd" in
     RETRAIN_NEW_BOT_EXTRA_PASS=0 \
     RETRAIN_RETIRE_PERSISTENT_LOSERS=0 \
     RETRAIN_QUIET_CHILD_OUTPUT="${RETRAIN_QUIET_CHILD_OUTPUT:-1}" \
+    RETRAIN_GREEN_MEMORY_SWAP_RELIEF="${RETRAIN_GREEN_MEMORY_SWAP_RELIEF:-1}" \
+    PYTHONUNBUFFERED=1 \
     MLX_METAL_JIT="${MLX_METAL_JIT:-0}" \
     training_pcore_exec "$TRAINING_PY" "$PROJECT_ROOT/scripts/weekly_retrain.py" --continue-on-error "$@"
     ;;
@@ -2786,6 +2791,7 @@ opsctl commands:
   mlx-audio-audit [--json]
   mlx-intelligence-router|mlx-compute-brain|mlx-utilization [--apply] [--json]
   library-utilization-router|library-router|non-mlx-library-router [--apply] [--json]
+  library-upgrade-route|upgrade-route-libraries [--apply] [--json]
   library-efficiency-deepening|library-1-10 [--apply] [--json]
   safety-bounded-advancement-frontier|safe-frontier-push [--apply] [--json]
   whole-system-safety-frontier|system-frontier-1-12 [--apply] [--json]
@@ -2849,7 +2855,7 @@ opsctl commands:
   retention-intelligence-v2 [--apply] [--sample-limit N] [--json]
   hot-lane-retention-control [--apply] [--target-free-gb N] [--hot-total-thin-gb N] [--json]
   storage-retention-unison [--apply] [--raw-max-files N] [--raw-max-gb N] [--cleanup-max-delete-gb N] [--telemetry-max-gb N] [--lifecycle-max-gb N] [--decision-max-gb N] [--target-free-gb N] [--json]
-  manifest-backed-offload [--apply] [--target-root PATH] [--max-files N] [--max-gb N] [--json]
+  manifest-backed-offload [--apply] [--target-root PATH] [--max-files N] [--max-gb N] [--release-source-after-verify] [--json]
   governance-telemetry-compactor [--apply] [--channels CSV|all] [--target-free-gb N] [--min-file-mb N] [--json]
   governance-lifecycle-compactor [--apply] [--target-free-gb N] [--keep-latest N] [--json]
   decision-log-compactor [--apply] [--target-free-gb N] [--min-file-mb N] [--json]
@@ -3018,6 +3024,7 @@ opsctl commands:
   adaptive-intelligence-kernel|intelligence-kernel [--apply] [--json]
   mlx-intelligence-router|mlx-compute-brain|mlx-utilization [--apply] [--json]
   library-utilization-router|library-router|non-mlx-library-router [--apply] [--json]
+  library-upgrade-route|upgrade-route-libraries [--apply] [--json]
   big-platform-brain|platform-brain|system-self-model|self-model|self-awareness [--json]
   self-awareness-infrabots|system-self-awareness [--apply] [--json]
   alpha-intelligence-evolution|alpha-advancement [--apply] [--json]
@@ -3067,7 +3074,7 @@ opsctl commands:
   storage-retention-unison [--apply] [--raw-max-files N] [--raw-max-gb N] [--cleanup-max-delete-gb N] [--telemetry-max-gb N] [--lifecycle-max-gb N] [--decision-max-gb N] [--target-free-gb N] [--json]
   sql-maint|sqlite-maint [--vacuum] [--json]
   health-gates|health-gate-refresh [--json]
-  health
+  health|daily-auto-verify|daily-verify
   py314-canary|py314-ready|py314-migration-audit [--refresh-deps] [--skip-install] [--json]
   doctor
   coinbase-start [paper default] [--paper] [--force-restart] [--live-data|--simulate] [--top-n N] [--min-acc X] [--profiles default]

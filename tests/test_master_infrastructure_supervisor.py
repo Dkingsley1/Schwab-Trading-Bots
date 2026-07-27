@@ -165,6 +165,24 @@ def test_master_supervisor_ready_when_child_surfaces_are_coherent(tmp_path: Path
     }
 
 
+def test_master_supervisor_accepts_nested_dashboard_overall_ready(tmp_path: Path, monkeypatch) -> None:
+    project_root = tmp_path / "project"
+    monkeypatch.setenv("ONE_NUMBERS_ORIGINAL_START_DAY", "20260422")
+    _write_ready_fixture(project_root)
+    _write_json(
+        project_root / "governance" / "health" / "runtime_gate_dashboard_latest.json",
+        {"overall": {"status": "ok", "ok": True, "attention": []}},
+    )
+
+    payload = supervisor.build_payload(project_root)
+    cockpit = next(row for row in payload["checks"] if row["name"] == "operator_cockpit_readiness")
+    dashboard = next(row for row in cockpit["evidence"]["artifacts"] if row["name"] == "runtime_gate_dashboard")
+
+    assert payload["overall_status"] == "ready"
+    assert cockpit["status"] == "ready"
+    assert dashboard["status"] == "ready"
+
+
 def test_master_supervisor_degrades_when_one_numbers_start_is_unpinned(tmp_path: Path, monkeypatch) -> None:
     project_root = tmp_path / "project"
     monkeypatch.delenv("ONE_NUMBERS_ORIGINAL_START_DAY", raising=False)
@@ -181,6 +199,148 @@ def test_master_supervisor_degrades_when_one_numbers_start_is_unpinned(tmp_path:
     assert payload["operator_followups"] == [
         "pin the One Numbers original start day in config/one_numbers_start_day.txt or ONE_NUMBERS_ORIGINAL_START_DAY"
     ]
+
+
+def test_master_supervisor_accepts_bounded_soak_storage_backlog(tmp_path: Path, monkeypatch) -> None:
+    project_root = tmp_path / "project"
+    monkeypatch.setenv("ONE_NUMBERS_ORIGINAL_START_DAY", "20260422")
+    _write_ready_fixture(project_root)
+    _write_json(
+        project_root / "governance" / "health" / "ingestion_storage_control_latest.json",
+        {
+            "overall_status": "ready",
+            "severity": "stable",
+            "recovery_state": "steady_state",
+            "backpressure": {
+                "total_pending_lines": 11669,
+                "estimated_total_drain_minutes": 8569.813,
+            },
+            "storage": {"backlog_drain_status": "blocked"},
+            "steady_state": {
+                "target_status": {
+                    "steady_state_ready": False,
+                    "target_breaches": ["pressure_index", "estimated_total_drain_minutes"],
+                }
+            },
+            "continuous_run_soak_contract": {
+                "active": True,
+                "status": "watch",
+                "soak_ready": True,
+                "grade": "A",
+                "blockers": [],
+                "non_blocking_conditions": [
+                    "bounded_sparse_and_raw_reserve_backlog_allowed_for_soak",
+                    "sparse_jsonl_and_raw_live_reserve_under_soak_controls",
+                ],
+                "inputs": {"bounded_sparse_reserve_soak_watch": True},
+            },
+        },
+    )
+
+    payload = supervisor.build_payload(project_root)
+    storage_check = next(row for row in payload["checks"] if row["name"] == "sql_ingestion_lag_and_backlog")
+
+    assert payload["overall_status"] == "ready"
+    assert storage_check["status"] == "ready"
+    assert storage_check["evidence"]["bounded_soak_backlog_ready"] is True
+
+
+def test_master_supervisor_accepts_raw_live_a_plus_soak_backlog(tmp_path: Path, monkeypatch) -> None:
+    project_root = tmp_path / "project"
+    monkeypatch.setenv("ONE_NUMBERS_ORIGINAL_START_DAY", "20260422")
+    _write_ready_fixture(project_root)
+    _write_json(
+        project_root / "governance" / "health" / "ingestion_storage_control_latest.json",
+        {
+            "overall_status": "ready",
+            "severity": "stable",
+            "recovery_state": "steady_state",
+            "backpressure": {
+                "total_pending_lines": 4098,
+                "core_pending_lines": 2261,
+                "estimated_total_drain_minutes": 3748.834,
+            },
+            "storage": {"backlog_drain_status": "blocked"},
+            "steady_state": {
+                "target_status": {
+                    "steady_state_ready": False,
+                    "target_breaches": ["estimated_total_drain_minutes"],
+                }
+            },
+            "backlog_truth": {
+                "raw_live": {
+                    "grade": "A+",
+                    "core_pending_lines": 2261,
+                    "total_pending_lines": 4098,
+                    "oldest_pending_age_seconds": 0.0,
+                }
+            },
+            "raw_live_expansion_contract": {
+                "expansion_ready": True,
+                "hard_block": False,
+                "expansion_tier": "ready_for_bigger_expansion",
+            },
+        },
+    )
+
+    payload = supervisor.build_payload(project_root)
+    storage_check = next(row for row in payload["checks"] if row["name"] == "sql_ingestion_lag_and_backlog")
+
+    assert payload["overall_status"] == "ready"
+    assert storage_check["status"] == "ready"
+    assert storage_check["evidence"]["bounded_soak_backlog_ready"] is True
+    assert storage_check["evidence"]["raw_live_soak_backlog_ready"] is True
+    assert storage_check["evidence"]["raw_live_grade"] == "A+"
+
+
+def test_master_supervisor_manages_self_auditing_debt_during_guarded_paper(tmp_path: Path, monkeypatch) -> None:
+    project_root = tmp_path / "project"
+    health = project_root / "governance" / "health"
+    monkeypatch.setenv("ONE_NUMBERS_ORIGINAL_START_DAY", "20260422")
+    _write_ready_fixture(project_root)
+    _write_json(
+        health / "health_fast_latest.json",
+        {
+            "strict_all_clear": True,
+            "operational_readiness": {
+                "guarded_paper": {"ok": True, "status": "ready", "blockers": []},
+                "live_execution": {"ok": False, "status": "blocked_read_only"},
+            },
+        },
+    )
+    _write_json(
+        health / "infrastructure_autofix_bot_latest.json",
+        {
+            "timestamp_utc": "2099-04-23T20:00:00+00:00",
+            "overall_status": "degraded",
+            "ok": False,
+            "repair_plan": [{"name": "master_infrastructure_supervisor"}],
+            "attempts": [{"rc": 0}],
+            "operator_followups": [],
+        },
+    )
+    _write_json(
+        health / "system_drift_autopilot_latest.json",
+        {
+            "timestamp_utc": "2099-04-23T20:00:00+00:00",
+            "overall_status": "degraded",
+            "ok": False,
+            "repair_plan": [{"name": "master_infrastructure_supervisor"}],
+            "attempts": [{"rc": 0}],
+            "operator_followups": [],
+        },
+    )
+
+    payload = supervisor.build_payload(project_root)
+    child = next(row for row in payload["checks"] if row["name"] == "child_repair_bot_outcomes")
+    self_check = next(row for row in payload["checks"] if row["name"] == "self_auditing_infra_bots")
+    infra_row = next(row for row in self_check["evidence"]["bots"] if row["name"] == "infrastructure_autofix")
+
+    assert payload["overall_status"] == "ready"
+    assert child["status"] == "ready"
+    assert child["evidence"]["paper_soak_advisory_only"] is True
+    assert self_check["status"] == "ready"
+    assert infra_row["status"] == "advisory"
 
 
 def test_master_supervisor_allows_operator_gated_command_validity(tmp_path: Path, monkeypatch) -> None:
@@ -522,6 +682,30 @@ def test_master_supervisor_treats_wrapped_fx_child_as_non_owner(tmp_path: Path, 
     assert payload["overall_status"] == "ready"
     assert process_check["status"] == "ready"
     assert fx_row["owner_count"] == 1
+
+
+def test_master_supervisor_treats_dividend_capture_child_as_non_owner(tmp_path: Path, monkeypatch) -> None:
+    project_root = tmp_path / "project"
+    monkeypatch.setenv("ONE_NUMBERS_ORIGINAL_START_DAY", "20260422")
+    _write_ready_fixture(project_root)
+
+    def _fake_ps_rows(root: Path) -> list[dict]:
+        return [
+            {"pid": 301, "ppid": 1, "command": f"{root}/.venv312/bin/python {root}/scripts/run_dividend_shadow.py"},
+            {"pid": 302, "ppid": 1, "command": f"{root}/.venv312/bin/python {root}/scripts/run_dividend_capture_shadow.py"},
+            {"pid": 303, "ppid": 302, "command": f"{root}/.venv312/bin/python {root}/scripts/run_dividend_shadow.py"},
+        ]
+
+    monkeypatch.setattr(supervisor, "_ps_rows", _fake_ps_rows)
+
+    payload = supervisor.build_payload(project_root)
+    process_check = next(row for row in payload["checks"] if row["name"] == "process_lane_ownership")
+    dividend_row = next(row for row in process_check["evidence"]["lanes"] if row["lane"] == "dividend_shadow")
+
+    assert payload["overall_status"] == "ready"
+    assert process_check["status"] == "ready"
+    assert dividend_row["owner_count"] == 1
+    assert process_check["evidence"]["ignored_embedded_children"][0]["reason"] == "dividend_capture_embedded_child"
 
 
 def test_master_supervisor_apply_treats_rc2_as_degraded_not_hard_failed(tmp_path: Path, monkeypatch) -> None:

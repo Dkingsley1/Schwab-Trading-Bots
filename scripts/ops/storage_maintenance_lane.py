@@ -100,12 +100,51 @@ def _run_json_command(
     }
 
 
+def _payload_reason_tokens(payload: dict[str, Any]) -> set[str]:
+    tokens: set[str] = set()
+    for key in ("reason", "skipped_reason"):
+        value = str(payload.get(key) or "").strip()
+        if value:
+            tokens.add(value)
+    resource_guard = payload.get("resource_guard") if isinstance(payload.get("resource_guard"), dict) else {}
+    for key in ("reason", "skipped_reason"):
+        value = str(resource_guard.get(key) or "").strip()
+        if value:
+            tokens.add(value)
+    for raw in resource_guard.get("resource_guard_reasons") or []:
+        value = str(raw or "").strip()
+        if value:
+            tokens.add(value)
+    freeze_contract = (
+        resource_guard.get("support_maintenance_freeze_contract")
+        if isinstance(resource_guard.get("support_maintenance_freeze_contract"), dict)
+        else {}
+    )
+    value = str(freeze_contract.get("reason") or "").strip()
+    if value:
+        tokens.add(value)
+    return tokens
+
+
+def _has_nonfatal_reason(payload: dict[str, Any], accepted: set[str]) -> bool:
+    return bool(accepted and (_payload_reason_tokens(payload) & accepted))
+
+
+def _support_maintenance_frozen(payload: dict[str, Any]) -> bool:
+    return bool(
+        payload.get("support_maintenance_frozen", False)
+        or "support_maintenance_frozen_for_mac_fluidity" in _payload_reason_tokens(payload)
+    )
+
+
 def _step_status(result: dict[str, Any], *, nonfatal_reasons: set[str] | None = None) -> str:
+    payload = result.get("payload") if isinstance(result.get("payload"), dict) else {}
+    accepted = nonfatal_reasons or set()
+    reason = str(payload.get("reason") or "")
+    if _has_nonfatal_reason(payload, accepted):
+        return "busy"
     if int(result.get("rc", 1)) != 0:
         return "error"
-    payload = result.get("payload") if isinstance(result.get("payload"), dict) else {}
-    reason = str(payload.get("reason") or "")
-    accepted = nonfatal_reasons or set()
     if bool(payload.get("busy", False)) or reason in accepted:
         return "busy"
     if bool(payload.get("skipped", False)):
@@ -468,10 +507,9 @@ def build_storage_maintenance_payload(
     retention: dict[str, Any] | None = None
     content_store_gc: dict[str, Any] | None = None
     resource_guard_payload = resource_guard.get("payload") if isinstance(resource_guard.get("payload"), dict) else {}
-    resource_ok = bool(
-        resource_guard_payload.get("ok", resource_guard_payload.get("resource_guard_ok", False))
-    )
-    if not resource_ok and not force:
+    resource_support_frozen = _support_maintenance_frozen(resource_guard_payload)
+    resource_ok = bool(resource_guard_payload.get("ok", resource_guard_payload.get("resource_guard_ok", False)))
+    if (not resource_ok or resource_support_frozen) and not force:
         heavy_steps_skipped = True
     else:
         shard_manager = _run_json_command(
@@ -545,17 +583,18 @@ def build_storage_maintenance_payload(
     steps = {
         "ingestion_storage_governor": _step_record(governor),
         "maintenance_strategy_reloader": _step_record(strategy_reloader),
-        "resource_guard": _step_record(resource_guard),
+        "resource_guard": _step_record(resource_guard, nonfatal_reasons={"support_maintenance_frozen_for_mac_fluidity"}),
         "storage_failback_sync": _step_record(failback),
     }
     if heavy_steps_skipped:
-        steps["resource_guard"]["status"] = "blocked"
-        steps["sql_link_shard_manager"] = {"status": "skipped", "reason": "resource_guard_blocked"}
-        steps["content_addressed_artifact_store"] = {"status": "skipped", "reason": "resource_guard_blocked"}
-        steps["sqlite_maintenance"] = {"status": "skipped", "reason": "resource_guard_blocked"}
-        steps["stale_artifact_sweeper_bot"] = {"status": "skipped", "reason": "resource_guard_blocked"}
-        steps["stale_artifact_reaper_bot"] = {"status": "skipped", "reason": "resource_guard_blocked"}
-        steps["data_retention_policy"] = {"status": "skipped", "reason": "resource_guard_blocked"}
+        skip_reason = "support_maintenance_frozen_for_mac_fluidity" if resource_support_frozen else "resource_guard_blocked"
+        steps["resource_guard"]["status"] = "busy" if resource_support_frozen else "blocked"
+        steps["sql_link_shard_manager"] = {"status": "skipped", "reason": skip_reason}
+        steps["content_addressed_artifact_store"] = {"status": "skipped", "reason": skip_reason}
+        steps["sqlite_maintenance"] = {"status": "skipped", "reason": skip_reason}
+        steps["stale_artifact_sweeper_bot"] = {"status": "skipped", "reason": skip_reason}
+        steps["stale_artifact_reaper_bot"] = {"status": "skipped", "reason": skip_reason}
+        steps["data_retention_policy"] = {"status": "skipped", "reason": skip_reason}
     else:
         assert shard_manager is not None
         assert sqlite_maintenance is not None
@@ -590,7 +629,7 @@ def build_storage_maintenance_payload(
     for result, nonfatal in (
         (governor, set()),
         (strategy_reloader, set()),
-        (resource_guard, set()),
+        (resource_guard, {"support_maintenance_frozen_for_mac_fluidity"}),
         (failback, set()),
         (shard_manager, {"writer_lock_busy"}),
         (content_store_gc, set()),
@@ -601,29 +640,50 @@ def build_storage_maintenance_payload(
     ):
         if result is None:
             continue
-        if int(result.get("rc", 1)) != 0:
+        payload = result.get("payload") if isinstance(result.get("payload"), dict) else {}
+        if int(result.get("rc", 1)) != 0 and not _has_nonfatal_reason(payload, nonfatal):
             ok = False
             break
-        payload = result.get("payload") if isinstance(result.get("payload"), dict) else {}
         reason = str(payload.get("reason") or "")
-        if payload.get("ok") is False and not bool(payload.get("busy", False)) and reason not in nonfatal:
+        if payload.get("ok") is False and not bool(payload.get("busy", False)) and reason not in nonfatal and not _has_nonfatal_reason(payload, nonfatal):
             ok = False
             break
 
     if heavy_steps_skipped:
-        ok = all(
+        base_ok = all(
             int(result.get("rc", 1)) == 0 and _step_status(result) != "error"
             for result in (governor, strategy_reloader, failback)
         )
+        if resource_support_frozen:
+            ok = bool(
+                base_ok
+                and _step_status(resource_guard, nonfatal_reasons={"support_maintenance_frozen_for_mac_fluidity"})
+                in {"ok", "busy", "skipped"}
+            )
+        else:
+            ok = base_ok
 
     reason = "ok"
-    if heavy_steps_skipped:
+    overall_status = "ready"
+    if heavy_steps_skipped and resource_support_frozen:
+        reason = "support_maintenance_frozen_for_mac_fluidity"
+        overall_status = "guarded_hold"
+    elif heavy_steps_skipped:
         reason = "resource_guard_blocked"
+        overall_status = "guarded_hold"
     elif not ok:
+        overall_status = "blocked"
         for name, record in steps.items():
             if str(record.get("status") or "") == "error":
                 reason = f"{name}_failed"
                 break
+
+    if heavy_steps_skipped and not resource_support_frozen:
+        ok = all(
+            int(result.get("rc", 1)) == 0 and _step_status(result) != "error"
+            for result in (governor, strategy_reloader, failback)
+        )
+        overall_status = "guarded_hold"
 
     failback_payload = failback.get("payload") if isinstance(failback.get("payload"), dict) else {}
     shard_payload = (shard_manager or {}).get("payload") if isinstance((shard_manager or {}).get("payload"), dict) else {}
@@ -642,6 +702,7 @@ def build_storage_maintenance_payload(
         "timestamp_utc": _utc_now(),
         "project_root": str(project_root),
         "ok": bool(ok),
+        "overall_status": overall_status,
         "reason": reason,
         "force": bool(force),
         "vacuum": bool(vacuum),

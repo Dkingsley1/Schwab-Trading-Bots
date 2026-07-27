@@ -1517,7 +1517,7 @@ def test_runtime_throttle_apply_preserves_selected_writer_lane_cap_under_storage
     assert "BACKLOG_PCORE_PREPROCESS_WORKERS=7" not in override
 
 
-def test_runtime_throttle_apply_preserves_selected_writer_lanes_when_storage_overlay_is_clear(
+def test_runtime_throttle_apply_keeps_stable_storage_overlay_on_single_writer(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
@@ -1561,25 +1561,27 @@ def test_runtime_throttle_apply_preserves_selected_writer_lanes_when_storage_ove
 
     override = (tmp_path / "config" / ".env.runtime_resource_guard_override").read_text(encoding="utf-8")
 
-    assert "SQL_LINK_SERVICE_HOST_COOLING_ACTIVE" not in result["drain_friendly_sql_overrides"]
-    assert result["drain_friendly_sql_overrides"]["BACKLOG_PCORE_PREPROCESS_WORKERS"] == "7"
-    assert result["drain_friendly_sql_overrides"]["SQL_LINK_SERVICE_PREPROCESS_WORKERS"] == "7"
-    assert result["drain_friendly_sql_overrides"]["SQL_LINK_SERVICE_SHARD_WRITER_LANES"] == "7"
-    assert result["drain_friendly_sql_overrides"]["SQL_LINK_SERVICE_MAX_SHARD_WRITER_LANES"] == "7"
+    assert result["drain_friendly_sql_overrides"]["SQL_LINK_SERVICE_HOST_COOLING_ACTIVE"] == "1"
+    assert result["drain_friendly_sql_overrides"]["BACKLOG_PCORE_PREPROCESS_WORKERS"] == "1"
+    assert result["drain_friendly_sql_overrides"]["SQL_LINK_SERVICE_PREPROCESS_WORKERS"] == "1"
+    assert result["drain_friendly_sql_overrides"]["SQL_LINK_SERVICE_SHARD_WRITER_LANES"] == "1"
+    assert result["drain_friendly_sql_overrides"]["SQL_LINK_SERVICE_MAX_SHARD_WRITER_LANES"] == "1"
+    assert result["drain_friendly_sql_overrides"]["SQL_LINK_SERVICE_INTERVAL_SECONDS"] == "12"
     assert result["drain_friendly_sql_overrides"]["SQL_LINK_SERVICE_PROGRESS_HEARTBEAT_SECONDS"] == "20"
     assert result["drain_friendly_sql_overrides"]["SQL_LINK_SERVICE_SMART_SHARD_PARALLELISM"] == "1"
     assert result["drain_friendly_sql_overrides"]["SQL_LINK_SERVICE_COLD_SHARD_LANE_CAP"] == "1"
     assert result["drain_friendly_sql_overrides"]["SQL_LINK_SERVICE_SHARD_GOVERNANCE_MAX_FILES"] == "10"
     assert result["drain_friendly_sql_overrides"]["SQL_LINK_SERVICE_SHARD_GOVERNANCE_TIMEOUT_SECONDS"] == "240"
-    assert "SQL_LINK_SERVICE_HOST_COOLING_ACTIVE=1" not in override
-    assert "BACKLOG_PCORE_PREPROCESS_WORKERS=7" in override
-    assert "SQL_LINK_SERVICE_SHARD_WRITER_LANES=7" in override
-    assert "SQL_LINK_SERVICE_MAX_SHARD_WRITER_LANES=7" in override
+    assert "SQL_LINK_SERVICE_HOST_COOLING_ACTIVE=1" in override
+    assert "BACKLOG_PCORE_PREPROCESS_WORKERS=1" in override
+    assert "SQL_LINK_SERVICE_SHARD_WRITER_LANES=1" in override
+    assert "SQL_LINK_SERVICE_MAX_SHARD_WRITER_LANES=1" in override
+    assert "SQL_LINK_SERVICE_INTERVAL_SECONDS=12" in override
     assert "SQL_LINK_SERVICE_PROGRESS_HEARTBEAT_SECONDS=20" in override
     assert "SQL_LINK_SERVICE_SMART_SHARD_PARALLELISM=1" in override
     assert "SQL_LINK_SERVICE_COLD_SHARD_LANE_CAP=1" in override
     assert "SQL_LINK_SERVICE_SHARD_GOVERNANCE_MAX_FILES=10" in override
-    assert "BACKLOG_PCORE_PREPROCESS_WORKERS=1" not in override
+    assert "BACKLOG_PCORE_PREPROCESS_WORKERS=7" not in override
 
 
 def test_runtime_payload_ignores_stale_lane_cap_when_pcore_operator_override_is_active(
@@ -3427,6 +3429,29 @@ def test_runtime_throttle_marks_paper_heat_with_green_os_memory_as_advisory(tmp_
     assert advisory["reason"] == "low_priority_paper_execution_pressure_is_guarded_advisory"
     assert advisory["measurements"]["paper_ramp_memory_guarded"] is True
     assert advisory["measurements"]["paper_lane_low_priority_guarded"] is True
+
+
+def test_runtime_throttle_treats_managed_critical_compression_as_normal_memory() -> None:
+    assert (
+        src._memory_pressure_level(
+            {"memory_pressure_state": "green", "memory_pressure_kind": "none", "swap_used_gb": 11.445},
+            {
+                "overall_status": "needs_work",
+                "reasons": ["compressed_memory_critical"],
+                "cotenant_awareness": {"memory_pressure_clear": True},
+                "compressed_memory_relief_contract": {"managed": True},
+                "memory_truth_reconciliation": {"stale_swap_relief": True},
+                "memory_snapshot": {
+                    "memory_pressure_state": "green",
+                    "memory_pressure_kind": "none",
+                    "memory_free_pct": 43.0,
+                    "swap_used_gb": 0.024,
+                    "compressor_gb": 6.465,
+                },
+            },
+        )
+        == "normal"
+    )
 
 
 def test_runtime_throttle_marks_clean_backlog_writer_cooldown_as_advisory(tmp_path: Path) -> None:
@@ -5319,6 +5344,138 @@ def test_runtime_throttle_marks_niced_research_pressure_as_advisory(tmp_path: Pa
     assert advisory["measurements"]["research_low_priority_guarded"] is True
 
 
+def test_runtime_throttle_marks_full_force_paper_and_research_mix_as_soak_advisory(tmp_path: Path) -> None:
+    health_root = tmp_path / "governance" / "health"
+    _write_json(health_root / "resource_guard_latest.json", {"memory_pressure_state": "green", "swap_used_gb": 0.1})
+    _write_json(health_root / "memory_efficiency_control_latest.json", {"overall_status": "ready"})
+    _write_json(
+        health_root / "live_runtime_separation_control_latest.json",
+        {"release_contract": {"live_lane_should_be_read_only": True}},
+    )
+    _write_json(health_root / "paper_400_ramp_latest.json", {"stage": "armed", "armed": True, "ok": True, "blockers": []})
+    _write_json(
+        health_root / "ingestion_storage_control_latest.json",
+        {
+            "overall_status": "ready",
+            "recommended_operating_mode": "live_full",
+            "pressure_index": 0.1,
+            "severity": "stable",
+            "storage": {"backlog_drain_status": "steady_state"},
+            "backpressure": {
+                "core_pending_lines": 2261,
+                "total_pending_lines": 4098,
+                "pending_lines_threshold": 15000,
+                "oldest_pending_age_seconds": 0.0,
+                "oldest_age_threshold_seconds": 240.0,
+            },
+        },
+    )
+    _write_json(
+        tmp_path / "master_bot_registry.json",
+        {
+            "sub_bots": [
+                {
+                    "bot_id": f"paper_capacity_bot_{idx}",
+                    "active": True,
+                    "lifecycle_state": "active",
+                    "paper_execution_allowed": True,
+                }
+                for idx in range(700)
+            ]
+        },
+    )
+
+    payload = src.build_payload(
+        tmp_path,
+        runtime_snapshot={
+            "cpu_count": 10,
+            "load_averages": {"one_minute": 9.0, "five_minutes": 6.0, "fifteen_minutes": 5.0},
+            "thermal": {"thermal_warning_active": False, "performance_warning_active": False},
+            "vm_stat": {},
+            "top_processes": [
+                {
+                    "pid": 601,
+                    "nice": 20,
+                    "cpu_percent": 85.0,
+                    "mem_percent": 0.4,
+                    "elapsed": "00:04",
+                    "command": "python scripts/run_execution_lane.py --mode paper",
+                    "category": "paper_execution",
+                    "priority_tier": "paper_gate_controlled",
+                    "throttle_candidate": True,
+                },
+                {
+                    "pid": 701,
+                    "nice": 20,
+                    "cpu_percent": 179.0,
+                    "mem_percent": 0.4,
+                    "elapsed": "00:04",
+                    "command": "python scripts/run_shadow_training_loop.py --broker schwab",
+                    "category": "research_training",
+                    "priority_tier": "research_downshift",
+                    "throttle_candidate": False,
+                },
+                {
+                    "pid": 801,
+                    "nice": 0,
+                    "cpu_percent": 55.0,
+                    "mem_percent": 0.4,
+                    "elapsed": "00:04",
+                    "command": "/usr/libexec/symptomsd",
+                    "category": "system_cotenant",
+                    "priority_tier": "observe",
+                    "throttle_candidate": False,
+                },
+                {
+                    "pid": 901,
+                    "nice": 0,
+                    "cpu_percent": 24.0,
+                    "mem_percent": 0.4,
+                    "elapsed": "00:04",
+                    "command": "Codex",
+                    "category": "interactive_cotenant",
+                    "priority_tier": "external_cotenant",
+                    "throttle_candidate": False,
+                },
+                {
+                    "pid": 902,
+                    "nice": 0,
+                    "cpu_percent": 9.0,
+                    "mem_percent": 0.1,
+                    "elapsed": "00:04",
+                    "command": "python scripts/ops/runtime_throttle_control.py --json",
+                    "category": "operator_observability",
+                    "priority_tier": "operator_visible",
+                    "throttle_candidate": False,
+                },
+            ],
+            "category_cpu": {
+                "paper_execution": 85.0,
+                "research_training": 179.0,
+                "system_cotenant": 55.0,
+                "interactive_cotenant": 24.0,
+                "operator_observability": 9.0,
+            },
+            "category_counts": {
+                "paper_execution": 1,
+                "research_training": 1,
+                "system_cotenant": 1,
+                "interactive_cotenant": 1,
+                "operator_observability": 1,
+            },
+        },
+    )
+
+    assert payload["overall_status"] == "advisory"
+    assert payload["ok"] is True
+    advisory = payload["soft_cap_advisory_reclassification"]
+    assert advisory["active"] is True
+    assert advisory["reason"] == "full_force_paper_and_research_pressure_is_soak_guarded_advisory"
+    assert advisory["measurements"]["full_force_paper_research_mix_guarded_advisory"] is True
+    assert payload["paper_capacity_contract"]["ready_for_700_bot_paper"] is True
+    assert payload["paper_capacity_contract"]["attribution_capacity_advisory"] is True
+
+
 def test_runtime_throttle_downgrades_protect_live_for_stoppable_background_research(tmp_path: Path) -> None:
     health_root = tmp_path / "governance" / "health"
     _write_json(health_root / "resource_guard_latest.json", {"memory_pressure_state": "green", "swap_used_gb": 0.1})
@@ -5913,6 +6070,62 @@ def test_runtime_throttle_pauses_support_maintenance_for_mac_fluidity_watch(tmp_
     assert result["reason"] == "mac_fluidity_support_pause"
     assert result["successful_count"] == 1
     assert [pid for pid, sig in signals if sig == signal.SIGSTOP] == [801]
+
+
+def test_runtime_throttle_does_not_pause_storage_recovery_owner_during_storage_pressure(tmp_path: Path, monkeypatch) -> None:
+    signals: list[tuple[int, signal.Signals | int]] = []
+
+    def fake_kill(pid: int, sig: signal.Signals | int) -> None:
+        signals.append((pid, sig))
+
+    payload = {
+        "mac_fluidity_contract": {
+            "overall_status": "watch",
+            "fluidity_band": "guarded_smooth",
+            "fluidity_score": 83.0,
+            "support_pause_recommended": True,
+        },
+        "runtime_snapshot": {
+            "storage_pressure": {
+                "pressure_index": 0.7,
+                "total_pending_lines": 3825,
+            }
+        },
+        "storage_stabilization": {"drain_friendly_sql_required": True},
+    }
+    candidates = [
+        {
+            "pid": 901,
+            "category": "support_maintenance",
+            "cpu_percent": 66.0,
+            "command": "python scripts/ops/swap_pressure_governor.py --json",
+        },
+        {
+            "pid": 902,
+            "category": "support_maintenance",
+            "cpu_percent": 74.0,
+            "command": "python scripts/ops/storage_backpressure_autopilot.py --apply --json",
+        },
+        {
+            "pid": 903,
+            "category": "support_maintenance",
+            "cpu_percent": 88.0,
+            "command": "python scripts/ops/sql_link_shard_manager.py --once --json",
+        },
+    ]
+
+    monkeypatch.setattr(src.os, "kill", fake_kill)
+
+    result = src._apply_support_maintenance_pause(
+        tmp_path,
+        candidates,
+        payload,
+        state_path=tmp_path / "runtime_support_pause_state.json",
+    )
+
+    assert result["pause_requested"] is True
+    assert result["successful_count"] == 1
+    assert [pid for pid, sig in signals if sig == signal.SIGSTOP] == [901]
 
 
 def test_efficiency_guard_keeps_research_throttle_off_background_taskpolicy(tmp_path: Path, monkeypatch) -> None:

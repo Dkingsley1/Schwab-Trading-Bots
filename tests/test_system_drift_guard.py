@@ -324,6 +324,180 @@ def test_system_drift_guard_downgrades_guarded_master_infra_recovery_debt(monkey
 
     payload = src.build_payload(tmp_path)
 
-    assert payload["overall_status"] == "degraded"
+    assert payload["overall_status"] == "ready"
     assert payload["metrics"]["blocked_surface_count"] == 0
+    assert payload["metrics"]["degraded_surface_count"] == 0
+    assert payload["surfaces"][0]["status"] == "ready"
     assert payload["surfaces"][0]["recovery_deferred_reason"] == "guarded_paper_infrastructure_recovery_debt"
+
+
+def test_system_drift_guard_marks_guarded_scoreboard_warning_debt_ready(monkeypatch, tmp_path: Path) -> None:
+    health_root = tmp_path / "governance" / "health"
+    artifact = health_root / "architecture_upgrade_scoreboard_latest.json"
+    _write_guarded_paper_health_fast(health_root)
+    _write_json(
+        artifact,
+        {
+            "overall_status": "degraded",
+            "ok": False,
+            "rows": [
+                {"slug": "self_healing_ops_plane", "status": "degraded"},
+                {"slug": "immutable_incident_review", "status": "degraded"},
+            ],
+            "timestamp_utc": "2099-04-23T20:00:00+00:00",
+        },
+    )
+
+    monkeypatch.setattr(
+        src,
+        "surface_specs",
+        lambda _root: [
+            {
+                "name": "architecture_upgrade_scoreboard",
+                "family": "architecture_surface",
+                "artifact_path": artifact,
+                "status_key": "overall_status",
+                "ok_key": "ok",
+                "max_age_minutes": 90,
+                "repair_commands": [["python", "scripts/ops/architecture_upgrade_scoreboard.py", "--json"]],
+            }
+        ],
+    )
+
+    payload = src.build_payload(tmp_path)
+
+    assert payload["overall_status"] == "ready"
+    assert payload["metrics"]["degraded_surface_count"] == 0
+    assert payload["surfaces"][0]["status"] == "ready"
+    assert payload["surfaces"][0]["recovery_deferred_reason"] == "guarded_paper_architecture_scoreboard_advisory_debt"
+
+
+def test_system_drift_guard_marks_guarded_incident_closeout_warning_debt_ready(monkeypatch, tmp_path: Path) -> None:
+    health_root = tmp_path / "governance" / "health"
+    artifact = health_root / "incident_closeout_autopilot_latest.json"
+    _write_guarded_paper_health_fast(health_root)
+    _write_json(
+        artifact,
+        {
+            "overall_status": "degraded",
+            "ok": False,
+            "open_incident_count": 1,
+            "bounded_incident_backlog": True,
+            "bounded_closeout_path_ready": True,
+            "closeout_score": 90.0,
+            "recoverable_runtime_clearance": True,
+            "recoverable_review_gate": True,
+            "blocking_surfaces": [
+                {"surface": "runtime_clearance", "severity": "warning"},
+                {"surface": "incident_review", "severity": "warning"},
+            ],
+            "timestamp_utc": "2099-04-23T20:00:00+00:00",
+        },
+    )
+
+    monkeypatch.setattr(
+        src,
+        "surface_specs",
+        lambda _root: [
+            {
+                "name": "incident_closeout",
+                "family": "governance_surface",
+                "artifact_path": artifact,
+                "status_key": "overall_status",
+                "ok_key": "ok",
+                "max_age_minutes": 30,
+                "repair_commands": [["./scripts/ops/opsctl.sh", "incident-closeout", "--json"]],
+            }
+        ],
+    )
+
+    payload = src.build_payload(tmp_path)
+
+    assert payload["overall_status"] == "ready"
+    assert payload["metrics"]["degraded_surface_count"] == 0
+    assert payload["surfaces"][0]["status"] == "ready"
+    assert payload["surfaces"][0]["recovery_deferred_reason"] == "guarded_paper_incident_closeout_advisory_debt"
+
+
+def test_system_drift_guard_marks_guarded_self_reference_loop_ready(monkeypatch, tmp_path: Path) -> None:
+    health_root = tmp_path / "governance" / "health"
+    _write_guarded_paper_health_fast(health_root)
+    artifacts = {
+        "system_architecture_contract_graph": health_root / "system_architecture_contract_graph_latest.json",
+        "system_architecture_autopilot": health_root / "system_architecture_autopilot_latest.json",
+        "infrastructure_autofix": health_root / "infrastructure_autofix_bot_latest.json",
+        "master_infrastructure_supervisor": health_root / "master_infrastructure_supervisor_latest.json",
+    }
+    _write_json(
+        artifacts["system_architecture_contract_graph"],
+        {
+            "overall_status": "degraded",
+            "ok": False,
+            "blocked_node_count": 0,
+            "blocked_edge_count": 0,
+            "degraded_nodes": ["system_drift_guard", "system_self_model"],
+            "timestamp_utc": "2099-04-23T20:00:00+00:00",
+        },
+    )
+    _write_json(
+        artifacts["system_architecture_autopilot"],
+        {
+            "overall_status": "degraded",
+            "ok": False,
+            "final_graph": {"blocked_node_count": 0, "blocked_edge_count": 0},
+            "repair_plan": [{"node_id": "system_drift_guard"}, {"node_id": "system_self_model"}],
+            "timestamp_utc": "2099-04-23T20:00:00+00:00",
+        },
+    )
+    _write_json(
+        artifacts["infrastructure_autofix"],
+        {
+            "overall_status": "degraded",
+            "ok": False,
+            "repair_plan": [{"name": "master_infrastructure_supervisor"}],
+            "attempts": [{"rc": 0}],
+            "failed_attempt_count": 0,
+            "hard_failed_attempt_count": 0,
+            "operator_followups": [],
+            "timestamp_utc": "2099-04-23T20:00:00+00:00",
+        },
+    )
+    _write_json(
+        artifacts["master_infrastructure_supervisor"],
+        {
+            "overall_status": "degraded",
+            "ok": False,
+            "checks": [{"name": "governance_artifact_freshness", "status": "degraded"}],
+            "metrics": {"blocked_check_count": 0, "degraded_check_count": 1},
+            "platform_posture": {"operating_posture": "coherent"},
+            "timestamp_utc": "2099-04-23T20:00:00+00:00",
+        },
+    )
+
+    monkeypatch.setattr(
+        src,
+        "surface_specs",
+        lambda _root: [
+            {
+                "name": name,
+                "family": "architecture_surface" if "architecture" in name else "infrastructure_surface",
+                "artifact_path": path,
+                "status_key": "overall_status",
+                "ok_key": "ok",
+                "max_age_minutes": 30,
+                "repair_commands": [["./scripts/ops/opsctl.sh", name.replace("_", "-"), "--json"]],
+            }
+            for name, path in artifacts.items()
+        ],
+    )
+
+    payload = src.build_payload(tmp_path)
+    reasons = {row["name"]: row["recovery_deferred_reason"] for row in payload["surfaces"]}
+
+    assert payload["overall_status"] == "ready"
+    assert payload["metrics"]["degraded_surface_count"] == 0
+    assert {row["status"] for row in payload["surfaces"]} == {"ready"}
+    assert reasons["system_architecture_contract_graph"] == "guarded_paper_architecture_self_reference_debt"
+    assert reasons["system_architecture_autopilot"] == "guarded_paper_architecture_autopilot_self_reference_debt"
+    assert reasons["infrastructure_autofix"] == "guarded_paper_infrastructure_autofix_advisory_debt"
+    assert reasons["master_infrastructure_supervisor"] == "guarded_paper_infrastructure_self_reference_debt"

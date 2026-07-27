@@ -1306,6 +1306,23 @@ def _shard_writer_lane_cap() -> int:
     return 8
 
 
+def _live_shard_writer_lane_cap(default_cap: int) -> int:
+    cap = max(1, min(int(default_cap), 16, _shard_writer_lane_cap()))
+    overrides = _live_runtime_control_overrides()
+    live_caps = [
+        _as_int(overrides.get(name), 0)
+        for name in (
+            "SQL_LINK_SERVICE_MAX_SHARD_WRITER_LANES",
+            "SQL_LINK_SERVICE_SHARD_WRITER_LANES",
+            "SQL_LINK_SERVICE_PREPROCESS_WORKERS",
+        )
+        if _as_int(overrides.get(name), 0) > 0
+    ]
+    if live_caps:
+        cap = min(cap, min(live_caps))
+    return max(1, min(int(cap), 16))
+
+
 def _smart_shard_parallelism_enabled() -> bool:
     return _env_flag("SQL_LINK_SERVICE_SMART_SHARD_PARALLELISM", True)
 
@@ -1386,14 +1403,26 @@ def _pop_next_queued_shard_index(
     return None
 
 
-def _shard_writer_lane_contract(requested_workers: int | None = None) -> dict[str, object]:
-    requested = max(int(requested_workers or _env_int("SQL_LINK_SERVICE_SHARD_WRITER_LANES", _env_int("SQL_LINK_SERVICE_PREPROCESS_WORKERS", 1))), 1)
-    cap = _shard_writer_lane_cap()
+def _shard_writer_lane_contract(
+    requested_workers: int | None = None,
+    *,
+    overrides: dict[str, str] | None = None,
+) -> dict[str, object]:
+    effective_overrides = overrides or {}
+    default_requested = _dynamic_env_int(
+        effective_overrides,
+        "SQL_LINK_SERVICE_SHARD_WRITER_LANES",
+        _dynamic_env_int(effective_overrides, "SQL_LINK_SERVICE_PREPROCESS_WORKERS", 1),
+    )
+    requested = max(int(requested_workers or default_requested), 1)
+    env_cap = _shard_writer_lane_cap()
+    configured_cap = _dynamic_env_int(effective_overrides, "SQL_LINK_SERVICE_MAX_SHARD_WRITER_LANES", env_cap)
+    cap = max(1, min(configured_cap if configured_cap > 0 else env_cap, env_cap, 16))
     selected = max(1, min(requested, cap))
     primary_p_cores = max(
-        _env_int("BOT_PERFORMANCE_CORE_TARGET", 0),
-        _env_int("AUTONOMIC_PCORE_SYSTEM_WORKERS", 0),
-        _env_int("BOT_CPU_PRIMARY_WORKER_BUDGET", 0),
+        _dynamic_env_int(effective_overrides, "BOT_PERFORMANCE_CORE_TARGET", _env_int("BOT_PERFORMANCE_CORE_TARGET", 0)),
+        _dynamic_env_int(effective_overrides, "AUTONOMIC_PCORE_SYSTEM_WORKERS", _env_int("AUTONOMIC_PCORE_SYSTEM_WORKERS", 0)),
+        _dynamic_env_int(effective_overrides, "BOT_CPU_PRIMARY_WORKER_BUDGET", _env_int("BOT_CPU_PRIMARY_WORKER_BUDGET", 0)),
     )
     return {
         "requested_shard_writer_lanes": int(requested),
@@ -1405,8 +1434,14 @@ def _shard_writer_lane_contract(requested_workers: int | None = None) -> dict[st
         "parallel_child_shard_writers": int(selected),
         "performance_core_primary": str(os.getenv("BOT_CPU_ALLOCATION_POLICY", "performance_core_primary")).startswith("performance_core"),
         "primary_performance_core_budget": int(primary_p_cores),
-        "avoid_background_taskpolicy": str(os.getenv("SQL_LINK_WRITER_BACKGROUND_POLICY", "0")).strip() != "1",
-        "writer_nice_target": _env_int("SQL_LINK_WRITER_NICE", 0),
+        "avoid_background_taskpolicy": str(
+            _dynamic_env_value(
+                effective_overrides,
+                "SQL_LINK_WRITER_BACKGROUND_POLICY",
+                os.getenv("SQL_LINK_WRITER_BACKGROUND_POLICY", "0"),
+            )
+        ).strip() != "1",
+        "writer_nice_target": _dynamic_env_int(effective_overrides, "SQL_LINK_WRITER_NICE", _env_int("SQL_LINK_WRITER_NICE", 0)),
         "policy": "parallel_shard_child_writers_single_primary_sqlite_merge_writer",
         "smart_shard_parallelism": _shard_parallelism_contract(selected),
         "macos_hard_affinity_note": "macOS does not expose portable hard P-core pinning; lane count, nice/QoS, and taskpolicy controls express the P-core intent.",
@@ -1649,13 +1684,21 @@ def _effective_cycle_args(args: argparse.Namespace, overrides: dict[str, str]) -
     values["interval_seconds"] = max(_dynamic_env_int(overrides, "SQL_LINK_SERVICE_INTERVAL_SECONDS", int(args.interval_seconds)), 10)
     values["link_mode"] = str(_dynamic_env_value(overrides, "SQL_LINK_SERVICE_LINK_MODE", str(args.link_mode or "sqlite")) or "sqlite")
     values["shards"] = str(_dynamic_env_value(overrides, "SQL_LINK_SERVICE_SHARDS", str(args.shards or "")))
-    requested_shard_writer_lanes = _dynamic_env_int(
+    requested_shard_writer_lanes = max(
+        _dynamic_env_int(
+            overrides,
+            "SQL_LINK_SERVICE_SHARD_WRITER_LANES",
+            _dynamic_env_int(overrides, "SQL_LINK_SERVICE_PREPROCESS_WORKERS", int(getattr(args, "preprocess_workers", 1))),
+        ),
+        1,
+    )
+    max_shard_writer_lanes = _dynamic_env_int(
         overrides,
-        "SQL_LINK_SERVICE_SHARD_WRITER_LANES",
-        _dynamic_env_int(overrides, "SQL_LINK_SERVICE_PREPROCESS_WORKERS", int(getattr(args, "preprocess_workers", 1))),
+        "SQL_LINK_SERVICE_MAX_SHARD_WRITER_LANES",
+        requested_shard_writer_lanes,
     )
     values["preprocess_workers"] = max(
-        requested_shard_writer_lanes,
+        min(requested_shard_writer_lanes, max(max_shard_writer_lanes, 1)),
         1,
     )
     values["low_priority_merge_skip_gb"] = max(
@@ -2737,9 +2780,11 @@ def _run_shard_links(
     shard_link_timeout_seconds: int,
     preprocess_workers: int = 1,
     progress_callback=None,
+    live_lane_cap_reload: bool = False,
 ) -> list[dict[str, object]]:
     results: list[dict[str, object]] = []
-    worker_count = max(1, min(int(preprocess_workers), max(len(shards), 1), _shard_writer_lane_cap()))
+    lane_cap = _live_shard_writer_lane_cap(int(preprocess_workers)) if live_lane_cap_reload else _shard_writer_lane_cap()
+    worker_count = max(1, min(int(preprocess_workers), max(len(shards), 1), lane_cap))
     parallelism_contract = _shard_parallelism_contract(worker_count)
     tier_lane_caps = {
         str(key): _as_int(value, worker_count)
@@ -2996,12 +3041,14 @@ def _run_shard_links(
 
     with ThreadPoolExecutor(max_workers=worker_count) as executor:
         def _submit_ready() -> None:
-            while queued_indexes and len(running) < worker_count:
+            live_lane_cap = _live_shard_writer_lane_cap(worker_count) if live_lane_cap_reload else worker_count
+            live_tier_lane_caps = {key: min(value, live_lane_cap) for key, value in tier_lane_caps.items()}
+            while queued_indexes and len(running) < live_lane_cap:
                 idx = _pop_next_queued_shard_index(
                     queued_indexes=queued_indexes,
                     shards=shards,
                     running=running,
-                    tier_lane_caps=tier_lane_caps,
+                    tier_lane_caps=live_tier_lane_caps,
                     smart_parallelism_enabled=smart_parallelism_enabled,
                 )
                 if idx is None:
@@ -3164,7 +3211,10 @@ def main() -> int:
         with _temporary_env_overrides(request_overrides):
             shards = _build_shards(cycle_shard_names)
             shards, shard_link_plan = _prioritize_shards_for_linking(shards)
-            shard_writer_lane_contract = _shard_writer_lane_contract(int(getattr(cycle_args, "preprocess_workers", 1)))
+            shard_writer_lane_contract = _shard_writer_lane_contract(
+                int(getattr(cycle_args, "preprocess_workers", 1)),
+                overrides=request_overrides,
+            )
         merge_results: list[dict[str, object]] = []
         _write_service_progress(
             cycle_started_utc=ts,
@@ -3190,6 +3240,7 @@ def main() -> int:
                 sqlite_lock_retry_delay_seconds=float(cycle_args.sqlite_lock_retry_delay_seconds),
                 shard_link_timeout_seconds=int(cycle_args.shard_link_timeout_seconds),
                 preprocess_workers=int(getattr(cycle_args, "preprocess_workers", 1)),
+                live_lane_cap_reload=_dynamic_env_flag(request_overrides, "SQL_LINK_SERVICE_LIVE_LANE_CAP_RELOAD", True),
                 progress_callback=lambda rows, active_shard_links=None: _write_service_progress(
                     cycle_started_utc=ts,
                     current_step="shard_linking",

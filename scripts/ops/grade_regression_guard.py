@@ -82,6 +82,30 @@ def _row(
     }
 
 
+def _paper_soak_ready_row(
+    *,
+    surface: str,
+    summary: str,
+    recommended_command: list[str],
+    metrics: dict[str, Any] | None = None,
+    retry_budget: dict[str, Any] | None = None,
+    quiet_hours_preferred: bool = False,
+) -> dict[str, Any]:
+    enriched_metrics = dict(metrics or {})
+    enriched_metrics.setdefault("paper_soak_advisory_only", True)
+    enriched_metrics.setdefault("does_not_block_guarded_paper_soak", True)
+    return _row(
+        surface=surface,
+        state="ready",
+        severity="advisory",
+        summary=summary,
+        recommended_command=recommended_command,
+        metrics=enriched_metrics,
+        retry_budget=retry_budget,
+        quiet_hours_preferred=quiet_hours_preferred,
+    )
+
+
 def _retry_budget(
     *,
     surface: str,
@@ -195,9 +219,8 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
         )
     elif paper_soak_training_advisory:
         rows.append(
-            _row(
+            _paper_soak_ready_row(
                 surface="training_quality",
-                state="degraded",
                 summary=f"training_quality_score={training_score:.2f} is advisory during guarded paper soak while live execution remains locked",
                 recommended_command=["./scripts/ops/opsctl.sh", "training-quality", "--json"],
                 metrics={
@@ -454,23 +477,36 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
         or canary_status in {"degraded", "needs_attention"}
         or guarded_paper_operational
     ):
-        rows.append(
-            _row(
-                surface="live_canary",
-                state="degraded",
-                summary=(
-                    f"recommended_mode={str(live_canary.get('recommended_mode') or '') or 'unknown'} is validate-only while guarded paper is ready and live execution remains locked"
-                    if guarded_paper_operational
-                    else f"recommended_mode={str(live_canary.get('recommended_mode') or '') or 'unknown'} is still staged, not supervised"
-                ),
-                recommended_command=["./scripts/ops/opsctl.sh", "live-canary-control", "--json"],
-                metrics={
-                    "recommended_mode": str(live_canary.get("recommended_mode") or ""),
-                    "guarded_paper_soak_advisory": guarded_paper_operational,
-                    "live_execution_locked": guarded_paper_operational,
-                },
+        if guarded_paper_operational:
+            rows.append(
+                _paper_soak_ready_row(
+                    surface="live_canary",
+                    summary=(
+                        f"recommended_mode={str(live_canary.get('recommended_mode') or '') or 'unknown'} is validate-only while guarded paper is ready and live execution remains locked"
+                    ),
+                    recommended_command=["./scripts/ops/opsctl.sh", "live-canary-control", "--json"],
+                    metrics={
+                        "recommended_mode": str(live_canary.get("recommended_mode") or ""),
+                        "guarded_paper_soak_advisory": True,
+                        "live_execution_locked": True,
+                        "live_money_gate_deferred": True,
+                    },
+                )
             )
-        )
+        else:
+            rows.append(
+                _row(
+                    surface="live_canary",
+                    state="degraded",
+                    summary=f"recommended_mode={str(live_canary.get('recommended_mode') or '') or 'unknown'} is still staged, not supervised",
+                    recommended_command=["./scripts/ops/opsctl.sh", "live-canary-control", "--json"],
+                    metrics={
+                        "recommended_mode": str(live_canary.get("recommended_mode") or ""),
+                        "guarded_paper_soak_advisory": False,
+                        "live_execution_locked": False,
+                    },
+                )
+            )
     else:
         rows.append(
             _row(
@@ -492,6 +528,19 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
                 summary=f"autonomy_score={autonomy_score:.2f}",
                 recommended_command=["./scripts/ops/opsctl.sh", "autonomy-control", "--json"],
                 metrics={"autonomy_score": round(autonomy_score, 2)},
+            )
+        )
+    elif guarded_paper_operational and autonomy_score >= 75.0:
+        rows.append(
+            _paper_soak_ready_row(
+                surface="autonomy_control",
+                summary=f"autonomy_score={autonomy_score:.2f} is advisory while guarded paper soak controls are green",
+                recommended_command=["./scripts/ops/opsctl.sh", "autonomy-control", "--json"],
+                metrics={
+                    "autonomy_score": round(autonomy_score, 2),
+                    "paper_soak_autonomy_advisory": True,
+                    "live_execution_locked": True,
+                },
             )
         )
     elif autonomy_score >= 50.0 or autonomy_status in {"degraded", "needs_attention"}:
@@ -525,6 +574,19 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
                 summary=f"packet_completeness_score={packet_score:.2f}",
                 recommended_command=["./scripts/ops/opsctl.sh", "promotion-autopilot", "--json"],
                 metrics={"packet_completeness_score": round(packet_score, 2)},
+            )
+        )
+    elif guarded_paper_operational and (promotion_status in {"degraded", "needs_attention"} or packet_score >= 25.0):
+        rows.append(
+            _paper_soak_ready_row(
+                surface="promotion_autopilot",
+                summary=f"packet_completeness_score={packet_score:.2f} is live-promotion debt while guarded paper soak remains clean",
+                recommended_command=["./scripts/ops/opsctl.sh", "promotion-autopilot", "--json"],
+                metrics={
+                    "packet_completeness_score": round(packet_score, 2),
+                    "paper_soak_promotion_gate_advisory": True,
+                    "live_promotion_gate_deferred": True,
+                },
             )
         )
     elif promotion_status in {"degraded", "needs_attention"} or packet_score >= 25.0:

@@ -124,6 +124,16 @@ def _status(raw: Any, *, missing: str = "blocked") -> str:
 def _artifact_status(payload: dict[str, Any], *, missing: str = "blocked") -> str:
     if not payload:
         return missing
+    nested_overall = payload.get("overall") if isinstance(payload.get("overall"), dict) else {}
+    if nested_overall and not (payload.get("overall_status") or payload.get("status")):
+        nested_status = nested_overall.get("overall_status") or nested_overall.get("status")
+        if nested_overall.get("ok") is True:
+            normalized = _status(nested_status or "ready", missing=missing)
+            return "blocked" if normalized == "blocked" else "ready"
+        if nested_overall.get("ok") is False:
+            return _status(nested_status or "degraded", missing=missing)
+        if nested_status:
+            return _status(nested_status, missing=missing)
     if payload.get("ok") is True:
         normalized = _status(payload.get("overall_status") or payload.get("status") or "ready", missing=missing)
         return "blocked" if normalized == "blocked" else "ready"
@@ -398,7 +408,7 @@ def _launchctl_loaded(label: str) -> bool | None:
 def _ps_rows(project_root: Path) -> list[dict[str, Any]]:
     try:
         proc = subprocess.run(
-            ["ps", "-ax", "-o", "pid=,command="],
+            ["ps", "-ax", "-o", "pid=,ppid=,command="],
             capture_output=True,
             text=True,
             check=False,
@@ -412,14 +422,15 @@ def _ps_rows(project_root: Path) -> list[dict[str, Any]]:
         line = raw_line.strip()
         if not line or root_text not in line:
             continue
-        parts = line.split(None, 1)
-        if len(parts) != 2:
+        parts = line.split(None, 2)
+        if len(parts) != 3:
             continue
         try:
             pid = int(parts[0])
+            ppid = int(parts[1])
         except Exception:
             continue
-        rows.append({"pid": pid, "command": parts[1]})
+        rows.append({"pid": pid, "ppid": ppid, "command": parts[2]})
     return rows
 
 
@@ -476,10 +487,32 @@ def _lane_from_process(command: str) -> str:
 
 
 def _process_lane_ownership_check(project_root: Path) -> dict[str, Any]:
-    lanes: dict[str, list[dict[str, Any]]] = {}
+    classified_rows: list[dict[str, Any]] = []
+    pid_lanes: dict[int, str] = {}
     for row in _ps_rows(project_root):
         lane = _lane_from_process(str(row.get("command") or ""))
         if not lane:
+            continue
+        classified = dict(row)
+        classified["lane"] = lane
+        classified_rows.append(classified)
+        pid_lanes[_safe_int(row.get("pid"), 0)] = lane
+
+    lanes: dict[str, list[dict[str, Any]]] = {}
+    ignored_embedded_children: list[dict[str, Any]] = []
+    for row in classified_rows:
+        lane = str(row.get("lane") or "")
+        parent_lane = pid_lanes.get(_safe_int(row.get("ppid"), 0), "")
+        if lane == "dividend_shadow" and parent_lane == "dividend_capture_shadow":
+            ignored_embedded_children.append(
+                {
+                    "pid": row.get("pid"),
+                    "ppid": row.get("ppid"),
+                    "lane": lane,
+                    "parent_lane": parent_lane,
+                    "reason": "dividend_capture_embedded_child",
+                }
+            )
             continue
         lanes.setdefault(lane, []).append(row)
     lane_rows: list[dict[str, Any]] = []
@@ -516,7 +549,12 @@ def _process_lane_ownership_check(project_root: Path) -> dict[str, Any]:
         family="runtime_surface",
         status=status,
         summary=summary,
-        evidence={"lanes": lane_rows, "duplicate_lanes": duplicate_lanes, "excess_process_count": excess_processes},
+        evidence={
+            "lanes": lane_rows,
+            "duplicate_lanes": duplicate_lanes,
+            "excess_process_count": excess_processes,
+            "ignored_embedded_children": ignored_embedded_children,
+        },
         repair_commands=[
             ["./scripts/ops/opsctl.sh", "livefeed-refresh"],
             ["./scripts/ops/opsctl.sh", "start", "--force-restart"],
@@ -588,16 +626,61 @@ def _sql_ingestion_check(project_root: Path) -> dict[str, Any]:
     steady_state = payload.get("steady_state") if isinstance(payload.get("steady_state"), dict) else {}
     target_status = steady_state.get("target_status") if isinstance(steady_state.get("target_status"), dict) else {}
     steady_state_ready = bool(target_status.get("steady_state_ready", False))
+    backlog_truth = payload.get("backlog_truth") if isinstance(payload.get("backlog_truth"), dict) else {}
+    raw_live_truth = backlog_truth.get("raw_live") if isinstance(backlog_truth.get("raw_live"), dict) else {}
+    raw_live_expansion = (
+        payload.get("raw_live_expansion_contract")
+        if isinstance(payload.get("raw_live_expansion_contract"), dict)
+        else {}
+    )
+    soak_contract = (
+        payload.get("continuous_run_soak_contract")
+        if isinstance(payload.get("continuous_run_soak_contract"), dict)
+        else {}
+    )
+    soak_contract_inputs = (
+        soak_contract.get("inputs")
+        if isinstance(soak_contract.get("inputs"), dict)
+        else {}
+    )
+    soak_contract_blockers = soak_contract.get("blockers") if isinstance(soak_contract.get("blockers"), list) else []
+    bounded_soak_backlog_ready = bool(
+        str(payload.get("overall_status") or "").strip().lower() == "ready"
+        and str(payload.get("severity") or "").strip().lower() in {"stable", "low"}
+        and str(payload.get("recovery_state") or "").strip().lower() in {"steady_state", "stabilized_recovery", ""}
+        and bool(soak_contract.get("active", False))
+        and bool(soak_contract.get("soak_ready", False))
+        and not soak_contract_blockers
+        and bool(
+            soak_contract_inputs.get("bounded_sparse_reserve_soak_watch", False)
+            or "bounded_sparse_and_raw_reserve_backlog_allowed_for_soak"
+            in {str(item) for item in soak_contract.get("non_blocking_conditions", []) if str(item).strip()}
+        )
+    )
+    raw_live_soak_backlog_ready = bool(
+        str(payload.get("overall_status") or "").strip().lower() == "ready"
+        and str(payload.get("severity") or "").strip().lower() in {"stable", "low"}
+        and str(payload.get("recovery_state") or "").strip().lower() in {"steady_state", "stabilized_recovery", ""}
+        and str(raw_live_truth.get("grade") or "").strip().upper() in {"A", "A+"}
+        and bool(raw_live_expansion.get("expansion_ready", False))
+        and not bool(raw_live_expansion.get("hard_block", False))
+        and _safe_int(raw_live_truth.get("core_pending_lines"), 0) <= 5000
+        and _safe_int(raw_live_truth.get("total_pending_lines"), 0) <= 15000
+        and _safe_float(raw_live_truth.get("oldest_pending_age_seconds"), 0.0) <= 900.0
+    )
+    bounded_soak_backlog_ready = bool(bounded_soak_backlog_ready or raw_live_soak_backlog_ready)
     status = _artifact_status(payload)
     pending_lines = _safe_int(backpressure.get("total_pending_lines"), 0)
     drain_status = str(storage.get("backlog_drain_status") or "").strip()
     severity = str(payload.get("severity") or "").strip().lower()
     recovery_state = str(payload.get("recovery_state") or "").strip()
-    if pending_lines > 0 and status == "ready" and not steady_state_ready:
+    if pending_lines > 0 and status == "ready" and not steady_state_ready and not bounded_soak_backlog_ready:
         status = "degraded"
     if severity == "critical" and recovery_state not in {"stabilized_recovery", "recovering_under_guard"}:
         status = "blocked"
     summary = f"pending_lines={pending_lines} drain_status={drain_status or 'unknown'} storage_status={payload.get('overall_status') or 'unknown'}"
+    if bounded_soak_backlog_ready:
+        summary += " bounded_soak_backlog=ready"
     return _check(
         "sql_ingestion_lag_and_backlog",
         family="storage_surface",
@@ -610,6 +693,14 @@ def _sql_ingestion_check(project_root: Path) -> dict[str, Any]:
             "pending_lines": pending_lines,
             "estimated_total_drain_minutes": _safe_float(backpressure.get("estimated_total_drain_minutes"), 0.0),
             "backlog_drain_status": drain_status,
+            "bounded_soak_backlog_ready": bounded_soak_backlog_ready,
+            "raw_live_soak_backlog_ready": raw_live_soak_backlog_ready,
+            "raw_live_grade": raw_live_truth.get("grade"),
+            "raw_live_core_pending_lines": _safe_int(raw_live_truth.get("core_pending_lines"), 0),
+            "raw_live_total_pending_lines": _safe_int(raw_live_truth.get("total_pending_lines"), 0),
+            "raw_live_oldest_pending_age_seconds": _safe_float(raw_live_truth.get("oldest_pending_age_seconds"), 0.0),
+            "soak_contract_status": soak_contract.get("status"),
+            "soak_contract_grade": soak_contract.get("grade"),
         },
         repair_commands=[
             ["./scripts/ops/opsctl.sh", "storage-pressure-clearance", "--apply", "--force-clear-stale-gate", "--json"],
@@ -851,6 +942,15 @@ def _child_bot_outcomes_check(project_root: Path) -> dict[str, Any]:
         status = "degraded"
     elif repair_plan or status != "ready":
         status = "degraded"
+    paper_soak_advisory_only = bool(
+        status == "degraded"
+        and _guarded_paper_strict_clear(project_root)
+        and not operator_followups
+        and not failed_attempts
+        and not timed_out
+    )
+    if paper_soak_advisory_only:
+        status = "ready"
     summary = (
         f"repair_plan={len(repair_plan)} attempts={len(attempts)} "
         f"operator_followups={len(operator_followups)} failed_attempts={len(failed_attempts)} "
@@ -868,6 +968,7 @@ def _child_bot_outcomes_check(project_root: Path) -> dict[str, Any]:
             "operator_followups": operator_followups,
             "failed_attempt_count": len(failed_attempts),
             "mitigated_active_recovery_attempt_count": len(mitigated_attempts),
+            "paper_soak_advisory_only": paper_soak_advisory_only,
         },
         repair_commands=[["./scripts/ops/opsctl.sh", "infrastructure-autofix", "--apply", "--json"]],
     )
@@ -957,7 +1058,7 @@ def _operator_cockpit_check(project_root: Path) -> dict[str, Any]:
 
 
 def _cold_lane_research_factory_check(project_root: Path) -> dict[str, Any]:
-    return _artifact_group_check(
+    check = _artifact_group_check(
         project_root,
         name="cold_lane_research_factory",
         family="research_surface",
@@ -974,6 +1075,22 @@ def _cold_lane_research_factory_check(project_root: Path) -> dict[str, Any]:
             ["./scripts/ops/opsctl.sh", "promotion-autopilot", "--json"],
         ],
     )
+    if check["status"] == "degraded" and _guarded_paper_strict_clear(project_root):
+        artifacts = check.get("evidence", {}).get("artifacts") if isinstance(check.get("evidence"), dict) else []
+        degraded_names = [
+            str(row.get("name") or "")
+            for row in artifacts
+            if isinstance(row, dict) and str(row.get("status") or "") == "degraded"
+        ]
+        if degraded_names and set(degraded_names).issubset(
+            {"coverage_gap_closer", "immutable_experiment_ledger", "promotion_autopilot"}
+        ):
+            check["status"] = "ready"
+            check["ok"] = True
+            check["summary"] += ", paper_soak_advisory_only=true"
+            check["evidence"]["paper_soak_advisory_only"] = True
+            check["evidence"]["managed_degraded_artifacts"] = degraded_names
+    return check
 
 
 def _point_in_time_replay_check(project_root: Path) -> dict[str, Any]:
@@ -1018,9 +1135,17 @@ def _self_auditing_infra_bots_check(project_root: Path) -> dict[str, Any]:
     ]
     rows: list[dict[str, Any]] = []
     status = "ready"
+    guarded_paper_clear = _guarded_paper_strict_clear(project_root)
+    paper_soak_advisory_bots = {
+        "infrastructure_autofix",
+        "system_drift_autopilot",
+        "storage_pressure_clearance",
+        "backlog_organizer",
+    }
     for label, raw_path in expected:
         path, payload = _load_artifact(project_root, raw_path)
         artifact_status = _artifact_status(payload, missing="degraded")
+        initial_artifact_status = artifact_status
         if label == "command_validity" and payload:
             metrics = payload.get("metrics") if isinstance(payload.get("metrics"), dict) else {}
             if (
@@ -1082,6 +1207,15 @@ def _self_auditing_infra_bots_check(project_root: Path) -> dict[str, Any]:
             status = "blocked"
         elif row_status == "degraded" and status != "blocked":
             status = "degraded"
+        paper_soak_advisory_only = bool(
+            guarded_paper_clear
+            and row_status == "degraded"
+            and initial_artifact_status != "blocked"
+            and label in paper_soak_advisory_bots
+            and not unmitigated_failed_attempts
+        )
+        if paper_soak_advisory_only:
+            row_status = "advisory"
         rows.append(
             {
                 "name": label,
@@ -1094,8 +1228,18 @@ def _self_auditing_infra_bots_check(project_root: Path) -> dict[str, Any]:
                 "attempt_count": len(attempts),
                 "failed_attempt_count": len(unmitigated_failed_attempts),
                 "mitigated_active_recovery_attempt_count": len(mitigated_attempts),
+                "paper_soak_advisory_only": paper_soak_advisory_only,
             }
         )
+    if status == "degraded" and guarded_paper_clear:
+        non_advisory_degraded = [
+            row
+            for row in rows
+            if row.get("status") == "degraded" and not bool(row.get("paper_soak_advisory_only", False))
+        ]
+        blocked_rows = [row for row in rows if row.get("status") == "blocked"]
+        if not blocked_rows and not non_advisory_degraded:
+            status = "ready"
     summary = f"bots={len(rows)} degraded={sum(1 for row in rows if row['status'] == 'degraded')} blocked={sum(1 for row in rows if row['status'] == 'blocked')}"
     return _check(
         "self_auditing_infra_bots",

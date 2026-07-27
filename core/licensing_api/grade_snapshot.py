@@ -282,6 +282,19 @@ def build_grade_snapshot(
         if isinstance(storage.get("bounded_recovery_contract"), dict)
         else {}
     )
+    continuous_storage_soak = (
+        storage.get("continuous_run_soak_contract")
+        if isinstance(storage.get("continuous_run_soak_contract"), dict)
+        else {}
+    )
+    backlog_truth = storage.get("backlog_truth") if isinstance(storage.get("backlog_truth"), dict) else {}
+    raw_live_truth = backlog_truth.get("raw_live") if isinstance(backlog_truth.get("raw_live"), dict) else {}
+    overlay_truth = backlog_truth.get("sql_overlay") if isinstance(backlog_truth.get("sql_overlay"), dict) else {}
+    raw_live_expansion = (
+        storage.get("raw_live_expansion_contract")
+        if isinstance(storage.get("raw_live_expansion_contract"), dict)
+        else {}
+    )
     storage_follow_through_ready = bool(
         (
             storage_autopilot_status in {"applied", "applied_with_followups", "already_running", "ready", "degraded"}
@@ -337,6 +350,32 @@ def build_grade_snapshot(
         + 0.10 * (96.0 if proof_present_count >= 3 else 90.0 if proof_present_count >= 2 else 80.0)
         - storage_pressure_penalty
     )
+    continuous_soak_blockers = (
+        continuous_storage_soak.get("blockers")
+        if isinstance(continuous_storage_soak.get("blockers"), list)
+        else []
+    )
+    raw_live_grade = str(raw_live_truth.get("grade") or raw_live_expansion.get("grade") or "")
+    overlay_grade = str(overlay_truth.get("grade") or "")
+    continuous_storage_soak_a_plus_ready = bool(
+        str(continuous_storage_soak.get("status") or "").strip().lower() == "ready"
+        and bool(continuous_storage_soak.get("ready", False) or continuous_storage_soak.get("soak_ready", False))
+        and str(continuous_storage_soak.get("grade") or "") in {"A+", "A++"}
+        and not continuous_soak_blockers
+        and raw_live_grade in {"A+", "A++"}
+        and (not overlay_grade or overlay_grade in {"A+", "A++"})
+        and bool(raw_live_expansion.get("expansion_ready", True))
+        and not bool(raw_live_expansion.get("hard_block", False))
+        and str(storage.get("overall_status") or "").strip().lower() == "ready"
+        and str(storage.get("severity") or "").strip().lower() == "stable"
+        and backpressure_quality_score >= 95.0
+        and pressure_index <= 0.50
+        and proof_present_count >= 3
+        and reliability_engineering >= 100.0
+        and storage_follow_through_ready
+    )
+    if continuous_storage_soak_a_plus_ready:
+        storage_raw_score = max(storage_raw_score, 96.0)
 
     training_quality_score = _safe_float(training.get("training_quality_score"), 0.0)
     lineage_score = _safe_float(training_lineage.get("lineage_score"), 0.0)
@@ -616,6 +655,7 @@ def build_grade_snapshot(
                 "proof_present_count": proof_present_count,
                 "tracked_sqlite_gb": _safe_float(storage_cost_proxy.get("tracked_sqlite_gb"), 0.0),
                 "storage_follow_through_ready": storage_follow_through_ready,
+                "continuous_storage_soak_a_plus_ready": continuous_storage_soak_a_plus_ready,
             },
         ),
         "training_and_model_quality": _section_row(

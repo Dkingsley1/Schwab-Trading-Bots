@@ -70,7 +70,7 @@ def test_section_grade_guard_makes_training_debt_advisory_when_guarded_paper_is_
 
     payload = src.build_payload(tmp_path)
 
-    assert payload["overall_status"] == "degraded"
+    assert payload["overall_status"] == "ready"
     assert payload["ok"] is True
     assert payload["below_floor_sections"] == ["training_and_model_quality"]
     assert payload["blocking_below_floor_sections"] == []
@@ -134,7 +134,7 @@ def test_section_grade_guard_makes_current_guarded_paper_floor_debt_advisory(tmp
 
     payload = src.build_payload(tmp_path)
 
-    assert payload["overall_status"] == "degraded"
+    assert payload["overall_status"] == "ready"
     assert payload["ok"] is True
     assert payload["blocking_below_floor_sections"] == []
     assert set(payload["advisory_below_floor_sections"]) == below_floor_sections
@@ -197,6 +197,87 @@ def test_section_grade_guard_accepts_managed_coverage_deferred_as_live_locked(tm
     assert payload["live_execution_locked"] is True
     assert set(payload["advisory_below_floor_sections"]) == {"live_trading_readiness", "ops_and_autonomy"}
     assert payload["blocking_below_floor_sections"] == []
+
+
+def test_section_grade_guard_makes_bounded_storage_floor_debt_advisory_for_paper_soak(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    health = tmp_path / "governance" / "health"
+    _write_json(
+        health / "health_fast_latest.json",
+        {
+            "overall_status": "ready",
+            "ok": True,
+            "operational_readiness": {
+                "guarded_paper": {"ok": True, "status": "ready", "blockers": []},
+                "live_execution": {
+                    "ok": False,
+                    "status": "blocked_read_only",
+                    "blockers": ["live_execution_requires_explicit_operator_control"],
+                },
+            },
+        },
+    )
+    _write_json(
+        health / "live_runtime_separation_control_latest.json",
+        {"overall_status": "degraded", "clearance_plan": {"clearance_state": "guarded_live_read_only"}},
+    )
+    _write_json(
+        health / "ingestion_storage_control_latest.json",
+        {
+            "overall_status": "ready",
+            "severity": "stable",
+            "pressure_index": 0.293,
+            "continuous_run_soak_contract": {"status": "watch", "soak_ready": True, "blockers": []},
+            "backpressure": {
+                "raw_live": {
+                    "core_pending_lines": 4400,
+                    "total_pending_lines": 11669,
+                    "oldest_pending_age_seconds": 0.0,
+                }
+            },
+        },
+    )
+
+    def section(slug: str) -> dict:
+        below = slug == "data_ingestion_and_storage"
+        return {
+            "floor_state": "below_floor" if below else "at_floor",
+            "letter_grade": "B" if below else "A+",
+            "raw_letter_grade": "B" if below else "A+",
+            "score": 83.5 if below else 96.0,
+            "raw_score": 83.5 if below else 96.0,
+            "target_floor_letter_grade": "A",
+            "target_floor_score": 92.0,
+            "floor_contract_active": False,
+            "floor_reason": "",
+            "signals": {},
+        }
+
+    class DummyConnector:
+        exposed_endpoints = [object()] * 16
+
+    monkeypatch.setattr(src, "DefaultLicensingAPIConnector", lambda: DummyConnector())
+    monkeypatch.setattr(
+        src,
+        "build_grade_snapshot",
+        lambda **_: {
+            "overall_score": 94.5,
+            "overall_letter_grade": "A",
+            "raw_overall_score": 94.5,
+            "raw_overall_letter_grade": "A",
+            "section_grades": {slug: section(slug) for slug in src.SECTION_COMMANDS},
+        },
+    )
+
+    payload = src.build_payload(tmp_path)
+
+    assert payload["overall_status"] == "ready"
+    assert payload["ok"] is True
+    assert payload["below_floor_sections"] == ["data_ingestion_and_storage"]
+    assert payload["blocking_below_floor_sections"] == []
+    assert payload["advisory_below_floor_sections"] == ["data_ingestion_and_storage"]
 
 
 def test_section_grade_guard_reports_degraded_when_sections_are_floor_protected(tmp_path: Path) -> None:

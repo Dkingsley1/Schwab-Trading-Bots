@@ -1138,8 +1138,15 @@ truncate_live_lines() {
   function suppressible_futures_specialist_intent(line) {
     return (line ~ /\[ExecutionIntent\]/ && line ~ /paper_mirror_futures::futures_specialist_/) || line ~ /\[PaperMirrorFutures\]/
   }
+  function intentional_data_only_blocked(lower) {
+    return lower ~ /data_only_blocked/ && lower ~ /market_data_only=1|execution_enabled=0|collection_only_no_master_vote/
+  }
+  function paper_mirror_selection_line(line) {
+    return line ~ /^\[PaperMirror\][[:space:]]+selected=/
+  }
   function important_operator_line(line, lower) {
     lower = tolower(line)
+    if (paper_mirror_selection_line(line)) return 0
     if (line ~ /\[Decision\]|\[decision\]|ExecutionIntent|ShadowLoop|RegimeCooldown|AdaptiveInterval/) return 1
     if (line ~ /"symbol"[[:space:]]*:/ && line ~ /"action"[[:space:]]*:|"master_action"[[:space:]]*:|"master_intent_action"[[:space:]]*:|"grand_action"[[:space:]]*:/) return 1
     if (line ~ /symbol=[^[:space:]]+/ && line ~ /action=|grand_action=|futures_action=|options_action=|master_action=/) return 1
@@ -1227,8 +1234,8 @@ truncate_live_lines() {
     lower = tolower(line)
     prefix = ""
     clear_blocked_metric = blocked_metric_is_clear(lower)
-    red_alert = lower ~ /global_trading_halt|operator_stop|halt=true|halt_state[^a-z0-9_]*active|hard_gate|critical|failed|tripwire|killswitch|kill_switch|margin_guard/
-    if (!clear_blocked_metric && lower ~ /blocked/) {
+    red_alert = !paper_mirror_selection_line(line) && lower ~ /global_trading_halt|operator_stop|halt=true|halt_state[^a-z0-9_]*active|hard_gate|critical|failed|tripwire|killswitch|kill_switch|margin_guard/
+    if (!clear_blocked_metric && lower ~ /blocked/ && !intentional_data_only_blocked(lower)) {
       red_alert = 1
     }
     if (red_alert) {
@@ -1241,7 +1248,7 @@ truncate_live_lines() {
       prefix = bold cyan "[FLOW] " reset
     }
     line = highlight_token(line, "GLOBAL_TRADING_HALT|OPERATOR_STOP|halt=true|failed|critical|tripwire|killswitch|margin_guard", bold red)
-    if (!clear_blocked_metric) {
+    if (!clear_blocked_metric && !intentional_data_only_blocked(lower)) {
       line = highlight_token(line, "blocked", bold red)
     }
     line = highlight_token(line, "degraded|warning|backpressure|storage_pressure|sql_wal_pressure|awaiting|timeout|throttle|pressure|stale|low_grade_blockers=[1-9][0-9]*", bold yellow)

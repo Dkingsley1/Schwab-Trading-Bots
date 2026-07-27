@@ -37,6 +37,15 @@ SOFT_ARCHITECTURE_SCOREBOARD_BLOCKERS = {
     "autonomous_drill_program",
     "notification_escalation_ladder",
 }
+ADVISORY_RECOVERY_DEFERRED_REASONS = {
+    "guarded_paper_architecture_self_reference_debt",
+    "guarded_paper_architecture_autopilot_self_reference_debt",
+    "guarded_paper_architecture_scoreboard_advisory_debt",
+    "guarded_paper_incident_closeout_advisory_debt",
+    "guarded_paper_infrastructure_autofix_advisory_debt",
+    "guarded_paper_infrastructure_recovery_debt",
+    "guarded_paper_infrastructure_self_reference_debt",
+}
 
 
 def _safe_int(raw: Any, default: int = 0) -> int:
@@ -44,6 +53,13 @@ def _safe_int(raw: Any, default: int = 0) -> int:
         return int(float(raw))
     except Exception:
         return int(default)
+
+
+def _safe_float(raw: Any, default: float = 0.0) -> float:
+    try:
+        return float(raw)
+    except Exception:
+        return float(default)
 
 
 def _status_from_bool(ok: Any) -> str:
@@ -106,19 +122,110 @@ def _guarded_paper_strict_clear_for_spec(spec: dict[str, Any]) -> bool:
 
 
 def _recovery_deferred_reason(spec: dict[str, Any], payload: dict[str, Any], status: str) -> str:
-    if status != "blocked" or not payload:
+    if status not in {"blocked", "degraded"} or not payload:
         return ""
 
     guarded_paper_strict_clear = _guarded_paper_strict_clear_for_spec(spec)
     surface_name = str(spec.get("name") or "").strip()
+    if guarded_paper_strict_clear and status == "degraded" and surface_name == "system_architecture_contract_graph":
+        degraded_nodes = {str(item or "").strip() for item in _safe_list(payload.get("degraded_nodes")) if str(item or "").strip()}
+        if (
+            _safe_int(payload.get("blocked_node_count"), 0) == 0
+            and _safe_int(payload.get("blocked_edge_count"), 0) == 0
+            and degraded_nodes
+            and degraded_nodes
+            <= {
+                "system_drift_guard",
+                "system_self_model",
+                "master_infrastructure_supervisor",
+                "infrastructure_autofix",
+                "system_architecture_autopilot",
+            }
+        ):
+            return "guarded_paper_architecture_self_reference_debt"
+
+    if guarded_paper_strict_clear and status == "degraded" and surface_name == "system_architecture_autopilot":
+        final_graph = _as_dict(payload.get("final_graph"))
+        repair_nodes = {
+            str(row.get("node_id") or "").strip()
+            for row in _safe_list(payload.get("repair_plan"))
+            if isinstance(row, dict) and str(row.get("node_id") or "").strip()
+        }
+        if (
+            _safe_int(final_graph.get("blocked_node_count"), 0) == 0
+            and _safe_int(final_graph.get("blocked_edge_count"), 0) == 0
+            and repair_nodes
+            and repair_nodes
+            <= {
+                "system_drift_guard",
+                "system_self_model",
+                "master_infrastructure_supervisor",
+                "system_architecture_contract_graph",
+            }
+        ):
+            return "guarded_paper_architecture_autopilot_self_reference_debt"
+
+    if guarded_paper_strict_clear and status == "degraded" and surface_name == "infrastructure_autofix":
+        operator_followups = _safe_list(payload.get("operator_followups"))
+        if _safe_int(payload.get("failed_attempt_count"), 0) == 0 and _safe_int(payload.get("hard_failed_attempt_count"), 0) == 0 and not operator_followups:
+            return "guarded_paper_infrastructure_autofix_advisory_debt"
+
+    if guarded_paper_strict_clear and status == "degraded" and surface_name == "master_infrastructure_supervisor":
+        checks = _safe_list(payload.get("checks"))
+        blocked_checks = {
+            str(row.get("name") or "").strip()
+            for row in checks
+            if isinstance(row, dict) and str(row.get("status") or "").strip().lower() in {"blocked", "critical"}
+        }
+        degraded_checks = {
+            str(row.get("name") or "").strip()
+            for row in checks
+            if isinstance(row, dict) and str(row.get("status") or "").strip().lower() in {"degraded", "warning", "warn"}
+        }
+        platform_posture = _as_dict(payload.get("platform_posture"))
+        if (
+            not blocked_checks
+            and degraded_checks
+            and degraded_checks <= {"governance_artifact_freshness", "self_auditing_infra_bots", "child_repair_bot_outcomes"}
+            and str(platform_posture.get("operating_posture") or "").strip().lower() in {"coherent", "guarded_collection", "guarded_paper_ready", ""}
+            and _safe_int(_as_dict(payload.get("metrics")).get("blocked_check_count"), 0) == 0
+        ):
+            return "guarded_paper_infrastructure_self_reference_debt"
+
     if guarded_paper_strict_clear and surface_name == "architecture_upgrade_scoreboard":
         blocked_slugs = {
             str(row.get("slug") or "").strip()
             for row in _safe_list(payload.get("rows"))
             if isinstance(row, dict) and str(row.get("status") or "").strip().lower() in {"blocked", "critical"}
         }
+        degraded_slugs = {
+            str(row.get("slug") or "").strip()
+            for row in _safe_list(payload.get("rows"))
+            if isinstance(row, dict) and str(row.get("status") or "").strip().lower() in {"degraded", "warning", "warn"}
+        }
         if blocked_slugs and blocked_slugs <= {"self_healing_ops_plane", "immutable_incident_review"}:
             return "guarded_paper_architecture_recovery_debt"
+        if not blocked_slugs and degraded_slugs and degraded_slugs <= {"self_healing_ops_plane", "immutable_incident_review"}:
+            return "guarded_paper_architecture_scoreboard_advisory_debt"
+
+    if guarded_paper_strict_clear and surface_name == "incident_closeout":
+        blocking_surfaces = [
+            row
+            for row in _safe_list(payload.get("blocking_surfaces"))
+            if isinstance(row, dict) and str(row.get("surface") or "").strip()
+        ]
+        warning_only = all(str(row.get("severity") or "").strip().lower() in {"", "info", "warning", "warn"} for row in blocking_surfaces)
+        if (
+            status == "degraded"
+            and _safe_int(payload.get("open_incident_count"), 0) <= 3
+            and _safe_float(payload.get("closeout_score"), 0.0) >= 90.0
+            and bool(payload.get("bounded_incident_backlog", False))
+            and bool(payload.get("bounded_closeout_path_ready", False))
+            and bool(payload.get("recoverable_runtime_clearance", False))
+            and bool(payload.get("recoverable_review_gate", False))
+            and warning_only
+        ):
+            return "guarded_paper_incident_closeout_advisory_debt"
 
     if guarded_paper_strict_clear and surface_name == "master_infrastructure_supervisor":
         blocked_checks = {
@@ -361,7 +468,7 @@ def _generic_row(spec: dict[str, Any]) -> dict[str, Any]:
         status = _normalize_status(raw_status or "ready", payload.get(ok_key) if ok_key else None)
         recovery_deferred_reason = _recovery_deferred_reason(spec, payload, status)
         if recovery_deferred_reason:
-            status = "degraded"
+            status = "ready" if recovery_deferred_reason in ADVISORY_RECOVERY_DEFERRED_REASONS else "degraded"
         detail = status
         if recovery_deferred_reason:
             detail = f"{detail} recovery_deferred={recovery_deferred_reason}"

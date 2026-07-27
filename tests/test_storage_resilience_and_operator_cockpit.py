@@ -293,6 +293,80 @@ def test_operator_cockpit_keeps_expanded_collection_green_with_adaptive_followup
     assert "memory_efficiency_control_needs_work" not in payload["recommended_actions"]
 
 
+def test_operator_cockpit_manages_proof_debt_when_paper_soak_is_green(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    health = project_root / "governance" / "health"
+    _write_json(
+        health / "runtime_gate_dashboard_latest.json",
+        {"overall": {"status": "degraded", "ok": False, "attention": ["training_quality_control_blocked", "daily_auto_verify_not_ok"]}},
+    )
+    _write_json(health / "unattended_soak_readiness_latest.json", {"ok": True, "overall_status": "ready", "safe_to_leave_unattended": True})
+    _write_json(health / "runtime_paper_regression_guard_latest.json", {"ok": True, "overall_status": "ready"})
+    _write_json(health / "process_watchdog_latest.json", {"overall_status": "ready"})
+    _write_json(health / "training_report_latest.json", {"overall_status": "blocked"})
+    _write_json(health / "training_quality_control_latest.json", {"overall_status": "blocked"})
+    _write_json(
+        health / "ingestion_storage_control_latest.json",
+        {
+            "overall_status": "ready",
+            "severity": "stable",
+            "pressure_index": 0.01,
+            "steady_state": {"target_status": {"steady_state_ready": True}},
+            "queue_watermarks": {"breaches": {"hard": [], "elevated": []}},
+            "backpressure": {"total_pending_lines": 100, "core_pending_lines": 50, "estimated_total_drain_minutes": 0.0},
+            "storage": {"backlog_drain_recommended_now": False},
+            "writer_shedding": {"active": False},
+        },
+    )
+    _write_json(health / "external_backlog_drain_latest.json", {"overall_status": "blocked", "recommended_now": True})
+    _write_json(
+        health / "memory_efficiency_control_latest.json",
+        {
+            "overall_status": "ready",
+            "memory_snapshot": {"memory_pressure_state": "green", "memory_pressure_kind": "none", "swap_used_gb": 0.4},
+            "expansion_session": {"total_bots": 900, "active_bots": 850, "data_collection_active_bots": 850, "sleeve_profile_count": 12},
+        },
+    )
+    _write_json(project_root / "master_bot_registry.json", {"summary": {"total_bots": 900, "active_bots": 850, "data_collection_active_bots": 850, "sleeve_profile_count": 12}})
+    _write_json(health / "global_killswitch_latest.json", {"halt": False, "action": "none", "reasons": []})
+    _write_json(health / "storage_tier_policy_latest.json", {"overall_status": "ready"})
+    _write_json(health / "live_runtime_separation_control_latest.json", {"overall_status": "ready"})
+    _write_json(health / "runtime_snapshot_cache_control_latest.json", {"overall_status": "ready", "cache_health": {"snapshot_ready": True}})
+    _write_json(health / "auth_lease_manager_latest.json", {"overall_status": "ready"})
+    _write_json(health / "rolling_restart_controller_latest.json", {"overall_status": "ready"})
+    _write_json(health / "artifact_freshness_slo_latest.json", {"overall_status": "ready", "sla_summary": {"stale_required": 0}})
+    _write_json(health / "blackstart_recovery_latest.json", {"overall_status": "ready"})
+    _write_json(health / "sleeve_isolation_guard_latest.json", {"overall_status": "ready"})
+    _write_json(health / "remote_alert_control_latest.json", {"overall_status": "ready"})
+    _write_json(health / "storage_quota_guard_latest.json", {"overall_status": "ready"})
+    _write_json(health / "chaos_drill_coordinator_latest.json", {"overall_status": "blocked"})
+    _write_json(
+        health / "master_infrastructure_supervisor_latest.json",
+        {
+            "overall_status": "blocked",
+            "operator_followups": [],
+            "hardening_scorecard": {
+                "truth_layer_ready": True,
+                "storage_route_certified": False,
+                "process_ownership_canonical": False,
+                "command_surface_clean": True,
+                "launchd_jobs_installed": True,
+            },
+            "checks": [{"name": "process_lane_ownership", "status": "degraded"}],
+        },
+    )
+
+    payload = cockpit_src.build_payload(project_root)
+
+    assert payload["overall_status"] == "ready"
+    assert payload["adaptive_posture"]["paper_soak_ready"] is True
+    assert payload["readiness_domains"]["training_and_promotion"]["status"] == "managed_paper_soak"
+    assert "training_quality_control" in payload["managed_proof_debt"]
+    assert payload["surfaces"]["training_quality_control"]["status"] == "managed_paper_soak"
+    assert payload["surfaces"]["chaos_drill_coordinator"]["status"] == "managed_paper_soak"
+    assert "training_quality_control_blocked" not in payload["recommended_actions"]
+
+
 def test_operator_cockpit_keeps_storage_steady_when_sql_overlay_clears_raw_backlog(tmp_path: Path) -> None:
     project_root = tmp_path / "project"
     health = project_root / "governance" / "health"
@@ -394,3 +468,38 @@ def test_daily_verify_auto_remediation_bot_builds_actionable_plan(tmp_path: Path
     assert payload["overall_status"] == "pending"
     assert len(payload["attempts"]) == 2
     assert all(row["actionable"] for row in payload["attempts"])
+
+
+def test_daily_verify_auto_remediation_resolves_signed_seed_ready_promotion_packet(tmp_path: Path, monkeypatch) -> None:
+    project_root = tmp_path / "project"
+    _write_json(
+        project_root / "governance" / "health" / "daily_auto_verify_latest.json",
+        {"failed_checks": ["promotion_packet_builder"]},
+    )
+    packet_stdout = json.dumps(
+        {
+            "committee_packet_seed_ready": True,
+            "signing_material_ready": True,
+            "trained_models_complete": True,
+            "signature": {"status": "verified", "verified": True},
+            "replayability_contract": {"hash_bundle_complete": True, "exact_replay_ready": True},
+            "gate_results": {
+                "training_success_confirmed": False,
+                "feature_store_manifest_strict_ok": True,
+                "new_bot_admission_ok": True,
+            },
+        }
+    )
+
+    def fake_run(cmd: list[str], *, timeout_sec: int) -> tuple[int, str, str]:
+        if "promotion_packet_builder.py" in " ".join(cmd):
+            return 2, packet_stdout, ""
+        return 0, "{}", ""
+
+    monkeypatch.setattr(remediation_src, "_run", fake_run)
+
+    payload = remediation_src.build_payload(project_root, apply=True)
+
+    assert payload["overall_status"] == "ready"
+    assert payload["resolved_checks"] == ["promotion_packet_builder"]
+    assert payload["unresolved_checks"] == []

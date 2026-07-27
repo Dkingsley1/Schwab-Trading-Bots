@@ -1,23 +1,23 @@
 # generated from requirements.lock.txt
 # profile=live
 
-adbc-driver-manager==1.10.0
-adbc-driver-sqlite==1.10.0
-aiohttp==3.13.3
-apsw==3.52.0.0
-curl-cffi==0.13.0
-duckdb==1.5.0
+adbc-driver-manager==1.11.0
+adbc-driver-sqlite==1.11.0
+aiohttp==3.14.1
+apsw==3.53.2.0
+curl-cffi==0.15.0
+duckdb==1.5.3
 duckdb-engine==0.17.0
-numpy==2.2.6
-orjson==3.11.7
-pandas==3.0.1
-polars==1.38.1
-polars-runtime-32==1.38.1
-pyarrow==23.0.1
-redis==7.3.0
-requests==2.32.5
+numpy==2.4.6
+orjson==3.11.9
+pandas==3.0.3
+polars==1.41.2
+polars-runtime-32==1.41.2
+pyarrow==24.0.0
+redis==8.0.0
+requests==2.34.2
 schwab-py==1.5.1
-sqlalchemy==2.0.48
-urllib3==2.6.3
+sqlalchemy==2.0.50
+urllib3==2.7.0
 websockets==16.0
 zstandard==0.25.0

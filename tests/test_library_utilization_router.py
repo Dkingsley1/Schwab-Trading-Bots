@@ -91,3 +91,41 @@ def test_library_utilization_router_apply_writes_env_caps(tmp_path: Path) -> Non
     assert result["applied"] is True
     assert "LIBRARY_UTILIZATION_ROUTER_ENABLED='1'" in override
     assert "PRIMARY_ML_RUNTIME_BACKEND='mlx'" in override
+
+
+def test_library_utilization_router_routes_runtime_ahead_and_optional_fallback_as_advisory(tmp_path: Path) -> None:
+    lock = tmp_path / "config" / "requirements.lock.txt"
+    lock.parent.mkdir(parents=True, exist_ok=True)
+    lock.write_text(
+        "\n".join(
+            [
+                "pandas==3.0.1",
+                "pandas-ta==0.4.71b0",
+                "ta==0.11.0",
+                "requests==2.32.5",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    payload = src.build_payload(
+        tmp_path,
+        lock_file=lock,
+        installed_versions={
+            "pandas": "3.0.3",
+            "ta": "0.11.0",
+            "requests": "2.34.2",
+        },
+    )
+    coverage = payload["coverage"]
+    rows = {row["package"]: row for row in payload["package_inventory"]}
+
+    assert payload["overall_status"] == "advisory"
+    assert payload["ok"] is True
+    assert coverage["missing_runtime_count"] == 0
+    assert coverage["runtime_ahead_of_lock_count"] == 2
+    assert coverage["optional_fallback_active_count"] == 1
+    assert rows["pandas"]["status"] == "runtime_ahead_of_lock"
+    assert rows["pandas-ta"]["status"] == "optional_fallback_active"
+    assert rows["pandas-ta"]["available_fallback_packages"] == ["ta", "pandas", "numpy"][:2]
+    assert "adopt newer runtime packages into the lock after canary evidence instead of marking active routes failed" in payload["recommended_actions"]

@@ -100,6 +100,34 @@ def test_acquire_singleton_lock_reports_busy_owner(tmp_path):
     fh.close()
 
 
+def test_lock_busy_payload_preserves_last_completed_route(tmp_path):
+    out = tmp_path / 'governance' / 'health' / 'storage_failback_sync_latest.json'
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(
+        json.dumps(
+            {
+                'timestamp_utc': '2026-07-26T12:00:00+00:00',
+                'mode': 'external',
+                'certified_mode': 'external',
+                'split_brain_conflicts': 0,
+                'route_verification': {'verification_state': 'ready'},
+            }
+        ),
+        encoding='utf-8',
+    )
+    lock_path = tmp_path / 'governance' / 'locks' / 'storage_failback_sync.lock'
+
+    payload = storage_failback_sync._lock_busy_payload(lock_path, 'pid=123 cmd=storage_failback_sync', out)
+
+    assert payload['mode'] == 'external'
+    assert payload['certified_mode'] == 'external'
+    assert payload['split_brain_conflicts'] == 0
+    assert 'busy' not in payload
+    assert payload['last_completed_timestamp_utc'] == '2026-07-26T12:00:00+00:00'
+    assert payload['refresh_deferred']['busy'] is True
+    assert payload['refresh_deferred']['skipped_reason'] == 'lock_busy_preserved_last_completed_route'
+
+
 def test_build_sqlite_skip_report_classifies_active_queue_and_warm_standby(monkeypatch, tmp_path):
     project_root = tmp_path / 'project'
     local_root = project_root / 'local_fallback_storage'

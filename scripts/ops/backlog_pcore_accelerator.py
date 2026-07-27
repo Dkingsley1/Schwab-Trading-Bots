@@ -237,7 +237,10 @@ def _single_writer_tuning_contract() -> dict[str, Any]:
     sqlite_timeout = max(_safe_int(os.getenv("SQL_LINK_SERVICE_SQLITE_TIMEOUT"), 300), 1)
     lock_retries = max(_safe_int(os.getenv("SQL_LINK_SERVICE_LOCK_RETRIES"), 200), 1)
     cache_kb = max(_safe_int(os.getenv("SQLITE_CACHE_SIZE_KB"), 0), 0)
-    mmap_mb = max(_safe_int(os.getenv("SQLITE_MMAP_SIZE_MB"), 0), 0)
+    mmap_allowed = _env_flag("SQLITE_ALLOW_MMAP", False)
+    ops_mmap_allowed = _env_flag("BOT_OPS_SQLITE_ALLOW_MMAP", False)
+    mmap_mb = max(_safe_int(os.getenv("SQLITE_MMAP_SIZE_MB"), 0), 0) if mmap_allowed else 0
+    ops_mmap_mb = max(_safe_int(os.getenv("BOT_OPS_SQLITE_MMAP_SIZE_MB"), 0), 0) if ops_mmap_allowed else 0
     wal_threshold = _safe_float(os.getenv("SQL_LINK_SERVICE_WAL_CHECKPOINT_THRESHOLD_GB"), 2.0)
     wal_growth = _safe_float(os.getenv("SQL_LINK_SERVICE_WAL_CHECKPOINT_TRIGGER_GROWTH_GB"), 1.5)
     return {
@@ -263,9 +266,11 @@ def _single_writer_tuning_contract() -> dict[str, Any]:
         "sqlite_memory": {
             "cache_size_kb": int(cache_kb),
             "mmap_size_mb": int(mmap_mb),
+            "mmap_enabled": bool(mmap_allowed and mmap_mb > 0),
             "wal_autocheckpoint_pages": max(_safe_int(os.getenv("SQLITE_WAL_AUTOCHECKPOINT_PAGES"), 0), 0),
             "ops_cache_size_kb": max(_safe_int(os.getenv("BOT_OPS_SQLITE_CACHE_SIZE_KB"), 0), 0),
-            "ops_mmap_size_mb": max(_safe_int(os.getenv("BOT_OPS_SQLITE_MMAP_SIZE_MB"), 0), 0),
+            "ops_mmap_size_mb": int(ops_mmap_mb),
+            "ops_mmap_enabled": bool(ops_mmap_allowed and ops_mmap_mb > 0),
             "ops_busy_timeout_ms": max(_safe_int(os.getenv("BOT_OPS_SQLITE_BUSY_TIMEOUT_MS"), 0), 0),
         },
         "control_env": {
@@ -284,9 +289,11 @@ def _single_writer_tuning_contract() -> dict[str, Any]:
             "SQL_LINK_SERVICE_WAL_CHECKPOINT_MODE": str(os.getenv("SQL_LINK_SERVICE_WAL_CHECKPOINT_MODE") or "auto"),
             "SQLITE_CACHE_SIZE_KB": str(cache_kb),
             "SQLITE_MMAP_SIZE_MB": str(mmap_mb),
+            "SQLITE_ALLOW_MMAP": "1" if mmap_allowed else "0",
             "SQLITE_WAL_AUTOCHECKPOINT_PAGES": str(max(_safe_int(os.getenv("SQLITE_WAL_AUTOCHECKPOINT_PAGES"), 0), 0)),
             "BOT_OPS_SQLITE_CACHE_SIZE_KB": str(max(_safe_int(os.getenv("BOT_OPS_SQLITE_CACHE_SIZE_KB"), 0), 0)),
-            "BOT_OPS_SQLITE_MMAP_SIZE_MB": str(max(_safe_int(os.getenv("BOT_OPS_SQLITE_MMAP_SIZE_MB"), 0), 0)),
+            "BOT_OPS_SQLITE_MMAP_SIZE_MB": str(ops_mmap_mb),
+            "BOT_OPS_SQLITE_ALLOW_MMAP": "1" if ops_mmap_allowed else "0",
             "BOT_OPS_SQLITE_BUSY_TIMEOUT_MS": str(max(_safe_int(os.getenv("BOT_OPS_SQLITE_BUSY_TIMEOUT_MS"), 0), 0)),
         },
         "stop_conditions": [

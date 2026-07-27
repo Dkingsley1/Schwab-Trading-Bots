@@ -141,6 +141,58 @@ def test_live_runtime_separation_uses_storage_control_steady_state_to_bound_hot_
     assert payload["shared_host_pressure"]["signals"]["storage_hot_path_bounded_by_control"] is True
 
 
+def test_live_runtime_separation_ignores_isolated_read_only_restart_storm_contention(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    health = project_root / "governance" / "health"
+    _write_json(
+        health / "live_readiness_smoke_latest.json",
+        {
+            "timestamp_utc": separation_src.iso_now(),
+            "ok": True,
+            "broker_ready": True,
+            "session_ready": True,
+            "live_lane_running": True,
+        },
+    )
+    _write_json(health / "training_runtime_control_latest.json", {"overall_status": "ready", "snapshot_ready": True, "precompute_targets": []})
+    _write_json(project_root / "governance" / "walk_forward" / "coverage_seed_latest.json", {"coverage_shortfall_bots": 0})
+    _write_json(health / "storage_tier_policy_latest.json", {"overall_status": "ready", "pressure": {"hot_path_over_budget_bytes": 0}})
+    _write_json(
+        health / "ingestion_storage_control_latest.json",
+        {
+            "overall_status": "ready",
+            "severity": "stable",
+            "backpressure_quality_score": 100.0,
+            "recovery_quality_score": 96.0,
+            "steady_state": {"target_status": {"steady_state_ready": True}},
+            "external_route_verification": {"verification_state": "ready"},
+        },
+    )
+    _write_json(health / "resource_guard_latest.json", {"swap_used_gb": 0.0, "memory_pressure_state": "green"})
+    _write_json(
+        health / "process_watchdog_latest.json",
+        {
+            "restart_storms": [{"name": "coinbase_loop", "quarantinable": True, "blocks_execution_clear": False}],
+            "restart_storm_isolation": {
+                "isolated_count": 1,
+                "execution_blocking_count": 0,
+                "isolated_targets": ["coinbase_loop"],
+                "execution_blocking_targets": [],
+                "all_active_storms_isolated": True,
+            },
+        },
+    )
+
+    payload = separation_src.build_payload(project_root)
+
+    assert payload["overall_status"] == "ready"
+    assert payload["shared_host_pressure"]["contention_score"] == 0
+    assert payload["shared_host_pressure"]["restart_storms"] == 1
+    assert payload["shared_host_pressure"]["restart_storm_contention_count"] == 0
+    assert payload["shared_host_pressure"]["signals"]["restart_storm_present"] is False
+    assert payload["shared_host_pressure"]["signals"]["isolated_read_only_restart_storms"] is True
+
+
 def test_live_runtime_separation_bounds_near_steady_state_storage_when_raw_live_is_clear(tmp_path: Path) -> None:
     project_root = tmp_path / "project"
     health = project_root / "governance" / "health"
@@ -345,6 +397,45 @@ def test_live_runtime_separation_treats_staged_coverage_budget_wait_as_managed(t
     assert payload["shared_host_pressure"]["managed_coverage_stage_deferred"] is True
     assert payload["release_contract"]["live_lane_should_be_read_only"] is True
     assert payload["release_contract"]["shared_host_training_resume_allowed"] is False
+
+
+def test_live_runtime_separation_treats_ok_cold_lane_refresh_as_managed_stage(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    health = project_root / "governance" / "health"
+    walk = project_root / "governance" / "walk_forward"
+    _write_json(
+        health / "live_readiness_smoke_latest.json",
+        {
+            "timestamp_utc": separation_src.iso_now(),
+            "ok": True,
+            "broker_ready": True,
+            "session_ready": True,
+            "live_lane_running": True,
+        },
+    )
+    _write_json(health / "training_runtime_control_latest.json", {"overall_status": "degraded", "snapshot_ready": True})
+    _write_json(health / "storage_tier_policy_latest.json", {"overall_status": "ready", "pressure": {"hot_path_over_budget_bytes": 0}})
+    _write_json(health / "resource_guard_latest.json", {"swap_used_gb": 0.0})
+    _write_json(health / "process_watchdog_latest.json", {"restart_storms": []})
+    _write_json(health / "cold_lane_refresh_latest.json", {"ok": True, "reason": "ok", "ran": True})
+    _write_json(walk / "coverage_seed_latest.json", {"coverage_shortfall_bots": 4})
+    _write_json(
+        walk / "coverage_gap_closer_latest.json",
+        {
+            "staged_candidate_count": 4,
+            "autopilot_contract": {
+                "overall_status": "degraded",
+                "launch_state": "stage_only_training_blocked",
+                "off_hours_preferred": True,
+                "launch_contract": {"training_launch_blocked": True, "launch_guard": "off_hours_only"},
+            },
+        },
+    )
+
+    payload = separation_src.build_payload(project_root)
+
+    assert payload["overall_status"] == "ready"
+    assert payload["clearance_plan"]["clearance_state"] == "managed_coverage_stage_deferred"
 
 
 def test_blackstart_treats_warning_lease_as_operable_when_broker_is_ready(tmp_path: Path) -> None:

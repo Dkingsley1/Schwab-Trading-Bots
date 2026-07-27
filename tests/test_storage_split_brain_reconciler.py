@@ -58,6 +58,26 @@ def test_storage_split_brain_reconciler_fast_path_skips_full_tree_scan_when_mani
     assert payload["summary"]["reported_split_brain_conflicts"] == 0
 
 
+def test_storage_split_brain_reconciler_suppresses_stale_reported_conflicts_after_clean_scan(tmp_path: Path, monkeypatch) -> None:
+    project_root = tmp_path / "project"
+    external_root = tmp_path / "external"
+    local_root = project_root / "local_fallback_storage"
+    external_root.mkdir(parents=True, exist_ok=True)
+    local_root.mkdir(parents=True, exist_ok=True)
+    _write_json(project_root / "governance" / "health" / "storage_failback_sync_latest.json", {"split_brain_conflicts": 4})
+    _write_json(project_root / "governance" / "health" / "storage_mount_guard_latest.json", {"external_available": True, "storage_mode": "local_fallback_split_brain"})
+
+    monkeypatch.setenv("BOT_LOGS_EXTERNAL_PROJECT_ROOT", str(external_root))
+    monkeypatch.setenv("BOT_LOGS_LOCAL_FALLBACK_ROOT", str(local_root))
+
+    payload = src.build_payload(project_root, full_scan=True)
+
+    assert payload["summary"]["artifact_reported_split_brain_conflicts"] == 4
+    assert payload["summary"]["stale_reported_split_brain_conflicts_suppressed"] == 4
+    assert payload["summary"]["reported_split_brain_conflicts"] == 0
+    assert payload["summary"]["force_failback_eligible"] is True
+
+
 def test_storage_split_brain_reconciler_counts_router_conflicts_for_failback(tmp_path: Path, monkeypatch) -> None:
     project_root = tmp_path / "project"
     external_root = tmp_path / "external"

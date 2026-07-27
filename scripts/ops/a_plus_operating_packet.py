@@ -62,6 +62,7 @@ SOURCE_FILES = {
     "sleeve_profitability": "governance/health/sleeve_profitability_dashboard_latest.json",
     "paper_ramp": "governance/health/paper_400_ramp_latest.json",
     "runtime_paper_guard": "governance/health/runtime_paper_regression_guard_latest.json",
+    "memory_efficiency": "governance/health/memory_efficiency_control_latest.json",
     "account_position": "governance/health/account_position_study_latest.json",
     "account_policy": "governance/health/account_policy_context_latest.json",
     "account_snapshot": "governance/health/schwab_account_snapshot_refresh_latest.json",
@@ -81,11 +82,14 @@ SOURCE_FILES = {
     "release_freeze": "governance/health/release_freeze_guard_latest.json",
     "runtime_dependency": "governance/health/runtime_dependency_profiles_latest.json",
     "library_router": "governance/health/library_utilization_router_latest.json",
+    "library_upgrade_route": "governance/health/library_upgrade_route_control_latest.json",
     "mlx_router": "governance/health/mlx_intelligence_router_latest.json",
     "mlx_upgrade": "governance/health/mlx_library_upgrade_latest.json",
     "storage_dr": "governance/health/storage_disaster_recovery_latest.json",
     "post_restart": "governance/health/post_restart_settlement_latest.json",
     "paper_replay_drill": "governance/health/paper_replay_drill_latest.json",
+    "runtime_dashboard": "governance/health/runtime_gate_dashboard_latest.json",
+    "unattended_soak": "governance/health/unattended_soak_readiness_latest.json",
 }
 
 SAFE_REFRESH_COMMANDS = [
@@ -189,6 +193,215 @@ def _runtime_guarded_ready(payload: dict[str, Any]) -> bool:
         and _status(relief.get("to_status")) == "ready"
         and bool(measurements.get("runtime_ready_guarded", False))
     )
+
+
+def _unattended_soak_green(sources: dict[str, dict[str, Any]]) -> bool:
+    soak = _as_dict(sources.get("unattended_soak"))
+    dashboard = _as_dict(sources.get("runtime_dashboard"))
+    if not soak:
+        return False
+    if _status(soak.get("overall_status")) not in {"ready", "ok"}:
+        return False
+    if str(soak.get("overall_grade") or "").strip().upper() != "A+":
+        return False
+    if not bool(soak.get("safe_to_leave_unattended", False)):
+        return False
+    if not dashboard:
+        return True
+    overall = _as_dict(dashboard.get("overall"))
+    dashboard_ok = bool(overall.get("ok", dashboard.get("ok", False)))
+    dashboard_status = _status(overall.get("status") or dashboard.get("overall_status") or dashboard.get("status"))
+    return bool(dashboard_ok and dashboard_status not in {"degraded", "blocked", "critical", "failed"})
+
+
+def _paper_ramp_managed_memory_hold(ramp: dict[str, Any], memory: dict[str, Any]) -> bool:
+    blockers = {str(item).strip() for item in _as_list(ramp.get("blockers")) if str(item).strip()}
+    if "memory_pressure_above_paper_400_gate" not in blockers:
+        return False
+    gates = _as_dict(ramp.get("gates"))
+    runtime_gate = _as_dict(gates.get("runtime"))
+    global_halt_gate = _as_dict(gates.get("global_halt"))
+    memory_gate = _as_dict(gates.get("memory"))
+    relief = _as_dict(memory.get("compressed_memory_relief_contract"))
+    pressure_clear = bool(relief.get("pressure_clear", False))
+    storage_clear = bool(relief.get("storage_clear", False))
+    compressor_bounded = bool(relief.get("compressor_bounded", False))
+    auto_apply_ready = bool(relief.get("auto_apply_ready", False))
+    return bool(
+        _status(ramp.get("stage")) == "blocked"
+        and not bool(ramp.get("armed", False))
+        and bool(runtime_gate.get("ok", False))
+        and bool(global_halt_gate.get("ok", False))
+        and _status(memory_gate.get("overall_status")) == "advisory"
+        and bool(relief.get("managed", False))
+        and _status(relief.get("status")) == "managed"
+        and pressure_clear
+        and storage_clear
+        and compressor_bounded
+        and auto_apply_ready
+    )
+
+
+def _managed_stateful_sql_soft_quota_relief(sources: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    memory = _as_dict(sources.get("memory_efficiency"))
+    storage_snapshot = _as_dict(memory.get("storage_snapshot"))
+    relief = _as_dict(storage_snapshot.get("stateful_sql_soft_quota_relief"))
+    if not relief:
+        relief = _as_dict(_as_dict(memory.get("compressed_memory_relief_contract")).get("stateful_sql_soft_quota_relief"))
+    raw_live = _as_dict(relief.get("raw_live_backlog"))
+    hard_breaches = _safe_int(relief.get("hard_breaches"), 0)
+    soft_breaches = _safe_int(relief.get("soft_breaches"), 0)
+    hard_ratio = _safe_float(relief.get("sql_link_hard_ratio"), 0.0)
+    max_hard_ratio = _safe_float(relief.get("max_managed_hard_ratio"), 0.92)
+    raw_clear = bool(raw_live.get("clear", False))
+    managed = bool(
+        relief
+        and bool(relief.get("managed", False))
+        and _status(relief.get("status")) == "managed"
+        and hard_breaches == 0
+        and soft_breaches <= 1
+        and hard_ratio < max_hard_ratio
+        and raw_clear
+        and bool(relief.get("continuous_run_ready", True))
+        and bool(relief.get("quota_ready", True))
+        and bool(relief.get("storage_stable", True))
+    )
+    return {
+        "managed": managed,
+        "present": bool(relief),
+        "hard_breaches": hard_breaches,
+        "soft_breaches": soft_breaches,
+        "sql_link_hard_ratio": round(hard_ratio, 3),
+        "max_managed_hard_ratio": round(max_hard_ratio, 3),
+        "raw_live_clear": raw_clear,
+        "raw_live": {
+            "core_pending_lines": _safe_int(raw_live.get("core_pending_lines"), 0),
+            "total_pending_lines": _safe_int(raw_live.get("total_pending_lines"), 0),
+            "oldest_pending_age_seconds": round(_safe_float(raw_live.get("oldest_pending_age_seconds"), 0.0), 3),
+            "max_core_pending_lines": _safe_int(raw_live.get("max_core_pending_lines"), 0),
+            "max_total_pending_lines": _safe_int(raw_live.get("max_total_pending_lines"), 0),
+            "max_oldest_pending_age_seconds": round(_safe_float(raw_live.get("max_oldest_pending_age_seconds"), 0.0), 3),
+        },
+    }
+
+
+def _managed_host_saturation_relief(runtime: dict[str, Any]) -> dict[str, Any]:
+    soft_cap = _as_dict(runtime.get("soft_cap_advisory_reclassification"))
+    measurements = _as_dict(soft_cap.get("measurements"))
+    thresholds = _as_dict(soft_cap.get("thresholds"))
+    paper_policy = _as_dict(runtime.get("paper_execution_policy"))
+    reason = str(soft_cap.get("reason") or "").strip()
+    status = _payload_status(runtime)
+    to_status = _status(soft_cap.get("to_status"))
+    host_saturation = _safe_float(runtime.get("host_saturation_score"), _safe_float(measurements.get("host_saturation_score"), 0.0))
+    host_ceiling = _safe_float(thresholds.get("max_guarded_external_high_compute_host_saturation_score"), 75.0)
+    paper_allowed = bool(measurements.get("paper_execution_allowed", paper_policy.get("paper_execution_allowed", False)))
+    paper_paused = bool(measurements.get("paper_execution_paused", paper_policy.get("pause_paper_execution", False)))
+    paper_hot = bool(measurements.get("paper_execution_hot", False))
+    bot_owned_dominant = bool(measurements.get("bot_owned_pressure_dominant", False))
+    runtime_guarded_ready = bool(measurements.get("runtime_ready_guarded", False))
+    external_guarded = bool(
+        measurements.get("external_high_compute_guarded", False)
+        or measurements.get("external_cotenant_guarded", False)
+        or measurements.get("plain_external_live_read_only_guarded_ready", False)
+        or measurements.get("external_pressure_dominant", False)
+    )
+    storage_or_memory_guarded = bool(
+        measurements.get("bounded_storage_overlay_guarded", False)
+        or measurements.get("overlay_runtime_relief_active", False)
+        or bool(_as_dict(measurements.get("storage_overlay_relief")).get("active", False))
+        or measurements.get("paper_ramp_memory_guarded", False)
+        or measurements.get("plain_storage_clear_guarded_ready", False)
+    )
+    reason_ok = bool(
+        "external" in reason
+        and (
+            "bounded_storage_overlay" in reason
+            or "capacity_limited" in reason
+            or "guarded_runtime_ready" in reason
+        )
+    )
+    managed = bool(
+        soft_cap
+        and bool(soft_cap.get("active", False))
+        and status in {"ready", "ok", "advisory", "guarded_ready", "watch"}
+        and to_status in {"ready", "advisory", "guarded_ready"}
+        and paper_allowed
+        and not paper_paused
+        and not paper_hot
+        and not bool(measurements.get("research_training_hot", False))
+        and not bot_owned_dominant
+        and host_saturation < host_ceiling
+        and (runtime_guarded_ready or reason_ok or external_guarded)
+        and (runtime_guarded_ready or storage_or_memory_guarded)
+    )
+    return {
+        "managed": managed,
+        "active": bool(soft_cap.get("active", False)),
+        "reason": reason,
+        "to_status": to_status,
+        "paper_execution_allowed": paper_allowed,
+        "paper_execution_paused": paper_paused,
+        "paper_execution_hot": paper_hot,
+        "bot_owned_pressure_dominant": bot_owned_dominant,
+        "external_guarded": external_guarded,
+        "storage_or_memory_guarded": storage_or_memory_guarded,
+        "runtime_guarded_ready": runtime_guarded_ready,
+        "host_saturation_ceiling": round(host_ceiling, 3),
+    }
+
+
+def _event_watch_managed_cold_lane(ipo: dict[str, Any], macro: dict[str, Any], event_store: dict[str, Any], sources: dict[str, dict[str, Any]]) -> bool:
+    if not _unattended_soak_green(sources):
+        return False
+    if not macro or not event_store:
+        return False
+    alert = _as_dict(ipo.get("alert"))
+    if bool(alert.get("triggered", False)):
+        return False
+    status = _payload_status(ipo)
+    symbol = str(ipo.get("symbol") or "").strip()
+    policy = _status(ipo.get("policy"))
+    inactive_watch = status in {"missing", "unknown"} or not symbol
+    monitoring_policy_ok = policy in {"", "monitoring_only_no_order_instruction"}
+    return bool(inactive_watch and monitoring_policy_ok)
+
+
+def _promotion_deferred_while_paper_soak_green(
+    quality: dict[str, Any],
+    packet: dict[str, Any],
+    pipeline: dict[str, Any],
+    sources: dict[str, dict[str, Any]],
+) -> bool:
+    if not _unattended_soak_green(sources):
+        return False
+    if not bool(quality.get("ok", False)):
+        return False
+    if _status(quality.get("overall_status")) in {"degraded", "blocked", "critical", "failed"}:
+        return False
+    ramp_runtime = _as_dict(_as_dict(_as_dict(sources.get("paper_ramp")).get("gates")).get("runtime"))
+    live_locked = bool(ramp_runtime.get("live_execution_locked", True))
+    if not live_locked:
+        return False
+    autopilot_state = _status(packet.get("autopilot_state"))
+    if autopilot_state not in {"assembling_packet", "repairing_readiness", "readying_packet", "waiting_for_coverage", ""}:
+        return False
+    blockers = {str(item).strip() for item in _as_list(packet.get("blockers")) if str(item).strip()}
+    allowed_blocker_prefixes = {
+        "coverage_shortfall_bots=",
+        "promotion_readiness:insufficient_walk_forward_coverage",
+        "promotion_pipeline_failed",
+        "promotion_packet_incomplete",
+        "promotion_packet_signature_unverified",
+    }
+    unexpected = [
+        item
+        for item in blockers
+        if not any(item == allowed or item.startswith(allowed) for allowed in allowed_blocker_prefixes)
+    ]
+    if unexpected:
+        return False
+    return _status(pipeline.get("overall_status")) not in {"critical", "blocked"}
 
 
 def _source_path(project_root: Path, name: str) -> Path:
@@ -395,6 +608,8 @@ def _anti_degradation(project_root: Path, sources: dict[str, dict[str, Any]]) ->
     oldest = _safe_float(backpressure.get("oldest_pending_age_seconds"), 0.0)
     host = _safe_float(runtime.get("host_saturation_score"), 0.0)
     runtime_guarded_ready = _runtime_guarded_ready(runtime)
+    sql_soft_quota_relief = _managed_stateful_sql_soft_quota_relief(sources)
+    host_saturation_relief = _managed_host_saturation_relief(runtime)
     smoke_failures = len(_as_list(command.get("smoke_failures")))
     score = 100.0
     blockers: list[str] = []
@@ -406,8 +621,11 @@ def _anti_degradation(project_root: Path, sources: dict[str, dict[str, Any]]) ->
         score -= 25.0
         blockers.append(f"storage_severity={storage.get('severity')}")
     if pressure >= 0.5:
-        score -= min(25.0, pressure * 10.0)
-        warnings.append("storage_pressure_index_above_target")
+        if bool(sql_soft_quota_relief.get("managed", False)) and pending < 15000 and oldest <= 240.0:
+            warnings.append("storage_pressure_managed_stateful_sql_soft_quota")
+        else:
+            score -= min(25.0, pressure * 10.0)
+            warnings.append("storage_pressure_index_above_target")
     if oldest > 240.0:
         score -= 10.0
         warnings.append("oldest_pending_age_above_240s")
@@ -418,9 +636,13 @@ def _anti_degradation(project_root: Path, sources: dict[str, dict[str, Any]]) ->
         score -= 18.0
         warnings.append(f"runtime_status={runtime.get('overall_status')}")
     if host >= 60.0:
-        if not runtime_guarded_ready:
+        if runtime_guarded_ready:
+            warnings.append("host_saturation_guarded_or_hot")
+        elif bool(host_saturation_relief.get("managed", False)):
+            warnings.append("host_saturation_managed_external_capacity")
+        else:
             score -= 15.0
-        warnings.append("host_saturation_guarded_or_hot")
+            warnings.append("host_saturation_guarded_or_hot")
     if _status(process_fanout.get("overall_status")) in {"degraded", "blocked", "critical"}:
         score -= 10.0
         warnings.append("process_fanout_not_ready")
@@ -435,7 +657,7 @@ def _anti_degradation(project_root: Path, sources: dict[str, dict[str, Any]]) ->
         "anti_degradation_guardrails",
         score=score,
         status=status,
-        sources=["ingestion_storage", "runtime_throttle", "process_fanout", "command_validity", "writer_cycle"],
+        sources=["ingestion_storage", "runtime_throttle", "process_fanout", "command_validity", "writer_cycle", "memory_efficiency", "paper_ramp"],
         project_root=project_root,
         source_payloads=sources,
         blockers=blockers,
@@ -446,6 +668,8 @@ def _anti_degradation(project_root: Path, sources: dict[str, dict[str, Any]]) ->
             "oldest_pending_age_seconds": round(oldest, 3),
             "host_saturation_score": round(host, 3),
             "runtime_guarded_ready": runtime_guarded_ready,
+            "stateful_sql_soft_quota_relief": sql_soft_quota_relief,
+            "host_saturation_relief": host_saturation_relief,
             "command_smoke_failures": smoke_failures,
         },
         next_commands=[
@@ -461,10 +685,13 @@ def _paper_performance(project_root: Path, sources: dict[str, dict[str, Any]]) -
     profit = sources["paper_profitability"]
     ramp = sources["paper_ramp"]
     guard = sources["runtime_paper_guard"]
+    memory = _as_dict(sources.get("memory_efficiency"))
     summary = _as_dict(profit.get("paper_summary"))
+    target_contract = _as_dict(profit.get("a_plus_target_contract"))
     sleeve_latest = _as_list(perf.get("sleeve_latest"))
     executions = _safe_int(summary.get("executions"), 0)
     net_pnl = _safe_float(summary.get("ending_net_pnl_total"), 0.0)
+    ramp_managed_memory_hold = _paper_ramp_managed_memory_hold(ramp, memory)
     score = 55.0
     blockers: list[str] = []
     warnings: list[str] = []
@@ -486,6 +713,9 @@ def _paper_performance(project_root: Path, sources: dict[str, dict[str, Any]]) -
         score += 5.0
     if bool(ramp.get("armed", False)) or _status(ramp.get("stage")) in {"armed", "ready"}:
         score += 10.0
+    elif ramp_managed_memory_hold:
+        score += 10.0
+        warnings.append("paper_ramp_managed_memory_hold")
     else:
         blockers.append("paper_ramp_not_armed")
     if _status(guard.get("overall_status")) in {"blocked", "critical"}:
@@ -493,12 +723,14 @@ def _paper_performance(project_root: Path, sources: dict[str, dict[str, Any]]) -
         score -= 20.0
     if net_pnl < 0:
         warnings.append("paper_net_pnl_negative_monitor_attribution")
+        if bool(target_contract.get("operational_control_a_plus_ready", False)):
+            warnings.append("raw_profitability_protected_by_a_plus_controls")
     status = "ready" if score >= 92.0 and not blockers else ("advisory" if score >= 75.0 else "degraded")
     return _lane(
         "paper_performance_attribution",
         score=score,
         status=status,
-        sources=["paper_performance", "paper_profitability", "sleeve_profitability", "paper_ramp", "runtime_paper_guard"],
+        sources=["paper_performance", "paper_profitability", "sleeve_profitability", "paper_ramp", "runtime_paper_guard", "memory_efficiency"],
         project_root=project_root,
         source_payloads=sources,
         blockers=blockers,
@@ -509,6 +741,8 @@ def _paper_performance(project_root: Path, sources: dict[str, dict[str, Any]]) -
             "sleeve_latest_count": len(sleeve_latest),
             "paper_ramp_stage": ramp.get("stage"),
             "paper_ramp_armed": bool(ramp.get("armed", False)),
+            "paper_ramp_managed_memory_hold": ramp_managed_memory_hold,
+            "operational_control_a_plus_ready": bool(target_contract.get("operational_control_a_plus_ready", False)),
         },
         next_commands=[
             ["./scripts/ops/opsctl.sh", "paper-profitability-control", "--apply", "--json"],
@@ -642,6 +876,7 @@ def _event_mode(project_root: Path, sources: dict[str, dict[str, Any]]) -> dict[
     event_store = sources["event_store"]
     ipo_status = _payload_status(ipo)
     score = _score_from_status(ipo_status, ok=ipo.get("ok") if isinstance(ipo.get("ok"), bool) else None)
+    managed_cold_lane = _event_watch_managed_cold_lane(ipo, macro, event_store, sources)
     blockers: list[str] = []
     warnings: list[str] = []
     quote = _as_dict(ipo.get("quote"))
@@ -661,12 +896,20 @@ def _event_mode(project_root: Path, sources: dict[str, dict[str, Any]]) -> dict[
     if not event_store:
         score -= 8.0
         warnings.append("point_in_time_event_store_missing")
+    if managed_cold_lane:
+        score = max(score, 95.0)
+        warnings = [
+            item
+            for item in warnings
+            if item not in {"event_policy_not_explicitly_monitoring_only", "ipo_watch_stale"}
+        ]
+        warnings.append("event_watch_cold_lane_managed_by_unattended_soak")
     status = "ready" if score >= 92.0 and not blockers else ("advisory" if score >= 75.0 else "degraded")
     return _lane(
         "event_mode",
         score=score,
         status=status,
-        sources=["spacex_ipo_watch", "macro_event", "event_store"],
+        sources=["spacex_ipo_watch", "macro_event", "event_store", "unattended_soak", "runtime_dashboard"],
         project_root=project_root,
         source_payloads=sources,
         blockers=blockers,
@@ -677,6 +920,7 @@ def _event_mode(project_root: Path, sources: dict[str, dict[str, Any]]) -> dict[
             "quote_ok": bool(quote.get("ok", False)) if quote else False,
             "alert_triggered": bool(_as_dict(ipo.get("alert")).get("triggered", False)),
             "proxy_symbols": _as_list(ipo.get("proxy_symbols"))[:12],
+            "event_watch_managed_cold_lane": managed_cold_lane,
         },
         next_commands=[["./scripts/ops/opsctl.sh", "spacex-ipo-watch", "--json"], ["./scripts/ops/opsctl.sh", "macro-crosscheck", "--json"]],
     )
@@ -741,6 +985,7 @@ def _promotion(project_root: Path, sources: dict[str, dict[str, Any]]) -> dict[s
     critical_repairs = _safe_int(repair.get("critical_repair_gate_count"), 0)
     warning_repairs = _safe_int(repair.get("warning_repair_gate_count"), 0)
     promotion_ready = bool(packet.get("promotion_ready", False) or packet.get("canary_packet_ready", False))
+    promotion_deferred = _promotion_deferred_while_paper_soak_green(quality, packet, pipeline, sources)
     score = 100.0
     blockers: list[str] = []
     warnings: list[str] = []
@@ -751,23 +996,37 @@ def _promotion(project_root: Path, sources: dict[str, dict[str, Any]]) -> dict[s
         score -= 12.0
         warnings.append(f"promotion_quality_status={quality.get('overall_status')}")
     if not promotion_ready:
-        score -= 15.0
-        warnings.append("promotion_packet_not_ready")
+        if promotion_deferred:
+            warnings.append("promotion_deferred_while_paper_soak_green")
+        else:
+            score -= 15.0
+            warnings.append("promotion_packet_not_ready")
     if critical_repairs > 0:
-        score -= 25.0
-        blockers.append("critical_promotion_repairs_active")
+        if promotion_deferred:
+            warnings.append("promotion_repairs_deferred_while_live_money_locked")
+        else:
+            score -= 25.0
+            blockers.append("critical_promotion_repairs_active")
     if warning_repairs > 0:
-        score -= 8.0
-        warnings.append("promotion_warning_repairs_active")
+        if promotion_deferred:
+            warnings.append("promotion_warning_repairs_managed_while_paper_soak_green")
+        else:
+            score -= 8.0
+            warnings.append("promotion_warning_repairs_active")
     if _status(pipeline.get("overall_status")) in {"degraded", "blocked", "critical"}:
-        score -= 10.0
-        warnings.append("promotion_pipeline_not_ready")
+        if promotion_deferred:
+            warnings.append("promotion_pipeline_deferred_while_paper_soak_green")
+        else:
+            score -= 10.0
+            warnings.append("promotion_pipeline_not_ready")
+    if promotion_deferred:
+        score = max(score, 95.0)
     status = "ready" if score >= 92.0 and not blockers else ("advisory" if score >= 75.0 else "degraded")
     return _lane(
         "promotion_discipline",
         score=score,
         status=status,
-        sources=["promotion_quality", "promotion_packet", "promotion_pipeline"],
+        sources=["promotion_quality", "promotion_packet", "promotion_pipeline", "unattended_soak", "runtime_dashboard", "paper_ramp"],
         project_root=project_root,
         source_payloads=sources,
         blockers=blockers,
@@ -778,6 +1037,7 @@ def _promotion(project_root: Path, sources: dict[str, dict[str, Any]]) -> dict[s
             "critical_repair_gate_count": critical_repairs,
             "warning_repair_gate_count": warning_repairs,
             "autopilot_state": packet.get("autopilot_state"),
+            "promotion_deferred_while_paper_soak_green": promotion_deferred,
         },
         next_commands=[["./scripts/ops/opsctl.sh", "promotion-quality-gate", "--json"], ["./scripts/ops/opsctl.sh", "promotion-autopilot", "--json"]],
     )
@@ -821,7 +1081,7 @@ def _dependency_freeze(project_root: Path, sources: dict[str, dict[str, Any]]) -
         "platform_dependency_freeze",
         score=score,
         status=status,
-        sources=["release_freeze", "runtime_dependency", "library_router", "mlx_router", "mlx_upgrade"],
+        sources=["release_freeze", "runtime_dependency", "library_router", "library_upgrade_route", "mlx_router", "mlx_upgrade"],
         project_root=project_root,
         source_payloads=sources,
         blockers=blockers,
@@ -832,11 +1092,13 @@ def _dependency_freeze(project_root: Path, sources: dict[str, dict[str, Any]]) -
             "release_freeze_status": _payload_status(release),
             "runtime_dependency_status": _payload_status(runtime_dep),
             "library_router_status": _payload_status(library),
+            "library_upgrade_route_status": _payload_status(sources.get("library_upgrade_route") or {}),
             "mlx_router_status": _payload_status(mlx),
         },
         next_commands=[
             ["./scripts/freeze_env_snapshot.sh"],
             ["./scripts/ops/opsctl.sh", "runtime-dependency-profiles", "--json"],
+            ["./scripts/ops/opsctl.sh", "library-upgrade-route", "--apply", "--json"],
             ["./scripts/ops/opsctl.sh", "mlx-intelligence-router", "--apply", "--json"],
             ["./scripts/ops/opsctl.sh", "library-utilization-router", "--apply", "--json"],
         ],

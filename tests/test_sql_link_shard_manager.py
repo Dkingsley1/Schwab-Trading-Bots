@@ -1046,6 +1046,90 @@ def test_run_shard_links_uses_preprocess_worker_budget(tmp_path, monkeypatch) ->
     assert all(row["preprocess_worker_count"] == 3 for row in results)
 
 
+def test_run_shard_links_obeys_live_governor_lane_cap(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("SQL_LINK_SERVICE_MAX_SHARD_WRITER_LANES", "4")
+    monkeypatch.setattr(
+        shard_manager,
+        "_live_runtime_control_overrides",
+        lambda: {
+            "SQL_LINK_SERVICE_MAX_SHARD_WRITER_LANES": "1",
+            "SQL_LINK_SERVICE_SHARD_WRITER_LANES": "1",
+            "SQL_LINK_SERVICE_PREPROCESS_WORKERS": "1",
+        },
+    )
+    shards = []
+    for idx, name in enumerate(["trading", "aggressive_trading", "crypto_trading"]):
+        shards.append(
+            {
+                "name": name,
+                "sqlite_db": tmp_path / f"{name}.sqlite3",
+                "state_file": tmp_path / f"{name}_state.json",
+                "health_file": tmp_path / f"{name}_health.json",
+                "journal_file": tmp_path / f"{name}_journal.jsonl",
+                "journal_events_file": tmp_path / f"{name}_journal_events.jsonl",
+                "invalid_log_file": tmp_path / f"{name}_invalid.jsonl",
+                "include_streams": "decisions",
+                "path_contains": f"decisions/{idx}/",
+                "skip_json_files": True,
+                "max_files": 1,
+                "max_lines_per_file": 100,
+                "state_checkpoint_lines": 10,
+            }
+        )
+    monkeypatch.setattr(
+        shard_manager,
+        "_quarantine_shard_artifacts",
+        lambda **kwargs: {"triggered": False},
+    )
+    lock = threading.Lock()
+    active = {"count": 0, "max": 0}
+
+    def fake_run(*_args, **_kwargs):
+        with lock:
+            active["count"] += 1
+            active["max"] = max(active["max"], active["count"])
+        time.sleep(0.03)
+        with lock:
+            active["count"] -= 1
+        return subprocess.CompletedProcess(args=["link"], returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(shard_manager.subprocess, "run", fake_run)
+
+    results = shard_manager._run_shard_links(
+        shards=shards,
+        link_mode="sqlite",
+        sqlite_timeout_seconds=30,
+        sqlite_lock_retries=0,
+        sqlite_lock_retry_delay_seconds=0.1,
+        shard_link_timeout_seconds=5,
+        preprocess_workers=3,
+        live_lane_cap_reload=True,
+    )
+
+    assert [row["shard"] for row in results] == ["trading", "aggressive_trading", "crypto_trading"]
+    assert active["max"] == 1
+    assert all(row["parallel_preprocess"] is False for row in results)
+    assert all(row["preprocess_worker_count"] == 1 for row in results)
+
+
+def test_shard_writer_lane_contract_obeys_live_governor_cap(monkeypatch) -> None:
+    overrides = {
+        "SQL_LINK_SERVICE_MAX_SHARD_WRITER_LANES": "1",
+        "SQL_LINK_SERVICE_SHARD_WRITER_LANES": "1",
+        "SQL_LINK_SERVICE_PREPROCESS_WORKERS": "1",
+    }
+    monkeypatch.setenv("SQL_LINK_SERVICE_MAX_SHARD_WRITER_LANES", "8")
+
+    with shard_manager._temporary_env_overrides(overrides):
+        contract = shard_manager._shard_writer_lane_contract(8, overrides=overrides)
+
+    assert contract["requested_shard_writer_lanes"] == 8
+    assert contract["selected_shard_writer_lanes"] == 1
+    assert contract["max_shard_writer_lanes"] == 1
+    assert contract["parallel_child_shard_writers"] == 1
+    assert contract["smart_shard_parallelism"]["selected_worker_count"] == 1
+
+
 def test_shard_writer_lane_contract_exposes_smart_parallelism(monkeypatch) -> None:
     monkeypatch.setenv("SQL_LINK_SERVICE_MAX_SHARD_WRITER_LANES", "4")
     monkeypatch.setenv("SQL_LINK_SERVICE_COLD_SHARD_LANE_CAP", "1")

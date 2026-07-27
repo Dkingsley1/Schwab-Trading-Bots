@@ -144,6 +144,105 @@ def test_external_backlog_retry_bot_marks_progressing_follow_through_as_healthy(
     assert payload["drain_result"]["follow_through_progress_state"] == "progressing"
 
 
+def test_external_backlog_retry_bot_accepts_completed_busy_handoff(tmp_path: Path, monkeypatch) -> None:
+    project_root = tmp_path / "project"
+    monkeypatch.setattr(
+        src.drain_src,
+        "build_payload",
+        lambda *args, **kwargs: {
+            "overall_status": "ready",
+            "blocked_reasons": [],
+            "off_hours_window": {"active": True},
+            "backpressure_before": {"deferred_pending_lines": 8000, "cold_pending_lines": 0},
+            "aged_candidate_files": 0,
+            "recommended_now": True,
+            "storage_mode": "external",
+            "writer_busy": True,
+        },
+    )
+
+    def _fake_run(cmd: list[str], *, cwd: Path, payload_path: Path | None = None, timeout_sec: int) -> dict:
+        joined = " ".join(cmd)
+        if "external_backlog_drain.py" in joined:
+            payload = {
+                "overall_status": "drain_active",
+                "writer_busy": True,
+                "follow_through": {
+                    "completed": True,
+                    "status": "handoff_requested",
+                    "progress_state": "requested_live_writer",
+                    "attempts": 1,
+                    "waited_seconds": 0.0,
+                },
+            }
+        elif "ingestion_storage_control.py" in joined:
+            payload = {"overall_status": "ready"}
+        elif "runtime_gate_dashboard.py" in joined:
+            payload = {"overall": {"status": "ok"}}
+        elif "operator_cockpit.py" in joined:
+            payload = {"overall_status": "ready"}
+        else:
+            raise AssertionError(f"unexpected command: {cmd}")
+        if payload_path is not None:
+            _write_json(payload_path, payload)
+        return {"cmd": cmd, "rc": 0, "duration_ms": 8.0, "payload": payload, "stdout_tail": "", "stderr_tail": "", "timed_out": False}
+
+    monkeypatch.setattr(src, "_run_json_command", _fake_run)
+
+    payload = src.build_payload(project_root, apply=True, wait_timeout_seconds=30.0)
+
+    assert payload["overall_status"] == "applied_progressing"
+    assert payload["ok"] is True
+    assert payload["drain_result"]["follow_through_completed"] is True
+    assert payload["drain_result"]["follow_through_status"] == "handoff_requested"
+
+
+def test_external_backlog_retry_bot_accepts_not_needed_handoff_as_applied(tmp_path: Path, monkeypatch) -> None:
+    project_root = tmp_path / "project"
+    monkeypatch.setattr(
+        src.drain_src,
+        "build_payload",
+        lambda *args, **kwargs: {
+            "overall_status": "ready",
+            "blocked_reasons": [],
+            "off_hours_window": {"active": True},
+            "backpressure_before": {"deferred_pending_lines": 8000, "cold_pending_lines": 0},
+            "aged_candidate_files": 0,
+            "recommended_now": True,
+            "storage_mode": "external",
+            "writer_busy": False,
+        },
+    )
+
+    def _fake_run(cmd: list[str], *, cwd: Path, payload_path: Path | None = None, timeout_sec: int) -> dict:
+        joined = " ".join(cmd)
+        if "external_backlog_drain.py" in joined:
+            payload = {
+                "overall_status": "ready",
+                "writer_busy": False,
+                "follow_through": {"status": "not_needed", "progress_state": "not_needed"},
+            }
+        elif "ingestion_storage_control.py" in joined:
+            payload = {"overall_status": "ready"}
+        elif "runtime_gate_dashboard.py" in joined:
+            payload = {"overall": {"status": "ok"}}
+        elif "operator_cockpit.py" in joined:
+            payload = {"overall_status": "ready"}
+        else:
+            raise AssertionError(f"unexpected command: {cmd}")
+        if payload_path is not None:
+            _write_json(payload_path, payload)
+        return {"cmd": cmd, "rc": 0, "duration_ms": 8.0, "payload": payload, "stdout_tail": "", "stderr_tail": "", "timed_out": False}
+
+    monkeypatch.setattr(src, "_run_json_command", _fake_run)
+
+    payload = src.build_payload(project_root, apply=True, wait_timeout_seconds=30.0)
+
+    assert payload["overall_status"] == "applied"
+    assert payload["ok"] is True
+    assert payload["drain_result"]["follow_through_status"] == "not_needed"
+
+
 def test_external_backlog_retry_bot_runs_quarantine_during_market_hours(tmp_path: Path, monkeypatch) -> None:
     project_root = tmp_path / "project"
     monkeypatch.setattr(

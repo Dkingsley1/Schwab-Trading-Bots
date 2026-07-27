@@ -33,7 +33,9 @@ def test_resolve_runtime_settings_downshifts_under_red_memory_pressure(tmp_path)
     assert settings["pressure_level"] == "red"
     assert settings["temp_store_mode"] == "FILE"
     assert settings["cache_size_kb"] == 4096
-    assert settings["mmap_size_mb"] == 32
+    assert settings["mmap_requested_mb"] == 0
+    assert settings["mmap_size_mb"] == 0
+    assert settings["mmap_enabled"] is False
     assert settings["analyze_enabled"] is False
     assert settings["auto_vacuum_allowed"] is False
 

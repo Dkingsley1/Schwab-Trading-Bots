@@ -277,6 +277,25 @@ def test_paper_execution_truth_layer_keeps_low_replay_rows_probationary_when_col
     assert "paper_replay_rows_low_collecting" in gate["reasons"]
 
 
+def test_paper_execution_truth_layer_keeps_empty_counterfactual_candidates_advisory_while_collecting() -> None:
+    inputs = _good_inputs()
+    inputs["counterfactual"]["top_candidates"] = []
+    inputs["paper_replay"] = {"ok": True, "failed_checks": []}
+
+    payload = truth.evaluate_truth_layer(**inputs)
+
+    assert payload["ok"] is True
+    assert payload["overall_status"] == "ready"
+    assert payload["grade"] == "A+"
+    assert payload["failed_checks"] == []
+    assert payload["advisory_warnings"] == ["decision_replay_harness"]
+    gate = payload["gates"]["decision_replay_harness"]
+    assert gate["status"] == "warn"
+    assert gate["grade_blocking"] is False
+    assert gate["advisory_only"] is True
+    assert gate["reasons"] == ["counterfactual_candidates_pending_collecting"]
+
+
 def test_paper_execution_truth_layer_blocks_stale_skip_only_replay() -> None:
     inputs = _good_inputs()
     inputs["paper_replay"] = {

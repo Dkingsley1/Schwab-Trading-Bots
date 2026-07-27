@@ -1,9 +1,9 @@
 # Intelligence Layers PyCharm Index
 
-- Updated UTC: `2026-07-22T18:03:49.049542+00:00`
-- Whole-System Status: `blocked`
+- Updated UTC: `2026-07-27T16:28:54.726882+00:00`
+- Whole-System Status: `advisory`
 - Top Risk: `system_self_model`
-- Safe Next Command: `./scripts/ops/opsctl.sh expansion-capacity --json`
+- Safe Next Command: `./scripts/ops/opsctl.sh backpressure-super-drainer --apply --max-waves 1 --target-pending-lines 5000 --json`
 
 ## Bot Activity Snapshot
 
@@ -36,14 +36,14 @@
 - Memory Pressure High: `False`
 - Runtime Pressure High: `False`
 - Storage Critical: `False`
-- Writer Active: `True`
+- Writer Active: `False`
 - Guard Policy Mode: `full_schwab_observe`
 
 ## Docs Commands Reporting
 
 - Layer Status: `advisory`
 - Action: `run_report_quality_guard_repair`
-- Command Contract Entries: `150`
+- Command Contract Entries: `154`
 - Command Issues: `0`
 - Report Bundle Entries: `38`
 - Report Bundle Errors: `0`
@@ -58,15 +58,15 @@
 
 ## Intelligence Layers
 
-- `super_intelligence`: status `blocked`, mode `expand`, action `cautious_expansion_rehearsal`
-- `outcome_learning`: status `degraded`, verdict `baseline`
-- `paper_lane_governor`: status `blocked`, mode `block_and_relock`, score `1584`
+- `super_intelligence`: status `advisory`, mode `rethink`, action `run_outcome_verified_micro_drain`
+- `outcome_learning`: status `advisory`, verdict `ineffective_so_far`
+- `paper_lane_governor`: status `ready`, mode `full_eligible_paper_soak_active`, score `1584`
 - `symbol_universe_intelligence`: status `degraded`, score `0.0`
-- `cognitive_twin_counterfactuals`: status `degraded`, score `70`, next `base_case`
-- `recursive_policy_evolution`: status `advisory`, score `60.0`, next `cognitive_twin_counterfactual_simulator`
-- `deeper_self_awareness_layers`: status `missing`, mode `advisory_control_plane_with_constitutional_lockout_attestation`, score `0`
+- `cognitive_twin_counterfactuals`: status `degraded`, score `62`, next `base_case`
+- `recursive_policy_evolution`: status `advisory`, score `58.0`, next `cognitive_twin_counterfactual_simulator`
+- `deeper_self_awareness_layers`: status `advisory`, mode `advisory_control_plane_with_constitutional_lockout_attestation`, score `8`, next `causal_world_model,belief_ledger_confidence`
 - `codex_handoff`: status `advisory`
-- `documentation_reporting_intelligence`: status `advisory`, action `run_report_quality_guard_repair`, score `150`
+- `documentation_reporting_intelligence`: status `advisory`, action `run_report_quality_guard_repair`, score `154`
 
 ## PyCharm Open Paths
 

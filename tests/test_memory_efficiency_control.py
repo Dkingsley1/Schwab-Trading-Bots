@@ -53,6 +53,10 @@ def test_memory_efficiency_control_recommends_constrained_profile_under_pressure
     assert payload["recommended_env_overrides"]["COINBASE_CACHE_MAX_ENTRIES"] == "96"
     assert payload["recommended_env_overrides"]["RUNTIME_TRAIN_BATCH_SIZE_CAP"] == "48"
     assert payload["recommended_env_overrides"]["SQLITE_TEMP_STORE_MODE"] == "FILE"
+    assert payload["recommended_env_overrides"]["SQLITE_MMAP_SIZE_MB"] == "0"
+    assert payload["recommended_env_overrides"]["BOT_OPS_SQLITE_MMAP_SIZE_MB"] == "0"
+    assert payload["recommended_env_overrides"]["SQLITE_ALLOW_MMAP"] == "0"
+    assert payload["recommended_env_overrides"]["BOT_OPS_SQLITE_ALLOW_MMAP"] == "0"
     assert payload["recommended_env_overrides"]["BOT_OPS_SQLITE_CACHE_SIZE_KB"] == "2048"
     assert payload["recommended_env_overrides"]["QUANT_MODEL_TRANSFORMER_SEQUENCE"] == "32"
     assert payload["recommended_env_overrides"]["QUANT_MODEL_DML_CROSSFIT_FOLDS"] == "2"
@@ -162,6 +166,228 @@ def test_memory_efficiency_control_reconciles_stale_allocation_high_water(tmp_pa
     assert payload["memory_snapshot"]["swap_used_gb"] == 0.185
     assert payload["raw_memory_snapshot"]["compressed_store_gb"] == 19.552
     assert payload["memory_snapshot"]["compressed_store_gb"] == 8.0
+
+
+def test_memory_efficiency_control_manages_green_critical_compression_with_relief_contract(tmp_path: Path) -> None:
+    health = tmp_path / "governance" / "health"
+    _write_json(
+        health / "resource_guard_latest.json",
+        {
+            "memory_pressure_state": "green",
+            "memory_pressure_kind": "none",
+            "memory_free_pct": 43.0,
+            "swap_used_gb": 11.445,
+            "compressed_store_gb": 34.548,
+            "compressor_gb": 6.465,
+            "pages_throttled": 0,
+        },
+    )
+    _write_json(
+        health / "swap_pressure_governor_latest.json",
+        {
+            "swap_pressure": {
+                "tier": "normal",
+                "swap_used_gb": 0.024,
+                "memory_pressure_state": "green",
+                "memory_pressure_kind": "none",
+            }
+        },
+    )
+    _write_json(
+        health / "apple_silicon_profile_latest.json",
+        {"applied_tier": "max_throughput", "env_overrides": {}, "hardware": {"memory_gb": 32.0}},
+    )
+    _write_json(health / "ingestion_storage_control_latest.json", {"severity": "stable", "pressure_index": 0.447})
+
+    payload = src.build_payload(tmp_path, action="status", override_path=tmp_path / "config" / ".env.memory_efficiency_override")
+
+    assert payload["overall_status"] == "advisory"
+    assert payload["ok"] is True
+    assert payload["recommended_profile"] == "constrained"
+    assert payload["memory_truth_reconciliation"]["stale_swap_relief"] is True
+    assert payload["memory_truth_reconciliation"]["stale_compression_relief"] is False
+    relief = payload["compressed_memory_relief_contract"]
+    assert relief["active"] is True
+    assert relief["managed"] is True
+    assert relief["severity"] == "critical"
+    assert relief["auto_apply_ready"] is True
+    assert relief["live_execution_authority"] is False
+    assert ["./scripts/ops/opsctl.sh", "runtime-throttle", "--apply", "--json"] in relief["self_remediation_commands"]
+    assert payload["recommended_env_overrides"]["BOT_COMPRESSED_MEMORY_RELIEF_ACTIVE"] == "1"
+    assert payload["recommended_env_overrides"]["COINBASE_SNAPSHOT_MAX_WORKERS"] == "1"
+    assert payload["recommended_env_overrides"]["SQL_LINK_SERVICE_MAX_SHARD_WRITER_LANES"] == "1"
+    assert payload["recommended_env_overrides"]["TRAINING_RUNTIME_GOVERNOR_MODE"] == "micro_canary_only"
+
+
+def test_memory_efficiency_control_manages_sql_soft_quota_during_ready_soak(tmp_path: Path) -> None:
+    health = tmp_path / "governance" / "health"
+    _write_json(
+        health / "resource_guard_latest.json",
+        {
+            "memory_pressure_state": "green",
+            "memory_pressure_kind": "none",
+            "memory_free_pct": 26.0,
+            "swap_used_gb": 9.595,
+            "compressed_store_gb": 36.521,
+            "compressor_gb": 9.661,
+            "pages_throttled": 0,
+        },
+    )
+    _write_json(
+        health / "swap_pressure_governor_latest.json",
+        {
+            "swap_pressure": {
+                "tier": "normal",
+                "swap_used_gb": 0.024,
+                "memory_pressure_state": "green",
+                "memory_pressure_kind": "none",
+            }
+        },
+    )
+    _write_json(
+        health / "apple_silicon_profile_latest.json",
+        {"applied_tier": "max_throughput", "env_overrides": {}, "hardware": {"memory_gb": 32.0}},
+    )
+    _write_json(
+        health / "ingestion_storage_control_latest.json",
+        {
+            "overall_status": "ready",
+            "severity": "stable",
+            "pressure_index": 0.667,
+            "backpressure": {
+                "raw_live": {
+                    "core_pending_lines": 598,
+                    "total_pending_lines": 598,
+                    "oldest_pending_age_seconds": 160.133,
+                }
+            },
+        },
+    )
+    _write_json(
+        health / "storage_quota_guard_latest.json",
+        {
+            "overall_status": "degraded",
+            "quota_summary": {
+                "hard_breaches": 0,
+                "soft_breaches": 1,
+                "blocked_families": [],
+                "degraded_families": ["sql_link_shards"],
+            },
+            "lanes": [
+                {
+                    "family": "sql_link_shards",
+                    "status": "degraded",
+                    "over_hard_gb": 0.0,
+                    "hard_ratio": 0.879,
+                }
+            ],
+        },
+    )
+    _write_json(
+        health / "storage_retention_unison_latest.json",
+        {
+            "overall_status": "ready",
+            "continuous_run_contract": {
+                "ready": True,
+                "status": "ready",
+                "storage_controls": {"quota_ready": True, "quota_status": "degraded"},
+            },
+            "storage_growth_forecast": {"status": "stable_or_improving", "days_until_pressure_free": None},
+            "integration_contract": {"stateful_sql_compaction_only": True},
+        },
+    )
+
+    payload = src.build_payload(tmp_path, action="status", override_path=tmp_path / "config" / ".env.memory_efficiency_override")
+
+    assert payload["overall_status"] == "advisory"
+    assert payload["ok"] is True
+    relief = payload["compressed_memory_relief_contract"]
+    assert relief["managed"] is True
+    assert relief["storage_clear"] is True
+    assert relief["stateful_sql_soft_quota_relief"]["managed"] is True
+    assert payload["storage_snapshot"]["stateful_sql_soft_quota_relief"]["managed"] is True
+    assert payload["recommended_env_overrides"]["BOT_COMPRESSED_MEMORY_RELIEF_ACTIVE"] == "1"
+
+
+def test_memory_efficiency_control_keeps_sql_hard_quota_actionable(tmp_path: Path) -> None:
+    health = tmp_path / "governance" / "health"
+    _write_json(
+        health / "resource_guard_latest.json",
+        {
+            "memory_pressure_state": "green",
+            "memory_pressure_kind": "none",
+            "memory_free_pct": 26.0,
+            "swap_used_gb": 0.4,
+            "compressed_store_gb": 36.0,
+            "compressor_gb": 9.0,
+            "pages_throttled": 0,
+        },
+    )
+    _write_json(
+        health / "apple_silicon_profile_latest.json",
+        {"applied_tier": "max_throughput", "env_overrides": {}, "hardware": {"memory_gb": 32.0}},
+    )
+    _write_json(
+        health / "ingestion_storage_control_latest.json",
+        {
+            "overall_status": "ready",
+            "severity": "stable",
+            "pressure_index": 0.667,
+            "backpressure": {"raw_live": {"core_pending_lines": 0, "total_pending_lines": 0, "oldest_pending_age_seconds": 0.0}},
+        },
+    )
+    _write_json(
+        health / "storage_quota_guard_latest.json",
+        {
+            "overall_status": "blocked",
+            "quota_summary": {"hard_breaches": 1, "soft_breaches": 1, "blocked_families": ["sql_link_shards"]},
+            "lanes": [{"family": "sql_link_shards", "status": "blocked", "over_hard_gb": 2.0, "hard_ratio": 1.01}],
+        },
+    )
+    _write_json(
+        health / "storage_retention_unison_latest.json",
+        {
+            "overall_status": "ready",
+            "continuous_run_contract": {"ready": True, "status": "ready", "storage_controls": {"quota_ready": True}},
+            "integration_contract": {"stateful_sql_compaction_only": True},
+        },
+    )
+
+    payload = src.build_payload(tmp_path, action="status", override_path=tmp_path / "config" / ".env.memory_efficiency_override")
+
+    assert payload["overall_status"] == "needs_work"
+    relief = payload["compressed_memory_relief_contract"]
+    assert relief["managed"] is False
+    assert relief["storage_clear"] is False
+    assert relief["stateful_sql_soft_quota_relief"]["managed"] is False
+
+
+def test_memory_efficiency_control_keeps_unbounded_compressor_pressure_actionable(tmp_path: Path) -> None:
+    health = tmp_path / "governance" / "health"
+    _write_json(
+        health / "resource_guard_latest.json",
+        {
+            "memory_pressure_state": "green",
+            "memory_pressure_kind": "none",
+            "memory_free_pct": 42.0,
+            "swap_used_gb": 0.4,
+            "compressed_store_gb": 34.0,
+            "compressor_gb": 16.5,
+            "pages_throttled": 0,
+        },
+    )
+    _write_json(
+        health / "apple_silicon_profile_latest.json",
+        {"applied_tier": "max_throughput", "env_overrides": {}, "hardware": {"memory_gb": 32.0}},
+    )
+    _write_json(health / "ingestion_storage_control_latest.json", {"severity": "stable", "pressure_index": 0.1})
+
+    payload = src.build_payload(tmp_path, action="status", override_path=tmp_path / "config" / ".env.memory_efficiency_override")
+
+    assert payload["overall_status"] == "needs_work"
+    assert payload["compressed_memory_relief_contract"]["active"] is True
+    assert payload["compressed_memory_relief_contract"]["managed"] is False
+    assert payload["compressed_memory_relief_contract"]["compressor_bounded"] is False
 
 
 def test_memory_efficiency_control_downshifts_for_dual_creative_session(tmp_path: Path) -> None:

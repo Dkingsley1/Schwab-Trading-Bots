@@ -151,3 +151,78 @@ def test_provider_mesh_control_ready_when_all_sources_verified_without_cooldowns
     assert payload["provider_groups"]["verification_mesh"]["depth_status"] == "single_source_verified"
     assert "single_verified=1" in payload["provider_groups"]["verification_mesh"]["summary"]
     assert "cross-verify more sources to raise optional verification depth from ready to A+" in payload["recommended_actions"]
+
+
+def test_provider_mesh_control_keeps_required_mesh_ready_with_optional_soft_debt(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    health = project_root / "governance" / "health"
+    _write_json(
+        health / "collector_contracts_latest.json",
+        {
+            "average_quality_score": 0.81,
+            "required_failure_count": 0,
+            "soft_failure_count": 2,
+            "required_failures": [],
+            "soft_failures": ["sec_edgar_context", "options_flow_context"],
+            "rows": [
+                {
+                    "name": "official_macro_context",
+                    "required": True,
+                    "contract_ok": True,
+                    "payload_present": True,
+                    "payload_size_bytes": 512,
+                    "quality_score": 0.97,
+                },
+                {
+                    "name": "market_micro_context",
+                    "required": True,
+                    "contract_ok": True,
+                    "payload_present": True,
+                    "payload_size_bytes": 256,
+                    "quality_score": 0.91,
+                },
+                {
+                    "name": "sec_edgar_context",
+                    "required": False,
+                    "safe_to_degrade": True,
+                    "contract_ok": False,
+                    "payload_present": True,
+                    "payload_size_bytes": 128,
+                    "quality_score": 0.52,
+                },
+                {
+                    "name": "options_flow_context",
+                    "required": False,
+                    "safe_to_degrade": True,
+                    "contract_ok": False,
+                    "payload_present": True,
+                    "payload_size_bytes": 128,
+                    "quality_score": 0.48,
+                },
+            ],
+        },
+    )
+    _write_json(
+        health / "source_verification_latest.json",
+        {
+            "overall": {
+                "all_verified": False,
+                "all_cross_verified": False,
+                "counts": {
+                    "cross_verified": 2,
+                    "single_source_verified": 2,
+                    "single_source_unverified": 2,
+                },
+            }
+        },
+    )
+    _write_json(health / "fx_twelve_data_guard_latest.json", {})
+
+    payload = src.build_payload(project_root)
+
+    assert payload["overall_status"] == "ready"
+    assert payload["provider_groups"]["required_context"]["status"] == "ready"
+    assert payload["provider_groups"]["optional_context"]["status"] == "advisory"
+    assert payload["provider_groups"]["verification_mesh"]["status"] == "advisory"
+    assert payload["provider_groups"]["quota_limited_providers"]["status"] == "advisory"
+    assert "optional_context_soft_failures" in payload["advisories"]

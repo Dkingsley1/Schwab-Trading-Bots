@@ -17,6 +17,7 @@ DEFAULT_REGISTRY = PROJECT_ROOT / "master_bot_registry.json"
 OVERLAY_RAW_LIVE_MAX_CORE_LINES = 10_000
 OVERLAY_RAW_LIVE_MAX_TOTAL_LINES = 15_000
 OVERLAY_RAW_LIVE_MAX_AGE_SECONDS = 15 * 60
+STATEFUL_SQL_SOFT_QUOTA_MAX_HARD_RATIO = 0.92
 
 DRAIN_FRIENDLY_SQL_OVERRIDES = {
     "SQL_LINK_SERVICE_INTERVAL_SECONDS": "12",
@@ -25,6 +26,58 @@ DRAIN_FRIENDLY_SQL_OVERRIDES = {
     "SQL_LINK_SERVICE_HOT_BATCH_SIZE": "240000",
     "SQL_LINK_SERVICE_QUEUE_BATCH_SIZE": "180000",
     "SQL_LINK_SERVICE_MERGE_MAX_SECONDS_PER_CYCLE": "25",
+}
+
+COMPRESSED_MEMORY_RELIEF_OVERRIDES = {
+    "BOT_COMPRESSED_MEMORY_RELIEF_ACTIVE": "1",
+    "BOT_MEMORY_REMEDY_MODE": "compressed_memory_relief",
+    "BOT_MEMORY_REMEDY_SELF_APPLY_READY": "1",
+    "DATA_COLLECTION_RESOURCE_CAPTURE_MODE": "sampled",
+    "DATA_COLLECTION_RESOURCE_SAMPLE_RATE": "0.25",
+    "ONE_NUMBERS_REFRESH_INTERVAL_SECONDS": "900",
+    "INGESTION_BACKPRESSURE_REFRESH_INTERVAL_SECONDS": "300",
+    "DATA_SOURCE_DIVERGENCE_REFRESH_INTERVAL_SECONDS": "900",
+    "OPS_WATCHDOG_REFRESH_MAX_AGE_SECONDS": "3600",
+    "COINBASE_SNAPSHOT_MAX_WORKERS": "1",
+    "COINBASE_CACHE_MAX_ENTRIES": "64",
+    "COINBASE_WEBSOCKET_BOOK_DEPTH": "3",
+    "TRADE_BEHAVIOR_BATCH_SIZE": "384",
+    "ASYNC_PIPELINE_WORKERS": "1",
+    "RUNTIME_FEATURE_CACHE_MAX_ENTRIES": "32",
+    "RUNTIME_SLOW_BOT_CACHE_MAX_SYMBOLS": "8",
+    "SCHWAB_NEWS_CACHE_MAX_SYMBOLS": "12",
+    "SCHWAB_OPTIONS_CHAIN_CACHE_MAX_SYMBOLS": "12",
+    "RUNTIME_TRAIN_SAMPLE_STRIDE_FLOOR": "4",
+    "RUNTIME_TRAIN_BATCH_SIZE_CAP": "24",
+    "RUNTIME_TRAIN_MAX_SAMPLES": "4000",
+    "TRAINING_RUNTIME_GOVERNOR_MODE": "micro_canary_only",
+    "TRAINING_RUNTIME_MAX_PARALLEL": "1",
+    "SQL_LINK_SERVICE_INTERVAL_SECONDS": "120",
+    "SQL_LINK_SERVICE_JSON_FILE_SYNC_MIN_INTERVAL_SECONDS": "900",
+    "SQL_LINK_SERVICE_HOT_MIN_INTERVAL_SECONDS": "360",
+    "SQL_LINK_SERVICE_QUEUE_MIN_INTERVAL_SECONDS": "1200",
+    "SQL_LINK_SERVICE_HOT_BATCH_SIZE": "30000",
+    "SQL_LINK_SERVICE_QUEUE_BATCH_SIZE": "20000",
+    "SQL_LINK_SERVICE_PREPROCESS_WORKERS": "1",
+    "BACKLOG_PCORE_PREPROCESS_WORKERS": "1",
+    "SQL_LINK_SERVICE_SHARD_WRITER_LANES": "1",
+    "SQL_LINK_SERVICE_MAX_SHARD_WRITER_LANES": "1",
+    "SQL_LINK_SERVICE_MERGE_MAX_SECONDS_PER_CYCLE": "20",
+    "SQLITE_TEMP_STORE_MODE": "FILE",
+    "SQLITE_CACHE_SIZE_KB": "4096",
+    "SQLITE_MMAP_SIZE_MB": "16",
+    "SQLITE_ANALYZE_ENABLED": "0",
+    "BOT_OPS_SQLITE_TEMP_STORE_MODE": "FILE",
+    "BOT_OPS_SQLITE_CACHE_SIZE_KB": "1024",
+    "BOT_OPS_SQLITE_MMAP_SIZE_MB": "8",
+    "BOT_MLX_OPTIONAL": "1",
+    "MLX_METAL_JIT": "0",
+    "QUANT_MODEL_MLX_COMPILE_ENABLED": "0",
+    "QUANT_MODEL_LAZY_LIBRARY_IMPORTS": "1",
+    "MLX_INTELLIGENCE_MAX_CONCURRENT_JOBS": "1",
+    "MLX_INTELLIGENCE_HEAVY_VLM_ENABLED": "0",
+    "MLX_INTELLIGENCE_CACHE_POLICY": "reuse_model_weights_avoid_duplicate_loads",
+    "SHADOW_LOOP_RUNTIME_PAUSE_SLEEP_SECONDS": "90",
 }
 
 CONCENTRATED_DRAIN_SQL_OVERRIDES = {
@@ -868,10 +921,156 @@ def _memory_pressure_clear(resource_guard: dict[str, Any]) -> bool:
     return state in {"", "green", "normal", "ok", "none"} and kind in {"", "none", "green", "normal", "ok"} and swap_used_gb < 8.0
 
 
-def _storage_pressure_clear(ingestion_storage: dict[str, Any]) -> bool:
+def _raw_live_backlog_clear_contract(ingestion_storage: dict[str, Any]) -> dict[str, Any]:
+    backpressure = ingestion_storage.get("backpressure") if isinstance(ingestion_storage.get("backpressure"), dict) else {}
+    raw_live, raw_source = _overlay_raw_live_candidate(backpressure)
+    if not raw_live:
+        raw_live = backpressure
+        raw_source = "backpressure"
+    raw_core = _safe_int(raw_live.get("core_pending_lines"), 0)
+    raw_total = _safe_int(raw_live.get("total_pending_lines"), raw_core)
+    raw_oldest = _safe_float(raw_live.get("oldest_pending_age_seconds"), 0.0)
+    clear = bool(
+        raw_core <= OVERLAY_RAW_LIVE_MAX_CORE_LINES
+        and raw_total <= OVERLAY_RAW_LIVE_MAX_TOTAL_LINES
+        and raw_oldest <= OVERLAY_RAW_LIVE_MAX_AGE_SECONDS
+    )
+    return {
+        "clear": clear,
+        "source": raw_source,
+        "core_pending_lines": raw_core,
+        "total_pending_lines": raw_total,
+        "oldest_pending_age_seconds": round(raw_oldest, 3),
+        "max_core_pending_lines": OVERLAY_RAW_LIVE_MAX_CORE_LINES,
+        "max_total_pending_lines": OVERLAY_RAW_LIVE_MAX_TOTAL_LINES,
+        "max_oldest_pending_age_seconds": OVERLAY_RAW_LIVE_MAX_AGE_SECONDS,
+    }
+
+
+def _managed_stateful_sql_soft_quota_contract(
+    project_root: Path | None,
+    ingestion_storage: dict[str, Any],
+) -> dict[str, Any]:
+    contract: dict[str, Any] = {
+        "active": False,
+        "managed": False,
+        "status": "inactive",
+        "policy": (
+            "only a single sql_link_shards soft-quota breach can be managed during paper soak; "
+            "hard quota breaches, multiple families, hot raw backlog, or missing storage forecast remain actionable"
+        ),
+    }
+    if project_root is None:
+        return contract
+    health_root = Path(project_root) / "governance" / "health"
+    quota_payload = _load_json(health_root / "storage_quota_guard_latest.json")
+    unison_payload = _load_json(health_root / "storage_retention_unison_latest.json")
+    growth_payload = _load_json(health_root / "storage_growth_forecast_latest.json")
+    tier_payload = _load_json(health_root / "storage_tier_policy_latest.json")
+    quota_summary = quota_payload.get("quota_summary") if isinstance(quota_payload.get("quota_summary"), dict) else {}
+    lanes = quota_payload.get("lanes") if isinstance(quota_payload.get("lanes"), list) else []
+    hard_breaches = _safe_int(quota_summary.get("hard_breaches"), 0)
+    soft_breaches = _safe_int(quota_summary.get("soft_breaches"), 0)
+    blocked_families = {
+        str(item or "").strip()
+        for item in (quota_summary.get("blocked_families") if isinstance(quota_summary.get("blocked_families"), list) else [])
+        if str(item or "").strip()
+    }
+    degraded_families = {
+        str(item or "").strip()
+        for item in (quota_summary.get("degraded_families") if isinstance(quota_summary.get("degraded_families"), list) else [])
+        if str(item or "").strip()
+    }
+    sql_lane: dict[str, Any] = {}
+    for row in lanes:
+        if isinstance(row, dict) and str(row.get("family") or "") == "sql_link_shards":
+            sql_lane = row
+            break
+    if not degraded_families:
+        degraded_families = {
+            str(row.get("family") or "")
+            for row in lanes
+            if isinstance(row, dict) and str(row.get("status") or "") in {"degraded", "blocked"}
+        }
+        degraded_families.discard("")
+    over_hard_gb = _safe_float(sql_lane.get("over_hard_gb"), 0.0)
+    hard_ratio = _safe_float(sql_lane.get("hard_ratio"), 0.0)
+    continuous = unison_payload.get("continuous_run_contract") if isinstance(unison_payload.get("continuous_run_contract"), dict) else {}
+    storage_controls = continuous.get("storage_controls") if isinstance(continuous.get("storage_controls"), dict) else {}
+    forecast = (
+        unison_payload.get("storage_growth_forecast")
+        if isinstance(unison_payload.get("storage_growth_forecast"), dict)
+        else growth_payload
+    )
+    forecast_status = str(forecast.get("status") or "").strip()
+    days_until_pressure = forecast.get("days_until_pressure_free")
+    forecast_ready = bool(
+        forecast_status in {"stable_or_improving", "forecast_ready", "ready"}
+        and (days_until_pressure is None or _safe_float(days_until_pressure, 0.0) >= 30.0)
+    )
+    continuous_ready = bool(continuous.get("ready", False) or continuous.get("status") == "ready" or forecast_ready)
+    quota_ready = bool(storage_controls.get("quota_ready", False)) or (
+        hard_breaches == 0 and not bool(quota_summary.get("external_free_below_target", False))
+    )
+    integration = unison_payload.get("integration_contract") if isinstance(unison_payload.get("integration_contract"), dict) else {}
+    manifest_contract = (
+        tier_payload.get("manifest_backed_offload_contract")
+        if isinstance(tier_payload.get("manifest_backed_offload_contract"), dict)
+        else {}
+    )
+    stateful_policy = str(manifest_contract.get("stateful_sql_policy") or "").lower()
+    stateful_sql_compaction_only = bool(integration.get("stateful_sql_compaction_only", False)) or (
+        "never source-delete" in stateful_policy and "checkpoint" in stateful_policy
+    )
+    raw_live = _raw_live_backlog_clear_contract(ingestion_storage)
+    severity = str(ingestion_storage.get("severity") or "").strip().lower()
+    storage_status = str(ingestion_storage.get("overall_status") or "").strip().lower()
+    storage_stable = bool(
+        severity in {"", "ready", "stable", "low", "normal"}
+        and storage_status in {"", "ready", "ok", "advisory"}
+    )
+    managed = bool(
+        str(quota_payload.get("overall_status") or "") in {"degraded", "ready"}
+        and hard_breaches == 0
+        and soft_breaches <= 1
+        and not blocked_families
+        and degraded_families.issubset({"sql_link_shards"})
+        and bool(sql_lane)
+        and over_hard_gb <= 0.0
+        and hard_ratio <= STATEFUL_SQL_SOFT_QUOTA_MAX_HARD_RATIO
+        and continuous_ready
+        and quota_ready
+        and stateful_sql_compaction_only
+        and storage_stable
+        and bool(raw_live.get("clear", False))
+    )
+    return {
+        **contract,
+        "active": bool(quota_payload),
+        "managed": managed,
+        "status": "managed" if managed else "action_required" if quota_payload else "inactive",
+        "hard_breaches": hard_breaches,
+        "soft_breaches": soft_breaches,
+        "blocked_families": sorted(blocked_families),
+        "degraded_families": sorted(degraded_families),
+        "sql_link_hard_ratio": round(hard_ratio, 3),
+        "sql_link_over_hard_gb": round(over_hard_gb, 3),
+        "max_managed_hard_ratio": STATEFUL_SQL_SOFT_QUOTA_MAX_HARD_RATIO,
+        "continuous_run_ready": continuous_ready,
+        "quota_ready": quota_ready,
+        "stateful_sql_compaction_only": stateful_sql_compaction_only,
+        "storage_stable": storage_stable,
+        "raw_live_backlog": raw_live,
+    }
+
+
+def _storage_pressure_clear(ingestion_storage: dict[str, Any], *, project_root: Path | None = None) -> bool:
     severity = str(ingestion_storage.get("severity") or "").strip().lower()
     pressure_index = _safe_float(ingestion_storage.get("pressure_index"), 0.0)
-    return severity in {"", "ready", "stable", "low"} and pressure_index <= 0.50
+    direct_clear = severity in {"", "ready", "stable", "low"} and pressure_index <= 0.50
+    if direct_clear:
+        return True
+    return bool(_managed_stateful_sql_soft_quota_contract(project_root, ingestion_storage).get("managed", False))
 
 
 def _cotenant_awareness(
@@ -884,13 +1083,14 @@ def _cotenant_awareness(
     ingestion_storage: dict[str, Any],
     creative_session: dict[str, Any],
     co_running_session: dict[str, Any],
+    project_root: Path | None = None,
 ) -> dict[str, Any]:
     co_level = str(co_running_session.get("level") or "none").strip().lower()
     creative_level = str(creative_session.get("level") or "none").strip().lower()
     co_active = bool(co_running_session.get("active", False)) or co_level not in {"", "none"}
     creative_active = bool(creative_session.get("active", False)) or creative_level not in {"", "none"}
     memory_clear = _memory_pressure_clear(resource_guard)
-    storage_clear = _storage_pressure_clear(ingestion_storage)
+    storage_clear = _storage_pressure_clear(ingestion_storage, project_root=project_root)
     soft_cotenant_only = bool(reasons) and all(
         reason in {"co_running_light_competition", "co_running_interactive"}
         for reason in reasons
@@ -1055,6 +1255,73 @@ def _memory_truth_reconciliation(resource_guard: dict[str, Any], swap_pressure_p
         "swap_pressure_tier": swap_tier,
         "reason": "stale_allocation_high_water_reconciled" if stale_swap_relief or stale_compression_relief else "not_applicable",
         "policy": "fresh green swap-pressure evidence can relax stale resource_guard high-water swap/compression while preserving raw telemetry",
+    }
+
+
+def _compressed_memory_relief_contract(
+    *,
+    resource_guard: dict[str, Any],
+    raw_resource_guard: dict[str, Any],
+    ingestion_storage: dict[str, Any],
+    reasons: list[str],
+    recommended_profile: str,
+    override_path: Path,
+    project_root: Path | None = None,
+) -> dict[str, Any]:
+    compression_reasons = [
+        str(reason)
+        for reason in reasons
+        if str(reason).strip() in {"compressed_memory_high", "compressed_memory_critical"}
+    ]
+    raw_compressed_store_gb = _safe_float(raw_resource_guard.get("compressed_store_gb"), 0.0)
+    effective_compressed_store_gb = _safe_float(resource_guard.get("compressed_store_gb"), raw_compressed_store_gb)
+    compressor_gb = _safe_float(resource_guard.get("compressor_gb"), _safe_float(raw_resource_guard.get("compressor_gb"), 0.0))
+    swap_used_gb = _safe_float(resource_guard.get("swap_used_gb"), 0.0)
+    pages_throttled = _safe_float(resource_guard.get("pages_throttled"), _safe_float(raw_resource_guard.get("pages_throttled"), 0.0))
+    pressure_clear = bool(_memory_pressure_clear(resource_guard) and pages_throttled <= 0.0 and swap_used_gb < 3.0)
+    stateful_sql_soft_quota_relief = _managed_stateful_sql_soft_quota_contract(project_root, ingestion_storage)
+    storage_clear = _storage_pressure_clear(ingestion_storage, project_root=project_root)
+    compressor_bounded = compressor_gb < 14.0
+    managed = bool(compression_reasons and pressure_clear and storage_clear and compressor_bounded)
+    severity = "critical" if "compressed_memory_critical" in compression_reasons else "high" if compression_reasons else "none"
+    return {
+        "active": bool(compression_reasons),
+        "managed": managed,
+        "status": "managed" if managed else "action_required" if compression_reasons else "inactive",
+        "severity": severity,
+        "raw_compressed_store_gb": round(raw_compressed_store_gb, 3),
+        "effective_compressed_store_gb": round(effective_compressed_store_gb, 3),
+        "compressor_gb": round(compressor_gb, 3),
+        "swap_used_gb": round(swap_used_gb, 3),
+        "pages_throttled": round(pages_throttled, 3),
+        "pressure_clear": pressure_clear,
+        "storage_clear": storage_clear,
+        "stateful_sql_soft_quota_relief": stateful_sql_soft_quota_relief,
+        "compressor_bounded": compressor_bounded,
+        "recommended_profile": recommended_profile,
+        "override_path": str(override_path),
+        "override_exists": bool(override_path.exists()),
+        "auto_apply_ready": bool(compression_reasons),
+        "live_execution_authority": False,
+        "apply_surfaces": [
+            "runtime_env_resource_override",
+            "broker_snapshot_worker_caps",
+            "feature_cache_caps",
+            "sqlite_file_backed_temp_store",
+            "sql_writer_single_lane_cooling",
+            "collector_sampling",
+            "mlx_heavy_job_caps",
+            "training_micro_canary_cap",
+        ],
+        "self_remediation_commands": [
+            ["./scripts/ops/opsctl.sh", "memory-efficiency", "apply", "--json"],
+            ["./scripts/ops/opsctl.sh", "memory-pressure-intelligence", "--apply", "--json"],
+            ["./scripts/ops/opsctl.sh", "runtime-throttle", "--apply", "--json"],
+        ],
+        "policy": (
+            "compressed memory is managed by shrinking bot-owned caches, SQL fanout, collectors, training, and MLX work; "
+            "macOS page compression is not force-purged while pressure is green"
+        ),
     }
 
 
@@ -1304,6 +1571,15 @@ def _drain_friendly_sql_overrides(coordination: dict[str, Any]) -> dict[str, str
     return dict(DRAIN_FRIENDLY_SQL_OVERRIDES)
 
 
+def _disable_sqlite_mmap_env(env_overrides: dict[str, str]) -> dict[str, str]:
+    env = dict(env_overrides)
+    env["SQLITE_MMAP_SIZE_MB"] = "0"
+    env["BOT_OPS_SQLITE_MMAP_SIZE_MB"] = "0"
+    env["SQLITE_ALLOW_MMAP"] = "0"
+    env["BOT_OPS_SQLITE_ALLOW_MMAP"] = "0"
+    return env
+
+
 def _recommended_profile(
     base_tier: str,
     resource_guard: dict[str, Any],
@@ -1507,8 +1783,23 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, action: str, override_pa
         ingestion_storage=ingestion_storage,
         creative_session=creative_session,
         co_running_session=co_running_session,
+        project_root=project_root,
     )
     overall_status = str(cotenant_awareness.get("overall_status") or overall_status)
+    compressed_memory_relief = _compressed_memory_relief_contract(
+        resource_guard=resource_guard,
+        raw_resource_guard=raw_resource_guard,
+        ingestion_storage=ingestion_storage,
+        reasons=reasons,
+        recommended_profile=recommended_profile,
+        override_path=override_path,
+        project_root=project_root,
+    )
+    non_compression_reasons = [
+        reason for reason in reasons if reason not in {"compressed_memory_high", "compressed_memory_critical"}
+    ]
+    if bool(compressed_memory_relief.get("managed", False)) and overall_status == "needs_work" and not non_compression_reasons:
+        overall_status = "advisory"
     recommended_env = {
         **base_env,
         **FALLBACK_PRESETS.get(recommended_profile, {}),
@@ -1522,6 +1813,9 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, action: str, override_pa
     sql_writer_coordination = _sql_writer_coordination(backpressure_fleet, ingestion_storage)
     if drain_friendly_sql_active:
         recommended_env.update(_drain_friendly_sql_overrides(sql_writer_coordination))
+    if bool(compressed_memory_relief.get("managed", False)):
+        recommended_env.update(COMPRESSED_MEMORY_RELIEF_OVERRIDES)
+    recommended_env = _disable_sqlite_mmap_env(recommended_env)
     hardware = apple_profile.get("hardware") if isinstance(apple_profile.get("hardware"), dict) else {}
     unified_memory = apple_profile.get("unified_memory_telemetry") if isinstance(apple_profile.get("unified_memory_telemetry"), dict) else {}
     memory_gb = _safe_float(hardware.get("memory_gb"), 0.0)
@@ -1575,17 +1869,20 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, action: str, override_pa
             "compressor_gb": _safe_float(raw_resource_guard.get("compressor_gb"), 0.0),
         },
         "memory_truth_reconciliation": memory_truth,
+        "compressed_memory_relief_contract": compressed_memory_relief,
         "storage_snapshot": {
             "severity": str(ingestion_storage.get("severity") or ""),
             "pressure_index": _safe_float(ingestion_storage.get("pressure_index"), 0.0),
             "estimated_core_drain_minutes": ((ingestion_storage.get("backpressure") or {}).get("estimated_core_drain_minutes") if isinstance(ingestion_storage.get("backpressure"), dict) else None),
             "drain_friendly_sql_active": drain_friendly_sql_active,
             "bounded_overlay_relief": _bounded_overlay_storage_relief(ingestion_storage),
+            "stateful_sql_soft_quota_relief": _managed_stateful_sql_soft_quota_contract(project_root, ingestion_storage),
             "sql_writer_coordination": sql_writer_coordination,
             "backlog_drain_status": str(((ingestion_storage.get("storage") or {}).get("backlog_drain_status")) if isinstance(ingestion_storage.get("storage"), dict) else ""),
             "recommended_operating_mode": str(ingestion_storage.get("recommended_operating_mode") or ""),
         },
         "recommended_env_overrides": recommended_env,
+        "compressed_memory_relief_overrides": COMPRESSED_MEMORY_RELIEF_OVERRIDES if bool(compressed_memory_relief.get("managed", False)) else {},
         "quant_model_caps": QUANT_MODEL_CAPS_BY_PROFILE.get(recommended_profile, {}),
         "expansion_pressure_overrides": expansion_overlay,
         "recommendations": [

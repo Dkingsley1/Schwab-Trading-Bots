@@ -153,6 +153,41 @@ def _acquire_singleton_lock(lock_path: Path):
     return fh, ""
 
 
+def _read_payload(path: Path) -> dict[str, object]:
+    try:
+        decoded = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    return decoded if isinstance(decoded, dict) else {}
+
+
+def _lock_busy_payload(lock_path: Path, lock_owner: str, previous_path: Path) -> dict[str, object]:
+    observed_at = datetime.now(timezone.utc).isoformat()
+    base = {
+        "timestamp_utc": observed_at,
+        "ok": True,
+        "busy": True,
+        "lock_path": str(lock_path),
+        "lock_owner": lock_owner,
+        "skipped_reason": "lock_busy",
+    }
+    previous = _read_payload(previous_path)
+    if not previous or bool(previous.get("busy", False)):
+        return base
+
+    preserved = dict(previous)
+    preserved["timestamp_utc"] = observed_at
+    preserved["last_completed_timestamp_utc"] = str(previous.get("timestamp_utc") or "")
+    preserved["refresh_deferred"] = {
+        "busy": True,
+        "lock_path": str(lock_path),
+        "lock_owner": lock_owner,
+        "observed_at_utc": observed_at,
+        "skipped_reason": "lock_busy_preserved_last_completed_route",
+    }
+    return preserved
+
+
 def _maybe_autoprune_external_low_space(project_root: Path, external_root: Path) -> dict[str, object]:
     payload: dict[str, object] = {
         "enabled": _env_flag("BOT_LOGS_LOW_SPACE_AUTOPRUNE_ENABLED", "1"),
@@ -640,21 +675,22 @@ def main() -> int:
     out.parent.mkdir(parents=True, exist_ok=True)
 
     if lock_fh is None:
-        payload = {
-            'timestamp_utc': datetime.now(timezone.utc).isoformat(),
-            'ok': True,
-            'busy': True,
-            'lock_path': str(lock_path),
-            'lock_owner': lock_owner,
-            'skipped_reason': 'lock_busy',
-        }
+        payload = _lock_busy_payload(lock_path, lock_owner, out)
         encoded = json.dumps(payload, ensure_ascii=True, indent=2)
         out.write_text(encoded, encoding='utf-8')
         compat.write_text(encoded, encoding='utf-8')
         if args.json:
             print(json.dumps(payload, ensure_ascii=True))
         else:
-            print(f"[StorageRoute] busy lock_path={lock_path} owner={lock_owner}")
+            refresh_deferred = (
+                payload.get("refresh_deferred")
+                if isinstance(payload.get("refresh_deferred"), dict)
+                else {}
+            )
+            if bool(refresh_deferred.get("busy", False)):
+                print(f"[StorageRoute] busy preserved_previous_route lock_path={lock_path} owner={lock_owner}")
+            else:
+                print(f"[StorageRoute] busy lock_path={lock_path} owner={lock_owner}")
         return 0
 
     external_root = _external_project_root()

@@ -62,6 +62,36 @@ def test_mlx_intelligence_router_maps_every_mlx_library_to_a_lane(tmp_path: Path
     assert payload["recommended_runtime_env"]["MLX_INTELLIGENCE_HYSTERESIS_ENABLED"] == "1"
 
 
+def test_mlx_intelligence_router_counts_runtime_ahead_packages_as_available(tmp_path: Path) -> None:
+    health = tmp_path / "governance" / "health"
+    rows = _package_rows()
+    rows[0]["status"] = "runtime_ahead_of_lock"
+    rows[0]["locked_version"] = "0.31.1"
+    rows[0]["installed_version"] = "0.31.2"
+    _write_json(
+        health / "mlx_runtime_audit_latest.json",
+        {
+            "ok": True,
+            "package_rows": rows,
+            "runtime": {
+                "compile_available": True,
+                "compile_smoke_ok": True,
+                "metal_available": True,
+            },
+        },
+    )
+    _write_json(health / "mlx_library_upgrade_latest.json", {"ok": True})
+    _write_json(health / "memory_efficiency_control_latest.json", {"overall_status": "ready", "memory_snapshot": {"memory_pressure_state": "green"}})
+    _write_json(health / "runtime_throttle_control_latest.json", {"overall_status": "ready", "throttle_profile": "observe", "memory_pressure_level": "normal"})
+
+    payload = src.build_payload(tmp_path)
+
+    assert payload["overall_status"] == "ready"
+    assert payload["library_coverage"]["missing_count"] == 0
+    assert payload["library_coverage"]["coverage_ratio"] == 1.0
+    assert payload["route_coverage"]["blocked_lane_count"] == 0
+
+
 def test_mlx_intelligence_router_scales_up_on_deep_green_unified_memory(tmp_path: Path) -> None:
     health = tmp_path / "governance" / "health"
     _write_json(

@@ -1,26 +1,26 @@
 # Deeper Intelligence Layers
 
-- Updated UTC: `2026-05-29T13:01:42.645068+00:00`
+- Updated UTC: `2026-07-27T15:16:09.771584+00:00`
 - Status: `advisory`
 - Layers: `10`
-- Ready/Advisory/Degraded/Blocked: `6/4/0/0`
+- Ready/Advisory/Degraded/Blocked: `8/2/0/0`
 
 ## Operator Dialogue Packet
 
-- Summary: 10 deeper intelligence layers are installed; 0 blocked, 0 degraded, 4 advisory.
-- Safe Next Command: `./scripts/ops/opsctl.sh pressure-relief --apply --json`
+- Summary: 10 deeper intelligence layers are installed; 0 blocked, 0 degraded, 2 advisory.
+- Safe Next Command: `./scripts/ops/opsctl.sh deeper-intelligence-layers --apply --json`
 
 ## Layer Status
 
 | Layer | Status | Score | Decision |
 | --- | --- | ---: | --- |
-| `causal_world_model` | `advisory` | `94` | rank_root_causes_before_restart_retrain_or_expansion |
-| `belief_ledger_confidence` | `advisory` | `80` | require_confidence_floor_and_freshness_age_on_all_promotions |
+| `causal_world_model` | `advisory` | `80` | rank_root_causes_before_restart_retrain_or_expansion |
+| `belief_ledger_confidence` | `advisory` | `84` | require_confidence_floor_and_freshness_age_on_all_promotions |
 | `digital_twin_replay` | `ready` | `90` | simulate_upgrade_and_policy_changes_against_shadow_replay_before_promotion |
-| `adversarial_market_infra_simulator` | `advisory` | `80` | stress_bad_ticks_broker_lag_queue_refill_storage_route_failure_and_fanout_spikes |
+| `adversarial_market_infra_simulator` | `ready` | `92` | stress_bad_ticks_broker_lag_queue_refill_storage_route_failure_and_fanout_spikes |
 | `self_scientific_method` | `ready` | `91` | every_upgrade_needs_hypothesis_evidence_window_success_metric_and_rollback_rule |
-| `resource_economist` | `advisory` | `70` | allocate_budget_by_value_pressure_and_safety_before_new_training_or_paper_slots |
-| `promotion_court` | `ready` | `95` | keep_new_or_low_confidence_bots_collect_only_until_evidence_packet_passes |
+| `resource_economist` | `ready` | `94` | allocate_budget_by_value_pressure_and_safety_before_new_training_or_paper_slots |
+| `promotion_court` | `ready` | `83` | keep_new_or_low_confidence_bots_collect_only_until_evidence_packet_passes |
 | `living_ontology_memory_graph` | `ready` | `94` | keep_bot_sleeve_launcher_report_command_dependency_graph_current |
 | `operator_dialogue` | `ready` | `93` | write_operator_brief_approval_queue_and_degradation_explainer |
 | `constitutional_risk` | `ready` | `100` | hard_invariants_override_all_model_and_bot_recommendations |
@@ -36,7 +36,6 @@
 
 ## Next Actions
 
-- `resource_pressure_active`: `./scripts/ops/opsctl.sh pressure-relief --apply --json`
 - `refresh_deeper_layer_packet`: `./scripts/ops/opsctl.sh deeper-intelligence-layers --apply --json`
 
 ## Layer Details
@@ -47,7 +46,7 @@ Explain why market, broker, storage, auth, memory, backlog, launcher, and sleeve
 
 - Authority: `advisory_only`
 - Outputs: `root_cause_graph, causal_blocker_rank, intervention_order`
-- Blockers: `storage_backpressure_primary`
+- Blockers: `none`
 
 ### Belief Ledger And Confidence Layer
 
@@ -71,7 +70,7 @@ Stress market assumptions and infrastructure assumptions against bad ticks, queu
 
 - Authority: `advisory_only`
 - Outputs: `stress_scenarios, survival_score, fragility_watchlist`
-- Blockers: `host_pressure_scenario_active`
+- Blockers: `none`
 
 ### Self Scientific Method Layer
 
@@ -87,7 +86,7 @@ Allocate CPU, memory, disk, SQLite writes, training slots, paper slots, and oper
 
 - Authority: `advisory_only`
 - Outputs: `resource_budget_curve, earned_budget, downgrade_or_parking_queue`
-- Blockers: `resource_budget_protective_mode`
+- Blockers: `none`
 
 ### Promotion Court Layer
 

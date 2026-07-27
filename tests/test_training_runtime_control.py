@@ -643,6 +643,151 @@ def test_training_runtime_control_allows_two_bot_small_canary_when_governor_reop
     assert "brain_refinery_v10_seasonal,brain_refinery_v50_investment_drawdown_risk" in contract["recommended_retrain_command"]
 
 
+def test_training_runtime_control_demotes_recent_small_canary_timeout_to_micro(monkeypatch, tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    health = project_root / "governance" / "health"
+    walk = project_root / "governance" / "walk_forward"
+    _write_json(health / "runtime_training_snapshot_latest.json", {"timestamp_utc": _fresh_ts(), "row_count": 100, "sequence_count": 12})
+    _write_json(health / "training_quality_control_latest.json", {"overall_status": "needs_attention", "training_quality_score": 79.0, "top_priorities": ["lane_specific_training"]})
+    _write_json(health / "retrain_scorecard_latest.json", {"retry_pack": {"command": []}})
+    _write_json(health / "training_success_latest.json", {"confirmed_training_success": True, "failure_details": []})
+    _write_json(health / "resource_guard_latest.json", {"resource_guard_ok": True, "memory_pressure_state": "green"})
+    _write_json(health / "health_gates_latest.json", {"recommended_operating_mode": "normal", "inputs": {"backpressure_overload_severe": False}})
+    _write_json(
+        health / "memory_pressure_intelligence_latest.json",
+        {
+            "overall_status": "advisory",
+            "classification": {"status": "soft_guard", "decision": "cooldown_probe_only", "recommended_p_core_worker_cap": 4},
+            "multitasking_headroom": {"active": False, "level": "background_available", "open_apps": [], "training_allowed_by_multitasking": True},
+            "reopen_gate": {
+                "safe_for_training": False,
+                "small_canary_training_safe": True,
+                "small_batch_training_safe": True,
+                "training_batch_cap": 2,
+            },
+        },
+    )
+    _write_json(
+        health / "autonomic_resource_governor_latest.json",
+        {
+            "budgets": {
+                "training": {
+                    "allowed": True,
+                    "profile": "coverage_small_canary",
+                    "reentry_gate": {"max_parallel_trainings": 2},
+                }
+            }
+        },
+    )
+    _write_json(
+        health / "training_drain_autopilot_latest.json",
+        {
+            "timestamp_utc": _fresh_ts(),
+            "overall_status": "launched_training",
+            "last_launch_attempted": True,
+            "last_launch_result": {"returncode": 124, "timed_out": True},
+            "last_training_gate": {
+                "launch_allowed": True,
+                "recommended_batch_size": 2,
+                "recommended_command": [
+                    str(project_root / "scripts" / "ops" / "opsctl.sh"),
+                    "retrain-force-targeted",
+                    "--include-bot-ids",
+                    "brain_refinery_v10_seasonal,brain_refinery_v50_investment_drawdown_risk",
+                    "--retrain-profile",
+                    "coverage_small_canary",
+                    "--skip-master-update",
+                ],
+            },
+        },
+    )
+    _write_json(
+        walk / "coverage_seed_latest.json",
+        {
+            "coverage_shortfall_bots": 3,
+            "seed_queue": [
+                {"bot_id": "brain_refinery_v10_seasonal", "current_runs": 14, "runs_remaining": 0, "priority": 40.0},
+                {"bot_id": "brain_refinery_v50_investment_drawdown_risk", "current_runs": 16, "runs_remaining": 0, "priority": 39.0},
+                {"bot_id": "brain_refinery_v59_risk_sentinel", "current_runs": 9, "runs_remaining": 3, "priority": 38.0},
+            ],
+        },
+    )
+
+    runtime_python = project_root / ".venv312" / "bin" / "python"
+    runtime_python.parent.mkdir(parents=True, exist_ok=True)
+    runtime_python.write_text("", encoding="utf-8")
+    monkeypatch.setattr(src, "resolve_runtime_python", lambda _root: runtime_python)
+
+    class _Proc:
+        def __init__(self) -> None:
+            self.returncode = 0
+            self.stdout = json.dumps(
+                {
+                    "python": "3.12.12",
+                    "platform": "macOS",
+                    "modules": {"mlx": True, "torch": True, "onnxruntime": False, "tensorflow": False, "jax": False},
+                }
+            )
+            self.stderr = ""
+
+    monkeypatch.setattr(src.subprocess, "run", lambda *args, **kwargs: _Proc())
+
+    payload = src.build_payload(project_root)
+
+    contract = payload["training_launch_contract"]
+    assert contract["launch_allowed"] is True
+    assert contract["recommended_batch_size"] == 1
+    assert contract["recommended_retrain_profile"] == "coverage_micro_canary"
+    assert contract["timeout_fallback"]["applied"] is True
+    assert contract["timeout_fallback"]["original_recommended_batch_size"] == 2
+    assert contract["recommended_retrain_command"][-3:] == ["--retrain-profile", "coverage_micro_canary", "--skip-master-update"]
+    assert "brain_refinery_v10_seasonal" in contract["recommended_retrain_command"]
+    assert "brain_refinery_v50_investment_drawdown_risk" not in contract["recommended_retrain_command"]
+    assert "one-bot coverage_micro_canary" in " ".join(payload["recommended_actions"])
+
+
+def test_training_runtime_control_treats_recent_micro_canary_timeout_as_hold_signal() -> None:
+    result = src._recent_small_canary_timeout(
+        {
+            "timestamp_utc": _fresh_ts(),
+            "last_launch_result": {"returncode": 124, "timed_out": True},
+            "last_training_gate": {
+                "recommended_command": [
+                    "opsctl.sh",
+                    "retrain-force-targeted",
+                    "--include-bot-ids",
+                    "brain_refinery_v10_seasonal",
+                    "--retrain-profile",
+                    "coverage_micro_canary",
+                    "--skip-master-update",
+                ],
+            },
+        }
+    )
+
+    assert result["active"] is True
+    assert result["profile"] == "coverage_micro_canary"
+    assert result["bot_ids"] == ["brain_refinery_v10_seasonal"]
+
+
+def test_training_runtime_control_uses_retrain_launch_timeout_as_hold_signal() -> None:
+    result = src._recent_retrain_launch_timeout(
+        {
+            "ended_utc": _fresh_ts(),
+            "final_status": "timed_out_by_training_drain_autopilot",
+            "exit_code": 124,
+            "retrain_profile": "coverage_micro_canary",
+            "selector_summary": {"include_bot_ids": ["brain_refinery_v10_seasonal"]},
+            "timeout_phase": "memory_gate",
+            "timeout_progress": {"bot_id": "brain_refinery_v10_seasonal"},
+        }
+    )
+
+    assert result["active"] is True
+    assert result["source"] == "retrain_launch_latest"
+    assert result["timeout_phase"] == "memory_gate"
+
+
 def test_training_runtime_control_allows_one_bot_micro_canary_under_bounded_compression_relief(monkeypatch, tmp_path: Path) -> None:
     project_root = tmp_path / "project"
     health = project_root / "governance" / "health"
@@ -1300,6 +1445,10 @@ def test_training_runtime_control_allows_guarded_recovery_batch_when_quality_is_
     assert "training_quality_blocked" not in contract["launch_blockers"]
     assert contract["recommended_batch_size"] == 20
     assert "skip-master-update" in " ".join(contract["recommended_retrain_command"])
+    assert payload["overall_status"] == "ready"
+    assert payload["ok"] is True
+    assert payload["launch_allowed"] is True
+    assert payload["recommended_batch_size"] == 20
 
 
 def test_training_runtime_control_launches_weekend_soft_guard_recovery_batch(monkeypatch, tmp_path: Path) -> None:

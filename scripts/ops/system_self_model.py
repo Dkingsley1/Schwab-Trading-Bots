@@ -25,21 +25,60 @@ FALLBACK_ROOT_NAMES = {"data", "exports", "governance", "logs"}
 
 STATUS_ORDER = {
     "missing": 0,
+    "ok": 1,
     "ready": 1,
     "idle": 1,
     "applied": 1,
     "baseline": 1,
     "steady_state": 1,
+    "watch": 2,
     "advisory": 2,
     "thin": 2,
     "applied_with_followups": 2,
     "waiting_for_writer": 2,
+    "handoff_requested": 2,
     "needs_work": 3,
     "degraded": 4,
     "stalled": 4,
     "apply_failed": 4,
     "blocked": 5,
     "critical": 6,
+}
+GUARDED_PAPER_MANAGED_SURFACES = {
+    "whole_system_intelligence": "whole_system_self_model_feedback_debt_managed_by_runtime_dashboard",
+    "system_signal_bus": "signal_bus_self_model_feedback_debt_managed_by_runtime_dashboard",
+    "data_plane_recovery": "data_plane_coverage_stage_deferred_while_guarded_paper_soak_is_green",
+    "master_infra": "self_auditing_infra_debt_deferred_while_hot_path_is_green",
+    "training_quality": "training_quality_recovery_deferred_while_paper_execution_is_clean",
+    "bot_quality": "bot_quality_retrain_queue_deferred_while_training_budget_is_closed",
+}
+GUARDED_PAPER_OPTIONAL_SURFACES = {
+    "codex_operator_bridge": "optional_codex_handoff_surface_not_required_for_unattended_soak",
+    "quant_model_control": "optional_quant_model_expansion_surface_not_required_for_unattended_soak",
+    "capital_growth_intelligence": "optional_live_money_growth_surface_not_required_for_guarded_paper_soak",
+    "capital_growth_awareness": "optional_live_money_growth_surface_not_required_for_guarded_paper_soak",
+    "capital_rotation_control": "optional_live_money_rotation_surface_not_required_for_guarded_paper_soak",
+}
+GUARDED_PAPER_READY_STATUSES = {"ok", "ready", "armed", "guarded_ready"}
+GUARDED_PAPER_SOFTENABLE_STATUSES = {"blocked", "degraded", "needs_work", "missing"}
+GUARDED_PAPER_DATA_PLANE_STATES = {
+    "managed_coverage_stage_deferred",
+    "recovering_under_guard",
+    "awaiting_coverage_cycles",
+    "ready",
+}
+GUARDED_PAPER_MASTER_INFRA_DEBTS = {
+    "governance_artifact_freshness",
+    "operator_cockpit_readiness",
+    "self_auditing_infra_bots",
+}
+GUARDED_PAPER_OPTIONAL_STALE_SURFACES = {
+    "backpressure_super_drainer",
+    "backpressure_super_drainer_memory",
+    "mlx_runtime",
+    "mlx_library",
+    "mlx_intelligence_router",
+    "library_utilization_router",
 }
 
 
@@ -186,10 +225,104 @@ def _status(payload: dict[str, Any], default: str = "missing") -> str:
     else:
         explicit = ""
     if explicit:
+        if explicit.strip().lower().endswith("_ready"):
+            return "ready"
         return explicit
     if "ok" in payload:
         return "ready" if bool(payload.get("ok", False)) else "blocked"
     return default
+
+
+def _guarded_paper_management_context(health_root: Path) -> dict[str, Any]:
+    dashboard = _load_json(health_root / "runtime_gate_dashboard_latest.json")
+    overall = dashboard.get("overall") if isinstance(dashboard.get("overall"), dict) else dashboard
+    if not isinstance(overall, dict):
+        overall = {}
+    context = overall.get("soak_management_context") if isinstance(overall.get("soak_management_context"), dict) else {}
+    dashboard_status = str(overall.get("status") or dashboard.get("overall_status") or dashboard.get("status") or "").strip().lower()
+    health_fast_status = str(context.get("health_fast_status") or "").strip().lower()
+    paper_stage = str(context.get("paper_stage") or "").strip().lower()
+    enabled = bool(
+        overall.get("ok", False)
+        and dashboard_status in {"ok", "ready"}
+        and bool(context.get("soak_ready", False))
+        and bool(context.get("paper_guard_clean", False))
+        and paper_stage in {"armed", "ready", "paper_armed"}
+        and health_fast_status in {"ready", "ok"}
+    )
+    return {
+        "enabled": enabled,
+        "managed_by": "runtime_gate_dashboard",
+        "dashboard_status": dashboard_status,
+        "soak_status": str(context.get("soak_status") or "").strip().lower(),
+        "soak_grade": str(context.get("soak_grade") or ""),
+        "paper_stage": paper_stage,
+        "health_fast_status": health_fast_status,
+        "raw_attention": _ordered_unique(overall.get("raw_attention") if isinstance(overall.get("raw_attention"), list) else []),
+    }
+
+
+def _master_infra_guarded_paper_debt(payload: dict[str, Any]) -> bool:
+    metrics = payload.get("metrics") if isinstance(payload.get("metrics"), dict) else {}
+    if _safe_int(metrics.get("blocked_check_count"), 0) > 0 or _safe_int(metrics.get("hard_failed_attempt_count"), 0) > 0:
+        return False
+    checks = payload.get("checks") if isinstance(payload.get("checks"), list) else []
+    non_ready = {
+        str(row.get("name") or "").strip()
+        for row in checks
+        if isinstance(row, dict) and str(row.get("status") or "").strip().lower() not in GUARDED_PAPER_READY_STATUSES
+    }
+    return bool(non_ready) and non_ready <= GUARDED_PAPER_MASTER_INFRA_DEBTS
+
+
+def _data_plane_guarded_paper_debt(payload: dict[str, Any]) -> bool:
+    state = str(payload.get("runtime_clearance_state") or payload.get("recovery_state") or "").strip().lower()
+    if state in GUARDED_PAPER_DATA_PLANE_STATES:
+        return True
+    blockers = payload.get("blockers") if isinstance(payload.get("blockers"), list) else []
+    return not blockers and str(payload.get("recovery_state") or "").strip().lower() == "recovering_under_guard"
+
+
+def _normalize_guarded_paper_surface(
+    name: str,
+    status: str,
+    payload: dict[str, Any],
+    context: dict[str, Any],
+) -> tuple[str, dict[str, Any]]:
+    raw_status = str(status or "missing").strip().lower()
+    if name == "runtime_gate_dashboard" and raw_status == "ok":
+        return "ready", {"raw_status": raw_status, "status_normalized_reason": "runtime_dashboard_ok_is_ready"}
+    if not bool(context.get("enabled", False)) or raw_status not in GUARDED_PAPER_SOFTENABLE_STATUSES:
+        return status, {}
+
+    reason = ""
+    if name in GUARDED_PAPER_OPTIONAL_SURFACES:
+        reason = GUARDED_PAPER_OPTIONAL_SURFACES[name]
+    elif name == "master_infra":
+        if not _master_infra_guarded_paper_debt(payload):
+            return status, {}
+        reason = GUARDED_PAPER_MANAGED_SURFACES[name]
+    elif name == "data_plane_recovery":
+        if not _data_plane_guarded_paper_debt(payload):
+            return status, {}
+        reason = GUARDED_PAPER_MANAGED_SURFACES[name]
+    elif name in GUARDED_PAPER_MANAGED_SURFACES:
+        reason = GUARDED_PAPER_MANAGED_SURFACES[name]
+    if not reason:
+        return status, {}
+
+    return (
+        "advisory",
+        {
+            "raw_status": raw_status,
+            "guarded_paper_advisory_only": True,
+            "managed_by": str(context.get("managed_by") or "runtime_gate_dashboard"),
+            "managed_control_state": reason,
+            "soak_grade": str(context.get("soak_grade") or ""),
+            "paper_stage": str(context.get("paper_stage") or ""),
+            "health_fast_status": str(context.get("health_fast_status") or ""),
+        },
+    )
 
 
 def _worst_status(statuses: list[str]) -> str:
@@ -246,6 +379,7 @@ def _registry_identity(registry: dict[str, Any]) -> dict[str, Any]:
 
 def _surface_matrix(health_root: Path, project_root: Path, *, now: datetime | None = None) -> dict[str, dict[str, Any]]:
     current = now or datetime.now(timezone.utc)
+    guarded_paper_context = _guarded_paper_management_context(health_root)
     paths = {
         "operator_cockpit": health_root / "operator_cockpit_latest.json",
         "memory_efficiency": health_root / "memory_efficiency_control_latest.json",
@@ -305,15 +439,28 @@ def _surface_matrix(health_root: Path, project_root: Path, *, now: datetime | No
             watched_rows = [row for row in rows if isinstance(row, dict)]
             any_down = any(not bool(row.get("process_live", row.get("running", 0))) for row in watched_rows)
             status = "degraded" if alerts or any_down else "ready"
+        raw_status = status
+        status, status_metadata = _normalize_guarded_paper_surface(name, status, payload, guarded_paper_context)
+        if name == "runtime_gate_dashboard" and bool(guarded_paper_context.get("enabled", False)):
+            status_metadata.update(
+                {
+                    "guarded_paper_context_enabled": True,
+                    "soak_grade": str(guarded_paper_context.get("soak_grade") or ""),
+                    "paper_stage": str(guarded_paper_context.get("paper_stage") or ""),
+                    "health_fast_status": str(guarded_paper_context.get("health_fast_status") or ""),
+                }
+            )
         timestamp, age_minutes = _payload_timestamp(payload, path, current) if payload else ("", None)
         matrix[name] = {
             "status": status,
+            "raw_status": str(status_metadata.get("raw_status") or raw_status),
             "path": str(path),
             "loaded": bool(payload),
             "timestamp_utc": timestamp,
             "age_minutes": age_minutes,
             "payload_sha256": _json_sha256(payload) if payload else "",
             "payload_hash_short": _json_sha256(payload)[:12] if payload else "",
+            **{key: value for key, value in status_metadata.items() if key != "raw_status"},
         }
     return matrix
 
@@ -1061,7 +1208,10 @@ def _dependency_memory(
         str(name): row for name, row in previous_last_good.items() if isinstance(row, dict)
     }
     stale_sources: list[dict[str, Any]] = []
-    ready_like = {"ready", "advisory", "thin", "steady_state", "applied_with_followups"}
+    managed_stale_sources: list[dict[str, Any]] = []
+    ready_like = {"ready", "ok", "watch", "advisory", "thin", "steady_state", "applied_with_followups", "handoff_requested"}
+    dashboard_row = surface_matrix.get("runtime_gate_dashboard") if isinstance(surface_matrix.get("runtime_gate_dashboard"), dict) else {}
+    guarded_paper_context_enabled = bool(dashboard_row.get("guarded_paper_context_enabled", False))
 
     for name, row in surface_matrix.items():
         status = str(row.get("status") or "missing")
@@ -1078,14 +1228,23 @@ def _dependency_memory(
         if isinstance(age_minutes, (int, float)):
             stale_limit = 90.0 if name in {"global_halt", "memory_efficiency", "runtime_throttle"} else 360.0
             if float(age_minutes) > stale_limit:
-                stale_sources.append(
-                    {
-                        "surface": name,
-                        "age_minutes": round(float(age_minutes), 3),
-                        "stale_limit_minutes": stale_limit,
-                        "status": status,
-                    }
-                )
+                row_payload = {
+                    "surface": name,
+                    "age_minutes": round(float(age_minutes), 3),
+                    "stale_limit_minutes": stale_limit,
+                    "status": status,
+                }
+                if guarded_paper_context_enabled and name in GUARDED_PAPER_OPTIONAL_STALE_SURFACES and status in ready_like:
+                    row_payload.update(
+                        {
+                            "managed_by": "runtime_gate_dashboard",
+                            "managed_control_state": "optional_support_artifact_refresh_deferred_while_guarded_paper_soak_is_green",
+                            "guarded_paper_advisory_only": True,
+                        }
+                    )
+                    managed_stale_sources.append(row_payload)
+                else:
+                    stale_sources.append(row_payload)
 
     edge_health: list[dict[str, Any]] = []
     for edge in _dependency_edges():
@@ -1123,7 +1282,9 @@ def _dependency_memory(
         "blocked_edge_count": len(blocked_edges),
         "degraded_edge_count": len(degraded_edges),
         "stale_source_count": len(stale_sources),
+        "managed_stale_source_count": len(managed_stale_sources),
         "stale_sources": stale_sources,
+        "managed_stale_sources": managed_stale_sources,
         "edge_health": edge_health,
         "last_good_snapshot_count": len(last_good),
         "last_good_snapshots": last_good,

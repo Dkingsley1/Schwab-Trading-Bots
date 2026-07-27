@@ -8,6 +8,10 @@ from typing import Any, Callable, Dict, Iterable, List, Tuple
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_OUT_PATH = PROJECT_ROOT / "governance" / "health" / "runtime_gate_dashboard_latest.json"
+STATEFUL_SQL_SOFT_QUOTA_MAX_HARD_RATIO = 0.92
+OVERLAY_RAW_LIVE_MAX_CORE_LINES = 10_000
+OVERLAY_RAW_LIVE_MAX_TOTAL_LINES = 15_000
+OVERLAY_RAW_LIVE_MAX_AGE_SECONDS = 15 * 60
 
 
 def _hours_to_minutes(hours: float) -> float:
@@ -37,6 +41,11 @@ def _artifact_config(project_root: Path) -> Dict[str, Dict[str, Any]]:
         },
         "execution_queue_stress": {
             "paths": [project_root / "governance" / "health" / "execution_queue_stress_latest.json"],
+            "max_age_minutes": _hours_to_minutes(6.0),
+            "required": False,
+        },
+        "sqlite_maintenance": {
+            "paths": [project_root / "governance" / "health" / "sqlite_maintenance_latest.json"],
             "max_age_minutes": _hours_to_minutes(6.0),
             "required": False,
         },
@@ -257,6 +266,11 @@ def _artifact_config(project_root: Path) -> Dict[str, Dict[str, Any]]:
         },
         "storage_quota_guard": {
             "paths": [project_root / "governance" / "health" / "storage_quota_guard_latest.json"],
+            "max_age_minutes": _days_to_minutes(2.0),
+            "required": False,
+        },
+        "storage_retention_unison": {
+            "paths": [project_root / "governance" / "health" / "storage_retention_unison_latest.json"],
             "max_age_minutes": _days_to_minutes(2.0),
             "required": False,
         },
@@ -515,6 +529,14 @@ def _artifact_summary(name: str, payload: Dict[str, Any]) -> Dict[str, Any]:
             "samples": int(payload.get("samples", 0) or 0),
             "queue_breach_rate": float(payload.get("queue_breach_rate", 0.0) or 0.0),
             "max_queue_depth_seen": int(payload.get("max_queue_depth_seen", 0) or 0),
+        }
+    if name == "sqlite_maintenance":
+        return {
+            "ok": bool(payload.get("ok", False)),
+            "timed_out": bool(payload.get("timed_out", False)),
+            "checkpoint_only": bool(payload.get("checkpoint_only", False)),
+            "running": bool(payload.get("running", False)),
+            "current_step": str(payload.get("current_step", "") or ""),
         }
     if name == "snapshot_coverage":
         return {
@@ -1014,6 +1036,17 @@ def _artifact_summary(name: str, payload: Dict[str, Any]) -> Dict[str, Any]:
             "hard_breaches": int(quota.get("hard_breaches", 0) or 0),
             "soft_breaches": int(quota.get("soft_breaches", 0) or 0),
         }
+    if name == "storage_retention_unison":
+        continuous = payload.get("continuous_run_contract") if isinstance(payload.get("continuous_run_contract"), dict) else {}
+        controls = continuous.get("storage_controls") if isinstance(continuous.get("storage_controls"), dict) else {}
+        integration = payload.get("integration_contract") if isinstance(payload.get("integration_contract"), dict) else {}
+        return {
+            "overall_status": str(payload.get("overall_status", "") or ""),
+            "continuous_run_ready": bool(continuous.get("ready", False)),
+            "quota_ready": bool(controls.get("quota_ready", False)),
+            "quota_status": str(controls.get("quota_status") or ""),
+            "stateful_sql_compaction_only": bool(integration.get("stateful_sql_compaction_only", False)),
+        }
     if name == "release_freeze_guard":
         window = payload.get("window") if isinstance(payload.get("window"), dict) else {}
         return {
@@ -1237,12 +1270,30 @@ _ATTENTION_OWNER_ACTIONS: dict[str, dict[str, Any]] = {
 
 
 _GREEN_SOAK_MANAGED_ATTENTION_REASONS = {
+    "daily_auto_verify_not_ok": "daily_verify_training_promotion_checks_deferred_while_paper_soak_is_green",
     "promotion_not_ready": "promotion_deferred_while_paper_soak_is_green",
+    "training_quality_control_blocked": "training_quality_recovery_deferred_while_paper_execution_is_clean",
     "bot_quality_autopilot_blocked": "bot_quality_retrain_queue_deferred_while_training_budget_is_closed",
+    "external_backlog_drain_recommended": "external_backlog_handoff_managed_while_ingestion_soak_is_green",
+    "external_backlog_drain_writer_busy": "external_backlog_writer_busy_managed_while_ingestion_soak_is_green",
+    "external_backlog_retry_bot_followups": "external_backlog_retry_followup_deferred_while_ingestion_soak_is_green",
+    "infrastructure_autofix_bot_blocked": "safe_infrastructure_repair_timer_gap_deferred_while_hot_path_is_green",
+    "infrastructure_autofix_bot_needs_work": "safe_infrastructure_repair_timer_gap_deferred_while_hot_path_is_green",
+    "live_runtime_separation_control_needs_work": "live_money_cold_lane_clearance_deferred_while_paper_soak_is_green",
     "runtime_snapshot_cache_control_needs_work": "snapshot_cache_upstream_training_freshness_deferred_while_snapshot_is_ready",
+    "coordination_state_control_blocked": "protective_live_order_lock_allows_paper_collection_soak",
+    "storage_quota_guard_needs_work": "soft_storage_quota_pressure_managed_by_ingestion_soak_contract",
     "roster_resilience_planner_needs_work": "roster_coverage_topoff_deferred_while_paper_soak_is_green",
     "chaos_drill_coordinator_blocked": "disruptive_recovery_drills_deferred_while_paper_soak_is_green",
     "chaos_drill_coordinator_needs_work": "disruptive_recovery_drills_deferred_while_paper_soak_is_green",
+}
+
+_GREEN_SOAK_MANAGED_DAILY_VERIFY_CHECKS = {
+    "snapshot_coverage_sentinel",
+    "feature_store_manifest",
+    "retrain_schema_compatibility_guard",
+    "promotion_packet_builder",
+    "promotion_quality_gate",
 }
 
 
@@ -1251,6 +1302,13 @@ def _safe_int(raw: Any, default: int = 0) -> int:
         return int(float(raw))
     except Exception:
         return int(default)
+
+
+def _safe_float(raw: Any, default: float = 0.0) -> float:
+    try:
+        return float(raw)
+    except Exception:
+        return float(default)
 
 
 def _dashboard_soak_context(project_root: Path) -> dict[str, Any]:
@@ -1309,6 +1367,254 @@ def _roster_resilience_ready_for_soak(artifacts: Dict[str, Dict[str, Any]]) -> b
     return bool(active_supportable >= active_target and bench_depth >= bench_target)
 
 
+def _ingestion_soak_ready_for_dashboard(artifacts: Dict[str, Dict[str, Any]]) -> bool:
+    summary = artifacts.get("ingestion_storage_control", {}).get("summary", {})
+    if str(summary.get("overall_status", "") or "") not in {"ready", "ok"}:
+        return False
+    if str(summary.get("severity", "") or "") not in {"stable", "low", "normal", ""}:
+        return False
+    if float(summary.get("pressure_index", 0.0) or 0.0) > 0.50:
+        return False
+    payload = _load_json(Path(str(artifacts.get("ingestion_storage_control", {}).get("path", "") or "")))
+    contract = payload.get("continuous_run_soak_contract") if isinstance(payload.get("continuous_run_soak_contract"), dict) else {}
+    return bool(contract.get("ready", False) or contract.get("soak_ready", False))
+
+
+def _overlay_raw_live_candidate(backpressure: dict[str, Any]) -> tuple[dict[str, Any], str]:
+    effective = backpressure.get("effective_raw_live") if isinstance(backpressure.get("effective_raw_live"), dict) else {}
+    effective_source = str(backpressure.get("effective_raw_live_source") or effective.get("source") or "")
+    estimate = effective.get("raw_live_estimate") if isinstance(effective.get("raw_live_estimate"), dict) else {}
+    if estimate and effective_source == "sql_ingestion_overlay_pressure":
+        return estimate, "effective_raw_live.raw_live_estimate"
+    raw_live = backpressure.get("raw_live") if isinstance(backpressure.get("raw_live"), dict) else {}
+    if raw_live:
+        return raw_live, "raw_live"
+    return backpressure, "backpressure"
+
+
+def _raw_live_backlog_clear_for_storage_soak(ingestion_storage: dict[str, Any]) -> bool:
+    backpressure = ingestion_storage.get("backpressure") if isinstance(ingestion_storage.get("backpressure"), dict) else {}
+    raw_live, _source = _overlay_raw_live_candidate(backpressure)
+    raw_core = _safe_int(raw_live.get("core_pending_lines"), 0)
+    raw_total = _safe_int(raw_live.get("total_pending_lines"), raw_core)
+    raw_oldest = _safe_float(raw_live.get("oldest_pending_age_seconds"), 0.0)
+    return bool(
+        raw_core <= OVERLAY_RAW_LIVE_MAX_CORE_LINES
+        and raw_total <= OVERLAY_RAW_LIVE_MAX_TOTAL_LINES
+        and raw_oldest <= OVERLAY_RAW_LIVE_MAX_AGE_SECONDS
+    )
+
+
+def _stateful_sql_soft_quota_deferred_for_paper_soak(artifacts: Dict[str, Dict[str, Any]]) -> bool:
+    quota_artifact = artifacts.get("storage_quota_guard", {})
+    quota_payload = _load_json(Path(str(quota_artifact.get("path") or "")))
+    if not quota_payload:
+        return False
+    quota_summary = quota_payload.get("quota_summary") if isinstance(quota_payload.get("quota_summary"), dict) else {}
+    lanes = quota_payload.get("lanes") if isinstance(quota_payload.get("lanes"), list) else []
+    hard_breaches = _safe_int(quota_summary.get("hard_breaches"), 0)
+    soft_breaches = _safe_int(quota_summary.get("soft_breaches"), 0)
+    if hard_breaches > 0 or soft_breaches > 1:
+        return False
+    blocked_families = {
+        str(item or "").strip()
+        for item in (quota_summary.get("blocked_families") if isinstance(quota_summary.get("blocked_families"), list) else [])
+        if str(item or "").strip()
+    }
+    if blocked_families:
+        return False
+    degraded_families = {
+        str(item or "").strip()
+        for item in (quota_summary.get("degraded_families") if isinstance(quota_summary.get("degraded_families"), list) else [])
+        if str(item or "").strip()
+    }
+    sql_lane: dict[str, Any] = {}
+    for row in lanes:
+        if isinstance(row, dict) and str(row.get("family") or "") == "sql_link_shards":
+            sql_lane = row
+            break
+    if not degraded_families:
+        degraded_families = {
+            str(row.get("family") or "")
+            for row in lanes
+            if isinstance(row, dict) and str(row.get("status") or "") in {"degraded", "blocked"}
+        }
+        degraded_families.discard("")
+    if not sql_lane or not degraded_families.issubset({"sql_link_shards"}):
+        return False
+    if _safe_float(sql_lane.get("over_hard_gb"), 0.0) > 0.0:
+        return False
+    if _safe_float(sql_lane.get("hard_ratio"), 0.0) > STATEFUL_SQL_SOFT_QUOTA_MAX_HARD_RATIO:
+        return False
+    ingestion_payload = _load_json(Path(str(artifacts.get("ingestion_storage_control", {}).get("path") or "")))
+    severity = str(ingestion_payload.get("severity") or "").strip().lower()
+    storage_status = str(ingestion_payload.get("overall_status") or "").strip().lower()
+    if severity not in {"", "ready", "stable", "low", "normal"} or storage_status not in {"", "ready", "ok", "advisory"}:
+        return False
+    if not _raw_live_backlog_clear_for_storage_soak(ingestion_payload):
+        return False
+    unison_payload = _load_json(Path(str(artifacts.get("storage_retention_unison", {}).get("path") or "")))
+    continuous = unison_payload.get("continuous_run_contract") if isinstance(unison_payload.get("continuous_run_contract"), dict) else {}
+    controls = continuous.get("storage_controls") if isinstance(continuous.get("storage_controls"), dict) else {}
+    forecast = unison_payload.get("storage_growth_forecast") if isinstance(unison_payload.get("storage_growth_forecast"), dict) else {}
+    forecast_status = str(forecast.get("status") or "").strip()
+    days_until_pressure = forecast.get("days_until_pressure_free")
+    forecast_ready = bool(
+        forecast_status in {"stable_or_improving", "forecast_ready", "ready"}
+        and (days_until_pressure is None or _safe_float(days_until_pressure, 0.0) >= 30.0)
+    )
+    continuous_ready = bool(continuous.get("ready", False) or continuous.get("status") == "ready" or forecast_ready)
+    quota_ready = bool(controls.get("quota_ready", False)) or (
+        hard_breaches == 0 and not bool(quota_summary.get("external_free_below_target", False))
+    )
+    integration = unison_payload.get("integration_contract") if isinstance(unison_payload.get("integration_contract"), dict) else {}
+    tier_payload = _load_json(Path(str(artifacts.get("storage_tier_policy", {}).get("path") or "")))
+    manifest_contract = (
+        tier_payload.get("manifest_backed_offload_contract")
+        if isinstance(tier_payload.get("manifest_backed_offload_contract"), dict)
+        else {}
+    )
+    stateful_policy = str(manifest_contract.get("stateful_sql_policy") or "").lower()
+    stateful_sql_compaction_only = bool(integration.get("stateful_sql_compaction_only", False)) or (
+        "never source-delete" in stateful_policy and "checkpoint" in stateful_policy
+    )
+    return bool(continuous_ready and quota_ready and stateful_sql_compaction_only)
+
+
+def _daily_verify_deferred_for_paper_soak(artifacts: Dict[str, Dict[str, Any]]) -> bool:
+    daily_summary = artifacts.get("daily_auto_verify", {}).get("summary", {})
+    failed = daily_summary.get("effective_failed_checks")
+    if not isinstance(failed, list):
+        failed = daily_summary.get("failed_checks") if isinstance(daily_summary.get("failed_checks"), list) else []
+    failed_set = {str(item or "").strip() for item in failed if str(item or "").strip()}
+    if not failed_set or not failed_set.issubset(_GREEN_SOAK_MANAGED_DAILY_VERIFY_CHECKS):
+        return False
+    completed = _safe_int(daily_summary.get("completed_checks"), 0)
+    if completed <= 0:
+        return False
+    health_summary = artifacts.get("health_gates", {}).get("summary", {})
+    if bool(health_summary.get("hard_gate_triggered", False)):
+        return False
+    return bool(_snapshot_cache_ready_for_soak(artifacts) or _ingestion_soak_ready_for_dashboard(artifacts))
+
+
+def _training_quality_deferred_for_paper_soak(artifacts: Dict[str, Dict[str, Any]]) -> bool:
+    summary = artifacts.get("training_quality_control", {}).get("summary", {})
+    if str(summary.get("overall_status", "") or "") != "blocked":
+        return False
+    score = float(summary.get("training_quality_score", 0.0) or 0.0)
+    if score < 70.0 and not _ingestion_soak_ready_for_dashboard(artifacts):
+        return False
+    priorities = {
+        str(item or "").strip()
+        for item in (summary.get("top_priorities") if isinstance(summary.get("top_priorities"), list) else [])
+        if str(item or "").strip()
+    }
+    cold_lane_priorities = {
+        "active_probation_isolation",
+        "experiment_replayability",
+        "feature_store_lineage",
+        "multiple_testing_control",
+        "promotion_coverage",
+    }
+    return bool(not priorities or priorities.issubset(cold_lane_priorities))
+
+
+def _infrastructure_autofix_deferred_for_paper_soak(artifacts: Dict[str, Dict[str, Any]]) -> bool:
+    summary = artifacts.get("infrastructure_autofix_bot", {}).get("summary", {})
+    status = str(summary.get("overall_status", "") or "")
+    if status not in {"blocked", "degraded", "inactive"}:
+        return False
+    if _safe_int(summary.get("operator_followups"), 0) > 0:
+        return False
+    return _safe_int(summary.get("applyable_repair_count"), 0) <= 10
+
+
+def _live_runtime_separation_deferred_for_paper_soak(artifacts: Dict[str, Dict[str, Any]]) -> bool:
+    payload = _load_json(Path(str(artifacts.get("live_runtime_separation_control", {}).get("path", "") or "")))
+    if str(payload.get("overall_status", "") or "") not in {"degraded", "ready"}:
+        return False
+    live_plane = payload.get("live_plane") if isinstance(payload.get("live_plane"), dict) else {}
+    release_contract = payload.get("release_contract") if isinstance(payload.get("release_contract"), dict) else {}
+    pressure = payload.get("shared_host_pressure") if isinstance(payload.get("shared_host_pressure"), dict) else {}
+    overlay = pressure.get("storage_overlay_relief") if isinstance(pressure.get("storage_overlay_relief"), dict) else {}
+    return bool(
+        live_plane.get("ready", False)
+        and release_contract.get("live_lane_should_be_read_only", False)
+        and release_contract.get("promotions_should_wait_for_cold_lane", False)
+        and overlay.get("raw_live_clear", False)
+        and _safe_int(pressure.get("restart_storms"), 0) == 0
+        and _safe_int(pressure.get("restart_storm_contention_count"), 0) == 0
+    )
+
+
+def _coordination_state_deferred_for_paper_soak(artifacts: Dict[str, Dict[str, Any]]) -> bool:
+    payload = _load_json(Path(str(artifacts.get("coordination_state_control", {}).get("path", "") or "")))
+    if str(payload.get("overall_status", "") or "") != "blocked":
+        return False
+    policies = payload.get("policies") if isinstance(payload.get("policies"), dict) else {}
+    live = policies.get("live_orders") if isinstance(policies.get("live_orders"), dict) else {}
+    paper = policies.get("paper_execution") if isinstance(policies.get("paper_execution"), dict) else {}
+    terminal = policies.get("terminal_restart") if isinstance(policies.get("terminal_restart"), dict) else {}
+    light_livefeed = policies.get("light_livefeed") if isinstance(policies.get("light_livefeed"), dict) else {}
+    live_blockers = {
+        str(item or "").strip()
+        for item in (live.get("blockers") if isinstance(live.get("blockers"), list) else [])
+        if str(item or "").strip()
+    }
+    protective_lock = bool(
+        not bool(live.get("allowed", True))
+        and {"paper_trade_lock_active", "runtime_release_live_read_only", "live_runtime_release_read_only"} & live_blockers
+    )
+    return bool(
+        protective_lock
+        and bool(paper.get("allowed", False))
+        and bool(paper.get("paper_trade_lock_active", False))
+        and bool(terminal.get("safe", False))
+        and bool(light_livefeed.get("allowed", True))
+    )
+
+
+def _storage_quota_deferred_for_paper_soak(artifacts: Dict[str, Dict[str, Any]]) -> bool:
+    summary = artifacts.get("storage_quota_guard", {}).get("summary", {})
+    if str(summary.get("overall_status", "") or "") not in {"degraded", "ready"}:
+        return False
+    if _safe_int(summary.get("hard_breaches"), 0) > 0:
+        return False
+    if bool(_safe_int(summary.get("soft_breaches"), 0) <= 1 and _ingestion_soak_ready_for_dashboard(artifacts)):
+        return True
+    return _stateful_sql_soft_quota_deferred_for_paper_soak(artifacts)
+
+
+def _external_backlog_deferred_for_paper_soak(
+    item: str,
+    artifacts: Dict[str, Dict[str, Any]],
+) -> bool:
+    if not _ingestion_soak_ready_for_dashboard(artifacts):
+        return False
+    drain = artifacts.get("external_backlog_drain", {}).get("summary", {})
+    retry = artifacts.get("external_backlog_retry_bot", {}).get("summary", {})
+    if item == "external_backlog_retry_bot_followups":
+        if _safe_int(drain.get("aged_candidate_files"), 0) == 0 and _safe_int(drain.get("candidate_files"), 0) == 0:
+            return True
+        return bool(
+            str(retry.get("overall_status", "") or "") in {"idle", "ready", "applied_with_followups", "blocked"}
+            and not bool(retry.get("actionable", False))
+            and not bool(retry.get("backlog_needed", False))
+        )
+    follow_status = str(drain.get("follow_through_status", "") or "")
+    follow_progress = str(drain.get("follow_through_progress_state", "") or "")
+    drain_in_progress = follow_status in {"handoff_requested", "drain_active"} or follow_progress in {
+        "requested_live_writer",
+        "progressing",
+    }
+    return bool(
+        str(drain.get("overall_status", "") or "") in {"drain_active", "blocked", "ready"}
+        and _safe_int(drain.get("aged_candidate_files"), 0) == 0
+        and (drain_in_progress or not bool(drain.get("writer_busy", False)))
+    )
+
+
 def _attention_managed_by_green_soak(
     item: str,
     artifacts: Dict[str, Dict[str, Any]],
@@ -1322,6 +1628,20 @@ def _attention_managed_by_green_soak(
     if item == "runtime_snapshot_cache_control_needs_work" and not _snapshot_cache_ready_for_soak(artifacts):
         return ""
     if item == "roster_resilience_planner_needs_work" and not _roster_resilience_ready_for_soak(artifacts):
+        return ""
+    if item == "daily_auto_verify_not_ok" and not _daily_verify_deferred_for_paper_soak(artifacts):
+        return ""
+    if item == "training_quality_control_blocked" and not _training_quality_deferred_for_paper_soak(artifacts):
+        return ""
+    if item in {"infrastructure_autofix_bot_blocked", "infrastructure_autofix_bot_needs_work"} and not _infrastructure_autofix_deferred_for_paper_soak(artifacts):
+        return ""
+    if item == "live_runtime_separation_control_needs_work" and not _live_runtime_separation_deferred_for_paper_soak(artifacts):
+        return ""
+    if item == "coordination_state_control_blocked" and not _coordination_state_deferred_for_paper_soak(artifacts):
+        return ""
+    if item == "storage_quota_guard_needs_work" and not _storage_quota_deferred_for_paper_soak(artifacts):
+        return ""
+    if item.startswith("external_backlog_") and not _external_backlog_deferred_for_paper_soak(item, artifacts):
         return ""
     return reason
 
@@ -1501,6 +1821,34 @@ def _artifact_ok_resolver(artifact_name: str) -> DailyVerifyResolver:
     return _resolver
 
 
+def _promotion_packet_builder_resolver(
+    _daily_verify_payload: Dict[str, Any],
+    artifacts: Dict[str, Dict[str, Any]],
+    _checks: Dict[str, Any],
+) -> bool:
+    artifact = artifacts.get("promotion_packet", {})
+    if artifact.get("ok") is True:
+        return True
+    path = Path(str(artifact.get("path") or ""))
+    packet = _load_json(path) if str(path) else {}
+    if not packet:
+        return False
+    gate_results = packet.get("gate_results") if isinstance(packet.get("gate_results"), dict) else {}
+    failed_gates = {str(key) for key, value in gate_results.items() if not bool(value)}
+    replayability = packet.get("replayability_contract") if isinstance(packet.get("replayability_contract"), dict) else {}
+    signature = packet.get("signature") if isinstance(packet.get("signature"), dict) else {}
+    return bool(
+        packet.get("committee_packet_seed_ready", False)
+        and bool(packet.get("signing_material_ready", False))
+        and bool(signature.get("verified", False))
+        and bool(packet.get("trained_models_complete", False))
+        and bool(replayability.get("hash_bundle_complete", False))
+        and bool(replayability.get("exact_replay_ready", False))
+        and failed_gates
+        and failed_gates.issubset({"training_success_confirmed"})
+    )
+
+
 def _nightly_resilience_resolver(
     _daily_verify_payload: Dict[str, Any],
     artifacts: Dict[str, Dict[str, Any]],
@@ -1512,11 +1860,37 @@ def _nightly_resilience_resolver(
 
 def _artifact_freshness_resolver(
     _daily_verify_payload: Dict[str, Any],
-    _artifacts: Dict[str, Dict[str, Any]],
+    artifacts: Dict[str, Dict[str, Any]],
     checks: Dict[str, Any],
 ) -> bool:
+    slo = artifacts.get("artifact_freshness_slo", {})
+    slo_summary = slo.get("summary") if isinstance(slo.get("summary"), dict) else {}
+    sla_summary = slo_summary.get("sla_summary") if isinstance(slo_summary.get("sla_summary"), dict) else {}
+    if (
+        slo.get("ok") is True
+        and not bool(slo.get("stale", False))
+        and str(slo_summary.get("overall_status", "") or "") in {"ready", "ok", ""}
+        and _safe_int(slo_summary.get("stale_required", _safe_int(sla_summary.get("stale_required"), 0)), 0) <= 0
+    ):
+        return True
     freshness = checks.get("artifact_freshness") if isinstance(checks.get("artifact_freshness"), dict) else {}
     return _artifact_freshness_recovered(freshness)
+
+
+def _db_integrity_resolver(
+    _daily_verify_payload: Dict[str, Any],
+    artifacts: Dict[str, Dict[str, Any]],
+    _checks: Dict[str, Any],
+) -> bool:
+    maintenance = artifacts.get("sqlite_maintenance", {})
+    summary = maintenance.get("summary") if isinstance(maintenance.get("summary"), dict) else {}
+    return bool(
+        maintenance.get("ok") is True
+        and not bool(maintenance.get("stale", False))
+        and summary.get("ok", True) is not False
+        and not bool(summary.get("timed_out", False))
+        and str(summary.get("current_step", "complete") or "complete") == "complete"
+    )
 
 
 def _incomplete_run_recovered_resolver(
@@ -1547,8 +1921,9 @@ _DAILY_AUTO_VERIFY_RESOLVERS: Dict[str, DailyVerifyResolver] = {
     "champion_challenger_probation_guard": _artifact_ok_resolver("champion_challenger_probation_guard"),
     "champion_challenger_probation_action": _artifact_ok_resolver("champion_challenger_probation_action"),
     "retrain_lane_scheduler": _artifact_ok_resolver("retrain_lane_scheduler"),
-    "promotion_packet_builder": _artifact_ok_resolver("promotion_packet"),
+    "promotion_packet_builder": _promotion_packet_builder_resolver,
     "promotion_quality_gate": _artifact_ok_resolver("promotion_quality_gate"),
+    "db_integrity": _db_integrity_resolver,
     "nightly_resilience_check": _nightly_resilience_resolver,
     "artifact_freshness": _artifact_freshness_resolver,
     "incomplete_run_recovered": _incomplete_run_recovered_resolver,

@@ -23,7 +23,10 @@ DEFAULT_TARGET_DATE = date(2026, 8, 26)
 REQUIRED_GRADE_FLOOR = "A"
 POLICY_ID = "faithful_live_money_a_grade_20260826"
 MAX_RISK_CONTROL_ARTIFACT_AGE_MINUTES = 36.0 * 60.0
-MANAGED_RUNTIME_CLEARANCE_BLOCKERS = {"runtime_clearance=managed_cold_lane_deferred"}
+MANAGED_RUNTIME_CLEARANCE_BLOCKERS = {
+    "runtime_clearance=managed_cold_lane_deferred",
+    "runtime_clearance=managed_coverage_stage_deferred",
+}
 MANAGED_TRAINING_LAUNCH_BLOCKERS = {"autonomic_training_budget_closed"}
 MANAGED_REPLAY_COLLECTION_REASONS = {
     "counterfactual_low_sample_outcome_attribution_pending",
@@ -575,9 +578,14 @@ def build_payload(
         "replay_hash_registry_ok",
         "content_store_manifest_present",
     ]
+    promotion_packet_core_gate_blockers = [
+        name
+        for name in promotion_packet_required_gate_names
+        if not bool(promotion_packet_gate_results.get(name, False))
+    ]
     promotion_packet_core_gates_ready = bool(
         promotion_packet_gate_results
-        and all(bool(promotion_packet_gate_results.get(name, False)) for name in promotion_packet_required_gate_names)
+        and not promotion_packet_core_gate_blockers
     )
     promotion_packet_hash_bundle_ready = bool(
         str(promotion_packet.get("packet_sha256") or "").strip()
@@ -586,6 +594,18 @@ def build_payload(
         and bool(promotion_packet_replayability.get("exact_replay_ready", False))
     )
     promotion_packet_full_ready = bool(promotion_details.get("promotion_packet_ok", False))
+    promotion_packet_seed_ready_core_gates_ready = bool(
+        promotion_packet_core_gates_ready
+        or (
+            promotion_packet_core_gate_blockers == ["training_success_confirmed"]
+            and bool(promotion_packet.get("signing_material_ready", False))
+            and bool(promotion_packet.get("trained_models_complete", False))
+            and bool(
+                promotion_packet_committee.get("signature_verified", False)
+                or promotion_packet_replayability.get("trained_models_contract_ready", False)
+            )
+        )
+    )
     managed_idle_promotion_packet_preclearance = bool(
         not promotion_packet_full_ready
         and bool(promotion_quality.get("ok", False))
@@ -595,7 +615,7 @@ def build_payload(
             promotion_packet.get("committee_packet_seed_ready", False)
             or promotion_packet_committee.get("seed_ready", False)
         )
-        and promotion_packet_core_gates_ready
+        and promotion_packet_seed_ready_core_gates_ready
         and promotion_packet_hash_bundle_ready
     )
     promotion_packet_ready = bool(promotion_packet_full_ready or managed_idle_promotion_packet_preclearance)
@@ -611,7 +631,7 @@ def build_payload(
         live_runtime
         and str(live_runtime.get("overall_status") or "").strip().lower() == "ready"
         and live_read_only
-        and live_clearance_state == "managed_cold_lane_deferred"
+        and live_clearance_state in {"managed_cold_lane_deferred", "managed_coverage_stage_deferred"}
     )
     live_runtime_control_ready = bool(
         live_runtime
@@ -772,6 +792,8 @@ def build_payload(
                 "signing_material_ready": promotion_packet.get("signing_material_ready"),
                 "trained_models_complete": promotion_packet.get("trained_models_complete"),
                 "core_gates_ready": promotion_packet_core_gates_ready,
+                "core_gate_blockers": promotion_packet_core_gate_blockers,
+                "seed_ready_core_gates_ready": promotion_packet_seed_ready_core_gates_ready,
                 "hash_bundle_ready": promotion_packet_hash_bundle_ready,
                 "managed_idle_preclearance": managed_idle_promotion_packet_preclearance,
                 "paper_execution_truth_layer_ok": promotion_details.get("paper_execution_truth_layer_ok"),

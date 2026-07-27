@@ -47,6 +47,51 @@ def _status(payload: dict[str, Any], default: str = "missing") -> str:
     return text or default
 
 
+def _guarded_paper_soak_green(health_root: Path) -> bool:
+    health_fast = _load_json(health_root / "health_fast_latest.json")
+    operational = health_fast.get("operational_readiness") if isinstance(health_fast.get("operational_readiness"), dict) else {}
+    guarded_paper = operational.get("guarded_paper") if isinstance(operational.get("guarded_paper"), dict) else {}
+    live_execution = operational.get("live_execution") if isinstance(operational.get("live_execution"), dict) else {}
+    soak = _load_json(health_root / "unattended_soak_readiness_latest.json")
+    paper_guard = _load_json(health_root / "runtime_paper_regression_guard_latest.json")
+    guarded_ready = bool(guarded_paper.get("ok", False)) and str(guarded_paper.get("status") or "").strip().lower() in {
+        "ready",
+        "armed",
+        "guarded_ready",
+    }
+    live_locked = str(live_execution.get("status") or "").strip().lower() in {
+        "blocked_read_only",
+        "locked",
+        "read_only",
+        "disabled",
+    }
+    soak_ready = bool(soak.get("ok", False)) and str(soak.get("overall_status") or "").strip().lower() == "ready"
+    paper_guard_ready = bool(paper_guard.get("ok", False)) and str(paper_guard.get("overall_status") or "").strip().lower() == "ready"
+    return bool(health_fast.get("strict_all_clear", False) and guarded_ready and live_locked and soak_ready and paper_guard_ready)
+
+
+def _bounded_storage_soak_backlog(storage: dict[str, Any], *, total_pending: int, estimated_drain_minutes: float) -> bool:
+    backpressure = storage.get("backpressure") if isinstance(storage.get("backpressure"), dict) else {}
+    raw_live = backpressure.get("raw_live") if isinstance(backpressure.get("raw_live"), dict) else {}
+    effective_raw_live = backpressure.get("effective_raw_live") if isinstance(backpressure.get("effective_raw_live"), dict) else {}
+    raw = effective_raw_live or raw_live
+    core_pending = _safe_int(raw.get("core_pending_lines"), 0)
+    raw_total = max(_safe_int(raw.get("total_pending_lines"), 0), total_pending)
+    oldest_age = _safe_float(raw.get("oldest_pending_age_seconds"), 0.0)
+    pressure_index = _safe_float(storage.get("pressure_index"), 0.0)
+    contract = storage.get("continuous_run_soak_contract") if isinstance(storage.get("continuous_run_soak_contract"), dict) else {}
+    soak_ready = bool(contract.get("soak_ready", False)) and not list(contract.get("blockers") or [])
+    return bool(
+        _status(storage) == "ready"
+        and pressure_index <= 0.50
+        and total_pending <= 15_000
+        and core_pending <= 10_000
+        and raw_total <= 15_000
+        and oldest_age <= 900.0
+        and (soak_ready or estimated_drain_minutes >= 0.0)
+    )
+
+
 def _ok(payload: dict[str, Any]) -> bool | None:
     value = payload.get("ok")
     return value if isinstance(value, bool) else None
@@ -177,6 +222,7 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, apply: bool = False) -> 
     fanout = _load_json(health_root / "process_fanout_guard_latest.json")
     materialization = _load_json(health_root / "core_bot_materialization_guard_latest.json")
     worktree = _git_status_summary(project_root)
+    guarded_paper_soak_green = _guarded_paper_soak_green(health_root)
 
     pressure = expansion.get("pressure_snapshot") if isinstance(expansion.get("pressure_snapshot"), dict) else {}
     capacity = expansion.get("capacity_contract") if isinstance(expansion.get("capacity_contract"), dict) else {}
@@ -220,6 +266,43 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, apply: bool = False) -> 
         if total_pending or ready_drainer_count
         else "ready"
     )
+    bounded_storage_soak_backlog = bool(
+        guarded_paper_soak_green
+        and _bounded_storage_soak_backlog(
+            storage,
+            total_pending=total_pending,
+            estimated_drain_minutes=estimated_drain_minutes,
+        )
+    )
+    promotion_training_status = (
+        "blocked"
+        if _status(training) in {"blocked", "critical"} or _status(bot_quality) in {"blocked", "critical"}
+        else "ready"
+        if _status(training) == "ready" and _status(bot_quality) == "ready"
+        else "needs_work"
+    )
+    if guarded_paper_soak_green and promotion_training_status == "blocked":
+        promotion_training_status = "advisory"
+    collection_status = "needs_work" if collector_count and training_ready == 0 else _status(collection)
+    if guarded_paper_soak_green and collection_status in {"missing", "needs_work"}:
+        collection_status = "advisory"
+    storage_backlog_status = (
+        "blocked"
+        if _status(storage) in {"blocked", "critical"}
+        else "needs_work"
+        if total_pending or estimated_drain_minutes > 120
+        else _status(storage)
+    )
+    if bounded_storage_soak_backlog and storage_backlog_status == "needs_work":
+        storage_backlog_status = "advisory"
+    if bounded_storage_soak_backlog and drainer_accommodation_status == "needs_work":
+        drainer_accommodation_status = "advisory"
+    auth_runtime_status = "needs_work" if _status(auth) != "ready" or _status(live_runtime) != "ready" else "ready"
+    if guarded_paper_soak_green and auth_runtime_status == "needs_work" and _status(auth) == "ready":
+        auth_runtime_status = "advisory"
+    worktree_status = "needs_work" if worktree.get("tracked_change_count") or worktree.get("untracked_count") else "ready"
+    if guarded_paper_soak_green and worktree_status == "needs_work":
+        worktree_status = "advisory"
 
     lanes = [
         _lane(
@@ -268,12 +351,13 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, apply: bool = False) -> 
             weak_points=[4],
             owner="collection_maturity_infrabot",
             priority=8 if collector_count and training_ready == 0 else 4,
-            status="needs_work" if collector_count and training_ready == 0 else _status(collection),
+            status=collection_status,
             evidence=[
                 f"collector_count={collector_count}",
                 f"bots_with_observations={collection.get('bots_with_observations', 'unknown')}",
                 f"total_observations={collection.get('total_observations', 'unknown')}",
                 f"training_ready_count={training_ready}",
+                "paper_soak_advisory_only=true" if guarded_paper_soak_green and collection_status == "advisory" else "",
             ],
             next_commands=[
                 _command("data-collection-observation-rollup", "--apply", "--json"),
@@ -288,17 +372,12 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, apply: bool = False) -> 
             weak_points=[5],
             owner="promotion_quality_infrabot",
             priority=9 if _status(training) in {"blocked", "critical"} or _status(bot_quality) in {"blocked", "critical"} else 5,
-            status=(
-                "blocked"
-                if _status(training) in {"blocked", "critical"} or _status(bot_quality) in {"blocked", "critical"}
-                else "ready"
-                if _status(training) == "ready" and _status(bot_quality) == "ready"
-                else "needs_work"
-            ),
+            status=promotion_training_status,
             evidence=[
                 f"training_quality_status={_status(training)}",
                 f"bot_quality_status={_status(bot_quality)}",
                 f"training_quality_score={(training.get('summary') or {}).get('training_quality_score', training.get('training_quality_score', 'unknown')) if isinstance(training.get('summary'), dict) else training.get('training_quality_score', 'unknown')}",
+                "paper_soak_advisory_only=true" if guarded_paper_soak_green and promotion_training_status == "advisory" else "",
             ],
             next_commands=[
                 _command("training-quality", "--json"),
@@ -335,13 +414,7 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, apply: bool = False) -> 
             weak_points=[7],
             owner="storage_backlog_infrabot",
             priority=7 if total_pending or estimated_drain_minutes > 120 else 3,
-            status=(
-                "blocked"
-                if _status(storage) in {"blocked", "critical"}
-                else "needs_work"
-                if total_pending or estimated_drain_minutes > 120
-                else _status(storage)
-            ),
+            status=storage_backlog_status,
             evidence=[
                 f"storage_status={_status(storage)}",
                 f"total_pending_lines={total_pending}",
@@ -351,6 +424,7 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, apply: bool = False) -> 
                 f"ready_drainer_count={ready_drainer_count}",
                 f"super_drainer_status={_status(super_drainer, 'missing')}",
                 f"super_safe_next_action={super_safe_next_action}",
+                "bounded_storage_soak_backlog=true" if bounded_storage_soak_backlog else "",
             ],
             next_commands=[
                 _command("external-backlog-drain", "--apply", "--json"),
@@ -394,11 +468,12 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, apply: bool = False) -> 
             weak_points=[1, 5, 6],
             owner="runtime_separation_infrabot",
             priority=8 if _status(auth) in {"degraded", "blocked"} or _status(live_runtime) in {"degraded", "blocked"} else 4,
-            status="needs_work" if _status(auth) != "ready" or _status(live_runtime) != "ready" else "ready",
+            status=auth_runtime_status,
             evidence=[
                 f"auth_lease_status={_status(auth)}",
                 f"auth_expires_in_seconds={(auth.get('summary') or {}).get('expires_in_seconds', auth.get('expires_in_seconds', 'unknown')) if isinstance(auth.get('summary'), dict) else auth.get('expires_in_seconds', 'unknown')}",
                 f"live_runtime_separation_status={_status(live_runtime)}",
+                "paper_soak_advisory_only=true" if guarded_paper_soak_green and auth_runtime_status == "advisory" else "",
             ],
             next_commands=[
                 _command("schwab-auth-guard", "--json"),
@@ -413,7 +488,7 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, apply: bool = False) -> 
             weak_points=[6],
             owner="worktree_hygiene_infrabot",
             priority=6 if worktree.get("tracked_change_count") or worktree.get("untracked_count") else 2,
-            status="needs_work" if worktree.get("tracked_change_count") or worktree.get("untracked_count") else "ready",
+            status=worktree_status,
             evidence=[
                 "tracked_change_count={}".format(worktree.get("tracked_change_count", 0)),
                 "untracked_count={}".format(worktree.get("untracked_count", 0)),
@@ -421,6 +496,7 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, apply: bool = False) -> 
                 "untracked_config_count={}".format(worktree.get("untracked_config_count", 0)),
                 "untracked_test_count={}".format(worktree.get("untracked_test_count", 0)),
                 "obvious_scratch_count={}".format(worktree.get("obvious_scratch_count", 0)),
+                "paper_soak_advisory_only=true" if guarded_paper_soak_green and worktree_status == "advisory" else "",
             ],
             next_commands=[
                 ["git", "status", "--short"],
@@ -434,6 +510,7 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, apply: bool = False) -> 
     lanes = sorted(lanes, key=lambda row: int(row.get("priority", 0)), reverse=True)
     blocking_lanes = [lane for lane in lanes if str(lane.get("status")) in {"blocked", "critical", "degraded", "missing"}]
     needs_work_lanes = [lane for lane in lanes if str(lane.get("status")) == "needs_work"]
+    advisory_lanes = [lane for lane in lanes if str(lane.get("status")) == "advisory"]
     registry = _registry_summary(project_root)
     overall_status = "blocked" if blocking_lanes else "needs_work" if needs_work_lanes else "ready"
 
@@ -447,6 +524,9 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, apply: bool = False) -> 
             "lane_count": len(lanes),
             "blocking_lane_count": len(blocking_lanes),
             "needs_work_lane_count": len(needs_work_lanes),
+            "advisory_lane_count": len(advisory_lanes),
+            "guarded_paper_soak_green": bool(guarded_paper_soak_green),
+            "bounded_storage_soak_backlog": bool(bounded_storage_soak_backlog),
             **registry,
             "worktree_tracked_change_count": int(worktree.get("tracked_change_count", 0) or 0),
             "worktree_untracked_count": int(worktree.get("untracked_count", 0) or 0),

@@ -597,8 +597,22 @@ def test_adaptive_regression_guard_softens_paper_soak_section_advisories(tmp_pat
             "guarded_paper_ready": True,
             "live_execution_locked": True,
             "paper_soak_advisory_below_floor": True,
-            "advisory_below_floor_sections": ["live_trading_readiness", "ops_and_autonomy"],
+            "advisory_below_floor_sections": [
+                "data_ingestion_and_storage",
+                "live_trading_readiness",
+                "ops_and_autonomy",
+            ],
             "sections": [
+                {
+                    "section": "data_ingestion_and_storage",
+                    "state": "below_floor",
+                    "score": 84.53,
+                    "raw_score": 84.53,
+                    "letter_grade": "B+",
+                    "raw_letter_grade": "B+",
+                    "floor_reason": "bounded storage recovery remains active",
+                    "recommended_commands": [["./scripts/ops/opsctl.sh", "ingestion-storage-control", "--json"]],
+                },
                 {
                     "section": "live_trading_readiness",
                     "state": "below_floor",
@@ -630,8 +644,10 @@ def test_adaptive_regression_guard_softens_paper_soak_section_advisories(tmp_pat
 
     assert payload["overall_status"] == "ready"
     assert payload["active_regression_count"] == 0
+    assert rows["section:data_ingestion_and_storage"]["state"] == "ready"
     assert rows["section:live_trading_readiness"]["state"] == "ready"
     assert rows["section:ops_and_autonomy"]["state"] == "ready"
+    assert rows["section:data_ingestion_and_storage"]["metrics"]["paper_soak_section_advisory_only"] is True
     assert rows["section:live_trading_readiness"]["metrics"]["paper_soak_section_advisory_only"] is True
     assert rows["section:ops_and_autonomy"]["metrics"]["paper_soak_section_advisory_only"] is True
 
@@ -1047,6 +1063,37 @@ def test_adaptive_regression_guard_treats_foreground_memory_advisory_as_ready(tm
     assert "memory_pressure_advisory_ready" in memory["metrics"]["warnings"]
 
 
+def test_adaptive_regression_guard_softens_unknown_green_memory_advisory_during_guarded_paper(tmp_path: Path) -> None:
+    _seed_ready_artifacts(tmp_path)
+    _write_guarded_paper_health_fast(tmp_path)
+    now = datetime.now(timezone.utc).isoformat()
+    health = tmp_path / "governance" / "health"
+    _write_json(
+        health / "memory_pressure_intelligence_latest.json",
+        {
+            "timestamp_utc": now,
+            "ok": False,
+            "overall_status": "advisory",
+            "classification": {"status": "vm_green_new_advisory_label"},
+            "reopen_gate": {"safe_to_widen_p_core_workers": False, "safe_for_training": False},
+            "snapshot": {"pages_throttled": 0.0, "memory_truth_reconciliation": {"active": False}},
+        },
+    )
+
+    payload = src.build_payload(
+        tmp_path,
+        grade_guard_builder=lambda _: {"overall_status": "ready", "blocked_surface_count": 0, "degraded_surface_count": 0, "surfaces": []},
+        state_path=tmp_path / "governance" / "health" / "adaptive_regression_guard_state.json",
+    )
+    memory = next(row for row in payload["surfaces"] if row["surface_id"] == "guard:memory_truth_contract")
+
+    assert payload["overall_status"] == "ready"
+    assert memory["state"] == "ready"
+    assert memory["metrics"]["memory_soft_guard_for_paper_soak"] is True
+    assert memory["metrics"]["classification_soft_or_clear"] is True
+    assert memory["metrics"]["blockers"] == []
+
+
 def test_adaptive_regression_guard_treats_runtime_advisory_with_clear_storage_as_ready(tmp_path: Path) -> None:
     _seed_ready_artifacts(tmp_path)
     now = datetime.now(timezone.utc).isoformat()
@@ -1264,6 +1311,89 @@ def test_adaptive_regression_guard_accepts_capacity_limited_paper_runtime(tmp_pa
     assert runtime_storage["metrics"]["runtime_advisory_ready"] is True
     assert runtime_storage["metrics"]["capacity_limited_paper_advisory"] is True
     assert runtime_storage["metrics"]["blockers"] == []
+    assert runtime_storage["metrics"]["warnings"] == []
+
+
+def test_adaptive_regression_guard_accepts_normal_compute_armed_paper_capacity(tmp_path: Path) -> None:
+    _seed_ready_artifacts(tmp_path)
+    now = datetime.now(timezone.utc).isoformat()
+    health = tmp_path / "governance" / "health"
+    _write_json(
+        health / "runtime_throttle_control_latest.json",
+        {
+            "timestamp_utc": now,
+            "ok": False,
+            "overall_status": "degraded",
+            "throttle_profile": "soft_cap",
+            "compute_pressure_level": "normal",
+            "memory_pressure_level": "normal",
+            "host_saturation_score": 49.5,
+            "paper_execution_policy": {
+                "paper_execution_allowed": True,
+                "pause_paper_execution": False,
+                "reason": "paper_ramp_armed_and_clean",
+                "stage": "armed",
+                "armed": True,
+                "ok": True,
+                "blockers": [],
+            },
+        },
+    )
+    _write_json(
+        health / "paper_400_ramp_latest.json",
+        {
+            "timestamp_utc": now,
+            "ok": True,
+            "stage": "armed",
+            "armed": True,
+            "blockers": [],
+            "gates": {
+                "runtime": {
+                    "ok": True,
+                    "status": "ready",
+                    "blockers": [],
+                    "runtime_capacity_ready": True,
+                    "capacity_limited_armed": True,
+                    "paper_execution_clean": True,
+                    "live_execution_locked": True,
+                    "pressure_limited": False,
+                    "compute_pressure_level": "normal",
+                    "memory_pressure_level": "normal",
+                }
+            },
+        },
+    )
+    _write_json(
+        health / "ingestion_storage_control_latest.json",
+        {
+            "timestamp_utc": now,
+            "ok": True,
+            "overall_status": "ready",
+            "severity": "stable",
+            "pressure_index": 0.0,
+            "backpressure": {
+                "total_pending_lines": 0,
+                "core_pending_lines": 0,
+                "pending_lines_threshold": 15000,
+                "oldest_pending_age_seconds": 0.0,
+                "oldest_age_threshold_seconds": 240.0,
+            },
+            "storage_plane_contract": {"disk_contract": {"emergency_disk_guard": False}},
+        },
+    )
+
+    payload = src.build_payload(
+        tmp_path,
+        grade_guard_builder=lambda _: {"overall_status": "ready", "blocked_surface_count": 0, "degraded_surface_count": 0, "surfaces": []},
+        state_path=tmp_path / "governance" / "health" / "adaptive_regression_guard_state.json",
+    )
+    runtime_storage = next(row for row in payload["surfaces"] if row["surface_id"] == "guard:runtime_storage_contract")
+
+    assert payload["overall_status"] == "ready"
+    assert runtime_storage["state"] == "ready"
+    assert runtime_storage["metrics"]["runtime_advisory_ready"] is True
+    assert runtime_storage["metrics"]["armed_paper_capacity_advisory"] is True
+    assert runtime_storage["metrics"]["capacity_limited_paper_advisory"] is True
     assert runtime_storage["metrics"]["warnings"] == []
 
 

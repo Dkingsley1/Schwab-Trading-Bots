@@ -41,6 +41,91 @@ def _safe_float(raw: Any, default: float = 0.0) -> float:
         return float(default)
 
 
+def _load_json(path: Path) -> dict[str, Any]:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _process_alive(pid: int) -> bool:
+    if int(pid) <= 0:
+        return False
+    try:
+        os.kill(int(pid), 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except Exception:
+        return False
+    return True
+
+
+def _write_retrain_launch_payload(payload: dict[str, Any]) -> list[str]:
+    paths: list[str] = []
+    for raw_path in [
+        payload.get("artifact_path"),
+        payload.get("latest_path"),
+        *(payload.get("latest_alias_paths") if isinstance(payload.get("latest_alias_paths"), list) else []),
+    ]:
+        text = str(raw_path or "").strip()
+        if not text or text in paths:
+            continue
+        write_payload(Path(text), payload)
+        paths.append(text)
+    return paths
+
+
+def _finalize_timed_out_retrain_launch(project_root: Path, launch_result: dict[str, Any]) -> dict[str, Any]:
+    if not bool(launch_result.get("timed_out", False)):
+        return {}
+    latest_path = project_root / "governance" / "health" / "retrain_launch_latest.json"
+    payload = _load_json(latest_path)
+    if not payload:
+        return {"status": "missing_retrain_launch_latest", "latest_path": str(latest_path)}
+    if str(payload.get("state") or "").strip().lower() != "running":
+        return {
+            "status": "latest_not_running",
+            "latest_path": str(latest_path),
+            "state": str(payload.get("state") or ""),
+            "final_status": str(payload.get("final_status") or ""),
+        }
+    pid = _safe_int(payload.get("pid"), 0)
+    alive = _process_alive(pid)
+    if alive:
+        return {
+            "status": "process_still_alive",
+            "latest_path": str(latest_path),
+            "pid": pid,
+            "phase": str(payload.get("phase") or ""),
+            "progress": payload.get("progress") if isinstance(payload.get("progress"), dict) else {},
+        }
+    finalized = dict(payload)
+    finalized["state"] = "completed"
+    finalized["ended_utc"] = iso_now()
+    finalized["final_status"] = "timed_out_by_training_drain_autopilot"
+    finalized["exit_code"] = 124
+    finalized["timeout_source"] = "training_drain_autopilot"
+    finalized["timeout_phase"] = str(payload.get("phase") or "")
+    finalized["timeout_progress"] = payload.get("progress") if isinstance(payload.get("progress"), dict) else {}
+    finalized["autopilot_timeout"] = {
+        "returncode": launch_result.get("returncode"),
+        "stdout_tail": str(launch_result.get("stdout_tail") or "")[-1200:],
+        "stderr_tail": str(launch_result.get("stderr_tail") or "")[-1200:],
+    }
+    written = _write_retrain_launch_payload(finalized)
+    return {
+        "status": "finalized_timeout",
+        "latest_path": str(latest_path),
+        "written_paths": written,
+        "pid": pid,
+        "timeout_phase": finalized["timeout_phase"],
+        "timeout_progress": finalized["timeout_progress"],
+    }
+
+
 def _acquire_lock(path: Path) -> tuple[Any | None, str]:
     path.parent.mkdir(parents=True, exist_ok=True)
     handle = path.open("a+", encoding="utf-8")
@@ -74,6 +159,8 @@ def _training_env_overrides() -> dict[str, str]:
         "TRAINING_PCORE_NICE": str(nice),
         "RUNTIME_THROTTLE_USE_TASKPOLICY_BACKGROUND": "0",
         "RUNTIME_THROTTLE_RESEARCH_NICE": str(research_nice),
+        "PYTHONUNBUFFERED": "1",
+        "RETRAIN_GREEN_MEMORY_SWAP_RELIEF": "1",
         "BOT_PROTECTED_VOLUME_DENYLIST": ",".join(PROTECTED_VOLUMES),
     }
 
@@ -398,6 +485,11 @@ def run_cycle(
         )
         cycle["launch_result"] = _compact_step(launch)
         cycle["launch_result"]["env_overrides"] = _training_env_overrides()
+        if bool(cycle["launch_result"].get("timed_out", False)):
+            cycle["launch_result"]["retrain_launch_timeout_finalization"] = _finalize_timed_out_retrain_launch(
+                project_root,
+                cycle["launch_result"],
+            )
     elif not apply:
         cycle["launch_result"] = {"skipped": True, "reason": "dry_run"}
     elif final_gate.get("launch_allowed") and not command:

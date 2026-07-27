@@ -88,6 +88,10 @@ PAPER_SOAK_ADVISORY_BELOW_FLOOR_SECTIONS = {
     "training_and_model_quality",
     "ops_and_autonomy",
 }
+STORAGE_PAPER_SOAK_ADVISORY_SECTION = "data_ingestion_and_storage"
+STORAGE_SOAK_RAW_LIVE_MAX_CORE_LINES = 10_000
+STORAGE_SOAK_RAW_LIVE_MAX_TOTAL_LINES = 15_000
+STORAGE_SOAK_RAW_LIVE_MAX_AGE_SECONDS = 900.0
 GUARDED_READ_ONLY_RUNTIME_STATES = {
     "guarded_live_read_only",
     "managed_cold_lane_deferred",
@@ -133,6 +137,83 @@ def _live_execution_locked(health_fast: dict[str, Any], runtime: dict[str, Any])
     )
 
 
+def _safe_int(raw: Any, default: int = 0) -> int:
+    try:
+        return int(float(raw))
+    except Exception:
+        return int(default)
+
+
+def _safe_float(raw: Any, default: float = 0.0) -> float:
+    try:
+        return float(raw)
+    except Exception:
+        return float(default)
+
+
+def _raw_live_storage_backlog_clear(storage: dict[str, Any]) -> bool:
+    backpressure = storage.get("backpressure") if isinstance(storage.get("backpressure"), dict) else {}
+    effective = backpressure.get("effective_raw_live") if isinstance(backpressure.get("effective_raw_live"), dict) else {}
+    estimate = effective.get("raw_live_estimate") if isinstance(effective.get("raw_live_estimate"), dict) else {}
+    raw_live = estimate or (backpressure.get("raw_live") if isinstance(backpressure.get("raw_live"), dict) else {})
+    if not raw_live:
+        return True
+    return bool(
+        _safe_int(raw_live.get("core_pending_lines"), 0) <= STORAGE_SOAK_RAW_LIVE_MAX_CORE_LINES
+        and _safe_int(raw_live.get("total_pending_lines"), _safe_int(raw_live.get("core_pending_lines"), 0))
+        <= STORAGE_SOAK_RAW_LIVE_MAX_TOTAL_LINES
+        and _safe_float(raw_live.get("oldest_pending_age_seconds"), 0.0) <= STORAGE_SOAK_RAW_LIVE_MAX_AGE_SECONDS
+    )
+
+
+def _storage_section_advisory_for_paper_soak(project_root: Path) -> bool:
+    storage = load_json(project_root / "governance" / "health" / "ingestion_storage_control_latest.json")
+    status = str(storage.get("overall_status") or storage.get("status") or "").strip().lower()
+    severity = str(storage.get("severity") or "").strip().lower()
+    if status not in {"ready", "ok", "advisory"}:
+        return False
+    if severity not in {"", "ready", "stable", "low", "normal"}:
+        return False
+    if _safe_float(storage.get("pressure_index"), 1.0) > 0.50:
+        return False
+    soak_contract = (
+        storage.get("continuous_run_soak_contract")
+        if isinstance(storage.get("continuous_run_soak_contract"), dict)
+        else {}
+    )
+    blockers = {
+        str(item or "").strip()
+        for item in (soak_contract.get("blockers") if isinstance(soak_contract.get("blockers"), list) else [])
+        if str(item or "").strip()
+    }
+    soak_ready = bool(soak_contract.get("ready", False) or soak_contract.get("soak_ready", False))
+    if blockers or not soak_ready:
+        return False
+    return _raw_live_storage_backlog_clear(storage)
+
+
+def _advisory_below_floor_sections(
+    below_floor: list[str],
+    *,
+    project_root: Path,
+    guarded_paper_ready: bool,
+    live_execution_locked: bool,
+    guarded_paper_strict_clear: bool,
+    overall_score: float,
+) -> list[str]:
+    if not (below_floor and guarded_paper_ready and live_execution_locked):
+        return []
+    advisory: list[str] = []
+    default_advisory_allowed = bool(guarded_paper_strict_clear or overall_score >= 96.0)
+    storage_advisory_allowed = _storage_section_advisory_for_paper_soak(project_root)
+    for section in below_floor:
+        if section in PAPER_SOAK_ADVISORY_BELOW_FLOOR_SECTIONS and default_advisory_allowed:
+            advisory.append(section)
+        elif section == STORAGE_PAPER_SOAK_ADVISORY_SECTION and storage_advisory_allowed:
+            advisory.append(section)
+    return advisory
+
+
 def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
     health_root = project_root / "governance" / "health"
     connector = DefaultLicensingAPIConnector()
@@ -151,16 +232,17 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
     guarded_paper_ready = _guarded_paper_ready(health_fast)
     live_execution_locked = _live_execution_locked(health_fast, runtime)
     guarded_paper_strict_clear = bool(health_fast.get("strict_all_clear", False) and guarded_paper_ready and live_execution_locked)
-    paper_soak_advisory_below_floor = bool(
-        below_floor
-        and set(below_floor).issubset(PAPER_SOAK_ADVISORY_BELOW_FLOOR_SECTIONS)
-        and guarded_paper_ready
-        and live_execution_locked
-        and (guarded_paper_strict_clear or float(snapshot.get("overall_score", 0.0) or 0.0) >= 96.0)
+    advisory_below_floor = _advisory_below_floor_sections(
+        below_floor,
+        project_root=project_root,
+        guarded_paper_ready=guarded_paper_ready,
+        live_execution_locked=live_execution_locked,
+        guarded_paper_strict_clear=guarded_paper_strict_clear,
+        overall_score=_safe_float(snapshot.get("overall_score"), 0.0),
     )
-    advisory_below_floor = below_floor if paper_soak_advisory_below_floor else []
+    paper_soak_advisory_below_floor = bool(below_floor and set(below_floor).issubset(set(advisory_below_floor)))
     blocking_below_floor = [section for section in below_floor if section not in set(advisory_below_floor)]
-    overall_status = "blocked" if blocking_below_floor else ("degraded" if protected_by_floor or advisory_below_floor else "ready")
+    overall_status = "blocked" if blocking_below_floor else ("degraded" if protected_by_floor else "ready")
     recommended_actions = ordered_unique(
         [
             "keep the section-grade floor bot active so A-/A sections stay protected even when raw live artifacts dip during bounded recovery"

@@ -15,7 +15,12 @@ import numpy as np
 # --- THE OPTIONS MATH ---
 from py_vollib.black_scholes import black_scholes
 from py_vollib.black_scholes.greeks.numerical import delta, theta, gamma
-import pandas_ta as ta
+try:
+    import pandas_ta as ta
+    INDICATOR_LIBRARY_BACKEND = "pandas_ta"
+except ModuleNotFoundError:
+    import ta
+    INDICATOR_LIBRARY_BACKEND = "ta"
 
 # --- SYSTEM TOOLS ---
 import sqlite3  # To store your "Failure Logs" locally

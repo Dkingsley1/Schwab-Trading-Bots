@@ -116,6 +116,16 @@ def _storage_ready(storage: dict[str, Any]) -> tuple[bool, list[str]]:
     return not blockers, blockers
 
 
+def _collection_rollup_advisory_ready(rollup: dict[str, Any], rollup_status: str) -> bool:
+    return bool(
+        rollup_status == "degraded"
+        and _safe_int(rollup.get("collector_count"), 0) > 0
+        and _safe_int(rollup.get("bots_with_observations"), 0) > 0
+        and _safe_int(rollup.get("total_observations"), 0) > 0
+        and _safe_int(rollup.get("training_ready_count"), 0) == 0
+    )
+
+
 def _platform_repair_contract(
     *,
     platform: dict[str, Any],
@@ -277,6 +287,7 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
     runtime_status = _status(runtime.get("overall_status"))
     memory_status = _status(memory.get("overall_status"))
     rollup_status = _status(rollup.get("overall_status"))
+    collection_advisory_ready = _collection_rollup_advisory_ready(rollup, rollup_status)
     swap_tier = _status(swap_payload.get("tier") or "normal")
     paper_ramp_blockers = [str(item) for item in _as_list(paper_ramp.get("blockers")) if str(item).strip()]
     paper_ramp_stage = _status(paper_ramp.get("stage"))
@@ -344,7 +355,7 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
         guarded_paper_blockers.append(f"runtime_status={runtime_status or 'missing'}")
     if not memory_guarded_ok:
         guarded_paper_blockers.append(f"memory_status={memory_status or 'missing'}")
-    if rollup_status not in {"ready", ""}:
+    if rollup_status not in {"ready", ""} and not collection_advisory_ready:
         guarded_paper_blockers.append(f"collection_status={rollup_status}")
     if swap_tier not in {"normal", "calm", ""}:
         guarded_paper_blockers.append(f"swap_tier={swap_tier}")
@@ -376,6 +387,7 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
                 "paper_ramp_stage": paper_ramp_stage,
                 "paper_ramp_blockers": paper_ramp_blockers,
                 "advisory_clear_blockers": sorted(advisory_halt_blockers),
+                "collection_advisory_ready": collection_advisory_ready,
                 "runtime_memory_advisory_relief": plumbing_runtime_memory_relief,
                 "paper_ramp_runtime_ready": paper_ramp_runtime_ready,
                 "paper_ramp_memory_ready": paper_ramp_memory_ready,
@@ -428,6 +440,8 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
             "bots_with_observations": _safe_int(rollup.get("bots_with_observations"), 0),
             "zero_observation_count": _safe_int(rollup.get("zero_observation_count"), 0),
             "total_observations": _safe_int(rollup.get("total_observations"), 0),
+            "training_ready_count": _safe_int(rollup.get("training_ready_count"), 0),
+            "advisory_ready": collection_advisory_ready,
         },
         "platform_intelligence": {
             "overall_status": platform.get("overall_status"),

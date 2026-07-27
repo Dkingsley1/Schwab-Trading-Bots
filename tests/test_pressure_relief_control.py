@@ -149,6 +149,36 @@ def test_health_fast_is_read_only_and_ready_from_latest_files(tmp_path: Path) ->
     assert payload["collection"]["bots_with_observations"] == 2
 
 
+def test_health_fast_allows_flowing_collection_maturity_debt_for_guarded_paper(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    health_root = project_root / "governance" / "health"
+    _write_json(health_root / "process_watchdog_latest.json", {"alerts": [], "safety_pause": {"active": False}, "status": []})
+    _write_json(health_root / "runtime_throttle_control_latest.json", {"overall_status": "ready", "host_saturation_score": 12})
+    _write_json(health_root / "memory_efficiency_control_latest.json", {"overall_status": "ready", "recommended_profile": "max_throughput"})
+    _write_json(health_root / "swap_pressure_governor_latest.json", {"swap_pressure": {"tier": "normal", "swap_used_gb": 0.0}})
+    _write_json(
+        health_root / "data_collection_observation_rollup_latest.json",
+        {
+            "overall_status": "degraded",
+            "collector_count": 173,
+            "bots_with_observations": 28,
+            "total_observations": 3887,
+            "training_ready_count": 0,
+            "zero_observation_count": 145,
+        },
+    )
+    _write_json(health_root / "global_halt_auto_clear_latest.json", {"halt": False, "halt_state": "clear_ready", "clear_blockers": []})
+    _write_json(health_root / "ingestion_storage_control_latest.json", {"severity": "stable", "pressure_index": 0.01, "backpressure": {}})
+
+    payload = health_fast.build_payload(project_root)
+
+    assert payload["ok"] is True
+    assert payload["strict_all_clear"] is True
+    assert payload["operational_readiness"]["guarded_paper"]["blockers"] == []
+    assert payload["operational_readiness"]["guarded_paper"]["collection_advisory_ready"] is True
+    assert payload["collection"]["advisory_ready"] is True
+
+
 def test_health_fast_surfaces_all_sleeves_effective_runtime_reconciliation(tmp_path: Path) -> None:
     project_root = tmp_path / "project"
     health_root = project_root / "governance" / "health"

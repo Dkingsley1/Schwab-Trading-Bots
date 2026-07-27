@@ -1040,6 +1040,13 @@ def _resolved_restart_storms(
             unresolved = False
         if paused_by_safety_flags or paused_by_creative_cotenant or paused_by_runtime_gate:
             unresolved = False
+        sql_writer_idle_complete = bool(
+            name == 'sql_link_writer'
+            and row.get('writer_idle_ok', False)
+            and not _safe_bool(row.get('live_execution_critical'), default=False)
+        )
+        if sql_writer_idle_complete:
+            unresolved = False
         impact = _restart_storm_impact(name, row)
         quarantinable = _restart_storm_quarantine_allowed(name, row)
         live_execution_critical = _safe_bool(row.get('live_execution_critical'), default=(impact == 'execution_lane'))
@@ -1063,6 +1070,8 @@ def _resolved_restart_storms(
             storm['resolution_reason'] = str(row.get('creative_pause_reason') or 'creative_cotenant_pause_active')
         elif paused_by_runtime_gate:
             storm['resolution_reason'] = str(row.get('runtime_pause_reason') or 'runtime_paper_execution_paused')
+        elif sql_writer_idle_complete:
+            storm['resolution_reason'] = 'sql_writer_on_demand_idle_complete'
         recent.append(storm)
         if unresolved:
             active.append(storm)

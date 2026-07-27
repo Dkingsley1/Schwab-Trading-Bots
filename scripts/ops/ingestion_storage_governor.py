@@ -363,10 +363,12 @@ def _apply_backlog_relief_env(env: dict[str, str], backlog_relief_contract: dict
         env.update(
             {
                 "SQLITE_CACHE_SIZE_KB": "32768",
-                "SQLITE_MMAP_SIZE_MB": "512",
+                "SQLITE_MMAP_SIZE_MB": "0",
+                "SQLITE_ALLOW_MMAP": "0",
                 "SQLITE_WAL_AUTOCHECKPOINT_PAGES": "4000",
                 "BOT_OPS_SQLITE_CACHE_SIZE_KB": "8192",
-                "BOT_OPS_SQLITE_MMAP_SIZE_MB": "96",
+                "BOT_OPS_SQLITE_MMAP_SIZE_MB": "0",
+                "BOT_OPS_SQLITE_ALLOW_MMAP": "0",
                 "BOT_OPS_SQLITE_BUSY_TIMEOUT_MS": "420000",
             }
         )

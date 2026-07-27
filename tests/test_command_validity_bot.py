@@ -140,6 +140,52 @@ esac
     assert f"open_target_missing:{missing_pdf}" in payload["command_rows"][0]["issues"]
 
 
+def test_command_validity_bot_treats_clean_operator_gated_routes_as_ready(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    _write(
+        project_root / "COMMANDS.md",
+        f"""# Commands (Canonical)
+
+## Most Used
+
+### Stop the stack
+```bash
+cd {project_root}
+./scripts/ops/opsctl.sh stop
+```
+""",
+    )
+    _write(
+        project_root / "scripts" / "ops" / "opsctl.sh",
+        """#!/bin/zsh
+cmd="${1:-help}"
+case "$cmd" in
+  stop)
+    if [[ "${2:-}" == "--dry-run" ]]; then
+      echo "stack_stop_status=ready_to_stop"
+      exit 0
+    fi
+    echo stopped
+    ;;
+  help|*)
+    cat <<'EOF'
+Usage: opsctl.sh <command>
+  stop
+EOF
+    ;;
+esac
+""",
+    )
+    _write(project_root / "scripts" / "runbook.sh", "#!/bin/zsh\necho ok\n")
+
+    payload = validity_src.build_payload(project_root, apply=False, timeout_sec=15)
+
+    assert payload["overall_status"] == "ready"
+    assert payload["metrics"]["operator_gated_entry_count"] == 1
+    assert payload["metrics"]["contract_dispatch_smoke_failure_count"] == 0
+    assert payload["metrics"]["unprobed_operator_gated_count"] == 0
+
+
 def test_command_validity_bot_blocks_failed_operator_route_probe(tmp_path: Path) -> None:
     project_root = tmp_path / "project"
     _write(

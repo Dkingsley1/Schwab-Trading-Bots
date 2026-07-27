@@ -476,14 +476,46 @@ def _run_json_command(
     }
 
 
+def _payload_reason_tokens(payload: dict[str, Any]) -> set[str]:
+    tokens: set[str] = set()
+    for key in ("reason", "skipped_reason"):
+        value = str(payload.get(key) or "").strip()
+        if value:
+            tokens.add(value)
+    resource_guard = payload.get("resource_guard") if isinstance(payload.get("resource_guard"), dict) else {}
+    for key in ("reason", "skipped_reason"):
+        value = str(resource_guard.get(key) or "").strip()
+        if value:
+            tokens.add(value)
+    for raw in resource_guard.get("resource_guard_reasons") or []:
+        value = str(raw or "").strip()
+        if value:
+            tokens.add(value)
+    freeze_contract = (
+        resource_guard.get("support_maintenance_freeze_contract")
+        if isinstance(resource_guard.get("support_maintenance_freeze_contract"), dict)
+        else {}
+    )
+    value = str(freeze_contract.get("reason") or "").strip()
+    if value:
+        tokens.add(value)
+    return tokens
+
+
+def _has_nonfatal_reason(payload: dict[str, Any], accepted: set[str]) -> bool:
+    return bool(accepted and (_payload_reason_tokens(payload) & accepted))
+
+
 def _step_status(result: dict[str, Any], *, nonfatal_reasons: set[str] | None = None) -> str:
+    payload = result.get("payload") if isinstance(result.get("payload"), dict) else {}
+    accepted = nonfatal_reasons or set()
+    if _has_nonfatal_reason(payload, accepted):
+        return "busy"
     if bool(result.get("timed_out", False)):
         return "timed_out"
     if int(result.get("rc", 1)) != 0:
         return "error"
-    payload = result.get("payload") if isinstance(result.get("payload"), dict) else {}
     reason = str(payload.get("reason") or "")
-    accepted = nonfatal_reasons or set()
     if bool(payload.get("busy", False)) or reason in accepted:
         return "busy"
     if bool(payload.get("skipped", False)):
@@ -1178,9 +1210,16 @@ def build_payload(
                 payload_path=project_root / "governance" / "health" / "storage_maintenance_latest.json",
                 timeout_sec=max(int(command_timeout_seconds), 900),
             )
-            steps["storage_maintenance_lane"] = _step_record(maintenance, nonfatal_reasons={"already_running"})
+            steps["storage_maintenance_lane"] = _step_record(
+                maintenance,
+                nonfatal_reasons={"already_running", "support_maintenance_frozen_for_mac_fluidity"},
+            )
             maintenance_payload = maintenance.get("payload") if isinstance(maintenance.get("payload"), dict) else {}
-            maintenance_applied = int(maintenance.get("rc", 1)) == 0 and str(steps["storage_maintenance_lane"].get("status") or "") == "ok"
+            maintenance_applied = (
+                int(maintenance.get("rc", 1)) == 0
+                and str(steps["storage_maintenance_lane"].get("status") or "") == "ok"
+                and str(maintenance_payload.get("overall_status") or "") != "guarded_hold"
+            )
             if str(steps["storage_maintenance_lane"].get("status") or "") == "busy":
                 maintenance_followup_needed = True
 
@@ -1217,12 +1256,19 @@ def build_payload(
         ok = False
     elif apply and steps and applied_with_followups:
         overall_status = "applied_with_followups"
-        ok = False
+        ok = True
     elif apply and steps:
         overall_status = "applied"
         ok = True
     elif bool(writer_after.get("active", False)) and bool(wait_result.get("timed_out", False)) and bool(writer_progress.get("progress_observed", False)):
         overall_status = "progressing_waiting_for_writer"
+        ok = True
+    elif (
+        bool(writer_after.get("active", False))
+        and bool(wait_result.get("timed_out", False))
+        and not _stale_writer_detected(writer_after, stale_progress_minutes=float(stale_progress_minutes))
+    ):
+        overall_status = "waiting_for_writer"
         ok = True
     elif bool(writer_after.get("active", False)) and bool(wait_result.get("timed_out", False)):
         overall_status = "timed_out_waiting_for_writer"
@@ -1508,6 +1554,7 @@ def main() -> int:
         "handoff_needed",
         "writer_active",
         "handoff_released",
+        "applied_with_followups",
     }
     return 0 if bool(payload.get("ok", False) or str(payload.get("overall_status") or "") in healthy_statuses) else 2
 

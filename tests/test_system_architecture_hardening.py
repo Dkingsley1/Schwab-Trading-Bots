@@ -561,6 +561,58 @@ def test_architecture_hardening_isolates_optional_provider_source_debt(tmp_path:
     assert "macro_crossstack" in contract["managed_verification_debt"]
 
 
+def test_architecture_hardening_treats_collection_maturity_as_watch_under_guarded_paper(tmp_path: Path) -> None:
+    _seed_ready_project(tmp_path)
+    health = tmp_path / "governance" / "health"
+    _write_json(
+        health / "data_collection_observation_rollup_latest.json",
+        {
+            "overall_status": "degraded",
+            "collector_count": 173,
+            "bots_with_observations": 28,
+            "zero_observation_count": 145,
+            "total_observations": 3887,
+            "training_ready_count": 0,
+        },
+    )
+    _write_json(health / "training_quality_control_latest.json", {"overall_status": "blocked", "training_quality_score": 93.5})
+
+    payload = src.build_payload(tmp_path)
+    training = payload["sections"]["training_evidence_contract"]
+
+    assert payload["ok"] is True
+    assert payload["overall_status"] == "watch"
+    assert payload["hard_section_count"] == 0
+    assert training["overall_status"] == "watch"
+    assert training["evidence"]["managed_training_evidence_contract"]["active"] is True
+
+
+def test_architecture_hardening_treats_refreshing_core_source_debt_as_watch_under_guarded_paper(tmp_path: Path) -> None:
+    _seed_ready_project(tmp_path)
+    health = tmp_path / "governance" / "health"
+    _write_json(
+        health / "source_verification_latest.json",
+        {
+            "overall_status": "degraded",
+            "unverified_sources": ["public_macro_feeds"],
+            "degraded_artifacts": ["public_macro_feeds"],
+            "stale_artifacts": ["public_macro_feeds"],
+            "autorefresh_contract": {"enabled": True},
+        },
+    )
+
+    payload = src.build_payload(tmp_path)
+    provider = payload["sections"]["provider_source_mesh"]
+    contract = provider["evidence"]["source_mesh_debt_contract"]
+
+    assert payload["ok"] is True
+    assert payload["overall_status"] == "watch"
+    assert payload["hard_section_count"] == 0
+    assert provider["overall_status"] == "watch"
+    assert "core_source_verification_debt_managed_by_guarded_paper_autorefresh" in provider["watch_items"]
+    assert contract["guarded_paper_source_debt_advisory"] is True
+
+
 def test_architecture_hardening_writes_section_config_and_override_artifacts(tmp_path: Path) -> None:
     _seed_ready_project(tmp_path)
     payload = src.build_payload(tmp_path)

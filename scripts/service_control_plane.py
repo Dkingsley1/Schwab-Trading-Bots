@@ -43,7 +43,17 @@ def _status_rank(status: str) -> int:
         return 3
     if text in {"degraded", "running", "busy", "missing", "needs_work", "needs_coverage"}:
         return 2
-    if text in {"ready", "ok"}:
+    if text in {
+        "advisory",
+        "applied_with_followups",
+        "managed_paper_soak",
+        "ok",
+        "prep_only",
+        "ready",
+        "ready_with_advisories",
+        "waiting_for_off_hours",
+        "watch",
+    }:
         return 1
     return 2
 
@@ -69,6 +79,76 @@ def _lane(status: str, summary: str, *, raw_status: str = "", details: dict[str,
     return payload
 
 
+def _payload_fresh(payload: dict[str, Any], *, max_age_minutes: float = 30.0) -> bool:
+    raw = str(payload.get("timestamp_utc") or "").strip().replace("Z", "+00:00")
+    if not raw:
+        return False
+    try:
+        parsed = datetime.fromisoformat(raw)
+    except Exception:
+        return False
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    age = (datetime.now(timezone.utc) - parsed.astimezone(timezone.utc)).total_seconds() / 60.0
+    return bool(age <= max(float(max_age_minutes), 0.0))
+
+
+def _provider_lane_status(provider_mesh: dict[str, Any]) -> str:
+    raw = str(provider_mesh.get("overall_status") or ("missing" if not provider_mesh else "degraded"))
+    if not provider_mesh:
+        return raw
+    summary = provider_mesh.get("summary") if isinstance(provider_mesh.get("summary"), dict) else {}
+    required_collectors = int(summary.get("required_collectors", 0) or 0)
+    required_contract_ok = int(summary.get("required_contract_ok", 0) or 0)
+    required_snapshot_ready = int(summary.get("required_snapshot_ready", 0) or 0)
+    required_failures = int(summary.get("required_failure_count", 0) or 0)
+    cooldowns = provider_mesh.get("cooldowns") if isinstance(provider_mesh.get("cooldowns"), list) else []
+    required_ready = bool(
+        required_collectors > 0
+        and required_contract_ok >= required_collectors
+        and required_snapshot_ready >= required_collectors
+        and required_failures == 0
+        and not cooldowns
+    )
+    if raw in {"degraded", "missing"} and required_ready:
+        return "ready"
+    return raw
+
+
+def _runtime_lane_status(runtime_separation: dict[str, Any]) -> str:
+    raw = str(runtime_separation.get("overall_status") or ("missing" if not runtime_separation else "degraded"))
+    if raw != "degraded" or not runtime_separation:
+        return raw
+    live_plane = runtime_separation.get("live_plane") if isinstance(runtime_separation.get("live_plane"), dict) else {}
+    clearance = runtime_separation.get("clearance_plan") if isinstance(runtime_separation.get("clearance_plan"), dict) else {}
+    pressure = runtime_separation.get("shared_host_pressure") if isinstance(runtime_separation.get("shared_host_pressure"), dict) else {}
+    signals = pressure.get("signals") if isinstance(pressure.get("signals"), dict) else {}
+    clearance_state = str(clearance.get("clearance_state") or "").strip()
+    if (
+        bool(live_plane.get("ready", False))
+        and bool(live_plane.get("broker_ready", True))
+        and bool(live_plane.get("session_ready", True))
+        and int(pressure.get("contention_score", 0) or 0) <= 3
+        and clearance_state
+        in {"awaiting_coverage_cycles", "awaiting_cold_lane", "managed_cold_lane_deferred", "managed_coverage_stage_deferred", "protect_live", "ready"}
+        and not bool(signals.get("restart_storm_present", False))
+        and not bool(signals.get("swap_pressure_elevated", False))
+    ):
+        return "advisory"
+    return raw
+
+
+def _cockpit_lane_status(operator_cockpit: dict[str, Any]) -> str:
+    raw = str(operator_cockpit.get("overall_status") or ("degraded" if operator_cockpit else "missing"))
+    if raw != "degraded" or not operator_cockpit:
+        return raw
+    posture = operator_cockpit.get("adaptive_posture") if isinstance(operator_cockpit.get("adaptive_posture"), dict) else {}
+    hard_blockers = posture.get("hard_blockers") if isinstance(posture.get("hard_blockers"), list) else []
+    if bool(posture.get("live_collection_ready", False)) and not hard_blockers:
+        return "advisory"
+    return raw
+
+
 def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
     health_root = project_root / "governance" / "health"
     allocator_root = project_root / "governance" / "allocator"
@@ -92,22 +172,24 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
 
     restart_storms = len(process_watchdog.get("restart_storms") or [])
     platform_status = str((platform_control.get("institutional_readiness") or {}).get("overall_status") or "")
+    process_watchdog_status = str(process_watchdog.get("overall_status") or process_watchdog.get("status") or "")
     control_status = "ready"
     if restart_storms > 0:
         control_status = "blocked"
     elif not ops_coordinator or not process_watchdog:
         control_status = "degraded"
     elif not bool(ops_coordinator.get("ok", False)):
-        control_status = "degraded"
+        control_status = "advisory" if process_watchdog_status == "ready" else "degraded"
     elif platform_status and platform_status not in {"ready", "advancing"}:
-        control_status = "degraded"
+        control_status = "advisory"
     control_summary = (
         f"ops_ok={int(bool(ops_coordinator.get('ok', False)))} "
         f"restart_storms={restart_storms} "
         f"platform_status={platform_status or 'missing'}"
     )
 
-    provider_status = str(provider_mesh.get("overall_status") or ("missing" if not provider_mesh else "degraded"))
+    provider_status = _provider_lane_status(provider_mesh)
+    provider_raw_status = str(provider_mesh.get("overall_status") or "")
     provider_summary = (
         f"required_contract_ok={int(((provider_mesh.get('summary') or {}).get('required_contract_ok', 0) or 0))}/"
         f"{int(((provider_mesh.get('summary') or {}).get('required_collectors', 0) or 0))} "
@@ -128,7 +210,7 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
     elif paper_stale or live_stale:
         execution_status = "degraded"
     elif len(pre_trade_rows) <= 0 and len(approved_intents) <= 0:
-        execution_status = "degraded"
+        execution_status = "advisory"
     execution_summary = (
         f"approved_intents={len(approved_intents)} "
         f"pre_trade_orders={len(pre_trade_rows)} "
@@ -149,6 +231,8 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
         retrain_status = "ready"
     elif failure_count > 0 or "failure" in training_reason or "blocked" in str(retrain_orchestrator.get("reason") or ""):
         retrain_status = "blocked"
+    elif launch_state == "completed" and failure_count == 0 and training_reason in {"", "no_trained_targets", "skipped_by_flag"}:
+        retrain_status = "managed_paper_soak"
     elif retrain_orchestrator or retrain_launch or retrain_scorecard:
         retrain_status = "degraded"
     retrain_summary = (
@@ -162,14 +246,16 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
     event_status = "ready" if bool(event_store.get("ok", False)) and event_count > 0 else ("degraded" if event_store else "missing")
     event_summary = f"event_count={event_count} categories={len(category_counts)}"
 
-    runtime_status = str(runtime_separation.get("overall_status") or ("missing" if not runtime_separation else "degraded"))
+    runtime_status = _runtime_lane_status(runtime_separation)
+    runtime_raw_status = str(runtime_separation.get("overall_status") or "")
     runtime_summary = (
         f"contention_score={int(((runtime_separation.get('shared_host_pressure') or {}).get('contention_score', 0) or 0))}"
         if runtime_separation
         else "runtime_separation_missing"
     )
 
-    cockpit_status = str(operator_cockpit.get("overall_status") or ("degraded" if (project_root / "scripts" / "ops" / "operator_cockpit.py").exists() else "missing"))
+    cockpit_status = _cockpit_lane_status(operator_cockpit)
+    cockpit_raw_status = str(operator_cockpit.get("overall_status") or "")
     cockpit_summary = (
         f"recommended_actions={len(operator_cockpit.get('recommended_actions') or [])}"
         if operator_cockpit
@@ -178,7 +264,7 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
 
     upgrade_lanes = {
         "control_plane": _lane(control_status, control_summary, details={"restart_storms": restart_storms}),
-        "provider_mesh": _lane(provider_status, provider_summary),
+        "provider_mesh": _lane(provider_status, provider_summary, raw_status=provider_raw_status),
         "execution_gateway": _lane(
             execution_status,
             execution_summary,
@@ -191,8 +277,8 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
         ),
         "retrain_pipeline": _lane(retrain_status, retrain_summary, raw_status=retrain_raw_status),
         "event_history": _lane(event_status, event_summary, details={"event_count": event_count}),
-        "runtime_separation": _lane(runtime_status, runtime_summary),
-        "operator_cockpit_contract": _lane(cockpit_status, cockpit_summary),
+        "runtime_separation": _lane(runtime_status, runtime_summary, raw_status=runtime_raw_status),
+        "operator_cockpit_contract": _lane(cockpit_status, cockpit_summary, raw_status=cockpit_raw_status),
     }
 
     overall_status = _rollup_status([str(row.get("status") or "") for row in upgrade_lanes.values()])

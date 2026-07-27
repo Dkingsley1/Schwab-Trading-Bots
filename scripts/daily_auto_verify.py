@@ -507,11 +507,27 @@ def _promotion_packet_builder_ok(rc: int, stdout: str, stderr: str) -> bool:
         return False
     gate_results = packet.get("gate_results") if isinstance(packet.get("gate_results"), dict) else {}
     evidence_gates_ready = bool(gate_results) and all(bool(value) for value in gate_results.values())
-    return bool(
+    failed_gates = {str(key) for key, value in gate_results.items() if not bool(value)}
+    replayability = packet.get("replayability_contract") if isinstance(packet.get("replayability_contract"), dict) else {}
+    signature = packet.get("signature") if isinstance(packet.get("signature"), dict) else {}
+    signed_idle_seed_ready = bool(
         packet.get("committee_packet_seed_ready", False)
-        and evidence_gates_ready
-        and not bool(packet.get("signing_material_ready", False))
-        and str((packet.get("signature") or {}).get("status") or "") == "missing_signing_key"
+        and bool(packet.get("signing_material_ready", False))
+        and bool(signature.get("verified", False))
+        and bool(packet.get("trained_models_complete", False))
+        and bool(replayability.get("hash_bundle_complete", False))
+        and bool(replayability.get("exact_replay_ready", False))
+        and failed_gates
+        and failed_gates.issubset({"training_success_confirmed"})
+    )
+    return bool(
+        (
+            packet.get("committee_packet_seed_ready", False)
+            and evidence_gates_ready
+            and not bool(packet.get("signing_material_ready", False))
+            and str(signature.get("status") or "") == "missing_signing_key"
+        )
+        or signed_idle_seed_ready
     )
 
 

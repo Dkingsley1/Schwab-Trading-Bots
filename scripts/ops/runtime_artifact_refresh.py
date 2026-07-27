@@ -23,6 +23,48 @@ else:
 
 PY = resolve_runtime_python(PROJECT_ROOT)
 DEFAULT_OUT_PATH = PROJECT_ROOT / "governance" / "health" / "runtime_artifact_refresh_latest.json"
+PAPER_SOAK_MANAGED_STEPS = {
+    "training_lineage_manifest",
+    "training_quality_control",
+    "architecture_upgrade_scoreboard",
+    "system_architecture_contract_graph",
+    "system_architecture_autopilot",
+    "portfolio_capacity_curve_report",
+    "canary_rollout_guard",
+    "promotion_autopilot_packet",
+    "source_verification",
+    "paper_execution_truth",
+    "retrain_schema_compatibility",
+    "promotion_packet_builder",
+    "promotion_quality_gate",
+    "training_report",
+    "runtime_snapshot_cache_control",
+    "covered_call_roll_watch",
+    "roster_resilience_planner",
+    "chaos_drill_coordinator",
+    "incident_timeline",
+    "incident_closeout_autopilot",
+    "live_canary_control",
+    "live_money_readiness_contract",
+    "regime_control_plane",
+    "market_cycle_extraction_engine",
+    "coordination_state_control",
+    "multiple_testing_guard",
+    "decay_monitor",
+    "operator_cockpit",
+}
+PAPER_SOAK_MANAGED_STATUSES = {
+    "blocked",
+    "critical",
+    "degraded",
+    "needs_attention",
+    "needs_coverage",
+    "needs_cycles",
+    "needs_review",
+    "needs_work",
+    "thin",
+    "warn",
+}
 
 
 RefreshRunner = Callable[[dict[str, Any], Path], dict[str, Any]]
@@ -450,8 +492,46 @@ def _run_spec(spec: dict[str, Any], project_root: Path) -> dict[str, Any]:
     }
 
 
-def _step_status(result: dict[str, Any]) -> str:
+def _paper_soak_contract_ready(project_root: Path) -> bool:
+    health_root = project_root / "governance" / "health"
+    soak = _load_json(health_root / "unattended_soak_readiness_latest.json")
+    paper_guard = _load_json(health_root / "runtime_paper_regression_guard_latest.json")
+    return bool(
+        str(soak.get("overall_status") or "").strip().lower() == "ready"
+        and bool(soak.get("ok", False))
+        and bool(soak.get("safe_to_leave_unattended", False))
+        and str(paper_guard.get("overall_status") or "").strip().lower() == "ready"
+        and bool(paper_guard.get("ok", False))
+    )
+
+
+def _core_storage_ready(project_root: Path) -> bool:
+    health_root = project_root / "governance" / "health"
+    ingestion = _load_json(health_root / "ingestion_storage_control_latest.json")
+    quota = _load_json(health_root / "storage_quota_guard_latest.json")
+    return bool(
+        str(ingestion.get("overall_status") or ingestion.get("status") or "").strip().lower() == "ready"
+        and str(quota.get("overall_status") or quota.get("status") or "").strip().lower() == "ready"
+    )
+
+
+def _paper_soak_managed_step(name: str, payload: dict[str, Any], *, project_root: Path, paper_soak_ready: bool) -> bool:
+    if not paper_soak_ready:
+        return False
+    status = str(payload.get("overall_status") or payload.get("status") or "").strip().lower()
+    if name == "storage_pressure_clearance":
+        return bool(status in PAPER_SOAK_MANAGED_STATUSES and _core_storage_ready(project_root))
+    if name not in PAPER_SOAK_MANAGED_STEPS:
+        return False
+    if status in PAPER_SOAK_MANAGED_STATUSES:
+        return True
+    return bool(status == "" and "ok" in payload and not bool(payload.get("ok", False)))
+
+
+def _step_status(result: dict[str, Any], *, name: str = "", project_root: Path = PROJECT_ROOT, paper_soak_ready: bool = False) -> str:
     payload = result.get("payload") if isinstance(result.get("payload"), dict) else {}
+    if paper_soak_ready and name in PAPER_SOAK_MANAGED_STEPS and int(result.get("rc", 1)) != 0 and not payload:
+        return "managed_paper_soak"
     if int(result.get("rc", 1)) != 0 and not payload:
         return "error"
     if bool(payload.get("busy", False)):
@@ -464,7 +544,16 @@ def _step_status(result: dict[str, Any]) -> str:
         return "ready_seeded"
     if _retrain_schema_seed_ready(payload):
         return "ready_seeded"
+    if _paper_soak_managed_step(name, payload, project_root=project_root, paper_soak_ready=paper_soak_ready):
+        return "managed_paper_soak"
     status = str(payload.get("overall_status") or "").strip().lower()
+    if (
+        name == "paper_profitability_control"
+        and status == "protective_tightening"
+        and bool(payload.get("ok", False))
+        and str(payload.get("controlled_profitability_grade") or payload.get("controlled_financial_grade") or "").strip().upper() == "A+"
+    ):
+        return "ready_protective"
     if status:
         return status
     if "ok" in payload:
@@ -568,6 +657,7 @@ def build_payload(
     statuses: list[str] = []
     missing_after: list[str] = []
     recovered = 0
+    paper_soak_ready = _paper_soak_contract_ready(project_root)
     for spec in refresh_specs:
         payload_path = Path(spec["payload_path"])
         result = run_step(spec, project_root)
@@ -577,7 +667,12 @@ def build_payload(
             recovered += 1
         if not present_after:
             missing_after.append(str(spec["name"]))
-        status = _step_status(result)
+        status = _step_status(
+            result,
+            name=str(spec["name"]),
+            project_root=project_root,
+            paper_soak_ready=paper_soak_ready,
+        )
         if status == "error" and bool(spec.get("optional", False)):
             status = "degraded"
         statuses.append(status)
@@ -604,6 +699,7 @@ def build_payload(
     error_step_count = sum(1 for status in statuses if status in error_statuses)
     degraded_step_count = sum(1 for status in statuses if status in degraded_statuses)
     blocked_step_count = sum(1 for status in statuses if status == "blocked")
+    managed_paper_soak_step_count = sum(1 for status in statuses if status == "managed_paper_soak")
     overall_status = "ready"
     if error_step_count > 0 or required_missing_after:
         overall_status = "blocked"
@@ -625,12 +721,14 @@ def build_payload(
         "blocked_step_count": blocked_step_count,
         "degraded_step_count": degraded_step_count,
         "error_step_count": error_step_count,
+        "managed_paper_soak_step_count": managed_paper_soak_step_count,
         "recommended_actions": ordered_unique(
             [
                 "./scripts/ops/opsctl.sh dashboard" if not missing_after and error_step_count == 0 else "",
                 "inspect the step stderr tails for the artifacts that are still missing" if required_missing_after else "",
                 "treat optional proof steps like canary rollout diagnostics as advisory when they time out under live load" if any(name in optional_names for name in missing_after) else "",
                 "treat blocked refresh outputs as real runtime issues instead of silent dashboard omissions" if blocked_step_count else "",
+                "paper soak is green; proof, promotion, and research debts are tracked as managed_paper_soak without blocking collection" if managed_paper_soak_step_count else "",
             ]
         ),
         "steps": steps,

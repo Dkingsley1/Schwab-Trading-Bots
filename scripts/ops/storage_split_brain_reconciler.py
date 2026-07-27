@@ -440,13 +440,13 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, full_scan: bool = False)
     mount_payload = _load_json(project_root / "governance" / "health" / "storage_mount_guard_latest.json")
     router_conflicts = _router_log_conflict_rows(project_root)
 
-    reported_split_brain_conflicts = max(
+    artifact_reported_split_brain_conflicts = max(
         int(failback_payload.get("split_brain_conflicts", 0) or 0),
         int(mount_payload.get("storage_mount_transition", {}).get("recovery", {}).get("payload", {}).get("split_brain_conflicts", 0) or 0),
     )
     scan_mode = "full_scan" if full_scan else "manifest_fast_path"
     rows: list[dict[str, Any]] = []
-    if full_scan or reported_split_brain_conflicts > 0:
+    if full_scan or artifact_reported_split_brain_conflicts > 0:
         for conflict_path in _iter_conflict_files(external_root):
             canonical_external = _strip_conflict_suffix(conflict_path)
             relative_path = str(canonical_external.relative_to(external_root)) if canonical_external.exists() or external_root.exists() else canonical_external.name
@@ -490,11 +490,17 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, full_scan: bool = False)
     rows.sort(key=lambda row: (str(row.get("classification") or ""), str(row.get("relative_path") or "")))
     hash_match_ready = sum(1 for row in rows if bool(row.get("hashes_match", False)))
     unresolved_conflicts = sum(1 for row in rows if not bool(row.get("hashes_match", False)))
-    split_brain_conflicts = max(
-        reported_split_brain_conflicts,
-        unresolved_conflicts,
-        len(router_conflicts),
-    )
+    concrete_blocking_conflicts = max(unresolved_conflicts, len(router_conflicts))
+    stale_reported_conflicts_suppressed = 0
+    if artifact_reported_split_brain_conflicts > 0 and concrete_blocking_conflicts == 0:
+        split_brain_conflicts = 0
+        stale_reported_conflicts_suppressed = artifact_reported_split_brain_conflicts
+    else:
+        split_brain_conflicts = max(
+            artifact_reported_split_brain_conflicts,
+            unresolved_conflicts,
+            len(router_conflicts),
+        )
     force_failback_eligible = bool(mount_payload.get("external_available", False)) and split_brain_conflicts == 0
 
     payload = {
@@ -510,6 +516,8 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, full_scan: bool = False)
             "unresolved_conflicts": unresolved_conflicts,
             "router_conflicts": len(router_conflicts),
             "router_repairable_conflicts": sum(1 for row in router_conflicts if bool(row.get("repair_allowed", False))),
+            "artifact_reported_split_brain_conflicts": artifact_reported_split_brain_conflicts,
+            "stale_reported_split_brain_conflicts_suppressed": stale_reported_conflicts_suppressed,
             "reported_split_brain_conflicts": split_brain_conflicts,
             "force_failback_eligible": force_failback_eligible,
         },

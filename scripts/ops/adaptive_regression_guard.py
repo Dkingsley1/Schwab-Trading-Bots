@@ -93,6 +93,7 @@ CRITICAL_CONTRACT_IDS = {
     "guard:backlog_pcore_contract",
 }
 OPTIONAL_CONTEXT_SOURCE_IDS = {
+    "fx_market_context",
     "options_context_mesh",
     "macro_crossstack",
     "crypto_market_context",
@@ -110,6 +111,7 @@ PAPER_SOAK_QUALITY_DEBT_SURFACES = {
     "section:training_and_model_quality",
 }
 PAPER_SOAK_ADVISORY_SECTION_SURFACES = {
+    "section:data_ingestion_and_storage",
     "section:live_trading_readiness",
     "section:training_and_model_quality",
     "section:ops_and_autonomy",
@@ -798,18 +800,32 @@ def _memory_truth_contract_surface(project_root: Path, loader: ArtifactLoader, m
     stale_high_water_guarded = bool(not high_water_gap or (reconciliation_active and pressure_reconciliation_active))
     bad_reason_tokens = {"compressed_memory_high", "swap_usage_high", "memory_pressure_red", "memory_pressure_yellow"}
     stale_reason_regression = any(reason in bad_reason_tokens for reason in reasons) and _lower(memory_snapshot.get("memory_pressure_state")) == "green"
+    memory_telemetry_green = bool(
+        _lower(memory_snapshot.get("memory_pressure_state")) == "green"
+        and _lower(memory_snapshot.get("memory_pressure_kind")) in {"", "none", "normal"}
+        and raw_swap <= 4.0
+        and effective_swap <= 4.0
+        and _safe_float(pressure_snapshot.get("pages_throttled"), 0.0) <= 0.0
+    )
+    classification_status = _lower(classification.get("status"))
+    classification_soft_or_clear = bool(
+        classification_status in {
+            "soft_guard",
+            "foreground_headroom",
+            "clear",
+            "ready",
+            "advisory",
+        }
+        or (_lower(pressure.get("overall_status")) == "advisory" and memory_telemetry_green)
+    )
     memory_pressure_advisory_ready = bool(
         pressure
         and pressure_state == "degraded"
         and _lower(pressure.get("overall_status")) == "advisory"
         and efficiency_state == "ready"
         and swap_state == "ready"
-        and _lower(memory_snapshot.get("memory_pressure_state")) == "green"
-        and _lower(memory_snapshot.get("memory_pressure_kind")) in {"", "none", "normal"}
-        and raw_swap <= 4.0
-        and effective_swap <= 4.0
-        and _safe_float(pressure_snapshot.get("pages_throttled"), 0.0) <= 0.0
-        and _lower(classification.get("status")) in {"soft_guard", "foreground_headroom", "clear", "ready", "advisory"}
+        and memory_telemetry_green
+        and classification_soft_or_clear
         and (
             _bool(reopen_gate.get("safe_to_widen_p_core_workers", False))
             or _bool(reopen_gate.get("safe_for_training", False))
@@ -823,12 +839,8 @@ def _memory_truth_contract_surface(project_root: Path, loader: ArtifactLoader, m
         and pressure
         and swap
         and swap_state == "ready"
-        and _lower(memory_snapshot.get("memory_pressure_state")) == "green"
-        and _lower(memory_snapshot.get("memory_pressure_kind")) in {"", "none", "normal"}
-        and raw_swap <= 4.0
-        and effective_swap <= 4.0
-        and _safe_float(pressure_snapshot.get("pages_throttled"), 0.0) <= 0.0
-        and _lower(classification.get("status")) in {"soft_guard", "foreground_headroom", "clear", "ready", "advisory"}
+        and memory_telemetry_green
+        and classification_soft_or_clear
     )
 
     blockers = ordered_unique(
@@ -907,6 +919,7 @@ def _memory_truth_contract_surface(project_root: Path, loader: ArtifactLoader, m
             "memory_truth_reconciliation_active": reconciliation_active,
             "pressure_reconciliation_active": pressure_reconciliation_active,
             "classification_status": str(classification.get("status") or ""),
+            "classification_soft_or_clear": classification_soft_or_clear,
             "safe_to_widen_p_core_workers": _bool(reopen_gate.get("safe_to_widen_p_core_workers", False)),
             "safe_for_training": _bool(reopen_gate.get("safe_for_training", False)),
             "memory_pressure_advisory_ready": memory_pressure_advisory_ready,
@@ -1000,17 +1013,28 @@ def _runtime_storage_contract_surface(project_root: Path, loader: ArtifactLoader
         and bool(paper_policy.get("paper_execution_allowed", runtime_measurements.get("paper_execution_allowed", False)))
         and not bool(paper_policy.get("pause_paper_execution", runtime_measurements.get("paper_execution_paused", False)))
     )
-    capacity_limited_paper_advisory = bool(
+    armed_paper_capacity_advisory = bool(
         runtime
         and runtime_state == "degraded"
-        and compute_level in {"elevated", "high"}
+        and compute_level in {"normal", "elevated", "high"}
         and memory_level == "normal"
         and storage_clear
         and not runtime_stale
         and paper_execution_open
-        and (
-            bool(paper_policy.get("capacity_limited_paper_execution", runtime_measurements.get("capacity_limited_paper_execution", False)))
-            or ramp_capacity_limited_armed
+        and ramp_capacity_limited_armed
+        and host_saturation < 75.0
+    )
+    capacity_limited_paper_advisory = bool(
+        armed_paper_capacity_advisory
+        or (
+            runtime
+            and runtime_state == "degraded"
+            and compute_level in {"elevated", "high"}
+            and memory_level == "normal"
+            and storage_clear
+            and not runtime_stale
+            and paper_execution_open
+            and bool(paper_policy.get("capacity_limited_paper_execution", runtime_measurements.get("capacity_limited_paper_execution", False)))
         )
     )
     managed_high_compute_advisory = bool(
@@ -1098,6 +1122,7 @@ def _runtime_storage_contract_surface(project_root: Path, loader: ArtifactLoader
             "managed_high_compute_advisory": managed_high_compute_advisory,
             "external_pressure_advisory": external_pressure_advisory,
             "capacity_limited_paper_advisory": capacity_limited_paper_advisory,
+            "armed_paper_capacity_advisory": armed_paper_capacity_advisory,
             "paper_armed_clean": paper_armed_clean,
             "paper_execution_open": paper_execution_open,
             "paper_capacity_limited_armed": ramp_capacity_limited_armed,

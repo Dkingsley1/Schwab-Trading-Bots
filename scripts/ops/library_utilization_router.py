@@ -8,6 +8,12 @@ from importlib import metadata
 from pathlib import Path
 from typing import Any
 
+try:
+    from packaging.version import InvalidVersion, Version
+except Exception:  # pragma: no cover - packaging is pinned, but keep the router bootable.
+    InvalidVersion = Exception
+    Version = None
+
 if __package__ in {None, ""}:
     PROJECT_ROOT = Path(__file__).resolve().parents[2]
     if str(PROJECT_ROOT) not in sys.path:
@@ -303,6 +309,20 @@ PACKAGE_LANE_OVERRIDES: dict[str, str] = {
     "pyloudnorm": "audio_media_non_mlx",
 }
 
+OPTIONAL_PACKAGE_FALLBACKS: dict[str, list[str]] = {
+    "pandas-ta": ["ta", "pandas", "numpy"],
+}
+
+CRITICAL_RUNTIME_LANES = {
+    "broker_market_data",
+    "async_networking",
+    "storage_sql",
+    "dataframe_feature_engine",
+    "security_auth_config",
+    "serialization_compression",
+    "system_runtime_primitives",
+}
+
 
 def _safe_float(value: Any, default: float = 0.0) -> float:
     try:
@@ -360,12 +380,27 @@ def _package_status(package: str, lock_versions: dict[str, str], installed_versi
     locked = lock_versions.get(package)
     installed = installed_versions.get(package)
     if locked and installed:
-        return "ok" if locked == installed else "version_mismatch"
+        return "ok" if locked == installed else _version_drift_status(locked, installed)
     if locked:
         return "missing_runtime"
     if installed:
         return "runtime_only"
     return "missing"
+
+
+def _version_drift_status(locked: str, installed: str) -> str:
+    if Version is None:
+        return "version_mismatch"
+    try:
+        locked_version = Version(str(locked))
+        installed_version = Version(str(installed))
+    except InvalidVersion:
+        return "version_mismatch"
+    if installed_version > locked_version:
+        return "runtime_ahead_of_lock"
+    if installed_version < locked_version:
+        return "runtime_behind_lock"
+    return "version_mismatch"
 
 
 def _infer_lane(package: str) -> str:
@@ -406,17 +441,30 @@ def _package_inventory(lock_versions: dict[str, str], installed_versions: dict[s
     rows: list[dict[str, Any]] = []
     for package in packages:
         lane = _infer_lane(package)
+        status = _package_status(package, lock_versions, installed_versions)
+        fallback_packages = OPTIONAL_PACKAGE_FALLBACKS.get(package, [])
+        available_fallbacks = [pkg for pkg in fallback_packages if _norm_package(pkg) in installed_versions]
+        if status == "missing_runtime" and available_fallbacks:
+            status = "optional_fallback_active"
         rows.append(
             {
                 "package": package,
                 "lane": lane,
                 "locked_version": lock_versions.get(package),
                 "installed_version": installed_versions.get(package),
-                "status": _package_status(package, lock_versions, installed_versions),
+                "status": status,
                 "source": "locked" if package in lock_versions else "runtime_only",
+                "fallback_packages": fallback_packages,
+                "available_fallback_packages": available_fallbacks,
             }
         )
     return rows
+
+
+def _lane_drift_is_critical(lane: str, statuses: set[str]) -> bool:
+    if not statuses.intersection({"runtime_behind_lock", "version_mismatch"}):
+        return False
+    return str(lane or "") in CRITICAL_RUNTIME_LANES
 
 
 def _lane_routes(package_rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -430,9 +478,12 @@ def _lane_routes(package_rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
         statuses = {str(row.get("status") or "") for row in rows}
         if "missing_runtime" in statuses:
             status = "blocked"
-        elif "version_mismatch" in statuses:
+        elif _lane_drift_is_critical(lane, statuses):
             status = "degraded"
-        elif any(str(row.get("source") or "") == "runtime_only" for row in rows):
+        elif any(
+            item in statuses
+            for item in ("runtime_behind_lock", "version_mismatch", "runtime_ahead_of_lock", "optional_fallback_active")
+        ) or any(str(row.get("source") or "") == "runtime_only" for row in rows):
             status = "advisory"
         else:
             status = "ready" if rows else "thin"
@@ -448,7 +499,9 @@ def _lane_routes(package_rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 "runtime_only_package_count": sum(1 for row in rows if str(row.get("source") or "") == "runtime_only"),
                 "packages": [str(row.get("package") or "") for row in rows],
                 "blocked_packages": [str(row.get("package") or "") for row in rows if str(row.get("status") or "") == "missing_runtime"],
-                "version_mismatch_packages": [str(row.get("package") or "") for row in rows if str(row.get("status") or "") == "version_mismatch"],
+                "version_mismatch_packages": [str(row.get("package") or "") for row in rows if str(row.get("status") or "") in {"version_mismatch", "runtime_behind_lock"}],
+                "runtime_ahead_packages": [str(row.get("package") or "") for row in rows if str(row.get("status") or "") == "runtime_ahead_of_lock"],
+                "optional_fallback_packages": [str(row.get("package") or "") for row in rows if str(row.get("status") or "") == "optional_fallback_active"],
             }
         )
     return routes
@@ -458,9 +511,16 @@ def _coverage(package_rows: list[dict[str, Any]]) -> dict[str, Any]:
     locked_rows = [row for row in package_rows if str(row.get("source") or "") == "locked"]
     managed_rows = package_rows
     missing = [row for row in locked_rows if str(row.get("status") or "") == "missing_runtime"]
-    mismatched = [row for row in locked_rows if str(row.get("status") or "") == "version_mismatch"]
+    mismatched = [row for row in locked_rows if str(row.get("status") or "") in {"version_mismatch", "runtime_behind_lock"}]
+    runtime_ahead = [row for row in locked_rows if str(row.get("status") or "") == "runtime_ahead_of_lock"]
+    fallback_active = [row for row in locked_rows if str(row.get("status") or "") == "optional_fallback_active"]
     runtime_only = [row for row in managed_rows if str(row.get("source") or "") == "runtime_only"]
     mapped = [row for row in managed_rows if str(row.get("lane") or "")]
+    runtime_usable = [
+        row
+        for row in locked_rows
+        if str(row.get("status") or "") in {"ok", "runtime_ahead_of_lock", "optional_fallback_active"}
+    ]
     return {
         "locked_non_mlx_package_count": len(locked_rows),
         "managed_non_mlx_package_count": len(managed_rows),
@@ -468,10 +528,16 @@ def _coverage(package_rows: list[dict[str, Any]]) -> dict[str, Any]:
         "runtime_only_package_count": len(runtime_only),
         "missing_runtime_count": len(missing),
         "version_mismatch_count": len(mismatched),
+        "runtime_ahead_of_lock_count": len(runtime_ahead),
+        "optional_fallback_active_count": len(fallback_active),
+        "dependency_reconciliation_count": len(mismatched) + len(runtime_ahead) + len(fallback_active) + len(runtime_only),
         "coverage_ratio": round(len(mapped) / max(len(managed_rows), 1), 4),
         "locked_runtime_ok_ratio": round((len(locked_rows) - len(missing) - len(mismatched)) / max(len(locked_rows), 1), 4),
+        "locked_runtime_usable_ratio": round(len(runtime_usable) / max(len(locked_rows), 1), 4),
         "missing_runtime_packages": [str(row.get("package") or "") for row in missing],
         "version_mismatch_packages": [str(row.get("package") or "") for row in mismatched],
+        "runtime_ahead_of_lock_packages": [str(row.get("package") or "") for row in runtime_ahead],
+        "optional_fallback_active_packages": [str(row.get("package") or "") for row in fallback_active],
         "runtime_only_packages": [str(row.get("package") or "") for row in runtime_only],
     }
 
@@ -572,12 +638,28 @@ def _recommended_actions(coverage: dict[str, Any], caps: dict[str, Any]) -> list
             "repair missing locked packages before relying on their owner lane"
             if _safe_int(coverage.get("missing_runtime_count"), 0)
             else "",
-            "align version mismatches between the lock and runtime before broad retrains"
+            "align runtime-behind/version-mismatch packages between the lock and runtime before broad retrains"
             if _safe_int(coverage.get("version_mismatch_count"), 0)
+            else "",
+            "adopt newer runtime packages into the lock after canary evidence instead of marking active routes failed"
+            if _safe_int(coverage.get("runtime_ahead_of_lock_count"), 0)
+            else "",
+            "keep optional library fallbacks routed until the pinned package can be installed in a maintenance window"
+            if _safe_int(coverage.get("optional_fallback_active_count"), 0)
             else "",
             "./scripts/ops/opsctl.sh runtime-throttle --apply --json",
         ]
     )
+
+
+def _has_critical_version_drift(rows: list[dict[str, Any]]) -> bool:
+    for row in rows:
+        status = str(row.get("status") or "")
+        if status not in {"runtime_behind_lock", "version_mismatch"}:
+            continue
+        if str(row.get("lane") or "") in CRITICAL_RUNTIME_LANES:
+            return True
+    return False
 
 
 def _write_env_override(path: Path, env: dict[str, str]) -> bool:
@@ -620,9 +702,15 @@ def build_payload(
     status = "ready"
     if _safe_int(coverage.get("missing_runtime_count"), 0):
         status = "blocked"
-    elif _safe_int(coverage.get("version_mismatch_count"), 0):
+    elif _has_critical_version_drift(rows):
         status = "degraded"
-    elif _safe_int(coverage.get("runtime_only_package_count"), 0) or str(runtime_caps.get("profile") or "") != "max_library_coverage":
+    elif (
+        _safe_int(coverage.get("version_mismatch_count"), 0)
+        or _safe_int(coverage.get("runtime_ahead_of_lock_count"), 0)
+        or _safe_int(coverage.get("optional_fallback_active_count"), 0)
+        or _safe_int(coverage.get("runtime_only_package_count"), 0)
+        or str(runtime_caps.get("profile") or "") != "max_library_coverage"
+    ):
         status = "advisory"
     return {
         "timestamp_utc": iso_now(),
@@ -642,6 +730,8 @@ def build_payload(
             "default_ml_backend": "mlx",
             "mlx_boundary": "mlx_specific_packages_are_owned_by_mlx_intelligence_router",
             "portable_ml_policy": "pytorch_onnx_transformers_stay_canary_or_off_hours_when_live_collection_is_active",
+            "lock_drift_policy": "newer_runtime_versions_are_routed_as_advisory_until_canary_reconciles_the_lock",
+            "optional_fallback_policy": "optional_missing_packages_use_declared_fallback_routes_without blocking the soak",
         },
         "recommended_actions": _recommended_actions(coverage, runtime_caps),
         "artifact_paths": {

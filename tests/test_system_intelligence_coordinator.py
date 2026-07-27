@@ -495,6 +495,416 @@ def test_system_intelligence_routes_training_quality_to_guarded_recovery_batch(t
     assert handoff["integration_route"] == "training_recovery_first"
 
 
+def test_signal_bus_normalizes_controlled_training_debt_during_guarded_paper_soak(tmp_path: Path) -> None:
+    _seed_pressure_project(tmp_path)
+    health = tmp_path / "governance" / "health"
+    _write_json(
+        health / "ingestion_storage_control_latest.json",
+        {
+            "overall_status": "ready",
+            "severity": "stable",
+            "pressure_index": 0.0,
+            "backpressure": {"total_pending_lines": 200, "core_pending_lines": 200, "pending_lines_threshold": 15000},
+        },
+    )
+    _write_json(
+        health / "memory_efficiency_control_latest.json",
+        {
+            "overall_status": "ready",
+            "memory_snapshot": {"memory_pressure_state": "green", "memory_pressure_kind": "none", "swap_used_gb": 0.0, "compressed_store_gb": 1.0},
+            "cotenant_awareness": {"memory_pressure_clear": True},
+        },
+    )
+    _write_json(
+        health / "runtime_throttle_control_latest.json",
+        {"overall_status": "ready", "memory_pressure_level": "normal", "cpu_pressure_level": "watch", "host_saturation_score": 34.0},
+    )
+    _write_json(
+        health / "health_fast_latest.json",
+        {
+            "ok": True,
+            "overall_status": "ready",
+            "strict_all_clear": True,
+            "operational_readiness": {
+                "guarded_paper": {"ok": True, "status": "ready", "blockers": []},
+                "live_execution": {"ok": False, "status": "blocked_read_only", "blockers": ["operator_required"]},
+            },
+        },
+    )
+    _write_json(health / "runtime_paper_regression_guard_latest.json", {"ok": True, "overall_status": "ready"})
+    _write_json(
+        health / "training_quality_control_latest.json",
+        {
+            "overall_status": "blocked",
+            "training_quality_score": 93.5,
+            "training_quality_index": 93.5,
+            "improvement_status_counts": {"blocked": 1, "needs_work": 2, "ready": 23, "recoverable_blocked": 0, "effective_blocked": 1},
+            "recoverable_blocked_keys": [],
+            "top_priorities": ["active_probation_isolation", "multiple_testing_control", "promotion_coverage"],
+            "a_plus_contract": {"quality_score": 93.5, "promotion_confidence_ready": False, "bench_depth": 1591, "roster_a_plus_ready": False},
+            "control_contract": {
+                "raw_evidence_preserved": True,
+                "controlled_raw_need_count": 7,
+                "controlled_raw_need_keys": ["multiple_testing_control", "paper_loss_feedback"],
+                "training_process_ready": True,
+                "paper_feedback_control_ready": True,
+                "label_contract_ready": True,
+                "lane_training_control_ready": True,
+                "calibration_control_ready": True,
+            },
+        },
+    )
+    _write_json(
+        health / "bot_quality_autopilot_latest.json",
+        {
+            "overall_status": "blocked",
+            "quality_blockers": {
+                "quality_probation_bot_ids": ["bot_a"],
+                "targeted_retrain_bot_ids": ["bot_a"],
+                "repair_runtime_input_bot_ids": [],
+                "students_without_teachers": 0,
+                "coverage_shortfall_bots": 4,
+                "infrastructure_helper_count": 0,
+            },
+            "teacher_summary": {"qualified_teacher_count": 3, "elite_teacher_count": 1},
+            "quality_upgrade_queue": [{"bot_id": "bot_a"}],
+            "attempts": [{"cmd": ["python", "scripts/ops/training_quality_control.py", "--json"], "rc": 2, "timed_out": False}],
+        },
+    )
+
+    signal_bus = src.build_signal_bus(tmp_path)
+    signals = {str(row["name"]): row for row in signal_bus["signals"]}
+
+    assert signal_bus["overall_status"] == "ready"
+    assert signal_bus["summary"]["blocked_signal_count"] == 0
+    assert signal_bus["summary"]["guarded_paper_advisory_signals"] == ["training_quality", "bot_quality"]
+    assert signals["training_quality"]["status"] == "ready"
+    assert signals["training_quality"]["source_status"] == "blocked"
+    assert signals["training_quality"]["severity_score"] == 20
+    assert signals["training_quality"]["raw_severity_score"] == 90
+    assert signals["training_quality"]["metrics"]["does_not_block_guarded_paper_soak"] is True
+    assert signals["bot_quality"]["status"] == "ready"
+    assert signals["bot_quality"]["metrics"]["controlled_training_quality_exit_count"] == 1
+
+
+def test_signal_bus_keeps_bot_mesh_quality_target_debt_advisory_during_guarded_paper_soak(tmp_path: Path) -> None:
+    _seed_pressure_project(tmp_path)
+    health = tmp_path / "governance" / "health"
+    _write_json(
+        health / "ingestion_storage_control_latest.json",
+        {
+            "overall_status": "ready",
+            "severity": "stable",
+            "pressure_index": 0.0,
+            "backpressure": {"total_pending_lines": 200, "core_pending_lines": 200, "pending_lines_threshold": 15000},
+        },
+    )
+    _write_json(
+        health / "memory_efficiency_control_latest.json",
+        {
+            "overall_status": "ready",
+            "memory_snapshot": {"memory_pressure_state": "green", "memory_pressure_kind": "none", "swap_used_gb": 0.0, "compressed_store_gb": 1.0},
+            "cotenant_awareness": {"memory_pressure_clear": True},
+        },
+    )
+    _write_json(
+        health / "runtime_throttle_control_latest.json",
+        {"overall_status": "ready", "memory_pressure_level": "normal", "cpu_pressure_level": "watch", "host_saturation_score": 34.0},
+    )
+    _write_json(
+        health / "health_fast_latest.json",
+        {
+            "ok": True,
+            "overall_status": "ready",
+            "strict_all_clear": True,
+            "operational_readiness": {
+                "guarded_paper": {"ok": True, "status": "ready", "blockers": []},
+                "live_execution": {"ok": False, "status": "blocked_read_only", "blockers": ["operator_required"]},
+            },
+        },
+    )
+    _write_json(health / "runtime_paper_regression_guard_latest.json", {"ok": True, "overall_status": "ready"})
+    _write_json(
+        health / "bot_intelligence_mesh_latest.json",
+        {
+            "overall_status": "ready",
+            "communication_readiness_score": 100.0,
+            "quality_readiness_score": 57.725,
+            "bot_count": 1584,
+            "active_bot_count": 1584,
+            "missing_tiers": [],
+            "a_plus_target_contract": {
+                "blocker_count": 6,
+                "current_training_quality_score": 93.5,
+                "current_data_quality_score": 0.0,
+                "current_collection_coverage_score": 16.0,
+                "current_training_readiness_score": 0.0,
+            },
+            "teacher_student_intelligence": {"summary": {"teacher_count": 10, "student_count": 1574, "elite_teacher_count": 5}},
+            "hierarchy_edge_summary": {
+                "edge_count_total": 42,
+                "active_sub_or_infra_route_ratio": 1.0,
+                "active_master_route_ratio": 1.0,
+            },
+            "what_the_system_needs": ["keep training quality debt visible without blocking guarded paper soak"],
+        },
+    )
+
+    signal_bus = src.build_signal_bus(tmp_path)
+    mesh = next(row for row in signal_bus["signals"] if row["name"] == "bot_intelligence_mesh")
+
+    assert mesh["status"] == "ready"
+    assert mesh["source_status"] == "ready"
+    assert mesh["raw_severity_score"] == 65
+    assert mesh["severity_score"] == 20
+    assert mesh["metrics"]["does_not_block_guarded_paper_soak"] is True
+    assert mesh["metrics"]["normalization_reason"] == "guarded_paper_soak_green_and_bot_mesh_quality_target_debt_visible"
+
+
+def test_signal_bus_treats_full_eligible_paper_cohort_as_ready(tmp_path: Path) -> None:
+    _seed_pressure_project(tmp_path)
+    health = tmp_path / "governance" / "health"
+    _write_json(
+        health / "paper_live_data_standard_latest.json",
+        {
+            "overall_status": "ready",
+            "counts_after": {
+                "paper_live_data_enabled_bots": 1584,
+                "collection_until_standard_bots": 148,
+                "data_collection_active_bots": 1732,
+                "direct_execution_allowed_bots": 0,
+                "live_trading_enabled_bots": 0,
+            },
+            "paper_lane_target": {"minimum": 30, "target": 40, "maximum": 50, "within_target_band": False},
+            "safety_contract": {"paper_trade_lock": "1", "market_data_only": "1", "live_execution_allowed": False},
+        },
+    )
+
+    signal_bus = src.build_signal_bus(tmp_path)
+    paper = next(row for row in signal_bus["signals"] if row["name"] == "paper_live_data_standard")
+
+    assert paper["status"] == "ready"
+    assert paper["severity_score"] == 0
+    assert paper["metrics"]["full_eligible_paper_soak"] is True
+
+
+def test_super_paper_lane_accepts_full_eligible_paper_soak(tmp_path: Path) -> None:
+    _seed_pressure_project(tmp_path)
+    health = tmp_path / "governance" / "health"
+    _write_json(
+        health / "ingestion_storage_control_latest.json",
+        {
+            "overall_status": "ready",
+            "severity": "stable",
+            "pressure_index": 0.0,
+            "backpressure": {"total_pending_lines": 0, "core_pending_lines": 0, "pending_lines_threshold": 15000},
+        },
+    )
+    _write_json(
+        health / "memory_efficiency_control_latest.json",
+        {
+            "overall_status": "ready",
+            "memory_snapshot": {"memory_pressure_state": "green", "memory_pressure_kind": "none", "swap_used_gb": 0.0, "compressed_store_gb": 1.0},
+            "cotenant_awareness": {"memory_pressure_clear": True},
+        },
+    )
+    _write_json(
+        health / "runtime_throttle_control_latest.json",
+        {"overall_status": "ready", "memory_pressure_level": "normal", "cpu_pressure_level": "normal", "host_saturation_score": 22.0},
+    )
+    _write_json(
+        health / "paper_live_data_standard_latest.json",
+        {
+            "overall_status": "ready",
+            "counts_after": {
+                "paper_live_data_enabled_bots": 120,
+                "collection_until_standard_bots": 20,
+                "data_collection_active_bots": 140,
+                "direct_execution_allowed_bots": 0,
+                "live_trading_enabled_bots": 0,
+            },
+            "paper_lane_target": {"minimum": 30, "target": 40, "maximum": 50, "within_target_band": False},
+            "safety_contract": {"paper_trade_lock": "1", "market_data_only": "1", "live_execution_allowed": False},
+        },
+    )
+
+    payload = src.build_payload(tmp_path)
+    super_layer = payload["system_super_intelligence"]
+    paper_lane = super_layer["paper_lane_governor_layer"]
+
+    assert paper_lane["overall_status"] == "ready"
+    assert paper_lane["paper_lane_posture"] == "full_eligible_paper_soak_active"
+    assert paper_lane["full_eligible_paper_soak"] is True
+    assert paper_lane["hard_blocks"] == []
+    assert super_layer["overall_status"] != "blocked"
+
+
+def test_signal_bus_defers_training_runtime_and_data_plane_under_guarded_paper_soak(tmp_path: Path) -> None:
+    _seed_pressure_project(tmp_path)
+    health = tmp_path / "governance" / "health"
+    _write_json(
+        health / "health_fast_latest.json",
+        {
+            "ok": True,
+            "overall_status": "ready",
+            "strict_all_clear": True,
+            "operational_readiness": {
+                "guarded_paper": {"ok": True, "status": "ready", "blockers": []},
+                "live_execution": {"ok": False, "status": "blocked_read_only", "blockers": ["operator_required"]},
+            },
+        },
+    )
+    _write_json(health / "runtime_paper_regression_guard_latest.json", {"ok": True, "overall_status": "ready"})
+    _write_json(
+        health / "live_runtime_separation_control_latest.json",
+        {"overall_status": "ready", "ok": True, "live_plane": {"ready": True, "live_lane_running": True}},
+    )
+    _write_json(
+        health / "training_quality_control_latest.json",
+        {
+            "overall_status": "blocked",
+            "training_quality_score": 93.5,
+            "recoverable_blocked_keys": [],
+            "control_contract": {
+                "raw_evidence_preserved": True,
+                "training_process_ready": True,
+                "paper_feedback_control_ready": True,
+                "label_contract_ready": True,
+                "lane_training_control_ready": True,
+                "calibration_control_ready": True,
+            },
+        },
+    )
+    _write_json(
+        health / "training_runtime_control_latest.json",
+        {
+            "overall_status": "degraded",
+            "training_launch_contract": {
+                "mode": "prep_only",
+                "launch_allowed": False,
+                "prep_allowed": True,
+                "launch_blockers": ["autonomic_training_budget_closed", "training_quality_blocked"],
+            },
+        },
+    )
+    _write_json(
+        health / "data_plane_recovery_controller_latest.json",
+        {
+            "overall_status": "degraded",
+            "recovery_state": "recovering_under_guard",
+            "queue_depth": 2268,
+            "write_failure_count": 0,
+            "account_snapshot_failure_count": 0,
+            "write_path_recovery_evidence": {
+                "raw_live_clear": True,
+                "route_ready": True,
+                "storage_status": "ready",
+                "severity": "stable",
+                "pressure_index": 0.154,
+                "current_sql_write_failures": 0,
+                "writer_status": "ok",
+                "raw_live": {"core_pending_lines": 2315, "total_pending_lines": 9168, "oldest_pending_age_seconds": 0.0},
+            },
+        },
+    )
+
+    signal_bus = src.build_signal_bus(tmp_path)
+    signals = {str(row["name"]): row for row in signal_bus["signals"]}
+
+    assert signals["training_runtime"]["status"] == "ready"
+    assert signals["training_runtime"]["source_status"] == "degraded"
+    assert signals["training_runtime"]["metrics"]["does_not_block_guarded_paper_soak"] is True
+    assert signals["data_plane_recovery"]["status"] == "ready"
+    assert signals["data_plane_recovery"]["source_status"] == "degraded"
+    assert signals["data_plane_recovery"]["metrics"]["normalization_reason"] == "guarded_paper_soak_green_and_data_plane_recovering_under_guard"
+
+
+def test_signal_bus_normalizes_bounded_training_canary_and_platform_brain_under_guarded_paper_soak(tmp_path: Path) -> None:
+    _seed_pressure_project(tmp_path)
+    health = tmp_path / "governance" / "health"
+    _write_json(
+        health / "health_fast_latest.json",
+        {
+            "ok": True,
+            "overall_status": "ready",
+            "strict_all_clear": True,
+            "operational_readiness": {
+                "guarded_paper": {"ok": True, "status": "ready", "blockers": []},
+                "live_execution": {"ok": False, "status": "blocked_read_only", "blockers": ["operator_required"]},
+            },
+        },
+    )
+    _write_json(health / "runtime_paper_regression_guard_latest.json", {"ok": True, "overall_status": "ready"})
+    _write_json(
+        health / "training_runtime_control_latest.json",
+        {
+            "overall_status": "degraded",
+            "training_launch_contract": {
+                "mode": "canary_training_allowed",
+                "launch_allowed": True,
+                "prep_allowed": True,
+                "launch_blockers": [],
+                "recommended_batch_size": 2,
+                "available_canary_pool_size": 12,
+                "requested_batch_size": 4,
+                "training_quality_recovery_canary": True,
+                "host_training_headroom_gate": {"selected_training_profile": "coverage_batch30_canary"},
+                "recommended_retrain_command": ["./scripts/ops/opsctl.sh", "retrain-force-targeted", "--skip-master-update"],
+            },
+        },
+    )
+    _write_json(
+        health / "platform_brain_v6_latest.json",
+        {"overall_status": "needs_work", "section_count": 15, "gate_blockers": []},
+    )
+
+    signal_bus = src.build_signal_bus(tmp_path)
+    signals = {str(row["name"]): row for row in signal_bus["signals"]}
+
+    assert signals["training_runtime"]["status"] == "ready"
+    assert signals["training_runtime"]["source_status"] == "degraded"
+    assert signals["training_runtime"]["metrics"]["normalization_reason"] == "guarded_paper_soak_green_and_training_runtime_deferred"
+    assert signals["platform_brain_v6"]["status"] == "ready"
+    assert signals["platform_brain_v6"]["source_status"] == "needs_work"
+    assert signals["platform_brain_v6"]["metrics"]["normalization_reason"] == "guarded_paper_soak_green_and_platform_brain_has_no_gate_blockers"
+
+
+def test_signal_bus_keeps_optional_support_staleness_managed_under_guarded_paper_soak(tmp_path: Path) -> None:
+    _seed_pressure_project(tmp_path)
+    health = tmp_path / "governance" / "health"
+    old_timestamp = "2026-01-01T00:00:00+00:00"
+    _write_json(
+        health / "health_fast_latest.json",
+        {
+            "ok": True,
+            "overall_status": "ready",
+            "strict_all_clear": True,
+            "operational_readiness": {
+                "guarded_paper": {"ok": True, "status": "ready", "blockers": []},
+                "live_execution": {"ok": False, "status": "blocked_read_only", "blockers": ["operator_required"]},
+            },
+        },
+    )
+    _write_json(health / "runtime_paper_regression_guard_latest.json", {"ok": True, "overall_status": "ready"})
+    _write_json(health / "backpressure_super_drainer_latest.json", {"timestamp_utc": old_timestamp, "overall_status": "applied_with_followups"})
+    _write_json(health / "mlx_intelligence_router_latest.json", {"timestamp_utc": old_timestamp, "overall_status": "advisory"})
+    _write_json(health / "library_utilization_router_latest.json", {"timestamp_utc": old_timestamp, "overall_status": "advisory"})
+
+    signal_bus = src.build_signal_bus(tmp_path)
+    signals = {str(row["name"]): row for row in signal_bus["signals"]}
+
+    assert signal_bus["summary"]["stale_signal_count"] == 0
+    assert signal_bus["summary"]["managed_stale_signals"] == [
+        "backpressure_super_drainer",
+        "mlx_intelligence_router",
+        "library_utilization_router",
+    ]
+    for name in signal_bus["summary"]["managed_stale_signals"]:
+        assert signals[name]["stale"] is False
+        assert signals[name]["raw_stale"] is True
+        assert signals[name]["managed_stale"] is True
+
+
 def test_system_intelligence_routes_storage_quota_top_risk_to_quota_remediation(tmp_path: Path) -> None:
     _seed_pressure_project(tmp_path)
     health = tmp_path / "governance" / "health"
@@ -1092,7 +1502,7 @@ def test_process_watchdog_restart_in_progress_is_not_reported_as_down(tmp_path: 
     _write_json(
         health / "process_watchdog_latest.json",
         {
-            "overall_status": "ready",
+            "overall_status": "degraded",
             "status": [
                 {"name": "all_sleeves", "running": 0, "process_live": False, "restarted_pid": 1234},
                 {"name": "coinbase_loop", "running": 1, "process_live": True},
@@ -1106,7 +1516,34 @@ def test_process_watchdog_restart_in_progress_is_not_reported_as_down(tmp_path: 
 
     assert watchdog["metrics"]["down_processes"] == []
     assert watchdog["metrics"]["restarted_count"] == 1
-    assert watchdog["severity_score"] < 70
+    assert watchdog["status"] == "advisory"
+    assert watchdog["source_status"] == "degraded"
+    assert watchdog["severity_score"] < watchdog["raw_severity_score"]
+    assert watchdog["metrics"]["normalization_reason"] == "watchdog_has_no_down_processes_or_alerts"
+
+
+def test_process_fanout_clear_hold_is_not_reported_as_degraded(tmp_path: Path) -> None:
+    _seed_pressure_project(tmp_path)
+    health = tmp_path / "governance" / "health"
+    _write_json(
+        health / "process_fanout_guard_latest.json",
+        {
+            "overall_status": "active",
+            "triggered": False,
+            "fanout": {"targetable_count": 24, "total_rss_mb": 4953.0},
+            "override": {"hold_active": True},
+            "startup_policy": {"core_sleeve_restart_allowed": False},
+        },
+    )
+
+    payload = src.build_payload(tmp_path)
+    fanout = next(row for row in payload["system_signal_bus"]["signals"] if row["name"] == "process_fanout_guard")
+
+    assert fanout["status"] == "advisory"
+    assert fanout["source_status"] == "active"
+    assert fanout["metrics"]["resolved_fanout_state"] is True
+    assert fanout["severity_score"] < 65
+    assert "triggered=False" in fanout["summary"]
 
 
 def test_super_intelligence_does_not_treat_conservative_fanout_hold_as_guard_conflict(tmp_path: Path) -> None:
@@ -1252,6 +1689,7 @@ def test_self_intelligence_scores_repeated_action_effectiveness(tmp_path: Path) 
     assert self_layer["reflex"]["followup_command"] == ["./scripts/ops/opsctl.sh", "ingestion-storage-control", "--json"]
     assert self_layer["reflex"]["verification_command"] == ["./scripts/ops/opsctl.sh", "system-intelligence", "--json"]
     assert self_layer["reflex"]["evidence_window"]["requires_single_sql_writer"] is True
+    assert super_layer["overall_status"] == "advisory"
     assert super_layer["decision_packet"]["action"] == "run_outcome_verified_micro_drain"
     assert super_layer["decision_packet"]["owner"] == "backpressure_super_drainer"
     assert handoff["safe_next_command"] == self_layer["reflex"]["command"]
@@ -1334,6 +1772,121 @@ def test_outcome_learning_credits_recent_verified_super_drainer_progress() -> No
     credit = payload["policy_credit_assignment"]["run_outcome_verified_micro_drain"]
     assert credit["credit_score"] > 50
     assert "verified_drain_delta=131197" in credit["evidence"]
+
+
+def test_outcome_learning_marks_ineffective_so_far_as_advisory_proof_debt() -> None:
+    signal_bus = {"summary": {"total_pending_lines": 9168}, "signals": []}
+    super_intelligence = {
+        "overall_status": "advisory",
+        "decision_packet": {
+            "action": "run_outcome_verified_micro_drain",
+            "executive_mode": "rethink",
+            "owner": "backpressure_super_drainer",
+            "top_attention": "macro_event_intelligence",
+        },
+        "decision_quality_layer": {"quality_score": 59.3},
+        "adversarial_simulation_layer": {"resilience_score": 57, "top_scenario": "stale_signal_false_clear"},
+        "regime_drift_audit": {"overall_status": "advisory", "current_operational_regime": "expansion_rehearsal_ready"},
+        "adaptive_policy": {"guard_policy_mode": "full_schwab_observe"},
+        "semantic_synthesis_layer": {"invalidators": []},
+    }
+    self_intelligence = {
+        "action_effectiveness": {"verdict": "ineffective_so_far"},
+        "causal_diagnosis": {"primary_root_cause": "pressure_playbook_not_reducing_backlog", "confidence": 0.6},
+    }
+    outcome_events = [
+        {
+            "timestamp_utc": "2026-07-27T15:00:00Z",
+            "status": "advisory",
+            "action": "run_outcome_verified_micro_drain",
+            "pending_lines": 9168,
+            "decision_quality_score": 59.3,
+            "resilience_score": 57,
+        }
+    ]
+
+    payload = src.build_outcome_learning(
+        signal_bus=signal_bus,
+        system_brain={},
+        self_intelligence=self_intelligence,
+        super_intelligence=super_intelligence,
+        outcome_events=outcome_events,
+    )
+
+    assert payload["intervention_outcome"]["verdict"] == "ineffective_so_far"
+    assert payload["overall_status"] == "advisory"
+    assert payload["playbook_mutation_guard"]["mutation_allowed"] is True
+
+
+def test_outcome_learning_treats_read_only_replan_quality_drop_as_advisory_debt() -> None:
+    signal_bus = {
+        "summary": {
+            "total_pending_lines": 4098,
+            "blocked_signal_count": 0,
+            "severe_signal_count": 0,
+            "storage_critical": False,
+            "memory_pressure_high": False,
+            "runtime_pressure_high": False,
+            "writer_recovery_required": False,
+        },
+        "signals": [
+            {
+                "name": "paper_live_data_standard",
+                "status": "ready",
+                "metrics": {
+                    "paper_live_data_enabled_bots": 1584,
+                    "collection_until_standard_bots": 148,
+                    "data_collection_active_bots": 1732,
+                    "direct_execution_allowed_bots": 0,
+                    "live_trading_enabled_bots": 0,
+                    "covered_by_paper_or_collection": True,
+                    "full_eligible_paper_soak": True,
+                },
+            }
+        ],
+    }
+    super_intelligence = {
+        "overall_status": "advisory",
+        "decision_packet": {
+            "action": "reroute_stalled_playbook",
+            "executive_mode": "rethink",
+            "owner": "drainer_intelligence_layer",
+            "top_attention": "pressure_playbook_not_reducing_backlog",
+        },
+        "decision_quality_layer": {"quality_score": 59.3},
+        "adversarial_simulation_layer": {"resilience_score": 57, "top_scenario": "stale_signal_false_clear"},
+        "regime_drift_audit": {"overall_status": "ready", "current_operational_regime": "expansion_rehearsal_ready"},
+        "adaptive_policy": {"guard_policy_mode": "full_schwab_observe"},
+        "semantic_synthesis_layer": {"invalidators": []},
+    }
+    self_intelligence = {
+        "action_effectiveness": {"verdict": "worsening"},
+        "causal_diagnosis": {"primary_root_cause": "pressure_playbook_not_reducing_backlog", "confidence": 0.6},
+    }
+    outcome_events = [
+        {
+            "timestamp_utc": "2026-07-27T16:20:00Z",
+            "status": "degraded",
+            "action": "cautious_expansion_rehearsal",
+            "pending_lines": 4098,
+            "decision_quality_score": 72.55,
+            "resilience_score": 57,
+        }
+    ]
+
+    payload = src.build_outcome_learning(
+        signal_bus=signal_bus,
+        system_brain={},
+        self_intelligence=self_intelligence,
+        super_intelligence=super_intelligence,
+        outcome_events=outcome_events,
+    )
+
+    assert payload["intervention_outcome"]["verdict"] == "ineffective_so_far"
+    assert payload["overall_status"] == "advisory"
+    assert "read_only_replan_quality_debt" in payload["causal_replay_scorer"]["replay_findings"]
+    credit = payload["policy_credit_assignment"]["reroute_stalled_playbook"]
+    assert "quality_drop_is_read_only_replan_debt" in credit["evidence"]
 
 
 def test_self_intelligence_uses_verified_drain_progress_before_escalating_repeated_action(tmp_path: Path) -> None:

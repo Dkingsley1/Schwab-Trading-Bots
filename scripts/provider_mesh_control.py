@@ -83,6 +83,23 @@ def _group_status(*, total: int, contract_ok: int, snapshot_ready: int, degraded
     return "degraded"
 
 
+def _optional_mesh_is_advisory(
+    *,
+    optional_total: int,
+    optional_snapshot_ready: int,
+    soft_failure_count: int,
+    cooldown_active: bool,
+    required_snapshot_ready: int,
+) -> bool:
+    return bool(
+        optional_total > 0
+        and soft_failure_count > 0
+        and optional_snapshot_ready > 0
+        and not cooldown_active
+        and required_snapshot_ready > 0
+    )
+
+
 def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
     health_root = project_root / "governance" / "health"
     collector_contracts = _load_json(health_root / "collector_contracts_latest.json")
@@ -120,16 +137,26 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
     )
     verification_status = "ready" if all_verified else ("degraded" if bool(source_overall) else "missing")
     verification_depth_status = "cross_verified" if all_cross_verified else "single_source_verified"
+    soft_failure_count = int(collector_contracts.get("soft_failure_count", 0) or 0)
     quota_status = "ready"
     if cooldown["active"]:
         quota_status = "degraded" if required_snapshot_ready > 0 else "blocked"
-    elif int(collector_contracts.get("soft_failure_count", 0) or 0) > 0:
-        quota_status = "degraded"
+    elif soft_failure_count > 0:
+        quota_status = "advisory"
+    optional_advisory = _optional_mesh_is_advisory(
+        optional_total=len(optional_rows),
+        optional_snapshot_ready=optional_snapshot_ready,
+        soft_failure_count=soft_failure_count,
+        cooldown_active=bool(cooldown["active"]),
+        required_snapshot_ready=required_snapshot_ready,
+    )
 
     overall_status = "ready"
     if required_status == "blocked":
         overall_status = "blocked"
-    elif any(status in {"degraded", "missing"} for status in (required_status, verification_status, quota_status)):
+    elif cooldown["active"] or required_status in {"degraded", "missing"}:
+        overall_status = "degraded"
+    elif verification_status in {"degraded", "missing"} and not optional_advisory:
         overall_status = "degraded"
 
     recommended_actions = _ordered_unique(
@@ -140,7 +167,7 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
             "cross-verify more sources to raise optional verification depth from ready to A+"
             if all_verified and not all_cross_verified and bool(source_overall)
             else "",
-            "keep optional collectors on a degraded path instead of letting them block the required context mesh" if int(collector_contracts.get("soft_failure_count", 0) or 0) > 0 else "",
+            "keep optional collectors on a degraded path instead of letting them block the required context mesh" if soft_failure_count > 0 else "",
         ]
     )
 
@@ -159,7 +186,7 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
             "optional_contract_ok": optional_contract_ok,
             "optional_snapshot_ready": optional_snapshot_ready,
             "average_quality_score": round(average_quality_score, 6),
-            "soft_failure_count": int(collector_contracts.get("soft_failure_count", 0) or 0),
+            "soft_failure_count": soft_failure_count,
             "required_failure_count": int(collector_contracts.get("required_failure_count", 0) or 0),
         },
         "provider_groups": {
@@ -169,17 +196,21 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
                 "collectors": [str(row.get("name") or "") for row in required_rows],
             },
             "optional_context": {
-                "status": _group_status(
-                    total=len(optional_rows),
-                    contract_ok=optional_contract_ok,
-                    snapshot_ready=optional_snapshot_ready,
-                    degraded_ok=True,
+                "status": (
+                    "advisory"
+                    if optional_advisory
+                    else _group_status(
+                        total=len(optional_rows),
+                        contract_ok=optional_contract_ok,
+                        snapshot_ready=optional_snapshot_ready,
+                        degraded_ok=True,
+                    )
                 ),
                 "summary": f"contract_ok={optional_contract_ok}/{len(optional_rows)} snapshot_ready={optional_snapshot_ready}/{len(optional_rows)}",
                 "collectors": [str(row.get("name") or "") for row in optional_rows],
             },
             "verification_mesh": {
-                "status": verification_status,
+                "status": "advisory" if verification_status == "degraded" and optional_advisory else verification_status,
                 "depth_status": verification_depth_status,
                 "summary": (
                     f"cross_verified={int(source_counts.get('cross_verified', 0) or 0)} "
@@ -193,7 +224,7 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
                 "status": quota_status,
                 "summary": (
                     f"cooldowns_active={int(cooldown['active'])} "
-                    f"soft_failures={int(collector_contracts.get('soft_failure_count', 0) or 0)}"
+                    f"soft_failures={soft_failure_count}"
                 ),
                 "active_cooldowns": [cooldown] if cooldown["active"] else [],
             },
@@ -213,6 +244,12 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
         "cooldowns": [cooldown] if cooldown["active"] else [],
         "required_failures": collector_contracts.get("required_failures", []),
         "soft_failures": collector_contracts.get("soft_failures", []),
+        "advisories": _ordered_unique(
+            [
+                "optional_context_soft_failures" if optional_advisory and soft_failure_count > 0 else "",
+                "verification_depth_soft_debt" if verification_status == "degraded" and optional_advisory else "",
+            ]
+        ),
         "recommended_actions": recommended_actions,
         "top_actions": recommended_actions[:4],
     }

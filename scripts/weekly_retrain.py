@@ -81,6 +81,7 @@ DATA_RETENTION_POLICY = os.path.join(PROJECT_ROOT, "scripts", "data_retention_po
 DATA_DIVERGENCE_GLOBAL_FILE = os.path.join(PROJECT_ROOT, "governance", "health", "data_source_divergence_latest.json")
 DATA_DIVERGENCE_BOND_FILE = os.path.join(PROJECT_ROOT, "governance", "health", "data_source_divergence_bond_latest.json")
 DATA_DIVERGENCE_NON_BOND_FILE = os.path.join(PROJECT_ROOT, "governance", "health", "data_source_divergence_non_bond_latest.json")
+RESOURCE_GUARD_LATEST = os.path.join(PROJECT_ROOT, "governance", "health", "resource_guard_latest.json")
 RETRAIN_OPERATOR_NOTES_PATH = os.path.join(PROJECT_ROOT, "governance", "health", "retrain_operator_notes_latest.json")
 PAPER_PERFORMANCE_PATH = os.path.join(PROJECT_ROOT, "governance", "health", "paper_performance_latest.json")
 PAPER_HARD_EXAMPLES_PATH = os.path.join(PROJECT_ROOT, "governance", "training_diagnostics", "paper_hard_examples_latest.json")
@@ -401,6 +402,25 @@ def _finalize_retrain_launch_record(
         payload["master_update_status"] = str(master_update_status)
     if failure_count is not None:
         payload["failure_count"] = int(failure_count)
+    return _persist_retrain_launch_record(payload, dry_run=dry_run)
+
+
+def _heartbeat_retrain_launch_record(
+    record: dict[str, Any],
+    *,
+    dry_run: bool,
+    phase: str,
+    progress: dict[str, Any] | None = None,
+    **extra: Any,
+) -> dict[str, Any]:
+    payload = dict(record or {})
+    payload["state"] = "running"
+    payload["updated_utc"] = datetime.now(timezone.utc).isoformat()
+    payload["phase"] = str(phase or "").strip() or "running"
+    if progress is not None:
+        payload["progress"] = dict(progress)
+    for key, value in extra.items():
+        payload[str(key)] = value
     return _persist_retrain_launch_record(payload, dry_run=dry_run)
 
 
@@ -1413,6 +1433,21 @@ def _apply_retrain_profile_defaults(args: argparse.Namespace) -> str:
         )
         if int(args.target_timeout_seconds) <= 0 or int(args.target_timeout_seconds) > target_timeout:
             args.target_timeout_seconds = target_timeout
+        memory_wait_cap = (
+            120
+            if profile == "coverage_micro_canary"
+            else 180
+            if profile == "coverage_small_canary"
+            else 300
+            if profile in {"coverage_canary", "coverage_batch10_canary"}
+            else 420
+        )
+        if int(args.memory_max_wait_seconds) <= 0 or int(args.memory_max_wait_seconds) > memory_wait_cap:
+            args.memory_max_wait_seconds = memory_wait_cap
+        if hasattr(args, "ops_timeout_seconds") and (
+            int(args.ops_timeout_seconds) <= 0 or int(args.ops_timeout_seconds) > 120
+        ):
+            args.ops_timeout_seconds = 120
         args.cold_lane_retrain_extras = False
         args.auto_insufficient_data_retry = False
 
@@ -2374,6 +2409,34 @@ def _memory_snapshot() -> dict[str, float]:
     return snapshot
 
 
+def _env_truthy(name: str) -> bool:
+    return str(os.getenv(name, "") or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _resource_guard_allows_green_swap_relief() -> tuple[bool, str]:
+    if not _env_truthy("RETRAIN_GREEN_MEMORY_SWAP_RELIEF"):
+        return False, "disabled"
+    guard = _safe_json_load(RESOURCE_GUARD_LATEST)
+    if not guard:
+        return False, "resource_guard_missing"
+    memory_state = str(guard.get("memory_pressure_state") or "").strip().lower()
+    raw_ok = bool(guard.get("resource_guard_ok", guard.get("ok", False)))
+    reasons = {
+        str(item or "").strip().lower()
+        for item in (guard.get("resource_guard_reasons") or guard.get("reasons") or [])
+        if str(item or "").strip()
+    }
+    advisory_reasons = {
+        "support_maintenance_frozen_for_mac_fluidity",
+        "creative_session_active",
+    }
+    advisory_ok = bool((not raw_ok) and memory_state == "green" and reasons and reasons.issubset(advisory_reasons))
+    if memory_state == "green" and (raw_ok or advisory_ok):
+        mode = "raw_ok" if raw_ok else "advisory_only"
+        return True, f"resource_guard_green_{mode}"
+    return False, f"resource_guard_state={memory_state or 'unknown'}"
+
+
 def _memory_ready(min_free_pct: float, max_swap_gb: float) -> tuple[bool, str, dict[str, float]]:
     snap = _memory_snapshot()
 
@@ -2401,6 +2464,13 @@ def _memory_ready(min_free_pct: float, max_swap_gb: float) -> tuple[bool, str, d
             return True, (
                 f"swap_relaxed swap_used_gb={swap_gb:.2f} > max_swap_gb={max_swap_gb:.2f} "
                 f"but {relaxed_on}"
+            ), snap
+        guard_relief_ok, guard_relief_reason = _resource_guard_allows_green_swap_relief()
+        if guard_relief_ok:
+            snap["swap_relief_by_resource_guard"] = 1.0
+            return True, (
+                f"swap_relaxed_by_resource_guard swap_used_gb={swap_gb:.2f} > max_swap_gb={max_swap_gb:.2f} "
+                f"reason={guard_relief_reason}"
             ), snap
         return False, f"swap_used_gb={swap_gb:.2f} > max_swap_gb={max_swap_gb:.2f}", snap
 
@@ -3555,6 +3625,12 @@ def main() -> int:
         help="Extra nice offset for ops tasks (master registry update + behavior jobs).",
     )
     parser.add_argument(
+        "--ops-timeout-seconds",
+        type=int,
+        default=int(os.getenv("RETRAIN_OPS_TIMEOUT_SECONDS", "0")),
+        help="Timeout for startup guard and ops helper commands; 0 disables the timeout.",
+    )
+    parser.add_argument(
         "--after-hours-only",
         action="store_true",
         default=os.getenv("RETRAIN_AFTER_HOURS_ONLY", "1").strip() == "1",
@@ -3993,6 +4069,12 @@ def main() -> int:
     if _MLX_LOCK_HANDLE is None:
         print("Another MLX retrain is already active. Skipping this retrain run.")
         return finish(0, "skipped_lock_busy")
+    launch_record = _heartbeat_retrain_launch_record(
+        launch_record,
+        dry_run=args.dry_run,
+        phase="lock_acquired",
+        progress={"pid": os.getpid(), "retrain_profile": effective_retrain_profile},
+    )
 
     if args.after_hours_only and _market_open_now_et(args.session_start_hour, args.session_end_hour):
         print("Retrain skipped: market session is open (after-hours-only enabled).")
@@ -4034,7 +4116,13 @@ def main() -> int:
             return finish(1, "blocked_data_quality_floor")
 
     if args.require_artifact_freshness and os.path.exists(RETRAIN_ARTIFACT_FRESHNESS_GUARD):
-        rc_fresh = run_cmd(
+        launch_record = _heartbeat_retrain_launch_record(
+            launch_record,
+            dry_run=args.dry_run,
+            phase="startup_guard",
+            progress={"guard": "artifact_freshness_guard"},
+        )
+        rc_fresh, _out_fresh, _err_fresh = run_cmd_capture(
             [
                 VENV_PY,
                 RETRAIN_ARTIFACT_FRESHNESS_GUARD,
@@ -4045,6 +4133,7 @@ def main() -> int:
             args.dry_run,
             os.environ.copy(),
             extra_nice=max(args.ops_extra_nice, 0),
+            timeout_seconds=max(int(args.ops_timeout_seconds), 0),
         )
         if rc_fresh != 0:
             print("Retrain blocked by artifact freshness guard.")
@@ -4067,11 +4156,18 @@ def main() -> int:
             guard_cmd += ["--include-bot-ids", str(args.include_bot_ids or "")]
             if args.skip_master_update or args.allow_precheck_failures:
                 guard_cmd.append("--advisory-only")
-        rc_guard = run_cmd(
+        launch_record = _heartbeat_retrain_launch_record(
+            launch_record,
+            dry_run=args.dry_run,
+            phase="startup_guard",
+            progress={"guard": label},
+        )
+        rc_guard, _out_guard, _err_guard = run_cmd_capture(
             guard_cmd,
             args.dry_run,
             os.environ.copy(),
             extra_nice=max(args.ops_extra_nice, 0),
+            timeout_seconds=max(int(args.ops_timeout_seconds), 0),
         )
         if rc_guard != 0:
             print(f"Retrain blocked by {label}.")
@@ -4305,6 +4401,12 @@ def main() -> int:
     existing_runtime_snapshot_summary = _load_json_file(RUNTIME_TRAINING_SNAPSHOT_LATEST)
     configured_snapshot_path, configured_snapshot_summary = _configured_runtime_snapshot_summary(child_env)
     if args.build_runtime_training_snapshot and os.path.exists(RUNTIME_TRAINING_SNAPSHOT_SCRIPT):
+        launch_record = _heartbeat_retrain_launch_record(
+            launch_record,
+            dry_run=args.dry_run,
+            phase="runtime_snapshot_preflight",
+            progress={"lookback_days": int(args.runtime_training_snapshot_lookback_days)},
+        )
         if _snapshot_is_reusable(
             existing_runtime_snapshot_summary,
             lookback_days=max(int(args.runtime_training_snapshot_lookback_days), 1),
@@ -4343,6 +4445,7 @@ def main() -> int:
                 args.dry_run,
                 child_env,
                 extra_nice=max(args.ops_extra_nice, 0),
+                timeout_seconds=max(int(args.ops_timeout_seconds), 0),
             )
             runtime_training_snapshot_summary = _parse_json_output(out_snapshot) if rc_snapshot == 0 else {}
             if rc_snapshot != 0:
@@ -4364,6 +4467,16 @@ def main() -> int:
             child_env["RUNTIME_TRAIN_SNAPSHOT_FILE"] = RUNTIME_TRAINING_SNAPSHOT_LATEST
             runtime_training_snapshot_summary = _safe_json_load(RUNTIME_TRAINING_SNAPSHOT_LATEST)
     if args.runtime_train_use_snapshot and runtime_snapshot_target_count > 0:
+        launch_record = _heartbeat_retrain_launch_record(
+            launch_record,
+            dry_run=args.dry_run,
+            phase="runtime_snapshot_preflight",
+            progress={
+                "runtime_snapshot_target_count": runtime_snapshot_target_count,
+                "sequence_count": int(runtime_training_snapshot_summary.get("sequence_count", 0) or 0),
+                "row_count": int(runtime_training_snapshot_summary.get("row_count", 0) or 0),
+            },
+        )
         snapshot_failure = _runtime_training_snapshot_preflight_failure(
             runtime_training_snapshot_summary,
             min_sequences=max(int(args.runtime_training_snapshot_min_sequences), 0),
@@ -4514,6 +4627,19 @@ def main() -> int:
         if summary:
             print(f"Operator note summary: {summary}")
 
+    launch_record = _heartbeat_retrain_launch_record(
+        launch_record,
+        dry_run=args.dry_run,
+        phase="target_queue_ready",
+        progress={
+            "target_count": len(targets),
+            "target_workers": target_workers,
+            "retrain_profile": effective_retrain_profile,
+            "memory_max_wait_seconds": int(args.memory_max_wait_seconds),
+            "target_timeout_seconds": int(args.target_timeout_seconds),
+        },
+    )
+
     started = datetime.now(timezone.utc).isoformat()
     print(f"Weekly retrain start (UTC): {started}")
     print(f"Targets: {len(targets)}")
@@ -4559,6 +4685,12 @@ def main() -> int:
         return bool(result.get("stop"))
 
     if target_workers > 1:
+        launch_record = _heartbeat_retrain_launch_record(
+            launch_record,
+            dry_run=args.dry_run,
+            phase="parallel_target_training",
+            progress={"target_count": len(targets), "target_workers": target_workers},
+        )
         print(
             "Target execution: "
             f"workers={target_workers} "
@@ -4608,6 +4740,18 @@ def main() -> int:
                         "dynamic_max_swap_gb": dynamic_max_swap_gb,
                     }
                 indexed_results.append((idx, result))
+                launch_record = _heartbeat_retrain_launch_record(
+                    launch_record,
+                    dry_run=args.dry_run,
+                    phase="target_result",
+                    progress={
+                        "target_index": idx + 1,
+                        "target_count": len(targets),
+                        "bot_id": str(result.get("bot_id") or ""),
+                        "target": target,
+                        "status": str(result.get("status") or ""),
+                    },
+                )
                 print(
                     "[TargetWorker] done "
                     f"index={idx + 1}/{len(targets)} "
@@ -4619,8 +4763,21 @@ def main() -> int:
         if not args.dry_run:
             gc.collect()
 
-    for target in ([] if target_workers > 1 else targets):
+    serial_targets = [] if target_workers > 1 else targets
+    for target_index, target in enumerate(serial_targets, start=1):
         target_name = os.path.basename(target)
+        bot_id = _normalized_bot_id_from_script(target)
+        launch_record = _heartbeat_retrain_launch_record(
+            launch_record,
+            dry_run=args.dry_run,
+            phase="target_prefilter",
+            progress={
+                "target_index": target_index,
+                "target_count": len(targets),
+                "bot_id": bot_id,
+                "target": target,
+            },
+        )
         readiness_skip = _sample_starved_prefilter_decision(target, effective_retrain_profile)
         if readiness_skip:
             target_outcomes.append(readiness_skip)
@@ -4633,6 +4790,18 @@ def main() -> int:
             )
             continue
 
+        launch_record = _heartbeat_retrain_launch_record(
+            launch_record,
+            dry_run=args.dry_run,
+            phase="memory_gate",
+            progress={
+                "target_index": target_index,
+                "target_count": len(targets),
+                "bot_id": bot_id,
+                "target": target,
+                "max_wait_seconds": int(args.memory_max_wait_seconds),
+            },
+        )
         allowed = _wait_for_memory_gate(
             enabled=args.memory_guard,
             min_free_pct=args.min_free_pct,
@@ -4666,9 +4835,21 @@ def main() -> int:
                     )
         if not allowed:
             skipped_by_memory.append(target)
-            target_outcomes.append({"bot_id": _normalized_bot_id_from_script(target), "target": target, "status": "skipped_memory"})
+            target_outcomes.append({"bot_id": bot_id, "target": target, "status": "skipped_memory"})
             continue
 
+        launch_record = _heartbeat_retrain_launch_record(
+            launch_record,
+            dry_run=args.dry_run,
+            phase="thermal_gate",
+            progress={
+                "target_index": target_index,
+                "target_count": len(targets),
+                "bot_id": bot_id,
+                "target": target,
+                "max_wait_seconds": int(args.memory_max_wait_seconds),
+            },
+        )
         thermal_ok = _wait_for_thermal_gate(
             enabled=args.thermal_guard,
             min_cpu_speed_limit=args.thermal_min_cpu_speed_limit,
@@ -4680,11 +4861,10 @@ def main() -> int:
         )
         if not thermal_ok:
             skipped_by_memory.append(target)
-            target_outcomes.append({"bot_id": _normalized_bot_id_from_script(target), "target": target, "status": "skipped_thermal"})
+            target_outcomes.append({"bot_id": bot_id, "target": target, "status": "skipped_thermal"})
             continue
 
         target_env = dict(child_env)
-        bot_id = _normalized_bot_id_from_script(target)
         is_new_bot = bot_id in new_bot_ids if args.new_bot_boost else False
         if is_new_bot:
             target_env["FEATURE_FRESHNESS_GUARD_ENABLED"] = "1"
@@ -4702,6 +4882,18 @@ def main() -> int:
         else:
             target_env["DISTILLATION_STUDENT"] = "0"
 
+        launch_record = _heartbeat_retrain_launch_record(
+            launch_record,
+            dry_run=args.dry_run,
+            phase="target_training",
+            progress={
+                "target_index": target_index,
+                "target_count": len(targets),
+                "bot_id": bot_id,
+                "target": target,
+                "target_timeout_seconds": int(args.target_timeout_seconds),
+            },
+        )
         rc, captured_stdout, captured_stderr = run_cmd_capture(
             [VENV_PY, target],
             args.dry_run,
@@ -4710,6 +4902,19 @@ def main() -> int:
         )
         retry_attempts: list[dict[str, object]] = []
         failure_reason = _extract_failure_reason(captured_stdout, captured_stderr)
+        launch_record = _heartbeat_retrain_launch_record(
+            launch_record,
+            dry_run=args.dry_run,
+            phase="target_result",
+            progress={
+                "target_index": target_index,
+                "target_count": len(targets),
+                "bot_id": bot_id,
+                "target": target,
+                "rc": int(rc),
+                "failure_reason": failure_reason[:240],
+            },
+        )
         if rc != 0 and args.auto_insufficient_data_retry and _failure_is_insufficient_data(failure_reason):
             for retry_index in range(2):
                 retry_env = dict(target_env)

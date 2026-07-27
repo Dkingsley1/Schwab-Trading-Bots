@@ -16,10 +16,12 @@ DEFAULT_MANIFEST_PATH = PROJECT_ROOT / "governance" / "health" / "storage_tier_o
 DEFAULT_OUT_PATH = PROJECT_ROOT / "governance" / "health" / "manifest_backed_offload_worker_latest.json"
 DEFAULT_PROOF_PATH = PROJECT_ROOT / "governance" / "health" / "manifest_backed_offload_restore_proofs_latest.jsonl"
 PROTECTED_VOLUME_PREFIXES = ("/Volumes/VIDEO",)
+DEFAULT_VIDEO_COLD_ARCHIVE_ROOT = "/Volumes/VIDEO/schwab_trading_bot_cold"
 DEFAULT_COLD_TARGETS = (
     "/Volumes/BOT_COLD/schwab_trading_bot",
     "/Volumes/BOT_ARCHIVE/schwab_trading_bot",
     "/Volumes/BOT_RETENTION/schwab_trading_bot",
+    DEFAULT_VIDEO_COLD_ARCHIVE_ROOT,
 )
 
 
@@ -40,7 +42,22 @@ def _gb(raw_bytes: int | float) -> float:
 
 def _is_protected(path: Path) -> bool:
     raw = str(path.expanduser())
+    if _approved_video_cold_archive(path):
+        return False
     return any(raw == prefix or raw.startswith(f"{prefix}/") for prefix in PROTECTED_VOLUME_PREFIXES)
+
+
+def _env_truthy(name: str) -> bool:
+    return str(os.getenv(name, "")).strip().lower() in {"1", "true", "yes", "y", "on"}
+
+
+def _approved_video_cold_archive(path: Path) -> bool:
+    if not _env_truthy("BOT_ALLOW_VIDEO_COLD_ARCHIVE"):
+        return False
+    allowed_root = Path(os.getenv("BOT_VIDEO_COLD_ARCHIVE_ROOT", DEFAULT_VIDEO_COLD_ARCHIVE_ROOT)).expanduser()
+    raw = str(path.expanduser())
+    allowed = str(allowed_root)
+    return bool(raw == allowed or raw.startswith(f"{allowed}/"))
 
 
 def _resolve_target(raw_target: str) -> tuple[Path | None, list[dict[str, Any]]]:
@@ -126,6 +143,7 @@ def _copy_verify_one(
     target_root: Path,
     entry: dict[str, Any],
     proof_path: Path,
+    release_source_after_verify: bool = False,
 ) -> dict[str, Any]:
     rel = str(entry.get("relative_path") or "")
     source = project_root / rel
@@ -165,10 +183,51 @@ def _copy_verify_one(
         "source_retained": True,
         "source_delete_requires_retention_gate": True,
     }
+    if release_source_after_verify and status == "copied_verified":
+        result.update(_release_source_with_retention_gate(source=source, target=target, entry=entry, result=result))
     proof_path.parent.mkdir(parents=True, exist_ok=True)
     with proof_path.open("a", encoding="utf-8") as handle:
         handle.write(json.dumps(result, ensure_ascii=True) + "\n")
     return result
+
+
+def _release_source_with_retention_gate(*, source: Path, target: Path, entry: dict[str, Any], result: dict[str, Any]) -> dict[str, Any]:
+    allowed = {str(item) for item in (entry.get("allowed_actions") or [])}
+    proof = entry.get("proof_required") if isinstance(entry.get("proof_required"), dict) else {}
+    if str(entry.get("classification") or "") != "eligible_manifest_backed_offload":
+        return {"source_release_status": "blocked_not_manifest_eligible", "source_retained": True}
+    if "source_delete_requires_retention_gate" not in allowed:
+        return {"source_release_status": "blocked_missing_retention_gate_action", "source_retained": True}
+    if not bool(proof.get("retention_gate_before_source_delete", False)):
+        return {"source_release_status": "blocked_missing_retention_gate_proof", "source_retained": True}
+    if not target.exists() or not source.exists():
+        return {"source_release_status": "blocked_missing_source_or_target", "source_retained": True}
+    try:
+        source_hash = _sha256(source)
+        target_hash = _sha256(target)
+        source_size = int(source.stat().st_size)
+        target_size = int(target.stat().st_size)
+        if (
+            source_hash != target_hash
+            or source_hash != str(result.get("source_sha256") or "")
+            or target_hash != str(result.get("target_sha256") or "")
+            or source_size != target_size
+        ):
+            return {
+                "source_release_status": "blocked_restore_proof_mismatch",
+                "source_retained": True,
+                "source_release_error": "hash_or_size_mismatch",
+            }
+        source.unlink()
+    except Exception as exc:
+        return {"source_release_status": "error", "source_retained": True, "source_release_error": str(exc)}
+    return {
+        "status": "copied_verified_source_released",
+        "source_release_status": "released_after_restore_proof",
+        "source_retained": False,
+        "source_released": True,
+        "source_release_bytes": source_size,
+    }
 
 
 def build_payload(
@@ -179,6 +238,7 @@ def build_payload(
     apply: bool = False,
     max_files: int = 4,
     max_gb: float = 4.0,
+    release_source_after_verify: bool = False,
     out_path: Path = DEFAULT_OUT_PATH,
     proof_path: Path = DEFAULT_PROOF_PATH,
 ) -> dict[str, Any]:
@@ -194,10 +254,25 @@ def build_payload(
     results: list[dict[str, Any]] = []
     if apply and target is not None:
         for entry in selected:
-            results.append(_copy_verify_one(project_root=project_root, target_root=target, entry=entry, proof_path=proof_path))
+            results.append(
+                _copy_verify_one(
+                    project_root=project_root,
+                    target_root=target,
+                    entry=entry,
+                    proof_path=proof_path,
+                    release_source_after_verify=bool(release_source_after_verify),
+                )
+            )
 
-    copied = [row for row in results if str(row.get("status") or "") == "copied_verified"]
-    errors = [row for row in results if str(row.get("status") or "") not in {"copied_verified"}]
+    copied_statuses = {"copied_verified", "copied_verified_source_released"}
+    copied = [row for row in results if str(row.get("status") or "") in copied_statuses]
+    released = [row for row in results if bool(row.get("source_released", False))]
+    errors = [
+        row
+        for row in results
+        if str(row.get("status") or "") not in copied_statuses
+        or (release_source_after_verify and not bool(row.get("source_released", False)))
+    ]
     if not manifest:
         status = "blocked_missing_manifest"
         ok = False
@@ -232,14 +307,26 @@ def build_payload(
         "apply_result": {
             "copied_count": len(copied),
             "copied_gb": _gb(sum(_safe_int(row.get("source_bytes"), 0) for row in copied)),
+            "released_count": len(released),
+            "released_gb": _gb(sum(_safe_int(row.get("source_release_bytes"), 0) for row in released)),
             "error_count": len(errors),
             "proof_path": str(proof_path),
-            "source_delete_performed": False,
+            "source_delete_performed": bool(released),
+            "release_source_after_verify": bool(release_source_after_verify),
         },
         "policy": {
             "mode": "manifest_backed_copy_verify_restore_proof",
-            "source_delete_policy": "never delete source in this worker; retention gate must consume restore proofs first",
+            "source_delete_policy": (
+                "release only manifest eligible sources after copy, hash verify, and restore proof"
+                if release_source_after_verify
+                else "never delete source in this worker; retention gate must consume restore proofs first"
+            ),
             "never_touch_protected_volumes": list(PROTECTED_VOLUME_PREFIXES),
+            "approved_video_cold_archive": {
+                "enabled": _env_truthy("BOT_ALLOW_VIDEO_COLD_ARCHIVE"),
+                "root": os.getenv("BOT_VIDEO_COLD_ARCHIVE_ROOT", DEFAULT_VIDEO_COLD_ARCHIVE_ROOT),
+                "scope": "cold_archive_subtree_only",
+            },
             "required_entry_classification": "eligible_manifest_backed_offload",
         },
         "selected_entries": selected[:25],
@@ -248,6 +335,8 @@ def build_payload(
             "configure BOT_SECOND_COLD_ROOT or mount BOT_COLD/BOT_ARCHIVE before offload copy-verify can run"
             if status == "blocked_waiting_for_cold_target"
             else "offload copies have restore proofs; source retention remains separately gated"
+            if status == "applied" and not released
+            else "offload copies have restore proofs and eligible sources were released by retention gate"
             if status == "applied"
             else "run with --apply during a maintenance window to copy and verify selected offload candidates"
         ),
@@ -266,6 +355,7 @@ def main() -> int:
     parser.add_argument("--proof-file", default=str(DEFAULT_PROOF_PATH))
     parser.add_argument("--max-files", type=int, default=int(os.getenv("MANIFEST_BACKED_OFFLOAD_MAX_FILES", "4")))
     parser.add_argument("--max-gb", type=float, default=float(os.getenv("MANIFEST_BACKED_OFFLOAD_MAX_GB", "4.0")))
+    parser.add_argument("--release-source-after-verify", action="store_true")
     parser.add_argument("--apply", action="store_true")
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args()
@@ -277,6 +367,7 @@ def main() -> int:
         apply=bool(args.apply),
         max_files=int(args.max_files),
         max_gb=float(args.max_gb),
+        release_source_after_verify=bool(args.release_source_after_verify),
         out_path=Path(args.out_file).expanduser(),
         proof_path=Path(args.proof_file).expanduser(),
     )

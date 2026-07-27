@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from scripts.ops import system_self_model as src
@@ -453,3 +454,110 @@ def test_system_self_model_escalates_auth_fallback_when_token_does_not_extend(tm
     assert halt["next_safe_command"] == ["./scripts/ops/opsctl.sh", "token-refresh-interactive", "--force", "--json"]
     assert "operator_interactive_schwab_auth_refresh" in halt["needs"]
     assert ["./scripts/ops/opsctl.sh", "token-refresh-interactive", "--force", "--json"] in halt["recovery_sequence"]
+
+
+def test_system_self_model_softens_guarded_paper_managed_surfaces(tmp_path: Path) -> None:
+    now = datetime(2026, 7, 27, 16, 15, tzinfo=timezone.utc)
+    health = tmp_path / "governance" / "health"
+    _write_json(
+        health / "runtime_gate_dashboard_latest.json",
+        {
+            "timestamp_utc": now.isoformat(),
+            "overall": {
+                "status": "ok",
+                "ok": True,
+                "raw_attention": ["training_quality_control_blocked", "bot_quality_autopilot_blocked"],
+                "soak_management_context": {
+                    "soak_ready": True,
+                    "soak_status": "ready",
+                    "soak_grade": "A+",
+                    "paper_guard_clean": True,
+                    "paper_stage": "armed",
+                    "health_fast_status": "ready",
+                },
+            },
+        },
+    )
+    _write_json(health / "training_quality_control_latest.json", {"timestamp_utc": now.isoformat(), "overall_status": "blocked"})
+    _write_json(health / "bot_quality_autopilot_latest.json", {"timestamp_utc": now.isoformat(), "overall_status": "blocked"})
+    _write_json(
+        health / "data_plane_recovery_controller_latest.json",
+        {
+            "timestamp_utc": now.isoformat(),
+            "overall_status": "degraded",
+            "recovery_state": "recovering_under_guard",
+            "runtime_clearance_state": "managed_coverage_stage_deferred",
+        },
+    )
+    _write_json(
+        health / "master_infrastructure_supervisor_latest.json",
+        {
+            "timestamp_utc": now.isoformat(),
+            "overall_status": "degraded",
+            "metrics": {"blocked_check_count": 0, "hard_failed_attempt_count": 0},
+            "checks": [
+                {"name": "governance_artifact_freshness", "status": "degraded"},
+                {"name": "operator_cockpit_readiness", "status": "degraded"},
+                {"name": "self_auditing_infra_bots", "status": "degraded"},
+            ],
+        },
+    )
+
+    matrix = src._surface_matrix(health, tmp_path, now=now)
+
+    assert matrix["runtime_gate_dashboard"]["status"] == "ready"
+    assert matrix["runtime_gate_dashboard"]["guarded_paper_context_enabled"] is True
+    for name in ("training_quality", "bot_quality", "data_plane_recovery", "master_infra"):
+        assert matrix[name]["status"] == "advisory"
+        assert matrix[name]["guarded_paper_advisory_only"] is True
+        assert matrix[name]["raw_status"] in {"blocked", "degraded"}
+    for name in ("codex_operator_bridge", "quant_model_control", "capital_growth_intelligence", "capital_growth_awareness", "capital_rotation_control"):
+        assert matrix[name]["status"] == "advisory"
+        assert matrix[name]["raw_status"] == "missing"
+
+
+def test_system_self_model_keeps_optional_support_staleness_advisory_during_guarded_paper_soak(tmp_path: Path) -> None:
+    now = datetime(2026, 7, 27, 16, 15, tzinfo=timezone.utc)
+    old = now - timedelta(hours=8)
+    health = tmp_path / "governance" / "health"
+    _write_json(
+        health / "runtime_gate_dashboard_latest.json",
+        {
+            "timestamp_utc": now.isoformat(),
+            "overall": {
+                "status": "ok",
+                "ok": True,
+                "soak_management_context": {
+                    "soak_ready": True,
+                    "soak_status": "ready",
+                    "soak_grade": "A+",
+                    "paper_guard_clean": True,
+                    "paper_stage": "armed",
+                    "health_fast_status": "ready",
+                },
+            },
+        },
+    )
+    for artifact, status in {
+        "backpressure_super_drainer_latest.json": "applied_with_followups",
+        "backpressure_super_drainer_memory_latest.json": "ready",
+        "mlx_runtime_audit_latest.json": "ready",
+        "mlx_library_upgrade_latest.json": "ready",
+        "mlx_intelligence_router_latest.json": "advisory",
+        "library_utilization_router_latest.json": "advisory",
+    }.items():
+        _write_json(health / artifact, {"timestamp_utc": old.isoformat(), "overall_status": status})
+
+    matrix = src._surface_matrix(health, tmp_path, now=now)
+    memory = src._dependency_memory(matrix, {}, now=now)
+
+    assert memory["stale_source_count"] == 0
+    assert memory["managed_stale_source_count"] == 6
+    assert {row["surface"] for row in memory["managed_stale_sources"]} == {
+        "backpressure_super_drainer",
+        "backpressure_super_drainer_memory",
+        "mlx_runtime",
+        "mlx_library",
+        "mlx_intelligence_router",
+        "library_utilization_router",
+    }
