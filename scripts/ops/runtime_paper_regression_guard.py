@@ -513,6 +513,10 @@ def _runtime_guarded_ready_lane_guard(runtime: dict[str, Any]) -> dict[str, Any]
         _bool(measurements.get("bounded_protected_lane_guarded_ready", False))
         or reason == "bounded_read_only_protected_lane_after_green_backpressure_is_guarded_runtime_ready"
     )
+    niced_support_ready = bool(
+        _bool(measurements.get("support_low_priority_guarded_ready", False))
+        or reason == "niced_support_pressure_after_green_backpressure_is_guarded_runtime_ready"
+    )
     hot_flags = [
         "support_jobs_hot",
         "paper_execution_hot",
@@ -529,6 +533,8 @@ def _runtime_guarded_ready_lane_guard(runtime: dict[str, Any]) -> dict[str, Any]
             allowed_hot_flags.add("support_jobs_hot")
     if protected_lane_ready:
         allowed_hot_flags.add("bot_owned_pressure_dominant")
+    if niced_support_ready and _bool(measurements.get("support_hot_low_priority", True)):
+        allowed_hot_flags.update({"support_jobs_hot", "bot_owned_pressure_dominant"})
     hot_lanes = [
         name
         for name in hot_flags
@@ -556,6 +562,15 @@ def _runtime_guarded_ready_lane_guard(runtime: dict[str, Any]) -> dict[str, Any]
         protected_limit = max(
             protected_limit,
             _safe_float(thresholds.get("max_guarded_ready_protected_lane_cpu_percent"), 75.0),
+        )
+    if niced_support_ready:
+        bot_limit = max(
+            bot_limit,
+            _safe_float(thresholds.get("max_guarded_niced_support_ready_cpu_percent"), 160.0),
+        )
+        operator_limit = max(
+            operator_limit,
+            _safe_float(thresholds.get("max_guarded_operator_observability_high_compute_cpu_percent"), 100.0),
         )
     bot_owned_raw = _safe_float(measurements.get("bot_owned_cpu_percent"), 0.0)
     bot_owned = _safe_float(measurements.get("bot_owned_non_operator_cpu_percent"), bot_owned_raw)

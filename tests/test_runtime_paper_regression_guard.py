@@ -119,6 +119,38 @@ def test_runtime_guard_accepts_full_force_paper_ready_hot_lane() -> None:
     assert guard["status"] == "ready"
 
 
+def test_runtime_guard_accepts_niced_support_pressure_when_paper_is_open() -> None:
+    runtime = _runtime_payload(blocked_paper=False)
+    soft_cap = runtime["soft_cap_advisory_reclassification"]
+    soft_cap["reason"] = "niced_support_pressure_after_green_backpressure_is_guarded_runtime_ready"
+    soft_cap["measurements"].update(
+        {
+            "support_low_priority_guarded_ready": True,
+            "support_hot_low_priority": True,
+            "support_jobs_hot": True,
+            "bot_owned_pressure_dominant": True,
+            "bot_owned_cpu_percent": 225.7,
+            "bot_owned_non_operator_cpu_percent": 147.7,
+            "operator_observability_cpu_percent": 78.0,
+            "storage_ready_for_runtime_advisory": True,
+            "paper_execution_allowed": True,
+            "paper_execution_paused": False,
+            "paper_ramp_armed": True,
+        }
+    )
+    soft_cap["thresholds"].update(
+        {
+            "max_guarded_niced_support_ready_cpu_percent": 160.0,
+            "max_guarded_operator_observability_high_compute_cpu_percent": 100.0,
+        }
+    )
+
+    guard = src._runtime_guarded_ready_lane_guard(runtime)
+
+    assert guard["ok"] is True
+    assert guard["status"] == "ready"
+
+
 def _ready_override(path: Path) -> None:
     _write_env(
         path,
