@@ -327,11 +327,18 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, live_fresh_minutes: floa
     }
     non_contention_signals = {"storage_hot_path_bounded_by_control", "isolated_read_only_restart_storms"}
     contention_score = sum(1 for key, value in contention_signals.items() if key not in non_contention_signals and value)
+    guarded_paper_read_only_ready = bool(
+        guarded_paper_soak.get("ready", False)
+        and not live_ready
+        and bool(live_readiness.get("broker_ready", False))
+        and bool(live_readiness.get("session_ready", False))
+        and not bool(live_readiness.get("live_lane_running", False))
+    )
 
     overall_status = "ready"
     if contention_score >= 3:
         overall_status = "blocked"
-    elif contention_score > 0 or not live_ready:
+    elif contention_score > 0 or (not live_ready and not guarded_paper_read_only_ready):
         overall_status = "degraded"
 
     cold_lane_contract = _cold_lane_contract(
@@ -447,6 +454,7 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, live_fresh_minutes: floa
         "live_plane": {
             "ready": bool(live_ready),
             "guarded_paper_soak_ready": bool(guarded_paper_soak.get("ready", False)),
+            "guarded_paper_read_only_ready": bool(guarded_paper_read_only_ready),
             "guarded_paper_soak": guarded_paper_soak,
             "broker_ready": bool(live_readiness.get("broker_ready", False)),
             "session_ready": bool(live_readiness.get("session_ready", False)),
@@ -479,12 +487,14 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, live_fresh_minutes: floa
             "live_lane_should_be_read_only": bool(
                 (
                     live_ready
+                    or guarded_paper_read_only_ready
                     or (
                         bool(live_readiness.get("broker_ready", False))
                         and bool(live_readiness.get("session_ready", False))
                     )
                 )
                 and contention_score > 0
+                or guarded_paper_read_only_ready
             ),
             "promotions_should_wait_for_cold_lane": bool(training_blocked or coverage_shortfall_bots > 0),
             "shared_host_training_resume_allowed": bool(

@@ -234,6 +234,7 @@ def check_ci_guardrails(project_root: Path) -> dict[str, Any]:
         and "commands_hygiene_bot.py --help" in text
         and "source_mutation_guard.py --check-clean --json" in text
         and "production_hardening_watch.py --help" in text
+        and "infrabot_library_self_awareness_control.py --help" in text
         and "paper_400_ramp_control.py --help" in text
         and "runtime_throttle_control.py --help" in text
         and "production_level_upgrade_hardener_control.py --help" in text
@@ -244,6 +245,7 @@ def check_ci_guardrails(project_root: Path) -> dict[str, Any]:
         "commands_hygiene_bot_in_ci": "commands_hygiene_bot.py --help" in text,
         "source_mutation_guard_in_ci": "source_mutation_guard.py --check-clean --json" in text,
         "production_hardening_watch_in_ci": "production_hardening_watch.py --help" in text,
+        "infrabot_library_self_awareness_control_in_ci": "infrabot_library_self_awareness_control.py --help" in text,
         "paper_400_ramp_control_in_ci": "paper_400_ramp_control.py --help" in text,
         "runtime_throttle_control_in_ci": "runtime_throttle_control.py --help" in text,
         "production_level_upgrade_hardener_control_in_ci": "production_level_upgrade_hardener_control.py --help" in text,

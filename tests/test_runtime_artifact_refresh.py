@@ -183,6 +183,38 @@ def test_runtime_artifact_refresh_tracks_paper_soak_proof_debt_as_managed(tmp_pa
     ]
 
 
+def test_runtime_artifact_refresh_rechecks_soak_after_refreshing_core_artifacts(tmp_path: Path) -> None:
+    health = tmp_path / "governance" / "health"
+    specs = [
+        {"name": "canary_rollout_guard", "payload_path": health / "canary_rollout_latest.json", "cmd": ["canary"], "optional": True},
+        {"name": "training_quality_control", "payload_path": health / "training_quality_control_latest.json", "cmd": ["training"]},
+        {"name": "unattended_soak_readiness", "payload_path": health / "unattended_soak_readiness_latest.json", "cmd": ["soak"]},
+        {"name": "runtime_paper_regression_guard", "payload_path": health / "runtime_paper_regression_guard_latest.json", "cmd": ["paper"]},
+    ]
+
+    def runner(spec: dict, project_root: Path) -> dict:
+        if spec["name"] == "canary_rollout_guard":
+            return {"cmd": list(spec["cmd"]), "rc": 124, "payload": {}, "stdout_tail": "", "stderr_tail": "timeout", "duration_ms": 1.0}
+        if spec["name"] == "training_quality_control":
+            payload = {"ok": False, "overall_status": "blocked", "failed_checks": ["future_live_money_proof"]}
+        elif spec["name"] == "unattended_soak_readiness":
+            payload = {"ok": True, "overall_status": "ready", "safe_to_leave_unattended": True}
+        else:
+            payload = {"ok": True, "overall_status": "ready"}
+        _write_json(Path(spec["payload_path"]), payload)
+        return {"cmd": list(spec["cmd"]), "rc": 0, "payload": payload, "stdout_tail": "", "stderr_tail": "", "duration_ms": 1.0}
+
+    payload = runtime_artifact_refresh.build_payload(tmp_path, specs=specs, runner=runner)
+
+    assert payload["paper_soak_ready_before_refresh"] is False
+    assert payload["paper_soak_ready_after_refresh"] is True
+    assert payload["overall_status"] == "ready"
+    assert payload["required_missing_after"] == []
+    assert payload["managed_paper_soak_step_count"] == 2
+    assert {row["name"]: row["status"] for row in payload["steps"]}["canary_rollout_guard"] == "managed_paper_soak"
+    assert {row["name"]: row["status"] for row in payload["steps"]}["training_quality_control"] == "managed_paper_soak"
+
+
 def test_runtime_artifact_refresh_manages_stateful_sql_soft_quota_during_green_soak(tmp_path: Path) -> None:
     health = tmp_path / "governance" / "health"
     _write_json(
@@ -292,6 +324,7 @@ def test_runtime_artifact_refresh_step_specs_include_training_storage_and_harden
     assert "market_cycle_extraction_engine" in names
     assert "chrome_headless_guard" in names
     assert "multiple_testing_guard" in names
+    assert "service_control_plane" in names
 
     chrome_spec = next(row for row in specs if row["name"] == "chrome_headless_guard")
     assert "--apply" in chrome_spec["cmd"]

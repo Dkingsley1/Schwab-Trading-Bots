@@ -220,6 +220,7 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
     launch_state = str(retrain_launch.get("state") or "")
     launch_final_status = str(retrain_launch.get("final_status") or "")
     training_reason = str(training_success.get("reason") or retrain_scorecard.get("training_reason") or "")
+    training_reason_lower = training_reason.lower()
     failure_count = int(
         training_success.get("failure_count", retrain_scorecard.get("failure_count", 0)) or 0
     )
@@ -231,7 +232,15 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
         retrain_status = "ready"
     elif failure_count > 0 or "failure" in training_reason or "blocked" in str(retrain_orchestrator.get("reason") or ""):
         retrain_status = "blocked"
-    elif launch_state == "completed" and failure_count == 0 and training_reason in {"", "no_trained_targets", "skipped_by_flag"}:
+    elif (
+        launch_state == "completed"
+        and failure_count == 0
+        and (
+            training_reason in {"", "no_trained_targets", "skipped_by_flag"}
+            or "skipped_by_flag" in training_reason_lower
+            or "trained_ok_but_not_promotable" in training_reason_lower
+        )
+    ):
         retrain_status = "managed_paper_soak"
     elif retrain_orchestrator or retrain_launch or retrain_scorecard:
         retrain_status = "degraded"

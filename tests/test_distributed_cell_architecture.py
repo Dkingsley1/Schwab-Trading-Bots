@@ -39,6 +39,10 @@ def test_distributed_cell_architecture_builds_seven_cells(tmp_path: Path) -> Non
     assert market_contract["primary_budget"] == "required_context_first_optional_news_bounded"
     market_state = next(row for row in cells.CELL_DEFINITIONS if row["cell_id"] == "market_data_cell")
     assert "ticker_news_context" in {row["name"] for row in market_state["surfaces"]}
+    infra_state = next(row for row in cells.CELL_DEFINITIONS if row["cell_id"] == "infra_cell")
+    infra_paths = {row["path"] for row in infra_state["surfaces"]}
+    assert "governance/health/infrastructure_autofix_bot_latest.json" in infra_paths
+    assert "governance/health/infrabot_library_self_awareness_control_latest.json" in infra_paths
     assert payload["protected_volumes"]["VIDEO"] == "never_touched"
     assert "/Volumes/VIDEO" in payload["integration_contract"]["never_touch_protected_volumes"]
 
@@ -124,7 +128,19 @@ def test_distributed_cell_architecture_normalizes_controlled_production_states(t
         },
     )
     _write_json(health / "ingestion_storage_control_latest.json", {"timestamp_utc": now, "overall_status": "ready"})
-    _write_json(health / "storage_quota_guard_latest.json", {"timestamp_utc": now, "overall_status": "ready"})
+    _write_json(
+        health / "storage_quota_guard_latest.json",
+        {
+            "timestamp_utc": now,
+            "overall_status": "degraded",
+            "quota_summary": {
+                "hard_breaches": 0,
+                "soft_breaches": 1,
+                "blocked_families": [],
+                "degraded_families": ["sql_link_shards"],
+            },
+        },
+    )
     _write_json(health / "storage_backpressure_autopilot_latest.json", {"timestamp_utc": now, "overall_status": "running", "ok": True})
     _write_json(
         health / "writer_cycle_coordinator_latest.json",
@@ -137,7 +153,17 @@ def test_distributed_cell_architecture_normalizes_controlled_production_states(t
     )
     _write_json(health / "writer_process_intelligence_latest.json", {"timestamp_utc": now, "overall_status": "ready"})
     _write_json(health / "backlog_pcore_accelerator_latest.json", {"timestamp_utc": now, "overall_status": "ready"})
-    _write_json(health / "training_runtime_control_latest.json", {"timestamp_utc": now, "overall_status": "ready"})
+    _write_json(
+        health / "training_runtime_control_latest.json",
+        {
+            "timestamp_utc": now,
+            "overall_status": "constrained",
+            "launch_blockers": ["autonomic_training_budget_closed"],
+            "prep_allowed": True,
+            "resource_guard": {"training_ok": True},
+            "storage_quota_training_gate": {"hard_breaches": 0},
+        },
+    )
     _write_json(
         health / "training_quality_control_latest.json",
         {
@@ -175,6 +201,51 @@ def test_distributed_cell_architecture_normalizes_controlled_production_states(t
     assert surfaces["paper_profitability_control"]["raw_status"] == "protective_tightening"
     assert surfaces["paper_profitability_control"]["controlled_state_reason"] == "profitability_protective_tightening_is_controlled_risk_posture"
     assert surfaces["writer_cycle_coordinator"]["raw_status"] == "waiting_for_writer"
+    assert surfaces["storage_quota_guard"]["controlled_state_reason"] == "stateful_sql_soft_quota_compaction_debt_managed_by_guarded_soak"
+    assert surfaces["training_runtime"]["controlled_state_reason"] == "training_budget_closed_is_managed_during_guarded_paper_soak"
     assert surfaces["data_collection_observation_rollup"]["controlled_state_reason"] == "zero_observation_targets_are_routed_to_targeted_repair_lane"
     assert surfaces["master_infrastructure_supervisor"]["controlled_state_reason"] == "master_infrastructure_degraded_only_by_advisory_refreshable_checks"
     assert cells._controlled_surface_state("writer_cycle_coordinator", "handoff_released", {"ok": True})["status"] == "complete"
+
+
+def test_guarded_soak_accepts_architecture_self_reference_drift_debt(tmp_path: Path) -> None:
+    health = tmp_path / "governance" / "health"
+    now = cells.iso_now()
+    _write_json(
+        health / "unattended_soak_readiness_latest.json",
+        {
+            "timestamp_utc": now,
+            "overall_status": "ready",
+            "overall_grade": "A+",
+            "safe_to_leave_unattended": True,
+            "blockers": [],
+        },
+    )
+    _write_json(
+        health / "runtime_paper_regression_guard_latest.json",
+        {
+            "timestamp_utc": now,
+            "overall_status": "ready",
+            "paper_armed": True,
+            "paper_blocked": False,
+            "failed_guard_count": 0,
+        },
+    )
+    _write_json(health / "health_fast_latest.json", {"timestamp_utc": now, "overall_status": "ready", "ok": True, "strict_all_clear": True})
+    _write_json(health / "runtime_gate_dashboard_latest.json", {"timestamp_utc": now, "overall": {"status": "ok", "ok": True, "attention": []}})
+    _write_json(
+        health / "system_drift_guard_latest.json",
+        {
+            "timestamp_utc": now,
+            "overall_status": "degraded",
+            "ok": False,
+            "metrics": {"blocked_surface_count": 0, "degraded_surface_count": 1, "stale_surface_count": 0},
+            "surfaces": [{"name": "system_architecture_autopilot", "status": "degraded"}],
+        },
+    )
+
+    guarded = cells._guarded_paper_soak_health(tmp_path)
+
+    assert guarded["ready"] is True
+    assert guarded["system_drift_ready"] is True
+    assert guarded["system_drift_context"]["managed"] is True

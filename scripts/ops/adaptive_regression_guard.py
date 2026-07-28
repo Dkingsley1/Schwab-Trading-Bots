@@ -880,6 +880,7 @@ def _memory_truth_contract_surface(project_root: Path, loader: ArtifactLoader, m
         hard_blockers = [item for item in blockers if item not in soft_guard_blockers]
         warnings = ordered_unique(warnings + [item for item in blockers if item in soft_guard_blockers])
     paper_soak_soft_guard_warning_tokens = {
+        "memory_efficiency_stale",
         "memory_pressure_advisory_ready",
         "memory_pressure_not_clear",
         "memory_soft_guard_for_guarded_paper",

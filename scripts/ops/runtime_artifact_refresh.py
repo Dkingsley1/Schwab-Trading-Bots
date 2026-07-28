@@ -51,7 +51,9 @@ PAPER_SOAK_MANAGED_STEPS = {
     "coordination_state_control",
     "multiple_testing_guard",
     "decay_monitor",
+    "rolling_restart_controller",
     "operator_cockpit",
+    "service_control_plane",
 }
 PAPER_SOAK_MANAGED_STATUSES = {
     "blocked",
@@ -478,6 +480,12 @@ def _step_specs(project_root: Path) -> list[dict[str, Any]]:
             "timeout_sec": 180,
         },
         {
+            "name": "service_control_plane",
+            "payload_path": health_root / "service_control_plane_latest.json",
+            "cmd": [str(PY), str(project_root / "scripts" / "service_control_plane.py"), "--json"],
+            "timeout_sec": 180,
+        },
+        {
             "name": "operator_cockpit",
             "payload_path": health_root / "operator_cockpit_latest.json",
             "cmd": [str(PY), str(ops_root / "operator_cockpit.py"), "--json"],
@@ -617,6 +625,19 @@ def _paper_soak_managed_step(name: str, payload: dict[str, Any], *, project_root
         return bool(status in PAPER_SOAK_MANAGED_STATUSES and _core_storage_ready(project_root))
     if name == "storage_quota_guard":
         return bool(status in PAPER_SOAK_MANAGED_STATUSES and _stateful_sql_soft_quota_managed_for_paper_soak(project_root, payload))
+    if name == "rolling_restart_controller":
+        signals = _as_dict(payload.get("due_signals"))
+        scope = str(payload.get("recommended_scope") or "").strip().lower()
+        checkpoint_only = bool(signals.get("checkpoint_missing_or_stale", False)) and not any(
+            bool(signals.get(key, False))
+            for key in (
+                "session_stale",
+                "shadow_heartbeat_stale",
+                "swap_pressure_high",
+                "restart_storm_present",
+            )
+        )
+        return bool(status in PAPER_SOAK_MANAGED_STATUSES and checkpoint_only and scope in {"", "none"})
     if name not in PAPER_SOAK_MANAGED_STEPS:
         return False
     if status in PAPER_SOAK_MANAGED_STATUSES:
@@ -753,7 +774,7 @@ def build_payload(
     statuses: list[str] = []
     missing_after: list[str] = []
     recovered = 0
-    paper_soak_ready = _paper_soak_contract_ready(project_root)
+    paper_soak_ready_before_refresh = _paper_soak_contract_ready(project_root)
     for spec in refresh_specs:
         payload_path = Path(spec["payload_path"])
         result = run_step(spec, project_root)
@@ -763,24 +784,43 @@ def build_payload(
             recovered += 1
         if not present_after:
             missing_after.append(str(spec["name"]))
-        status = _step_status(
-            result,
-            name=str(spec["name"]),
-            project_root=project_root,
-            paper_soak_ready=paper_soak_ready,
-        )
-        if status == "error" and bool(spec.get("optional", False)):
-            status = "degraded"
-        statuses.append(status)
         steps.append(
             {
                 "name": str(spec["name"]),
+                "result": result,
+                "payload": payload,
+                "payload_path": payload_path,
+                "present_after": present_after,
+                "optional": bool(spec.get("optional", False)),
+            }
+        )
+
+    paper_soak_ready_after_refresh = _paper_soak_contract_ready(project_root)
+    paper_soak_ready = bool(paper_soak_ready_before_refresh or paper_soak_ready_after_refresh)
+    rendered_steps: list[dict[str, Any]] = []
+    for row in steps:
+        payload_path = Path(row["payload_path"])
+        result = row["result"] if isinstance(row.get("result"), dict) else {}
+        payload = row["payload"] if isinstance(row.get("payload"), dict) else {}
+        optional = bool(row.get("optional", False))
+        status = _step_status(
+            result,
+            name=str(row["name"]),
+            project_root=project_root,
+            paper_soak_ready=paper_soak_ready,
+        )
+        if status == "error" and optional:
+            status = "optional_advisory" if paper_soak_ready else "degraded"
+        statuses.append(status)
+        rendered_steps.append(
+            {
+                "name": str(row["name"]),
                 "status": status,
                 "rc": int(result.get("rc", 1)),
                 "duration_ms": float(result.get("duration_ms", 0.0) or 0.0),
                 "payload_path": str(payload_path),
-                "optional": bool(spec.get("optional", False)),
-                "artifact_present": present_after,
+                "optional": optional,
+                "artifact_present": bool(row.get("present_after", False)),
                 "payload_summary": _payload_summary(payload),
                 "cmd": list(result.get("cmd") or []),
                 "stdout_tail": str(result.get("stdout_tail") or ""),
@@ -796,6 +836,7 @@ def build_payload(
     degraded_step_count = sum(1 for status in statuses if status in degraded_statuses)
     blocked_step_count = sum(1 for status in statuses if status == "blocked")
     managed_paper_soak_step_count = sum(1 for status in statuses if status == "managed_paper_soak")
+    optional_advisory_step_count = sum(1 for status in statuses if status == "optional_advisory")
     overall_status = "ready"
     if error_step_count > 0 or required_missing_after:
         overall_status = "blocked"
@@ -818,6 +859,9 @@ def build_payload(
         "degraded_step_count": degraded_step_count,
         "error_step_count": error_step_count,
         "managed_paper_soak_step_count": managed_paper_soak_step_count,
+        "optional_advisory_step_count": optional_advisory_step_count,
+        "paper_soak_ready_before_refresh": paper_soak_ready_before_refresh,
+        "paper_soak_ready_after_refresh": paper_soak_ready_after_refresh,
         "recommended_actions": ordered_unique(
             [
                 "./scripts/ops/opsctl.sh dashboard" if not missing_after and error_step_count == 0 else "",
@@ -827,7 +871,7 @@ def build_payload(
                 "paper soak is green; proof, promotion, and research debts are tracked as managed_paper_soak without blocking collection" if managed_paper_soak_step_count else "",
             ]
         ),
-        "steps": steps,
+        "steps": rendered_steps,
     }
 
 

@@ -167,6 +167,7 @@ OPSCTL_ROUTE_PROBES = {
     "schwab-futures-tail": {"args": ["--help"], "expected_rcs": {0}},
     "schwab-auth-supervisor": {"args": ["--help"], "expected_rcs": {0}},
     "schwab-tail": {"args": ["--help"], "expected_rcs": {0}},
+    "service-control-plane": {"args": ["--help"], "expected_rcs": {0}},
     "showcase-refresh": {"args": ["--help"], "expected_rcs": {0}},
     "start": {"args": ["--dry-run"], "expected_rcs": {0, 2}},
     "start-live": {"args": ["--dry-run"], "expected_rcs": {0, 2}},

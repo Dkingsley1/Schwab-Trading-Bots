@@ -1,0 +1,225 @@
+{
+  "schema_version": 1,
+  "purpose": "Coordinate infrabot efficiency, Python/MLX library routing, and operator-facing needs intelligence without mutating dependencies during an unattended paper soak.",
+  "target_grade": "A+",
+  "control_contract": {
+    "live_execution_authority": false,
+    "live_orders_must_remain_disabled": true,
+    "paper_soak_safe": true,
+    "dependency_mutation_allowed_during_soak": false,
+    "dependency_upgrade_policy": "route_now_plan_upgrades_apply_only_in_maintenance_after_smoke",
+    "infrabot_parallel_writer_cap": 1,
+    "infrabot_parallel_storage_cap": 1,
+    "needs_must_explain_owner_command_stop_condition_and_authority": true,
+    "raw_profitability_truth_must_remain_visible": true
+  },
+  "artifact_requirements": [
+    {
+      "name": "library_utilization_router",
+      "path": "governance/health/library_utilization_router_latest.json",
+      "required": true,
+      "ready_statuses": ["ready", "advisory"],
+      "truthy_paths": ["ok"],
+      "min_value_by_path": {
+        "coverage.coverage_ratio": 1.0,
+        "coverage.locked_runtime_ok_ratio": 1.0
+      },
+      "max_value_by_path": {
+        "coverage.missing_runtime_count": 0,
+        "coverage.version_mismatch_count": 0
+      }
+    },
+    {
+      "name": "library_upgrade_route_control",
+      "path": "governance/health/library_upgrade_route_control_latest.json",
+      "required": true,
+      "ready_statuses": ["ready", "advisory"],
+      "truthy_paths": ["ok"],
+      "falsey_paths": ["upgrade_plan.soak_dependency_mutation_allowed"],
+      "max_value_by_path": {
+        "upgrade_plan.hard_blocker_count": 0,
+        "route_matrix.blocked_route_count": 0,
+        "route_matrix.degraded_route_count": 0
+      }
+    },
+    {
+      "name": "mlx_intelligence_router",
+      "path": "governance/health/mlx_intelligence_router_latest.json",
+      "required": true,
+      "ready_statuses": ["ready", "advisory"],
+      "truthy_paths": ["ok"],
+      "max_value_by_path": {
+        "blocked_lane_count": 0
+      }
+    },
+    {
+      "name": "runtime_gate_dashboard",
+      "path": "governance/health/runtime_gate_dashboard_latest.json",
+      "required": true,
+      "status_path": "overall.status",
+      "ready_statuses": ["ok", "ready"],
+      "truthy_paths": ["overall.ok", "overall.soak_management_context.soak_ready", "overall.soak_management_context.paper_armed"],
+      "max_value_by_path": {
+        "overall.attention_tiers.critical.0": 0
+      }
+    },
+    {
+      "name": "unattended_soak_readiness",
+      "path": "governance/health/unattended_soak_readiness_latest.json",
+      "required": true,
+      "ready_statuses": ["ready"],
+      "truthy_paths": ["ok"],
+      "zero_count_paths": ["blockers"]
+    },
+    {
+      "name": "production_level_upgrade_hardener_control",
+      "path": "governance/health/production_level_upgrade_hardener_control_latest.json",
+      "required": true,
+      "ready_statuses": ["ready"],
+      "truthy_paths": ["ok", "raw_profitability_truth_preserved"],
+      "falsey_paths": ["live_execution_authority"],
+      "min_value_by_path": {
+        "ready_count": 20
+      },
+      "expected_values": {
+        "grade": "A+"
+      }
+    },
+    {
+      "name": "infrabot_adaptive_governor",
+      "path": "governance/health/infrabot_adaptive_governor_latest.json",
+      "required": false,
+      "ready_statuses": ["ready", "guarded", "advisory"]
+    },
+    {
+      "name": "infrastructure_autofix_bot",
+      "path": "governance/health/infrastructure_autofix_bot_latest.json",
+      "required": false,
+      "ready_statuses": ["ready", "advisory", "degraded"]
+    },
+    {
+      "name": "master_infrastructure_supervisor",
+      "path": "governance/health/master_infrastructure_supervisor_latest.json",
+      "required": false,
+      "ready_statuses": ["ready", "advisory", "degraded", "blocked"]
+    },
+    {
+      "name": "system_drift_autopilot",
+      "path": "governance/health/system_drift_autopilot_latest.json",
+      "required": false,
+      "ready_statuses": ["ready", "advisory", "degraded", "blocked"]
+    },
+    {
+      "name": "system_needs_intelligence",
+      "path": "governance/health/system_needs_intelligence_latest.json",
+      "required": false,
+      "ready_statuses": ["ready", "needs_action", "advisory"]
+    },
+    {
+      "name": "bot_needs_intelligence",
+      "path": "governance/health/bot_needs_intelligence_latest.json",
+      "required": false,
+      "ready_statuses": ["ready", "needs_action", "advisory"]
+    },
+    {
+      "name": "system_self_model",
+      "path": "governance/health/system_self_model_latest.json",
+      "required": false,
+      "ready_statuses": ["ready", "advisory", "degraded"]
+    },
+    {
+      "name": "infrabot_gap_roster",
+      "path": "governance/health/infrabot_gap_roster_latest.json",
+      "required": false,
+      "ready_statuses": ["ready", "advisory", "watch", "missing"]
+    }
+  ],
+  "infrabot_efficiency_lanes": [
+    {
+      "lane": "storage_writer",
+      "family": "single_writer_storage_and_backpressure",
+      "max_parallel": 1,
+      "pressure_policy": "run_only_one_writer_or_storage_repair_at_a_time_and_prefer_existing_hot_path_green_contract",
+      "owner_controls": ["storage_backpressure_autopilot", "writer_cycle_coordinator", "storage_quota_guard", "stateful_storage_regression_guard"],
+      "default_commands": [
+        ["./scripts/ops/opsctl.sh", "storage-backpressure-autopilot", "--apply", "--json"],
+        ["./scripts/ops/opsctl.sh", "stateful-storage-regression-guard", "--apply", "--json"],
+        ["./scripts/ops/opsctl.sh", "writer-cycle-coordinator", "--apply", "--json"]
+      ],
+      "stop_condition": "storage status ready, pending lines below threshold, no stale hot-path artifact, and no active writer lock handoff"
+    },
+    {
+      "lane": "source_truth",
+      "family": "source_verification_and_data_truth",
+      "max_parallel": 2,
+      "pressure_policy": "prefer read_only_crosschecks_and_refreshes_before_retraining_or_source_mutation",
+      "owner_controls": ["source_verification_refresh", "collector_contracts", "paper_profitability_control"],
+      "default_commands": [
+        ["./scripts/ops/opsctl.sh", "source-verification-refresh", "--apply", "--json"],
+        ["./scripts/ops/opsctl.sh", "collector-contracts", "--json"],
+        ["./scripts/ops/opsctl.sh", "paper-profitability-control", "--json"]
+      ],
+      "stop_condition": "source verification ready with zero unverified required sources and raw profitability truth preserved"
+    },
+    {
+      "lane": "runtime_memory",
+      "family": "runtime_pressure_memory_and_mlx_caps",
+      "max_parallel": 1,
+      "pressure_policy": "reduce_runtime_pressure_before_heavy_mlx_training_and_keep_mlx_single_job_when_p_core_backlog_contract_is_active",
+      "owner_controls": ["runtime_throttle", "memory_efficiency", "mlx_intelligence_router", "library_utilization_router"],
+      "default_commands": [
+        ["./scripts/ops/opsctl.sh", "runtime-throttle", "--apply", "--json"],
+        ["./scripts/ops/opsctl.sh", "memory-efficiency", "apply", "--json"],
+        ["./scripts/ops/opsctl.sh", "mlx-intelligence-router", "--apply", "--json"],
+        ["./scripts/ops/opsctl.sh", "library-utilization-router", "--apply", "--json"]
+      ],
+      "stop_condition": "runtime dashboard ok, memory pressure green or advisory-only, and MLX caps match current P-core/backlog contract"
+    },
+    {
+      "lane": "governance_regression",
+      "family": "artifact_freshness_and_regression_guards",
+      "max_parallel": 2,
+      "pressure_policy": "refresh_stale_lightweight_guards_first_and_defer_heavy_reporting_until_workstation_guards_are_green",
+      "owner_controls": ["adaptive_regression_guard", "system_drift_autopilot", "runtime_paper_regression_guard", "grade_regression_guard"],
+      "default_commands": [
+        ["./scripts/ops/opsctl.sh", "adaptive-regression-guard", "--apply", "--json"],
+        ["./scripts/ops/opsctl.sh", "runtime-paper-regression-guard", "--json"],
+        ["./scripts/ops/opsctl.sh", "grade-regression-guard", "--json"],
+        ["./scripts/ops/opsctl.sh", "section-grade-guard", "--json"]
+      ],
+      "stop_condition": "adaptive regression guard ready or advisory-only, no stale paper guard, and no critical repeated regression"
+    },
+    {
+      "lane": "auth_live_lock",
+      "family": "broker_auth_and_live_execution_firewall",
+      "max_parallel": 1,
+      "pressure_policy": "refresh_auth_readiness_without_enabling_live_execution_or_live_orders",
+      "owner_controls": ["schwab_auth_supervisor", "auth_lease_manager", "production_readiness_control"],
+      "default_commands": [
+        ["./scripts/ops/opsctl.sh", "schwab-auth-supervisor", "--apply", "--json"],
+        ["./scripts/ops/opsctl.sh", "production-readiness", "--json"]
+      ],
+      "stop_condition": "auth ready, broker ready, lease healthy, market_data_only active, live orders disabled"
+    }
+  ],
+  "communication_contract": {
+    "required_fields": ["owner", "symptom", "why_it_matters", "safe_next_command", "stop_condition", "authority_boundary", "urgency", "soak_impact"],
+    "status_language": "distinguish_hard_blocker_from_managed_soak_advisory",
+    "operator_output_policy": "show_exact_command_and_stop_condition_for_each_need",
+    "dashboard_policy": "managed_attention_stays_visible_but_must_not_reduce_soak_grade_when_paper_auth_storage_and_livefeed_contracts_are_clean"
+  },
+  "candidate_library_additions": [
+    "polars",
+    "duckdb",
+    "pyarrow",
+    "orjson",
+    "msgspec",
+    "zstandard",
+    "pydantic-settings",
+    "structlog",
+    "prometheus-client",
+    "psutil",
+    "tenacity",
+    "networkx"
+  ]
+}

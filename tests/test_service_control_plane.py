@@ -113,3 +113,48 @@ def test_service_control_plane_treats_paper_soak_soft_debt_as_advisory(tmp_path:
     assert payload["upgrade_lanes"]["retrain_pipeline"]["status"] == "managed_paper_soak"
     assert payload["upgrade_lanes"]["runtime_separation"]["status"] == "advisory"
     assert payload["upgrade_lanes"]["operator_cockpit_contract"]["status"] == "advisory"
+
+
+def test_service_control_plane_manages_completed_nonpromotion_retrain(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    health = project_root / "governance" / "health"
+    allocator_root = project_root / "governance" / "allocator"
+    risk_root = project_root / "governance" / "risk"
+
+    _write_json(health / "ops_coordinator_latest.json", {"ok": False})
+    _write_json(health / "process_watchdog_latest.json", {"ok": True, "overall_status": "ready", "restart_storms": []})
+    _write_json(health / "platform_control_plane_latest.json", {"institutional_readiness": {"overall_status": "industry_leaning"}})
+    _write_json(
+        health / "provider_mesh_latest.json",
+        {
+            "overall_status": "ready",
+            "summary": {"required_collectors": 4, "required_contract_ok": 4, "required_snapshot_ready": 4},
+            "cooldowns": [],
+        },
+    )
+    _write_json(allocator_root / "portfolio_allocator_service_latest.json", {"ok": True, "approved_intents": []})
+    _write_json(risk_root / "risk_service_boundary_latest.json", {"ok": True, "pre_trade_decisions": []})
+    _write_json(health / "execution_lane_paper_latest.json", {"stale": False})
+    _write_json(health / "execution_lane_live_latest.json", {"stale": False})
+    _write_json(health / "retrain_launch_latest.json", {"state": "completed"})
+    _write_json(health / "retrain_orchestrator_latest.json", {"ok": True})
+    _write_json(health / "retrain_scorecard_latest.json", {"failure_count": 0})
+    _write_json(
+        health / "training_success_latest.json",
+        {
+            "confirmed_training_success": False,
+            "failure_count": 0,
+            "reason": "trained_ok_but_not_promotable:skipped_by_flag",
+        },
+    )
+    _write_json(health / "point_in_time_event_store_latest.json", {"ok": True, "event_count": 12, "category_counts": {"control_plane": 2}})
+    _write_json(health / "live_runtime_separation_control_latest.json", {"overall_status": "ready", "shared_host_pressure": {"contention_score": 0}})
+    _write_json(health / "operator_cockpit_latest.json", {"overall_status": "ready", "recommended_actions": []})
+
+    payload = src.build_payload(project_root)
+
+    assert payload["overall_status"] == "ready"
+    assert payload["ok"] is True
+    assert payload["upgrade_lanes"]["control_plane"]["status"] == "advisory"
+    assert payload["upgrade_lanes"]["execution_gateway"]["status"] == "advisory"
+    assert payload["upgrade_lanes"]["retrain_pipeline"]["status"] == "managed_paper_soak"

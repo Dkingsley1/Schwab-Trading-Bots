@@ -398,6 +398,64 @@ def test_operator_cockpit_manages_proof_debt_when_paper_soak_is_green(tmp_path: 
     assert "training_quality_control_blocked" not in payload["recommended_actions"]
 
 
+def test_operator_cockpit_manages_stateful_sql_soft_quota_during_green_soak(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    health = project_root / "governance" / "health"
+    _write_json(health / "unattended_soak_readiness_latest.json", {"ok": True, "overall_status": "ready", "safe_to_leave_unattended": True})
+    _write_json(health / "runtime_paper_regression_guard_latest.json", {"ok": True, "overall_status": "ready"})
+    _write_json(
+        health / "ingestion_storage_control_latest.json",
+        {
+            "overall_status": "ready",
+            "severity": "stable",
+            "pressure_index": 0.01,
+            "steady_state": {"target_status": {"steady_state_ready": True}},
+            "queue_watermarks": {"breaches": {"hard": [], "elevated": []}},
+            "backpressure": {"total_pending_lines": 100, "core_pending_lines": 50, "estimated_total_drain_minutes": 0.0},
+            "storage": {"backlog_drain_recommended_now": False},
+            "writer_shedding": {"active": False},
+        },
+    )
+    _write_json(health / "external_backlog_drain_latest.json", {"overall_status": "ready", "recommended_now": False})
+    _write_json(
+        health / "memory_efficiency_control_latest.json",
+        {
+            "overall_status": "ready",
+            "memory_snapshot": {"memory_pressure_state": "green", "memory_pressure_kind": "none", "swap_used_gb": 0.4},
+        },
+    )
+    _write_json(health / "global_killswitch_latest.json", {"halt": False, "action": "none", "reasons": []})
+    _write_json(health / "process_watchdog_latest.json", {"overall_status": "ready"})
+    _write_json(health / "live_runtime_separation_control_latest.json", {"overall_status": "ready"})
+    _write_json(
+        health / "storage_quota_guard_latest.json",
+        {
+            "overall_status": "degraded",
+            "quota_summary": {
+                "hard_breaches": 0,
+                "soft_breaches": 1,
+                "blocked_families": [],
+                "degraded_families": ["sql_link_shards"],
+                "worst_hard_ratio": 0.904,
+                "worst_over_hard_gb": 0.0,
+            },
+        },
+    )
+    _write_json(
+        health / "master_infrastructure_supervisor_latest.json",
+        {
+            "overall_status": "ready",
+            "checks": [{"name": "process_lane_ownership", "status": "ready"}],
+        },
+    )
+
+    payload = cockpit_src.build_payload(project_root)
+
+    assert payload["overall_status"] == "ready"
+    assert payload["long_run_lanes"]["storage_quota_guard"]["status"] == "managed_paper_soak"
+    assert payload["surfaces"]["storage_quota_guard"]["status"] == "managed_paper_soak"
+
+
 def test_operator_cockpit_keeps_storage_steady_when_sql_overlay_clears_raw_backlog(tmp_path: Path) -> None:
     project_root = tmp_path / "project"
     health = project_root / "governance" / "health"

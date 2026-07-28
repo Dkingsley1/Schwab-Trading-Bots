@@ -1094,6 +1094,61 @@ def test_adaptive_regression_guard_softens_unknown_green_memory_advisory_during_
     assert memory["metrics"]["blockers"] == []
 
 
+def test_adaptive_regression_guard_treats_slightly_stale_green_memory_as_soft_soak_guard(tmp_path: Path) -> None:
+    _seed_ready_artifacts(tmp_path)
+    _write_guarded_paper_health_fast(tmp_path)
+    now = datetime.now(timezone.utc).isoformat()
+    stale = (datetime.now(timezone.utc) - timedelta(minutes=31)).isoformat()
+    health = tmp_path / "governance" / "health"
+    _write_json(
+        health / "memory_efficiency_control_latest.json",
+        {
+            "timestamp_utc": stale,
+            "ok": True,
+            "overall_status": "ready",
+            "recommended_profile": "max_throughput",
+            "reasons": ["memory_headroom_ok"],
+            "memory_snapshot": {
+                "memory_pressure_state": "green",
+                "memory_pressure_kind": "none",
+                "swap_used_gb": 0.4,
+                "compressed_store_gb": 4.5,
+            },
+            "raw_memory_snapshot": {
+                "memory_pressure_state": "green",
+                "memory_pressure_kind": "none",
+                "swap_used_gb": 0.4,
+                "compressed_store_gb": 4.5,
+            },
+            "memory_truth_reconciliation": {"active": False},
+        },
+    )
+    _write_json(
+        health / "memory_pressure_intelligence_latest.json",
+        {
+            "timestamp_utc": now,
+            "ok": True,
+            "overall_status": "ready",
+            "classification": {"status": "clear"},
+            "reopen_gate": {"safe_to_widen_p_core_workers": True, "safe_for_training": True},
+            "snapshot": {"pages_throttled": 0.0, "memory_truth_reconciliation": {"active": False}},
+        },
+    )
+    _write_json(health / "swap_pressure_governor_latest.json", {"timestamp_utc": now, "ok": True, "overall_status": "ready"})
+
+    payload = src.build_payload(
+        tmp_path,
+        grade_guard_builder=lambda _: {"overall_status": "ready", "blocked_surface_count": 0, "degraded_surface_count": 0, "surfaces": []},
+        state_path=tmp_path / "governance" / "health" / "adaptive_regression_guard_state.json",
+    )
+    memory = next(row for row in payload["surfaces"] if row["surface_id"] == "guard:memory_truth_contract")
+
+    assert payload["overall_status"] == "ready"
+    assert memory["state"] == "ready"
+    assert memory["metrics"]["paper_soak_soft_guard_advisory_only"] is True
+    assert "memory_efficiency_stale" in memory["metrics"]["warnings"]
+
+
 def test_adaptive_regression_guard_treats_runtime_advisory_with_clear_storage_as_ready(tmp_path: Path) -> None:
     _seed_ready_artifacts(tmp_path)
     now = datetime.now(timezone.utc).isoformat()

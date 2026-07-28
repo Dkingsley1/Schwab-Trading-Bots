@@ -1,6 +1,6 @@
 # Intelligence Layers PyCharm Index
 
-- Updated UTC: `2026-07-28T16:00:13.117344+00:00`
+- Updated UTC: `2026-07-28T18:59:16.791694+00:00`
 - Whole-System Status: `advisory`
 - Top Risk: `training_runtime`
 - Safe Next Command: `./scripts/ops/opsctl.sh expansion-capacity --json`

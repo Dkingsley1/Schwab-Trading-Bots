@@ -42,6 +42,7 @@ jobs:
             scripts/ops/paper_live_data_standard.py \
             scripts/ops/production_hardening_watch.py \
             scripts/ops/production_flow_smoke.py \
+            scripts/ops/infrabot_library_self_awareness_control.py \
             scripts/ops/production_level_upgrade_hardener_control.py \
             scripts/ops/production_quality_control.py \
             scripts/ops/production_quality_slo_guard.py \
@@ -66,6 +67,7 @@ jobs:
           python scripts/ops/paper_live_data_standard.py --help >/dev/null
           python scripts/ops/production_hardening_watch.py --help >/dev/null
           python scripts/ops/production_flow_smoke.py --help >/dev/null
+          python scripts/ops/infrabot_library_self_awareness_control.py --help >/dev/null
           python scripts/ops/production_level_upgrade_hardener_control.py --help >/dev/null
           python scripts/ops/production_quality_control.py --help >/dev/null
           python scripts/ops/production_quality_slo_guard.py --help >/dev/null

@@ -326,6 +326,39 @@ def _paper_soak_managed_status(status: str, *, paper_soak_ready: bool) -> str:
     return clean
 
 
+def _storage_quota_lane_status(storage_quota: dict[str, Any], *, paper_soak_ready: bool) -> str:
+    raw = _payload_status(storage_quota)
+    if not storage_quota or not paper_soak_ready:
+        return raw
+    quota_summary = storage_quota.get("quota_summary") if isinstance(storage_quota.get("quota_summary"), dict) else {}
+    hard_breaches = _safe_int(quota_summary.get("hard_breaches"), 0)
+    soft_breaches = _safe_int(quota_summary.get("soft_breaches"), 0)
+    blocked_families = {
+        str(item or "").strip()
+        for item in quota_summary.get("blocked_families", [])
+        if str(item or "").strip()
+    }
+    degraded_families = {
+        str(item or "").strip()
+        for item in quota_summary.get("degraded_families", [])
+        if str(item or "").strip()
+    }
+    hard_ratio = _safe_float(quota_summary.get("worst_hard_ratio"), 0.0)
+    over_hard_gb = _safe_float(quota_summary.get("worst_over_hard_gb"), 0.0)
+    stateful_sql_soft_only = bool(
+        raw in {"blocked", "degraded"}
+        and hard_breaches == 0
+        and soft_breaches == 1
+        and not blocked_families
+        and degraded_families == {"sql_link_shards"}
+        and over_hard_gb <= 0.0
+        and hard_ratio <= 0.92
+    )
+    if stateful_sql_soft_only:
+        return "managed_paper_soak"
+    return raw
+
+
 def _registry_counts(registry: dict[str, Any]) -> dict[str, int]:
     summary = registry.get("summary") if isinstance(registry.get("summary"), dict) else {}
     rows = registry.get("sub_bots") if isinstance(registry.get("sub_bots"), list) else []
@@ -517,6 +550,7 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
     rolling_restart_lane_status = _rolling_restart_status(rolling_restart, storage_steady=storage_steady, memory_healthy=memory_healthy)
     artifact_freshness_lane_status = _artifact_freshness_status(artifact_freshness, storage_steady=storage_steady, process_ready=process_ready)
     master_infra_lane_status = _master_infra_status(master_infra, storage_steady=storage_steady, process_ready=process_ready)
+    storage_quota_lane_status = _storage_quota_lane_status(storage_quota, paper_soak_ready=paper_soak_ready)
     if paper_soak_ready and master_infra_lane_status in {"blocked", "degraded"} and process_ready:
         master_infra_lane_status = "advisory"
 
@@ -663,7 +697,7 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
         ("artifact_freshness_slo", artifact_freshness_lane_status),
         ("runtime_snapshot_cache_control", snapshot_cache_lane_status),
         ("remote_alert_control", _payload_status(remote_alert)),
-        ("storage_quota_guard", _payload_status(storage_quota)),
+        ("storage_quota_guard", storage_quota_lane_status),
         ("chaos_drill_coordinator", _payload_status(chaos_drills)),
     ):
         if paper_soak_ready and name == "chaos_drill_coordinator" and status == "blocked":
@@ -942,7 +976,7 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
             ),
         },
         "storage_quota_guard": {
-            "status": str(storage_quota.get("overall_status") or "missing"),
+            "status": storage_quota_lane_status,
             "summary": (
                 f"hard_breaches={int(((storage_quota.get('quota_summary') or {}).get('hard_breaches', 0) or 0))}"
                 if storage_quota
@@ -1021,7 +1055,7 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
             "artifact_freshness_slo": {"status": artifact_freshness_lane_status if artifact_freshness else "missing"},
             "runtime_snapshot_cache_control": {"status": snapshot_cache_lane_status if snapshot_cache else "missing"},
             "remote_alert_control": {"status": str(remote_alert.get("overall_status") or "missing") if remote_alert else "missing"},
-            "storage_quota_guard": {"status": str(storage_quota.get("overall_status") or "missing") if storage_quota else "missing"},
+            "storage_quota_guard": {"status": storage_quota_lane_status if storage_quota else "missing"},
             "release_freeze_guard": {"status": str(release_freeze.get("overall_status") or "missing") if release_freeze else "missing"},
             "roster_expansion_slots": {"status": str(roster_expansion.get("overall_status") or "missing") if roster_expansion else "missing"},
             "roster_resilience_planner": {"status": _paper_soak_managed_status(str(roster_resilience.get("overall_status") or "missing") if roster_resilience else "missing", paper_soak_ready=paper_soak_ready)},

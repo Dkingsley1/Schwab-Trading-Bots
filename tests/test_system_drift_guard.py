@@ -572,3 +572,51 @@ def test_system_drift_guard_marks_blocked_architecture_self_reference_loop_ready
     assert payload["metrics"]["degraded_surface_count"] == 0
     assert reasons["system_architecture_contract_graph"] == "guarded_paper_architecture_self_reference_debt"
     assert reasons["system_architecture_autopilot"] == "guarded_paper_architecture_autopilot_self_reference_debt"
+
+
+def test_system_drift_guard_marks_executed_architecture_autopilot_self_reference_ready(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    health_root = tmp_path / "governance" / "health"
+    _write_guarded_paper_health_fast(health_root)
+    artifact = health_root / "system_architecture_autopilot_latest.json"
+    _write_json(
+        artifact,
+        {
+            "overall_status": "degraded",
+            "ok": False,
+            "execute_safe_repairs": True,
+            "attempt_count": 2,
+            "final_graph": {
+                "blocked_node_count": 0,
+                "blocked_edge_count": 0,
+                "degraded_nodes": ["system_drift_guard"],
+            },
+            "repair_plan": [{"node_id": "adaptive_regression_guard"}, {"node_id": "system_drift_guard"}],
+            "timestamp_utc": "2099-04-23T20:00:00+00:00",
+        },
+    )
+
+    monkeypatch.setattr(
+        src,
+        "surface_specs",
+        lambda _root: [
+            {
+                "name": "system_architecture_autopilot",
+                "family": "architecture_surface",
+                "artifact_path": artifact,
+                "status_key": "overall_status",
+                "ok_key": "ok",
+                "max_age_minutes": 30,
+                "repair_commands": [["./scripts/ops/opsctl.sh", "system-architecture-autopilot", "--apply", "--json"]],
+            }
+        ],
+    )
+
+    payload = src.build_payload(tmp_path)
+
+    assert payload["overall_status"] == "ready"
+    assert payload["metrics"]["degraded_surface_count"] == 0
+    assert payload["surfaces"][0]["status"] == "ready"
+    assert payload["surfaces"][0]["recovery_deferred_reason"] == "guarded_paper_architecture_autopilot_self_reference_debt"

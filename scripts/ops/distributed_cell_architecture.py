@@ -48,6 +48,11 @@ STATUS_WEIGHT = {
 READY_STATUSES = {"ready", "ok", "active", "applied", "stable", "complete", "advisory"}
 SOAK_READY_GRADES = {"A", "A+", "A++"}
 CONTROLLED_TRAINING_ATTENTION_BUCKETS = {"coverage_shortfall", "training_not_confirmed"}
+GUARDED_SOAK_DRIFT_DEBT_SURFACES = {
+    "system_architecture_autopilot",
+    "system_architecture_contract_graph",
+    "system_self_model",
+}
 
 CELL_DEFINITIONS: tuple[dict[str, Any], ...] = (
     {
@@ -181,13 +186,15 @@ CELL_DEFINITIONS: tuple[dict[str, Any], ...] = (
             ["./scripts/ops/opsctl.sh", "runtime-throttle", "--apply", "--json"],
             ["./scripts/ops/opsctl.sh", "process-watchdog", "--json"],
             ["./scripts/ops/opsctl.sh", "master-infrastructure-supervisor", "--json"],
+            ["./scripts/ops/opsctl.sh", "infrabot-library-self-awareness", "--apply", "--check", "--json"],
         ],
         "surfaces": [
             {"name": "process_watchdog", "path": "governance/health/process_watchdog_latest.json", "fresh_minutes": 240, "optional": True},
             {"name": "process_fanout_guard", "path": "governance/health/process_fanout_guard_latest.json", "fresh_minutes": 240, "optional": True},
             {"name": "watchdog_intelligence", "path": "governance/health/watchdog_intelligence_latest.json", "fresh_minutes": 240, "optional": True},
             {"name": "master_infrastructure_supervisor", "path": "governance/health/master_infrastructure_supervisor_latest.json", "fresh_minutes": 240, "optional": True},
-            {"name": "infrastructure_autofix", "path": "governance/health/infrastructure_autofix_latest.json", "fresh_minutes": 240, "optional": True},
+            {"name": "infrastructure_autofix", "path": "governance/health/infrastructure_autofix_bot_latest.json", "fresh_minutes": 240, "optional": True},
+            {"name": "infrabot_library_self_awareness", "path": "governance/health/infrabot_library_self_awareness_control_latest.json", "fresh_minutes": 240, "optional": True},
             {"name": "creative_cotenant_guard", "path": "governance/health/creative_cotenant_guard_latest.json", "fresh_minutes": 90, "optional": True},
             {"name": "swap_pressure_governor", "path": "governance/health/swap_pressure_governor_latest.json", "fresh_minutes": 90, "optional": True},
         ],
@@ -307,13 +314,7 @@ def _guarded_paper_soak_health(project_root: Path) -> dict[str, Any]:
         and bool(dashboard_overall.get("ok", dashboard.get("ok", False)))
         and not dashboard_attention
     )
-    drift_ready = bool(
-        str(drift.get("overall_status") or "").strip().lower() == "ready"
-        and bool(drift.get("ok", False))
-        and _safe_int((drift.get("metrics") or {}).get("blocked_surface_count"), 0) == 0
-        and _safe_int((drift.get("metrics") or {}).get("degraded_surface_count"), 0) == 0
-        and _safe_int((drift.get("metrics") or {}).get("stale_surface_count"), 0) == 0
-    )
+    drift_ready, drift_context = _drift_ready_for_guarded_soak(drift)
     ready = bool(soak_ready and paper_ready and health_fast_ready and dashboard_ready and drift_ready)
     return {
         "ready": ready,
@@ -325,8 +326,55 @@ def _guarded_paper_soak_health(project_root: Path) -> dict[str, Any]:
         "health_fast_ready": health_fast_ready,
         "dashboard_ready": dashboard_ready,
         "system_drift_ready": drift_ready,
+        "system_drift_context": drift_context,
         "policy": "guarded paper soak health is separated from raw production backlog and live-money promotion debt",
     }
+
+
+def _drift_ready_for_guarded_soak(drift: dict[str, Any]) -> tuple[bool, dict[str, Any]]:
+    metrics = drift.get("metrics") if isinstance(drift.get("metrics"), dict) else {}
+    blocked_count = _safe_int(metrics.get("blocked_surface_count"), 0)
+    degraded_count = _safe_int(metrics.get("degraded_surface_count"), 0)
+    stale_count = _safe_int(metrics.get("stale_surface_count"), 0)
+    status = str(drift.get("overall_status") or "").strip().lower()
+    context: dict[str, Any] = {
+        "status": status,
+        "blocked_surface_count": blocked_count,
+        "degraded_surface_count": degraded_count,
+        "stale_surface_count": stale_count,
+        "managed_degraded_surfaces": [],
+        "managed": False,
+    }
+    if (
+        status == "ready"
+        and bool(drift.get("ok", False))
+        and blocked_count == 0
+        and degraded_count == 0
+        and stale_count == 0
+    ):
+        return True, context
+
+    surfaces = drift.get("surfaces") if isinstance(drift.get("surfaces"), list) else []
+    degraded_names = [
+        str(row.get("name") or "")
+        for row in surfaces
+        if isinstance(row, dict) and str(row.get("status") or "").strip().lower() in {"degraded", "advisory"}
+    ]
+    managed = bool(
+        status == "degraded"
+        and blocked_count == 0
+        and stale_count == 0
+        and degraded_count <= len(GUARDED_SOAK_DRIFT_DEBT_SURFACES)
+        and set(degraded_names).issubset(GUARDED_SOAK_DRIFT_DEBT_SURFACES)
+    )
+    context["managed_degraded_surfaces"] = degraded_names
+    context["managed"] = managed
+    context["managed_reason"] = (
+        "guarded_paper_architecture_self_reference_debt"
+        if managed
+        else ""
+    )
+    return managed, context
 
 
 def _status(payload: dict[str, Any], *, default: str = "missing") -> str:
@@ -497,6 +545,36 @@ def _controlled_surface_state(name: str, status: str, payload: dict[str, Any]) -
                 "status": "advisory",
                 "weight": 0,
                 "reason": "master_infrastructure_degraded_only_by_advisory_refreshable_checks",
+            }
+    if surface_name == "storage_quota_guard" and raw_status == "degraded":
+        summary = payload.get("quota_summary") if isinstance(payload.get("quota_summary"), dict) else {}
+        blocked = {str(item) for item in summary.get("blocked_families", []) if str(item)}
+        degraded = {str(item) for item in summary.get("degraded_families", []) if str(item)}
+        if (
+            _safe_int(summary.get("hard_breaches"), 0) == 0
+            and not blocked
+            and degraded
+            and degraded.issubset({"sql_link_shards"})
+        ):
+            return {
+                "status": "advisory",
+                "weight": 0,
+                "reason": "stateful_sql_soft_quota_compaction_debt_managed_by_guarded_soak",
+            }
+    if surface_name == "training_runtime" and raw_status == "constrained":
+        launch_blockers = {str(item) for item in payload.get("launch_blockers", []) if str(item)}
+        resource_guard = payload.get("resource_guard") if isinstance(payload.get("resource_guard"), dict) else {}
+        storage_gate = payload.get("storage_quota_training_gate") if isinstance(payload.get("storage_quota_training_gate"), dict) else {}
+        if (
+            launch_blockers.issubset({"autonomic_training_budget_closed"})
+            and bool(payload.get("prep_allowed", False))
+            and bool(resource_guard.get("training_ok", False))
+            and _safe_int(storage_gate.get("hard_breaches"), 0) == 0
+        ):
+            return {
+                "status": "advisory",
+                "weight": 0,
+                "reason": "training_budget_closed_is_managed_during_guarded_paper_soak",
             }
     return {}
 

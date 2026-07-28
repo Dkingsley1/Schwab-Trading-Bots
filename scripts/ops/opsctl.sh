@@ -1003,6 +1003,9 @@ case "$cmd" in
   library-upgrade-route|upgrade-route-libraries|library-upgrade-router|dependency-upgrade-router)
     run_then_refresh_self_model "$PY" "$PROJECT_ROOT/scripts/ops/library_upgrade_route_control.py" "$@"
     ;;
+  infrabot-library-self-awareness|infra-library-awareness|infrabot-efficiency|library-self-awareness|self-awareness-router)
+    run_then_refresh_self_model "$PY" "$PROJECT_ROOT/scripts/ops/infrabot_library_self_awareness_control.py" "$@"
+    ;;
   library-efficiency-deepening|library-efficiency-layers|efficiency-layers|library-1-10|dual-mode-library-efficiency)
     exec "$PY" "$PROJECT_ROOT/scripts/ops/library_efficiency_deepening.py" "$@"
     ;;
@@ -1811,6 +1814,9 @@ case "$cmd" in
     ;;
   dashboard-refresh|runtime-artifact-refresh|runtime-contract-refresh)
     exec "$PY" "$PROJECT_ROOT/scripts/ops/runtime_artifact_refresh.py" --json "$@"
+    ;;
+  service-control-plane|service-plane|service-control)
+    exec "$PY" "$PROJECT_ROOT/scripts/service_control_plane.py" "$@"
     ;;
   dashboard)
     dashboard_refresh=1
@@ -2811,6 +2817,7 @@ opsctl commands:
   production-level-upgrades|prod-level-upgrades|production-20 [--apply] [--check] [--json]
   production-soak-enhancement|prod-soak|soak-enhancement [--apply] [--dependency-batch NAME] [--json]
   library-upgrade-route|upgrade-route-libraries [--apply] [--json]
+  infrabot-library-self-awareness|infra-library-awareness|infrabot-efficiency [--apply] [--check] [--json]
   library-efficiency-deepening|library-1-10 [--apply] [--json]
   safety-bounded-advancement-frontier|safe-frontier-push [--apply] [--json]
   whole-system-safety-frontier|system-frontier-1-12 [--apply] [--json]
@@ -2902,6 +2909,7 @@ opsctl commands:
   system-drift-guard|drift-guard|drift-mesh [--json]
   system-drift-autopilot|drift-autopilot|drift-mesh-autopilot [--apply] [--max-steps N] [--json]
   dashboard-refresh|runtime-artifact-refresh|runtime-contract-refresh [--json]
+  service-control-plane|service-plane [--json]
   dashboard [--skip-refresh] [--max-rows N] [--json]
   options-flow-export-hygiene [--apply] [--json]
   options-flow-efficiency [--apply] [--timeout-sec N] [--json]
@@ -3049,6 +3057,7 @@ opsctl commands:
   production-level-upgrades|prod-level-upgrades|production-20 [--apply] [--check] [--json]
   production-soak-enhancement|prod-soak|soak-enhancement [--apply] [--dependency-batch NAME] [--json]
   library-upgrade-route|upgrade-route-libraries [--apply] [--json]
+  infrabot-library-self-awareness|infra-library-awareness|infrabot-efficiency [--apply] [--check] [--json]
   big-platform-brain|platform-brain|system-self-model|self-model|self-awareness [--json]
   self-awareness-infrabots|system-self-awareness [--apply] [--json]
   alpha-intelligence-evolution|alpha-advancement [--apply] [--json]

@@ -269,3 +269,97 @@ def test_passive_cycle_is_not_treated_as_training_not_confirmed():
 
     assert any('No active retrain batch is recorded right now' in line for line in lines)
     assert 'training_not_confirmed' not in reasons
+
+
+def test_controlled_skip_master_update_can_be_ready_for_guarded_soak(tmp_path):
+    scorecard_path = tmp_path / 'retrain_scorecard_latest.json'
+    training_success_path = tmp_path / 'training_success_latest.json'
+    promotion_quality_path = tmp_path / 'promotion_quality_gate_latest.json'
+    promotion_gate_path = tmp_path / 'promotion_gate_latest.json'
+    graduation_path = tmp_path / 'new_bot_graduation_latest.json'
+    daily_verify_path = tmp_path / 'daily_auto_verify_latest.json'
+    divergence_path = tmp_path / 'data_source_divergence_latest.json'
+    lane_scorecard_path = tmp_path / 'unified_lane_scorecard_latest.json'
+    training_quality_control_path = tmp_path / 'training_quality_control_latest.json'
+    training_runtime_control_path = tmp_path / 'training_runtime_control_latest.json'
+    promotion_packet_path = tmp_path / 'promotion_packet_latest.json'
+
+    _write_json(
+        scorecard_path,
+        {
+            'timestamp_utc': '2026-07-28T04:38:56.907121+00:00',
+            'target_count': 1,
+            'failure_count': 0,
+            'master_update_status': 'skipped_by_flag',
+        },
+    )
+    _write_json(
+        training_success_path,
+        {
+            'timestamp_utc': '2026-07-28T04:38:53.310216+00:00',
+            'trained_count': 1,
+            'failure_count': 0,
+            'confirmed_training_success': False,
+            'training_completed_ok': True,
+            'trained_ok_but_not_promotable': True,
+            'promotion_status': 'held_out',
+            'master_update_status': 'skipped_by_flag',
+            'reason': 'trained_ok_but_not_promotable:skipped_by_flag',
+            'data_quality_ok': True,
+        },
+    )
+    _write_json(promotion_quality_path, {'ok': True, 'failed_checks': []})
+    _write_json(promotion_gate_path, {'promote_ok': True, 'coverage_ok': True, 'considered_bots': 1})
+    _write_json(graduation_path, {'ok': True, 'immature_active_count': 0})
+    _write_json(daily_verify_path, {'ok': True, 'failed_checks': []})
+    _write_json(divergence_path, {'ok': True, 'window_hours': 24})
+    _write_json(lane_scorecard_path, {'ok': True, 'lookback_hours': 24, 'rows_used': 10, 'lanes': {}})
+    _write_json(training_quality_control_path, {'ok': True, 'overall_status': 'ready', 'training_quality_score': 100.0})
+    _write_json(
+        training_runtime_control_path,
+        {
+            'ok': True,
+            'overall_status': 'ready',
+            'snapshot_ready': True,
+            'prep_allowed': True,
+            'launch_allowed': True,
+            'prep_blockers': [],
+        },
+    )
+    _write_json(
+        promotion_packet_path,
+        {
+            'ok': True,
+            'packet_complete': True,
+            'gate_results': {'training_success_confirmed': True},
+            'signature': {'verified': True},
+            'replayability_contract': {
+                'exact_replay_ready': True,
+                'trained_models_contract_ready': True,
+            },
+        },
+    )
+
+    context = training_report._build_context(
+        scorecard_path=scorecard_path,
+        training_success_path=training_success_path,
+        promotion_quality_path=promotion_quality_path,
+        promotion_gate_path=promotion_gate_path,
+        graduation_path=graduation_path,
+        daily_verify_path=daily_verify_path,
+        data_divergence_path=divergence_path,
+        lane_scorecard_path=lane_scorecard_path,
+        training_quality_control_path=training_quality_control_path,
+        training_runtime_control_path=training_runtime_control_path,
+        promotion_packet_path=promotion_packet_path,
+    )
+
+    reasons = training_report._blocking_reasons(context)
+    status = training_report._overall_status(context, reasons)
+
+    assert context['summary']['confirmed_training_success'] is False
+    assert context['summary']['soak_training_ready'] is True
+    assert context['summary']['soak_training_reason'] == 'controlled_nonpromotion_training_ready_for_guarded_paper_soak'
+    assert 'training_not_confirmed' not in reasons
+    assert status == 'ready'
+    assert any('ready for the guarded paper soak' in line for line in context['assessment'])

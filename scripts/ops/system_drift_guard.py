@@ -161,6 +161,23 @@ def _recovery_deferred_reason(spec: dict[str, Any], payload: dict[str, Any], sta
 
     if guarded_paper_strict_clear and status in {"blocked", "degraded"} and surface_name == "system_architecture_autopilot":
         final_graph = _as_dict(payload.get("final_graph"))
+        final_blocked_nodes = {
+            str(item or "").strip()
+            for item in _safe_list(final_graph.get("blocked_nodes"))
+            if str(item or "").strip()
+        }
+        final_degraded_nodes = {
+            str(item or "").strip()
+            for item in _safe_list(final_graph.get("degraded_nodes"))
+            if str(item or "").strip()
+        }
+        final_self_reference_nodes = {
+            "system_drift_guard",
+            "system_self_model",
+            "master_infrastructure_supervisor",
+            "system_architecture_contract_graph",
+        }
+        final_non_ready_nodes = final_blocked_nodes | final_degraded_nodes
         repair_nodes = {
             str(row.get("node_id") or "").strip()
             for row in _safe_list(payload.get("repair_plan"))
@@ -169,18 +186,15 @@ def _recovery_deferred_reason(spec: dict[str, Any], payload: dict[str, Any], sta
         if (
             (
                 _safe_int(final_graph.get("blocked_node_count"), 0) == 0
-                or set(_safe_list(final_graph.get("blocked_nodes")))
-                <= {"system_drift_guard", "system_self_model", "master_infrastructure_supervisor", "system_architecture_contract_graph"}
+                or final_blocked_nodes <= final_self_reference_nodes
             )
             and _safe_int(final_graph.get("blocked_edge_count"), 0) == 0
-            and repair_nodes
-            and repair_nodes
-            <= {
-                "system_drift_guard",
-                "system_self_model",
-                "master_infrastructure_supervisor",
-                "system_architecture_contract_graph",
-            }
+            and (not final_non_ready_nodes or final_non_ready_nodes <= final_self_reference_nodes)
+            and (
+                not repair_nodes
+                or repair_nodes
+                <= (final_self_reference_nodes | {"adaptive_regression_guard", "section_grade_guard", "grade_regression_guard"})
+            )
         ):
             return "guarded_paper_architecture_autopilot_self_reference_debt"
 

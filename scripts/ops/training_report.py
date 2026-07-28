@@ -18,6 +18,15 @@ DEFAULT_OUT_DIR = PROJECT_ROOT / "exports" / "reports" / "training_reports"
 LATEST_METADATA_PATH = PROJECT_ROOT / "governance" / "health" / "training_report_latest.json"
 OPERATOR_NOTES_PATH = PROJECT_ROOT / "governance" / "health" / "retrain_operator_notes_latest.json"
 TRAINING_QUALITY_CONTROL_PATH = PROJECT_ROOT / "governance" / "health" / "training_quality_control_latest.json"
+TRAINING_RUNTIME_CONTROL_PATH = PROJECT_ROOT / "governance" / "health" / "training_runtime_control_latest.json"
+PROMOTION_PACKET_PATH = PROJECT_ROOT / "governance" / "champion_challenger" / "promotion_packet_latest.json"
+CONTROLLED_MASTER_UPDATE_SKIP_STATES = {
+    "held_out",
+    "skipped_by_flag",
+    "skipped_by_operator",
+    "skipped_no_master_update",
+    "skip_master_update",
+}
 
 
 def _env_flag(name: str, default: str = "0") -> bool:
@@ -210,6 +219,70 @@ def _load_lane_rows(payload: Dict[str, Any]) -> List[Dict[str, Any]]:
     return rows
 
 
+def _promotion_packet_ready(payload: Dict[str, Any]) -> bool:
+    gates = payload.get("gate_results") if isinstance(payload.get("gate_results"), dict) else {}
+    signature = payload.get("signature") if isinstance(payload.get("signature"), dict) else {}
+    replayability = payload.get("replayability_contract") if isinstance(payload.get("replayability_contract"), dict) else {}
+    return bool(
+        payload.get("ok", False)
+        and payload.get("packet_complete", False)
+        and signature.get("verified", False)
+        and gates.get("training_success_confirmed", False)
+        and replayability.get("exact_replay_ready", False)
+        and replayability.get("trained_models_contract_ready", False)
+    )
+
+
+def _training_runtime_ready(payload: Dict[str, Any]) -> bool:
+    return bool(
+        payload.get("ok", False)
+        and str(payload.get("overall_status", "") or "").strip().lower() == "ready"
+        and payload.get("snapshot_ready", False)
+        and payload.get("prep_allowed", False)
+        and not payload.get("prep_blockers")
+    )
+
+
+def _soak_training_contract(
+    *,
+    summary: Dict[str, Any],
+    training_runtime: Dict[str, Any],
+    promotion_packet: Dict[str, Any],
+) -> Dict[str, Any]:
+    target_count = int(summary.get("target_count", 0) or 0)
+    trained_count = int(summary.get("trained_count", 0) or 0)
+    failure_count = int(summary.get("failure_count", 0) or 0)
+    master_update_status = str(summary.get("master_update_status", "") or "").strip()
+    promotion_status = str(summary.get("promotion_status", "") or "").strip()
+    controlled_skip = master_update_status in CONTROLLED_MASTER_UPDATE_SKIP_STATES or promotion_status == "held_out"
+    execution_ok = bool(summary.get("training_completed_ok", False)) and trained_count >= target_count > 0 and failure_count <= 0
+    packet_ready = _promotion_packet_ready(promotion_packet)
+    runtime_ready = _training_runtime_ready(training_runtime)
+    ready = bool(summary.get("confirmed_training_success", False)) or bool(
+        execution_ok and controlled_skip and packet_ready and runtime_ready
+    )
+    if bool(summary.get("confirmed_training_success", False)):
+        reason = "confirmed_training_success"
+    elif ready:
+        reason = "controlled_nonpromotion_training_ready_for_guarded_paper_soak"
+    elif execution_ok and controlled_skip and not packet_ready:
+        reason = "promotion_packet_not_ready"
+    elif execution_ok and controlled_skip and not runtime_ready:
+        reason = "training_runtime_not_ready"
+    elif execution_ok:
+        reason = "training_completed_but_not_a_controlled_soak_skip"
+    else:
+        reason = "training_execution_not_ready"
+    return {
+        "ready": ready,
+        "reason": reason,
+        "execution_ok": execution_ok,
+        "controlled_master_update_skip": controlled_skip,
+        "promotion_packet_ready": packet_ready,
+        "training_runtime_ready": runtime_ready,
+    }
+
+
 def _assessment_lines(context: Dict[str, Any]) -> List[str]:
     lines: List[str] = []
     summary = context.get("summary") if isinstance(context.get("summary"), dict) else {}
@@ -234,6 +307,11 @@ def _assessment_lines(context: Dict[str, Any]) -> List[str]:
     )
     if bool(summary.get("confirmed_training_success", False)):
         lines.append(f"Confirmed training success was achieved with {trained_count}/{target_count} trained targets.")
+    elif bool(summary.get("soak_training_ready", False)):
+        lines.append(
+            "Training execution completed cleanly with the master update intentionally held out; "
+            "the signed promotion packet and runtime controls are ready for the guarded paper soak."
+        )
     elif passive_cycle:
         lines.append("No active retrain batch is recorded right now; training posture is being inferred from the standing quality and promotion artifacts.")
     else:
@@ -330,7 +408,7 @@ def _blocking_reasons(context: Dict[str, Any]) -> List[str]:
         and failure_count <= 0
         and not training_reason
     )
-    if not bool(summary.get("confirmed_training_success", False)) and not passive_cycle:
+    if not bool(summary.get("confirmed_training_success", False)) and not passive_cycle and not bool(summary.get("soak_training_ready", False)):
         reasons.append("training_not_confirmed")
     if not bool(summary.get("promotion_quality_ok", False)):
         reasons.extend(str(item).strip() for item in (promotion_quality.get("failed_checks") or []) if str(item).strip())
@@ -363,6 +441,8 @@ def _overall_status(context: Dict[str, Any], blocking_reasons: List[str]) -> str
 
     if not blocking_reasons and bool(summary.get("confirmed_training_success", False)) and bool(promotion_gate.get("promote_ok", False)):
         return "ready"
+    if not blocking_reasons and bool(summary.get("soak_training_ready", False)):
+        return "ready"
     if blocking_reasons and any(reason in {"training_not_confirmed", "data_divergence_not_ok"} for reason in blocking_reasons):
         return "blocked"
     if score_delta is not None and score_delta < 0.0:
@@ -383,6 +463,8 @@ def _build_context(
     data_divergence_path: Path,
     lane_scorecard_path: Path,
     training_quality_control_path: Path = TRAINING_QUALITY_CONTROL_PATH,
+    training_runtime_control_path: Path = TRAINING_RUNTIME_CONTROL_PATH,
+    promotion_packet_path: Path = PROMOTION_PACKET_PATH,
     trade_log_path: str = "",
 ) -> Dict[str, Any]:
     scorecard = _load_json(scorecard_path)
@@ -394,6 +476,8 @@ def _build_context(
     data_divergence = _load_json(data_divergence_path)
     lane_scorecard = _load_json(lane_scorecard_path)
     training_quality_control = _load_json(training_quality_control_path)
+    training_runtime_control = _load_json(training_runtime_control_path)
+    promotion_packet = _load_json(promotion_packet_path)
     fallback_operator_notes = _load_json(OPERATOR_NOTES_PATH)
 
     resolved_trade_log = _resolve_trade_log(trade_log_path, scorecard)
@@ -427,6 +511,9 @@ def _build_context(
         "failure_count": int(scorecard.get("failure_count", success.get("failure_count", 0)) or 0),
         "skipped_by_memory_count": int(scorecard.get("skipped_by_memory_count", success.get("skipped_by_memory_count", 0)) or 0),
         "confirmed_training_success": bool(success.get("confirmed_training_success", False)),
+        "training_completed_ok": bool(success.get("training_completed_ok", False)),
+        "trained_ok_but_not_promotable": bool(success.get("trained_ok_but_not_promotable", False)),
+        "promotion_status": str(success.get("promotion_status", "") or ""),
         "training_reason": str(success.get("reason", "") or ""),
         "master_update_status": str(scorecard.get("master_update_status", success.get("master_update_status", "")) or ""),
         "data_quality_ok": bool(success.get("data_quality_ok", False)),
@@ -434,6 +521,21 @@ def _build_context(
         "daily_verify_ok": daily_verify_effective_ok,
         "run_timestamp_local": _fmt_ts_local(success.get("timestamp_utc") or scorecard.get("timestamp_utc")),
     }
+    soak_contract = _soak_training_contract(
+        summary=summary,
+        training_runtime=training_runtime_control,
+        promotion_packet=promotion_packet,
+    )
+    summary.update(
+        {
+            "soak_training_ready": bool(soak_contract["ready"]),
+            "soak_training_reason": str(soak_contract["reason"]),
+            "training_execution_ok": bool(soak_contract["execution_ok"]),
+            "controlled_master_update_skip": bool(soak_contract["controlled_master_update_skip"]),
+            "promotion_packet_ready": bool(soak_contract["promotion_packet_ready"]),
+            "training_runtime_ready": bool(soak_contract["training_runtime_ready"]),
+        }
+    )
 
     context: Dict[str, Any] = {
         "generated_utc": summary["generated_utc"],
@@ -505,6 +607,21 @@ def _build_context(
             ],
             "implemented_improvement_count": int(training_quality_control.get("implemented_improvement_count", 0) or 0),
         },
+        "training_runtime_control": {
+            "ok": bool(training_runtime_control.get("ok", False)),
+            "overall_status": str(training_runtime_control.get("overall_status", "") or ""),
+            "snapshot_ready": bool(training_runtime_control.get("snapshot_ready", False)),
+            "prep_allowed": bool(training_runtime_control.get("prep_allowed", False)),
+            "launch_allowed": bool(training_runtime_control.get("launch_allowed", False)),
+            "prep_blockers": training_runtime_control.get("prep_blockers") if isinstance(training_runtime_control.get("prep_blockers"), list) else [],
+            "launch_blockers": training_runtime_control.get("launch_blockers") if isinstance(training_runtime_control.get("launch_blockers"), list) else [],
+        },
+        "promotion_packet": {
+            "ok": bool(promotion_packet.get("ok", False)),
+            "packet_complete": bool(promotion_packet.get("packet_complete", False)),
+            "ready_for_committee": bool(promotion_packet.get("ready_for_committee", False)),
+            "signature_verified": bool((promotion_packet.get("signature") if isinstance(promotion_packet.get("signature"), dict) else {}).get("verified", False)),
+        },
         "immutable_lineage": training_quality_control.get("immutable_lineage") if isinstance(training_quality_control.get("immutable_lineage"), dict) else {},
         "failure_taxonomy": training_quality_control.get("failure_taxonomy") if isinstance(training_quality_control.get("failure_taxonomy"), dict) else {},
         "data_divergence": {
@@ -529,6 +646,8 @@ def _build_context(
             "data_divergence": str(data_divergence_path),
             "unified_lane_scorecard": str(lane_scorecard_path),
             "training_quality_control": str(training_quality_control_path),
+            "training_runtime_control": str(training_runtime_control_path),
+            "promotion_packet": str(promotion_packet_path),
             "trade_behavior_log": str(resolved_trade_log) if resolved_trade_log is not None else "",
             "operator_notes": str(OPERATOR_NOTES_PATH),
         },
@@ -546,6 +665,7 @@ def _render_markdown(context: Dict[str, Any]) -> str:
     trade = context["trade_behavior"]
     lane_scorecard = context["lane_scorecard"]
     training_quality_control = context.get("training_quality_control") if isinstance(context.get("training_quality_control"), dict) else {}
+    training_runtime_control = context.get("training_runtime_control") if isinstance(context.get("training_runtime_control"), dict) else {}
     divergence = context["data_divergence"]
     operator_notes = context.get("operator_notes") if isinstance(context.get("operator_notes"), dict) else {}
 
@@ -557,6 +677,7 @@ def _render_markdown(context: Dict[str, Any]) -> str:
         f"- Run completed at: {summary['run_timestamp_local']}",
         f"- Targets trained: {summary['trained_count']} / {summary['target_count']}",
         f"- Confirmed training success: {summary['confirmed_training_success']}",
+        f"- Guarded soak training ready: {summary['soak_training_ready']} ({summary['soak_training_reason']})",
         f"- Master update status: {summary['master_update_status']}",
         f"- Promotion quality gate ok: {promotion_quality['ok']}",
         f"- Daily verify ok: {summary['daily_verify_ok']}",
@@ -657,6 +778,7 @@ def _render_markdown(context: Dict[str, Any]) -> str:
             f"- Normalized score: {_fmt_num(training_quality_control.get('training_quality_score'), 2)}",
             f"- Implemented improvements: {int(training_quality_control.get('implemented_improvement_count', 0) or 0)}",
             f"- Top priorities: {', '.join(training_quality_control.get('top_priorities', [])[:6]) if training_quality_control.get('top_priorities') else 'none'}",
+            f"- Runtime control: {training_runtime_control.get('overall_status', 'unknown') or 'unknown'} prep_allowed={training_runtime_control.get('prep_allowed', False)} launch_allowed={training_runtime_control.get('launch_allowed', False)}",
         ]
     )
 
@@ -790,7 +912,7 @@ def _render_html(context: Dict[str, Any]) -> str:
     h1 {{ font-size: 34px; letter-spacing: 0.02em; }}
     h2 {{ margin-top: 28px; font-size: 20px; }}
     p.meta {{ margin: 0; color: var(--muted); }}
-    .grid {{ display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; margin-top: 18px; }}
+    .grid {{ display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 14px; margin-top: 18px; }}
     .card {{ background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 16px; }}
     .label {{ color: var(--muted); font-family: 'Avenir Next', 'Segoe UI', sans-serif; font-size: 12px; text-transform: uppercase; letter-spacing: 0.08em; }}
     .value {{ font-size: 24px; margin-top: 6px; font-weight: 700; }}
@@ -812,6 +934,7 @@ def _render_html(context: Dict[str, Any]) -> str:
       <div class=\"grid\">
         <div class=\"card\"><div class=\"label\">Targets</div><div class=\"value\">{summary['trained_count']} / {summary['target_count']}</div></div>
         <div class=\"card\"><div class=\"label\">Confirmed Success</div><div class=\"value\">{html.escape(str(summary['confirmed_training_success']))}</div></div>
+        <div class=\"card\"><div class=\"label\">Soak Training</div><div class=\"value\">{html.escape(str(summary['soak_training_ready']))}</div></div>
         <div class=\"card\"><div class=\"label\">Master Update</div><div class=\"value\">{html.escape(summary['master_update_status'] or 'unknown')}</div></div>
       </div>
     </section>
@@ -889,6 +1012,8 @@ def main() -> int:
     parser.add_argument("--data-divergence", default=str(PROJECT_ROOT / "governance" / "health" / "data_source_divergence_latest.json"))
     parser.add_argument("--lane-scorecard", default=str(PROJECT_ROOT / "governance" / "health" / "unified_lane_scorecard_latest.json"))
     parser.add_argument("--training-quality-control", default=str(TRAINING_QUALITY_CONTROL_PATH))
+    parser.add_argument("--training-runtime-control", default=str(TRAINING_RUNTIME_CONTROL_PATH))
+    parser.add_argument("--promotion-packet", default=str(PROMOTION_PACKET_PATH))
     parser.add_argument("--trade-log", default="")
     parser.add_argument(
         "--render-pdf",
@@ -917,6 +1042,8 @@ def main() -> int:
         data_divergence_path=Path(args.data_divergence),
         lane_scorecard_path=Path(args.lane_scorecard),
         training_quality_control_path=Path(args.training_quality_control),
+        training_runtime_control_path=Path(args.training_runtime_control),
+        promotion_packet_path=Path(args.promotion_packet),
         trade_log_path=str(args.trade_log),
     )
     md_text = _render_markdown(context)
