@@ -25,6 +25,7 @@ def test_production_flow_smoke_passes_current_contract() -> None:
     assert ci_check["production_hardening_watch_in_ci"] is True
     assert ci_check["paper_400_ramp_control_in_ci"] is True
     assert ci_check["runtime_throttle_control_in_ci"] is True
+    assert ci_check["production_level_upgrade_hardener_control_in_ci"] is True
     assert ci_check["production_quality_control_in_ci"] is True
     assert ci_check["production_quality_slo_guard_in_ci"] is True
 

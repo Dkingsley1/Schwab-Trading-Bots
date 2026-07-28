@@ -236,6 +236,7 @@ def check_ci_guardrails(project_root: Path) -> dict[str, Any]:
         and "production_hardening_watch.py --help" in text
         and "paper_400_ramp_control.py --help" in text
         and "runtime_throttle_control.py --help" in text
+        and "production_level_upgrade_hardener_control.py --help" in text
         and "production_quality_control.py --help" in text
         and "production_quality_slo_guard.py --help" in text,
         "production_smoke_in_ci": "production_flow_smoke.py --json" in text,
@@ -245,6 +246,7 @@ def check_ci_guardrails(project_root: Path) -> dict[str, Any]:
         "production_hardening_watch_in_ci": "production_hardening_watch.py --help" in text,
         "paper_400_ramp_control_in_ci": "paper_400_ramp_control.py --help" in text,
         "runtime_throttle_control_in_ci": "runtime_throttle_control.py --help" in text,
+        "production_level_upgrade_hardener_control_in_ci": "production_level_upgrade_hardener_control.py --help" in text,
         "production_quality_control_in_ci": "production_quality_control.py --help" in text,
         "production_quality_slo_guard_in_ci": "production_quality_slo_guard.py --help" in text,
     }

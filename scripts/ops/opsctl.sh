@@ -994,6 +994,9 @@ case "$cmd" in
   production-readiness|prod-readiness|production-readiness-control|production-quality-control)
     run_then_refresh_self_model "$PY" "$PROJECT_ROOT/scripts/ops/production_readiness_control.py" "$@"
     ;;
+  production-level-upgrades|prod-level-upgrades|upgrade-hardener-control|production-hardener-control|production-20)
+    run_then_refresh_self_model "$PY" "$PROJECT_ROOT/scripts/ops/production_level_upgrade_hardener_control.py" "$@"
+    ;;
   production-soak-enhancement|prod-soak|soak-enhancement|soak-quality)
     run_then_refresh_self_model "$PY" "$PROJECT_ROOT/scripts/ops/production_soak_enhancement.py" "$@"
     ;;
@@ -2805,6 +2808,7 @@ opsctl commands:
   library-utilization-router|library-router|non-mlx-library-router [--apply] [--json]
   dependency-activation-smoke|dependency-smoke|library-activation-smoke [--batch NAME] [--profile NAME] [--import-smoke] [--json]
   production-readiness|prod-readiness|production-readiness-control [--apply] [--json]
+  production-level-upgrades|prod-level-upgrades|production-20 [--apply] [--check] [--json]
   production-soak-enhancement|prod-soak|soak-enhancement [--apply] [--dependency-batch NAME] [--json]
   library-upgrade-route|upgrade-route-libraries [--apply] [--json]
   library-efficiency-deepening|library-1-10 [--apply] [--json]
@@ -3042,6 +3046,7 @@ opsctl commands:
   library-utilization-router|library-router|non-mlx-library-router [--apply] [--json]
   dependency-activation-smoke|dependency-smoke|library-activation-smoke [--batch NAME] [--profile NAME] [--import-smoke] [--json]
   production-readiness|prod-readiness|production-readiness-control [--apply] [--json]
+  production-level-upgrades|prod-level-upgrades|production-20 [--apply] [--check] [--json]
   production-soak-enhancement|prod-soak|soak-enhancement [--apply] [--dependency-batch NAME] [--json]
   library-upgrade-route|upgrade-route-libraries [--apply] [--json]
   big-platform-brain|platform-brain|system-self-model|self-model|self-awareness [--json]
