@@ -93,3 +93,44 @@ def test_build_post_trade_analysis_combines_attribution_runtime_calibration_and_
     assert payload["summary"]["global_halt_events"] == 1
     assert "Softguard logged 1 halt events" in payload["assessment"][3]
 
+
+def test_build_post_trade_analysis_reuses_fresh_strategy_cache(tmp_path):
+    module = _load_module()
+
+    health_dir = tmp_path / "governance" / "health"
+    health_dir.mkdir(parents=True)
+    strategy_cache = {
+        "timestamp_utc": module._utc_now(),
+        "schema_version": 2,
+        "ok": True,
+        "day": "20260318",
+        "row_count": 7,
+        "file_count": 1,
+        "latest_event_timestamp_utc": "2026-03-18T14:30:00+00:00",
+        "total_pnl_proxy": 1.25,
+        "top_lane": "cached_lane",
+        "top_layer": "cached_layer",
+        "action_counts": {"BUY": 7},
+        "by_lane": [{"lane": "cached_lane", "samples": 7, "pnl_proxy_sum": 1.25}],
+        "by_layer": [],
+        "top_positive_symbols": [],
+        "top_negative_symbols": [],
+        "top_positive_bots": [],
+        "top_negative_bots": [],
+        "processing": {"mode": "incremental"},
+    }
+    (health_dir / "strategy_attribution_latest.json").write_text(json.dumps(strategy_cache), encoding="utf-8")
+
+    def fake_runner(cmd, cwd):
+        script_name = Path(cmd[1]).name
+        if script_name == "paper_execution_calibration_report.py":
+            return 0, {"ok": True, "samples": 1, "metrics": {"mae_bps": 1.0, "p95_bps": 1.0}}, ""
+        if script_name == "daily_runtime_summary.py":
+            return 0, {"decision": {"rows": 1, "stale_windows": 0}, "watchdog": {"restarts": 0}}, ""
+        raise AssertionError(f"unexpected command: {cmd}")
+
+    payload = module.build_post_trade_analysis(tmp_path, day="20260318", hours=24, runner=fake_runner)
+
+    assert payload["summary"]["top_lane"] == "cached_lane"
+    assert payload["strategy_attribution"]["row_count"] == 7
+    assert payload["sources"]["strategy_attribution_cache_used"] is True

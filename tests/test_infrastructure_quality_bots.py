@@ -322,6 +322,33 @@ def test_bot_quality_autopilot_surfaces_infrastructure_helper_lane(tmp_path: Pat
     assert payload["infrastructure_helper_queue"][0]["recommended_teacher_bot_ids"] == ["brain_refinery_v86_risk_budget_allocator_v2"]
 
 
+def test_bot_quality_autopilot_keeps_planned_queue_advisory_when_quality_is_clean(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    _write_json(project_root / "governance" / "health" / "training_quality_control_latest.json", {"overall_status": "ready", "targeted_actions": {}})
+    _write_json(project_root / "governance" / "health" / "supportability_control_latest.json", {"teacher_student": {"students_without_teachers": 0, "uncovered_students": []}})
+    _write_json(
+        project_root / "governance" / "distillation" / "teacher_quality_latest.json",
+        {
+            "overall_status": "ready",
+            "summary": {"qualified_teacher_count": 1, "elite_teacher_count": 1},
+            "qualified_teachers": [{"bot_id": "brain_refinery_v10_seasonal", "bot_role": "signal_sub_bot"}],
+        },
+    )
+    _write_json(
+        project_root / "governance" / "health" / "training_requalification_latest.json",
+        {"top_candidates": [{"bot_id": "brain_refinery_v10_seasonal", "actions": ["seed_walk_forward_coverage"], "priority": 77.0}]},
+    )
+    _write_json(project_root / "governance" / "walk_forward" / "coverage_seed_latest.json", {"coverage_shortfall_bots": 0, "seed_queue": []})
+    _write_json(project_root / "governance" / "health" / "training_runtime_control_latest.json", {"snapshot_ready": True})
+    _write_json(project_root / "master_bot_registry.json", {"sub_bots": [{"bot_id": "brain_refinery_v10_seasonal", "bot_role": "signal_sub_bot"}]})
+
+    payload = quality_auto_src.build_payload(project_root, apply=False)
+
+    assert payload["overall_status"] == "ready"
+    assert payload["quality_blockers"]["queue_advisory_active"] is True
+    assert payload["quality_blockers"]["planned_queue_count"] == 1
+
+
 def test_bot_quality_autopilot_refreshes_registry_audit_before_quality_control(monkeypatch, tmp_path: Path) -> None:
     project_root = tmp_path / "project"
     health = project_root / "governance" / "health"

@@ -301,10 +301,25 @@ def build_payload(
         students_without_teachers = _safe_int(teacher_student.get("students_without_teachers"), students_without_teachers)
         training_status = str(training_quality.get("overall_status") or training_status)
 
+    hard_blocker_active = bool(
+        training_status == "blocked"
+        or qualified_teachers <= 0
+        or students_without_teachers > 0
+        or repair_ids
+    )
+    needs_work_signal = bool(
+        refresh_ids
+        or probation_ids
+        or retrain_ids
+        or elite_teachers <= 0
+        or coverage_shortfall_bots > 0
+    )
+    queue_advisory_active = bool(quality_queue) and not hard_blocker_active and not needs_work_signal
+
     overall_status = "ready"
-    if training_status == "blocked" or qualified_teachers <= 0 or students_without_teachers > 0 or repair_ids:
+    if hard_blocker_active:
         overall_status = "blocked"
-    elif quality_queue or elite_teachers <= 0 or coverage_shortfall_bots > 0:
+    elif needs_work_signal:
         overall_status = "needs_work"
 
     if apply and attempts:
@@ -347,6 +362,8 @@ def build_payload(
             "students_without_teachers": students_without_teachers,
             "coverage_shortfall_bots": coverage_shortfall_bots,
             "infrastructure_helper_count": infrastructure_helper_count,
+            "planned_queue_count": len(quality_queue),
+            "queue_advisory_active": queue_advisory_active,
         },
         "teacher_summary": {
             "qualified_teacher_count": qualified_teachers,

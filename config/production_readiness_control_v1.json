@@ -125,5 +125,154 @@
       "governance/health/artifact_freshness_slo_latest.json"
     ],
     "policy": "freeze_feature_promotion_when_reliability_budget_is_burned_or_reconciliation_is_blocked"
+  },
+  "live_money_production_bar": {
+    "enabled": true,
+    "require_for_live_canary": true,
+    "require_read_only_pre_canary": true,
+    "required_domain_statuses": {
+      "dependency_activation_smoke_runner": ["ready"],
+      "live_execution_risk_firewall": ["ready_guarded"],
+      "deterministic_replay_harness": ["ready"],
+      "observability_redaction": ["ready"],
+      "release_gates": ["ready"],
+      "data_integrity_gates": ["ready"],
+      "incident_and_rollback_system": ["ready"],
+      "slo_error_budget_policy": ["ready"]
+    },
+    "required_capabilities": [
+      {
+        "capability_id": "external_alert_supervision",
+        "title": "External Alert Supervision",
+        "artifact": "governance/health/remote_alert_control_latest.json",
+        "ready_statuses": ["ready"],
+        "max_age_hours": 12,
+        "truthy_keys": ["ok"],
+        "required": true
+      },
+      {
+        "capability_id": "immutable_evidence_store",
+        "title": "Immutable Evidence Store",
+        "artifact": "governance/content_store/latest.json",
+        "ready_statuses": ["ready", "ok"],
+        "max_age_hours": 24,
+        "truthy_keys": ["ok"],
+        "max_count_by_key": {
+          "skipped_blob_count": 0
+        },
+        "required": true
+      },
+      {
+        "capability_id": "source_verification",
+        "title": "Source Verification",
+        "artifact": "governance/health/source_verification_latest.json",
+        "ready_statuses": ["ready"],
+        "max_age_hours": 24,
+        "truthy_keys": ["ok"],
+        "required": true
+      },
+      {
+        "capability_id": "security_hardening_audit",
+        "title": "Security Hardening Audit",
+        "artifact": "governance/health/security_audit_latest.json",
+        "ready_statuses": ["ready"],
+        "max_age_hours": 36,
+        "truthy_keys": ["ok"],
+        "required": true
+      },
+      {
+        "capability_id": "secret_scan_zero_findings",
+        "title": "Secret Scan Zero Findings",
+        "artifact": "governance/health/secret_scan_latest.json",
+        "ready_statuses": ["ready", "ok"],
+        "max_age_hours": 36,
+        "zero_count_keys": ["findings_count"],
+        "required": true
+      },
+      {
+        "capability_id": "auth_lease_continuity",
+        "title": "Auth Lease Continuity",
+        "artifact": "governance/health/auth_lease_manager_latest.json",
+        "ready_statuses": ["ready"],
+        "max_age_hours": 6,
+        "truthy_keys": ["ok"],
+        "required": true
+      },
+      {
+        "capability_id": "storage_disaster_recovery",
+        "title": "Storage Disaster Recovery",
+        "artifact": "governance/health/storage_disaster_recovery_latest.json",
+        "ready_statuses": ["ready"],
+        "max_age_hours": 24,
+        "truthy_keys": ["ok"],
+        "required": true
+      },
+      {
+        "capability_id": "blackstart_recovery",
+        "title": "Blackstart Recovery",
+        "artifact": "governance/health/blackstart_recovery_latest.json",
+        "ready_statuses": ["ready"],
+        "max_age_hours": 36,
+        "truthy_keys": ["ok", "production_grade_ready"],
+        "zero_count_keys": ["blocked_stage_count"],
+        "required": true
+      },
+      {
+        "capability_id": "paper_execution_truth_a_plus",
+        "title": "Paper Execution Truth A+",
+        "artifact": "governance/health/paper_execution_truth_layer_latest.json",
+        "ready_statuses": ["ready"],
+        "max_age_hours": 12,
+        "truthy_keys": ["ok", "a_plus_ready"],
+        "zero_count_keys": ["blocked_gates"],
+        "required": true
+      },
+      {
+        "capability_id": "production_slo_guard",
+        "title": "Production SLO Guard",
+        "artifact": "governance/health/production_quality_slo_guard_latest.json",
+        "ready_statuses": ["ready"],
+        "max_age_hours": 12,
+        "truthy_keys": ["ok"],
+        "zero_count_keys": ["breach_count", "critical_active_lane_count"],
+        "required": true
+      },
+      {
+        "capability_id": "live_reconciliation_slo",
+        "title": "Live Reconciliation SLO",
+        "artifact": "governance/health/live_reconciliation_slo_latest.json",
+        "ready_statuses": ["ready", "ok"],
+        "max_age_hours": 24,
+        "truthy_keys": ["ok"],
+        "required": true
+      },
+      {
+        "capability_id": "paper_reconciliation_slo",
+        "title": "Paper Reconciliation SLO",
+        "artifact": "governance/health/paper_reconciliation_slo_latest.json",
+        "ready_statuses": ["ready", "ok"],
+        "max_age_hours": 24,
+        "truthy_keys": ["ok"],
+        "required": true
+      },
+      {
+        "capability_id": "telemetry_redaction_canary",
+        "title": "Telemetry Redaction Canary",
+        "artifact": "governance/health/telemetry_redaction_canary_latest.json",
+        "ready_statuses": ["ready"],
+        "max_age_hours": 36,
+        "required": true
+      },
+      {
+        "capability_id": "live_canary_governor_read_only_cap",
+        "title": "Live Canary Governor Read-Only Cap",
+        "artifact": "governance/health/live_canary_control_latest.json",
+        "ready_statuses": ["blocked", "ready", "guarded"],
+        "max_age_hours": 12,
+        "truthy_keys": ["canary_weight_ok", "live_lane_should_be_read_only", "live_money_contract_enforced", "live_money_contract_hard_block"],
+        "required": true
+      }
+    ],
+    "policy": "live_money_canary_consideration_requires external alerting, immutable evidence, source/security hygiene, auth continuity, storage disaster recovery, blackstart recovery, broker/paper reconciliation, SLOs, telemetry redaction, microscopic canary cap, and a read-only live firewall"
   }
 }

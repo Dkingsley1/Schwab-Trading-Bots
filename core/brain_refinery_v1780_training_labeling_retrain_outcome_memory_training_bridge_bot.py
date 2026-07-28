@@ -15,7 +15,7 @@ except ModuleNotFoundError:
     from core.registry_backed_collection_bot import describe_registry_backed_bot, train_registry_backed_bot
 
 BOT_ID = 'brain_refinery_v1780_training_labeling_retrain_outcome_memory_training_bridge_bot'
-GENERATED_AT_UTC = '2026-07-03T03:49:50.166834+00:00'
+GENERATED_AT_UTC = '2026-07-28T15:27:19.856394+00:00'
 BOT_SPEC = {'active': True,
  'allocation_enabled': False,
  'bootstrap_teacher_bot_ids': ['brain_refinery_v1',
@@ -85,7 +85,7 @@ BOT_SPEC = {'active': True,
                               'codex_handoff'],
  'data_collection_active': True,
  'data_collection_mode': 'active_observer',
- 'data_collection_observations': 0,
+ 'data_collection_observations': 1226,
  'data_collection_reason': 'training_labeling_intelligence_collect_only_until_label_and_training_effect_gates_clear',
  'data_intake_collections': ['training_quality_trace',
                              'training_runtime_trace',

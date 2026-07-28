@@ -513,6 +513,15 @@ PyCharm tier view generated from `master_bot_registry.json` and `core/bot_catalo
 | brain_refinery_v1777_training_labeling_retrain_outcome_memory_telemetry_collector_bot | infrastructure_sub_bot | active / collecting | core/brain_refinery_v1777_training_labeling_retrain_outcome_memory_telemetry_collector_bot.py |
 | brain_refinery_v1779_training_labeling_retrain_outcome_memory_policy_guard_bot | infrastructure_sub_bot | active / collecting | core/brain_refinery_v1779_training_labeling_retrain_outcome_memory_policy_guard_bot.py |
 | brain_refinery_v1780_training_labeling_retrain_outcome_memory_training_bridge_bot | infrastructure_sub_bot | active / collecting | core/brain_refinery_v1780_training_labeling_retrain_outcome_memory_training_bridge_bot.py |
+| brain_refinery_v1781_self_model_identity_cartographer_bot | infrastructure_sub_bot | active / collecting | core/brain_refinery_v1781_self_model_identity_cartographer_bot.py |
+| brain_refinery_v1782_resource_cotenant_awareness_guard_bot | infrastructure_sub_bot | active / collecting | core/brain_refinery_v1782_resource_cotenant_awareness_guard_bot.py |
+| brain_refinery_v1783_bot_roster_drift_mapper_bot | infrastructure_sub_bot | active / collecting | core/brain_refinery_v1783_bot_roster_drift_mapper_bot.py |
+| brain_refinery_v1784_incident_failure_memory_linker_bot | infrastructure_sub_bot | active / collecting | core/brain_refinery_v1784_incident_failure_memory_linker_bot.py |
+| brain_refinery_v1785_dependency_graph_surface_mapper_bot | infrastructure_sub_bot | active / collecting | core/brain_refinery_v1785_dependency_graph_surface_mapper_bot.py |
+| brain_refinery_v1786_growth_pressure_forecaster_bot | infrastructure_sub_bot | active / collecting | core/brain_refinery_v1786_growth_pressure_forecaster_bot.py |
+| brain_refinery_v1787_self_reporting_narrator_bot | infrastructure_sub_bot | active / collecting | core/brain_refinery_v1787_self_reporting_narrator_bot.py |
+| brain_refinery_v1788_optimization_recommendation_ranker_bot | infrastructure_sub_bot | active / collecting | core/brain_refinery_v1788_optimization_recommendation_ranker_bot.py |
+| brain_refinery_v1789_self_model_regression_guard_bot | infrastructure_sub_bot | active / collecting | core/brain_refinery_v1789_self_model_regression_guard_bot.py |
 | brain_refinery_v185_options_assignment_pin_risk_guard | options_sub_bot | active / collecting | core/brain_refinery_v185_options_assignment_pin_risk_guard.py |
 | brain_refinery_v187_data_collection_storage_budget_guard | infrastructure_sub_bot | active / collecting | core/brain_refinery_v187_data_collection_storage_budget_guard.py |
 | brain_refinery_v188_host_resource_pressure_guard | infrastructure_sub_bot | active / collecting | core/brain_refinery_v188_host_resource_pressure_guard.py |

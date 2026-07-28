@@ -30,6 +30,7 @@ DEFAULT_PROTECTED_PATHS = (
     "scripts/ops/production_flow_smoke.py",
     "scripts/ops/production_quality_control.py",
     "scripts/ops/production_quality_slo_guard.py",
+    "scripts/ops/production_readiness_control.py",
     "scripts/ops/runtime_throttle_control.py",
     "scripts/ops/source_mutation_guard.py",
     "config/deployment_profiles.json",
@@ -38,6 +39,7 @@ DEFAULT_PROTECTED_PATHS = (
     "config/promotion_gate_snapshot_policy.json",
     "config/generated_artifact_policy.json",
     "config/live_canary_readiness_contract.json",
+    "config/production_readiness_control_v1.json",
     "docs/operations/PRODUCTION_FLOW_GUARDRAILS.md",
     "master_bot_registry.json",
 )

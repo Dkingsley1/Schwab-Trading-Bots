@@ -13,6 +13,62 @@ def test_checkpoint_mode_for_wal_respects_explicit_mode() -> None:
     assert maint._checkpoint_mode_for_wal(12.0, "restart", 8.0) == "restart"
 
 
+def test_row_count_skip_reason_skips_checkpoint_only() -> None:
+    assert (
+        maint._row_count_skip_reason(
+            checkpoint_only=True,
+            skip_row_count=False,
+            db_size_gb=1.0,
+            skip_over_gb=50.0,
+        )
+        == "checkpoint_only"
+    )
+
+
+def test_analyze_skip_reason_skips_large_database() -> None:
+    reason = maint._analyze_skip_reason(
+        skip_analyze=False,
+        db_size_gb=182.214,
+        skip_over_gb=50.0,
+    )
+
+    assert reason == "db_size_over_analyze_skip_threshold:182.214>=50.000"
+
+
+def test_analyze_skip_reason_respects_operator_skip() -> None:
+    assert (
+        maint._analyze_skip_reason(
+            skip_analyze=True,
+            db_size_gb=1.0,
+            skip_over_gb=50.0,
+        )
+        == "operator_skip_analyze"
+    )
+
+
+def test_row_count_skip_reason_skips_large_database() -> None:
+    reason = maint._row_count_skip_reason(
+        checkpoint_only=False,
+        skip_row_count=False,
+        db_size_gb=182.214,
+        skip_over_gb=50.0,
+    )
+
+    assert reason == "db_size_over_row_count_skip_threshold:182.214>=50.000"
+
+
+def test_row_count_skip_reason_allows_small_database() -> None:
+    assert (
+        maint._row_count_skip_reason(
+            checkpoint_only=False,
+            skip_row_count=False,
+            db_size_gb=1.0,
+            skip_over_gb=50.0,
+        )
+        == ""
+    )
+
+
 def test_resolve_runtime_settings_downshifts_under_red_memory_pressure(tmp_path) -> None:
     health_root = tmp_path / "governance" / "health"
     health_root.mkdir(parents=True, exist_ok=True)

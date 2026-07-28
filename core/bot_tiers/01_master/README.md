@@ -112,6 +112,7 @@ PyCharm tier view generated from `master_bot_registry.json` and `core/bot_catalo
 | brain_refinery_v1549_quant_operational_paper_live_separation_auditor_master_bridge_bot | infrastructure_sub_bot | active / collecting | master_bot_registry.json |
 | brain_refinery_v1553_quant_operational_report_signal_freshness_sentinel_master_bridge_bot | infrastructure_sub_bot | active / collecting | master_bot_registry.json |
 | brain_refinery_v1557_quant_operational_operator_decision_packet_builder_master_bridge_bot | infrastructure_sub_bot | active / collecting | master_bot_registry.json |
+| brain_refinery_v1790_grandmaster_self_awareness_bridge_bot | infrastructure_sub_bot | active / collecting | core/brain_refinery_v1790_grandmaster_self_awareness_bridge_bot.py |
 | brain_refinery_v248_sector_master_rotation_coordinator | signal_sub_bot | active / collecting | core/brain_refinery_v248_sector_master_rotation_coordinator.py |
 | brain_refinery_v313_master_roster_load_balancer | signal_sub_bot | active / collecting | core/brain_refinery_v313_master_roster_load_balancer.py |
 | brain_refinery_v606_mckean_vlasov_master_equation_control_bot | signal_sub_bot | active / collecting | core/brain_refinery_v606_mckean_vlasov_master_equation_control_bot.py |

@@ -242,6 +242,32 @@ def _checkpoint_mode_for_wal(wal_size_gb: float, requested_mode: str, truncate_m
     return "truncate" if wal_size_gb <= max(float(truncate_max_gb), 0.0) else "passive"
 
 
+def _row_count_skip_reason(
+    *,
+    checkpoint_only: bool,
+    skip_row_count: bool,
+    db_size_gb: float,
+    skip_over_gb: float,
+) -> str:
+    if bool(skip_row_count):
+        return "operator_skip_row_count"
+    if bool(checkpoint_only):
+        return "checkpoint_only"
+    threshold = max(float(skip_over_gb), 0.0)
+    if threshold > 0.0 and float(db_size_gb) >= threshold:
+        return f"db_size_over_row_count_skip_threshold:{float(db_size_gb):.3f}>={threshold:.3f}"
+    return ""
+
+
+def _analyze_skip_reason(*, skip_analyze: bool, db_size_gb: float, skip_over_gb: float) -> str:
+    if bool(skip_analyze):
+        return "operator_skip_analyze"
+    threshold = max(float(skip_over_gb), 0.0)
+    if threshold > 0.0 and float(db_size_gb) >= threshold:
+        return f"db_size_over_analyze_skip_threshold:{float(db_size_gb):.3f}>={threshold:.3f}"
+    return ""
+
+
 def _emit(payload: dict, out_path: Path, as_json: bool) -> int:
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(json.dumps(payload, ensure_ascii=True, indent=2), encoding="utf-8")
@@ -268,6 +294,10 @@ def main() -> int:
     parser.add_argument("--wal-checkpoint-mode", choices=("auto", "passive", "truncate", "restart"), default=_normalize_checkpoint_mode(os.getenv("SQLITE_WAL_CHECKPOINT_MODE", "auto")))
     parser.add_argument("--auto-vacuum-over-gb", type=float, default=float(os.getenv("SQLITE_AUTO_VACUUM_OVER_GB", "24")))
     parser.add_argument("--vacuum-min-interval-hours", type=float, default=float(os.getenv("SQLITE_VACUUM_MIN_INTERVAL_HOURS", "24")))
+    parser.add_argument("--skip-analyze", action="store_true")
+    parser.add_argument("--analyze-skip-over-gb", type=float, default=float(os.getenv("SQLITE_ANALYZE_SKIP_OVER_GB", "50")))
+    parser.add_argument("--skip-row-count", action="store_true")
+    parser.add_argument("--row-count-skip-over-gb", type=float, default=float(os.getenv("SQLITE_ROW_COUNT_SKIP_OVER_GB", "50")))
     parser.add_argument("--json", action="store_true")
     parser.add_argument("--out-file", default=str(DEFAULT_OUT))
     parser.add_argument("--sqlite-timeout-seconds", type=float, default=float(os.getenv("SQLITE_TIMEOUT_SECONDS", "60")))
@@ -309,6 +339,8 @@ def main() -> int:
     size_gb_before = db_path.stat().st_size / (1024 ** 3)
     wal_path = _sqlite_sidecar_path(db_path, "-wal")
     wal_size_gb_before = _size_gb(wal_path)
+    analyze_skip_over_gb = max(float(args.analyze_skip_over_gb), 0.0)
+    row_count_skip_over_gb = max(float(args.row_count_skip_over_gb), 0.0)
 
     payload = {
         "timestamp_utc": timestamp_utc,
@@ -333,6 +365,12 @@ def main() -> int:
         "no_auto_vacuum": bool(args.no_auto_vacuum),
         "vacuum_min_interval_hours": float(args.vacuum_min_interval_hours),
         "max_runtime_seconds": max_runtime_seconds,
+        "analyze_skipped": False,
+        "analyze_skipped_reason": "",
+        "analyze_skip_over_gb": analyze_skip_over_gb,
+        "row_count_skipped": False,
+        "row_count_skipped_reason": "",
+        "row_count_skip_over_gb": row_count_skip_over_gb,
         "running": True,
         "pid": os.getpid(),
         "current_step": "starting",
@@ -433,11 +471,18 @@ def main() -> int:
 
         analyze_ran = False
         optimize_ran = False
+        payload["analyze_ran"] = False
+        payload["optimize_ran"] = False
         if not args.checkpoint_only and (bool(runtime_settings.get("analyze_enabled", True)) or bool(runtime_settings.get("optimize_enabled", True))):
             _raise_if_deadline_expired(deadline_monotonic)
             _write_heartbeat(payload, out_path, current_step="analyze_optimize", started_monotonic=started_monotonic)
             _emit_progress("sqlite_maintenance step=analyze_optimize", as_json=args.json)
-            if bool(runtime_settings.get("analyze_enabled", True)):
+            analyze_skip_reason = _analyze_skip_reason(
+                skip_analyze=bool(args.skip_analyze),
+                db_size_gb=size_gb_before,
+                skip_over_gb=analyze_skip_over_gb,
+            )
+            if bool(runtime_settings.get("analyze_enabled", True)) and not analyze_skip_reason:
                 _sqlite_exec_with_retry(
                     conn,
                     "ANALYZE",
@@ -445,7 +490,16 @@ def main() -> int:
                     lock_retry_delay_seconds=max(args.sqlite_lock_retry_delay_seconds, 0.01),
                 )
                 analyze_ran = True
+                payload["analyze_ran"] = True
+            elif analyze_skip_reason:
+                payload["analyze_skipped"] = True
+                payload["analyze_skipped_reason"] = analyze_skip_reason
+                _emit_progress(
+                    f"sqlite_maintenance step=analyze_skipped reason={analyze_skip_reason}",
+                    as_json=args.json,
+                )
             if bool(runtime_settings.get("optimize_enabled", True)):
+                _write_heartbeat(payload, out_path, current_step="optimize", started_monotonic=started_monotonic)
                 _sqlite_exec_with_retry(
                     conn,
                     "PRAGMA optimize",
@@ -453,6 +507,7 @@ def main() -> int:
                     lock_retry_delay_seconds=max(args.sqlite_lock_retry_delay_seconds, 0.01),
                 )
                 optimize_ran = True
+                payload["optimize_ran"] = True
         payload["analyze_ran"] = analyze_ran
         payload["optimize_ran"] = optimize_ran
 
@@ -534,7 +589,13 @@ def main() -> int:
                 lock_retry_delay_seconds=max(args.sqlite_lock_retry_delay_seconds, 0.01),
             )
 
-        if _table_exists(conn, "jsonl_records"):
+        row_count_skip_reason = _row_count_skip_reason(
+            checkpoint_only=bool(args.checkpoint_only),
+            skip_row_count=bool(args.skip_row_count),
+            db_size_gb=size_gb_before,
+            skip_over_gb=row_count_skip_over_gb,
+        )
+        if _table_exists(conn, "jsonl_records") and not row_count_skip_reason:
             _raise_if_deadline_expired(deadline_monotonic)
             _write_heartbeat(payload, out_path, current_step="count_jsonl_records", started_monotonic=started_monotonic)
             _emit_progress("sqlite_maintenance step=count_jsonl_records", as_json=args.json)
@@ -545,6 +606,13 @@ def main() -> int:
                 lock_retry_delay_seconds=max(args.sqlite_lock_retry_delay_seconds, 0.01),
             ).fetchone()
             total_rows = int(row[0] if row else 0)
+        elif row_count_skip_reason:
+            payload["row_count_skipped"] = True
+            payload["row_count_skipped_reason"] = row_count_skip_reason
+            _emit_progress(
+                f"sqlite_maintenance step=count_jsonl_records_skipped reason={row_count_skip_reason}",
+                as_json=args.json,
+            )
 
         _sqlite_exec_with_retry(
             conn,

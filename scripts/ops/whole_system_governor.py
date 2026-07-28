@@ -306,11 +306,60 @@ def _pressure_snapshot(surfaces: dict[str, dict[str, Any]], identity: dict[str, 
         for name, surface in surfaces.items()
         if STATUS_WEIGHT.get(str(surface["status"]), 3) >= STATUS_WEIGHT["degraded"]
     ]
-    payloads = [surface["payload"] for surface in surfaces.values()]
-    pending_lines = max([0.0, *[number for payload in payloads for number in _walk_numbers(payload, ("pending_lines",))]])
-    swap_gb = max([0.0, *[number for payload in payloads for number in _walk_numbers(payload, ("swap_gb", "swap_used_gb"))]])
+
+    def payload(name: str) -> dict[str, Any]:
+        raw = surfaces.get(name, {}).get("payload")
+        return raw if isinstance(raw, dict) else {}
+
+    def child(raw: dict[str, Any], key: str) -> dict[str, Any]:
+        value = raw.get(key)
+        return value if isinstance(value, dict) else {}
+
+    storage = payload("ingestion_storage")
+    storage_backpressure = child(storage, "backpressure")
+    storage_raw_expansion = child(storage, "raw_live_expansion_contract")
+    storage_raw_live = child(storage_raw_expansion, "raw_live")
+    storage_backlog_truth = child(storage, "backlog_truth")
+    storage_raw_truth = child(storage_backlog_truth, "raw_live")
+    drainer = payload("backpressure_drainer_fleet")
+    drainer_metrics = child(drainer, "metrics")
+    super_drainer = payload("backpressure_super_drainer")
+    super_metrics = child(super_drainer, "metrics")
+    expansion = payload("expansion_capacity")
+    expansion_pressure = child(expansion, "pressure_snapshot")
+    memory = payload("memory_efficiency")
+
+    # Read only current pressure fields. A previous implementation walked every
+    # nested number and let stale historical ledgers dominate live pressure.
+    pending_lines = max(
+        [
+            0.0,
+            _safe_float(expansion_pressure.get("total_pending_lines"), 0.0),
+            _safe_float(storage_backpressure.get("total_pending_lines"), 0.0),
+            _safe_float(storage_backpressure.get("pending_lines_total"), 0.0),
+            _safe_float(storage_raw_live.get("total_pending_lines"), 0.0),
+            _safe_float(storage_raw_truth.get("total_pending_lines"), 0.0),
+            _safe_float(drainer.get("total_pending_lines"), 0.0),
+            _safe_float(drainer_metrics.get("total_pending_lines"), 0.0),
+            _safe_float(super_drainer.get("total_pending_lines"), 0.0),
+            _safe_float(super_metrics.get("total_pending_lines"), 0.0),
+        ]
+    )
+    swap_gb = max(
+        [
+            0.0,
+            _safe_float(expansion_pressure.get("swap_used_gb"), 0.0),
+            _safe_float(memory.get("swap_used_gb"), 0.0),
+            _safe_float(child(memory, "summary").get("swap_used_gb"), 0.0),
+        ]
+    )
     memory_pressure = max(
-        [0.0, *[number for payload in payloads for number in _walk_numbers(payload, ("memory_pressure", "pressure_index"))]]
+        [
+            0.0,
+            _safe_float(expansion_pressure.get("memory_pressure_score"), 0.0),
+            _safe_float(storage.get("pressure_index"), 0.0),
+            _safe_float(memory.get("memory_pressure_score"), 0.0),
+        ]
     )
     collection_count = _safe_int(identity.get("data_collection_active_bots"), 0)
     if bad_surfaces or pending_lines >= 250000 or swap_gb >= 24 or memory_pressure >= 85:
@@ -545,11 +594,14 @@ def _operator_packet(
                 "safe_command": "./scripts/ops/opsctl.sh whole-system-governor --apply --json",
             }
         )
+    clean_mode = str(clean_scaling.get("mode") or "")
     if str(clean_scaling.get("overall_status") or "") != "ready":
         attention.append(
             {
-                "priority": 1,
-                "title": "Clean scaling gate is not ready",
+                "priority": 3 if clean_mode == "no_growth_soak_lock" else 1,
+                "title": "Clean scaling locked for soak"
+                if clean_mode == "no_growth_soak_lock"
+                else "Clean scaling gate is not ready",
                 "reason": f"status={clean_scaling.get('overall_status')} blocked={','.join(clean_scaling.get('blocked_dimensions') or [])}",
                 "safe_command": "./scripts/ops/opsctl.sh expansion-capacity --json",
             }

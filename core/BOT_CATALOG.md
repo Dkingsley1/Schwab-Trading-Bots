@@ -6,15 +6,15 @@ Some newer bots are registry-backed collection slots, not dedicated `core/*.py` 
 
 ## Summary
 
-- Generated UTC: `2026-07-22T22:00:57.018431+00:00`
-- Registry updated UTC: `2026-07-22T21:01:39.286812+00:00`
-- Registry bots: `1771`
-- Active registry bots: `1732`
-- Active data-collection bots: `1732`
-- Registry bots with physical `core/*.py` files: `1492`
+- Generated UTC: `2026-07-28T15:27:20.849553+00:00`
+- Registry updated UTC: `2026-07-28T14:36:17.751506+00:00`
+- Registry bots: `1781`
+- Active registry bots: `1742`
+- Active data-collection bots: `1742`
+- Registry bots with physical `core/*.py` files: `1502`
 - Registry-backed bots without dedicated core files: `279`
-- Ops/infrastructure bots indexed here: `111`
-- Total indexed rows: `1882`
+- Ops/infrastructure bots indexed here: `116`
+- Total indexed rows: `1897`
 
 ## Category Counts
 
@@ -23,10 +23,10 @@ Some newer bots are registry-backed collection slots, not dedicated `core/*.py` 
 - `dividend_income`: `19`
 - `futures_macro`: `30`
 - `general_signal`: `439`
-- `infrastructure`: `820`
+- `infrastructure`: `830`
 - `intraday`: `48`
 - `macro`: `44`
-- `ops_infrastructure`: `111`
+- `ops_infrastructure`: `116`
 - `options`: `55`
 - `platform_organ_systems`: `71`
 - `quant_strategy_gap`: `123`
@@ -1381,6 +1381,16 @@ Some newer bots are registry-backed collection slots, not dedicated `core/*.py` 
 | brain_refinery_v1777_training_labeling_retrain_outcome_memory_telemetry_collector_bot | infrastructure_sub_bot | active / collecting | infrastructure | core/brain_refinery_v1777_training_labeling_retrain_outcome_memory_telemetry_collector_bot.py | scripts/run_cross_asset_basis_training_shadow.py, scripts/run_macro_crisis_scenario_lab_shadow.py | Physical core module found. |
 | brain_refinery_v1779_training_labeling_retrain_outcome_memory_policy_guard_bot | infrastructure_sub_bot | active / collecting | infrastructure | core/brain_refinery_v1779_training_labeling_retrain_outcome_memory_policy_guard_bot.py | scripts/run_cross_asset_basis_training_shadow.py, scripts/run_macro_crisis_scenario_lab_shadow.py | Physical core module found. |
 | brain_refinery_v1780_training_labeling_retrain_outcome_memory_training_bridge_bot | infrastructure_sub_bot | active / collecting | infrastructure | core/brain_refinery_v1780_training_labeling_retrain_outcome_memory_training_bridge_bot.py | scripts/run_cross_asset_basis_training_shadow.py, scripts/run_macro_crisis_scenario_lab_shadow.py | Physical core module found. |
+| brain_refinery_v1781_self_model_identity_cartographer_bot | infrastructure_sub_bot | active / collecting | infrastructure | core/brain_refinery_v1781_self_model_identity_cartographer_bot.py | scripts/run_model_risk_validation_shadow.py | Physical core module found. |
+| brain_refinery_v1782_resource_cotenant_awareness_guard_bot | infrastructure_sub_bot | active / collecting | infrastructure | core/brain_refinery_v1782_resource_cotenant_awareness_guard_bot.py |  | Physical core module found. |
+| brain_refinery_v1783_bot_roster_drift_mapper_bot | infrastructure_sub_bot | active / collecting | infrastructure | core/brain_refinery_v1783_bot_roster_drift_mapper_bot.py | scripts/run_alpha_research_os_shadow.py | Physical core module found. |
+| brain_refinery_v1784_incident_failure_memory_linker_bot | infrastructure_sub_bot | active / collecting | infrastructure | core/brain_refinery_v1784_incident_failure_memory_linker_bot.py |  | Physical core module found. |
+| brain_refinery_v1785_dependency_graph_surface_mapper_bot | infrastructure_sub_bot | active / collecting | infrastructure | core/brain_refinery_v1785_dependency_graph_surface_mapper_bot.py | scripts/run_tail_dependency_risk_shadow.py | Physical core module found. |
+| brain_refinery_v1786_growth_pressure_forecaster_bot | infrastructure_sub_bot | active / collecting | infrastructure | core/brain_refinery_v1786_growth_pressure_forecaster_bot.py |  | Physical core module found. |
+| brain_refinery_v1787_self_reporting_narrator_bot | infrastructure_sub_bot | active / collecting | infrastructure | core/brain_refinery_v1787_self_reporting_narrator_bot.py | scripts/run_repo_securities_lending_shadow.py | Physical core module found. |
+| brain_refinery_v1788_optimization_recommendation_ranker_bot | infrastructure_sub_bot | active / collecting | infrastructure | core/brain_refinery_v1788_optimization_recommendation_ranker_bot.py | scripts/run_optimization_research_shadow.py, scripts/run_options_on_futures_aggressive_shadow.py, scripts/run_options_on_futures_shadow.py | Physical core module found. |
+| brain_refinery_v1789_self_model_regression_guard_bot | infrastructure_sub_bot | active / collecting | infrastructure | core/brain_refinery_v1789_self_model_regression_guard_bot.py | scripts/run_model_risk_validation_shadow.py, scripts/run_options_on_futures_aggressive_shadow.py, scripts/run_options_on_futures_shadow.py | Physical core module found. |
+| brain_refinery_v1790_grandmaster_self_awareness_bridge_bot | infrastructure_sub_bot | active / collecting | infrastructure | core/brain_refinery_v1790_grandmaster_self_awareness_bridge_bot.py |  | Physical core module found. |
 | brain_refinery_v24_vwap_deviation | signal_sub_bot | inactive | intraday | core/brain_refinery_v24_vwap_deviation.py | scripts/run_options_on_futures_aggressive_shadow.py, scripts/run_options_on_futures_shadow.py | Physical core module found. |
 | brain_refinery_v43_intraday_ultrafast_proxy | signal_sub_bot | active / collecting | intraday | core/brain_refinery_v43_intraday_ultrafast_proxy.py | scripts/run_futures_index_intraday_shadow.py | Physical core module found. |
 | brain_refinery_v44_intraday_scalp_1m_5m | signal_sub_bot | active / collecting | intraday | core/brain_refinery_v44_intraday_scalp_1m_5m.py | scripts/run_futures_index_intraday_shadow.py | Physical core module found. |
@@ -1517,6 +1527,7 @@ Some newer bots are registry-backed collection slots, not dedicated `core/*.py` 
 | ingestion_storage_control | ops_infrastructure_bot | scripted_control_plane | ops_infrastructure | scripts/ops/ingestion_storage_control.py |  | Ops/infrastructure bot; kept under scripts/ops but indexed here for PyCharm visibility. |
 | lane_thaw_controller | ops_infrastructure_bot | scripted_control_plane | ops_infrastructure | scripts/ops/lane_thaw_controller.py |  | Ops/infrastructure bot; kept under scripts/ops but indexed here for PyCharm visibility. |
 | legacy_bot_harmonizer | ops_infrastructure_bot | scripted_control_plane | ops_infrastructure | scripts/ops/legacy_bot_harmonizer.py |  | Ops/infrastructure bot; kept under scripts/ops but indexed here for PyCharm visibility. |
+| library_upgrade_route_control | ops_infrastructure_bot | scripted_control_plane | ops_infrastructure | scripts/ops/library_upgrade_route_control.py |  | Ops/infrastructure bot; kept under scripts/ops but indexed here for PyCharm visibility. |
 | live_canary_control | ops_infrastructure_bot | scripted_control_plane | ops_infrastructure | scripts/ops/live_canary_control.py |  | Ops/infrastructure bot; kept under scripts/ops but indexed here for PyCharm visibility. |
 | live_runtime_separation_control | ops_infrastructure_bot | scripted_control_plane | ops_infrastructure | scripts/ops/live_runtime_separation_control.py |  | Ops/infrastructure bot; kept under scripts/ops but indexed here for PyCharm visibility. |
 | livefeed_refresh_guard | ops_infrastructure_bot | scripted_control_plane | ops_infrastructure | scripts/ops/livefeed_refresh_guard.py |  | Ops/infrastructure bot; kept under scripts/ops but indexed here for PyCharm visibility. |
@@ -1538,6 +1549,9 @@ Some newer bots are registry-backed collection slots, not dedicated `core/*.py` 
 | pressure_relief_control | ops_infrastructure_bot | scripted_control_plane | ops_infrastructure | scripts/ops/pressure_relief_control.py |  | Ops/infrastructure bot; kept under scripts/ops but indexed here for PyCharm visibility. |
 | process_fanout_guard | ops_infrastructure_bot | scripted_control_plane | ops_infrastructure | scripts/ops/process_fanout_guard.py |  | Ops/infrastructure bot; kept under scripts/ops but indexed here for PyCharm visibility. |
 | process_watchdog | ops_infrastructure_bot | scripted_control_plane | ops_infrastructure | scripts/ops/process_watchdog.py |  | Ops/infrastructure bot; kept under scripts/ops but indexed here for PyCharm visibility. |
+| production_quality_control | ops_infrastructure_bot | scripted_control_plane | ops_infrastructure | scripts/ops/production_quality_control.py |  | Ops/infrastructure bot; kept under scripts/ops but indexed here for PyCharm visibility. |
+| production_quality_slo_guard | ops_infrastructure_bot | scripted_control_plane | ops_infrastructure | scripts/ops/production_quality_slo_guard.py |  | Ops/infrastructure bot; kept under scripts/ops but indexed here for PyCharm visibility. |
+| production_readiness_control | ops_infrastructure_bot | scripted_control_plane | ops_infrastructure | scripts/ops/production_readiness_control.py |  | Ops/infrastructure bot; kept under scripts/ops but indexed here for PyCharm visibility. |
 | promotion_autopilot_packet | ops_infrastructure_bot | scripted_control_plane | ops_infrastructure | scripts/ops/promotion_autopilot_packet.py |  | Ops/infrastructure bot; kept under scripts/ops but indexed here for PyCharm visibility. |
 | pycharm_active_bot_highlights | ops_infrastructure_bot | scripted_control_plane | ops_infrastructure | scripts/ops/pycharm_active_bot_highlights.py |  | Ops/infrastructure bot; kept under scripts/ops but indexed here for PyCharm visibility. |
 | quant_model_control | ops_infrastructure_bot | scripted_control_plane | ops_infrastructure | scripts/ops/quant_model_control.py |  | Ops/infrastructure bot; kept under scripts/ops but indexed here for PyCharm visibility. |
@@ -1556,6 +1570,7 @@ Some newer bots are registry-backed collection slots, not dedicated `core/*.py` 
 | sleeve_isolation_guard | ops_infrastructure_bot | scripted_control_plane | ops_infrastructure | scripts/ops/sleeve_isolation_guard.py |  | Ops/infrastructure bot; kept under scripts/ops but indexed here for PyCharm visibility. |
 | sleeve_strategy_coverage_guard | ops_infrastructure_bot | scripted_control_plane | ops_infrastructure | scripts/ops/sleeve_strategy_coverage_guard.py |  | Ops/infrastructure bot; kept under scripts/ops but indexed here for PyCharm visibility. |
 | soak_self_healing_control | ops_infrastructure_bot | scripted_control_plane | ops_infrastructure | scripts/ops/soak_self_healing_control.py |  | Ops/infrastructure bot; kept under scripts/ops but indexed here for PyCharm visibility. |
+| source_mutation_guard | ops_infrastructure_bot | scripted_control_plane | ops_infrastructure | scripts/ops/source_mutation_guard.py |  | Ops/infrastructure bot; kept under scripts/ops but indexed here for PyCharm visibility. |
 | stale_artifact_reaper_bot | ops_infrastructure_bot | scripted_control_plane | ops_infrastructure | scripts/ops/stale_artifact_reaper_bot.py |  | Ops/infrastructure bot; kept under scripts/ops but indexed here for PyCharm visibility. |
 | stale_artifact_sweeper_bot | ops_infrastructure_bot | scripted_control_plane | ops_infrastructure | scripts/ops/stale_artifact_sweeper_bot.py |  | Ops/infrastructure bot; kept under scripts/ops but indexed here for PyCharm visibility. |
 | stateful_storage_regression_guard | ops_infrastructure_bot | scripted_control_plane | ops_infrastructure | scripts/ops/stateful_storage_regression_guard.py |  | Ops/infrastructure bot; kept under scripts/ops but indexed here for PyCharm visibility. |

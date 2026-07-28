@@ -187,6 +187,22 @@ def _pressure_snapshot(project_root: Path) -> dict[str, Any]:
     overlay_core_pending_lines = _safe_int(overlay_truth.get("core_pending_lines"), 0)
     storage_allow_expansion_raw = storage_efficiency_env.get("BOT_STORAGE_ALLOW_EXPANSION")
     storage_allow_expansion = True if storage_allow_expansion_raw is None else _bool(storage_allow_expansion_raw)
+    storage_phase = str(storage_efficiency_env.get("BOT_STORAGE_PLANE_PHASE") or "").strip()
+    storage_recovery_deficit_gb = _safe_float(storage_efficiency_env.get("BOT_STORAGE_SPACE_RECOVERY_DEFICIT_GB"), 0.0)
+    storage_external_free_gb = _safe_float(storage_efficiency_env.get("BOT_STORAGE_EXTERNAL_FREE_GB"), 0.0)
+    storage_external_min_free_gb = _safe_float(storage_efficiency_env.get("BOT_STORAGE_EXTERNAL_MIN_FREE_GB"), 0.0)
+    storage_space_recovery_required = _bool(storage_efficiency_env.get("BOT_STORAGE_SPACE_RECOVERY_REQUIRED"))
+    storage_no_growth_soak_lock = bool(
+        storage_efficiency_contract
+        and not storage_allow_expansion
+        and storage_phase in {"bounded_raw_compaction", "manifest_only_recovery"}
+        and not storage_space_recovery_required
+        and storage_recovery_deficit_gb <= 0.0
+        and (
+            storage_external_min_free_gb <= 0.0
+            or storage_external_free_gb >= storage_external_min_free_gb
+        )
+    )
     source_overall = source_verification.get("overall") if isinstance(source_verification.get("overall"), dict) else {}
     source_counts = source_overall.get("counts") if isinstance(source_overall.get("counts"), dict) else {}
     source_unverified = source_overall.get("unverified_sources") if isinstance(source_overall.get("unverified_sources"), list) else []
@@ -205,7 +221,7 @@ def _pressure_snapshot(project_root: Path) -> dict[str, Any]:
         blocking_reasons.append("queue_backpressure_active")
     if raw_live_expansion and (raw_live_expansion_active or not raw_live_expansion_ready):
         blocking_reasons.append("raw_live_expansion_headroom_not_ready")
-    if storage_efficiency_contract and not storage_allow_expansion:
+    if storage_efficiency_contract and not storage_allow_expansion and not storage_no_growth_soak_lock:
         blocking_reasons.append("storage_efficiency_expansion_locked")
     if clear_blockers:
         blocking_reasons.append("global_clear_blockers_present")
@@ -221,6 +237,8 @@ def _pressure_snapshot(project_root: Path) -> dict[str, Any]:
         watch_reasons.append("swap_pressure_elevated")
     if storage_pressure >= 0.40:
         watch_reasons.append("storage_pressure_index_elevated")
+    if storage_no_growth_soak_lock:
+        watch_reasons.append("storage_efficiency_no_growth_soak_lock_active")
     if raw_live_expansion and _safe_float(raw_live_expansion.get("pressure_ratio"), 0.0) >= 0.70:
         watch_reasons.append("raw_live_expansion_headroom_warm")
     if overlay_total_pending_lines >= 50_000:
@@ -291,16 +309,14 @@ def _pressure_snapshot(project_root: Path) -> dict[str, Any]:
         },
         "storage_efficiency": {
             "active": bool(storage_efficiency_contract.get("active", False)),
-            "storage_plane_phase": str(storage_efficiency_env.get("BOT_STORAGE_PLANE_PHASE") or ""),
+            "storage_plane_phase": storage_phase,
             "storage_allow_expansion": bool(storage_allow_expansion),
             "storage_allow_training": _bool(storage_efficiency_env.get("BOT_STORAGE_ALLOW_TRAINING")),
-            "storage_space_recovery_required": _bool(storage_efficiency_env.get("BOT_STORAGE_SPACE_RECOVERY_REQUIRED")),
-            "storage_space_recovery_deficit_gb": _safe_float(
-                storage_efficiency_env.get("BOT_STORAGE_SPACE_RECOVERY_DEFICIT_GB"),
-                0.0,
-            ),
-            "storage_external_free_gb": _safe_float(storage_efficiency_env.get("BOT_STORAGE_EXTERNAL_FREE_GB"), 0.0),
-            "storage_external_min_free_gb": _safe_float(storage_efficiency_env.get("BOT_STORAGE_EXTERNAL_MIN_FREE_GB"), 0.0),
+            "storage_space_recovery_required": storage_space_recovery_required,
+            "storage_space_recovery_deficit_gb": storage_recovery_deficit_gb,
+            "storage_external_free_gb": storage_external_free_gb,
+            "storage_external_min_free_gb": storage_external_min_free_gb,
+            "storage_no_growth_soak_lock": storage_no_growth_soak_lock,
             "data_capture_mode": str(storage_efficiency_env.get("BOT_DATA_CAPTURE_MODE") or ""),
             "raw_payload_storage_mode": str(storage_efficiency_env.get("BOT_RAW_PAYLOAD_STORAGE_MODE") or ""),
         },
@@ -387,12 +403,16 @@ def _capacity_contract(
 
     requested = max(int(requested_wave_size), 0)
     recommended = min(requested, max_new_collectors)
+    clean_mode = str(clean.get("mode") or "")
     if max_new_collectors <= 0:
-        rollout_mode = (
-            "blocked_clean_scaling_no_new_runtime_loops"
-            if str(clean.get("mode") or "") == "blocked_clean_scaling"
-            else "protect_live_no_new_runtime_loops"
-        )
+        if clean_mode == "no_growth_soak_lock":
+            rollout_mode = "no_growth_soak_lock_no_new_runtime_loops"
+        else:
+            rollout_mode = (
+                "blocked_clean_scaling_no_new_runtime_loops"
+                if clean_mode == "blocked_clean_scaling"
+                else "protect_live_no_new_runtime_loops"
+            )
     elif recommended < requested:
         rollout_mode = (
             "micro_collection_only_soak"
@@ -418,7 +438,7 @@ def _capacity_contract(
 
     status = "ready"
     if max_new_collectors <= 0:
-        status = "blocked"
+        status = "needs_work" if clean_mode == "no_growth_soak_lock" else "blocked"
     elif recommended < requested:
         status = "needs_work"
 
@@ -500,6 +520,7 @@ def _clean_scaling_contract(
     provider_failures = _safe_int(provider_quality.get("provider_required_failure_count"), 0)
     provider_soft_failures = _safe_int(provider_quality.get("provider_soft_failure_count"), 0)
     source_unverified = _safe_int(provider_quality.get("source_unverified_count"), 0)
+    source_all_verified = bool(provider_quality.get("source_all_verified", False))
     data_quality_score = _safe_float(provider_quality.get("data_quality_score"), 0.0)
     admission_blocking = _safe_int(pressure.get("admission_blocking_candidate_count"), 0)
     storage_allow_expansion = bool(storage_efficiency.get("storage_allow_expansion", True))
@@ -514,6 +535,7 @@ def _clean_scaling_contract(
         and storage_external_min_free_gb > 0.0
         and storage_external_free_gb >= storage_external_min_free_gb
     )
+    storage_no_growth_soak_lock = bool(storage_efficiency.get("storage_no_growth_soak_lock", False))
     raw_live_ready = bool(raw_live.get("ready", False)) and not bool(raw_live.get("active", False))
     raw_live_watch = bool(
         not raw_live_ready
@@ -539,7 +561,15 @@ def _clean_scaling_contract(
         and (
             source_status in {"missing", "needs_work", "degraded"}
             or (data_quality_score > 0.0 and data_quality_score < 90.0)
-            or provider_soft_failures > 2
+            or (
+                provider_soft_failures > 2
+                and not (
+                    provider_failures == 0
+                    and source_unverified == 0
+                    and source_all_verified
+                    and data_quality_score >= 95.0
+                )
+            )
             or (provider_status in {"missing", "needs_work", "degraded"} and provider_failures > 0)
         )
     )
@@ -566,7 +596,7 @@ def _clean_scaling_contract(
             status="ready"
             if storage_allow_expansion
             else "watch"
-            if storage_manifest_recovery_watch
+            if storage_manifest_recovery_watch or storage_no_growth_soak_lock
             else "blocked",
             evidence=storage_efficiency,
             next_action="let storage efficiency return BOT_STORAGE_ALLOW_EXPANSION=1 before expanding",
@@ -615,8 +645,13 @@ def _clean_scaling_contract(
         mode = "blocked_clean_scaling"
         max_clean_wave = 0
     elif watch:
-        mode = "micro_collection_only_soak"
-        max_clean_wave = min(max(raw_headroom, 1), 3, max(int(requested_wave_size), 0))
+        no_growth_watch_set = {"storage_efficiency", "provider_and_data_quality"}
+        if storage_no_growth_soak_lock and set(watch).issubset(no_growth_watch_set):
+            mode = "no_growth_soak_lock"
+            max_clean_wave = 0
+        else:
+            mode = "micro_collection_only_soak"
+            max_clean_wave = min(max(raw_headroom, 1), 3, max(int(requested_wave_size), 0))
     else:
         mode = "clean_collection_wave"
         max_clean_wave = min(max(raw_headroom, 1), max(int(requested_wave_size), 0))

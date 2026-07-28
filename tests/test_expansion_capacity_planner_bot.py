@@ -104,6 +104,60 @@ def test_expansion_capacity_allows_collection_only_wave_when_pressure_is_ready(t
     assert payload["growth_invariants"][0] == "new bots enter as data_collection_only"
 
 
+def test_expansion_capacity_treats_bounded_compaction_as_no_growth_soak_lock(tmp_path: Path) -> None:
+    _seed_registry(tmp_path)
+    _seed_health(tmp_path)
+    health = tmp_path / "governance" / "health"
+    storage = json.loads((health / "ingestion_storage_control_latest.json").read_text(encoding="utf-8"))
+    storage["storage_efficiency_contract"] = {
+        "active": True,
+        "control_env_recommendations": {
+            "BOT_STORAGE_PLANE_PHASE": "bounded_raw_compaction",
+            "BOT_STORAGE_ALLOW_EXPANSION": "0",
+            "BOT_STORAGE_ALLOW_TRAINING": "0",
+            "BOT_STORAGE_SPACE_RECOVERY_REQUIRED": "0",
+            "BOT_STORAGE_SPACE_RECOVERY_DEFICIT_GB": "0.0",
+            "BOT_STORAGE_EXTERNAL_FREE_GB": "155.0",
+            "BOT_STORAGE_EXTERNAL_MIN_FREE_GB": "32.0",
+            "BOT_DATA_CAPTURE_MODE": "thin_digest_with_manifest",
+            "BOT_RAW_PAYLOAD_STORAGE_MODE": "manifest_first",
+        },
+    }
+    _write_json(health / "ingestion_storage_control_latest.json", storage)
+
+    payload = src.build_payload(tmp_path, requested_wave_size=20)
+
+    assert payload["ok"] is True
+    assert payload["overall_status"] == "needs_work"
+    assert "storage_efficiency_expansion_locked" not in payload["pressure_snapshot"]["blocking_reasons"]
+    assert "storage_efficiency_no_growth_soak_lock_active" in payload["pressure_snapshot"]["watch_reasons"]
+    assert payload["clean_scaling_contract"]["overall_status"] == "needs_work"
+    assert payload["clean_scaling_contract"]["grade"] == "A"
+    assert payload["clean_scaling_contract"]["mode"] == "no_growth_soak_lock"
+    assert payload["clean_scaling_contract"]["max_clean_wave_size_now"] == 0
+    assert payload["capacity_contract"]["overall_status"] == "needs_work"
+    assert payload["capacity_contract"]["recommended_wave_size_now"] == 0
+    assert payload["capacity_contract"]["rollout_mode"] == "no_growth_soak_lock_no_new_runtime_loops"
+
+
+def test_expansion_capacity_keeps_optional_provider_soft_failures_advisory_when_truth_is_clean(tmp_path: Path) -> None:
+    _seed_registry(tmp_path)
+    _seed_health(tmp_path)
+    health = tmp_path / "governance" / "health"
+    _write_json(
+        health / "provider_mesh_latest.json",
+        {"overall_status": "ready", "summary": {"required_failure_count": 0, "soft_failure_count": 3}},
+    )
+    _write_json(health / "data_collection_observation_rollup_latest.json", {"data_quality_score": 100.0})
+
+    payload = src.build_payload(tmp_path, requested_wave_size=20)
+
+    assert payload["overall_status"] == "ready"
+    assert payload["clean_scaling_contract"]["overall_status"] == "ready"
+    assert "provider_and_data_quality" not in payload["clean_scaling_contract"]["watch_dimensions"]
+    assert payload["capacity_contract"]["recommended_wave_size_now"] == 20
+
+
 def test_expansion_capacity_blocks_new_runtime_when_halt_or_swap_pressure_active(tmp_path: Path) -> None:
     _seed_registry(tmp_path)
     _seed_health(tmp_path, halt=True, swap_tier="pause_research", swap_gb=21.0, admission_blocking=4)

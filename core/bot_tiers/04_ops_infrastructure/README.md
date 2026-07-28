@@ -48,6 +48,7 @@ PyCharm tier view generated from `master_bot_registry.json` and `core/bot_catalo
 | ingestion_storage_control | ops_infrastructure_bot | scripted_control_plane | scripts/ops/ingestion_storage_control.py |
 | lane_thaw_controller | ops_infrastructure_bot | scripted_control_plane | scripts/ops/lane_thaw_controller.py |
 | legacy_bot_harmonizer | ops_infrastructure_bot | scripted_control_plane | scripts/ops/legacy_bot_harmonizer.py |
+| library_upgrade_route_control | ops_infrastructure_bot | scripted_control_plane | scripts/ops/library_upgrade_route_control.py |
 | live_canary_control | ops_infrastructure_bot | scripted_control_plane | scripts/ops/live_canary_control.py |
 | live_runtime_separation_control | ops_infrastructure_bot | scripted_control_plane | scripts/ops/live_runtime_separation_control.py |
 | livefeed_refresh_guard | ops_infrastructure_bot | scripted_control_plane | scripts/ops/livefeed_refresh_guard.py |
@@ -68,6 +69,9 @@ PyCharm tier view generated from `master_bot_registry.json` and `core/bot_catalo
 | pressure_relief_control | ops_infrastructure_bot | scripted_control_plane | scripts/ops/pressure_relief_control.py |
 | process_fanout_guard | ops_infrastructure_bot | scripted_control_plane | scripts/ops/process_fanout_guard.py |
 | process_watchdog | ops_infrastructure_bot | scripted_control_plane | scripts/ops/process_watchdog.py |
+| production_quality_control | ops_infrastructure_bot | scripted_control_plane | scripts/ops/production_quality_control.py |
+| production_quality_slo_guard | ops_infrastructure_bot | scripted_control_plane | scripts/ops/production_quality_slo_guard.py |
+| production_readiness_control | ops_infrastructure_bot | scripted_control_plane | scripts/ops/production_readiness_control.py |
 | promotion_autopilot_packet | ops_infrastructure_bot | scripted_control_plane | scripts/ops/promotion_autopilot_packet.py |
 | pycharm_active_bot_highlights | ops_infrastructure_bot | scripted_control_plane | scripts/ops/pycharm_active_bot_highlights.py |
 | quant_model_control | ops_infrastructure_bot | scripted_control_plane | scripts/ops/quant_model_control.py |
@@ -86,6 +90,7 @@ PyCharm tier view generated from `master_bot_registry.json` and `core/bot_catalo
 | sleeve_isolation_guard | ops_infrastructure_bot | scripted_control_plane | scripts/ops/sleeve_isolation_guard.py |
 | sleeve_strategy_coverage_guard | ops_infrastructure_bot | scripted_control_plane | scripts/ops/sleeve_strategy_coverage_guard.py |
 | soak_self_healing_control | ops_infrastructure_bot | scripted_control_plane | scripts/ops/soak_self_healing_control.py |
+| source_mutation_guard | ops_infrastructure_bot | scripted_control_plane | scripts/ops/source_mutation_guard.py |
 | stale_artifact_reaper_bot | ops_infrastructure_bot | scripted_control_plane | scripts/ops/stale_artifact_reaper_bot.py |
 | stale_artifact_sweeper_bot | ops_infrastructure_bot | scripted_control_plane | scripts/ops/stale_artifact_sweeper_bot.py |
 | stateful_storage_regression_guard | ops_infrastructure_bot | scripted_control_plane | scripts/ops/stateful_storage_regression_guard.py |

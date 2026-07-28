@@ -117,3 +117,69 @@ def test_whole_system_governor_surfaces_clean_scaling_contract(tmp_path: Path) -
     assert clean["blocked_dimensions"] == ["sql_overlay_tail_debt"]
     assert payload["governor"]["clean_scaling"]["max_clean_wave_size_now"] == 0
     assert any(item["title"] == "Clean scaling gate is not ready" for item in payload["operator_decision_packet"]["attention_queue"])
+
+
+def test_whole_system_governor_uses_current_pressure_fields_not_stale_history(tmp_path: Path) -> None:
+    _write_registry(tmp_path)
+    health = tmp_path / "governance" / "health"
+    health.mkdir(parents=True)
+    (health / "whole_system_intelligence_latest.json").write_text(
+        json.dumps(
+            {
+                "overall_status": "ready",
+                "old_backlog_outcome_learning": {"pending_lines_estimate": 18_000_000},
+                "old_swap_forecast": {"swap_gb_estimate": 24.0},
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    (health / "ingestion_storage_control_latest.json").write_text(
+        json.dumps(
+            {
+                "overall_status": "ready",
+                "pressure_index": 0.013,
+                "backpressure": {"total_pending_lines": 3449},
+                "raw_live_expansion_contract": {
+                    "raw_live": {"total_pending_lines": 3449},
+                },
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    (health / "memory_efficiency_control_latest.json").write_text(
+        json.dumps({"overall_status": "ready", "swap_used_gb": 0.5}) + "\n",
+        encoding="utf-8",
+    )
+    (health / "expansion_capacity_planner_latest.json").write_text(
+        json.dumps(
+            {
+                "overall_status": "needs_work",
+                "pressure_snapshot": {"total_pending_lines": 3449, "swap_used_gb": 0.5},
+                "clean_scaling_contract": {
+                    "overall_status": "needs_work",
+                    "grade": "A",
+                    "mode": "no_growth_soak_lock",
+                    "max_clean_wave_size_now": 0,
+                    "blocked_dimensions": [],
+                    "watch_dimensions": ["storage_efficiency"],
+                    "dimension_count": 6,
+                    "next_action": "hold new expansion while compaction lock is active",
+                },
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    payload = governor.build_payload(tmp_path)
+
+    pressure = payload["governor"]["pressure"]
+    assert pressure["pending_lines_estimate"] == 3449
+    assert pressure["swap_gb_estimate"] == 0.5
+    assert pressure["pressure_tier"] == "steady"
+    assert payload["clean_scaling_control"]["mode"] == "no_growth_soak_lock"
+    titles = [item["title"] for item in payload["operator_decision_packet"]["attention_queue"]]
+    assert "Pressure-aware capture downgrade active" not in titles
+    assert "Clean scaling locked for soak" in titles

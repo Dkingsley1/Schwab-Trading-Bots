@@ -13,10 +13,10 @@ if __package__ in {None, ""}:
     if str(PROJECT_ROOT) not in sys.path:
         sys.path.insert(0, str(PROJECT_ROOT))
     from scripts.ops.long_runtime_common import PROJECT_ROOT, iso_now, load_json, ordered_unique, payload_age_minutes, write_payload
-    from scripts.ops import production_flow_smoke, source_mutation_guard
+    from scripts.ops import production_flow_smoke, production_readiness_control, source_mutation_guard
 else:
     from .long_runtime_common import PROJECT_ROOT, iso_now, load_json, ordered_unique, payload_age_minutes, write_payload
-    from . import production_flow_smoke, source_mutation_guard
+    from . import production_flow_smoke, production_readiness_control, source_mutation_guard
 
 
 DEFAULT_OUT_PATH = PROJECT_ROOT / "governance" / "health" / "live_canary_readiness_contract_latest.json"
@@ -87,6 +87,13 @@ DEFAULT_CANARY_MILESTONES: tuple[dict[str, Any], ...] = (
         "owner": "live_canary_readiness_contract",
         "required": True,
         "description": "The system can explain why a sleeve is allowed to trade before any live-money canary is considered.",
+    },
+    {
+        "milestone_id": "m10_live_money_production_bar",
+        "title": "Live-Money Production Bar",
+        "owner": "production_readiness_control",
+        "required": True,
+        "description": "External supervision, immutable evidence, security, recovery, release, SLO, and read-only firewall controls are all production-ready.",
     },
 )
 
@@ -183,6 +190,7 @@ def _build_live_money_canary_milestones(
     paper_truth: dict[str, Any],
     live_money_contract: dict[str, Any],
     live_canary_control: dict[str, Any],
+    production_readiness: dict[str, Any],
 ) -> list[dict[str, Any]]:
     definitions = _as_list(config.get("live_money_canary_milestones")) or [dict(row) for row in DEFAULT_CANARY_MILESTONES]
     by_id = {str(gate.get("gate_id") or ""): gate for gate in gates}
@@ -210,6 +218,9 @@ def _build_live_money_canary_milestones(
     target_weight = _safe_float(live_canary_control.get("target_canary_weight"), 0.0)
     applied_weight = _safe_float(live_canary_control.get("applied_canary_weight"), target_weight)
     canary_weight = applied_weight if applied_weight > 0 else target_weight
+    production_bar_ready = bool(production_readiness.get("live_money_production_bar_ready", False))
+    canary_consideration_ready = bool(production_readiness.get("live_money_canary_consideration_ready", False))
+    production_domains_blocked = _safe_int(production_readiness.get("blocked_domain_count"), 0)
 
     prior_milestones: dict[str, bool] = {}
     milestones: list[dict[str, Any]] = []
@@ -342,16 +353,37 @@ def _build_live_money_canary_milestones(
         elif milestone_id == "m09_explainable_trade_permission":
             previous_ready = all(prior_milestones.values()) if prior_milestones else False
             gates_ready = all(bool(gate.get("ready", False)) for gate in gates)
-            ready = bool(previous_ready and gates_ready)
+            ready = bool(previous_ready and gates_ready and canary_consideration_ready)
             blockers = [
                 "prior_live_money_canary_milestones_not_ready" if not previous_ready else "",
                 "hard_live_canary_gates_not_ready" if not gates_ready else "",
+                "live_money_production_bar_not_ready" if not canary_consideration_ready else "",
             ]
             evidence = {
                 "prior_milestones_ready": previous_ready,
                 "all_hard_gates_ready": gates_ready,
                 "ready_gate_count": sum(1 for gate in gates if gate.get("ready", False)),
                 "gate_count": len(gates),
+                "live_money_production_bar_ready": production_bar_ready,
+                "live_money_canary_consideration_ready": canary_consideration_ready,
+                "production_readiness_blocked_domain_count": production_domains_blocked,
+            }
+        elif milestone_id == "m10_live_money_production_bar":
+            ready = bool(production_bar_ready and canary_consideration_ready)
+            blockers = [
+                "production_readiness_control_missing" if not production_readiness else "",
+                "live_money_production_bar_not_ready" if production_readiness and not production_bar_ready else "",
+                "live_money_canary_consideration_not_ready" if production_readiness and not canary_consideration_ready else "",
+                "production_readiness_domains_blocked" if production_domains_blocked > 0 else "",
+            ]
+            evidence = {
+                "production_readiness_status": production_readiness.get("overall_status"),
+                "live_money_production_bar_ready": production_bar_ready,
+                "live_money_canary_consideration_ready": canary_consideration_ready,
+                "blocked_domain_count": production_domains_blocked,
+                "domain_count": production_readiness.get("domain_count"),
+                "ready_domain_count": production_readiness.get("ready_domain_count"),
+                "blockers": _as_list(production_readiness.get("blockers")),
             }
         else:
             ready = False
@@ -467,6 +499,7 @@ def build_payload(
     health_fast = load_json(health / "health_fast_latest.json")
     live_money_contract = load_json(health / "live_money_readiness_contract_latest.json")
     live_canary_control = load_json(health / "live_canary_control_latest.json")
+    production_readiness = load_json(health / "production_readiness_control_latest.json")
 
     raw_grade = _grade(
         paper_profit.get("raw_profitability_grade")
@@ -605,6 +638,8 @@ def build_payload(
     )
 
     production_smoke = production_flow_smoke.build_payload(project_root)
+    if not production_readiness:
+        production_readiness = production_readiness_control.build_payload(project_root)
     ci_gate = _gate(
         "ci_production_guardrails",
         "CI And Production Guardrails",
@@ -692,6 +727,7 @@ def build_payload(
         paper_truth=paper_truth,
         live_money_contract=live_money_contract,
         live_canary_control=live_canary_control,
+        production_readiness=production_readiness,
     )
     require_milestones = bool(config.get("require_live_money_canary_milestones", True))
     required_milestones_ready = all(
@@ -736,6 +772,7 @@ def build_payload(
             "clean CI",
             "clean storage pressure",
             "clean promotion/paper gate freshness",
+            "clean live-money production bar",
             "all gates sustained before live canary money",
         ],
         "milestone_bar": [str(item.get("title") or item.get("milestone_id")) for item in milestones],
@@ -768,6 +805,7 @@ def build_payload(
                 "runtime_gate_dashboard",
                 "system_signal_bus",
                 "system_self_model",
+                "production_readiness_control",
             ],
             "live_execution_authority": False,
             "must_keep_live_orders_disabled_until_ready": True,

@@ -80,7 +80,14 @@
       "owner": "live_canary_readiness_contract",
       "required": true,
       "description": "The system can explain why a sleeve is allowed to trade before any live-money canary is considered."
+    },
+    {
+      "milestone_id": "m10_live_money_production_bar",
+      "title": "Live-Money Production Bar",
+      "owner": "production_readiness_control",
+      "required": true,
+      "description": "External supervision, immutable evidence, security, recovery, release, SLO, and read-only firewall controls are all production-ready."
     }
   ],
-  "infrastructure_message": "Before live canary money: no raw D-grade posture, no unexplained sleeve paper-trading dropouts, no auth/token surprises, no source mutation from runtime, clean CI, clean storage pressure, clean promotion/paper gate freshness, sustained window proof, 30-day strict-clear soak, live-like paper execution, proven pre-trade risk controls, autonomous recovery, no fake-green dashboard state, explained loss attribution, broker/order reconciliation, microscopic canary plan, and explainable trade permission."
+  "infrastructure_message": "Before live canary money: no raw D-grade posture, no unexplained sleeve paper-trading dropouts, no auth/token surprises, no source mutation from runtime, clean CI, clean storage pressure, clean promotion/paper gate freshness, sustained window proof, 30-day strict-clear soak, live-like paper execution, proven pre-trade risk controls, autonomous recovery, no fake-green dashboard state, explained loss attribution, broker/order reconciliation, microscopic canary plan, explainable trade permission, and the live-money production bar."
 }

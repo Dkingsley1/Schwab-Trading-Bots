@@ -1,8 +1,8 @@
 # Intelligence Layers PyCharm Index
 
-- Updated UTC: `2026-07-27T20:50:17.290832+00:00`
+- Updated UTC: `2026-07-28T15:46:54.602166+00:00`
 - Whole-System Status: `advisory`
-- Top Risk: `operator_cockpit`
+- Top Risk: `training_runtime`
 - Safe Next Command: `./scripts/ops/opsctl.sh expansion-capacity --json`
 
 ## Bot Activity Snapshot
@@ -41,19 +41,19 @@
 
 ## Docs Commands Reporting
 
-- Layer Status: `blocked`
-- Action: `run_commands_hygiene_apply`
+- Layer Status: `ready`
+- Action: `observe_docs_reporting_contract`
 - Command Contract Entries: `155`
-- Command Issues: `2`
+- Command Issues: `0`
 - Report Bundle Entries: `38`
 - Report Bundle Errors: `0`
 - Report Permission Errors: `0`
-- PyCharm File Color Status: `missing`
-- PyCharm Active Core Files: `0`
-- PyCharm Scope Strategy: ``
-- PyCharm Scope Pattern Bytes: `0`
-- PyCharm Project View Style: ``
-- PyCharm Foreground Blue Source: ``
+- PyCharm File Color Status: `ready`
+- PyCharm Active Core Files: `1450`
+- PyCharm Scope Strategy: `brain_refinery_family_with_inactive_exclusions`
+- PyCharm Scope Pattern Bytes: `2931`
+- PyCharm Project View Style: `scope_background_color`
+- PyCharm Foreground Blue Source: `pycharm_vcs_modified_file_status`
 - Foreground Blue Without Dirtying Files: `False`
 
 ## Intelligence Layers
@@ -64,9 +64,9 @@
 - `symbol_universe_intelligence`: status `ready`, score `100.0`
 - `cognitive_twin_counterfactuals`: status `ready`, score `38`, next `base_case`
 - `recursive_policy_evolution`: status `ready`, score `72.0`, next `cognitive_twin_counterfactual_simulator`
-- `deeper_self_awareness_layers`: status `advisory`, mode `advisory_control_plane_with_constitutional_lockout_attestation`, score `8`, next `causal_world_model,belief_ledger_confidence`
+- `deeper_self_awareness_layers`: status `advisory`, mode `advisory_control_plane_with_constitutional_lockout_attestation`, score `9`, next `belief_ledger_confidence`
 - `codex_handoff`: status `advisory`
-- `documentation_reporting_intelligence`: status `blocked`, action `run_commands_hygiene_apply`, score `155`
+- `documentation_reporting_intelligence`: status `ready`, action `observe_docs_reporting_contract`, score `155`
 
 ## PyCharm Open Paths
 

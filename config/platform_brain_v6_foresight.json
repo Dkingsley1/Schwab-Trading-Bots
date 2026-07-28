@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "updated_utc": "2026-05-22T21:52:43.682726+00:00",
+  "updated_utc": "2026-07-28T14:34:40.693820+00:00",
   "layer": "platform_brain_v6_foresight_cortex",
   "section_keys": [
     "counterfactual_world_model",

@@ -7,6 +7,7 @@ import json
 import os
 import re
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -15,10 +16,10 @@ if __package__ in {None, ""}:
     if str(PROJECT_ROOT) not in sys.path:
         sys.path.insert(0, str(PROJECT_ROOT))
     from scripts.ops.dependency_activation_smoke import build_payload as build_dependency_activation_smoke
-    from scripts.ops.long_runtime_common import iso_now, load_json, ordered_unique, status_rank, write_payload
+    from scripts.ops.long_runtime_common import iso_now, load_json, ordered_unique, payload_age_minutes, status_rank, write_payload
 else:
     from .dependency_activation_smoke import build_payload as build_dependency_activation_smoke
-    from .long_runtime_common import PROJECT_ROOT, iso_now, load_json, ordered_unique, status_rank, write_payload
+    from .long_runtime_common import PROJECT_ROOT, iso_now, load_json, ordered_unique, payload_age_minutes, status_rank, write_payload
 
 
 DEFAULT_CONFIG = PROJECT_ROOT / "config" / "production_readiness_control_v1.json"
@@ -86,6 +87,59 @@ def _artifact_row(project_root: Path, raw_path: str) -> dict[str, Any]:
         "exists": exists,
         "status": status,
         "ok": status in READY_STATUSES,
+        "summary_keys": sorted(payload.keys())[:20] if payload else [],
+    }
+
+
+def _artifact_capability_row(project_root: Path, raw: dict[str, Any], *, now: datetime) -> dict[str, Any]:
+    capability_id = str(raw.get("capability_id") or raw.get("name") or "").strip()
+    raw_path = str(raw.get("artifact") or raw.get("path") or "").strip()
+    path = _project_path(project_root, raw_path)
+    payload = load_json(path)
+    exists = path.exists()
+    status = _extract_status(payload) if exists else "missing"
+    ready_statuses = set(_string_list(raw.get("ready_statuses")) or ["ready", "ok", "stable"])
+    max_age_hours = _safe_float(raw.get("max_age_hours"), 0.0)
+    age_minutes = payload_age_minutes(payload, path, now=now) if payload else None
+    fresh = bool(max_age_hours <= 0.0 or (age_minutes is not None and age_minutes <= max_age_hours * 60.0))
+    truthy_keys = _string_list(raw.get("truthy_keys"))
+    truthy_ok = all(bool(payload.get(key, False)) for key in truthy_keys) if truthy_keys else True
+    zero_count_keys = _string_list(raw.get("zero_count_keys"))
+    zero_counts_ok = all(_safe_int(payload.get(key), 1) == 0 for key in zero_count_keys) if zero_count_keys else True
+    max_count_by_key = raw.get("max_count_by_key") if isinstance(raw.get("max_count_by_key"), dict) else {}
+    max_counts_ok = True
+    for key, ceiling in max_count_by_key.items():
+        if _safe_float(payload.get(str(key)), 0.0) > _safe_float(ceiling, 0.0):
+            max_counts_ok = False
+            break
+    status_ok = bool(status in ready_statuses or (bool(payload.get("ok", False)) and "ok" in ready_statuses))
+    ready = bool(payload and status_ok and fresh and truthy_ok and zero_counts_ok and max_counts_ok)
+    blockers = ordered_unique(
+        [
+            f"{capability_id}_missing" if not payload else "",
+            f"{capability_id}_status_not_ready" if payload and not status_ok else "",
+            f"{capability_id}_stale" if payload and not fresh else "",
+            f"{capability_id}_truthy_keys_not_met" if payload and not truthy_ok else "",
+            f"{capability_id}_zero_count_keys_not_met" if payload and not zero_counts_ok else "",
+            f"{capability_id}_max_count_keys_not_met" if payload and not max_counts_ok else "",
+        ]
+    )
+    return {
+        "capability_id": capability_id,
+        "title": str(raw.get("title") or capability_id).strip(),
+        "required": bool(raw.get("required", True)),
+        "path": str(path),
+        "exists": exists,
+        "status": status,
+        "ok": payload.get("ok") if payload else None,
+        "ready": ready,
+        "blockers": blockers,
+        "age_minutes": round(float(age_minutes), 4) if age_minutes is not None else None,
+        "max_age_minutes": round(float(max_age_hours) * 60.0, 4) if max_age_hours > 0.0 else 0.0,
+        "fresh": fresh,
+        "truthy_keys": truthy_keys,
+        "zero_count_keys": zero_count_keys,
+        "max_count_by_key": max_count_by_key,
         "summary_keys": sorted(payload.keys())[:20] if payload else [],
     }
 
@@ -500,6 +554,85 @@ def _slo_error_budget_domain(project_root: Path, config: dict[str, Any]) -> dict
     )
 
 
+def _live_money_production_bar_domain(project_root: Path, config: dict[str, Any], base_domains: list[dict[str, Any]]) -> dict[str, Any]:
+    by_name = {str(domain.get("name") or ""): domain for domain in base_domains}
+    now = datetime.now(timezone.utc)
+    domain_requirements = config.get("required_domain_statuses") if isinstance(config.get("required_domain_statuses"), dict) else {}
+    domain_rows: list[dict[str, Any]] = []
+    domain_blockers: list[str] = []
+    for name, raw_allowed in domain_requirements.items():
+        allowed = set(_string_list(raw_allowed) if not isinstance(raw_allowed, str) else [raw_allowed])
+        if not allowed:
+            allowed = {"ready"}
+        domain = by_name.get(str(name))
+        actual = str((domain or {}).get("status") or "missing").strip().lower()
+        ready = bool(domain and actual in allowed)
+        if not ready:
+            domain_blockers.append(f"{name}_domain_not_production_ready")
+        domain_rows.append(
+            {
+                "name": str(name),
+                "status": actual,
+                "allowed_statuses": sorted(allowed),
+                "ready": ready,
+                "blockers": [] if ready else [f"{name}_domain_not_production_ready"],
+            }
+        )
+
+    firewall = by_name.get("live_execution_risk_firewall", {})
+    firewall_evidence = firewall.get("evidence") if isinstance(firewall.get("evidence"), dict) else {}
+    require_read_only = bool(config.get("require_read_only_pre_canary", True))
+    read_only_ready = bool(
+        not require_read_only
+        or (
+            not bool(firewall_evidence.get("execution_armed", False))
+            and bool(firewall_evidence.get("market_data_only", True))
+            and not bool(firewall_evidence.get("live_order_allowed", False))
+        )
+    )
+
+    capability_rows = [
+        _artifact_capability_row(project_root, row, now=now)
+        for row in (config.get("required_capabilities") if isinstance(config.get("required_capabilities"), list) else [])
+        if isinstance(row, dict)
+    ]
+    capability_blockers = [
+        f"{row['capability_id']}:{blocker}"
+        for row in capability_rows
+        if bool(row.get("required", True))
+        for blocker in _string_list(row.get("blockers"))
+    ]
+    blockers = ordered_unique(
+        [
+            *domain_blockers,
+            "live_execution_firewall_not_read_only_pre_canary" if not read_only_ready else "",
+            *capability_blockers,
+        ]
+    )
+    required_capabilities = [row for row in capability_rows if bool(row.get("required", True))]
+    status = "ready" if not blockers else "blocked"
+    return _domain(
+        "live_money_production_bar",
+        status,
+        evidence={
+            "policy": str(config.get("policy") or "all production capabilities must be fresh before live-money canary consideration"),
+            "require_read_only_pre_canary": require_read_only,
+            "pre_canary_firewall_read_only": read_only_ready,
+            "domain_rows": domain_rows,
+            "capability_rows": capability_rows,
+            "required_capability_count": len(required_capabilities),
+            "ready_required_capability_count": sum(1 for row in required_capabilities if bool(row.get("ready", False))),
+        },
+        blockers=blockers,
+        actions=[
+            "refresh or implement every blocked live-money production-bar capability before live canary consideration"
+            if blockers
+            else "",
+            "keep live execution read-only until the production bar and live canary milestones are both ready",
+        ],
+    )
+
+
 def _live_promotion_allowed(domains: list[dict[str, Any]]) -> bool:
     if any(str(domain.get("status") or "") in BLOCKING_STATUSES for domain in domains):
         return False
@@ -531,7 +664,7 @@ def build_payload(
 ) -> dict[str, Any]:
     config_path = config_path or project_root / "config" / "production_readiness_control_v1.json"
     config = load_json(config_path)
-    domains = [
+    base_domains = [
         _dependency_activation_domain(
             project_root,
             config,
@@ -572,8 +705,16 @@ def build_payload(
             config.get("slo_error_budget") if isinstance(config.get("slo_error_budget"), dict) else {},
         ),
     ]
+    production_bar_config = config.get("live_money_production_bar") if isinstance(config.get("live_money_production_bar"), dict) else {}
+    domains = list(base_domains)
+    if bool(production_bar_config.get("enabled", True)):
+        domains.append(_live_money_production_bar_domain(project_root, production_bar_config, base_domains))
     status = _overall_status(domains)
     live_allowed = _live_promotion_allowed(domains)
+    production_bar = next((domain for domain in domains if domain.get("name") == "live_money_production_bar"), {})
+    production_bar_ready = bool(production_bar and str(production_bar.get("status") or "") == "ready")
+    base_domains_blocked = any(str(domain.get("status") or "") in BLOCKING_STATUSES for domain in base_domains)
+    canary_consideration_ready = bool(production_bar_ready and not base_domains_blocked)
     blockers = ordered_unique(
         f"{domain.get('name')}:{blocker}"
         for domain in domains
@@ -585,6 +726,9 @@ def build_payload(
         "ok": status != "blocked",
         "overall_status": status,
         "live_runtime_promotion_allowed": live_allowed,
+        "live_money_production_bar_ready": production_bar_ready,
+        "live_money_canary_consideration_ready": canary_consideration_ready,
+        "live_money_canary_consideration_blocked": not canary_consideration_ready,
         "domain_count": len(domains),
         "ready_domain_count": sum(1 for domain in domains if str(domain.get("status") or "") == "ready"),
         "guarded_domain_count": sum(1 for domain in domains if str(domain.get("status") or "") in {"guarded", "ready_guarded", "pending_install", "advisory", "thin"}),
@@ -605,9 +749,11 @@ def build_payload(
         ),
         "control_contract": {
             "covers_controls_1_through_8": True,
+            "covers_live_money_production_bar": True,
             "dependency_installation_is_separate_from_activation": True,
             "live_execution_rejects_by_default": True,
             "production_live_ready_requires_all_domains_ready": True,
+            "live_money_production_bar_required_before_canary": bool(production_bar_config.get("require_for_live_canary", True)),
             "control_policy": str(config.get("control_policy") or "production_grade_controls_before_live_feature_enablement"),
         },
         "artifact_paths": {

@@ -62,6 +62,83 @@ def _load_json(path: Path) -> dict[str, Any]:
     return obj if isinstance(obj, dict) else {}
 
 
+def _parse_utc(value: str) -> datetime | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        return datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except Exception:
+        return None
+
+
+def _cache_fresh_enough(payload: dict[str, Any], *, day: str) -> bool:
+    if str(payload.get("day") or "") != str(day):
+        return False
+    generated = _parse_utc(str(payload.get("timestamp_utc") or ""))
+    if generated is None:
+        return False
+    max_age_minutes = float(os.getenv("POST_TRADE_STRATEGY_CACHE_MAX_AGE_MINUTES", "360") or 360.0)
+    age_minutes = (datetime.now(timezone.utc) - generated).total_seconds() / 60.0
+    return age_minutes <= max(max_age_minutes, 1.0)
+
+
+def _empty_strategy_payload(day: str, *, reason: str) -> dict[str, Any]:
+    return {
+        "timestamp_utc": _utc_now(),
+        "schema_version": 2,
+        "ok": False,
+        "day": str(day),
+        "row_count": 0,
+        "file_count": 0,
+        "source_files": [],
+        "latest_event_timestamp_utc": "",
+        "total_pnl_proxy": 0.0,
+        "top_lane": "",
+        "top_layer": "",
+        "action_counts": {},
+        "by_lane": [],
+        "by_layer": [],
+        "top_positive_symbols": [],
+        "top_negative_symbols": [],
+        "top_positive_bots": [],
+        "top_negative_bots": [],
+        "processing": {
+            "mode": "bounded_empty_fallback",
+            "reason": reason,
+            "state_file": str(PROJECT_ROOT / "governance" / "health" / "strategy_attribution_state.json"),
+            "full_files": 0,
+            "incremental_files": 0,
+            "reused_files": 0,
+        },
+    }
+
+
+def _strategy_attribution_payload(
+    project_root: Path,
+    *,
+    day: str,
+    runner: Callable[[list[str], Path], tuple[int, dict[str, Any], str]] | None = None,
+) -> tuple[int, dict[str, Any], str, bool]:
+    cache_path = project_root / "governance" / "health" / "strategy_attribution_latest.json"
+    cached = _load_json(cache_path)
+    if _cache_fresh_enough(cached, day=day):
+        return 0, cached, "", True
+
+    script_path = project_root / "scripts" / "strategy_attribution_report.py"
+    if runner is not None or not script_path.exists():
+        payload = build_strategy_attribution_report(project_root, day=day)
+        return 0, payload, "", False
+
+    py = _python_bin(project_root)
+    rc, payload, err = _run_json_command([py, str(script_path), "--day", str(day), "--json"], cwd=project_root)
+    if payload:
+        return rc, payload, err, False
+
+    reason = err or f"strategy_attribution_rc_{rc}"
+    return rc, _empty_strategy_payload(day, reason=reason), reason, False
+
+
 def _softguard_summary(project_root: Path, *, day: str) -> dict[str, Any]:
     path = project_root / "governance" / "events" / f"live_softguard_{day}.jsonl"
     reason_counts: Counter[str] = Counter()
@@ -212,7 +289,11 @@ def build_post_trade_analysis(
     py = _python_bin(project_root)
     exec_runner = runner or (lambda cmd, cwd: _run_json_command(cmd, cwd=cwd))
 
-    strategy_payload = build_strategy_attribution_report(project_root, day=day)
+    strategy_rc, strategy_payload, strategy_err, strategy_cache_used = _strategy_attribution_payload(
+        project_root,
+        day=day,
+        runner=runner,
+    )
     calibration_cmd = [py, str(project_root / "scripts" / "paper_execution_calibration_report.py"), "--hours", str(max(int(hours), 1)), "--json"]
     runtime_cmd = [py, str(project_root / "scripts" / "daily_runtime_summary.py"), "--day", str(day), "--json"]
 
@@ -266,6 +347,11 @@ def build_post_trade_analysis(
         "softguard": softguard_payload,
         "sources": {
             "strategy_attribution": str(project_root / "governance" / "health" / "strategy_attribution_latest.json"),
+            "strategy_attribution_rc": int(strategy_rc),
+            "strategy_attribution_error": strategy_err,
+            "strategy_attribution_cache_used": bool(strategy_cache_used),
+            "strategy_attribution_bounded_fallback_used": str((strategy_payload.get("processing") or {}).get("mode") or "")
+            == "bounded_empty_fallback",
             "paper_execution_calibration_rc": int(calibration_rc),
             "paper_execution_calibration_error": calibration_err,
             "paper_execution_calibration_fallback_used": bool(calibration_fallback_used),

@@ -97,6 +97,21 @@ def _seed_ready_artifacts(project_root: Path) -> None:
             "canary_weight_ok": True,
         },
     )
+    _write_json(
+        health / "production_readiness_control_latest.json",
+        {
+            "timestamp_utc": now,
+            "overall_status": "guarded",
+            "ok": True,
+            "domain_count": 9,
+            "ready_domain_count": 8,
+            "blocked_domain_count": 0,
+            "live_runtime_promotion_allowed": False,
+            "live_money_production_bar_ready": True,
+            "live_money_canary_consideration_ready": True,
+            "blockers": [],
+        },
+    )
 
 
 def test_live_canary_readiness_contract_blocks_raw_d_grade(tmp_path: Path, monkeypatch) -> None:
@@ -218,3 +233,41 @@ def test_live_canary_readiness_contract_blocks_oversized_initial_canary_weight(t
     milestone = next(row for row in payload["live_money_canary_milestones"] if row["milestone_id"] == "m08_microscopic_canary_plan")
     assert milestone["ready"] is False
     assert "initial_canary_weight_above_0.0400" in milestone["blockers"]
+
+
+def test_live_canary_readiness_contract_blocks_when_production_bar_not_ready(tmp_path: Path, monkeypatch) -> None:
+    project_root = tmp_path / "project"
+    out_path = project_root / "governance" / "health" / "live_canary_readiness_contract_latest.json"
+    _seed_ready_artifacts(project_root)
+    _write_json(
+        project_root / "governance" / "health" / "production_readiness_control_latest.json",
+        {
+            "overall_status": "blocked",
+            "ok": False,
+            "domain_count": 9,
+            "ready_domain_count": 7,
+            "blocked_domain_count": 1,
+            "live_money_production_bar_ready": False,
+            "live_money_canary_consideration_ready": False,
+            "blockers": ["live_money_production_bar:immutable_evidence_store_missing"],
+        },
+    )
+    _write_json(
+        out_path,
+        {
+            "overall_status": "blocked",
+            "continuous_all_gates_ready_since_utc": (datetime.now(timezone.utc) - timedelta(hours=730)).isoformat(),
+        },
+    )
+    monkeypatch.setattr(src.source_mutation_guard, "build_payload", lambda _root: {"ok": True, "overall_status": "ready", "dirty_count": 0, "dirty_entries": []})
+    monkeypatch.setattr(src.production_flow_smoke, "build_payload", lambda _root: {"ok": True, "overall_status": "ready", "failed_checks": []})
+
+    payload = src.build_payload(project_root, out_path=out_path)
+
+    assert payload["overall_status"] == "blocked"
+    assert payload["live_canary_money_ready"] is False
+    assert "m10_live_money_production_bar" in payload["blocked_milestones"]
+    assert "m09_explainable_trade_permission" in payload["blocked_milestones"]
+    milestone = next(row for row in payload["live_money_canary_milestones"] if row["milestone_id"] == "m10_live_money_production_bar")
+    assert milestone["ready"] is False
+    assert "live_money_production_bar_not_ready" in milestone["blockers"]
