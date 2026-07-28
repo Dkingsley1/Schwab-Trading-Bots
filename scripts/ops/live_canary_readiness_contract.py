@@ -24,6 +24,71 @@ DEFAULT_CONFIG_PATH = PROJECT_ROOT / "config" / "live_canary_readiness_contract.
 POLICY_ID = "production_hardening_live_canary_bar_v1"
 BAD_STATUSES = {"blocked", "critical", "degraded", "failed", "missing", "needs_work", "stale", "warning"}
 GRADE_RANK = {"F": 0, "D": 1, "C": 2, "B": 3, "A-": 4, "A": 5, "A+": 6, "A++": 6}
+DEFAULT_CANARY_MILESTONES: tuple[dict[str, Any], ...] = (
+    {
+        "milestone_id": "m01_continuous_soak_no_hard_blockers",
+        "title": "30-Day Soak With No Hard Blockers",
+        "owner": "unattended_soak_readiness",
+        "required": True,
+        "description": "Guarded paper stays strict-clear for the full soak window before live-money canary consideration.",
+    },
+    {
+        "milestone_id": "m02_live_like_paper_execution",
+        "title": "Live-Like Paper Execution Evidence",
+        "owner": "paper_execution_truth_layer",
+        "required": True,
+        "description": "Paper PnL is backed by execution truth, continuity, slippage, latency, spread, fees, and rejected-order handling.",
+    },
+    {
+        "milestone_id": "m03_pre_trade_risk_controls",
+        "title": "Pre-Trade Risk Controls Proven",
+        "owner": "risk_service_boundary",
+        "required": True,
+        "description": "Kill switch, pre-trade approval, risk budgets, and portfolio caps are fresh and enforceable.",
+    },
+    {
+        "milestone_id": "m04_autonomous_recovery_without_operator",
+        "title": "Autonomous Recovery Without Operator",
+        "owner": "process_watchdog",
+        "required": True,
+        "description": "Auth, storage, providers, and sleeve fanout can repair, quarantine, or degrade without manual babysitting.",
+    },
+    {
+        "milestone_id": "m05_no_fake_green_dashboard_semantics",
+        "title": "No Hidden Fake-Green Dashboard State",
+        "owner": "health_fast",
+        "required": True,
+        "description": "Dashboards separate ready, managed advisory, true blocker, and live-money blocker states.",
+    },
+    {
+        "milestone_id": "m06_explained_loss_attribution",
+        "title": "Explained Loss Attribution",
+        "owner": "paper_profitability_control",
+        "required": True,
+        "description": "Losses must trace to expected strategy behavior, not stale data, duplicate exposure, sizing, or fill modeling bugs.",
+    },
+    {
+        "milestone_id": "m07_broker_order_reconciliation",
+        "title": "Broker And Order Reconciliation",
+        "owner": "broker_truth_reconciliation",
+        "required": True,
+        "description": "Every intended, paper, rejected, canceled, filled, and position state reconciles with no mystery exposure.",
+    },
+    {
+        "milestone_id": "m08_microscopic_canary_plan",
+        "title": "Microscopic Canary Plan",
+        "owner": "live_canary_control",
+        "required": True,
+        "description": "The first live canary is capped at a tiny weight with rollback, no leverage, and supervised release.",
+    },
+    {
+        "milestone_id": "m09_explainable_trade_permission",
+        "title": "Explainable Trade Permission",
+        "owner": "live_canary_readiness_contract",
+        "required": True,
+        "description": "The system can explain why a sleeve is allowed to trade before any live-money canary is considered.",
+    },
+)
 
 
 def _as_dict(raw: Any) -> dict[str, Any]:
@@ -72,6 +137,232 @@ def _gate(gate_id: str, title: str, ready: bool, blockers: list[str], evidence: 
         "owner": owner,
         "evidence": evidence,
     }
+
+
+def _milestone(
+    definition: dict[str, Any],
+    *,
+    ready: bool,
+    blockers: list[str],
+    evidence: dict[str, Any],
+) -> dict[str, Any]:
+    clean_blockers = ordered_unique(str(item or "").strip() for item in blockers if str(item or "").strip())
+    required = bool(definition.get("required", True))
+    return {
+        "milestone_id": str(definition.get("milestone_id") or ""),
+        "title": str(definition.get("title") or ""),
+        "required": required,
+        "ready": bool(ready and not clean_blockers),
+        "status": "ready" if ready and not clean_blockers else "blocked",
+        "blockers": clean_blockers,
+        "owner": str(definition.get("owner") or ""),
+        "description": str(definition.get("description") or ""),
+        "evidence": evidence,
+    }
+
+
+def _contract_section(contract: dict[str, Any], section_id: str) -> dict[str, Any]:
+    for row in _as_list(contract.get("sections")):
+        section = _as_dict(row)
+        if str(section.get("section_id") or "") == section_id:
+            return section
+    return {}
+
+
+def _section_grade_ready(contract: dict[str, Any], section_id: str, *, floor: str = "A") -> bool:
+    section = _contract_section(contract, section_id)
+    return bool(section and section.get("ready", False) and _grade_at_least(section.get("grade"), floor))
+
+
+def _build_live_money_canary_milestones(
+    *,
+    config: dict[str, Any],
+    gates: list[dict[str, Any]],
+    sustained: dict[str, Any],
+    health_fast: dict[str, Any],
+    paper_truth: dict[str, Any],
+    live_money_contract: dict[str, Any],
+    live_canary_control: dict[str, Any],
+) -> list[dict[str, Any]]:
+    definitions = _as_list(config.get("live_money_canary_milestones")) or [dict(row) for row in DEFAULT_CANARY_MILESTONES]
+    by_id = {str(gate.get("gate_id") or ""): gate for gate in gates}
+    min_soak_hours = _safe_float(config.get("live_money_canary_min_soak_hours"), 720.0)
+    max_initial_weight = _safe_float(config.get("max_initial_live_canary_weight"), 0.04)
+    health_status = _status(health_fast.get("overall_status"))
+    strict_clear = bool(health_fast.get("strict_all_clear", False))
+    guarded_paper = _as_dict(_as_dict(health_fast.get("operational_readiness")).get("guarded_paper"))
+    platform_layers = [
+        "platform_intelligence",
+        "platform_brain_v4",
+        "platform_brain_v5",
+        "platform_stabilization_quality",
+        "system_architecture_hardening",
+    ]
+    platform_ready = bool(
+        health_fast
+        and all(_status(_as_dict(health_fast.get(name)).get("overall_status")) == "ready" for name in platform_layers)
+    )
+    watchdog = _as_dict(_as_dict(health_fast.get("process_watchdog")).get("all_sleeves_effective_runtime"))
+    collector_repair = _as_dict(_as_dict(health_fast.get("operational_readiness")).get("collector_repair"))
+    platform_repair = _as_dict(_as_dict(health_fast.get("operational_readiness")).get("platform_repair"))
+    broker_truth = _as_dict(_as_dict(paper_truth.get("gates")).get("paper_broker_truth_reconciliation"))
+    live_money_risk_ready = _section_grade_ready(live_money_contract, "risk_controls")
+    target_weight = _safe_float(live_canary_control.get("target_canary_weight"), 0.0)
+    applied_weight = _safe_float(live_canary_control.get("applied_canary_weight"), target_weight)
+    canary_weight = applied_weight if applied_weight > 0 else target_weight
+
+    prior_milestones: dict[str, bool] = {}
+    milestones: list[dict[str, Any]] = []
+    for raw_definition in definitions:
+        definition = _as_dict(raw_definition)
+        milestone_id = str(definition.get("milestone_id") or "")
+        if milestone_id == "m01_continuous_soak_no_hard_blockers":
+            ready = bool(
+                health_fast
+                and health_status == "ready"
+                and strict_clear
+                and _status(guarded_paper.get("status")) == "ready"
+                and _safe_float(sustained.get("sustained_ready_hours"), 0.0) >= min_soak_hours
+            )
+            blockers = [
+                "health_fast_missing" if not health_fast else "",
+                "strict_all_clear_not_true" if health_fast and not strict_clear else "",
+                "guarded_paper_not_ready" if guarded_paper and _status(guarded_paper.get("status")) != "ready" else "",
+                f"continuous_soak_below_{int(min_soak_hours)}h"
+                if _safe_float(sustained.get("sustained_ready_hours"), 0.0) < min_soak_hours
+                else "",
+            ]
+            evidence = {
+                "health_status": health_status or "unknown",
+                "strict_all_clear": strict_clear,
+                "guarded_paper_status": guarded_paper.get("status"),
+                "required_soak_hours": min_soak_hours,
+                "sustained_ready_hours": sustained.get("sustained_ready_hours"),
+                "continuous_all_gates_ready_since_utc": sustained.get("continuous_all_gates_ready_since_utc"),
+            }
+        elif milestone_id == "m02_live_like_paper_execution":
+            raw_ready = bool(by_id.get("raw_profitability_posture", {}).get("ready", False))
+            paper_ready = bool(by_id.get("sleeve_paper_trading_continuity", {}).get("ready", False))
+            ready = bool(raw_ready and paper_ready)
+            blockers = [
+                "raw_profitability_posture_not_ready" if not raw_ready else "",
+                "sleeve_paper_trading_continuity_not_ready" if not paper_ready else "",
+            ]
+            evidence = {
+                "raw_profitability_posture": by_id.get("raw_profitability_posture", {}),
+                "sleeve_paper_trading_continuity": by_id.get("sleeve_paper_trading_continuity", {}),
+            }
+        elif milestone_id == "m03_pre_trade_risk_controls":
+            ready = bool(live_money_risk_ready)
+            blockers = ["live_money_risk_controls_not_A_ready" if not ready else ""]
+            evidence = {
+                "live_money_contract_present": bool(live_money_contract),
+                "risk_controls": _contract_section(live_money_contract, "risk_controls"),
+            }
+        elif milestone_id == "m04_autonomous_recovery_without_operator":
+            auth_ready = bool(by_id.get("auth_token_continuity", {}).get("ready", False))
+            storage_ready = bool(by_id.get("storage_pressure_clean", {}).get("ready", False))
+            process_ready = bool(
+                health_fast
+                and watchdog.get("ok", False)
+                and _status(collector_repair.get("status")) == "ready"
+                and _status(platform_repair.get("status")) == "ready"
+            )
+            ready = bool(auth_ready and storage_ready and process_ready)
+            blockers = [
+                "auth_token_continuity_not_ready" if not auth_ready else "",
+                "storage_pressure_clean_not_ready" if not storage_ready else "",
+                "process_or_repair_plane_not_ready" if not process_ready else "",
+            ]
+            evidence = {
+                "auth_token_continuity": by_id.get("auth_token_continuity", {}),
+                "storage_pressure_clean": by_id.get("storage_pressure_clean", {}),
+                "all_sleeves_effective_runtime": watchdog,
+                "collector_repair": collector_repair,
+                "platform_repair": platform_repair,
+            }
+        elif milestone_id == "m05_no_fake_green_dashboard_semantics":
+            source_ready = bool(by_id.get("runtime_source_mutation_guard", {}).get("ready", False))
+            ci_ready = bool(by_id.get("ci_production_guardrails", {}).get("ready", False))
+            freshness_ready = bool(by_id.get("promotion_paper_gate_freshness", {}).get("ready", False))
+            ready = bool(health_fast and strict_clear and platform_ready and source_ready and ci_ready and freshness_ready)
+            blockers = [
+                "health_fast_missing" if not health_fast else "",
+                "strict_all_clear_not_true" if health_fast and not strict_clear else "",
+                "platform_layers_not_ready" if health_fast and not platform_ready else "",
+                "runtime_source_mutation_guard_not_ready" if not source_ready else "",
+                "ci_production_guardrails_not_ready" if not ci_ready else "",
+                "promotion_paper_gate_freshness_not_ready" if not freshness_ready else "",
+            ]
+            evidence = {
+                "strict_all_clear": strict_clear,
+                "platform_ready": platform_ready,
+                "runtime_source_mutation_guard": by_id.get("runtime_source_mutation_guard", {}),
+                "ci_production_guardrails": by_id.get("ci_production_guardrails", {}),
+                "promotion_paper_gate_freshness": by_id.get("promotion_paper_gate_freshness", {}),
+            }
+        elif milestone_id == "m06_explained_loss_attribution":
+            raw_ready = bool(by_id.get("raw_profitability_posture", {}).get("ready", False))
+            paper_ready = bool(by_id.get("sleeve_paper_trading_continuity", {}).get("ready", False))
+            ready = bool(raw_ready and paper_ready)
+            blockers = [
+                "raw_profitability_not_A_ready" if not raw_ready else "",
+                "paper_truth_continuity_not_ready" if not paper_ready else "",
+            ]
+            evidence = {
+                "raw_profitability_posture": by_id.get("raw_profitability_posture", {}),
+                "paper_truth_failed_checks": _as_list(paper_truth.get("failed_checks")),
+            }
+        elif milestone_id == "m07_broker_order_reconciliation":
+            broker_truth_ready = bool(broker_truth.get("ok", False)) if broker_truth else bool(by_id.get("sleeve_paper_trading_continuity", {}).get("ready", False))
+            ready = bool(by_id.get("sleeve_paper_trading_continuity", {}).get("ready", False) and broker_truth_ready)
+            blockers = [
+                "sleeve_paper_trading_continuity_not_ready" if not by_id.get("sleeve_paper_trading_continuity", {}).get("ready", False) else "",
+                "paper_broker_truth_reconciliation_not_ready" if not broker_truth_ready else "",
+            ]
+            evidence = {
+                "paper_broker_truth_reconciliation": broker_truth,
+                "sleeve_paper_trading_continuity": by_id.get("sleeve_paper_trading_continuity", {}),
+            }
+        elif milestone_id == "m08_microscopic_canary_plan":
+            ready = bool(live_canary_control and canary_weight > 0.0 and canary_weight <= max_initial_weight)
+            blockers = [
+                "live_canary_control_missing" if not live_canary_control else "",
+                "canary_weight_not_positive" if live_canary_control and canary_weight <= 0.0 else "",
+                f"initial_canary_weight_above_{max_initial_weight:.4f}" if canary_weight > max_initial_weight else "",
+            ]
+            evidence = {
+                "recommended_mode": live_canary_control.get("recommended_mode"),
+                "target_canary_weight": target_weight,
+                "applied_canary_weight": applied_weight,
+                "effective_canary_weight": canary_weight,
+                "max_initial_live_canary_weight": max_initial_weight,
+                "canary_weight_ok": bool(canary_weight > 0.0 and canary_weight <= max_initial_weight),
+            }
+        elif milestone_id == "m09_explainable_trade_permission":
+            previous_ready = all(prior_milestones.values()) if prior_milestones else False
+            gates_ready = all(bool(gate.get("ready", False)) for gate in gates)
+            ready = bool(previous_ready and gates_ready)
+            blockers = [
+                "prior_live_money_canary_milestones_not_ready" if not previous_ready else "",
+                "hard_live_canary_gates_not_ready" if not gates_ready else "",
+            ]
+            evidence = {
+                "prior_milestones_ready": previous_ready,
+                "all_hard_gates_ready": gates_ready,
+                "ready_gate_count": sum(1 for gate in gates if gate.get("ready", False)),
+                "gate_count": len(gates),
+            }
+        else:
+            ready = False
+            blockers = [f"unknown_milestone_id={milestone_id or 'missing'}"]
+            evidence = {}
+
+        row = _milestone(definition, ready=ready, blockers=blockers, evidence=evidence)
+        milestones.append(row)
+        if milestone_id:
+            prior_milestones[milestone_id] = bool(row.get("ready", False))
+    return milestones
 
 
 def _fresh_gate(
@@ -173,6 +464,9 @@ def build_payload(
     schwab_auth = load_json(health / "schwab_auth_supervisor_latest.json")
     auth_lease = load_json(health / "auth_lease_manager_latest.json")
     storage = load_json(health / "ingestion_storage_control_latest.json")
+    health_fast = load_json(health / "health_fast_latest.json")
+    live_money_contract = load_json(health / "live_money_readiness_contract_latest.json")
+    live_canary_control = load_json(health / "live_canary_control_latest.json")
 
     raw_grade = _grade(
         paper_profit.get("raw_profitability_grade")
@@ -390,11 +684,38 @@ def build_payload(
         now=now,
         sustained_window_hours=sustained_window_hours,
     )
-    live_canary_ready = bool(all_gates_ready and sustained["sustained_window_met"])
+    milestones = _build_live_money_canary_milestones(
+        config=config,
+        gates=gates,
+        sustained=sustained,
+        health_fast=health_fast,
+        paper_truth=paper_truth,
+        live_money_contract=live_money_contract,
+        live_canary_control=live_canary_control,
+    )
+    require_milestones = bool(config.get("require_live_money_canary_milestones", True))
+    required_milestones_ready = all(
+        milestone.get("ready", False)
+        for milestone in milestones
+        if bool(milestone.get("required", True))
+    )
+    live_canary_ready = bool(
+        all_gates_ready
+        and sustained["sustained_window_met"]
+        and (required_milestones_ready or not require_milestones)
+    )
     blockers = ordered_unique(
         [
             *[f"{gate['gate_id']}_blocked" for gate in gates if not gate["ready"]],
             "sustained_window_not_met" if all_gates_ready and not sustained["sustained_window_met"] else "",
+            "live_money_canary_milestones_not_ready"
+            if require_milestones and not required_milestones_ready
+            else "",
+            *[
+                f"{milestone['milestone_id']}_blocked"
+                for milestone in milestones
+                if bool(milestone.get("required", True)) and not bool(milestone.get("ready", False))
+            ],
         ]
     )
     return {
@@ -417,11 +738,28 @@ def build_payload(
             "clean promotion/paper gate freshness",
             "all gates sustained before live canary money",
         ],
+        "milestone_bar": [str(item.get("title") or item.get("milestone_id")) for item in milestones],
         "gate_count": len(gates),
         "ready_gate_count": sum(1 for gate in gates if gate["ready"]),
+        "milestone_count": len(milestones),
+        "ready_milestone_count": sum(1 for milestone in milestones if milestone.get("ready", False)),
+        "required_milestone_count": sum(1 for milestone in milestones if bool(milestone.get("required", True))),
+        "ready_required_milestone_count": sum(
+            1
+            for milestone in milestones
+            if bool(milestone.get("required", True)) and bool(milestone.get("ready", False))
+        ),
+        "required_live_money_canary_milestones_ready": required_milestones_ready,
+        "require_live_money_canary_milestones": require_milestones,
+        "blocked_milestones": [
+            milestone["milestone_id"]
+            for milestone in milestones
+            if bool(milestone.get("required", True)) and not bool(milestone.get("ready", False))
+        ],
         "blockers": blockers,
         "sustained_window": sustained,
         "gates": gates,
+        "live_money_canary_milestones": milestones,
         "infrastructure_bot_contract": {
             "target_bots": [
                 "infrabot_adaptive_governor",
@@ -440,6 +778,9 @@ def build_payload(
                 "keep live orders disabled until live_canary_money_ready=true",
                 "route blocked gates to the owning infrastructure bot",
                 "refresh this contract after paper/auth/storage/promotion guard repairs",
+                "treat blocked live-money canary milestones as pre-canary work, not runtime noise"
+                if require_milestones and not required_milestones_ready
+                else "",
                 "do not treat controlled A+ posture as raw-profitability proof while raw grade is below A",
             ]
         ),
