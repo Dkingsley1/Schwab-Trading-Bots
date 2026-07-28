@@ -1,0 +1,8 @@
+{
+  "timestamp_utc": "2026-07-28T15:52:00+00:00",
+  "schema_version": 1,
+  "source": "production_readiness_control",
+  "fingerprint_hash": "b41061130e5589eafcb4d4cb7a2c346ae5c22b9b91515fd84991d35540025e57",
+  "fingerprint_count": 4,
+  "policy": "baseline_is_soak_evidence_not_live_promotion"
+}

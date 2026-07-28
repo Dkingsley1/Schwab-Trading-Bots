@@ -18,6 +18,8 @@ aiodns==4.0.4
 aiofiles==25.1.0
 aiohappyeyeballs==2.6.2
 aiohttp==3.14.1
+aiolimiter==1.2.1
+aiometer==1.0.0
 aiosignal==1.4.0
 alembic==1.18.4
 annotated-doc==0.0.4
@@ -25,6 +27,7 @@ annotated-types==0.7.0
 anyio==4.13.0
 apsw==3.53.2.0
 arch==8.0.0
+asgiref==3.12.1
 attrs==26.1.0
 audioop-lts==0.2.2
 audioread==3.1.0
@@ -33,6 +36,9 @@ awkward==2.9.1
 awkward_cpp==53
 beautifulsoup4==4.15.0
 blinker==1.9.0
+cachebox==5.2.3
+cachetools==7.1.6
+cattrs==26.1.0
 certifi==2026.5.20
 cffi==2.0.0
 charset-normalizer==3.4.7
@@ -46,6 +52,7 @@ cycler==0.12.1
 dacite==1.9.2
 datasets==5.0.0
 decorator==5.3.1
+deepdiff==9.1.0
 dill==0.4.1
 duckdb==1.5.3
 duckdb_engine==0.17.0
@@ -72,6 +79,7 @@ iniconfig==2.3.0
 itsdangerous==2.2.0
 joblib==1.5.3
 joserfc==1.7.1
+jsonpath-ng==1.8.0
 kiwisolver==1.5.0
 lazy-loader==0.5
 lets_be_rational==1.1.2
@@ -111,7 +119,17 @@ numpy==2.4.6
 onnx==1.21.0
 onnxruntime==1.26.0
 opencv-python==4.13.0.92
+opentelemetry-api==1.44.0
+opentelemetry-instrumentation-asgi==0.65b0
+opentelemetry-instrumentation-fastapi==0.65b0
+opentelemetry-instrumentation-httpx==0.65b0
+opentelemetry-instrumentation-requests==0.65b0
+opentelemetry-instrumentation==0.65b0
+opentelemetry-sdk==1.44.0
+opentelemetry-semantic-conventions==0.65b0
+opentelemetry-util-http==0.65b0
 optuna==4.9.0
+orderly-set==5.5.0
 orjson==3.11.9
 packaging==26.2
 pandas-stubs==3.0.3.260530
@@ -128,6 +146,7 @@ pluggy==1.6.0
 polars-runtime-32==1.41.2
 polars==1.41.2
 pooch==1.9.0
+prometheus-fastapi-instrumentator==8.1.0
 prometheus_client==0.25.0
 propcache==0.5.2
 protobuf==7.35.0
@@ -145,6 +164,7 @@ pydantic==2.13.4
 pydantic_core==2.46.4
 pyinstrument==5.1.2
 pyparsing==3.3.2
+pyrate-limiter==4.4.0
 pytest==9.0.3
 python-dateutil==2.9.0.post0
 python-dotenv==1.2.2
@@ -152,6 +172,8 @@ pytz==2026.2
 quantstats==0.0.81
 redis==8.0.0
 regex==2026.5.9
+requests-cache==1.3.3
+requests-ratelimiter==0.10.0
 requests==2.34.2
 rich==15.0.0
 safetensors==0.8.0
@@ -169,6 +191,7 @@ sounddevice==0.5.5
 soundfile==0.14.0
 soupsieve==2.8.4
 soxr==1.1.0
+sqlglot==30.14.0
 standard-aifc==3.13.0
 standard-chunk==3.13.0
 standard-sunau==3.13.0
@@ -192,6 +215,7 @@ typing-inspection==0.4.2
 typing_extensions==4.15.0
 tzlocal==5.3.1
 ujson==5.12.1
+url-normalize==3.0.0
 urllib3==2.7.0
 uvicorn==0.49.0
 uvloop==0.22.1
@@ -199,6 +223,7 @@ vollib==1.0.11
 watchfiles==1.2.0
 websockets==16.0
 wheel==0.47.0
+wrapt==2.3.0
 xgboost==3.2.0
 xxhash==3.7.0
 yarl==1.24.2

@@ -1,6 +1,6 @@
 # Intelligence Layers PyCharm Index
 
-- Updated UTC: `2026-07-28T15:46:54.602166+00:00`
+- Updated UTC: `2026-07-28T16:00:13.117344+00:00`
 - Whole-System Status: `advisory`
 - Top Risk: `training_runtime`
 - Safe Next Command: `./scripts/ops/opsctl.sh expansion-capacity --json`
@@ -59,7 +59,7 @@
 ## Intelligence Layers
 
 - `super_intelligence`: status `advisory`, mode `expand`, action `cautious_expansion_rehearsal`
-- `outcome_learning`: status `ready`, verdict `effective`
+- `outcome_learning`: status `ready`, verdict `monitoring`
 - `paper_lane_governor`: status `ready`, mode `full_eligible_paper_soak_active`, score `1584`
 - `symbol_universe_intelligence`: status `ready`, score `100.0`
 - `cognitive_twin_counterfactuals`: status `ready`, score `38`, next `base_case`

@@ -33,7 +33,7 @@
       "config/library_activation_profiles_v1.json",
       "config/production_readiness_control_v1.json"
     ],
-    "baseline_path": "governance/health/production_readiness_replay_baseline.json",
+    "baseline_path": "config/production_readiness_replay_baseline.json",
     "policy": "same_inputs_same_replay_hashes_before_promotion"
   },
   "observability_redaction": {
@@ -269,7 +269,7 @@
         "artifact": "governance/health/live_canary_control_latest.json",
         "ready_statuses": ["blocked", "ready", "guarded"],
         "max_age_hours": 12,
-        "truthy_keys": ["canary_weight_ok", "live_lane_should_be_read_only", "live_money_contract_enforced", "live_money_contract_hard_block"],
+        "truthy_keys": ["canary_weight_ok", "live_money_contract_enforced", "live_money_contract_hard_block"],
         "required": true
       }
     ],

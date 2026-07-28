@@ -251,7 +251,6 @@ def _seed_minimal_project(project_root: Path) -> Path:
                         "max_age_hours": 24,
                         "truthy_keys": [
                             "canary_weight_ok",
-                            "live_lane_should_be_read_only",
                             "live_money_contract_enforced",
                             "live_money_contract_hard_block",
                         ],
@@ -288,6 +287,29 @@ def test_production_readiness_control_covers_all_domains_and_keeps_live_guarded(
     assert domains["live_money_production_bar"]["status"] == "ready"
     assert domains["observability_redaction"]["status"] == "ready"
     assert domains["incident_and_rollback_system"]["status"] == "ready"
+
+
+def test_live_money_bar_accepts_contract_hard_block_when_firewall_is_read_only(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    config_path = _seed_minimal_project(project_root)
+    live_canary_path = project_root / "governance" / "health" / "live_canary_control_latest.json"
+    canary = json.loads(live_canary_path.read_text(encoding="utf-8"))
+    canary["live_lane_should_be_read_only"] = False
+    _write_json(live_canary_path, canary)
+
+    payload = src.build_payload(
+        project_root,
+        config_path=config_path,
+        installed_versions={"cachetools": "6.2.0"},
+        env={"ALLOW_ORDER_EXECUTION": "0", "MARKET_DATA_ONLY": "1"},
+    )
+    domains = {row["name"]: row for row in payload["domains"]}
+
+    assert domains["live_execution_risk_firewall"]["evidence"]["market_data_only"] is True
+    assert domains["live_execution_risk_firewall"]["evidence"]["execution_armed"] is False
+    assert domains["live_money_production_bar"]["evidence"]["pre_canary_firewall_read_only"] is True
+    assert domains["live_money_production_bar"]["status"] == "ready"
+    assert payload["live_money_production_bar_ready"] is True
 
 
 def test_production_readiness_control_blocks_unsafe_live_order_intent(tmp_path: Path) -> None:
