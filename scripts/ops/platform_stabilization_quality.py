@@ -382,18 +382,33 @@ def _provider_failover(project_root: Path, platform: dict[str, Any]) -> dict[str
 
 def _ready_microtraining(project_root: Path, brain_v4: dict[str, Any], registry: dict[str, Any]) -> dict[str, Any]:
     runtime = _health(project_root, "training_runtime_control_latest.json")
+    bot_needs = _health(project_root, "bot_needs_intelligence_latest.json")
     training = _brain_section(brain_v4, "training_scheduler_brain")
     economist = _brain_section(brain_v4, "bot_portfolio_economist")
-    train_allowed = _safe_int(training.get("train_allowed_count"), _safe_int(economist.get("trainable_bots"), registry.get("registry_trainable_bots", 0)))
+    selector = _as_dict(bot_needs.get("training_candidate_selector"))
+    readiness_counts = _as_dict(bot_needs.get("training_readiness_counts"))
+    train_allowed = max(
+        _safe_int(training.get("train_allowed_count"), _safe_int(economist.get("trainable_bots"), registry.get("registry_trainable_bots", 0))),
+        _safe_int(selector.get("selected_count"), 0),
+        _safe_int(readiness_counts.get("can_train_now"), 0),
+    )
     sample_debt = _safe_int(training.get("sample_debt_count"), 0)
     runtime_status = str(runtime.get("overall_status") or "missing")
+    launch_blockers = [str(item) for item in _as_list(runtime.get("launch_blockers")) if str(item).strip()]
+    budget_closed_managed = bool(launch_blockers) and set(launch_blockers) <= {"autonomic_training_budget_closed"}
     status = "ready" if train_allowed > 0 and runtime_status in {"ready", "degraded", "constrained"} else "needs_work"
+    if status != "ready" and budget_closed_managed and bool(runtime.get("snapshot_ready", False)):
+        status = "watch"
     return {
         "overall_status": status,
         "train_allowed_count": train_allowed,
+        "bot_needs_selected_count": _safe_int(selector.get("selected_count"), 0),
+        "bot_needs_can_train_now": _safe_int(readiness_counts.get("can_train_now"), 0),
         "sample_debt_count": sample_debt,
         "training_policy": str(training.get("training_policy") or "off_hours_micro_batches"),
         "runtime_training_status": runtime_status,
+        "training_runtime_launch_blockers": launch_blockers,
+        "managed_training_budget_closed": budget_closed_managed,
         "snapshot_ready": bool(runtime.get("snapshot_ready", False)),
         "assigned_infrabots": INFRA_ASSIGNMENTS["ready_only_microtraining"],
         "recommended_commands": [
@@ -436,8 +451,15 @@ def _expansion_gate(project_root: Path, brain_v5: dict[str, Any], backlog: dict[
     settlement_queue_active = _bool(settlement_queue.get("queue_backpressure_active"))
     settlement_status = str(settlement.get("overall_status") or "missing").lower()
     collector_count = max(_safe_int(rollup.get("collector_count"), 0), 0)
-    observed_count = max(_safe_int(rollup.get("bots_with_observations"), 0), 0)
-    zero_observation_count = max(_safe_int(rollup.get("zero_observation_count"), 0), 0)
+    observed_count = max(
+        _safe_int(rollup.get("effective_bots_with_observations", rollup.get("bots_with_observations")), 0),
+        0,
+    )
+    zero_observation_count = max(
+        _safe_int(rollup.get("unmanaged_zero_observation_count", rollup.get("zero_observation_count")), 0),
+        0,
+    )
+    managed_zero_observation_count = max(_safe_int(rollup.get("managed_zero_observation_count"), 0), 0)
     collection_coverage = (observed_count / float(collector_count)) if collector_count else 1.0
     swap_tier = str(swap_payload.get("tier") or swap.get("tier") or "normal").lower()
     swap_gb = _safe_float(swap_payload.get("swap_used_gb") or swap.get("swap_used_gb"), 0.0)
@@ -496,6 +518,7 @@ def _expansion_gate(project_root: Path, brain_v5: dict[str, Any], backlog: dict[
             "clear_blockers": clear_blockers,
             "collection_coverage_ratio": round(collection_coverage, 6),
             "zero_observation_count": zero_observation_count,
+            "managed_zero_observation_count": managed_zero_observation_count,
             "swap_tier": swap_tier,
             "swap_used_gb": round(swap_gb, 3),
         },

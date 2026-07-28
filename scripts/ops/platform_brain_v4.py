@@ -172,8 +172,10 @@ def _worst_status(rows: list[dict[str, Any]]) -> str:
         return "blocked"
     if status == "degraded":
         return "degraded"
-    if any(str(row.get("overall_status")) in {"needs_work", "watch", "thin"} for row in rows):
+    if any(str(row.get("overall_status")) == "needs_work" for row in rows):
         return "needs_work"
+    if any(str(row.get("overall_status")) in {"watch", "thin"} for row in rows):
+        return "watch"
     return "ready"
 
 
@@ -407,10 +409,19 @@ def _critic_council(sections: dict[str, dict[str, Any]], pressure: dict[str, Any
         },
     ]
     caution_count = sum(1 for vote in votes if vote["vote"] == "caution")
+    hard_pressure = str(pressure.get("overall_status") or "").strip().lower() in {"blocked", "critical"}
+    status = "needs_work" if hard_pressure else "watch" if caution_count else "ready"
     return {
-        "overall_status": "needs_work" if caution_count else "ready",
+        "overall_status": status,
         "critic_count": len(votes),
         "caution_count": caution_count,
+        "severity_policy": (
+            "blocked_or_critical_pressure_keeps_critic_council_hard"
+            if hard_pressure
+            else "caution_votes_hold_expansion_without_blocking_guarded_collection_or_paper"
+            if caution_count
+            else "critics_clear_for_guarded_iteration"
+        ),
         "votes": votes,
         "critic_contract": [
             "risk_data_execution_resource_overlap_and_autonomy_critics_review_the_plan",
@@ -452,13 +463,19 @@ def _bot_portfolio_economist(registry: dict[str, Any], sections: dict[str, dict[
     trainable = _safe_int(lifecycle_counts.get("trainable"), 0)
     cold_start = _safe_int(label_counts.get("cold_start"), 0)
     overlap_clusters = _safe_int(duplicate.get("overlap_cluster_count"), 0)
+    maturity_debt = bool(cold_start > max(active * 0.35, 20) or overlap_clusters)
     return {
-        "overall_status": "needs_work" if cold_start > max(active * 0.35, 20) or overlap_clusters else "ready",
+        "overall_status": "watch" if maturity_debt else "ready",
         "active_bots": active,
         "collecting_bots": collecting,
         "trainable_bots": trainable,
         "cold_start_bots": cold_start,
         "overlap_cluster_count": overlap_clusters,
+        "severity_policy": (
+            "cold_start_and_duplicate_alpha_debt_is_soak_watch_debt_while_collection_continues"
+            if maturity_debt
+            else "portfolio_ready_for_guarded_collection"
+        ),
         "portfolio_actions": {
             "protect_compute_for": ["trainable_bots", "high_quality_unique_sleeves", "provider_health_bots"],
             "keep_collecting": ["cold_start_bots", "new_expansion_bots", "deep_awareness_bots"],
@@ -478,14 +495,26 @@ def _data_value_engine(sections: dict[str, dict[str, Any]]) -> dict[str, Any]:
     execution = _as_dict(sections.get("execution_paper_trade_realism_layer"))
     avg_quality = _safe_float(quality.get("average_quality_score"), 0.0)
     provider_degraded = _safe_int(provider.get("degraded_provider_count"), 0)
+    provider_status = str(provider.get("overall_status") or "").strip().lower()
     realism_ready = str(execution.get("overall_status")) == "ready"
     value_score = max(0.0, min(100.0, avg_quality - provider_degraded * 6.0 + (8.0 if realism_ready else -8.0)))
+    if value_score < 25.0 and provider_status in {"blocked", "critical"}:
+        status = "needs_work"
+        severity_policy = "low_data_value_with_hard_provider_failure_requires_repair"
+    elif value_score < 55.0:
+        status = "watch"
+        severity_policy = "low_data_value_is_soak_watch_debt_until_quality_and_realism_mature"
+    else:
+        status = "ready"
+        severity_policy = "data_value_ready_for_guarded_iteration"
     return {
-        "overall_status": "needs_work" if value_score < 55.0 else "ready",
+        "overall_status": status,
         "data_value_score": round(value_score, 3),
         "average_bot_quality_score": avg_quality,
         "provider_degraded_count": provider_degraded,
+        "provider_status": provider_status,
         "execution_realism_ready": realism_ready,
+        "severity_policy": severity_policy,
         "high_value_data_next": ["provider_health", "execution_realism", "label_quality", "source_confidence", "unique_alpha_features"],
         "data_value_contract": [
             "score_data_by_model_usefulness_not_raw_volume",
@@ -649,7 +678,7 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
     payload = {
         "timestamp_utc": iso_now(),
         "schema_version": 1,
-        "ok": overall in {"ready", "needs_work", "degraded"},
+        "ok": overall in {"ready", "watch", "needs_work", "degraded"},
         "overall_status": overall,
         "mode": "advisory_read_only_decision_brain",
         "brain_name": "Platform Brain v4 Grande",

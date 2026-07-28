@@ -311,6 +311,7 @@ def build_payload(
 
     status = "ready"
     findings: list[str] = []
+    recovered_findings: list[str] = []
     operator_followups: list[str] = []
     repair_plan: list[dict[str, Any]] = []
 
@@ -373,11 +374,11 @@ def build_payload(
                 status = "degraded"
             findings.append("recent_schwab_auth_errors")
         else:
-            findings.append("historical_schwab_auth_errors_after_current_recovery")
+            recovered_findings.append("historical_schwab_auth_errors_after_current_recovery")
 
     if signals["callback_error_markers"] or auth_refresh_reason.startswith("auth_error:RedirectTimeoutError"):
         if active_contract_ok and str(auth_refresh.get("reason") or "") == "token_already_ready":
-            findings.append("historical_callback_flow_errors_after_current_recovery")
+            recovered_findings.append("historical_callback_flow_errors_after_current_recovery")
         elif status == "ready":
             status = "degraded"
             findings.append("recent_callback_flow_errors")
@@ -385,11 +386,10 @@ def build_payload(
             findings.append("recent_callback_flow_errors")
 
     if signals["circuit_breaker_with_auth_error"]:
-        findings.append(
-            "historical_auth_error_misclassified_as_symbol_data"
-            if active_contract_ok
-            else "auth_error_misclassified_as_symbol_data"
-        )
+        if active_contract_ok:
+            recovered_findings.append("historical_auth_error_misclassified_as_symbol_data")
+        else:
+            findings.append("auth_error_misclassified_as_symbol_data")
 
     repair_plan.extend(
         [
@@ -430,6 +430,7 @@ def build_payload(
         "apply": bool(apply),
         "summary": summary,
         "findings": sorted(set(findings)),
+        "recovered_findings": sorted(set(recovered_findings)),
         "token": {
             **token,
             "ready": bool(token_ready),

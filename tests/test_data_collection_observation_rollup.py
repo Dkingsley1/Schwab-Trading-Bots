@@ -189,6 +189,118 @@ def test_observation_rollup_credits_governance_artifact_references_once(tmp_path
     assert second_payload["total_observations"] == 1
 
 
+def test_observation_rollup_uses_training_diagnostics_as_observation_floor(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    bot_id = "brain_refinery_v1614_training_labeling_label_contract_normalizer_telemetry_collector_bot"
+    registry_path = project_root / "master_bot_registry.json"
+    state_path = project_root / "governance" / "health" / "state.json"
+    _write_json(registry_path, _registry(bot_id))
+    _write_json(
+        project_root / "governance" / "training_diagnostics" / f"{bot_id}_latest.json",
+        {
+            "status": "deferred_sample_starved",
+            "sample_count": 1,
+            "eligible_sequences": 1,
+        },
+    )
+
+    payload = src.build_payload(
+        project_root=project_root,
+        registry_path=registry_path,
+        state_path=state_path,
+        days=1,
+        bootstrap_tail_lines=20,
+        apply=True,
+    )
+    registry = json.loads(registry_path.read_text(encoding="utf-8"))
+    row = registry["sub_bots"][0]
+
+    assert payload["overall_status"] == "ready"
+    assert payload["bots_with_observations"] == 1
+    assert payload["zero_observation_count"] == 0
+    assert payload["diagnostic_files_scanned"] == 1
+    assert payload["diagnostic_observations_counted"] == 1
+    assert row["data_collection_observations"] == 1
+    assert row["data_collection_training_ready"] is False
+    assert row["training_excluded"] is True
+
+
+def test_observation_rollup_counts_governance_channel_events(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    bot_id = "brain_refinery_v261_crypto_eth_gas_defi_activity_guard"
+    registry_path = project_root / "master_bot_registry.json"
+    state_path = project_root / "governance" / "health" / "state.json"
+    _write_json(registry_path, _registry(bot_id))
+    stamp = src._day_stamps(1)[0]
+    channel_file = project_root / "governance" / "channels" / "risk" / "crypto_futures_basis" / f"risk_{stamp}.jsonl"
+    channel_file.parent.mkdir(parents=True, exist_ok=True)
+    channel_file.write_text(
+        "\n".join(
+            [
+                json.dumps({"bot_id": bot_id, "channel": "risk", "action": "HOLD"}),
+                json.dumps({"bot_id": bot_id, "channel": "risk", "action": "HOLD"}),
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    payload = src.build_payload(
+        project_root=project_root,
+        registry_path=registry_path,
+        state_path=state_path,
+        days=1,
+        bootstrap_tail_lines=20,
+        apply=True,
+    )
+    registry = json.loads(registry_path.read_text(encoding="utf-8"))
+
+    assert payload["overall_status"] == "ready"
+    assert payload["bots_with_observations"] == 1
+    assert payload["channel_files_scanned"] == 1
+    assert payload["channel_observations_counted"] == 2
+    assert registry["sub_bots"][0]["data_collection_observations"] == 2
+
+
+def test_observation_rollup_manages_training_labeling_observer_zero_debt(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    bot_id = "brain_refinery_v1661_training_labeling_label_contract_normalizer_telemetry_collector_bot"
+    registry_path = project_root / "master_bot_registry.json"
+    state_path = project_root / "governance" / "health" / "state.json"
+    registry = _registry(bot_id)
+    row = registry["sub_bots"][0]
+    row["data_collection_mode"] = "active_observer"
+    row["data_collection_reason"] = "training_labeling_intelligence_collect_only_until_label_and_training_effect_gates_clear"
+    row["minimum_training_observations"] = 70000
+    row["minimum_data_collection_days"] = 180
+    row["trading_enabled"] = False
+    row["labeling_tags"] = ["collection_guard:training_labeling_intelligence_v1"]
+    _write_json(registry_path, registry)
+
+    payload = src.build_payload(
+        project_root=project_root,
+        registry_path=registry_path,
+        state_path=state_path,
+        days=1,
+        bootstrap_tail_lines=20,
+        apply=True,
+    )
+    registry = json.loads(registry_path.read_text(encoding="utf-8"))
+    row = registry["sub_bots"][0]
+
+    assert payload["overall_status"] == "ready"
+    assert payload["bots_with_observations"] == 0
+    assert payload["effective_bots_with_observations"] == 1
+    assert payload["zero_observation_count"] == 0
+    assert payload["managed_zero_observation_count"] == 1
+    assert payload["raw_zero_observation_count"] == 1
+    assert payload["zero_observation_repair_lane"]["active"] is False
+    assert payload["managed_zero_observation_lane"]["active"] is True
+    assert row["data_collection_training_ready"] is False
+    assert row["training_exclusion_reason"] == "collecting_training_labeling_effect_evidence_before_training"
+    assert row["training_exclusion_until"] == "training_labeling_collection_threshold_met"
+
+
 def test_observation_rollup_includes_training_excluded_paper_live_data(tmp_path: Path) -> None:
     project_root = tmp_path / "project"
     bot_id = "brain_refinery_v56_meta_ranker"

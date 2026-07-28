@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "updated_utc": "2026-05-24T16:59:39.430938+00:00",
+  "updated_utc": "2026-07-27T23:54:15.281866+00:00",
   "layer": "platform_stabilization_quality_v1",
   "section_keys": [
     "backlog_drain_stabilizer",

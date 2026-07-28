@@ -1094,12 +1094,21 @@ def _training_evidence_contract(ctx: dict[str, dict[str, Any]]) -> dict[str, Any
     quality = ctx["training_quality"]
     runtime = ctx["training_runtime"]
     collector_count = _safe_int(rollup.get("collector_count"), 0)
-    observed_count = _safe_int(rollup.get("bots_with_observations"), 0)
-    zero_count = _safe_int(rollup.get("zero_observation_count"), 0)
+    observed_count = _safe_int(
+        rollup.get("effective_bots_with_observations", rollup.get("bots_with_observations")),
+        0,
+    )
+    zero_count = _safe_int(
+        rollup.get("unmanaged_zero_observation_count", rollup.get("zero_observation_count")),
+        0,
+    )
+    managed_zero_count = _safe_int(rollup.get("managed_zero_observation_count"), 0)
+    raw_zero_count = _safe_int(rollup.get("raw_zero_observation_count", zero_count), 0)
     coverage_ratio = float(observed_count / collector_count) if collector_count else 0.0
     quality_status = _status(quality.get("overall_status"))
     quality_score = _safe_float(quality.get("training_quality_score", quality.get("training_quality_index")), 0.0)
     launch_blockers = [str(item) for item in _as_list(runtime.get("launch_blockers")) if str(item).strip()]
+    budget_only_launch_blockers = bool(launch_blockers) and set(launch_blockers) <= {"autonomic_training_budget_closed"}
     findings: list[str] = []
     watch_items: list[str] = []
 
@@ -1117,7 +1126,7 @@ def _training_evidence_contract(ctx: dict[str, dict[str, Any]]) -> dict[str, Any
         watch_items.append("training_quality_watch")
     elif not quality:
         watch_items.append("training_quality_missing")
-    if launch_blockers:
+    if launch_blockers and not budget_only_launch_blockers:
         watch_items.append("training_runtime_launch_blockers_present")
     if not rollup:
         watch_items.append("collection_rollup_missing")
@@ -1129,7 +1138,20 @@ def _training_evidence_contract(ctx: dict[str, dict[str, Any]]) -> dict[str, Any
         "strict_all_clear": _health_fast_strict_clear(ctx),
         "collection_flowing": bool(collector_count > 0 and observed_count > 0 and _safe_int(rollup.get("total_observations"), 0) > 0),
         "training_quality_score": quality_score,
+        "training_budget_closed_managed": False,
+        "managed_zero_observation_count": managed_zero_count,
+        "raw_zero_observation_count": raw_zero_count,
+        "unmanaged_zero_observation_count": zero_count,
     }
+    if (
+        budget_only_launch_blockers
+        and managed_training_evidence_contract["guarded_paper_ready"]
+        and managed_training_evidence_contract["strict_all_clear"]
+        and managed_training_evidence_contract["collection_flowing"]
+        and quality_score >= 75.0
+    ):
+        managed_training_evidence_contract["training_budget_closed_managed"] = True
+
     if findings:
         if (
             _health_fast_guarded_paper_ready(ctx)
@@ -1147,6 +1169,14 @@ def _training_evidence_contract(ctx: dict[str, dict[str, Any]]) -> dict[str, Any
             status = "needs_work"
     elif watch_items:
         status = "watch"
+    elif bool(managed_training_evidence_contract.get("training_budget_closed_managed", False)):
+        managed_training_evidence_contract.update(
+            {
+                "active": True,
+                "reason": "training_budget_closed_is_managed_during_guarded_paper_soak",
+            }
+        )
+        status = "ready"
     else:
         status = "ready"
     return _section(
@@ -1158,6 +1188,8 @@ def _training_evidence_contract(ctx: dict[str, dict[str, Any]]) -> dict[str, Any
             "bots_with_observations": observed_count,
             "coverage_ratio": round(coverage_ratio, 4),
             "zero_observation_count": zero_count,
+            "managed_zero_observation_count": managed_zero_count,
+            "raw_zero_observation_count": raw_zero_count,
             "training_quality_status": quality_status,
             "training_quality_score": quality_score,
             "training_runtime_launch_allowed": bool(runtime.get("launch_allowed", False)) if runtime else None,

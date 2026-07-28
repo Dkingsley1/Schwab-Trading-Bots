@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "updated_utc": "2026-05-24T17:00:29.387053+00:00",
+  "updated_utc": "2026-07-27T23:51:06.997919+00:00",
   "layer": "platform_settlement_stabilization_v1",
   "section_keys": [
     "queue_decay_meter",

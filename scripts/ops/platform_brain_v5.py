@@ -222,22 +222,41 @@ def _reflex_action_router(v4: dict[str, Any]) -> dict[str, Any]:
 
 
 def _regret_ledger(project_root: Path, temporal: dict[str, Any], v4: dict[str, Any]) -> dict[str, Any]:
-    priority_count = _safe_int(_as_dict(_as_dict(v4.get("sections")).get("autonomous_priority_ranker")).get("priority_count"), 0)
+    priority = _as_dict(_as_dict(v4.get("sections")).get("autonomous_priority_ranker"))
+    priority_count = _safe_int(priority.get("priority_count"), 0)
+    priority_rows = _as_list(priority.get("ranked_priorities"))
+    hard_priority_count = sum(
+        1
+        for row in priority_rows
+        if str(_as_dict(row).get("status") or "").strip().lower() in {"blocked", "critical", "degraded", "failed", "fatal"}
+    )
     memory_count = _safe_int(temporal.get("v5_reflex_event_count"), 0)
     repeated_count = len(_as_list(temporal.get("repeated_action_themes")))
     regret_score = min(100.0, priority_count * 6.0 + repeated_count * 4.0)
+    if regret_score >= 50.0 and hard_priority_count:
+        status = "needs_work"
+        severity_policy = "high_regret_with_hard_priority_rows_requires_operator_repair"
+    elif regret_score >= 50.0:
+        status = "watch"
+        severity_policy = "high_regret_from_advisory_repetition_is_soak_watch_debt"
+    else:
+        status = "ready"
+        severity_policy = "regret_within_guarded_soak_budget"
     event = {
         "timestamp_utc": iso_now(),
         "priority_count": priority_count,
+        "hard_priority_count": hard_priority_count,
         "v4_status": v4.get("overall_status"),
         "regret_score": round(regret_score, 3),
         "next_best_command": _as_dict(_as_dict(v4.get("sections")).get("executive_meta_orchestrator")).get("next_best_command"),
     }
     return {
-        "overall_status": "needs_work" if regret_score >= 50.0 else "ready",
+        "overall_status": status,
         "mode": "append_on_apply",
         "reflex_memory_event_count_before_apply": memory_count,
         "regret_score": round(regret_score, 3),
+        "hard_priority_count": hard_priority_count,
+        "severity_policy": severity_policy,
         "latest_reflex_event": event,
         "ledger_contract": [
             "track_unresolved_priority_count_as_regret",
@@ -315,14 +334,27 @@ def _safe_autonomy_boundary(v4: dict[str, Any], reflex: dict[str, Any]) -> dict[
 
 def _critic_fusion(v4: dict[str, Any], reflex: dict[str, Any]) -> dict[str, Any]:
     council = _as_dict(_as_dict(v4.get("sections")).get("critic_council"))
+    council_status = str(council.get("overall_status") or "").strip().lower()
     caution_count = _safe_int(council.get("caution_count"), 0)
     votes = _as_list(council.get("votes"))
+    hard_vote_count = sum(1 for row in votes if str(_as_dict(row).get("vote") or "").strip().lower() in {"block", "blocked", "critical"})
     fusion_vote = "hold_expansion" if caution_count >= 3 else "allow_guarded_iteration"
+    if council_status in {"blocked", "critical", "failed", "fatal"} or hard_vote_count:
+        status = "needs_work"
+        severity_policy = "blocked_or_critical_critic_votes_require_operator_repair"
+    elif caution_count >= 3:
+        status = "watch"
+        severity_policy = "caution_votes_hold_expansion_without_degrading_guarded_collection_or_paper"
+    else:
+        status = "ready"
+        severity_policy = "critics_clear_for_guarded_iteration"
     return {
-        "overall_status": "needs_work" if caution_count >= 3 else "ready",
+        "overall_status": status,
         "fusion_vote": fusion_vote,
         "critic_count": len(votes),
         "caution_count": caution_count,
+        "hard_vote_count": hard_vote_count,
+        "severity_policy": severity_policy,
         "safe_reflex_count": reflex.get("safe_reflex_count", 0),
         "critic_contract": [
             "fuse_resource_data_execution_overlap_and_autonomy_critics",

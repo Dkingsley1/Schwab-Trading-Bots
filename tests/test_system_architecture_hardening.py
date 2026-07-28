@@ -104,6 +104,60 @@ def test_architecture_hardening_ready_when_all_contracts_align(tmp_path: Path) -
     assert payload["recommended_env_overrides"]["ALLOW_ORDER_EXECUTION"] == "0"
 
 
+def test_architecture_hardening_manages_closed_training_budget_during_guarded_paper(tmp_path: Path) -> None:
+    _seed_ready_project(tmp_path)
+    health = tmp_path / "governance" / "health"
+    _write_json(
+        health / "training_runtime_control_latest.json",
+        {
+            "overall_status": "constrained",
+            "launch_allowed": False,
+            "launch_blockers": ["autonomic_training_budget_closed"],
+        },
+    )
+
+    payload = src.build_payload(tmp_path)
+    training = payload["sections"]["training_evidence_contract"]
+    contract = training["evidence"]["managed_training_evidence_contract"]
+
+    assert payload["overall_status"] == "ready"
+    assert training["overall_status"] == "ready"
+    assert training["watch_items"] == []
+    assert contract["active"] is True
+    assert contract["training_budget_closed_managed"] is True
+    assert contract["reason"] == "training_budget_closed_is_managed_during_guarded_paper_soak"
+
+
+def test_architecture_hardening_uses_actionable_collection_zero_contract(tmp_path: Path) -> None:
+    _seed_ready_project(tmp_path)
+    health = tmp_path / "governance" / "health"
+    _write_json(
+        health / "data_collection_observation_rollup_latest.json",
+        {
+            "overall_status": "ready",
+            "collector_count": 10,
+            "bots_with_observations": 7,
+            "effective_bots_with_observations": 10,
+            "zero_observation_count": 0,
+            "unmanaged_zero_observation_count": 0,
+            "managed_zero_observation_count": 3,
+            "raw_zero_observation_count": 3,
+            "total_observations": 1000,
+            "training_ready_count": 0,
+        },
+    )
+
+    payload = src.build_payload(tmp_path)
+    training = payload["sections"]["training_evidence_contract"]
+
+    assert payload["overall_status"] == "ready"
+    assert training["overall_status"] == "ready"
+    assert training["findings"] == []
+    assert training["watch_items"] == []
+    assert training["evidence"]["managed_zero_observation_count"] == 3
+    assert training["evidence"]["zero_observation_count"] == 0
+
+
 def test_architecture_hardening_treats_plumbed_sql_overlay_cleanup_as_watch(tmp_path: Path) -> None:
     _seed_ready_project(tmp_path)
     health = tmp_path / "governance" / "health"

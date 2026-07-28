@@ -27,6 +27,8 @@ BOT_ID_RE = re.compile(r"brain_refinery_v\d+_[A-Za-z0-9_]+")
 LEGACY_ALIAS_BOT_ID_RE = re.compile(r"^brain_refinery_v\d+$")
 STATUS_RE = re.compile(r'"status"\s*:\s*"([^"]+)"|status=([A-Z_]+)')
 MAX_ARTIFACT_OBSERVATION_KEYS = 20000
+DEFAULT_CHANNEL_OBSERVATION_DAYS = 7
+DEFAULT_CHANNEL_TAIL_LINES = 20000
 
 
 def _safe_int(raw: Any, default: int = 0) -> int:
@@ -126,6 +128,17 @@ def _decision_files(project_root: Path, *, days: int) -> list[Path]:
     for stamp in _day_stamps(days):
         files.extend(root.glob(f"*/decision_explanations_{stamp}.jsonl"))
         files.extend(root.glob(f"*/decision_explanations_{stamp}.jsonl.gz"))
+    return sorted({path for path in files if path.is_file()})
+
+
+def _channel_files(project_root: Path, *, days: int) -> list[Path]:
+    root = project_root / "governance" / "channels"
+    if not root.exists():
+        return []
+    files: list[Path] = []
+    for stamp in _day_stamps(max(int(days), DEFAULT_CHANNEL_OBSERVATION_DAYS)):
+        files.extend(root.glob(f"*/*/*_{stamp}.jsonl"))
+        files.extend(root.glob(f"*/*/*_{stamp}.jsonl.gz"))
     return sorted({path for path in files if path.is_file()})
 
 
@@ -262,6 +275,94 @@ def _artifact_observations(
     return counts, statuses, new_keys, files_scanned
 
 
+def _channel_observations(
+    project_root: Path,
+    *,
+    bot_ids: set[str],
+    days: int,
+    tail_lines: int,
+) -> tuple[Counter[str], dict[str, Counter[str]], int, int]:
+    counts: Counter[str] = Counter()
+    statuses: dict[str, Counter[str]] = defaultdict(Counter)
+    files_scanned = 0
+    lines_scanned = 0
+    for path in _channel_files(project_root, days=days):
+        lines = _iter_tail_lines(path, limit=max(int(tail_lines), DEFAULT_CHANNEL_TAIL_LINES))
+        file_counts, _file_statuses = _count_lines(lines, bot_ids)
+        if file_counts:
+            files_scanned += 1
+            lines_scanned += len(lines)
+        counts.update(file_counts)
+        for bot_id, count in file_counts.items():
+            statuses[bot_id]["channel_event"] += int(count)
+    return counts, statuses, files_scanned, lines_scanned
+
+
+def _diagnostic_bot_id(path: Path, payload: dict[str, Any]) -> str:
+    explicit = str(payload.get("bot_id") or payload.get("id") or payload.get("name") or "").strip()
+    if explicit:
+        return explicit
+    name = path.name
+    if name.endswith("_latest.json"):
+        return name[: -len("_latest.json")]
+    if name.endswith(".json"):
+        return name[: -len(".json")]
+    return path.stem
+
+
+def _diagnostic_observation_count(payload: dict[str, Any]) -> int:
+    candidates = [
+        payload.get("observation_count"),
+        payload.get("data_collection_observations"),
+        payload.get("collected_observation_count"),
+        payload.get("sample_count"),
+        payload.get("eligible_sequences"),
+        payload.get("sequence_count"),
+    ]
+    for key in ("runtime_meta", "metadata", "summary"):
+        nested = payload.get(key) if isinstance(payload.get(key), dict) else {}
+        candidates.extend(
+            [
+                nested.get("observation_count"),
+                nested.get("data_collection_observations"),
+                nested.get("collected_observation_count"),
+                nested.get("sample_count"),
+                nested.get("eligible_sequences"),
+                nested.get("sequence_count"),
+            ]
+        )
+    return max([_safe_int(item, 0) for item in candidates] + [0])
+
+
+def _diagnostic_observations(
+    project_root: Path,
+    *,
+    bot_ids: set[str],
+) -> tuple[Counter[str], dict[str, Counter[str]], int]:
+    diagnostics_root = project_root / "governance" / "training_diagnostics"
+    counts: Counter[str] = Counter()
+    statuses: dict[str, Counter[str]] = defaultdict(Counter)
+    files_scanned = 0
+    if not diagnostics_root.exists():
+        return counts, statuses, files_scanned
+
+    for path in sorted(diagnostics_root.glob("*_latest.json")):
+        payload = load_json(path)
+        if not isinstance(payload, dict):
+            continue
+        bot_id = _diagnostic_bot_id(path, payload)
+        if bot_id not in bot_ids:
+            continue
+        count = _diagnostic_observation_count(payload)
+        if count <= 0:
+            continue
+        files_scanned += 1
+        counts[bot_id] = max(counts.get(bot_id, 0), int(count))
+        status = str(payload.get("status") or payload.get("overall_status") or "training_diagnostic").strip() or "training_diagnostic"
+        statuses[bot_id][f"diagnostic:{status}"] += int(count)
+    return counts, statuses, files_scanned
+
+
 def _collection_age_days(row: dict[str, Any]) -> float | None:
     parsed = parse_iso_utc(row.get("data_collection_started_utc"))
     if parsed is None:
@@ -293,6 +394,37 @@ def _threshold_progress(row: dict[str, Any], observations: int) -> dict[str, Any
         "days_ready": days_ready,
         "training_ready": bool(observations_ready and days_ready),
     }
+
+
+def _row_tags(row: dict[str, Any]) -> set[str]:
+    out: set[str] = set()
+    for key in ("tags", "labeling_tags", "capability_tags", "governance_tags"):
+        values = row.get(key) if isinstance(row.get(key), list) else []
+        out.update(str(item).strip().lower() for item in values if str(item or "").strip())
+    return out
+
+
+def _is_managed_zero_observation_debt(row: dict[str, Any]) -> bool:
+    bot_id = _bot_id(row).lower()
+    reason = str(row.get("data_collection_reason") or row.get("training_exclusion_reason") or "").lower()
+    tags = _row_tags(row)
+    lifecycle_state = str(row.get("lifecycle_state") or "").strip().lower()
+    mode = str(row.get("data_collection_mode") or "").strip().lower()
+    training_excluded = bool(row.get("training_excluded", False) or row.get("exclude_from_training", False))
+    execution_blocked = not bool(row.get("trading_enabled", False))
+    is_training_labeling_observer = bool(
+        "_training_labeling_" in bot_id
+        or "training_labeling_intelligence" in reason
+        or "collection_guard:training_labeling_intelligence_v1" in tags
+        or "sleeve_family:training_labeling_intelligence" in tags
+    )
+    return bool(
+        lifecycle_state == "data_collection_only"
+        and mode in {"active_observer", "collect_only", "collection_only"}
+        and training_excluded
+        and execution_blocked
+        and is_training_labeling_observer
+    )
 
 
 def build_payload(
@@ -327,6 +459,9 @@ def build_payload(
     lines_scanned = 0
     artifact_files_scanned = 0
     new_artifact_keys: list[str] = []
+    channel_files_scanned = 0
+    channel_lines_scanned = 0
+    diagnostic_files_scanned = 0
 
     for path in files:
         key = str(path.relative_to(project_root))
@@ -363,14 +498,45 @@ def build_payload(
     for bot_id, counter in artifact_statuses.items():
         status_counts[bot_id].update(counter)
 
+    channel_counts, channel_statuses, channel_files_scanned, channel_lines_scanned = _channel_observations(
+        project_root,
+        bot_ids=bot_ids,
+        days=days,
+        tail_lines=bootstrap_tail_lines,
+    )
+    for bot_id, counter in channel_statuses.items():
+        status_counts[bot_id].update(counter)
+
+    diagnostic_counts, diagnostic_statuses, diagnostic_files_scanned = _diagnostic_observations(
+        project_root,
+        bot_ids=bot_ids,
+    )
+    for bot_id, counter in diagnostic_statuses.items():
+        status_counts[bot_id].update(counter)
+
     if bootstrap:
-        merged_counts = Counter({bot_id: max(_safe_int(row.get("data_collection_observations"), 0), observed_counts.get(bot_id, 0)) for bot_id, row in ((_bot_id(row), row) for row in collectors)})
+        merged_counts = Counter(
+            {
+                bot_id: max(
+                    _safe_int(row.get("data_collection_observations"), 0),
+                    observed_counts.get(bot_id, 0),
+                    channel_counts.get(bot_id, 0),
+                    diagnostic_counts.get(bot_id, 0),
+                )
+                for bot_id, row in ((_bot_id(row), row) for row in collectors)
+            }
+        )
     else:
         merged_counts = state_counts.copy()
         merged_counts.update(observed_counts)
         for row in collectors:
             bot_id = _bot_id(row)
-            merged_counts[bot_id] = max(merged_counts.get(bot_id, 0), _safe_int(row.get("data_collection_observations"), 0))
+            merged_counts[bot_id] = max(
+                merged_counts.get(bot_id, 0),
+                _safe_int(row.get("data_collection_observations"), 0),
+                channel_counts.get(bot_id, 0),
+                diagnostic_counts.get(bot_id, 0),
+            )
 
     bot_updates: list[dict[str, Any]] = []
     training_ready_bot_ids: list[str] = []
@@ -422,6 +588,17 @@ def build_payload(
                     "promotion_block_reason": "awaiting_data_collection_quality_gate",
                 }
             )
+        elif lifecycle_state == "data_collection_only" and total <= 0 and _is_managed_zero_observation_debt(row):
+            managed_reason = str(row.get("training_exclusion_reason") or "collecting_training_labeling_effect_evidence_before_training")
+            desired.update(
+                {
+                    "training_excluded": True,
+                    "exclude_from_training": True,
+                    "training_exclusion_reason": managed_reason,
+                    "training_exclusion_until": "training_labeling_collection_threshold_met",
+                    "promotion_block_reason": "awaiting_training_labeling_observation_floor",
+                }
+            )
         elif lifecycle_state == "data_collection_only" and total <= 0:
             desired.update(
                 {
@@ -461,63 +638,112 @@ def build_payload(
         write_payload(state_path, state_payload)
 
     bots_with_observations = sum(1 for bot_id in bot_ids if int(merged_counts.get(bot_id, 0)) > 0)
-    zero_observation_bot_ids = sorted(bot_id for bot_id in bot_ids if int(merged_counts.get(bot_id, 0)) <= 0)
+    rows_by_bot_id = {_bot_id(row): row for row in collectors}
+    raw_zero_observation_bot_ids = sorted(bot_id for bot_id in bot_ids if int(merged_counts.get(bot_id, 0)) <= 0)
+    managed_zero_observation_bot_ids = sorted(
+        bot_id for bot_id in raw_zero_observation_bot_ids if _is_managed_zero_observation_debt(rows_by_bot_id.get(bot_id, {}))
+    )
+    unmanaged_zero_observation_bot_ids = sorted(
+        bot_id for bot_id in raw_zero_observation_bot_ids if bot_id not in set(managed_zero_observation_bot_ids)
+    )
     training_ready = sorted(training_ready_bot_ids)
     collector_count = len(bot_ids)
-    collection_coverage_score = round((bots_with_observations / max(collector_count, 1)) * 100.0, 3)
-    zero_observation_penalty = round((len(zero_observation_bot_ids) / max(collector_count, 1)) * 100.0, 3)
+    effective_bots_with_observations = min(bots_with_observations + len(managed_zero_observation_bot_ids), collector_count)
+    collection_coverage_score = round((effective_bots_with_observations / max(collector_count, 1)) * 100.0, 3)
+    raw_collection_coverage_score = round((bots_with_observations / max(collector_count, 1)) * 100.0, 3)
+    zero_observation_penalty = round((len(unmanaged_zero_observation_bot_ids) / max(collector_count, 1)) * 100.0, 3)
+    raw_zero_observation_penalty = round((len(raw_zero_observation_bot_ids) / max(collector_count, 1)) * 100.0, 3)
     data_quality_score = round(max(0.0, min(collection_coverage_score - zero_observation_penalty, 100.0)), 3)
+    raw_data_quality_score = round(max(0.0, min(raw_collection_coverage_score - raw_zero_observation_penalty, 100.0)), 3)
     training_readiness_score = round((len(training_ready) / max(collector_count, 1)) * 100.0, 3)
     zero_repair_commands = [
         ["./scripts/ops/opsctl.sh", "training-label-audit", "--json"],
         ["./scripts/ops/opsctl.sh", "data-collection-observation-rollup", "--bootstrap-tail-lines", "5000", "--json"],
     ]
-    if zero_observation_bot_ids:
+    if unmanaged_zero_observation_bot_ids:
         zero_repair_commands.insert(
             0,
             [
                 "./scripts/ops/opsctl.sh",
                 "bot-needs",
                 "--include-bot-ids",
-                ",".join(zero_observation_bot_ids[:12]),
+                ",".join(unmanaged_zero_observation_bot_ids[:12]),
                 "--json",
             ],
         )
+    ok = len(unmanaged_zero_observation_bot_ids) == 0
     return {
         "timestamp_utc": now,
         "schema_version": 1,
-        "ok": bots_with_observations == len(bot_ids),
-        "overall_status": "ready" if bots_with_observations == len(bot_ids) else "degraded",
+        "ok": ok,
+        "overall_status": "ready" if ok else "degraded",
         "mode": "bootstrap_tail" if bootstrap else "incremental",
         "apply": bool(apply),
         "collector_count": collector_count,
         "bots_with_observations": bots_with_observations,
-        "zero_observation_count": max(len(bot_ids) - bots_with_observations, 0),
-        "zero_observation_bot_ids": zero_observation_bot_ids[:50],
+        "effective_bots_with_observations": effective_bots_with_observations,
+        "zero_observation_count": len(unmanaged_zero_observation_bot_ids),
+        "zero_observation_bot_ids": unmanaged_zero_observation_bot_ids[:50],
+        "unmanaged_zero_observation_count": len(unmanaged_zero_observation_bot_ids),
+        "unmanaged_zero_observation_bot_ids": unmanaged_zero_observation_bot_ids[:50],
+        "managed_zero_observation_count": len(managed_zero_observation_bot_ids),
+        "managed_zero_observation_bot_ids": managed_zero_observation_bot_ids[:50],
+        "raw_zero_observation_count": len(raw_zero_observation_bot_ids),
+        "raw_zero_observation_bot_ids": raw_zero_observation_bot_ids[:50],
         "data_quality_score": data_quality_score,
+        "raw_data_quality_score": raw_data_quality_score,
         "collection_coverage_score": collection_coverage_score,
+        "raw_collection_coverage_score": raw_collection_coverage_score,
         "training_readiness_score": training_readiness_score,
         "quality_contract": {
             "data_quality_definition": "observation coverage for active collection bots; training readiness is reported separately",
+            "managed_zero_definition": "collect-only training-labeling observers with execution blocked and explicit training exclusion are managed observer debt, not paper-trading collection failures",
             "target_data_quality_score": 100.0,
             "target_training_readiness_score": 100.0,
             "data_quality_score": data_quality_score,
+            "raw_data_quality_score": raw_data_quality_score,
             "collection_coverage_score": collection_coverage_score,
+            "raw_collection_coverage_score": raw_collection_coverage_score,
             "training_readiness_score": training_readiness_score,
             "training_ready_count": len(training_ready),
             "training_ready_gap": max(collector_count - len(training_ready), 0),
+            "managed_zero_observation_count": len(managed_zero_observation_bot_ids),
+            "unmanaged_zero_observation_count": len(unmanaged_zero_observation_bot_ids),
         },
         "zero_observation_repair_lane": {
-            "active": bool(zero_observation_bot_ids),
-            "target_bot_ids": zero_observation_bot_ids[:12],
-            "priority": "targeted" if zero_observation_bot_ids else "observe",
-            "recommended_commands": zero_repair_commands if zero_observation_bot_ids else [],
+            "active": bool(unmanaged_zero_observation_bot_ids),
+            "zero_observation_count": len(unmanaged_zero_observation_bot_ids),
+            "target_bot_ids": unmanaged_zero_observation_bot_ids[:12],
+            "priority": "targeted" if unmanaged_zero_observation_bot_ids else "observe",
+            "recommended_commands": zero_repair_commands if unmanaged_zero_observation_bot_ids else [],
             "policy": "repair_exact_zero_observation_bots_before_broad_collection_expansion",
+        },
+        "managed_zero_observation_lane": {
+            "active": bool(managed_zero_observation_bot_ids),
+            "managed_count": len(managed_zero_observation_bot_ids),
+            "target_bot_ids": managed_zero_observation_bot_ids[:12],
+            "recommended_commands": [
+                [
+                    "./scripts/ops/opsctl.sh",
+                    "training-labeling-intelligence",
+                    "--apply",
+                    "--materialize-collect-only-diagnostics",
+                    "--json",
+                ]
+            ]
+            if managed_zero_observation_bot_ids
+            else [],
+            "policy": "keep expected collect-only training-labeling observers excluded from training and execution until observation and minimum-day gates clear",
         },
         "files_scanned": files_scanned,
         "lines_scanned": lines_scanned,
         "artifact_files_scanned": artifact_files_scanned,
         "new_artifact_observations_counted": len(new_artifact_keys),
+        "channel_files_scanned": channel_files_scanned,
+        "channel_lines_scanned": channel_lines_scanned,
+        "channel_observations_counted": int(sum(channel_counts.values())),
+        "diagnostic_files_scanned": diagnostic_files_scanned,
+        "diagnostic_observations_counted": int(sum(diagnostic_counts.values())),
         "new_rows_counted": int(sum(observed_counts.values())),
         "total_observations": int(sum(merged_counts.get(bot_id, 0) for bot_id in bot_ids)),
         "training_ready_count": len(training_ready),
@@ -534,7 +760,7 @@ def build_payload(
         "recommended_actions": [
             "run this rollup on a short cadence so training thresholds use registry counters instead of ad hoc log scans",
             "keep data-only bots excluded from training until both observation and minimum-day gates clear",
-            "repair exact zero-observation bot routing before adding broad collection volume" if zero_observation_bot_ids else "if zero_observation_count rises above zero, inspect decision_explanations routing before adding more bots",
+            "repair exact zero-observation bot routing before adding broad collection volume" if unmanaged_zero_observation_bot_ids else "if unmanaged_zero_observation_count rises above zero, inspect decision and channel routing before adding more bots",
         ],
     }
 

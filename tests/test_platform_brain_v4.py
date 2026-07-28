@@ -95,3 +95,42 @@ def test_platform_brain_v4_simulates_expansion_and_prioritizes_actions(tmp_path:
     assert [row["additional_bots"] for row in simulator["simulations"]] == [25, 100, 250]
     assert priority["priority_count"] >= 4
     assert critics["caution_count"] >= 3
+
+
+def test_platform_brain_v4_rolls_caution_only_debt_to_watch(tmp_path: Path) -> None:
+    _seed_project(tmp_path)
+
+    payload = src.build_payload(tmp_path)
+
+    assert payload["overall_status"] == "watch"
+    assert payload["ok"] is True
+    assert payload["sections"]["bot_portfolio_economist"]["overall_status"] == "watch"
+    assert payload["sections"]["critic_council"]["overall_status"] == "watch"
+    assert payload["sections"]["data_value_engine"]["overall_status"] == "watch"
+    assert (
+        payload["sections"]["critic_council"]["severity_policy"]
+        == "caution_votes_hold_expansion_without_blocking_guarded_collection_or_paper"
+    )
+
+
+def test_platform_brain_v4_keeps_hard_provider_data_value_as_needs_work() -> None:
+    section = src._data_value_engine(
+        {
+            "bot_data_quality_scores": {"average_quality_score": 20.0},
+            "provider_rotation_failover_mesh": {"overall_status": "critical", "degraded_provider_count": 4},
+            "execution_paper_trade_realism_layer": {"overall_status": "watch"},
+        }
+    )
+
+    assert section["overall_status"] == "needs_work"
+    assert section["severity_policy"] == "low_data_value_with_hard_provider_failure_requires_repair"
+
+
+def test_platform_brain_v4_keeps_blocked_pressure_critic_hard() -> None:
+    council = src._critic_council(
+        {"bot_data_quality_scores": {"overall_status": "ready"}, "execution_paper_trade_realism_layer": {"overall_status": "ready"}},
+        {"overall_status": "blocked"},
+    )
+
+    assert council["overall_status"] == "needs_work"
+    assert council["severity_policy"] == "blocked_or_critical_pressure_keeps_critic_council_hard"

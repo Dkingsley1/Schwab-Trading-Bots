@@ -438,7 +438,20 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
             "overall_status": rollup.get("overall_status"),
             "collector_count": _safe_int(rollup.get("collector_count"), 0),
             "bots_with_observations": _safe_int(rollup.get("bots_with_observations"), 0),
+            "effective_bots_with_observations": _safe_int(
+                rollup.get("effective_bots_with_observations", rollup.get("bots_with_observations")),
+                0,
+            ),
             "zero_observation_count": _safe_int(rollup.get("zero_observation_count"), 0),
+            "unmanaged_zero_observation_count": _safe_int(
+                rollup.get("unmanaged_zero_observation_count", rollup.get("zero_observation_count")),
+                0,
+            ),
+            "managed_zero_observation_count": _safe_int(rollup.get("managed_zero_observation_count"), 0),
+            "raw_zero_observation_count": _safe_int(
+                rollup.get("raw_zero_observation_count", rollup.get("zero_observation_count")),
+                0,
+            ),
             "total_observations": _safe_int(rollup.get("total_observations"), 0),
             "training_ready_count": _safe_int(rollup.get("training_ready_count"), 0),
             "advisory_ready": collection_advisory_ready,

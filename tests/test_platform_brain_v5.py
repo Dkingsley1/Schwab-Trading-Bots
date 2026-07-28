@@ -196,3 +196,82 @@ def test_platform_brain_v5_rehearses_expansion_and_fuses_critics(tmp_path: Path)
     assert critics["caution_count"] >= 3
     assert reflex["safe_reflex_count"] == 2
     assert reflex["operator_review_count"] == 2
+
+
+def test_platform_brain_v5_treats_caution_only_expansion_hold_as_watch(tmp_path: Path) -> None:
+    _seed_project(tmp_path)
+
+    payload = src.build_payload(tmp_path)
+    critics = payload["sections"]["critic_ensemble_fusion"]
+
+    assert payload["overall_status"] == "watch"
+    assert critics["overall_status"] == "watch"
+    assert critics["hard_vote_count"] == 0
+    assert critics["severity_policy"] == "caution_votes_hold_expansion_without_degrading_guarded_collection_or_paper"
+
+
+def test_platform_brain_v5_keeps_blocked_critic_vote_hard() -> None:
+    critics = src._critic_fusion(
+        {
+            "sections": {
+                "critic_council": {
+                    "overall_status": "blocked",
+                    "caution_count": 3,
+                    "votes": [
+                        {"critic": "provider", "vote": "blocked"},
+                        {"critic": "data", "vote": "hold"},
+                    ],
+                }
+            }
+        },
+        {"safe_reflex_count": 0},
+    )
+
+    assert critics["overall_status"] == "needs_work"
+    assert critics["hard_vote_count"] == 1
+    assert critics["severity_policy"] == "blocked_or_critical_critic_votes_require_operator_repair"
+
+
+def test_platform_brain_v5_treats_repeated_advisory_regret_as_watch(tmp_path: Path) -> None:
+    ledger = src._regret_ledger(
+        tmp_path,
+        {"v5_reflex_event_count": 2, "repeated_action_themes": [{"action": "refresh", "count": 3}, {"action": "review", "count": 2}]},
+        {
+            "overall_status": "needs_work",
+            "sections": {
+                "autonomous_priority_ranker": {
+                    "priority_count": 8,
+                    "ranked_priorities": [
+                        {"section": "quality", "status": "watch"},
+                        {"section": "realism", "status": "watch"},
+                    ],
+                },
+                "executive_meta_orchestrator": {"next_best_command": "./scripts/ops/opsctl.sh health-fast --json"},
+            },
+        },
+    )
+
+    assert ledger["overall_status"] == "watch"
+    assert ledger["hard_priority_count"] == 0
+    assert ledger["severity_policy"] == "high_regret_from_advisory_repetition_is_soak_watch_debt"
+
+
+def test_platform_brain_v5_keeps_hard_priority_regret_as_needs_work(tmp_path: Path) -> None:
+    ledger = src._regret_ledger(
+        tmp_path,
+        {"v5_reflex_event_count": 0, "repeated_action_themes": [{"action": "repair", "count": 3}]},
+        {
+            "overall_status": "degraded",
+            "sections": {
+                "autonomous_priority_ranker": {
+                    "priority_count": 8,
+                    "ranked_priorities": [{"section": "provider", "status": "critical"}],
+                },
+                "executive_meta_orchestrator": {"next_best_command": "./scripts/ops/opsctl.sh provider-mesh --json"},
+            },
+        },
+    )
+
+    assert ledger["overall_status"] == "needs_work"
+    assert ledger["hard_priority_count"] == 1
+    assert ledger["severity_policy"] == "high_regret_with_hard_priority_rows_requires_operator_repair"

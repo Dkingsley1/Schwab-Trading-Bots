@@ -318,8 +318,12 @@ def _paper_floor(project_root: Path) -> dict[str, Any]:
     rollup = _health(project_root, "data_collection_observation_rollup_latest.json")
     registry = _registry_counts(project_root)
     collector_count = _safe_int(rollup.get("collector_count"), registry["collecting_bots"])
-    observed = _safe_int(rollup.get("bots_with_observations"), 0)
-    zero_obs = _safe_int(rollup.get("zero_observation_count"), max(collector_count - observed, 0))
+    observed = _safe_int(rollup.get("effective_bots_with_observations", rollup.get("bots_with_observations")), 0)
+    zero_obs = _safe_int(
+        rollup.get("unmanaged_zero_observation_count", rollup.get("zero_observation_count")),
+        max(collector_count - observed, 0),
+    )
+    managed_zero_obs = _safe_int(rollup.get("managed_zero_observation_count"), 0)
     coverage = (observed / float(collector_count)) if collector_count > 0 else 1.0
     status = "ready"
     if zero_obs > 0 or coverage < 0.95:
@@ -331,6 +335,7 @@ def _paper_floor(project_root: Path) -> dict[str, Any]:
         "collector_count": collector_count,
         "bots_with_observations": observed,
         "zero_observation_count": zero_obs,
+        "managed_zero_observation_count": managed_zero_obs,
         "observation_coverage_ratio": round(coverage, 6),
         "registry": registry,
         "paper_ramp_status": str(ramp.get("overall_status") or "missing"),

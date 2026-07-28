@@ -146,6 +146,43 @@ def test_platform_stabilization_quality_keeps_training_ready_only(tmp_path: Path
     assert payload["recommended_env_overrides"]["TRAINING_READY_ONLY_MICROBATCH_ENABLED"] == "1"
 
 
+def test_platform_stabilization_quality_uses_bot_needs_training_selector_fallback(tmp_path: Path) -> None:
+    _seed_project(tmp_path)
+    _write_json(
+        tmp_path / "governance" / "health" / "platform_brain_v4_latest.json",
+        {
+            "overall_status": "ready",
+            "sections": {
+                "training_scheduler_brain": {"training_policy": "collect_more_data", "train_allowed_count": 0, "sample_debt_count": 0},
+                "bot_portfolio_economist": {"trainable_bots": 0},
+            },
+        },
+    )
+    _write_json(
+        tmp_path / "governance" / "health" / "training_runtime_control_latest.json",
+        {
+            "overall_status": "constrained",
+            "snapshot_ready": True,
+            "launch_blockers": ["autonomic_training_budget_closed"],
+        },
+    )
+    _write_json(
+        tmp_path / "governance" / "health" / "bot_needs_intelligence_latest.json",
+        {
+            "training_candidate_selector": {"selected_count": 2},
+            "training_readiness_counts": {"can_train_now": 2},
+        },
+    )
+
+    payload = src.build_payload(tmp_path)
+    training = payload["sections"]["ready_only_microtraining"]
+
+    assert training["overall_status"] == "ready"
+    assert training["train_allowed_count"] == 2
+    assert training["bot_needs_selected_count"] == 2
+    assert training["managed_training_budget_closed"] is True
+
+
 def test_platform_stabilization_marks_duplicate_alpha_as_watch_when_novelty_contract_controls_overlap(tmp_path: Path) -> None:
     _seed_project(tmp_path)
     _write_json(
