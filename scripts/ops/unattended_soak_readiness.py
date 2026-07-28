@@ -217,6 +217,61 @@ def _external_root(project_root: Path, health_root: Path) -> Path:
     return Path(raw).expanduser() if raw else DEFAULT_EXTERNAL_ROOT
 
 
+def _managed_ingestion_soak_watch(ingestion: dict[str, Any], ingestion_contract: dict[str, Any]) -> bool:
+    allowed_blockers = {"steady_state_targets_not_clear"}
+    contract_blockers = {str(item) for item in ingestion_contract.get("blockers", []) if str(item)}
+    if contract_blockers and not contract_blockers.issubset(allowed_blockers):
+        return False
+
+    status = str(ingestion.get("overall_status") or "").lower()
+    severity = str(ingestion.get("severity") or "").lower()
+    if status not in {"ready", "ok"} or severity not in {"stable", "low", "ready"}:
+        return False
+
+    raw_live = _dict(_dict(ingestion.get("backlog_truth")).get("raw_live"))
+    backpressure = _dict(ingestion.get("backpressure"))
+    if not raw_live:
+        raw_live = backpressure
+    raw_grade = str(raw_live.get("grade") or "").upper()
+    total_pending = _safe_int(raw_live.get("total_pending_lines"), _safe_int(backpressure.get("total_pending_lines"), 0))
+    core_pending = _safe_int(raw_live.get("core_pending_lines"), _safe_int(backpressure.get("core_pending_lines"), 0))
+    oldest_age = _safe_float(
+        raw_live.get("oldest_pending_age_seconds"),
+        _safe_float(backpressure.get("oldest_pending_age_seconds"), 0.0),
+    )
+    pressure_index = _safe_float(ingestion.get("pressure_index"), 99.0)
+
+    stale_locator = _dict(ingestion.get("stale_pending_locator"))
+    stale_clear = str(stale_locator.get("status") or "clear").lower() in {"clear", "ready", ""}
+    route = _dict(ingestion.get("external_route_verification"))
+    route_ready = str(route.get("verification_state") or "").lower() in {"ready", "verified", "ok"}
+    resilience = _dict(ingestion.get("storage_resilience"))
+    resilience_ready = str(resilience.get("overall_status") or "").lower() in {"ready", "ok", ""}
+    data_integrity = _dict(ingestion.get("data_integrity"))
+    data_clean = all(
+        _safe_int(data_integrity.get(key), 0) == 0
+        for key in ("sql_invalid_lines", "sql_overlay_invalid_lines", "sql_overlay_oversize_payloads", "sql_overlay_ops_write_failures")
+    )
+    writer_shedding = _dict(ingestion.get("writer_shedding"))
+    no_queue_breaches = not writer_shedding.get("hard_breaches") and not writer_shedding.get("elevated_breaches")
+    steady = _dict(_dict(ingestion.get("steady_state")).get("target_status"))
+    backlog_relief_ready = bool(steady.get("backlog_relief_a_plus_ready") or steady.get("backlog_relief_a_plus_plus_ready"))
+
+    return bool(
+        raw_grade in {"A+", "A", ""}
+        and pressure_index <= 0.6
+        and total_pending <= 5000
+        and core_pending <= 1000
+        and oldest_age <= 240.0
+        and stale_clear
+        and route_ready
+        and resilience_ready
+        and data_clean
+        and no_queue_breaches
+        and backlog_relief_ready
+    )
+
+
 def _storage_contract(
     *,
     project_root: Path,
@@ -270,9 +325,17 @@ def _storage_contract(
         managed_controls.append("approved_cold_archive_spillover")
     if not bool(retention_contract.get("ready", False)):
         blockers.append("storage_retention_contract_not_ready")
-    ingestion_soak_ready = bool(ingestion_contract.get("ready", False) or ingestion_contract.get("soak_ready", False))
+    ingestion_managed_watch = _managed_ingestion_soak_watch(ingestion, ingestion_contract)
+    ingestion_soak_ready = bool(
+        ingestion_contract.get("ready", False)
+        or ingestion_contract.get("soak_ready", False)
+        or ingestion_managed_watch
+    )
     if not ingestion_soak_ready:
         blockers.append("ingestion_soak_contract_not_ready")
+    elif ingestion_managed_watch and not bool(ingestion_contract.get("ready", False) or ingestion_contract.get("soak_ready", False)):
+        warnings.append("ingestion_soak_contract_managed_by_bounded_backlog_watch")
+        managed_controls.append("ingestion_soak_contract_managed_by_bounded_backlog_watch")
     if not bool(resilience.get("ok", False)):
         blockers.append("storage_resilience_not_ready")
     if bool(mount_guard.get("external_low_space", False)):
@@ -308,6 +371,7 @@ def _storage_contract(
         "retention_status": str(retention_contract.get("status") or ""),
         "ingestion_status": str(ingestion_contract.get("status") or ""),
         "ingestion_soak_ready": ingestion_soak_ready,
+        "ingestion_managed_watch": ingestion_managed_watch,
         "resilience_status": str(resilience.get("overall_status") or ""),
         "failed_database_integrity_checks": failed_db_checks,
         "blockers": ordered_unique(blockers),

@@ -177,6 +177,76 @@ def test_unattended_soak_readiness_accepts_approved_cold_archive_spillover(tmp_p
     assert "storage_margin_not_30_day_ready" not in payload["blockers"]
 
 
+def test_unattended_soak_readiness_manages_bounded_ingestion_steady_state_watch(
+    tmp_path: Path, monkeypatch
+) -> None:
+    project_root = tmp_path / "project"
+    external_root = tmp_path / "BOT_LOGS" / "schwab_trading_bot"
+    external_root.mkdir(parents=True)
+    _ready_artifacts(project_root, external_root)
+    health = project_root / "governance" / "health"
+    now = src.iso_now()
+    _write_json(
+        health / "ingestion_storage_control_latest.json",
+        {
+            "timestamp_utc": now,
+            "overall_status": "ready",
+            "severity": "stable",
+            "pressure_index": 0.395,
+            "continuous_run_soak_contract": {
+                "status": "blocked",
+                "ready": False,
+                "soak_ready": False,
+                "blockers": ["steady_state_targets_not_clear"],
+                "warnings": ["drain_time_unknown", "storage_growth_baseline_watch"],
+            },
+            "steady_state": {
+                "target_status": {
+                    "steady_state_ready": False,
+                    "target_breaches": ["pressure_index", "estimated_total_drain_minutes"],
+                    "backlog_relief_a_plus_ready": True,
+                    "backlog_relief_a_plus_plus_ready": True,
+                }
+            },
+            "backlog_truth": {
+                "raw_live": {
+                    "grade": "A+",
+                    "core_pending_lines": 266,
+                    "total_pending_lines": 1382,
+                    "oldest_pending_age_seconds": 94.9,
+                }
+            },
+            "stale_pending_locator": {"status": "clear"},
+            "external_route_verification": {"verification_state": "ready"},
+            "storage_resilience": {"overall_status": "ready"},
+            "data_integrity": {
+                "sql_invalid_lines": 0,
+                "sql_overlay_invalid_lines": 0,
+                "sql_overlay_oversize_payloads": 0,
+                "sql_overlay_ops_write_failures": 0,
+            },
+            "writer_shedding": {"hard_breaches": [], "elevated_breaches": []},
+        },
+    )
+    monkeypatch.setattr(src.platform, "system", lambda: "Darwin")
+
+    payload = src.build_payload(
+        project_root,
+        pmset_custom_text="AC Power:\n sleep 0\n disksleep 0\n standby 0\n autopoweroff 0\n",
+        pmset_batt_text="Now drawing from 'AC Power'\n -InternalBattery-0; AC attached; not charging present: true",
+        process_text="",
+        disk_snapshot_fn=lambda path: {"path": str(path), "exists": True, "free_gb": 160.0, "used_pct": 60.0},
+    )
+
+    assert payload["overall_status"] == "ready"
+    assert payload["safe_to_leave_unattended"] is True
+    assert "ingestion_soak_contract_not_ready" not in payload["blockers"]
+    assert payload["sections"]["storage"]["ingestion_soak_ready"] is True
+    assert payload["sections"]["storage"]["ingestion_managed_watch"] is True
+    assert "ingestion_soak_contract_managed_by_bounded_backlog_watch" in payload["sections"]["storage"]["warnings"]
+    assert "ingestion_soak_contract_managed_by_bounded_backlog_watch" in payload["sections"]["storage"]["managed_controls"]
+
+
 def test_unattended_soak_readiness_tracks_caffeinate_guard_as_managed_control(tmp_path: Path, monkeypatch) -> None:
     project_root = tmp_path / "project"
     external_root = tmp_path / "BOT_LOGS" / "schwab_trading_bot"
