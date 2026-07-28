@@ -233,7 +233,12 @@ def _regret_ledger(project_root: Path, temporal: dict[str, Any], v4: dict[str, A
     memory_count = _safe_int(temporal.get("v5_reflex_event_count"), 0)
     repeated_count = len(_as_list(temporal.get("repeated_action_themes")))
     regret_score = min(100.0, priority_count * 6.0 + repeated_count * 4.0)
-    if regret_score >= 50.0 and hard_priority_count:
+    v4_status = str(v4.get("overall_status") or "").strip().lower()
+    current_ready_clears_historical_regret = bool(v4_status == "ready" and hard_priority_count == 0)
+    if current_ready_clears_historical_regret:
+        status = "ready"
+        severity_policy = "historical_advisory_regret_cleared_by_current_ready_state"
+    elif regret_score >= 50.0 and hard_priority_count:
         status = "needs_work"
         severity_policy = "high_regret_with_hard_priority_rows_requires_operator_repair"
     elif regret_score >= 50.0:
@@ -256,6 +261,8 @@ def _regret_ledger(project_root: Path, temporal: dict[str, Any], v4: dict[str, A
         "reflex_memory_event_count_before_apply": memory_count,
         "regret_score": round(regret_score, 3),
         "hard_priority_count": hard_priority_count,
+        "current_ready_clears_historical_regret": current_ready_clears_historical_regret,
+        "managed_historical_advisory_count": repeated_count if current_ready_clears_historical_regret else 0,
         "severity_policy": severity_policy,
         "latest_reflex_event": event,
         "ledger_contract": [

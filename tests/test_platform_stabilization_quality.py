@@ -109,7 +109,11 @@ def test_platform_stabilization_quality_builds_seven_controls(tmp_path: Path) ->
     assert set(payload["section_keys"]) == set(src.SECTION_KEYS)
     assert payload["control_count"] == 7
     assert payload["sections"]["backlog_drain_stabilizer"]["queue_backpressure_active"] is True
-    assert payload["sections"]["provider_cooldown_failover_v2"]["degraded_provider_count"] == 3
+    provider = payload["sections"]["provider_cooldown_failover_v2"]
+    assert provider["degraded_provider_count"] == 2
+    assert provider["effective_degraded_provider_count"] == 2
+    assert provider["required_failure_count"] == 1
+    assert provider["soft_failure_count"] == 2
     assert payload["sections"]["expansion_rehearsal_gate"]["expansion_allowed_now"] is False
     assert "queue_backpressure_active" in payload["sections"]["expansion_rehearsal_gate"]["gate_closed_reasons"]
     assert "storage_or_queue_not_settled" in payload["sections"]["expansion_rehearsal_gate"]["gate_closed_reasons"]
@@ -235,6 +239,99 @@ def test_platform_stabilization_marks_optional_provider_failures_as_watch(tmp_pa
     assert provider["overall_status"] == "watch"
     assert provider["required_failure_count"] == 0
     assert provider["soft_failure_count"] == 3
+
+
+def test_platform_stabilization_marks_managed_provider_failover_as_ready(tmp_path: Path) -> None:
+    _seed_project(tmp_path)
+    _write_json(
+        tmp_path / "governance" / "health" / "platform_intelligence_expansion_latest.json",
+        {
+            "overall_status": "ready",
+            "sections": {
+                "bot_data_quality_scores": {"overall_status": "ready", "average_quality_score": 88.0},
+                "duplicate_alpha_overlap_detector": {"overall_status": "ready", "overlap_cluster_count": 0},
+                "execution_paper_trade_realism_layer": {"overall_status": "ready", "mae_bps": 12.0},
+                "provider_rotation_failover_mesh": {
+                    "overall_status": "ready",
+                    "degraded_provider_count": 2,
+                    "managed_degraded_provider_count": 2,
+                    "actionable_degraded_provider_count": 0,
+                    "managed_soft_failure_count": 2,
+                    "managed_failover_contract": {"active": True},
+                },
+            },
+        },
+    )
+    _write_json(
+        tmp_path / "governance" / "health" / "provider_mesh_latest.json",
+        {"overall_status": "ready", "summary": {"required_failure_count": 0, "soft_failure_count": 2}, "cooldowns": []},
+    )
+    _write_json(tmp_path / "governance" / "health" / "source_verification_latest.json", {"overall_status": "ready"})
+
+    provider = src.build_payload(tmp_path)["sections"]["provider_cooldown_failover_v2"]
+
+    assert provider["overall_status"] == "ready"
+    assert provider["degraded_provider_count"] == 2
+    assert provider["effective_degraded_provider_count"] == 0
+    assert provider["managed_failover_active"] is True
+
+
+def test_platform_stabilization_marks_managed_quality_debt_as_ready(tmp_path: Path) -> None:
+    _seed_project(tmp_path)
+    _write_json(
+        tmp_path / "governance" / "health" / "platform_intelligence_expansion_latest.json",
+        {
+            "overall_status": "ready",
+            "sections": {
+                "bot_data_quality_scores": {
+                    "overall_status": "ready",
+                    "average_quality_score": 22.0,
+                    "quality_debt_count": 0,
+                    "managed_quality_debt_count": 20,
+                    "managed_debt_contract": {"active": True},
+                },
+                "duplicate_alpha_overlap_detector": {"overall_status": "ready", "overlap_cluster_count": 0},
+                "execution_paper_trade_realism_layer": {"overall_status": "ready", "mae_bps": 12.0},
+                "provider_rotation_failover_mesh": {"overall_status": "ready", "degraded_provider_count": 0},
+            },
+        },
+    )
+    _write_json(tmp_path / "governance" / "health" / "training_quality_control_latest.json", {"overall_status": "ready", "training_quality_score": 100.0})
+    _write_json(tmp_path / "governance" / "health" / "bot_quality_autopilot_latest.json", {"overall_status": "ready"})
+
+    quality = src.build_payload(tmp_path)["sections"]["bot_data_quality_governor"]
+
+    assert quality["overall_status"] == "ready"
+    assert quality["managed_quality_debt_count"] == 20
+    assert quality["managed_quality_debt_active"] is True
+
+
+def test_platform_stabilization_marks_managed_duplicate_overlap_as_ready(tmp_path: Path) -> None:
+    _seed_project(tmp_path)
+    _write_json(
+        tmp_path / "governance" / "health" / "platform_intelligence_expansion_latest.json",
+        {
+            "overall_status": "ready",
+            "sections": {
+                "bot_data_quality_scores": {"overall_status": "ready", "average_quality_score": 88.0},
+                "duplicate_alpha_overlap_detector": {
+                    "overall_status": "ready",
+                    "overlap_cluster_count": 27,
+                    "high_overlap_cluster_count": 15,
+                    "managed_overlap_cluster_count": 27,
+                    "actionable_overlap_cluster_count": 0,
+                },
+                "execution_paper_trade_realism_layer": {"overall_status": "ready", "mae_bps": 12.0},
+                "provider_rotation_failover_mesh": {"overall_status": "ready", "degraded_provider_count": 0},
+            },
+        },
+    )
+
+    duplicate = src.build_payload(tmp_path)["sections"]["duplicate_alpha_compression"]
+
+    assert duplicate["overall_status"] == "ready"
+    assert duplicate["managed_overlap_cluster_count"] == 27
+    assert duplicate["actionable_overlap_cluster_count"] == 0
 
 
 def test_platform_stabilization_marks_quality_repair_queue_as_watch_when_training_quality_is_strong(tmp_path: Path) -> None:

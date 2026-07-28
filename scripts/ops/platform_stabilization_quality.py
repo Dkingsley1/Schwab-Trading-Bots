@@ -235,16 +235,38 @@ def _bot_quality(project_root: Path, platform: dict[str, Any]) -> dict[str, Any]
     recoverable_blocked = len(_as_list(training_quality.get("recoverable_blocked_keys")))
     probation_count = len(_as_list(_as_dict(quality.get("quality_blockers")).get("quality_probation_bot_ids")))
     targeted_retrain_count = len(_as_list(_as_dict(quality.get("quality_blockers")).get("targeted_retrain_bot_ids")))
+    unmanaged_quality_debt = _safe_int(section.get("quality_debt_count"), 0)
+    managed_quality_debt = _safe_int(section.get("managed_quality_debt_count"), 0)
+    managed_debt_contract = _as_dict(section.get("managed_debt_contract"))
+    managed_quality_only = bool(
+        managed_debt_contract.get("active", False)
+        and unmanaged_quality_debt == 0
+        and zero_obs == 0
+        and recoverable_blocked == 0
+        and training_score >= 75.0
+    )
     status = "ready"
     if zero_obs > 0 or recoverable_blocked > 0 or (average < 55.0 and training_score < 75.0):
         status = "needs_work"
-    elif quality_status in {"blocked", "degraded", "needs_work"} or average < 70.0 or probation_count > 0 or targeted_retrain_count > 0:
+    elif managed_quality_only:
+        status = "ready"
+    elif (
+        quality_status in {"blocked", "degraded", "needs_work"}
+        or unmanaged_quality_debt > 0
+        or average < 70.0
+        or probation_count > 0
+        or targeted_retrain_count > 0
+    ):
         status = "watch"
     return {
         "overall_status": status,
         "average_quality_score": round(average, 3),
         "training_quality_score": round(training_score, 3),
         "label_counts": _as_dict(section.get("label_counts")),
+        "raw_label_counts": _as_dict(section.get("raw_label_counts")),
+        "unmanaged_quality_debt_count": unmanaged_quality_debt,
+        "managed_quality_debt_count": managed_quality_debt,
+        "managed_quality_debt_active": managed_quality_only,
         "quality_autopilot_status": quality_status,
         "quality_probation_count": probation_count,
         "targeted_retrain_count": targeted_retrain_count,
@@ -270,6 +292,9 @@ def _duplicate_alpha(platform: dict[str, Any]) -> dict[str, Any]:
     section = _platform_section(platform, "duplicate_alpha_overlap_detector")
     overlap = _safe_int(section.get("overlap_cluster_count"), 0)
     high_overlap = _safe_int(section.get("high_overlap_cluster_count"), 0)
+    direct_overlap = _safe_int(section.get("direct_execution_overlap_cluster_count"), 0)
+    actionable_overlap = _safe_int(section.get("actionable_overlap_cluster_count"), overlap)
+    managed_overlap = _safe_int(section.get("managed_overlap_cluster_count"), 0)
     source_status = str(section.get("overall_status") or "missing")
     novelty_contract_raw = section.get("novelty_contract")
     novelty_contract = _as_dict(novelty_contract_raw)
@@ -281,9 +306,11 @@ def _duplicate_alpha(platform: dict[str, Any]) -> dict[str, Any]:
         or _bool(section.get("review_queue_active"))
     )
     source_needs_work = source_status in {"needs_work", "degraded"}
-    if overlap <= 0 and not source_needs_work:
+    if direct_overlap > 0 or (source_needs_work and not controlled_by_novelty_contract):
+        status = "needs_work"
+    elif actionable_overlap <= 0 and (overlap <= 0 or managed_overlap >= overlap):
         status = "ready"
-    elif overlap > 0 and controlled_by_novelty_contract:
+    elif actionable_overlap > 0 and controlled_by_novelty_contract:
         status = "watch"
     else:
         status = "needs_work"
@@ -291,6 +318,9 @@ def _duplicate_alpha(platform: dict[str, Any]) -> dict[str, Any]:
         "overall_status": status,
         "overlap_cluster_count": overlap,
         "high_overlap_cluster_count": high_overlap,
+        "direct_execution_overlap_cluster_count": direct_overlap,
+        "actionable_overlap_cluster_count": actionable_overlap,
+        "managed_overlap_cluster_count": managed_overlap,
         "source_status": source_status,
         "controlled_by_novelty_contract": controlled_by_novelty_contract,
         "compression_review_required": bool(overlap > 0),
@@ -318,10 +348,12 @@ def _paper_realism(project_root: Path, platform: dict[str, Any]) -> dict[str, An
     poor = _safe_int(metrics.get("poor_or_fair_fill_count"), 0)
     worst_rows = [row for row in _as_list(execution_lab.get("top_worst_case_scenarios")) if isinstance(row, dict)]
     worst_slippage = max([_safe_float(row.get("slippage_bps"), 0.0) for row in worst_rows] or [0.0])
+    constrained_curves = _safe_int(section.get("constrained_capacity_curve_count"), 0)
+    capacity_haircut_active = _bool(section.get("capacity_curve_haircut_active"))
     status = "ready"
     if mae >= 35.0 or worst_slippage >= 60.0:
         status = "needs_work"
-    elif p95 >= 50.0 or worst_slippage >= 35.0 or poor > 0:
+    elif p95 >= 50.0 or worst_slippage >= 40.0 or poor > 0:
         status = "watch"
     return {
         "overall_status": status,
@@ -329,6 +361,8 @@ def _paper_realism(project_root: Path, platform: dict[str, Any]) -> dict[str, An
         "p95_bps": round(p95, 3),
         "poor_or_fair_fill_count": poor,
         "worst_lab_slippage_bps": round(worst_slippage, 3),
+        "constrained_capacity_curve_count": constrained_curves,
+        "capacity_curve_haircut_active": capacity_haircut_active,
         "assigned_infrabots": INFRA_ASSIGNMENTS["paper_trade_realism_v2"],
         "recommended_commands": [
             ["./scripts/ops/opsctl.sh", "execution-lab", "--json"],
@@ -348,22 +382,38 @@ def _provider_failover(project_root: Path, platform: dict[str, Any]) -> dict[str
     mesh = _health(project_root, "provider_mesh_latest.json")
     source = _health(project_root, "source_verification_latest.json")
     summary = _as_dict(mesh.get("summary"))
-    degraded_count = max(_safe_int(provider.get("degraded_provider_count"), 0), _safe_int(summary.get("required_failure_count"), 0) + _safe_int(summary.get("soft_failure_count"), 0))
+    raw_degraded_count = _safe_int(provider.get("degraded_provider_count"), 0)
+    actionable_degraded_count = _safe_int(provider.get("actionable_degraded_provider_count"), raw_degraded_count)
+    managed_degraded_count = _safe_int(provider.get("managed_degraded_provider_count"), 0)
+    degraded_count = max(actionable_degraded_count, _safe_int(summary.get("required_failure_count"), 0))
     mesh_status = str(mesh.get("overall_status") or "missing")
     required_failures = _safe_int(summary.get("required_failure_count"), 0)
     soft_failures = _safe_int(summary.get("soft_failure_count"), 0)
+    managed_soft_failures = _safe_int(provider.get("managed_soft_failure_count"), 0)
     source_status = str(source.get("overall_status") or provider.get("source_verification_status") or "missing")
+    managed_failover_contract = _as_dict(provider.get("managed_failover_contract"))
     status = "ready"
     if required_failures > 0 or mesh_status in {"blocked", "critical"}:
         status = "needs_work"
-    elif soft_failures > 0 or degraded_count > 0 or mesh_status == "degraded" or source_status == "degraded":
+    elif (
+        degraded_count > 0
+        or (soft_failures > 0 and managed_soft_failures < soft_failures)
+        or mesh_status == "degraded"
+        or source_status == "degraded"
+    ):
         status = "watch"
     return {
         "overall_status": status,
-        "degraded_provider_count": degraded_count,
+        "degraded_provider_count": raw_degraded_count,
+        "effective_degraded_provider_count": degraded_count,
+        "raw_degraded_provider_count": raw_degraded_count,
+        "managed_degraded_provider_count": managed_degraded_count,
+        "actionable_degraded_provider_count": actionable_degraded_count,
         "provider_mesh_status": mesh_status,
         "required_failure_count": required_failures,
         "soft_failure_count": soft_failures,
+        "managed_soft_failure_count": managed_soft_failures,
+        "managed_failover_active": bool(managed_failover_contract.get("active", False)),
         "source_verification_status": source_status,
         "cooldowns": _as_list(mesh.get("cooldowns")),
         "assigned_infrabots": INFRA_ASSIGNMENTS["provider_cooldown_failover_v2"],

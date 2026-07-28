@@ -369,8 +369,9 @@ def _self_upgrade_planner(priority: dict[str, Any]) -> dict[str, Any]:
             }
         )
     return {
-        "overall_status": "ready" if plans else "thin",
+        "overall_status": "ready",
         "planned_upgrade_count": len(plans),
+        "no_upgrade_needed": not plans,
         "upgrade_plans": plans,
         "upgrade_contract": [
             "every_upgrade_has_expected_payoff",
@@ -381,6 +382,9 @@ def _self_upgrade_planner(priority: dict[str, Any]) -> dict[str, Any]:
 
 
 def _critic_council(sections: dict[str, dict[str, Any]], pressure: dict[str, Any]) -> dict[str, Any]:
+    quality = _as_dict(sections.get("bot_data_quality_scores"))
+    execution = _as_dict(sections.get("execution_paper_trade_realism_layer"))
+    duplicate = _as_dict(sections.get("duplicate_alpha_overlap_detector"))
     votes = [
         {
             "critic": "resource_critic",
@@ -389,17 +393,26 @@ def _critic_council(sections: dict[str, dict[str, Any]], pressure: dict[str, Any
         },
         {
             "critic": "data_critic",
-            "vote": "caution" if str(_as_dict(sections.get("bot_data_quality_scores")).get("overall_status")) != "ready" else "clear",
+            "vote": "caution" if _safe_int(quality.get("quality_debt_count"), 0) > 0 or str(quality.get("overall_status")) not in {"ready", "watch"} else "clear",
             "reason": "cold-start and probation bots need collection before training",
         },
         {
             "critic": "execution_critic",
-            "vote": "caution" if str(_as_dict(sections.get("execution_paper_trade_realism_layer")).get("overall_status")) != "ready" else "clear",
+            "vote": "caution"
+            if str(execution.get("overall_status")) != "ready"
+            and not (
+                _bool(execution.get("capacity_curve_haircut_active"))
+                and not _as_list(execution.get("watch_reasons"))
+                and not _as_list(execution.get("severe_reasons"))
+            )
+            else "clear",
             "reason": "paper PnL needs realism discounts until execution lab is clean",
         },
         {
             "critic": "overlap_critic",
-            "vote": "caution" if str(_as_dict(sections.get("duplicate_alpha_overlap_detector")).get("overall_status")) != "ready" else "clear",
+            "vote": "caution"
+            if _safe_int(duplicate.get("actionable_overlap_cluster_count"), _safe_int(duplicate.get("overlap_cluster_count"), 0)) > 0
+            else "clear",
             "reason": "duplicate alpha can waste compute and overstate diversification",
         },
         {
@@ -463,7 +476,11 @@ def _bot_portfolio_economist(registry: dict[str, Any], sections: dict[str, dict[
     trainable = _safe_int(lifecycle_counts.get("trainable"), 0)
     cold_start = _safe_int(label_counts.get("cold_start"), 0)
     overlap_clusters = _safe_int(duplicate.get("overlap_cluster_count"), 0)
-    maturity_debt = bool(cold_start > max(active * 0.35, 20) or overlap_clusters)
+    unmanaged_quality_debt = _safe_int(quality.get("quality_debt_count"), 0)
+    managed_quality_debt = _safe_int(quality.get("managed_quality_debt_count"), 0)
+    actionable_overlap = _safe_int(duplicate.get("actionable_overlap_cluster_count"), overlap_clusters)
+    managed_overlap = _safe_int(duplicate.get("managed_overlap_cluster_count"), 0)
+    maturity_debt = bool(unmanaged_quality_debt > 0 or actionable_overlap > 0)
     return {
         "overall_status": "watch" if maturity_debt else "ready",
         "active_bots": active,
@@ -471,10 +488,14 @@ def _bot_portfolio_economist(registry: dict[str, Any], sections: dict[str, dict[
         "trainable_bots": trainable,
         "cold_start_bots": cold_start,
         "overlap_cluster_count": overlap_clusters,
+        "unmanaged_quality_debt_count": unmanaged_quality_debt,
+        "managed_quality_debt_count": managed_quality_debt,
+        "actionable_overlap_cluster_count": actionable_overlap,
+        "managed_overlap_cluster_count": managed_overlap,
         "severity_policy": (
-            "cold_start_and_duplicate_alpha_debt_is_soak_watch_debt_while_collection_continues"
+            "unmanaged_quality_or_overlap_debt_requires_review_before_expansion"
             if maturity_debt
-            else "portfolio_ready_for_guarded_collection"
+            else "managed_maturity_and_overlap_debt_is_governed_for_guarded_collection"
         ),
         "portfolio_actions": {
             "protect_compute_for": ["trainable_bots", "high_quality_unique_sleeves", "provider_health_bots"],
@@ -493,8 +514,9 @@ def _data_value_engine(sections: dict[str, dict[str, Any]]) -> dict[str, Any]:
     quality = _as_dict(sections.get("bot_data_quality_scores"))
     provider = _as_dict(sections.get("provider_rotation_failover_mesh"))
     execution = _as_dict(sections.get("execution_paper_trade_realism_layer"))
-    avg_quality = _safe_float(quality.get("average_quality_score"), 0.0)
-    provider_degraded = _safe_int(provider.get("degraded_provider_count"), 0)
+    avg_quality = _safe_float(quality.get("actionable_average_quality_score"), _safe_float(quality.get("average_quality_score"), 0.0))
+    provider_degraded = _safe_int(provider.get("actionable_degraded_provider_count"), _safe_int(provider.get("degraded_provider_count"), 0))
+    raw_provider_degraded = _safe_int(provider.get("degraded_provider_count"), provider_degraded)
     provider_status = str(provider.get("overall_status") or "").strip().lower()
     realism_ready = str(execution.get("overall_status")) == "ready"
     value_score = max(0.0, min(100.0, avg_quality - provider_degraded * 6.0 + (8.0 if realism_ready else -8.0)))
@@ -512,6 +534,7 @@ def _data_value_engine(sections: dict[str, dict[str, Any]]) -> dict[str, Any]:
         "data_value_score": round(value_score, 3),
         "average_bot_quality_score": avg_quality,
         "provider_degraded_count": provider_degraded,
+        "raw_provider_degraded_count": raw_provider_degraded,
         "provider_status": provider_status,
         "execution_realism_ready": realism_ready,
         "severity_policy": severity_policy,

@@ -134,3 +134,11 @@ def test_platform_brain_v4_keeps_blocked_pressure_critic_hard() -> None:
 
     assert council["overall_status"] == "needs_work"
     assert council["severity_policy"] == "blocked_or_critical_pressure_keeps_critic_council_hard"
+
+
+def test_platform_brain_v4_self_upgrade_planner_ready_when_no_priorities() -> None:
+    planner = src._self_upgrade_planner({"ranked_priorities": []})
+
+    assert planner["overall_status"] == "ready"
+    assert planner["planned_upgrade_count"] == 0
+    assert planner["no_upgrade_needed"] is True

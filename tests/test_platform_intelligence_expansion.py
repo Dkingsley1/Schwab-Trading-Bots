@@ -223,7 +223,55 @@ def test_quality_debt_is_watch_unless_low_quality_live_execution_is_allowed() ->
     assert quality["unsafe_live_candidate_count"] == 1
 
 
-def test_execution_realism_capacity_constraints_are_watch_not_failure(tmp_path: Path) -> None:
+def test_generic_paper_locked_quality_debt_is_managed_not_actionable() -> None:
+    row = src._bot_quality_row(
+        {
+            "bot_id": "paper_locked_generic_bot",
+            "active": True,
+            "lifecycle_state": "active",
+            "quality_score": 0.42,
+            "test_accuracy": 0.42,
+            "paper_trade_lock_required": True,
+            "direct_execution_allowed": False,
+            "target_functions": ["paper_live_data_standard", "paper_trade_lock", "data_collection_floor"],
+            "correlation_dependencies": [],
+        },
+        sleeve="default",
+    )
+
+    quality = src._quality_system([row], max_rows=5)
+
+    assert row["managed_quality_debt"] is True
+    assert row["generic_paper_collection_contract"] is True
+    assert quality["overall_status"] == "ready"
+    assert quality["quality_debt_count"] == 0
+    assert quality["managed_quality_debt_count"] == 1
+    assert quality["managed_debt_contract"]["active"] is True
+
+
+def test_generic_paper_collection_overlap_is_managed_not_duplicate_alpha() -> None:
+    rows = [
+        {
+            "bot_id": f"generic_{idx}",
+            "sleeve": "default",
+            "quality_score": 30.0,
+            "target_functions": ["paper_live_data_standard", "paper_trade_lock", "data_collection_floor"],
+            "correlation_dependencies": [],
+            "direct_execution_allowed": False,
+            "managed_quality_debt": False,
+        }
+        for idx in range(8)
+    ]
+
+    duplicate = src._duplicate_alpha_overlap_detector(rows, max_rows=5)
+
+    assert duplicate["overall_status"] == "ready"
+    assert duplicate["managed_overlap_cluster_count"] == 1
+    assert duplicate["actionable_overlap_cluster_count"] == 0
+    assert duplicate["overlap_clusters"][0]["managed_overlap_reason"] == "generic_paper_live_collection_contract"
+
+
+def test_execution_realism_capacity_constraints_are_managed_not_failure(tmp_path: Path) -> None:
     health = tmp_path / "governance" / "health"
     _write_json(health / "paper_execution_calibration_latest.json", {"metrics": {"mae_bps": 19.0}})
     _write_json(health / "execution_lab_latest.json", {"top_worst_case_scenarios": [{"slippage_bps": 35.0}]})
@@ -234,8 +282,33 @@ def test_execution_realism_capacity_constraints_are_watch_not_failure(tmp_path: 
 
     realism = src._execution_realism(tmp_path)
 
-    assert realism["overall_status"] == "watch"
-    assert realism["watch_reasons"] == ["capacity_curves_constrained"]
+    assert realism["overall_status"] == "ready"
+    assert realism["watch_reasons"] == []
+    assert realism["managed_reasons"] == ["capacity_curves_constrained_haircut_active"]
+    assert realism["capacity_curve_haircut_active"] is True
+
+
+def test_low_pressure_runtime_degraded_label_is_managed_in_pressure_snapshot(tmp_path: Path) -> None:
+    health = tmp_path / "governance" / "health"
+    _write_json(health / "swap_pressure_governor_latest.json", {"swap_pressure": {"tier": "normal", "swap_used_gb": 0.5}})
+    _write_json(
+        health / "runtime_throttle_control_latest.json",
+        {
+            "overall_status": "degraded",
+            "host_saturation_score": 34.0,
+            "compute_pressure_level": "normal",
+            "memory_pressure_level": "normal",
+        },
+    )
+    _write_json(health / "ingestion_storage_control_latest.json", {"overall_status": "ready", "pressure_index": 0.01})
+    _write_json(health / "global_killswitch_latest.json", {"global_halt_active": False})
+    _write_json(health / "memory_efficiency_control_latest.json", {"overall_status": "ready", "recommended_profile": "max_throughput"})
+
+    pressure = src._pressure_snapshot(tmp_path)
+
+    assert pressure["overall_status"] == "ready"
+    assert pressure["managed_runtime_degraded"] is True
+    assert pressure["compute_policy"] == "normal"
 
 
 def test_self_healing_auto_playbooks_are_watch_manual_auth_is_needs_work(tmp_path: Path) -> None:
@@ -296,7 +369,9 @@ def test_sleeve_masters_research_pipeline_decay_and_black_box_are_written(tmp_pa
     assert any(row["sleeve"] == "intraday_aggressive" for row in masters)
     assert payload["sections"]["research_to_strategy_pipeline"]["stage_counts"]["paper_only_collecting"] >= 1
     assert payload["sections"]["model_decay_detector"]["decaying_bot_count"] >= 1
-    assert payload["sections"]["cross_sleeve_correlation_governor"]["overall_status"] == "watch"
+    correlation = payload["sections"]["cross_sleeve_correlation_governor"]
+    assert correlation["overall_status"] == "ready"
+    assert correlation["managed_concentration_contract"]["active"] is True
     assert payload["sections"]["system_black_box_recorder"]["captured_file_count"] > 0
 
 

@@ -256,6 +256,31 @@ def test_platform_brain_v5_treats_repeated_advisory_regret_as_watch(tmp_path: Pa
     assert ledger["severity_policy"] == "high_regret_from_advisory_repetition_is_soak_watch_debt"
 
 
+def test_platform_brain_v5_clears_historical_regret_when_current_v4_is_ready(tmp_path: Path) -> None:
+    ledger = src._regret_ledger(
+        tmp_path,
+        {"v5_reflex_event_count": 8, "repeated_action_themes": [{"action": "refresh", "count": 6}, {"action": "review", "count": 5}]},
+        {
+            "overall_status": "ready",
+            "sections": {
+                "autonomous_priority_ranker": {
+                    "priority_count": 8,
+                    "ranked_priorities": [
+                        {"section": "quality", "status": "watch"},
+                        {"section": "realism", "status": "watch"},
+                    ],
+                },
+                "executive_meta_orchestrator": {"next_best_command": "./scripts/ops/opsctl.sh health-fast --json"},
+            },
+        },
+    )
+
+    assert ledger["overall_status"] == "ready"
+    assert ledger["current_ready_clears_historical_regret"] is True
+    assert ledger["managed_historical_advisory_count"] == 2
+    assert ledger["severity_policy"] == "historical_advisory_regret_cleared_by_current_ready_state"
+
+
 def test_platform_brain_v5_keeps_hard_priority_regret_as_needs_work(tmp_path: Path) -> None:
     ledger = src._regret_ledger(
         tmp_path,

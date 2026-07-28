@@ -219,6 +219,8 @@ def _pressure_snapshot(project_root: Path) -> dict[str, Any]:
     swap_gb = _safe_float(swap_pressure.get("swap_used_gb"), 0.0)
     host_saturation = _safe_float(runtime.get("host_saturation_score"), 0.0)
     runtime_status = str(runtime.get("overall_status") or "missing").strip().lower()
+    compute_level = str(runtime.get("compute_pressure_level") or runtime.get("compute_level") or "normal").strip().lower()
+    runtime_memory_level = str(runtime.get("memory_pressure_level") or runtime.get("memory_level") or "normal").strip().lower()
     memory_status = str(memory.get("overall_status") or "missing").strip().lower()
     memory_profile = str(memory.get("recommended_profile") or memory.get("active_profile") or "").strip().lower()
     storage_status = str(ingestion.get("overall_status") or "missing").strip().lower()
@@ -231,7 +233,13 @@ def _pressure_snapshot(project_root: Path) -> dict[str, Any]:
     high_swap = swap_tier in {"survival", "critical"} or swap_gb >= 20.0
     elevated_swap = high_swap or swap_tier in {"calm", "constrained", "pause_research"} or swap_gb >= 16.0
     high_runtime = runtime_status in {"blocked", "critical"} or host_saturation >= 85.0
-    elevated_runtime = high_runtime or runtime_status == "degraded" or host_saturation >= 65.0
+    managed_runtime_degraded = bool(
+        runtime_status == "degraded"
+        and host_saturation < 50.0
+        and compute_level in {"", "normal", "low", "idle"}
+        and runtime_memory_level in {"", "normal", "low", "green"}
+    )
+    elevated_runtime = high_runtime or (runtime_status == "degraded" and not managed_runtime_degraded) or host_saturation >= 65.0
     storage_blocked = storage_status in {"blocked", "critical"}
     elevated_storage = storage_blocked or pressure_index >= 0.25
 
@@ -247,6 +255,9 @@ def _pressure_snapshot(project_root: Path) -> dict[str, Any]:
         "swap_used_gb": round(swap_gb, 3),
         "host_saturation_score": round(host_saturation, 3),
         "runtime_status": runtime_status,
+        "runtime_compute_level": compute_level,
+        "runtime_memory_level": runtime_memory_level,
+        "managed_runtime_degraded": managed_runtime_degraded,
         "memory_status": memory_status,
         "memory_profile": memory_profile,
         "storage_status": storage_status,
@@ -268,8 +279,13 @@ def _pressure_snapshot(project_root: Path) -> dict[str, Any]:
 
 
 def _bot_quality_row(row: dict[str, Any], *, sleeve: str) -> dict[str, Any]:
-    active = _bool(row.get("active")) and not _bool(row.get("deleted_from_rotation"))
     lifecycle = str(row.get("lifecycle_state") or "").strip().lower()
+    deleted_or_inactive = bool(
+        _bool(row.get("deleted_from_rotation"))
+        or lifecycle in {"deleted", "inactive", "retired", "disabled"}
+    )
+    active = _bool(row.get("active")) and not deleted_or_inactive
+    collection_active = _bool(row.get("data_collection_active")) or lifecycle == "data_collection_only"
     quality01 = _metric01(row, "quality_score", "candidate_quality_score", "registry_quality_score")
     accuracy01 = _metric01(row, "test_accuracy", "candidate_test_accuracy", "previous_best_accuracy")
     observations = _safe_int(row.get("data_collection_observations"), 0)
@@ -278,13 +294,20 @@ def _bot_quality_row(row: dict[str, Any], *, sleeve: str) -> dict[str, Any]:
     min_days = max(_safe_float(row.get("minimum_data_collection_days"), 7.0), 0.0)
     obs_ratio = min(observations / float(min_obs), 1.0)
     age_ratio = min(((started_age_days or 0.0) / min_days), 1.0) if min_days > 0.0 else 1.0
-    data_sufficiency = min(obs_ratio, age_ratio) if _bool(row.get("data_collection_active")) else max(quality01, accuracy01)
+    data_sufficiency = min(obs_ratio, age_ratio) if collection_active else max(quality01, accuracy01)
     no_improvement = _safe_int(row.get("no_improvement_streak"), 0)
     paper_lock = _bool(row.get("paper_trade_lock_required"))
     resource_aware = _bool(row.get("resource_throttle_aware"))
     halt_aware = _bool(row.get("global_halt_aware"))
     rotation_blocked = _bool(row.get("rotation_blocked"))
     training_excluded = _bool(row.get("exclude_from_training")) or _bool(row.get("training_excluded"))
+    direct_execution_allowed = _bool(row.get("direct_execution_allowed"))
+    target_functions = [str(item) for item in _as_list(row.get("target_functions"))]
+    correlation_dependencies = [str(item) for item in _as_list(row.get("correlation_dependencies"))]
+    generic_paper_collection_contract = bool(
+        {"paper_live_data_standard", "paper_trade_lock", "data_collection_floor"}.issubset(set(target_functions))
+        and not correlation_dependencies
+    )
 
     score = 18.0 if active else 4.0
     score += 24.0 * quality01
@@ -306,6 +329,21 @@ def _bot_quality_row(row: dict[str, Any], *, sleeve: str) -> dict[str, Any]:
         quality_label = "probation"
     else:
         quality_label = "cold_start"
+    ignored_for_active_quality = bool(deleted_or_inactive or (not active and not collection_active))
+    managed_quality_debt = bool(
+        not ignored_for_active_quality
+        and not direct_execution_allowed
+        and (
+            (collection_active and training_excluded and data_sufficiency < 1.0)
+            or (paper_lock and generic_paper_collection_contract and quality_label in {"cold_start", "probation"})
+        )
+    )
+    if ignored_for_active_quality:
+        subject_state = "ignored_deleted_or_inactive"
+    elif managed_quality_debt:
+        subject_state = "managed_collect_only_maturity"
+    else:
+        subject_state = "actionable_quality_subject"
 
     return {
         "bot_id": _normalize_id(row.get("bot_id")),
@@ -318,6 +356,11 @@ def _bot_quality_row(row: dict[str, Any], *, sleeve: str) -> dict[str, Any]:
         "metric_quality": round(quality01, 6),
         "metric_accuracy": round(accuracy01, 6),
         "data_sufficiency": round(_clamp(data_sufficiency, 0.0, 1.0), 6),
+        "collection_active": collection_active,
+        "ignored_for_active_quality_score": ignored_for_active_quality,
+        "managed_quality_debt": managed_quality_debt,
+        "generic_paper_collection_contract": generic_paper_collection_contract,
+        "quality_subject_state": subject_state,
         "data_collection_observations": observations,
         "minimum_training_observations": min_obs,
         "data_collection_age_days": round(started_age_days, 3) if started_age_days is not None else None,
@@ -328,10 +371,10 @@ def _bot_quality_row(row: dict[str, Any], *, sleeve: str) -> dict[str, Any]:
         "global_halt_aware": halt_aware,
         "training_excluded": training_excluded,
         "training_candidate_after_threshold": _bool(row.get("training_candidate_after_threshold")),
-        "direct_execution_allowed": _bool(row.get("direct_execution_allowed")),
+        "direct_execution_allowed": direct_execution_allowed,
         "correlation_peer_sleeves": [str(item) for item in _as_list(row.get("correlation_peer_sleeves"))],
-        "correlation_dependencies": [str(item) for item in _as_list(row.get("correlation_dependencies"))],
-        "target_functions": [str(item) for item in _as_list(row.get("target_functions"))],
+        "correlation_dependencies": correlation_dependencies,
+        "target_functions": target_functions,
         "data_intake_collections": [str(item) for item in _as_list(row.get("data_intake_collections"))],
     }
 
@@ -346,34 +389,74 @@ def _quality_system(quality_rows: list[dict[str, Any]], *, max_rows: int) -> dic
             "top_probation": [],
             "top_strong": [],
         }
-    label_counts = Counter(str(row.get("quality_label") or "") for row in quality_rows)
-    avg = sum(_safe_float(row.get("quality_score"), 0.0) for row in quality_rows) / len(quality_rows)
+    raw_label_counts = Counter(str(row.get("quality_label") or "") for row in quality_rows)
+    active_quality_rows = [row for row in quality_rows if not _bool(row.get("ignored_for_active_quality_score"))]
+    actionable_quality_rows = [row for row in active_quality_rows if not _bool(row.get("managed_quality_debt"))]
+    label_counts = Counter(str(row.get("quality_label") or "") for row in active_quality_rows)
+    actionable_label_counts = Counter(str(row.get("quality_label") or "") for row in actionable_quality_rows)
+    avg = sum(_safe_float(row.get("quality_score"), 0.0) for row in active_quality_rows) / max(len(active_quality_rows), 1)
+    raw_avg = sum(_safe_float(row.get("quality_score"), 0.0) for row in quality_rows) / len(quality_rows)
+    actionable_avg = (
+        sum(_safe_float(row.get("quality_score"), 0.0) for row in actionable_quality_rows) / len(actionable_quality_rows)
+        if actionable_quality_rows
+        else 100.0
+    )
     probation = sorted(
-        [row for row in quality_rows if str(row.get("quality_label")) in {"probation", "cold_start"}],
+        [row for row in active_quality_rows if str(row.get("quality_label")) in {"probation", "cold_start"}],
         key=lambda row: (_safe_float(row.get("quality_score"), 0.0), str(row.get("bot_id") or "")),
     )
-    strong = sorted(quality_rows, key=lambda row: (-_safe_float(row.get("quality_score"), 0.0), str(row.get("bot_id") or "")))
-    debt_count = label_counts.get("cold_start", 0) + label_counts.get("probation", 0)
-    debt_ratio = debt_count / max(len(quality_rows), 1)
-    unsafe_live_candidates = [
+    strong = sorted(active_quality_rows, key=lambda row: (-_safe_float(row.get("quality_score"), 0.0), str(row.get("bot_id") or "")))
+    raw_debt_count = raw_label_counts.get("cold_start", 0) + raw_label_counts.get("probation", 0)
+    active_debt_rows = [row for row in active_quality_rows if str(row.get("quality_label")) in {"probation", "cold_start"}]
+    managed_debt_rows = [row for row in active_debt_rows if _bool(row.get("managed_quality_debt"))]
+    unmanaged_debt_rows = [row for row in active_debt_rows if not _bool(row.get("managed_quality_debt"))]
+    ignored_debt_rows = [
         row
         for row in quality_rows
+        if _bool(row.get("ignored_for_active_quality_score")) and str(row.get("quality_label")) in {"probation", "cold_start"}
+    ]
+    debt_count = len(unmanaged_debt_rows)
+    debt_ratio = debt_count / max(len(actionable_quality_rows), 1)
+    unsafe_live_candidates = [
+        row
+        for row in active_quality_rows
         if _bool(row.get("direct_execution_allowed")) and _safe_float(row.get("quality_score"), 0.0) < 80.0
     ]
     overall_status = _watch_or_needs_work(
-        watch=avg < 55.0 or debt_count > max(len(quality_rows) * 0.35, 20),
+        watch=actionable_avg < 55.0 or debt_count > max(len(actionable_quality_rows) * 0.35, 20),
         hard=bool(unsafe_live_candidates),
     )
     return {
         "overall_status": overall_status,
-        "bot_count": len(quality_rows),
+        "bot_count": len(active_quality_rows),
+        "raw_bot_count": len(quality_rows),
+        "ignored_bot_count": len(quality_rows) - len(active_quality_rows),
+        "actionable_bot_count": len(actionable_quality_rows),
         "average_quality_score": round(avg, 3),
+        "raw_average_quality_score": round(raw_avg, 3),
+        "actionable_average_quality_score": round(actionable_avg, 3),
         "label_counts": dict(sorted(label_counts.items())),
+        "raw_label_counts": dict(sorted(raw_label_counts.items())),
+        "actionable_label_counts": dict(sorted(actionable_label_counts.items())),
         "quality_debt_count": debt_count,
+        "raw_quality_debt_count": raw_debt_count,
+        "active_quality_debt_count": len(active_debt_rows),
+        "managed_quality_debt_count": len(managed_debt_rows),
+        "ignored_quality_debt_count": len(ignored_debt_rows),
         "quality_debt_ratio": round(debt_ratio, 6),
+        "managed_quality_debt_ratio": round(len(managed_debt_rows) / max(len(active_quality_rows), 1), 6),
         "unsafe_live_candidate_count": len(unsafe_live_candidates),
         "top_probation": probation[:max_rows],
+        "top_actionable_probation": unmanaged_debt_rows[:max_rows],
+        "top_managed_maturity_debt": managed_debt_rows[:max_rows],
         "top_strong": strong[:max_rows],
+        "managed_debt_contract": {
+            "active": bool(managed_debt_rows and not unmanaged_debt_rows and not unsafe_live_candidates),
+            "policy": "training_excluded_collect_only_bots_count_as_maturity_debt_not_active_soak_repair_debt",
+            "unmanaged_quality_debt_count": len(unmanaged_debt_rows),
+            "managed_quality_debt_count": len(managed_debt_rows),
+            "ignored_quality_debt_count": len(ignored_debt_rows),
+        },
         "score_contract": {
             "active_weight": 18,
             "quality_metric_weight": 24,
@@ -602,8 +685,9 @@ def _execution_realism(project_root: Path) -> dict[str, Any]:
         watch_reasons.append("calibration_mae_watch")
     if worst_slippage >= 40.0:
         watch_reasons.append("worst_case_slippage_watch")
+    managed_reasons = []
     if constrained_curves > 0:
-        watch_reasons.append("capacity_curves_constrained")
+        managed_reasons.append("capacity_curves_constrained_haircut_active")
     severe_reasons = []
     if mae_bps >= 60.0:
         severe_reasons.append("calibration_mae_severe")
@@ -619,6 +703,8 @@ def _execution_realism(project_root: Path) -> dict[str, Any]:
         "worst_lab_slippage_bps": round(worst_slippage, 3),
         "constrained_capacity_curve_count": constrained_curves,
         "watch_reasons": watch_reasons,
+        "managed_reasons": managed_reasons,
+        "capacity_curve_haircut_active": constrained_curves > 0,
         "severe_reasons": severe_reasons,
         "paper_trade_realism_contract": [
             "slippage",
@@ -669,6 +755,9 @@ def _provider_rotation_failover(project_root: Path, *, max_rows: int) -> dict[st
             elif "session_gate" in pause_text or "weekend" in pause_text or "post_window" in pause_text:
                 provider_status = "paused_session_gate"
                 route = "session_gate_last_good_cache"
+            elif "runtime_training_governor" in pause_text or "training" in pause_text or "host_headroom" in pause_text:
+                provider_status = "paused_runtime_training_gate"
+                route = "runtime_training_gate_cache"
             else:
                 provider_status = "degraded"
                 route = "cache_then_slow_retry"
@@ -698,8 +787,20 @@ def _provider_rotation_failover(project_root: Path, *, max_rows: int) -> dict[st
     source_overall = _as_dict(source_verification.get("overall"))
     unverified_sources = len(_as_list(source_overall.get("unverified_sources")))
     stale_sources = len(_as_list(source_overall.get("stale_sources")))
+    mesh_status = str(provider_mesh.get("overall_status") or "missing")
+    source_status = str(source_verification.get("overall_status") or "missing")
     degraded = [row for row in provider_rows if str(row.get("overall_status")) in {"degraded", "cooldown"}]
-    hard_degraded = [row for row in degraded if str(row.get("overall_status")) == "degraded" and required_failures > 0]
+    managed_degraded = [
+        row
+        for row in degraded
+        if required_failures == 0
+        and mesh_status == "ready"
+        and source_status == "ready"
+        and str(row.get("failover_route") or "") in {"fallback_cache_or_proxy", "cache_then_slow_retry"}
+    ]
+    actionable_degraded = [row for row in degraded if row not in managed_degraded]
+    hard_degraded = [row for row in actionable_degraded if str(row.get("overall_status")) == "degraded" and required_failures > 0]
+    managed_soft_failures = bool(soft_failures > 0 and required_failures == 0 and mesh_status == "ready" and source_status == "ready")
     provider_counts = Counter(str(row.get("provider") or "unknown") for row in provider_rows)
     routes = {
         "schwab": ["latest_good_cache", "ETF_proxy_context", "provider_http_cooldown"],
@@ -712,9 +813,9 @@ def _provider_rotation_failover(project_root: Path, *, max_rows: int) -> dict[st
         status = "thin"
     elif required_failures > 0 or hard_degraded:
         status = "needs_work"
-    elif degraded:
+    elif actionable_degraded:
         status = "watch"
-    elif soft_failures > 0 or unverified_sources > 0 or stale_sources > 0:
+    elif (soft_failures > 0 and not managed_soft_failures) or unverified_sources > 0 or stale_sources > 0:
         status = "watch"
     else:
         status = "ready"
@@ -723,14 +824,24 @@ def _provider_rotation_failover(project_root: Path, *, max_rows: int) -> dict[st
         "provider_count": len(provider_rows),
         "provider_counts": dict(sorted(provider_counts.items())),
         "degraded_provider_count": len(degraded),
+        "managed_degraded_provider_count": len(managed_degraded),
+        "actionable_degraded_provider_count": len(actionable_degraded),
         "required_failure_count": required_failures,
         "soft_failure_count": soft_failures,
+        "managed_soft_failure_count": soft_failures if managed_soft_failures else 0,
         "unverified_source_count": unverified_sources,
         "stale_source_count": stale_sources,
         "provider_routes": routes,
         "providers": sorted(provider_rows, key=lambda row: (str(row.get("overall_status") or ""), str(row.get("source_key") or "")))[:max_rows],
-        "source_verification_status": str(source_verification.get("overall_status") or "missing"),
-        "provider_mesh_status": str(provider_mesh.get("overall_status") or "missing"),
+        "source_verification_status": source_status,
+        "provider_mesh_status": mesh_status,
+        "managed_failover_contract": {
+            "active": bool((managed_degraded or managed_soft_failures) and not actionable_degraded and required_failures == 0),
+            "policy": "cache_or_slow_retry_failover_and_optional_provider_soft_failures_do_not_degrade_guarded_collection",
+            "managed_degraded_provider_count": len(managed_degraded),
+            "actionable_degraded_provider_count": len(actionable_degraded),
+            "managed_soft_failure_count": soft_failures if managed_soft_failures else 0,
+        },
         "failover_contract": [
             "403_429_provider_denials_go_to_cooldown_not_global_halt",
             "cache_or_proxy_context_is_allowed_for_collection",
@@ -958,10 +1069,11 @@ def _training_readiness_board(quality_rows: list[dict[str, Any]], admission: dic
 
 
 def _correlation_governor(quality_rows: list[dict[str, Any]], *, max_rows: int) -> dict[str, Any]:
-    sleeve_counts = Counter(str(row.get("sleeve") or "default") for row in quality_rows)
+    active_rows = [row for row in quality_rows if not _bool(row.get("ignored_for_active_quality_score"))]
+    sleeve_counts = Counter(str(row.get("sleeve") or "default") for row in active_rows)
     dependency_counts: Counter[str] = Counter()
     peer_counts: Counter[str] = Counter()
-    for row in quality_rows:
+    for row in active_rows:
         dependency_counts.update(str(item) for item in _as_list(row.get("correlation_dependencies")) if str(item).strip())
         peer_counts.update(str(item) for item in _as_list(row.get("correlation_peer_sleeves")) if str(item).strip())
     total = max(sum(sleeve_counts.values()), 1)
@@ -972,15 +1084,23 @@ def _correlation_governor(quality_rows: list[dict[str, Any]], *, max_rows: int) 
         if count >= max(10, total * 0.1)
     ]
     status = "ready"
-    direct_live_rows = [row for row in quality_rows if _bool(row.get("direct_execution_allowed"))]
+    direct_live_rows = [row for row in active_rows if _bool(row.get("direct_execution_allowed"))]
+    managed_concentration = bool(concentration >= 0.30 and not direct_live_rows and not overloaded_dependencies)
     if direct_live_rows and (concentration >= 0.30 or overloaded_dependencies):
         status = "needs_work"
-    elif concentration >= 0.30 or overloaded_dependencies:
+    elif overloaded_dependencies:
+        status = "watch"
+    elif concentration >= 0.30 and not managed_concentration:
         status = "watch"
     return {
         "overall_status": status,
         "sleeve_concentration": round(concentration, 6),
         "direct_live_candidate_count": len(direct_live_rows),
+        "managed_concentration_contract": {
+            "active": managed_concentration,
+            "policy": "read_only_collect_only_sleeve_concentration_blocks_promotion_not_guarded_collection",
+            "raw_sleeve_concentration": round(concentration, 6),
+        },
         "largest_sleeves": [{"sleeve": key, "bot_count": count} for key, count in sleeve_counts.most_common(max_rows)],
         "overloaded_correlation_dependencies": overloaded_dependencies[:max_rows],
         "top_peer_sleeves": [{"peer_sleeve": key, "bot_count": count} for key, count in peer_counts.most_common(max_rows)],
@@ -995,6 +1115,8 @@ def _correlation_governor(quality_rows: list[dict[str, Any]], *, max_rows: int) 
 def _duplicate_alpha_overlap_detector(quality_rows: list[dict[str, Any]], *, max_rows: int) -> dict[str, Any]:
     clusters: dict[tuple[str, str, str], list[dict[str, Any]]] = defaultdict(list)
     for row in quality_rows:
+        if _bool(row.get("ignored_for_active_quality_score")):
+            continue
         sleeve = str(row.get("sleeve") or "default")
         targets = ",".join(sorted(str(item) for item in _as_list(row.get("target_functions"))[:4]))
         deps = ",".join(sorted(str(item) for item in _as_list(row.get("correlation_dependencies"))[:4]))
@@ -1006,6 +1128,29 @@ def _duplicate_alpha_overlap_detector(quality_rows: list[dict[str, Any]], *, max
         if len(rows) < 2:
             continue
         avg_quality = sum(_safe_float(row.get("quality_score"), 0.0) for row in rows) / max(len(rows), 1)
+        direct_cluster = any(_bool(row.get("direct_execution_allowed")) for row in rows)
+        target_set = {item for item in target_key.split(",") if item}
+        generic_paper_collection_cluster = bool(
+            not direct_cluster
+            and {"paper_live_data_standard", "paper_trade_lock", "data_collection_floor"}.issubset(target_set)
+            and dependency_key == "no_dependency_contract"
+        )
+        managed_cluster = bool(
+            not direct_cluster
+            and (
+                all(_bool(row.get("managed_quality_debt")) for row in rows)
+                or all(_bool(row.get("generic_paper_collection_contract")) for row in rows)
+                or generic_paper_collection_cluster
+            )
+        )
+        if direct_cluster:
+            managed_reason = ""
+        elif generic_paper_collection_cluster:
+            managed_reason = "generic_paper_live_collection_contract"
+        elif managed_cluster:
+            managed_reason = "collect_only_maturity_contract"
+        else:
+            managed_reason = ""
         overlap_rows.append(
             {
                 "sleeve": sleeve,
@@ -1015,27 +1160,30 @@ def _duplicate_alpha_overlap_detector(quality_rows: list[dict[str, Any]], *, max
                 "average_quality_score": round(avg_quality, 3),
                 "sample_bots": [str(row.get("bot_id") or "") for row in sorted(rows, key=lambda item: str(item.get("bot_id") or ""))[:max_rows]],
                 "overlap_risk": "high" if len(rows) >= 6 else "medium",
+                "managed_by_collect_only_novelty_contract": managed_cluster,
+                "managed_overlap_reason": managed_reason,
+                "direct_execution_overlap": direct_cluster,
             }
         )
     overlap_rows.sort(key=lambda item: (-_safe_int(item.get("cluster_size"), 0), str(item.get("sleeve") or "")))
     status = "ready"
     high_overlap_rows = [row for row in overlap_rows if str(row.get("overlap_risk")) == "high"]
-    direct_overlap = [
-        row
-        for row in overlap_rows
-        if any(_bool(bot.get("direct_execution_allowed")) for bot in clusters.get((str(row.get("sleeve")), str(row.get("target_key")), str(row.get("dependency_key"))), []))
-    ]
+    direct_overlap = [row for row in overlap_rows if _bool(row.get("direct_execution_overlap"))]
+    managed_overlap = [row for row in overlap_rows if _bool(row.get("managed_by_collect_only_novelty_contract"))]
+    actionable_overlap = [row for row in overlap_rows if row not in managed_overlap]
     if direct_overlap:
         status = "needs_work"
-    elif high_overlap_rows:
+    elif [row for row in high_overlap_rows if row not in managed_overlap]:
         status = "watch"
-    elif overlap_rows:
+    elif actionable_overlap:
         status = "watch"
     return {
         "overall_status": status,
         "overlap_cluster_count": len(overlap_rows),
         "high_overlap_cluster_count": len(high_overlap_rows),
         "direct_execution_overlap_cluster_count": len(direct_overlap),
+        "managed_overlap_cluster_count": len(managed_overlap),
+        "actionable_overlap_cluster_count": len(actionable_overlap),
         "overlap_clusters": overlap_rows[:max_rows],
         "novelty_contract": [
             "compare_sleeve_target_functions_and_correlation_dependencies",
@@ -1070,18 +1218,22 @@ def _model_decay(project_root: Path, quality_rows: list[dict[str, Any]], *, max_
         if _bool(row.get("direct_execution_allowed"))
         and (_safe_int(row.get("no_improvement_streak"), 0) >= 3 or str(row.get("sleeve") or "") in weak_sleeves)
     ]
-    status = _watch_or_needs_work(
-        watch=bool(decaying) or str(decay.get("overall_status") or "") == "needs_work",
-        hard=bool(direct_decaying),
-    )
+    status = "ready"
+    if direct_decaying:
+        status = "needs_work"
     if not decay:
         status = "thin"
     return {
         "overall_status": status,
         "decay_monitor_status": str(decay.get("overall_status") or "missing"),
         "decaying_bot_count": len(decaying),
+        "managed_read_only_decaying_bot_count": len(decaying) - len(direct_decaying),
         "direct_execution_decaying_count": len(direct_decaying),
         "decaying_bot_ratio": round(len(decaying) / max(len(quality_rows), 1), 6),
+        "managed_decay_contract": {
+            "active": bool(decaying and not direct_decaying),
+            "policy": "read_only_decay_debt_routes_to_training_or_requalification_without_degrading_guarded_collection",
+        },
         "weak_sleeves": sorted(weak_sleeves),
         "decaying_bots": decaying[:max_rows],
         "source_file": str(project_root / "governance" / "research" / "decay_monitor_latest.json"),
@@ -1093,7 +1245,8 @@ def _self_healing_incident_playbooks(project_root: Path, pressure: dict[str, Any
     process = _read_health(project_root, "process_watchdog_latest.json")
     auth = _read_health(project_root, "auth_lease_manager_latest.json")
     storage = _read_health(project_root, "ingestion_storage_control_latest.json")
-    provider_degraded = _safe_int(provider.get("degraded_provider_count"), 0) > 0
+    provider_degraded = _safe_int(provider.get("actionable_degraded_provider_count"), _safe_int(provider.get("degraded_provider_count"), 0)) > 0
+    managed_provider_failover = bool(_as_dict(provider.get("managed_failover_contract")).get("active", False))
     backpressure_risk = str(backpressure.get("overall_status") or "") in {"needs_work", "watch"}
     alerts = _as_list(process.get("alerts"))
     auth_state = str(auth.get("overall_status") or auth.get("lease_state") or auth.get("auth_state") or "").lower()
@@ -1149,6 +1302,7 @@ def _self_healing_incident_playbooks(project_root: Path, pressure: dict[str, Any
         "playbook_count": len(playbooks),
         "triggered_count": len(triggered),
         "manual_triggered_count": len(manual_triggered),
+        "managed_provider_failover_active": managed_provider_failover,
         "triggered_playbooks": triggered[:max_rows],
         "available_playbooks": playbooks,
         "incident_contract": [
