@@ -678,7 +678,7 @@ def main() -> int:
         oldest_pending_age_seconds=oldest_pending_age_seconds_core,
         pending_lines=pending_core,
         threshold_seconds=float(args.oldest_age_threshold_seconds),
-        min_pending_lines=int(args.oldest_age_min_pending_lines),
+        min_pending_lines=meaningful_pending_for_pressure,
     )
     ema_pressure = bool(
         ema_pending >= max(float(args.pending_lines_threshold) * 0.8, 1.0)

@@ -288,6 +288,30 @@ def test_infrabot_adaptive_governor_routes_raw_profitability_burn_down(tmp_path:
     ]
 
 
+def test_infrabot_adaptive_governor_routes_source_quality_to_health_gate_recheck(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    health = _base_ready_health(project_root)
+    _write_json(
+        health / "source_verification_latest.json",
+        {
+            "overall_status": "degraded",
+            "overall": {
+                "unverified_sources": ["ticker_news_context"],
+                "stale_sources": ["ticker_news_context"],
+            },
+        },
+    )
+
+    payload = infrabot_adaptive_governor.build_payload(project_root, max_actions=8)
+
+    needs = {need["id"]: need for need in payload["system_needs_contract"]["needs"]}
+    assert "source_quality" in needs
+    assert "health_gates_recheck" in needs["source_quality"]["target_capabilities"]
+    assert "health_gates_recheck" in {
+        row["id"] for row in payload["capability_registry"]["capabilities"]
+    }
+
+
 def test_infrabot_adaptive_governor_surfaces_production_quality_slo_breach(tmp_path: Path) -> None:
     project_root = tmp_path / "project"
     health = _base_ready_health(project_root)
@@ -452,8 +476,19 @@ def test_infrabot_adaptive_governor_routes_cleanup_handoff_specialists(tmp_path:
             "next_action": "clear hard blockers, then rerun storage-retention-unison --apply",
         },
     )
+    _write_json(
+        health / "storage_quota_guard_latest.json",
+        {
+            "overall_status": "degraded",
+            "quota_summary": {
+                "hard_breaches": 0,
+                "soft_breaches": 1,
+                "degraded_families": ["sql_link_shards"],
+            },
+        },
+    )
 
-    payload = infrabot_adaptive_governor.build_payload(project_root, max_actions=8)
+    payload = infrabot_adaptive_governor.build_payload(project_root, max_actions=10)
 
     needs = {need["id"] for need in payload["system_needs_contract"]["needs"]}
     routes = {row["capability_id"]: row for row in payload["adaptive_policy_router"]["routes"]}
@@ -471,7 +506,9 @@ def test_infrabot_adaptive_governor_routes_cleanup_handoff_specialists(tmp_path:
         "--json",
     ]
     assert routes["raw_training_cleanup_handoff"]["action"] == "run_now"
+    assert routes["deep_cold_second_cold_handoff"]["action"] == "run_now"
     assert routes["storage_retention_unison_handoff"]["action"] == "run_now"
+    assert routes["stateful_sql_quota_relief"]["action"] == "run_now"
 
 
 def test_infrabot_adaptive_governor_does_not_route_storage_backpressure_when_overlay_clear(tmp_path: Path) -> None:

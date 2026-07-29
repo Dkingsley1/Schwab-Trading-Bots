@@ -46,6 +46,8 @@ class DailyStateSnapshotDrillTests(unittest.TestCase):
 
             self.assertEqual(rc, 0)
             latest = json.loads((out_root / "latest.json").read_text(encoding="utf-8"))
+            self.assertTrue(latest["latest_write_verified"])
+            self.assertEqual(latest["latest_file"], str(out_root / "latest.json"))
             row = latest["rows"][0]
             self.assertEqual(row["copy_mode"], "metadata_only_large_file")
             self.assertEqual(row["snapshot"], "")
@@ -78,6 +80,8 @@ class DailyStateSnapshotDrillTests(unittest.TestCase):
 
             self.assertEqual(rc, 0)
             latest = json.loads((out_root / "latest.json").read_text(encoding="utf-8"))
+            self.assertTrue(latest["latest_write_verified"])
+            self.assertEqual(latest["latest_file"], str(out_root / "latest.json"))
             row = latest["rows"][0]
             self.assertEqual(row["copy_mode"], "full_copy_restore")
             self.assertNotEqual(row["snapshot"], "")
@@ -115,6 +119,8 @@ class DailyStateSnapshotDrillTests(unittest.TestCase):
 
             self.assertEqual(rc, 0)
             latest = json.loads((out_root / "latest.json").read_text(encoding="utf-8"))
+            self.assertTrue(latest["latest_write_verified"])
+            self.assertEqual(latest["latest_file"], str(out_root / "latest.json"))
             row = latest["rows"][0]
             self.assertEqual(row["requested_source"], str(routed_db))
             self.assertEqual(row["effective_source"], str(fallback_db))

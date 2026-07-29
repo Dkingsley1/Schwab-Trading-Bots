@@ -181,3 +181,55 @@ def test_source_verification_autorefresh_does_not_pin_on_fresh_confidence_debt(t
     assert [cmd[1] for cmd in payload["selected_commands"]] == ["macro-context-sync"]
     skipped_by_reason = {row["reason"]: row for row in payload["skipped_commands"]}
     assert skipped_by_reason["fresh_ok_source_confidence_debt_waiting"]["source_id"] == "fx_market_context"
+
+
+def test_source_verification_autorefresh_reconciles_downstream_reports_after_apply(tmp_path: Path, monkeypatch) -> None:
+    _seed_runtime(tmp_path, ready=True)
+    opsctl = "/repo/scripts/ops/opsctl.sh"
+    before = {
+        "ok": False,
+        "overall_status": "degraded",
+        "unverified_sources": ["sec_edgar_context"],
+        "stale_artifacts": ["sec_edgar_context"],
+        "degraded_artifacts": ["sec_edgar_context"],
+        "recommended_refresh_commands": [
+            [opsctl, "sec-edgar-sync", "--json"],
+            [opsctl, "source-verification", "--json"],
+        ],
+    }
+    after = {
+        "ok": True,
+        "overall_status": "ready",
+        "unverified_sources": [],
+        "stale_artifacts": [],
+        "degraded_artifacts": [],
+        "recommended_refresh_commands": [[opsctl, "source-verification", "--json"]],
+    }
+    payloads = iter([before, after])
+    calls: list[list[str]] = []
+
+    def _fake_run(command: list[str], *, cwd: Path, timeout_seconds: int) -> dict:
+        calls.append(list(command))
+        return {
+            "command": list(command),
+            "rc": 0,
+            "ok": True,
+            "stdout_tail": "",
+            "stderr_tail": "",
+            "timed_out": False,
+        }
+
+    monkeypatch.setattr(src.report_src, "build_source_verification_payload", lambda _root: next(payloads))
+    monkeypatch.setattr(src, "_write_latest_source_report", lambda _root, _payload: None)
+    monkeypatch.setattr(src, "_run_command", _fake_run)
+
+    payload = src.build_payload(tmp_path, apply=True, max_commands=1, timeout_seconds=180, max_heavy_commands=1)
+
+    assert payload["overall_status"] == "applied"
+    assert [cmd[1] for cmd in calls] == ["sec-edgar-sync", "collector-contracts", "health-gates"]
+    assert [cmd[1] for cmd in payload["downstream_recheck_commands"]] == ["collector-contracts", "health-gates"]
+    assert [row["command"][1] for row in payload["downstream_recheck_results"]] == ["collector-contracts", "health-gates"]
+
+
+def test_source_verification_autorefresh_tails_are_bounded() -> None:
+    assert len(src._tail_text("x" * 5000, char_limit=123)) == 123

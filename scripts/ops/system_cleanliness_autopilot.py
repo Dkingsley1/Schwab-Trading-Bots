@@ -36,6 +36,17 @@ def _safe_float(raw: Any, default: float = 0.0) -> float:
         return float(default)
 
 
+def _dict(raw: Any) -> dict[str, Any]:
+    return raw if isinstance(raw, dict) else {}
+
+
+def _tail_text(text: str, *, line_count: int = 10, char_limit: int = 4000) -> str:
+    tail = "\n".join((text or "").splitlines()[-max(int(line_count), 1):])
+    if len(tail) <= char_limit:
+        return tail
+    return tail[-char_limit:]
+
+
 def _run_json(cmd: list[str], *, cwd: Path, timeout_sec: int) -> dict[str, Any]:
     try:
         proc = subprocess.run(
@@ -69,8 +80,8 @@ def _run_json(cmd: list[str], *, cwd: Path, timeout_sec: int) -> dict[str, Any]:
         "cmd": list(cmd),
         "rc": rc,
         "timed_out": timed_out,
-        "stdout_tail": "\n".join(stdout.splitlines()[-10:]),
-        "stderr_tail": "\n".join(stderr.splitlines()[-10:]),
+        "stdout_tail": _tail_text(stdout),
+        "stderr_tail": _tail_text(stderr),
         "payload": payload,
     }
 
@@ -133,10 +144,12 @@ def build_payload(
     source_verification = _health(project_root, "source_verification_latest.json")
     training = _health(project_root, "training_quality_control_latest.json")
     paper = _health(project_root, "paper_performance_latest.json")
+    paper_profitability = _health(project_root, "paper_profitability_control_latest.json")
     replay_hash = _health(project_root, "replay_hash_registry_guard_latest.json")
     golden_replay = _health(project_root, "golden_replay_regression_latest.json")
     promotion_quality = _health(project_root, "promotion_quality_gate_latest.json")
     promotion_packet = _champion(project_root, "promotion_autopilot_packet_latest.json")
+    live_canary = _health(project_root, "live_canary_readiness_contract_latest.json")
     coverage_seed = _walk_forward(project_root, "coverage_seed_latest.json")
     coverage_gap = _walk_forward(project_root, "coverage_gap_closer_latest.json")
 
@@ -269,6 +282,14 @@ def build_payload(
             _opsctl(project_root, "source-verification", "--json"),
         )
     ) if collector_blocked or collector_degraded else None
+    repair_plan.append(
+        _plan_row(
+            "collectors_sources",
+            "health_gates_recheck",
+            "reconcile dashboard hard gates after collector/source repairs",
+            _opsctl(project_root, "health-gates", "--json"),
+        )
+    ) if collector_blocked or collector_degraded or storage_blocked or storage_degraded else None
 
     training_status = str(training.get("overall_status") or "missing").strip().lower()
     training_blocked = training_status in {"blocked", "missing"}
@@ -318,8 +339,21 @@ def build_payload(
         )
     ) if training_blocked or training_degraded else None
 
-    weak_sleeves = ((training.get("targeted_actions") or {}).get("weak_sleeves") or [])
-    paper_blocked = bool(weak_sleeves)
+    weak_sleeves = ((_dict(training.get("targeted_actions"))).get("weak_sleeves") or [])
+    low_grade_summary = _dict(paper_profitability.get("low_grade_layer_summary"))
+    controls_grade = str(
+        low_grade_summary.get("control_posture_grade")
+        or paper_profitability.get("controlled_profitability_grade")
+        or paper_profitability.get("profitability_grade")
+        or ""
+    ).strip().upper()
+    paper_controls_ready = bool(
+        paper_profitability.get("ok", False)
+        and controls_grade in {"A", "A+"}
+        and _safe_int(low_grade_summary.get("active_blocker_count"), 0) == 0
+    )
+    weak_sleeves_managed = bool(weak_sleeves and paper_controls_ready)
+    paper_blocked = bool(weak_sleeves and not weak_sleeves_managed)
     if paper_blocked:
         repair_plan.append(
             _plan_row(
@@ -342,7 +376,9 @@ def build_payload(
 
     replay_blocked = not bool(replay_hash.get("ok", False)) or not bool(golden_replay.get("ok", False))
     promotion_ready = bool(promotion_packet.get("promotion_ready", False)) or bool(promotion_quality.get("ok", False))
-    promotion_blocked = replay_blocked or not promotion_ready
+    live_money_ready = bool(live_canary.get("live_canary_money_ready", False))
+    promotion_live_money_watch = bool(not promotion_ready and not live_money_ready and not replay_blocked)
+    promotion_blocked = bool(replay_blocked or (live_money_ready and not promotion_ready))
     promotion_gate = "training_eligibility" if (training_blocked or storage_blocked or collector_blocked) else ""
     repair_plan.append(
         _plan_row(
@@ -458,11 +494,21 @@ def build_payload(
             "unverified_sources": unverified_sources,
             **training_metrics,
             "weak_sleeve_count": len(weak_sleeves),
+            "weak_sleeves_managed_by_profitability_controls": weak_sleeves_managed,
+            "paper_profitability_control_grade": controls_grade,
+            "paper_profitability_active_blockers": _safe_int(low_grade_summary.get("active_blocker_count"), 0),
             "coverage_seed_queue_size": _safe_int(coverage_seed.get("coverage_seed_queue_size"), 0),
             "coverage_gap_status": str((coverage_gap.get("autopilot_contract") or {}).get("overall_status") or coverage_gap.get("overall_status") or ""),
             "replay_hash_ok": bool(replay_hash.get("ok", False)),
             "golden_replay_ok": bool(golden_replay.get("ok", False)),
             "promotion_ready": bool(promotion_ready),
+            "promotion_live_money_watch": promotion_live_money_watch,
+            "live_canary_money_ready": live_money_ready,
+            "live_canary_blockers": [
+                str(item)
+                for item in (live_canary.get("blockers") if isinstance(live_canary.get("blockers"), list) else [])
+                if str(item).strip()
+            ],
         },
         "assigned_infrabot": "system_cleanliness_infrabot",
         "infra_assistants": [
@@ -498,8 +544,10 @@ def build_payload(
                 "clear storage/backpressure before broad retrains" if storage_blocked else "",
                 "repair market_micro_context before marking collector contracts clean" if collector_blocked else "",
                 "keep new sleeves collect-only until source coverage and training eligibility are ready",
+                "keep weak sleeves visible but managed by profitability controls during paper soak" if weak_sleeves_managed else "",
                 "use lane-specific retraining and dominance caps after ingestion clears" if training_blocked or training_degraded else "",
                 "hold promotion until replay lineage and packet gates are clean" if promotion_blocked else "",
+                "treat promotion readiness as a live-money blocker, not an unattended paper-soak blocker, while live canary remains blocked" if promotion_live_money_watch else "",
             ]
         ),
         "source_files": {

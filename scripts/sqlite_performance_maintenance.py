@@ -1,6 +1,7 @@
 import argparse
 import json
 import os
+import shutil
 import sqlite3
 import time
 from datetime import datetime, timezone
@@ -226,6 +227,95 @@ def _size_gb(path: Path) -> float:
         return 0.0
 
 
+def _disk_free_gb(path: Path) -> float:
+    try:
+        return float(shutil.disk_usage(path).free) / (1024**3)
+    except Exception:
+        return 0.0
+
+
+def _vacuum_temp_dir_candidates(db_path: Path, project_root: Path, explicit: str = "") -> list[tuple[Path, str]]:
+    candidates: list[tuple[Path, str]] = []
+    if str(explicit or "").strip():
+        candidates.append((Path(str(explicit).strip()).expanduser(), "vacuum_temp_dir_arg"))
+    env_sqlite_tmp = str(os.getenv("SQLITE_TMPDIR", "") or "").strip()
+    if env_sqlite_tmp:
+        candidates.append((Path(env_sqlite_tmp).expanduser(), "sqlite_tmpdir_env"))
+    candidates.append((db_path.parent / ".sqlite_tmp", "db_volume_tmpdir"))
+    video_root = Path("/Volumes/VIDEO")
+    if video_root.exists():
+        candidates.append((video_root / "schwab_trading_bot_cold" / "sqlite_tmp", "video_volume_tmpdir"))
+    env_tmpdir = str(os.getenv("TMPDIR", "") or "").strip()
+    if env_tmpdir:
+        candidates.append((Path(env_tmpdir).expanduser(), "tmpdir_env"))
+    candidates.append((project_root / ".tmp" / "sqlite_vacuum", "project_tmpdir"))
+
+    seen: set[str] = set()
+    unique: list[tuple[Path, str]] = []
+    for path, source in candidates:
+        key = str(path)
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        unique.append((path, source))
+    return unique
+
+
+def _select_vacuum_temp_dir(
+    *,
+    db_path: Path,
+    project_root: Path,
+    db_size_gb: float,
+    explicit: str = "",
+    min_free_ratio: float = 1.15,
+    min_free_gb: float = 8.0,
+) -> dict[str, Any]:
+    required_gb = max(float(db_size_gb) * max(float(min_free_ratio), 1.0), float(db_size_gb) + max(float(min_free_gb), 0.0))
+    evaluations: list[dict[str, Any]] = []
+    for candidate, source in _vacuum_temp_dir_candidates(db_path, project_root, explicit):
+        row = {
+            "path": str(candidate),
+            "source": source,
+            "exists": False,
+            "is_dir": False,
+            "free_gb": 0.0,
+            "required_gb": round(required_gb, 3),
+            "usable": False,
+            "reason": "",
+        }
+        try:
+            candidate.mkdir(parents=True, exist_ok=True)
+            row["exists"] = candidate.exists()
+            row["is_dir"] = candidate.is_dir()
+            free_gb = _disk_free_gb(candidate)
+            row["free_gb"] = round(free_gb, 3)
+            row["usable"] = bool(candidate.exists() and candidate.is_dir() and free_gb >= required_gb)
+            if not row["usable"]:
+                row["reason"] = "insufficient_free_space" if free_gb < required_gb else "not_a_directory"
+        except Exception as exc:
+            row["reason"] = f"unusable:{exc}"
+        evaluations.append(row)
+        if row["usable"]:
+            return {
+                "selected": True,
+                "selected_dir": str(candidate),
+                "selected_source": source,
+                "required_gb": round(required_gb, 3),
+                "free_gb": row["free_gb"],
+                "candidate_evaluations": evaluations,
+                "reason": "",
+            }
+    return {
+        "selected": False,
+        "selected_dir": "",
+        "selected_source": "",
+        "required_gb": round(required_gb, 3),
+        "free_gb": 0.0,
+        "candidate_evaluations": evaluations,
+        "reason": "insufficient_vacuum_temp_headroom",
+    }
+
+
 def _normalize_checkpoint_mode(raw: str) -> str:
     mode = str(raw or "auto").strip().lower()
     if mode in {"auto", "passive", "truncate", "restart"}:
@@ -304,6 +394,17 @@ def main() -> int:
     parser.add_argument("--sqlite-lock-retries", type=int, default=int(os.getenv("SQLITE_LOCK_RETRIES", "8")))
     parser.add_argument("--sqlite-lock-retry-delay-seconds", type=float, default=float(os.getenv("SQLITE_LOCK_RETRY_DELAY_SECONDS", "0.25")))
     parser.add_argument("--max-runtime-seconds", type=float, default=float(os.getenv("SQLITE_MAINTENANCE_MAX_RUNTIME_SECONDS", "7200")))
+    parser.add_argument("--vacuum-temp-dir", default=os.getenv("SQLITE_VACUUM_TMPDIR", ""))
+    parser.add_argument(
+        "--vacuum-temp-min-free-ratio",
+        type=float,
+        default=float(os.getenv("SQLITE_VACUUM_TMP_MIN_FREE_RATIO", "1.15")),
+    )
+    parser.add_argument(
+        "--vacuum-temp-min-free-gb",
+        type=float,
+        default=float(os.getenv("SQLITE_VACUUM_TMP_MIN_FREE_GB", "8")),
+    )
     args = parser.parse_args()
 
     db_path = Path(args.db)
@@ -377,6 +478,9 @@ def main() -> int:
         "last_heartbeat_utc": timestamp_utc,
         "elapsed_seconds": 0.0,
         "timed_out": False,
+        "vacuum_temp_safety": {},
+        "vacuum_safety_skipped": False,
+        "vacuum_skipped_reason": "",
     }
     runtime_settings = resolve_runtime_settings(PROJECT_ROOT)
     payload["sqlite_runtime_settings"] = {
@@ -395,6 +499,32 @@ def main() -> int:
         "memory_free_pct": float(runtime_settings.get("memory_free_pct") or 0.0),
         "swap_used_gb": float(runtime_settings.get("swap_used_gb") or 0.0),
     }
+    vacuum_may_run = bool(
+        (not args.checkpoint_only)
+        and (
+            bool(args.vacuum)
+            or (
+                not bool(args.no_auto_vacuum)
+                and bool(runtime_settings.get("auto_vacuum_allowed", True))
+                and size_gb_before >= float(args.auto_vacuum_over_gb)
+            )
+        )
+    )
+    vacuum_temp_safety: dict[str, Any] = {}
+    if vacuum_may_run:
+        vacuum_temp_safety = _select_vacuum_temp_dir(
+            db_path=db_path,
+            project_root=PROJECT_ROOT,
+            db_size_gb=size_gb_before,
+            explicit=str(args.vacuum_temp_dir or ""),
+            min_free_ratio=float(args.vacuum_temp_min_free_ratio),
+            min_free_gb=float(args.vacuum_temp_min_free_gb),
+        )
+        payload["vacuum_temp_safety"] = vacuum_temp_safety
+        selected_dir = str(vacuum_temp_safety.get("selected_dir") or "").strip()
+        if selected_dir:
+            os.environ["SQLITE_TMPDIR"] = selected_dir
+            os.environ["TMPDIR"] = selected_dir
 
     try:
         _write_heartbeat(payload, out_path, current_step="starting", started_monotonic=started_monotonic)
@@ -579,15 +709,26 @@ def main() -> int:
             payload["auto_vacuum_skipped_reason"] = "memory_pressure_red"
 
         if do_vacuum:
-            _raise_if_deadline_expired(deadline_monotonic)
-            _write_heartbeat(payload, out_path, current_step="vacuum", started_monotonic=started_monotonic)
-            _emit_progress("sqlite_maintenance step=vacuum", as_json=args.json)
-            _sqlite_exec_with_retry(
-                conn,
-                "VACUUM",
-                lock_retries=max(args.sqlite_lock_retries, 0),
-                lock_retry_delay_seconds=max(args.sqlite_lock_retry_delay_seconds, 0.01),
-            )
+            if not bool((payload.get("vacuum_temp_safety") or {}).get("selected", False)):
+                do_vacuum = False
+                payload["vacuum_safety_skipped"] = True
+                payload["vacuum_skipped_reason"] = str(
+                    (payload.get("vacuum_temp_safety") or {}).get("reason") or "vacuum_temp_dir_not_selected"
+                )
+                _emit_progress(
+                    f"sqlite_maintenance step=vacuum_skipped reason={payload['vacuum_skipped_reason']}",
+                    as_json=args.json,
+                )
+            else:
+                _raise_if_deadline_expired(deadline_monotonic)
+                _write_heartbeat(payload, out_path, current_step="vacuum", started_monotonic=started_monotonic)
+                _emit_progress("sqlite_maintenance step=vacuum", as_json=args.json)
+                _sqlite_exec_with_retry(
+                    conn,
+                    "VACUUM",
+                    lock_retries=max(args.sqlite_lock_retries, 0),
+                    lock_retry_delay_seconds=max(args.sqlite_lock_retry_delay_seconds, 0.01),
+                )
 
         row_count_skip_reason = _row_count_skip_reason(
             checkpoint_only=bool(args.checkpoint_only),

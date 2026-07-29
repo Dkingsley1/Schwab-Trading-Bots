@@ -47,6 +47,18 @@ COMMAND_MARKER_SOURCE_IDS = {
     "extended-quant-sync": "extended_quant_context",
     "public-policy-sync": "public_policy_context",
 }
+DOWNSTREAM_RECHECK_TIMEOUT_SECONDS = 120
+
+
+def _opsctl(project_root: Path, *args: str) -> list[str]:
+    return [str(project_root / "scripts" / "ops" / "opsctl.sh"), *args]
+
+
+def _tail_text(text: str, *, line_count: int = 8, char_limit: int = 4000) -> str:
+    tail = "\n".join((text or "").splitlines()[-max(int(line_count), 1):])
+    if len(tail) <= char_limit:
+        return tail
+    return tail[-char_limit:]
 
 
 def _command_key(command: list[str]) -> tuple[str, ...]:
@@ -207,8 +219,8 @@ def _run_command(command: list[str], *, cwd: Path, timeout_seconds: int) -> dict
             "command": [str(part) for part in command],
             "rc": int(proc.returncode),
             "ok": proc.returncode == 0,
-            "stdout_tail": "\n".join((proc.stdout or "").splitlines()[-8:]),
-            "stderr_tail": "\n".join((proc.stderr or "").splitlines()[-8:]),
+            "stdout_tail": _tail_text(proc.stdout or ""),
+            "stderr_tail": _tail_text(proc.stderr or ""),
             "timed_out": False,
         }
     except subprocess.TimeoutExpired as exc:
@@ -218,8 +230,8 @@ def _run_command(command: list[str], *, cwd: Path, timeout_seconds: int) -> dict
             "command": [str(part) for part in command],
             "rc": 124,
             "ok": False,
-            "stdout_tail": "\n".join(stdout.splitlines()[-8:]),
-            "stderr_tail": "\n".join(stderr.splitlines()[-8:]),
+            "stdout_tail": _tail_text(stdout),
+            "stderr_tail": _tail_text(stderr),
             "timed_out": True,
         }
     except Exception as exc:
@@ -241,6 +253,13 @@ def _write_latest_source_report(project_root: Path, payload: dict[str, Any]) -> 
     text = json.dumps(payload, ensure_ascii=True, indent=2) + "\n"
     (health / "source_verification_latest.json").write_text(text, encoding="utf-8")
     (reports / "source_verification_latest.md").write_text(report_src._render_markdown(payload), encoding="utf-8")
+
+
+def _downstream_recheck_commands(project_root: Path) -> list[list[str]]:
+    return [
+        _opsctl(project_root, "collector-contracts", "--json"),
+        _opsctl(project_root, "health-gates", "--json"),
+    ]
 
 
 def build_payload(
@@ -337,6 +356,8 @@ def build_payload(
         selected.append({"command": command, "policy": policy})
 
     results: list[dict[str, Any]] = []
+    downstream_recheck_commands = _downstream_recheck_commands(project_root)
+    downstream_recheck_results: list[dict[str, Any]] = []
     after = before
     if apply and selected:
         for row in selected:
@@ -345,13 +366,24 @@ def build_payload(
             results.append(_run_command(command, cwd=project_root, timeout_seconds=_safe_int(policy.get("timeout_seconds"), int(timeout_seconds))))
         after = report_src.build_source_verification_payload(project_root)
         _write_latest_source_report(project_root, after)
+        for command in downstream_recheck_commands:
+            downstream_recheck_results.append(
+                _run_command(command, cwd=project_root, timeout_seconds=DOWNSTREAM_RECHECK_TIMEOUT_SECONDS)
+            )
     elif apply:
         _write_latest_source_report(project_root, after)
+        for command in downstream_recheck_commands:
+            downstream_recheck_results.append(
+                _run_command(command, cwd=project_root, timeout_seconds=DOWNSTREAM_RECHECK_TIMEOUT_SECONDS)
+            )
 
     failed = [row for row in results if not bool(row.get("ok", False))]
+    downstream_failed = [row for row in downstream_recheck_results if not bool(row.get("ok", False))]
     status = "ready" if bool(after.get("ok", False)) else "needs_refresh"
     if apply and failed:
         status = "applied_with_failures"
+    elif apply and downstream_failed:
+        status = "applied_with_recheck_failures"
     elif apply and results:
         status = "applied" if bool(after.get("ok", False)) else "applied_still_degraded"
     elif not selected and skipped:
@@ -380,9 +412,13 @@ def build_payload(
         "skipped_commands": skipped,
         "applied_commands": [row["command"] for row in selected] if apply else [],
         "results": results,
+        "downstream_recheck_commands": downstream_recheck_commands,
+        "downstream_recheck_results": downstream_recheck_results,
         "recommended_actions": [
             "source refresh is deferred until runtime and Mac fluidity are ready"
             if status == "deferred_by_runtime_governor"
+            else "post-refresh downstream rechecks failed; inspect collector-contracts and health-gates artifacts"
+            if downstream_failed
             else "apply source-verification-refresh to refresh degraded artifacts in bounded batches"
             if not apply and selected
             else "rerun source-verification after failed refresh commands"

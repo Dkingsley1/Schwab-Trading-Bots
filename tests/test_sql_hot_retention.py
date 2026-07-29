@@ -293,6 +293,45 @@ class SqlHotRetentionTests(unittest.TestCase):
             self.assertEqual(_count_rows(archive_db), 1)
             self.assertEqual(_count_rows(db), 1)
 
+    def test_skip_remaining_count_keeps_large_retention_pass_bounded(self) -> None:
+        module = _load_module()
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            db = root / "jsonl_link.sqlite3"
+            archive_db = root / "jsonl_link_archive.sqlite3"
+            _init_db(db)
+
+            now = datetime.now(timezone.utc)
+            _insert_rows(
+                db,
+                [
+                    (1, (now - timedelta(days=10)).isoformat(), "old.jsonl", 1),
+                    (2, now.isoformat(), "fresh.jsonl", 2),
+                ],
+            )
+
+            rc, payload = _run_main(
+                module,
+                [
+                    "sql_hot_retention.py",
+                    "--db",
+                    str(db),
+                    "--archive-db",
+                    str(archive_db),
+                    "--hot-days",
+                    "7",
+                    "--skip-remaining-count",
+                    "--json",
+                ],
+            )
+
+            self.assertEqual(rc, 0)
+            self.assertEqual(payload["moved_rows"], 1)
+            self.assertEqual(payload["remaining_rows"], -1)
+            self.assertTrue(payload["remaining_count_skipped"])
+            self.assertEqual(_count_rows(archive_db), 1)
+            self.assertEqual(_count_rows(db), 1)
+
 
 if __name__ == "__main__":
     unittest.main()

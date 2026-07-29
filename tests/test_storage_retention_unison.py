@@ -419,6 +419,9 @@ def test_storage_retention_unison_runs_hot_plane_compactors(monkeypatch, tmp_pat
     external_root = tmp_path / "external" / "schwab_trading_bot"
     external_root.mkdir(parents=True)
     (tmp_path / "governance" / "health").mkdir(parents=True)
+    second_cold = tmp_path / "VIDEO" / "schwab_trading_bot_cold"
+    monkeypatch.setenv("BOT_ALLOW_VIDEO_COLD_ARCHIVE", "1")
+    monkeypatch.setenv("BOT_VIDEO_COLD_ARCHIVE_ROOT", str(second_cold))
 
     commands: list[list[str]] = []
 
@@ -538,9 +541,12 @@ def test_storage_retention_unison_runs_hot_plane_compactors(monkeypatch, tmp_pat
     )
 
     command_names = [row[1] for row in commands]
+    deep_cold_command = commands[command_names.index("deep-cold-storage-layer")]
     assert "governance-telemetry-compactor" in command_names
     assert "governance-lifecycle-compactor" in command_names
     assert "decision-log-compactor" in command_names
+    assert "--move-to-second-cold" in deep_cold_command
+    assert str(second_cold) in deep_cold_command
     telemetry_command = commands[command_names.index("governance-telemetry-compactor")]
     telemetry_commands = [row for row in commands if row[1] == "governance-telemetry-compactor"]
     external_telemetry_command = [row for row in telemetry_commands if "--project-root" in row][0]

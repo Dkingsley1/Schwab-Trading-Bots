@@ -562,14 +562,25 @@ def main() -> int:
     gate_blocked = blocked_rate > args.blocked_rate_limit
     gate_restarts = watchdog_restarts > args.watchdog_restarts_limit
 
+    ingest_oldest_age_material_lines = max(2000, int(int(args.ingestion_pending_lines_limit) * 0.10))
+    backpressure_oldest_age_material_lines = max(
+        int(float(args.ingestion_pending_lines_limit) * 0.75),
+        ingest_oldest_age_material_lines,
+    )
     gate_ingest_pending = ingest_pending_lines > int(args.ingestion_pending_lines_limit)
-    gate_ingest_oldest_age = ingest_oldest_age_s > float(args.ingestion_oldest_age_seconds_limit)
+    gate_ingest_oldest_age = bool(
+        ingest_oldest_age_s > float(args.ingestion_oldest_age_seconds_limit)
+        and ingest_pending_lines >= ingest_oldest_age_material_lines
+    )
     gate_ingest_invalid = ingest_invalid_lines > int(args.ingestion_invalid_lines_limit)
     severe_backpressure_overload = bool(
         backpressure_overload
         and (
             backpressure_pending_lines > int(args.ingestion_pending_lines_limit)
-            or backpressure_oldest_age_s > float(args.ingestion_oldest_age_seconds_limit)
+            or (
+                backpressure_oldest_age_s > float(args.ingestion_oldest_age_seconds_limit)
+                and backpressure_pending_lines >= backpressure_oldest_age_material_lines
+            )
             or bool(critical_priority_failures)
         )
     )
@@ -662,10 +673,12 @@ def main() -> int:
             'ingest_oldest_uningested_age_seconds': ingest_oldest_age_s,
             'ingest_invalid_lines': ingest_invalid_lines,
             'ingest_p95_latency_seconds': ingest_p95_latency_s,
+            'ingest_oldest_age_material_lines': ingest_oldest_age_material_lines,
             'backpressure_overload': backpressure_overload,
             'backpressure_overload_severe': severe_backpressure_overload,
             'backpressure_pending_lines': backpressure_pending_lines,
             'backpressure_oldest_pending_age_seconds': backpressure_oldest_age_s,
+            'backpressure_oldest_age_material_lines': backpressure_oldest_age_material_lines,
             'priority_shard_latency_failures': priority_shard_latency_failures,
             'priority_shard_storage_failures': priority_shard_storage_failures,
             'critical_priority_shard_latency_failures': critical_priority_latency_failures,

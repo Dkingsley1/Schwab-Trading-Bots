@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shutil
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -33,6 +34,21 @@ SOFT_ADVISORY_TOLERANCE_RATIO = 0.10
 DEFAULT_ACTIVE_DECISION_BUFFER_ALLOWANCE_GB = float(os.getenv("STORAGE_QUOTA_ACTIVE_DECISION_BUFFER_ALLOWANCE_GB", "16"))
 DEFAULT_ACTIVE_GOVERNANCE_BUFFER_ALLOWANCE_GB = float(os.getenv("STORAGE_QUOTA_ACTIVE_GOVERNANCE_BUFFER_ALLOWANCE_GB", "24"))
 DEFAULT_ACTIVE_EXPLANATION_BUFFER_ALLOWANCE_GB = float(os.getenv("STORAGE_QUOTA_ACTIVE_EXPLANATION_BUFFER_ALLOWANCE_GB", "16"))
+DEFAULT_MANAGED_SUPPORT_SQL_RELIEF_ENABLED = os.getenv("STORAGE_QUOTA_MANAGED_SUPPORT_SQL_RELIEF", "1").strip().lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
+DEFAULT_SUPPORT_SQL_RELIEF_MIN_FREE_GB = float(os.getenv("STORAGE_QUOTA_SUPPORT_SQL_RELIEF_MIN_FREE_GB", "96"))
+DEFAULT_SUPPORT_SQL_RELIEF_MIN_SUPPORT_RATIO = float(os.getenv("STORAGE_QUOTA_SUPPORT_SQL_RELIEF_MIN_SUPPORT_RATIO", "0.20"))
+DEFAULT_SUPPORT_SQL_RAW_HARD_ADVISORY_RATIO = float(os.getenv("STORAGE_QUOTA_SUPPORT_SQL_RAW_HARD_ADVISORY_RATIO", "0.95"))
+SUPPORT_SQL_SHARD_MARKERS = (
+    "risk_support",
+    "support_watchdog",
+    "writer_progress",
+    "schema_violations",
+)
 
 FAMILY_TO_ROLE = {
     "sql_link_shards": "stateful_sql",
@@ -81,6 +97,106 @@ def _compressed_archive_bytes(root: Path) -> int:
         except Exception:
             continue
     return total
+
+
+def _disk_free_gb(path: Path) -> float:
+    try:
+        return float(shutil.disk_usage(path).free) / float(1024**3)
+    except Exception:
+        return 0.0
+
+
+def _stateful_sql_shard_breakdown(project_root: Path) -> dict[str, Any]:
+    shard_root = project_root / "data" / "sql_link_shards"
+    try:
+        scan_root = shard_root.resolve() if shard_root.exists() else shard_root
+    except Exception:
+        scan_root = shard_root
+    support_bytes = 0
+    core_bytes = 0
+    support_rows: list[dict[str, Any]] = []
+    core_rows: list[dict[str, Any]] = []
+    if scan_root.exists():
+        try:
+            iterator = scan_root.glob("*.sqlite3")
+        except Exception:
+            iterator = []
+        for path in iterator:
+            try:
+                if not path.is_file() or path.is_symlink():
+                    continue
+                size = max(int(path.stat().st_size), 0)
+            except Exception:
+                continue
+            name = path.name.lower()
+            row = {"path": str(path), "name": path.name, "size_gb": _round_gb(float(size) / float(1024**3))}
+            if any(marker in name for marker in SUPPORT_SQL_SHARD_MARKERS):
+                support_bytes += size
+                support_rows.append(row)
+            else:
+                core_bytes += size
+                core_rows.append(row)
+    support_rows = sorted(support_rows, key=lambda row: _safe_float(row.get("size_gb"), 0.0), reverse=True)
+    core_rows = sorted(core_rows, key=lambda row: _safe_float(row.get("size_gb"), 0.0), reverse=True)
+    return {
+        "root": str(scan_root),
+        "root_exists": bool(scan_root.exists()),
+        "root_free_gb": _round_gb(_disk_free_gb(scan_root if scan_root.exists() else scan_root.parent)),
+        "support_bytes": int(support_bytes),
+        "core_bytes": int(core_bytes),
+        "total_bytes": int(support_bytes + core_bytes),
+        "support_gb": _round_gb(float(support_bytes) / float(1024**3)),
+        "core_gb": _round_gb(float(core_bytes) / float(1024**3)),
+        "top_support_shards": support_rows[:5],
+        "top_core_shards": core_rows[:5],
+        "support_markers": list(SUPPORT_SQL_SHARD_MARKERS),
+    }
+
+
+def _managed_support_sql_adjustment(project_root: Path, *, bytes_used: int, soft_gb: float, hard_gb: float) -> dict[str, Any]:
+    breakdown = _stateful_sql_shard_breakdown(project_root)
+    support_bytes = min(max(int(breakdown.get("support_bytes") or 0), 0), max(int(bytes_used), 0))
+    raw_used_gb = float(max(int(bytes_used), 0)) / float(1024**3)
+    support_ratio = float(support_bytes) / float(max(int(bytes_used), 1))
+    core_after_support_gb = max(raw_used_gb - (float(support_bytes) / float(1024**3)), 0.0)
+    root_free_gb = _safe_float(breakdown.get("root_free_gb"), 0.0)
+    active = bool(
+        DEFAULT_MANAGED_SUPPORT_SQL_RELIEF_ENABLED
+        and support_bytes > 0
+        and support_ratio >= max(float(DEFAULT_SUPPORT_SQL_RELIEF_MIN_SUPPORT_RATIO), 0.0)
+        and raw_used_gb < float(hard_gb)
+        and core_after_support_gb <= float(soft_gb)
+        and root_free_gb >= max(float(DEFAULT_SUPPORT_SQL_RELIEF_MIN_FREE_GB), 0.0)
+    )
+    blockers: list[str] = []
+    if not DEFAULT_MANAGED_SUPPORT_SQL_RELIEF_ENABLED:
+        blockers.append("managed_support_sql_relief_disabled")
+    if support_bytes <= 0:
+        blockers.append("no_support_sql_shards")
+    if support_ratio < max(float(DEFAULT_SUPPORT_SQL_RELIEF_MIN_SUPPORT_RATIO), 0.0):
+        blockers.append("support_sql_ratio_below_floor")
+    if raw_used_gb >= float(hard_gb):
+        blockers.append("raw_stateful_sql_at_or_above_hard_quota")
+    if core_after_support_gb > float(soft_gb):
+        blockers.append("core_stateful_sql_above_soft_quota_after_support_relief")
+    if root_free_gb < max(float(DEFAULT_SUPPORT_SQL_RELIEF_MIN_FREE_GB), 0.0):
+        blockers.append("stateful_sql_root_free_below_support_relief_floor")
+    return {
+        "active": active,
+        "support_bytes": int(support_bytes),
+        "support_gb": _round_gb(float(support_bytes) / float(1024**3)),
+        "support_ratio": round(float(support_ratio), 3),
+        "core_after_support_gb": _round_gb(core_after_support_gb),
+        "raw_used_gb": _round_gb(raw_used_gb),
+        "raw_hard_ratio": round(raw_used_gb / max(float(hard_gb), 0.001), 3),
+        "root_free_gb": _round_gb(root_free_gb),
+        "min_root_free_gb": _round_gb(DEFAULT_SUPPORT_SQL_RELIEF_MIN_FREE_GB),
+        "min_support_ratio": round(max(float(DEFAULT_SUPPORT_SQL_RELIEF_MIN_SUPPORT_RATIO), 0.0), 3),
+        "raw_hard_advisory_ratio": round(max(float(DEFAULT_SUPPORT_SQL_RAW_HARD_ADVISORY_RATIO), 0.0), 3),
+        "blockers": ordered_unique(blockers),
+        "breakdown": breakdown,
+        "policy": "managed support SQL shards can be excluded from core stateful quota only while raw SQL remains below hard quota, core SQL is below soft quota after relief, and the backing volume has a free-space buffer; bytes still count toward disk forecasts",
+    }
 
 
 def _today_tokens() -> set[str]:
@@ -189,6 +305,9 @@ def _quota_lane_action(lane: dict[str, Any]) -> str:
     if family == "decision_explanations":
         return "tighten explanation retention or cold-tier offload before hot-path quotas spill further"
     if family == "sql_link_shards":
+        relief = lane.get("managed_support_sql_relief") if isinstance(lane.get("managed_support_sql_relief"), dict) else {}
+        if bool(relief.get("active", False)):
+            return "keep managed support SQL shards on scheduled compaction/offload watch while core stateful SQL stays below quota"
         return "checkpoint and compact sql_link shards before the stateful_sql quota becomes runtime blocking"
     if family == "artifact_store":
         return "garbage-collect artifact store blobs proactively during long-run windows"
@@ -265,6 +384,8 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
         bytes_used = _family_bytes(storage_tier, family)
         if bytes_used == 0:
             bytes_used = _role_bytes(storage_tier, FAMILY_TO_ROLE.get(family, family))
+        raw_bytes_used = int(bytes_used)
+        managed_support_sql_relief: dict[str, Any] = {}
         adjustments: list[dict[str, Any]] = []
         if family == "decisions" and fallback_reconciliation_bytes > 0:
             applied = min(bytes_used, fallback_reconciliation_bytes)
@@ -355,9 +476,32 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
                             "hard_quota_protected": True,
                         }
                     )
+        if family == "sql_link_shards":
+            managed_support_sql_relief = _managed_support_sql_adjustment(
+                project_root,
+                bytes_used=int(bytes_used),
+                soft_gb=float(quota["soft"]),
+                hard_gb=float(quota["hard"]),
+            )
+            if bool(managed_support_sql_relief.get("active", False)):
+                applied = min(bytes_used, int(managed_support_sql_relief.get("support_bytes") or 0))
+                if applied > 0:
+                    bytes_used = max(bytes_used - applied, 0)
+                    adjustments.append(
+                        {
+                            "reason": "exclude_managed_support_sql_shards_from_core_stateful_quota",
+                            "gb": _round_gb(float(applied) / float(1024**3)),
+                            "support_ratio": managed_support_sql_relief.get("support_ratio"),
+                            "root_free_gb": managed_support_sql_relief.get("root_free_gb"),
+                            "hard_quota_protected": True,
+                            "still_counted_by_disk_free_forecast": True,
+                        }
+                    )
         used_gb = float(bytes_used) / float(1024**3)
         soft_gb = float(quota["soft"])
         hard_gb = float(quota["hard"])
+        raw_used_gb = float(raw_bytes_used) / float(1024**3)
+        raw_hard_ratio = raw_used_gb / max(hard_gb, 0.001)
         over_soft_gb = max(used_gb - soft_gb, 0.0)
         over_hard_gb = max(used_gb - hard_gb, 0.0)
         soft_ratio = used_gb / max(soft_gb, 0.001)
@@ -373,20 +517,30 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
             else:
                 status = "degraded"
                 soft_breaches += 1
-        lanes.append(
-            {
-                "family": family,
-                "used_gb": _round_gb(used_gb),
-                "soft_quota_gb": soft_gb,
-                "hard_quota_gb": hard_gb,
-                "over_soft_gb": _round_gb(over_soft_gb),
-                "over_hard_gb": _round_gb(over_hard_gb),
-                "soft_ratio": round(soft_ratio, 3),
-                "hard_ratio": round(hard_ratio, 3),
-                "status": status,
-                "adjustments": adjustments,
-            }
-        )
+        elif (
+            family == "sql_link_shards"
+            and bool(managed_support_sql_relief.get("active", False))
+            and raw_hard_ratio >= max(float(DEFAULT_SUPPORT_SQL_RAW_HARD_ADVISORY_RATIO), 0.0)
+        ):
+            status = "advisory"
+            advisory_breaches += 1
+        lane = {
+            "family": family,
+            "used_gb": _round_gb(used_gb),
+            "raw_used_gb": _round_gb(raw_used_gb),
+            "soft_quota_gb": soft_gb,
+            "hard_quota_gb": hard_gb,
+            "over_soft_gb": _round_gb(over_soft_gb),
+            "over_hard_gb": _round_gb(over_hard_gb),
+            "soft_ratio": round(soft_ratio, 3),
+            "hard_ratio": round(hard_ratio, 3),
+            "raw_hard_ratio": round(raw_hard_ratio, 3),
+            "status": status,
+            "adjustments": adjustments,
+        }
+        if managed_support_sql_relief:
+            lane["managed_support_sql_relief"] = managed_support_sql_relief
+        lanes.append(lane)
 
     overall_status = "ready"
     if hard_breaches > 0:
@@ -406,7 +560,12 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
         ),
         reverse=True,
     )
-    recommended_actions = ordered_unique(_quota_lane_action(row) for row in ranked_breaches)
+    recommended_actions = ordered_unique(
+        [
+            *[_quota_lane_action(row) for row in ranked_breaches],
+            *[_quota_lane_action(row) for row in advisory_lanes],
+        ]
+    )
     if blocked_lanes:
         recommended_actions.append("keep expansion and heavy training gated until blocked storage quota lanes fall below hard quota")
     recommended_actions = ordered_unique(recommended_actions)

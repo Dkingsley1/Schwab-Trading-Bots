@@ -2021,6 +2021,149 @@ def test_ingestion_storage_control_bounds_isolated_support_overlay_pressure(tmp_
     assert payload["recovery_quality_score"] >= 88.0
 
 
+def test_ingestion_storage_control_manages_large_support_overlay_without_critical_pressure(tmp_path: Path) -> None:
+    now = datetime(2026, 7, 29, 16, 30, tzinfo=timezone.utc)
+    health = tmp_path / "governance" / "health"
+    _write_json(
+        health / "ingestion_backpressure_latest.json",
+        {
+            "pending_lines": 10508,
+            "pending_lines_total": 55564,
+            "pending_lines_deferred": 45056,
+            "pending_lines_cold": 0,
+            "pending_lines_support_telemetry": 4,
+            "pending_lines_stale_stage": 0,
+            "pending_lines_threshold": 15000,
+            "oldest_pending_age_seconds": 72587.807,
+            "oldest_age_threshold_seconds": 240.0,
+            "overload": False,
+            "top_pending_files": [
+                {
+                    "source_rel": "governance/events/execution_lane_stale_skips_20260728.jsonl",
+                    "pending_lines": 890,
+                    "oldest_pending_age_seconds": 72587.807,
+                }
+            ],
+        },
+    )
+    _write_json(
+        health / "jsonl_sql_ingestion_health_risk_support_latest.json",
+        {
+            "timestamp_utc": now.isoformat(),
+            "sqlite": {
+                "pending_lines": 612561,
+                "files_with_pending": 5,
+                "invalid": 0,
+                "oldest_uningested_age_seconds": 975.088,
+                "top_pending_files": [
+                    {
+                        "source_rel": "governance/channels/risk/aggressive_equities_schwab/risk_20260729.jsonl",
+                        "shard": "risk_support",
+                        "pending_lines": 189875,
+                        "oldest_pending_age_seconds": 580.641,
+                    },
+                    {
+                        "source_rel": "governance/channels/risk/default_crypto_schwab/risk_20260729.jsonl",
+                        "shard": "risk_support",
+                        "pending_lines": 152769,
+                        "oldest_pending_age_seconds": 959.404,
+                    },
+                ],
+            },
+        },
+    )
+    _write_json(
+        health / "jsonl_sql_ingestion_health_trading_latest.json",
+        {
+            "timestamp_utc": now.isoformat(),
+            "sqlite": {
+                "pending_lines": 1475,
+                "files_with_pending": 2,
+                "invalid": 0,
+                "oldest_uningested_age_seconds": 72.0,
+                "top_pending_files": [
+                    {
+                        "source_rel": "governance/channels/decision/default_crypto_schwab/decision_20260729.jsonl",
+                        "shard": "trading",
+                        "pending_lines": 435,
+                        "oldest_pending_age_seconds": 72.0,
+                    },
+                    {
+                        "source_rel": "governance/channels/decision/dividend_equities_schwab/decision_20260729.jsonl",
+                        "shard": "trading",
+                        "pending_lines": 325,
+                        "oldest_pending_age_seconds": 44.0,
+                    },
+                ],
+            },
+        },
+    )
+    for source_rel in (
+        "governance/channels/risk/aggressive_equities_schwab/risk_20260729.jsonl",
+        "governance/channels/risk/default_crypto_schwab/risk_20260729.jsonl",
+        "governance/channels/decision/default_crypto_schwab/decision_20260729.jsonl",
+        "governance/channels/decision/dividend_equities_schwab/decision_20260729.jsonl",
+    ):
+        source_path = tmp_path / source_rel
+        source_path.parent.mkdir(parents=True, exist_ok=True)
+        source_path.write_text('{"event": "pending"}\n', encoding="utf-8")
+    _write_json(
+        health / "sql_link_service_progress_latest.json",
+        {
+            "status": "running",
+            "cycle_started_utc": (now - timedelta(minutes=2)).isoformat(),
+            "merged_rows_this_cycle": 240000,
+        },
+    )
+    _write_json(health / "sql_link_service_latest.json", {"sqlite_wal_size_gb": 0.0})
+    _write_json(
+        health / "health_gates_latest.json",
+        {
+            "hard_gate_triggered": False,
+            "recommended_operating_mode": "live_cautious",
+            "storage_pressure": {"retention_debt_gb": 0.0, "severe_backpressure_overload": False},
+            "ingestion_pressure": {"severe_backpressure_overload": False},
+        },
+    )
+    _write_json(
+        health / "ingestion_storage_governor_latest.json",
+        {
+            "profile": "steady_state",
+            "sql_primary_db": {"route_drift": False},
+            "queue_watermarks": {"overall_status": "ready"},
+            "writer_shedding": {"active": False, "level": "normal"},
+        },
+    )
+    _write_json(health / "external_backlog_drain_latest.json", {"overall_status": "ready", "recommended_now": False, "aged_candidate_files": 0})
+    _write_json(health / "storage_maintenance_latest.json", {"reason": "ok"})
+    _write_json(
+        health / "storage_failback_sync_latest.json",
+        {"route_verification": {"verification_state": "ready", "ready_count": 3, "tracked_count": 3, "coverage_ratio": 1.0, "mismatches": []}},
+    )
+    _write_json(
+        health / "storage_resilience_control_latest.json",
+        {
+            "overall_status": "ready",
+            "resilience_score": 100,
+            "restore_drill_fresh": True,
+            "dual_root_ready": True,
+            "warm_standby_ready": True,
+            "unresolved_split_brain_conflicts": 0,
+        },
+    )
+
+    payload = src.build_payload(tmp_path, now_utc=now)
+
+    assert payload["sql_ingestion_pending_overlay"]["managed_support_overlay_backlog"] is True
+    assert payload["sql_ingestion_pending_overlay"]["support_overlay_dominant"] is True
+    assert payload["sql_ingestion_pending_overlay"]["raw_support_pending_lines"] == 612561
+    assert payload["sql_ingestion_pending_overlay"]["overlay_non_support_pending_for_dominance"] == 1475
+    assert payload["sql_ingestion_pending_overlay"]["pressure_support_pending_lines"] == 5000
+    assert payload["severity"] == "elevated"
+    assert payload["overall_status"] == "ready"
+    assert payload["pressure_index"] < 1.5
+
+
 def test_ingestion_storage_control_decays_fresh_overlay_when_raw_backpressure_cleared(tmp_path: Path) -> None:
     now = datetime.now(timezone.utc)
     health = tmp_path / "governance" / "health"

@@ -489,7 +489,7 @@ def test_external_backlog_drain_uses_storage_overlay_leaders_for_focus(tmp_path:
     assert payload["drain_overrides"]["risk_support_path_focus"] == [
         "governance/channels/risk/crypto_futures_crypto_schwab/risk_20260525.jsonl",
     ]
-    assert payload["drain_overrides"]["risk_support_max_lines_per_file"] == 800000
+    assert payload["drain_overrides"]["risk_support_max_lines_per_file"] == 160000
     assert any("risk-support shard pinned" in item for item in payload["top_actions"])
 
 

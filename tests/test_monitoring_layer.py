@@ -34,6 +34,49 @@ def test_health_gates_prefers_freshest_ingestion_payload(tmp_path: Path) -> None
     assert payload["sqlite"]["pending_lines"] == 5
 
 
+def test_health_gates_does_not_hard_gate_tiny_old_ingestion_tail(tmp_path: Path, monkeypatch) -> None:
+    now = datetime.now(timezone.utc)
+    health_root = tmp_path / "governance" / "health"
+    sql_root = tmp_path / "exports" / "sql_reports"
+    _write_json(
+        health_root / "one_numbers_latest.json",
+        {
+            "generated_utc": now.isoformat(),
+            "combined_blocked_rate": "0.010000",
+            "decision_stale_windows_4h": "0",
+            "watchdog_restarts": "0",
+        },
+    )
+    _write_json(sql_root / "daily_runtime_summary_latest.json", {"timestamp_utc": now.isoformat(), "watchdog": {"restarts": 0}})
+    _write_json(
+        health_root / "jsonl_sql_ingestion_health_trading_latest.json",
+        {
+            "timestamp_utc": now.isoformat(),
+            "sqlite": {"pending_lines": 999, "oldest_uningested_age_seconds": 3131.7, "invalid": 0},
+        },
+    )
+    _write_json(
+        health_root / "ingestion_backpressure_latest.json",
+        {
+            "timestamp_utc": now.isoformat(),
+            "pending_lines": 7602,
+            "pending_files": 8,
+            "oldest_pending_age_seconds": 73392.5,
+            "overload": False,
+        },
+    )
+
+    monkeypatch.setattr(sys, "argv", ["health_gates.py", "--project-root", str(tmp_path)])
+    rc = health_gates.main()
+
+    payload = json.loads((health_root / "health_gates_latest.json").read_text(encoding="utf-8"))
+
+    assert rc == 0
+    assert payload["hard_gate_triggered"] is False
+    assert payload["hard_gates"]["ingestion_oldest_age"] is False
+    assert payload["inputs"]["ingest_oldest_age_material_lines"] == 2000
+
+
 def test_daily_auto_verify_resolves_best_freshness_artifact(tmp_path: Path) -> None:
     original_root = daily_auto_verify.PROJECT_ROOT
     original_groups = daily_auto_verify.DEFAULT_FRESHNESS_FILE_GROUPS

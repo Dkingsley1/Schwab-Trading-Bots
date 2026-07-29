@@ -19,6 +19,7 @@ def _seed_health(
     *,
     governance_gb: float = 30.0,
     explanations_gb: float = 0.0,
+    sql_link_shards_gb: float = 0.0,
     hot_path_over_budget_bytes: int = 0,
     hot_lane_mode: str = "full_decision_evidence",
     hot_lane_status: str = "ready",
@@ -35,6 +36,7 @@ def _seed_health(
             },
             "by_family": {
                 "decision_explanations": {"bytes": int(explanations_gb * GIB)},
+                "sql_link_shards": {"bytes": int(sql_link_shards_gb * GIB)},
             },
             "by_service_role": {
                 "governance_telemetry": {"bytes": int(governance_gb * GIB)},
@@ -137,3 +139,75 @@ def test_quota_guard_does_not_hide_hard_explanation_breach(
     assert explanations["status"] == "blocked"
     assert explanations["used_gb"] == 60.0
     assert explanations["adjustments"] == []
+
+
+def test_quota_guard_manages_support_sql_soft_quota_when_core_is_below_quota(
+    tmp_path: Path, monkeypatch
+) -> None:
+    _seed_health(tmp_path, governance_gb=0.0, sql_link_shards_gb=377.0)
+    monkeypatch.setattr(src, "_active_current_day_decision_bytes", lambda _project_root: 0)
+    monkeypatch.setattr(src, "_active_current_day_governance_channel_bytes", lambda _project_root: 0)
+    monkeypatch.setattr(src, "_active_current_day_explanation_bytes", lambda _project_root: 0)
+    monkeypatch.setattr(
+        src,
+        "_stateful_sql_shard_breakdown",
+        lambda _project_root: {
+            "root": str(tmp_path / "data" / "sql_link_shards"),
+            "root_exists": True,
+            "root_free_gb": 128.0,
+            "support_bytes": int(259 * GIB),
+            "core_bytes": int(118 * GIB),
+            "total_bytes": int(377 * GIB),
+            "support_gb": 259.0,
+            "core_gb": 118.0,
+            "top_support_shards": [{"name": "jsonl_link_risk_support.sqlite3", "size_gb": 259.0}],
+            "top_core_shards": [{"name": "jsonl_link_crypto_trading.sqlite3", "size_gb": 83.0}],
+            "support_markers": ["risk_support"],
+        },
+    )
+
+    payload = src.build_payload(tmp_path)
+
+    sql_lane = next(row for row in payload["lanes"] if row["family"] == "sql_link_shards")
+    assert payload["overall_status"] == "ready"
+    assert payload["quota_summary"]["advisory_breaches"] == 1
+    assert sql_lane["status"] == "advisory"
+    assert sql_lane["raw_used_gb"] == 377.0
+    assert sql_lane["used_gb"] == 118.0
+    assert sql_lane["managed_support_sql_relief"]["active"] is True
+    assert sql_lane["adjustments"][0]["reason"] == "exclude_managed_support_sql_shards_from_core_stateful_quota"
+
+
+def test_quota_guard_does_not_manage_support_sql_when_free_space_is_low(
+    tmp_path: Path, monkeypatch
+) -> None:
+    _seed_health(tmp_path, governance_gb=0.0, sql_link_shards_gb=377.0)
+    monkeypatch.setattr(src, "_active_current_day_decision_bytes", lambda _project_root: 0)
+    monkeypatch.setattr(src, "_active_current_day_governance_channel_bytes", lambda _project_root: 0)
+    monkeypatch.setattr(src, "_active_current_day_explanation_bytes", lambda _project_root: 0)
+    monkeypatch.setattr(
+        src,
+        "_stateful_sql_shard_breakdown",
+        lambda _project_root: {
+            "root": str(tmp_path / "data" / "sql_link_shards"),
+            "root_exists": True,
+            "root_free_gb": 25.0,
+            "support_bytes": int(259 * GIB),
+            "core_bytes": int(118 * GIB),
+            "total_bytes": int(377 * GIB),
+            "support_gb": 259.0,
+            "core_gb": 118.0,
+            "top_support_shards": [{"name": "jsonl_link_risk_support.sqlite3", "size_gb": 259.0}],
+            "top_core_shards": [{"name": "jsonl_link_crypto_trading.sqlite3", "size_gb": 83.0}],
+            "support_markers": ["risk_support"],
+        },
+    )
+
+    payload = src.build_payload(tmp_path)
+
+    sql_lane = next(row for row in payload["lanes"] if row["family"] == "sql_link_shards")
+    assert payload["overall_status"] == "degraded"
+    assert sql_lane["status"] == "degraded"
+    assert sql_lane["used_gb"] == 377.0
+    assert sql_lane["managed_support_sql_relief"]["active"] is False
+    assert "stateful_sql_root_free_below_support_relief_floor" in sql_lane["managed_support_sql_relief"]["blockers"]

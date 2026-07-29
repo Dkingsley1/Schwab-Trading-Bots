@@ -65,6 +65,21 @@ def _prune_old_runs(out_root: Path, keep_runs: int) -> int:
     return removed
 
 
+def _write_json_atomic(path: Path, payload: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(f".{path.name}.tmp")
+    tmp.write_text(json.dumps(payload, ensure_ascii=True, indent=2), encoding="utf-8")
+    os.replace(tmp, path)
+
+
+def _latest_write_verified(latest: Path, expected_timestamp: str) -> bool:
+    try:
+        payload = json.loads(latest.read_text(encoding="utf-8"))
+    except Exception:
+        return False
+    return str(payload.get("timestamp_utc") or "") == str(expected_timestamp)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Daily state snapshot + restore drill.")
     parser.add_argument("--out-root", default=str(PROJECT_ROOT / "exports" / "state_snapshot_drills"))
@@ -162,14 +177,19 @@ def main() -> int:
         "rows": manifest_rows,
     }
 
-    (run_dir / "manifest.json").write_text(json.dumps(payload, ensure_ascii=True, indent=2), encoding="utf-8")
+    manifest_path = run_dir / "manifest.json"
     latest = out_root / "latest.json"
-    latest.write_text(json.dumps(payload, ensure_ascii=True, indent=2), encoding="utf-8")
+    payload["manifest_file"] = str(manifest_path)
+    payload["latest_file"] = str(latest)
 
     pruned_runs = _prune_old_runs(out_root, args.keep_runs)
     payload["retention"] = {"keep_runs": int(args.keep_runs), "pruned_runs": int(pruned_runs)}
-    (run_dir / "manifest.json").write_text(json.dumps(payload, ensure_ascii=True, indent=2), encoding="utf-8")
-    latest.write_text(json.dumps(payload, ensure_ascii=True, indent=2), encoding="utf-8")
+    _write_json_atomic(manifest_path, payload)
+    _write_json_atomic(latest, payload)
+    payload["latest_write_verified"] = _latest_write_verified(latest, str(payload["timestamp_utc"]))
+    payload["ok"] = bool(payload["ok"] and payload["latest_write_verified"])
+    _write_json_atomic(manifest_path, payload)
+    _write_json_atomic(latest, payload)
 
     events = PROJECT_ROOT / "governance" / "watchdog" / "state_snapshot_drill_events.jsonl"
     events.parent.mkdir(parents=True, exist_ok=True)
@@ -181,7 +201,7 @@ def main() -> int:
     else:
         print(f"state_snapshot_drill_ok={all_ok} files_checked={len(manifest_rows)} missing={len(missing)}")
 
-    return 0 if all_ok else 2
+    return 0 if bool(payload.get("ok", False)) else 2
 
 
 if __name__ == "__main__":

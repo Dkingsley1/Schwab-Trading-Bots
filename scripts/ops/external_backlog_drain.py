@@ -36,11 +36,11 @@ DEFAULT_DRAIN_SHARDS = [
     "crypto_trading",
     "runtime",
     "crypto_runtime",
-    "risk_support",
     "aggressive_trading",
     "trading",
     "governance",
     "support_watchdog",
+    "risk_support",
     "crypto_governance",
     "data",
     "explanations",
@@ -804,9 +804,9 @@ def _drain_env(
     crypto_trading_max_lines = "64000" if crypto_trading_focused else ("20000" if critical or crypto_trading_first else "14000")
     risk_support_focused = bool(risk_support_focus_paths)
     risk_support_first = bool(prioritized_shards and prioritized_shards[0] == "risk_support")
-    risk_support_max_files = "10" if risk_support_focused and critical else ("8" if critical or risk_support_first else "6")
-    risk_support_max_lines = "800000" if risk_support_focused and critical else ("400000" if critical or risk_support_first else "200000")
-    risk_support_checkpoint_lines = "32000" if risk_support_focused and critical else ("16000" if critical or risk_support_first else "8000")
+    risk_support_max_files = "6" if risk_support_focused and critical else ("6" if critical or risk_support_first else "4")
+    risk_support_max_lines = "160000" if risk_support_focused and critical else ("120000" if critical or risk_support_first else "80000")
+    risk_support_checkpoint_lines = "8000" if risk_support_focused and critical else ("6000" if critical or risk_support_first else "4000")
     aggressive_trading_focused = bool(aggressive_trading_focus_paths)
     aggressive_trading_first = bool(prioritized_shards and prioritized_shards[0] == "aggressive_trading")
     aggressive_trading_max_files = "14" if aggressive_trading_focused and critical else ("12" if critical or aggressive_trading_first else "10")

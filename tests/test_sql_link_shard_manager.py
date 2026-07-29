@@ -622,6 +622,10 @@ def test_build_shards_separates_fast_trading_streams() -> None:
     assert shards["crypto_trading"]["sqlite_batch_max_bytes"] == 32 * 1024 * 1024
     assert shards["crypto_trading"]["state_checkpoint_lines"] == 2000
     assert shards["crypto_trading"]["merge_max_jsonl_rows"] == 8000
+    assert shards["crypto_trading"]["hot_retention_enabled"] is True
+    assert shards["crypto_trading"]["hot_retention_max_db_gb"] == 32.0
+    assert shards["crypto_trading"]["hot_retention_hot_days"] == 7
+    assert shards["crypto_trading"]["hot_retention_max_rows"] == 2500000
     assert shards["trading"]["include_streams"] == "decisions,trade_logs"
     assert shards["trading"]["max_lines_per_file"] == 16000
     assert shards["trading"]["max_bytes_per_file"] == 128 * 1024 * 1024
@@ -643,6 +647,10 @@ def test_build_shards_separates_fast_trading_streams() -> None:
     assert shards["risk_support"]["state_checkpoint_lines"] == 16000
     assert shards["risk_support"]["merge_max_jsonl_rows"] == 0
     assert shards["risk_support"]["merge_to_primary"] is False
+    assert shards["risk_support"]["hot_retention_enabled"] is True
+    assert shards["risk_support"]["hot_retention_max_db_gb"] == 64.0
+    assert shards["risk_support"]["hot_retention_hot_days"] == 7
+    assert shards["risk_support"]["hot_retention_max_rows"] == 3000000
     assert shards["support_watchdog"]["include_streams"] == "governance_watchdog"
     assert "governance/watchdog/" in str(shards["support_watchdog"]["path_contains"])
     assert shards["support_watchdog"]["max_lines_per_file"] == 96000
@@ -655,6 +663,19 @@ def test_build_shards_separates_fast_trading_streams() -> None:
     assert "exports/external_context/" in str(shards["data"]["path_contains"])
     assert shards["data"]["merge_priority"] == "low"
     assert shards["data"]["merge_to_primary"] is False
+
+
+def test_build_shards_routes_hot_retention_archives_to_approved_second_cold(monkeypatch, tmp_path: Path) -> None:
+    second_cold = tmp_path / "VIDEO" / "schwab_trading_bot_cold"
+    monkeypatch.setenv("BOT_ALLOW_VIDEO_COLD_ARCHIVE", "1")
+    monkeypatch.setenv("BOT_VIDEO_COLD_ARCHIVE_ROOT", str(second_cold))
+
+    shards = {row["name"]: row for row in shard_manager._build_shards(["risk_support", "crypto_trading"])}
+
+    assert str(shards["risk_support"]["hot_retention_archive_root"]).startswith(str(second_cold))
+    assert str(shards["risk_support"]["hot_retention_cold_export_root"]).startswith(str(second_cold))
+    assert str(shards["crypto_trading"]["hot_retention_archive_root"]).startswith(str(second_cold))
+    assert str(shards["crypto_trading"]["hot_retention_cold_export_root"]).startswith(str(second_cold))
 
 
 def test_load_active_request_sanitizes_live_drain_overrides(tmp_path) -> None:

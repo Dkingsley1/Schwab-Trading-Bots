@@ -11,6 +11,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 SWAP_OVERRIDE_PATH = PROJECT_ROOT / "config" / ".env.swap_pressure_override"
 ARCHIVE_MONTH_FILE_RE = re.compile(r"^jsonl_link_archive_(\d{4})_(\d{2})\.sqlite3$")
 ARCHIVE_DAY_FILE_RE = re.compile(r"^jsonl_link_archive_(\d{4})_(\d{2})_(\d{2})\.sqlite3$")
+GIB = 1024**3
 
 
 def _now_utc() -> datetime:
@@ -28,6 +29,13 @@ def _connect(path: Path) -> sqlite3.Connection:
     conn.execute("PRAGMA synchronous=NORMAL")
     conn.execute("PRAGMA busy_timeout=30000")
     return conn
+
+
+def _size_gb(path: Path) -> float:
+    try:
+        return float(path.stat().st_size) / float(GIB)
+    except Exception:
+        return 0.0
 
 
 def _load_env_file(path: Path) -> dict[str, str]:
@@ -400,6 +408,12 @@ def main() -> int:
     parser.add_argument("--hot-hours", type=int, default=0, help="Optional hourly hot window that takes precedence over hot-days when greater than zero.")
     parser.add_argument("--batch-size", type=int, default=50000)
     parser.add_argument("--max-rows", type=int, default=0, help="Maximum rows to move in one pass (0 = unlimited).")
+    parser.add_argument("--skip-remaining-count", action="store_true")
+    parser.add_argument(
+        "--remaining-count-skip-over-gb",
+        type=float,
+        default=float(os.getenv("SQL_HOT_RETENTION_REMAINING_COUNT_SKIP_OVER_GB", "50")),
+    )
     parser.add_argument("--vacuum", action="store_true")
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args()
@@ -506,7 +520,15 @@ def main() -> int:
         if args.vacuum and total_moved > 0:
             src.execute("VACUUM")
 
-        remaining = src.execute("SELECT COUNT(*) FROM jsonl_records").fetchone()[0]
+        skip_remaining_count = bool(args.skip_remaining_count) or (
+            _size_gb(db_path) >= max(float(args.remaining_count_skip_over_gb), 0.0)
+        )
+        if skip_remaining_count:
+            remaining = -1
+            remaining_count_skipped = True
+        else:
+            remaining = src.execute("SELECT COUNT(*) FROM jsonl_records").fetchone()[0]
+            remaining_count_skipped = False
     finally:
         src.close()
         for conn in archive_conns.values():
@@ -536,6 +558,8 @@ def main() -> int:
         "max_rows": int(max_rows),
         "moved_rows": int(total_moved),
         "remaining_rows": int(remaining),
+        "remaining_count_skipped": bool(remaining_count_skipped),
+        "remaining_count_skip_over_gb": float(args.remaining_count_skip_over_gb),
         "archive_dbs_touched": sorted(archive_rows_by_db.keys()),
         "archive_rows_by_db": archive_rows_by_db,
         "cutoff_utc": cutoff,

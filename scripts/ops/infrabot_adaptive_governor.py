@@ -342,7 +342,7 @@ def _capability_registry() -> list[dict[str, Any]]:
         _capability(
             capability_id="storage_retention_unison_handoff",
             title="Storage Retention Unison Handoff",
-            owns=["cleanup_handoff_ingestion", "hot_plane_compaction", "retention_unison"],
+            owns=["cleanup_handoff_ingestion", "hot_plane_compaction", "retention_unison", "storage_quota_guard", "stateful_sql_compaction"],
             command=_opsctl(
                 "storage-retention-unison",
                 "--apply",
@@ -369,6 +369,40 @@ def _capability_registry() -> list[dict[str, Any]]:
             apply_safe=True,
             requires_single_writer_idle=True,
             success_artifact="governance/health/storage_retention_unison_latest.json",
+        ),
+        _capability(
+            capability_id="deep_cold_second_cold_handoff",
+            title="Deep Cold Second-Cold Handoff",
+            owns=["deep_cold_archive", "second_cold_archive", "stale_stage_pressure_relief", "storage_quota_guard"],
+            command=_opsctl(
+                "deep-cold-storage-layer",
+                "--apply",
+                "--move-to-second-cold",
+                "--second-cold-root",
+                "/Volumes/VIDEO/schwab_trading_bot_cold",
+                "--max-move-gb",
+                "96",
+                "--max-move-files",
+                "500",
+                "--include-critical",
+                "--json",
+            ),
+            risk_level="medium",
+            cost_class="medium",
+            apply_safe=True,
+            safe_under_pressure=True,
+            success_artifact="governance/health/deep_cold_storage_layer_latest.json",
+        ),
+        _capability(
+            capability_id="stateful_sql_quota_relief",
+            title="Stateful SQL Quota Relief",
+            owns=["storage_quota_guard", "stateful_sql_hot_retention", "sql_link_shards", "sqlite_compaction"],
+            command=_opsctl("storage-maintenance", "--force", "--json"),
+            risk_level="medium",
+            cost_class="high",
+            apply_safe=True,
+            requires_single_writer_idle=True,
+            success_artifact="governance/health/storage_maintenance_latest.json",
         ),
         _capability(
             capability_id="livefeed_refresh_guard",
@@ -630,12 +664,21 @@ def _capability_registry() -> list[dict[str, Any]]:
         _capability(
             capability_id="source_verification_autorefresh",
             title="Source Verification Autorefresh",
-            owns=["stale_sources", "provider_mesh_refresh", "source_quality_repair"],
+            owns=["stale_sources", "provider_mesh_refresh", "source_quality_repair", "collector_contract_reconciliation", "health_gate_reconciliation"],
             command=_opsctl("source-verification-refresh", "--apply", "--json"),
             risk_level="medium",
             cost_class="medium",
             apply_safe=True,
             success_artifact="governance/health/source_verification_autorefresh_latest.json",
+        ),
+        _capability(
+            capability_id="health_gates_recheck",
+            title="Health Gates Recheck",
+            owns=["hard_gate_truth", "dashboard_gate_freshness", "post_repair_reconciliation"],
+            command=_opsctl("health-gates", "--json"),
+            advisory_only=True,
+            safe_under_pressure=True,
+            success_artifact="governance/health/health_gates_latest.json",
         ),
         _capability(
             capability_id="provider_mesh_refresh",
@@ -846,6 +889,7 @@ def _needs_contract(project_root: Path, *, refresh_needs: bool = False) -> dict[
     external_backlog = _health(project_root, "external_backlog_drain_latest.json")
     raw_training = _health(project_root, "raw_training_compaction_intelligence_latest.json")
     storage_retention = _health(project_root, "storage_retention_unison_latest.json")
+    storage_quota = _health(project_root, "storage_quota_guard_latest.json")
     writer = _health(project_root, "writer_cycle_coordinator_latest.json")
     training = _health(project_root, "training_runtime_control_latest.json")
     livefeed = _health(project_root, "livefeed_local_latest.json")
@@ -1182,6 +1226,21 @@ def _needs_contract(project_root: Path, *, refresh_needs: bool = False) -> dict[
     retention_status = _status(storage_retention.get("overall_status"))
     retention_next_action = str(storage_retention.get("next_action") or "")
     retention_recommended = retention_status in BAD_STATUSES or "rerun storage-retention-unison" in retention_next_action
+    quota_status = _status(storage_quota.get("overall_status"))
+    quota_summary = _as_dict(storage_quota.get("quota_summary"))
+    quota_degraded_families = {
+        str(item or "").strip()
+        for item in quota_summary.get("degraded_families", [])
+        if str(item or "").strip()
+    } if isinstance(quota_summary.get("degraded_families"), list) else set()
+    quota_hard_breaches = _safe_int(quota_summary.get("hard_breaches"), 0)
+    quota_soft_breaches = _safe_int(quota_summary.get("soft_breaches"), 0)
+    stateful_sql_quota_pressure = bool(
+        quota_status in BAD_STATUSES
+        or quota_hard_breaches > 0
+        or quota_soft_breaches > 0
+        or "sql_link_shards" in quota_degraded_families
+    )
     cleanup_handoff_needed = (
         external_recommended
         or external_status in {"drain_active", "handoff_requested", "ready_to_drain", "waiting_for_writer"}
@@ -1190,6 +1249,7 @@ def _needs_contract(project_root: Path, *, refresh_needs: bool = False) -> dict[
         or raw_candidate_count > 0
         or raw_candidate_gb > 0.05
         or retention_recommended
+        or stateful_sql_quota_pressure
         or bool(storage_allowed_work.get("raw_training_compaction_apply"))
     )
     if cleanup_handoff_needed:
@@ -1209,17 +1269,23 @@ def _needs_contract(project_root: Path, *, refresh_needs: bool = False) -> dict[
                     f"raw_training_candidate_count={raw_candidate_count}",
                     f"raw_training_candidate_gb={raw_candidate_gb:.3f}",
                     f"retention_status={retention_status or 'unknown'}",
+                    f"storage_quota_status={quota_status or 'unknown'}",
+                    f"storage_quota_soft_breaches={quota_soft_breaches}",
+                    f"storage_quota_hard_breaches={quota_hard_breaches}",
+                    f"storage_quota_degraded_families={','.join(sorted(quota_degraded_families)) or 'none'}",
                     f"raw_training_compaction_apply_allowed={bool(storage_allowed_work.get('raw_training_compaction_apply'))}",
                 ],
                 target_capabilities=[
                     "external_backlog_drain_handoff",
                     "raw_training_cleanup_handoff",
+                    "deep_cold_second_cold_handoff",
                     "storage_retention_unison_handoff",
+                    "stateful_sql_quota_relief",
                     "storage_backpressure_autopilot",
                     "writer_cycle_coordinator",
                 ],
-                stop_when="external backlog drain is complete, raw training compaction has no selected/eligible cleanup work, retention unison reports ready, and ingestion backpressure is below pressure thresholds.",
-                expected_impact="Adds focused cleanup handoff owners so ingestion drains faster without starting competing SQLite writers or broad cleanup fanout.",
+                stop_when="external backlog drain is complete, raw training compaction has no selected/eligible cleanup work, retention unison reports ready, storage quota guard is ready, and ingestion backpressure is below pressure thresholds.",
+                expected_impact="Adds focused cleanup, cold-archive, and stateful SQL owners so ingestion drains faster without starting competing SQLite writers or broad cleanup fanout.",
             )
         )
 
@@ -1552,6 +1618,7 @@ def _needs_contract(project_root: Path, *, refresh_needs: bool = False) -> dict[
                 target_capabilities=[
                     "source_verification",
                     "source_verification_autorefresh",
+                    "health_gates_recheck",
                     "provider_mesh_refresh",
                     "market_explanation_evidence",
                     "infrastructure_autofix",
@@ -1646,6 +1713,7 @@ def _needs_contract(project_root: Path, *, refresh_needs: bool = False) -> dict[
             "external_backlog_drain": bool(external_backlog),
             "raw_training_compaction": bool(raw_training),
             "storage_retention_unison": bool(storage_retention),
+            "storage_quota_guard": bool(storage_quota),
             "training_runtime_control": bool(training),
             "livefeed_local": bool(livefeed),
             "commands_hygiene": bool(commands),

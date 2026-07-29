@@ -108,7 +108,9 @@
       "expected_impact": "keeps data collection useful when optional providers are thin without letting them poison decisions",
       "commands": [
         ["./scripts/ops/opsctl.sh", "provider-mesh", "--json"],
-        ["./scripts/ops/opsctl.sh", "source-verification-refresh", "--apply", "--json"]
+        ["./scripts/ops/opsctl.sh", "source-verification-refresh", "--apply", "--json"],
+        ["./scripts/ops/opsctl.sh", "collector-contracts", "--json"],
+        ["./scripts/ops/opsctl.sh", "health-gates", "--json"]
       ],
       "requirements": [
         {
@@ -413,6 +415,8 @@
       "expected_impact": "keeps the soak collecting without letting storage run into hard failure",
       "commands": [
         ["./scripts/ops/opsctl.sh", "storage-quota-guard", "--json"],
+        ["./scripts/ops/opsctl.sh", "deep-cold-storage-layer", "--apply", "--move-to-second-cold", "--second-cold-root", "/Volumes/VIDEO/schwab_trading_bot_cold", "--max-move-gb", "96", "--max-move-files", "500", "--include-critical", "--json"],
+        ["./scripts/ops/opsctl.sh", "storage-retention-unison", "--apply", "--json"],
         ["./scripts/ops/opsctl.sh", "ingestion-storage", "--json"]
       ],
       "custom_checks": ["storage_soft_quota_escalator"],

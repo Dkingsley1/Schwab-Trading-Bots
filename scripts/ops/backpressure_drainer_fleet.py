@@ -47,13 +47,12 @@ RAW_LIVE_EXPANSION_HOT_DRAINERS = {
     "api_ingress_drainer",
     "runtime_channel_drainer",
     "schema_violation_drainer",
-    "support_watchdog_drainer",
     "fast_trade_bridge_drainer",
-    "risk_support_drainer",
     "ingestion_priority_drainer",
     "hot_path_storage_budget_drainer",
     "writer_progress_recovery_drainer",
 }
+RAW_LIVE_EXPANSION_SUPPORT_DRAINERS = {"risk_support_drainer", "support_watchdog_drainer"}
 
 DRAINER_OWNERS: dict[str, dict[str, Any]] = {
     "stale_decision_log_drainer": {
@@ -1574,6 +1573,7 @@ def _raw_live_expansion_guard(
         "governance/events/channel_schema_violations_",
         "governance/events/signal_generation_",
         "governance/events/auth_events_",
+        "governance/events/execution_lane_stale_skips_",
         "governance/events/live_execution_guard_",
         "governance/events/premarket_token_guard_",
         "governance/events/write_failures_",
@@ -1657,6 +1657,8 @@ def _apply_age_pressure_priority(
     )
     guard = raw_live_guard if isinstance(raw_live_guard, dict) else {}
     guard_active = bool(guard.get("active", False))
+    guard_pressure_ratio = _safe_float(guard.get("pressure_ratio"), 0.0)
+    preemption_active = bool(guard_active and guard_pressure_ratio >= 2.0)
     live_priority_bonus = _safe_int(guard.get("live_priority_bonus"), 0) if guard_active else 0
     cold_stage_penalty = _safe_int(guard.get("cold_stage_penalty"), 0) if guard_active else 0
     for row in profiles:
@@ -1683,8 +1685,18 @@ def _apply_age_pressure_priority(
             else 0
         )
         cold_penalty = int(cold_stage_penalty if guard_active and name == "cold_stage_drainer" else 0)
+        if preemption_active and name in RAW_LIVE_EXPANSION_HOT_DRAINERS and pending_lines > 0:
+            preemption_tier = 3
+        elif preemption_active and name in RAW_LIVE_EXPANSION_SUPPORT_DRAINERS and pending_lines > 0:
+            preemption_tier = 1
+        elif preemption_active and live_window_safe and pending_lines > 0:
+            preemption_tier = 2
+        else:
+            preemption_tier = 0
         row["age_pressure_priority_bonus"] = bonus
         row["raw_live_expansion_guard_active"] = guard_active
+        row["raw_live_expansion_preemption_active"] = preemption_active
+        row["raw_live_expansion_preemption_tier"] = preemption_tier
         row["raw_live_expansion_priority_bonus"] = raw_bonus
         row["raw_live_expansion_size_priority_bonus"] = raw_size_bonus
         row["raw_live_expansion_cold_penalty"] = cold_penalty
@@ -2119,6 +2131,7 @@ def _candidate_drainers(
         (
             "governance/execution_lanes/",
             "governance/events/auth_events_",
+            "governance/events/execution_lane_stale_skips_",
             "governance/events/live_execution_guard_",
             "governance/events/premarket_token_guard_",
             "governance/events/write_failures_",
@@ -2564,7 +2577,15 @@ def _candidate_drainers(
     hot_path_budget_shards, hot_path_budget_env = _focused_shard_env(base, hot_path_budget_rows, shards=["governance", "data"], critical=critical, max_files=10, max_lines_per_file=24000, state_checkpoint_lines=1000)
     admission_evidence_shards, admission_evidence_env = _focused_shard_env(base, admission_evidence_rows, shards=["governance", "data"], critical=critical, max_files=8, max_lines_per_file=16000, state_checkpoint_lines=900)
     writer_progress_shards, writer_progress_env = _focused_shard_env(base, writer_progress_rows, shards=["support_watchdog", "health_fast", "governance"], critical=critical, max_files=6, max_lines_per_file=12000, state_checkpoint_lines=600, include_health_fast=False)
-    risk_support_shards, risk_support_env = _focused_shard_env(base, risk_rows, shards=["risk_support"], critical=critical, max_files=10, max_lines_per_file=800000, state_checkpoint_lines=32000)
+    risk_support_shards, risk_support_env = _focused_shard_env(
+        base,
+        risk_rows,
+        shards=["risk_support"],
+        critical=critical,
+        max_files=6,
+        max_lines_per_file=160000,
+        state_checkpoint_lines=8000,
+    )
     training_lineage_shards, training_lineage_env = _focused_shard_env(base, training_lineage_rows, shards=["governance", "data"], critical=critical, max_files=8, max_lines_per_file=16000, state_checkpoint_lines=900)
     label_contract_shards, label_contract_env = _focused_shard_env(base, label_contract_rows, shards=["data", "governance", "schema_violations"], critical=critical, max_files=8, max_lines_per_file=16000, state_checkpoint_lines=900)
     collector_telemetry_shards, collector_telemetry_env = _focused_shard_env(base, collector_telemetry_rows, shards=["data", "governance"], critical=critical, max_files=8, max_lines_per_file=16000, state_checkpoint_lines=900)
@@ -2915,9 +2936,12 @@ def _candidate_drainers(
                 **base,
                 "SQL_LINK_SERVICE_SHARDS": "runtime,crypto_runtime,health_fast",
                 "SQL_LINK_SERVICE_SHARD_RUNTIME_PATH_CONTAINS": ",".join(str(row["source_rel"]) for row in runtime_rows[:8]),
-                "SQL_LINK_SERVICE_SHARD_RUNTIME_MAX_FILES": "16",
-                "SQL_LINK_SERVICE_SHARD_RUNTIME_MAX_LINES_PER_FILE": "64000",
-                "SQL_LINK_SERVICE_SHARD_CRYPTO_RUNTIME_MAX_FILES": "10",
+                "SQL_LINK_SERVICE_SHARD_RUNTIME_MAX_FILES": "8",
+                "SQL_LINK_SERVICE_SHARD_RUNTIME_MAX_LINES_PER_FILE": "24000",
+                "SQL_LINK_SERVICE_SHARD_RUNTIME_STATE_CHECKPOINT_LINES": "1000",
+                "SQL_LINK_SERVICE_SHARD_CRYPTO_RUNTIME_MAX_FILES": "6",
+                "SQL_LINK_SERVICE_SHARD_CRYPTO_RUNTIME_MAX_LINES_PER_FILE": "16000",
+                "SQL_LINK_SERVICE_SHARD_CRYPTO_RUNTIME_STATE_CHECKPOINT_LINES": "1000",
                 "SQL_LINK_SERVICE_SKIP_FRESH_IDLE_SHARDS": "0",
                 "SQL_LINK_SERVICE_IDLE_SHARD_MAX_AGE_SECONDS": "0",
             },
@@ -3005,6 +3029,7 @@ def _candidate_drainers(
     idle = [row for row in profiles if str(row.get("status") or "") != "ready"]
     ready.sort(
         key=lambda row: (
+            _safe_int(row.get("raw_live_expansion_preemption_tier"), 0),
             _safe_int(row.get("effective_priority_score"), _safe_int(row.get("priority_score"), 0)),
             _safe_int(row.get("pending_lines"), 0),
         ),

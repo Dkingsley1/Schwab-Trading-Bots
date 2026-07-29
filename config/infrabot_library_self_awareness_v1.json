@@ -141,13 +141,15 @@
       "family": "single_writer_storage_and_backpressure",
       "max_parallel": 1,
       "pressure_policy": "run_only_one_writer_or_storage_repair_at_a_time_and_prefer_existing_hot_path_green_contract",
-      "owner_controls": ["storage_backpressure_autopilot", "writer_cycle_coordinator", "storage_quota_guard", "stateful_storage_regression_guard"],
+      "owner_controls": ["storage_backpressure_autopilot", "writer_cycle_coordinator", "storage_quota_guard", "stateful_storage_regression_guard", "deep_cold_storage_layer", "storage_retention_unison"],
       "default_commands": [
         ["./scripts/ops/opsctl.sh", "storage-backpressure-autopilot", "--apply", "--json"],
+        ["./scripts/ops/opsctl.sh", "deep-cold-storage-layer", "--apply", "--move-to-second-cold", "--second-cold-root", "/Volumes/VIDEO/schwab_trading_bot_cold", "--max-move-gb", "96", "--max-move-files", "500", "--include-critical", "--json"],
+        ["./scripts/ops/opsctl.sh", "storage-retention-unison", "--apply", "--json"],
         ["./scripts/ops/opsctl.sh", "stateful-storage-regression-guard", "--apply", "--json"],
         ["./scripts/ops/opsctl.sh", "writer-cycle-coordinator", "--apply", "--json"]
       ],
-      "stop_condition": "storage status ready, pending lines below threshold, no stale hot-path artifact, and no active writer lock handoff"
+      "stop_condition": "storage status ready, pending lines below threshold, no stale hot-path artifact, stateful SQL quota guard ready or actively archiving to second cold, and no active writer lock handoff"
     },
     {
       "lane": "raw_profitability_recovery",
@@ -183,13 +185,14 @@
       "family": "source_verification_and_data_truth",
       "max_parallel": 2,
       "pressure_policy": "prefer read_only_crosschecks_and_refreshes_before_retraining_or_source_mutation",
-      "owner_controls": ["source_verification_refresh", "collector_contracts", "paper_profitability_control"],
+      "owner_controls": ["source_verification_refresh", "collector_contracts", "health_gates", "paper_profitability_control"],
       "default_commands": [
         ["./scripts/ops/opsctl.sh", "source-verification-refresh", "--apply", "--json"],
         ["./scripts/ops/opsctl.sh", "collector-contracts", "--json"],
+        ["./scripts/ops/opsctl.sh", "health-gates", "--json"],
         ["./scripts/ops/opsctl.sh", "paper-profitability-control", "--json"]
       ],
-      "stop_condition": "source verification ready with zero unverified required sources and raw profitability truth preserved"
+      "stop_condition": "source verification ready with zero unverified required sources, collector contracts reconciled, health gates refreshed, and raw profitability truth preserved"
     },
     {
       "lane": "runtime_memory",

@@ -122,3 +122,57 @@ def test_sqlite_maintenance_deadline_helper_raises_after_deadline() -> None:
         assert "runtime_exceeded" in str(exc)
     else:
         raise AssertionError("expected MaintenanceDeadlineExceeded")
+
+
+def test_select_vacuum_temp_dir_uses_first_candidate_with_headroom(tmp_path, monkeypatch) -> None:
+    db_path = tmp_path / "data" / "jsonl_link.sqlite3"
+    db_path.parent.mkdir(parents=True)
+    explicit = tmp_path / "small_tmp"
+    db_tmp = db_path.parent / ".sqlite_tmp"
+    project_tmp = tmp_path / ".tmp" / "sqlite_vacuum"
+
+    def fake_free(path):
+        text = str(path)
+        if text == str(explicit):
+            return 25.0
+        if text == str(db_tmp):
+            return 260.0
+        if text == str(project_tmp):
+            return 500.0
+        return 0.0
+
+    monkeypatch.setattr(maint, "_disk_free_gb", fake_free)
+
+    selected = maint._select_vacuum_temp_dir(
+        db_path=db_path,
+        project_root=tmp_path,
+        db_size_gb=200.0,
+        explicit=str(explicit),
+        min_free_ratio=1.15,
+        min_free_gb=8.0,
+    )
+
+    assert selected["selected"] is True
+    assert selected["selected_dir"] == str(db_tmp)
+    assert selected["selected_source"] == "db_volume_tmpdir"
+    assert selected["required_gb"] == 230.0
+    assert selected["candidate_evaluations"][0]["reason"] == "insufficient_free_space"
+
+
+def test_select_vacuum_temp_dir_refuses_all_small_candidates(tmp_path, monkeypatch) -> None:
+    db_path = tmp_path / "data" / "jsonl_link.sqlite3"
+    db_path.parent.mkdir(parents=True)
+    monkeypatch.setattr(maint, "_disk_free_gb", lambda _path: 25.0)
+
+    selected = maint._select_vacuum_temp_dir(
+        db_path=db_path,
+        project_root=tmp_path,
+        db_size_gb=200.0,
+        explicit="",
+        min_free_ratio=1.15,
+        min_free_gb=8.0,
+    )
+
+    assert selected["selected"] is False
+    assert selected["reason"] == "insufficient_vacuum_temp_headroom"
+    assert all(not row["usable"] for row in selected["candidate_evaluations"])

@@ -681,9 +681,77 @@ def test_backpressure_drainer_fleet_handoffs_overlay_risk_support_backlog(tmp_pa
     env = payload["service_request"]["env_overrides"]
     assert env["SQL_LINK_SERVICE_SHARDS"] == "risk_support,health_fast"
     assert "default_crypto_schwab" in env["SQL_LINK_SERVICE_SHARD_RISK_SUPPORT_PATH_CONTAINS"]
-    assert env["SQL_LINK_SERVICE_SHARD_RISK_SUPPORT_MAX_LINES_PER_FILE"] == "800000"
-    assert env["SQL_LINK_SERVICE_SHARD_RISK_SUPPORT_STATE_CHECKPOINT_LINES"] == "32000"
+    assert env["SQL_LINK_SERVICE_SHARD_RISK_SUPPORT_MAX_LINES_PER_FILE"] == "160000"
+    assert env["SQL_LINK_SERVICE_SHARD_RISK_SUPPORT_STATE_CHECKPOINT_LINES"] == "8000"
     assert env["BOT_COLLECTION_DUTY_CYCLE_MAX_ACTIVE_RATIO"] == "0.20"
+
+
+def test_backpressure_drainer_fleet_prioritizes_core_when_risk_overlay_is_louder(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    health = project_root / "governance" / "health"
+    _write_json(
+        health / "ingestion_backpressure_latest.json",
+        {
+            "pending_lines": 109000,
+            "pending_lines_total": 2540000,
+            "oldest_pending_age_seconds": 70500.0,
+            "pending_lines_threshold": 15000,
+            "oldest_age_threshold_seconds": 240.0,
+            "top_pending_files": [
+                {
+                    "source_rel": "governance/events/signal_generation_20260729.jsonl",
+                    "shard": "governance",
+                    "pending_lines": 104000,
+                    "oldest_pending_age_seconds": 480.0,
+                }
+            ],
+        },
+    )
+    _write_json(
+        health / "ingestion_storage_control_latest.json",
+        {
+            "severity": "critical",
+            "backpressure": {
+                "core_pending_lines": 109000,
+                "support_pending_lines": 612000,
+                "total_pending_lines": 3150000,
+            },
+            "sql_ingestion_pending_overlay": {
+                "active": True,
+                "used_for_pressure": True,
+                "source_count": 1,
+                "fresh_source_count": 1,
+                "stale_source_count": 0,
+                "total_pending_lines": 612000,
+                "support_pending_lines": 612000,
+                "top_pending_files": [
+                    {
+                        "source_rel": "governance/channels/risk/aggressive_equities_schwab/risk_20260729.jsonl",
+                        "shard": "risk_support",
+                        "pending_lines": 612000,
+                        "oldest_pending_age_seconds": 960.0,
+                    }
+                ],
+            },
+            "backlog_truth": {"authoritative_mode": "overlay_sql_ingestion"},
+            "overlay_decay": {"should_decay": False, "attribution_ratio": 1.0},
+        },
+    )
+
+    payload = src.build_payload(
+        project_root,
+        apply=False,
+        now_utc=datetime(2026, 7, 29, 16, 0, tzinfo=timezone.utc),
+    )
+
+    risk = next(row for row in payload["candidate_drainers"] if row["name"] == "risk_support_drainer")
+    core = next(row for row in payload["candidate_drainers"] if row["name"] == "core_decision_drainer")
+    assert risk["status"] == "ready"
+    assert core["status"] == "ready"
+    assert risk["raw_live_expansion_preemption_tier"] < core["raw_live_expansion_preemption_tier"]
+    assert risk["raw_live_expansion_priority_bonus"] == 0
+    assert payload["active_drainer"]["name"] == "core_decision_drainer"
+    assert payload["active_env_overrides"]["SQL_LINK_SERVICE_SHARDS"].startswith("governance,")
 
 
 def test_backpressure_drainer_fleet_scores_sql_overlay_signal_generation_before_tiny_runtime(tmp_path: Path) -> None:
@@ -863,6 +931,11 @@ def test_backpressure_drainer_fleet_routes_old_governance_event_tails_before_def
                     "oldest_pending_age_seconds": 51539.739,
                 },
                 {
+                    "source_rel": "governance/events/execution_lane_stale_skips_20260624.jsonl",
+                    "pending_lines": 890,
+                    "oldest_pending_age_seconds": 75140.601,
+                },
+                {
                     "source_rel": "governance/events/live_execution_guard_20260624.jsonl",
                     "pending_lines": 192,
                     "oldest_pending_age_seconds": 52833.682,
@@ -898,8 +971,9 @@ def test_backpressure_drainer_fleet_routes_old_governance_event_tails_before_def
     assert payload["overall_status"] == "ready"
     assert payload["metrics"]["raw_live_expansion_guard"]["active"] is False
     assert payload["active_drainer"]["name"] == "governance_execution_drainer"
-    assert payload["active_drainer"]["pending_lines"] == 816
+    assert payload["active_drainer"]["pending_lines"] == 1706
     assert "auth_events_20260624" in payload["active_env_overrides"]["SQL_LINK_SERVICE_SHARD_GOVERNANCE_PATH_CONTAINS"]
+    assert "execution_lane_stale_skips_20260624" in payload["active_env_overrides"]["SQL_LINK_SERVICE_SHARD_GOVERNANCE_PATH_CONTAINS"]
     assert "write_failures_20260624" in payload["active_env_overrides"]["SQL_LINK_SERVICE_SHARD_GOVERNANCE_PATH_CONTAINS"]
 
 
@@ -1687,6 +1761,8 @@ def test_backpressure_drainer_fleet_keeps_futures_loop_state_out_of_derivatives_
     assert derivatives["status"] == "idle"
     assert payload["active_drainer"]["name"] == "runtime_channel_drainer"
     assert "futures_commodity_macro" in payload["active_env_overrides"]["SQL_LINK_SERVICE_SHARD_RUNTIME_PATH_CONTAINS"]
+    assert payload["active_env_overrides"]["SQL_LINK_SERVICE_SHARD_RUNTIME_MAX_LINES_PER_FILE"] == "24000"
+    assert payload["active_env_overrides"]["SQL_LINK_SERVICE_SHARD_RUNTIME_MAX_FILES"] == "8"
     assert payload["active_env_overrides"]["SQL_LINK_SERVICE_SKIP_FRESH_IDLE_SHARDS"] == "0"
     assert payload["active_env_overrides"]["SQL_LINK_SERVICE_IDLE_SHARD_MAX_AGE_SECONDS"] == "0"
 

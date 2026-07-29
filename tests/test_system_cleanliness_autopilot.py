@@ -54,6 +54,7 @@ def test_system_cleanliness_autopilot_builds_five_layer_repair_plan(tmp_path: Pa
     assert "bounded_market_micro_sync" in names
     assert "sec_edgar_sync" in names
     assert "extended_quant_sync" in names
+    assert "health_gates_recheck" in names
     assert "bot_quality_autopilot" in names
     assert "replay_hash_registry" in names
     assert payload["assigned_infrabot"] == "system_cleanliness_infrabot"
@@ -106,3 +107,44 @@ def test_system_cleanliness_infrabot_wraps_autopilot_status(tmp_path: Path) -> N
     assert payload["overall_status"] == "ready"
     assert payload["supervision_contract"]["owner_bot"] == "system_cleanliness_infrabot"
     assert "collectors_sources" in payload["assigned_scope"]
+
+
+def test_system_cleanliness_treats_contained_weak_sleeves_as_managed_soak_watch(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    health = project_root / "governance" / "health"
+    champion = project_root / "governance" / "champion_challenger"
+
+    _write_json(health / "ingestion_storage_control_latest.json", {"overall_status": "ready", "pressure_index": 0.05, "storage": {"retention_debt_gb": 0.0}})
+    _write_json(health / "collector_contracts_latest.json", {"required_failures": [], "soft_failures": []})
+    _write_json(health / "source_verification_latest.json", {"overall_status": "ready", "overall": {"unverified_sources": [], "stale_sources": []}})
+    _write_json(
+        health / "training_quality_control_latest.json",
+        {
+            "overall_status": "ready",
+            "training_quality_score": 100.0,
+            "rollout": {"considered_bots": 1, "min_considered_bots": 1},
+            "targeted_actions": {"weak_sleeves": [{"profile": "bond"}]},
+        },
+    )
+    _write_json(
+        health / "paper_profitability_control_latest.json",
+        {
+            "ok": True,
+            "profitability_grade": "A+",
+            "controlled_profitability_grade": "A+",
+            "low_grade_layer_summary": {"control_posture_grade": "A+", "active_blocker_count": 0},
+        },
+    )
+    _write_json(health / "replay_hash_registry_guard_latest.json", {"ok": True})
+    _write_json(health / "golden_replay_regression_latest.json", {"ok": True})
+    _write_json(health / "live_canary_readiness_contract_latest.json", {"live_canary_money_ready": False, "blockers": ["raw_profitability_posture_blocked"]})
+    _write_json(champion / "promotion_autopilot_packet_latest.json", {"promotion_ready": False})
+
+    payload = autopilot_src.build_payload(project_root, apply=False)
+
+    assert payload["overall_status"] == "ready"
+    assert payload["layer_statuses"]["paper_feedback"] == "ready"
+    assert payload["layer_statuses"]["promotion_replay"] == "ready"
+    assert payload["metrics"]["weak_sleeves_managed_by_profitability_controls"] is True
+    assert payload["metrics"]["promotion_live_money_watch"] is True
+    assert payload["repair_plan"] == []

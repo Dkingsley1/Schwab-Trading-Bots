@@ -307,6 +307,18 @@ DEFAULT_SHARD_DEFS = {
         "sqlite_batch_max_bytes": 32 * 1024 * 1024,
         "state_checkpoint_lines": 2000,
         "merge_max_jsonl_rows": 8000,
+        "hot_retention_enabled": True,
+        "hot_retention_max_db_gb": 32.0,
+        "hot_retention_trigger_growth_gb": 4.0,
+        "hot_retention_trigger_rows": 400000,
+        "hot_retention_hot_days": 7,
+        "hot_retention_hot_hours": 0,
+        "hot_retention_archive_period": "day",
+        "hot_retention_archive_retention_days": 180,
+        "hot_retention_vacuum_threshold_gb": 24.0,
+        "hot_retention_batch_size": 240000,
+        "hot_retention_max_rows": 2500000,
+        "hot_retention_min_interval_seconds": 120,
     },
     "governance": {
         "include_streams": "governance_events,governance_watchdog,governance,governance_walk_forward,governance_distillation,governance_canary",
@@ -350,6 +362,18 @@ DEFAULT_SHARD_DEFS = {
         "merge_max_jsonl_rows": 0,
         "merge_priority": "low",
         "merge_to_primary": False,
+        "hot_retention_enabled": True,
+        "hot_retention_max_db_gb": 64.0,
+        "hot_retention_trigger_growth_gb": 6.0,
+        "hot_retention_trigger_rows": 600000,
+        "hot_retention_hot_days": 7,
+        "hot_retention_hot_hours": 0,
+        "hot_retention_archive_period": "day",
+        "hot_retention_archive_retention_days": 180,
+        "hot_retention_vacuum_threshold_gb": 48.0,
+        "hot_retention_batch_size": 240000,
+        "hot_retention_max_rows": 3000000,
+        "hot_retention_min_interval_seconds": 120,
     },
     "schema_violations": {
         "include_streams": "schema_violations",
@@ -1684,18 +1708,17 @@ def _effective_cycle_args(args: argparse.Namespace, overrides: dict[str, str]) -
     values["interval_seconds"] = max(_dynamic_env_int(overrides, "SQL_LINK_SERVICE_INTERVAL_SECONDS", int(args.interval_seconds)), 10)
     values["link_mode"] = str(_dynamic_env_value(overrides, "SQL_LINK_SERVICE_LINK_MODE", str(args.link_mode or "sqlite")) or "sqlite")
     values["shards"] = str(_dynamic_env_value(overrides, "SQL_LINK_SERVICE_SHARDS", str(args.shards or "")))
-    requested_shard_writer_lanes = max(
-        _dynamic_env_int(
-            overrides,
-            "SQL_LINK_SERVICE_SHARD_WRITER_LANES",
-            _dynamic_env_int(overrides, "SQL_LINK_SERVICE_PREPROCESS_WORKERS", int(getattr(args, "preprocess_workers", 1))),
-        ),
-        1,
-    )
-    max_shard_writer_lanes = _dynamic_env_int(
-        overrides,
-        "SQL_LINK_SERVICE_MAX_SHARD_WRITER_LANES",
-        requested_shard_writer_lanes,
+    if "SQL_LINK_SERVICE_SHARD_WRITER_LANES" in overrides:
+        requested_shard_writer_lanes = _dynamic_env_int(overrides, "SQL_LINK_SERVICE_SHARD_WRITER_LANES", int(getattr(args, "preprocess_workers", 1)))
+    elif "SQL_LINK_SERVICE_PREPROCESS_WORKERS" in overrides:
+        requested_shard_writer_lanes = _dynamic_env_int(overrides, "SQL_LINK_SERVICE_PREPROCESS_WORKERS", int(getattr(args, "preprocess_workers", 1)))
+    else:
+        requested_shard_writer_lanes = int(getattr(args, "preprocess_workers", 1))
+    requested_shard_writer_lanes = max(requested_shard_writer_lanes, 1)
+    max_shard_writer_lanes = (
+        _dynamic_env_int(overrides, "SQL_LINK_SERVICE_MAX_SHARD_WRITER_LANES", requested_shard_writer_lanes)
+        if "SQL_LINK_SERVICE_MAX_SHARD_WRITER_LANES" in overrides
+        else requested_shard_writer_lanes
     )
     values["preprocess_workers"] = max(
         min(requested_shard_writer_lanes, max(max_shard_writer_lanes, 1)),
@@ -2083,6 +2106,16 @@ def _quarantine_shard_artifacts(
 
 def _shard_env(name: str, suffix: str) -> str:
     return f"SQL_LINK_SERVICE_SHARD_{name.upper()}_{suffix}"
+
+
+def _approved_second_cold_sql_root(safe_name: str, *, kind: str) -> Path | None:
+    if not _env_flag("BOT_ALLOW_VIDEO_COLD_ARCHIVE", False):
+        return None
+    root = Path(os.getenv("BOT_VIDEO_COLD_ARCHIVE_ROOT", "/Volumes/VIDEO/schwab_trading_bot_cold")).expanduser()
+    clean = str(safe_name or "").strip().lower().replace("-", "_")
+    if not clean:
+        return None
+    return root / "sql_link_shards" / kind / clean
 
 
 def _table_exists(conn: sqlite3.Connection, db_alias: str, table: str) -> bool:
@@ -2476,6 +2509,7 @@ def _run_hot_retention(
         str(archive_period or "single"),
         "--archive-retention-days",
         str(max(archive_retention_days, 0)),
+        "--skip-remaining-count",
         "--json",
     ]
     if int(hot_hours) > 0:
@@ -2716,8 +2750,8 @@ def _build_shards(shard_names: list[str]) -> list[dict[str, object]]:
             _env_int(_shard_env(safe_name, "MERGE_MAX_JSON_FILE_ROWS"), int(defaults.get("merge_max_json_file_rows", 0) or 0)),
             0,
         )
-        archive_root_default = SHARD_DB_ROOT / "archives" / safe_name
-        cold_export_root_default = SHARD_DB_ROOT / "cold_archives" / safe_name
+        archive_root_default = _approved_second_cold_sql_root(safe_name, kind="archives") or SHARD_DB_ROOT / "archives" / safe_name
+        cold_export_root_default = _approved_second_cold_sql_root(safe_name, kind="cold_archives") or SHARD_DB_ROOT / "cold_archives" / safe_name
         max_files = max(_env_int(_shard_env(safe_name, "MAX_FILES"), int(defaults.get("max_files", 0) or 0)), 0)
         heat_row = heat_map.get(safe_name, {})
         if bool(heat_row.get("promotion_candidate", False)):
@@ -2783,7 +2817,7 @@ def _run_shard_links(
     live_lane_cap_reload: bool = False,
 ) -> list[dict[str, object]]:
     results: list[dict[str, object]] = []
-    lane_cap = _live_shard_writer_lane_cap(int(preprocess_workers)) if live_lane_cap_reload else _shard_writer_lane_cap()
+    lane_cap = _live_shard_writer_lane_cap(int(preprocess_workers)) if live_lane_cap_reload else int(preprocess_workers)
     worker_count = max(1, min(int(preprocess_workers), max(len(shards), 1), lane_cap))
     parallelism_contract = _shard_parallelism_contract(worker_count)
     tier_lane_caps = {

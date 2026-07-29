@@ -1017,6 +1017,20 @@ def build_payload(
     deep_cmd = [opsctl, "deep-cold-storage-layer", "--json"]
     if apply:
         deep_cmd.insert(2, "--apply")
+        if _env_truthy("BOT_ALLOW_VIDEO_COLD_ARCHIVE"):
+            deep_cmd.extend(
+                [
+                    "--move-to-second-cold",
+                    "--second-cold-root",
+                    os.getenv("BOT_VIDEO_COLD_ARCHIVE_ROOT", DEFAULT_VIDEO_COLD_ARCHIVE_ROOT),
+                    "--max-move-gb",
+                    os.getenv("BOT_DEEP_COLD_MAX_MOVE_GB", "96.0"),
+                    "--max-move-files",
+                    os.getenv("BOT_DEEP_COLD_MAX_MOVE_FILES", "500"),
+                ]
+            )
+            if _env_truthy("BOT_DEEP_COLD_INCLUDE_CRITICAL"):
+                deep_cmd.append("--include-critical")
     steps["retention_freshness_deep_cold"] = _run_json(deep_cmd, cwd=project_root, timeout_sec=timeout_sec)
 
     retention_cmd = [opsctl, "retention-intelligence-v2", "--json"]
