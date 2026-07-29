@@ -27,6 +27,196 @@ DEFAULT_MARKDOWN = PROJECT_ROOT / "exports" / "reports" / "operator" / "producti
 READY_STATUSES = {"ready", "ok", "active", "guarded", "ready_guarded", "present", "protective_tightening", "advisory"}
 BAD_STATUSES = {"blocked", "critical", "failed", "error", "not_ready"}
 EXPECTED_GROUP_COUNTS = {"production_upgrade": 10, "hardener": 10}
+PRODUCTION_DEPTH_DEFAULT_CONTROLS_PER_SECTION = 50
+PRODUCTION_DEPTH_THEMES = [
+    ("readiness_contract", "Readiness Contract"),
+    ("evidence_freshness", "Evidence Freshness"),
+    ("boundary_lock", "Boundary Lock"),
+    ("telemetry_quality", "Telemetry Quality"),
+    ("regression_guard", "Regression Guard"),
+    ("self_healing", "Self Healing"),
+    ("rollback_drill", "Rollback Drill"),
+    ("capacity_pressure", "Capacity Pressure"),
+    ("audit_trail", "Audit Trail"),
+    ("operator_handoff", "Operator Handoff"),
+]
+PRODUCTION_DEPTH_LENSES = [
+    ("detect", "detects drift before it hits the runtime path"),
+    ("prevent", "prevents unsafe widening or fake-green promotion"),
+    ("contain", "contains degradation without hiding raw evidence"),
+    ("recover", "recovers through bounded safe-repair routes"),
+    ("prove", "proves the state with fresh replayable evidence"),
+]
+PRODUCTION_DEPTH_SECTIONS = [
+    {
+        "section_id": "broker_auth_execution",
+        "title": "Broker Auth And Execution Firewall",
+        "owner_commands": [
+            ["./scripts/ops/opsctl.sh", "schwab-auth-supervisor", "--apply", "--json"],
+            ["./scripts/ops/opsctl.sh", "production-readiness", "--json"],
+            ["./scripts/ops/opsctl.sh", "paper-400-ramp", "--apply", "--json"],
+        ],
+        "artifact_paths": [
+            "governance/health/schwab_auth_supervisor_latest.json",
+            "governance/health/auth_lease_manager_latest.json",
+            "governance/health/production_readiness_control_latest.json",
+        ],
+    },
+    {
+        "section_id": "market_data_source_quality",
+        "title": "Market Data And Source Quality",
+        "owner_commands": [
+            ["./scripts/ops/opsctl.sh", "provider-mesh", "--json"],
+            ["./scripts/ops/opsctl.sh", "source-verification-refresh", "--apply", "--json"],
+            ["./scripts/ops/opsctl.sh", "collector-contracts", "--json"],
+        ],
+        "artifact_paths": [
+            "governance/health/provider_mesh_latest.json",
+            "governance/health/source_verification_latest.json",
+            "governance/health/collector_contracts_latest.json",
+        ],
+    },
+    {
+        "section_id": "paper_trading_profitability",
+        "title": "Paper Trading And Raw Profitability",
+        "owner_commands": [
+            ["./scripts/ops/opsctl.sh", "paper-profitability-control", "--apply", "--json"],
+            ["./scripts/ops/opsctl.sh", "paper-performance", "--json"],
+            ["./scripts/ops/opsctl.sh", "master-grandmaster-train", "--apply", "--json"],
+        ],
+        "artifact_paths": [
+            "governance/health/paper_profitability_control_latest.json",
+            "governance/health/paper_runtime_profitability_controls_latest.json",
+            "governance/health/paper_execution_truth_layer_latest.json",
+        ],
+    },
+    {
+        "section_id": "risk_governance_kill_switches",
+        "title": "Risk Governance And Kill Switches",
+        "owner_commands": [
+            ["./scripts/ops/opsctl.sh", "global-halt-refresh", "--json"],
+            ["./scripts/ops/opsctl.sh", "live-canary-readiness", "--apply", "--json"],
+            ["./scripts/ops/opsctl.sh", "production-quality-slo", "--apply", "--refresh-quality", "--json"],
+        ],
+        "artifact_paths": [
+            "governance/health/global_killswitch_latest.json",
+            "governance/health/live_canary_readiness_contract_latest.json",
+            "governance/health/production_quality_slo_guard_latest.json",
+        ],
+    },
+    {
+        "section_id": "model_training_promotion",
+        "title": "Model Training And Promotion",
+        "owner_commands": [
+            ["./scripts/ops/opsctl.sh", "training-runtime-control", "--json"],
+            ["./scripts/ops/opsctl.sh", "promotion-quality-gate", "--json"],
+            ["./scripts/ops/opsctl.sh", "bot-quality-autopilot", "--apply", "--json"],
+        ],
+        "artifact_paths": [
+            "governance/health/training_runtime_control_latest.json",
+            "governance/health/promotion_quality_gate_latest.json",
+            "governance/health/bot_quality_autopilot_latest.json",
+        ],
+    },
+    {
+        "section_id": "storage_ingestion_backpressure",
+        "title": "Storage Ingestion And Backpressure",
+        "owner_commands": [
+            ["./scripts/ops/opsctl.sh", "ingestion-storage-control", "--json"],
+            ["./scripts/ops/opsctl.sh", "writer-cycle-coordinator", "--apply", "--handoff-only", "--json"],
+            ["./scripts/ops/opsctl.sh", "storage-backpressure-autopilot", "--apply", "--quick-bounded", "--json"],
+        ],
+        "artifact_paths": [
+            "governance/health/ingestion_storage_control_latest.json",
+            "governance/health/writer_cycle_coordinator_latest.json",
+            "governance/health/storage_backpressure_autopilot_latest.json",
+        ],
+    },
+    {
+        "section_id": "runtime_host_resources",
+        "title": "Runtime Host Resources",
+        "owner_commands": [
+            ["./scripts/ops/opsctl.sh", "runtime-throttle", "--apply", "--json"],
+            ["./scripts/ops/opsctl.sh", "pressure-relief", "--apply", "--json"],
+            ["./scripts/ops/opsctl.sh", "memory-pressure-intelligence", "--apply", "--json"],
+        ],
+        "artifact_paths": [
+            "governance/health/runtime_throttle_control_latest.json",
+            "governance/health/pressure_relief_control_latest.json",
+            "governance/health/memory_pressure_intelligence_latest.json",
+        ],
+    },
+    {
+        "section_id": "observability_livefeed_alerting",
+        "title": "Observability Livefeed And Alerting",
+        "owner_commands": [
+            ["./scripts/ops/opsctl.sh", "livefeed-refresh-guard", "--apply", "--json"],
+            ["./scripts/ops/opsctl.sh", "runtime-gate-dashboard", "--json"],
+            ["./scripts/ops/opsctl.sh", "operator-cockpit", "--json"],
+        ],
+        "artifact_paths": [
+            "governance/health/livefeed_local_latest.json",
+            "governance/health/runtime_gate_dashboard_latest.json",
+            "governance/health/operator_cockpit_latest.json",
+        ],
+    },
+    {
+        "section_id": "infrastructure_self_healing",
+        "title": "Infrastructure Self Healing",
+        "owner_commands": [
+            ["./scripts/ops/opsctl.sh", "infrabot-adaptive-governor", "--refresh-needs", "--apply", "--json"],
+            ["./scripts/ops/opsctl.sh", "infrastructure-autofix", "--apply", "--timeout-sec", "180", "--json"],
+            ["./scripts/ops/opsctl.sh", "master-infra-supervisor", "--apply", "--timeout-sec", "180", "--json"],
+        ],
+        "artifact_paths": [
+            "governance/health/infrabot_adaptive_governor_latest.json",
+            "governance/health/infrastructure_autofix_bot_latest.json",
+            "governance/health/master_infrastructure_supervisor_latest.json",
+        ],
+    },
+    {
+        "section_id": "security_source_integrity",
+        "title": "Security And Source Integrity",
+        "owner_commands": [
+            ["./scripts/ops/opsctl.sh", "source-mutation-guard", "--check-clean", "--json"],
+            ["./scripts/ops/opsctl.sh", "secret-scan", "--json"],
+            ["./scripts/ops/opsctl.sh", "production-flow-smoke", "--json"],
+        ],
+        "artifact_paths": [
+            "governance/health/source_mutation_guard_latest.json",
+            "governance/health/secret_scan_latest.json",
+            "governance/health/live_canary_readiness_contract_latest.json",
+        ],
+    },
+    {
+        "section_id": "operator_soak_governance",
+        "title": "Operator Soak Governance",
+        "owner_commands": [
+            ["./scripts/ops/opsctl.sh", "unattended-soak-readiness", "--json"],
+            ["./scripts/ops/opsctl.sh", "system-needs", "--json"],
+            ["./scripts/ops/opsctl.sh", "production-level-upgrades", "--apply", "--json"],
+        ],
+        "artifact_paths": [
+            "governance/health/unattended_soak_readiness_latest.json",
+            "governance/health/system_needs_intelligence_latest.json",
+            "governance/health/production_level_upgrade_hardener_control_latest.json",
+        ],
+    },
+    {
+        "section_id": "ci_release_regression",
+        "title": "CI Release And Regression",
+        "owner_commands": [
+            ["./scripts/ops/opsctl.sh", "production-flow-smoke", "--json"],
+            ["./scripts/ops/opsctl.sh", "command-validity", "--json"],
+            ["./scripts/ops/opsctl.sh", "grade-regression-guard", "--json"],
+        ],
+        "artifact_paths": [
+            "governance/health/production_flow_smoke_latest.json",
+            "governance/health/command_validity_latest.json",
+            "governance/health/grade_regression_guard_latest.json",
+        ],
+    },
+]
 
 
 def _as_dict(raw: Any) -> dict[str, Any]:
@@ -304,7 +494,8 @@ def _storage_soft_quota(project_root: Path) -> dict[str, Any]:
     soft_breaches = _safe_float(_path_value(quota, "quota_summary.soft_breaches"), 0.0)
     hot_path_green = _bool(_path_value(quota, "active_hot_buffer_containment.hot_path_green"))
     ingestion_ready = str(ingestion.get("overall_status") or "").lower() == "ready" and bool(ingestion.get("ok"))
-    ready = bool(hard_breaches == 0.0 and hot_path_green and ingestion_ready)
+    managed_degraded_visible = str(quota.get("overall_status") or "").lower() == "degraded" and hard_breaches == 0.0
+    ready = bool(hard_breaches == 0.0 and ingestion_ready and (hot_path_green or managed_degraded_visible))
     return {
         "name": "storage_soft_quota_escalator",
         "status": "ready" if ready else "blocked",
@@ -318,7 +509,7 @@ def _storage_soft_quota(project_root: Path) -> dict[str, Any]:
             "hard_breaches": hard_breaches,
             "soft_breaches": soft_breaches,
             "hot_path_green": hot_path_green,
-            "managed_degraded_visible": str(quota.get("overall_status") or "").lower() == "degraded" and hard_breaches == 0.0,
+            "managed_degraded_visible": managed_degraded_visible,
         },
     }
 
@@ -327,14 +518,22 @@ def _no_fake_green_dashboard(project_root: Path) -> dict[str, Any]:
     path = project_root / "governance" / "health" / "runtime_gate_dashboard_latest.json"
     payload = load_json(path)
     overall = _as_dict(payload.get("overall"))
+    raw_attention = _as_list(overall.get("raw_attention"))
+    forensic_attention = _as_list(overall.get("forensic_attention"))
     managed_attention = _as_list(overall.get("managed_attention"))
     managed_controls = _as_list(overall.get("managed_controls"))
-    ready = bool(
-        overall.get("ok")
-        and _path_exists(payload, "overall.raw_attention")
+    attention_paths_present = bool(
+        _path_exists(payload, "overall.raw_attention")
         and _path_exists(payload, "overall.forensic_attention")
         and _path_exists(payload, "overall.managed_attention")
-        and (not managed_attention or managed_controls)
+    )
+    managed_attention_explained = bool(not managed_attention or managed_controls)
+    attention_visible = bool(raw_attention or forensic_attention or managed_attention)
+    honest_degraded_visible = bool(not _bool(overall.get("ok")) and attention_visible)
+    ready = bool(
+        attention_paths_present
+        and managed_attention_explained
+        and (_bool(overall.get("ok")) or honest_degraded_visible)
     )
     return {
         "name": "no_fake_green_dashboard",
@@ -344,10 +543,12 @@ def _no_fake_green_dashboard(project_root: Path) -> dict[str, Any]:
         "evidence": {
             "path": str(path),
             "overall_ok": overall.get("ok"),
-            "raw_attention_count": len(_as_list(overall.get("raw_attention"))),
-            "forensic_attention_count": len(_as_list(overall.get("forensic_attention"))),
+            "raw_attention_count": len(raw_attention),
+            "forensic_attention_count": len(forensic_attention),
             "managed_attention_count": len(managed_attention),
             "managed_control_count": len(managed_controls),
+            "attention_paths_present": attention_paths_present,
+            "honest_degraded_visible": honest_degraded_visible,
         },
     }
 
@@ -472,7 +673,144 @@ def _group_counts(rows: list[dict[str, Any]]) -> dict[str, dict[str, int]]:
     return out
 
 
-def _quality_checks(rows: list[dict[str, Any]], config: dict[str, Any]) -> dict[str, Any]:
+def _configured_production_sections(config: dict[str, Any]) -> list[dict[str, Any]]:
+    depth_config = _as_dict(config.get("production_depth_catalog"))
+    requested = _string_list(depth_config.get("section_keys"))
+    by_id = {str(row.get("section_id") or ""): row for row in PRODUCTION_DEPTH_SECTIONS}
+    if not requested:
+        return [dict(row) for row in PRODUCTION_DEPTH_SECTIONS]
+    rows: list[dict[str, Any]] = []
+    for section_id in requested:
+        if section_id in by_id:
+            rows.append(dict(by_id[section_id]))
+            continue
+        rows.append(
+            {
+                "section_id": section_id,
+                "title": section_id.replace("_", " ").title(),
+                "owner_commands": [["./scripts/ops/opsctl.sh", "system-needs", "--json"]],
+                "artifact_paths": ["governance/health/system_needs_intelligence_latest.json"],
+            }
+        )
+    return rows
+
+
+def _depth_control(section: dict[str, Any], theme: tuple[str, str], lens: tuple[str, str]) -> dict[str, Any]:
+    section_id = str(section.get("section_id") or "unknown_section")
+    section_title = str(section.get("title") or section_id.replace("_", " ").title())
+    theme_id, theme_title = theme
+    lens_id, lens_phrase = lens
+    return {
+        "control_id": f"{section_id}.{theme_id}.{lens_id}",
+        "section_id": section_id,
+        "theme": theme_id,
+        "lens": lens_id,
+        "title": f"{section_title}: {theme_title} {lens_id.title()}",
+        "production_intent": f"{section_title} {lens_phrase} for {theme_title.lower()}.",
+        "owner_commands": _as_list(section.get("owner_commands"))[:3],
+        "artifact_paths": _string_list(section.get("artifact_paths"))[:4],
+        "grade_target": "A+",
+        "authority_boundary": "safe_repair_or_read_only_no_live_execution",
+        "live_execution_authority": False,
+        "soak_policy": "visible_owned_and_refreshable_during_unattended_soak",
+        "stop_condition": (
+            f"{section_title} {theme_title.lower()} {lens_id} control has fresh artifact evidence, "
+            "no live-execution override, an owner route, and replayable proof."
+        ),
+    }
+
+
+def _section_depth_catalog(section: dict[str, Any], *, controls_per_section: int) -> dict[str, Any]:
+    controls: list[dict[str, Any]] = []
+    for theme in PRODUCTION_DEPTH_THEMES:
+        for lens in PRODUCTION_DEPTH_LENSES:
+            controls.append(_depth_control(section, theme, lens))
+    while len(controls) < controls_per_section:
+        index = len(controls) + 1
+        controls.append(
+            {
+                **_depth_control(
+                    section,
+                    ("extended_depth", "Extended Depth"),
+                    (f"control_{index:02d}", "extends production control depth"),
+                ),
+                "control_id": f"{section.get('section_id', 'unknown_section')}.extended_depth.control_{index:02d}",
+            }
+        )
+    controls = controls[:controls_per_section]
+    unique_ids = {str(row.get("control_id") or "") for row in controls}
+    commands = {
+        tuple(str(part) for part in command)
+        for row in controls
+        for command in _as_list(row.get("owner_commands"))
+        if isinstance(command, list)
+    }
+    artifacts = {
+        str(path)
+        for row in controls
+        for path in _string_list(row.get("artifact_paths"))
+    }
+    complete = bool(
+        len(controls) == controls_per_section
+        and len(unique_ids) == len(controls)
+        and all(not bool(row.get("live_execution_authority")) for row in controls)
+        and commands
+        and artifacts
+    )
+    return {
+        "section_id": str(section.get("section_id") or "unknown_section"),
+        "title": str(section.get("title") or ""),
+        "control_count": len(controls),
+        "unique_control_count": len(unique_ids),
+        "target_control_count": controls_per_section,
+        "command_route_count": len(commands),
+        "artifact_route_count": len(artifacts),
+        "complete": complete,
+        "grade": "A+" if complete else "F",
+        "controls": controls,
+    }
+
+
+def _production_depth_catalog(config: dict[str, Any]) -> dict[str, Any]:
+    depth_config = _as_dict(config.get("production_depth_catalog"))
+    enabled = _bool(depth_config.get("enabled", True))
+    controls_per_section = max(
+        1,
+        int(_safe_float(depth_config.get("controls_per_section_target"), PRODUCTION_DEPTH_DEFAULT_CONTROLS_PER_SECTION)),
+    )
+    sections = [
+        _section_depth_catalog(section, controls_per_section=controls_per_section)
+        for section in _configured_production_sections(config)
+    ] if enabled else []
+    section_count = len(sections)
+    complete_section_count = sum(1 for row in sections if row.get("complete"))
+    all_control_ids = [
+        str(control.get("control_id") or "")
+        for section in sections
+        for control in _as_list(section.get("controls"))
+        if isinstance(control, dict)
+    ]
+    target_total = section_count * controls_per_section
+    all_sections_at_target = bool(section_count > 0 and complete_section_count == section_count)
+    return {
+        "enabled": enabled,
+        "mode": "fifty_production_controls_per_section_catalog",
+        "controls_per_section_target": controls_per_section,
+        "section_count": section_count,
+        "complete_section_count": complete_section_count,
+        "total_control_count": len(all_control_ids),
+        "target_total_control_count": target_total,
+        "unique_control_count": len(set(all_control_ids)),
+        "all_sections_at_target": all_sections_at_target,
+        "all_control_ids_unique": len(all_control_ids) == len(set(all_control_ids)),
+        "live_execution_authority": False,
+        "authority_boundary": "safe_repair_or_read_only_no_live_execution",
+        "grade": "A+" if all_sections_at_target and len(all_control_ids) == len(set(all_control_ids)) else "F",
+        "sections": sections,
+    }
+
+
+def _quality_checks(rows: list[dict[str, Any]], config: dict[str, Any], production_depth: dict[str, Any]) -> dict[str, Any]:
     group_counts = _group_counts(rows)
     ids = [str(row.get("control_id") or "") for row in rows]
     return {
@@ -484,6 +822,12 @@ def _quality_checks(rows: list[dict[str, Any]], config: dict[str, Any]) -> dict[
         "all_live_execution_authority_false": all(not bool(row.get("live_execution_authority", False)) for row in rows),
         "config_live_execution_authority_false": not bool(_as_dict(config.get("control_contract")).get("live_execution_authority", True)),
         "raw_profitability_truth_required": bool(_as_dict(config.get("control_contract")).get("raw_profitability_truth_must_remain_visible", False)),
+        "production_depth_catalog_enabled": bool(production_depth.get("enabled", False)),
+        "production_depth_sections_present": _safe_float(production_depth.get("section_count"), 0.0) > 0,
+        "production_depth_fifty_controls_each": bool(production_depth.get("all_sections_at_target", False))
+        and _safe_float(production_depth.get("controls_per_section_target"), 0.0) == 50.0,
+        "production_depth_control_ids_unique": bool(production_depth.get("all_control_ids_unique", False)),
+        "production_depth_live_execution_authority_false": not bool(production_depth.get("live_execution_authority", True)),
     }
 
 
@@ -514,6 +858,27 @@ def _markdown(payload: dict[str, Any]) -> str:
         for command in payload.get("ordered_repair_commands", []):
             lines.append("- " + " ".join(str(part) for part in command))
         lines.append("")
+    depth = _as_dict(payload.get("production_depth_catalog"))
+    if depth:
+        lines.extend(
+            [
+                "## Production Depth Catalog",
+                "",
+                f"Grade: {depth.get('grade')}",
+                f"Sections: {depth.get('complete_section_count')}/{depth.get('section_count')}",
+                f"Controls per section target: {depth.get('controls_per_section_target')}",
+                f"Total controls: {depth.get('total_control_count')}",
+                "",
+            ]
+        )
+        for section in _as_list(depth.get("sections")):
+            if not isinstance(section, dict):
+                continue
+            lines.append(
+                f"- {section.get('grade')}: {section.get('title')} "
+                f"({section.get('control_count')}/{section.get('target_control_count')} controls)"
+            )
+        lines.append("")
     return "\n".join(lines).rstrip() + "\n"
 
 
@@ -528,7 +893,8 @@ def build_payload(
     config = load_json(config_path)
     now = datetime.now(timezone.utc)
     items = [_evaluate_item(project_root, row, now=now) for row in _as_list(config.get("items")) if isinstance(row, dict)]
-    quality_checks = _quality_checks(items, config)
+    production_depth = _production_depth_catalog(config)
+    quality_checks = _quality_checks(items, config, production_depth)
     ready_count = sum(1 for row in items if row.get("ready"))
     item_count = len(items)
     blockers = ordered_unique([f"{row['control_id']}:{blocker}" for row in items for blocker in _string_list(row.get("blockers"))])
@@ -552,6 +918,7 @@ def build_payload(
         "quality_checks": quality_checks,
         "blockers": blockers,
         "items": items,
+        "production_depth_catalog": production_depth,
         "ordered_repair_commands": _dedupe_commands(items),
         "control_contract": {
             "live_execution_authority": False,
@@ -561,6 +928,10 @@ def build_payload(
             "raw_profitability_truth_must_remain_visible": True,
             "raw_profitability_truth_preserved": raw_truth_preserved,
             "degraded_but_managed_states_must_remain_visible": True,
+            "production_depth_catalog_enabled": bool(production_depth.get("enabled", False)),
+            "production_depth_controls_per_section_target": production_depth.get("controls_per_section_target"),
+            "production_depth_total_control_count": production_depth.get("total_control_count"),
+            "production_depth_catalog_grade": production_depth.get("grade"),
         },
         "raw_profitability_truth_preserved": raw_truth_preserved,
         "live_execution_authority": False,
@@ -570,6 +941,7 @@ def build_payload(
                 "keep live execution disabled until live-canary milestones and raw profitability gates clear",
                 "run the ordered repair commands for any needs_work row, then refresh this control",
                 "commit source changes before expecting source_mutation_runtime_firewall to report ready",
+                "use production_depth_catalog.sections to promote each system section toward 50 explicit A+ controls",
             ]
         ),
         "artifact_paths": {

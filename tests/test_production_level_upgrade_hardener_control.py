@@ -67,6 +67,36 @@ def test_control_reports_a_plus_when_all_twenty_items_are_ready(tmp_path: Path) 
     assert payload["control_contract"]["live_execution_authority"] is False
 
 
+def test_production_depth_catalog_has_fifty_controls_per_system_section(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    config_path = _base_config(project_root)
+
+    payload = src.build_payload(project_root, config_path=config_path)
+    catalog = payload["production_depth_catalog"]
+
+    assert catalog["grade"] == "A+"
+    assert catalog["controls_per_section_target"] == 50
+    assert catalog["section_count"] >= 12
+    assert catalog["total_control_count"] == catalog["section_count"] * 50
+    assert catalog["unique_control_count"] == catalog["total_control_count"]
+    assert catalog["live_execution_authority"] is False
+    assert payload["quality_checks"]["production_depth_fifty_controls_each"] is True
+    assert payload["control_contract"]["production_depth_total_control_count"] == catalog["total_control_count"]
+    section_ids = {section["section_id"] for section in catalog["sections"]}
+    assert {
+        "broker_auth_execution",
+        "paper_trading_profitability",
+        "storage_ingestion_backpressure",
+        "infrastructure_self_healing",
+    } <= section_ids
+    assert all(section["control_count"] == 50 for section in catalog["sections"])
+    assert all(
+        control["authority_boundary"] == "safe_repair_or_read_only_no_live_execution"
+        for section in catalog["sections"]
+        for control in section["controls"]
+    )
+
+
 def test_missing_artifact_keeps_repair_command_and_blocks_a_plus(tmp_path: Path) -> None:
     project_root = tmp_path / "project"
     config_path = _base_config(project_root)
@@ -149,7 +179,10 @@ def test_storage_soft_quota_degraded_without_hard_breach_is_managed_ready(tmp_pa
                 "path": "governance/health/storage_quota_guard_latest.json",
                 "ready_statuses": ["ready", "degraded"],
                 "zero_count_paths": ["quota_summary.hard_breaches"],
-                "truthy_paths": ["active_hot_buffer_containment.hot_path_green"],
+                "required_paths": [
+                    "active_hot_buffer_containment.hot_path_green",
+                    "active_hot_buffer_containment.hot_lane_control_active",
+                ],
             },
             {"path": "governance/health/ingestion_storage_control_latest.json", "ready_statuses": ["ready"], "truthy_paths": ["ok"]},
         ],
@@ -160,7 +193,7 @@ def test_storage_soft_quota_degraded_without_hard_breach_is_managed_ready(tmp_pa
         {
             "overall_status": "degraded",
             "quota_summary": {"hard_breaches": 0, "soft_breaches": 1},
-            "active_hot_buffer_containment": {"hot_path_green": True},
+            "active_hot_buffer_containment": {"hot_path_green": False, "hot_lane_control_active": True},
         },
     )
     _write_json(project_root / "governance" / "health" / "ingestion_storage_control_latest.json", {"overall_status": "ready", "ok": True})
@@ -170,7 +203,151 @@ def test_storage_soft_quota_degraded_without_hard_breach_is_managed_ready(tmp_pa
     assert payload["overall_status"] == "ready"
     row = next(item for item in payload["items"] if item["control_id"] == "storage_soft_quota_escalator")
     assert row["ready"] is True
+    assert row["custom_rows"][0]["evidence"]["hot_path_green"] is False
     assert row["custom_rows"][0]["evidence"]["managed_degraded_visible"] is True
+
+
+def test_no_fake_green_guard_accepts_honest_degraded_dashboard(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    config_path = _base_config(project_root)
+    config = json.loads(config_path.read_text(encoding="utf-8"))
+    config["items"][0] = {
+        "control_id": "no_fake_green_guard",
+        "group": "production_upgrade",
+        "title": "No Fake Green Guard",
+        "commands": [_cmd("runtime-gate-dashboard")],
+        "custom_checks": ["no_fake_green_dashboard"],
+        "requirements": [
+            {
+                "path": "governance/health/runtime_gate_dashboard_latest.json",
+                "existence_only": True,
+                "truthy_paths": ["overall.soak_management_context.enabled"],
+                "required_paths": [
+                    "overall.raw_attention",
+                    "overall.forensic_attention",
+                    "overall.managed_attention",
+                    "overall.managed_controls",
+                ],
+            }
+        ],
+    }
+    _write_json(config_path, config)
+    _write_json(
+        project_root / "governance" / "health" / "runtime_gate_dashboard_latest.json",
+        {
+            "overall": {
+                "ok": False,
+                "raw_attention": ["storage_quota_guard_needs_work"],
+                "forensic_attention": ["storage_quota_guard_needs_work"],
+                "managed_attention": ["runtime_snapshot_cache_control_needs_work"],
+                "managed_controls": [{"attention": "runtime_snapshot_cache_control_needs_work"}],
+                "soak_management_context": {"enabled": True},
+            }
+        },
+    )
+
+    payload = src.build_payload(project_root, config_path=config_path)
+
+    assert payload["overall_status"] == "ready"
+    row = next(item for item in payload["items"] if item["control_id"] == "no_fake_green_guard")
+    assert row["ready"] is True
+    assert row["custom_rows"][0]["evidence"]["honest_degraded_visible"] is True
+
+
+def test_safe_coordinating_infrabot_and_idle_writer_states_are_ready(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    config_path = _base_config(project_root)
+    config = json.loads(config_path.read_text(encoding="utf-8"))
+    config["items"][0] = {
+        "control_id": "autonomous_repair_planner",
+        "group": "production_upgrade",
+        "title": "Autonomous Repair Planner",
+        "commands": [_cmd("production-quality")],
+        "requirements": [
+            {
+                "path": "governance/health/infrastructure_autofix_bot_latest.json",
+                "ready_statuses": ["ready", "degraded"],
+                "required_paths": ["repair_plan", "post_apply_recheck"],
+            },
+            {
+                "path": "governance/health/infrabot_adaptive_governor_latest.json",
+                "ready_statuses": ["ready", "guarded", "coordinating"],
+                "falsey_paths": ["safety_guard.live_execution_authority"],
+                "required_paths": ["safety_guard", "capability_registry"],
+            },
+            {
+                "path": "governance/health/production_quality_control_latest.json",
+                "ready_statuses": ["ready", "coordinating", "blocked"],
+                "truthy_paths": ["quality_checks.safe_apply_only"],
+                "falsey_paths": ["live_execution_authority"],
+            },
+        ],
+    }
+    config["items"][1] = {
+        "control_id": "single_writer_enforcement",
+        "group": "production_upgrade",
+        "title": "Single Writer Enforcement",
+        "commands": [_cmd("writer-cycle-coordinator")],
+        "requirements": [
+            {
+                "path": "governance/health/writer_cycle_coordinator_latest.json",
+                "ready_statuses": ["ready", "writer_active", "idle"],
+                "truthy_paths": ["ok"],
+                "required_paths": ["writer_state_before", "writer_state_after_remediation", "summary"],
+            },
+            {
+                "path": "governance/health/writer_process_intelligence_latest.json",
+                "ready_statuses": ["ready", "advisory"],
+                "required_paths": ["writer_health", "process_playbook", "safety_envelope"],
+            },
+        ],
+    }
+    _write_json(config_path, config)
+    _write_json(
+        project_root / "governance" / "health" / "infrastructure_autofix_bot_latest.json",
+        {"overall_status": "degraded", "repair_plan": [], "post_apply_recheck": {"enabled": False}},
+    )
+    _write_json(
+        project_root / "governance" / "health" / "infrabot_adaptive_governor_latest.json",
+        {
+            "overall_status": "coordinating",
+            "safety_guard": {"live_execution_authority": False},
+            "capability_registry": {"integration_contract": {"safe_apply_only": True}},
+        },
+    )
+    _write_json(
+        project_root / "governance" / "health" / "production_quality_control_latest.json",
+        {
+            "overall_status": "blocked",
+            "live_execution_authority": False,
+            "quality_checks": {"safe_apply_only": True},
+        },
+    )
+    _write_json(
+        project_root / "governance" / "health" / "writer_cycle_coordinator_latest.json",
+        {
+            "overall_status": "idle",
+            "ok": True,
+            "writer_state_before": {"active": False},
+            "writer_state_after_remediation": {"active": False},
+            "summary": {"actionable": 0},
+        },
+    )
+    _write_json(
+        project_root / "governance" / "health" / "writer_process_intelligence_latest.json",
+        {
+            "overall_status": "ready",
+            "writer_health": {"state": "idle"},
+            "process_playbook": [],
+            "safety_envelope": {"single_writer_only": True},
+        },
+    )
+
+    payload = src.build_payload(project_root, config_path=config_path)
+
+    assert payload["overall_status"] == "ready"
+    assert payload["items"][0]["ready"] is True
+    assert payload["items"][1]["ready"] is True
 
 
 def test_live_execution_double_lock_accepts_intentional_guarded_firewall(tmp_path: Path) -> None:

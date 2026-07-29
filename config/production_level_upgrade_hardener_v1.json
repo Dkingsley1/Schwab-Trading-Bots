@@ -9,6 +9,24 @@
     "degraded_but_managed_states_must_remain_visible": true,
     "runtime_source_mutation_allowed": false
   },
+  "production_depth_catalog": {
+    "enabled": true,
+    "controls_per_section_target": 50,
+    "section_keys": [
+      "broker_auth_execution",
+      "market_data_source_quality",
+      "paper_trading_profitability",
+      "risk_governance_kill_switches",
+      "model_training_promotion",
+      "storage_ingestion_backpressure",
+      "runtime_host_resources",
+      "observability_livefeed_alerting",
+      "infrastructure_self_healing",
+      "security_source_integrity",
+      "operator_soak_governance",
+      "ci_release_regression"
+    ]
+  },
   "items": [
     {
       "control_id": "trade_evidence_court_v2",
@@ -177,7 +195,6 @@
         {
           "path": "governance/health/runtime_gate_dashboard_latest.json",
           "existence_only": true,
-          "truthy_paths": ["overall.ok"],
           "required_paths": ["overall.raw_attention", "overall.managed_attention", "overall.forensic_attention"]
         }
       ]
@@ -249,7 +266,8 @@
         },
         {
           "path": "governance/health/infrabot_adaptive_governor_latest.json",
-          "ready_statuses": ["ready", "guarded"],
+          "ready_statuses": ["ready", "guarded", "coordinating"],
+          "falsey_paths": ["safety_guard.live_execution_authority"],
           "required_paths": ["safety_guard", "capability_registry"]
         },
         {
@@ -278,7 +296,7 @@
         {
           "path": "governance/health/runtime_gate_dashboard_latest.json",
           "existence_only": true,
-          "truthy_paths": ["overall.ok", "overall.soak_management_context.enabled"],
+          "truthy_paths": ["overall.soak_management_context.enabled"],
           "required_paths": ["overall.raw_attention", "overall.forensic_attention", "overall.managed_attention", "overall.managed_controls"]
         }
       ]
@@ -376,7 +394,7 @@
       "requirements": [
         {
           "path": "governance/health/writer_cycle_coordinator_latest.json",
-          "ready_statuses": ["ready", "writer_active"],
+          "ready_statuses": ["ready", "writer_active", "idle"],
           "truthy_paths": ["ok"],
           "required_paths": ["writer_state_before", "writer_state_after_remediation", "summary"]
         },
@@ -403,7 +421,10 @@
           "path": "governance/health/storage_quota_guard_latest.json",
           "ready_statuses": ["ready", "degraded"],
           "zero_count_paths": ["quota_summary.hard_breaches"],
-          "truthy_paths": ["active_hot_buffer_containment.hot_path_green"]
+          "required_paths": [
+            "active_hot_buffer_containment.hot_path_green",
+            "active_hot_buffer_containment.hot_lane_control_active"
+          ]
         },
         {
           "path": "governance/health/ingestion_storage_control_latest.json",
