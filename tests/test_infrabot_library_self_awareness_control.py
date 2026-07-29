@@ -75,6 +75,7 @@ def _write_required_health(root: Path) -> None:
                 "ok": True,
                 "attention": [],
                 "raw_attention": [],
+                "forensic_attention": [],
                 "attention_tiers": {"critical": [], "degraded": [], "watch": [], "advisory": []},
                 "managed_attention": ["storage_quota_guard_needs_work"],
                 "managed_controls": [
@@ -87,6 +88,7 @@ def _write_required_health(root: Path) -> None:
                     }
                 ],
                 "soak_management_context": {
+                    "enabled": True,
                     "soak_ready": True,
                     "soak_grade": "A+",
                     "paper_armed": True,
@@ -160,6 +162,21 @@ def test_ready_fixture_is_a_plus_and_does_not_mutate_dependencies(tmp_path: Path
     assert payload["library_upgrade_scope"]["hard_upgrade_blockers"] == 0
     assert payload["library_upgrade_scope"]["configured_candidate_additions"]
     assert any(row["status"] == "managed_soak_advisory" for row in payload["self_awareness_need_brief"])
+    nervous = payload["autonomic_nervous_system"]
+    assert nervous["grade"] == "A+"
+    assert nervous["lane_count"] >= 6
+    assert nervous["minimum_reflexes_per_lane"] == 6
+    assert nervous["reflex_count"] == nervous["lane_count"] * nervous["minimum_reflexes_per_lane"]
+    assert nervous["unique_reflex_count"] == nervous["reflex_count"]
+    assert nervous["incomplete_reflex_count"] == 0
+    assert nervous["live_execution_authority"] is False
+    assert nervous["dependency_mutation_authority"] is False
+    assert payload["quality_checks"]["autonomic_need_brief_routes_present"] is True
+    assert all(
+        route["authority_boundary"] == "safe_repair_or_read_only_no_live_execution_no_dependency_mutation"
+        for need in payload["self_awareness_need_brief"]
+        for route in [need["reflex_route"]]
+    )
 
 
 def test_missing_library_router_is_a_hard_blocker(tmp_path: Path) -> None:
@@ -174,6 +191,73 @@ def test_missing_library_router_is_a_hard_blocker(tmp_path: Path) -> None:
     hard_needs = [row for row in payload["self_awareness_need_brief"] if row["status"] == "hard_blocker"]
     assert hard_needs
     assert hard_needs[0]["authority_boundary"] == "safe_repair_or_read_only_no_live_execution_no_dependency_mutation"
+    assert hard_needs[0]["reflex_route"]["phase"] == "repair"
+    assert hard_needs[0]["reflex_route"]["proof_artifacts"]
+
+
+def test_autonomic_reflex_matrix_covers_each_efficiency_lane(tmp_path: Path) -> None:
+    _write_required_health(tmp_path)
+
+    payload = control.build_payload(tmp_path, config_path=PROJECT_ROOT / "config" / "infrabot_library_self_awareness_v1.json")
+    nervous = payload["autonomic_nervous_system"]
+    lane_counts = nervous["lane_reflex_counts"]
+    config = json.loads((PROJECT_ROOT / "config" / "infrabot_library_self_awareness_v1.json").read_text(encoding="utf-8"))
+    expected_lanes = {row["lane"] for row in config["infrabot_efficiency_lanes"]}
+
+    assert set(nervous["lanes"]) == expected_lanes
+    assert set(lane_counts) == expected_lanes
+    assert all(count >= 6 for count in lane_counts.values())
+    assert {row["phase"] for row in nervous["reflexes"]} >= {"sense", "classify", "refresh", "repair", "verify", "escalate_or_hold"}
+    assert all(row["owner_command"] for row in nervous["reflexes"])
+    assert all(row["proof_artifacts"] for row in nervous["reflexes"])
+    assert all(row["escalation_target"] for row in nervous["reflexes"])
+    assert all(row["stop_condition"] for row in nervous["reflexes"])
+    assert all(row["live_execution_authority"] is False for row in nervous["reflexes"])
+    assert all(row["dependency_mutation_authority"] is False for row in nervous["reflexes"])
+    storage_reflexes = [row for row in nervous["reflexes"] if row["lane"] == "storage_writer"]
+    assert storage_reflexes
+    assert all(row["max_parallel"] == 1 for row in storage_reflexes)
+
+
+def test_honest_degraded_dashboard_with_visible_attention_is_ready(tmp_path: Path) -> None:
+    _write_required_health(tmp_path)
+    _write_json(
+        tmp_path / "governance" / "health" / "runtime_gate_dashboard_latest.json",
+        {
+            "overall": {
+                "status": "degraded",
+                "ok": False,
+                "raw_attention": ["ingestion_storage_governor_critical"],
+                "forensic_attention": ["ingestion_storage_governor_critical", "storage_quota_guard_needs_work"],
+                "managed_attention": ["storage_quota_guard_needs_work"],
+                "managed_controls": [
+                    {
+                        "attention": "storage_quota_guard_needs_work",
+                        "managed_by": "unattended_soak_readiness",
+                        "soak_ready": True,
+                        "paper_armed": True,
+                        "when_to_unmanage": "surface if storage becomes a hard blocker",
+                    }
+                ],
+                "attention_tiers": {"critical": [], "degraded": ["ingestion_storage_governor_critical"], "watch": [], "advisory": []},
+                "soak_management_context": {
+                    "enabled": True,
+                    "soak_ready": True,
+                    "soak_grade": "A+",
+                    "paper_armed": True,
+                },
+            }
+        },
+    )
+
+    payload = control.build_payload(tmp_path, config_path=PROJECT_ROOT / "config" / "infrabot_library_self_awareness_v1.json")
+
+    assert payload["ok"] is True
+    dashboard = next(row for row in payload["artifact_rows"] if row["name"] == "runtime_gate_dashboard")
+    assert dashboard["status"] == "degraded"
+    assert dashboard["ready"] is True
+    managed_need = next(row for row in payload["self_awareness_need_brief"] if row["need_id"] == "storage_quota_guard_needs_work")
+    assert managed_need["reflex_route"]["phase"] == "refresh"
 
 
 def test_repair_commands_are_deduped_and_storage_is_single_writer(tmp_path: Path) -> None:

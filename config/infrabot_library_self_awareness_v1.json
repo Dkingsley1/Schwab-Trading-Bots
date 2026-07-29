@@ -57,8 +57,9 @@
       "path": "governance/health/runtime_gate_dashboard_latest.json",
       "required": true,
       "status_path": "overall.status",
-      "ready_statuses": ["ok", "ready"],
-      "truthy_paths": ["overall.ok", "overall.soak_management_context.soak_ready", "overall.soak_management_context.paper_armed"],
+      "ready_statuses": ["ok", "ready", "degraded"],
+      "truthy_paths": ["overall.soak_management_context.enabled", "overall.soak_management_context.soak_ready", "overall.soak_management_context.paper_armed"],
+      "required_paths": ["overall.raw_attention", "overall.forensic_attention", "overall.managed_attention", "overall.managed_controls"],
       "max_value_by_path": {
         "overall.attention_tiers.critical.0": 0
       }
@@ -231,6 +232,20 @@
       "stop_condition": "auth ready, broker ready, lease healthy, market_data_only active, live orders disabled"
     }
   ],
+  "autonomic_nervous_system": {
+    "enabled": true,
+    "minimum_reflexes_per_lane": 6,
+    "mode": "sense_classify_refresh_repair_verify_escalate",
+    "authority_boundary": "safe_repair_or_read_only_no_live_execution_no_dependency_mutation",
+    "dependency_mutation_allowed_during_soak": false,
+    "live_execution_authority": false,
+    "requires_owner_command": true,
+    "requires_proof_artifacts": true,
+    "requires_stop_condition": true,
+    "requires_escalation_target": true,
+    "needs_brief_must_include_reflex_route": true,
+    "operator_output_policy": "show_reflex_id_escalation_target_cooldown_and_proof_artifacts_for_each_need"
+  },
   "communication_contract": {
     "required_fields": ["owner", "symptom", "why_it_matters", "safe_next_command", "stop_condition", "authority_boundary", "urgency", "soak_impact"],
     "status_language": "distinguish_hard_blocker_from_managed_soak_advisory",

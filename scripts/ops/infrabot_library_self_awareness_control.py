@@ -27,6 +27,98 @@ DEFAULT_OVERRIDE_PATH = PROJECT_ROOT / "config" / ".env.infrabot_library_self_aw
 READY_STATUSES = {"ready", "ok", "active", "guarded", "advisory", "watch", "needs_action"}
 BAD_STATUSES = {"blocked", "critical", "failed", "error", "missing"}
 SINGLE_WRITER_HINTS = ("storage", "writer", "sql", "backpressure", "stateful", "quota")
+AUTONOMIC_REFLEX_PHASES = [
+    {
+        "phase_id": "sense",
+        "title": "Sense",
+        "severity_floor": "watch",
+        "allowed_action": "read_fresh_health_artifacts_and_collect_symptoms",
+        "cooldown_seconds": 60,
+        "escalation_target": "self_awareness_need_brief",
+    },
+    {
+        "phase_id": "classify",
+        "title": "Classify",
+        "severity_floor": "watch",
+        "allowed_action": "separate_hard_blocker_managed_advisory_and_cosmetic_noise",
+        "cooldown_seconds": 90,
+        "escalation_target": "runtime_gate_dashboard",
+    },
+    {
+        "phase_id": "refresh",
+        "title": "Refresh",
+        "severity_floor": "advisory",
+        "allowed_action": "run_lightweight_owner_refresh_without_mutating_dependencies",
+        "cooldown_seconds": 180,
+        "escalation_target": "owning_health_artifact",
+    },
+    {
+        "phase_id": "repair",
+        "title": "Repair",
+        "severity_floor": "degraded",
+        "allowed_action": "run_one_bounded_safe_apply_command_for_the_owner_lane",
+        "cooldown_seconds": 300,
+        "escalation_target": "infrabot_adaptive_governor",
+    },
+    {
+        "phase_id": "verify",
+        "title": "Verify",
+        "severity_floor": "watch",
+        "allowed_action": "recheck_stop_condition_and_publish_replayable_proof",
+        "cooldown_seconds": 120,
+        "escalation_target": "production_level_upgrade_hardener_control",
+    },
+    {
+        "phase_id": "escalate_or_hold",
+        "title": "Escalate Or Hold",
+        "severity_floor": "critical",
+        "allowed_action": "escalate_to_operator_or_hold_visible_if_soak_manager_proves_it_is_safe",
+        "cooldown_seconds": 600,
+        "escalation_target": "operator_notification_and_unattended_soak_readiness",
+    },
+]
+LANE_SENSORY_ARTIFACTS = {
+    "storage_writer": [
+        "governance/health/runtime_gate_dashboard_latest.json",
+        "governance/health/ingestion_storage_control_latest.json",
+        "governance/health/storage_quota_guard_latest.json",
+        "governance/health/writer_cycle_coordinator_latest.json",
+    ],
+    "raw_profitability_recovery": [
+        "governance/health/paper_profitability_control_latest.json",
+        "governance/health/paper_runtime_profitability_controls_latest.json",
+        "governance/health/live_canary_readiness_contract_latest.json",
+        "governance/health/system_needs_intelligence_latest.json",
+    ],
+    "source_truth": [
+        "governance/health/provider_mesh_latest.json",
+        "governance/health/source_verification_latest.json",
+        "governance/health/collector_contracts_latest.json",
+    ],
+    "runtime_memory": [
+        "governance/health/runtime_gate_dashboard_latest.json",
+        "governance/health/runtime_throttle_control_latest.json",
+        "governance/health/memory_efficiency_control_latest.json",
+        "governance/health/mlx_intelligence_router_latest.json",
+    ],
+    "governance_regression": [
+        "governance/health/adaptive_regression_guard_latest.json",
+        "governance/health/runtime_paper_regression_guard_latest.json",
+        "governance/health/grade_regression_guard_latest.json",
+        "governance/health/production_level_upgrade_hardener_control_latest.json",
+    ],
+    "auth_live_lock": [
+        "governance/health/schwab_auth_supervisor_latest.json",
+        "governance/health/auth_lease_manager_latest.json",
+        "governance/health/production_readiness_control_latest.json",
+        "governance/health/global_killswitch_latest.json",
+    ],
+    "general_infrabot": [
+        "governance/health/runtime_gate_dashboard_latest.json",
+        "governance/health/system_needs_intelligence_latest.json",
+        "governance/health/infrabot_adaptive_governor_latest.json",
+    ],
+}
 
 
 def _as_dict(raw: Any) -> dict[str, Any]:
@@ -133,6 +225,10 @@ def _artifact_row(project_root: Path, requirement: dict[str, Any]) -> dict[str, 
         selected[dotted] = value
         if _bool(value):
             blockers.append(f"falsey_path_failed:{dotted}")
+    for dotted in _string_list(requirement.get("required_paths")):
+        selected[dotted] = _path_value(payload, dotted)
+        if not _path_exists(payload, dotted):
+            blockers.append(f"required_path_missing:{dotted}")
     for dotted in _string_list(requirement.get("zero_count_paths")):
         value = _path_value(payload, dotted)
         selected[dotted] = value
@@ -328,6 +424,153 @@ def _first_command(plan: dict[str, Any], lane: str) -> list[str]:
     return []
 
 
+def _lane_artifacts(lane: str) -> list[str]:
+    return list(LANE_SENSORY_ARTIFACTS.get(lane) or LANE_SENSORY_ARTIFACTS["general_infrabot"])
+
+
+def _configured_reflex_phases(config: dict[str, Any]) -> list[dict[str, Any]]:
+    nervous_config = _as_dict(config.get("autonomic_nervous_system"))
+    configured = [row for row in _as_list(nervous_config.get("reflex_phases")) if isinstance(row, dict)]
+    phases = configured or [dict(row) for row in AUTONOMIC_REFLEX_PHASES]
+    minimum = max(1, _safe_int(nervous_config.get("minimum_reflexes_per_lane"), len(AUTONOMIC_REFLEX_PHASES)))
+    while len(phases) < minimum:
+        index = len(phases) + 1
+        phases.append(
+            {
+                "phase_id": f"extended_reflex_{index:02d}",
+                "title": f"Extended Reflex {index:02d}",
+                "severity_floor": "watch",
+                "allowed_action": "preserve_visible_state_and_route_to_owner_without_live_execution",
+                "cooldown_seconds": 300,
+                "escalation_target": "self_awareness_need_brief",
+            }
+        )
+    return phases[:minimum]
+
+
+def _autonomic_nervous_system(config: dict[str, Any], plan: dict[str, Any], artifact_rows: list[dict[str, Any]], library_scope: dict[str, Any]) -> dict[str, Any]:
+    nervous_config = _as_dict(config.get("autonomic_nervous_system"))
+    enabled = _bool(nervous_config.get("enabled", True))
+    lane_specs = [row for row in _as_list(config.get("infrabot_efficiency_lanes")) if isinstance(row, dict)]
+    lane_names = [str(row.get("lane") or "").strip() for row in lane_specs if str(row.get("lane") or "").strip()]
+    if not lane_names:
+        lane_names = sorted(str(lane) for lane in _as_dict(plan.get("lane_counts")).keys())
+    phases = _configured_reflex_phases(config)
+    reflexes: list[dict[str, Any]] = []
+    for lane in lane_names:
+        command = _first_command(plan, lane) or ["./scripts/ops/opsctl.sh", "system-needs", "--json"]
+        artifacts = _lane_artifacts(lane)
+        single_writer_cap = 1 if lane == "storage_writer" or any(hint in lane for hint in SINGLE_WRITER_HINTS) else _safe_int(
+            next((row.get("max_parallel") for row in lane_specs if str(row.get("lane") or "") == lane), 1),
+            1,
+        )
+        for phase in phases:
+            phase_id = str(phase.get("phase_id") or phase.get("title") or "reflex").strip().lower().replace(" ", "_")
+            reflexes.append(
+                {
+                    "reflex_id": f"{lane}.{phase_id}",
+                    "lane": lane,
+                    "phase": phase_id,
+                    "title": str(phase.get("title") or phase_id.replace("_", " ").title()),
+                    "severity_floor": str(phase.get("severity_floor") or "watch"),
+                    "sensing_artifacts": artifacts,
+                    "owner_command": command,
+                    "allowed_action": str(phase.get("allowed_action") or "read_and_route_only"),
+                    "cooldown_seconds": max(0, _safe_int(phase.get("cooldown_seconds"), 300)),
+                    "proof_artifacts": artifacts,
+                    "stop_condition": (
+                        next((str(row.get("stop_condition") or "") for row in lane_specs if str(row.get("lane") or "") == lane), "")
+                        or "owning health artifacts return ready or managed advisory with visible evidence"
+                    ),
+                    "escalation_target": str(phase.get("escalation_target") or "self_awareness_need_brief"),
+                    "authority_boundary": "safe_repair_or_read_only_no_live_execution_no_dependency_mutation",
+                    "live_execution_authority": False,
+                    "dependency_mutation_authority": False,
+                    "max_parallel": max(1, single_writer_cap),
+                }
+            )
+    reflex_ids = [str(row.get("reflex_id") or "") for row in reflexes]
+    lane_counts = Counter(str(row.get("lane") or "general_infrabot") for row in reflexes)
+    incomplete_reflexes = [
+        row
+        for row in reflexes
+        if not _as_list(row.get("owner_command"))
+        or not _string_list(row.get("proof_artifacts"))
+        or not str(row.get("stop_condition") or "").strip()
+        or not str(row.get("escalation_target") or "").strip()
+        or bool(row.get("live_execution_authority"))
+        or bool(row.get("dependency_mutation_authority"))
+    ]
+    artifact_statuses = {
+        str(row.get("name") or Path(str(row.get("path") or "")).name): {
+            "status": row.get("status"),
+            "ready": row.get("ready"),
+            "blocking": row.get("blocking"),
+        }
+        for row in artifact_rows
+    }
+    complete = bool(
+        enabled
+        and lane_names
+        and reflexes
+        and not incomplete_reflexes
+        and len(reflex_ids) == len(set(reflex_ids))
+        and all(lane_counts.get(lane, 0) >= len(phases) for lane in lane_names)
+    )
+    return {
+        "enabled": enabled,
+        "mode": "autonomic_reflex_matrix_v1",
+        "lane_count": len(lane_names),
+        "lanes": lane_names,
+        "reflex_phase_count": len(phases),
+        "reflex_count": len(reflexes),
+        "unique_reflex_count": len(set(reflex_ids)),
+        "lane_reflex_counts": dict(sorted(lane_counts.items())),
+        "minimum_reflexes_per_lane": len(phases),
+        "incomplete_reflex_count": len(incomplete_reflexes),
+        "incomplete_reflex_ids": [str(row.get("reflex_id") or "") for row in incomplete_reflexes],
+        "all_reflex_ids_unique": len(reflex_ids) == len(set(reflex_ids)),
+        "all_lanes_have_reflex_minimum": all(lane_counts.get(lane, 0) >= len(phases) for lane in lane_names),
+        "all_reflexes_have_owner_commands": all(_as_list(row.get("owner_command")) for row in reflexes),
+        "all_reflexes_have_proof_artifacts": all(_string_list(row.get("proof_artifacts")) for row in reflexes),
+        "all_reflexes_have_escalation_targets": all(str(row.get("escalation_target") or "").strip() for row in reflexes),
+        "all_reflexes_have_stop_conditions": all(str(row.get("stop_condition") or "").strip() for row in reflexes),
+        "live_execution_authority": False,
+        "dependency_mutation_authority": False,
+        "authority_boundary": "safe_repair_or_read_only_no_live_execution_no_dependency_mutation",
+        "sensory_bus": {
+            "artifact_statuses": artifact_statuses,
+            "library_route_count": library_scope.get("existing_library_route_count"),
+            "library_blocked_routes": library_scope.get("existing_library_blocked_routes"),
+            "library_degraded_routes": library_scope.get("existing_library_degraded_routes"),
+            "infrabot_lane_counts": plan.get("lane_counts"),
+        },
+        "grade": "A+" if complete else "F",
+        "reflexes": reflexes,
+    }
+
+
+def _need_with_reflex_route(need: dict[str, Any], nervous_system: dict[str, Any]) -> dict[str, Any]:
+    lane = str(need.get("reflex_lane") or need.get("owner") or "general_infrabot")
+    target_phase = "repair" if str(need.get("status") or "") == "hard_blocker" else "refresh"
+    reflexes = [row for row in _as_list(nervous_system.get("reflexes")) if isinstance(row, dict) and str(row.get("lane") or "") == lane]
+    selected = next((row for row in reflexes if str(row.get("phase") or "") == target_phase), None)
+    if selected is None:
+        selected = next(iter(reflexes), {})
+    row = dict(need)
+    row["reflex_route"] = {
+        "reflex_id": selected.get("reflex_id"),
+        "lane": selected.get("lane", lane),
+        "phase": selected.get("phase"),
+        "owner_command": selected.get("owner_command") or need.get("safe_next_command"),
+        "proof_artifacts": selected.get("proof_artifacts") or [],
+        "cooldown_seconds": selected.get("cooldown_seconds"),
+        "escalation_target": selected.get("escalation_target"),
+        "authority_boundary": selected.get("authority_boundary") or "safe_repair_or_read_only_no_live_execution_no_dependency_mutation",
+    }
+    return row
+
+
 def _managed_dashboard_needs(project_root: Path, plan: dict[str, Any]) -> list[dict[str, Any]]:
     dashboard = _health(project_root, "runtime_gate_dashboard_latest.json")
     overall = _as_dict(dashboard.get("overall"))
@@ -346,6 +589,7 @@ def _managed_dashboard_needs(project_root: Path, plan: dict[str, Any]) -> list[d
                 "need_id": attention,
                 "status": "managed_soak_advisory",
                 "owner": str(raw.get("managed_by") or "unattended_soak_readiness"),
+                "reflex_lane": lane,
                 "symptom": attention,
                 "why_it_matters": "This is visible production telemetry, but the soak manager has verified paper/auth/storage/livefeed contracts are still clean.",
                 "safe_next_command": _first_command(plan, lane),
@@ -381,6 +625,7 @@ def _artifact_needs(artifact_rows: list[dict[str, Any]], plan: dict[str, Any]) -
                 "need_id": name,
                 "status": "hard_blocker" if row.get("blocking") else "owned_advisory",
                 "owner": lane,
+                "reflex_lane": lane,
                 "symptom": ",".join(_string_list(row.get("blockers"))) or f"{name}_not_ready",
                 "why_it_matters": "Required control artifacts must stay current and truthful so the soak does not hide paper trading, storage, auth, or routing faults.",
                 "safe_next_command": _first_command(plan, lane),
@@ -433,6 +678,8 @@ def _quality_checks(
     artifact_rows: list[dict[str, Any]],
     library_scope: dict[str, Any],
     infrabot_plan: dict[str, Any],
+    nervous_system: dict[str, Any],
+    need_rows: list[dict[str, Any]],
     config: dict[str, Any],
 ) -> dict[str, bool]:
     contract = _as_dict(config.get("control_contract"))
@@ -452,6 +699,17 @@ def _quality_checks(
         "infrabot_command_dedupe_present": _safe_int(infrabot_plan.get("command_count"), 0) > 0,
         "single_writer_storage_cap": single_writer_ok,
         "communication_contract_complete": all(field in required_fields for field in ("owner", "symptom", "safe_next_command", "stop_condition", "authority_boundary", "soak_impact")),
+        "autonomic_nervous_system_enabled": bool(nervous_system.get("enabled", False)),
+        "autonomic_lane_reflex_coverage_complete": bool(nervous_system.get("all_lanes_have_reflex_minimum", False)),
+        "autonomic_reflex_ids_unique": bool(nervous_system.get("all_reflex_ids_unique", False)),
+        "autonomic_reflexes_have_owner_commands": bool(nervous_system.get("all_reflexes_have_owner_commands", False)),
+        "autonomic_reflexes_have_proof_artifacts": bool(nervous_system.get("all_reflexes_have_proof_artifacts", False)),
+        "autonomic_reflexes_have_stop_conditions": bool(nervous_system.get("all_reflexes_have_stop_conditions", False)),
+        "autonomic_reflexes_have_escalation_targets": bool(nervous_system.get("all_reflexes_have_escalation_targets", False)),
+        "autonomic_need_brief_routes_present": all(bool(_as_dict(row.get("reflex_route")).get("reflex_id")) for row in need_rows),
+        "autonomic_authority_safe": not bool(nervous_system.get("live_execution_authority", True))
+        and not bool(nervous_system.get("dependency_mutation_authority", True))
+        and _safe_int(nervous_system.get("incomplete_reflex_count"), 1) == 0,
     }
 
 
@@ -475,6 +733,10 @@ def _grade(ready_count: int, total_count: int) -> str:
 def _write_env_override(path: Path, payload: dict[str, Any]) -> bool:
     env = {
         "INFRABOT_LIBRARY_SELF_AWARENESS_ENABLED": "1",
+        "INFRABOT_AUTONOMIC_NERVOUS_SYSTEM_ENABLED": "1",
+        "INFRABOT_AUTONOMIC_REFLEX_MIN_PER_LANE": str(
+            _safe_int(_as_dict(payload.get("autonomic_nervous_system")).get("minimum_reflexes_per_lane"), len(AUTONOMIC_REFLEX_PHASES))
+        ),
         "INFRABOT_REPAIR_COMMAND_DEDUPE": "1",
         "INFRABOT_STORAGE_WRITER_MAX_PARALLEL": "1",
         "INFRABOT_NEEDS_COMMUNICATION_DEPTH": "owner_command_stop_condition_authority",
@@ -498,6 +760,7 @@ def _write_env_override(path: Path, payload: dict[str, Any]) -> bool:
 def render_markdown(payload: dict[str, Any]) -> str:
     library_scope = _as_dict(payload.get("library_upgrade_scope"))
     plan = _as_dict(payload.get("infrabot_efficiency_plan"))
+    nervous = _as_dict(payload.get("autonomic_nervous_system"))
     lines = [
         "# Infrabot Library Self Awareness Control",
         "",
@@ -521,6 +784,14 @@ def render_markdown(payload: dict[str, Any]) -> str:
         f"- Single-writer or pressure-sensitive commands: `{plan.get('single_writer_command_count', 0)}`",
         f"- Lane counts: `{json.dumps(plan.get('lane_counts') or {}, sort_keys=True)}`",
         "",
+        "## Autonomic Nervous System",
+        "",
+        f"- Grade: `{nervous.get('grade', '')}`",
+        f"- Lanes: `{nervous.get('lane_count', 0)}`",
+        f"- Reflexes: `{nervous.get('reflex_count', 0)}`",
+        f"- Reflexes per lane: `{nervous.get('minimum_reflexes_per_lane', 0)}`",
+        f"- Authority boundary: `{nervous.get('authority_boundary', '')}`",
+        "",
         "## Needs Brief",
         "",
     ]
@@ -528,8 +799,10 @@ def render_markdown(payload: dict[str, Any]) -> str:
         if not isinstance(need, dict):
             continue
         command = " ".join(str(part) for part in _as_list(need.get("safe_next_command"))) or "none"
+        route = _as_dict(need.get("reflex_route"))
         lines.append(f"- `{need.get('status', '')}` `{need.get('need_id', '')}` owner=`{need.get('owner', '')}` urgency=`{need.get('urgency', '')}`")
         lines.append(f"  command: `{command}`")
+        lines.append(f"  reflex: `{route.get('reflex_id', '')}` escalate=`{route.get('escalation_target', '')}`")
         lines.append(f"  stop: {need.get('stop_condition', '')}")
     lines.extend(["", "## Control Contract", "", "- Live execution authority: `false`", "- Dependency mutation during soak: `false`", "- Raw profitability truth remains external and evidence-based."])
     return "\n".join(lines).rstrip() + "\n"
@@ -549,7 +822,11 @@ def build_payload(
     ]
     infrabot_plan = _infrabot_efficiency_plan(project_root, config)
     library_scope = _library_upgrade_scope(project_root, config)
-    need_rows = _managed_dashboard_needs(project_root, infrabot_plan) + _artifact_needs(artifact_rows, infrabot_plan)
+    nervous_system = _autonomic_nervous_system(config, infrabot_plan, artifact_rows, library_scope)
+    need_rows = [
+        _need_with_reflex_route(row, nervous_system)
+        for row in (_managed_dashboard_needs(project_root, infrabot_plan) + _artifact_needs(artifact_rows, infrabot_plan))
+    ]
     need_rows = sorted(
         need_rows,
         key=lambda row: (
@@ -558,7 +835,7 @@ def build_payload(
             str(row.get("need_id") or ""),
         ),
     )
-    quality_checks = _quality_checks(artifact_rows, library_scope, infrabot_plan, config)
+    quality_checks = _quality_checks(artifact_rows, library_scope, infrabot_plan, nervous_system, need_rows, config)
     ready_quality_count = sum(1 for value in quality_checks.values() if value)
     blockers = ordered_unique(
         [
@@ -586,6 +863,7 @@ def build_payload(
         "artifact_rows": artifact_rows,
         "library_upgrade_scope": library_scope,
         "infrabot_efficiency_plan": infrabot_plan,
+        "autonomic_nervous_system": nervous_system,
         "self_awareness_need_brief": need_rows,
         "communications_contract": _as_dict(config.get("communication_contract")),
         "control_contract": {
@@ -596,6 +874,9 @@ def build_payload(
             "pip_install_or_lock_rewrite_ran": False,
             "raw_profitability_truth_must_remain_visible": bool(contract.get("raw_profitability_truth_must_remain_visible", True)),
             "managed_dashboard_attention_does_not_fake_green": True,
+            "autonomic_nervous_system_enabled": bool(nervous_system.get("enabled", False)),
+            "autonomic_reflex_count": nervous_system.get("reflex_count"),
+            "autonomic_reflex_grade": nervous_system.get("grade"),
         },
         "recommended_actions": ordered_unique(
             [
@@ -603,6 +884,7 @@ def build_payload(
                 "./scripts/ops/opsctl.sh library-upgrade-route --apply --json",
                 "./scripts/ops/opsctl.sh mlx-intelligence-router --apply --json",
                 "./scripts/ops/opsctl.sh infrabot-library-self-awareness --apply --json",
+                "use autonomic_nervous_system.reflexes to route degradation through sense/classify/refresh/repair/verify/escalate phases",
                 "keep dependency installs in a maintenance window; this control only routes and stages during soak",
                 "run the first safe_next_command for any hard_blocker need, then refresh this control",
             ]
