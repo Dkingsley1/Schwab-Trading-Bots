@@ -1043,7 +1043,12 @@ def _filter_list(raw: object) -> list[str]:
 def _shard_health_filters_match(shard: dict[str, object], snapshot: dict[str, object]) -> bool:
     health_filters = snapshot.get("filters") if isinstance(snapshot.get("filters"), dict) else {}
     if not health_filters:
-        return True
+        current = _shard_filters(shard)
+        focused_filters = (
+            _filter_list(current.get("path_contains"))
+            or _filter_list(current.get("path_not_contains"))
+        )
+        return not focused_filters
     current = _shard_filters(shard)
     for key in ("include_streams", "exclude_streams", "path_contains", "path_not_contains"):
         current_values = _filter_list(current.get(key))

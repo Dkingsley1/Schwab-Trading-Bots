@@ -522,6 +522,113 @@ def test_runtime_paper_guard_blocks_eligible_paper_when_stale_artifact_pauses_co
     assert "stale_artifact_blocking_eligible_paper_lane" in lane_guard["actual"]["lane_blockers"]
 
 
+def test_runtime_paper_guard_treats_fresh_all_sleeves_startup_as_bounded_grace(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    health = project_root / "governance" / "health"
+    override = project_root / "config" / ".env.runtime_resource_guard_override"
+    _write_json(health / "runtime_throttle_control_latest.json", _runtime_payload(blocked_paper=False))
+    _write_json(health / "paper_400_ramp_latest.json", _paper_payload(blockers=[], armed=True))
+    _write_soak_lane_artifacts(project_root)
+    _write_json(
+        health / "process_watchdog_latest.json",
+        {
+            "timestamp_utc": src.iso_now(),
+            "overall_status": "ready",
+            "status": [
+                {
+                    "name": "all_sleeves",
+                    "running": 1,
+                    "process_live": True,
+                    "heartbeat_ok": False,
+                    "launcher_live": True,
+                    "child_fanout_ok": False,
+                    "process_elapsed_seconds": 42.0,
+                    "child_fanout": {
+                        "ok": False,
+                        "reason": "startup_grace",
+                        "child_process_count": 0,
+                        "child_fanout_grace_seconds": 180.0,
+                        "parent_elapsed_seconds": 42.0,
+                    },
+                    "launcher_artifact_health": {
+                        "phase": "starting",
+                        "overall_status": "degraded",
+                        "age_seconds": 12.0,
+                        "running_job_count": 1,
+                        "expected_job_count": 7,
+                        "problem_job_count": 0,
+                        "launcher_readiness_contract": {
+                            "readiness_status": "starting",
+                            "problem_job_count": 0,
+                        },
+                    },
+                }
+            ],
+        },
+    )
+    _ready_override(override)
+
+    payload = src.build_payload(project_root)
+
+    assert payload["overall_status"] == "ready"
+    assert payload["failed_guards"] == []
+    lane_guard = next(row for row in payload["regression_guards"] if row["name"] == "soak_paper_eligible_lane_open_contract")
+    assert lane_guard["actual"]["all_sleeves"]["startup_grace_active"] is True
+    continuity = next(row for row in payload["regression_guards"] if row["name"] == "soak_30_day_continuity_contract")
+    assert continuity["actual"]["all_sleeves"]["startup_grace_active"] is True
+
+
+def test_runtime_paper_guard_blocks_all_sleeves_startup_after_grace_expires(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    health = project_root / "governance" / "health"
+    override = project_root / "config" / ".env.runtime_resource_guard_override"
+    _write_json(health / "runtime_throttle_control_latest.json", _runtime_payload(blocked_paper=False))
+    _write_json(health / "paper_400_ramp_latest.json", _paper_payload(blockers=[], armed=True))
+    _write_soak_lane_artifacts(project_root)
+    _write_json(
+        health / "process_watchdog_latest.json",
+        {
+            "timestamp_utc": src.iso_now(),
+            "overall_status": "degraded",
+            "status": [
+                {
+                    "name": "all_sleeves",
+                    "running": 1,
+                    "process_live": True,
+                    "heartbeat_ok": False,
+                    "launcher_live": True,
+                    "child_fanout_ok": False,
+                    "process_elapsed_seconds": 360.0,
+                    "child_fanout": {
+                        "ok": False,
+                        "reason": "child_fanout_below_floor",
+                        "child_process_count": 0,
+                        "child_fanout_grace_seconds": 180.0,
+                        "parent_elapsed_seconds": 360.0,
+                    },
+                    "launcher_artifact_health": {
+                        "phase": "running",
+                        "overall_status": "degraded",
+                        "age_seconds": 12.0,
+                        "running_job_count": 1,
+                        "expected_job_count": 7,
+                        "problem_job_count": 0,
+                    },
+                }
+            ],
+        },
+    )
+    _ready_override(override)
+
+    payload = src.build_payload(project_root)
+
+    assert payload["overall_status"] == "blocked"
+    assert "soak_paper_eligible_lane_open_contract" in payload["failed_guards"]
+    lane_guard = next(row for row in payload["regression_guards"] if row["name"] == "soak_paper_eligible_lane_open_contract")
+    assert lane_guard["actual"]["all_sleeves"]["startup_grace_active"] is False
+    assert "all_sleeves_runtime_not_effectively_live" in lane_guard["actual"]["lane_blockers"]
+
+
 def test_runtime_paper_guard_degrades_on_stale_profitability_without_pausing_paper(tmp_path: Path) -> None:
     project_root = tmp_path / "project"
     health = project_root / "governance" / "health"

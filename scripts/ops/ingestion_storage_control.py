@@ -22,6 +22,7 @@ DEFAULT_TARGET_TOTAL_DRAIN_MINUTES = 15.0
 DEFAULT_TARGET_STALE_STAGE_PENDING_LINES = 0
 DEFAULT_TARGET_RETENTION_DEBT_GB = 0.25
 DEFAULT_SQL_INGESTION_OVERLAY_MAX_AGE_SECONDS = 3600.0
+DEFAULT_SHARD_STATE_RECONCILE_MAX_BYTES = 512 * 1024 * 1024
 SMALL_HOT_QUEUE_TOTAL_MULTIPLIER = 1.25
 SMALL_HOT_QUEUE_SIDE_LANE_ALLOWANCE = 10
 UNKNOWN_DRAIN_TOTAL_MULTIPLIER = 2.0
@@ -91,6 +92,23 @@ def _safe_int(raw: Any, default: int = 0) -> int:
         return int(float(raw))
     except Exception:
         return int(default)
+
+
+def _count_lines_bounded(path: Path, *, max_bytes: int) -> int | None:
+    try:
+        size = int(path.stat().st_size)
+    except OSError:
+        return None
+    if max_bytes > 0 and size > max_bytes:
+        return None
+    count = 0
+    try:
+        with path.open("rb") as handle:
+            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                count += chunk.count(b"\n")
+    except OSError:
+        return None
+    return int(count)
 
 
 def _is_protected_volume(path: Path) -> bool:
@@ -633,6 +651,10 @@ def _raw_live_expansion_headroom_contract(
     raw_core = _safe_int(raw_live_backpressure.get("core_pending_lines"), 0)
     raw_total = _safe_int(raw_live_backpressure.get("total_pending_lines"), 0)
     raw_oldest = _safe_float(raw_live_backpressure.get("oldest_pending_age_seconds"), 0.0)
+    core_hot_pending = 0
+    core_hot_oldest = 0.0
+    side_hot_pending = 0
+    side_hot_oldest = 0.0
     source_hot_pending = 0
     source_hot_oldest = 0.0
     hot_age_reconciled_clear = bool(
@@ -654,18 +676,31 @@ def _raw_live_expansion_headroom_contract(
             pending = _safe_int(row.get("pending_lines"), 0)
             if pending <= 0:
                 continue
+            oldest = _safe_float(row.get("oldest_pending_age_seconds"), 0.0)
             source_hot_pending += pending
-            source_hot_oldest = max(source_hot_oldest, _safe_float(row.get("oldest_pending_age_seconds"), 0.0))
-    expansion_core = max(raw_core, source_hot_pending)
+            source_hot_oldest = max(source_hot_oldest, oldest)
+            if key == "top_pending_files":
+                core_hot_pending += pending
+                core_hot_oldest = max(core_hot_oldest, oldest)
+            else:
+                side_hot_pending += pending
+                side_hot_oldest = max(side_hot_oldest, oldest)
+    expansion_core = max(raw_core, core_hot_pending)
+    expansion_total = max(raw_total, expansion_core + side_hot_pending)
     hot_material = bool(expansion_core >= reserve_core)
     hot_age_material_floor = max(100, int(target_core * 0.02))
     hot_age_material = bool(
         not hot_age_reconciled_clear
-        and source_hot_pending >= hot_age_material_floor
-        and source_hot_oldest >= reserve_age
+        and (raw_core >= hot_age_material_floor or core_hot_pending >= hot_age_material_floor)
+        and max(raw_oldest, core_hot_oldest) >= reserve_age
     )
-    expansion_total = max(source_hot_pending, expansion_core if hot_material else 0)
-    expansion_oldest = max(source_hot_oldest if hot_age_material else 0.0, raw_oldest if hot_material else 0.0)
+    expansion_oldest = (
+        max(raw_oldest, core_hot_oldest)
+        if hot_age_material
+        else raw_oldest
+        if hot_material
+        else 0.0
+    )
     core_ratio = _target_ratio(expansion_core, reserve_core)
     total_ratio = _target_ratio(expansion_total, reserve_total)
     age_ratio = _target_ratio(expansion_oldest, reserve_age)
@@ -726,6 +761,10 @@ def _raw_live_expansion_headroom_contract(
             "oldest_pending_age_seconds": round(float(raw_oldest), 3),
             "hot_source_pending_lines": int(source_hot_pending),
             "hot_source_oldest_pending_age_seconds": round(float(source_hot_oldest), 3),
+            "core_hot_source_pending_lines": int(core_hot_pending),
+            "core_hot_source_oldest_pending_age_seconds": round(float(core_hot_oldest), 3),
+            "deferred_or_support_hot_source_pending_lines": int(side_hot_pending),
+            "deferred_or_support_hot_source_oldest_pending_age_seconds": round(float(side_hot_oldest), 3),
             "guard_total_pending_lines": int(expansion_total),
             "guard_oldest_pending_age_seconds": round(float(expansion_oldest), 3),
             "excluded_deferred_or_support_pending_lines": int(max(raw_total - expansion_total, 0)),
@@ -3276,6 +3315,13 @@ def _sql_ingestion_health_paths(health_root: Path) -> list[Path]:
     return sorted(paths)
 
 
+def _sql_ingestion_state_paths(project_root: Path) -> list[Path]:
+    shard_root = project_root / "governance" / "sql_link_shards"
+    paths = set(shard_root.glob("jsonl_sql_link_state*.json")) if shard_root.exists() else set()
+    paths.add(project_root / "governance" / "jsonl_sql_link_state.json")
+    return sorted(path for path in paths if path.exists())
+
+
 def _shard_name_from_health_path(path: Path, payload: dict[str, Any]) -> str:
     for raw in (payload.get("state_file"), payload.get("health_file"), path.name):
         name = Path(str(raw or "")).name
@@ -3428,6 +3474,169 @@ def _overlay_source_suppression(project_root: Path, source_rel: str) -> str:
     if any(path.exists() for path in compressed_candidates):
         return "raw_compacted_to_compressed_evidence"
     return "raw_source_missing"
+
+
+def _state_progress_for_source(project_root: Path, source_rel: str) -> dict[str, Any]:
+    rel = str(source_rel or "").strip()
+    if not rel or rel.startswith("/") or ".." in Path(rel).parts:
+        return {}
+    source_path = project_root / rel
+    if not source_path.exists() or not source_path.is_file():
+        return {}
+    best: dict[str, Any] = {}
+    for state_path in _sql_ingestion_state_paths(project_root):
+        state = _load_json(state_path)
+        sqlite_state = state.get("sqlite") if isinstance(state.get("sqlite"), dict) else {}
+        row = sqlite_state.get(rel) if isinstance(sqlite_state.get(rel), dict) else {}
+        if not row:
+            continue
+        last_line = _safe_int(row.get("last_line"), 0)
+        if last_line <= _safe_int(best.get("last_line"), -1):
+            continue
+        best = {
+            "state_file": str(state_path),
+            "last_line": int(last_line),
+            "last_offset_bytes": _safe_int(row.get("last_offset_bytes"), 0),
+            "state_file_size_bytes": _safe_int(row.get("file_size_bytes"), 0),
+            "state_mtime": _safe_float(row.get("mtime"), 0.0),
+        }
+    if not best:
+        return {}
+    try:
+        source_stat = source_path.stat()
+    except OSError:
+        return {}
+    source_size = int(source_stat.st_size)
+    max_bytes = max(_safe_int(os.getenv("SQL_INGESTION_STATE_RECONCILE_MAX_BYTES"), DEFAULT_SHARD_STATE_RECONCILE_MAX_BYTES), 0)
+    total_lines: int | None = None
+    line_count_method = ""
+    if _safe_int(best.get("last_offset_bytes"), 0) >= source_size and _safe_int(best.get("state_file_size_bytes"), 0) == source_size:
+        total_lines = _safe_int(best.get("last_line"), 0)
+        line_count_method = "state_eof"
+    else:
+        counted = _count_lines_bounded(source_path, max_bytes=max_bytes)
+        if counted is not None:
+            total_lines = int(counted)
+            line_count_method = "bounded_exact_count"
+    if total_lines is None:
+        return {
+            **best,
+            "source_size_bytes": int(source_size),
+            "source_mtime": float(source_stat.st_mtime),
+            "reconciled": False,
+            "reason": "source_too_large_for_bounded_line_count",
+            "max_count_bytes": int(max_bytes),
+        }
+    pending = max(int(total_lines) - _safe_int(best.get("last_line"), 0), 0)
+    return {
+        **best,
+        "source_size_bytes": int(source_size),
+        "source_mtime": float(source_stat.st_mtime),
+        "total_lines": int(total_lines),
+        "pending_lines": int(pending),
+        "line_count_method": line_count_method,
+        "reconciled": True,
+    }
+
+
+def _reconcile_raw_backpressure_with_shard_state(
+    project_root: Path,
+    raw_live_backpressure: dict[str, Any],
+) -> dict[str, Any]:
+    list_lanes = {
+        "top_pending_files": "core",
+        "top_deferred_pending_files": "deferred",
+        "top_support_telemetry_pending_files": "support",
+    }
+    reductions = {"core": 0, "deferred": 0, "support": 0}
+    reconciled_rows: list[dict[str, Any]] = []
+    checked_rows = 0
+    original_rows_by_key: dict[str, list[dict[str, Any]]] = {}
+    for list_key, lane in list_lanes.items():
+        rows = raw_live_backpressure.get(list_key) if isinstance(raw_live_backpressure.get(list_key), list) else []
+        original_rows_by_key[list_key] = [row for row in rows if isinstance(row, dict)]
+        updated_rows: list[dict[str, Any]] = []
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            checked_rows += 1
+            source_rel = str(row.get("source_rel") or "").strip()
+            old_pending = _safe_int(row.get("pending_lines"), 0)
+            progress = _state_progress_for_source(project_root, source_rel)
+            if bool(progress.get("reconciled", False)):
+                new_pending = min(old_pending, _safe_int(progress.get("pending_lines"), old_pending))
+                reduction = max(old_pending - new_pending, 0)
+                if reduction > 0:
+                    reductions[lane] += reduction
+                    row = {
+                        **row,
+                        "pending_lines": int(new_pending),
+                        "sql_shard_state_reconciled": True,
+                        "raw_pending_lines_before_state_reconcile": int(old_pending),
+                        "sql_shard_state_last_line": _safe_int(progress.get("last_line"), 0),
+                        "sql_shard_state_total_lines": _safe_int(progress.get("total_lines"), 0),
+                        "sql_shard_state_file": str(progress.get("state_file") or ""),
+                        "sql_shard_state_line_count_method": str(progress.get("line_count_method") or ""),
+                    }
+                    reconciled_rows.append(
+                        {
+                            "source_rel": source_rel,
+                            "lane": lane,
+                            "before_pending_lines": int(old_pending),
+                            "after_pending_lines": int(new_pending),
+                            "state_file": str(progress.get("state_file") or ""),
+                            "line_count_method": str(progress.get("line_count_method") or ""),
+                        }
+                    )
+            if _safe_int(row.get("pending_lines"), 0) > 0:
+                updated_rows.append(row)
+        raw_live_backpressure[list_key] = updated_rows
+    total_reduction = int(sum(reductions.values()))
+    if total_reduction <= 0:
+        for list_key, rows in original_rows_by_key.items():
+            raw_live_backpressure[list_key] = rows
+        payload = {
+            "active": False,
+            "checked_top_rows": int(checked_rows),
+            "reconciled_source_count": 0,
+            "pending_line_reduction": 0,
+            "reductions_by_lane": reductions,
+            "top_reconciled_sources": [],
+            "policy": "fresh sql shard state can retire stale raw pending estimates after focused drains",
+        }
+        raw_live_backpressure["sql_shard_state_reconciliation"] = payload
+        return payload
+    for lane, reduction in reductions.items():
+        key = f"{lane}_pending_lines"
+        raw_live_backpressure[key] = max(_safe_int(raw_live_backpressure.get(key), 0) - int(reduction), 0)
+    raw_live_backpressure["total_pending_lines"] = (
+        _safe_int(raw_live_backpressure.get("core_pending_lines"), 0)
+        + _safe_int(raw_live_backpressure.get("deferred_pending_lines"), 0)
+        + _safe_int(raw_live_backpressure.get("cold_pending_lines"), 0)
+        + _safe_int(raw_live_backpressure.get("support_pending_lines"), 0)
+        + _safe_int(raw_live_backpressure.get("stale_stage_pending_lines"), 0)
+    )
+    remaining_ages = [
+        _safe_float(row.get("oldest_pending_age_seconds"), 0.0)
+        for key in list_lanes
+        for row in (raw_live_backpressure.get(key) if isinstance(raw_live_backpressure.get(key), list) else [])
+        if isinstance(row, dict) and _safe_int(row.get("pending_lines"), 0) > 0
+    ]
+    if remaining_ages:
+        raw_live_backpressure["oldest_pending_age_seconds"] = round(max(remaining_ages), 3)
+    elif raw_live_backpressure["total_pending_lines"] <= 0:
+        raw_live_backpressure["oldest_pending_age_seconds"] = 0.0
+    payload = {
+        "active": bool(reconciled_rows),
+        "checked_top_rows": int(checked_rows),
+        "reconciled_source_count": len(reconciled_rows),
+        "pending_line_reduction": total_reduction,
+        "reductions_by_lane": reductions,
+        "top_reconciled_sources": reconciled_rows[:12],
+        "policy": "fresh sql shard state can retire stale raw pending estimates after focused drains",
+    }
+    raw_live_backpressure["sql_shard_state_reconciliation"] = payload
+    return payload
 
 
 def _sql_ingestion_pending_overlay(health_root: Path, now_utc: datetime) -> dict[str, Any]:
@@ -3737,6 +3946,14 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, now_utc: datetime | None
         "artifact_age_seconds": round(float(backpressure_age_seconds), 3) if backpressure_age_seconds is not None else None,
         "artifact_stale_for_overlay_reconciliation": bool(raw_backpressure_artifact_stale),
     }
+    state_reconciliation = _reconcile_raw_backpressure_with_shard_state(project_root, raw_live_backpressure)
+    core_pending_lines = _safe_int(raw_live_backpressure.get("core_pending_lines"), core_pending_lines)
+    deferred_pending_lines = _safe_int(raw_live_backpressure.get("deferred_pending_lines"), deferred_pending_lines)
+    cold_pending_lines = _safe_int(raw_live_backpressure.get("cold_pending_lines"), cold_pending_lines)
+    support_pending_lines = _safe_int(raw_live_backpressure.get("support_pending_lines"), support_pending_lines)
+    stale_stage_pending_lines = _safe_int(raw_live_backpressure.get("stale_stage_pending_lines"), stale_stage_pending_lines)
+    total_pending_lines = _safe_int(raw_live_backpressure.get("total_pending_lines"), total_pending_lines)
+    oldest_age_seconds = _safe_float(raw_live_backpressure.get("oldest_pending_age_seconds"), oldest_age_seconds)
     sql_overlay_would_adjust = bool(
         sql_pending_overlay.get("active", False)
         and (

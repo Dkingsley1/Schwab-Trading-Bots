@@ -686,6 +686,79 @@ def test_backpressure_drainer_fleet_handoffs_overlay_risk_support_backlog(tmp_pa
     assert env["BOT_COLLECTION_DUTY_CYCLE_MAX_ACTIVE_RATIO"] == "0.20"
 
 
+def test_backpressure_drainer_fleet_handoffs_raw_live_deferred_risk_backlog(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    health = project_root / "governance" / "health"
+    _write_json(
+        health / "ingestion_backpressure_latest.json",
+        {
+            "pending_lines": 3078,
+            "pending_lines_total": 8200,
+            "oldest_pending_age_seconds": 231.0,
+            "top_pending_files": [
+                {
+                    "source_rel": "decisions/shadow_crypto/trade_decisions_20260729.jsonl",
+                    "pending_lines": 1798,
+                    "oldest_pending_age_seconds": 231.0,
+                }
+            ],
+        },
+    )
+    _write_json(
+        health / "ingestion_storage_control_latest.json",
+        {
+            "severity": "high",
+            "backpressure": {
+                "core_pending_lines": 3078,
+                "deferred_pending_lines": 534169,
+                "total_pending_lines": 540247,
+                "raw_live": {
+                    "core_pending_lines": 3078,
+                    "total_pending_lines": 540247,
+                    "oldest_pending_age_seconds": 231.553,
+                    "top_pending_files": [
+                        {
+                            "source_rel": "decisions/shadow_crypto/trade_decisions_20260729.jsonl",
+                            "pending_lines": 1798,
+                            "oldest_pending_age_seconds": 231.553,
+                        }
+                    ],
+                    "top_deferred_pending_files": [
+                        {
+                            "source_rel": "governance/channels/risk/default_crypto_schwab/risk_20260729.jsonl",
+                            "shard": "risk_support",
+                            "pending_lines": 505819,
+                            "oldest_pending_age_seconds": 231.415,
+                        }
+                    ],
+                },
+            },
+            "sql_ingestion_pending_overlay": {
+                "active": True,
+                "used_for_pressure": True,
+                "total_pending_lines": 3114,
+                "top_pending_files": [],
+                "fresh_path_contains": ["governance/channels/risk/"],
+            },
+            "backlog_truth": {"authoritative_mode": "overlay_source_attributed"},
+        },
+    )
+
+    payload = src.build_payload(
+        project_root,
+        apply=True,
+        now_utc=datetime(2026, 7, 29, 23, 40, tzinfo=timezone.utc),
+    )
+
+    assert payload["overall_status"] == "handoff_requested"
+    assert payload["active_drainer"]["name"] == "risk_support_drainer"
+    assert payload["active_drainer"]["pending_lines"] == 505819
+    assert payload["service_request"]["assigned_pressure_lane"] == "risk_support_backpressure"
+    env = payload["service_request"]["env_overrides"]
+    assert env["SQL_LINK_SERVICE_SHARDS"] == "risk_support,health_fast"
+    assert "risk_20260729" in env["SQL_LINK_SERVICE_SHARD_RISK_SUPPORT_PATH_CONTAINS"]
+
+
 def test_backpressure_drainer_fleet_prioritizes_core_when_risk_overlay_is_louder(tmp_path: Path) -> None:
     project_root = tmp_path / "project"
     health = project_root / "governance" / "health"

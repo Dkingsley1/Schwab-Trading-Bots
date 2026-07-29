@@ -101,7 +101,13 @@ def test_build_storage_maintenance_payload_runs_all_steps(tmp_path, monkeypatch)
         elif "data_retention_policy.py" in joined:
             payload = {"deleted": 14, "delete_errors": 0}
         elif "content_addressed_artifact_store.py" in joined:
-            payload = {"ok": True, "skipped_blob_count": 1, "gc": {"deleted_blob_count": 3, "deleted_bytes": 4096}}
+            payload = {
+                "ok": True,
+                "skipped_blob_count": 1,
+                "metadata_only_blob_count": 1,
+                "unsafe_skipped_blob_count": 0,
+                "gc": {"deleted_blob_count": 3, "deleted_bytes": 4096},
+            }
         else:
             raise AssertionError(f"unexpected command: {cmd}")
         return {"cmd": cmd, "rc": 0, "duration_ms": 7.0, "payload": payload, "stdout_tail": "", "stderr_tail": ""}
@@ -131,6 +137,8 @@ def test_build_storage_maintenance_payload_runs_all_steps(tmp_path, monkeypatch)
     assert payload["summary"]["content_store_deleted_blobs"] == 3
     assert payload["summary"]["content_store_deleted_bytes"] == 4096
     assert payload["summary"]["content_store_skipped_blobs"] == 1
+    assert payload["summary"]["content_store_metadata_only_blobs"] == 1
+    assert payload["summary"]["content_store_unsafe_skipped_blobs"] == 0
     assert payload["summary"]["sql_sync_status"] == "running"
     assert payload["summary"]["sql_sync_step"] == "merge_primary"
     assert payload["summary"]["primary_db_size_gb_live"] >= 0.0

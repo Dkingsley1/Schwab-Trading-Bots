@@ -45,6 +45,14 @@ def _safe_int(value: Any, default: int = 0) -> int:
         return int(default)
 
 
+def _payload_count_metric(payload: dict[str, Any], key: str) -> tuple[Any, bool]:
+    if key in payload:
+        return payload.get(key), False
+    if key == "unsafe_skipped_blob_count" and "skipped_blob_count" in payload:
+        return payload.get("skipped_blob_count"), True
+    return None, False
+
+
 def _string_list(value: Any) -> list[str]:
     if isinstance(value, list):
         return [str(item).strip() for item in value if str(item).strip()]
@@ -108,10 +116,24 @@ def _artifact_capability_row(project_root: Path, raw: dict[str, Any], *, now: da
     zero_counts_ok = all(_safe_int(payload.get(key), 1) == 0 for key in zero_count_keys) if zero_count_keys else True
     max_count_by_key = raw.get("max_count_by_key") if isinstance(raw.get("max_count_by_key"), dict) else {}
     max_counts_ok = True
+    max_count_rows: list[dict[str, Any]] = []
     for key, ceiling in max_count_by_key.items():
-        if _safe_float(payload.get(str(key)), 0.0) > _safe_float(ceiling, 0.0):
+        metric_key = str(key)
+        metric_value, legacy_fallback = _payload_count_metric(payload, metric_key)
+        actual = _safe_float(metric_value, 0.0)
+        allowed = _safe_float(ceiling, 0.0)
+        row_ok = actual <= allowed
+        max_count_rows.append(
+            {
+                "key": metric_key,
+                "value": actual,
+                "ceiling": allowed,
+                "ok": row_ok,
+                "legacy_fallback_from_skipped_blob_count": bool(legacy_fallback),
+            }
+        )
+        if not row_ok:
             max_counts_ok = False
-            break
     status_ok = bool(status in ready_statuses or (bool(payload.get("ok", False)) and "ok" in ready_statuses))
     ready = bool(payload and status_ok and fresh and truthy_ok and zero_counts_ok and max_counts_ok)
     blockers = ordered_unique(
@@ -140,6 +162,7 @@ def _artifact_capability_row(project_root: Path, raw: dict[str, Any], *, now: da
         "truthy_keys": truthy_keys,
         "zero_count_keys": zero_count_keys,
         "max_count_by_key": max_count_by_key,
+        "max_count_rows": max_count_rows,
         "summary_keys": sorted(payload.keys())[:20] if payload else [],
     }
 

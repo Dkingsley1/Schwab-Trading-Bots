@@ -158,7 +158,7 @@
         "max_age_hours": 24,
         "truthy_keys": ["ok"],
         "max_count_by_key": {
-          "skipped_blob_count": 0
+          "unsafe_skipped_blob_count": 0
         },
         "required": true
       },

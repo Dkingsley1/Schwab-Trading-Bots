@@ -524,6 +524,9 @@ def _lane_cmd(
     raw_training_max_gb: float = DEFAULT_RAW_TRAINING_COMPACTION_MAX_GB,
     raw_training_jumbo_gb: float = DEFAULT_RAW_TRAINING_JUMBO_COMPACTION_GB,
 ) -> tuple[list[str], int]:
+    quick_bounded = bool(max(float(wait_timeout_seconds), 0.0) <= 90.0 and max(int(command_timeout_seconds), 1) <= 240)
+    command_timeout = max(int(command_timeout_seconds), 1)
+    wait_timeout = max(float(wait_timeout_seconds), 0.0)
     if lane == "backpressure_slo_bot":
         return (
             [
@@ -561,15 +564,15 @@ def _lane_cmd(
                 "--poll-seconds",
                 str(max(float(poll_seconds), 0.1)),
                 "--wait-timeout-seconds",
-                str(max(float(wait_timeout_seconds), 0.0)),
+                str(wait_timeout),
                 "--command-timeout-seconds",
-                str(max(int(command_timeout_seconds), 1)),
+                str(command_timeout),
             ]
         )
         if maintenance_force:
             cmd.append("--maintenance-force")
         cmd.append("--json")
-        timeout_sec = max(int(command_timeout_seconds), int(wait_timeout_seconds) + 240)
+        timeout_sec = max(command_timeout, int(wait_timeout) + (15 if quick_bounded else 240))
         return (cmd, timeout_sec)
     if lane == "retention_debt_sheriff":
         cmd = [
@@ -579,14 +582,14 @@ def _lane_cmd(
             "--poll-seconds",
             str(max(float(poll_seconds), 0.1)),
             "--wait-timeout-seconds",
-            str(max(float(wait_timeout_seconds), 0.0)),
+            str(wait_timeout),
             "--command-timeout-seconds",
-            str(max(int(command_timeout_seconds), 1)),
+            str(command_timeout),
         ]
         if sheriff_force:
             cmd.append("--force")
         cmd.append("--json")
-        timeout_sec = max(int(command_timeout_seconds), int(wait_timeout_seconds) + 240)
+        timeout_sec = max(command_timeout, int(wait_timeout) + (15 if quick_bounded else 240))
         return (cmd, timeout_sec)
     if lane == "data_collection_storage_guard":
         cmd = [
@@ -595,7 +598,7 @@ def _lane_cmd(
             "--cleanup-duplicates",
             "--json",
         ]
-        timeout_sec = max(int(command_timeout_seconds), 420)
+        timeout_sec = max(command_timeout, 180 if quick_bounded else 420)
         return (cmd, timeout_sec)
     if lane == "botlogs_space_recovery":
         cmd = [
@@ -630,11 +633,8 @@ def _lane_cmd(
             cmd.extend(["--bot-logs-root", raw_training_root])
         cmd.append("--json")
         timeout_floor = (180 if lane == "raw_training_compaction" else 120) if int(command_timeout_seconds) < 300 else (900 if lane == "raw_training_compaction" else 420)
-        timeout_sec = max(
-            int(command_timeout_seconds),
-            int(float(raw_training_max_gb) * (120.0 if lane == "raw_training_compaction" else 40.0)) + 240,
-            timeout_floor,
-        )
+        size_timeout_sec = int(float(raw_training_max_gb) * (120.0 if lane == "raw_training_compaction" else 40.0)) + 240
+        timeout_sec = max(command_timeout, timeout_floor) if quick_bounded else max(command_timeout, size_timeout_sec, timeout_floor)
         return (cmd, timeout_sec)
     raise ValueError(f"unsupported lane: {lane}")
 
@@ -1095,17 +1095,27 @@ def build_payload(
     storage_control = load_json(health_root / "ingestion_storage_control_latest.json")
     uniform_process = _uniform_process_refresh(project_root, apply=bool(apply))
     uniform_env = uniform_process.get("env_overrides") if isinstance(uniform_process.get("env_overrides"), dict) else {}
+    requested_quick_bounded = bool(max(float(wait_timeout_seconds), 0.0) <= 90.0 and max(int(command_timeout_seconds), 1) <= 240)
     if uniform_env:
         poll_seconds = min(float(poll_seconds), _safe_float(uniform_env.get("BACKLOG_DRAIN_UNIFORM_WRITER_POLL_SECONDS"), float(poll_seconds)))
         wait_timeout_seconds = min(
             float(wait_timeout_seconds),
             _safe_float(uniform_env.get("BACKLOG_DRAIN_UNIFORM_WAIT_TIMEOUT_SECONDS"), float(wait_timeout_seconds)),
         )
-        max_cycles = max(int(max_cycles), _safe_int(uniform_env.get("STORAGE_BACKPRESSURE_AUTOPILOT_MAX_CYCLES"), int(max_cycles)))
-        command_timeout_seconds = max(
+        uniform_max_cycles = _safe_int(uniform_env.get("STORAGE_BACKPRESSURE_AUTOPILOT_MAX_CYCLES"), int(max_cycles))
+        uniform_command_timeout_seconds = _safe_int(
+            uniform_env.get("SQL_LINK_SERVICE_MERGE_MAX_SECONDS_PER_CYCLE"),
             int(command_timeout_seconds),
-            _safe_int(uniform_env.get("SQL_LINK_SERVICE_MERGE_MAX_SECONDS_PER_CYCLE"), int(command_timeout_seconds)),
         )
+        if requested_quick_bounded:
+            max_cycles = min(max(int(max_cycles), 1), max(int(uniform_max_cycles), 1))
+            command_timeout_seconds = min(
+                max(int(command_timeout_seconds), 1),
+                max(int(uniform_command_timeout_seconds), 1),
+            )
+        else:
+            max_cycles = max(int(max_cycles), int(uniform_max_cycles))
+            command_timeout_seconds = max(int(command_timeout_seconds), int(uniform_command_timeout_seconds))
     timing_contract = {
         "mode": "quick_bounded" if max(float(wait_timeout_seconds), 0.0) <= 90.0 and max(int(command_timeout_seconds), 1) <= 240 else "standard",
         "poll_seconds": round(max(float(poll_seconds), 0.1), 3),

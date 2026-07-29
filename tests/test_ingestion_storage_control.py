@@ -3187,6 +3187,73 @@ def test_ingestion_storage_control_uses_fresh_sql_ingestion_overlay_when_summary
     assert any("SQL ingestion overlay" in action for action in payload["top_actions"])
 
 
+def test_ingestion_storage_control_retires_stale_raw_risk_pending_from_shard_state(
+    tmp_path: Path,
+) -> None:
+    now = datetime(2026, 7, 29, 23, 55, tzinfo=timezone.utc)
+    health = tmp_path / "governance" / "health"
+    source_rel = "governance/channels/risk/default_crypto_schwab/risk_20260729.jsonl"
+    source_path = tmp_path / source_rel
+    source_path.parent.mkdir(parents=True, exist_ok=True)
+    source_path.write_text('{"risk": 1}\n{"risk": 2}\n{"risk": 3}\n', encoding="utf-8")
+    state_path = tmp_path / "governance" / "sql_link_shards" / "jsonl_sql_link_state_risk_support.json"
+    _write_json(
+        state_path,
+        {
+            "sqlite": {
+                source_rel: {
+                    "last_line": 3,
+                    "last_offset_bytes": source_path.stat().st_size,
+                    "file_size_bytes": source_path.stat().st_size,
+                    "mtime": source_path.stat().st_mtime,
+                }
+            }
+        },
+    )
+    _write_json(
+        health / "ingestion_backpressure_latest.json",
+        {
+            "timestamp_utc": (now - timedelta(minutes=2)).isoformat(),
+            "pending_lines": 0,
+            "pending_lines_total": 505819,
+            "pending_lines_deferred": 505819,
+            "pending_lines_cold": 0,
+            "pending_lines_support_telemetry": 0,
+            "pending_lines_stale_stage": 0,
+            "pending_lines_threshold": 15000,
+            "oldest_pending_age_seconds": 900.0,
+            "oldest_age_threshold_seconds": 240.0,
+            "overload": False,
+            "top_deferred_pending_files": [
+                {
+                    "source_rel": source_rel,
+                    "pending_lines": 505819,
+                    "oldest_pending_age_seconds": 900.0,
+                    "total_lines": 505819,
+                    "last_line": 0,
+                }
+            ],
+        },
+    )
+    _write_json(
+        health / "jsonl_sql_ingestion_health_risk_support_latest.json",
+        {
+            "timestamp_utc": now.isoformat(),
+            "state_file": str(state_path),
+        },
+    )
+
+    payload = src.build_payload(tmp_path, now_utc=now)
+    reconciliation = payload["backpressure"]["raw_live"]["sql_shard_state_reconciliation"]
+
+    assert reconciliation["active"] is True
+    assert reconciliation["pending_line_reduction"] == 505819
+    assert payload["backpressure"]["raw_live"]["deferred_pending_lines"] == 0
+    assert payload["backpressure"]["deferred_pending_lines"] == 0
+    assert payload["backpressure"]["total_pending_lines"] == 0
+    assert payload["raw_live_expansion_contract"]["grade"] == "A+"
+
+
 def test_ingestion_storage_control_ignores_stale_sql_ingestion_overlay(tmp_path: Path) -> None:
     now = datetime(2026, 5, 19, 18, 20, tzinfo=timezone.utc)
     health = tmp_path / "governance" / "health"
@@ -4075,6 +4142,40 @@ def test_raw_live_expansion_headroom_contract_allows_bigger_expansion_when_cool(
     assert contract["expansion_ready"] is True
     assert contract["grade"] == "A+"
     assert contract["expansion_tier"] == "ready_for_bigger_expansion"
+    assert contract["control_env"]["RAW_LIVE_EXPANSION_READY"] == "1"
+
+
+def test_raw_live_expansion_headroom_contract_does_not_hard_block_on_small_deferred_hot_tail() -> None:
+    contract = src._raw_live_expansion_headroom_contract(
+        raw_live_backpressure={
+            "core_pending_lines": 24,
+            "total_pending_lines": 5121,
+            "oldest_pending_age_seconds": 5.866,
+            "top_pending_files": [
+                {
+                    "source_rel": "governance/events/auth_events_20260729.jsonl",
+                    "pending_lines": 24,
+                    "oldest_pending_age_seconds": 139.62,
+                }
+            ],
+            "top_deferred_pending_files": [
+                {
+                    "source_rel": "governance/channels/ingress/bond_equities_schwab/ingress_20260729.jsonl",
+                    "pending_lines": 2065,
+                    "oldest_pending_age_seconds": 806.378,
+                }
+            ],
+        },
+        pending_threshold=15000,
+        age_threshold_seconds=240.0,
+        core_target=5000,
+    )
+
+    assert contract["active"] is False
+    assert contract["hard_block"] is False
+    assert contract["grade"] == "A+"
+    assert contract["raw_live"]["guard_core_pending_lines"] == 24
+    assert contract["raw_live"]["deferred_or_support_hot_source_pending_lines"] == 2065
     assert contract["control_env"]["RAW_LIVE_EXPANSION_READY"] == "1"
 
 

@@ -246,6 +246,114 @@ def test_storage_backpressure_autopilot_quick_bounded_mode_limits_drainer_ttl(tm
     assert payload["metrics"]["quick_bounded_mode"] is True
 
 
+def test_storage_backpressure_autopilot_quick_bounded_caps_uniform_and_lane_timeouts(tmp_path: Path, monkeypatch) -> None:
+    project_root = tmp_path / "project"
+    health = project_root / "governance" / "health"
+    bot_logs_root = tmp_path / "bot_logs"
+    bot_logs_root.mkdir(parents=True)
+    _write_json(
+        health / "ingestion_storage_control_latest.json",
+        {
+            "overall_status": "blocked",
+            "severity": "critical",
+            "pressure_index": 1.25,
+            "backpressure": {
+                "pending_lines_threshold": 15000,
+                "total_pending_lines": 76000,
+                "estimated_total_drain_minutes": 70.0,
+                "raw_live": {
+                    "total_pending_lines": 76000,
+                    "core_pending_lines": 36000,
+                    "oldest_pending_age_seconds": 1200.0,
+                },
+            },
+            "storage": {
+                "retention_debt_gb": 0.0,
+                "backlog_drain_recommended_now": True,
+                "backlog_quarantine_candidate_files": 0,
+            },
+            "data_integrity": {"sql_invalid_lines": 0},
+        },
+    )
+    _write_json(
+        health / "raw_training_compaction_intelligence_latest.json",
+        {
+            "scan_roots": [{"path": str(bot_logs_root)}],
+            "raw_summary": {
+                "compression_candidate_count": 3,
+                "compression_candidate_gb": 12.0,
+            },
+        },
+    )
+
+    monkeypatch.setattr(
+        autopilot_src,
+        "_uniform_process_refresh",
+        lambda *args, **kwargs: {
+            "enabled": True,
+            "reason": "test_uniform_wants_longer_window",
+            "env_overrides": {
+                "BACKLOG_DRAIN_UNIFORM_WRITER_POLL_SECONDS": "6",
+                "BACKLOG_DRAIN_UNIFORM_WAIT_TIMEOUT_SECONDS": "240",
+                "STORAGE_BACKPRESSURE_AUTOPILOT_MAX_CYCLES": "3",
+                "SQL_LINK_SERVICE_MERGE_MAX_SECONDS_PER_CYCLE": "900",
+            },
+            "payload": {},
+            "write_result": {},
+        },
+    )
+    monkeypatch.setattr(
+        autopilot_src.backpressure_src,
+        "build_payload",
+        lambda *args, **kwargs: {"overall_status": "ready", "actionable": True, "recommended_actions": []},
+    )
+    monkeypatch.setattr(
+        autopilot_src.drainer_src,
+        "build_payload",
+        lambda *args, **kwargs: {"overall_status": "idle", "ready_drainer_count": 0, "recommended_actions": []},
+    )
+    monkeypatch.setattr(
+        autopilot_src.coordinator_src,
+        "build_payload",
+        lambda *args, **kwargs: {
+            "overall_status": "ready",
+            "actionable": True,
+            "drain_ready": True,
+            "maintenance_ready": True,
+            "recommended_actions": [],
+        },
+    )
+    monkeypatch.setattr(
+        autopilot_src.sheriff_src,
+        "build_payload",
+        lambda *args, **kwargs: {
+            "overall_status": "idle",
+            "actionable": False,
+            "focus": {"focus_shards": [], "targeted_retention_debt_gb": 0.0, "severe_focus": False},
+            "recommended_actions": [],
+        },
+    )
+
+    payload = autopilot_src.build_payload(
+        project_root,
+        apply=False,
+        poll_seconds=5.0,
+        wait_timeout_seconds=75.0,
+        command_timeout_seconds=180,
+        backpressure_command_timeout_seconds=120,
+        max_cycles=1,
+    )
+
+    assert payload["timing_contract"]["mode"] == "quick_bounded"
+    assert payload["timing_contract"]["wait_timeout_seconds"] == 75
+    assert payload["timing_contract"]["command_timeout_seconds"] == 180
+    assert payload["timing_contract"]["max_cycles"] == 1
+    timeouts = {row["name"]: row["timeout_sec"] for row in payload["repair_plan"]}
+    assert timeouts["backpressure_slo_bot"] == 180
+    assert timeouts["writer_cycle_coordinator"] == 180
+    assert timeouts["raw_training_manifest_refresh"] == 180
+
+
 def test_storage_backpressure_autopilot_applies_only_needed_lanes(tmp_path: Path, monkeypatch) -> None:
     project_root = tmp_path / "project"
     storage_path = project_root / "governance" / "health" / "ingestion_storage_control_latest.json"

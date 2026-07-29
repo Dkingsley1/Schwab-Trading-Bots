@@ -94,6 +94,27 @@ def _mtime_utc(path: Path) -> str:
         return ""
 
 
+def _skip_control(reason: str) -> dict[str, Any]:
+    reason = str(reason or "").strip()
+    if reason == "size_over_limit":
+        return {
+            "metadata_only": True,
+            "skip_safety": "safe_metadata_only_large_file",
+            "immutability_mode": "metadata_only_large_file",
+        }
+    if reason:
+        return {
+            "metadata_only": False,
+            "skip_safety": "unsafe_skip",
+            "immutability_mode": "not_immutably_bound",
+        }
+    return {
+        "metadata_only": False,
+        "skip_safety": "",
+        "immutability_mode": "",
+    }
+
+
 def _artifact_row(
     project_root: Path,
     *,
@@ -111,9 +132,13 @@ def _artifact_row(
         "blob_path": "",
         "materialized": False,
         "skipped_reason": "",
+        "metadata_only": False,
+        "skip_safety": "",
+        "immutability_mode": "",
     }
     if max_blob_bytes > 0 and size_bytes > max_blob_bytes:
         row["skipped_reason"] = "size_over_limit"
+        row.update(_skip_control("size_over_limit"))
         return row, None, False
 
     digest = _sha(path)
@@ -128,6 +153,7 @@ def _artifact_row(
             "sha256": digest,
             "blob_path": str(blob_path),
             "materialized": bool(blob_path.exists()),
+            "immutability_mode": "sha256_blob" if blob_path.exists() else "sha256_reference",
         }
     )
     return row, blob_path, copied
@@ -195,6 +221,10 @@ def build_payload(
     copied = 0
     skipped_blob_count = 0
     skipped_blob_bytes = 0
+    metadata_only_blob_count = 0
+    metadata_only_blob_bytes = 0
+    unsafe_skipped_blob_count = 0
+    unsafe_skipped_blob_bytes = 0
     max_blob_bytes = _default_max_blob_bytes() if max_blob_bytes is None else max(int(max_blob_bytes), 0)
     gc_grace_days = _default_gc_grace_days() if gc_grace_days is None else max(float(gc_grace_days), 0.0)
     referenced_blobs: set[str] = set()
@@ -212,9 +242,15 @@ def build_payload(
         copied += int(bool(copied_blob))
         if blob_path is not None:
             referenced_blobs.add(str(blob_path))
-        elif str(row.get("skipped_reason") or "") == "size_over_limit":
+        elif str(row.get("skipped_reason") or ""):
             skipped_blob_count += 1
             skipped_blob_bytes += int(row.get("size_bytes", 0) or 0)
+            if bool(row.get("metadata_only", False)):
+                metadata_only_blob_count += 1
+                metadata_only_blob_bytes += int(row.get("size_bytes", 0) or 0)
+            else:
+                unsafe_skipped_blob_count += 1
+                unsafe_skipped_blob_bytes += int(row.get("size_bytes", 0) or 0)
         artifact_rows.append(row)
     artifact_rows.sort(key=lambda row: str(row.get("path") or ""))
     manifest_hash = hashlib.sha256(
@@ -229,16 +265,26 @@ def build_payload(
     payload = {
         "timestamp_utc": datetime.now(timezone.utc).isoformat(),
         "schema_version": 1,
-        "ok": True,
+        "ok": unsafe_skipped_blob_count == 0,
         "store_root": str(store_root),
         "artifact_count": len(artifact_rows),
         "copied_blob_count": copied,
         "skipped_blob_count": int(skipped_blob_count),
         "skipped_blob_bytes": int(skipped_blob_bytes),
+        "metadata_only_blob_count": int(metadata_only_blob_count),
+        "metadata_only_blob_bytes": int(metadata_only_blob_bytes),
+        "unsafe_skipped_blob_count": int(unsafe_skipped_blob_count),
+        "unsafe_skipped_blob_bytes": int(unsafe_skipped_blob_bytes),
         "max_blob_bytes": int(max_blob_bytes),
         "manifest_hash": manifest_hash,
         "artifacts": artifact_rows,
         "gc": gc_payload,
+        "evidence_store_contract": {
+            "oversized_artifacts_are_metadata_only": True,
+            "production_readiness_blocks_unsafe_skips_only": True,
+            "unsafe_skipped_blob_count": int(unsafe_skipped_blob_count),
+            "metadata_only_blob_count": int(metadata_only_blob_count),
+        },
         "top_actions": [
             "bind training, replay, and promotion bundles to immutable sha256 blobs before rollout",
             "use manifest_hash as the rollback/replay bundle identifier in governance events",
@@ -246,6 +292,8 @@ def build_payload(
     }
     if skipped_blob_count > 0:
         payload["top_actions"].append("keep oversized runtime artifacts referenced by metadata only so the content store does not duplicate multi-gigabyte files")
+    if unsafe_skipped_blob_count > 0:
+        payload["top_actions"].append("repair unsafe evidence skips before production readiness can pass")
     return payload
 
 

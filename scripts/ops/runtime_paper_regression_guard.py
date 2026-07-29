@@ -390,6 +390,33 @@ def _all_sleeves_runtime_state(process: dict[str, Any]) -> dict[str, Any]:
     heartbeat_ok = row.get("heartbeat_ok")
     process_live = row.get("process_live")
     running = _safe_float(row.get("running"), 0.0)
+    child_count = _safe_float(child_fanout.get("child_process_count"), _safe_float(row.get("child_count"), 0.0))
+    launcher_phase = str(launcher.get("phase") or row.get("launcher_phase") or "")
+    launcher_running = _safe_float(launcher.get("running_job_count"), _safe_float(row.get("launcher_running"), 0.0))
+    launcher_expected = _safe_float(launcher.get("expected_job_count"), _safe_float(row.get("launcher_expected"), 0.0))
+    parent_elapsed = max(
+        _safe_float(row.get("process_elapsed_seconds"), 0.0),
+        _safe_float(child_fanout.get("parent_elapsed_seconds"), 0.0),
+        _safe_float(launcher.get("launcher_uptime_seconds"), 0.0),
+    )
+    startup_grace_seconds = max(_safe_float(child_fanout.get("child_fanout_grace_seconds"), 180.0), 1.0)
+    readiness = _as_dict(launcher.get("launcher_readiness_contract"))
+    problem_job_count = max(
+        _safe_float(launcher.get("problem_job_count"), 0.0),
+        _safe_float(readiness.get("problem_job_count"), 0.0),
+    )
+    startup_grace_active = bool(
+        row
+        and running > 0
+        and _bool(process_live)
+        and _bool(launcher_live)
+        and not _bool(child_fanout_ok)
+        and parent_elapsed > 0.0
+        and parent_elapsed <= startup_grace_seconds
+        and problem_job_count <= 0
+        and (launcher_expected <= 0 or launcher_running < launcher_expected or child_count <= 0)
+        and _lower(launcher_phase or readiness.get("readiness_status")) in {"starting", "running", "startup_grace", ""}
+    )
     ok = bool(
         row
         and running > 0
@@ -398,6 +425,7 @@ def _all_sleeves_runtime_state(process: dict[str, Any]) -> dict[str, Any]:
         and _bool(launcher_live)
         and _bool(child_fanout_ok)
     )
+    ok = bool(ok or startup_grace_active)
     return {
         "present": bool(row),
         "ok": ok,
@@ -406,10 +434,14 @@ def _all_sleeves_runtime_state(process: dict[str, Any]) -> dict[str, Any]:
         "heartbeat_ok": _bool(heartbeat_ok),
         "launcher_live": _bool(launcher_live),
         "child_fanout_ok": _bool(child_fanout_ok),
-        "child_process_count": _safe_float(child_fanout.get("child_process_count"), _safe_float(row.get("child_count"), 0.0)),
-        "launcher_phase": str(launcher.get("phase") or row.get("launcher_phase") or ""),
-        "launcher_running_job_count": _safe_float(launcher.get("running_job_count"), _safe_float(row.get("launcher_running"), 0.0)),
-        "launcher_expected_job_count": _safe_float(launcher.get("expected_job_count"), _safe_float(row.get("launcher_expected"), 0.0)),
+        "child_process_count": child_count,
+        "launcher_phase": launcher_phase,
+        "launcher_running_job_count": launcher_running,
+        "launcher_expected_job_count": launcher_expected,
+        "startup_grace_active": startup_grace_active,
+        "startup_grace_seconds": round(float(startup_grace_seconds), 3),
+        "parent_elapsed_seconds": round(float(parent_elapsed), 3),
+        "problem_job_count": int(problem_job_count),
     }
 
 

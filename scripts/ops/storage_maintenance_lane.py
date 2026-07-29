@@ -750,6 +750,8 @@ def build_storage_maintenance_payload(
             "content_store_deleted_blobs": int(((((content_store_gc or {}).get("payload") or {}).get("gc") or {}).get("deleted_blob_count", 0) or 0)),
             "content_store_deleted_bytes": int(((((content_store_gc or {}).get("payload") or {}).get("gc") or {}).get("deleted_bytes", 0) or 0)),
             "content_store_skipped_blobs": int((((content_store_gc or {}).get("payload") or {}).get("skipped_blob_count", 0) or 0)),
+            "content_store_metadata_only_blobs": int((((content_store_gc or {}).get("payload") or {}).get("metadata_only_blob_count", 0) or 0)),
+            "content_store_unsafe_skipped_blobs": int((((content_store_gc or {}).get("payload") or {}).get("unsafe_skipped_blob_count", 0) or 0)),
             "sql_sync_status": str(sql_progress.get("status") or ""),
             "sql_sync_step": str(sql_progress.get("current_step") or ""),
             "sql_progress_idle_minutes": round(float(sql_progress_idle_minutes), 3) if sql_progress_idle_minutes is not None else None,

@@ -46,10 +46,18 @@ def test_content_addressed_artifact_store_skips_oversized_blob(tmp_path: Path) -
     )
 
     assert payload["artifact_count"] == 1
+    assert payload["ok"] is True
     assert payload["skipped_blob_count"] == 1
     assert payload["skipped_blob_bytes"] == 2
+    assert payload["metadata_only_blob_count"] == 1
+    assert payload["metadata_only_blob_bytes"] == 2
+    assert payload["unsafe_skipped_blob_count"] == 0
+    assert payload["unsafe_skipped_blob_bytes"] == 0
     row = payload["artifacts"][0]
     assert row["skipped_reason"] == "size_over_limit"
+    assert row["metadata_only"] is True
+    assert row["skip_safety"] == "safe_metadata_only_large_file"
+    assert row["immutability_mode"] == "metadata_only_large_file"
     assert row["sha256"] == ""
     assert row["blob_path"] == ""
     assert not any(path.is_file() for path in store_root.rglob("*"))

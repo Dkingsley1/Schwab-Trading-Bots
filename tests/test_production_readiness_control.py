@@ -69,7 +69,17 @@ def _seed_minimal_project(project_root: Path) -> Path:
     ):
         _write_json(project_root / artifact_path, {"timestamp_utc": now, "overall_status": "ready", "ok": True})
     _write_json(project_root / "governance" / "health" / "remote_alert_control_latest.json", {"timestamp_utc": now, "overall_status": "ready", "ok": True})
-    _write_json(project_root / "governance" / "content_store" / "latest.json", {"timestamp_utc": now, "ok": True, "artifact_count": 3, "skipped_blob_count": 0})
+    _write_json(
+        project_root / "governance" / "content_store" / "latest.json",
+        {
+            "timestamp_utc": now,
+            "ok": True,
+            "artifact_count": 3,
+            "skipped_blob_count": 0,
+            "metadata_only_blob_count": 0,
+            "unsafe_skipped_blob_count": 0,
+        },
+    )
     _write_json(project_root / "governance" / "health" / "source_verification_latest.json", {"timestamp_utc": now, "overall_status": "ready", "ok": True})
     _write_json(project_root / "governance" / "health" / "security_audit_latest.json", {"timestamp_utc": now, "overall_status": "ready", "ok": True})
     _write_json(project_root / "governance" / "health" / "secret_scan_latest.json", {"timestamp_utc": now, "findings_count": 0})
@@ -227,7 +237,7 @@ def _seed_minimal_project(project_root: Path) -> Path:
                         "ready_statuses": ["ok", "ready"],
                         "max_age_hours": 24,
                         "truthy_keys": ["ok"],
-                        "max_count_by_key": {"skipped_blob_count": 0},
+                        "max_count_by_key": {"unsafe_skipped_blob_count": 0},
                     },
                     {
                         "capability_id": "secret_scan_zero_findings",
@@ -310,6 +320,74 @@ def test_live_money_bar_accepts_contract_hard_block_when_firewall_is_read_only(t
     assert domains["live_money_production_bar"]["evidence"]["pre_canary_firewall_read_only"] is True
     assert domains["live_money_production_bar"]["status"] == "ready"
     assert payload["live_money_production_bar_ready"] is True
+
+
+def test_live_money_bar_accepts_metadata_only_content_store_skips(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    config_path = _seed_minimal_project(project_root)
+    now = datetime.now(timezone.utc).isoformat()
+    _write_json(
+        project_root / "governance" / "content_store" / "latest.json",
+        {
+            "timestamp_utc": now,
+            "ok": True,
+            "artifact_count": 4,
+            "skipped_blob_count": 1,
+            "metadata_only_blob_count": 1,
+            "unsafe_skipped_blob_count": 0,
+        },
+    )
+
+    payload = src.build_payload(
+        project_root,
+        config_path=config_path,
+        installed_versions={"cachetools": "6.2.0"},
+        env={"ALLOW_ORDER_EXECUTION": "0"},
+    )
+    production_bar = {row["name"]: row for row in payload["domains"]}["live_money_production_bar"]
+    capability = next(
+        row
+        for row in production_bar["evidence"]["capability_rows"]
+        if row["capability_id"] == "immutable_evidence_store"
+    )
+
+    assert production_bar["status"] == "ready"
+    assert capability["ready"] is True
+    assert capability["max_count_rows"][0]["key"] == "unsafe_skipped_blob_count"
+    assert capability["max_count_rows"][0]["value"] == 0.0
+
+
+def test_live_money_bar_blocks_legacy_content_store_skip_without_unsafe_counter(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    config_path = _seed_minimal_project(project_root)
+    now = datetime.now(timezone.utc).isoformat()
+    _write_json(
+        project_root / "governance" / "content_store" / "latest.json",
+        {
+            "timestamp_utc": now,
+            "ok": True,
+            "artifact_count": 4,
+            "skipped_blob_count": 1,
+        },
+    )
+
+    payload = src.build_payload(
+        project_root,
+        config_path=config_path,
+        installed_versions={"cachetools": "6.2.0"},
+        env={"ALLOW_ORDER_EXECUTION": "0"},
+    )
+    production_bar = {row["name"]: row for row in payload["domains"]}["live_money_production_bar"]
+    capability = next(
+        row
+        for row in production_bar["evidence"]["capability_rows"]
+        if row["capability_id"] == "immutable_evidence_store"
+    )
+
+    assert production_bar["status"] == "blocked"
+    assert payload["live_money_production_bar_ready"] is False
+    assert "live_money_production_bar:immutable_evidence_store:immutable_evidence_store_max_count_keys_not_met" in payload["blockers"]
+    assert capability["max_count_rows"][0]["legacy_fallback_from_skipped_blob_count"] is True
 
 
 def test_production_readiness_control_blocks_unsafe_live_order_intent(tmp_path: Path) -> None:
