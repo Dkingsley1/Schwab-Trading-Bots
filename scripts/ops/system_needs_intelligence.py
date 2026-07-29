@@ -54,6 +54,13 @@ def _safe_int(value: Any, default: int = 0) -> int:
         return int(default)
 
 
+def _safe_float(value: Any, default: float = 0.0) -> float:
+    try:
+        return float(value)
+    except Exception:
+        return float(default)
+
+
 def _command(value: Any) -> list[Any]:
     return list(value) if isinstance(value, list) else []
 
@@ -392,6 +399,224 @@ def _need_from_low_grade_audit(audit: dict[str, Any]) -> list[dict[str, Any]]:
             "source": "low_grade_layer_audit",
             "low_grade_layer_count": _safe_int(audit.get("unique_low_grade_layer_count"), 0),
             "low_grade_categories": _as_dict(audit.get("by_category")),
+        }
+    ]
+
+
+def _profitability_grade_below_a(value: Any) -> bool:
+    grade = str(value or "").strip().upper()
+    return bool(grade and grade not in {"A", "A+"})
+
+
+def _nested_dict(payload: dict[str, Any], *path: str) -> dict[str, Any]:
+    current: Any = payload
+    for key in path:
+        current = _as_dict(current).get(key)
+    return _as_dict(current)
+
+
+def _first_nested_dict(*values: dict[str, Any]) -> dict[str, Any]:
+    for value in values:
+        if value:
+            return value
+    return {}
+
+
+def _loss_cause_names(*contracts: dict[str, Any]) -> list[str]:
+    names: list[str] = []
+    for contract in contracts:
+        for row in _as_list(contract.get("top_loss_causes")):
+            if isinstance(row, dict):
+                cause = str(row.get("cause") or "").strip()
+            else:
+                cause = str(row or "").strip()
+            if cause and cause not in names:
+                names.append(cause)
+    return names
+
+
+def _raw_profitability_recovery_context(
+    *,
+    paper_profitability: dict[str, Any],
+    paper_runtime_profitability: dict[str, Any],
+    live_canary_readiness: dict[str, Any],
+) -> dict[str, Any]:
+    source = paper_profitability if paper_profitability else paper_runtime_profitability
+    runtime_source = paper_runtime_profitability if paper_runtime_profitability else paper_profitability
+    raw_grade = str(
+        source.get("raw_profitability_grade")
+        or runtime_source.get("raw_profitability_grade")
+        or ""
+    ).strip().upper()
+    controlled_grade = str(
+        source.get("controlled_profitability_grade")
+        or runtime_source.get("controlled_profitability_grade")
+        or source.get("profitability_grade")
+        or runtime_source.get("profitability_grade")
+        or ""
+    ).strip().upper()
+    financial_grade = str(
+        source.get("financial_profitability_grade")
+        or runtime_source.get("financial_profitability_grade")
+        or source.get("financial_display_grade")
+        or runtime_source.get("financial_display_grade")
+        or ""
+    ).strip().upper()
+    a_plus = _first_nested_dict(
+        _nested_dict(paper_runtime_profitability, "a_plus_target_contract"),
+        _nested_dict(paper_profitability, "a_plus_target_contract"),
+    )
+    current = _as_dict(a_plus.get("current"))
+    thresholds = _as_dict(a_plus.get("thresholds"))
+    raw_improvement = _first_nested_dict(
+        _nested_dict(paper_runtime_profitability, "raw_profitability_improvement_contract"),
+        _nested_dict(paper_profitability, "raw_profitability_improvement_contract"),
+    )
+    raw_a_recovery = _first_nested_dict(
+        _nested_dict(paper_runtime_profitability, "raw_profitability_a_recovery_contract"),
+        _nested_dict(paper_profitability, "raw_profitability_a_recovery_contract"),
+    )
+    raw_six = _first_nested_dict(
+        _nested_dict(paper_runtime_profitability, "raw_profitability_six_point_recovery_contract"),
+        _nested_dict(paper_profitability, "raw_profitability_six_point_recovery_contract"),
+    )
+    burn_down = _first_nested_dict(
+        _nested_dict(raw_improvement, "burn_down_contract"),
+        _nested_dict(raw_a_recovery, "burn_down_contract"),
+        _nested_dict(raw_six, "burn_down_contract"),
+    )
+    loss_feedback = _first_nested_dict(
+        _nested_dict(raw_improvement, "loss_cause_training_feedback_contract"),
+        _nested_dict(raw_six, "loss_cause_filter_contract"),
+        raw_a_recovery,
+    )
+    top_loss_causes = _loss_cause_names(loss_feedback, raw_a_recovery)
+    requirements = _as_list(raw_improvement.get("requirements"))
+    ready_requirement_count = sum(1 for row in requirements if isinstance(row, dict) and bool(row.get("ready", False)))
+    live_blockers = [
+        str(item or "").strip()
+        for item in _as_list(live_canary_readiness.get("blockers"))
+        if str(item or "").strip()
+    ]
+    raw_live_blockers = [item for item in live_blockers if "raw_profitability" in item]
+    net_pnl = _safe_float(current.get("net_pnl"), _safe_float(burn_down.get("current_net_pnl"), 0.0))
+    raw_ready = bool(
+        raw_grade in {"A", "A+"}
+        and net_pnl >= 0.0
+        and not raw_live_blockers
+        and (not bool(a_plus) or bool(a_plus.get("combined_a_plus_ready", True)))
+    )
+    active = bool(
+        raw_grade
+        and (
+            _profitability_grade_below_a(raw_grade)
+            or net_pnl < 0.0
+            or _profitability_grade_below_a(financial_grade)
+            or raw_live_blockers
+            or (bool(a_plus) and not bool(a_plus.get("combined_a_plus_ready", False)))
+        )
+    )
+    return {
+        "active": bool(active and not raw_ready),
+        "raw_profitability_grade": raw_grade,
+        "controlled_profitability_grade": controlled_grade,
+        "financial_profitability_grade": financial_grade,
+        "net_pnl": net_pnl,
+        "realized_pnl": _safe_float(current.get("realized_pnl"), 0.0),
+        "unrealized_pnl": _safe_float(current.get("unrealized_pnl"), 0.0),
+        "change_vs_previous_day": _safe_float(current.get("change_vs_previous_day"), 0.0),
+        "executions": _safe_int(current.get("executions"), 0),
+        "weak_profile_count": _safe_int(current.get("weak_profile_count"), 0),
+        "strategy_control_count": _safe_int(current.get("strategy_control_count"), 0),
+        "unprotected_weak_profile_count": _safe_int(current.get("unprotected_weak_profile_count"), 0),
+        "unprotected_strategy_control_count": _safe_int(current.get("unprotected_strategy_control_count"), 0),
+        "min_net_pnl": _safe_float(thresholds.get("min_net_pnl"), 0.0),
+        "combined_a_plus_ready": bool(a_plus.get("combined_a_plus_ready", False)) if a_plus else False,
+        "daily_net_improvement_target": max(
+            _safe_float(burn_down.get("required_average_daily_net_improvement"), 0.0),
+            _safe_float(_as_dict(raw_improvement.get("runtime_enforcement")).get("raw_d_daily_net_improvement_target"), 0.0),
+        ),
+        "top_loss_causes": top_loss_causes,
+        "requirement_count": len(requirements),
+        "ready_requirement_count": ready_requirement_count,
+        "all_requirements_ready": bool(requirements) and ready_requirement_count == len(requirements),
+        "runtime_enforcement": _as_dict(raw_improvement.get("runtime_enforcement")),
+        "top_drag_profiles": _as_list(burn_down.get("top_drag_profiles"))[:5],
+        "largest_drag_profile": _as_dict(burn_down.get("largest_drag_profile")),
+        "live_canary_raw_blockers": raw_live_blockers,
+        "source_file": (
+            "governance/health/paper_runtime_profitability_controls_latest.json"
+            if paper_runtime_profitability
+            else "governance/health/paper_profitability_control_latest.json"
+        ),
+        "stop_condition": (
+            str(raw_improvement.get("stop_condition") or "")
+            or str(raw_a_recovery.get("stop_condition") or "")
+            or str(raw_six.get("stop_condition") or "")
+            or "raw_profitability_grade is A or better and net_pnl_total >= 0"
+        ),
+    }
+
+
+def _need_from_raw_profitability_recovery(context: dict[str, Any]) -> list[dict[str, Any]]:
+    if not bool(context.get("active", False)):
+        return []
+    top_drags = []
+    for row in _as_list(context.get("top_drag_profiles")):
+        if not isinstance(row, dict):
+            continue
+        profile = str(row.get("profile") or "").strip()
+        if profile:
+            top_drags.append(profile)
+    evidence = [
+        f"raw_profitability_grade={context.get('raw_profitability_grade') or 'unknown'}",
+        f"controlled_profitability_grade={context.get('controlled_profitability_grade') or 'unknown'}",
+        f"financial_profitability_grade={context.get('financial_profitability_grade') or 'unknown'}",
+        f"raw_net_pnl={_safe_float(context.get('net_pnl'), 0.0):.6f}",
+        f"realized_pnl={_safe_float(context.get('realized_pnl'), 0.0):.6f}",
+        f"unrealized_pnl={_safe_float(context.get('unrealized_pnl'), 0.0):.6f}",
+        f"change_vs_previous_day={_safe_float(context.get('change_vs_previous_day'), 0.0):.6f}",
+        f"weak_profile_count={_safe_int(context.get('weak_profile_count'), 0)}",
+        f"strategy_control_count={_safe_int(context.get('strategy_control_count'), 0)}",
+        f"daily_net_improvement_target={_safe_float(context.get('daily_net_improvement_target'), 0.0):.6f}",
+        f"top_loss_causes={','.join(_as_list(context.get('top_loss_causes'))[:6]) or 'none'}",
+        f"top_drag_profiles={','.join(top_drags[:5]) or 'none'}",
+        f"live_canary_raw_blockers={','.join(_as_list(context.get('live_canary_raw_blockers'))[:6]) or 'none'}",
+        f"raw_recovery_requirements={_safe_int(context.get('ready_requirement_count'), 0)}/{_safe_int(context.get('requirement_count'), 0)}",
+    ]
+    return [
+        {
+            "blocker": "raw_profitability_burn_down",
+            "exact_file": str(context.get("source_file") or "governance/health/paper_runtime_profitability_controls_latest.json"),
+            "exact_shard": "raw_profitability_improvement_contract",
+            "command": ["./scripts/ops/opsctl.sh", "paper-profitability-control", "--apply", "--json"],
+            "expected_impact": (
+                "Keeps raw PnL recovery visible and routes zero-entry weak sleeves, reduce-only drag burn-down, "
+                "strict clean-sleeve admission, loss-cause filters, training feedback, and three-profitable-refresh re-entry."
+            ),
+            "risk_level": "low",
+            "when_to_stop": (
+                "raw_profitability_grade is A or better, raw net PnL is non-negative, weak profiles and losing strategy pairs "
+                "have three profitable refreshes or remain quarantined, and live-canary raw profitability blockers are empty."
+            ),
+            "source": "raw_profitability_recovery",
+            "evidence": evidence,
+            "target_capabilities": [
+                "paper_profitability_control",
+                "paper_performance_refresh",
+                "runtime_paper_regression_guard",
+                "paper_execution_truth_layer",
+                "training_data_intake_labeling",
+                "training_labeling_intelligence",
+                "master_grandmaster_profitability_trainer",
+                "live_canary_readiness_contract",
+            ],
+            "control_policy": {
+                "do_not_force_trades": True,
+                "paper_only": True,
+                "live_execution_allowed": False,
+                "raw_truth_preserved": True,
+            },
         }
     ]
 
@@ -807,7 +1032,15 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, fix_log_path: Path = DEF
     global_halt = load_json(health / "global_halt_auto_clear_latest.json") or load_json(health / "global_killswitch_latest.json")
     paper_ramp = load_json(health / "paper_400_ramp_latest.json")
     plumbing = load_json(health / "system_plumbing_control_latest.json")
+    paper_profitability = load_json(health / "paper_profitability_control_latest.json")
+    paper_runtime_profitability = load_json(health / "paper_runtime_profitability_controls_latest.json")
+    live_canary_readiness = load_json(health / "live_canary_readiness_contract_latest.json")
     low_grade_audit = _low_grade_layer_audit(project_root)
+    raw_profitability_recovery = _raw_profitability_recovery_context(
+        paper_profitability=paper_profitability,
+        paper_runtime_profitability=paper_runtime_profitability,
+        live_canary_readiness=live_canary_readiness,
+    )
     soak_management = _soak_management_context(project_root, health_fast)
     needs = [
         *_need_from_governor(governor),
@@ -815,6 +1048,7 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, fix_log_path: Path = DEF
         *_need_from_storage(storage),
         *_need_from_training_runtime(training_runtime),
         *_need_from_low_grade_audit(low_grade_audit),
+        *_need_from_raw_profitability_recovery(raw_profitability_recovery),
         *_need_from_runtime_surfaces(
             health_fast=health_fast,
             process_watchdog=process_watchdog,
@@ -898,6 +1132,7 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, fix_log_path: Path = DEF
                 "plumbing_score": plumbing.get("plumbing_score"),
             },
             "low_grade_layer_audit": low_grade_audit,
+            "raw_profitability_recovery": raw_profitability_recovery,
             "soak_management_context": soak_management,
             "operator_action_packet": _as_dict(governor.get("operator_action_packet")),
             "migration_binder": _as_dict(migration.get("migration_binder")),
@@ -909,6 +1144,7 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, fix_log_path: Path = DEF
             "always_include_expected_impact_risk_and_stop_rule": True,
             "include_ready_actions_when_no_blockers_exist": True,
             "include_remaining_low_grade_layers": True,
+            "include_raw_profitability_recovery_need": True,
             "split_managed_soak_controls_from_actionable_needs": True,
             "fixes_logged_to": str(fix_log_path),
             "protected_volumes": ["/Volumes/VIDEO"],

@@ -149,6 +149,35 @@
       "stop_condition": "storage status ready, pending lines below threshold, no stale hot-path artifact, and no active writer lock handoff"
     },
     {
+      "lane": "raw_profitability_recovery",
+      "family": "paper_profitability_burn_down_and_training_feedback",
+      "max_parallel": 2,
+      "pressure_policy": "paper_only_recovery_commands_may_refresh_or_label_but_must_not_force_trades_or_enable_live_execution",
+      "owner_controls": [
+        "paper_profitability_control",
+        "paper-profitability-control",
+        "paper_performance",
+        "runtime_paper_regression_guard",
+        "runtime-paper-regression-guard",
+        "paper_execution_truth_layer",
+        "training_data_intake_labeling",
+        "training_labeling_intelligence",
+        "master_grandmaster_profitability_trainer",
+        "master-grandmaster-train",
+        "live_canary_readiness_contract",
+        "live-canary-readiness"
+      ],
+      "default_commands": [
+        ["./scripts/ops/opsctl.sh", "paper-profitability-control", "--apply", "--json"],
+        ["./scripts/ops/opsctl.sh", "paper-performance", "--json"],
+        ["./scripts/ops/opsctl.sh", "runtime-paper-regression-guard", "--json"],
+        ["./scripts/ops/opsctl.sh", "training-labeling-intelligence", "--apply", "--json"],
+        ["./scripts/ops/opsctl.sh", "master-grandmaster-train", "--apply", "--json"],
+        ["./scripts/ops/opsctl.sh", "live-canary-readiness", "--apply", "--json"]
+      ],
+      "stop_condition": "raw_profitability_grade A or better, raw net PnL non-negative, weak profiles and losing strategy pairs cleared by three profitable refreshes or quarantined, and live-canary raw blockers empty"
+    },
+    {
       "lane": "source_truth",
       "family": "source_verification_and_data_truth",
       "max_parallel": 2,

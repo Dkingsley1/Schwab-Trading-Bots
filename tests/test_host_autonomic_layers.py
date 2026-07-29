@@ -2791,3 +2791,91 @@ def test_system_needs_marks_controlled_low_grades_as_a_plus_posture(tmp_path: Pa
         "self_awareness_under_a_plus_control",
     }
     assert not any(item.get("blocker") == "low_grade_layers_still_present" for item in payload["what_do_you_need"])
+
+
+def test_system_needs_embeds_raw_profitability_burn_down_plan(tmp_path: Path) -> None:
+    health = tmp_path / "governance" / "health"
+    _write_json(health / "autonomic_resource_governor_latest.json", {"what_do_you_need": {"items": []}})
+    raw_runtime = {
+        "raw_profitability_grade": "D",
+        "controlled_profitability_grade": "A+",
+        "financial_profitability_grade": "D",
+        "a_plus_target_contract": {
+            "combined_a_plus_ready": False,
+            "current": {
+                "net_pnl": -17908.060398,
+                "realized_pnl": -4853.579587,
+                "unrealized_pnl": -13054.480811,
+                "change_vs_previous_day": 335.377531,
+                "executions": 596,
+                "weak_profile_count": 25,
+                "strategy_control_count": 24,
+            },
+            "thresholds": {"min_net_pnl": 50000.0},
+        },
+        "raw_profitability_improvement_contract": {
+            "requirements": [
+                {"id": "1_weak_sleeves_zero_new_entries", "ready": True},
+                {"id": "2_strict_clean_sleeve_admission", "ready": True},
+                {"id": "3_position_harvest_evidence_layer", "ready": True},
+                {"id": "4_position_level_paper_telemetry", "ready": True},
+                {"id": "5_loss_cause_training_feedback", "ready": True},
+                {"id": "6_losing_strategy_pair_quarantine", "ready": True},
+                {"id": "7_raw_recovery_burn_down_guard", "ready": True},
+            ],
+            "loss_cause_training_feedback_contract": {
+                "top_loss_causes": [
+                    {"cause": "conflict:low", "count": 25},
+                    {"cause": "event_proximity:low", "count": 25},
+                    {"cause": "fill_quality:unknown", "count": 25},
+                    {"cause": "source_quality:low", "count": 25},
+                ],
+            },
+            "burn_down_contract": {
+                "required_average_daily_net_improvement": 596.935347,
+                "top_drag_profiles": [
+                    {"profile": "bond", "net_pnl_total": -7413.988011},
+                    {"profile": "aggressive", "net_pnl_total": -7118.301148},
+                ],
+            },
+            "runtime_enforcement": {
+                "block_new_entries_on_weak_profiles": True,
+                "keep_sells_and_reduce_only_paths_open": True,
+                "feed_loss_causes_to_training": True,
+                "paper_only": True,
+                "live_execution_allowed": False,
+            },
+        },
+    }
+    _write_json(
+        health / "paper_profitability_control_latest.json",
+        {
+            "overall_status": "ready",
+            "profitability_grade": "A+",
+            "raw_profitability_grade": "D",
+            "controlled_profitability_grade": "A+",
+            "financial_profitability_grade": "D",
+            "low_grade_layer_summary": {"control_posture_grade": "A+", "active_blocker_count": 0},
+        },
+    )
+    _write_json(health / "paper_runtime_profitability_controls_latest.json", raw_runtime)
+    _write_json(
+        health / "live_canary_readiness_contract_latest.json",
+        {
+            "overall_status": "blocked",
+            "live_canary_money_ready": False,
+            "blockers": ["raw_profitability_posture_blocked"],
+        },
+    )
+
+    payload = system_needs_intelligence.build_payload(tmp_path, fix_log_path=health / "system_needs_fix_log.jsonl")
+
+    needs = {item["blocker"]: item for item in payload["what_do_you_need"]}
+    raw_need = needs["raw_profitability_burn_down"]
+    assert raw_need["command"][1] == "paper-profitability-control"
+    assert raw_need["control_policy"]["live_execution_allowed"] is False
+    assert "master_grandmaster_profitability_trainer" in raw_need["target_capabilities"]
+    assert "raw_net_pnl=-17908.060398" in raw_need["evidence"]
+    assert "top_loss_causes=conflict:low,event_proximity:low,fill_quality:unknown,source_quality:low" in raw_need["evidence"]
+    assert payload["frames_of_reference"]["raw_profitability_recovery"]["active"] is True
+    assert payload["frames_of_reference"]["raw_profitability_recovery"]["daily_net_improvement_target"] == 596.935347

@@ -610,6 +610,16 @@ def _capability_registry() -> list[dict[str, Any]]:
             success_artifact="governance/health/paper_performance_latest.json",
         ),
         _capability(
+            capability_id="master_grandmaster_profitability_trainer",
+            title="Master Grandmaster Profitability Trainer",
+            owns=["raw_profitability_training_feedback", "master_profit_calibration", "paper_loss_hard_negative_labels"],
+            command=_opsctl("master-grandmaster-train", "--apply", "--json"),
+            risk_level="medium",
+            cost_class="medium",
+            apply_safe=True,
+            success_artifact="governance/health/master_grandmaster_profitability_training_latest.json",
+        ),
+        _capability(
             capability_id="source_verification",
             title="Source Verification",
             owns=["unverified_sources", "stale_sources", "provider_mesh_quality"],
@@ -673,6 +683,141 @@ def _need(
     }
 
 
+def _profitability_grade_below_a(value: Any) -> bool:
+    grade = str(value or "").strip().upper()
+    return bool(grade and grade not in {"A", "A+"})
+
+
+def _nested_dict(payload: dict[str, Any], *path: str) -> dict[str, Any]:
+    current: Any = payload
+    for key in path:
+        current = _as_dict(current).get(key)
+    return _as_dict(current)
+
+
+def _first_nested_dict(*values: dict[str, Any]) -> dict[str, Any]:
+    for value in values:
+        if value:
+            return value
+    return {}
+
+
+def _loss_cause_names(*contracts: dict[str, Any]) -> list[str]:
+    names: list[str] = []
+    for contract in contracts:
+        for row in _as_list(contract.get("top_loss_causes")):
+            if isinstance(row, dict):
+                cause = str(row.get("cause") or "").strip()
+            else:
+                cause = str(row or "").strip()
+            if cause and cause not in names:
+                names.append(cause)
+    return names
+
+
+def _raw_profitability_recovery_context(
+    *,
+    paper_profitability: dict[str, Any],
+    paper_runtime_profitability: dict[str, Any],
+    live_canary_readiness: dict[str, Any],
+) -> dict[str, Any]:
+    source = paper_profitability if paper_profitability else paper_runtime_profitability
+    runtime_source = paper_runtime_profitability if paper_runtime_profitability else paper_profitability
+    raw_grade = str(
+        source.get("raw_profitability_grade")
+        or runtime_source.get("raw_profitability_grade")
+        or ""
+    ).strip().upper()
+    controlled_grade = str(
+        source.get("controlled_profitability_grade")
+        or runtime_source.get("controlled_profitability_grade")
+        or source.get("profitability_grade")
+        or runtime_source.get("profitability_grade")
+        or ""
+    ).strip().upper()
+    financial_grade = str(
+        source.get("financial_profitability_grade")
+        or runtime_source.get("financial_profitability_grade")
+        or source.get("financial_display_grade")
+        or runtime_source.get("financial_display_grade")
+        or ""
+    ).strip().upper()
+    a_plus = _first_nested_dict(
+        _nested_dict(paper_runtime_profitability, "a_plus_target_contract"),
+        _nested_dict(paper_profitability, "a_plus_target_contract"),
+    )
+    current = _as_dict(a_plus.get("current"))
+    thresholds = _as_dict(a_plus.get("thresholds"))
+    raw_improvement = _first_nested_dict(
+        _nested_dict(paper_runtime_profitability, "raw_profitability_improvement_contract"),
+        _nested_dict(paper_profitability, "raw_profitability_improvement_contract"),
+    )
+    raw_a_recovery = _first_nested_dict(
+        _nested_dict(paper_runtime_profitability, "raw_profitability_a_recovery_contract"),
+        _nested_dict(paper_profitability, "raw_profitability_a_recovery_contract"),
+    )
+    raw_six = _first_nested_dict(
+        _nested_dict(paper_runtime_profitability, "raw_profitability_six_point_recovery_contract"),
+        _nested_dict(paper_profitability, "raw_profitability_six_point_recovery_contract"),
+    )
+    burn_down = _first_nested_dict(
+        _nested_dict(raw_improvement, "burn_down_contract"),
+        _nested_dict(raw_a_recovery, "burn_down_contract"),
+        _nested_dict(raw_six, "burn_down_contract"),
+    )
+    loss_feedback = _first_nested_dict(
+        _nested_dict(raw_improvement, "loss_cause_training_feedback_contract"),
+        _nested_dict(raw_six, "loss_cause_filter_contract"),
+        raw_a_recovery,
+    )
+    requirements = _as_list(raw_improvement.get("requirements"))
+    live_blockers = [
+        str(item or "").strip()
+        for item in _as_list(live_canary_readiness.get("blockers"))
+        if str(item or "").strip()
+    ]
+    raw_live_blockers = [item for item in live_blockers if "raw_profitability" in item]
+    net_pnl = _safe_float(current.get("net_pnl"), _safe_float(burn_down.get("current_net_pnl"), 0.0))
+    combined_ready = bool(a_plus.get("combined_a_plus_ready", False)) if a_plus else False
+    ready_requirement_count = sum(1 for row in requirements if isinstance(row, dict) and bool(row.get("ready", False)))
+    active = bool(
+        raw_grade
+        and (
+            _profitability_grade_below_a(raw_grade)
+            or net_pnl < 0.0
+            or _profitability_grade_below_a(financial_grade)
+            or raw_live_blockers
+            or (bool(a_plus) and not combined_ready)
+        )
+    )
+    return {
+        "active": bool(active),
+        "raw_profitability_grade": raw_grade,
+        "controlled_profitability_grade": controlled_grade,
+        "financial_profitability_grade": financial_grade,
+        "net_pnl": net_pnl,
+        "realized_pnl": _safe_float(current.get("realized_pnl"), 0.0),
+        "unrealized_pnl": _safe_float(current.get("unrealized_pnl"), 0.0),
+        "change_vs_previous_day": _safe_float(current.get("change_vs_previous_day"), 0.0),
+        "executions": _safe_int(current.get("executions"), 0),
+        "weak_profile_count": _safe_int(current.get("weak_profile_count"), 0),
+        "strategy_control_count": _safe_int(current.get("strategy_control_count"), 0),
+        "unprotected_weak_profile_count": _safe_int(current.get("unprotected_weak_profile_count"), 0),
+        "unprotected_strategy_control_count": _safe_int(current.get("unprotected_strategy_control_count"), 0),
+        "min_net_pnl": _safe_float(thresholds.get("min_net_pnl"), 0.0),
+        "combined_a_plus_ready": combined_ready,
+        "daily_net_improvement_target": max(
+            _safe_float(burn_down.get("required_average_daily_net_improvement"), 0.0),
+            _safe_float(_as_dict(raw_improvement.get("runtime_enforcement")).get("raw_d_daily_net_improvement_target"), 0.0),
+        ),
+        "top_loss_causes": _loss_cause_names(loss_feedback, raw_a_recovery),
+        "requirement_count": len(requirements),
+        "ready_requirement_count": ready_requirement_count,
+        "top_drag_profiles": _as_list(burn_down.get("top_drag_profiles"))[:5],
+        "live_canary_raw_blockers": raw_live_blockers,
+    }
+
+
 def _needs_contract(project_root: Path, *, refresh_needs: bool = False) -> dict[str, Any]:
     health = project_root / "governance" / "health"
     if refresh_needs:
@@ -712,6 +857,7 @@ def _needs_contract(project_root: Path, *, refresh_needs: bool = False) -> dict[
     master = _health(project_root, "master_infrastructure_supervisor_latest.json")
     bot_quality = _health(project_root, "bot_quality_autopilot_latest.json")
     paper_profitability = _health(project_root, "paper_profitability_control_latest.json")
+    paper_runtime_profitability = _health(project_root, "paper_runtime_profitability_controls_latest.json")
     paper_truth = _health(project_root, "paper_execution_truth_layer_latest.json")
     paper_runtime = _health(project_root, "runtime_paper_regression_guard_latest.json")
     paper_backlog = _health(project_root, "paper_execution_backlog_relief_latest.json")
@@ -1267,6 +1413,60 @@ def _needs_contract(project_root: Path, *, refresh_needs: bool = False) -> dict[
     active_low_grade_blockers = _safe_int(low_grade_summary.get("active_blocker_count"), 0)
     paper_runtime_status = _status(paper_runtime.get("overall_status"))
     paper_backlog_ok = bool(paper_backlog.get("ok", True))
+    raw_recovery = _raw_profitability_recovery_context(
+        paper_profitability=paper_profitability,
+        paper_runtime_profitability=paper_runtime_profitability,
+        live_canary_readiness=live_canary_readiness,
+    )
+    if bool(raw_recovery.get("active", False)):
+        top_drags = [
+            str(_as_dict(row).get("profile") or "")
+            for row in _as_list(raw_recovery.get("top_drag_profiles"))
+            if str(_as_dict(row).get("profile") or "").strip()
+        ]
+        needs.append(
+            _need(
+                need_id="raw_profitability_burn_down",
+                title="Raw profitability recovery needs burn-down evidence",
+                category="paper_trading",
+                severity="critical" if str(raw_recovery.get("raw_profitability_grade") or "") in {"D", "F"} else "high",
+                evidence=[
+                    f"raw_profitability_grade={raw_recovery.get('raw_profitability_grade') or 'unknown'}",
+                    f"controlled_profitability_grade={raw_recovery.get('controlled_profitability_grade') or 'unknown'}",
+                    f"financial_profitability_grade={raw_recovery.get('financial_profitability_grade') or 'unknown'}",
+                    f"raw_net_pnl={_safe_float(raw_recovery.get('net_pnl'), 0.0):.6f}",
+                    f"realized_pnl={_safe_float(raw_recovery.get('realized_pnl'), 0.0):.6f}",
+                    f"unrealized_pnl={_safe_float(raw_recovery.get('unrealized_pnl'), 0.0):.6f}",
+                    f"change_vs_previous_day={_safe_float(raw_recovery.get('change_vs_previous_day'), 0.0):.6f}",
+                    f"weak_profile_count={_safe_int(raw_recovery.get('weak_profile_count'), 0)}",
+                    f"strategy_control_count={_safe_int(raw_recovery.get('strategy_control_count'), 0)}",
+                    f"daily_net_improvement_target={_safe_float(raw_recovery.get('daily_net_improvement_target'), 0.0):.6f}",
+                    f"top_loss_causes={','.join(_as_list(raw_recovery.get('top_loss_causes'))[:6]) or 'none'}",
+                    f"top_drag_profiles={','.join(top_drags[:5]) or 'none'}",
+                    f"live_canary_raw_blockers={','.join(_as_list(raw_recovery.get('live_canary_raw_blockers'))[:6]) or 'none'}",
+                    f"raw_recovery_requirements={_safe_int(raw_recovery.get('ready_requirement_count'), 0)}/{_safe_int(raw_recovery.get('requirement_count'), 0)}",
+                ],
+                target_capabilities=[
+                    "paper_profitability_control",
+                    "paper_performance_refresh",
+                    "runtime_paper_regression_guard",
+                    "paper_execution_truth_layer",
+                    "training_data_intake_labeling",
+                    "training_labeling_intelligence",
+                    "master_grandmaster_profitability_trainer",
+                    "live_canary_readiness_contract",
+                    "promotion_quality_gate",
+                ],
+                stop_when=(
+                    "raw_profitability_grade is A or better, raw net PnL is non-negative, weak profiles and losing "
+                    "strategy pairs have three profitable refreshes or remain quarantined, and live-canary raw blockers are empty."
+                ),
+                expected_impact=(
+                    "Keeps raw D/F paper outcomes routed to zero-entry controls, reduce-only drag burn-down, strict clean-sleeve "
+                    "admission, loss-cause training feedback, and promotion/live-canary gates without granting cosmetic grade credit."
+                ),
+            )
+        )
     if (
         bot_quality_status in BAD_STATUSES
         or paper_status in BAD_STATUSES
@@ -1452,6 +1652,7 @@ def _needs_contract(project_root: Path, *, refresh_needs: bool = False) -> dict[
             "infrastructure_autofix": bool(infra),
             "infrabot_gap_roster": bool(gap_roster),
             "paper_profitability_control": bool(paper_profitability),
+            "paper_runtime_profitability_controls": bool(paper_runtime_profitability),
             "paper_execution_truth_layer": bool(paper_truth),
             "runtime_paper_regression_guard": bool(paper_runtime),
             "live_canary_readiness_contract": bool(live_canary_readiness),

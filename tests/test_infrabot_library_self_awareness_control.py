@@ -189,6 +189,26 @@ def test_repair_commands_are_deduped_and_storage_is_single_writer(tmp_path: Path
     assert storage_commands[0]["single_writer_or_pressure_sensitive"] is True
 
 
+def test_raw_profitability_recovery_lane_is_self_awareness_owned(tmp_path: Path) -> None:
+    _write_required_health(tmp_path)
+
+    payload = control.build_payload(tmp_path, config_path=PROJECT_ROOT / "config" / "infrabot_library_self_awareness_v1.json")
+    raw_commands = [
+        row
+        for row in payload["infrabot_efficiency_plan"]["commands"]
+        if row["lane"] == "raw_profitability_recovery"
+    ]
+    command_tuples = {tuple(row["command"]) for row in raw_commands}
+
+    assert payload["infrabot_efficiency_plan"]["lane_counts"]["raw_profitability_recovery"] >= 6
+    assert ("./scripts/ops/opsctl.sh", "paper-profitability-control", "--apply", "--json") in command_tuples
+    assert ("./scripts/ops/opsctl.sh", "master-grandmaster-train", "--apply", "--json") in command_tuples
+    assert ("./scripts/ops/opsctl.sh", "live-canary-readiness", "--apply", "--json") in command_tuples
+    assert {row["authority_boundary"] for row in raw_commands} == {
+        "safe_repair_or_read_only_no_live_execution_no_dependency_mutation"
+    }
+
+
 def test_library_scope_stages_candidates_but_requires_maintenance_for_installs(tmp_path: Path) -> None:
     _write_required_health(tmp_path)
 
