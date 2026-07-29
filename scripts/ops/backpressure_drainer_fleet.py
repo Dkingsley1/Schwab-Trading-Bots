@@ -2915,6 +2915,8 @@ def _candidate_drainers(
                 "SQL_LINK_SERVICE_SHARD_GOVERNANCE_MAX_FILES": "14",
                 "SQL_LINK_SERVICE_SHARD_GOVERNANCE_MAX_LINES_PER_FILE": "64000",
             },
+            min_pending_lines=25,
+            stale_ready_age_seconds=DEFAULT_AGE_PRESSURE_THRESHOLD_SECONDS,
         ),
         _profile(
             name="api_ingress_drainer",

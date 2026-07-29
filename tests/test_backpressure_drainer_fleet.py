@@ -977,6 +977,54 @@ def test_backpressure_drainer_fleet_routes_old_governance_event_tails_before_def
     assert "write_failures_20260624" in payload["active_env_overrides"]["SQL_LINK_SERVICE_SHARD_GOVERNANCE_PATH_CONTAINS"]
 
 
+def test_backpressure_drainer_fleet_routes_sub_100_stale_execution_skip_tail(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    health = project_root / "governance" / "health"
+    _write_json(
+        health / "ingestion_backpressure_latest.json",
+        {
+            "pending_lines": 108,
+            "pending_lines_total": 143,
+            "pending_lines_deferred": 37,
+            "oldest_pending_age_seconds": 0.0,
+            "oldest_age_threshold_seconds": 240.0,
+            "top_pending_files": [
+                {
+                    "source_rel": "governance/events/execution_lane_stale_skips_20260729.jsonl",
+                    "pending_lines": 80,
+                    "oldest_pending_age_seconds": 1589.96,
+                },
+                {
+                    "source_rel": "governance/events/premarket_token_guard_20260729.jsonl",
+                    "pending_lines": 4,
+                    "oldest_pending_age_seconds": 25.0,
+                },
+            ],
+            "top_deferred_pending_files": [
+                {
+                    "source_rel": "governance/channels/runtime/intraday_aggressive_equities_schwab/runtime_20260729.jsonl",
+                    "pending_lines": 320,
+                    "oldest_pending_age_seconds": 9.6,
+                }
+            ],
+        },
+    )
+    _write_json(health / "ingestion_storage_control_latest.json", {"severity": "stable"})
+
+    payload = src.build_payload(
+        project_root,
+        apply=False,
+        now_utc=datetime(2026, 7, 29, 22, 5, tzinfo=timezone.utc),
+    )
+
+    governance = next(row for row in payload["candidate_drainers"] if row["name"] == "governance_execution_drainer")
+    assert governance["status"] == "ready"
+    assert governance["min_pending_lines"] == 25
+    assert governance["pending_lines"] == 84
+    assert payload["active_drainer"]["name"] == "governance_execution_drainer"
+    assert "execution_lane_stale_skips_20260729" in payload["active_env_overrides"]["SQL_LINK_SERVICE_SHARD_GOVERNANCE_PATH_CONTAINS"]
+
+
 def test_backpressure_drainer_fleet_does_not_freeze_cold_stage_for_tiny_raw_live_tail(tmp_path: Path) -> None:
     project_root = tmp_path / "project"
     health = project_root / "governance" / "health"

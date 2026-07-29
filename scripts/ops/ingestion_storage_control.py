@@ -3299,6 +3299,63 @@ def _sql_overlay_file_age_seconds(path: Path, payload: dict[str, Any], now_utc: 
     return max((now_utc - mtime).total_seconds(), 0.0)
 
 
+def _filter_values(raw: Any) -> list[str]:
+    if isinstance(raw, list):
+        values = raw
+    elif isinstance(raw, str):
+        values = raw.split(",")
+    else:
+        values = []
+    return [str(item).strip() for item in values if str(item).strip()]
+
+
+def _overlay_source_stream(source_rel: str) -> str:
+    rel = str(source_rel or "")
+    if rel.startswith("decision_explanations/"):
+        return "decision_explanations"
+    if rel.startswith("decisions/"):
+        return "decisions"
+    if rel.startswith("governance/channels/decision/"):
+        return "decisions"
+    if rel.startswith("governance/events/channel_schema_violations_"):
+        return "schema_violations"
+    if rel.startswith("governance/events/"):
+        return "governance_events"
+    if rel.startswith("governance/watchdog/"):
+        return "governance_watchdog"
+    if rel.startswith("governance/"):
+        return "governance"
+    if rel.startswith("exports/trade_logs/"):
+        return "trade_logs"
+    if rel.startswith("exports/paper_broker_bridge/"):
+        return "paper_broker_bridge"
+    if rel.startswith("paper_trades_") or rel.startswith("live_orders_"):
+        return "top_level_trade_links"
+    if rel.startswith("data/"):
+        return "data"
+    return "other"
+
+
+def _fresh_overlay_rule_covers_source(rule: dict[str, Any], source_rel: str) -> bool:
+    rel = str(source_rel or "").strip()
+    if not rel:
+        return False
+    path_contains = _filter_values(rule.get("path_contains"))
+    path_not_contains = _filter_values(rule.get("path_not_contains"))
+    include_streams = set(_filter_values(rule.get("include_streams")))
+    exclude_streams = set(_filter_values(rule.get("exclude_streams")))
+    if path_contains and not any(token in rel for token in path_contains):
+        return False
+    if path_not_contains and any(token in rel for token in path_not_contains):
+        return False
+    stream = _overlay_source_stream(rel)
+    if include_streams and stream not in include_streams:
+        return False
+    if exclude_streams and stream in exclude_streams:
+        return False
+    return bool(path_contains or include_streams)
+
+
 def _sql_pending_pressure_lane(row: dict[str, Any], *, source_rel: str, shard_name: str) -> str:
     rel = str(source_rel or "").strip().lower()
     lane = str(row.get("ingestion_lane") or "").strip().lower()
@@ -3400,6 +3457,7 @@ def _sql_ingestion_pending_overlay(health_root: Path, now_utc: datetime) -> dict
     oldest_pending_age_seconds = 0.0
     max_source_age_seconds = 0.0
     fresh_path_contains: set[str] = set()
+    fresh_coverage_rules: list[dict[str, Any]] = []
 
     for path in _sql_ingestion_health_paths(health_root):
         payload = _load_json(path)
@@ -3443,14 +3501,29 @@ def _sql_ingestion_pending_overlay(health_root: Path, now_utc: datetime) -> dict
 
         fresh_source_count += 1
         filters = payload.get("filters") if isinstance(payload.get("filters"), dict) else {}
-        path_contains = [
-            str(item).strip()
-            for item in (filters.get("path_contains") if isinstance(filters.get("path_contains"), list) else [])
-            if str(item).strip()
-        ]
+        include_streams = _filter_values(filters.get("include_streams"))
+        exclude_streams = _filter_values(filters.get("exclude_streams"))
+        path_contains = _filter_values(filters.get("path_contains"))
+        path_not_contains = _filter_values(filters.get("path_not_contains"))
         if path_contains:
             fresh_path_contains.update(path_contains)
             source_summary["path_contains"] = path_contains[:16]
+        if include_streams:
+            source_summary["include_streams"] = include_streams[:16]
+        if exclude_streams:
+            source_summary["exclude_streams"] = exclude_streams[:16]
+        if path_not_contains:
+            source_summary["path_not_contains"] = path_not_contains[:16]
+        if path_contains or include_streams:
+            fresh_coverage_rules.append(
+                {
+                    "shard": shard_name,
+                    "path_contains": path_contains[:32],
+                    "path_not_contains": path_not_contains[:32],
+                    "include_streams": include_streams[:32],
+                    "exclude_streams": exclude_streams[:32],
+                }
+            )
         pending_lines_raw = _safe_int(sqlite.get("pending_lines"), 0)
         files_with_pending += _safe_int(sqlite.get("files_with_pending"), 0)
         inserted_rows += _safe_int(sqlite.get("inserted"), 0)
@@ -3580,6 +3653,7 @@ def _sql_ingestion_pending_overlay(health_root: Path, now_utc: datetime) -> dict
         "top_pending_files": top_pending_files[:10],
         "source_files": source_files[:32],
         "fresh_path_contains": sorted(fresh_path_contains)[:128],
+        "fresh_coverage_rules": fresh_coverage_rules[:32],
         "suppressed_overlay_pending_lines": int(suppressed_pending_total),
         "suppressed_overlay_sources": suppressed_rows[:16],
     }
@@ -3696,13 +3770,27 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, now_utc: datetime | None
         )
         if str(item).strip()
     }
+    fresh_overlay_rules = [
+        row
+        for row in (
+            sql_pending_overlay.get("fresh_coverage_rules")
+            if isinstance(sql_pending_overlay.get("fresh_coverage_rules"), list)
+            else []
+        )
+        if isinstance(row, dict)
+    ]
     raw_top_rows = backpressure.get("top_pending_files") if isinstance(backpressure.get("top_pending_files"), list) else []
-    raw_top_pending_lines = sum(_safe_int(row.get("pending_lines"), 0) for row in raw_top_rows if isinstance(row, dict))
-    covered_raw_top_pending_lines = sum(
-        _safe_int(row.get("pending_lines"), 0)
+    raw_top_covered_rows = [
+        row
         for row in raw_top_rows
-        if isinstance(row, dict) and str(row.get("source_rel") or "").strip() in fresh_overlay_paths
-    )
+        if isinstance(row, dict)
+        and (
+            any(token in str(row.get("source_rel") or "") for token in fresh_overlay_paths)
+            or any(_fresh_overlay_rule_covers_source(rule, str(row.get("source_rel") or "")) for rule in fresh_overlay_rules)
+        )
+    ]
+    raw_top_pending_lines = sum(_safe_int(row.get("pending_lines"), 0) for row in raw_top_rows if isinstance(row, dict))
+    covered_raw_top_pending_lines = sum(_safe_int(row.get("pending_lines"), 0) for row in raw_top_covered_rows)
     uncovered_raw_top_pending_lines = max(int(raw_top_pending_lines) - int(covered_raw_top_pending_lines), 0)
     raw_top_coverage_ratio = (
         float(covered_raw_top_pending_lines) / max(float(raw_top_pending_lines), 1.0)
@@ -3741,6 +3829,15 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, now_utc: datetime | None
         "tail_allowance_lines": int(focused_tail_allowance_lines),
         "overlay_newer_than_raw_backpressure": bool(overlay_newer_than_raw_backpressure),
         "covers_raw_pressure": bool(focused_empty_overlay_covers_raw_pressure),
+        "covered_top_files": [
+            {
+                "source_rel": str(row.get("source_rel") or ""),
+                "pending_lines": _safe_int(row.get("pending_lines"), 0),
+            }
+            for row in raw_top_covered_rows[:10]
+            if isinstance(row, dict)
+        ],
+        "coverage_policy": "fresh_empty_overlay_must_cover_raw_top_by_path_contains_or_include_streams",
     }
     sql_overlay_reconciles_broad_downward = bool(
         sql_pending_overlay.get("active", False)
@@ -3894,6 +3991,22 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, now_utc: datetime | None
             if overlay_fresh_empty_clear
             else "sql_ingestion_overlay_pressure"
         )
+        effective_top_pending_files = (
+            raw_live_backpressure.get("top_pending_files")
+            if isinstance(raw_live_backpressure.get("top_pending_files"), list)
+            else []
+        )
+        if focused_empty_overlay_covers_raw_pressure:
+            covered_rels = {
+                str(row.get("source_rel") or "")
+                for row in raw_top_covered_rows
+                if isinstance(row, dict) and str(row.get("source_rel") or "")
+            }
+            effective_top_pending_files = [
+                row
+                for row in effective_top_pending_files
+                if not (isinstance(row, dict) and str(row.get("source_rel") or "") in covered_rels)
+            ]
         effective_raw_live_backpressure = {
             **raw_live_backpressure,
             "core_pending_lines": int(core_pending_lines),
@@ -3905,6 +4018,7 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, now_utc: datetime | None
             "oldest_pending_age_seconds": round(float(oldest_age_seconds), 3),
             "source": effective_raw_live_source,
             "reconciled_from_raw_live": True,
+            "top_pending_files": effective_top_pending_files,
             "raw_live_estimate": {
                 "core_pending_lines": _safe_int(raw_live_backpressure.get("core_pending_lines"), 0),
                 "deferred_pending_lines": _safe_int(raw_live_backpressure.get("deferred_pending_lines"), 0),
@@ -3918,6 +4032,15 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, now_utc: datetime | None
                 ),
             },
         }
+        if focused_empty_overlay_covers_raw_pressure:
+            effective_raw_live_backpressure["overlay_reconciled_top_pending_files"] = [
+                {
+                    "source_rel": str(row.get("source_rel") or ""),
+                    "pending_lines": _safe_int(row.get("pending_lines"), 0),
+                }
+                for row in raw_top_covered_rows[:10]
+                if isinstance(row, dict)
+            ]
     backlog_truth: dict[str, Any] = {}
     raw_live_expansion_contract: dict[str, Any] = {}
     retention_debt_gb = _safe_float(health_gates.get("storage_pressure", {}).get("retention_debt_gb"), _safe_float(health_gates.get("retention_debt_gb"), 0.0))

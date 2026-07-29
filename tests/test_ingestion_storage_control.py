@@ -3396,6 +3396,133 @@ def test_ingestion_storage_control_reconciles_stale_raw_core_when_focused_empty_
     assert payload["sql_ingestion_pending_overlay"]["fresh_overlay_raw_top_coverage"]["uncovered_raw_top_pending_lines"] == 28
 
 
+def test_ingestion_storage_control_reconciles_stale_raw_core_when_stream_scoped_empty_overlay_covers_events(
+    tmp_path: Path,
+) -> None:
+    now = datetime(2026, 7, 29, 22, 35, tzinfo=timezone.utc)
+    health = tmp_path / "governance" / "health"
+    _write_json(
+        health / "ingestion_backpressure_latest.json",
+        {
+            "timestamp_utc": (now - timedelta(minutes=20)).isoformat(),
+            "pending_lines": 84,
+            "pending_lines_total": 84,
+            "pending_lines_deferred": 0,
+            "pending_lines_cold": 0,
+            "pending_lines_support_telemetry": 0,
+            "pending_lines_stale_stage": 0,
+            "pending_lines_threshold": 15000,
+            "oldest_pending_age_seconds": 1250.0,
+            "oldest_age_threshold_seconds": 240.0,
+            "overload": True,
+            "top_pending_files": [
+                {
+                    "source_rel": "governance/events/execution_lane_stale_skips_20260729.jsonl",
+                    "pending_lines": 80,
+                    "oldest_pending_age_seconds": 1250.0,
+                },
+                {
+                    "source_rel": "governance/events/auth_events_20260729.jsonl",
+                    "pending_lines": 3,
+                    "oldest_pending_age_seconds": 1249.0,
+                },
+                {
+                    "source_rel": "governance/events/premarket_token_guard_20260729.jsonl",
+                    "pending_lines": 1,
+                    "oldest_pending_age_seconds": 1248.0,
+                },
+            ],
+        },
+    )
+    _write_json(
+        health / "jsonl_sql_ingestion_health_governance_latest.json",
+        {
+            "timestamp_utc": now.isoformat(),
+            "filters": {"include_streams": ["governance_events", "governance"]},
+            "sqlite": {
+                "pending_lines": 0,
+                "oldest_uningested_age_seconds": 0.0,
+                "files_with_pending": 0,
+                "top_pending_files": [],
+                "invalid": 0,
+                "oversize_payloads": 0,
+                "ops_write_failures": 0,
+            },
+        },
+    )
+
+    payload = src.build_payload(tmp_path, now_utc=now)
+
+    coverage = payload["sql_ingestion_pending_overlay"]["fresh_overlay_raw_top_coverage"]
+    assert payload["backpressure"]["overlay_adjusted"] is True
+    assert payload["backpressure"]["core_pending_lines"] == 0
+    assert payload["backpressure"]["total_pending_lines"] == 0
+    assert coverage["covers_raw_pressure"] is True
+    assert coverage["covered_raw_top_pending_lines"] == 84
+    assert coverage["uncovered_raw_top_pending_lines"] == 0
+    assert payload["backpressure"]["effective_raw_live"]["overlay_reconciled_top_pending_files"][0]["source_rel"] == (
+        "governance/events/execution_lane_stale_skips_20260729.jsonl"
+    )
+    assert payload["backpressure"]["effective_raw_live"]["top_pending_files"] == []
+    assert payload["raw_live_expansion_contract"]["grade"] == "A+"
+    assert payload["raw_live_expansion_contract"]["active"] is False
+
+
+def test_ingestion_storage_control_does_not_reconcile_stale_raw_core_with_unrelated_stream_scope(
+    tmp_path: Path,
+) -> None:
+    now = datetime(2026, 7, 29, 22, 35, tzinfo=timezone.utc)
+    health = tmp_path / "governance" / "health"
+    _write_json(
+        health / "ingestion_backpressure_latest.json",
+        {
+            "timestamp_utc": (now - timedelta(minutes=20)).isoformat(),
+            "pending_lines": 4200,
+            "pending_lines_total": 4200,
+            "pending_lines_deferred": 0,
+            "pending_lines_cold": 0,
+            "pending_lines_support_telemetry": 0,
+            "pending_lines_stale_stage": 0,
+            "pending_lines_threshold": 15000,
+            "oldest_pending_age_seconds": 1250.0,
+            "oldest_age_threshold_seconds": 240.0,
+            "overload": True,
+            "top_pending_files": [
+                {
+                    "source_rel": "governance/events/execution_lane_stale_skips_20260729.jsonl",
+                    "pending_lines": 4200,
+                    "oldest_pending_age_seconds": 1250.0,
+                }
+            ],
+        },
+    )
+    _write_json(
+        health / "jsonl_sql_ingestion_health_trading_latest.json",
+        {
+            "timestamp_utc": now.isoformat(),
+            "filters": {"include_streams": ["decisions"]},
+            "sqlite": {
+                "pending_lines": 0,
+                "oldest_uningested_age_seconds": 0.0,
+                "files_with_pending": 0,
+                "top_pending_files": [],
+                "invalid": 0,
+                "oversize_payloads": 0,
+                "ops_write_failures": 0,
+            },
+        },
+    )
+
+    payload = src.build_payload(tmp_path, now_utc=now)
+
+    coverage = payload["sql_ingestion_pending_overlay"]["fresh_overlay_raw_top_coverage"]
+    assert payload["backpressure"]["overlay_adjusted"] is False
+    assert payload["backpressure"]["core_pending_lines"] == 4200
+    assert coverage["covers_raw_pressure"] is False
+    assert coverage["covered_raw_top_pending_lines"] == 0
+    assert payload["raw_live_expansion_contract"]["active"] is True
+
+
 def test_ingestion_storage_control_reconciles_stale_raw_age_when_locator_is_clear(tmp_path: Path) -> None:
     now = datetime(2026, 6, 5, 6, 15, tzinfo=timezone.utc)
     health = tmp_path / "governance" / "health"

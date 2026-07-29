@@ -1806,6 +1806,25 @@ def _effective_cycle_args(args: argparse.Namespace, overrides: dict[str, str]) -
     return argparse.Namespace(**values)
 
 
+def _apply_explicit_cycle_scope(args: argparse.Namespace, overrides: dict[str, str]) -> dict[str, str]:
+    scoped = dict(overrides)
+    explicit_shards = bool(getattr(args, "cli_shards_explicit", False))
+    requested = str(getattr(args, "shards", "") or "").strip()
+    if not explicit_shards or not requested:
+        return scoped
+    scoped["SQL_LINK_SERVICE_SHARDS"] = requested
+    for shard in _parse_csv(requested):
+        safe_name = str(shard).strip().lower().replace("-", "_")
+        if not safe_name:
+            continue
+        for suffix in ("PATH_CONTAINS", "PATH_NOT_CONTAINS"):
+            key = f"SQL_LINK_SERVICE_SHARD_{safe_name.upper()}_{suffix}"
+            raw = os.environ.get(key)
+            if raw is not None:
+                scoped[key] = str(raw)
+    return scoped
+
+
 def _merge_hot_cutoff_utc(days: int) -> str:
     if int(days) <= 0:
         return ""
@@ -3178,6 +3197,7 @@ def main() -> int:
     parser.add_argument("--once", action="store_true")
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args()
+    args.cli_shards_explicit = "--shards" in sys.argv[1:]
 
     shard_names = _parse_csv(_normalized_shard_config(args.shards))
     if not shard_names:
@@ -3237,7 +3257,7 @@ def main() -> int:
         ts = _now_utc()
         cycle_ts = time.time()
         active_request = _load_active_request(REQUEST_PATH)
-        request_overrides = _cycle_runtime_overrides(active_request)
+        request_overrides = _apply_explicit_cycle_scope(args, _cycle_runtime_overrides(active_request))
         cycle_args = _effective_cycle_args(args, request_overrides)
         cycle_shard_names = _parse_csv(_normalized_shard_config(str(cycle_args.shards or "")))
         if not cycle_shard_names:

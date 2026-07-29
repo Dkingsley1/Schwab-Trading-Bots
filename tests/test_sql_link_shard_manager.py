@@ -777,6 +777,55 @@ def test_effective_cycle_args_applies_live_request_env() -> None:
     assert effective.hot_retention_batch_size == 240000
 
 
+def test_explicit_cli_shards_override_broad_request_scope(monkeypatch) -> None:
+    args = shard_manager.argparse.Namespace(
+        interval_seconds=20,
+        link_mode="sqlite",
+        shards="governance",
+        cli_shards_explicit=True,
+        low_priority_merge_skip_gb=120.0,
+        merge_max_seconds_per_cycle=60.0,
+        shard_link_timeout_seconds=180,
+        preprocess_workers=1,
+        auto_wal_checkpoint=True,
+        wal_checkpoint_threshold_gb=2.0,
+        wal_checkpoint_trigger_growth_gb=1.5,
+        wal_checkpoint_trigger_rows=750000,
+        wal_checkpoint_min_interval_seconds=900,
+        wal_truncate_max_gb=8.0,
+        wal_checkpoint_mode="auto",
+        auto_hot_retention=True,
+        hot_retention_max_db_gb=12.0,
+        hot_retention_trigger_growth_gb=2.0,
+        hot_retention_trigger_rows=500000,
+        hot_retention_hot_days=3,
+        hot_retention_hot_hours=0,
+        hot_retention_batch_size=120000,
+        hot_retention_max_rows=1000000,
+        hot_retention_min_interval_seconds=180,
+    )
+    monkeypatch.setenv(
+        "SQL_LINK_SERVICE_SHARD_GOVERNANCE_PATH_CONTAINS",
+        "governance/events/execution_lane_stale_skips_20260729.jsonl",
+    )
+
+    scoped = shard_manager._apply_explicit_cycle_scope(
+        args,
+        {
+            "SQL_LINK_SERVICE_SHARDS": "health_fast,trading_fast,crypto_trading_fast,explanations,shadow_attribution",
+            "SQL_LINK_SERVICE_PREPROCESS_WORKERS": "7",
+        },
+    )
+    effective = shard_manager._effective_cycle_args(args, scoped)
+
+    assert scoped["SQL_LINK_SERVICE_SHARDS"] == "governance"
+    assert scoped["SQL_LINK_SERVICE_SHARD_GOVERNANCE_PATH_CONTAINS"] == (
+        "governance/events/execution_lane_stale_skips_20260729.jsonl"
+    )
+    assert effective.shards == "governance"
+    assert effective.preprocess_workers == 7
+
+
 def test_temporary_env_overrides_clears_stale_shard_path_filters(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setattr(shard_manager, "SHARD_DB_ROOT", tmp_path / "sql_link_shards")
     monkeypatch.setattr(shard_manager, "SHARD_STATE_ROOT", tmp_path / "state")
