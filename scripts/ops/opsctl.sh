@@ -1369,6 +1369,9 @@ case "$cmd" in
   promotion-autopilot|promotion-packet-autopilot|promotion-autopilot-packet)
     exec "$PY" "$PROJECT_ROOT/scripts/ops/promotion_autopilot_packet.py" "$@"
     ;;
+  promotion-pipeline|promotion-pipeline-refresh|promotion-evidence-pipeline)
+    exec "$PY" "$PROJECT_ROOT/scripts/ops/promotion_pipeline.py" "$@"
+    ;;
   promotion-quality-gate|promotion-gate|quality-gate)
     exec "$PY" "$PROJECT_ROOT/scripts/promotion_quality_gate.py" "$@"
     ;;

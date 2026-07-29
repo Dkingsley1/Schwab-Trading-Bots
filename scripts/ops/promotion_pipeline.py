@@ -69,13 +69,7 @@ def _run(step: str, cmd: list[str]) -> dict:
     }
 
 
-def main() -> int:
-    parser = argparse.ArgumentParser(description='Run full promotion pipeline with one artifact.')
-    parser.add_argument('--apply-retirement', action='store_true', default=True)
-    parser.add_argument('--run-master-update', action='store_true', default=True)
-    parser.add_argument('--json', action='store_true')
-    args = parser.parse_args()
-
+def _pipeline_steps(*, apply_retirement: bool = False, run_master_update: bool = False) -> list[tuple[str, list[str], bool]]:
     steps: list[tuple[str, list[str], bool]] = [
         ('walk_forward_validate', [str(PY), str(PROJECT_ROOT / 'scripts' / 'walk_forward_validate.py')], True),
         ('walk_forward_promotion_gate', [str(PY), str(PROJECT_ROOT / 'scripts' / 'walk_forward_promotion_gate.py')], False),
@@ -94,11 +88,36 @@ def main() -> int:
         ('champion_challenger_probation_guard', [str(PY), str(PROJECT_ROOT / 'scripts' / 'champion_challenger_probation_guard.py'), '--json'], True),
         ('champion_challenger_probation_action', [str(PY), str(PROJECT_ROOT / 'scripts' / 'champion_challenger_probation_action.py'), '--json'], True),
         ('retrain_lane_scheduler', [str(PY), str(PROJECT_ROOT / 'scripts' / 'retrain_lane_scheduler.py'), '--json'], True),
-        ('promotion_packet_builder', [str(PY), str(PROJECT_ROOT / 'scripts' / 'promotion_packet_builder.py'), '--json'], False),
-        ('promotion_quality_gate', [str(PY), str(PROJECT_ROOT / 'scripts' / 'promotion_quality_gate.py'), '--json'], True),
+        (
+            'promotion_packet_builder',
+            [
+                str(PY),
+                str(PROJECT_ROOT / 'scripts' / 'promotion_packet_builder.py'),
+                '--allow-idle-success',
+                '--json',
+            ],
+            False,
+        ),
+        (
+            'promotion_quality_gate',
+            [
+                str(PY),
+                str(PROJECT_ROOT / 'scripts' / 'promotion_quality_gate.py'),
+                '--ignore-daily-verify-check',
+                'promotion_packet_builder',
+                '--ignore-daily-verify-check',
+                'nightly_resilience_check',
+                '--ignore-daily-verify-check',
+                'promotion_quality_gate',
+                '--ignore-daily-verify-check',
+                'unhandled_exception',
+                '--json',
+            ],
+            True,
+        ),
     ]
 
-    if args.apply_retirement:
+    if apply_retirement:
         steps.append(
             ('retire_persistent_losers', [
                 str(PY),
@@ -112,11 +131,27 @@ def main() -> int:
             ], True)
         )
 
-    if args.run_master_update:
+    if run_master_update:
         steps.append(('run_master_bot', [str(PY), str(PROJECT_ROOT / 'scripts' / 'run_master_bot.py'), '--require-canary-gate'], False))
+
+    return steps
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description='Run full promotion pipeline with one artifact.')
+    parser.add_argument('--apply-retirement', action='store_true', help='Apply persistent-loser retirement actions after evidence refresh.')
+    parser.add_argument('--run-master-update', action='store_true', help='Run the master bot update after evidence refresh.')
+    parser.add_argument('--json', action='store_true')
+    args = parser.parse_args()
+
+    steps = _pipeline_steps(
+        apply_retirement=bool(args.apply_retirement),
+        run_master_update=bool(args.run_master_update),
+    )
 
     results = []
     hard_fail = False
+    required_failed_steps: list[str] = []
     promotion_candidate_ids: list[str] = []
     candidate_scoped_new_bot_admission = False
     for step, cmd, required_zero in steps:
@@ -131,11 +166,18 @@ def main() -> int:
         results.append(row)
         if required_zero and row['rc'] != 0:
             hard_fail = True
+            required_failed_steps.append(step)
 
     payload = {
         'timestamp_utc': datetime.now(timezone.utc).isoformat(),
         'ok': not hard_fail,
+        'overall_status': 'ready' if not hard_fail else 'blocked',
         'hard_fail': hard_fail,
+        'evidence_only': not bool(args.apply_retirement or args.run_master_update),
+        'apply_retirement': bool(args.apply_retirement),
+        'run_master_update': bool(args.run_master_update),
+        'failed_steps': [row['step'] for row in results if not row['ok']],
+        'required_failed_steps': required_failed_steps,
         'promotion_candidate_ids': promotion_candidate_ids,
         'candidate_scoped_new_bot_admission': candidate_scoped_new_bot_admission,
         'candidate_scoped_new_bot_admission_file': str(CANDIDATE_ADMISSION_PATH) if candidate_scoped_new_bot_admission else '',

@@ -46,3 +46,31 @@ def test_candidate_scoped_admission_command_falls_back_without_candidates(tmp_pa
 
     assert cmd == base_cmd
     assert candidate_ids == []
+
+
+def test_promotion_pipeline_defaults_to_evidence_only() -> None:
+    step_names = [
+        name
+        for name, _cmd, _required_zero in promotion_pipeline._pipeline_steps(
+            apply_retirement=False,
+            run_master_update=False,
+        )
+    ]
+
+    assert "promotion_packet_builder" in step_names
+    assert "promotion_quality_gate" in step_names
+    assert "retire_persistent_losers" not in step_names
+    assert "run_master_bot" not in step_names
+
+
+def test_promotion_pipeline_requires_explicit_mutation_steps() -> None:
+    step_names = [
+        name
+        for name, _cmd, _required_zero in promotion_pipeline._pipeline_steps(
+            apply_retirement=True,
+            run_master_update=True,
+        )
+    ]
+
+    assert "retire_persistent_losers" in step_names
+    assert "run_master_bot" in step_names
