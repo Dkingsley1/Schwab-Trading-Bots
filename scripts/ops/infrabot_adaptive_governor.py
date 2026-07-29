@@ -1717,6 +1717,9 @@ def _build_safety_guard(contract: dict[str, Any], registry: list[dict[str, Any]]
 
     if not training_launch_allowed:
         guardrails.append("training_launch_blocked_until_training_runtime_control_allows")
+    healing_contract = _self_awareness_healing_contract(project_root)
+    if bool(healing_contract.get("enabled")):
+        guardrails.append("self_healing_playbooks_define_retry_verify_and_hold_policy")
 
     return {
         "schema_version": SCHEMA_VERSION,
@@ -1734,6 +1737,84 @@ def _build_safety_guard(contract: dict[str, Any], registry: list[dict[str, Any]]
         "blocked_capability_ids": ordered_unique(blocked),
         "guardrails": guardrails,
         "need_count": int(contract.get("need_count") or 0),
+        "self_healing_playbook_contract": healing_contract,
+    }
+
+
+def _self_awareness_healing_contract(project_root: Path) -> dict[str, Any]:
+    payload = _health(project_root, "infrabot_library_self_awareness_control_latest.json")
+    healing = _as_dict(payload.get("self_healing_playbooks"))
+    playbooks = [row for row in _as_list(healing.get("playbooks")) if isinstance(row, dict)]
+    playbooks_by_lane = {str(row.get("lane") or ""): row for row in playbooks if str(row.get("lane") or "").strip()}
+    return {
+        "enabled": bool(healing.get("enabled", False)),
+        "grade": str(healing.get("grade") or ""),
+        "playbook_count": _safe_int(healing.get("playbook_count"), len(playbooks)),
+        "complete_playbook_count": _safe_int(healing.get("complete_playbook_count"), 0),
+        "all_playbooks_complete": bool(healing.get("all_playbooks_complete", False)),
+        "all_lanes_have_playbooks": bool(healing.get("all_lanes_have_playbooks", False)),
+        "all_needs_have_playbooks": bool(healing.get("all_needs_have_playbooks", False)),
+        "authority_safe": bool(healing.get("authority_safe", False))
+        and not bool(healing.get("live_execution_authority", True))
+        and not bool(healing.get("dependency_mutation_authority", True)),
+        "playbooks_by_lane": playbooks_by_lane,
+        "source_artifact": "governance/health/infrabot_library_self_awareness_control_latest.json",
+    }
+
+
+def _capability_healing_lane(capability: dict[str, Any]) -> str:
+    cap_id = str(capability.get("id") or "").lower()
+    if cap_id in {
+        "broker_auth_supervisor",
+        "global_halt_refresh",
+        "paper_ramp_guard",
+        "live_canary_readiness_contract",
+        "production_quality_control",
+        "production_quality_slo_guard",
+        "source_mutation_guard",
+        "production_flow_smoke",
+    }:
+        return "auth_live_lock"
+    if cap_id in {
+        "paper_profitability_control",
+        "paper_performance_refresh",
+        "paper_execution_truth_layer",
+        "runtime_paper_regression_guard",
+        "promotion_quality_gate",
+        "training_data_intake_labeling",
+        "training_labeling_intelligence",
+        "master_grandmaster_profitability_trainer",
+    }:
+        return "raw_profitability_recovery"
+    text = " ".join([cap_id, str(capability.get("title") or ""), " ".join(str(item) for item in _as_list(capability.get("owns")))]).lower()
+    if any(item in text for item in ("storage", "writer", "sql", "backpressure", "retention", "drain")):
+        return "storage_writer"
+    if any(item in text for item in ("profitability", "paper", "raw", "training_label", "grandmaster", "loss")):
+        return "raw_profitability_recovery"
+    if any(item in text for item in ("source", "provider", "collector", "market_explanation")):
+        return "source_truth"
+    if any(item in text for item in ("pressure", "runtime", "memory", "mlx", "library", "throttle", "fluidity")):
+        return "runtime_memory"
+    if any(item in text for item in ("auth", "broker", "halt", "canary", "execution", "ramp")):
+        return "auth_live_lock"
+    return "governance_regression"
+
+
+def _route_healing_context(capability: dict[str, Any], safety: dict[str, Any]) -> dict[str, Any]:
+    lane = _capability_healing_lane(capability)
+    contract = _as_dict(safety.get("self_healing_playbook_contract"))
+    playbook = _as_dict(_as_dict(contract.get("playbooks_by_lane")).get(lane))
+    return {
+        "lane": lane,
+        "playbook_id": playbook.get("playbook_id"),
+        "primary_capability": playbook.get("primary_capability"),
+        "max_attempts_per_incident": playbook.get("max_attempts_per_incident"),
+        "cooldown_seconds": playbook.get("cooldown_seconds"),
+        "verify_command": playbook.get("verify_command") or [],
+        "proof_artifacts": playbook.get("proof_artifacts") or [],
+        "hold_condition": playbook.get("hold_condition") or "",
+        "authority_boundary": playbook.get("authority_boundary") or "advisory_and_safe_repair_only_no_live_execution_authority",
+        "contract_ready": bool(contract.get("enabled")) and bool(contract.get("authority_safe")) and bool(playbook),
     }
 
 
@@ -1758,6 +1839,7 @@ def _route_policy(
 
     for cap in registry:
         cap_id = str(cap.get("id") or "")
+        healing_context = _route_healing_context(cap, safety)
         matching_needs = needs_by_capability.get(cap_id, [])
         matching_need_ids = [str(need.get("id") or "") for need in matching_needs]
         if not matching_needs:
@@ -1771,6 +1853,7 @@ def _route_policy(
                     "reason": "No active need currently targets this capability.",
                     "blocked_by": [],
                     "stop_when": "",
+                    "self_healing": healing_context,
                 }
             )
             continue
@@ -1813,6 +1896,7 @@ def _route_policy(
                 "reason": reason,
                 "blocked_by": ordered_unique(blocked_by),
                 "stop_when": stop_when,
+                "self_healing": healing_context,
             }
         )
 
@@ -1858,6 +1942,7 @@ def _route_policy(
                 "production_quality_slo_guard",
                 "operator_cockpit",
             ],
+            "uses_self_healing_playbooks": bool(_as_dict(safety.get("self_healing_playbook_contract")).get("enabled", False)),
         },
     }
 
@@ -1985,6 +2070,51 @@ def _active_cooldown(state: dict[str, Any], cap_id: str, now: datetime) -> dict[
     }
 
 
+def _routes_by_capability(payload: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    policy = _as_dict(payload.get("adaptive_policy_router"))
+    return {
+        str(row.get("capability_id") or ""): row
+        for row in _as_list(policy.get("routes"))
+        if isinstance(row, dict) and str(row.get("capability_id") or "").strip()
+    }
+
+
+def _self_healing_execution_gate(
+    state: dict[str, Any],
+    cap_id: str,
+    now: datetime,
+    healing_context: dict[str, Any],
+) -> dict[str, Any]:
+    cooldown = _active_cooldown(state, cap_id, now)
+    if bool(cooldown.get("active")):
+        cooldown["gate"] = "cooldown"
+        return cooldown
+
+    cap_state = _self_healing_capability_state(state, cap_id)
+    failure_count = _safe_int(cap_state.get("failure_count"), 0)
+    max_attempts = _safe_int(healing_context.get("max_attempts_per_incident"), 0)
+    if max_attempts <= 0 or failure_count < max_attempts:
+        return {"active": False}
+
+    last_seen = _parse_utc(cap_state.get("last_seen_utc"))
+    cooldown_seconds = max(_safe_int(healing_context.get("cooldown_seconds"), 0), 60)
+    incident_window_seconds = max(cooldown_seconds * max(max_attempts, 1), 3600)
+    if last_seen is not None and (now - last_seen).total_seconds() > incident_window_seconds:
+        return {"active": False, "reason": "self_healing_incident_window_elapsed"}
+
+    return {
+        "active": True,
+        "gate": "retry_budget",
+        "reason": "self_healing_retry_budget_exhausted",
+        "lane": healing_context.get("lane"),
+        "playbook_id": healing_context.get("playbook_id"),
+        "failure_count": failure_count,
+        "max_attempts_per_incident": max_attempts,
+        "hold_condition": healing_context.get("hold_condition") or "hold visible and escalate when retry budget is exhausted",
+        "requires_operator_attention": True,
+    }
+
+
 def _payload_applied(parsed: dict[str, Any]) -> bool:
     apply_result = _as_dict(parsed.get("apply_result"))
     write_result = _as_dict(parsed.get("write_result"))
@@ -2034,7 +2164,7 @@ def _classify_command_outcome(returncode: int | None, parsed: dict[str, Any], *,
     elif returncode not in {0, None} or status in BAD_STATUSES:
         outcome = "failed"
         retryable = True
-        budget_consuming = False
+        budget_consuming = returncode is not None
         success_like = False
     else:
         outcome = "advisory_no_apply"
@@ -2050,16 +2180,17 @@ def _classify_command_outcome(returncode: int | None, parsed: dict[str, Any], *,
     }
 
 
-def _cooldown_seconds_for(cap_id: str, outcome: str, failure_count: int) -> int:
+def _cooldown_seconds_for(cap_id: str, outcome: str, failure_count: int, healing_context: dict[str, Any] | None = None) -> int:
+    healing_cooldown = _safe_int(_as_dict(healing_context).get("cooldown_seconds"), 0)
     if outcome == "partial_success_blocked":
-        return 180
+        return max(180, healing_cooldown)
     if outcome == "timeout":
-        return min(3600, 900 * max(1, min(failure_count, 4)))
+        return min(3600, max(healing_cooldown, 900 * max(1, min(failure_count, 4))))
     if outcome == "blocked_no_apply":
         base = 1800 if cap_id == "external_backlog_drain_handoff" else 900
-        return min(7200, base * max(1, min(failure_count, 4)))
+        return min(7200, max(healing_cooldown, base * max(1, min(failure_count, 4))))
     if outcome == "failed":
-        return min(3600, 600 * max(1, min(failure_count, 4)))
+        return min(3600, max(healing_cooldown, 600 * max(1, min(failure_count, 4))))
     return 0
 
 
@@ -2071,25 +2202,36 @@ def _update_self_healing_state(
     command: list[str],
     classification: dict[str, Any],
     returncode: int | None,
+    healing_context: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    healing_context = _as_dict(healing_context)
     capabilities = _as_dict(state.setdefault("capabilities", {}))
     cap_state = _as_dict(capabilities.get(cap_id))
     outcome = str(classification.get("outcome") or "")
     success_like = bool(classification.get("success_like"))
     previous_failures = _safe_int(cap_state.get("failure_count"), 0)
-    failure_count = 0 if success_like and outcome != "partial_success_blocked" else previous_failures + (1 if bool(classification.get("retryable")) else 0)
-    cooldown_seconds = _cooldown_seconds_for(cap_id, outcome, failure_count)
+    budget_consumed = bool(classification.get("budget_consuming"))
+    consumes_retry_budget = bool(classification.get("retryable")) and budget_consumed
+    failure_count = 0 if success_like and outcome != "partial_success_blocked" else previous_failures + (1 if consumes_retry_budget else 0)
+    max_attempts = _safe_int(healing_context.get("max_attempts_per_incident"), 0)
+    retry_budget_exhausted = bool(max_attempts > 0 and failure_count >= max_attempts and consumes_retry_budget)
+    cooldown_seconds = _cooldown_seconds_for(cap_id, outcome, failure_count, healing_context)
     now = _utc_now()
     next_retry = now + timedelta(seconds=cooldown_seconds) if cooldown_seconds > 0 else None
     cap_state.update(
         {
             "capability_id": cap_id,
+            "lane": healing_context.get("lane"),
+            "playbook_id": healing_context.get("playbook_id"),
             "last_seen_utc": _iso_from_dt(now),
             "last_command": command,
             "last_returncode": returncode,
             "last_outcome": outcome,
             "last_summary": _as_dict(classification.get("summary")),
             "failure_count": failure_count,
+            "max_attempts_per_incident": max_attempts,
+            "retry_budget_exhausted": retry_budget_exhausted,
+            "hold_condition": healing_context.get("hold_condition") or "",
             "cooldown_seconds": cooldown_seconds,
             "cooldown_until_utc": _iso_from_dt(next_retry) if next_retry else "",
             "cooldown_reason": "self_healing_backoff_after_retryable_blocker" if cooldown_seconds else "",
@@ -2102,6 +2244,7 @@ def _update_self_healing_state(
         "mode": "adaptive_self_healing",
         "cooldown_blocks_repeat_failures": True,
         "blocked_no_apply_does_not_consume_repair_budget": True,
+        "playbook_retry_budget_enforced": True,
         "partial_success_blocks_get_short_backoff": True,
         "live_execution_authority": False,
     }
@@ -2126,6 +2269,7 @@ def _execute_safe_recommended(
     safety = _as_dict(payload.get("safety_guard"))
     recommended = [row for row in _as_list(policy.get("recommended_commands")) if isinstance(row, list)]
     allowed = _allowed_execution_commands(registry_rows, safety)
+    route_contexts = _routes_by_capability(payload)
     max_execute = max(int(max_execute_actions), 0)
     timeout = max(int(command_timeout_seconds), 30)
     env = os.environ.copy()
@@ -2142,6 +2286,7 @@ def _execute_safe_recommended(
     timed_out_count = 0
     skipped_count = 0
     cooldown_skipped_count = 0
+    retry_budget_skipped_count = 0
     for raw_command in recommended:
         command = [str(item) for item in raw_command]
         cap_id = allowed.get(tuple(command), "")
@@ -2155,17 +2300,22 @@ def _execute_safe_recommended(
                 }
             )
             continue
-        cooldown = _active_cooldown(self_healing_state, cap_id, now) if self_healing else {"active": False}
-        if bool(cooldown.get("active")):
+        route_context = _as_dict(route_contexts.get(cap_id))
+        healing_context = _as_dict(route_context.get("self_healing"))
+        healing_gate = _self_healing_execution_gate(self_healing_state, cap_id, now, healing_context) if self_healing else {"active": False}
+        if bool(healing_gate.get("active")):
             skipped_count += 1
-            cooldown_skipped_count += 1
+            if str(healing_gate.get("gate") or "") == "retry_budget":
+                retry_budget_skipped_count += 1
+            else:
+                cooldown_skipped_count += 1
             results.append(
                 {
                     "capability_id": cap_id,
                     "command": command,
                     "executed": False,
-                    "reason": "self_healing_cooldown_active",
-                    "self_healing": cooldown,
+                    "reason": str(healing_gate.get("reason") or "self_healing_gate_active"),
+                    "self_healing": healing_gate,
                 }
             )
             continue
@@ -2204,6 +2354,7 @@ def _execute_safe_recommended(
                     command=command,
                     classification=classification,
                     returncode=completed.returncode,
+                    healing_context=healing_context,
                 )
                 if self_healing
                 else {}
@@ -2219,6 +2370,7 @@ def _execute_safe_recommended(
                     "summary": _as_dict(classification.get("summary")),
                     "self_healing": {
                         "enabled": bool(self_healing),
+                        "playbook": healing_context,
                         "state": cap_state,
                     },
                     "stdout_tail": completed.stdout[-1200:],
@@ -2239,6 +2391,7 @@ def _execute_safe_recommended(
                     command=command,
                     classification=classification,
                     returncode=None,
+                    healing_context=healing_context,
                 )
                 if self_healing
                 else {}
@@ -2255,6 +2408,7 @@ def _execute_safe_recommended(
                     "classification": classification,
                     "self_healing": {
                         "enabled": bool(self_healing),
+                        "playbook": healing_context,
                         "state": cap_state,
                     },
                     "stdout_tail": str(exc.stdout or "")[-1200:],
@@ -2274,6 +2428,7 @@ def _execute_safe_recommended(
         "budget_consumed_count": budget_consumed_count,
         "skipped_count": skipped_count,
         "cooldown_skipped_count": cooldown_skipped_count,
+        "retry_budget_skipped_count": retry_budget_skipped_count,
         "failed_count": failed_count,
         "timed_out_count": timed_out_count,
         "live_execution_authority": False,

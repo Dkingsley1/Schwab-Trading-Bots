@@ -119,6 +119,56 @@ LANE_SENSORY_ARTIFACTS = {
         "governance/health/infrabot_adaptive_governor_latest.json",
     ],
 }
+LANE_HEALING_CAPABILITIES = {
+    "storage_writer": {
+        "primary_capability": "writer_cycle_coordinator",
+        "secondary_capabilities": ["storage_backpressure_autopilot", "stateful_storage_regression_guard"],
+        "verify_command": ["./scripts/ops/opsctl.sh", "ingestion-storage", "--json"],
+        "max_attempts": 1,
+        "cooldown_seconds": 300,
+        "allowed_under_pressure": True,
+    },
+    "raw_profitability_recovery": {
+        "primary_capability": "paper_profitability_control",
+        "secondary_capabilities": ["paper_performance_refresh", "master_grandmaster_profitability_trainer", "runtime_paper_regression_guard"],
+        "verify_command": ["./scripts/ops/opsctl.sh", "runtime-paper-regression-guard", "--json"],
+        "max_attempts": 2,
+        "cooldown_seconds": 600,
+        "allowed_under_pressure": False,
+    },
+    "source_truth": {
+        "primary_capability": "source_verification_autorefresh",
+        "secondary_capabilities": ["provider_mesh_refresh", "market_explanation_evidence"],
+        "verify_command": ["./scripts/ops/opsctl.sh", "source-verification", "--json"],
+        "max_attempts": 2,
+        "cooldown_seconds": 300,
+        "allowed_under_pressure": False,
+    },
+    "runtime_memory": {
+        "primary_capability": "pressure_relief_control",
+        "secondary_capabilities": ["runtime_throttle_control", "memory_pressure_intelligence"],
+        "verify_command": ["./scripts/ops/opsctl.sh", "runtime-throttle", "--json"],
+        "max_attempts": 2,
+        "cooldown_seconds": 240,
+        "allowed_under_pressure": True,
+    },
+    "governance_regression": {
+        "primary_capability": "adaptive_regression_guard",
+        "secondary_capabilities": ["runtime_paper_regression_guard", "grade_regression_guard", "production_quality_slo_guard"],
+        "verify_command": ["./scripts/ops/opsctl.sh", "grade-regression-guard", "--json"],
+        "max_attempts": 2,
+        "cooldown_seconds": 420,
+        "allowed_under_pressure": False,
+    },
+    "auth_live_lock": {
+        "primary_capability": "broker_auth_supervisor",
+        "secondary_capabilities": ["global_halt_refresh", "paper_ramp_guard", "production_quality_control"],
+        "verify_command": ["./scripts/ops/opsctl.sh", "production-readiness", "--json"],
+        "max_attempts": 1,
+        "cooldown_seconds": 300,
+        "allowed_under_pressure": True,
+    },
+}
 
 
 def _as_dict(raw: Any) -> dict[str, Any]:
@@ -571,6 +621,139 @@ def _need_with_reflex_route(need: dict[str, Any], nervous_system: dict[str, Any]
     return row
 
 
+def _reflex_by_lane_phase(nervous_system: dict[str, Any], lane: str, phase: str) -> dict[str, Any]:
+    for row in _as_list(nervous_system.get("reflexes")):
+        if not isinstance(row, dict):
+            continue
+        if str(row.get("lane") or "") == lane and str(row.get("phase") or "") == phase:
+            return row
+    return {}
+
+
+def _self_healing_playbooks(config: dict[str, Any], nervous_system: dict[str, Any], need_rows: list[dict[str, Any]]) -> dict[str, Any]:
+    healing_config = _as_dict(config.get("self_healing_contract"))
+    enabled = _bool(healing_config.get("enabled", True))
+    default_max_attempts = max(1, _safe_int(healing_config.get("default_max_attempts_per_incident"), 2))
+    default_cooldown = max(60, _safe_int(healing_config.get("default_cooldown_seconds"), 300))
+    lanes = _string_list(nervous_system.get("lanes"))
+    need_count_by_lane = Counter(
+        str(_as_dict(row.get("reflex_route")).get("lane") or row.get("reflex_lane") or row.get("owner") or "general_infrabot")
+        for row in need_rows
+        if isinstance(row, dict)
+    )
+    playbooks: list[dict[str, Any]] = []
+    for lane in lanes:
+        profile = dict(LANE_HEALING_CAPABILITIES.get(lane) or {})
+        repair_reflex = _reflex_by_lane_phase(nervous_system, lane, "repair")
+        refresh_reflex = _reflex_by_lane_phase(nervous_system, lane, "refresh")
+        verify_reflex = _reflex_by_lane_phase(nervous_system, lane, "verify")
+        owner_command = _as_list(repair_reflex.get("owner_command")) or _as_list(refresh_reflex.get("owner_command"))
+        verify_command = _as_list(profile.get("verify_command")) or _as_list(verify_reflex.get("owner_command")) or owner_command
+        proof_artifacts = ordered_unique(_string_list(verify_reflex.get("proof_artifacts")) or _string_list(repair_reflex.get("proof_artifacts")) or _lane_artifacts(lane))
+        cooldown = max(60, _safe_int(profile.get("cooldown_seconds"), default_cooldown))
+        max_attempts = max(1, _safe_int(profile.get("max_attempts"), default_max_attempts))
+        hold_condition = (
+            "stop automatic attempts, keep the issue visible, and escalate through the reflex target "
+            "when retry budget is exhausted, proof artifacts fail verification, or safety guard removes apply authority"
+        )
+        complete = bool(
+            enabled
+            and owner_command
+            and verify_command
+            and proof_artifacts
+            and str(repair_reflex.get("stop_condition") or verify_reflex.get("stop_condition") or "").strip()
+            and not bool(repair_reflex.get("live_execution_authority"))
+            and not bool(repair_reflex.get("dependency_mutation_authority"))
+        )
+        playbooks.append(
+            {
+                "playbook_id": f"{lane}.self_heal",
+                "lane": lane,
+                "active_need_count": int(need_count_by_lane.get(lane, 0)),
+                "primary_capability": str(profile.get("primary_capability") or lane),
+                "secondary_capabilities": _string_list(profile.get("secondary_capabilities")),
+                "owner_command": [str(part) for part in owner_command],
+                "verify_command": [str(part) for part in verify_command],
+                "proof_artifacts": proof_artifacts,
+                "max_attempts_per_incident": max_attempts,
+                "cooldown_seconds": cooldown,
+                "retry_backoff_seconds": [cooldown, min(cooldown * 2, 3600), min(cooldown * 4, 7200)][:max_attempts],
+                "allowed_under_pressure": bool(profile.get("allowed_under_pressure", False)),
+                "requires_single_writer_idle": lane == "storage_writer",
+                "stop_condition": str(repair_reflex.get("stop_condition") or verify_reflex.get("stop_condition") or ""),
+                "hold_condition": hold_condition,
+                "escalation_target": str(repair_reflex.get("escalation_target") or "infrabot_adaptive_governor"),
+                "proof_obligation": "verify_command exits cleanly and proof_artifacts show ready, guarded, or managed-visible state before another attempt is allowed",
+                "authority_boundary": "safe_repair_or_read_only_no_live_execution_no_dependency_mutation",
+                "live_execution_authority": False,
+                "dependency_mutation_authority": False,
+                "budget_consumption_policy": "consume_budget_only_after_exact_allowlisted_apply_command_runs_or_times_out",
+                "cooldown_policy": "backoff_after_retryable_blocked_timeout_or_failed_result",
+                "rollback_policy": "no source dependency or live-order rollback authority; publish hold/escalation if verification fails",
+                "complete": complete,
+                "grade": "A+" if complete else "F",
+            }
+        )
+    playbook_ids = [str(row.get("playbook_id") or "") for row in playbooks]
+    complete_count = sum(1 for row in playbooks if row.get("complete"))
+    by_lane = {str(row.get("lane") or ""): row for row in playbooks}
+    route_complete = all(
+        bool(by_lane.get(str(_as_dict(row.get("reflex_route")).get("lane") or row.get("reflex_lane") or row.get("owner") or "")))
+        for row in need_rows
+    )
+    authority_safe = bool(
+        all(not bool(row.get("live_execution_authority")) and not bool(row.get("dependency_mutation_authority")) for row in playbooks)
+    )
+    complete = bool(
+        enabled
+        and playbooks
+        and len(playbook_ids) == len(set(playbook_ids))
+        and complete_count == len(playbooks)
+        and route_complete
+        and authority_safe
+    )
+    return {
+        "enabled": enabled,
+        "mode": "bounded_self_healing_playbooks_v1",
+        "playbook_count": len(playbooks),
+        "complete_playbook_count": complete_count,
+        "unique_playbook_count": len(set(playbook_ids)),
+        "lane_count": len(lanes),
+        "all_playbook_ids_unique": len(playbook_ids) == len(set(playbook_ids)),
+        "all_lanes_have_playbooks": len(playbooks) == len(lanes),
+        "all_needs_have_playbooks": route_complete,
+        "all_playbooks_complete": complete_count == len(playbooks),
+        "authority_safe": authority_safe,
+        "max_attempts_default": default_max_attempts,
+        "cooldown_default_seconds": default_cooldown,
+        "live_execution_authority": False,
+        "dependency_mutation_authority": False,
+        "grade": "A+" if complete else "F",
+        "playbooks": playbooks,
+    }
+
+
+def _need_with_healing_playbook(need: dict[str, Any], healing: dict[str, Any]) -> dict[str, Any]:
+    lane = str(_as_dict(need.get("reflex_route")).get("lane") or need.get("reflex_lane") or need.get("owner") or "general_infrabot")
+    selected = next(
+        (row for row in _as_list(healing.get("playbooks")) if isinstance(row, dict) and str(row.get("lane") or "") == lane),
+        {},
+    )
+    row = dict(need)
+    row["healing_playbook"] = {
+        "playbook_id": selected.get("playbook_id"),
+        "lane": selected.get("lane", lane),
+        "primary_capability": selected.get("primary_capability"),
+        "max_attempts_per_incident": selected.get("max_attempts_per_incident"),
+        "cooldown_seconds": selected.get("cooldown_seconds"),
+        "verify_command": selected.get("verify_command") or [],
+        "proof_artifacts": selected.get("proof_artifacts") or [],
+        "hold_condition": selected.get("hold_condition") or "",
+        "authority_boundary": selected.get("authority_boundary") or "safe_repair_or_read_only_no_live_execution_no_dependency_mutation",
+    }
+    return row
+
+
 def _managed_dashboard_needs(project_root: Path, plan: dict[str, Any]) -> list[dict[str, Any]]:
     dashboard = _health(project_root, "runtime_gate_dashboard_latest.json")
     overall = _as_dict(dashboard.get("overall"))
@@ -679,6 +862,7 @@ def _quality_checks(
     library_scope: dict[str, Any],
     infrabot_plan: dict[str, Any],
     nervous_system: dict[str, Any],
+    self_healing: dict[str, Any],
     need_rows: list[dict[str, Any]],
     config: dict[str, Any],
 ) -> dict[str, bool]:
@@ -710,6 +894,14 @@ def _quality_checks(
         "autonomic_authority_safe": not bool(nervous_system.get("live_execution_authority", True))
         and not bool(nervous_system.get("dependency_mutation_authority", True))
         and _safe_int(nervous_system.get("incomplete_reflex_count"), 1) == 0,
+        "self_healing_playbooks_enabled": bool(self_healing.get("enabled", False)),
+        "self_healing_lane_coverage_complete": bool(self_healing.get("all_lanes_have_playbooks", False)),
+        "self_healing_playbooks_complete": bool(self_healing.get("all_playbooks_complete", False)),
+        "self_healing_playbook_ids_unique": bool(self_healing.get("all_playbook_ids_unique", False)),
+        "self_healing_need_playbooks_present": bool(self_healing.get("all_needs_have_playbooks", False)),
+        "self_healing_authority_safe": bool(self_healing.get("authority_safe", False))
+        and not bool(self_healing.get("live_execution_authority", True))
+        and not bool(self_healing.get("dependency_mutation_authority", True)),
     }
 
 
@@ -737,6 +929,8 @@ def _write_env_override(path: Path, payload: dict[str, Any]) -> bool:
         "INFRABOT_AUTONOMIC_REFLEX_MIN_PER_LANE": str(
             _safe_int(_as_dict(payload.get("autonomic_nervous_system")).get("minimum_reflexes_per_lane"), len(AUTONOMIC_REFLEX_PHASES))
         ),
+        "INFRABOT_SELF_HEALING_PLAYBOOKS_ENABLED": "1",
+        "INFRABOT_SELF_HEALING_PLAYBOOK_COUNT": str(_safe_int(_as_dict(payload.get("self_healing_playbooks")).get("playbook_count"), 0)),
         "INFRABOT_REPAIR_COMMAND_DEDUPE": "1",
         "INFRABOT_STORAGE_WRITER_MAX_PARALLEL": "1",
         "INFRABOT_NEEDS_COMMUNICATION_DEPTH": "owner_command_stop_condition_authority",
@@ -761,6 +955,7 @@ def render_markdown(payload: dict[str, Any]) -> str:
     library_scope = _as_dict(payload.get("library_upgrade_scope"))
     plan = _as_dict(payload.get("infrabot_efficiency_plan"))
     nervous = _as_dict(payload.get("autonomic_nervous_system"))
+    healing = _as_dict(payload.get("self_healing_playbooks"))
     lines = [
         "# Infrabot Library Self Awareness Control",
         "",
@@ -792,6 +987,13 @@ def render_markdown(payload: dict[str, Any]) -> str:
         f"- Reflexes per lane: `{nervous.get('minimum_reflexes_per_lane', 0)}`",
         f"- Authority boundary: `{nervous.get('authority_boundary', '')}`",
         "",
+        "## Self Healing Playbooks",
+        "",
+        f"- Grade: `{healing.get('grade', '')}`",
+        f"- Playbooks: `{healing.get('playbook_count', 0)}`",
+        f"- Complete: `{healing.get('complete_playbook_count', 0)}/{healing.get('playbook_count', 0)}`",
+        f"- Authority safe: `{healing.get('authority_safe', False)}`",
+        "",
         "## Needs Brief",
         "",
     ]
@@ -800,9 +1002,13 @@ def render_markdown(payload: dict[str, Any]) -> str:
             continue
         command = " ".join(str(part) for part in _as_list(need.get("safe_next_command"))) or "none"
         route = _as_dict(need.get("reflex_route"))
+        playbook = _as_dict(need.get("healing_playbook"))
         lines.append(f"- `{need.get('status', '')}` `{need.get('need_id', '')}` owner=`{need.get('owner', '')}` urgency=`{need.get('urgency', '')}`")
         lines.append(f"  command: `{command}`")
         lines.append(f"  reflex: `{route.get('reflex_id', '')}` escalate=`{route.get('escalation_target', '')}`")
+        lines.append(
+            f"  healing: `{playbook.get('playbook_id', '')}` attempts=`{playbook.get('max_attempts_per_incident', '')}` cooldown=`{playbook.get('cooldown_seconds', '')}`"
+        )
         lines.append(f"  stop: {need.get('stop_condition', '')}")
     lines.extend(["", "## Control Contract", "", "- Live execution authority: `false`", "- Dependency mutation during soak: `false`", "- Raw profitability truth remains external and evidence-based."])
     return "\n".join(lines).rstrip() + "\n"
@@ -827,6 +1033,8 @@ def build_payload(
         _need_with_reflex_route(row, nervous_system)
         for row in (_managed_dashboard_needs(project_root, infrabot_plan) + _artifact_needs(artifact_rows, infrabot_plan))
     ]
+    self_healing = _self_healing_playbooks(config, nervous_system, need_rows)
+    need_rows = [_need_with_healing_playbook(row, self_healing) for row in need_rows]
     need_rows = sorted(
         need_rows,
         key=lambda row: (
@@ -835,7 +1043,7 @@ def build_payload(
             str(row.get("need_id") or ""),
         ),
     )
-    quality_checks = _quality_checks(artifact_rows, library_scope, infrabot_plan, nervous_system, need_rows, config)
+    quality_checks = _quality_checks(artifact_rows, library_scope, infrabot_plan, nervous_system, self_healing, need_rows, config)
     ready_quality_count = sum(1 for value in quality_checks.values() if value)
     blockers = ordered_unique(
         [
@@ -864,6 +1072,7 @@ def build_payload(
         "library_upgrade_scope": library_scope,
         "infrabot_efficiency_plan": infrabot_plan,
         "autonomic_nervous_system": nervous_system,
+        "self_healing_playbooks": self_healing,
         "self_awareness_need_brief": need_rows,
         "communications_contract": _as_dict(config.get("communication_contract")),
         "control_contract": {
@@ -877,6 +1086,9 @@ def build_payload(
             "autonomic_nervous_system_enabled": bool(nervous_system.get("enabled", False)),
             "autonomic_reflex_count": nervous_system.get("reflex_count"),
             "autonomic_reflex_grade": nervous_system.get("grade"),
+            "self_healing_playbooks_enabled": bool(self_healing.get("enabled", False)),
+            "self_healing_playbook_count": self_healing.get("playbook_count"),
+            "self_healing_playbook_grade": self_healing.get("grade"),
         },
         "recommended_actions": ordered_unique(
             [
@@ -885,6 +1097,7 @@ def build_payload(
                 "./scripts/ops/opsctl.sh mlx-intelligence-router --apply --json",
                 "./scripts/ops/opsctl.sh infrabot-library-self-awareness --apply --json",
                 "use autonomic_nervous_system.reflexes to route degradation through sense/classify/refresh/repair/verify/escalate phases",
+                "use self_healing_playbooks.playbooks for retry budgets, verification commands, proof artifacts, and safe hold escalation",
                 "keep dependency installs in a maintenance window; this control only routes and stages during soak",
                 "run the first safe_next_command for any hard_blocker need, then refresh this control",
             ]

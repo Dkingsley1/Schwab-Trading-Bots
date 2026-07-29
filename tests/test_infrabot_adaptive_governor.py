@@ -120,6 +120,56 @@ def _base_ready_health(project_root: Path) -> Path:
     return health
 
 
+def _write_self_healing_playbook_fixture(health: Path) -> None:
+    lanes = {
+        "storage_writer": ("storage_writer.self_heal", 1, ["governance/health/ingestion_storage_control_latest.json"]),
+        "runtime_memory": ("runtime_memory.self_heal", 2, ["governance/health/runtime_throttle_control_latest.json"]),
+        "raw_profitability_recovery": ("raw_profitability_recovery.self_heal", 2, ["governance/health/paper_profitability_control_latest.json"]),
+        "source_truth": ("source_truth.self_heal", 2, ["governance/health/source_verification_latest.json"]),
+        "governance_regression": ("governance_regression.self_heal", 2, ["governance/health/grade_regression_guard_latest.json"]),
+        "auth_live_lock": ("auth_live_lock.self_heal", 1, ["governance/health/production_readiness_control_latest.json"]),
+    }
+    playbooks = []
+    for lane, (playbook_id, max_attempts, proof_artifacts) in lanes.items():
+        playbooks.append(
+            {
+                "playbook_id": playbook_id,
+                "lane": lane,
+                "primary_capability": lane,
+                "owner_command": ["./scripts/ops/opsctl.sh", "system-needs", "--json"],
+                "verify_command": ["./scripts/ops/opsctl.sh", "system-needs", "--json"],
+                "proof_artifacts": proof_artifacts,
+                "max_attempts_per_incident": max_attempts,
+                "cooldown_seconds": 300,
+                "hold_condition": "hold visible and escalate when retry budget is exhausted",
+                "authority_boundary": "safe_repair_or_read_only_no_live_execution_no_dependency_mutation",
+                "live_execution_authority": False,
+                "dependency_mutation_authority": False,
+                "complete": True,
+            }
+        )
+    _write_json(
+        health / "infrabot_library_self_awareness_control_latest.json",
+        {
+            "overall_status": "ready",
+            "ok": True,
+            "self_healing_playbooks": {
+                "enabled": True,
+                "grade": "A+",
+                "playbook_count": len(playbooks),
+                "complete_playbook_count": len(playbooks),
+                "all_playbooks_complete": True,
+                "all_lanes_have_playbooks": True,
+                "all_needs_have_playbooks": True,
+                "authority_safe": True,
+                "live_execution_authority": False,
+                "dependency_mutation_authority": False,
+                "playbooks": playbooks,
+            },
+        },
+    )
+
+
 def test_infrabot_adaptive_governor_routes_pressure_and_blocks_broad_fanout(tmp_path: Path) -> None:
     project_root = tmp_path / "project"
     health = _base_ready_health(project_root)
@@ -322,6 +372,45 @@ def test_infrabot_adaptive_governor_routes_broker_auth_self_heal_before_paper_ra
     assert routes["runtime_paper_regression_guard"]["action"] == "advisory_only"
 
 
+def test_infrabot_adaptive_governor_routes_include_self_healing_playbooks(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    health = _base_ready_health(project_root)
+    _write_self_healing_playbook_fixture(health)
+    _write_json(
+        health / "ingestion_storage_control_latest.json",
+        {"overall_status": "degraded", "backpressure": {"total_pending_lines": 15000}, "storage": {"retention_debt_gb": 1.0}},
+    )
+    _write_json(
+        health / "live_canary_readiness_contract_latest.json",
+        {
+            "overall_status": "blocked",
+            "live_canary_money_ready": False,
+            "blockers": ["paper_ramp_not_ready"],
+        },
+    )
+
+    payload = infrabot_adaptive_governor.build_payload(project_root, max_actions=8)
+
+    safety_contract = payload["safety_guard"]["self_healing_playbook_contract"]
+    routes = {row["capability_id"]: row for row in payload["adaptive_policy_router"]["routes"]}
+    assert safety_contract["enabled"] is True
+    assert safety_contract["grade"] == "A+"
+    assert safety_contract["authority_safe"] is True
+    assert payload["adaptive_policy_router"]["integration_contract"]["uses_self_healing_playbooks"] is True
+
+    storage_route = routes["storage_backpressure_autopilot"]
+    assert storage_route["self_healing"]["lane"] == "storage_writer"
+    assert storage_route["self_healing"]["playbook_id"] == "storage_writer.self_heal"
+    assert storage_route["self_healing"]["max_attempts_per_incident"] == 1
+    assert storage_route["self_healing"]["cooldown_seconds"] == 300
+    assert storage_route["self_healing"]["proof_artifacts"] == ["governance/health/ingestion_storage_control_latest.json"]
+    assert storage_route["self_healing"]["hold_condition"]
+    assert storage_route["self_healing"]["contract_ready"] is True
+    assert routes["paper_ramp_guard"]["self_healing"]["lane"] == "auth_live_lock"
+    assert routes["paper_ramp_guard"]["self_healing"]["playbook_id"] == "auth_live_lock.self_heal"
+    assert routes["live_canary_readiness_contract"]["self_healing"]["lane"] == "auth_live_lock"
+
+
 def test_infrabot_adaptive_governor_routes_cleanup_handoff_specialists(tmp_path: Path) -> None:
     project_root = tmp_path / "project"
     health = _base_ready_health(project_root)
@@ -461,3 +550,53 @@ def test_safe_repair_classifies_ok_protective_tightening_as_success() -> None:
     assert classification["outcome"] == "success"
     assert classification["success_like"] is True
     assert classification["retryable"] is False
+
+
+def test_self_healing_retry_budget_uses_playbook_and_ignores_blocked_no_apply(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    state: dict = {"capabilities": {}}
+    healing_context = {
+        "lane": "storage_writer",
+        "playbook_id": "storage_writer.self_heal",
+        "max_attempts_per_incident": 1,
+        "cooldown_seconds": 300,
+        "hold_condition": "hold visible and escalate when retry budget is exhausted",
+    }
+    command = ["./scripts/ops/opsctl.sh", "storage-backpressure-autopilot", "--apply", "--quick-bounded", "--json"]
+
+    blocked = infrabot_adaptive_governor._classify_command_outcome(0, {"overall_status": "blocked"})
+    blocked_state = infrabot_adaptive_governor._update_self_healing_state(
+        project_root,
+        state,
+        cap_id="storage_backpressure_autopilot",
+        command=command,
+        classification=blocked,
+        returncode=0,
+        healing_context=healing_context,
+    )
+    assert blocked_state["failure_count"] == 0
+    assert blocked_state["retry_budget_exhausted"] is False
+
+    failed = infrabot_adaptive_governor._classify_command_outcome(1, {})
+    failed_state = infrabot_adaptive_governor._update_self_healing_state(
+        project_root,
+        state,
+        cap_id="storage_backpressure_autopilot",
+        command=command,
+        classification=failed,
+        returncode=1,
+        healing_context=healing_context,
+    )
+    assert failed_state["failure_count"] == 1
+    assert failed_state["retry_budget_exhausted"] is True
+    state["capabilities"]["storage_backpressure_autopilot"]["cooldown_until_utc"] = ""
+
+    gate = infrabot_adaptive_governor._self_healing_execution_gate(
+        state,
+        "storage_backpressure_autopilot",
+        infrabot_adaptive_governor._utc_now(),
+        healing_context,
+    )
+    assert gate["active"] is True
+    assert gate["gate"] == "retry_budget"
+    assert gate["reason"] == "self_healing_retry_budget_exhausted"

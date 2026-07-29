@@ -246,6 +246,21 @@
     "needs_brief_must_include_reflex_route": true,
     "operator_output_policy": "show_reflex_id_escalation_target_cooldown_and_proof_artifacts_for_each_need"
   },
+  "self_healing_contract": {
+    "enabled": true,
+    "mode": "bounded_lane_playbooks_with_verify_then_hold",
+    "default_max_attempts_per_incident": 2,
+    "default_cooldown_seconds": 300,
+    "consume_budget_only_after_exact_allowlisted_apply": true,
+    "blocked_no_apply_does_not_consume_budget": true,
+    "requires_verify_command": true,
+    "requires_proof_artifacts": true,
+    "requires_hold_condition": true,
+    "requires_escalation_target": true,
+    "live_execution_authority": false,
+    "dependency_mutation_allowed_during_soak": false,
+    "operator_output_policy": "show_playbook_id_attempt_budget_cooldown_verify_command_proof_artifacts_and_hold_condition"
+  },
   "communication_contract": {
     "required_fields": ["owner", "symptom", "why_it_matters", "safe_next_command", "stop_condition", "authority_boundary", "urgency", "soak_impact"],
     "status_language": "distinguish_hard_blocker_from_managed_soak_advisory",

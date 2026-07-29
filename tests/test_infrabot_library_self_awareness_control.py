@@ -177,6 +177,14 @@ def test_ready_fixture_is_a_plus_and_does_not_mutate_dependencies(tmp_path: Path
         for need in payload["self_awareness_need_brief"]
         for route in [need["reflex_route"]]
     )
+    healing = payload["self_healing_playbooks"]
+    assert healing["grade"] == "A+"
+    assert healing["playbook_count"] == nervous["lane_count"]
+    assert healing["complete_playbook_count"] == healing["playbook_count"]
+    assert healing["all_needs_have_playbooks"] is True
+    assert healing["authority_safe"] is True
+    assert payload["quality_checks"]["self_healing_playbooks_complete"] is True
+    assert all(need["healing_playbook"]["playbook_id"] for need in payload["self_awareness_need_brief"])
 
 
 def test_missing_library_router_is_a_hard_blocker(tmp_path: Path) -> None:
@@ -193,6 +201,8 @@ def test_missing_library_router_is_a_hard_blocker(tmp_path: Path) -> None:
     assert hard_needs[0]["authority_boundary"] == "safe_repair_or_read_only_no_live_execution_no_dependency_mutation"
     assert hard_needs[0]["reflex_route"]["phase"] == "repair"
     assert hard_needs[0]["reflex_route"]["proof_artifacts"]
+    assert hard_needs[0]["healing_playbook"]["verify_command"]
+    assert hard_needs[0]["healing_playbook"]["hold_condition"]
 
 
 def test_autonomic_reflex_matrix_covers_each_efficiency_lane(tmp_path: Path) -> None:
@@ -217,6 +227,33 @@ def test_autonomic_reflex_matrix_covers_each_efficiency_lane(tmp_path: Path) -> 
     storage_reflexes = [row for row in nervous["reflexes"] if row["lane"] == "storage_writer"]
     assert storage_reflexes
     assert all(row["max_parallel"] == 1 for row in storage_reflexes)
+
+
+def test_self_healing_playbooks_define_bounded_verify_then_hold_policy(tmp_path: Path) -> None:
+    _write_required_health(tmp_path)
+
+    payload = control.build_payload(tmp_path, config_path=PROJECT_ROOT / "config" / "infrabot_library_self_awareness_v1.json")
+    healing = payload["self_healing_playbooks"]
+    playbooks = healing["playbooks"]
+
+    assert healing["grade"] == "A+"
+    assert healing["playbook_count"] >= 6
+    assert healing["unique_playbook_count"] == healing["playbook_count"]
+    assert healing["all_lanes_have_playbooks"] is True
+    assert healing["all_playbooks_complete"] is True
+    assert healing["live_execution_authority"] is False
+    assert healing["dependency_mutation_authority"] is False
+    assert all(row["owner_command"] for row in playbooks)
+    assert all(row["verify_command"] for row in playbooks)
+    assert all(row["proof_artifacts"] for row in playbooks)
+    assert all(row["max_attempts_per_incident"] >= 1 for row in playbooks)
+    assert all(row["cooldown_seconds"] >= 60 for row in playbooks)
+    assert all(row["hold_condition"] for row in playbooks)
+    assert all(row["budget_consumption_policy"] == "consume_budget_only_after_exact_allowlisted_apply_command_runs_or_times_out" for row in playbooks)
+    storage = next(row for row in playbooks if row["lane"] == "storage_writer")
+    assert storage["max_attempts_per_incident"] == 1
+    assert storage["requires_single_writer_idle"] is True
+    assert storage["primary_capability"] == "writer_cycle_coordinator"
 
 
 def test_honest_degraded_dashboard_with_visible_attention_is_ready(tmp_path: Path) -> None:
