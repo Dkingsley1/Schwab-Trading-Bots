@@ -3985,6 +3985,7 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, now_utc: datetime | None
             sql_pending_overlay["clear_overlay_reconciled_stale_raw_age"] = True
     effective_raw_live_source = "raw_live_backpressure"
     effective_raw_live_backpressure = raw_live_backpressure
+    effective_line_estimation = line_estimation
     if sql_overlay_adjusted and not bool(overlay_decay.get("should_decay", False)):
         effective_raw_live_source = (
             "fresh_empty_sql_ingestion_overlay"
@@ -4007,6 +4008,33 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, now_utc: datetime | None
                 for row in effective_top_pending_files
                 if not (isinstance(row, dict) and str(row.get("source_rel") or "") in covered_rels)
             ]
+        effective_top_deferred_pending_files = (
+            raw_live_backpressure.get("top_deferred_pending_files")
+            if isinstance(raw_live_backpressure.get("top_deferred_pending_files"), list)
+            else []
+        )
+        effective_top_support_pending_files = (
+            raw_live_backpressure.get("top_support_telemetry_pending_files")
+            if isinstance(raw_live_backpressure.get("top_support_telemetry_pending_files"), list)
+            else []
+        )
+        if sql_overlay_reconciles_broad_downward:
+            effective_top_pending_files = []
+            effective_top_deferred_pending_files = []
+            effective_top_support_pending_files = []
+            effective_line_estimation = {
+                **line_estimation,
+                "raw_sparse_large_line_files": _safe_int(line_estimation.get("sparse_large_line_files"), 0),
+                "raw_sparse_large_line_pending_lines": _safe_int(line_estimation.get("sparse_large_line_pending_lines"), 0),
+                "raw_sparse_large_line_pending_bytes": _safe_int(line_estimation.get("sparse_large_line_pending_bytes"), 0),
+                "sparse_large_line_files": 0,
+                "sparse_large_line_pending_lines": 0,
+                "sparse_large_line_bytes": 0,
+                "sparse_large_line_pending_bytes": 0,
+                "sparse_large_line_active": False,
+                "reconciled_by_sql_overlay": True,
+                "reconciliation_source": "broad_sql_overlay_downward",
+            }
         effective_raw_live_backpressure = {
             **raw_live_backpressure,
             "core_pending_lines": int(core_pending_lines),
@@ -4019,6 +4047,9 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, now_utc: datetime | None
             "source": effective_raw_live_source,
             "reconciled_from_raw_live": True,
             "top_pending_files": effective_top_pending_files,
+            "top_deferred_pending_files": effective_top_deferred_pending_files,
+            "top_support_telemetry_pending_files": effective_top_support_pending_files,
+            "line_estimation": effective_line_estimation,
             "raw_live_estimate": {
                 "core_pending_lines": _safe_int(raw_live_backpressure.get("core_pending_lines"), 0),
                 "deferred_pending_lines": _safe_int(raw_live_backpressure.get("deferred_pending_lines"), 0),
@@ -4041,6 +4072,10 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, now_utc: datetime | None
                 for row in raw_top_covered_rows[:10]
                 if isinstance(row, dict)
             ]
+        if sql_overlay_reconciles_broad_downward:
+            effective_raw_live_backpressure["overlay_reconciled_top_pending_policy"] = (
+                "broad_sql_overlay_downward_reconciliation_clears_stale_raw_diagnostic_top_rows"
+            )
     backlog_truth: dict[str, Any] = {}
     raw_live_expansion_contract: dict[str, Any] = {}
     retention_debt_gb = _safe_float(health_gates.get("storage_pressure", {}).get("retention_debt_gb"), _safe_float(health_gates.get("retention_debt_gb"), 0.0))
@@ -4295,7 +4330,11 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, now_utc: datetime | None
         }
         effective_raw_live_source = f"{effective_raw_live_source}+managed_support_overlay_pressure"
 
-    backlog_truth_raw_live = effective_raw_live_backpressure if managed_support_overlay_backlog else raw_live_backpressure
+    backlog_truth_raw_live = (
+        effective_raw_live_backpressure
+        if managed_support_overlay_backlog or (sql_overlay_adjusted and sql_overlay_reconciles_downward)
+        else raw_live_backpressure
+    )
     backlog_truth = _backlog_truth_reconciliation(
         raw_live_backpressure=backlog_truth_raw_live,
         sql_pending_overlay=sql_pending_overlay,
@@ -4469,7 +4508,7 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, now_utc: datetime | None
         top_actions.append("quarantine invalid or oversize SQL ingestion rows across all shards before replay drift grows")
     if _safe_int(sql_pending_overlay.get("ops_write_failures"), 0) > 0:
         top_actions.append("repair SQL ingestion ops side-channel writes so drain telemetry stays current")
-    if bool(line_estimation.get("sparse_large_line_active", False)):
+    if bool(effective_line_estimation.get("sparse_large_line_active", False)):
         top_actions.append(
             "use the sparse-large-line decision drainer profile so giant JSONL payload rows drain by bytes instead of fake line pressure"
         )
@@ -4528,7 +4567,7 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, now_utc: datetime | None
         target_total_drain_minutes=target_total_drain_minutes,
         throughput_rows_per_second=throughput_rows_per_second,
         merged_rows_this_cycle=merged_rows_this_cycle,
-        line_estimation=line_estimation,
+        line_estimation=effective_line_estimation,
         sql_pending_overlay=sql_pending_overlay,
         sql_service=sql_service,
         route_drift=route_drift,
@@ -4572,7 +4611,7 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, now_utc: datetime | None
         route_verification_state=route_verification_state,
         route_verification=route_verification,
         unresolved_split_brain_conflicts=unresolved_split_brain_conflicts,
-        line_estimation=line_estimation,
+        line_estimation=effective_line_estimation,
         total_pending_lines=total_pending_lines,
         core_pending_lines=core_pending_lines,
         retention_debt_gb=retention_debt_gb,

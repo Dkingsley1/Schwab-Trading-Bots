@@ -3326,6 +3326,91 @@ def test_ingestion_storage_control_uses_fresh_overlay_to_reconcile_stale_raw_pre
     assert payload["backlog_truth"]["authoritative_mode"] == "overlay_fresh_shard_level"
 
 
+def test_ingestion_storage_control_broad_empty_overlay_clears_stale_raw_top_rows_for_grades(tmp_path: Path) -> None:
+    now = datetime(2026, 7, 29, 22, 55, tzinfo=timezone.utc)
+    health = tmp_path / "governance" / "health"
+    _write_json(
+        health / "ingestion_backpressure_latest.json",
+        {
+            "timestamp_utc": (now - timedelta(minutes=3)).isoformat(),
+            "pending_lines": 11256,
+            "pending_lines_total": 1307942,
+            "pending_lines_deferred": 1296686,
+            "pending_lines_cold": 0,
+            "pending_lines_support_telemetry": 2,
+            "pending_lines_stale_stage": 0,
+            "pending_lines_threshold": 15000,
+            "oldest_pending_age_seconds": 72.212,
+            "oldest_age_threshold_seconds": 240.0,
+            "overload": False,
+            "line_estimation": {
+                "sparse_large_line_files": 6,
+                "sparse_large_line_pending_lines": 323,
+                "sparse_large_line_pending_bytes": 302912027,
+                "sparse_large_line_active": True,
+            },
+            "top_pending_files": [
+                {
+                    "source_rel": "governance/events/signal_generation_20260729.jsonl",
+                    "pending_lines": 7181,
+                    "oldest_pending_age_seconds": 0.0,
+                },
+                {
+                    "source_rel": "decisions/shadow_swing_aggressive_equities/trade_decisions_20260729.jsonl",
+                    "pending_lines": 640,
+                    "oldest_pending_age_seconds": 72.212,
+                },
+            ],
+            "top_deferred_pending_files": [
+                {
+                    "source_rel": "governance/channels/ingress/swing_aggressive_equities_schwab/ingress_20260729.jsonl",
+                    "pending_lines": 625,
+                    "oldest_pending_age_seconds": 72.901,
+                },
+                {
+                    "source_rel": "governance/channels/runtime/swing_aggressive_equities_schwab/runtime_20260729.jsonl",
+                    "pending_lines": 627,
+                    "oldest_pending_age_seconds": 66.766,
+                },
+            ],
+        },
+    )
+    _write_json(
+        health / "jsonl_sql_ingestion_health_governance_latest.json",
+        {
+            "timestamp_utc": now.isoformat(),
+            "filters": {"include_streams": ["governance_events", "governance", "decisions", "data"]},
+            "sqlite": {
+                "pending_lines": 0,
+                "oldest_uningested_age_seconds": 0.0,
+                "files_with_pending": 0,
+                "top_pending_files": [],
+                "invalid": 0,
+                "oversize_payloads": 0,
+                "ops_write_failures": 0,
+            },
+        },
+    )
+
+    payload = src.build_payload(tmp_path, now_utc=now)
+
+    assert payload["backpressure"]["overlay_adjusted"] is True
+    assert payload["backpressure"]["core_pending_lines"] == 0
+    assert payload["backpressure"]["total_pending_lines"] == 0
+    assert payload["backpressure"]["effective_raw_live"]["top_pending_files"] == []
+    assert payload["backpressure"]["effective_raw_live"]["top_deferred_pending_files"] == []
+    assert payload["backpressure"]["effective_raw_live"]["line_estimation"]["sparse_large_line_active"] is False
+    assert payload["backpressure"]["effective_raw_live"]["line_estimation"]["raw_sparse_large_line_pending_bytes"] == 302912027
+    assert payload["backpressure"]["effective_raw_live"]["overlay_reconciled_top_pending_policy"] == (
+        "broad_sql_overlay_downward_reconciliation_clears_stale_raw_diagnostic_top_rows"
+    )
+    assert payload["backlog_truth"]["raw_live"]["grade"] == "A+"
+    assert payload["raw_live_expansion_contract"]["grade"] == "A+"
+    assert payload["raw_live_expansion_contract"]["active"] is False
+    assert payload["backlog_relief_contract"]["overall_grade"] == "A+"
+    assert payload["backlog_relief_contract"]["active"] is False
+
+
 def test_ingestion_storage_control_reconciles_stale_raw_core_when_focused_empty_overlay_covers_top_files(
     tmp_path: Path,
 ) -> None:
