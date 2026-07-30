@@ -192,6 +192,21 @@ def build_payload(
     else:
         overall_status = "waiting_for_quality_signal"
 
+    if active_lanes:
+        recommended_actions = [
+            "keep live orders disabled while production quality SLO is not ready",
+            "use production-quality ordered lanes to repair active blockers",
+            "use infrabot-adaptive-governor exact allowlist for any safe execution",
+            "escalate breached lanes instead of repeating unbounded repair loops" if breached_lanes else "",
+            "rerun production-quality-slo after each production-quality refresh",
+        ]
+    else:
+        recommended_actions = [
+            "production quality SLO is clear; keep monitoring resolved lanes for recurrence",
+            "keep live money governed by the live-canary readiness contract",
+            "rerun production-quality-slo after each production-quality refresh",
+        ]
+
     payload = {
         "schema_version": SCHEMA_VERSION,
         "timestamp_utc": iso_now(),
@@ -223,15 +238,7 @@ def build_payload(
             "runtime_source_mutation_allowed": False,
         },
         "next_state": next_state,
-        "recommended_actions": ordered_unique(
-            [
-                "keep live orders disabled while production quality SLO is not ready",
-                "use production-quality ordered lanes to repair active blockers",
-                "use infrabot-adaptive-governor exact allowlist for any safe execution",
-                "escalate breached lanes instead of repeating unbounded repair loops" if breached_lanes else "",
-                "rerun production-quality-slo after each production-quality refresh",
-            ]
-        ),
+        "recommended_actions": ordered_unique(recommended_actions),
     }
     if apply:
         write_payload(effective_state, next_state)

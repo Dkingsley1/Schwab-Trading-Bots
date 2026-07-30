@@ -97,3 +97,15 @@ def test_production_quality_slo_guard_apply_clears_resolved_lane_state(tmp_path:
     assert state["lanes"] == {}
     assert state["last_resolved_lanes"][0]["lane_id"] == "storage_pressure_clean"
     assert (health / "production_quality_slo_events.jsonl").exists()
+
+
+def test_production_quality_slo_guard_ready_recommendations_do_not_claim_active_degradation(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    _write_quality(project_root, [], status="ready")
+
+    payload = src.build_payload(project_root)
+
+    assert payload["overall_status"] == "ready"
+    assert payload["active_lane_count"] == 0
+    assert "production quality SLO is clear; keep monitoring resolved lanes for recurrence" in payload["recommended_actions"]
+    assert "use production-quality ordered lanes to repair active blockers" not in payload["recommended_actions"]

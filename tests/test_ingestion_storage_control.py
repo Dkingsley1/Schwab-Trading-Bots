@@ -1643,6 +1643,58 @@ def test_storage_efficiency_treats_tiny_raw_compaction_tail_as_manifest_watch(tm
     assert "raw_training_compaction_debt" not in contract["active_blockers"]
 
 
+def test_storage_efficiency_treats_bounded_raw_file_count_as_manifest_watch(tmp_path: Path) -> None:
+    contract = src._ingestion_storage_efficiency_contract(
+        project_root=tmp_path,
+        severity="stable",
+        queue_watermarks={"overall_status": "ready"},
+        backlog_relief_contract={"active": False, "overall_grade": "A+"},
+        data_collection_storage_guard={
+            "disk": {"available_gb": 510.0, "used_percent": 45.0},
+            "safe_space_recovery": {
+                "candidate_count": 0,
+                "candidate_gb": 0.0,
+                "selected_gb": 0.0,
+                "target_free_gb": 125.0,
+                "target_free_deficit_gb": 0.0,
+                "scan": {"unbacked_duplicate_count": 0, "unbacked_duplicate_gb": 0.0},
+            },
+            "duplicate_cleanup": {"candidate_count": 0, "candidate_gb": 0.0},
+        },
+        raw_training_compaction={
+            "raw_summary": {
+                "raw_jsonl_count": 676,
+                "eligible_training_source_count": 549,
+                "compression_candidate_count": 424,
+                "compression_candidate_gb": 0.293,
+                "local_fallback_reconciliation_count": 0,
+                "current_day_protected_count": 121,
+            }
+        },
+        storage_quota={"quota_summary": {"hard_breaches": 0, "soft_breaches": 0}, "lanes": []},
+        storage_mount={"external_available": True, "storage_mode": "external"},
+        route_drift=False,
+        route_verified=True,
+        route_verification_state="ready",
+        route_verification={"mismatches": []},
+        unresolved_split_brain_conflicts=0,
+        line_estimation={},
+        total_pending_lines=3137,
+        core_pending_lines=15,
+        retention_debt_gb=0.0,
+        overlay_pressure_clear=True,
+    )
+
+    assert contract["overall_status"] == "ready"
+    assert contract["grade"] == "A+"
+    assert contract["raw_candidate_compaction_required"] is False
+    assert contract["raw_candidate_count_pressure"] is False
+    assert contract["raw_candidate_manifest_watch"] is True
+    assert contract["metrics"]["raw_candidate_manifest_watch"] is True
+    assert contract["metrics"]["raw_count_pressure_min_count"] == 2048
+    assert "raw_training_compaction_debt" not in contract["active_blockers"]
+
+
 def test_ingestion_storage_control_enters_emergency_disk_guard_when_external_free_space_is_tiny(tmp_path: Path) -> None:
     now = datetime.now(timezone.utc)
     health = tmp_path / "governance" / "health"

@@ -43,6 +43,9 @@ DEFAULT_MANAGED_SUPPORT_SQL_RELIEF_ENABLED = os.getenv("STORAGE_QUOTA_MANAGED_SU
 DEFAULT_SUPPORT_SQL_RELIEF_MIN_FREE_GB = float(os.getenv("STORAGE_QUOTA_SUPPORT_SQL_RELIEF_MIN_FREE_GB", "96"))
 DEFAULT_SUPPORT_SQL_RELIEF_MIN_SUPPORT_RATIO = float(os.getenv("STORAGE_QUOTA_SUPPORT_SQL_RELIEF_MIN_SUPPORT_RATIO", "0.20"))
 DEFAULT_SUPPORT_SQL_RAW_HARD_ADVISORY_RATIO = float(os.getenv("STORAGE_QUOTA_SUPPORT_SQL_RAW_HARD_ADVISORY_RATIO", "0.95"))
+DEFAULT_SUPPORT_SQL_RAW_HARD_MANAGED_MAX_RATIO = float(
+    os.getenv("STORAGE_QUOTA_SUPPORT_SQL_RAW_HARD_MANAGED_MAX_RATIO", "1.15")
+)
 SUPPORT_SQL_SHARD_MARKERS = (
     "risk_support",
     "support_watchdog",
@@ -164,7 +167,7 @@ def _managed_support_sql_adjustment(project_root: Path, *, bytes_used: int, soft
         DEFAULT_MANAGED_SUPPORT_SQL_RELIEF_ENABLED
         and support_bytes > 0
         and support_ratio >= max(float(DEFAULT_SUPPORT_SQL_RELIEF_MIN_SUPPORT_RATIO), 0.0)
-        and raw_used_gb < float(hard_gb)
+        and raw_used_gb <= float(hard_gb) * max(float(DEFAULT_SUPPORT_SQL_RAW_HARD_MANAGED_MAX_RATIO), 1.0)
         and core_after_support_gb <= float(soft_gb)
         and root_free_gb >= max(float(DEFAULT_SUPPORT_SQL_RELIEF_MIN_FREE_GB), 0.0)
     )
@@ -175,8 +178,8 @@ def _managed_support_sql_adjustment(project_root: Path, *, bytes_used: int, soft
         blockers.append("no_support_sql_shards")
     if support_ratio < max(float(DEFAULT_SUPPORT_SQL_RELIEF_MIN_SUPPORT_RATIO), 0.0):
         blockers.append("support_sql_ratio_below_floor")
-    if raw_used_gb >= float(hard_gb):
-        blockers.append("raw_stateful_sql_at_or_above_hard_quota")
+    if raw_used_gb > float(hard_gb) * max(float(DEFAULT_SUPPORT_SQL_RAW_HARD_MANAGED_MAX_RATIO), 1.0):
+        blockers.append("raw_stateful_sql_above_managed_support_relief_ceiling")
     if core_after_support_gb > float(soft_gb):
         blockers.append("core_stateful_sql_above_soft_quota_after_support_relief")
     if root_free_gb < max(float(DEFAULT_SUPPORT_SQL_RELIEF_MIN_FREE_GB), 0.0):
@@ -193,9 +196,10 @@ def _managed_support_sql_adjustment(project_root: Path, *, bytes_used: int, soft
         "min_root_free_gb": _round_gb(DEFAULT_SUPPORT_SQL_RELIEF_MIN_FREE_GB),
         "min_support_ratio": round(max(float(DEFAULT_SUPPORT_SQL_RELIEF_MIN_SUPPORT_RATIO), 0.0), 3),
         "raw_hard_advisory_ratio": round(max(float(DEFAULT_SUPPORT_SQL_RAW_HARD_ADVISORY_RATIO), 0.0), 3),
+        "raw_hard_managed_max_ratio": round(max(float(DEFAULT_SUPPORT_SQL_RAW_HARD_MANAGED_MAX_RATIO), 1.0), 3),
         "blockers": ordered_unique(blockers),
         "breakdown": breakdown,
-        "policy": "managed support SQL shards can be excluded from core stateful quota only while raw SQL remains below hard quota, core SQL is below soft quota after relief, and the backing volume has a free-space buffer; bytes still count toward disk forecasts",
+        "policy": "managed support SQL shards can be excluded from core stateful quota only while raw SQL is inside the managed over-hard buffer, core SQL is below soft quota after relief, and the backing volume has a free-space buffer; bytes still count toward disk forecasts",
     }
 
 

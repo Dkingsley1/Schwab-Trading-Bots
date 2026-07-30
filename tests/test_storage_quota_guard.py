@@ -178,6 +178,78 @@ def test_quota_guard_manages_support_sql_soft_quota_when_core_is_below_quota(
     assert sql_lane["adjustments"][0]["reason"] == "exclude_managed_support_sql_shards_from_core_stateful_quota"
 
 
+def test_quota_guard_manages_support_sql_slight_overhard_when_core_and_free_space_are_safe(
+    tmp_path: Path, monkeypatch
+) -> None:
+    _seed_health(tmp_path, governance_gb=0.0, sql_link_shards_gb=384.0)
+    monkeypatch.setattr(src, "_active_current_day_decision_bytes", lambda _project_root: 0)
+    monkeypatch.setattr(src, "_active_current_day_governance_channel_bytes", lambda _project_root: 0)
+    monkeypatch.setattr(src, "_active_current_day_explanation_bytes", lambda _project_root: 0)
+    monkeypatch.setattr(
+        src,
+        "_stateful_sql_shard_breakdown",
+        lambda _project_root: {
+            "root": str(tmp_path / "data" / "sql_link_shards"),
+            "root_exists": True,
+            "root_free_gb": 128.0,
+            "support_bytes": int(259 * GIB),
+            "core_bytes": int(125 * GIB),
+            "total_bytes": int(384 * GIB),
+            "support_gb": 259.0,
+            "core_gb": 125.0,
+            "top_support_shards": [{"name": "jsonl_link_risk_support.sqlite3", "size_gb": 259.0}],
+            "top_core_shards": [{"name": "jsonl_link_crypto_trading.sqlite3", "size_gb": 83.0}],
+            "support_markers": ["risk_support"],
+        },
+    )
+
+    payload = src.build_payload(tmp_path)
+
+    sql_lane = next(row for row in payload["lanes"] if row["family"] == "sql_link_shards")
+    assert payload["overall_status"] == "ready"
+    assert payload["quota_summary"]["advisory_breaches"] == 1
+    assert sql_lane["status"] == "advisory"
+    assert sql_lane["raw_used_gb"] == 384.0
+    assert sql_lane["used_gb"] == 125.0
+    assert sql_lane["managed_support_sql_relief"]["active"] is True
+    assert sql_lane["managed_support_sql_relief"]["raw_hard_ratio"] == 1.011
+    assert sql_lane["managed_support_sql_relief"]["blockers"] == []
+
+
+def test_quota_guard_does_not_manage_support_sql_far_overhard(
+    tmp_path: Path, monkeypatch
+) -> None:
+    _seed_health(tmp_path, governance_gb=0.0, sql_link_shards_gb=460.0)
+    monkeypatch.setattr(src, "_active_current_day_decision_bytes", lambda _project_root: 0)
+    monkeypatch.setattr(src, "_active_current_day_governance_channel_bytes", lambda _project_root: 0)
+    monkeypatch.setattr(src, "_active_current_day_explanation_bytes", lambda _project_root: 0)
+    monkeypatch.setattr(
+        src,
+        "_stateful_sql_shard_breakdown",
+        lambda _project_root: {
+            "root": str(tmp_path / "data" / "sql_link_shards"),
+            "root_exists": True,
+            "root_free_gb": 128.0,
+            "support_bytes": int(320 * GIB),
+            "core_bytes": int(140 * GIB),
+            "total_bytes": int(460 * GIB),
+            "support_gb": 320.0,
+            "core_gb": 140.0,
+            "top_support_shards": [{"name": "jsonl_link_risk_support.sqlite3", "size_gb": 320.0}],
+            "top_core_shards": [{"name": "jsonl_link_crypto_trading.sqlite3", "size_gb": 83.0}],
+            "support_markers": ["risk_support"],
+        },
+    )
+
+    payload = src.build_payload(tmp_path)
+
+    sql_lane = next(row for row in payload["lanes"] if row["family"] == "sql_link_shards")
+    assert payload["overall_status"] == "blocked"
+    assert sql_lane["status"] == "blocked"
+    assert sql_lane["managed_support_sql_relief"]["active"] is False
+    assert "raw_stateful_sql_above_managed_support_relief_ceiling" in sql_lane["managed_support_sql_relief"]["blockers"]
+
+
 def test_quota_guard_does_not_manage_support_sql_when_free_space_is_low(
     tmp_path: Path, monkeypatch
 ) -> None:

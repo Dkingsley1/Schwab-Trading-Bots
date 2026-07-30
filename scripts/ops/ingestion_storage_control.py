@@ -23,6 +23,9 @@ DEFAULT_TARGET_STALE_STAGE_PENDING_LINES = 0
 DEFAULT_TARGET_RETENTION_DEBT_GB = 0.25
 DEFAULT_SQL_INGESTION_OVERLAY_MAX_AGE_SECONDS = 3600.0
 DEFAULT_SHARD_STATE_RECONCILE_MAX_BYTES = 512 * 1024 * 1024
+DEFAULT_RAW_COMPACTION_MATERIAL_GB = 1.0
+DEFAULT_RAW_COMPACTION_COUNT_PRESSURE_MIN_GB = 1.0
+DEFAULT_RAW_COMPACTION_COUNT_PRESSURE_MIN_COUNT = 2048
 SMALL_HOT_QUEUE_TOTAL_MULTIPLIER = 1.25
 SMALL_HOT_QUEUE_SIDE_LANE_ALLOWANCE = 10
 UNKNOWN_DRAIN_TOTAL_MULTIPLIER = 2.0
@@ -1775,8 +1778,34 @@ def _ingestion_storage_efficiency_contract(
     material_duplicate_cleanup = bool(duplicate_gb >= 0.25 or duplicate_count >= 1000)
     material_safe_duplicate_cleanup = bool(safe_duplicate_gb >= 0.25 or safe_duplicate_count >= 1000)
     dedupe_required = bool(material_duplicate_cleanup or material_safe_duplicate_cleanup)
-    raw_candidate_count_pressure = bool(raw_candidate_count >= 8 and raw_candidate_gb >= 0.25)
-    raw_candidate_compaction_required = raw_candidate_gb >= 1.0 or raw_candidate_count_pressure
+    raw_compaction_material_gb = max(
+        _safe_float(os.getenv("INGESTION_RAW_COMPACTION_MATERIAL_GB"), DEFAULT_RAW_COMPACTION_MATERIAL_GB),
+        0.0,
+    )
+    raw_count_pressure_min_gb = max(
+        _safe_float(
+            os.getenv("INGESTION_RAW_COMPACTION_COUNT_PRESSURE_MIN_GB"),
+            DEFAULT_RAW_COMPACTION_COUNT_PRESSURE_MIN_GB,
+        ),
+        0.0,
+    )
+    raw_count_pressure_min_count = max(
+        _safe_int(
+            os.getenv("INGESTION_RAW_COMPACTION_COUNT_PRESSURE_MIN_COUNT"),
+            DEFAULT_RAW_COMPACTION_COUNT_PRESSURE_MIN_COUNT,
+        ),
+        1,
+    )
+    raw_candidate_count_pressure = bool(
+        raw_candidate_count >= raw_count_pressure_min_count
+        and raw_candidate_gb >= raw_count_pressure_min_gb
+    )
+    raw_candidate_compaction_required = raw_candidate_gb >= raw_compaction_material_gb or raw_candidate_count_pressure
+    raw_candidate_manifest_watch = bool(
+        raw_candidate_count > 0
+        and not raw_candidate_compaction_required
+        and raw_candidate_gb < raw_compaction_material_gb
+    )
     sparse_byte_window_required = sparse_pending_bytes >= 64 * 1024 * 1024
     raw_compaction_required = bool(raw_candidate_compaction_required or sparse_byte_window_required)
     fallback_reconciliation_required = bool(
@@ -2201,6 +2230,7 @@ def _ingestion_storage_efficiency_contract(
         "raw_compaction_required": bool(raw_compaction_required),
         "raw_candidate_compaction_required": bool(raw_candidate_compaction_required),
         "raw_candidate_count_pressure": bool(raw_candidate_count_pressure),
+        "raw_candidate_manifest_watch": bool(raw_candidate_manifest_watch),
         "sparse_byte_window_required": bool(sparse_byte_window_required),
         "managed_raw_compaction_debt": bool(managed_raw_compaction_debt),
         "fallback_reconciliation_required": bool(fallback_reconciliation_required),
@@ -2239,6 +2269,10 @@ def _ingestion_storage_efficiency_contract(
             "eligible_training_source_count": raw_eligible_count,
             "raw_compression_candidate_count": raw_candidate_count,
             "raw_compression_candidate_gb": round(raw_candidate_gb, 3),
+            "raw_compaction_material_gb": round(raw_compaction_material_gb, 3),
+            "raw_count_pressure_min_count": int(raw_count_pressure_min_count),
+            "raw_count_pressure_min_gb": round(raw_count_pressure_min_gb, 3),
+            "raw_candidate_manifest_watch": bool(raw_candidate_manifest_watch),
             "managed_raw_compaction_debt": bool(managed_raw_compaction_debt),
             "local_fallback_reconciliation_count": fallback_reconciliation_count,
             "current_day_protected_raw_count": current_day_protected_count,
