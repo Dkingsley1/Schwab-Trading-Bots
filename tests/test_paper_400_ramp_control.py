@@ -800,6 +800,125 @@ def test_paper_400_ramp_uses_system_plumbing_write_path_relief(tmp_path: Path) -
     assert relief["plumbing_bounded_write_recovery"] is True
 
 
+def test_paper_400_ramp_arms_with_managed_deferred_backlog_and_clean_hot_path(tmp_path: Path) -> None:
+    _seed_ready_project(tmp_path, bot_count=700)
+    health = tmp_path / "governance" / "health"
+    _write_json(
+        health / "memory_efficiency_control_latest.json",
+        {
+            "overall_status": "blocked",
+            "recommended_profile": "constrained",
+            "reasons": ["storage_pressure_critical"],
+            "memory_snapshot": {
+                "memory_pressure_state": "green",
+                "memory_pressure_kind": "none",
+                "memory_free_pct": 90.0,
+                "swap_used_gb": 2.4,
+                "compressed_store_gb": 6.2,
+                "compressor_gb": 0.3,
+            },
+        },
+    )
+    _write_json(
+        health / "runtime_throttle_control_latest.json",
+        {
+            "overall_status": "blocked",
+            "throttle_profile": "protect_live",
+            "compute_pressure_level": "normal",
+            "memory_pressure_level": "normal",
+            "host_saturation_score": 27.0,
+            "paper_capacity_contract": {
+                "ready_for_700_bot_paper": False,
+                "pressure_limited": True,
+                "active_bot_count": 700,
+                "paper_tagged_count": 700,
+                "runtime_policy": {"live_execution_blocked": True},
+            },
+        },
+    )
+    _write_json(
+        health / "ingestion_storage_control_latest.json",
+        {
+            "overall_status": "blocked",
+            "severity": "critical",
+            "pressure_index": 53.028,
+            "backpressure": {
+                "core_pending_lines": 809,
+                "support_pending_lines": 8246,
+                "deferred_pending_lines": 15899259,
+                "total_pending_lines": 15908314,
+                "oldest_pending_age_seconds": 2582.833,
+                "pending_lines_threshold": 15000,
+            },
+            "storage": {"backlog_drain_status": "waiting_for_off_hours"},
+            "external_route_verification": {"verification_state": "ready"},
+            "data_integrity": {
+                "sql_invalid_lines": 0,
+                "sql_overlay_invalid_lines": 0,
+                "sql_overlay_oversize_payloads": 0,
+                "sql_overlay_ops_write_failures": 0,
+            },
+            "writer_shedding": {"hard_breaches": ["deferred"], "elevated_breaches": ["core", "deferred"]},
+        },
+    )
+    _write_json(
+        health / "system_plumbing_control_latest.json",
+        {
+            "ok": True,
+            "overall_status": "ready",
+            "plumbing_score": 100,
+            "root_cause": {
+                "raw_live": {
+                    "ok": True,
+                    "status": "ready",
+                    "core_pending_lines": 765,
+                    "total_pending_lines": 1814,
+                    "oldest_pending_age_seconds": 0.0,
+                    "max_core_pending_lines": 5000,
+                    "max_total_pending_lines": 15000,
+                    "max_oldest_pending_age_seconds": 900,
+                }
+            },
+        },
+    )
+    _write_json(
+        health / "global_halt_auto_clear_latest.json",
+        {
+            "halt": False,
+            "halt_required": True,
+            "would_rehalt": True,
+            "halt_posture": "unlatched_halt_required",
+            "clear_ready": False,
+            "clear_blockers": ["write_path_recovery_pending", "queue_backpressure_active"],
+            "metrics": {"execution_expected": False},
+        },
+    )
+    _write_json(
+        health / "data_plane_recovery_controller_latest.json",
+        {
+            "overall_status": "degraded",
+            "recovery_state": "recovering_under_guard",
+            "write_failure_count": 2,
+            "account_snapshot_failure_count": 0,
+            "queue_depth": 38667,
+        },
+    )
+
+    payload = src.build_payload(
+        tmp_path,
+        today=date(2026, 5, 11),
+        registry_path=tmp_path / "master_bot_registry.json",
+    )
+
+    assert payload["stage"] == "armed"
+    assert payload["blockers"] == []
+    assert payload["gates"]["storage"]["status"] == "managed_deferred_backlog_advisory"
+    assert payload["gates"]["memory"]["status"] == "storage_managed_memory_advisory"
+    assert payload["gates"]["runtime"]["status"] == "managed_deferred_backlog_armed"
+    assert payload["gates"]["global_halt"]["status"] == "managed_deferred_backpressure_advisory"
+    assert payload["gates"]["storage"]["managed_deferred_backlog_relief"]["active"] is True
+
+
 def test_paper_400_ramp_treats_isolated_read_only_restart_storm_as_advisory(tmp_path: Path) -> None:
     _seed_ready_project(tmp_path)
     health = tmp_path / "governance" / "health"

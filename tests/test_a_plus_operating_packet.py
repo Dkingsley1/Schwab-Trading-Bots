@@ -270,6 +270,71 @@ def test_a_plus_packet_treats_managed_sql_quota_and_external_host_pressure_as_re
     assert "host_saturation_guarded_or_hot" not in lane["warnings"]
 
 
+def test_a_plus_packet_treats_deferred_off_hours_backlog_as_managed_paper_debt(tmp_path: Path) -> None:
+    _write_sources(
+        tmp_path,
+        {
+            "health_fast": {
+                "ok": True,
+                "overall_status": "ready",
+                "strict_all_clear": True,
+                "operational_readiness": {
+                    "guarded_paper": {
+                        "ok": True,
+                        "status": "ready",
+                        "blockers": [],
+                        "storage_relief_contract": {
+                            "active": True,
+                            "status": "managed_deferred_backlog_waiting_for_off_hours",
+                            "core_pending_lines": 809,
+                            "support_pending_lines": 8246,
+                            "deferred_pending_lines": 15899259,
+                            "total_pending_lines": 15908314,
+                            "backlog_drain_status": "waiting_for_off_hours",
+                        },
+                    }
+                },
+                "process_watchdog": {"alert_summary": {"total_count": 0}},
+                "runtime_pressure": {"overall_status": "blocked"},
+                "storage": {"severity": "critical"},
+            },
+            "ingestion_storage": {
+                "ok": False,
+                "overall_status": "blocked",
+                "severity": "critical",
+                "pressure_index": 53.028,
+                "backpressure": {
+                    "core_pending_lines": 809,
+                    "support_pending_lines": 8246,
+                    "deferred_pending_lines": 15899259,
+                    "total_pending_lines": 15908314,
+                    "oldest_pending_age_seconds": 2582.833,
+                },
+                "storage": {"backlog_drain_status": "waiting_for_off_hours"},
+            },
+            "runtime_throttle": {
+                "ok": False,
+                "overall_status": "blocked",
+                "host_saturation_score": 27.0,
+                "compute_pressure_level": "normal",
+                "memory_pressure_level": "normal",
+            },
+        },
+    )
+
+    payload = packet.build_payload(tmp_path)
+    health_lane = next(row for row in payload["lanes"] if row["id"] == "health_scorecard")
+    anti_lane = next(row for row in payload["lanes"] if row["id"] == "anti_degradation_guardrails")
+
+    assert health_lane["a_plus"] is True
+    assert anti_lane["a_plus"] is True
+    assert health_lane["evidence"]["managed_deferred_backlog_relief"]["managed"] is True
+    assert anti_lane["evidence"]["managed_deferred_backlog_relief"]["managed"] is True
+    assert "storage_severity_managed_deferred_backlog" in health_lane["warnings"]
+    assert "pending_lines_managed_deferred_backlog" in anti_lane["warnings"]
+    assert "pending_lines_above_threshold" not in anti_lane["blockers"]
+
+
 def test_a_plus_packet_keeps_hot_host_saturation_actionable_above_managed_ceiling(tmp_path: Path) -> None:
     _write_sources(
         tmp_path,

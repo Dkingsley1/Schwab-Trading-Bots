@@ -89,7 +89,92 @@ def _alert_details(alerts: list[Any]) -> dict[str, Any]:
     }
 
 
-def _storage_ready(storage: dict[str, Any]) -> tuple[bool, list[str]]:
+def _paper_hot_path_storage_relief(storage: dict[str, Any], plumbing: dict[str, Any] | None = None) -> dict[str, Any]:
+    backpressure = _dict(storage.get("backpressure"))
+    plumbing = _dict(plumbing)
+    root_cause = _dict(plumbing.get("root_cause"))
+    plumbing_raw_live = _dict(root_cause.get("raw_live"))
+    plumbing_paper_relief = _dict(plumbing.get("paper_ramp_relief_contract"))
+    storage_section = _dict(storage.get("storage"))
+    route = _dict(storage.get("external_route_verification"))
+    integrity = _dict(storage.get("data_integrity"))
+    writer = _dict(storage.get("writer_shedding"))
+    core_pending = _safe_int(backpressure.get("core_pending_lines"), 0)
+    support_pending = _safe_int(backpressure.get("support_pending_lines"), 0)
+    deferred_pending = _safe_int(backpressure.get("deferred_pending_lines"), 0)
+    total_pending = _safe_int(backpressure.get("total_pending_lines"), 0)
+    oldest = _safe_float(backpressure.get("oldest_pending_age_seconds"), 0.0)
+    pending_threshold = max(_safe_int(backpressure.get("pending_lines_threshold"), 15000), 1)
+    route_ready = _status(route.get("verification_state")) in {"ready", "verified", "ok"}
+    integrity_clean = all(
+        _safe_int(integrity.get(key), 0) == 0
+        for key in ("sql_invalid_lines", "sql_overlay_invalid_lines", "sql_overlay_oversize_payloads", "sql_overlay_ops_write_failures")
+    )
+    plumbing_managed_deferred = bool(plumbing_paper_relief.get("managed_deferred_backlog", False))
+    hot_path_ok = bool(
+        plumbing_managed_deferred
+        or
+        plumbing_raw_live.get("ok", False)
+        or (
+            _status(plumbing_raw_live.get("status")) in {"ready", "ok", "advisory"}
+            and _safe_int(plumbing_raw_live.get("core_pending_lines"), core_pending) <= _safe_int(plumbing_raw_live.get("max_core_pending_lines"), 5000)
+            and _safe_int(plumbing_raw_live.get("total_pending_lines"), core_pending + support_pending) <= _safe_int(plumbing_raw_live.get("max_total_pending_lines"), 15000)
+            and _safe_float(plumbing_raw_live.get("oldest_pending_age_seconds"), 0.0) <= _safe_float(plumbing_raw_live.get("max_oldest_pending_age_seconds"), 900.0)
+        )
+    )
+    if not plumbing_raw_live and not plumbing_managed_deferred:
+        hot_path_ok = bool(core_pending <= 5000 and support_pending <= 12000 and oldest <= 3600.0)
+    backlog_status = _status(storage_section.get("backlog_drain_status") or storage.get("backlog_drain_status"))
+    deferred_managed = bool(
+        plumbing_managed_deferred
+        or deferred_pending > 0
+        and backlog_status in {"waiting_for_off_hours", "off_hours_scheduled", "market_hours_guard", "handoff_requested"}
+    )
+    hard_breaches = {str(item).strip().lower() for item in _as_list(writer.get("hard_breaches")) if str(item).strip()}
+    elevated_breaches = {str(item).strip().lower() for item in _as_list(writer.get("elevated_breaches")) if str(item).strip()}
+    allowed_hard_breaches = {"deferred", "support", "support_telemetry"}
+    writer_breaches_managed = bool(hard_breaches <= allowed_hard_breaches and (elevated_breaches - allowed_hard_breaches) <= {"core"})
+    active = bool(
+        hot_path_ok
+        and deferred_managed
+        and route_ready
+        and integrity_clean
+        and writer_breaches_managed
+        and core_pending <= 5000
+        and support_pending <= 12000
+        and total_pending >= pending_threshold
+    )
+    return {
+        "active": active,
+        "status": "managed_deferred_backlog_waiting_for_off_hours" if active else "inactive",
+        "hot_path_ok": hot_path_ok,
+        "deferred_backlog_managed": deferred_managed,
+        "route_ready": route_ready,
+        "integrity_clean": integrity_clean,
+        "writer_breaches_managed": writer_breaches_managed,
+        "backlog_drain_status": backlog_status,
+        "core_pending_lines": core_pending,
+        "support_pending_lines": support_pending,
+        "deferred_pending_lines": deferred_pending,
+        "total_pending_lines": total_pending,
+        "oldest_pending_age_seconds": round(oldest, 3),
+        "plumbing_raw_live": plumbing_raw_live,
+        "plumbing_paper_relief": plumbing_paper_relief,
+        "policy": "paper-only health treats explicitly scheduled deferred backlog as managed debt when hot-path queues and write routing are clean; live-money readiness still consumes raw backlog as a blocker",
+    }
+
+
+def _memory_actual_clear(memory: dict[str, Any]) -> bool:
+    snapshot = _dict(memory.get("memory_snapshot"))
+    return bool(
+        _safe_float(snapshot.get("memory_free_pct"), 100.0) >= 12.0
+        and _safe_float(snapshot.get("swap_used_gb"), 0.0) < 12.0
+        and _safe_float(snapshot.get("compressed_store_gb"), 0.0) < 28.0
+        and _safe_float(snapshot.get("compressor_gb"), 0.0) < 16.0
+    )
+
+
+def _storage_ready(storage: dict[str, Any], plumbing: dict[str, Any] | None = None) -> tuple[bool, list[str]]:
     severity = _status(storage.get("severity") or storage.get("overall_status") or "stable")
     pressure_index = _safe_float(storage.get("pressure_index"), 0.0)
     backpressure = storage.get("backpressure") if isinstance(storage.get("backpressure"), dict) else {}
@@ -111,6 +196,7 @@ def _storage_ready(storage: dict[str, Any]) -> tuple[bool, list[str]]:
     total_pending = _safe_int(backpressure.get("total_pending_lines"), 0)
     pending_threshold = max(_safe_int(backpressure.get("pending_lines_threshold"), 15000), 1)
     bounded_recovery = _dict(storage.get("bounded_recovery_contract"))
+    deferred_relief = _paper_hot_path_storage_relief(storage, plumbing)
     route = _dict(storage.get("external_route_verification"))
     resilience = _dict(storage.get("storage_resilience"))
     integrity = _dict(storage.get("data_integrity"))
@@ -144,11 +230,11 @@ def _storage_ready(storage: dict[str, Any]) -> tuple[bool, list[str]]:
         and efficiency_grade in {"", "A", "A+"}
     )
     blockers: list[str] = []
-    if severity in {"blocked", "critical", "high"} and not overlay_relief and not bounded_drain_relief:
+    if severity in {"blocked", "critical", "high"} and not overlay_relief and not bounded_drain_relief and not bool(deferred_relief.get("active", False)):
         blockers.append(f"storage_severity={severity}")
-    if pressure_index >= 0.50 and not overlay_relief and not bounded_drain_relief:
+    if pressure_index >= 0.50 and not overlay_relief and not bounded_drain_relief and not bool(deferred_relief.get("active", False)):
         blockers.append("storage_pressure_index_high")
-    if total_pending >= pending_threshold:
+    if total_pending >= pending_threshold and not bool(deferred_relief.get("active", False)):
         blockers.append("storage_pending_above_threshold")
     return not blockers, blockers
 
@@ -321,7 +407,8 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
     alert_summary = _alert_details(alerts)
     safety = process.get("safety_pause") if isinstance(process.get("safety_pause"), dict) else {}
     swap_payload = swap.get("swap_pressure") if isinstance(swap.get("swap_pressure"), dict) else {}
-    storage_ready, storage_blockers = _storage_ready(storage)
+    storage_relief = _paper_hot_path_storage_relief(storage, plumbing)
+    storage_ready, storage_blockers = _storage_ready(storage, plumbing)
     halt_blockers = [str(item) for item in _as_list(halt.get("clear_blockers")) if str(item).strip()]
     runtime_status = _status(runtime.get("overall_status"))
     memory_status = _status(memory.get("overall_status"))
@@ -345,6 +432,8 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
         for item in _as_list(paper_clear_relief.get("clear_blockers"))
         if str(item).strip()
     } if bool(paper_clear_relief.get("active", False)) and bool(paper_global_halt_gate.get("ok", False)) else set()
+    if bool(storage_relief.get("active", False)) and not bool(halt.get("halt", False)):
+        advisory_halt_blockers.update({"queue_backpressure_active", "write_path_recovery_pending"})
     blocking_halt_blockers = [item for item in halt_blockers if item not in advisory_halt_blockers]
     paper_ramp_stale_global_blocker = bool(
         paper_ramp_present
@@ -375,11 +464,18 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
         runtime_status in {"ready", "advisory", "guarded_ready"}
         or plumbing_runtime_memory_relief
         or paper_ramp_runtime_ready
+        or (
+            bool(storage_relief.get("active", False))
+            and _status(runtime.get("compute_pressure_level")) != "high"
+            and _status(runtime.get("memory_pressure_level")) != "high"
+            and _safe_float(runtime.get("host_saturation_score"), 0.0) < 75.0
+        )
     )
     memory_guarded_ok = bool(
         memory_status in {"ready", "advisory", "guarded_ready"}
         or plumbing_runtime_memory_relief
         or paper_ramp_memory_ready
+        or (bool(storage_relief.get("active", False)) and _memory_actual_clear(memory))
     )
 
     guarded_paper_blockers: list[str] = []
@@ -431,6 +527,7 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
                 "paper_ramp_runtime_ready": paper_ramp_runtime_ready,
                 "paper_ramp_memory_ready": paper_ramp_memory_ready,
                 "paper_ramp_stale_global_blocker_ignored": paper_ramp_stale_global_blocker,
+                "storage_relief_contract": storage_relief,
                 "policy": "guarded paper readiness consumes paper-ramp and system-plumbing advisory contracts while live execution stays locked",
             },
             "live_execution": {

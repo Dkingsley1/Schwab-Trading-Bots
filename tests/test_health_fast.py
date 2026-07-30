@@ -85,3 +85,49 @@ def test_health_fast_blocks_bounded_storage_without_drain_progress() -> None:
 
     assert ok is False
     assert blockers == ["storage_pressure_index_high"]
+
+
+def test_health_fast_treats_deferred_off_hours_backlog_as_managed_for_paper() -> None:
+    ok, blockers = src._storage_ready(
+        {
+            "overall_status": "blocked",
+            "severity": "critical",
+            "pressure_index": 53.028,
+            "backpressure": {
+                "core_pending_lines": 809,
+                "support_pending_lines": 8246,
+                "deferred_pending_lines": 15899259,
+                "total_pending_lines": 15908314,
+                "oldest_pending_age_seconds": 2582.833,
+                "pending_lines_threshold": 15000,
+            },
+            "storage": {"backlog_drain_status": "waiting_for_off_hours"},
+            "external_route_verification": {"verification_state": "ready"},
+            "data_integrity": {
+                "sql_invalid_lines": 0,
+                "sql_overlay_invalid_lines": 0,
+                "sql_overlay_oversize_payloads": 0,
+                "sql_overlay_ops_write_failures": 0,
+            },
+            "writer_shedding": {"hard_breaches": ["deferred"], "elevated_breaches": ["core", "deferred"]},
+        },
+        {
+            "ok": True,
+            "overall_status": "ready",
+            "root_cause": {
+                "raw_live": {
+                    "ok": True,
+                    "status": "ready",
+                    "core_pending_lines": 765,
+                    "total_pending_lines": 1814,
+                    "oldest_pending_age_seconds": 0.0,
+                    "max_core_pending_lines": 5000,
+                    "max_total_pending_lines": 15000,
+                    "max_oldest_pending_age_seconds": 900,
+                }
+            },
+        },
+    )
+
+    assert ok is True
+    assert blockers == []

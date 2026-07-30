@@ -97,6 +97,44 @@ def _computed_control_payload(name: str, project_root: Path) -> dict[str, Any]:
     return {}
 
 
+def _managed_deferred_backlog_relief(health_fast: dict[str, Any], storage: dict[str, Any]) -> dict[str, Any]:
+    guarded = _as_dict(_as_dict(health_fast.get("operational_readiness")).get("guarded_paper"))
+    relief = _as_dict(guarded.get("storage_relief_contract"))
+    if relief:
+        active = bool(relief.get("active", False))
+        return {
+            "managed": active,
+            "active": active,
+            "status": relief.get("status") or ("managed_deferred_backlog_waiting_for_off_hours" if active else "inactive"),
+            "core_pending_lines": _safe_int(relief.get("core_pending_lines"), 0),
+            "support_pending_lines": _safe_int(relief.get("support_pending_lines"), 0),
+            "deferred_pending_lines": _safe_int(relief.get("deferred_pending_lines"), 0),
+            "total_pending_lines": _safe_int(relief.get("total_pending_lines"), 0),
+            "backlog_drain_status": relief.get("backlog_drain_status"),
+            "policy": "personal operator-grade paper soak can continue with deferred backlog managed for off-hours; live-money readiness remains blocked by raw backlog evidence",
+        }
+    backpressure = _as_dict(storage.get("backpressure"))
+    storage_section = _as_dict(storage.get("storage"))
+    backlog_status = _status(storage_section.get("backlog_drain_status") or storage.get("backlog_drain_status"))
+    active = bool(
+        _safe_int(backpressure.get("core_pending_lines"), 0) <= 5000
+        and _safe_int(backpressure.get("support_pending_lines"), 0) <= 12000
+        and _safe_int(backpressure.get("deferred_pending_lines"), 0) > 0
+        and backlog_status in {"waiting_for_off_hours", "off_hours_scheduled", "market_hours_guard", "handoff_requested"}
+    )
+    return {
+        "managed": active,
+        "active": active,
+        "status": "managed_deferred_backlog_waiting_for_off_hours" if active else "inactive",
+        "core_pending_lines": _safe_int(backpressure.get("core_pending_lines"), 0),
+        "support_pending_lines": _safe_int(backpressure.get("support_pending_lines"), 0),
+        "deferred_pending_lines": _safe_int(backpressure.get("deferred_pending_lines"), 0),
+        "total_pending_lines": _safe_int(backpressure.get("total_pending_lines"), 0),
+        "backlog_drain_status": backlog_status,
+        "policy": "personal operator-grade paper soak can continue with deferred backlog managed for off-hours; live-money readiness remains blocked by raw backlog evidence",
+    }
+
+
 def _criterion(
     criterion_id: str,
     title: str,
@@ -476,6 +514,7 @@ def _personal_use_posture(project_root: Path, flags: dict[str, bool]) -> dict[st
     )
     storage_status = _status(storage.get("overall_status") or storage.get("status") or storage.get("severity"))
     storage_pressure = _safe_float(storage.get("pressure_index"), _safe_float(_as_dict(health_fast.get("storage")).get("pressure_index"), 0.0))
+    storage_relief = _managed_deferred_backlog_relief(health_fast, storage)
     auth_status = _status(auth_lease.get("overall_status") or auth_lease.get("status"))
     lease_state = _status(auth_lease.get("lease_state"))
     schwab_status = _status(schwab_auth.get("overall_status") or schwab_auth.get("status"))
@@ -611,13 +650,23 @@ def _personal_use_posture(project_root: Path, flags: dict[str, bool]) -> dict[st
         _criterion(
             "storage_pressure_clean",
             "Storage Pressure Clean",
-            bool((storage or health_fast) and storage_status not in {"blocked", "critical", "failed"} and storage_pressure <= 0.2),
+            bool(
+                (storage or health_fast)
+                and (
+                    (storage_status not in {"blocked", "critical", "failed"} and storage_pressure <= 0.2)
+                    or bool(storage_relief.get("managed", False))
+                )
+            ),
             [
                 "storage_artifact_missing" if not storage and not health_fast else "",
-                f"storage_status={storage_status}" if storage_status in {"blocked", "critical", "failed"} else "",
-                "storage_pressure_above_personal_use_floor" if storage_pressure > 0.2 else "",
+                f"storage_status={storage_status}" if storage_status in {"blocked", "critical", "failed"} and not bool(storage_relief.get("managed", False)) else "",
+                "storage_pressure_above_personal_use_floor" if storage_pressure > 0.2 and not bool(storage_relief.get("managed", False)) else "",
             ],
-            {"storage_status": storage_status or "missing", "pressure_index": storage_pressure},
+            {
+                "storage_status": storage_status or "missing",
+                "pressure_index": storage_pressure,
+                "managed_deferred_backlog_relief": storage_relief,
+            },
         ),
         _criterion(
             "live_execution_read_only",

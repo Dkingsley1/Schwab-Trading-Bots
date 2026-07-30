@@ -189,6 +189,102 @@ def test_system_plumbing_treats_sql_overlay_only_critical_storage_as_advisory(tm
     assert payload["root_cause"]["status"] == "advisory"
 
 
+def test_system_plumbing_manages_deferred_off_hours_backlog_for_paper(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    _seed_plumbing(project_root, raw_total=38667)
+    health = project_root / "governance" / "health"
+    _write_json(
+        health / "ingestion_storage_control_latest.json",
+        {
+            "overall_status": "blocked",
+            "severity": "critical",
+            "pressure_index": 53.028,
+            "backpressure_quality_score": 40,
+            "backpressure": {
+                "core_pending_lines": 809,
+                "support_pending_lines": 4246,
+                "deferred_pending_lines": 15899259,
+                "total_pending_lines": 15904314,
+                "pending_lines_threshold": 15000,
+            },
+            "storage": {"backlog_drain_status": "waiting_for_off_hours"},
+            "external_route_verification": {
+                "verification_state": "ready",
+                "ready_count": 3,
+                "tracked_count": 3,
+                "coverage_ratio": 1.0,
+                "mismatches": [],
+            },
+            "data_integrity": {
+                "sql_invalid_lines": 0,
+                "sql_overlay_invalid_lines": 0,
+                "sql_overlay_oversize_payloads": 0,
+                "sql_overlay_ops_write_failures": 0,
+            },
+            "writer_shedding": {"hard_breaches": ["deferred"], "elevated_breaches": ["core", "deferred"]},
+            "storage_resilience": {"unresolved_split_brain_conflicts": 0},
+            "storage_plane_contract": {"disk_contract": {"external_disk": {"exists": True, "available_gb": 560.0}}},
+        },
+    )
+    _write_json(
+        health / "data_plane_recovery_controller_latest.json",
+        {
+            "overall_status": "degraded",
+            "recovery_state": "recovering_under_guard",
+            "write_failure_count": 2,
+            "raw_write_failure_count": 2,
+            "account_snapshot_failure_count": 0,
+            "queue_depth": 38667,
+            "writer_handoff_contract": {"writer_service_active": True},
+        },
+    )
+    _write_json(health / "ingestion_priority_queue_latest.json", {"lane_counts": {"core": {"pending_lines": 38667}}})
+    _write_json(
+        health / "runtime_throttle_control_latest.json",
+        {
+            "overall_status": "blocked",
+            "compute_pressure_level": "normal",
+            "memory_pressure_level": "normal",
+            "host_saturation_score": 27.0,
+        },
+    )
+    _write_json(
+        health / "memory_efficiency_control_latest.json",
+        {
+            "overall_status": "blocked",
+            "memory_snapshot": {
+                "memory_free_pct": 90.0,
+                "swap_used_gb": 2.4,
+                "compressed_store_gb": 6.2,
+                "compressor_gb": 0.3,
+            },
+        },
+    )
+    _write_json(
+        health / "global_halt_auto_clear_latest.json",
+        {
+            "halt": False,
+            "halt_required": True,
+            "would_rehalt": True,
+            "halt_posture": "unlatched_halt_required",
+            "clear_blockers": ["write_path_recovery_pending", "queue_backpressure_active"],
+            "metrics": {"execution_expected": False},
+        },
+    )
+
+    payload = src.build_payload(project_root)
+
+    assert payload["ok"] is True
+    assert payload["overall_status"] == "ready"
+    assert payload["sections"]["queue_backpressure"]["status"] == "managed_deferred_backlog_advisory"
+    assert payload["sections"]["runtime_memory"]["status"] == "managed_deferred_backlog_advisory"
+    assert payload["sections"]["data_plane_recovery"]["bounded_write_recovery"] is True
+    assert payload["global_clear_relief"]["status"] == "managed_deferred_backpressure_advisory"
+    assert payload["paper_ramp_relief_contract"]["managed_deferred_backlog"] is True
+    assert "managed_deferred_backlog_advisory" in payload["warnings"]
+    assert payload["managed_advisories"]["all_managed"] is True
+
+
 def test_system_plumbing_consumes_runtime_external_high_compute_relief_for_paper(tmp_path: Path) -> None:
     project_root = tmp_path / "project"
     _seed_plumbing(project_root)

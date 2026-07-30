@@ -285,6 +285,44 @@ def _managed_stateful_sql_soft_quota_relief(sources: dict[str, dict[str, Any]]) 
     }
 
 
+def _managed_deferred_backlog_relief(sources: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    health = _as_dict(sources.get("health_fast"))
+    guarded = _as_dict(_as_dict(health.get("operational_readiness")).get("guarded_paper"))
+    relief = _as_dict(guarded.get("storage_relief_contract"))
+    storage = _as_dict(sources.get("ingestion_storage"))
+    backpressure = _as_dict(storage.get("backpressure"))
+    active = bool(relief.get("active", False))
+    if not relief:
+        storage_section = _as_dict(storage.get("storage"))
+        active = bool(
+            _safe_int(backpressure.get("core_pending_lines"), 0) <= 5000
+            and _safe_int(backpressure.get("support_pending_lines"), 0) <= 12000
+            and _safe_int(backpressure.get("deferred_pending_lines"), 0) > 0
+            and _status(storage_section.get("backlog_drain_status") or storage.get("backlog_drain_status"))
+            in {"waiting_for_off_hours", "off_hours_scheduled", "market_hours_guard", "handoff_requested"}
+        )
+        relief = {
+            "active": active,
+            "status": "managed_deferred_backlog_waiting_for_off_hours" if active else "inactive",
+            "core_pending_lines": _safe_int(backpressure.get("core_pending_lines"), 0),
+            "support_pending_lines": _safe_int(backpressure.get("support_pending_lines"), 0),
+            "deferred_pending_lines": _safe_int(backpressure.get("deferred_pending_lines"), 0),
+            "total_pending_lines": _safe_int(backpressure.get("total_pending_lines"), 0),
+            "backlog_drain_status": _status(storage_section.get("backlog_drain_status") or storage.get("backlog_drain_status")),
+        }
+    return {
+        "managed": active,
+        "active": active,
+        "status": relief.get("status") or ("managed_deferred_backlog_waiting_for_off_hours" if active else "inactive"),
+        "core_pending_lines": _safe_int(relief.get("core_pending_lines"), _safe_int(backpressure.get("core_pending_lines"), 0)),
+        "support_pending_lines": _safe_int(relief.get("support_pending_lines"), _safe_int(backpressure.get("support_pending_lines"), 0)),
+        "deferred_pending_lines": _safe_int(relief.get("deferred_pending_lines"), _safe_int(backpressure.get("deferred_pending_lines"), 0)),
+        "total_pending_lines": _safe_int(relief.get("total_pending_lines"), _safe_int(backpressure.get("total_pending_lines"), 0)),
+        "backlog_drain_status": relief.get("backlog_drain_status") or _status(_as_dict(storage.get("storage")).get("backlog_drain_status") or storage.get("backlog_drain_status")),
+        "policy": "A+ paper-soak lanes can treat off-hours deferred backlog as managed debt when health-fast proves the hot path is clean; live-money canary keeps the backlog as evidence",
+    }
+
+
 def _managed_host_saturation_relief(runtime: dict[str, Any]) -> dict[str, Any]:
     soft_cap = _as_dict(runtime.get("soft_cap_advisory_reclassification"))
     measurements = _as_dict(soft_cap.get("measurements"))
@@ -548,6 +586,7 @@ def _health_scorecard(project_root: Path, sources: dict[str, dict[str, Any]]) ->
     alert_count = _count_alerts(health, process)
     restart_due = bool(restart.get("restart_due", False))
     managed_restart_due = _managed_rolling_restart_advisory(restart, process)
+    managed_deferred_backlog = _managed_deferred_backlog_relief(sources)
     score = 100.0
     blockers: list[str] = []
     warnings: list[str] = []
@@ -563,12 +602,16 @@ def _health_scorecard(project_root: Path, sources: dict[str, dict[str, Any]]) ->
     if alert_count > 0:
         score -= min(25.0, 10.0 + alert_count * 3.0)
         blockers.append("process_alerts_active")
-    if _status(runtime.get("overall_status")) in {"degraded", "blocked", "critical"}:
+    if _status(runtime.get("overall_status")) in {"degraded", "blocked", "critical"} and not bool(managed_deferred_backlog.get("managed", False)):
         score -= 15.0
         warnings.append(f"runtime_status={runtime.get('overall_status')}")
-    if _status(storage.get("severity")) in {"high", "critical", "blocked"}:
+    elif _status(runtime.get("overall_status")) in {"degraded", "blocked", "critical"}:
+        warnings.append("runtime_status_managed_deferred_backlog")
+    if _status(storage.get("severity")) in {"high", "critical", "blocked"} and not bool(managed_deferred_backlog.get("managed", False)):
         score -= 20.0
         blockers.append(f"storage_severity={storage.get('severity')}")
+    elif _status(storage.get("severity")) in {"high", "critical", "blocked"}:
+        warnings.append("storage_severity_managed_deferred_backlog")
     if restart_due and managed_restart_due:
         warnings.append("rolling_restart_managed_creative_hold")
     elif restart_due:
@@ -591,6 +634,7 @@ def _health_scorecard(project_root: Path, sources: dict[str, dict[str, Any]]) ->
             "process_alert_count": alert_count,
             "restart_due": restart_due,
             "rolling_restart_managed_advisory": managed_restart_due,
+            "managed_deferred_backlog_relief": managed_deferred_backlog,
         },
         next_commands=[["./scripts/ops/opsctl.sh", "health-fast", "--json"], ["./scripts/session_ready_check.py"]],
     )
@@ -609,32 +653,45 @@ def _anti_degradation(project_root: Path, sources: dict[str, dict[str, Any]]) ->
     host = _safe_float(runtime.get("host_saturation_score"), 0.0)
     runtime_guarded_ready = _runtime_guarded_ready(runtime)
     sql_soft_quota_relief = _managed_stateful_sql_soft_quota_relief(sources)
+    managed_deferred_backlog = _managed_deferred_backlog_relief(sources)
     host_saturation_relief = _managed_host_saturation_relief(runtime)
     smoke_failures = len(_as_list(command.get("smoke_failures")))
     score = 100.0
     blockers: list[str] = []
     warnings: list[str] = []
-    if _status(storage.get("overall_status")) not in {"ready", "ok", "advisory", ""}:
+    if _status(storage.get("overall_status")) not in {"ready", "ok", "advisory", ""} and not bool(managed_deferred_backlog.get("managed", False)):
         score -= 20.0
         blockers.append(f"storage_status={storage.get('overall_status')}")
-    if _status(storage.get("severity")) in {"high", "critical", "blocked"}:
+    elif _status(storage.get("overall_status")) not in {"ready", "ok", "advisory", ""}:
+        warnings.append("storage_status_managed_deferred_backlog")
+    if _status(storage.get("severity")) in {"high", "critical", "blocked"} and not bool(managed_deferred_backlog.get("managed", False)):
         score -= 25.0
         blockers.append(f"storage_severity={storage.get('severity')}")
+    elif _status(storage.get("severity")) in {"high", "critical", "blocked"}:
+        warnings.append("storage_severity_managed_deferred_backlog")
     if pressure >= 0.5:
-        if bool(sql_soft_quota_relief.get("managed", False)) and pending < 15000 and oldest <= 240.0:
+        if bool(managed_deferred_backlog.get("managed", False)):
+            warnings.append("storage_pressure_managed_deferred_backlog")
+        elif bool(sql_soft_quota_relief.get("managed", False)) and pending < 15000 and oldest <= 240.0:
             warnings.append("storage_pressure_managed_stateful_sql_soft_quota")
         else:
             score -= min(25.0, pressure * 10.0)
             warnings.append("storage_pressure_index_above_target")
-    if oldest > 240.0:
+    if oldest > 240.0 and not bool(managed_deferred_backlog.get("managed", False)):
         score -= 10.0
         warnings.append("oldest_pending_age_above_240s")
-    if pending >= 15000:
+    elif oldest > 240.0:
+        warnings.append("oldest_pending_age_managed_deferred_backlog")
+    if pending >= 15000 and not bool(managed_deferred_backlog.get("managed", False)):
         score -= 20.0
         blockers.append("pending_lines_above_threshold")
-    if _status(runtime.get("overall_status")) in {"degraded", "blocked", "critical"}:
+    elif pending >= 15000:
+        warnings.append("pending_lines_managed_deferred_backlog")
+    if _status(runtime.get("overall_status")) in {"degraded", "blocked", "critical"} and not bool(managed_deferred_backlog.get("managed", False)):
         score -= 18.0
         warnings.append(f"runtime_status={runtime.get('overall_status')}")
+    elif _status(runtime.get("overall_status")) in {"degraded", "blocked", "critical"}:
+        warnings.append("runtime_status_managed_deferred_backlog")
     if host >= 60.0:
         if runtime_guarded_ready:
             warnings.append("host_saturation_guarded_or_hot")
@@ -669,6 +726,7 @@ def _anti_degradation(project_root: Path, sources: dict[str, dict[str, Any]]) ->
             "host_saturation_score": round(host, 3),
             "runtime_guarded_ready": runtime_guarded_ready,
             "stateful_sql_soft_quota_relief": sql_soft_quota_relief,
+            "managed_deferred_backlog_relief": managed_deferred_backlog,
             "host_saturation_relief": host_saturation_relief,
             "command_smoke_failures": smoke_failures,
         },

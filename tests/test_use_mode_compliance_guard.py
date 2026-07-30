@@ -162,6 +162,75 @@ def test_use_mode_guard_grades_clean_personal_paper_use_a_plus(tmp_path: Path) -
     assert payload["authority_boundaries"]["does_not_enable_live_execution"] is True
 
 
+def test_use_mode_guard_accepts_managed_deferred_backlog_for_personal_operator_soak(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    _seed_personal_ready(project_root)
+    now = datetime.now(timezone.utc).isoformat()
+    health = project_root / "governance" / "health"
+    _write_json(
+        health / "health_fast_latest.json",
+        {
+            "timestamp_utc": now,
+            "overall_status": "ready",
+            "strict_all_clear": True,
+            "operational_readiness": {
+                "guarded_paper": {
+                    "status": "ready",
+                    "ok": True,
+                    "blockers": [],
+                    "storage_relief_contract": {
+                        "active": True,
+                        "status": "managed_deferred_backlog_waiting_for_off_hours",
+                        "core_pending_lines": 809,
+                        "support_pending_lines": 8246,
+                        "deferred_pending_lines": 15899259,
+                        "total_pending_lines": 15908314,
+                        "backlog_drain_status": "waiting_for_off_hours",
+                    },
+                },
+                "live_execution": {"status": "blocked_read_only", "ok": False},
+            },
+            "process_watchdog": {
+                "all_sleeves_effective_runtime": {
+                    "status": "ready",
+                    "ok": True,
+                    "child_process_count": 16,
+                }
+            },
+            "collection": {
+                "overall_status": "ready",
+                "effective_bots_with_observations": 183,
+                "total_observations": 12345,
+            },
+            "storage": {"pressure_index": 53.028},
+        },
+    )
+    _write_json(
+        health / "ingestion_storage_control_latest.json",
+        {
+            "timestamp_utc": now,
+            "overall_status": "blocked",
+            "severity": "critical",
+            "pressure_index": 53.028,
+            "backpressure": {
+                "core_pending_lines": 809,
+                "support_pending_lines": 8246,
+                "deferred_pending_lines": 15899259,
+                "total_pending_lines": 15908314,
+            },
+            "storage": {"backlog_drain_status": "waiting_for_off_hours"},
+        },
+    )
+
+    payload = src.build_payload(project_root, env={})
+    storage_row = next(row for row in payload["personal_use"]["criteria"] if row["criterion_id"] == "storage_pressure_clean")
+
+    assert payload["personal_use"]["grade"] == "A+"
+    assert payload["personal_use"]["perfect_personal_use_ready"] is True
+    assert storage_row["ready"] is True
+    assert storage_row["evidence"]["managed_deferred_backlog_relief"]["managed"] is True
+
+
 def test_use_mode_guard_promotes_clean_personal_to_operator_grade_autonomy(tmp_path: Path, monkeypatch) -> None:
     project_root = tmp_path / "project"
     _seed_personal_ready(project_root)
