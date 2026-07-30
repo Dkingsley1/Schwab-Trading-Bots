@@ -1,0 +1,339 @@
+{
+  "schema_version": 1,
+  "policy_id": "commercial_readiness_framework_v1",
+  "control_policy": "commercial_expansion_requires_mode_specific_review_evidence_marketing_substantiation_customer_funds_blocks_security_privacy_controls_and_self_awareness",
+  "mode_env": "COMMERCIAL_PRODUCT_MODE",
+  "default_mode": "personal_only",
+  "seven_sections": [
+    "commercial_use_modes",
+    "registration_review_gates",
+    "marketing_claim_control",
+    "customer_funds_hard_blocks",
+    "commercial_evidence_packets",
+    "self_awareness_expansion",
+    "security_privacy_layer"
+  ],
+  "commercial_product_modes": {
+    "personal_only": {
+      "commercial_intent": false,
+      "description": "Personal guarded-paper/data-collection use only.",
+      "required_review_gates": [],
+      "forbidden_flags": [
+        "COMMERCIAL_USE_ENABLED",
+        "PAID_SIGNALS_ENABLED",
+        "MODEL_PORTFOLIO_ENABLED",
+        "INVESTMENT_ADVICE_ENABLED",
+        "CUSTOMER_ORDER_EXECUTION_ENABLED",
+        "CUSTOMER_FUNDS_ENABLED",
+        "CUSTODY_ENABLED",
+        "COPY_TRADING_ENABLED",
+        "PERFORMANCE_MARKETING_ENABLED",
+        "PUBLIC_MARKETING_ENABLED",
+        "COMMODITY_POOL_ENABLED"
+      ]
+    },
+    "internal_research_tool": {
+      "commercial_intent": true,
+      "description": "Internal non-public research, diagnostics, and operations tooling without customer funds, orders, advice, or public claims.",
+      "required_review_gates": [
+        "commercial_legal_review",
+        "commercial_compliance_review",
+        "privacy_security_review"
+      ],
+      "forbidden_flags": [
+        "CUSTOMER_FUNDS_ENABLED",
+        "CUSTODY_ENABLED",
+        "CUSTOMER_ORDER_EXECUTION_ENABLED",
+        "COPY_TRADING_ENABLED"
+      ]
+    },
+    "paid_analytics_reporting": {
+      "commercial_intent": true,
+      "description": "Paid reports or dashboards that avoid personalized recommendations and customer order handling.",
+      "required_review_gates": [
+        "commercial_legal_review",
+        "commercial_compliance_review",
+        "marketing_review",
+        "privacy_security_review",
+        "terms_disclosure_review"
+      ],
+      "forbidden_flags": [
+        "CUSTOMER_FUNDS_ENABLED",
+        "CUSTODY_ENABLED",
+        "CUSTOMER_ORDER_EXECUTION_ENABLED",
+        "COPY_TRADING_ENABLED"
+      ]
+    },
+    "paid_signals_newsletter": {
+      "commercial_intent": true,
+      "description": "Paid signals, newsletters, or model-watchlists that can resemble compensated advice or reports.",
+      "required_review_gates": [
+        "commercial_legal_review",
+        "commercial_compliance_review",
+        "investment_adviser_review",
+        "marketing_review",
+        "privacy_security_review",
+        "terms_disclosure_review"
+      ],
+      "forbidden_flags": [
+        "CUSTOMER_FUNDS_ENABLED",
+        "CUSTODY_ENABLED",
+        "CUSTOMER_ORDER_EXECUTION_ENABLED",
+        "COPY_TRADING_ENABLED"
+      ]
+    },
+    "adviser_support_software": {
+      "commercial_intent": true,
+      "description": "Software sold to a reviewed advisory context with no direct customer funds or order execution.",
+      "required_review_gates": [
+        "commercial_legal_review",
+        "commercial_compliance_review",
+        "investment_adviser_review",
+        "privacy_security_review",
+        "terms_disclosure_review"
+      ],
+      "forbidden_flags": [
+        "CUSTOMER_FUNDS_ENABLED",
+        "CUSTODY_ENABLED",
+        "CUSTOMER_ORDER_EXECUTION_ENABLED"
+      ]
+    },
+    "investment_advice_business": {
+      "commercial_intent": true,
+      "description": "Compensated securities advice, model portfolios, or personalized recommendations.",
+      "required_review_gates": [
+        "commercial_legal_review",
+        "commercial_compliance_review",
+        "investment_adviser_review",
+        "marketing_review",
+        "privacy_security_review",
+        "terms_disclosure_review"
+      ],
+      "forbidden_flags": [
+        "CUSTOMER_FUNDS_ENABLED",
+        "CUSTODY_ENABLED",
+        "CUSTOMER_ORDER_EXECUTION_ENABLED"
+      ]
+    },
+    "broker_customer_execution": {
+      "commercial_intent": true,
+      "description": "Customer order receipt, routing, execution, copy trading, or account handling.",
+      "required_review_gates": [
+        "commercial_legal_review",
+        "commercial_compliance_review",
+        "broker_dealer_review",
+        "privacy_security_review",
+        "terms_disclosure_review"
+      ],
+      "forbidden_flags": [
+        "CUSTOMER_FUNDS_ENABLED",
+        "CUSTODY_ENABLED"
+      ],
+      "execution_boundary": "blocked_until_external_broker_dealer_program_evidence"
+    },
+    "futures_crypto_commodity_advisory": {
+      "commercial_intent": true,
+      "description": "Futures, swaps, commodity, commodity-pool, or CTA/CPO-like analysis or advisory behavior.",
+      "required_review_gates": [
+        "commercial_legal_review",
+        "commercial_compliance_review",
+        "commodity_advice_review",
+        "marketing_review",
+        "privacy_security_review",
+        "terms_disclosure_review"
+      ],
+      "forbidden_flags": [
+        "CUSTOMER_FUNDS_ENABLED",
+        "CUSTODY_ENABLED",
+        "CUSTOMER_ORDER_EXECUTION_ENABLED",
+        "COPY_TRADING_ENABLED"
+      ]
+    },
+    "pooled_customer_funds_model": {
+      "commercial_intent": true,
+      "description": "Any pooled money, customer funds, custody, or managed-funds model.",
+      "required_review_gates": [
+        "commercial_legal_review",
+        "commercial_compliance_review",
+        "investment_adviser_review",
+        "commodity_advice_review",
+        "privacy_security_review",
+        "terms_disclosure_review"
+      ],
+      "hard_block": true,
+      "forbidden_flags": [
+        "CUSTOMER_FUNDS_ENABLED",
+        "CUSTODY_ENABLED"
+      ],
+      "execution_boundary": "hard_blocked_until_registered_custody_customer_funds_program_evidence"
+    }
+  },
+  "commercial_trigger_envs": [
+    "COMMERCIAL_USE_ENABLED",
+    "COMMERCIAL_ANALYTICS_REPORTING_ENABLED",
+    "ADVISER_SUPPORT_SOFTWARE_ENABLED",
+    "PAID_SIGNALS_ENABLED",
+    "MODEL_PORTFOLIO_ENABLED",
+    "INVESTMENT_ADVICE_ENABLED",
+    "CUSTOMER_FUNDS_ENABLED",
+    "CUSTOMER_ACCOUNTS_ENABLED",
+    "CUSTOMER_ORDER_EXECUTION_ENABLED",
+    "COPY_TRADING_ENABLED",
+    "CUSTODY_ENABLED",
+    "PERFORMANCE_MARKETING_ENABLED",
+    "PUBLIC_MARKETING_ENABLED",
+    "TESTIMONIALS_ENABLED",
+    "THIRD_PARTY_RATINGS_ENABLED",
+    "FUTURES_OR_DERIVATIVES_ADVICE_ENABLED",
+    "COMMODITY_POOL_ENABLED",
+    "CUSTOMER_DATA_ENABLED",
+    "PII_ENABLED"
+  ],
+  "review_gates": {
+    "commercial_legal_review": {
+      "env": "COMMERCIAL_LEGAL_REVIEW_APPROVED",
+      "evidence_file": "governance/commercial/evidence/commercial_legal_review.md"
+    },
+    "commercial_compliance_review": {
+      "env": "COMMERCIAL_COMPLIANCE_REVIEW_APPROVED",
+      "evidence_file": "governance/commercial/evidence/commercial_compliance_review.md"
+    },
+    "investment_adviser_review": {
+      "env": "INVESTMENT_ADVISER_REVIEW_APPROVED",
+      "evidence_file": "governance/commercial/evidence/investment_adviser_review.md"
+    },
+    "broker_dealer_review": {
+      "env": "BROKER_DEALER_REVIEW_APPROVED",
+      "evidence_file": "governance/commercial/evidence/broker_dealer_review.md"
+    },
+    "commodity_advice_review": {
+      "env": "COMMODITY_ADVICE_REVIEW_APPROVED",
+      "evidence_file": "governance/commercial/evidence/commodity_advice_review.md"
+    },
+    "marketing_review": {
+      "env": "MARKETING_REVIEW_APPROVED",
+      "evidence_file": "governance/commercial/evidence/marketing_review.md"
+    },
+    "privacy_security_review": {
+      "env": "PRIVACY_SECURITY_REVIEW_APPROVED",
+      "evidence_file": "governance/commercial/evidence/privacy_security_review.md"
+    },
+    "terms_disclosure_review": {
+      "env": "TERMS_DISCLOSURE_REVIEW_APPROVED",
+      "evidence_file": "governance/commercial/evidence/terms_disclosure_review.md"
+    }
+  },
+  "marketing_claim_control": {
+    "claims_file": "governance/commercial/marketing_claims.json",
+    "review_env": "MARKETING_REVIEW_APPROVED",
+    "claim_text_env": "COMMERCIAL_MARKETING_CLAIMS_TEXT",
+    "requires_net_performance_when_gross_performance_used": true,
+    "requires_hypothetical_or_backtest_label": true,
+    "requires_raw_vs_controlled_profitability_label": true,
+    "requires_substantiation_evidence": true
+  },
+  "customer_funds_hard_blocks": {
+    "customer_funds_program_registered_env": "CUSTOMER_FUNDS_PROGRAM_REGISTERED",
+    "custody_program_review_env": "CUSTODY_PROGRAM_REVIEW_APPROVED",
+    "customer_funds_segregation_env": "CUSTOMER_FUNDS_SEGREGATION_EVIDENCE",
+    "customer_funds_audit_trail_env": "CUSTOMER_FUNDS_AUDIT_TRAIL_READY",
+    "best_execution_review_env": "BEST_EXECUTION_REVIEW_READY",
+    "customer_order_routing_disclosure_env": "CUSTOMER_ORDER_ROUTING_DISCLOSURE_READY",
+    "customer_order_audit_trail_env": "CUSTOMER_ORDER_AUDIT_TRAIL_READY"
+  },
+  "commercial_evidence_packet": {
+    "output_json": "governance/health/commercial_readiness_control_latest.json",
+    "output_markdown": "exports/reports/operator/commercial_readiness_packet_latest.md",
+    "required_files_for_commercial_intent": [
+      "governance/commercial/evidence/business_mode_statement.md",
+      "governance/commercial/evidence/review_approvals.md",
+      "governance/commercial/evidence/performance_methodology.md",
+      "governance/commercial/evidence/marketing_claim_register.md",
+      "governance/commercial/evidence/customer_funds_custody_attestation.md",
+      "governance/commercial/evidence/security_privacy_program.md",
+      "governance/commercial/evidence/incident_response_plan.md",
+      "governance/commercial/evidence/audit_log_retention_policy.md",
+      "governance/commercial/evidence/service_provider_register.md",
+      "governance/commercial/evidence/commercial_release_approval.md"
+    ]
+  },
+  "security_privacy_layer": {
+    "customer_data_envs": [
+      "CUSTOMER_DATA_ENABLED",
+      "PII_ENABLED",
+      "CUSTOMER_ACCOUNTS_ENABLED",
+      "CUSTOMER_FUNDS_ENABLED",
+      "CUSTODY_ENABLED"
+    ],
+    "required_artifacts": [
+      "governance/health/security_audit_latest.json",
+      "governance/health/secret_scan_latest.json",
+      "governance/health/telemetry_redaction_canary_latest.json"
+    ],
+    "customer_data_required_controls": [
+      "WRITTEN_INFOSEC_PROGRAM_READY",
+      "CUSTOMER_DATA_INVENTORY_READY",
+      "ACCESS_CONTROL_REVIEW_READY",
+      "ENCRYPTION_REVIEW_READY",
+      "MFA_REVIEW_READY",
+      "SECURITY_MONITORING_READY",
+      "INCIDENT_RESPONSE_PLAN_READY",
+      "VENDOR_SECURITY_REVIEW_READY",
+      "DATA_DISPOSAL_POLICY_READY",
+      "STAFF_SECURITY_TRAINING_READY"
+    ]
+  },
+  "self_awareness_surfaces": [
+    "commercial_product_mode",
+    "marketing_claim_risk",
+    "customer_funds_boundary",
+    "broker_dealer_boundary",
+    "investment_adviser_boundary",
+    "cta_cpo_boundary",
+    "commercial_release_readiness",
+    "public_claim_evidence_status",
+    "security_privacy_boundary"
+  ],
+  "regulatory_source_references": [
+    {
+      "source_id": "sec_investment_adviser_marketing",
+      "url": "https://www.sec.gov/resources-small-businesses/small-business-compliance-guides/investment-adviser-marketing",
+      "scope": "Investment adviser advertising, testimonials, endorsements, third-party ratings, performance, hypothetical performance, and records."
+    },
+    {
+      "source_id": "sec_marketing_compliance_faqs_2026_01_15",
+      "url": "https://www.sec.gov/rules-regulations/staff-guidance/division-investment-management-frequently-asked-questions/marketing-compliance-frequently-asked-questions",
+      "scope": "Current SEC staff FAQ context for marketing compliance."
+    },
+    {
+      "source_id": "sec_investment_adviser_definition",
+      "url": "https://www.sec.gov/interps/legal/slbim11.htm",
+      "scope": "Compensated securities advice, reports, and adviser boundary."
+    },
+    {
+      "source_id": "finra_broker_dealer_registration",
+      "url": "https://www.finra.org/registration-exams-ce/broker-dealers",
+      "scope": "Broker-dealer registration lifecycle."
+    },
+    {
+      "source_id": "finra_best_execution_order_routing",
+      "url": "https://www.finra.org/rules-guidance/guidance/reports/2026-finra-annual-regulatory-oversight-report/best-execution",
+      "scope": "Customer order handling, best execution, and order-routing disclosures."
+    },
+    {
+      "source_id": "cftc_intermediaries_cta_cpo",
+      "url": "https://www.cftc.gov/IndustryOversight/Intermediaries/index.htm",
+      "scope": "CTA, CPO, futures, swaps, options, and commodity-pool intermediary boundaries."
+    },
+    {
+      "source_id": "ftc_safeguards_rule",
+      "url": "https://www.ftc.gov/legal-library/browse/rules/safeguards-rule",
+      "scope": "Customer-information security safeguards for covered financial institutions."
+    },
+    {
+      "source_id": "ftc_safeguards_business_guide",
+      "url": "https://www.ftc.gov/business-guidance/resources/ftc-safeguards-rule-what-your-business-needs-know",
+      "scope": "Written information-security program, risk assessment, access controls, encryption, MFA, monitoring, training, vendor oversight, incident response, and reporting."
+    }
+  ]
+}

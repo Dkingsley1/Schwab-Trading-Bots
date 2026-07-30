@@ -416,6 +416,7 @@ def _surface_matrix(health_root: Path, project_root: Path, *, now: datetime | No
         "data_plane_recovery": health_root / "data_plane_recovery_controller_latest.json",
         "live_runtime_separation": health_root / "live_runtime_separation_control_latest.json",
         "use_mode_compliance": health_root / "use_mode_compliance_guard_latest.json",
+        "commercial_readiness": health_root / "commercial_readiness_control_latest.json",
         "master_infra": health_root / "master_infrastructure_supervisor_latest.json",
         "artifact_freshness": health_root / "artifact_freshness_slo_latest.json",
         "training_quality": health_root / "training_quality_control_latest.json",
@@ -1132,6 +1133,8 @@ def _dependency_edges() -> list[dict[str, str]]:
         {"from": "capital_growth_awareness", "to": "system_self_model", "reason": "money-tree awareness becomes part of the shared self-model bus"},
         {"from": "use_mode_compliance", "to": "system_self_model", "reason": "personal, commercial, customer, marketing, and live authority boundaries become first-class awareness"},
         {"from": "use_mode_compliance", "to": "live_canary_readiness_contract", "reason": "live-money canary must pass use-mode and commercial-boundary evidence before promotion"},
+        {"from": "commercial_readiness", "to": "system_self_model", "reason": "seven-section commercial product readiness becomes a first-class awareness domain"},
+        {"from": "commercial_readiness", "to": "live_canary_readiness_contract", "reason": "paid, public, customer-facing, funds, claims, and privacy/security blockers constrain promotion"},
         {"from": "schwab_indicator_intelligence", "to": "system_expansion_execution", "reason": "Schwab study and strategy catalog feeds the indicator-to-feature bridge lane"},
         {"from": "capital_rotation_control", "to": "system_expansion_execution", "reason": "paper-only sleeve rotation pressure feeds capital simulator v2"},
         {"from": "system_architecture_contract_graph", "to": "system_expansion_execution", "reason": "blocked, degraded, and stale nodes feed self-healing and stale-surface expansion lanes"},
@@ -1238,6 +1241,57 @@ def _use_mode_compliance_awareness(use_mode: dict[str, Any]) -> dict[str, Any]:
         ],
         "next_safe_command": ["./scripts/ops/opsctl.sh", "use-mode-compliance", "--json"],
         "control_contract": "personal_a_plus_is_guarded_paper_data_collection_readiness_commercial_or_customer_use_requires_explicit_review_evidence",
+    }
+
+
+def _commercial_readiness_awareness(commercial: dict[str, Any]) -> dict[str, Any]:
+    guard_status = _status(commercial)
+    if not commercial:
+        return {
+            "status": "advisory",
+            "commercial_product_mode": "personal_only",
+            "commercial_intent": False,
+            "commercial_release_ready": False,
+            "commercial_release_blocked": False,
+            "grade": "unknown",
+            "ready_section_count": 0,
+            "section_count": 0,
+            "blocked_section_count": 0,
+            "blockers": [],
+            "live_execution_authority": False,
+            "needs": ["refresh_commercial_readiness_control"],
+            "next_safe_command": ["./scripts/ops/opsctl.sh", "commercial-readiness", "--json"],
+            "control_contract": "seven_section_commercial_readiness_must_be_visible_before_public_customer_or_paid_use",
+        }
+    authority = commercial.get("authority_boundaries") if isinstance(commercial.get("authority_boundaries"), dict) else {}
+    blockers = [str(item) for item in commercial.get("blockers", []) if str(item).strip()] if isinstance(commercial.get("blockers"), list) else []
+    status = "ready"
+    if guard_status == "blocked" or blockers or bool(authority.get("live_execution_authority", False)):
+        status = "blocked"
+    elif bool(commercial.get("commercial_intent", False)) and not bool(commercial.get("commercial_release_ready", False)):
+        status = "advisory"
+    return {
+        "status": status,
+        "guard_status": guard_status or "missing",
+        "commercial_product_mode": str(commercial.get("commercial_product_mode") or "personal_only"),
+        "commercial_intent": bool(commercial.get("commercial_intent", False)),
+        "commercial_release_ready": bool(commercial.get("commercial_release_ready", False)),
+        "commercial_release_blocked": bool(commercial.get("commercial_release_blocked", False)),
+        "grade": str(commercial.get("grade") or "unknown"),
+        "ready_section_count": _safe_int(commercial.get("ready_section_count"), 0),
+        "section_count": _safe_int(commercial.get("section_count"), 0),
+        "blocked_section_count": _safe_int(commercial.get("blocked_section_count"), 0),
+        "blockers": blockers,
+        "live_execution_authority": bool(authority.get("live_execution_authority", False)),
+        "customer_funds_allowed": bool(authority.get("customer_funds_allowed", False)),
+        "customer_order_execution_allowed": bool(authority.get("customer_order_execution_allowed", False)),
+        "seven_section_contract": commercial.get("seven_section_contract") if isinstance(commercial.get("seven_section_contract"), dict) else {},
+        "needs": [
+            *([] if not blockers else ["clear_commercial_readiness_blockers"]),
+            *([] if bool(commercial.get("commercial_release_ready", False)) or not bool(commercial.get("commercial_intent", False)) else ["complete_commercial_release_packet_before_public_or_customer_use"]),
+        ],
+        "next_safe_command": ["./scripts/ops/opsctl.sh", "commercial-readiness", "--json"],
+        "control_contract": "commercial_modes_reviews_marketing_claims_customer_funds_evidence_packet_self_awareness_and_security_privacy_are_first_class_boundaries",
     }
 
 
@@ -2179,6 +2233,7 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
     data_plane = _load_json(health_root / "data_plane_recovery_controller_latest.json")
     live_runtime = _load_json(health_root / "live_runtime_separation_control_latest.json")
     use_mode = _load_json(health_root / "use_mode_compliance_guard_latest.json")
+    commercial_readiness = _load_json(health_root / "commercial_readiness_control_latest.json")
     incident = _load_json(project_root / "governance" / "alerts" / "incident_auto_halt_latest.json")
     core_materialization = _load_json(health_root / "core_bot_materialization_guard_latest.json")
     tripwire = _load_json(health_root / "shadow_watchdog_tripwire_latest.json")
@@ -2217,6 +2272,7 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
         "dependency_awareness": _dependency_awareness(surface_matrix, cockpit),
         "growth_awareness": _growth_awareness(identity, memory, cockpit),
         "use_mode_compliance": _use_mode_compliance_awareness(use_mode),
+        "commercial_readiness": _commercial_readiness_awareness(commercial_readiness),
         "self_reporting": _self_reporting_awareness(cockpit, surface_matrix),
     }
     domain_statuses = [str(row.get("status") or "missing") for row in domains.values()]
@@ -2261,6 +2317,9 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
         f"use-mode boundary {domains['use_mode_compliance']['status']} "
         f"mode={domains['use_mode_compliance']['use_mode']} "
         f"personal_grade={domains['use_mode_compliance']['personal_grade']}, "
+        f"commercial readiness {domains['commercial_readiness']['status']} "
+        f"mode={domains['commercial_readiness']['commercial_product_mode']} "
+        f"grade={domains['commercial_readiness']['grade']}, "
         f"and {len(blocked_or_degraded)} blocked/degraded watched surfaces."
     )
     advanced_backlog = _advanced_upgrade_backlog(domains, dependency_memory, failure_index, registry_diff, surface_matrix)
@@ -2313,6 +2372,7 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
                 "schwab_indicator_intelligence",
                 "system_expansion_execution",
                 "use_mode_compliance",
+                "commercial_readiness",
             ],
         },
         "source_files": {
@@ -2350,6 +2410,7 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
             "data_plane_recovery": str(health_root / "data_plane_recovery_controller_latest.json"),
             "live_runtime_separation": str(health_root / "live_runtime_separation_control_latest.json"),
             "use_mode_compliance": str(health_root / "use_mode_compliance_guard_latest.json"),
+            "commercial_readiness": str(health_root / "commercial_readiness_control_latest.json"),
         },
         "_registry_diff_memory_full": registry_diff_full,
     }

@@ -316,6 +316,7 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
     schwab_futures = _health(project_root, "data_ingress_latest_schwab_futures_equities_schwab.json")
     done_for_today = _health(project_root, "system_done_for_today_latest.json")
     use_mode = _health(project_root, "use_mode_compliance_guard_latest.json")
+    commercial_readiness = _health(project_root, "commercial_readiness_control_latest.json")
     alerts = process.get("alerts") if isinstance(process.get("alerts"), list) else []
     alert_summary = _alert_details(alerts)
     safety = process.get("safety_pause") if isinstance(process.get("safety_pause"), dict) else {}
@@ -566,11 +567,26 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
             "policy": "context_only_for_health_fast_guarded_paper; live_canary_readiness_consumes_as_hard_boundary",
             "next_command": ["./scripts/ops/opsctl.sh", "use-mode-compliance", "--json"],
         },
+        "commercial_readiness": {
+            "overall_status": commercial_readiness.get("overall_status") or "missing",
+            "commercial_product_mode": commercial_readiness.get("commercial_product_mode") or "personal_only",
+            "commercial_intent": bool(commercial_readiness.get("commercial_intent", False)),
+            "commercial_release_ready": bool(commercial_readiness.get("commercial_release_ready", False)),
+            "commercial_release_blocked": bool(commercial_readiness.get("commercial_release_blocked", False)),
+            "grade": commercial_readiness.get("grade"),
+            "ready_section_count": _safe_int(commercial_readiness.get("ready_section_count"), 0),
+            "section_count": _safe_int(commercial_readiness.get("section_count"), 0),
+            "blockers": commercial_readiness.get("blockers", []),
+            "live_execution_authority": bool(_dict(commercial_readiness.get("authority_boundaries")).get("live_execution_authority", False)),
+            "policy": "context_only_for_health_fast_guarded_paper; commercial framework is enforced in live-canary readiness and self-awareness",
+            "next_command": ["./scripts/ops/opsctl.sh", "commercial-readiness", "--json"],
+        },
         "recommended_commands": [
             *([["./scripts/ops/opsctl.sh", "coinbase-api-health", "--snapshot", "--json"]] if collector_repair["status"] == "needs_repair" else []),
             *([["./scripts/ops/opsctl.sh", "pressure-relief", "--apply", "--json"]] if not platform_repair["ok"] else []),
             *([plumbing.get("root_cause", {}).get("next_command")] if isinstance(plumbing.get("root_cause"), dict) and isinstance(plumbing.get("root_cause", {}).get("next_command"), list) else []),
             *([["./scripts/ops/opsctl.sh", "use-mode-compliance", "--json"]] if not use_mode else []),
+            *([["./scripts/ops/opsctl.sh", "commercial-readiness", "--json"]] if not commercial_readiness else []),
             ["./scripts/ops/opsctl.sh", "system-plumbing-control", "--json"],
             ["./scripts/ops/opsctl.sh", "global-halt-status", "--json"],
             ["./scripts/ops/opsctl.sh", "done-for-today", "--json"],

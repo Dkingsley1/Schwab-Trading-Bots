@@ -598,3 +598,37 @@ def test_system_self_model_includes_use_mode_compliance_awareness(tmp_path: Path
     assert use_mode["personal_grade"] == "A+"
     assert use_mode["live_execution_authority"] is False
     assert "use_mode_compliance" in payload["control_contract"]["memory_surfaces"]
+
+
+def test_system_self_model_includes_commercial_readiness_awareness(tmp_path: Path) -> None:
+    health = tmp_path / "governance" / "health"
+    _write_json(
+        health / "commercial_readiness_control_latest.json",
+        {
+            "overall_status": "ready",
+            "commercial_product_mode": "personal_only",
+            "commercial_intent": False,
+            "commercial_release_ready": False,
+            "commercial_release_blocked": False,
+            "grade": "A+",
+            "ready_section_count": 7,
+            "section_count": 7,
+            "blocked_section_count": 0,
+            "blockers": [],
+            "authority_boundaries": {
+                "live_execution_authority": False,
+                "customer_funds_allowed": False,
+                "customer_order_execution_allowed": False,
+            },
+            "seven_section_contract": {"commercial_use_modes": True},
+        },
+    )
+
+    payload = src.build_payload(tmp_path)
+
+    commercial = payload["awareness_domains"]["commercial_readiness"]
+    assert commercial["status"] == "ready"
+    assert commercial["commercial_product_mode"] == "personal_only"
+    assert commercial["grade"] == "A+"
+    assert commercial["live_execution_authority"] is False
+    assert "commercial_readiness" in payload["control_contract"]["memory_surfaces"]

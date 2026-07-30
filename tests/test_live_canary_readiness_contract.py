@@ -133,6 +133,24 @@ def _seed_ready_artifacts(project_root: Path) -> None:
             },
         },
     )
+    _write_json(
+        health / "commercial_readiness_control_latest.json",
+        {
+            "timestamp_utc": now,
+            "overall_status": "ready",
+            "commercial_product_mode": "personal_only",
+            "commercial_intent": False,
+            "commercial_release_ready": False,
+            "commercial_release_blocked": False,
+            "grade": "A+",
+            "blockers": [],
+            "authority_boundaries": {
+                "live_execution_authority": False,
+                "customer_funds_allowed": False,
+                "customer_order_execution_allowed": False,
+            },
+        },
+    )
 
 
 def test_live_canary_readiness_contract_blocks_raw_d_grade(tmp_path: Path, monkeypatch) -> None:
@@ -335,3 +353,39 @@ def test_live_canary_readiness_contract_blocks_commercial_customer_execution_bou
     assert milestone["ready"] is False
     assert "commercial_boundary_blockers_present" in milestone["blockers"]
     assert "broker_dealer_review_not_approved" in milestone["evidence"]["commercial_blockers"]
+
+
+def test_live_canary_readiness_contract_blocks_commercial_readiness_framework(tmp_path: Path, monkeypatch) -> None:
+    project_root = tmp_path / "project"
+    out_path = project_root / "governance" / "health" / "live_canary_readiness_contract_latest.json"
+    _seed_ready_artifacts(project_root)
+    _write_json(
+        out_path,
+        {
+            "overall_status": "blocked",
+            "continuous_all_gates_ready_since_utc": (datetime.now(timezone.utc) - timedelta(hours=730)).isoformat(),
+        },
+    )
+    _write_json(
+        project_root / "governance" / "health" / "commercial_readiness_control_latest.json",
+        {
+            "overall_status": "blocked",
+            "commercial_product_mode": "paid_signals_newsletter",
+            "commercial_intent": True,
+            "commercial_release_ready": False,
+            "commercial_release_blocked": True,
+            "blockers": ["marketing_claim_control:marketing_review_not_approved"],
+            "authority_boundaries": {"live_execution_authority": False},
+        },
+    )
+    monkeypatch.setattr(src.source_mutation_guard, "build_payload", lambda _root: {"ok": True, "overall_status": "ready", "dirty_count": 0, "dirty_entries": []})
+    monkeypatch.setattr(src.production_flow_smoke, "build_payload", lambda _root: {"ok": True, "overall_status": "ready", "failed_checks": []})
+
+    payload = src.build_payload(project_root, out_path=out_path)
+
+    assert payload["overall_status"] == "blocked"
+    assert "m11_use_mode_and_commercial_boundary" in payload["blocked_milestones"]
+    milestone = next(row for row in payload["live_money_canary_milestones"] if row["milestone_id"] == "m11_use_mode_and_commercial_boundary")
+    assert "commercial_readiness_status=blocked" in milestone["blockers"]
+    assert "commercial_release_blocked" in milestone["blockers"]
+    assert "marketing_claim_control:marketing_review_not_approved" in milestone["evidence"]["commercial_readiness_blockers"]

@@ -22,6 +22,7 @@ DEFAULT_PROTECTED_PATHS = (
     "scripts/ops/command_validity_bot.py",
     "scripts/ops/commands_hygiene_bot.py",
     "scripts/ops/install_ops_automation_launchd.sh",
+    "scripts/ops/commercial_readiness_control.py",
     "scripts/ops/live_canary_readiness_contract.py",
     "scripts/ops/paper_400_ramp_control.py",
     "scripts/ops/paper_live_data_standard.py",
@@ -40,11 +41,13 @@ DEFAULT_PROTECTED_PATHS = (
     "config/credential_runtime_policy.json",
     "config/promotion_gate_snapshot_policy.json",
     "config/generated_artifact_policy.json",
+    "config/commercial_readiness_framework_v1.json",
     "config/infrabot_library_self_awareness_v1.json",
     "config/live_canary_readiness_contract.json",
     "config/production_level_upgrade_hardener_v1.json",
     "config/production_readiness_control_v1.json",
     "docs/operations/PRODUCTION_FLOW_GUARDRAILS.md",
+    "docs/operations/COMMERCIAL_READINESS_FRAMEWORK.md",
     "master_bot_registry.json",
 )
 

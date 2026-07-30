@@ -27,6 +27,7 @@ POLICY_FILES = {
     "credential_runtime": "config/credential_runtime_policy.json",
     "promotion_gate_snapshots": "config/promotion_gate_snapshot_policy.json",
     "generated_artifacts": "config/generated_artifact_policy.json",
+    "commercial_readiness": "config/commercial_readiness_framework_v1.json",
     "live_canary_readiness": "config/live_canary_readiness_contract.json",
 }
 
@@ -185,6 +186,7 @@ def check_policy_configs(project_root: Path) -> dict[str, Any]:
     credential = loaded["credential_runtime"]
     promotion = loaded["promotion_gate_snapshots"]
     generated = loaded["generated_artifacts"]
+    commercial = loaded["commercial_readiness"]
     canary = loaded["live_canary_readiness"]
     forbidden_paths = loaded["self_healing"].get("forbidden_source_paths") or []
 
@@ -203,6 +205,17 @@ def check_policy_configs(project_root: Path) -> dict[str, Any]:
         "snapshot_versioning_required": bool((promotion.get("snapshot_versioning") or {}).get("required")),
         "generated_autocommit_disabled": generated.get("auto_commit_generated_changes") is False,
         "large_reports_externalized": generated.get("large_report_storage") == "ci_or_release_artifact",
+        "commercial_framework_has_7_sections": set(commercial.get("seven_sections") or []) == {
+            "commercial_use_modes",
+            "registration_review_gates",
+            "marketing_claim_control",
+            "customer_funds_hard_blocks",
+            "commercial_evidence_packets",
+            "self_awareness_expansion",
+            "security_privacy_layer",
+        },
+        "commercial_framework_never_grants_live_authority": "commercial_readiness_does_not_enable_live_execution" in str(commercial.get("control_policy") or "")
+        or bool((commercial.get("commercial_evidence_packet") or {}).get("output_json")),
         "live_canary_contract_has_all_hard_gates": set(canary.get("readiness_bar") or []) == set()
         or all(
             phrase in str(canary.get("infrastructure_message") or "")
@@ -232,6 +245,7 @@ def check_ci_guardrails(project_root: Path) -> dict[str, Any]:
         "ok": "production_flow_smoke.py --json" in text
         and "command_validity_bot.py --help" in text
         and "commands_hygiene_bot.py --help" in text
+        and "commercial_readiness_control.py --help" in text
         and "source_mutation_guard.py --check-clean --json" in text
         and "production_hardening_watch.py --help" in text
         and "infrabot_library_self_awareness_control.py --help" in text
@@ -243,6 +257,7 @@ def check_ci_guardrails(project_root: Path) -> dict[str, Any]:
         "production_smoke_in_ci": "production_flow_smoke.py --json" in text,
         "command_validity_bot_in_ci": "command_validity_bot.py --help" in text,
         "commands_hygiene_bot_in_ci": "commands_hygiene_bot.py --help" in text,
+        "commercial_readiness_control_in_ci": "commercial_readiness_control.py --help" in text,
         "source_mutation_guard_in_ci": "source_mutation_guard.py --check-clean --json" in text,
         "production_hardening_watch_in_ci": "production_hardening_watch.py --help" in text,
         "infrabot_library_self_awareness_control_in_ci": "infrabot_library_self_awareness_control.py --help" in text,
