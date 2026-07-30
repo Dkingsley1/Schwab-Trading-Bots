@@ -93,6 +93,181 @@ def test_storage_backpressure_autopilot_builds_coordinated_plan(tmp_path: Path, 
     assert payload["previews"]["retention_debt_sheriff"]["severe_focus"] is True
 
 
+def test_storage_backpressure_autopilot_owns_high_deferred_backlog_without_operator(tmp_path: Path, monkeypatch) -> None:
+    project_root = tmp_path / "project"
+    health = project_root / "governance" / "health"
+    _write_json(
+        health / "ingestion_storage_control_latest.json",
+        {
+            "overall_status": "blocked",
+            "severity": "critical",
+            "pressure_index": 53.001,
+            "backpressure": {
+                "pending_lines_threshold": 15000,
+                "core_pending_lines": 827,
+                "support_pending_lines": 246,
+                "deferred_pending_lines": 15899259,
+                "cold_pending_lines": 0,
+                "total_pending_lines": 15900332,
+                "oldest_pending_age_seconds": 4893.061,
+                "estimated_total_drain_minutes": 0.0,
+            },
+            "storage": {
+                "retention_debt_gb": 0.0,
+                "backlog_drain_status": "waiting_for_off_hours",
+                "backlog_drain_off_hours": False,
+                "backlog_drain_recommended_now": False,
+                "backlog_quarantine_candidate_files": 0,
+            },
+            "data_integrity": {
+                "sql_invalid_lines": 0,
+                "sql_overlay_invalid_lines": 0,
+                "sql_overlay_oversize_payloads": 0,
+                "sql_overlay_ops_write_failures": 0,
+            },
+            "external_route_verification": {
+                "verification_state": "ready",
+                "ready_count": 3,
+                "tracked_count": 3,
+            },
+            "raw_live_expansion_contract": {
+                "expansion_ready": False,
+            },
+        },
+    )
+
+    monkeypatch.setenv("STORAGE_BACKPRESSURE_AUTOPILOT_ALWAYS_ARMED", "1")
+    monkeypatch.setattr(
+        autopilot_src.backpressure_src,
+        "build_payload",
+        lambda *args, **kwargs: {"overall_status": "ready", "actionable": True, "recommended_actions": []},
+    )
+    monkeypatch.setattr(
+        autopilot_src.drainer_src,
+        "build_payload",
+        lambda *args, **kwargs: {
+            "overall_status": "ready",
+            "ready_drainer_count": 1,
+            "active_drainer": {"name": "schema_violation_tail_drainer"},
+            "recommended_actions": [],
+        },
+    )
+    monkeypatch.setattr(
+        autopilot_src.coordinator_src,
+        "build_payload",
+        lambda *args, **kwargs: {
+            "overall_status": "ready",
+            "actionable": True,
+            "drain_ready": False,
+            "maintenance_ready": True,
+            "recommended_actions": [],
+        },
+    )
+    monkeypatch.setattr(
+        autopilot_src.sheriff_src,
+        "build_payload",
+        lambda *args, **kwargs: {
+            "overall_status": "idle",
+            "actionable": False,
+            "focus": {"focus_shards": [], "targeted_retention_debt_gb": 0.0, "severe_focus": False},
+            "recommended_actions": [],
+        },
+    )
+
+    payload = autopilot_src.build_payload(project_root, apply=False)
+    control = payload["high_backlog_control"]
+
+    assert control["active"] is True
+    assert control["class"] == "managed_deferred_backlog_with_stale_support_tail"
+    assert control["self_healing_status"] == "owned_hot_tail_now_deferred_off_hours"
+    assert control["next_system_action"] == "drain_stale_tail_now_and_hold_bulk_deferred_for_off_hours"
+    assert control["automation_contract"]["safe_to_auto_apply"] is True
+    assert control["paper_soak_boundary"]["allowed_with_advisory"] is True
+    assert control["live_money_boundary"]["blocked"] is True
+    assert "writer_cycle_coordinator" in control["automation_contract"]["repair_plan_names"]
+    assert "system owns high backlog" in control["operator_followups"][0]
+    assert payload["metrics"]["high_backlog_active"] is True
+    assert payload["metrics"]["high_backlog_no_operator_required"] is True
+
+
+def test_storage_backpressure_autopilot_distinguishes_hot_core_backlog_from_managed_deferred(tmp_path: Path, monkeypatch) -> None:
+    project_root = tmp_path / "project"
+    health = project_root / "governance" / "health"
+    _write_json(
+        health / "ingestion_storage_control_latest.json",
+        {
+            "overall_status": "blocked",
+            "severity": "critical",
+            "pressure_index": 4.0,
+            "backpressure": {
+                "pending_lines_threshold": 15000,
+                "core_pending_lines": 82000,
+                "support_pending_lines": 0,
+                "deferred_pending_lines": 60000,
+                "cold_pending_lines": 0,
+                "total_pending_lines": 180000,
+                "oldest_pending_age_seconds": 1200.0,
+                "estimated_total_drain_minutes": 90.0,
+            },
+            "storage": {
+                "retention_debt_gb": 0.0,
+                "backlog_drain_status": "drain_active",
+                "backlog_drain_off_hours": True,
+                "backlog_drain_recommended_now": True,
+                "backlog_quarantine_candidate_files": 0,
+            },
+            "data_integrity": {"sql_invalid_lines": 0},
+            "external_route_verification": {
+                "verification_state": "ready",
+                "ready_count": 3,
+                "tracked_count": 3,
+            },
+        },
+    )
+
+    monkeypatch.setenv("STORAGE_BACKPRESSURE_AUTOPILOT_ALWAYS_ARMED", "1")
+    monkeypatch.setattr(
+        autopilot_src.backpressure_src,
+        "build_payload",
+        lambda *args, **kwargs: {"overall_status": "ready", "actionable": True, "recommended_actions": []},
+    )
+    monkeypatch.setattr(
+        autopilot_src.drainer_src,
+        "build_payload",
+        lambda *args, **kwargs: {"overall_status": "idle", "ready_drainer_count": 0, "recommended_actions": []},
+    )
+    monkeypatch.setattr(
+        autopilot_src.coordinator_src,
+        "build_payload",
+        lambda *args, **kwargs: {
+            "overall_status": "ready",
+            "actionable": True,
+            "drain_ready": True,
+            "maintenance_ready": True,
+            "recommended_actions": [],
+        },
+    )
+    monkeypatch.setattr(
+        autopilot_src.sheriff_src,
+        "build_payload",
+        lambda *args, **kwargs: {
+            "overall_status": "idle",
+            "actionable": False,
+            "focus": {"focus_shards": [], "targeted_retention_debt_gb": 0.0, "severe_focus": False},
+            "recommended_actions": [],
+        },
+    )
+
+    payload = autopilot_src.build_payload(project_root, apply=False)
+    control = payload["high_backlog_control"]
+
+    assert control["class"] == "hot_path_backpressure"
+    assert control["self_healing_status"] == "owned_hot_path_drain_now"
+    assert control["next_system_action"] == "run_hot_path_single_writer_catchup"
+    assert control["paper_soak_boundary"]["allowed_with_advisory"] is False
+    assert control["routing_truth"]["hot_core"] is True
+
+
 def test_storage_backpressure_autopilot_fast_paths_completed_writer_handoff(tmp_path: Path, monkeypatch) -> None:
     project_root = tmp_path / "project"
     _write_json(

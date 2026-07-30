@@ -79,6 +79,14 @@ RAW_TRAINING_RAW_LIVE_MAX_CORE_LINES = 10_000
 RAW_TRAINING_RAW_LIVE_MAX_AGE_SECONDS = 15 * 60
 DEFAULT_BOTLOGS_SPACE_RECOVERY_MAX_DELETE_GB = 8.0
 DEFAULT_BOTLOGS_SPACE_RECOVERY_TARGET_FREE_GB = 64.0
+HIGH_BACKLOG_TOTAL_MIN_LINES = 60_000
+SEVERE_BACKLOG_TOTAL_MIN_LINES = 250_000
+CRITICAL_BACKLOG_TOTAL_MIN_LINES = 1_000_000
+HOT_BACKLOG_CORE_TARGET_LINES = 5_000
+HOT_BACKLOG_SUPPORT_TARGET_LINES = 5_000
+STALE_BACKLOG_AGE_SECONDS = 4 * 60
+LIVE_MONEY_BACKLOG_TOTAL_TARGET_LINES = 15_000
+LIVE_MONEY_BACKLOG_AGE_TARGET_SECONDS = 15 * 60
 
 
 def _safe_float(raw: Any, default: float = 0.0) -> float:
@@ -505,6 +513,269 @@ def _clearance_progress(before: dict[str, Any], after: dict[str, Any]) -> dict[s
         "severity_improved": severity_improved,
         "before": before,
         "after": after,
+    }
+
+
+def _high_backlog_control(
+    *,
+    storage_control: dict[str, Any],
+    repair_plan: list[dict[str, Any]],
+    clearance_after: dict[str, Any],
+    attempts: list[dict[str, Any]],
+    cycle_records: list[dict[str, Any]],
+    always_armed: bool,
+    apply_requested: bool,
+) -> dict[str, Any]:
+    backpressure = _as_dict(storage_control.get("backpressure"))
+    storage = _as_dict(storage_control.get("storage"))
+    integrity = _as_dict(storage_control.get("data_integrity"))
+    storage_plane = _as_dict(storage_control.get("storage_plane_contract"))
+    if not storage_plane:
+        efficiency = _as_dict(storage_control.get("storage_efficiency_contract"))
+        storage_plane = _as_dict(efficiency.get("storage_plane_phase_contract"))
+    effective = _as_dict(backpressure.get("effective_raw_live"))
+    raw_estimate = _as_dict(effective.get("raw_live_estimate"))
+    raw_live = _as_dict(backpressure.get("raw_live"))
+    route = _as_dict(storage_control.get("external_route_verification"))
+    raw_expansion = _as_dict(storage_control.get("raw_live_expansion_contract"))
+
+    pending_threshold = max(_safe_int(backpressure.get("pending_lines_threshold"), 15_000), 1)
+    core_pending = max(
+        _safe_int(backpressure.get("core_pending_lines"), 0),
+        _safe_int(effective.get("core_pending_lines"), 0),
+        _safe_int(raw_estimate.get("core_pending_lines"), 0),
+        _safe_int(raw_live.get("core_pending_lines"), 0),
+    )
+    support_pending = max(
+        _safe_int(backpressure.get("support_pending_lines"), 0),
+        _safe_int(effective.get("support_pending_lines"), 0),
+        _safe_int(raw_estimate.get("support_pending_lines"), 0),
+        _safe_int(raw_live.get("support_pending_lines"), 0),
+    )
+    deferred_pending = max(
+        _safe_int(backpressure.get("deferred_pending_lines"), 0),
+        _safe_int(effective.get("deferred_pending_lines"), 0),
+        _safe_int(raw_estimate.get("deferred_pending_lines"), 0),
+        _safe_int(raw_live.get("deferred_pending_lines"), 0),
+    )
+    cold_pending = max(
+        _safe_int(backpressure.get("cold_pending_lines"), 0),
+        _safe_int(effective.get("cold_pending_lines"), 0),
+        _safe_int(raw_estimate.get("cold_pending_lines"), 0),
+        _safe_int(raw_live.get("cold_pending_lines"), 0),
+    )
+    total_pending = max(
+        _safe_int(backpressure.get("total_pending_lines"), 0),
+        _safe_int(effective.get("total_pending_lines"), 0),
+        _safe_int(raw_estimate.get("total_pending_lines"), 0),
+        _safe_int(raw_live.get("total_pending_lines"), 0),
+    )
+    oldest_age = max(
+        _safe_float(backpressure.get("oldest_pending_age_seconds"), 0.0),
+        _safe_float(effective.get("oldest_pending_age_seconds"), 0.0),
+        _safe_float(raw_estimate.get("oldest_pending_age_seconds"), 0.0),
+        _safe_float(raw_live.get("oldest_pending_age_seconds"), 0.0),
+    )
+    pressure_index = max(_safe_float(storage_control.get("pressure_index"), 0.0), 0.0)
+    storage_status = str(storage_control.get("overall_status") or "")
+    storage_severity = str(storage_control.get("severity") or "")
+    drain_status = str(storage.get("backlog_drain_status") or "").strip()
+    off_hours_active = bool(storage.get("backlog_drain_off_hours", False))
+    repair_names = [str(row.get("name") or "") for row in repair_plan if str(row.get("name") or "").strip()]
+    attempted_names = [str(row.get("name") or "") for row in attempts if str(row.get("name") or "").strip()]
+    attempt_statuses = [str(row.get("status") or "") for row in attempts if isinstance(row, dict)]
+
+    high_backlog = bool(
+        total_pending >= max(pending_threshold * 4, HIGH_BACKLOG_TOTAL_MIN_LINES)
+        or oldest_age >= STALE_BACKLOG_AGE_SECONDS
+        or storage_severity in {"high", "critical"}
+        or pressure_index >= 1.0
+    )
+    deferred_dominant = bool(
+        deferred_pending >= max(int(total_pending * 0.75), pending_threshold * 10)
+        if total_pending > 0
+        else False
+    )
+    hot_core = bool(core_pending > max(HOT_BACKLOG_CORE_TARGET_LINES, pending_threshold // 3))
+    stale_tail = bool(oldest_age > STALE_BACKLOG_AGE_SECONDS and (core_pending > 0 or support_pending > 0))
+    support_tail = bool(support_pending > 0 and support_pending <= HOT_BACKLOG_SUPPORT_TARGET_LINES and stale_tail)
+    storage_phase = str(storage_plane.get("phase") or "")
+    if not high_backlog:
+        backlog_class = "green_or_elevated"
+    elif storage_phase in {"emergency_disk_guard", "storage_reserve_rebuild"}:
+        backlog_class = "storage_reserve_recovery"
+    elif hot_core:
+        backlog_class = "hot_path_backpressure"
+    elif deferred_dominant and support_tail:
+        backlog_class = "managed_deferred_backlog_with_stale_support_tail"
+    elif deferred_dominant:
+        backlog_class = "managed_deferred_backlog"
+    elif support_tail:
+        backlog_class = "stale_support_tail"
+    else:
+        backlog_class = "mixed_backlog_pressure"
+
+    if total_pending >= CRITICAL_BACKLOG_TOTAL_MIN_LINES or storage_severity == "critical" or pressure_index >= 1.0:
+        severity = "critical"
+    elif total_pending >= SEVERE_BACKLOG_TOTAL_MIN_LINES or storage_severity == "high":
+        severity = "high"
+    elif high_backlog:
+        severity = "elevated"
+    else:
+        severity = "green"
+
+    route_ready = bool(
+        route.get("verification_state") == "ready"
+        or (_safe_int(route.get("ready_count"), 0) > 0 and _safe_int(route.get("ready_count"), 0) >= _safe_int(route.get("tracked_count"), 0))
+        or (not route and storage_control)
+    )
+    integrity_clean = bool(
+        _safe_int(integrity.get("sql_invalid_lines"), 0) <= 0
+        and _safe_int(integrity.get("sql_overlay_invalid_lines"), 0) <= 0
+        and _safe_int(integrity.get("sql_overlay_oversize_payloads"), 0) <= 0
+        and _safe_int(integrity.get("sql_overlay_ops_write_failures"), 0) <= 0
+    )
+    single_writer_only = True
+    paper_boundary_ready = bool(
+        high_backlog
+        and not hot_core
+        and route_ready
+        and integrity_clean
+        and core_pending <= max(pending_threshold, HOT_BACKLOG_CORE_TARGET_LINES)
+        and support_pending <= max(pending_threshold, HOT_BACKLOG_SUPPORT_TARGET_LINES)
+    )
+    live_money_blocked = bool(
+        high_backlog
+        or total_pending > LIVE_MONEY_BACKLOG_TOTAL_TARGET_LINES
+        or oldest_age > LIVE_MONEY_BACKLOG_AGE_TARGET_SECONDS
+        or raw_expansion.get("expansion_ready") is False
+    )
+    no_operator_required = bool(route_ready and integrity_clean and single_writer_only and (always_armed or bool(repair_plan)))
+
+    if not high_backlog:
+        self_healing_status = "monitoring_green"
+        next_system_action = "monitor"
+    elif "error" in attempt_statuses or "timed_out" in attempt_statuses:
+        self_healing_status = "needs_operator_attention"
+        next_system_action = "inspect_failed_backlog_repair_attempt"
+    elif apply_requested and attempts:
+        self_healing_status = "bounded_cycle_executed"
+        next_system_action = "rescore_after_bounded_cycle"
+    elif always_armed and backlog_class == "managed_deferred_backlog_with_stale_support_tail":
+        self_healing_status = "owned_hot_tail_now_deferred_off_hours"
+        next_system_action = "drain_stale_tail_now_and_hold_bulk_deferred_for_off_hours"
+    elif always_armed and backlog_class == "managed_deferred_backlog":
+        self_healing_status = "owned_waiting_for_off_hours"
+        next_system_action = "hold_bulk_deferred_for_off_hours_single_writer_drain"
+    elif always_armed and hot_core:
+        self_healing_status = "owned_hot_path_drain_now"
+        next_system_action = "run_hot_path_single_writer_catchup"
+    elif repair_plan:
+        self_healing_status = "repair_plan_ready"
+        next_system_action = "run_storage_backpressure_autopilot_apply"
+    else:
+        self_healing_status = "monitoring_high_backlog"
+        next_system_action = "refresh_storage_truth"
+
+    immediate_actions = ordered_unique(
+        [
+            "apply critical backpressure governor" if "backpressure_slo_bot" in repair_names else "",
+            "route focused stale or hot sources through the drainer fleet" if "backpressure_drainer_fleet" in repair_names else "",
+            "hand off to exactly one SQL writer for bounded catch-up" if "writer_cycle_coordinator" in repair_names else "",
+            "refresh raw-training manifests only; keep raw compaction blocked until hot pressure is cool" if "raw_training_manifest_refresh" in repair_names else "",
+            "run bounded raw compaction only after pressure is stable" if "raw_training_compaction" in repair_names else "",
+            "keep collector duty cycle and verbose telemetry shedding active while backlog is high" if high_backlog else "",
+            "keep live execution disabled until raw backlog evidence is green" if live_money_blocked else "",
+        ]
+    )
+    off_hours_actions = ordered_unique(
+        [
+            "open deferred and cold drain quotas only inside the off-hours window" if deferred_dominant and not off_hours_active else "",
+            "spend multiple bounded cycles in the maintenance window until deferred backlog falls under target" if deferred_dominant else "",
+            "keep one primary SQLite writer; never add parallel SQLite writers to chase backlog" if high_backlog else "",
+        ]
+    )
+    operator_followups = ordered_unique(
+        [
+            "system owns high backlog through storage_backpressure_autopilot; operator action is not required while route, integrity, and single-writer checks stay ready"
+            if high_backlog and no_operator_required
+            else "",
+            "operator attention required only if route verification, integrity, memory relief, or writer locks fail" if high_backlog else "",
+            "bulk deferred backlog remains live-money-blocking evidence until raw/live totals and age are green" if live_money_blocked else "",
+        ]
+    )
+
+    return {
+        "active": high_backlog,
+        "severity": severity,
+        "class": backlog_class,
+        "self_healing_status": self_healing_status,
+        "next_system_action": next_system_action,
+        "no_operator_required": no_operator_required,
+        "queue_posture": {
+            "pending_threshold": pending_threshold,
+            "core_pending_lines": int(core_pending),
+            "support_pending_lines": int(support_pending),
+            "deferred_pending_lines": int(deferred_pending),
+            "cold_pending_lines": int(cold_pending),
+            "total_pending_lines": int(total_pending),
+            "oldest_pending_age_seconds": round(float(oldest_age), 3),
+            "pressure_index": round(float(pressure_index), 3),
+            "storage_status": storage_status,
+            "storage_severity": storage_severity,
+            "clearance_after": clearance_after,
+        },
+        "routing_truth": {
+            "route_ready": route_ready,
+            "integrity_clean": integrity_clean,
+            "single_writer_only": single_writer_only,
+            "deferred_dominant": deferred_dominant,
+            "hot_core": hot_core,
+            "support_tail": support_tail,
+            "stale_tail": stale_tail,
+            "storage_plane_phase": storage_phase,
+            "backlog_drain_status": drain_status,
+            "off_hours_active": off_hours_active,
+        },
+        "automation_contract": {
+            "always_armed": always_armed,
+            "apply_requested": bool(apply_requested),
+            "repair_plan_names": repair_names,
+            "attempted_names": attempted_names,
+            "cycle_count": len(cycle_records),
+            "last_cycle_progress": (
+                cycle_records[-1].get("progress") if cycle_records and isinstance(cycle_records[-1], dict) else {}
+            ),
+            "safe_to_auto_apply": bool(high_backlog and no_operator_required),
+            "policy": "classify backlog, protect intake, run bounded single-writer repair, and defer bulk cold/deferred work to off-hours without operator babysitting",
+        },
+        "paper_soak_boundary": {
+            "allowed_with_advisory": paper_boundary_ready,
+            "reason": "hot path clean; deferred backlog is managed debt" if paper_boundary_ready else "hot path or route/integrity is not clean enough for advisory paper relief",
+        },
+        "live_money_boundary": {
+            "blocked": live_money_blocked,
+            "reason": "raw backlog is not green enough for live-money canary" if live_money_blocked else "raw backlog evidence is inside live-money targets",
+            "targets": {
+                "total_pending_lines": LIVE_MONEY_BACKLOG_TOTAL_TARGET_LINES,
+                "oldest_pending_age_seconds": LIVE_MONEY_BACKLOG_AGE_TARGET_SECONDS,
+            },
+        },
+        "control_env_recommendations": {
+            "BACKLOG_DRAIN_SINGLE_WRITER_ONLY": "1",
+            "SQL_LINK_SERVICE_SINGLE_WRITER_ONLY": "1",
+            "SQL_LINK_SERVICE_RAW_LIVE_PRIORITY_BOOST": "1",
+            "SQL_LINK_SERVICE_COLD_STAGE_YIELDS_TO_RAW_LIVE": "1",
+            "BOT_COLLECTION_DUTY_CYCLE_ENABLED": "1" if high_backlog else "0",
+            "HEAVY_COLLECTORS_PAUSED_FOR_BACKLOG": "1" if high_backlog else "0",
+            "TRAINING_RUNTIME_PAUSED_FOR_BACKLOG": "1" if high_backlog else "0",
+            "REPORT_REFRESH_PAUSED_FOR_BACKLOG": "1" if high_backlog else "0",
+            "ALLOW_ORDER_EXECUTION": "0",
+            "MARKET_DATA_ONLY": "1",
+        },
+        "immediate_actions": immediate_actions,
+        "off_hours_actions": off_hours_actions,
+        "operator_followups": operator_followups,
     }
 
 
@@ -1322,8 +1593,23 @@ def build_payload(
         overall_status = "applied_with_followups"
         ok = True
 
+    always_armed = bool(
+        _env_flag("STORAGE_BACKPRESSURE_AUTOPILOT_ALWAYS_ARMED")
+        or _env_flag("BACKLOG_ACCELERATOR_ALWAYS_ARMED")
+    )
+    core_focus = _core_focus(backpressure_payload)
+    high_backlog_control = _high_backlog_control(
+        storage_control=storage_control,
+        repair_plan=repair_plan,
+        clearance_after=clearance_after,
+        attempts=attempts,
+        cycle_records=cycle_records,
+        always_armed=always_armed,
+        apply_requested=bool(apply),
+    )
     operator_followups = ordered_unique(
-        list(backpressure_preview.get("recommended_actions") or [])[:2]
+        list(high_backlog_control.get("operator_followups") or [])[:3]
+        + list(backpressure_preview.get("recommended_actions") or [])[:2]
         + list(drainer_preview.get("recommended_actions") or [])[:2]
         + list(coordinator_preview.get("recommended_actions") or [])[:2]
         + list(sheriff_preview.get("recommended_actions") or [])[:2]
@@ -1334,7 +1620,6 @@ def build_payload(
             for action in list(payload.get("recommended_actions") or [])[:2]
         ]
     )[:8]
-    core_focus = _core_focus(backpressure_payload)
     if bool(core_focus.get("concentrated_core_backlog", False)):
         top_sources = [str(row.get("source_rel") or "") for row in list(core_focus.get("top_rows") or [])[:3] if str(row.get("source_rel") or "").strip()]
         operator_followups = ordered_unique(
@@ -1344,10 +1629,6 @@ def build_payload(
             ]
             + operator_followups
         )[:8]
-    always_armed = bool(
-        _env_flag("STORAGE_BACKPRESSURE_AUTOPILOT_ALWAYS_ARMED")
-        or _env_flag("BACKLOG_ACCELERATOR_ALWAYS_ARMED")
-    )
 
     summary_focus = sheriff_preview.get("focus") if isinstance(sheriff_preview.get("focus"), dict) else {}
     storage_plane = (
@@ -1386,6 +1667,7 @@ def build_payload(
                 "safe storage reserve would be breached",
             ],
         },
+        "high_backlog_control": high_backlog_control,
         "storage_control": storage_control,
         "clearance_targets": clearance_targets,
         "clearance_state": {
@@ -1464,6 +1746,9 @@ def build_payload(
         "operator_followups": operator_followups,
         "recommended_actions": ordered_unique(
             [
+                f"high backlog class={high_backlog_control.get('class')} action={high_backlog_control.get('next_system_action')}"
+                if high_backlog_control.get("active")
+                else "",
                 "keep the storage backpressure autopilot on a timer so drain, retention, and governor changes stay coordinated",
                 "keep accelerators always armed; let the single-writer and memory guards decide when to apply work" if always_armed else "",
                 "let the autopilot spend multiple repair cycles in one maintenance window so severe backlog and explanation debt are burned down instead of merely nudged",
@@ -1475,6 +1760,8 @@ def build_payload(
                 "run safe BOT_LOGS reserve rebuild before raw compaction whenever the storage plane is below its free-space target",
             ]
             + operator_followups[:3]
+            + list(high_backlog_control.get("immediate_actions") or [])[:3]
+            + list(high_backlog_control.get("off_hours_actions") or [])[:2]
             + list(raw_training_control.get("recommended_actions") or [])[:2]
         )[:8],
         "core_focus": core_focus,
@@ -1509,6 +1796,9 @@ def build_payload(
             "botlogs_space_recovery_deficit_gb": _safe_float(safe_space_recovery.get("target_free_deficit_gb"), 0.0),
             "botlogs_space_recovery_reserve_rebuild_required": bool(safe_space_recovery.get("reserve_rebuild_required", False)),
             "quick_bounded_mode": bool(timing_contract["mode"] == "quick_bounded"),
+            "high_backlog_active": bool(high_backlog_control.get("active", False)),
+            "high_backlog_class": str(high_backlog_control.get("class") or ""),
+            "high_backlog_no_operator_required": bool(high_backlog_control.get("no_operator_required", False)),
         },
     }
     return payload
