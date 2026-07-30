@@ -1594,7 +1594,15 @@ def _raw_live_expansion_guard(
         "governance/training_diagnostics/requalification_queue",
         "live_orders",
     )
+    age_guard_excluded_markers = (
+        "governance/channels/risk/",
+        "governance/channels/ingress/",
+        "governance/channels/runtime/",
+        "governance/channels/loop_state/",
+        "governance/watchdog/",
+    )
     hot_rows_by_source: dict[str, dict[str, Any]] = {}
+    age_guard_rows_by_source: dict[str, dict[str, Any]] = {}
     storage_raw_live = _storage_raw_live_backpressure(storage)
     for source_payload in (backpressure, storage_raw_live):
         for key in ("top_pending_files", "top_deferred_pending_files", "top_support_telemetry_pending_files"):
@@ -1612,8 +1620,20 @@ def _raw_live_expansion_guard(
                             _safe_float(current.get("oldest_pending_age_seconds"), 0.0),
                             _safe_float(row.get("oldest_pending_age_seconds"), 0.0),
                         )
+                        if not rel.startswith(age_guard_excluded_markers):
+                            age_current = age_guard_rows_by_source.setdefault(
+                                rel,
+                                {"pending_lines": 0, "oldest_pending_age_seconds": 0.0},
+                            )
+                            age_current["pending_lines"] = max(_safe_int(age_current.get("pending_lines"), 0), pending)
+                            age_current["oldest_pending_age_seconds"] = max(
+                                _safe_float(age_current.get("oldest_pending_age_seconds"), 0.0),
+                                _safe_float(row.get("oldest_pending_age_seconds"), 0.0),
+                            )
     source_core_pending = sum(_safe_int(row.get("pending_lines"), 0) for row in hot_rows_by_source.values())
     source_core_oldest = max([_safe_float(row.get("oldest_pending_age_seconds"), 0.0) for row in hot_rows_by_source.values()] or [0.0])
+    age_guard_source_pending = sum(_safe_int(row.get("pending_lines"), 0) for row in age_guard_rows_by_source.values())
+    age_guard_source_oldest = max([_safe_float(row.get("oldest_pending_age_seconds"), 0.0) for row in age_guard_rows_by_source.values()] or [0.0])
     canonical_raw_core = max(
         _safe_int(backpressure.get("pending_lines"), 0),
         _safe_int(storage_raw_live.get("core_pending_lines"), 0),
@@ -1628,11 +1648,11 @@ def _raw_live_expansion_guard(
     raw_hot_material = bool(hot_guard_pending >= reserve_core)
     raw_hot_age_material = bool(
         existing.get("active", False)
-        and source_core_pending >= MIN_MATERIAL_PENDING_LINES
-        and source_core_oldest >= reserve_age
+        and age_guard_source_pending >= MIN_MATERIAL_PENDING_LINES
+        and age_guard_source_oldest >= reserve_age
     )
     guard_total = max(source_core_pending, raw_core if raw_hot_material else 0)
-    guard_oldest = max(source_core_oldest if raw_hot_age_material else 0.0, raw_oldest if raw_hot_material else 0.0)
+    guard_oldest = max(age_guard_source_oldest if raw_hot_age_material else 0.0, raw_oldest if raw_hot_material else 0.0)
     core_ratio = raw_core / max(float(reserve_core), 1.0)
     total_ratio = guard_total / max(float(reserve_total), 1.0) if guard_total > 0 else 0.0
     age_ratio = guard_oldest / max(float(reserve_age), 1.0) if raw_hot_material or raw_hot_age_material else 0.0
@@ -1655,6 +1675,13 @@ def _raw_live_expansion_guard(
             "oldest_pending_age_seconds": round(float(raw_oldest), 3),
             "hot_source_pending_lines": int(source_core_pending),
             "hot_source_oldest_pending_age_seconds": round(float(source_core_oldest), 3),
+            "age_guard_source_pending_lines": int(age_guard_source_pending),
+            "age_guard_source_oldest_pending_age_seconds": round(float(age_guard_source_oldest), 3),
+            "deferred_or_support_hot_source_pending_lines": int(max(source_core_pending - age_guard_source_pending, 0)),
+            "deferred_or_support_hot_source_oldest_pending_age_seconds": round(
+                float(source_core_oldest if source_core_pending > age_guard_source_pending else 0.0),
+                3,
+            ),
             "guard_total_pending_lines": int(guard_total),
             "guard_oldest_pending_age_seconds": round(float(guard_oldest), 3),
             "excluded_deferred_or_cold_pending_lines": int(max(raw_total - guard_total, 0)),
@@ -1687,7 +1714,17 @@ def _apply_age_pressure_priority(
     live_priority_bonus = _safe_int(guard.get("live_priority_bonus"), 0) if guard_active else 0
     cold_stage_penalty = _safe_int(guard.get("cold_stage_penalty"), 0) if guard_active else 0
     guard_raw_live = guard.get("raw_live") if isinstance(guard.get("raw_live"), dict) else {}
+    guard_targets = guard.get("targets") if isinstance(guard.get("targets"), dict) else {}
     canonical_core_pending = _safe_int(guard_raw_live.get("canonical_core_pending_lines"), _safe_int(guard_raw_live.get("core_pending_lines"), 0))
+    hot_source_oldest = _safe_float(guard_raw_live.get("hot_source_oldest_pending_age_seconds"), 0.0)
+    reserve_core = max(_safe_int(guard_targets.get("core_reserve_lines"), 0), 1)
+    raw_core_needs_first_handoff = bool(
+        canonical_core_pending >= reserve_core
+        or (
+            hot_source_oldest >= threshold_seconds
+            and _safe_int(guard_raw_live.get("age_guard_source_pending_lines"), 0) >= MIN_MATERIAL_PENDING_LINES
+        )
+    )
     for row in profiles:
         pending_lines = _safe_int(row.get("pending_lines"), 0)
         min_pending_lines = _safe_int(row.get("min_pending_lines"), MIN_MATERIAL_PENDING_LINES)
@@ -1707,18 +1744,30 @@ def _apply_age_pressure_priority(
         priority_score = _safe_int(row.get("priority_score"), 0)
         dominant_support_pressure = bool(
             guard_active
+            and not raw_core_needs_first_handoff
             and name in RAW_LIVE_EXPANSION_SUPPORT_DRAINERS
             and pending_lines >= CORE_HARD_PENDING_LINES
             and canonical_core_pending < CORE_HARD_PENDING_LINES
         )
-        raw_bonus = int(live_priority_bonus if guard_active and (name in RAW_LIVE_EXPANSION_HOT_DRAINERS or dominant_support_pressure) and pending_lines > 0 else 0)
+        risk_channel_pressure = bool(
+            guard_active
+            and name == "risk_support_drainer"
+            and pending_lines >= max(reserve_core, MIN_MATERIAL_PENDING_LINES)
+            and canonical_core_pending < reserve_core
+        )
+        raw_live_priority_drainer = bool(
+            name in RAW_LIVE_EXPANSION_HOT_DRAINERS
+            or dominant_support_pressure
+            or risk_channel_pressure
+        )
+        raw_bonus = int(live_priority_bonus if guard_active and raw_live_priority_drainer and pending_lines > 0 else 0)
         raw_size_bonus = (
             int(min(max(float(pending_lines) * 4.0, 0.0), 220_000.0))
-            if guard_active and (name in RAW_LIVE_EXPANSION_HOT_DRAINERS or dominant_support_pressure) and pending_lines > 0
+            if guard_active and raw_live_priority_drainer and pending_lines > 0
             else 0
         )
         cold_penalty = int(cold_stage_penalty if guard_active and name == "cold_stage_drainer" else 0)
-        if preemption_active and (name in RAW_LIVE_EXPANSION_HOT_DRAINERS or dominant_support_pressure) and pending_lines > 0:
+        if preemption_active and raw_live_priority_drainer and pending_lines > 0:
             preemption_tier = 3
         elif preemption_active and name in RAW_LIVE_EXPANSION_SUPPORT_DRAINERS and pending_lines > 0:
             preemption_tier = 1
@@ -1728,11 +1777,13 @@ def _apply_age_pressure_priority(
             preemption_tier = 0
         row["age_pressure_priority_bonus"] = bonus
         row["raw_live_expansion_guard_active"] = guard_active
+        row["raw_live_expansion_core_handoff_required"] = raw_core_needs_first_handoff
         row["raw_live_expansion_preemption_active"] = preemption_active
         row["raw_live_expansion_preemption_tier"] = preemption_tier
         row["raw_live_expansion_priority_bonus"] = raw_bonus
         row["raw_live_expansion_size_priority_bonus"] = raw_size_bonus
         row["raw_live_expansion_cold_penalty"] = cold_penalty
+        row["raw_live_expansion_risk_channel_pressure"] = risk_channel_pressure
         row["effective_priority_score"] = int(priority_score + bonus + raw_bonus + raw_size_bonus - cold_penalty)
         if guard_active and (raw_bonus or raw_size_bonus or cold_penalty):
             env = row.get("env_overrides") if isinstance(row.get("env_overrides"), dict) else {}

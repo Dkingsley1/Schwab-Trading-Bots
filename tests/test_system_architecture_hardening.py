@@ -104,6 +104,47 @@ def test_architecture_hardening_ready_when_all_contracts_align(tmp_path: Path) -
     assert payload["recommended_env_overrides"]["ALLOW_ORDER_EXECUTION"] == "0"
 
 
+def test_architecture_hardening_accepts_idle_on_demand_sql_writer(tmp_path: Path) -> None:
+    _seed_ready_project(tmp_path)
+    health = tmp_path / "governance" / "health"
+    _write_json(
+        health / "writer_process_intelligence_latest.json",
+        {
+            "overall_status": "ready",
+            "risk_flags": [],
+            "writer_health": {
+                "state": "idle",
+                "current_step": "complete",
+                "writer_lock_held": False,
+                "shard_writer_lane_contract": {
+                    "primary_merge_writer_count": 1,
+                    "sqlite_primary_writer_count": 1,
+                    "single_primary_merge_writer": True,
+                },
+            },
+        },
+    )
+    _write_json(health / "backpressure_drainer_fleet_latest.json", {"writer_lock_held": False})
+    _write_json(
+        health / "process_watchdog_latest.json",
+        {
+            "status": [{"name": "sql_link_writer", "running": 0, "heartbeat_ok": True}],
+            "alert_summary": {"critical_count": 0, "warning_count": 0},
+            "restart_storm_isolation": {"isolated_count": 0, "execution_blocking_count": 0, "isolated_targets": []},
+            "safety_pause": {"active": False},
+        },
+    )
+    _write_json(health / "system_plumbing_control_latest.json", {"overall_status": "ready", "plumbing_score": 100, "blockers": [], "warnings": []})
+
+    payload = src.build_payload(tmp_path)
+    writer = payload["sections"]["storage_writer_data_plane"]
+
+    assert payload["overall_status"] == "ready"
+    assert writer["overall_status"] == "ready"
+    assert writer["watch_items"] == []
+    assert writer["evidence"]["writer_idle_complete"] is True
+
+
 def test_architecture_hardening_manages_closed_training_budget_during_guarded_paper(tmp_path: Path) -> None:
     _seed_ready_project(tmp_path)
     health = tmp_path / "governance" / "health"

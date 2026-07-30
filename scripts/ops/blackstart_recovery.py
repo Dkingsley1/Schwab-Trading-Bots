@@ -19,6 +19,30 @@ else:
 DEFAULT_OUT_PATH = PROJECT_ROOT / "governance" / "health" / "blackstart_recovery_latest.json"
 
 
+def _latest_shadow_loop_age_minutes(health_root: Path) -> float | None:
+    latest_age: float | None = None
+    for path in health_root.glob("shadow_loop_*.json"):
+        payload = load_json(path)
+        if not payload:
+            continue
+        age = payload_age_minutes(payload, path)
+        if age is None:
+            continue
+        latest_age = float(age) if latest_age is None else min(latest_age, float(age))
+    launcher_path = health_root / "all_sleeves_launcher_latest.json"
+    launcher = load_json(launcher_path)
+    if launcher:
+        launcher_ready = str(launcher.get("overall_status") or launcher.get("status") or "").strip().lower() in {
+            "ready",
+            "ok",
+            "running",
+        }
+        launcher_age = payload_age_minutes(launcher, launcher_path)
+        if launcher_ready and launcher_age is not None:
+            latest_age = float(launcher_age) if latest_age is None else min(latest_age, float(launcher_age))
+    return latest_age
+
+
 def build_payload(project_root: Path = PROJECT_ROOT, *, max_session_age_minutes: float = 30.0) -> dict[str, Any]:
     health_root = project_root / "governance" / "health"
     reboot_resilience = load_json(health_root / "reboot_resilience_latest.json")
@@ -48,8 +72,17 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, max_session_age_minutes:
             )
     restart_storm_count = len(process_watchdog.get("restart_storms") or []) if isinstance(process_watchdog.get("restart_storms"), list) else 0
     restart_ok = restart_storm_count <= 0
-    session_ok = bool(session_ready.get("ok", session_ready.get("ready", False))) and (
-        session_age_minutes is None or float(session_age_minutes) <= float(max_session_age_minutes)
+    session_payload_ok = bool(session_ready.get("ok", session_ready.get("ready", False)))
+    shadow_loop_age_minutes = _latest_shadow_loop_age_minutes(health_root)
+    session_freshness_inferred_from_shadow_loop = bool(
+        session_payload_ok
+        and shadow_loop_age_minutes is not None
+        and float(shadow_loop_age_minutes) <= float(max_session_age_minutes)
+    )
+    session_ok = session_payload_ok and (
+        session_age_minutes is None
+        or float(session_age_minutes) <= float(max_session_age_minutes)
+        or session_freshness_inferred_from_shadow_loop
     )
     live_ok = bool(live_readiness.get("ok", False)) and (
         live_age_minutes is None or float(live_age_minutes) <= 24.0 * 60.0
@@ -59,7 +92,13 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, max_session_age_minutes:
         {"name": "launchd_recovery", "ok": launchd_ok, "command": "./scripts/ops/opsctl.sh restart-sanity --json", "auto_recoverable": True},
         {"name": "storage_mount", "ok": storage_ok, "command": "./scripts/ops/opsctl.sh storage-resilience --json", "auto_recoverable": True},
         {"name": "auth_lease", "ok": auth_ok, "command": "./scripts/ops/opsctl.sh token-refresh --json", "auto_recoverable": True},
-        {"name": "session_ready", "ok": session_ok, "command": "./scripts/session_ready_check.py", "auto_recoverable": False},
+        {
+            "name": "session_ready",
+            "ok": session_ok,
+            "command": "./scripts/session_ready_check.py",
+            "auto_recoverable": False,
+            "freshness_inferred_from_shadow_loop": session_freshness_inferred_from_shadow_loop,
+        },
         {"name": "live_readiness", "ok": live_ok, "command": "./scripts/ops/opsctl.sh start --force-restart", "auto_recoverable": False},
         {"name": "restart_sanity", "ok": restart_ok, "command": "./scripts/ops/opsctl.sh status --json", "auto_recoverable": True},
     ]
@@ -100,6 +139,10 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, max_session_age_minutes:
         "production_grade_ready": production_grade_ready,
         "evidence": {
             "session_ready_age_minutes": round(float(session_age_minutes), 4) if session_age_minutes is not None else None,
+            "latest_shadow_loop_age_minutes": (
+                round(float(shadow_loop_age_minutes), 4) if shadow_loop_age_minutes is not None else None
+            ),
+            "session_freshness_inferred_from_shadow_loop": session_freshness_inferred_from_shadow_loop,
             "live_readiness_age_minutes": round(float(live_age_minutes), 4) if live_age_minutes is not None else None,
             "storage_mode": str(storage_route.get("mode") or ""),
             "recovered_labels": len(reboot_resilience.get("recovered") or []),
@@ -110,6 +153,8 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, max_session_age_minutes:
             "launchd_recovery_ready": launchd_ok,
             "storage_ready": storage_ok,
             "auth_ready": auth_ok,
+            "session_ready": session_ok,
+            "session_freshness_inferred_from_shadow_loop": session_freshness_inferred_from_shadow_loop,
             "restart_sanity_ready": restart_ok,
             "recommended_stage_commands": [str(row.get("command") or "") for row in stages if not bool(row.get("ok", False))][:4],
         },

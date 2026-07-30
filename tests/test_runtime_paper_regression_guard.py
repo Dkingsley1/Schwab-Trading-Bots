@@ -629,6 +629,71 @@ def test_runtime_paper_guard_blocks_all_sleeves_startup_after_grace_expires(tmp_
     assert "all_sleeves_runtime_not_effectively_live" in lane_guard["actual"]["lane_blockers"]
 
 
+def test_runtime_paper_guard_accepts_fresh_launcher_certification_when_watchdog_row_is_hollow(
+    tmp_path: Path,
+) -> None:
+    project_root = tmp_path / "project"
+    health = project_root / "governance" / "health"
+    override = project_root / "config" / ".env.runtime_resource_guard_override"
+    _write_json(health / "runtime_throttle_control_latest.json", _runtime_payload(blocked_paper=False))
+    _write_json(health / "paper_400_ramp_latest.json", _paper_payload(blockers=[], armed=True))
+    _write_soak_lane_artifacts(project_root)
+    _write_json(
+        health / "process_watchdog_latest.json",
+        {
+            "timestamp_utc": src.iso_now(),
+            "overall_status": "degraded",
+            "status": [
+                {
+                    "name": "all_sleeves",
+                    "running": 1,
+                    "process_live": True,
+                    "heartbeat_ok": False,
+                    "launcher_live": True,
+                    "child_fanout_ok": False,
+                    "process_elapsed_seconds": 600.0,
+                    "child_fanout": {
+                        "ok": False,
+                        "reason": "child_fanout_below_floor",
+                        "child_process_count": 0,
+                        "child_fanout_grace_seconds": 180.0,
+                        "parent_elapsed_seconds": 600.0,
+                    },
+                    "launcher_artifact_health": {
+                        "path": str(health / "all_sleeves_launcher_latest.json"),
+                        "phase": "running",
+                        "overall_status": "blocked",
+                        "running_job_count": 0,
+                        "expected_job_count": 7,
+                        "problem_job_count": 7,
+                    },
+                }
+            ],
+        },
+    )
+    _write_json(
+        health / "all_sleeves_launcher_latest.json",
+        {
+            "timestamp_utc": src.iso_now(),
+            "overall_status": "ready",
+            "phase": "running",
+            "running_job_count": 7,
+            "expected_job_count": 7,
+            "launcher_readiness_contract": {"readiness_status": "ready", "problem_job_count": 0},
+        },
+    )
+    _ready_override(override)
+
+    payload = src.build_payload(project_root)
+
+    assert payload["overall_status"] == "ready"
+    assert payload["failed_guards"] == []
+    lane_guard = next(row for row in payload["regression_guards"] if row["name"] == "soak_paper_eligible_lane_open_contract")
+    continuity = next(row for row in payload["regression_guards"] if row["name"] == "soak_30_day_continuity_contract")
+    assert lane_guard["actual"]["all_sleeves"]["launcher_artifact_certified_fanout"] is True
+    assert continuity["actual"]["all_sleeves"]["launcher_artifact_certified_fanout"] is True
+
+
 def test_runtime_paper_guard_degrades_on_stale_profitability_without_pausing_paper(tmp_path: Path) -> None:
     project_root = tmp_path / "project"
     health = project_root / "governance" / "health"

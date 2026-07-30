@@ -74,6 +74,68 @@ def test_quota_guard_excludes_bounded_current_day_governance_when_full_evidence_
     assert payload["active_hot_buffer_containment"]["hot_lane_full_evidence_current_day_governance_relief"] is True
 
 
+def test_quota_guard_extends_current_day_governance_buffer_for_green_full_evidence_soak(
+    tmp_path: Path, monkeypatch
+) -> None:
+    _seed_health(tmp_path, governance_gb=33.5)
+    monkeypatch.setattr(src, "_active_current_day_decision_bytes", lambda _project_root: 0)
+    monkeypatch.setattr(src, "_active_current_day_governance_channel_bytes", lambda _project_root: int(33.5 * GIB))
+    monkeypatch.setattr(src, "_active_current_day_explanation_bytes", lambda _project_root: 0)
+
+    payload = src.build_payload(tmp_path)
+
+    governance = next(row for row in payload["lanes"] if row["family"] == "governance_telemetry")
+    assert payload["overall_status"] == "ready"
+    assert payload["quota_summary"]["soft_breaches"] == 0
+    assert governance["status"] == "ready"
+    assert governance["used_gb"] == 0.0
+    assert governance["adjustments"][0]["reason"] == (
+        "exclude_extended_current_day_active_governance_channels_under_green_full_evidence_hot_lane"
+    )
+    assert governance["adjustments"][0]["full_evidence_max_gb"] == 48.0
+    assert governance["adjustments"][0]["legacy_governance_after_current_day_gb"] == 0.0
+
+
+def test_quota_guard_does_not_extend_current_day_governance_buffer_over_full_evidence_cap(
+    tmp_path: Path, monkeypatch
+) -> None:
+    _seed_health(tmp_path, governance_gb=54.0)
+    monkeypatch.setattr(src, "_active_current_day_decision_bytes", lambda _project_root: 0)
+    monkeypatch.setattr(src, "_active_current_day_governance_channel_bytes", lambda _project_root: int(54.0 * GIB))
+    monkeypatch.setattr(src, "_active_current_day_explanation_bytes", lambda _project_root: 0)
+
+    payload = src.build_payload(tmp_path)
+
+    governance = next(row for row in payload["lanes"] if row["family"] == "governance_telemetry")
+    assert payload["overall_status"] == "blocked"
+    assert governance["status"] == "blocked"
+    assert governance["used_gb"] == 30.0
+    assert governance["adjustments"][0]["reason"] == (
+        "exclude_bounded_current_day_active_governance_channels_under_green_full_evidence_hot_lane"
+    )
+    assert governance["adjustments"][0]["gb"] == 24.0
+
+
+def test_quota_guard_does_not_extend_current_day_governance_buffer_when_old_telemetry_exceeds_soft(
+    tmp_path: Path, monkeypatch
+) -> None:
+    _seed_health(tmp_path, governance_gb=42.0)
+    monkeypatch.setattr(src, "_active_current_day_decision_bytes", lambda _project_root: 0)
+    monkeypatch.setattr(src, "_active_current_day_governance_channel_bytes", lambda _project_root: int(33.5 * GIB))
+    monkeypatch.setattr(src, "_active_current_day_explanation_bytes", lambda _project_root: 0)
+
+    payload = src.build_payload(tmp_path)
+
+    governance = next(row for row in payload["lanes"] if row["family"] == "governance_telemetry")
+    assert payload["overall_status"] == "blocked"
+    assert governance["status"] == "blocked"
+    assert governance["used_gb"] == 18.0
+    assert governance["adjustments"][0]["reason"] == (
+        "exclude_bounded_current_day_active_governance_channels_under_green_full_evidence_hot_lane"
+    )
+    assert governance["adjustments"][0]["legacy_governance_after_current_day_gb"] == 8.5
+
+
 def test_quota_guard_keeps_governance_blocked_when_hot_path_is_over_budget(tmp_path: Path, monkeypatch) -> None:
     _seed_health(tmp_path, governance_gb=30.0, hot_path_over_budget_bytes=1)
     monkeypatch.setattr(src, "_active_current_day_decision_bytes", lambda _project_root: 0)
@@ -214,6 +276,43 @@ def test_quota_guard_manages_support_sql_slight_overhard_when_core_and_free_spac
     assert sql_lane["managed_support_sql_relief"]["active"] is True
     assert sql_lane["managed_support_sql_relief"]["raw_hard_ratio"] == 1.011
     assert sql_lane["managed_support_sql_relief"]["blockers"] == []
+
+
+def test_quota_guard_prefers_verified_sql_shard_usage_when_storage_tier_is_stale(
+    tmp_path: Path, monkeypatch
+) -> None:
+    _seed_health(tmp_path, governance_gb=0.0, sql_link_shards_gb=392.0)
+    monkeypatch.setattr(src, "_active_current_day_decision_bytes", lambda _project_root: 0)
+    monkeypatch.setattr(src, "_active_current_day_governance_channel_bytes", lambda _project_root: 0)
+    monkeypatch.setattr(src, "_active_current_day_explanation_bytes", lambda _project_root: 0)
+    monkeypatch.setattr(
+        src,
+        "_stateful_sql_shard_breakdown",
+        lambda _project_root: {
+            "root": str(tmp_path / "data" / "sql_link_shards"),
+            "root_exists": True,
+            "root_free_gb": 568.0,
+            "support_bytes": int(26 * GIB),
+            "core_bytes": int(13 * GIB),
+            "total_bytes": int(39 * GIB),
+            "support_gb": 26.0,
+            "core_gb": 13.0,
+            "top_support_shards": [{"name": "jsonl_link_risk_support.sqlite3", "size_gb": 26.0}],
+            "top_core_shards": [{"name": "jsonl_link_trading.sqlite3", "size_gb": 5.0}],
+            "support_markers": ["risk_support"],
+        },
+    )
+
+    payload = src.build_payload(tmp_path)
+
+    sql_lane = next(row for row in payload["lanes"] if row["family"] == "sql_link_shards")
+    assert payload["overall_status"] == "ready"
+    assert sql_lane["status"] == "ready"
+    assert sql_lane["raw_used_gb"] == 39.0
+    assert sql_lane["used_gb"] == 13.0
+    assert sql_lane["accounting_reconciliations"][0]["storage_tier_reported_gb"] == 392.0
+    assert sql_lane["accounting_reconciliations"][0]["verified_filesystem_gb"] == 39.0
+    assert sql_lane["adjustments"][0]["reason"] == "exclude_managed_support_sql_shards_from_core_stateful_quota"
 
 
 def test_quota_guard_does_not_manage_support_sql_far_overhard(

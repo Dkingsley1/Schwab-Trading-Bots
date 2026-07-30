@@ -597,13 +597,26 @@ def _storage_writer_data_plane(ctx: dict[str, dict[str, Any]]) -> dict[str, Any]
     recommendations: list[str] = []
 
     duplicate_writer = bool("duplicate_sql_writer_processes" in risk_flags or (raw_writer_running > 1 and not single_primary))
+    writer_state = _status(writer_health.get("state") or writer_health.get("active_source"))
+    writer_step = _status(writer_health.get("current_step"))
+    writer_idle_complete = bool(
+        writer
+        and _status(writer.get("overall_status")) in {"ready", "ok"}
+        and not writer_lock_held
+        and raw_writer_running == 0
+        and writer_state in {"idle", "complete", ""}
+        and writer_step in {"complete", "idle", ""}
+        and total_pending < pending_threshold
+        and storage_status in {"stable", "ready", "normal", "calm"}
+        and plumbing_status in {"", "ready", "guarded_ready"}
+    )
     if duplicate_writer:
         findings.append("duplicate_sql_writer_processes")
     if writer and _is_hard_status(writer.get("overall_status")):
         findings.append(f"writer_status={_status(writer.get('overall_status'))}")
     if writer and not single_primary:
         watch_items.append("single_primary_merge_writer_proof_missing")
-    if writer and not writer_lock_held:
+    if writer and not writer_lock_held and not writer_idle_complete:
         watch_items.append("writer_lock_not_held")
     if not writer:
         watch_items.append("writer_process_intelligence_missing")
@@ -647,7 +660,10 @@ def _storage_writer_data_plane(ctx: dict[str, dict[str, Any]]) -> dict[str, Any]
         status,
         evidence={
             "writer_status": _status(writer.get("overall_status")),
+            "writer_state": writer_state,
+            "writer_current_step": writer_step,
             "writer_lock_held": writer_lock_held,
+            "writer_idle_complete": writer_idle_complete,
             "single_primary_merge_writer": single_primary,
             "primary_merge_writer_count": primary_count,
             "sqlite_primary_writer_count": sqlite_count,

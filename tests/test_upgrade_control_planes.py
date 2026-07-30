@@ -157,6 +157,84 @@ def test_storage_tier_policy_controls_fixed_hot_budget_with_continuous_run_margi
     assert contract["blockers"] == []
 
 
+def test_storage_tier_policy_accepts_clean_optional_collector_intake(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    decisions = project_root / "decisions" / "live_decisions_20260627.jsonl"
+    explanations = project_root / "decision_explanations" / "decision_explanations_20260627.jsonl"
+    for path, content in (
+        (decisions, "decision\n" * 128),
+        (explanations, "explanation\n" * 256),
+    ):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content, encoding="utf-8")
+
+    health = project_root / "governance" / "health"
+    _write_json(
+        health / "storage_retention_unison_latest.json",
+        {
+            "continuous_run_contract": {
+                "status": "ready",
+                "ready": True,
+                "available_margin_gb": 4.0,
+            }
+        },
+    )
+    _write_json(
+        health / "ingestion_storage_control_latest.json",
+        {
+            "collector_intake_enforcement_audit": {
+                "status": "not_required",
+                "required": False,
+                "mismatch_count": 0,
+            },
+            "continuous_run_soak_contract": {
+                "status": "ready",
+                "ready": True,
+                "inputs": {
+                    "collector_intake_status": "not_required",
+                    "storage_efficiency_status": "ready",
+                    "backlog_relief_active": False,
+                },
+                "forecast": {"continuous_run_margin_gb": 4.0},
+            },
+            "storage_efficiency_contract": {"overall_status": "ready"},
+        },
+    )
+
+    args = [
+        "storage_tier_policy.py",
+        "--project-root",
+        str(project_root),
+        "--hot-budget-gb",
+        "0.0000001",
+        "--cold-candidate-min-mb",
+        "0.000001",
+        "--offload-manifest-min-mb",
+        "0.000001",
+        "--offload-manifest-file",
+        str(project_root / "governance" / "health" / "storage_tier_offload_manifest_latest.json"),
+    ]
+    old_argv = sys.argv
+    try:
+        sys.argv = args
+        rc = storage_tier_src.main()
+    finally:
+        sys.argv = old_argv
+
+    payload = json.loads((health / "storage_tier_policy_latest.json").read_text(encoding="utf-8"))
+    contract = payload["hot_path_budget_contract"]
+
+    assert rc == 0
+    assert payload["overall_status"] == "ready"
+    assert payload["pressure"]["raw_hot_path_over_budget_bytes"] > 0
+    assert payload["pressure"]["hot_path_over_budget_bytes"] == 0
+    assert contract["active"] is True
+    assert contract["blockers"] == []
+    assert contract["inputs"]["collector_intake_enforced"] is False
+    assert contract["inputs"]["collector_intake_soak_safe"] is True
+    assert contract["inputs"]["collector_intake"]["safely_optional"] is True
+
+
 def test_training_runtime_control_prioritizes_sequence_timeout_retries(tmp_path: Path) -> None:
     project_root = tmp_path / "project"
     _write_json(

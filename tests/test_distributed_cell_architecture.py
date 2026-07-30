@@ -92,6 +92,57 @@ def test_distributed_cell_architecture_separates_guarded_soak_from_raw_backlog(t
     assert payload["integration_contract"]["separates_guarded_soak_health_from_raw_production_backlog"] is True
 
 
+def test_distributed_cell_architecture_markdown_includes_sleeve_guard_posture(tmp_path: Path) -> None:
+    health = tmp_path / "governance" / "health"
+    now = cells.iso_now()
+    _write_json(
+        health / "paper_profitability_control_latest.json",
+        {
+            "timestamp_utc": now,
+            "overall_status": "protective_tightening",
+            "ok": True,
+            "controlled_profitability_grade": "A+",
+            "raw_profitability_grade": "D",
+            "financial_profitability_grade": "D",
+            "weak_sleeve_recurrence_guard_contract": {
+                "control_ready": True,
+                "control_posture_grade": "A+",
+                "paper_only": True,
+                "live_execution_allowed": False,
+                "profile_count": 2,
+                "guarded_profile_count": 2,
+                "top_recurrent_loss_causes": [
+                    {"cause": "source_quality:low", "profile_count": 2},
+                    {"cause": "session:intraday", "profile_count": 2},
+                ],
+            },
+            "weak_sleeve_systemic_weak_point_contract": {
+                "active": True,
+                "control_ready": True,
+                "control_posture_grade": "A+",
+                "paper_only": True,
+                "live_execution_allowed": False,
+                "systemic_weak_point_count": 1,
+                "top_systemic_causes": [
+                    {"cause": "source_quality:low", "family": "source_quality", "profile_count": 2},
+                ],
+            },
+        },
+    )
+
+    payload = cells.build_payload(project_root=tmp_path, apply=False, cell_root=tmp_path / "governance" / "cells")
+    markdown = cells._markdown(payload)
+
+    assert payload["sleeve_guard_posture"]["posture"] == "paper_repair_guarded_with_systemic_weak_point_locks"
+    assert payload["integration_contract"]["includes_sleeve_weak_point_recurrence_and_systemic_guard_posture"] is True
+    assert "Sleeve guard posture:" in markdown
+    assert "Recurrence guarded: 2/2" in markdown
+    assert "Systemic weak points: 1" in markdown
+    assert "controlled A+" in markdown
+    assert "raw D" in markdown
+    assert "source_quality:low" in markdown
+
+
 def test_distributed_cell_architecture_normalizes_controlled_production_states(tmp_path: Path) -> None:
     health = tmp_path / "governance" / "health"
     now = cells.iso_now()

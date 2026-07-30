@@ -449,7 +449,7 @@ def test_runtime_guard_sigstops_hot_research_until_training_gate_clears(tmp_path
             "pid": 4242,
             "category": "research_training",
             "cpu_percent": 77.0,
-            "command": "python scripts/run_shadow_training_loop.py --broker schwab",
+            "command": "python scripts/run_shadow_training_loop.py --simulate",
         }
     ]
     state_path = tmp_path / "pause_state.json"
@@ -498,6 +498,8 @@ def test_runtime_throttle_includes_medium_hot_research_under_sustain() -> None:
 
     assert candidates
     assert candidates[0]["pid"] == 5150
+    assert candidates[0]["pause_exempt"] is True
+    assert candidates[0]["pause_exempt_reason"] == "live_soak_shadow_loop_downshift_only"
 
 
 def test_runtime_env_overrides_soft_cap_carries_support_spawn_contract() -> None:
@@ -507,6 +509,16 @@ def test_runtime_env_overrides_soft_cap_carries_support_spawn_contract() -> None
     assert overrides["MACRO_YTDLP_SUPPORT_NICE"] == "12"
     assert overrides["TRAINING_RUNTIME_PAUSED_FOR_HOST_HEADROOM"] == "0"
     assert overrides["SHADOW_LOOP_RUNTIME_PAUSE_SLEEP_SECONDS"] == "30"
+
+
+def test_runtime_env_overrides_observe_keeps_support_jobs_niced() -> None:
+    overrides = src._runtime_env_overrides("observe", "normal", "normal")
+
+    assert overrides["OPS_SUPPORT_JOB_NICE"] == "12"
+    assert overrides["YTDLP_SUPPORT_NICE"] == "12"
+    assert overrides["MACRO_YTDLP_SUPPORT_NICE"] == "12"
+    assert overrides["TRAINING_RUNTIME_PAUSED_FOR_HOST_HEADROOM"] == "0"
+    assert overrides["SHADOW_LOOP_RUNTIME_PAUSE_SLEEP_SECONDS"] == "15"
 
 
 def test_full_force_paper_keeps_cooling_controls_under_soft_cap() -> None:
@@ -5956,7 +5968,7 @@ def test_runtime_throttle_pauses_all_hot_research_candidates_up_to_limit(tmp_pat
             "pid": pid,
             "category": "research_training",
             "cpu_percent": cpu,
-            "command": f"python scripts/run_shadow_training_loop.py --broker schwab --profile p{pid}",
+            "command": f"python scripts/run_shadow_training_loop.py --simulate --profile p{pid}",
         }
         for pid, cpu in ((101, 93.0), (102, 88.0), (103, 79.0))
     ]
@@ -5975,7 +5987,10 @@ def test_runtime_throttle_pauses_all_hot_research_candidates_up_to_limit(tmp_pat
     assert [pid for pid, sig in signals if sig == signal.SIGSTOP] == [101, 102, 103]
 
 
-def test_runtime_throttle_pauses_research_for_mac_fluidity_watch(tmp_path: Path, monkeypatch) -> None:
+def test_runtime_throttle_keeps_live_soak_shadow_loops_running_for_mac_fluidity_watch(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
     signals: list[tuple[int, signal.Signals | int]] = []
 
     def fake_kill(pid: int, sig: signal.Signals | int) -> None:
@@ -6000,12 +6015,14 @@ def test_runtime_throttle_pauses_research_for_mac_fluidity_watch(tmp_path: Path,
             "pid": 701,
             "category": "research_training",
             "cpu_percent": 72.0,
+            "pause_exempt": True,
             "command": "python scripts/run_shadow_training_loop.py --broker schwab",
         },
         {
             "pid": 702,
             "category": "research_training",
             "cpu_percent": 43.5,
+            "pause_exempt": True,
             "command": "python scripts/run_shadow_training_loop.py --broker coinbase",
         },
     ]
@@ -6021,8 +6038,102 @@ def test_runtime_throttle_pauses_research_for_mac_fluidity_watch(tmp_path: Path,
 
     assert result["pause_requested"] is True
     assert result["reason"] == "mac_fluidity_research_pause"
-    assert result["successful_count"] == 2
-    assert [pid for pid, sig in signals if sig == signal.SIGSTOP] == [701, 702]
+    assert result["successful_count"] == 0
+    assert [pid for pid, sig in signals if sig == signal.SIGSTOP] == []
+
+
+def test_runtime_throttle_pauses_simulated_research_for_mac_fluidity_watch(tmp_path: Path, monkeypatch) -> None:
+    signals: list[tuple[int, signal.Signals | int]] = []
+
+    def fake_kill(pid: int, sig: signal.Signals | int) -> None:
+        signals.append((pid, sig))
+
+    payload = {
+        "runtime_saturation_governor_v2": {
+            "training_policy": {"training_paused": False, "reason": "runtime_training_ready"}
+        },
+        "throttle_profile": "soft_cap",
+        "compute_pressure_level": "elevated",
+        "memory_pressure_level": "normal",
+        "mac_fluidity_contract": {
+            "overall_status": "watch",
+            "fluidity_band": "guarded_smooth",
+            "fluidity_score": 88.5,
+            "research_pause_recommended": True,
+        },
+    }
+    candidates = [
+        {
+            "pid": 703,
+            "category": "research_training",
+            "cpu_percent": 72.0,
+            "command": "python scripts/run_shadow_training_loop.py --simulate",
+        },
+    ]
+
+    monkeypatch.setattr(src.os, "kill", fake_kill)
+
+    result = src._apply_research_training_pause(
+        tmp_path,
+        candidates,
+        payload,
+        state_path=tmp_path / "runtime_research_pause_state.json",
+    )
+
+    assert result["pause_requested"] is True
+    assert result["reason"] == "mac_fluidity_research_pause"
+    assert result["successful_count"] == 1
+    assert [pid for pid, sig in signals if sig == signal.SIGSTOP] == [703]
+
+
+def test_runtime_throttle_resumes_previously_paused_live_soak_shadow_loop(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    signals: list[tuple[int, signal.Signals | int]] = []
+
+    def fake_kill(pid: int, sig: signal.Signals | int) -> None:
+        signals.append((pid, sig))
+
+    state_path = tmp_path / "runtime_research_pause_state.json"
+    state_path.write_text(
+        json.dumps(
+            {
+                "timestamp_utc": "2026-07-30T14:50:00+00:00",
+                "pause_requested": True,
+                "reason": "mac_fluidity_research_pause",
+                "paused_processes": [
+                    {
+                        "pid": 704,
+                        "ok": True,
+                        "signal": "SIGSTOP",
+                        "reason": "mac_fluidity_research_pause",
+                        "command_excerpt": "python scripts/run_shadow_training_loop.py --broker schwab --profile dividend",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    payload = {
+        "runtime_saturation_governor_v2": {
+            "training_policy": {"training_paused": False, "reason": "runtime_training_ready"}
+        },
+        "throttle_profile": "soft_cap",
+        "compute_pressure_level": "elevated",
+        "memory_pressure_level": "normal",
+        "mac_fluidity_contract": {"research_pause_recommended": True},
+    }
+
+    monkeypatch.setattr(src.os, "kill", fake_kill)
+
+    result = src._apply_research_training_pause(tmp_path, [], payload, state_path=state_path)
+
+    assert result["pause_requested"] is True
+    assert result["resume_successful_count"] == 1
+    assert (704, signal.SIGCONT) in signals
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    assert state["paused_processes"] == []
 
 
 def test_runtime_throttle_pauses_support_maintenance_for_mac_fluidity_watch(tmp_path: Path, monkeypatch) -> None:

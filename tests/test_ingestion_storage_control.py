@@ -271,6 +271,70 @@ def test_continuous_ingestion_soak_contract_marks_a_plus_raw_live_drain_time_cle
     assert payload["control_env"]["TRAINING_RUNTIME_PAUSED_FOR_BACKLOG"] == "0"
 
 
+def test_continuous_ingestion_soak_contract_accepts_clean_optional_collector_intake() -> None:
+    payload = src._continuous_ingestion_soak_contract(
+        horizon_days=30.0,
+        overall_status="ready",
+        severity="stable",
+        steady_state={
+            "target_status": {
+                "steady_state_ready": False,
+                "target_breaches": ["estimated_total_drain_minutes"],
+                "estimated_total_drain_minutes_ok": False,
+            },
+            "ratios": {
+                "pressure_index": 0.604,
+                "core_pending_lines": 0.452,
+                "estimated_total_drain_minutes": 506.827,
+            },
+        },
+        recovery_scorecard={"score": 75.0},
+        backlog_relief_contract={
+            "active": False,
+            "overall_grade": "A+",
+            "active_issue_ids": [],
+            "raw_live_expansion_headroom": {
+                "active": False,
+                "grade": "A+",
+                "expansion_ready": True,
+                "hard_block": False,
+                "raw_live": {
+                    "core_pending_lines": 2261,
+                    "total_pending_lines": 4098,
+                    "oldest_pending_age_seconds": 0.0,
+                },
+                "targets": {
+                    "absolute_core_target_lines": 5000,
+                    "absolute_total_threshold_lines": 15000,
+                    "absolute_age_threshold_seconds": 240.0,
+                },
+            },
+        },
+        collector_intake_audit={"status": "not_required", "required": False, "mismatch_count": 0},
+        storage_efficiency_contract={"overall_status": "ready", "grade": "A+"},
+        storage_growth_forecast={"status": "forecast_ready", "days_until_pressure_free": 676.24},
+        storage_retention_unison={"continuous_run_contract": {"status": "ready", "ready": True, "available_margin_gb": 108.808}},
+        route_verified=True,
+        resilience_status="ready",
+        unresolved_split_brain_conflicts=0,
+        retention_debt_gb=0.0,
+        drain_minutes_total=7602.404,
+        data_integrity={
+            "sql_invalid_lines": 0,
+            "sql_overlay_invalid_lines": 0,
+            "sql_overlay_ops_write_failures": 0,
+            "sql_overlay_oversize_payloads": 0,
+        },
+    )
+
+    assert payload["status"] == "ready"
+    assert payload["soak_ready"] is True
+    assert payload["blockers"] == []
+    assert payload["inputs"]["collector_intake_soak_safe"] is True
+    assert payload["inputs"]["collector_intake_optional_soak_safe"] is True
+    assert payload["inputs"]["a_plus_drain_time_only_soak_clear"] is True
+
+
 def test_continuous_ingestion_soak_contract_allows_pressure_only_reserve_headroom_with_training_pause_mismatch() -> None:
     payload = src._continuous_ingestion_soak_contract(
         horizon_days=30.0,
@@ -2388,6 +2452,54 @@ def test_ingestion_storage_control_manages_large_support_overlay_without_critica
     assert payload["severity"] == "elevated"
     assert payload["overall_status"] == "ready"
     assert payload["pressure_index"] < 1.5
+
+    _write_json(
+        health / "ingestion_backpressure_latest.json",
+        {
+            "timestamp_utc": now.isoformat(),
+            "pending_lines": 29,
+            "pending_lines_total": 81,
+            "pending_lines_deferred": 52,
+            "pending_lines_cold": 0,
+            "pending_lines_support_telemetry": 0,
+            "pending_lines_stale_stage": 0,
+            "pending_lines_threshold": 15000,
+            "oldest_pending_age_seconds": 208.871,
+            "oldest_age_threshold_seconds": 240.0,
+            "overload": False,
+        },
+    )
+    _write_json(
+        health / "backpressure_drainer_fleet_latest.json",
+        {
+            "timestamp_utc": now.isoformat(),
+            "overall_status": "ready",
+            "ok": True,
+            "metrics": {
+                "core_pending_lines": 29,
+                "total_pending_lines": 176,
+                "support_pending_lines": 96,
+                "raw_live_expansion_guard": {
+                    "raw_live": {
+                        "canonical_core_pending_lines": 29,
+                        "total_pending_lines": 176,
+                        "oldest_pending_age_seconds": 208.871,
+                        "guard_oldest_pending_age_seconds": 0.0,
+                    }
+                },
+            },
+        },
+    )
+
+    reconciled = src.build_payload(tmp_path, now_utc=now)
+
+    overlay = reconciled["sql_ingestion_pending_overlay"]
+    assert overlay["managed_support_overlay_backlog"] is True
+    assert overlay["drainer_fleet_support_reconciliation"]["active"] is True
+    assert overlay["pressure_support_pending_lines"] == 96
+    assert reconciled["backpressure"]["overlay_pressure_clear"] is True
+    assert reconciled["severity"] == "stable"
+    assert reconciled["pressure_index"] < 0.75
 
 
 def test_ingestion_storage_control_decays_fresh_overlay_when_raw_backpressure_cleared(tmp_path: Path) -> None:

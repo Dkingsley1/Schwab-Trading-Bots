@@ -35,6 +35,41 @@ def _write_jsonl(path: Path, rows: list[dict]) -> None:
             handle.write(json.dumps(row, ensure_ascii=True) + "\n")
 
 
+def test_rolling_restart_checkpoint_stale_only_is_precondition_warning(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    health = project_root / "governance" / "health"
+    _write_json(health / "process_watchdog_latest.json", {"restart_storms": []})
+    _write_json(health / "resource_guard_latest.json", {"swap_used_gb": 0.5, "memory_pressure_state": "green"})
+    _write_json(health / "session_ready_latest.json", {"timestamp_utc": restart_src.iso_now(), "ok": True})
+    _write_json(project_root / "exports" / "state_snapshot_drills" / "latest.json", {"timestamp_utc": "2026-03-20T00:00:00+00:00"})
+
+    payload = restart_src.build_payload(project_root)
+
+    assert payload["overall_status"] == "ready"
+    assert payload["ok"] is True
+    assert payload["restart_due"] is False
+    assert payload["recommended_scope"] == "none"
+    assert payload["due_signals"]["checkpoint_missing_or_stale"] is True
+    assert "run a checkpoint bundle before the next controlled restart window" in payload["recommended_actions"]
+
+
+def test_rolling_restart_blocks_actual_restart_when_checkpoint_is_stale(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    health = project_root / "governance" / "health"
+    _write_json(health / "process_watchdog_latest.json", {"restart_storms": [{"service": "all_sleeves"}]})
+    _write_json(health / "resource_guard_latest.json", {"swap_used_gb": 0.5, "memory_pressure_state": "green"})
+    _write_json(health / "session_ready_latest.json", {"timestamp_utc": restart_src.iso_now(), "ok": True})
+    _write_json(project_root / "exports" / "state_snapshot_drills" / "latest.json", {"timestamp_utc": "2026-03-20T00:00:00+00:00"})
+
+    payload = restart_src.build_payload(project_root)
+
+    assert payload["overall_status"] == "blocked"
+    assert payload["ok"] is False
+    assert payload["restart_due"] is True
+    assert payload["recommended_scope"] == "full_stack"
+    assert payload["due_signals"]["checkpoint_missing_or_stale"] is True
+
+
 def test_long_runtime_runtime_controls_surface_pressure(tmp_path: Path) -> None:
     project_root = tmp_path / "project"
     health = project_root / "governance" / "health"
@@ -527,6 +562,27 @@ def test_blackstart_treats_warning_lease_as_operable_when_broker_is_ready(tmp_pa
     auth_stage = next(row for row in blackstart["stages"] if row["name"] == "auth_lease")
     assert auth_stage["ok"] is True
     assert blackstart["overall_status"] in {"ready", "degraded"}
+
+
+def test_blackstart_infers_stale_session_ready_from_fresh_shadow_loop(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    health = project_root / "governance" / "health"
+    _write_json(health / "reboot_resilience_latest.json", {"ok": True, "recovered": []})
+    _write_json(health / "session_ready_latest.json", {"timestamp_utc": "2026-04-09T14:00:00+00:00", "ok": True})
+    _write_json(health / "shadow_loop_schwab_default_latest.json", {"timestamp_utc": blackstart_src.iso_now(), "ok": True})
+    _write_json(health / "live_readiness_smoke_latest.json", {"timestamp_utc": blackstart_src.iso_now(), "ok": True})
+    _write_json(health / "storage_resilience_control_latest.json", {"ok": True, "overall_status": "ready"})
+    _write_json(health / "storage_route_status_latest.json", {"ok": True, "mode": "external"})
+    _write_json(health / "process_watchdog_latest.json", {"restart_storms": []})
+    _write_json(health / "auth_lease_manager_latest.json", {"ok": True, "overall_status": "ready", "lease_state": "healthy"})
+
+    blackstart = blackstart_src.build_payload(project_root)
+
+    session_stage = next(row for row in blackstart["stages"] if row["name"] == "session_ready")
+    assert blackstart["overall_status"] == "ready"
+    assert session_stage["ok"] is True
+    assert session_stage["freshness_inferred_from_shadow_loop"] is True
+    assert blackstart["evidence"]["session_freshness_inferred_from_shadow_loop"] is True
 
 
 def test_auth_lease_default_accepts_fresh_schwab_half_hour_token(tmp_path: Path) -> None:

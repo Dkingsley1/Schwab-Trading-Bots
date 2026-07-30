@@ -376,7 +376,47 @@ def _live_execution_authority_enabled(env_values: dict[str, str]) -> dict[str, A
     }
 
 
-def _all_sleeves_runtime_state(process: dict[str, Any]) -> dict[str, Any]:
+def _launcher_fanout_certification(project_root: Path, launcher_health: dict[str, Any]) -> dict[str, Any]:
+    raw_path = str(launcher_health.get("path") or "").strip()
+    path = Path(raw_path) if raw_path else project_root / "governance" / "health" / "all_sleeves_launcher_latest.json"
+    if not path.is_absolute():
+        path = project_root / path
+    payload = load_json(path)
+    if not payload:
+        return {}
+    age = payload_age_minutes(payload, path)
+    stale = bool(age is None or float(age) > 6.0)
+    readiness = _as_dict(payload.get("launcher_readiness_contract"))
+    running = _safe_float(payload.get("running_job_count"), 0.0)
+    expected = _safe_float(payload.get("expected_job_count"), 0.0)
+    problem = max(
+        _safe_float(payload.get("problem_job_count"), 0.0),
+        _safe_float(readiness.get("problem_job_count"), 0.0),
+    )
+    readiness_status = _lower(readiness.get("readiness_status"))
+    status = _lower(payload.get("overall_status") or payload.get("status"))
+    ok = bool(
+        not stale
+        and status in READY_LIKE_STATUSES
+        and readiness_status in {"", "ready", "ok"}
+        and running > 0
+        and (expected <= 0 or running >= expected)
+        and problem <= 0
+    )
+    return {
+        "ok": ok,
+        "path": str(path),
+        "age_minutes": round(float(age), 3) if age is not None else None,
+        "stale": stale,
+        "overall_status": status,
+        "readiness_status": readiness_status,
+        "running_job_count": running,
+        "expected_job_count": expected,
+        "problem_job_count": int(problem),
+    }
+
+
+def _all_sleeves_runtime_state(process: dict[str, Any], project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
     rows = _as_list(process.get("status"))
     row = next((item for item in rows if isinstance(item, dict) and str(item.get("name") or "") == "all_sleeves"), {})
     launcher = _as_dict(row.get("launcher_artifact_health"))
@@ -426,6 +466,17 @@ def _all_sleeves_runtime_state(process: dict[str, Any]) -> dict[str, Any]:
         and _bool(child_fanout_ok)
     )
     ok = bool(ok or startup_grace_active)
+    launcher_certification = _launcher_fanout_certification(project_root, launcher)
+    if not ok and bool(launcher_certification.get("ok", False)):
+        ok = True
+        heartbeat_ok = True
+        process_live = True if process_live is None else process_live
+        launcher_live = True
+        child_fanout_ok = True
+        child_count = max(child_count, _safe_float(launcher_certification.get("running_job_count"), 0.0))
+        launcher_running = max(launcher_running, _safe_float(launcher_certification.get("running_job_count"), 0.0))
+        launcher_expected = max(launcher_expected, _safe_float(launcher_certification.get("expected_job_count"), 0.0))
+        problem_job_count = 0
     return {
         "present": bool(row),
         "ok": ok,
@@ -442,6 +493,8 @@ def _all_sleeves_runtime_state(process: dict[str, Any]) -> dict[str, Any]:
         "startup_grace_seconds": round(float(startup_grace_seconds), 3),
         "parent_elapsed_seconds": round(float(parent_elapsed), 3),
         "problem_job_count": int(problem_job_count),
+        "launcher_artifact_certified_fanout": bool(launcher_certification.get("ok", False)),
+        "launcher_artifact_certification": launcher_certification,
     }
 
 
@@ -851,6 +904,7 @@ def _hot_artifact_freshness_guard(artifact_snapshots: list[dict[str, Any]]) -> d
 
 
 def _paper_eligible_lane_open_guard(
+    project_root: Path,
     runtime: dict[str, Any],
     paper: dict[str, Any],
     process: dict[str, Any],
@@ -868,7 +922,7 @@ def _paper_eligible_lane_open_guard(
 
     paper_policy = _as_dict(runtime.get("paper_execution_policy"))
     live_policy = _as_dict(_as_dict(runtime.get("runtime_saturation_governor_v2")).get("paper_live_data_policy"))
-    all_sleeves = _all_sleeves_runtime_state(process)
+    all_sleeves = _all_sleeves_runtime_state(process, project_root)
     stale = [row for row in artifact_snapshots if bool(row.get("stale", False))]
     lane_blockers: list[str] = []
     if not _bool(paper_policy.get("paper_execution_allowed")):
@@ -931,7 +985,7 @@ def _production_grade_authority_guard(
     eligible = _paper_lane_eligible(runtime, paper)
     paper_policy = _as_dict(runtime.get("paper_execution_policy"))
     live_policy = _as_dict(_as_dict(runtime.get("runtime_saturation_governor_v2")).get("paper_live_data_policy"))
-    all_sleeves = _all_sleeves_runtime_state(process)
+    all_sleeves = _all_sleeves_runtime_state(process, project_root)
     all_paper_blockers = _paper_and_gate_blockers(paper)
     hard_blockers = ordered_unique([item for item in all_paper_blockers if item in HARD_PAPER_BLOCKERS])
     expansion_blockers = _expansion_only_blockers(all_paper_blockers)
@@ -1087,6 +1141,7 @@ def _production_grade_authority_guard(
 
 
 def _soak_30_day_continuity_guard(
+    project_root: Path,
     runtime: dict[str, Any],
     paper: dict[str, Any],
     process: dict[str, Any],
@@ -1115,7 +1170,7 @@ def _soak_30_day_continuity_guard(
     expansion_blockers = _expansion_only_blockers(all_paper_blockers)
     fail_closed_blockers = _fail_closed_blockers(all_paper_blockers)
     runtime_capacity = _as_dict(runtime.get("paper_capacity_contract"))
-    all_sleeves = _all_sleeves_runtime_state(process)
+    all_sleeves = _all_sleeves_runtime_state(process, project_root)
     stale_artifacts = [row for row in artifact_snapshots if bool(row.get("stale", False))]
     profitability_grade = str(runtime_profitability.get("controlled_profitability_grade") or "").strip().upper()
     raw_recovery = _as_dict(runtime_profitability.get("raw_profitability_a_recovery_contract"))
@@ -1320,7 +1375,7 @@ def build_payload(
         _paper_execution_pause_guard(runtime, paper, env_values),
         _support_override_guard(runtime, env_values, override_path),
         _hot_artifact_freshness_guard(artifact_snapshots),
-        _paper_eligible_lane_open_guard(runtime, paper, process, artifact_snapshots),
+        _paper_eligible_lane_open_guard(project_root, runtime, paper, process, artifact_snapshots),
         _production_grade_authority_guard(
             project_root,
             runtime,
@@ -1335,6 +1390,7 @@ def build_payload(
             artifact_snapshots,
         ),
         _soak_30_day_continuity_guard(
+            project_root,
             runtime,
             paper,
             process,

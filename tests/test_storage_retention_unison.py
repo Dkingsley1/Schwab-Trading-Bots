@@ -16,6 +16,40 @@ def test_video_cold_archive_override_keeps_video_root_protected(monkeypatch) -> 
     assert src._is_protected_volume(Path("/Volumes/VIDEO/schwab_trading_bot_cold/data/proof.jsonl")) is False
 
 
+def test_soak_storage_controls_treat_clean_optional_collector_intake_as_safe() -> None:
+    controls = src._soak_storage_controls(
+        forecast={"current_external_free_gb": 240.0},
+        storage_payload={
+            "storage_efficiency_contract": {
+                "overall_status": "ready",
+                "grade": "A+",
+                "metrics": {"deep_cold_ready": True},
+            },
+            "steady_state": {"target_status": {"steady_state_ready": True}},
+            "storage": {"retention_debt_gb": 0.0, "retention_debt_target_gb": 0.25},
+            "collector_intake_enforcement_audit": {
+                "status": "not_required",
+                "required": False,
+                "mismatch_count": 0,
+            },
+            "external_route_verification": {"verification_state": "ready"},
+            "storage_resilience": {"overall_status": "ready"},
+            "backlog_relief_contract": {"active": False},
+        },
+        quota_payload={"overall_status": "ready"},
+        hot_lane_payload={"overall_status": "active"},
+        target_free_gb=125.0,
+        pressure_free_gb=64.0,
+        safety_buffer_gb=32.0,
+    )
+
+    assert controls["collector_intake_status"] == "not_required"
+    assert controls["collector_intake_soak_safe"] is True
+    assert controls["collector_intake_enforced"] is True
+    assert controls["storage_governed_core_ready"] is True
+    assert controls["storage_bounded_post_maintenance_ready"] is True
+
+
 def test_continuous_run_contract_blocks_when_projected_margin_is_negative() -> None:
     payload = src._continuous_run_contract(
         forecast={

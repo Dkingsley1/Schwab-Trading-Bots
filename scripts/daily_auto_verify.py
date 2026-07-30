@@ -190,6 +190,75 @@ def _artifact_time_utc(path: Path) -> datetime | None:
         return None
 
 
+def _safe_int(raw: Any, default: int = 0) -> int:
+    try:
+        return int(float(raw))
+    except Exception:
+        return int(default)
+
+
+def _fresh_sql_service_heartbeat(max_age_minutes: float, fresh_if_newer_than: datetime | None) -> dict[str, Any]:
+    health_root = PROJECT_ROOT / "governance" / "health"
+    candidates = [
+        health_root / "sql_link_service_progress_latest.json",
+        health_root / "sql_link_service_latest.json",
+    ]
+    rows: list[dict[str, Any]] = []
+    for path in candidates:
+        if not path.exists():
+            continue
+        payload = _load_json(path)
+        ts = _artifact_time_utc(path)
+        if ts is None:
+            continue
+        age_minutes = max((datetime.now(timezone.utc) - ts).total_seconds() / 60.0, 0.0)
+        state = str(payload.get("status") or payload.get("overall_status") or "").strip().lower()
+        current_step = str(payload.get("current_step") or "").strip().lower()
+        heartbeat_ok = bool(payload.get("ok", False)) or state in {"ready", "ok", "running", "complete", "active"}
+        heartbeat_ok = heartbeat_ok and current_step not in {"blocked", "failed", "error"}
+        heartbeat_ok = heartbeat_ok and not payload.get("failed_routes")
+        heartbeat_fresh = age_minutes <= max_age_minutes or bool(fresh_if_newer_than is not None and ts >= fresh_if_newer_than)
+        rows.append(
+            {
+                "path": str(path),
+                "timestamp_utc": ts.isoformat(),
+                "age_minutes": round(age_minutes, 4),
+                "ok": bool(heartbeat_ok),
+                "fresh": bool(heartbeat_fresh),
+                "state": state,
+                "current_step": current_step,
+            }
+        )
+    ready_rows = [row for row in rows if bool(row.get("ok")) and bool(row.get("fresh"))]
+    return {"ok": bool(ready_rows), "rows": rows}
+
+
+def _sql_ingestion_freshness_inferred(path: Path, payload: dict[str, Any], max_age_minutes: float, fresh_if_newer_than: datetime | None) -> dict[str, Any]:
+    if not path.name.startswith("jsonl_sql_ingestion_health"):
+        return {"ok": False}
+    sqlite = payload.get("sqlite") if isinstance(payload.get("sqlite"), dict) else {}
+    pending = _safe_int(sqlite.get("pending_lines"), 0)
+    invalid = _safe_int(sqlite.get("invalid", sqlite.get("invalid_lines", 0)), 0)
+    files_with_pending = _safe_int(sqlite.get("files_with_pending"), 0)
+    if pending > 0 or invalid > 0 or files_with_pending > 0:
+        return {
+            "ok": False,
+            "reason": "sql_ingestion_payload_has_pending_or_invalid_rows",
+            "pending_lines": pending,
+            "invalid_lines": invalid,
+            "files_with_pending": files_with_pending,
+        }
+    heartbeat = _fresh_sql_service_heartbeat(max_age_minutes, fresh_if_newer_than)
+    return {
+        "ok": bool(heartbeat.get("ok", False)),
+        "reason": "fresh_sql_service_heartbeat_with_clear_ingestion_payload" if heartbeat.get("ok") else "sql_service_heartbeat_not_fresh",
+        "pending_lines": pending,
+        "invalid_lines": invalid,
+        "files_with_pending": files_with_pending,
+        "heartbeat": heartbeat,
+    }
+
+
 def _artifact_freshness_status(
     files: list[Path],
     max_age_minutes: float,
@@ -217,6 +286,11 @@ def _artifact_freshness_status(
         age_minutes = max((now - ts).total_seconds() / 60.0, 0.0)
         refreshed_in_run = bool(fresh_if_newer_than is not None and ts >= fresh_if_newer_than)
         is_ok = refreshed_in_run or (age_minutes <= max_age)
+        inferred_freshness: dict[str, Any] = {}
+        if not is_ok:
+            payload = _load_json(p)
+            inferred_freshness = _sql_ingestion_freshness_inferred(p, payload, max_age, fresh_if_newer_than)
+            is_ok = bool(inferred_freshness.get("ok", False))
         if not is_ok:
             stale.append(str(p))
         rows.append({
@@ -225,6 +299,8 @@ def _artifact_freshness_status(
             "timestamp_utc": ts.isoformat(),
             "age_minutes": round(age_minutes, 4),
             "refreshed_in_run": bool(refreshed_in_run),
+            "freshness_inferred_from_sql_service": bool(inferred_freshness.get("ok", False)),
+            "freshness_inference": inferred_freshness,
             "ok": bool(is_ok),
         })
 

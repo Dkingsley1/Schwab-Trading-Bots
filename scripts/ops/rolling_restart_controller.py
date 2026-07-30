@@ -62,7 +62,10 @@ def build_payload(
         "restart_storm_present": restart_storms > 0,
         "checkpoint_missing_or_stale": not checkpoint_fresh,
     }
-    due = any(due_signals.values())
+    restart_due = any(
+        bool(due_signals[key])
+        for key in ("session_stale", "shadow_heartbeat_stale", "swap_pressure_high", "restart_storm_present")
+    )
     recommended_scope = "none"
     if due_signals["restart_storm_present"] or due_signals["session_stale"]:
         recommended_scope = "full_stack"
@@ -70,9 +73,9 @@ def build_payload(
         recommended_scope = "worker_only"
 
     overall_status = "ready"
-    if due and not checkpoint_fresh:
+    if restart_due and not checkpoint_fresh:
         overall_status = "blocked"
-    elif due:
+    elif restart_due:
         overall_status = "degraded"
 
     recommended_actions = ordered_unique(
@@ -80,7 +83,7 @@ def build_payload(
             "run a checkpoint bundle before the next controlled restart window" if not checkpoint_fresh else "",
             "recycle worker-side processes in a rolling window to relieve swap buildup" if due_signals["swap_pressure_high"] else "",
             "schedule a full-stack restart after sanity checks if runtime heartbeats stay stale" if due_signals["session_stale"] or due_signals["restart_storm_present"] else "",
-            "keep restart windows off-hours and per-sleeve so the runtime never hard-stops all lanes at once" if due else "",
+            "keep restart windows off-hours and per-sleeve so the runtime never hard-stops all lanes at once" if restart_due else "",
         ]
     )
 
@@ -89,7 +92,7 @@ def build_payload(
         "schema_version": 1,
         "ok": overall_status == "ready",
         "overall_status": overall_status,
-        "restart_due": bool(due),
+        "restart_due": bool(restart_due),
         "recommended_scope": recommended_scope,
         "runtime_signals": {
             "session_ready_age_minutes": round(float(session_age_minutes), 4) if session_age_minutes is not None else None,

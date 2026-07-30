@@ -15,9 +15,9 @@ if __package__ in {None, ""}:
     PROJECT_ROOT = Path(__file__).resolve().parents[2]
     if str(PROJECT_ROOT) not in sys.path:
         sys.path.insert(0, str(PROJECT_ROOT))
-    from scripts.ops.long_runtime_common import PROJECT_ROOT, iso_now, load_json, ordered_unique, write_payload
+    from scripts.ops.long_runtime_common import PROJECT_ROOT, iso_now, load_json, ordered_unique, payload_age_minutes, write_payload
 else:
-    from .long_runtime_common import PROJECT_ROOT, iso_now, load_json, ordered_unique, write_payload
+    from .long_runtime_common import PROJECT_ROOT, iso_now, load_json, ordered_unique, payload_age_minutes, write_payload
 
 
 DEFAULT_OUT_PATH = PROJECT_ROOT / "governance" / "health" / "infrastructure_autofix_bot_latest.json"
@@ -36,6 +36,7 @@ RUNTIME_PAPER_REGRESSION_GUARD_SCRIPT = Path(__file__).resolve().with_name("runt
 MASTER_INFRA_SUPERVISOR_SCRIPT = Path(__file__).resolve().with_name("master_infrastructure_supervisor.py")
 STALE_SURFACE_AUTOHEALER_SCRIPT = Path(__file__).resolve().with_name("stale_surface_autohealer.py")
 HOST_CAPABILITY_SCRIPT = Path(__file__).resolve().with_name("host_capability_contract.py")
+HEALTH_GATES_SCRIPT = PROJECT_ROOT / "scripts" / "health_gates.py"
 HALT_TRIGGER_CONTROL_SCRIPT = Path(__file__).resolve().with_name("halt_trigger_control_plane.py")
 COORDINATION_STATE_CONTROL_SCRIPT = Path(__file__).resolve().with_name("coordination_state_control.py")
 WHOLE_SYSTEM_GOVERNOR_SCRIPT = Path(__file__).resolve().with_name("whole_system_governor.py")
@@ -110,8 +111,9 @@ def _artifact_candidates(project_root: Path, raw_path: str | Path) -> list[Path]
     return out
 
 
-def _load_freshest_json(project_root: Path, raw_path: str | Path) -> dict[str, Any]:
+def _load_freshest_json_with_path(project_root: Path, raw_path: str | Path) -> tuple[dict[str, Any], Path | None]:
     best_payload: dict[str, Any] = {}
+    best_path: Path | None = None
     best_mtime = -1.0
     for candidate in _artifact_candidates(project_root, raw_path):
         payload = load_json(candidate)
@@ -123,8 +125,14 @@ def _load_freshest_json(project_root: Path, raw_path: str | Path) -> dict[str, A
             mtime = 0.0
         if mtime >= best_mtime:
             best_payload = payload
+            best_path = candidate
             best_mtime = mtime
-    return best_payload
+    return best_payload, best_path
+
+
+def _load_freshest_json(project_root: Path, raw_path: str | Path) -> dict[str, Any]:
+    payload, _ = _load_freshest_json_with_path(project_root, raw_path)
+    return payload
 
 
 def _collector_contract_row(payload: dict[str, Any], name: str) -> dict[str, Any]:
@@ -259,6 +267,26 @@ def _blocked_check_names(payload: dict[str, Any]) -> set[str]:
     }
 
 
+def _list_texts(raw: Any) -> list[str]:
+    if not isinstance(raw, list):
+        return []
+    return [str(item or "").strip() for item in raw if str(item or "").strip()]
+
+
+def _health_gates_stale_from_halt_control(halt_trigger: dict[str, Any]) -> bool:
+    artifacts = halt_trigger.get("artifacts") if isinstance(halt_trigger.get("artifacts"), dict) else {}
+    health_row = artifacts.get("health_gates") if isinstance(artifacts.get("health_gates"), dict) else {}
+    health_state = str(health_row.get("state") or "").strip().lower()
+    blockers = halt_trigger.get("blockers") if isinstance(halt_trigger.get("blockers"), dict) else {}
+    blocker_names = set(_list_texts(blockers.get("halt_clear"))) | set(_list_texts(blockers.get("live_execution")))
+    return (
+        health_state in {"stale", "missing", "invalid_json"}
+        or "critical_artifact_stale:health_gates" in blocker_names
+        or "critical_artifact_missing:health_gates" in blocker_names
+        or "critical_artifact_invalid_json:health_gates" in blocker_names
+    )
+
+
 def _system_drift_is_self_referential(payload: dict[str, Any]) -> bool:
     blocked = _blocked_surface_names(payload)
     return bool(blocked) and blocked <= {"infrastructure_autofix", "master_infrastructure_supervisor"}
@@ -316,6 +344,7 @@ def build_payload(
     timeout_sec: int = 1200,
 ) -> dict[str, Any]:
     daily_verify = _load_freshest_json(project_root, "governance/health/daily_auto_verify_latest.json")
+    health_gates, health_gates_path = _load_freshest_json_with_path(project_root, "governance/health/health_gates_latest.json")
     storage_control = _load_freshest_json(project_root, "governance/health/ingestion_storage_control_latest.json")
     collector_contracts = _load_freshest_json(project_root, "governance/health/collector_contracts_latest.json")
     source_verification = _load_freshest_json(project_root, "governance/health/source_verification_latest.json")
@@ -441,6 +470,22 @@ def build_payload(
 
     halt_status = str(halt_trigger.get("overall_status") or halt_trigger.get("status") or "")
     coordination_status = str(coordination_state.get("overall_status") or "")
+    health_gates_age_minutes = payload_age_minutes(health_gates, health_gates_path) if health_gates else None
+    health_gates_stale = (
+        not health_gates
+        or health_gates_age_minutes is None
+        or health_gates_age_minutes > 15.0
+        or _health_gates_stale_from_halt_control(halt_trigger)
+    )
+    if health_gates_stale:
+        add_plan(
+            "health_gates_refresh",
+            (
+                f"health_gates_status={str(health_gates.get('overall_status') or 'missing')} "
+                f"age_minutes={health_gates_age_minutes:.2f}" if health_gates_age_minutes is not None else "health_gates_status=missing"
+            ),
+            [str(PYTHON_BIN), str(HEALTH_GATES_SCRIPT), "--json"],
+        )
     coordination_issue_names = [
         str(row.get("name") or row.get("source") or "")
         for row in coordination_state.get("artifact_issues", [])
@@ -449,6 +494,7 @@ def build_payload(
     if (
         not halt_trigger
         or halt_status in {"stale", "missing", "invalid_json"}
+        or health_gates_stale
         or any("halt_trigger_control_plane" in name for name in coordination_issue_names)
     ):
         add_plan(
@@ -885,6 +931,8 @@ def build_payload(
             "daily_verify_failed_checks": len(failed_checks),
             "retention_debt_gb": retention_debt_gb,
             "auth_expires_in_seconds": _safe_float(((auth_lease.get("lease_budget") or {}).get("expires_in_seconds")), 0.0),
+            "health_gates_age_minutes": _safe_float(health_gates_age_minutes, -1.0) if health_gates_age_minutes is not None else -1.0,
+            "health_gates_stale": bool(health_gates_stale),
             "snapshot_ready": bool(((snapshot_cache.get("cache_health") or {}).get("snapshot_ready", False))),
             "unsent_critical_alerts": _safe_int(((remote_alert.get("critical_backlog") or {}).get("unsent_count")), 0),
             "storage_total_pending_lines": total_pending_lines,

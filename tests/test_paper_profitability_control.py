@@ -56,6 +56,7 @@ def test_paper_profitability_control_builds_profile_and_strategy_brakes(tmp_path
                         {"cause": "source_quality:low", "count": 8, "loss_total": 900.0},
                         {"cause": "fill_quality:unknown", "count": 8, "loss_total": 900.0},
                         {"cause": "event_proximity:low", "count": 8, "loss_total": 900.0},
+                        {"cause": "conflict:low", "count": 8, "loss_total": 900.0},
                         {"cause": "session:premarket", "count": 8, "loss_total": 900.0},
                     ],
                     "top_losing_strategies": [
@@ -104,16 +105,34 @@ def test_paper_profitability_control_builds_profile_and_strategy_brakes(tmp_path
     assert profile["confirmation_bias_control"]["min_independent_evidence_channels"] >= 3
     assert profile["a_plus_plus_strengthening"]["control_grade"] == "A+"
     assert "three_profitable_refreshes" in profile["a_plus_plus_strengthening"]["required_before_reentry"]
+    assert "no_repeated_loss_cause_in_recent_refresh" in profile["a_plus_plus_strengthening"]["required_before_reentry"]
     assert "source_quality" in profile["confirmation_bias_control"]["required_before_new_entry"]
     assert profile["thresholds"]["min_source_quality_norm"] >= 0.60
     assert profile["thresholds"]["min_execution_fitness_norm"] >= 0.62
+    assert profile["thresholds"]["min_cross_asset_confirmation_norm"] >= 0.58
     assert profile["thresholds"]["min_event_proximity_norm"] > 0.0
+    recurrence = profile["weak_sleeve_recurrence_guard"]
+    assert recurrence["active"] is True
+    assert recurrence["prevent_recurrence_ready"] is True
+    assert recurrence["reentry_locked_until_cleared"] is True
+    assert recurrence["required_profitable_refreshes_before_reentry"] >= 3
+    assert recurrence["min_independent_evidence_channels"] >= 4
+    assert "source_quality_passed" in recurrence["required_before_reentry"]
+    assert "modeled_fill_quality_present" in recurrence["required_before_reentry"]
+    assert "event_catalyst_confirmation_present" in recurrence["required_before_reentry"]
+    assert "portfolio_conflict_clearance_present" in recurrence["required_before_reentry"]
+    assert "session_gate_passed" in recurrence["required_before_reentry"]
+    assert "block_when_source_quality_low_or_stale" in recurrence["runtime_blocks"]
+    assert recurrence["session_gate"]["unknown_session_is_negative"] is True
+    assert "session_quality" in recurrence["recurrent_loss_families"]
     hardening = payload["paper_profitability_hardening_contract"]
-    assert hardening["action_count"] == 5
+    assert hardening["action_count"] == len(module.PROFITABILITY_HARDENING_ACTIONS)
     assert hardening["new_entry_policy"]["block_quarantined_profiles"] is True
     assert hardening["unrealized_drag_policy"]["block_adds_while_drag_active"] is True
     assert hardening["evidence_policy"]["unknown_evidence_is_negative"] is True
+    assert hardening["recurrence_policy"]["lock_reentry_on_repeated_loss_cause"] is True
     assert any(row["action_id"] == "stop_new_entries_in_worst_sleeves" for row in hardening["actions"])
+    assert any(row["action_id"] == "lock_recurring_loss_cause_reentry" for row in hardening["actions"])
     scout_contract = payload["scout_collection_contract"]
     assert scout_contract["active"] is True
     assert "no_trade_counterfactual_outcome" in scout_contract["required_label_outputs"]
@@ -136,6 +155,7 @@ def test_paper_profitability_control_builds_profile_and_strategy_brakes(tmp_path
     assert "session_gate_result" in payload["strategy_controls"][0]["data_intake_enrichment"]["required_label_outputs"]
     assert "paper_unrealized_drag_bucket" in payload["strategy_controls"][0]["data_intake_enrichment"]["required_label_outputs"]
     assert "session_gate_result" in payload["scout_collection_contract"]["required_label_outputs"]
+    assert "repeated_loss_cause_cleared" in payload["scout_collection_contract"]["required_label_outputs"]
     assert "session_calendar" in payload["scout_collection_contract"]["required_context"]
     assert "intraday_aggressive" in runtime["profile_controls"]
     weak_strength = payload["weak_sleeve_a_plus_plus_strengthening_contract"]
@@ -143,8 +163,21 @@ def test_paper_profitability_control_builds_profile_and_strategy_brakes(tmp_path
     assert weak_strength["control_ready"] is True
     assert weak_strength["weak_profile_count"] == 1
     assert weak_strength["a_plus_plus_profile_count"] == 1
+    assert weak_strength["profile_controls"][0]["recurrence_guard_ready"] is True
+    recurrence_contract = payload["weak_sleeve_recurrence_guard_contract"]
+    assert recurrence_contract["control_posture_grade"] == "A+"
+    assert recurrence_contract["control_ready"] is True
+    assert recurrence_contract["profile_count"] == 1
+    assert "intraday_aggressive" in recurrence_contract["target_profiles"]
+    assert "source_quality_gate" in recurrence_contract["required_family_gates"]
+    assert "session_quality_gate" in recurrence_contract["required_family_gates"]
+    assert "session_quality" in recurrence_contract["required_evidence_channels"]
+    assert payload["weak_sleeve_systemic_weak_point_contract"]["active"] is False
     assert runtime["weak_sleeve_a_plus_plus_strengthening_contract"]["control_posture_grade"] == "A+"
+    assert runtime["weak_sleeve_recurrence_guard_contract"]["control_posture_grade"] == "A+"
     assert runtime["global_runtime_policy"]["apply_weak_sleeve_a_plus_plus_strengthening_contract"] is True
+    assert runtime["global_runtime_policy"]["apply_weak_sleeve_recurrence_guard"] is True
+    assert runtime["global_runtime_policy"]["apply_weak_sleeve_recurrence_guard_contract"] is True
     assert runtime["upgrade_lane_count"] == 10
     assert runtime["global_runtime_policy"]["apply_dynamic_sizing"] is True
     assert runtime["global_runtime_policy"]["apply_confirmation_bias_control"] is True
@@ -205,6 +238,74 @@ def test_paper_profitability_control_builds_profile_and_strategy_brakes(tmp_path
     assert runtime["paper_profitability_hardening_contract"]["active"] is True
     assert runtime["scout_collection_contract"]["active"] is True
     assert any("brain_refinery_v48_position_1m_3m" in key for key in runtime["strategy_controls"])
+
+
+def test_paper_profitability_control_contains_systemic_cross_sleeve_weak_points(tmp_path: Path) -> None:
+    module = _load_module()
+    health = tmp_path / "governance" / "health"
+    sleeves = []
+    for profile in ("default", "bond", "dividend", "fx"):
+        sleeves.append(
+            {
+                "profile": profile,
+                "executions": 80,
+                "win_rate": 0.12,
+                "ending_realized_pnl_total": -50.0,
+                "ending_unrealized_pnl_total": -400.0,
+                "ending_net_pnl_total": -450.0,
+                "losing_strategy_count": 1,
+                "winning_strategy_count": 0,
+                "top_loss_causes": [
+                    {"cause": "source_quality:low", "count": 4, "loss_total": 300.0},
+                    {"cause": "fill_quality:unknown", "count": 4, "loss_total": 300.0},
+                    {"cause": "session:intraday", "count": 4, "loss_total": 300.0},
+                ],
+                "top_losing_strategies": [
+                    {
+                        "strategy": f"paper_mirror::systemic_{profile}",
+                        "ending_net_pnl_total": -75.0,
+                    }
+                ],
+            }
+        )
+    _write_json(
+        health / "paper_performance_latest.json",
+        {
+            "ok": True,
+            "history_daily_series": [
+                {
+                    "day_utc": "20260524",
+                    "executions": 320,
+                    "ending_net_pnl_total": -1800.0,
+                    "change_vs_previous_day": -1800.0,
+                }
+            ],
+            "sleeve_latest": sleeves,
+        },
+    )
+    _write_json(health / "training_quality_control_latest.json", {"training_quality_score": 88.0})
+
+    payload = module.build_payload(tmp_path)
+    runtime = module.build_runtime_control_payload(payload)
+    systemic = payload["weak_sleeve_systemic_weak_point_contract"]
+
+    assert systemic["active"] is True
+    assert systemic["control_ready"] is True
+    assert systemic["control_posture_grade"] == "A+"
+    assert systemic["systemic_threshold_profile_count"] == 4
+    causes = {row["cause"]: row for row in systemic["systemic_weak_points"]}
+    assert causes["source_quality:low"]["family"] == "source_quality"
+    assert causes["fill_quality:unknown"]["family"] == "fill_quality"
+    assert causes["session:intraday"]["family"] == "session_quality"
+    assert "session_quality_gate" in systemic["required_family_gates"]
+    assert "systemic_loss_cause_bucket" in systemic["required_label_outputs"]
+    assert runtime["weak_sleeve_systemic_weak_point_contract"]["active"] is True
+    assert runtime["global_runtime_policy"]["apply_weak_sleeve_systemic_weak_point_guard"] is True
+    hardening = payload["paper_profitability_hardening_contract"]
+    systemic_action = next(row for row in hardening["actions"] if row["action_id"] == "contain_systemic_sleeve_weak_points")
+    assert systemic_action["status"] == "active"
+    assert "session:intraday" in systemic_action["targets"]
+    assert "systemic_cause_lift_result" in payload["scout_collection_contract"]["required_label_outputs"]
 
 
 def test_paper_profitability_control_is_ready_without_active_losses(tmp_path: Path) -> None:

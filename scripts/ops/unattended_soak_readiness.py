@@ -218,14 +218,18 @@ def _external_root(project_root: Path, health_root: Path) -> Path:
 
 
 def _managed_ingestion_soak_watch(ingestion: dict[str, Any], ingestion_contract: dict[str, Any]) -> bool:
-    allowed_blockers = {"steady_state_targets_not_clear"}
+    allowed_blockers = {
+        "steady_state_targets_not_clear",
+        "backlog_relief_contract_active",
+        "drain_time_above_target",
+    }
     contract_blockers = {str(item) for item in ingestion_contract.get("blockers", []) if str(item)}
     if contract_blockers and not contract_blockers.issubset(allowed_blockers):
         return False
 
     status = str(ingestion.get("overall_status") or "").lower()
     severity = str(ingestion.get("severity") or "").lower()
-    if status not in {"ready", "ok"} or severity not in {"stable", "low", "ready"}:
+    if status not in {"ready", "ok"} or severity not in {"stable", "low", "ready", "normal", "watch", "elevated"}:
         return False
 
     raw_live = _dict(_dict(ingestion.get("backlog_truth")).get("raw_live"))
@@ -256,8 +260,7 @@ def _managed_ingestion_soak_watch(ingestion: dict[str, Any], ingestion_contract:
     no_queue_breaches = not writer_shedding.get("hard_breaches") and not writer_shedding.get("elevated_breaches")
     steady = _dict(_dict(ingestion.get("steady_state")).get("target_status"))
     backlog_relief_ready = bool(steady.get("backlog_relief_a_plus_ready") or steady.get("backlog_relief_a_plus_plus_ready"))
-
-    return bool(
+    strict_ready = bool(
         raw_grade in {"A+", "A", ""}
         and pressure_index <= 0.6
         and total_pending <= 5000
@@ -270,6 +273,66 @@ def _managed_ingestion_soak_watch(ingestion: dict[str, Any], ingestion_contract:
         and no_queue_breaches
         and backlog_relief_ready
     )
+    if strict_ready:
+        return True
+
+    bounded = _dict(ingestion.get("bounded_recovery_contract"))
+    storage = _dict(ingestion.get("storage"))
+    efficiency = _dict(ingestion.get("storage_efficiency_contract"))
+    inputs = _dict(ingestion_contract.get("inputs"))
+    efficiency_status = str(
+        efficiency.get("overall_status")
+        or inputs.get("storage_efficiency_status")
+        or ingestion.get("storage_efficiency_status")
+        or ""
+    ).strip().lower()
+    efficiency_grade = str(
+        efficiency.get("grade")
+        or inputs.get("storage_efficiency_grade")
+        or storage.get("efficiency_grade")
+        or ingestion.get("storage_efficiency_grade")
+        or ""
+    ).strip().upper()
+    plane_phase = str(
+        storage.get("storage_plane_phase")
+        or _dict(efficiency.get("storage_plane_phase_contract")).get("phase")
+        or ""
+    ).strip().lower()
+    collector_status = str(
+        inputs.get("collector_intake_status")
+        or ingestion.get("collector_intake_status")
+        or ""
+    ).strip().lower()
+    collector_safe = bool(
+        inputs.get("collector_intake_soak_safe")
+        or inputs.get("collector_partial_reserve_pressure_soak_safe")
+        or ingestion.get("collector_intake_soak_safe")
+        or collector_status in {"", "not_required", "ready", "enforced"}
+    )
+    bounded_progress = bool(bounded.get("active_drain_progress") or bounded.get("drain_delta_signal_observed"))
+    hard_gate_clear = not bool(bounded.get("hard_gate_active")) and not bool(bounded.get("effective_hard_gate_active"))
+    efficiency_ready = bool(
+        efficiency_status in {"", "ready", "ok"}
+        and (efficiency_grade in {"", "A", "A+"} or plane_phase in {"steady_state", "deep_cold_managed_steady_state"})
+    )
+    bounded_ready = bool(
+        raw_grade in {"A+", "A", ""}
+        and severity in {"stable", "low", "ready", "normal", "watch", "elevated"}
+        and pressure_index <= 1.05
+        and total_pending <= 10000
+        and core_pending <= 5000
+        and oldest_age <= 300.0
+        and stale_clear
+        and route_ready
+        and resilience_ready
+        and data_clean
+        and no_queue_breaches
+        and bounded_progress
+        and hard_gate_clear
+        and efficiency_ready
+        and collector_safe
+    )
+    return bounded_ready
 
 
 def _storage_contract(

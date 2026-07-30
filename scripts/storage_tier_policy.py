@@ -79,6 +79,41 @@ def _status_ready(payload: dict[str, Any]) -> bool:
     return bool(payload.get("ready", False)) or str(payload.get("status") or "").strip().lower() == "ready"
 
 
+def _collector_intake_soak_safe(
+    *,
+    ingestion_payload: dict[str, Any],
+    ingestion_inputs: dict[str, Any],
+    backlog_relief_clear: bool,
+) -> tuple[bool, dict[str, Any]]:
+    audit = (
+        ingestion_payload.get("collector_intake_enforcement_audit")
+        if isinstance(ingestion_payload.get("collector_intake_enforcement_audit"), dict)
+        else {}
+    )
+    status = (
+        str(ingestion_inputs.get("collector_intake_status") or audit.get("status") or "")
+        .strip()
+        .lower()
+    )
+    required = bool(audit.get("required", False))
+    mismatch_count = int(max(_safe_float(audit.get("mismatch_count"), 0.0), 0.0))
+    enforced = status == "enforced"
+    safely_optional = bool(
+        status == "not_required"
+        and not required
+        and mismatch_count <= 0
+        and backlog_relief_clear
+    )
+    return bool(enforced or safely_optional), {
+        "status": status,
+        "required": required,
+        "mismatch_count": mismatch_count,
+        "enforced": enforced,
+        "safely_optional": safely_optional,
+        "backlog_relief_clear": bool(backlog_relief_clear),
+    }
+
+
 def _managed_hot_path_budget_contract(
     *,
     project_root: Path,
@@ -111,8 +146,12 @@ def _managed_hot_path_budget_contract(
         .lower()
         == "ready"
     )
-    collector_enforced = str(ingestion_inputs.get("collector_intake_status") or "").strip().lower() == "enforced"
     backlog_relief_clear = not _truthy(ingestion_inputs.get("backlog_relief_active"), False)
+    collector_soak_safe, collector_details = _collector_intake_soak_safe(
+        ingestion_payload=ingestion,
+        ingestion_inputs=ingestion_inputs,
+        backlog_relief_clear=backlog_relief_clear,
+    )
 
     margin_gb = max(
         _safe_float(retention_contract.get("available_margin_gb"), 0.0),
@@ -128,7 +167,7 @@ def _managed_hot_path_budget_contract(
         "storage_retention_continuous_run_not_ready" if not retention_ready else "",
         "ingestion_continuous_run_not_ready" if not ingestion_ready else "",
         "storage_efficiency_not_ready" if not storage_efficiency_ready else "",
-        "collector_intake_not_enforced" if not collector_enforced else "",
+        "collector_intake_not_soak_safe" if not collector_soak_safe else "",
         "backlog_relief_active" if not backlog_relief_clear else "",
     ]
     blockers = [item for item in blockers if item]
@@ -168,7 +207,9 @@ def _managed_hot_path_budget_contract(
             "retention_continuous_run_ready": bool(retention_ready),
             "ingestion_continuous_run_ready": bool(ingestion_ready),
             "storage_efficiency_ready": bool(storage_efficiency_ready),
-            "collector_intake_enforced": bool(collector_enforced),
+            "collector_intake_enforced": bool(collector_details.get("enforced", False)),
+            "collector_intake_soak_safe": bool(collector_soak_safe),
+            "collector_intake": collector_details,
             "backlog_relief_clear": bool(backlog_relief_clear),
         },
         "policy": "raw fixed hot budget remains visible; continuous-run-ready systems use protected floor plus bounded margin allowance for blocking decisions",

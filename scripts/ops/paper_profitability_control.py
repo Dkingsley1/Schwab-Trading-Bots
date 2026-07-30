@@ -76,6 +76,87 @@ CONFIRMATION_EVIDENCE_CHANNELS = [
     "portfolio_conflict_clearance",
 ]
 
+WEAK_SLEEVE_RECURRENCE_EVIDENCE_CHANNELS = ordered_unique(CONFIRMATION_EVIDENCE_CHANNELS + ["session_quality"])
+
+WEAK_SLEEVE_RECURRENCE_REQUIRED_BEFORE_REENTRY = [
+    "three_profitable_refreshes",
+    "positive_net_pnl_refresh",
+    "unrealized_drag_reduced",
+    "paper_only_retest_passed",
+    "independent_evidence_channels_present",
+    "no_repeated_loss_cause_in_recent_refresh",
+    "entry_evidence_gate_result_passed",
+]
+
+WEAK_SLEEVE_RECURRENCE_REQUIRED_CONTEXT = [
+    "profile_reentry_attempt",
+    "market_regime_snapshot",
+    "session_calendar",
+    "source_quality_snapshot",
+    "fill_spread_snapshot",
+    "portfolio_conflict_snapshot",
+    "recent_loss_cause_digest",
+]
+
+WEAK_SLEEVE_RECURRENCE_REQUIRED_LABELS = [
+    "paper_loss_cause",
+    "entry_evidence_gate_result",
+    "independent_evidence_channel_count",
+    "source_quality_bucket",
+    "modeled_fill_quality_bucket",
+    "spread_quality_bucket",
+    "event_catalyst_confirmation_bucket",
+    "portfolio_conflict_clearance_bucket",
+    "session_gate_result",
+    "weak_sleeve_reentry_retest_outcome",
+    "repeated_loss_cause_cleared",
+]
+
+WEAK_SLEEVE_RECURRENCE_FAMILY_REQUIREMENTS = {
+    "source_quality": {
+        "gate": "source_quality_gate",
+        "required_before_reentry": ["source_quality_passed", "source_freshness_verified"],
+        "required_labels": ["source_quality_bucket", "source_freshness_age_seconds", "source_vendor_agreement_score"],
+        "runtime_block": "block_when_source_quality_low_or_stale",
+    },
+    "tradeability": {
+        "gate": "tradeability_gate",
+        "required_before_reentry": ["tradeability_score_passed", "liquidity_capacity_present"],
+        "required_labels": ["tradeability_bucket", "liquidity_capacity_bucket"],
+        "runtime_block": "block_when_tradeability_low",
+    },
+    "fill_quality": {
+        "gate": "modeled_fill_quality_gate",
+        "required_before_reentry": ["modeled_fill_quality_present", "paper_fill_slippage_bounded"],
+        "required_labels": ["modeled_fill_quality_bucket", "paper_fill_slippage_bucket"],
+        "runtime_block": "block_when_fill_quality_unknown_or_poor",
+    },
+    "spread_quality": {
+        "gate": "spread_quality_gate",
+        "required_before_reentry": ["spread_quality_known", "execution_model_present"],
+        "required_labels": ["spread_quality_bucket", "execution_model_status"],
+        "runtime_block": "block_when_spread_unknown_or_wide",
+    },
+    "catalyst_confirmation": {
+        "gate": "event_catalyst_confirmation_gate",
+        "required_before_reentry": ["event_catalyst_confirmation_present", "event_window_risk_labeled"],
+        "required_labels": ["event_catalyst_confirmation_bucket", "event_window_risk_bucket"],
+        "runtime_block": "block_when_event_catalyst_unconfirmed",
+    },
+    "portfolio_conflict": {
+        "gate": "portfolio_conflict_clearance_gate",
+        "required_before_reentry": ["portfolio_conflict_clearance_present", "overlap_pressure_below_cap"],
+        "required_labels": ["portfolio_conflict_clearance_bucket", "overlap_pressure_bucket"],
+        "runtime_block": "block_when_portfolio_conflict_not_cleared",
+    },
+    "session_quality": {
+        "gate": "session_quality_gate",
+        "required_before_reentry": ["session_gate_passed", "explicit_liquid_session_label_present"],
+        "required_labels": ["session_gate_result", "session_liquidity_bucket", "session_edge_bucket"],
+        "runtime_block": "block_when_session_unlabeled_or_weak",
+    },
+}
+
 STRATEGY_REHAB_REQUIRED_LABELS = [
     "strategy_reentry_retest_outcome",
     "strategy_regime_applicability_bucket",
@@ -95,15 +176,31 @@ STRATEGY_REHAB_REQUIRED_CONTEXT = [
 
 SESSION_LOSS_CAUSES = {
     "session:premarket",
+    "session:intraday",
     "session:after_hours",
     "session:overnight",
     "session:illiquid",
 }
 
+WEAK_SLEEVE_SYSTEMIC_PROFILE_SHARE_FLOOR = 0.25
+WEAK_SLEEVE_SYSTEMIC_MIN_PROFILE_COUNT = 4
+WEAK_SLEEVE_SYSTEMIC_REQUIRED_CONTEXT = [
+    "cross_sleeve_loss_cause_digest",
+    "systemic_weak_point_profile_map",
+    "clean_sleeve_expansion_candidate_snapshot",
+]
+WEAK_SLEEVE_SYSTEMIC_REQUIRED_LABELS = [
+    "systemic_loss_cause_bucket",
+    "cross_sleeve_recurrence_profile_count",
+    "systemic_cause_lift_result",
+]
+
 PROFITABILITY_HARDENING_ACTIONS = [
     "stop_new_entries_in_worst_sleeves",
     "accelerate_unrealized_drag_reduction",
     "require_independent_evidence_before_action",
+    "lock_recurring_loss_cause_reentry",
+    "contain_systemic_sleeve_weak_points",
     "deweight_losing_profile_strategy_pairs",
     "expand_scout_labels_for_profitability_feedback",
 ]
@@ -742,13 +839,198 @@ def _cause_names(row: dict[str, Any]) -> list[str]:
     return [str(cause.get("cause") or "").strip().lower() for cause in _loss_causes(row) if str(cause.get("cause") or "").strip()]
 
 
+def _loss_cause_family(cause_name: str) -> str:
+    cause = str(cause_name or "").strip().lower()
+    if not cause:
+        return ""
+    if cause.startswith("session:"):
+        return "session_quality"
+    return LOSS_CAUSE_FAMILY.get(cause, cause.split(":", 1)[0])
+
+
+def _session_loss_causes(cause_names: list[str]) -> list[str]:
+    return sorted(
+        {
+            str(cause or "").strip().lower()
+            for cause in cause_names
+            if str(cause or "").strip().lower() in SESSION_LOSS_CAUSES
+            or str(cause or "").strip().lower().startswith("session:")
+        }
+    )
+
+
 def _quality_families(cause_names: list[str]) -> list[str]:
     families = []
     for cause in cause_names:
-        family = LOSS_CAUSE_FAMILY.get(cause)
+        family = _loss_cause_family(cause)
         if family:
             families.append(family)
     return ordered_unique(families)
+
+
+def _weak_sleeve_recurrence_family_rows(
+    *,
+    families: list[str],
+    thresholds: dict[str, Any],
+) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for family in ordered_unique(families):
+        spec = WEAK_SLEEVE_RECURRENCE_FAMILY_REQUIREMENTS.get(family)
+        if not isinstance(spec, dict):
+            continue
+        rows.append(
+            {
+                "family": family,
+                "gate": str(spec.get("gate") or ""),
+                "runtime_block": str(spec.get("runtime_block") or ""),
+                "required_before_reentry": _as_list(spec.get("required_before_reentry")),
+                "required_labels": _as_list(spec.get("required_labels")),
+                "thresholds": {
+                    "min_source_quality_norm": thresholds.get("min_source_quality_norm"),
+                    "min_tradeability_norm": thresholds.get("min_tradeability_norm"),
+                    "min_execution_fitness_norm": thresholds.get("min_execution_fitness_norm"),
+                    "min_cross_asset_confirmation_norm": thresholds.get("min_cross_asset_confirmation_norm"),
+                    "min_event_proximity_norm": thresholds.get("min_event_proximity_norm"),
+                },
+            }
+        )
+    return rows
+
+
+def _weak_sleeve_session_recurrence_gate(profile: str, cause_names: list[str]) -> dict[str, Any]:
+    weak_session = _session_loss_causes(cause_names)
+    if profile == "fx":
+        allowed = ["london", "new_york_overlap", "new_york_morning"]
+        blocked = ["rollover", "illiquid_asia"]
+        mode = "fx_liquid_session_only"
+    elif "crypto" in profile:
+        allowed = ["high_liquidity_crypto_session", "funding_window_with_liquidity", "us_cash_overlap"]
+        blocked = ["thin_liquidity_window"]
+        mode = "crypto_high_liquidity_session_only"
+    else:
+        allowed = ["regular_session"]
+        blocked = ["premarket", "after_hours", "overnight"]
+        mode = "regular_session_or_explicit_event_only"
+    return {
+        "active": bool(weak_session),
+        "mode": mode,
+        "weak_session_causes": weak_session,
+        "allowed_sessions": allowed,
+        "blocked_sessions": blocked if weak_session else [],
+        "requires_explicit_session_label": True,
+        "unknown_session_is_negative": True,
+    }
+
+
+def _weak_sleeve_recurrence_guard(
+    *,
+    profile: str,
+    action: str,
+    cause_names: list[str],
+    families: list[str],
+    thresholds: dict[str, Any],
+    drag: float,
+    net: float,
+    win_rate: float | None,
+    top_loss_causes: list[dict[str, Any]],
+) -> dict[str, Any]:
+    family_rows = _weak_sleeve_recurrence_family_rows(families=families, thresholds=thresholds)
+    family_requirements: list[str] = []
+    family_labels: list[str] = []
+    runtime_blocks: list[str] = []
+    for row in family_rows:
+        family_requirements.extend(str(item) for item in _as_list(row.get("required_before_reentry")) if str(item))
+        family_labels.extend(str(item) for item in _as_list(row.get("required_labels")) if str(item))
+        runtime_block = str(row.get("runtime_block") or "").strip()
+        if runtime_block:
+            runtime_blocks.append(runtime_block)
+
+    session_gate = _weak_sleeve_session_recurrence_gate(profile, cause_names)
+    session_required = bool(session_gate.get("active", False))
+    if session_required:
+        family_requirements.extend(["session_gate_passed", "explicit_liquid_session_label_present"])
+        family_labels.extend(["session_gate_result", "session_liquidity_bucket"])
+        runtime_blocks.append("block_when_session_unlabeled_or_weak")
+
+    severe = bool(float(drag) >= 0.64 or float(net) <= -1000.0)
+    critical = bool(float(drag) >= 0.88 or float(net) <= -2500.0)
+    min_profitable_refreshes = max(RAW_RECOVERY_MIN_PROFITABLE_REFRESHES, 4 if critical else 3)
+    min_channels = max(RAW_RECOVERY_MIN_INDEPENDENT_EVIDENCE_CHANNELS, 5 if critical or len(set(families)) >= 4 else 4)
+    repeated_cause_rows = [
+        {
+            "cause": str(row.get("cause") or "").strip().lower(),
+            "count": _safe_int(row.get("count"), 1),
+            "loss_total": round(_safe_float(row.get("loss_total"), 0.0), 6),
+            "family": _loss_cause_family(str(row.get("cause") or "")),
+        }
+        for row in top_loss_causes
+        if isinstance(row, dict) and str(row.get("cause") or "").strip()
+    ]
+    recurrent_loss_causes = ordered_unique(
+        [
+            str(row.get("cause") or "")
+            for row in repeated_cause_rows
+            if str(row.get("cause") or "")
+        ]
+        + cause_names
+    )
+    required_before_reentry = ordered_unique(
+        WEAK_SLEEVE_RECURRENCE_REQUIRED_BEFORE_REENTRY
+        + family_requirements
+        + [
+            "cause_specific_runtime_blocks_cleared",
+            "loss_cause_digest_refreshed_after_latest_paper_cycle",
+        ]
+    )
+    required_labels = ordered_unique(WEAK_SLEEVE_RECURRENCE_REQUIRED_LABELS + family_labels)
+    return {
+        "active": bool(cause_names or families),
+        "mode": "weak_sleeve_recurrence_guard_v1",
+        "profile": profile,
+        "action": str(action or ""),
+        "reentry_locked_until_cleared": True,
+        "prevent_recurrence_ready": True,
+        "paper_only": True,
+        "live_execution_allowed": False,
+        "drag_score_norm": round(float(drag), 6),
+        "net_pnl_to_recover": round(abs(min(float(net), 0.0)), 6),
+        "win_rate": round(float(win_rate), 6) if win_rate is not None else None,
+        "severity": "critical" if critical else ("severe" if severe else "elevated"),
+        "recurrent_loss_causes": recurrent_loss_causes,
+        "recurrent_loss_families": ordered_unique(families),
+        "loss_cause_rows": repeated_cause_rows,
+        "family_gates": family_rows,
+        "session_gate": session_gate,
+        "required_profitable_refreshes_before_reentry": min_profitable_refreshes,
+        "min_independent_evidence_channels": min_channels,
+        "required_before_reentry": required_before_reentry,
+        "required_context": WEAK_SLEEVE_RECURRENCE_REQUIRED_CONTEXT,
+        "required_label_outputs": required_labels,
+        "runtime_blocks": ordered_unique(runtime_blocks),
+        "runtime_enforcement": {
+            "block_new_entries_when_any_prior_loss_family_repeats": True,
+            "block_new_entries_when_required_evidence_missing": True,
+            "unknown_source_fill_spread_session_or_conflict_is_negative": True,
+            "deweight_matching_strategy_pair_when_repeated_cause": True,
+            "feed_repeated_causes_as_hard_negatives": True,
+            "require_clean_loss_cause_digest_before_reentry": True,
+            "paper_only": True,
+            "live_execution_allowed": False,
+        },
+        "thresholds": {
+            "min_source_quality_norm": thresholds.get("min_source_quality_norm"),
+            "min_tradeability_norm": thresholds.get("min_tradeability_norm"),
+            "min_execution_fitness_norm": thresholds.get("min_execution_fitness_norm"),
+            "min_cross_asset_confirmation_norm": thresholds.get("min_cross_asset_confirmation_norm"),
+            "min_event_proximity_norm": thresholds.get("min_event_proximity_norm"),
+            "require_known_spread_or_execution_model": thresholds.get("require_known_spread_or_execution_model"),
+            "require_modeled_fill_quality": thresholds.get("require_modeled_fill_quality"),
+        },
+        "stop_condition": (
+            "three or more profitable refreshes, no repeated loss cause in the latest digest, "
+            "and all source/fill/spread/event/conflict/session gates present"
+        ),
+    }
 
 
 def _confirmation_bias_score(cause_names: list[str], *, drag: float, net: float, win_rate: float | None) -> float:
@@ -1271,7 +1553,7 @@ def _raw_recovery_loss_cause_filter_contract(
         cause_name = str(cause or "").strip().lower()
         if not cause_name:
             continue
-        family = LOSS_CAUSE_FAMILY.get(cause_name, cause_name.split(":", 1)[0])
+        family = _loss_cause_family(cause_name)
         if cause_name == "conflict:low":
             action = "block_or_dampen_new_buy_when_overlap_or_conflict_fails"
             gate_name = "portfolio_conflict_clearance"
@@ -1530,7 +1812,7 @@ def _raw_profitability_improvement_contract(
         "min_cross_asset_confirmation_norm": RAW_A_RECOVERY_CONFIRMATION_FLOOR,
         "max_overlap_pressure_norm": RAW_A_RECOVERY_MAX_OVERLAP_PRESSURE,
         "min_independent_evidence_channels": RAW_RECOVERY_MIN_INDEPENDENT_EVIDENCE_CHANNELS,
-        "required_evidence_channels": CONFIRMATION_EVIDENCE_CHANNELS,
+        "required_evidence_channels": WEAK_SLEEVE_RECURRENCE_EVIDENCE_CHANNELS,
         "block_when_source_or_fill_unknown": True,
         "block_when_spread_regime_unknown": True,
         "allow_buy_only_when_all_gates_pass": True,
@@ -1577,7 +1859,7 @@ def _raw_profitability_improvement_contract(
         "required_labels": RAW_RECOVERY_REQUIRED_TRAINING_LABELS,
         "priority_loss_families": ordered_unique(
             [
-                LOSS_CAUSE_FAMILY.get(str(row.get("cause") or ""), str(row.get("cause") or ""))
+                _loss_cause_family(str(row.get("cause") or ""))
                 for row in top_loss_causes
                 if str(row.get("cause") or "")
             ]
@@ -2022,6 +2304,7 @@ def _profile_a_plus_plus_strengthened(control: dict[str, Any]) -> bool:
     loser = control.get("loser_quarantine") if isinstance(control.get("loser_quarantine"), dict) else {}
     exit_control = control.get("exit_intelligence") if isinstance(control.get("exit_intelligence"), dict) else {}
     confirmation = control.get("confirmation_bias_control") if isinstance(control.get("confirmation_bias_control"), dict) else {}
+    recurrence = control.get("weak_sleeve_recurrence_guard") if isinstance(control.get("weak_sleeve_recurrence_guard"), dict) else {}
     return bool(
         _profile_loss_protected(control)
         and _safe_int(control.get("new_entry_cap"), 1) == 0
@@ -2032,6 +2315,8 @@ def _profile_a_plus_plus_strengthened(control: dict[str, Any]) -> bool:
         and bool(exit_control.get("prefer_reduce_over_add", False))
         and bool(runtime_policy.get("block_all_new_entries_until_clean_refresh", False) or runtime_policy.get("a_plus_lock_in", False))
         and bool(confirmation.get("required_before_new_entry") or confirmation.get("required_evidence_channels"))
+        and bool(recurrence.get("prevent_recurrence_ready", False))
+        and bool(recurrence.get("reentry_locked_until_cleared", False))
     )
 
 
@@ -2315,19 +2600,25 @@ def _a_plus_recovery_profile_control(control: dict[str, Any]) -> None:
     control["exit_intelligence"]["block_adds_while_unrealized_negative"] = True
     control["exit_intelligence"]["block_adds_while_drag_active"] = True
     control["exit_intelligence"]["max_adds_while_drag_active"] = 0
+    recurrence = _as_dict(control.get("weak_sleeve_recurrence_guard"))
     control["a_plus_plus_strengthening"] = {
         "active": True,
         "control_grade": "A+",
         "mode": "financial_a_plus_weak_sleeve_lock",
         "new_entry_cap": 0,
         "max_position_size_multiplier_norm": control["position_size_multiplier"],
-        "required_before_reentry": [
-            "three_profitable_refreshes",
-            "positive_net_pnl_refresh",
-            "unrealized_drag_reduced",
-            "independent_evidence_channels_present",
-            "paper_only_retest_passed",
-        ],
+        "required_before_reentry": ordered_unique(
+            [
+                "three_profitable_refreshes",
+                "positive_net_pnl_refresh",
+                "unrealized_drag_reduced",
+                "independent_evidence_channels_present",
+                "paper_only_retest_passed",
+            ]
+            + [str(item) for item in _as_list(recurrence.get("required_before_reentry")) if str(item)]
+        ),
+        "recurrence_guard_required": True,
+        "recurrence_guard_ready": bool(recurrence.get("prevent_recurrence_ready", False)),
         "paper_only": True,
         "live_execution_allowed": False,
     }
@@ -2450,19 +2741,25 @@ def _apply_protective_tightening_profile_control(control: dict[str, Any]) -> Non
     control["exit_intelligence"]["block_adds_while_unrealized_negative"] = True
     control["exit_intelligence"]["block_adds_while_drag_active"] = True
     control["exit_intelligence"]["max_adds_while_drag_active"] = 0
+    recurrence = _as_dict(control.get("weak_sleeve_recurrence_guard"))
     control["a_plus_plus_strengthening"] = {
         "active": True,
         "control_grade": "A+",
         "mode": "protective_weak_sleeve_strengthening",
         "new_entry_cap": 0,
         "max_position_size_multiplier_norm": control["position_size_multiplier"],
-        "required_before_reentry": [
-            "three_profitable_refreshes",
-            "positive_net_pnl_refresh",
-            "unrealized_drag_reduced",
-            "independent_evidence_channels_present",
-            "paper_only_retest_passed",
-        ],
+        "required_before_reentry": ordered_unique(
+            [
+                "three_profitable_refreshes",
+                "positive_net_pnl_refresh",
+                "unrealized_drag_reduced",
+                "independent_evidence_channels_present",
+                "paper_only_retest_passed",
+            ]
+            + [str(item) for item in _as_list(recurrence.get("required_before_reentry")) if str(item)]
+        ),
+        "recurrence_guard_required": True,
+        "recurrence_guard_ready": bool(recurrence.get("prevent_recurrence_ready", False)),
         "paper_only": True,
         "live_execution_allowed": False,
     }
@@ -2597,6 +2894,7 @@ def _weak_sleeve_a_plus_plus_strengthening_contract(
             continue
         protected = _profile_loss_protected(control)
         strengthened = _profile_a_plus_plus_strengthened(control)
+        recurrence = _as_dict(control.get("weak_sleeve_recurrence_guard"))
         profile_rows.append(
             {
                 "profile": str(profile),
@@ -2604,6 +2902,7 @@ def _weak_sleeve_a_plus_plus_strengthening_contract(
                 "control_grade": "A+" if strengthened else ("A+" if protected else "B"),
                 "protected": protected,
                 "a_plus_plus_strengthened": strengthened,
+                "recurrence_guard_ready": bool(recurrence.get("prevent_recurrence_ready", False)),
                 "action": str(control.get("action") or ""),
                 "new_entry_cap": _safe_int(control.get("new_entry_cap"), 1),
                 "position_size_multiplier_norm": _safe_float(control.get("position_size_multiplier"), 1.0),
@@ -2613,6 +2912,8 @@ def _weak_sleeve_a_plus_plus_strengthening_contract(
                 "required_before_reentry": _as_list(
                     _as_dict(control.get("a_plus_plus_strengthening")).get("required_before_reentry")
                 ),
+                "recurrent_loss_families": _as_list(recurrence.get("recurrent_loss_families")),
+                "recurrent_loss_causes": _as_list(recurrence.get("recurrent_loss_causes"))[:8],
             }
         )
 
@@ -2672,6 +2973,222 @@ def _weak_sleeve_a_plus_plus_strengthening_contract(
         },
         "stop_condition": "every weak sleeve and losing strategy pair has A+ control posture, then raw grades only rise after fresh profitable paper refreshes",
         "safety_rule": "A+ control posture is containment and learning strength; raw PnL grades remain evidence-based",
+    }
+
+
+def _weak_sleeve_recurrence_guard_contract(
+    *,
+    active_profile_controls: dict[str, dict[str, Any]],
+) -> dict[str, Any]:
+    profile_rows: list[dict[str, Any]] = []
+    cause_counter: Counter[str] = Counter()
+    required_labels: list[str] = []
+    required_context: list[str] = []
+    runtime_blocks: list[str] = []
+    family_gates: list[str] = []
+    for profile, control in sorted(active_profile_controls.items()):
+        if not isinstance(control, dict):
+            continue
+        guard = _as_dict(control.get("weak_sleeve_recurrence_guard"))
+        if not guard:
+            continue
+        action = str(control.get("action") or guard.get("action") or "").strip().lower()
+        locked_for_new_entries = bool(
+            action == "quarantine_new_entries"
+            and _safe_int(control.get("new_entry_cap"), 1) == 0
+            and bool(control.get("block_new_entries", False))
+        )
+        runtime_enforcement = _as_dict(guard.get("runtime_enforcement"))
+        guard_ready = bool(
+            guard.get("prevent_recurrence_ready", False)
+            and guard.get("reentry_locked_until_cleared", False)
+            and runtime_enforcement.get("block_new_entries_when_any_prior_loss_family_repeats", False)
+            and (locked_for_new_entries or action != "quarantine_new_entries")
+        )
+        for cause in _as_list(guard.get("recurrent_loss_causes")):
+            cause_name = str(cause or "").strip()
+            if cause_name:
+                cause_counter[cause_name] += 1
+        for label in _as_list(guard.get("required_label_outputs")):
+            if str(label):
+                required_labels.append(str(label))
+        for context in _as_list(guard.get("required_context")):
+            if str(context):
+                required_context.append(str(context))
+        for block in _as_list(guard.get("runtime_blocks")):
+            if str(block):
+                runtime_blocks.append(str(block))
+        for gate in _as_list(guard.get("family_gates")):
+            if isinstance(gate, dict) and str(gate.get("gate") or ""):
+                family_gates.append(str(gate.get("gate") or ""))
+        profile_rows.append(
+            {
+                "profile": str(profile),
+                "active": bool(guard.get("active", False)),
+                "guard_ready": guard_ready,
+                "action": action,
+                "locked_for_new_entries": locked_for_new_entries,
+                "new_entry_cap": _safe_int(control.get("new_entry_cap"), 1),
+                "position_size_multiplier_norm": _safe_float(control.get("position_size_multiplier"), 1.0),
+                "required_profitable_refreshes_before_reentry": _safe_int(
+                    guard.get("required_profitable_refreshes_before_reentry"),
+                    RAW_RECOVERY_MIN_PROFITABLE_REFRESHES,
+                ),
+                "min_independent_evidence_channels": _safe_int(
+                    guard.get("min_independent_evidence_channels"),
+                    RAW_RECOVERY_MIN_INDEPENDENT_EVIDENCE_CHANNELS,
+                ),
+                "recurrent_loss_families": _as_list(guard.get("recurrent_loss_families")),
+                "recurrent_loss_causes": _as_list(guard.get("recurrent_loss_causes"))[:8],
+                "runtime_blocks": _as_list(guard.get("runtime_blocks")),
+            }
+        )
+
+    control_ready = all(bool(row.get("guard_ready", False)) for row in profile_rows)
+    return {
+        "active": bool(profile_rows),
+        "mode": "weak_sleeve_recurrence_guard_contract_v1",
+        "control_ready": control_ready,
+        "control_posture_grade": "A+" if control_ready else "B",
+        "paper_only": True,
+        "live_execution_allowed": False,
+        "profile_count": len(profile_rows),
+        "guarded_profile_count": sum(1 for row in profile_rows if bool(row.get("guard_ready", False))),
+        "target_profiles": [str(row.get("profile") or "") for row in profile_rows],
+        "profile_controls": profile_rows,
+        "top_recurrent_loss_causes": [
+            {"cause": cause, "profile_count": int(count)}
+            for cause, count in cause_counter.most_common(12)
+        ],
+        "required_evidence_channels": WEAK_SLEEVE_RECURRENCE_EVIDENCE_CHANNELS,
+        "required_family_gates": ordered_unique(family_gates),
+        "required_context": ordered_unique(required_context or WEAK_SLEEVE_RECURRENCE_REQUIRED_CONTEXT),
+        "required_label_outputs": ordered_unique(required_labels or WEAK_SLEEVE_RECURRENCE_REQUIRED_LABELS),
+        "runtime_blocks": ordered_unique(runtime_blocks),
+        "runtime_enforcement": {
+            "apply_cause_specific_profile_reentry_locks": True,
+            "block_new_entries_when_prior_loss_family_reappears": True,
+            "treat_unknown_source_fill_spread_session_or_conflict_as_negative": True,
+            "require_clean_loss_cause_digest_before_lift": True,
+            "deweight_strategy_pairs_matching_recurrent_causes": True,
+            "paper_only": True,
+            "live_execution_allowed": False,
+        },
+        "stop_condition": (
+            "every weak sleeve has a clean latest loss-cause digest, required evidence channels, "
+            "and profitable paper refreshes before fresh entries can resume"
+        ),
+    }
+
+
+def _weak_sleeve_systemic_weak_point_contract(
+    *,
+    recurrence_contract: dict[str, Any],
+    active_profile_controls: dict[str, dict[str, Any]],
+) -> dict[str, Any]:
+    profile_rows = _as_list(recurrence_contract.get("profile_controls"))
+    profile_total = max(_safe_int(recurrence_contract.get("profile_count"), len(profile_rows)), len(profile_rows))
+    threshold = max(
+        WEAK_SLEEVE_SYSTEMIC_MIN_PROFILE_COUNT,
+        int((float(profile_total) * WEAK_SLEEVE_SYSTEMIC_PROFILE_SHARE_FLOOR) + 0.999999),
+    )
+    cause_to_profiles: dict[str, list[str]] = {}
+    for row in profile_rows:
+        if not isinstance(row, dict):
+            continue
+        profile = str(row.get("profile") or "").strip()
+        if not profile:
+            continue
+        for cause in _as_list(row.get("recurrent_loss_causes")):
+            cause_name = str(cause or "").strip().lower()
+            if cause_name:
+                cause_to_profiles.setdefault(cause_name, []).append(profile)
+
+    systemic_rows: list[dict[str, Any]] = []
+    required_labels: list[str] = []
+    runtime_blocks: list[str] = []
+    required_family_gates: list[str] = []
+    for cause, profiles in sorted(cause_to_profiles.items()):
+        targets = ordered_unique(profiles)
+        profile_count = len(targets)
+        if profile_count < threshold:
+            continue
+        family = _loss_cause_family(cause)
+        spec = WEAK_SLEEVE_RECURRENCE_FAMILY_REQUIREMENTS.get(family, {})
+        gate = str(spec.get("gate") or f"{family}_gate")
+        runtime_block = str(spec.get("runtime_block") or f"block_when_{family}_systemic")
+        required_family_gates.append(gate)
+        runtime_blocks.append(runtime_block)
+        required_labels.extend(str(item) for item in _as_list(spec.get("required_labels")) if str(item))
+        systemic_rows.append(
+            {
+                "cause": cause,
+                "family": family,
+                "profile_count": profile_count,
+                "profile_share_norm": round(profile_count / max(profile_total, 1), 6),
+                "threshold_profile_count": threshold,
+                "target_profiles": targets[:48],
+                "gate": gate,
+                "runtime_block": runtime_block,
+                "required_before_lift": ordered_unique(
+                    WEAK_SLEEVE_RECURRENCE_REQUIRED_BEFORE_REENTRY
+                    + [str(item) for item in _as_list(spec.get("required_before_reentry")) if str(item)]
+                    + [
+                        "cross_sleeve_loss_cause_digest_refreshed",
+                        "systemic_cause_not_repeated_in_latest_refresh",
+                    ]
+                ),
+            }
+        )
+
+    active = bool(systemic_rows)
+    recurrence_ready = bool(recurrence_contract.get("control_ready", False)) or not bool(recurrence_contract.get("active", False))
+    control_ready = bool((not active) or (recurrence_ready and all(str(row.get("runtime_block") or "") for row in systemic_rows)))
+    return {
+        "active": active,
+        "mode": "weak_sleeve_systemic_weak_point_guard_v1",
+        "control_ready": control_ready,
+        "control_posture_grade": "A+" if control_ready else "B",
+        "paper_only": True,
+        "live_execution_allowed": False,
+        "profile_count": profile_total,
+        "systemic_threshold_profile_count": threshold,
+        "systemic_weak_point_count": len(systemic_rows),
+        "systemic_weak_points": systemic_rows,
+        "top_systemic_causes": [
+            {
+                "cause": row["cause"],
+                "family": row["family"],
+                "profile_count": row["profile_count"],
+                "profile_share_norm": row["profile_share_norm"],
+            }
+            for row in systemic_rows[:12]
+        ],
+        "required_evidence_channels": WEAK_SLEEVE_RECURRENCE_EVIDENCE_CHANNELS,
+        "required_family_gates": ordered_unique(required_family_gates),
+        "required_context": ordered_unique(
+            WEAK_SLEEVE_RECURRENCE_REQUIRED_CONTEXT
+            + WEAK_SLEEVE_SYSTEMIC_REQUIRED_CONTEXT
+        ),
+        "required_label_outputs": ordered_unique(
+            WEAK_SLEEVE_RECURRENCE_REQUIRED_LABELS
+            + required_labels
+            + WEAK_SLEEVE_SYSTEMIC_REQUIRED_LABELS
+        ),
+        "runtime_blocks": ordered_unique(runtime_blocks),
+        "runtime_enforcement": {
+            "apply_global_new_entry_dampener_when_systemic_cause_hot": active,
+            "block_clean_sleeve_expansion_when_systemic_evidence_missing": active,
+            "require_cross_sleeve_cause_digest_refresh": True,
+            "deweight_strategy_pairs_matching_systemic_causes": active,
+            "do_not_promote_or_widen_on_systemic_weak_point": active,
+            "paper_only": True,
+            "live_execution_allowed": False,
+        },
+        "stop_condition": (
+            "systemic weak-point causes fall below the cross-sleeve profile threshold and every affected sleeve "
+            "passes its recurrence guard"
+        ),
     }
 
 
@@ -6102,8 +6619,18 @@ def _scout_collection_contract(
             if str(bot_id or "").strip()
         ]
     )
-    required_context = ordered_unique(SCOUT_PROFITABILITY_CONTEXT + STRATEGY_REHAB_REQUIRED_CONTEXT)
-    required_label_outputs = ordered_unique(SCOUT_PROFITABILITY_LABEL_OUTPUTS + STRATEGY_REHAB_REQUIRED_LABELS)
+    required_context = ordered_unique(
+        SCOUT_PROFITABILITY_CONTEXT
+        + STRATEGY_REHAB_REQUIRED_CONTEXT
+        + WEAK_SLEEVE_RECURRENCE_REQUIRED_CONTEXT
+        + WEAK_SLEEVE_SYSTEMIC_REQUIRED_CONTEXT
+    )
+    required_label_outputs = ordered_unique(
+        SCOUT_PROFITABILITY_LABEL_OUTPUTS
+        + STRATEGY_REHAB_REQUIRED_LABELS
+        + WEAK_SLEEVE_RECURRENCE_REQUIRED_LABELS
+        + WEAK_SLEEVE_SYSTEMIC_REQUIRED_LABELS
+    )
     return {
         "active": bool(target_profiles or target_bot_ids),
         "mode": "collect_first_no_execution",
@@ -6117,6 +6644,8 @@ def _scout_collection_contract(
             "persist exit-drag traces before any scout can leave collection-only mode",
             "treat missing fill, spread, source, or confirmation evidence as a negative evidence label",
             "label session gates, regime applicability, and paper-only reentry retests before rehabilitation",
+            "refresh each weak sleeve loss-cause digest before any recurrence guard can lift",
+            "label cross-sleeve systemic loss causes before any book-wide paper widening",
         ],
         "top_loss_causes": [
             {"cause": cause, "count": count}
@@ -6174,7 +6703,9 @@ def _hardening_contract(
     active_profile_controls: dict[str, dict[str, Any]],
     strategy_controls: list[dict[str, Any]],
     scout_collection_contract: dict[str, Any],
+    systemic_weak_point_contract: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    systemic_weak_point_contract = systemic_weak_point_contract or {}
     quarantined_profiles = ordered_unique(
         [
             profile
@@ -6196,6 +6727,14 @@ def _hardening_contract(
             for profile, control in active_profile_controls.items()
             if isinstance(control.get("confirmation_bias_control"), dict)
             and bool(control["confirmation_bias_control"].get("active", False))
+        ]
+    )
+    recurrence_profiles = ordered_unique(
+        [
+            profile
+            for profile, control in active_profile_controls.items()
+            if isinstance(control.get("weak_sleeve_recurrence_guard"), dict)
+            and bool(control["weak_sleeve_recurrence_guard"].get("active", False))
         ]
     )
     quarantined_pairs = [
@@ -6234,6 +6773,26 @@ def _hardening_contract(
             "risk_level": "low",
         },
         {
+            "action_id": "lock_recurring_loss_cause_reentry",
+            "status": "active" if recurrence_profiles else "armed",
+            "target_count": len(recurrence_profiles),
+            "targets": recurrence_profiles,
+            "expected_effect": "prevent weak sleeves from resuming fresh entries until their exact repeated loss causes are cleared",
+            "risk_level": "low",
+        },
+        {
+            "action_id": "contain_systemic_sleeve_weak_points",
+            "status": "active" if bool(systemic_weak_point_contract.get("active", False)) else "armed",
+            "target_count": _safe_int(systemic_weak_point_contract.get("systemic_weak_point_count"), 0),
+            "targets": [
+                str(row.get("cause") or "")
+                for row in _as_list(systemic_weak_point_contract.get("systemic_weak_points"))
+                if isinstance(row, dict) and str(row.get("cause") or "")
+            ][:12],
+            "expected_effect": "dampen or block book-wide paper widening when the same loss cause spreads across many sleeves",
+            "risk_level": "low",
+        },
+        {
             "action_id": "deweight_losing_profile_strategy_pairs",
             "status": "active" if strategy_controls else "armed",
             "target_count": len(strategy_controls),
@@ -6269,6 +6828,24 @@ def _hardening_contract(
             "required_channels": CONFIRMATION_EVIDENCE_CHANNELS,
             "unknown_evidence_is_negative": True,
             "min_channels_for_severe_drag": 4,
+            "recurring_loss_causes_require_clean_digest": True,
+        },
+        "recurrence_policy": {
+            "lock_reentry_on_repeated_loss_cause": True,
+            "target_profiles": recurrence_profiles,
+            "required_before_lift": WEAK_SLEEVE_RECURRENCE_REQUIRED_BEFORE_REENTRY,
+            "required_label_outputs": WEAK_SLEEVE_RECURRENCE_REQUIRED_LABELS,
+            "paper_only": True,
+            "live_execution_allowed": False,
+        },
+        "systemic_weak_point_policy": {
+            "active": bool(systemic_weak_point_contract.get("active", False)),
+            "control_ready": bool(systemic_weak_point_contract.get("control_ready", False)),
+            "systemic_weak_point_count": _safe_int(systemic_weak_point_contract.get("systemic_weak_point_count"), 0),
+            "threshold_profile_count": _safe_int(systemic_weak_point_contract.get("systemic_threshold_profile_count"), 0),
+            "required_family_gates": _as_list(systemic_weak_point_contract.get("required_family_gates")),
+            "paper_only": True,
+            "live_execution_allowed": False,
         },
         "scout_collection_contract": scout_collection_contract,
     }
@@ -6308,32 +6885,61 @@ def _profile_thresholds(profile: str, families: list[str], drag: float) -> dict[
     min_execution = 0.42
     min_confirmation = 0.34
     min_catalyst = 0.0
+    family_set = set(families)
 
-    if "source_quality" in families:
+    if "source_quality" in family_set:
         min_source = max(min_source, 0.56)
-    if "tradeability" in families:
+    if "tradeability" in family_set:
         min_tradeability = max(min_tradeability, 0.58)
-    if "fill_quality" in families or "spread_quality" in families:
+    if "session_quality" in family_set:
+        min_tradeability = max(min_tradeability, 0.58)
+        min_confirmation = max(min_confirmation, 0.46)
+    if "fill_quality" in family_set or "spread_quality" in family_set:
         min_execution = max(min_execution, 0.60)
         min_tradeability = max(min_tradeability, 0.54)
-    if "catalyst_confirmation" in families and profile in CATALYST_PROFILES:
-        min_catalyst = 0.28
+    if "catalyst_confirmation" in family_set:
+        min_catalyst = max(min_catalyst, 0.20)
+    if "catalyst_confirmation" in family_set and profile in CATALYST_PROFILES:
+        min_catalyst = max(min_catalyst, 0.28)
         min_confirmation = max(min_confirmation, 0.46)
-    if {"portfolio_conflict", "source_quality", "fill_quality", "spread_quality"} & set(families):
+    if {"portfolio_conflict", "source_quality", "fill_quality", "spread_quality"} & family_set:
         min_confirmation = max(min_confirmation, 0.42)
-    if {"fill_quality", "spread_quality"} & set(families):
+    if {"fill_quality", "spread_quality"} & family_set:
         min_source = max(min_source, 0.56)
+
+    recurring_evidence_gap_count = len(
+        family_set
+        & {
+            "source_quality",
+            "fill_quality",
+            "spread_quality",
+            "catalyst_confirmation",
+            "portfolio_conflict",
+            "session_quality",
+        }
+    )
+    if recurring_evidence_gap_count >= 3:
+        min_source = max(min_source, 0.64)
+        min_tradeability = max(min_tradeability, 0.62)
+        min_execution = max(min_execution, 0.64)
+        min_confirmation = max(min_confirmation, 0.58)
+        if "catalyst_confirmation" in family_set:
+            min_catalyst = max(min_catalyst, 0.30)
 
     if drag >= 0.64:
         min_source = max(min_source, 0.60)
         min_tradeability = max(min_tradeability, 0.60)
         min_execution = max(min_execution, 0.62)
         min_confirmation = max(min_confirmation, 0.48)
+        if "catalyst_confirmation" in family_set:
+            min_catalyst = max(min_catalyst, 0.26)
     if drag >= 0.88:
         min_source = max(min_source, 0.66)
         min_tradeability = max(min_tradeability, 0.66)
         min_execution = max(min_execution, 0.68)
         min_confirmation = max(min_confirmation, 0.54)
+        if "catalyst_confirmation" in family_set:
+            min_catalyst = max(min_catalyst, 0.30)
         if profile in CATALYST_PROFILES:
             min_catalyst = max(min_catalyst, 0.34)
 
@@ -6343,8 +6949,8 @@ def _profile_thresholds(profile: str, families: list[str], drag: float) -> dict[
         "min_execution_fitness_norm": round(min_execution, 6),
         "min_cross_asset_confirmation_norm": round(min_confirmation, 6),
         "min_event_proximity_norm": round(min_catalyst, 6),
-        "require_known_spread_or_execution_model": bool("spread_quality" in families or drag >= 0.88),
-        "require_modeled_fill_quality": bool("fill_quality" in families or drag >= 0.88),
+        "require_known_spread_or_execution_model": bool("spread_quality" in family_set or recurring_evidence_gap_count >= 3 or drag >= 0.88),
+        "require_modeled_fill_quality": bool("fill_quality" in family_set or recurring_evidence_gap_count >= 3 or drag >= 0.88),
     }
 
 
@@ -6441,7 +7047,7 @@ def _strategy_repair_actions(cause_names: list[str], focus: dict[str, Any]) -> l
         actions.append("require catalyst/event-window confirmation or mark the setup as no-trade")
     if "conflict:low" in cause_set:
         actions.append("require portfolio conflict clearance before trusting the strategy vote")
-    if cause_set & SESSION_LOSS_CAUSES:
+    if _session_loss_causes(cause_names):
         actions.append("block weak-session re-entry until session gate evidence is explicitly present")
     for evidence in _as_list(focus.get("required_regime_evidence"))[:4]:
         actions.append(f"collect {evidence}")
@@ -6449,8 +7055,7 @@ def _strategy_repair_actions(cause_names: list[str], focus: dict[str, Any]) -> l
 
 
 def _strategy_session_gate(profile: str, cause_names: list[str], focus: dict[str, Any]) -> dict[str, Any]:
-    cause_set = set(cause_names)
-    weak_session = cause_set & SESSION_LOSS_CAUSES
+    weak_session = _session_loss_causes(cause_names)
     family = str(focus.get("family") or "")
     if profile == "fx" or family == "fx_liquid_session_regime":
         allowed = ["london", "new_york_overlap", "new_york_morning"]
@@ -6730,6 +7335,17 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
             thresholds=thresholds,
             losing_strategy_count=losing_strategy_count,
         )
+        recurrence_guard = _weak_sleeve_recurrence_guard(
+            profile=profile,
+            action=action,
+            cause_names=cause_names,
+            families=families,
+            thresholds=thresholds,
+            drag=drag,
+            net=net,
+            win_rate=win_rate,
+            top_loss_causes=_loss_causes(row)[:8],
+        )
         active_profile_controls[profile] = {
             "profile": profile,
             "active": True,
@@ -6749,6 +7365,7 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
             "thresholds": thresholds,
             "top_loss_causes": _loss_causes(row)[:5],
             "upgrade_contracts": upgrade_contracts,
+            "weak_sleeve_recurrence_guard": recurrence_guard,
             "outcome_weighted_training": upgrade_contracts["outcome_weighted_training"],
             "per_sleeve_profit_score": upgrade_contracts["per_sleeve_profit_score"],
             "dynamic_sizing": upgrade_contracts["dynamic_sizing"],
@@ -6770,6 +7387,7 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
                 "apply_execution_aware_alpha": True,
                 "apply_portfolio_conflict_control": True,
                 "apply_confirmation_bias_control": True,
+                "apply_weak_sleeve_recurrence_guard": bool(recurrence_guard.get("active", False)),
             },
         }
         strategy_controls.extend(_strategy_controls(profile, row, cause_names=cause_names, profile_drag=drag))
@@ -6986,6 +7604,13 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
         raw_operational_outcome_grade=raw_operational_outcome_grade,
         base_raw_operational_outcome_grade=base_raw_operational_outcome_grade,
     )
+    weak_sleeve_recurrence_guard_contract = _weak_sleeve_recurrence_guard_contract(
+        active_profile_controls=active_profile_controls,
+    )
+    weak_sleeve_systemic_weak_point_contract = _weak_sleeve_systemic_weak_point_contract(
+        recurrence_contract=weak_sleeve_recurrence_guard_contract,
+        active_profile_controls=active_profile_controls,
+    )
     financial_grade_lift_contract = _financial_grade_lift_contract(
         sleeves=sleeves,
         financial_grade=financial_grade,
@@ -7089,6 +7714,7 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
         active_profile_controls=active_profile_controls,
         strategy_controls=strategy_controls,
         scout_collection_contract=scout_collection_contract,
+        systemic_weak_point_contract=weak_sleeve_systemic_weak_point_contract,
     )
     payload = {
         "timestamp_utc": datetime.now(timezone.utc).isoformat(),
@@ -7110,6 +7736,8 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
         "operational_control_grade": operational_control_grade,
         "a_plus_target_contract": a_plus_target_contract,
         "weak_sleeve_a_plus_plus_strengthening_contract": weak_sleeve_a_plus_plus_strengthening_contract,
+        "weak_sleeve_recurrence_guard_contract": weak_sleeve_recurrence_guard_contract,
+        "weak_sleeve_systemic_weak_point_contract": weak_sleeve_systemic_weak_point_contract,
         "financial_grade_basis_contract": financial_grade_basis_contract,
         "financial_grade_lift_contract": financial_grade_lift_contract,
         "raw_profitability_a_recovery_contract": raw_profitability_a_recovery_contract,
@@ -7235,6 +7863,8 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
                 "daily_target_adaptation",
                 "post_target_collection_expansion",
                 "weak_sleeve_a_plus_plus_strengthening",
+                "weak_sleeve_recurrence_guard",
+                "weak_sleeve_systemic_weak_point_guard",
                 "financial_grade_lift",
                 "controlled_profitability_grade_contract",
             ],
@@ -7274,6 +7904,8 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
                 f"close the financial {financial_grade}-to-A gap by harvesting winners and reducing unrealized drag before widening",
                 f"read {controlled_profitability_grade_contract.get('profitability_display_grade', net_grade)} as recovery posture, not raw financial proof",
                 "hold weak sleeves at A+ control posture: zero fresh adds, evidence-gated reentry, hard-negative labels, and reduce-only drag repair",
+                "lock every weak sleeve's recurring loss causes so source, fill, spread, catalyst, conflict, and session failures must clear before fresh entries resume",
+                "treat book-wide repeated loss causes as systemic weak points and block widening until cross-sleeve evidence clears",
                 "run the 1-8 profitability realization expansion so weak sleeves stop adding drag and winning sleeves get attribution-weighted attention",
                 "follow the profitability compounding autopilot do_first queue before widening paper size or training batches",
                 "admit new quant strategies through collection-only quant strategy admission before any paper widening",
@@ -7300,6 +7932,32 @@ def _runtime_profile_controls(profile_controls: dict[str, Any]) -> dict[str, dic
         grade = str(control.get("profit_grade") or "").strip().upper()
         loser = control.get("loser_quarantine") if isinstance(control.get("loser_quarantine"), dict) else {}
         runtime_policy = control.get("runtime_policy") if isinstance(control.get("runtime_policy"), dict) else {}
+        recurrence = _as_dict(control.get("weak_sleeve_recurrence_guard"))
+        if recurrence:
+            recurrence = {
+                **recurrence,
+                "active": True,
+                "runtime_enforced": True,
+                "reentry_locked_until_cleared": True,
+                "prevent_recurrence_ready": bool(recurrence.get("prevent_recurrence_ready", True)),
+                "paper_only": True,
+                "live_execution_allowed": False,
+                "runtime_enforcement": {
+                    **_as_dict(recurrence.get("runtime_enforcement")),
+                    "block_new_entries_when_any_prior_loss_family_repeats": True,
+                    "block_new_entries_when_required_evidence_missing": True,
+                    "unknown_source_fill_spread_session_or_conflict_is_negative": True,
+                    "paper_only": True,
+                    "live_execution_allowed": False,
+                },
+            }
+            runtime_policy = {
+                **runtime_policy,
+                "apply_weak_sleeve_recurrence_guard": True,
+                "block_reentry_when_prior_loss_cause_repeats": True,
+            }
+            control["weak_sleeve_recurrence_guard"] = recurrence
+            control["runtime_policy"] = runtime_policy
         hard_quarantine = bool(
             action == "quarantine_new_entries"
             or grade in {"D", "F"}
@@ -7317,6 +7975,8 @@ def _runtime_profile_controls(profile_controls: dict[str, Any]) -> dict[str, dic
                 "profile_hard_quarantine": True,
                 "block_all_new_entries_until_clean_refresh": True,
                 "paper_only_until_next_profitable_refresh": True,
+                "apply_weak_sleeve_recurrence_guard": bool(recurrence),
+                "block_reentry_when_prior_loss_cause_repeats": bool(recurrence),
             }
             dynamic = control.get("dynamic_sizing") if isinstance(control.get("dynamic_sizing"), dict) else {}
             control["dynamic_sizing"] = {
@@ -7388,6 +8048,16 @@ def build_runtime_control_payload(payload: dict[str, Any]) -> dict[str, Any]:
     weak_sleeve_a_plus_plus_strengthening_contract = (
         payload.get("weak_sleeve_a_plus_plus_strengthening_contract")
         if isinstance(payload.get("weak_sleeve_a_plus_plus_strengthening_contract"), dict)
+        else {}
+    )
+    weak_sleeve_recurrence_guard_contract = (
+        payload.get("weak_sleeve_recurrence_guard_contract")
+        if isinstance(payload.get("weak_sleeve_recurrence_guard_contract"), dict)
+        else {}
+    )
+    weak_sleeve_systemic_weak_point_contract = (
+        payload.get("weak_sleeve_systemic_weak_point_contract")
+        if isinstance(payload.get("weak_sleeve_systemic_weak_point_contract"), dict)
         else {}
     )
     financial_grade_lift_contract = (
@@ -7579,6 +8249,8 @@ def build_runtime_control_payload(payload: dict[str, Any]) -> dict[str, Any]:
         "profitability_upgrade_lanes": upgrade_lanes,
         "a_plus_target_contract": a_plus_target_contract,
         "weak_sleeve_a_plus_plus_strengthening_contract": weak_sleeve_a_plus_plus_strengthening_contract,
+        "weak_sleeve_recurrence_guard_contract": weak_sleeve_recurrence_guard_contract,
+        "weak_sleeve_systemic_weak_point_contract": weak_sleeve_systemic_weak_point_contract,
         "financial_grade_basis_contract": financial_grade_basis_contract,
         "financial_grade_lift_contract": financial_grade_lift_contract,
         "raw_profitability_a_recovery_contract": raw_profitability_a_recovery_contract,
@@ -7642,6 +8314,12 @@ def build_runtime_control_payload(payload: dict[str, Any]) -> dict[str, Any]:
             "apply_a_plus_recovery_mode": bool(a_plus_target_contract.get("combined_control_a_plus_ready", False)),
             "apply_a_plus_plus_weak_sleeve_strengthening": bool(
                 weak_sleeve_a_plus_plus_strengthening_contract.get("control_ready", False)
+            ),
+            "apply_weak_sleeve_recurrence_guard": bool(
+                weak_sleeve_recurrence_guard_contract.get("control_ready", False)
+            ),
+            "apply_weak_sleeve_systemic_weak_point_guard": bool(
+                weak_sleeve_systemic_weak_point_contract.get("control_ready", False)
             ),
             "apply_financial_grade_lift_contract": bool(financial_grade_lift_contract.get("active", False)),
             "apply_raw_profitability_a_recovery": bool(raw_profitability_a_recovery_contract.get("active", False)),
@@ -7786,6 +8464,8 @@ def build_runtime_control_payload(payload: dict[str, Any]) -> dict[str, Any]:
             "apply_profitability_compounding_autopilot": True,
             "apply_quant_strategy_expansion_admission": True,
             "apply_weak_sleeve_a_plus_plus_strengthening_contract": True,
+            "apply_weak_sleeve_recurrence_guard_contract": True,
+            "apply_weak_sleeve_systemic_weak_point_contract": True,
             "keep_raw_financial_grade_evidence_based": True,
             "quant_strategy_expansion_collection_only_first": True,
             "block_quant_strategy_widening_while_protective_tightening": True,

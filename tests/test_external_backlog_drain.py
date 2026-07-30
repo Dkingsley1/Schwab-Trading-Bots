@@ -160,6 +160,54 @@ def test_external_backlog_drain_builds_offhours_plan(tmp_path: Path) -> None:
     assert any("governance shard pinned" in item for item in payload["top_actions"])
 
 
+def test_external_backlog_drain_waits_cleanly_for_market_hours_guard(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    health = project_root / "governance" / "health"
+    _write_json(
+        health / "ingestion_backpressure_latest.json",
+        {
+            "pending_lines": 800,
+            "pending_lines_total": 4200,
+            "pending_lines_deferred": 3400,
+            "pending_lines_cold": 0,
+            "top_pending_files": [
+                {
+                    "source_rel": "decisions/paper/trade_decisions_20260504.jsonl",
+                    "pending_lines": 800,
+                    "oldest_pending_age_seconds": 120.0,
+                }
+            ],
+            "top_deferred_pending_files": [
+                {
+                    "source_rel": "governance/channels/runtime/default_crypto_schwab/runtime_20260504.jsonl",
+                    "pending_lines": 3400,
+                    "oldest_pending_age_seconds": 180.0,
+                }
+            ],
+        },
+    )
+    _write_json(health / "ingestion_priority_queue_latest.json", {"queue_depth": 4})
+    _write_json(health / "ingestion_storage_control_latest.json", {"overall_status": "ready"})
+    _write_json(health / "storage_mount_guard_latest.json", {"external_available": True, "storage_mode": "external"})
+    _write_json(health / "storage_failback_sync_latest.json", {"mode": "external", "split_brain_conflicts": 0})
+    _write_json(health / "storage_split_brain_reconciler_latest.json", {"summary": {"unresolved_conflicts": 0}})
+
+    payload = src.build_payload(
+        project_root,
+        apply=False,
+        now_utc=datetime(2026, 5, 4, 14, 30, tzinfo=timezone.utc),
+    )
+
+    assert payload["ok"] is True
+    assert payload["overall_status"] == "waiting_for_off_hours"
+    assert payload["material_drain_recommended"] is True
+    assert payload["recommended_now"] is False
+    assert payload["blocked_reasons"] == ["market_hours_guard"]
+    assert payload["hard_blocked_reasons"] == []
+    assert payload["soft_blocked_reasons"] == ["market_hours_guard"]
+    assert payload["waiting_for_off_hours"] is True
+
+
 def test_external_backlog_drain_pins_decision_channels_to_trading_shard(tmp_path: Path) -> None:
     project_root = tmp_path / "project"
     health = project_root / "governance" / "health"

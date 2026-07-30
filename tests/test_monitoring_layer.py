@@ -641,6 +641,39 @@ def test_daily_auto_verify_artifact_freshness_accepts_artifacts_written_during_r
     assert status["rows"][0]["refreshed_in_run"] is True
 
 
+def test_daily_auto_verify_infers_clear_sql_ingestion_freshness_from_service_heartbeat(tmp_path: Path) -> None:
+    original_root = daily_auto_verify.PROJECT_ROOT
+    try:
+        daily_auto_verify.PROJECT_ROOT = tmp_path
+        health_root = tmp_path / "governance" / "health"
+        now = datetime.now(timezone.utc)
+        artifact = health_root / "jsonl_sql_ingestion_health_trading_latest.json"
+        _write_json(
+            artifact,
+            {
+                "timestamp_utc": (now - timedelta(minutes=45)).isoformat(),
+                "sqlite": {"pending_lines": 0, "oldest_uningested_age_seconds": 0.0, "invalid": 0, "files_with_pending": 0},
+            },
+        )
+        _write_json(
+            health_root / "sql_link_service_progress_latest.json",
+            {
+                "timestamp_utc": now.isoformat(),
+                "ok": True,
+                "status": "ok",
+                "current_step": "complete",
+                "merged_rows_this_cycle": 7,
+            },
+        )
+
+        status = daily_auto_verify._artifact_freshness_status([artifact], max_age_minutes=20.0, fresh_if_newer_than=now)
+
+        assert status["ok"] is True
+        assert status["rows"][0]["freshness_inferred_from_sql_service"] is True
+    finally:
+        daily_auto_verify.PROJECT_ROOT = original_root
+
+
 def test_runtime_gate_dashboard_uses_current_registry_and_trading_ingestion(tmp_path: Path) -> None:
     now = datetime.now(timezone.utc)
     health_root = tmp_path / "governance" / "health"
@@ -830,6 +863,167 @@ def test_runtime_gate_dashboard_suppresses_sql_service_stale_when_ingestion_is_f
 
     assert "sql_link_service_stale" not in payload["overall"]["attention"]
     assert payload["artifacts"]["sql_link_service"]["summary"]["freshness_inferred_from_sql_ingestion"] is True
+
+
+def test_runtime_gate_dashboard_uses_storage_control_overlay_for_idle_sql_plane_freshness(tmp_path: Path) -> None:
+    now = datetime.now(timezone.utc)
+    health_root = tmp_path / "governance" / "health"
+    walk_root = tmp_path / "governance" / "walk_forward"
+
+    _write_json(
+        health_root / "session_ready_latest.json",
+        {"timestamp_utc": now.isoformat(), "ok": True, "expected_profiles": ["default"], "checks": []},
+    )
+    _write_json(
+        health_root / "health_gates_latest.json",
+        {"timestamp_utc": now.isoformat(), "data_quality_score": 99.9, "hard_gate_triggered": False, "inputs": {"blocked_rate": 0.01}},
+    )
+    _write_json(
+        health_root / "sql_link_service_progress_latest.json",
+        {
+            "timestamp_utc": (now - timedelta(minutes=35)).isoformat(),
+            "ok": True,
+            "running": False,
+            "status": "ok",
+            "current_step": "complete",
+            "merged_rows_this_cycle": 7,
+        },
+    )
+    _write_json(
+        health_root / "jsonl_sql_ingestion_health_trading_latest.json",
+        {
+            "timestamp_utc": (now - timedelta(minutes=65)).isoformat(),
+            "files_discovered": 12,
+            "sqlite": {"pending_lines": 0, "oldest_uningested_age_seconds": 0.0, "invalid": 0},
+        },
+    )
+    _write_json(
+        health_root / "ingestion_storage_control_latest.json",
+        {
+            "timestamp_utc": now.isoformat(),
+            "overall_status": "ready",
+            "severity": "stable",
+            "pressure_index": 0.05,
+            "sql_ingestion_pending_overlay": {
+                "active": True,
+                "fresh_source_count": 2,
+                "fresh_pending_unknown_source_count": 0,
+                "total_pending_lines": 0,
+                "files_with_pending": 0,
+                "invalid_lines": 0,
+                "stale_pending_lines": 0,
+                "ops_write_failures": 0,
+            },
+            "continuous_run_soak_contract": {"ready": True, "soak_ready": True, "grade": "A+"},
+        },
+    )
+    _write_json(
+        walk_root / "promotion_readiness_latest.json",
+        {"timestamp_utc": now.isoformat(), "promote_ok": True, "considered_bots": 5, "failed_bots": 0, "fail_share": 0.0},
+    )
+    _write_json(tmp_path / "master_bot_registry.json", {"summary": {"total_bots": 1, "active_bots": 1, "deleted_from_rotation": 0}, "sub_bots": []})
+
+    payload = runtime_gate_dashboard.build_dashboard(tmp_path)
+
+    assert "sql_link_service_stale" not in payload["overall"]["attention"]
+    assert "sql_ingestion_stale" not in payload["overall"]["attention"]
+    assert payload["artifacts"]["sql_link_service"]["stale"] is False
+    assert payload["artifacts"]["sql_ingestion"]["stale"] is False
+    assert payload["artifacts"]["sql_link_service"]["summary"]["freshness_inferred_from_ingestion_storage_control"] is True
+    assert payload["artifacts"]["sql_ingestion"]["summary"]["freshness_inferred_from_ingestion_storage_control"] is True
+
+
+def test_runtime_gate_dashboard_uses_storage_control_backpressure_for_idle_sql_plane_freshness(
+    tmp_path: Path,
+) -> None:
+    now = datetime.now(timezone.utc)
+    health_root = tmp_path / "governance" / "health"
+    walk_root = tmp_path / "governance" / "walk_forward"
+
+    _write_json(
+        health_root / "session_ready_latest.json",
+        {"timestamp_utc": now.isoformat(), "ok": True, "expected_profiles": ["default"], "checks": []},
+    )
+    _write_json(
+        health_root / "health_gates_latest.json",
+        {
+            "timestamp_utc": now.isoformat(),
+            "data_quality_score": 99.9,
+            "hard_gate_triggered": False,
+            "inputs": {"blocked_rate": 0.01},
+        },
+    )
+    _write_json(
+        health_root / "sql_link_service_progress_latest.json",
+        {
+            "timestamp_utc": (now - timedelta(minutes=35)).isoformat(),
+            "ok": True,
+            "running": False,
+            "status": "ok",
+            "current_step": "complete",
+            "merged_rows_this_cycle": 7,
+        },
+    )
+    _write_json(
+        health_root / "jsonl_sql_ingestion_health_trading_latest.json",
+        {
+            "timestamp_utc": (now - timedelta(minutes=65)).isoformat(),
+            "files_discovered": 12,
+            "sqlite": {"pending_lines": 0, "oldest_uningested_age_seconds": 0.0, "invalid": 0},
+        },
+    )
+    _write_json(
+        health_root / "ingestion_storage_control_latest.json",
+        {
+            "timestamp_utc": now.isoformat(),
+            "overall_status": "ready",
+            "severity": "stable",
+            "pressure_index": 0.058,
+            "backpressure": {
+                "effective_raw_live_source": "fresh_empty_sql_ingestion_overlay",
+                "raw_live": {
+                    "core_pending_lines": 866,
+                    "deferred_pending_lines": 1769,
+                    "support_pending_lines": 38,
+                    "total_pending_lines": 2673,
+                    "oldest_pending_age_seconds": 0.0,
+                },
+            },
+            "data_integrity": {
+                "sql_invalid_lines": 0,
+                "sql_overlay_invalid_lines": 0,
+                "sql_overlay_ops_write_failures": 0,
+            },
+            "writer_shedding": {
+                "hard_breaches": [],
+                "elevated_breaches": [],
+            },
+            "continuous_run_soak_contract": {
+                "ready": False,
+                "soak_ready": False,
+                "grade": "D",
+                "blockers": ["steady_state_targets_not_clear", "drain_time_above_target"],
+            },
+        },
+    )
+    _write_json(
+        walk_root / "promotion_readiness_latest.json",
+        {"timestamp_utc": now.isoformat(), "promote_ok": True, "considered_bots": 5, "failed_bots": 0, "fail_share": 0.0},
+    )
+    _write_json(tmp_path / "master_bot_registry.json", {"summary": {"total_bots": 1, "active_bots": 1, "deleted_from_rotation": 0}, "sub_bots": []})
+
+    payload = runtime_gate_dashboard.build_dashboard(tmp_path)
+
+    assert "sql_link_service_stale" not in payload["overall"]["attention"]
+    assert "sql_ingestion_stale" not in payload["overall"]["attention"]
+    inference = payload["artifacts"]["sql_ingestion"]["summary"]["freshness_inference"]
+    assert inference["source"] == "ingestion_storage_control_reconciled_backpressure"
+    assert inference["raw_live_total_pending_lines"] == 2673
+    assert inference["continuous_soak_blockers_managed_for_sql_freshness"] is True
+    assert inference["managed_continuous_soak_blockers"] == [
+        "drain_time_above_target",
+        "steady_state_targets_not_clear",
+    ]
 
 
 def test_runtime_gate_dashboard_suppresses_sql_stale_when_live_writer_lock_exists(tmp_path: Path) -> None:

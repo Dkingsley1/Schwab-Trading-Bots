@@ -43,6 +43,14 @@ LIVE_ENABLE_FLAGS = {
     "RUN_ALL_SLEEVES_WITH_LIVE_EXECUTOR",
     "TOP_BOT_ENABLE_LIVE_EXECUTION",
 }
+SELF_REFERENCE_DRIFT_SURFACES = {
+    "adaptive_regression_guard",
+    "system_architecture_contract_graph",
+    "system_architecture_autopilot",
+    "system_drift_guard",
+    "master_infrastructure_supervisor",
+    "infrastructure_autofix",
+}
 
 CONTRACT_NODES: tuple[dict[str, Any], ...] = (
     {
@@ -311,6 +319,65 @@ def _all_sleeves_health_fast_reconciliation(project_root: Path) -> dict[str, Any
     }
 
 
+def _guarded_paper_strict_clear(project_root: Path) -> bool:
+    health_fast = load_json(project_root / "governance" / "health" / "health_fast_latest.json")
+    operational = _as_dict(health_fast.get("operational_readiness"))
+    guarded_paper = _as_dict(operational.get("guarded_paper"))
+    live_execution = _as_dict(operational.get("live_execution"))
+    guarded_ready = bool(guarded_paper.get("ok", False)) and str(guarded_paper.get("status") or "").strip().lower() in {
+        "ready",
+        "armed",
+        "guarded_ready",
+    }
+    live_locked = str(live_execution.get("status") or "").strip().lower() in {
+        "blocked_read_only",
+        "locked",
+        "read_only",
+        "disabled",
+    }
+    return bool(health_fast.get("strict_all_clear", False) and guarded_ready and live_locked)
+
+
+def _drift_guard_self_reference_reconciliation(project_root: Path) -> dict[str, Any]:
+    payload = load_json(project_root / "governance" / "health" / "system_drift_guard_latest.json")
+    surfaces = _as_list(payload.get("surfaces"))
+    metrics = _as_dict(payload.get("metrics"))
+    non_ready_surfaces: set[str] = set()
+    blocked_surfaces: set[str] = set()
+    for row in surfaces:
+        if not isinstance(row, dict):
+            continue
+        name = str(row.get("name") or "").strip()
+        if not name:
+            continue
+        status = _normalize_status({"overall_status": row.get("status"), "ok": row.get("ok")})
+        if status == "blocked":
+            blocked_surfaces.add(name)
+            non_ready_surfaces.add(name)
+        elif status == "degraded":
+            non_ready_surfaces.add(name)
+    active = bool(
+        _guarded_paper_strict_clear(project_root)
+        and _normalize_status(payload) == "degraded"
+        and _safe_float(metrics.get("blocked_surface_count"), 0.0) == 0.0
+        and not blocked_surfaces
+        and non_ready_surfaces
+        and non_ready_surfaces <= SELF_REFERENCE_DRIFT_SURFACES
+    )
+    return {
+        "active": active,
+        "source": "system_drift_guard.surfaces",
+        "managed_surfaces": sorted(non_ready_surfaces),
+        "blocked_surfaces": sorted(blocked_surfaces),
+        "guarded_paper_strict_clear": _guarded_paper_strict_clear(project_root),
+        "reason": "guarded_paper_architecture_self_reference_debt",
+        "policy": (
+            "fresh guarded-paper strict-clear evidence can break the architecture/drift/supervisor loop "
+            "when all remaining drift surfaces are self-reference governance debt"
+        ),
+    }
+
+
 def _node_from_contract(project_root: Path, contract: dict[str, Any]) -> dict[str, Any]:
     rel_artifact = Path(str(contract["artifact"]))
     artifact_path = project_root / rel_artifact
@@ -328,6 +395,11 @@ def _node_from_contract(project_root: Path, contract: dict[str, Any]) -> dict[st
     reconciliations: list[dict[str, Any]] = []
     if str(contract["node_id"]) == "all_sleeves_launcher" and normalized_status == "blocked":
         reconciliation = _all_sleeves_health_fast_reconciliation(project_root)
+        if bool(reconciliation.get("active", False)):
+            normalized_status = "ready"
+            reconciliations.append(reconciliation)
+    if str(contract["node_id"]) == "system_drift_guard" and normalized_status == "degraded":
+        reconciliation = _drift_guard_self_reference_reconciliation(project_root)
         if bool(reconciliation.get("active", False)):
             normalized_status = "ready"
             reconciliations.append(reconciliation)

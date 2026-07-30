@@ -331,6 +331,63 @@ def _guarded_paper_soak_health(project_root: Path) -> dict[str, Any]:
     }
 
 
+def _paper_sleeve_guard_posture(project_root: Path) -> dict[str, Any]:
+    paper = load_json(project_root / "governance" / "health" / "paper_profitability_control_latest.json")
+    recurrence = (
+        paper.get("weak_sleeve_recurrence_guard_contract")
+        if isinstance(paper.get("weak_sleeve_recurrence_guard_contract"), dict)
+        else {}
+    )
+    systemic = (
+        paper.get("weak_sleeve_systemic_weak_point_contract")
+        if isinstance(paper.get("weak_sleeve_systemic_weak_point_contract"), dict)
+        else {}
+    )
+    weak_profile_count = _safe_int(
+        recurrence.get("profile_count"),
+        _safe_int(paper.get("active_profile_control_count"), 0),
+    )
+    guarded_profile_count = _safe_int(recurrence.get("guarded_profile_count"), 0)
+    systemic_count = _safe_int(systemic.get("systemic_weak_point_count"), 0)
+    recurrence_ready = bool(recurrence.get("control_ready", False))
+    systemic_ready = bool(systemic.get("control_ready", True))
+    active = bool(paper)
+    return {
+        "active": active,
+        "posture": (
+            "paper_repair_guarded_with_systemic_weak_point_locks"
+            if systemic_count
+            else ("paper_repair_guarded" if weak_profile_count else "clean_or_no_weak_sleeves")
+        ),
+        "paper_control_status": _status(paper) if active else "missing",
+        "controlled_profitability_grade": str(paper.get("controlled_profitability_grade") or paper.get("profitability_grade") or ""),
+        "raw_profitability_grade": str(paper.get("raw_profitability_grade") or paper.get("financial_profitability_grade") or ""),
+        "financial_profitability_grade": str(paper.get("financial_profitability_grade") or ""),
+        "weak_profile_count": weak_profile_count,
+        "guarded_profile_count": guarded_profile_count,
+        "recurrence_guard_ready": recurrence_ready,
+        "recurrence_guard_grade": str(recurrence.get("control_posture_grade") or ""),
+        "systemic_weak_point_count": systemic_count,
+        "systemic_guard_active": bool(systemic.get("active", False)),
+        "systemic_guard_ready": systemic_ready,
+        "systemic_guard_grade": str(systemic.get("control_posture_grade") or ""),
+        "top_recurrent_loss_causes": (
+            recurrence.get("top_recurrent_loss_causes")
+            if isinstance(recurrence.get("top_recurrent_loss_causes"), list)
+            else []
+        )[:8],
+        "top_systemic_causes": (
+            systemic.get("top_systemic_causes")
+            if isinstance(systemic.get("top_systemic_causes"), list)
+            else []
+        )[:8],
+        "paper_only": bool(recurrence.get("paper_only", True)) and bool(systemic.get("paper_only", True)),
+        "live_execution_allowed": bool(recurrence.get("live_execution_allowed", False))
+        or bool(systemic.get("live_execution_allowed", False)),
+        "truth_model": "control grades describe protection strength; raw profitability still moves only after fresh paper PnL evidence improves",
+    }
+
+
 def _drift_ready_for_guarded_soak(drift: dict[str, Any]) -> tuple[bool, dict[str, Any]]:
     metrics = drift.get("metrics") if isinstance(drift.get("metrics"), dict) else {}
     blocked_count = _safe_int(metrics.get("blocked_surface_count"), 0)
@@ -1134,15 +1191,22 @@ def _markdown(payload: dict[str, Any]) -> str:
     architecture = payload.get("architecture_report_card") if isinstance(payload.get("architecture_report_card"), dict) else {}
     operational = payload.get("operational_health") if isinstance(payload.get("operational_health"), dict) else {}
     raw_operational = payload.get("raw_operational_health") if isinstance(payload.get("raw_operational_health"), dict) else {}
+    sleeve_guard = payload.get("sleeve_guard_posture") if isinstance(payload.get("sleeve_guard_posture"), dict) else {}
+    top_systemic = sleeve_guard.get("top_systemic_causes") if isinstance(sleeve_guard.get("top_systemic_causes"), list) else []
+    top_recurrent = sleeve_guard.get("top_recurrent_loss_causes") if isinstance(sleeve_guard.get("top_recurrent_loss_causes"), list) else []
+    systemic_summary = ", ".join(str(row.get("cause") or "") for row in top_systemic[:5] if isinstance(row, dict)) or "none"
+    recurrent_summary = ", ".join(str(row.get("cause") or "") for row in top_recurrent[:5] if isinstance(row, dict)) or "none"
     lines = [
         "# Distributed Cell Architecture",
         "",
         f"Generated: {payload.get('timestamp_utc', '')}",
         "",
-        f"Architecture: {architecture.get('grade', payload.get('grade', ''))} | Score: {architecture.get('score', payload.get('score', ''))}",
-        f"Guarded soak health: {operational.get('grade', '')} | Score: {operational.get('score', '')} | Status: {operational.get('status', '')}",
-        f"Raw production backlog: {raw_operational.get('grade', '')} | Score: {raw_operational.get('score', '')} | Status: {raw_operational.get('status', '')}",
+        f"Architecture maturity: {architecture.get('grade', payload.get('grade', ''))} | Score: {architecture.get('score', payload.get('score', ''))}",
+        f"Guarded soak runtime health: {operational.get('grade', '')} | Score: {operational.get('score', '')} | Status: {operational.get('status', '')}",
+        f"Raw production backlog visibility: {raw_operational.get('grade', '')} | Score: {raw_operational.get('score', '')} | Status: {raw_operational.get('status', '')}",
         f"Distributed mode: {(payload.get('intercell_bus') or {}).get('mode', '')}",
+        f"Sleeve guard posture: {sleeve_guard.get('posture', 'missing')} | Recurrence guarded: {sleeve_guard.get('guarded_profile_count', 0)}/{sleeve_guard.get('weak_profile_count', 0)} | Systemic weak points: {sleeve_guard.get('systemic_weak_point_count', 0)}",
+        f"Sleeve profitability evidence: controlled {sleeve_guard.get('controlled_profitability_grade', '')} | raw {sleeve_guard.get('raw_profitability_grade', '')} | paper_only={sleeve_guard.get('paper_only', '')} | live_execution_allowed={sleeve_guard.get('live_execution_allowed', '')}",
         "",
         "| Cell | Raw Status | Raw Grade | Needs | Stale |",
         "| --- | --- | --- | ---: | ---: |",
@@ -1151,6 +1215,17 @@ def _markdown(payload: dict[str, Any]) -> str:
         lines.append(
             f"| {cell.get('title')} | {cell.get('overall_status')} | {cell.get('grade')} | {cell.get('need_count')} | {cell.get('stale_surface_count')} |"
         )
+    lines.extend(
+        [
+            "",
+            "## Sleeve Guard Posture",
+            "",
+            f"- Recurrence guard ready: `{sleeve_guard.get('recurrence_guard_ready', False)}`; guarded weak profiles: `{sleeve_guard.get('guarded_profile_count', 0)}/{sleeve_guard.get('weak_profile_count', 0)}`.",
+            f"- Systemic guard ready: `{sleeve_guard.get('systemic_guard_ready', False)}`; active systemic causes: `{systemic_summary}`.",
+            f"- Top recurrent causes: `{recurrent_summary}`.",
+            "- Rule: controlled grades describe protection strength; raw profitability only improves after fresh paper PnL evidence improves.",
+        ]
+    )
     lines.extend(["", "## Next Needs", ""])
     for need in payload.get("top_needs", [])[:12]:
         cmd = " ".join(str(part) for part in need.get("recommended_command") or [])
@@ -1206,6 +1281,7 @@ def build_payload(*, project_root: Path = PROJECT_ROOT, apply: bool = False, cel
         "truth_model": "raw production backlog stays visible even when the guarded paper soak is green",
     }
     guarded_soak_health = _guarded_paper_soak_health(project_root)
+    sleeve_guard_posture = _paper_sleeve_guard_posture(project_root)
     operational_health = {
         **raw_operational_health,
         "status": "ready" if guarded_soak_health.get("ready") else raw_operational_status,
@@ -1236,6 +1312,7 @@ def build_payload(*, project_root: Path = PROJECT_ROOT, apply: bool = False, cel
         "architecture_report_card": architecture,
         "operational_health": {**operational_health, "low_cell_count": len(low_cells)},
         "raw_operational_health": {**raw_operational_health, "low_cell_count": len(low_cells)},
+        "sleeve_guard_posture": sleeve_guard_posture,
         "cell_count": len(cell_rows),
         "cells": cell_rows,
         "low_cell_count": len(low_cells),
@@ -1282,6 +1359,7 @@ def build_payload(*, project_root: Path = PROJECT_ROOT, apply: bool = False, cel
             "writes_per_cell_state_health_needs": True,
             "separates_architecture_grade_from_operational_health_grade": True,
             "separates_guarded_soak_health_from_raw_production_backlog": True,
+            "includes_sleeve_weak_point_recurrence_and_systemic_guard_posture": True,
             "appends_cell_queue_when_apply": bool(apply),
             "never_touch_protected_volumes": list(PROTECTED_VOLUMES),
         },

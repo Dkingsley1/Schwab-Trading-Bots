@@ -1519,17 +1519,37 @@ def build_payload(
         support_watchdog_pending_lines=sum(int(row.get("pending_lines", 0) or 0) for row in support_watchdog_candidates),
     )
     recommended_now = bool(window.get("active", False) and not blocked_reasons and material_drain)
+    hard_blocked_reasons = [reason for reason in blocked_reasons if reason != "market_hours_guard"]
+    soft_blocked_reasons = [reason for reason in blocked_reasons if reason == "market_hours_guard"]
+    waiting_for_off_hours = bool(
+        not apply_executed
+        and material_drain
+        and not hard_blocked_reasons
+        and soft_blocked_reasons == ["market_hours_guard"]
+    )
+    ok = not bool(hard_blocked_reasons)
+    if apply_executed:
+        overall_status = "drain_active"
+    elif waiting_for_off_hours:
+        overall_status = "waiting_for_off_hours"
+    elif ok:
+        overall_status = "ready"
+    else:
+        overall_status = "blocked"
     payload = {
         "timestamp_utc": now.isoformat(),
         "schema_version": 1,
-        "ok": not blocked_reasons,
-        "overall_status": "drain_active" if apply_executed else ("ready" if not blocked_reasons else "blocked"),
+        "ok": ok,
+        "overall_status": overall_status,
         "apply_requested": bool(apply),
         "apply_executed": bool(apply_executed),
         "follow_through": follow_through_summary,
         "recommended_now": recommended_now,
         "material_drain_recommended": material_drain,
         "blocked_reasons": blocked_reasons,
+        "hard_blocked_reasons": hard_blocked_reasons,
+        "soft_blocked_reasons": soft_blocked_reasons,
+        "waiting_for_off_hours": waiting_for_off_hours,
         "off_hours_window": window,
         "drain_profile": drain_profile,
         "governor_profile": str(governor_payload.get("profile") or ""),

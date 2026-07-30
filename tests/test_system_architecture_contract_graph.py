@@ -143,6 +143,85 @@ def test_architecture_contract_graph_uses_health_fast_all_sleeves_reconciliation
     assert all_sleeves["reconciliations"][0]["active"] is True
 
 
+def test_architecture_contract_graph_reconciles_drift_guard_self_reference(tmp_path: Path) -> None:
+    _seed_contract_artifacts(tmp_path)
+    _write_json(
+        tmp_path / "governance" / "health" / "health_fast_latest.json",
+        {
+            "timestamp_utc": src.iso_now(),
+            "overall_status": "ready",
+            "ok": True,
+            "strict_all_clear": True,
+            "operational_readiness": {
+                "guarded_paper": {"ok": True, "status": "ready", "blockers": []},
+                "live_execution": {"ok": False, "status": "blocked_read_only"},
+            },
+        },
+    )
+    _write_json(
+        tmp_path / "governance" / "health" / "system_drift_guard_latest.json",
+        {
+            "timestamp_utc": src.iso_now(),
+            "overall_status": "degraded",
+            "ok": False,
+            "metrics": {
+                "blocked_surface_count": 0,
+                "degraded_surface_count": 4,
+            },
+            "surfaces": [
+                {"name": "adaptive_regression_guard", "status": "degraded", "ok": False},
+                {"name": "system_architecture_contract_graph", "status": "degraded", "ok": False},
+                {"name": "system_architecture_autopilot", "status": "degraded", "ok": False},
+                {"name": "master_infrastructure_supervisor", "status": "degraded", "ok": False},
+            ],
+        },
+    )
+
+    payload = src.build_payload(tmp_path)
+    drift_guard = next(row for row in payload["nodes"] if row["node_id"] == "system_drift_guard")
+
+    assert payload["overall_status"] == "ready"
+    assert drift_guard["status"] == "ready"
+    assert drift_guard["raw_status"] == "degraded"
+    assert drift_guard["reconciliations"][0]["reason"] == "guarded_paper_architecture_self_reference_debt"
+
+
+def test_architecture_contract_graph_keeps_drift_guard_degraded_for_real_surface(tmp_path: Path) -> None:
+    _seed_contract_artifacts(tmp_path)
+    _write_json(
+        tmp_path / "governance" / "health" / "health_fast_latest.json",
+        {
+            "timestamp_utc": src.iso_now(),
+            "overall_status": "ready",
+            "ok": True,
+            "strict_all_clear": True,
+            "operational_readiness": {
+                "guarded_paper": {"ok": True, "status": "ready", "blockers": []},
+                "live_execution": {"ok": False, "status": "blocked_read_only"},
+            },
+        },
+    )
+    _write_json(
+        tmp_path / "governance" / "health" / "system_drift_guard_latest.json",
+        {
+            "timestamp_utc": src.iso_now(),
+            "overall_status": "degraded",
+            "ok": False,
+            "metrics": {"blocked_surface_count": 0, "degraded_surface_count": 1},
+            "surfaces": [
+                {"name": "coinbase_api_health", "status": "degraded", "ok": False},
+            ],
+        },
+    )
+
+    payload = src.build_payload(tmp_path)
+    drift_guard = next(row for row in payload["nodes"] if row["node_id"] == "system_drift_guard")
+
+    assert payload["overall_status"] == "degraded"
+    assert drift_guard["status"] == "degraded"
+    assert drift_guard["reconciliations"] == []
+
+
 def test_architecture_contract_graph_apply_writes_config_and_graph(tmp_path: Path) -> None:
     _seed_contract_artifacts(tmp_path)
 

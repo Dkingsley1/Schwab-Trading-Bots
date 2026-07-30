@@ -2627,6 +2627,8 @@ def _runtime_env_overrides(
         overrides.update(_context_collector_pressure_overrides("sustain"))
         overrides.update(runtime_sql_overrides)
         return _with_library_utilization(_with_mlx_intelligence(_with_cotenant_awareness(_with_full_force_paper(overrides))))
+    support_nice = "12" if throttle_profile in {"soft_cap", "observe"} else "0"
+    support_pause_sleep = "30" if throttle_profile == "soft_cap" else "15" if throttle_profile == "observe" else "0"
     overrides = {
         "BOT_RUNTIME_RESOURCE_GUARD_PROFILE": throttle_profile,
         "DATA_COLLECTION_RESOURCE_GUARD_MODE": throttle_profile,
@@ -2640,14 +2642,14 @@ def _runtime_env_overrides(
         "TRAINING_RUNTIME_MAX_PARALLEL": "1" if throttle_profile == "soft_cap" else "2",
         "TRAINING_RUNTIME_BATCH10_ALLOWED": "0" if throttle_profile == "soft_cap" else "1",
         "TRAINING_RUNTIME_BATCH20_ALLOWED": "0",
-        "OPS_SUPPORT_JOB_NICE": "12" if throttle_profile == "soft_cap" else "0",
-        "YTDLP_SUPPORT_NICE": "12" if throttle_profile == "soft_cap" else "0",
-        "MACRO_YTDLP_SUPPORT_NICE": "12" if throttle_profile == "soft_cap" else "0",
+        "OPS_SUPPORT_JOB_NICE": support_nice,
+        "YTDLP_SUPPORT_NICE": support_nice,
+        "MACRO_YTDLP_SUPPORT_NICE": support_nice,
         "OPS_SUPPORT_JOBS_BACKGROUND_POLICY": "0",
         "OPS_SUPPORT_HEAVY_COLLECTOR_COOLDOWN_SECONDS": "300" if throttle_profile == "soft_cap" else "0",
         "OPS_SUPPORT_HEAVY_COLLECTOR_MAX_CPU_PERCENT": "60" if throttle_profile == "soft_cap" else "0",
         "TRAINING_RUNTIME_PAUSED_FOR_HOST_HEADROOM": "0" if throttle_profile == "soft_cap" else "0",
-        "SHADOW_LOOP_RUNTIME_PAUSE_SLEEP_SECONDS": "30" if throttle_profile == "soft_cap" else "0",
+        "SHADOW_LOOP_RUNTIME_PAUSE_SLEEP_SECONDS": support_pause_sleep,
     }
     overrides.update(_context_collector_pressure_overrides(throttle_profile))
     overrides.update(runtime_sql_overrides)
@@ -2676,8 +2678,19 @@ def _write_env_override(path: Path, overrides: dict[str, str], *, profile: str) 
 
 
 def _is_simulated_shadow_training(row: dict[str, Any]) -> bool:
-    command = str(row.get("command") or "")
+    command = str(row.get("command") or row.get("command_excerpt") or "")
     return "scripts/run_shadow_training_loop.py" in command and "--simulate" in command
+
+
+def _is_live_soak_shadow_loop(row: dict[str, Any]) -> bool:
+    command = str(row.get("command") or row.get("command_excerpt") or "").lower()
+    if "scripts/run_shadow_training_loop.py" not in command:
+        return False
+    if "--simulate" in command:
+        return False
+    if "--broker schwab" in command or "--broker coinbase" in command:
+        return True
+    return "--max-iterations 0" in command or "--max-iterations=0" in command
 
 
 def _research_training_pressure_candidates(
@@ -2708,12 +2721,15 @@ def _research_training_pressure_candidates(
             threshold = min(threshold, APPLY_CPU_THRESHOLD)
         if cpu < threshold:
             continue
+        pause_exempt = _is_live_soak_shadow_loop(row)
         out.append(
             {
                 **row,
                 "throttle_candidate": True,
                 "priority_tier": "throttle_first_when_protect_live" if simulated else "research_downshift_when_protect_live",
                 "throttle_reason": "simulated_training_loop_under_host_pressure" if simulated else "research_training_loop_under_host_pressure",
+                "pause_exempt": pause_exempt,
+                "pause_exempt_reason": "live_soak_shadow_loop_downshift_only" if pause_exempt else "",
             }
         )
     return out[:4]
@@ -2845,7 +2861,40 @@ def _apply_research_training_pause(
             if str(row.get("category") or "") == "research_training"
             and _safe_int(row.get("pid"), 0) > 0
             and _safe_float(row.get("cpu_percent"), 0.0) >= APPLY_CPU_THRESHOLD
+            and not bool(row.get("pause_exempt", False))
+            and not _is_live_soak_shadow_loop(row)
         ]
+        eligible_pids = {_safe_int(row.get("pid"), 0) for row in eligible if _safe_int(row.get("pid"), 0) > 0}
+        live_paused = {}
+        for row in paused_rows:
+            pid = _safe_int(row.get("pid"), 0)
+            if pid <= 0:
+                continue
+            if bool(row.get("pause_exempt", False)) or _is_live_soak_shadow_loop(row) or pid not in eligible_pids:
+                try:
+                    os.kill(pid, 0)
+                    os.kill(pid, signal.SIGCONT)
+                    resumed.append(
+                        {
+                            "pid": pid,
+                            "ok": True,
+                            "signal": "SIGCONT",
+                            "reason": "live_soak_shadow_loop_downshift_only",
+                            "command_excerpt": str(row.get("command_excerpt") or row.get("command") or "")[:220],
+                        }
+                    )
+                except Exception as exc:
+                    resumed.append(
+                        {
+                            "pid": pid,
+                            "ok": False,
+                            "signal": "SIGCONT",
+                            "reason": f"research_resume_failed:{exc}",
+                            "command_excerpt": str(row.get("command_excerpt") or row.get("command") or "")[:220],
+                        }
+                    )
+                continue
+            live_paused[pid] = row
         pause_limit = max(1, _safe_int(os.getenv("RUNTIME_RESEARCH_TRAINING_PAUSE_LIMIT", "8"), 8))
         for row in eligible[:pause_limit]:
             pid = _safe_int(row.get("pid"), 0)
@@ -2872,11 +2921,6 @@ def _apply_research_training_pause(
                         "command_excerpt": str(row.get("command") or "")[:220],
                     }
                 )
-        live_paused = {
-            _safe_int(row.get("pid"), 0): row
-            for row in paused_rows
-            if _safe_int(row.get("pid"), 0) > 0
-        }
         for row in attempted:
             if bool(row.get("ok", False)):
                 live_paused[_safe_int(row.get("pid"), 0)] = row

@@ -1089,6 +1089,16 @@ def _continuous_ingestion_soak_contract(
         if isinstance(collector_intake_audit.get("observed_env"), dict)
         else {}
     )
+    collector_required = bool(collector_intake_audit.get("required", False))
+    collector_not_required_soak_safe = bool(
+        collector_status == "not_required"
+        and not collector_required
+        and not collector_mismatch_keys
+        and not relief_active
+    )
+    collector_enforced_or_optional_safe = bool(
+        collector_status == "enforced" or collector_not_required_soak_safe
+    )
 
     def _collector_observed_values(key: str) -> set[str]:
         row = collector_observed_env.get(key) if isinstance(collector_observed_env.get(key), dict) else {}
@@ -1252,7 +1262,7 @@ def _continuous_ingestion_soak_contract(
         and route_verified
         and str(resilience_status or "").strip().lower() in {"", "ready"}
         and unresolved_split_brain_conflicts == 0
-        and (collector_status == "enforced" or collector_partial_reserve_pressure_soak_safe)
+        and (collector_enforced_or_optional_safe or collector_partial_reserve_pressure_soak_safe)
         and str(overall_status or "") == "ready"
         and str(severity or "") in {"stable", "elevated"}
         and retention_debt_gb <= retention_target
@@ -1275,7 +1285,7 @@ def _continuous_ingestion_soak_contract(
         and route_verified
         and str(resilience_status or "").strip().lower() in {"", "ready"}
         and unresolved_split_brain_conflicts == 0
-        and collector_status == "enforced"
+        and collector_enforced_or_optional_safe
         and str(overall_status or "") == "ready"
         and str(severity or "") in {"stable", "elevated"}
         and retention_debt_gb <= retention_target
@@ -1295,7 +1305,7 @@ def _continuous_ingestion_soak_contract(
         and route_verified
         and str(resilience_status or "").strip().lower() in {"", "ready"}
         and unresolved_split_brain_conflicts == 0
-        and collector_status == "enforced"
+        and collector_enforced_or_optional_safe
         and str(overall_status or "") == "ready"
         and str(severity or "") == "stable"
         and retention_debt_gb <= retention_target
@@ -1323,7 +1333,7 @@ def _continuous_ingestion_soak_contract(
         and route_verified
         and str(resilience_status or "").strip().lower() in {"", "ready"}
         and unresolved_split_brain_conflicts == 0
-        and collector_status == "enforced"
+        and collector_enforced_or_optional_safe
         and str(overall_status or "") == "ready"
         and str(severity or "") == "stable"
         and retention_debt_gb <= retention_target
@@ -1551,7 +1561,11 @@ def _continuous_ingestion_soak_contract(
             "resilience_status": str(resilience_status or ""),
             "unresolved_split_brain_conflicts": int(unresolved_split_brain_conflicts),
             "collector_intake_status": collector_status,
-            "collector_intake_soak_safe": bool(collector_partial_is_soak_safe),
+            "collector_intake_soak_safe": bool(
+                collector_enforced_or_optional_safe or collector_partial_is_soak_safe
+            ),
+            "collector_intake_required": collector_required,
+            "collector_intake_optional_soak_safe": bool(collector_not_required_soak_safe),
             "collector_partial_reserve_pressure_soak_safe": bool(collector_partial_reserve_pressure_soak_safe),
             "storage_efficiency_status": storage_efficiency_status,
             "storage_efficiency_grade": storage_efficiency_grade,
@@ -4028,6 +4042,51 @@ def _off_hours_active(now_utc: datetime) -> bool:
     return bool(local_clock >= OFF_HOURS_START or local_clock < OFF_HOURS_END)
 
 
+def _support_overlay_reconciled_by_drainer_fleet(
+    drainer_fleet: dict[str, Any],
+    *,
+    now: datetime,
+    pending_threshold: int,
+    age_threshold_seconds: float,
+) -> dict[str, Any]:
+    timestamp = _parse_iso_utc(drainer_fleet.get("timestamp_utc"))
+    age_seconds = max((now - timestamp).total_seconds(), 0.0) if timestamp is not None else None
+    metrics = drainer_fleet.get("metrics") if isinstance(drainer_fleet.get("metrics"), dict) else {}
+    raw_live_guard = metrics.get("raw_live_expansion_guard") if isinstance(metrics.get("raw_live_expansion_guard"), dict) else {}
+    raw_live = raw_live_guard.get("raw_live") if isinstance(raw_live_guard.get("raw_live"), dict) else {}
+    core_pending = _safe_int(metrics.get("core_pending_lines"), _safe_int(raw_live.get("canonical_core_pending_lines"), 0))
+    total_pending = _safe_int(metrics.get("total_pending_lines"), _safe_int(raw_live.get("total_pending_lines"), 0))
+    support_pending = _safe_int(metrics.get("support_pending_lines"), 0)
+    raw_live_oldest = _safe_float(raw_live.get("oldest_pending_age_seconds"), 0.0)
+    guard_oldest = _safe_float(raw_live.get("guard_oldest_pending_age_seconds"), raw_live_oldest)
+    oldest_pending = min(value for value in (raw_live_oldest, guard_oldest) if value >= 0.0)
+    status = str(drainer_fleet.get("overall_status") or "").strip().lower()
+    fresh = bool(age_seconds is not None and age_seconds <= max(float(age_threshold_seconds) * 4.0, 900.0))
+    ready = bool(status in {"ready", "watch", "advisory"} and drainer_fleet.get("ok", True) is not False)
+    clear = bool(
+        ready
+        and fresh
+        and int(core_pending) <= int(pending_threshold)
+        and int(total_pending) <= int(pending_threshold)
+        and int(support_pending) <= int(pending_threshold)
+        and float(oldest_pending) <= max(float(age_threshold_seconds) * 2.0, 600.0)
+    )
+    return {
+        "active": clear,
+        "source": "backpressure_drainer_fleet.metrics",
+        "status": status,
+        "fresh": fresh,
+        "age_seconds": None if age_seconds is None else round(float(age_seconds), 3),
+        "core_pending_lines": int(core_pending),
+        "total_pending_lines": int(total_pending),
+        "support_pending_lines": int(support_pending),
+        "oldest_pending_age_seconds": round(float(oldest_pending), 3),
+        "pending_threshold": int(pending_threshold),
+        "age_threshold_seconds": round(float(age_threshold_seconds), 3),
+        "policy": "fresh drainer-fleet proof can cap stale support-overlay pressure after raw/core/total queues are back under target",
+    }
+
+
 def build_payload(project_root: Path = PROJECT_ROOT, *, now_utc: datetime | None = None) -> dict[str, Any]:
     now = now_utc or datetime.now(timezone.utc)
     health_root = project_root / "governance" / "health"
@@ -4054,6 +4113,7 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, now_utc: datetime | None
     storage_mount = _load_json(health_root / "storage_mount_guard_latest.json")
     storage_growth_forecast = _load_json(health_root / "storage_growth_forecast_latest.json")
     storage_retention_unison = _load_json(health_root / "storage_retention_unison_latest.json")
+    backpressure_drainer_fleet = _load_json(health_root / "backpressure_drainer_fleet_latest.json")
     sql_ingestion_paths = _sql_ingestion_health_paths(health_root)
     sql_ingestion, sql_ingestion_source = _freshest_non_empty_json(sql_ingestion_paths)
     sql_pending_overlay = _sql_ingestion_pending_overlay(health_root, now)
@@ -4638,6 +4698,12 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, now_utc: datetime | None
         and _safe_int(sql_pending_overlay.get("ops_write_failures"), 0) <= 0
         and _safe_int(sql_ingestion.get("sqlite", {}).get("invalid"), 0) <= 0
     )
+    drainer_fleet_support_reconciliation = _support_overlay_reconciled_by_drainer_fleet(
+        backpressure_drainer_fleet,
+        now=now,
+        pending_threshold=pending_threshold,
+        age_threshold_seconds=age_threshold,
+    )
     if managed_support_overlay_backlog:
         if candidate_support_pending > int(support_pending_lines):
             support_pending_lines = int(candidate_support_pending)
@@ -4650,7 +4716,16 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, now_utc: datetime | None
                 + int(stale_stage_pending_lines),
             )
             oldest_age_seconds = max(oldest_age_seconds, _safe_float(sql_pending_overlay.get("oldest_pending_age_seconds"), 0.0))
-        bounded_support = max(raw_support_pending, min(int(candidate_support_pending), managed_support_pressure_cap))
+        if bool(drainer_fleet_support_reconciliation.get("active", False)):
+            bounded_support = max(raw_support_pending, _safe_int(drainer_fleet_support_reconciliation.get("support_pending_lines"), 0))
+            bounded_oldest_age = min(
+                float(oldest_age_seconds),
+                _safe_float(drainer_fleet_support_reconciliation.get("oldest_pending_age_seconds"), float(age_threshold)),
+                float(age_threshold),
+            )
+        else:
+            bounded_support = max(raw_support_pending, min(int(candidate_support_pending), managed_support_pressure_cap))
+            bounded_oldest_age = min(float(oldest_age_seconds), float(age_threshold) * 1.25)
         pressure_support_pending_lines = bounded_support
         pressure_total_pending_lines = (
             int(core_pending_lines)
@@ -4659,7 +4734,7 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, now_utc: datetime | None
             + int(bounded_support)
             + int(stale_stage_pending_lines)
         )
-        pressure_oldest_age_seconds = min(float(oldest_age_seconds), float(age_threshold) * 1.25)
+        pressure_oldest_age_seconds = bounded_oldest_age
         sql_pending_overlay["managed_support_overlay_backlog"] = True
         sql_pending_overlay["managed_support_overlay_policy"] = "support_lane_visible_but_bounded_for_core_storage_pressure"
         sql_pending_overlay["support_overlay_dominant"] = True
@@ -4676,6 +4751,7 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, now_utc: datetime | None
         sql_pending_overlay["pressure_total_pending_lines"] = int(pressure_total_pending_lines)
         sql_pending_overlay["raw_oldest_pending_age_seconds"] = round(float(oldest_age_seconds), 3)
         sql_pending_overlay["pressure_oldest_pending_age_seconds"] = round(float(pressure_oldest_age_seconds), 3)
+        sql_pending_overlay["drainer_fleet_support_reconciliation"] = drainer_fleet_support_reconciliation
         raw_live_backpressure["managed_support_overlay_backlog"] = True
         raw_live_backpressure["pressure_total_pending_lines"] = int(pressure_total_pending_lines)
         raw_live_backpressure["pressure_support_pending_lines"] = int(pressure_support_pending_lines)
@@ -4865,9 +4941,9 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, now_utc: datetime | None
     overlay_pressure_clear = bool(
         sql_overlay_adjusted
         and pressure_index < 0.75
-        and int(core_pending_lines) <= int(pending_threshold)
-        and int(total_pending_lines) <= int(pending_threshold)
-        and float(oldest_age_seconds) <= float(age_threshold)
+        and int(pressure_core_pending_lines) <= int(pending_threshold)
+        and int(pressure_total_pending_lines) <= int(pending_threshold)
+        and float(pressure_oldest_age_seconds) <= float(age_threshold)
         and float(retention_debt_gb) <= float(_steady_state_targets().get("retention_debt_gb", DEFAULT_TARGET_RETENTION_DEBT_GB))
         and _safe_int(sql_ingestion.get("sqlite", {}).get("invalid"), 0) <= 0
         and _safe_int(sql_pending_overlay.get("invalid_lines"), 0) <= 0

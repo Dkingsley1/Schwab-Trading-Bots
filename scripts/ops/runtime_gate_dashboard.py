@@ -1811,6 +1811,143 @@ def _artifact_freshness_recovered(payload: Dict[str, Any]) -> bool:
     return True
 
 
+def _sql_plane_freshness_from_storage_control(artifacts: Dict[str, Dict[str, Any]]) -> dict[str, Any]:
+    storage_artifact = artifacts.get("ingestion_storage_control", {})
+    if not bool(storage_artifact.get("exists")) or bool(storage_artifact.get("stale")):
+        return {}
+    storage_path = Path(str(storage_artifact.get("path") or ""))
+    storage_payload = _load_json(storage_path)
+    if not storage_payload:
+        return {}
+
+    overlay = (
+        storage_payload.get("sql_ingestion_pending_overlay")
+        if isinstance(storage_payload.get("sql_ingestion_pending_overlay"), dict)
+        else {}
+    )
+    continuous = (
+        storage_payload.get("continuous_run_soak_contract")
+        if isinstance(storage_payload.get("continuous_run_soak_contract"), dict)
+        else {}
+    )
+    backpressure = storage_payload.get("backpressure") if isinstance(storage_payload.get("backpressure"), dict) else {}
+    raw_live, raw_live_source = _overlay_raw_live_candidate(backpressure)
+    raw_live_evidence = bool(backpressure and raw_live)
+    raw_core = _safe_int(raw_live.get("core_pending_lines"), 0)
+    raw_total = _safe_int(raw_live.get("total_pending_lines"), raw_core)
+    raw_oldest = _safe_float(raw_live.get("oldest_pending_age_seconds"), 0.0)
+    service_artifact = artifacts.get("sql_link_service", {})
+    service_summary = service_artifact.get("summary") if isinstance(service_artifact.get("summary"), dict) else {}
+    service_idle_complete = bool(
+        service_artifact.get("ok") is True
+        and not bool(service_summary.get("running", False))
+        and str(service_summary.get("current_step") or "").strip().lower() in {"complete", "idle", "done"}
+    )
+    sql_ingestion_artifact = artifacts.get("sql_ingestion", {})
+    sql_ingestion_summary = (
+        sql_ingestion_artifact.get("summary") if isinstance(sql_ingestion_artifact.get("summary"), dict) else {}
+    )
+    sql_ingestion_summary_clear = bool(
+        bool(sql_ingestion_artifact.get("exists"))
+        and _safe_int(sql_ingestion_summary.get("pending_lines"), 0) == 0
+        and _safe_int(sql_ingestion_summary.get("invalid_lines"), 0) == 0
+    )
+    overlay_clear = bool(
+        bool(overlay.get("active", False))
+        and _safe_int(overlay.get("fresh_source_count"), 0) > 0
+        and _safe_int(overlay.get("fresh_pending_unknown_source_count"), 0) == 0
+        and _safe_int(overlay.get("total_pending_lines"), 0) == 0
+        and _safe_int(overlay.get("files_with_pending"), 0) == 0
+        and _safe_int(overlay.get("invalid_lines"), 0) == 0
+        and _safe_int(overlay.get("stale_pending_lines"), 0) == 0
+        and _safe_int(overlay.get("ops_write_failures"), 0) == 0
+    )
+    storage_ready = bool(
+        str(storage_payload.get("overall_status") or "").strip().lower() == "ready"
+        and str(storage_payload.get("severity") or "").strip().lower() in {"stable", "low", "normal", ""}
+    )
+    raw_live_clear = bool(
+        raw_live_evidence
+        and raw_core <= OVERLAY_RAW_LIVE_MAX_CORE_LINES
+        and raw_total <= OVERLAY_RAW_LIVE_MAX_TOTAL_LINES
+        and raw_oldest <= OVERLAY_RAW_LIVE_MAX_AGE_SECONDS
+    )
+    data_integrity = storage_payload.get("data_integrity") if isinstance(storage_payload.get("data_integrity"), dict) else {}
+    data_integrity_clear = all(
+        _safe_int(data_integrity.get(key), 0) == 0
+        for key in ("sql_invalid_lines", "sql_overlay_invalid_lines", "sql_overlay_ops_write_failures")
+    )
+    writer_shedding = (
+        storage_payload.get("writer_shedding") if isinstance(storage_payload.get("writer_shedding"), dict) else {}
+    )
+    writer_shedding_clear = bool(
+        not (writer_shedding.get("hard_breaches") if isinstance(writer_shedding.get("hard_breaches"), list) else [])
+        and not (
+            writer_shedding.get("elevated_breaches")
+            if isinstance(writer_shedding.get("elevated_breaches"), list)
+            else []
+        )
+    )
+    continuous_blockers = sorted(
+        {
+            str(item or "").strip()
+            for item in (continuous.get("blockers") if isinstance(continuous.get("blockers"), list) else [])
+            if str(item or "").strip()
+        }
+    )
+    managed_continuous_blockers = {
+        "steady_state_targets_not_clear",
+        "backlog_relief_contract_active",
+        "drain_time_above_target",
+    }
+    continuous_ready = not continuous or bool(continuous.get("ready") is True and continuous.get("soak_ready") is not False)
+    continuous_managed_for_sql = bool(
+        raw_live_clear
+        and continuous_blockers
+        and set(continuous_blockers).issubset(managed_continuous_blockers)
+    )
+    continuous_ok_for_sql_freshness = bool(continuous_ready or continuous_managed_for_sql)
+    backpressure_clear = bool(
+        raw_live_clear
+        and sql_ingestion_summary_clear
+        and data_integrity_clear
+        and writer_shedding_clear
+    )
+    if not (
+        service_idle_complete
+        and storage_ready
+        and continuous_ok_for_sql_freshness
+        and (overlay_clear or backpressure_clear)
+    ):
+        return {}
+    source = (
+        "ingestion_storage_control_sql_plane_overlay"
+        if overlay_clear
+        else "ingestion_storage_control_reconciled_backpressure"
+    )
+    return {
+        "source": source,
+        "storage_control_path": str(storage_path),
+        "storage_control_status": str(storage_payload.get("overall_status") or ""),
+        "storage_control_severity": str(storage_payload.get("severity") or ""),
+        "overlay_fresh_source_count": _safe_int(overlay.get("fresh_source_count"), 0),
+        "overlay_total_pending_lines": _safe_int(overlay.get("total_pending_lines"), 0),
+        "overlay_files_with_pending": _safe_int(overlay.get("files_with_pending"), 0),
+        "raw_live_source": raw_live_source,
+        "raw_live_core_pending_lines": raw_core,
+        "raw_live_total_pending_lines": raw_total,
+        "raw_live_oldest_pending_age_seconds": raw_oldest,
+        "sql_ingestion_summary_clear": sql_ingestion_summary_clear,
+        "data_integrity_clear": data_integrity_clear,
+        "writer_shedding_clear": writer_shedding_clear,
+        "continuous_soak_ready": continuous_ready,
+        "continuous_soak_blockers_managed_for_sql_freshness": continuous_managed_for_sql,
+        "managed_continuous_soak_blockers": continuous_blockers if continuous_managed_for_sql else [],
+        "service_current_step": str(service_summary.get("current_step") or ""),
+        "service_idle_complete": True,
+    }
+
+
 DailyVerifyResolver = Callable[[Dict[str, Any], Dict[str, Dict[str, Any]], Dict[str, Any]], bool]
 
 
@@ -2178,6 +2315,35 @@ def build_dashboard(project_root: Path = PROJECT_ROOT) -> Dict[str, Any]:
             "freshness_inferred_from_sql_ingestion": True,
         }
         artifacts["sql_link_service"] = sql_service_artifact
+
+    sql_plane_freshness = _sql_plane_freshness_from_storage_control(artifacts)
+    if sql_plane_freshness:
+        if "sql_link_service_stale" in attention:
+            attention = [item for item in attention if item != "sql_link_service_stale"]
+            sql_service_artifact = artifacts.get("sql_link_service", {})
+            sql_service_summary = (
+                sql_service_artifact.get("summary") if isinstance(sql_service_artifact.get("summary"), dict) else {}
+            )
+            sql_service_artifact["stale"] = False
+            sql_service_artifact["summary"] = {
+                **sql_service_summary,
+                "freshness_inferred_from_ingestion_storage_control": True,
+                "freshness_inference": sql_plane_freshness,
+            }
+            artifacts["sql_link_service"] = sql_service_artifact
+        if "sql_ingestion_stale" in attention:
+            attention = [item for item in attention if item != "sql_ingestion_stale"]
+            sql_ingestion_artifact = artifacts.get("sql_ingestion", {})
+            sql_ingestion_summary = (
+                sql_ingestion_artifact.get("summary") if isinstance(sql_ingestion_artifact.get("summary"), dict) else {}
+            )
+            sql_ingestion_artifact["stale"] = False
+            sql_ingestion_artifact["summary"] = {
+                **sql_ingestion_summary,
+                "freshness_inferred_from_ingestion_storage_control": True,
+                "freshness_inference": sql_plane_freshness,
+            }
+            artifacts["sql_ingestion"] = sql_ingestion_artifact
 
     if "session_ready_stale" in attention:
         latest_shadow_ts = _latest_shadow_loop_timestamp(project_root)

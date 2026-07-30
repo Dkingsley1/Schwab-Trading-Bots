@@ -46,6 +46,10 @@ def _status(value: Any) -> str:
     return str(value or "").strip().lower()
 
 
+def _dict(value: Any) -> dict[str, Any]:
+    return value if isinstance(value, dict) else {}
+
+
 def _alert_details(alerts: list[Any]) -> dict[str, Any]:
     rows: list[dict[str, Any]] = []
     for raw in alerts:
@@ -106,10 +110,43 @@ def _storage_ready(storage: dict[str, Any]) -> tuple[bool, list[str]]:
     )
     total_pending = _safe_int(backpressure.get("total_pending_lines"), 0)
     pending_threshold = max(_safe_int(backpressure.get("pending_lines_threshold"), 15000), 1)
+    bounded_recovery = _dict(storage.get("bounded_recovery_contract"))
+    route = _dict(storage.get("external_route_verification"))
+    resilience = _dict(storage.get("storage_resilience"))
+    integrity = _dict(storage.get("data_integrity"))
+    writer_shedding = _dict(storage.get("writer_shedding"))
+    efficiency = _dict(storage.get("storage_efficiency_contract"))
+    storage_section = _dict(storage.get("storage"))
+    efficiency_status = _status(efficiency.get("overall_status") or storage.get("storage_efficiency_status"))
+    efficiency_grade = str(efficiency.get("grade") or storage_section.get("efficiency_grade") or storage.get("storage_efficiency_grade") or "").strip().upper()
+    route_ready = _status(route.get("verification_state")) in {"ready", "verified", "ok"}
+    resilience_ready = _status(resilience.get("overall_status")) in {"", "ready", "ok"}
+    integrity_clean = all(
+        _safe_int(integrity.get(key), 0) == 0
+        for key in ("sql_invalid_lines", "sql_overlay_invalid_lines", "sql_overlay_oversize_payloads", "sql_overlay_ops_write_failures")
+    )
+    no_queue_breaches = not writer_shedding.get("hard_breaches") and not writer_shedding.get("elevated_breaches")
+    bounded_drain_relief = bool(
+        severity in {"stable", "low", "normal", "ready", "watch", "elevated"}
+        and pressure_index <= 1.05
+        and raw_core <= 5000
+        and raw_total <= 10000
+        and raw_oldest <= 300.0
+        and total_pending < pending_threshold
+        and bool(bounded_recovery.get("active_drain_progress") or bounded_recovery.get("drain_delta_signal_observed"))
+        and not bool(bounded_recovery.get("hard_gate_active"))
+        and not bool(bounded_recovery.get("effective_hard_gate_active"))
+        and route_ready
+        and resilience_ready
+        and integrity_clean
+        and no_queue_breaches
+        and efficiency_status in {"", "ready", "ok"}
+        and efficiency_grade in {"", "A", "A+"}
+    )
     blockers: list[str] = []
-    if severity in {"blocked", "critical", "high"} and not overlay_relief:
+    if severity in {"blocked", "critical", "high"} and not overlay_relief and not bounded_drain_relief:
         blockers.append(f"storage_severity={severity}")
-    if pressure_index >= 0.50 and not overlay_relief:
+    if pressure_index >= 0.50 and not overlay_relief and not bounded_drain_relief:
         blockers.append("storage_pressure_index_high")
     if total_pending >= pending_threshold:
         blockers.append("storage_pending_above_threshold")

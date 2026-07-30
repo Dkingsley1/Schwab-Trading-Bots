@@ -883,6 +883,22 @@ def _soak_storage_controls(
     external_free_above_target = current_free >= max(float(target_free_gb), float(pressure_free_gb) + float(safety_buffer_gb))
     quota_status = str(quota_payload.get("overall_status") or "").strip().lower()
     quota_ready = quota_status == "ready" or (quota_status in {"degraded", "watch", "needs_work"} and external_free_above_target)
+    collector_status = str(collector_audit.get("status") or "").strip().lower()
+    collector_required = bool(collector_audit.get("required", False))
+    collector_mismatch_count = _safe_int(collector_audit.get("mismatch_count"), 0)
+    collector_enforced = collector_status == "enforced"
+    backlog_relief_contract = (
+        storage_payload.get("backlog_relief_contract")
+        if isinstance(storage_payload.get("backlog_relief_contract"), dict)
+        else {}
+    )
+    collector_safely_optional = bool(
+        collector_status == "not_required"
+        and not collector_required
+        and collector_mismatch_count <= 0
+        and not bool(backlog_relief_contract.get("active", False))
+    )
+    collector_soak_safe = bool(collector_enforced or collector_safely_optional)
     controls = {
         "storage_efficiency_ready": storage_efficiency_ready,
         "quota_ready": quota_ready,
@@ -892,7 +908,11 @@ def _soak_storage_controls(
         "resilience_ready": str(resilience.get("overall_status") or "").strip().lower() in {"", "ready"},
         "steady_state_ready": bool(steady_target.get("steady_state_ready", False)),
         "retention_debt_ok": retention_debt <= retention_target,
-        "collector_intake_enforced": str(collector_audit.get("status") or "").strip().lower() == "enforced",
+        "collector_intake_enforced": collector_soak_safe,
+        "collector_intake_status": collector_status,
+        "collector_intake_required": collector_required,
+        "collector_intake_mismatch_count": collector_mismatch_count,
+        "collector_intake_soak_safe": collector_soak_safe,
         "manifest_first_storage": str(storage_efficiency.get("raw_payload_policy") or "").strip()
         in {"manifest_first", "manifest_first_compress_old_sources"}
         or str(storage_efficiency.get("write_intake_mode") or "").strip() == "thin_digest_with_manifest",

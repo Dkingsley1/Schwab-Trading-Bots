@@ -759,6 +759,162 @@ def test_backpressure_drainer_fleet_handoffs_raw_live_deferred_risk_backlog(tmp_
     assert "risk_20260729" in env["SQL_LINK_SERVICE_SHARD_RISK_SUPPORT_PATH_CONTAINS"]
 
 
+def test_backpressure_drainer_fleet_prioritizes_risk_channel_when_it_is_raw_live_pressure(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    health = project_root / "governance" / "health"
+    _write_json(
+        health / "ingestion_backpressure_latest.json",
+        {
+            "pending_lines": 192,
+            "pending_lines_total": 563828,
+            "pending_lines_deferred": 563636,
+            "oldest_pending_age_seconds": 408.391,
+            "pending_lines_threshold": 15000,
+            "oldest_age_threshold_seconds": 240.0,
+            "top_pending_files": [
+                {
+                    "source_rel": "decisions/shadow_crypto/trade_decisions_20260730.jsonl",
+                    "pending_lines": 138,
+                    "oldest_pending_age_seconds": 408.391,
+                }
+            ],
+            "top_deferred_pending_files": [
+                {
+                    "source_rel": "governance/channels/risk/swing_aggressive_equities_schwab/risk_20260730.jsonl",
+                    "pending_lines": 412479,
+                    "oldest_pending_age_seconds": 410.232,
+                },
+                {
+                    "source_rel": "governance/channels/risk/aggressive_equities_schwab/risk_20260730.jsonl",
+                    "pending_lines": 62402,
+                    "oldest_pending_age_seconds": 408.315,
+                },
+                {
+                    "source_rel": "governance/channels/risk/crypto_futures_crypto_schwab/risk_20260730.jsonl",
+                    "pending_lines": 49191,
+                    "oldest_pending_age_seconds": 408.909,
+                },
+                {
+                    "source_rel": "governance/channels/ingress/crypto_futures_crypto_schwab/ingress_20260730.jsonl",
+                    "pending_lines": 3735,
+                    "oldest_pending_age_seconds": 408.604,
+                },
+                {
+                    "source_rel": "governance/channels/ingress/aggressive_equities_schwab/ingress_20260730.jsonl",
+                    "pending_lines": 3184,
+                    "oldest_pending_age_seconds": 407.794,
+                },
+            ],
+        },
+    )
+    _write_json(health / "ingestion_storage_control_latest.json", {"severity": "high"})
+
+    payload = src.build_payload(
+        project_root,
+        apply=True,
+        now_utc=datetime(2026, 7, 30, 13, 5, tzinfo=timezone.utc),
+    )
+
+    risk = next(row for row in payload["candidate_drainers"] if row["name"] == "risk_support_drainer")
+    api = next(row for row in payload["candidate_drainers"] if row["name"] == "api_ingress_drainer")
+    assert risk["raw_live_expansion_risk_channel_pressure"] is True
+    assert risk["raw_live_expansion_preemption_tier"] == api["raw_live_expansion_preemption_tier"] == 3
+    assert risk["effective_priority_score"] > api["effective_priority_score"]
+    assert payload["active_drainer"]["name"] == "risk_support_drainer"
+    assert payload["service_request"]["assigned_pressure_lane"] == "risk_support_backpressure"
+    env = payload["service_request"]["env_overrides"]
+    assert env["SQL_LINK_SERVICE_SHARDS"] == "risk_support,health_fast"
+    assert "swing_aggressive_equities_schwab" in env["SQL_LINK_SERVICE_SHARD_RISK_SUPPORT_PATH_CONTAINS"]
+
+
+def test_backpressure_drainer_fleet_does_not_use_deferred_support_age_as_core_expansion_age(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    health = project_root / "governance" / "health"
+    _write_json(
+        health / "ingestion_backpressure_latest.json",
+        {
+            "pending_lines": 102,
+            "pending_lines_total": 8510,
+            "pending_lines_deferred": 8408,
+            "pending_lines_support_telemetry": 101,
+            "oldest_pending_age_seconds": 0.0,
+            "pending_lines_threshold": 15000,
+            "oldest_age_threshold_seconds": 240.0,
+            "top_pending_files": [
+                {
+                    "source_rel": "decisions/shadow_crypto/trade_decisions_20260730.jsonl",
+                    "pending_lines": 54,
+                    "oldest_pending_age_seconds": 574.798,
+                },
+                {
+                    "source_rel": "governance/events/auth_events_20260730.jsonl",
+                    "pending_lines": 24,
+                    "oldest_pending_age_seconds": 2.99,
+                },
+            ],
+            "top_deferred_pending_files": [
+                {
+                    "source_rel": "governance/channels/ingress/aggressive_equities_schwab/ingress_20260730.jsonl",
+                    "pending_lines": 3184,
+                    "oldest_pending_age_seconds": 1341.99,
+                },
+                {
+                    "source_rel": "governance/channels/ingress/crypto_futures_crypto_schwab/ingress_20260730.jsonl",
+                    "pending_lines": 3745,
+                    "oldest_pending_age_seconds": 573.854,
+                },
+            ],
+            "top_support_telemetry_pending_files": [
+                {
+                    "source_rel": "governance/watchdog/incident_auto_halt_events.jsonl",
+                    "pending_lines": 1,
+                    "oldest_pending_age_seconds": 28986.759,
+                }
+            ],
+        },
+    )
+    _write_json(
+        health / "ingestion_storage_control_latest.json",
+        {
+            "overall_status": "ready",
+            "severity": "stable",
+            "steady_state": {"target_status": {"steady_state_ready": True}},
+            "stale_pending_locator": {
+                "status": "clear",
+                "oldest_pending_age_seconds": 0.0,
+                "stale_source_count": 0,
+            },
+            "backpressure": {
+                "core_pending_lines": 94,
+                "total_pending_lines": 8407,
+                "oldest_pending_age_seconds": 0.0,
+            },
+            "raw_live_expansion_contract": {
+                "active": True,
+                "targets": {
+                    "core_reserve_lines": 4000,
+                    "total_reserve_lines": 5500,
+                    "oldest_age_reserve_seconds": 180.0,
+                },
+            },
+        },
+    )
+
+    payload = src.build_payload(
+        project_root,
+        apply=False,
+        now_utc=datetime(2026, 7, 30, 13, 20, tzinfo=timezone.utc),
+    )
+
+    guard = payload["metrics"]["raw_live_expansion_guard"]
+    assert guard["active"] is True
+    assert guard["ratios"]["total"] == 1.274
+    assert guard["ratios"]["oldest_age"] == 0.0
+    assert guard["raw_live"]["age_guard_source_pending_lines"] == 78
+    assert guard["raw_live"]["guard_oldest_pending_age_seconds"] == 0.0
+    assert guard["raw_live"]["deferred_or_support_hot_source_oldest_pending_age_seconds"] == 28986.759
+
+
 def test_backpressure_drainer_fleet_prioritizes_core_when_risk_overlay_is_louder(tmp_path: Path) -> None:
     project_root = tmp_path / "project"
     health = project_root / "governance" / "health"
@@ -825,6 +981,100 @@ def test_backpressure_drainer_fleet_prioritizes_core_when_risk_overlay_is_louder
     assert risk["raw_live_expansion_priority_bonus"] == 0
     assert payload["active_drainer"]["name"] == "core_decision_drainer"
     assert payload["active_env_overrides"]["SQL_LINK_SERVICE_SHARDS"].startswith("governance,")
+
+
+def test_backpressure_drainer_fleet_prioritizes_core_reserve_before_support_overlay(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    health = project_root / "governance" / "health"
+    _write_json(
+        health / "ingestion_backpressure_latest.json",
+        {
+            "pending_lines": 13644,
+            "pending_lines_total": 22611,
+            "oldest_pending_age_seconds": 559.0,
+            "pending_lines_threshold": 15000,
+            "oldest_age_threshold_seconds": 240.0,
+            "top_pending_files": [
+                {
+                    "source_rel": "decisions/shadow_crypto/trade_decisions_20260730.jsonl",
+                    "shard": "crypto_trading",
+                    "pending_lines": 7270,
+                    "oldest_pending_age_seconds": 344.0,
+                },
+                {
+                    "source_rel": "decisions/shadow_crypto_futures_crypto/trade_decisions_20260730.jsonl",
+                    "shard": "crypto_trading",
+                    "pending_lines": 2912,
+                    "oldest_pending_age_seconds": 374.0,
+                },
+                {
+                    "source_rel": "governance/events/signal_generation_20260730.jsonl",
+                    "shard": "governance",
+                    "pending_lines": 2458,
+                    "oldest_pending_age_seconds": 346.0,
+                },
+            ],
+        },
+    )
+    _write_json(
+        health / "ingestion_storage_control_latest.json",
+        {
+            "severity": "high",
+            "backpressure": {
+                "core_pending_lines": 13644,
+                "support_pending_lines": 332707,
+                "total_pending_lines": 350318,
+                "raw_live": {
+                    "core_pending_lines": 13644,
+                    "total_pending_lines": 22611,
+                    "oldest_pending_age_seconds": 559.0,
+                },
+            },
+            "raw_live_expansion_contract": {
+                "active": True,
+                "targets": {
+                    "core_reserve_lines": 4000,
+                    "total_reserve_lines": 5500,
+                    "oldest_age_reserve_seconds": 180.0,
+                },
+            },
+            "sql_ingestion_pending_overlay": {
+                "active": True,
+                "used_for_pressure": True,
+                "source_count": 1,
+                "fresh_source_count": 1,
+                "stale_source_count": 0,
+                "total_pending_lines": 333193,
+                "support_pending_lines": 332707,
+                "top_pending_files": [
+                    {
+                        "source_rel": "governance/channels/risk/default_crypto_schwab/risk_20260730.jsonl",
+                        "shard": "risk_support",
+                        "pending_lines": 332707,
+                        "oldest_pending_age_seconds": 423.0,
+                    }
+                ],
+            },
+            "backlog_truth": {"authoritative_mode": "overlay_sql_ingestion"},
+            "overlay_decay": {"should_decay": False, "attribution_ratio": 1.0},
+        },
+    )
+
+    payload = src.build_payload(
+        project_root,
+        apply=False,
+        now_utc=datetime(2026, 7, 30, 1, 15, tzinfo=timezone.utc),
+    )
+
+    risk = next(row for row in payload["candidate_drainers"] if row["name"] == "risk_support_drainer")
+    core = next(row for row in payload["candidate_drainers"] if row["name"] == "core_decision_drainer")
+    assert risk["status"] == "ready"
+    assert core["status"] == "ready"
+    assert risk["raw_live_expansion_core_handoff_required"] is True
+    assert risk["raw_live_expansion_preemption_tier"] < core["raw_live_expansion_preemption_tier"]
+    assert risk["raw_live_expansion_priority_bonus"] == 0
+    assert payload["active_drainer"]["name"] == "core_decision_drainer"
+    assert payload["active_env_overrides"]["SQL_LINK_SERVICE_RAW_LIVE_PRIORITY_BOOST"] == "1"
 
 
 def test_backpressure_drainer_fleet_scores_sql_overlay_signal_generation_before_tiny_runtime(tmp_path: Path) -> None:
