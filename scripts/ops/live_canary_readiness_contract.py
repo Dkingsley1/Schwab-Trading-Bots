@@ -13,10 +13,10 @@ if __package__ in {None, ""}:
     if str(PROJECT_ROOT) not in sys.path:
         sys.path.insert(0, str(PROJECT_ROOT))
     from scripts.ops.long_runtime_common import PROJECT_ROOT, iso_now, load_json, ordered_unique, payload_age_minutes, write_payload
-    from scripts.ops import production_flow_smoke, production_readiness_control, source_mutation_guard
+    from scripts.ops import production_flow_smoke, production_readiness_control, source_mutation_guard, use_mode_compliance_guard
 else:
     from .long_runtime_common import PROJECT_ROOT, iso_now, load_json, ordered_unique, payload_age_minutes, write_payload
-    from . import production_flow_smoke, production_readiness_control, source_mutation_guard
+    from . import production_flow_smoke, production_readiness_control, source_mutation_guard, use_mode_compliance_guard
 
 
 DEFAULT_OUT_PATH = PROJECT_ROOT / "governance" / "health" / "live_canary_readiness_contract_latest.json"
@@ -94,6 +94,13 @@ DEFAULT_CANARY_MILESTONES: tuple[dict[str, Any], ...] = (
         "owner": "production_readiness_control",
         "required": True,
         "description": "External supervision, immutable evidence, security, recovery, release, SLO, and read-only firewall controls are all production-ready.",
+    },
+    {
+        "milestone_id": "m11_use_mode_and_commercial_boundary",
+        "title": "Use-Mode And Commercial Boundary",
+        "owner": "use_mode_compliance_guard",
+        "required": True,
+        "description": "Personal use, commercial use, customer-facing use, marketing, advice, custody, and broker/customer execution boundaries are explicit before live-money canary consideration.",
     },
 )
 
@@ -191,6 +198,7 @@ def _build_live_money_canary_milestones(
     live_money_contract: dict[str, Any],
     live_canary_control: dict[str, Any],
     production_readiness: dict[str, Any],
+    use_mode_compliance: dict[str, Any],
 ) -> list[dict[str, Any]]:
     definitions = _as_list(config.get("live_money_canary_milestones")) or [dict(row) for row in DEFAULT_CANARY_MILESTONES]
     by_id = {str(gate.get("gate_id") or ""): gate for gate in gates}
@@ -221,6 +229,18 @@ def _build_live_money_canary_milestones(
     production_bar_ready = bool(production_readiness.get("live_money_production_bar_ready", False))
     canary_consideration_ready = bool(production_readiness.get("live_money_canary_consideration_ready", False))
     production_domains_blocked = _safe_int(production_readiness.get("blocked_domain_count"), 0)
+    use_commercial = _as_dict(use_mode_compliance.get("commercial_use"))
+    use_authority = _as_dict(use_mode_compliance.get("authority_boundaries"))
+    commercial_blockers = [str(item) for item in _as_list(use_commercial.get("blockers")) if str(item).strip()]
+    commercial_intent = bool(use_commercial.get("commercial_use_intent_detected", False))
+    use_guard_status = _status(use_mode_compliance.get("overall_status") or use_mode_compliance.get("status"))
+    use_boundary_ready = bool(
+        use_mode_compliance
+        and use_guard_status not in BAD_STATUSES
+        and not commercial_blockers
+        and not bool(use_authority.get("live_execution_authority", False))
+        and bool(use_authority.get("does_not_enable_live_execution", True))
+    )
 
     prior_milestones: dict[str, bool] = {}
     milestones: list[dict[str, Any]] = []
@@ -385,6 +405,25 @@ def _build_live_money_canary_milestones(
                 "ready_domain_count": production_readiness.get("ready_domain_count"),
                 "blockers": _as_list(production_readiness.get("blockers")),
             }
+        elif milestone_id == "m11_use_mode_and_commercial_boundary":
+            ready = use_boundary_ready
+            blockers = [
+                "use_mode_compliance_guard_missing" if not use_mode_compliance else "",
+                f"use_mode_compliance_status={use_guard_status}" if use_mode_compliance and use_guard_status in BAD_STATUSES else "",
+                "commercial_boundary_blockers_present" if commercial_blockers else "",
+                "use_mode_guard_granted_live_execution_authority" if bool(use_authority.get("live_execution_authority", False)) else "",
+                "use_mode_guard_does_not_confirm_read_only_authority" if not bool(use_authority.get("does_not_enable_live_execution", True)) else "",
+            ]
+            evidence = {
+                "use_mode": use_mode_compliance.get("use_mode"),
+                "use_mode_status": use_mode_compliance.get("overall_status"),
+                "commercial_use_intent_detected": commercial_intent,
+                "commercial_clearance_status": use_commercial.get("commercial_clearance_status"),
+                "commercial_blockers": commercial_blockers,
+                "personal_use_grade": _as_dict(use_mode_compliance.get("personal_use")).get("grade"),
+                "perfect_personal_use_ready": bool(_as_dict(use_mode_compliance.get("personal_use")).get("perfect_personal_use_ready", False)),
+                "authority_boundaries": use_authority,
+            }
         else:
             ready = False
             blockers = [f"unknown_milestone_id={milestone_id or 'missing'}"]
@@ -500,6 +539,7 @@ def build_payload(
     live_money_contract = load_json(health / "live_money_readiness_contract_latest.json")
     live_canary_control = load_json(health / "live_canary_control_latest.json")
     production_readiness = load_json(health / "production_readiness_control_latest.json")
+    use_mode_compliance = load_json(health / "use_mode_compliance_guard_latest.json")
 
     raw_grade = _grade(
         paper_profit.get("raw_profitability_grade")
@@ -640,6 +680,8 @@ def build_payload(
     production_smoke = production_flow_smoke.build_payload(project_root)
     if not production_readiness:
         production_readiness = production_readiness_control.build_payload(project_root)
+    if not use_mode_compliance:
+        use_mode_compliance = use_mode_compliance_guard.build_payload(project_root)
     ci_gate = _gate(
         "ci_production_guardrails",
         "CI And Production Guardrails",
@@ -728,6 +770,7 @@ def build_payload(
         live_money_contract=live_money_contract,
         live_canary_control=live_canary_control,
         production_readiness=production_readiness,
+        use_mode_compliance=use_mode_compliance,
     )
     require_milestones = bool(config.get("require_live_money_canary_milestones", True))
     required_milestones_ready = all(
@@ -773,6 +816,7 @@ def build_payload(
             "clean storage pressure",
             "clean promotion/paper gate freshness",
             "clean live-money production bar",
+            "clear use-mode and commercial boundary",
             "all gates sustained before live canary money",
         ],
         "milestone_bar": [str(item.get("title") or item.get("milestone_id")) for item in milestones],
@@ -806,6 +850,7 @@ def build_payload(
                 "system_signal_bus",
                 "system_self_model",
                 "production_readiness_control",
+                "use_mode_compliance_guard",
             ],
             "live_execution_authority": False,
             "must_keep_live_orders_disabled_until_ready": True,
@@ -815,6 +860,7 @@ def build_payload(
             [
                 "keep live orders disabled until live_canary_money_ready=true",
                 "route blocked gates to the owning infrastructure bot",
+                "refresh use-mode-compliance before any commercial/customer-facing or live-money promotion discussion",
                 "refresh this contract after paper/auth/storage/promotion guard repairs",
                 "treat blocked live-money canary milestones as pre-canary work, not runtime noise"
                 if require_milestones and not required_milestones_ready

@@ -315,6 +315,7 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
     paper_ramp = _health(project_root, "paper_400_ramp_latest.json")
     schwab_futures = _health(project_root, "data_ingress_latest_schwab_futures_equities_schwab.json")
     done_for_today = _health(project_root, "system_done_for_today_latest.json")
+    use_mode = _health(project_root, "use_mode_compliance_guard_latest.json")
     alerts = process.get("alerts") if isinstance(process.get("alerts"), list) else []
     alert_summary = _alert_details(alerts)
     safety = process.get("safety_pause") if isinstance(process.get("safety_pause"), dict) else {}
@@ -553,10 +554,23 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
             "blockers": done_for_today.get("blockers", []),
             "next_command": ["./scripts/ops/opsctl.sh", "done-for-today", "--json"],
         },
+        "use_mode_compliance": {
+            "overall_status": use_mode.get("overall_status") or "missing",
+            "use_mode": use_mode.get("use_mode") or "personal",
+            "personal_grade": _dict(use_mode.get("personal_use")).get("grade"),
+            "perfect_personal_use_ready": bool(_dict(use_mode.get("personal_use")).get("perfect_personal_use_ready", False)),
+            "commercial_use_intent_detected": bool(_dict(use_mode.get("commercial_use")).get("commercial_use_intent_detected", False)),
+            "commercial_clearance_status": _dict(use_mode.get("commercial_use")).get("commercial_clearance_status"),
+            "commercial_blockers": _dict(use_mode.get("commercial_use")).get("blockers", []),
+            "live_execution_authority": bool(_dict(use_mode.get("authority_boundaries")).get("live_execution_authority", False)),
+            "policy": "context_only_for_health_fast_guarded_paper; live_canary_readiness_consumes_as_hard_boundary",
+            "next_command": ["./scripts/ops/opsctl.sh", "use-mode-compliance", "--json"],
+        },
         "recommended_commands": [
             *([["./scripts/ops/opsctl.sh", "coinbase-api-health", "--snapshot", "--json"]] if collector_repair["status"] == "needs_repair" else []),
             *([["./scripts/ops/opsctl.sh", "pressure-relief", "--apply", "--json"]] if not platform_repair["ok"] else []),
             *([plumbing.get("root_cause", {}).get("next_command")] if isinstance(plumbing.get("root_cause"), dict) and isinstance(plumbing.get("root_cause", {}).get("next_command"), list) else []),
+            *([["./scripts/ops/opsctl.sh", "use-mode-compliance", "--json"]] if not use_mode else []),
             ["./scripts/ops/opsctl.sh", "system-plumbing-control", "--json"],
             ["./scripts/ops/opsctl.sh", "global-halt-status", "--json"],
             ["./scripts/ops/opsctl.sh", "done-for-today", "--json"],

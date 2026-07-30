@@ -415,6 +415,7 @@ def _surface_matrix(health_root: Path, project_root: Path, *, now: datetime | No
         "auth_lease_manager": health_root / "auth_lease_manager_latest.json",
         "data_plane_recovery": health_root / "data_plane_recovery_controller_latest.json",
         "live_runtime_separation": health_root / "live_runtime_separation_control_latest.json",
+        "use_mode_compliance": health_root / "use_mode_compliance_guard_latest.json",
         "master_infra": health_root / "master_infrastructure_supervisor_latest.json",
         "artifact_freshness": health_root / "artifact_freshness_slo_latest.json",
         "training_quality": health_root / "training_quality_control_latest.json",
@@ -1129,6 +1130,8 @@ def _dependency_edges() -> list[dict[str, str]]:
         {"from": "capital_growth_awareness", "to": "sub_bots", "reason": "evidence, label, precision, and disconfirmation collection rules"},
         {"from": "capital_growth_awareness", "to": "master_infra", "reason": "storage, training, fill, attribution, and position-ledger freshness enforcement"},
         {"from": "capital_growth_awareness", "to": "system_self_model", "reason": "money-tree awareness becomes part of the shared self-model bus"},
+        {"from": "use_mode_compliance", "to": "system_self_model", "reason": "personal, commercial, customer, marketing, and live authority boundaries become first-class awareness"},
+        {"from": "use_mode_compliance", "to": "live_canary_readiness_contract", "reason": "live-money canary must pass use-mode and commercial-boundary evidence before promotion"},
         {"from": "schwab_indicator_intelligence", "to": "system_expansion_execution", "reason": "Schwab study and strategy catalog feeds the indicator-to-feature bridge lane"},
         {"from": "capital_rotation_control", "to": "system_expansion_execution", "reason": "paper-only sleeve rotation pressure feeds capital simulator v2"},
         {"from": "system_architecture_contract_graph", "to": "system_expansion_execution", "reason": "blocked, degraded, and stale nodes feed self-healing and stale-surface expansion lanes"},
@@ -1180,6 +1183,61 @@ def _growth_awareness(identity: dict[str, Any], memory: dict[str, Any], cockpit:
         "data_collection_active_bots": collection_bots,
         "sleeve_profile_count": _safe_int(identity.get("sleeve_profile_count"), _safe_int(expansion.get("sleeve_profile_count"), 0)),
         "growth_contract": "new_expansions_must_land_as_collection_only_with_rollups_throttles_and_materialized_core_files",
+    }
+
+
+def _use_mode_compliance_awareness(use_mode: dict[str, Any]) -> dict[str, Any]:
+    guard_status = _status(use_mode)
+    if not use_mode:
+        return {
+            "status": "advisory",
+            "use_mode": "personal",
+            "guard_status": "missing",
+            "personal_grade": "unknown",
+            "perfect_personal_use_ready": False,
+            "personal_live_money_ready": False,
+            "commercial_use_intent_detected": False,
+            "commercial_clearance_status": "missing",
+            "commercial_blocker_count": 0,
+            "commercial_blockers": [],
+            "live_execution_authority": False,
+            "customer_funds_allowed": False,
+            "customer_order_execution_allowed": False,
+            "raw_profitability_is_not_live_money_proof": True,
+            "needs": ["refresh_use_mode_compliance_guard"],
+            "next_safe_command": ["./scripts/ops/opsctl.sh", "use-mode-compliance", "--json"],
+            "control_contract": "commercial_customer_facing_and_personal_use_boundaries_must_be_explicit_before_live_or_public_use",
+        }
+    commercial = use_mode.get("commercial_use") if isinstance(use_mode.get("commercial_use"), dict) else {}
+    personal = use_mode.get("personal_use") if isinstance(use_mode.get("personal_use"), dict) else {}
+    authority = use_mode.get("authority_boundaries") if isinstance(use_mode.get("authority_boundaries"), dict) else {}
+    commercial_blockers = [str(item) for item in commercial.get("blockers", []) if str(item).strip()] if isinstance(commercial.get("blockers"), list) else []
+    awareness_status = "ready"
+    if guard_status == "blocked" or commercial_blockers or bool(authority.get("live_execution_authority", False)):
+        awareness_status = "blocked"
+    elif guard_status in {"needs_work", "degraded", "warning"} or not bool(personal.get("perfect_personal_use_ready", False)):
+        awareness_status = "advisory"
+    return {
+        "status": awareness_status,
+        "use_mode": str(use_mode.get("use_mode") or "personal"),
+        "guard_status": guard_status or "missing",
+        "personal_grade": str(personal.get("grade") or "unknown"),
+        "perfect_personal_use_ready": bool(personal.get("perfect_personal_use_ready", False)),
+        "personal_live_money_ready": bool(personal.get("personal_live_money_ready", False)),
+        "commercial_use_intent_detected": bool(commercial.get("commercial_use_intent_detected", False)),
+        "commercial_clearance_status": str(commercial.get("commercial_clearance_status") or ""),
+        "commercial_blocker_count": len(commercial_blockers),
+        "commercial_blockers": commercial_blockers,
+        "live_execution_authority": bool(authority.get("live_execution_authority", False)),
+        "customer_funds_allowed": bool(authority.get("customer_funds_allowed", False)),
+        "customer_order_execution_allowed": bool(authority.get("customer_order_execution_allowed", False)),
+        "raw_profitability_is_not_live_money_proof": bool(authority.get("raw_profitability_is_not_live_money_proof", True)),
+        "needs": [
+            *([] if bool(personal.get("perfect_personal_use_ready", False)) else ["resolve_personal_use_posture_blockers"]),
+            *([] if not commercial_blockers else ["clear_commercial_boundary_blockers_before_public_or_customer_use"]),
+        ],
+        "next_safe_command": ["./scripts/ops/opsctl.sh", "use-mode-compliance", "--json"],
+        "control_contract": "personal_a_plus_is_guarded_paper_data_collection_readiness_commercial_or_customer_use_requires_explicit_review_evidence",
     }
 
 
@@ -2120,6 +2178,7 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
     auth_lease = _load_json(health_root / "auth_lease_manager_latest.json")
     data_plane = _load_json(health_root / "data_plane_recovery_controller_latest.json")
     live_runtime = _load_json(health_root / "live_runtime_separation_control_latest.json")
+    use_mode = _load_json(health_root / "use_mode_compliance_guard_latest.json")
     incident = _load_json(project_root / "governance" / "alerts" / "incident_auto_halt_latest.json")
     core_materialization = _load_json(health_root / "core_bot_materialization_guard_latest.json")
     tripwire = _load_json(health_root / "shadow_watchdog_tripwire_latest.json")
@@ -2157,6 +2216,7 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
         "halt_recovery_intelligence": _halt_recovery_intelligence(global_halt, process_watchdog, auth_lease, data_plane, live_runtime, storage),
         "dependency_awareness": _dependency_awareness(surface_matrix, cockpit),
         "growth_awareness": _growth_awareness(identity, memory, cockpit),
+        "use_mode_compliance": _use_mode_compliance_awareness(use_mode),
         "self_reporting": _self_reporting_awareness(cockpit, surface_matrix),
     }
     domain_statuses = [str(row.get("status") or "missing") for row in domains.values()]
@@ -2198,6 +2258,9 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
         f"halt recovery mode {domains['halt_recovery_intelligence']['status']} "
         f"next={ ' '.join(domains['halt_recovery_intelligence']['next_safe_command']) if domains['halt_recovery_intelligence'].get('next_safe_command') else 'none' }, "
         f"growth pressure {domains['growth_awareness']['pressure_level']}, "
+        f"use-mode boundary {domains['use_mode_compliance']['status']} "
+        f"mode={domains['use_mode_compliance']['use_mode']} "
+        f"personal_grade={domains['use_mode_compliance']['personal_grade']}, "
         f"and {len(blocked_or_degraded)} blocked/degraded watched surfaces."
     )
     advanced_backlog = _advanced_upgrade_backlog(domains, dependency_memory, failure_index, registry_diff, surface_matrix)
@@ -2249,6 +2312,7 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
                 "capital_rotation_control",
                 "schwab_indicator_intelligence",
                 "system_expansion_execution",
+                "use_mode_compliance",
             ],
         },
         "source_files": {
@@ -2285,6 +2349,7 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
             "auth_lease_manager": str(health_root / "auth_lease_manager_latest.json"),
             "data_plane_recovery": str(health_root / "data_plane_recovery_controller_latest.json"),
             "live_runtime_separation": str(health_root / "live_runtime_separation_control_latest.json"),
+            "use_mode_compliance": str(health_root / "use_mode_compliance_guard_latest.json"),
         },
         "_registry_diff_memory_full": registry_diff_full,
     }

@@ -561,3 +561,40 @@ def test_system_self_model_keeps_optional_support_staleness_advisory_during_guar
         "mlx_intelligence_router",
         "library_utilization_router",
     }
+
+
+def test_system_self_model_includes_use_mode_compliance_awareness(tmp_path: Path) -> None:
+    health = tmp_path / "governance" / "health"
+    _write_json(
+        health / "use_mode_compliance_guard_latest.json",
+        {
+            "overall_status": "ready",
+            "use_mode": "personal",
+            "personal_use": {
+                "grade": "A+",
+                "perfect_personal_use_ready": True,
+                "personal_live_money_ready": False,
+            },
+            "commercial_use": {
+                "commercial_use_intent_detected": False,
+                "commercial_clearance_status": "not_requested_personal_mode",
+                "blockers": [],
+            },
+            "authority_boundaries": {
+                "does_not_enable_live_execution": True,
+                "live_execution_authority": False,
+                "customer_funds_allowed": False,
+                "customer_order_execution_allowed": False,
+                "raw_profitability_is_not_live_money_proof": True,
+            },
+        },
+    )
+
+    payload = src.build_payload(tmp_path)
+
+    use_mode = payload["awareness_domains"]["use_mode_compliance"]
+    assert use_mode["status"] == "ready"
+    assert use_mode["use_mode"] == "personal"
+    assert use_mode["personal_grade"] == "A+"
+    assert use_mode["live_execution_authority"] is False
+    assert "use_mode_compliance" in payload["control_contract"]["memory_surfaces"]

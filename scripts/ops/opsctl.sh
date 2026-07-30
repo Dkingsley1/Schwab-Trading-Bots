@@ -994,6 +994,9 @@ case "$cmd" in
   production-readiness|prod-readiness|production-readiness-control|production-quality-control)
     run_then_refresh_self_model "$PY" "$PROJECT_ROOT/scripts/ops/production_readiness_control.py" "$@"
     ;;
+  use-mode-compliance|commercial-compliance|personal-use-readiness|commercial-boundary)
+    run_then_refresh_self_model "$PY" "$PROJECT_ROOT/scripts/ops/use_mode_compliance_guard.py" "$@"
+    ;;
   production-level-upgrades|prod-level-upgrades|upgrade-hardener-control|production-hardener-control|production-20)
     run_then_refresh_self_model "$PY" "$PROJECT_ROOT/scripts/ops/production_level_upgrade_hardener_control.py" "$@"
     ;;
@@ -2952,6 +2955,7 @@ opsctl commands:
   promotion-quality-gate|promotion-gate [--json]
   autonomy-control [--json]
   live-canary-readiness|canary-readiness-contract|production-hardening-bar [--apply] [--json]
+  use-mode-compliance|commercial-compliance|personal-use-readiness [--json]
   production-quality|production-quality-control|production-hardening-quality [--apply] [--refresh-contract] [--execute-safe-repairs] [--max-actions N] [--max-execute-actions N] [--json]
   production-quality-slo|production-slo-guard [--apply] [--refresh-quality] [--json]
   production-hardening-watch|hardening-watch [--apply] [--execute-safe-repairs] [--execute-on-watch] [--max-actions N] [--max-execute-actions N] [--json]

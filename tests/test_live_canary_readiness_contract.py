@@ -112,6 +112,27 @@ def _seed_ready_artifacts(project_root: Path) -> None:
             "blockers": [],
         },
     )
+    _write_json(
+        health / "use_mode_compliance_guard_latest.json",
+        {
+            "timestamp_utc": now,
+            "overall_status": "ready",
+            "use_mode": "personal",
+            "personal_use": {"grade": "A+", "perfect_personal_use_ready": True, "personal_live_money_ready": False},
+            "commercial_use": {
+                "commercial_use_intent_detected": False,
+                "commercial_clearance_status": "not_requested_personal_mode",
+                "blockers": [],
+            },
+            "authority_boundaries": {
+                "does_not_enable_live_execution": True,
+                "live_execution_authority": False,
+                "customer_funds_allowed": False,
+                "customer_order_execution_allowed": False,
+                "raw_profitability_is_not_live_money_proof": True,
+            },
+        },
+    )
 
 
 def test_live_canary_readiness_contract_blocks_raw_d_grade(tmp_path: Path, monkeypatch) -> None:
@@ -271,3 +292,46 @@ def test_live_canary_readiness_contract_blocks_when_production_bar_not_ready(tmp
     milestone = next(row for row in payload["live_money_canary_milestones"] if row["milestone_id"] == "m10_live_money_production_bar")
     assert milestone["ready"] is False
     assert "live_money_production_bar_not_ready" in milestone["blockers"]
+
+
+def test_live_canary_readiness_contract_blocks_commercial_customer_execution_boundary(tmp_path: Path, monkeypatch) -> None:
+    project_root = tmp_path / "project"
+    out_path = project_root / "governance" / "health" / "live_canary_readiness_contract_latest.json"
+    _seed_ready_artifacts(project_root)
+    _write_json(
+        out_path,
+        {
+            "overall_status": "blocked",
+            "continuous_all_gates_ready_since_utc": (datetime.now(timezone.utc) - timedelta(hours=730)).isoformat(),
+        },
+    )
+    _write_json(
+        project_root / "governance" / "health" / "use_mode_compliance_guard_latest.json",
+        {
+            "overall_status": "blocked",
+            "use_mode": "commercial_software",
+            "personal_use": {"grade": "A+", "perfect_personal_use_ready": True, "personal_live_money_ready": False},
+            "commercial_use": {
+                "commercial_use_intent_detected": True,
+                "commercial_clearance_status": "blocked_requires_compliance_review",
+                "blockers": ["broker_dealer_review_not_approved", "broker_dealer_customer_execution_review_required"],
+            },
+            "authority_boundaries": {
+                "does_not_enable_live_execution": True,
+                "live_execution_authority": False,
+                "customer_order_execution_allowed": False,
+            },
+        },
+    )
+    monkeypatch.setattr(src.source_mutation_guard, "build_payload", lambda _root: {"ok": True, "overall_status": "ready", "dirty_count": 0, "dirty_entries": []})
+    monkeypatch.setattr(src.production_flow_smoke, "build_payload", lambda _root: {"ok": True, "overall_status": "ready", "failed_checks": []})
+
+    payload = src.build_payload(project_root, out_path=out_path)
+
+    assert payload["overall_status"] == "blocked"
+    assert payload["live_canary_money_ready"] is False
+    assert "m11_use_mode_and_commercial_boundary" in payload["blocked_milestones"]
+    milestone = next(row for row in payload["live_money_canary_milestones"] if row["milestone_id"] == "m11_use_mode_and_commercial_boundary")
+    assert milestone["ready"] is False
+    assert "commercial_boundary_blockers_present" in milestone["blockers"]
+    assert "broker_dealer_review_not_approved" in milestone["evidence"]["commercial_blockers"]
