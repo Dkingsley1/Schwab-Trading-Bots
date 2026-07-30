@@ -87,6 +87,8 @@ SIGNAL_SOURCES: tuple[dict[str, str], ...] = (
     {"name": "data_plane_recovery", "category": "data_plane", "path": "governance/health/data_plane_recovery_controller_latest.json"},
     {"name": "live_runtime_separation", "category": "data_plane", "path": "governance/health/live_runtime_separation_control_latest.json"},
     {"name": "paper_live_data_standard", "category": "paper", "path": "governance/health/paper_live_data_standard_latest.json"},
+    {"name": "sleeve_ingestion_production_control", "category": "paper", "path": "governance/health/sleeve_ingestion_production_control_latest.json", "optional": "true"},
+    {"name": "sleeve_strategy_coverage", "category": "paper", "path": "governance/health/sleeve_strategy_coverage_latest.json", "optional": "true"},
     {"name": "operating_platform_upgrade", "category": "platform", "path": "governance/health/operating_platform_upgrade_latest.json", "optional": "true"},
     {"name": "distributed_cell_architecture", "category": "platform", "path": "governance/health/distributed_cell_architecture_latest.json", "optional": "true"},
     {"name": "cell_federation_intelligence", "category": "platform", "path": "governance/health/cell_federation_intelligence_latest.json", "optional": "true"},
@@ -127,6 +129,8 @@ SIGNAL_REFRESH_COMMANDS: dict[str, list[str]] = {
     "training_quality": ["./scripts/ops/opsctl.sh", "training-quality", "--json"],
     "training_runtime": ["./scripts/ops/opsctl.sh", "training-runtime-control", "--limit", "30", "--json"],
     "training_data_intake": ["./scripts/ops/opsctl.sh", "training-data-intake", "--json"],
+    "sleeve_ingestion_production_control": ["./scripts/ops/opsctl.sh", "sleeve-ingestion-production-control", "--json"],
+    "sleeve_strategy_coverage": ["./scripts/ops/opsctl.sh", "sleeve-strategy-coverage", "--json"],
     "bot_quality": ["./scripts/ops/opsctl.sh", "bot-quality-autopilot", "--json"],
     "operating_platform_upgrade": ["./scripts/ops/opsctl.sh", "operating-platform-upgrade", "--apply", "--json"],
     "distributed_cell_architecture": ["./scripts/ops/opsctl.sh", "distributed-cell-architecture", "--apply", "--json"],
@@ -154,6 +158,8 @@ STALE_SIGNAL_LIMITS: dict[str, float] = {
     "training_quality": 240.0,
     "training_runtime": 90.0,
     "training_data_intake": 240.0,
+    "sleeve_ingestion_production_control": 240.0,
+    "sleeve_strategy_coverage": 240.0,
     "bot_quality": 240.0,
     "operating_platform_upgrade": 240.0,
     "system_self_model": 240.0,
@@ -593,6 +599,43 @@ def _sleeve_ticker_universe_metrics(payload: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _sleeve_ingestion_production_metrics(payload: dict[str, Any]) -> dict[str, Any]:
+    grade = _as_dict(payload.get("production_grade_contract"))
+    mode = _as_dict(payload.get("ingestion_mode_contract"))
+    collection = _as_dict(payload.get("collection_contract"))
+    paper = _as_dict(payload.get("paper_standard_contract"))
+    queue = _as_dict(payload.get("ingestion_queue_contract"))
+    return {
+        "grade": str(grade.get("grade") or ""),
+        "score": _safe_float(grade.get("score"), 0.0),
+        "state": str(grade.get("state") or ""),
+        "missing": [str(item) for item in _as_list(grade.get("missing"))],
+        "mode": str(mode.get("mode") or ""),
+        "max_active_ratio": _safe_float(mode.get("max_active_ratio"), 0.0),
+        "pressure_limited": bool(mode.get("pressure_limited", False)),
+        "paper_soak_allowed": bool(mode.get("paper_soak_allowed", False)),
+        "live_money_blocked": bool(mode.get("live_money_blocked", True)),
+        "collector_count": _safe_int(collection.get("collector_count"), 0),
+        "effective_bots_with_observations": _safe_int(collection.get("effective_bots_with_observations"), 0),
+        "unmanaged_zero_observation_count": _safe_int(collection.get("unmanaged_zero_observation_count"), 0),
+        "live_execution_locked": bool(paper.get("live_execution_locked", False)),
+        "queue_depth": _safe_int(queue.get("queue_depth"), 0),
+        "dispatch_count": _safe_int(queue.get("dispatch_count"), 0),
+    }
+
+
+def _sleeve_strategy_coverage_metrics(payload: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "ok": bool(payload.get("ok", False)),
+        "sleeve_count": _safe_int(payload.get("sleeve_count"), 0),
+        "active_runtime_sleeve_count": _safe_int(payload.get("active_runtime_sleeve_count"), 0),
+        "strategy_count": _safe_int(payload.get("strategy_count"), 0),
+        "missing_runtime_sleeves": [str(item) for item in _as_list(payload.get("missing_runtime_sleeves"))],
+        "strategy_covered_needs_launcher": [str(item) for item in _as_list(payload.get("strategy_covered_needs_launcher"))],
+        "specialized_launcher_profile_count": _safe_int(payload.get("specialized_launcher_profile_count"), 0),
+    }
+
+
 def _registry_metrics(project_root: Path) -> dict[str, Any]:
     registry = load_json(project_root / "master_bot_registry.json")
     rows = [row for row in _as_list(registry.get("sub_bots")) if isinstance(row, dict)]
@@ -930,6 +973,10 @@ def _metrics_for_signal(name: str, project_root: Path, payload: dict[str, Any]) 
         return _guard_intelligence_metrics(payload)
     if name == "paper_live_data_standard":
         return _paper_live_data_metrics(payload)
+    if name == "sleeve_ingestion_production_control":
+        return _sleeve_ingestion_production_metrics(payload)
+    if name == "sleeve_strategy_coverage":
+        return _sleeve_strategy_coverage_metrics(payload)
     if name == "data_plane_recovery":
         return _data_plane_recovery_metrics(payload)
     if name == "sleeve_ticker_universe":
@@ -1154,6 +1201,20 @@ def _severity_for_signal(name: str, status: str, metrics: dict[str, Any], loaded
             score = max(score, 75)
         elif not bool(metrics.get("within_target_band", False)):
             score = max(score, 45)
+    elif name == "sleeve_ingestion_production_control":
+        if _as_list(metrics.get("missing")):
+            score = max(score, 75)
+        if not bool(metrics.get("live_execution_locked", True)):
+            score = max(score, 100)
+        elif _safe_float(metrics.get("score"), 100.0) < 94.0:
+            score = max(score, 55)
+    elif name == "sleeve_strategy_coverage":
+        if _as_list(metrics.get("missing_runtime_sleeves")):
+            score = max(score, 80)
+        if _as_list(metrics.get("strategy_covered_needs_launcher")):
+            score = max(score, 70)
+        elif bool(metrics.get("ok", False)):
+            score = min(score, 25)
     elif name == "sleeve_ticker_universe":
         if not bool(metrics.get("enabled", False)):
             score = max(score, 55)
@@ -1328,6 +1389,19 @@ def _signal_summary(name: str, metrics: dict[str, Any]) -> str:
         return f"lease={metrics.get('lease_state', '')} auth_ok={metrics.get('auth_ok', False)}"
     if name == "paper_live_data_standard":
         return f"paper={metrics.get('paper_live_data_enabled_bots', 0)} target={metrics.get('minimum', 30)}-{metrics.get('maximum', 50)}"
+    if name == "sleeve_ingestion_production_control":
+        return (
+            f"grade={metrics.get('grade', '')} "
+            f"mode={metrics.get('mode', '')} "
+            f"ratio={metrics.get('max_active_ratio', 0)} "
+            f"missing={len(_as_list(metrics.get('missing')))}"
+        )
+    if name == "sleeve_strategy_coverage":
+        return (
+            f"sleeves={metrics.get('active_runtime_sleeve_count', 0)}/{metrics.get('sleeve_count', 0)} "
+            f"strategies={metrics.get('strategy_count', 0)} "
+            f"launcher_gaps={len(_as_list(metrics.get('strategy_covered_needs_launcher')))}"
+        )
     if name == "sleeve_ticker_universe":
         return f"core={metrics.get('core_symbol_count', 0)} crypto={metrics.get('crypto_symbol_count', 0)} groups={metrics.get('sleeve_group_count', 0)}"
     if name == "deeper_intelligence_layers":

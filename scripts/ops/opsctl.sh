@@ -1147,6 +1147,9 @@ case "$cmd" in
   data-collection-observation-rollup|collector-observation-rollup)
     exec "$PY" "$PROJECT_ROOT/scripts/ops/data_collection_observation_rollup.py" "$@"
     ;;
+  sleeve-ingestion-production-control|sleeve-ingestion-control|sleeve-ingest-production)
+    run_then_refresh_self_model "$PY" "$PROJECT_ROOT/scripts/ops/sleeve_ingestion_production_control.py" "$@"
+    ;;
   writer-cycle-coordinator|writer-handoff|writer-cycle-bot)
     run_then_refresh_self_model "$PY" "$PROJECT_ROOT/scripts/ops/writer_cycle_coordinator.py" "$@"
     ;;
@@ -2936,6 +2939,7 @@ opsctl commands:
   data-collection-storage-guard [--apply] [--cleanup-duplicates] [--space-recovery] [--json]
   botlogs-space-recovery [--apply] [--space-recovery-max-delete-gb N] [--space-recovery-target-free-gb N] [--json]
   data-collection-observation-rollup [--apply] [--days N] [--bootstrap-tail-lines N] [--json]
+  sleeve-ingestion-production-control [--apply] [--json]
   infrastructure-autofix [--apply] [--timeout-sec N] [--json]
   stale-surface-autohealer|stale-autoheal [--apply] [--timeout-sec N] [--json]
   master-infra-supervisor|master-infrastructure-supervisor|infra-supervisor [--apply] [--timeout-sec N] [--json]

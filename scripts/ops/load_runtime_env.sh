@@ -89,6 +89,7 @@ for candidate in \
   "$PROJECT_ROOT/config/.env.data_intelligence_override" \
   "$PROJECT_ROOT/config/.env.sleeve_ticker_universe_override" \
   "$PROJECT_ROOT/config/.env.paper_live_data_standard_override" \
+  "$PROJECT_ROOT/config/.env.sleeve_ingestion_production_override" \
   "$PROJECT_ROOT/config/.env.paper_execution_calibration_override" \
   "$PROJECT_ROOT/config/.env.paper_400_ramp_override" \
   "$PROJECT_ROOT/config/.env.swap_pressure_override" \

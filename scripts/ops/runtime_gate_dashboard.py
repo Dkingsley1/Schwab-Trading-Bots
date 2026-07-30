@@ -1277,6 +1277,7 @@ _GREEN_SOAK_MANAGED_ATTENTION_REASONS = {
     "external_backlog_drain_recommended": "external_backlog_handoff_managed_while_ingestion_soak_is_green",
     "external_backlog_drain_writer_busy": "external_backlog_writer_busy_managed_while_ingestion_soak_is_green",
     "external_backlog_retry_bot_followups": "external_backlog_retry_followup_deferred_while_ingestion_soak_is_green",
+    "ingestion_storage_governor_critical": "deferred_backlog_governor_profile_managed_by_storage_soak_contract",
     "infrastructure_autofix_bot_blocked": "safe_infrastructure_repair_timer_gap_deferred_while_hot_path_is_green",
     "infrastructure_autofix_bot_needs_work": "safe_infrastructure_repair_timer_gap_deferred_while_hot_path_is_green",
     "live_runtime_separation_control_needs_work": "live_money_cold_lane_clearance_deferred_while_paper_soak_is_green",
@@ -1586,6 +1587,29 @@ def _storage_quota_deferred_for_paper_soak(artifacts: Dict[str, Dict[str, Any]])
     return _stateful_sql_soft_quota_deferred_for_paper_soak(artifacts)
 
 
+def _ingestion_storage_governor_deferred_for_paper_soak(artifacts: Dict[str, Dict[str, Any]]) -> bool:
+    governor_summary = artifacts.get("ingestion_storage_governor", {}).get("summary", {})
+    if str(governor_summary.get("profile", "") or "") != "critical_backpressure":
+        return False
+    if bool(governor_summary.get("route_drift", False)):
+        return False
+    storage_payload = _load_json(Path(str(artifacts.get("ingestion_storage_control", {}).get("path", "") or "")))
+    contract = storage_payload.get("continuous_run_soak_contract") if isinstance(storage_payload.get("continuous_run_soak_contract"), dict) else {}
+    storage = storage_payload.get("storage") if isinstance(storage_payload.get("storage"), dict) else {}
+    forecast = contract.get("forecast") if isinstance(contract.get("forecast"), dict) else {}
+    contract_grade = str(contract.get("grade") or "").strip().upper()
+    contract_blockers = contract.get("blockers") if isinstance(contract.get("blockers"), list) else []
+    return bool(
+        str(storage_payload.get("overall_status") or "") in {"ready", "ok"}
+        and str(storage_payload.get("severity") or "") in {"stable", "low", "normal", ""}
+        and bool(contract.get("soak_ready", False) or contract.get("ready", False))
+        and not contract_blockers
+        and (not contract_grade or contract_grade in {"A", "A+"})
+        and str(forecast.get("continuous_run_status") or "ready") in {"ready", "stable", "stable_or_improving"}
+        and bool(storage.get("sql_primary_route_drift", False)) is False
+    )
+
+
 def _external_backlog_deferred_for_paper_soak(
     item: str,
     artifacts: Dict[str, Dict[str, Any]],
@@ -1640,6 +1664,8 @@ def _attention_managed_by_green_soak(
     if item == "coordination_state_control_blocked" and not _coordination_state_deferred_for_paper_soak(artifacts):
         return ""
     if item == "storage_quota_guard_needs_work" and not _storage_quota_deferred_for_paper_soak(artifacts):
+        return ""
+    if item == "ingestion_storage_governor_critical" and not _ingestion_storage_governor_deferred_for_paper_soak(artifacts):
         return ""
     if item.startswith("external_backlog_") and not _external_backlog_deferred_for_paper_soak(item, artifacts):
         return ""

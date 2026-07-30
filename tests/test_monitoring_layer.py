@@ -1383,6 +1383,33 @@ def test_runtime_gate_dashboard_manages_soak_deferred_controls_when_paper_guard_
         },
     )
     _write_json(health_root / "health_fast_latest.json", {"timestamp_utc": now.isoformat(), "overall_status": "ready", "ok": True})
+    _write_json(
+        health_root / "ingestion_storage_control_latest.json",
+        {
+            "timestamp_utc": now.isoformat(),
+            "ok": True,
+            "overall_status": "ready",
+            "severity": "stable",
+            "pressure_index": 0.562,
+            "continuous_run_soak_contract": {
+                "ready": False,
+                "soak_ready": True,
+                "grade": "A",
+                "blockers": [],
+                "forecast": {"continuous_run_status": "ready"},
+            },
+            "storage": {"sql_primary_route_drift": False},
+        },
+    )
+    _write_json(
+        health_root / "ingestion_storage_governor_latest.json",
+        {
+            "timestamp_utc": now.isoformat(),
+            "ok": True,
+            "profile": "critical_backpressure",
+            "pressure": {"source": "deferred_backlog_tail", "pressure_index": 53.0},
+        },
+    )
     _write_json(walk_root / "promotion_readiness_latest.json", {"timestamp_utc": now.isoformat(), "promote_ok": False})
     _write_json(
         health_root / "bot_quality_autopilot_latest.json",
@@ -1442,6 +1469,7 @@ def test_runtime_gate_dashboard_manages_soak_deferred_controls_when_paper_guard_
         "promotion_not_ready",
         "daily_auto_verify_not_ok",
         "bot_quality_autopilot_blocked",
+        "ingestion_storage_governor_critical",
         "runtime_snapshot_cache_control_needs_work",
         "roster_resilience_planner_needs_work",
         "chaos_drill_coordinator_blocked",
@@ -1449,6 +1477,7 @@ def test_runtime_gate_dashboard_manages_soak_deferred_controls_when_paper_guard_
     assert managed["daily_auto_verify_not_ok"] == "daily_verify_training_promotion_checks_deferred_while_paper_soak_is_green"
     assert managed["promotion_not_ready"] == "promotion_deferred_while_paper_soak_is_green"
     assert managed["bot_quality_autopilot_blocked"] == "bot_quality_retrain_queue_deferred_while_training_budget_is_closed"
+    assert managed["ingestion_storage_governor_critical"] == "deferred_backlog_governor_profile_managed_by_storage_soak_contract"
     assert managed["runtime_snapshot_cache_control_needs_work"] == "snapshot_cache_upstream_training_freshness_deferred_while_snapshot_is_ready"
     assert managed["roster_resilience_planner_needs_work"] == "roster_coverage_topoff_deferred_while_paper_soak_is_green"
     assert managed["chaos_drill_coordinator_blocked"] == "disruptive_recovery_drills_deferred_while_paper_soak_is_green"

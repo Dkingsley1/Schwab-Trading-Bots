@@ -859,6 +859,19 @@ def test_opsctl_exposes_backlog_pcore_accelerator() -> None:
     assert "backlog-pcore-accelerator [--apply] [--json]" in text
 
 
+def test_opsctl_exposes_sleeve_ingestion_production_control() -> None:
+    text = _read(OPSCTL_PATH)
+    env_text = _read(PROJECT_ROOT / "scripts" / "ops" / "load_runtime_env.sh")
+    intelligence_text = _read(PROJECT_ROOT / "scripts" / "ops" / "system_intelligence_coordinator.py")
+
+    assert "sleeve-ingestion-production-control|sleeve-ingestion-control|sleeve-ingest-production" in text
+    assert "sleeve_ingestion_production_control.py" in text
+    assert "sleeve-ingestion-production-control [--apply] [--json]" in text
+    assert ".env.sleeve_ingestion_production_override" in env_text
+    assert "sleeve_ingestion_production_control_latest.json" in intelligence_text
+    assert "sleeve_ingestion_production_control" in intelligence_text
+
+
 def test_opsctl_exposes_income_operating_platform() -> None:
     text = _read(OPSCTL_PATH)
 
