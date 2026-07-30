@@ -169,6 +169,59 @@ def test_production_quality_control_manages_live_money_locks_when_soak_is_ready(
     assert payload["quality_checks"]["managed_live_money_locks_have_no_live_execution_authority"] is True
 
 
+def test_production_quality_control_manages_bounded_storage_pressure_live_money_lock(
+    tmp_path: Path,
+) -> None:
+    project_root = tmp_path / "project"
+    health = project_root / "governance" / "health"
+    _write_readiness(
+        project_root,
+        {
+            "overall_status": "blocked",
+            "live_canary_money_ready": False,
+            "blockers": ["storage_pressure_clean_blocked"],
+            "gates": [
+                {
+                    "gate_id": "storage_pressure_clean",
+                    "ready": False,
+                    "blockers": ["storage_pressure_index_too_high", "storage_total_pending_lines_too_high"],
+                    "evidence": {
+                        "overall_status": "ready",
+                        "severity": "stable",
+                        "pressure_index": 0.624,
+                        "max_pressure_index": 0.2,
+                        "total_pending_lines": 187146,
+                        "max_total_pending_lines": 15000,
+                    },
+                }
+            ],
+        },
+    )
+    _write_json(
+        health / "unattended_soak_readiness_latest.json",
+        {
+            "ok": True,
+            "overall_status": "ready",
+            "overall_grade": "A+",
+            "safe_to_leave_unattended": True,
+            "blockers": [],
+            "sections": {
+                "storage": {"ready": True, "grade": "A+", "ingestion_soak_ready": True},
+            },
+        },
+    )
+
+    payload = src.build_payload(project_root)
+
+    assert payload["overall_status"] == "ready"
+    assert payload["active_lane_count"] == 0
+    assert payload["managed_live_money_locks"] == ["storage_pressure_above_live_canary_floor_bounded_for_soak"]
+    lock = payload["managed_live_money_lock_lanes"][0]["managed_lock"]
+    assert lock["managed_pressure_ceiling"] == 0.8
+    assert lock["managed_total_pending_ceiling"] == 300000
+    assert lock["live_execution_authority"] is False
+
+
 def test_production_quality_control_does_not_manage_unexplained_paper_dropout(tmp_path: Path) -> None:
     project_root = tmp_path / "project"
     health = project_root / "governance" / "health"

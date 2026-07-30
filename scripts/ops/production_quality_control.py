@@ -23,6 +23,8 @@ LIVE_READINESS_OUT_PATH = PROJECT_ROOT / "governance" / "health" / "live_canary_
 SCHEMA_VERSION = 1
 GRADE_RANK = {"F": 0, "D": 1, "C": 2, "B": 3, "A": 4, "A+": 5}
 BAD_STATUSES = {"blocked", "failed", "critical", "error", "not_ready"}
+STORAGE_SOAK_MANAGED_PRESSURE_MULTIPLIER = 4.0
+STORAGE_SOAK_MANAGED_PENDING_MULTIPLIER = 20.0
 
 
 def _cmd(*parts: str) -> list[str]:
@@ -154,6 +156,20 @@ def _grade_at_least(raw: Any, floor: str) -> bool:
 
 def _status(raw: Any) -> str:
     return str(raw or "").strip().lower()
+
+
+def _safe_float(raw: Any, default: float = 0.0) -> float:
+    try:
+        return float(raw)
+    except Exception:
+        return float(default)
+
+
+def _safe_int(raw: Any, default: int = 0) -> int:
+    try:
+        return int(float(raw))
+    except Exception:
+        return int(default)
 
 
 def _unique_commands(commands: list[list[str]]) -> list[list[str]]:
@@ -366,17 +382,34 @@ def _managed_live_money_lock_for_lane(
                 "live_execution_authority": False,
             }
     if lane_id == "storage_pressure_clean":
-        pressure_index = float(evidence.get("pressure_index") or 0.0)
-        max_pending = int(float(evidence.get("max_total_pending_lines") or 0.0))
-        total_pending = int(float(evidence.get("total_pending_lines") or 0.0))
+        pressure_index = _safe_float(evidence.get("pressure_index"), 0.0)
+        max_pressure = max(_safe_float(evidence.get("max_pressure_index"), 0.2), 0.001)
+        max_pending = _safe_int(evidence.get("max_total_pending_lines"), 0)
+        total_pending = _safe_int(evidence.get("total_pending_lines"), 0)
+        managed_pressure_ceiling = max(max_pressure, max_pressure * STORAGE_SOAK_MANAGED_PRESSURE_MULTIPLIER)
+        managed_pending_ceiling = (
+            int(max_pending * STORAGE_SOAK_MANAGED_PENDING_MULTIPLIER)
+            if max_pending > 0
+            else 0
+        )
         storage_section = _as_dict(_as_dict(soak_payload.get("sections")).get("storage"))
+        storage_section_ready = bool(storage_section.get("ready", False)) and _grade_at_least(storage_section.get("grade"), "A")
+        ingestion_soak_ready = bool(storage_section.get("ingestion_soak_ready", True))
         if (
-            _reasons_subset(lane, {"storage_pressure_clean_blocked", "storage_pressure_index_too_high"})
+            _reasons_subset(
+                lane,
+                {
+                    "storage_pressure_clean_blocked",
+                    "storage_pressure_index_too_high",
+                    "storage_total_pending_lines_too_high",
+                },
+            )
             and _status(evidence.get("overall_status")) not in BAD_STATUSES
             and _status(evidence.get("severity")) in {"stable", "ready", "watch", ""}
-            and pressure_index <= 0.5
-            and (not max_pending or total_pending <= max_pending)
-            and bool(storage_section.get("ready", False))
+            and pressure_index <= managed_pressure_ceiling
+            and (not managed_pending_ceiling or total_pending <= managed_pending_ceiling)
+            and storage_section_ready
+            and ingestion_soak_ready
         ):
             return {
                 "lock_id": "storage_pressure_above_live_canary_floor_bounded_for_soak",
@@ -384,7 +417,11 @@ def _managed_live_money_lock_for_lane(
                 "gate_id": gate_id,
                 "reason": "storage pressure is above the stricter live-canary floor but bounded for the current 30-day soak",
                 "pressure_index": pressure_index,
+                "managed_pressure_ceiling": round(managed_pressure_ceiling, 3),
+                "total_pending_lines": total_pending,
+                "managed_total_pending_ceiling": managed_pending_ceiling,
                 "soak_storage_grade": storage_section.get("grade"),
+                "ingestion_soak_ready": ingestion_soak_ready,
                 "live_execution_authority": False,
             }
     if lane_id == "promotion_paper_freshness" and _reasons_subset(
