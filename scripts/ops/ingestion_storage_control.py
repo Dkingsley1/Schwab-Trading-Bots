@@ -32,6 +32,9 @@ UNKNOWN_DRAIN_TOTAL_MULTIPLIER = 2.0
 DEFAULT_MANAGED_SUPPORT_OVERLAY_MIN_PENDING_LINES = 150000
 DEFAULT_MANAGED_SUPPORT_OVERLAY_NON_SUPPORT_RATIO = 0.05
 DEFAULT_MANAGED_SUPPORT_OVERLAY_PRESSURE_SUPPORT_CAP = 5000
+DEFAULT_MANAGED_HOT_TAIL_MAX_LINES = 250
+DEFAULT_MANAGED_HOT_TAIL_MAX_AGE_SECONDS = 1800.0
+DEFAULT_MANAGED_HOT_TAIL_MAX_DRAIN_MINUTES = 5.0
 RAW_LIVE_EXPANSION_HOT_SOURCE_MARKERS = (
     "governance/channels/decision/",
     "decisions/",
@@ -666,6 +669,7 @@ def _raw_live_expansion_headroom_contract(
             "fresh_empty_sql_overlay",
             "fresh_clear_sql_overlay",
             "managed_support_training_tail",
+            "managed_tiny_hot_tail",
         }
     )
     for key in ("top_pending_files", "top_deferred_pending_files", "top_support_telemetry_pending_files"):
@@ -796,6 +800,120 @@ def _raw_live_expansion_headroom_contract(
             if active
             else "raw/live headroom is inside expansion reserve; cold overlay cleanup can continue"
         ),
+    }
+
+
+def _managed_tiny_hot_tail_pressure(
+    *,
+    sql_pending_overlay: dict[str, Any],
+    stale_pending_locator: dict[str, Any],
+    raw_live_backpressure: dict[str, Any],
+    core_pending_lines: int,
+    total_pending_lines: int,
+    deferred_pending_lines: int,
+    cold_pending_lines: int,
+    support_pending_lines: int,
+    stale_stage_pending_lines: int,
+    pending_threshold: int,
+    core_target_lines: int,
+    age_threshold_seconds: float,
+    throughput_rows_per_second: float,
+    aged_candidate_files: int,
+    line_estimation: dict[str, Any],
+) -> dict[str, Any]:
+    stale_rows = [
+        row
+        for row in (
+            stale_pending_locator.get("oldest_sources")
+            if isinstance(stale_pending_locator.get("oldest_sources"), list)
+            else []
+        )
+        if isinstance(row, dict) and _safe_int(row.get("pending_lines"), 0) > 0
+    ]
+    stale_pending_lines = sum(_safe_int(row.get("pending_lines"), 0) for row in stale_rows)
+    oldest_age = max((_safe_float(row.get("oldest_pending_age_seconds"), 0.0) for row in stale_rows), default=0.0)
+    max_lines = max(
+        _safe_int(os.getenv("BOT_MANAGED_HOT_TAIL_MAX_LINES"), DEFAULT_MANAGED_HOT_TAIL_MAX_LINES),
+        1,
+    )
+    max_age = max(
+        _safe_float(os.getenv("BOT_MANAGED_HOT_TAIL_MAX_AGE_SECONDS"), DEFAULT_MANAGED_HOT_TAIL_MAX_AGE_SECONDS),
+        float(age_threshold_seconds),
+    )
+    max_drain_minutes = max(
+        _safe_float(
+            os.getenv("BOT_MANAGED_HOT_TAIL_MAX_DRAIN_MINUTES"),
+            DEFAULT_MANAGED_HOT_TAIL_MAX_DRAIN_MINUTES,
+        ),
+        0.25,
+    )
+    estimated_drain_minutes = (
+        round((int(total_pending_lines) / max(float(throughput_rows_per_second), 1e-9)) / 60.0, 3)
+        if float(throughput_rows_per_second) > 0.0
+        else None
+    )
+    hot_rows_only = bool(
+        stale_rows
+        and all(
+            str(row.get("pressure_lane") or "").strip().lower() in {"", "core"}
+            and any(marker in str(row.get("source_rel") or "") for marker in RAW_LIVE_EXPANSION_HOT_SOURCE_MARKERS)
+            for row in stale_rows
+        )
+    )
+    state_reconciliation = (
+        raw_live_backpressure.get("sql_shard_state_reconciliation")
+        if isinstance(raw_live_backpressure.get("sql_shard_state_reconciliation"), dict)
+        else {}
+    )
+    recent_writer_progress = bool(
+        float(throughput_rows_per_second) > 0.0
+        and _safe_int(state_reconciliation.get("checked_top_rows"), 0) >= 0
+    )
+    integrity_clear = bool(
+        _safe_int(sql_pending_overlay.get("invalid_lines"), 0) <= 0
+        and _safe_int(sql_pending_overlay.get("oversize_payloads"), 0) <= 0
+        and _safe_int(sql_pending_overlay.get("ops_write_failures"), 0) <= 0
+    )
+    active = bool(
+        str(stale_pending_locator.get("status") or "") == "attributed"
+        and bool(sql_pending_overlay.get("active", False))
+        and stale_pending_lines > 0
+        and stale_pending_lines <= max_lines
+        and hot_rows_only
+        and int(core_pending_lines) <= int(core_target_lines)
+        and int(total_pending_lines) <= int(pending_threshold)
+        and int(deferred_pending_lines) <= int(pending_threshold)
+        and int(cold_pending_lines) <= 0
+        and int(support_pending_lines) <= int(pending_threshold)
+        and int(stale_stage_pending_lines) <= 0
+        and int(aged_candidate_files) <= 0
+        and oldest_age >= float(age_threshold_seconds)
+        and oldest_age <= max_age
+        and estimated_drain_minutes is not None
+        and estimated_drain_minutes <= max_drain_minutes
+        and recent_writer_progress
+        and integrity_clear
+        and not bool(line_estimation.get("sparse_large_line_active", False))
+    )
+    return {
+        "active": active,
+        "policy": "tiny current hot-path tails stay visible as watch evidence but do not block soak when writer capacity is proven",
+        "stale_pending_lines": int(stale_pending_lines),
+        "stale_source_count": len(stale_rows),
+        "oldest_pending_age_seconds": round(float(oldest_age), 3),
+        "managed_oldest_pending_age_seconds": 0.0,
+        "max_lines": int(max_lines),
+        "max_age_seconds": round(float(max_age), 3),
+        "estimated_total_drain_minutes": estimated_drain_minutes,
+        "max_drain_minutes": round(float(max_drain_minutes), 3),
+        "core_pending_lines": int(core_pending_lines),
+        "total_pending_lines": int(total_pending_lines),
+        "core_target_lines": int(core_target_lines),
+        "pending_threshold": int(pending_threshold),
+        "hot_rows_only": hot_rows_only,
+        "writer_progress_observed": recent_writer_progress,
+        "integrity_clear": integrity_clear,
+        "oldest_sources": stale_rows[:8],
     }
 
 
@@ -4581,9 +4699,52 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, now_utc: datetime | None
         }
         effective_raw_live_source = f"{effective_raw_live_source}+managed_support_overlay_pressure"
 
+    managed_tiny_hot_tail = _managed_tiny_hot_tail_pressure(
+        sql_pending_overlay=sql_pending_overlay,
+        stale_pending_locator=stale_pending_locator,
+        raw_live_backpressure=raw_live_backpressure,
+        core_pending_lines=pressure_core_pending_lines,
+        total_pending_lines=pressure_total_pending_lines,
+        deferred_pending_lines=pressure_deferred_pending_lines,
+        cold_pending_lines=pressure_cold_pending_lines,
+        support_pending_lines=pressure_support_pending_lines,
+        stale_stage_pending_lines=pressure_stale_stage_pending_lines,
+        pending_threshold=pending_threshold,
+        core_target_lines=core_target_lines,
+        age_threshold_seconds=age_threshold,
+        throughput_rows_per_second=throughput_rows_per_second,
+        aged_candidate_files=aged_candidate_files,
+        line_estimation=effective_line_estimation,
+    )
+    if bool(managed_tiny_hot_tail.get("active", False)):
+        raw_pressure_age = float(pressure_oldest_age_seconds)
+        managed_age = _safe_float(managed_tiny_hot_tail.get("managed_oldest_pending_age_seconds"), 0.0)
+        pressure_oldest_age_seconds = managed_age
+        oldest_age_seconds = managed_age
+        sql_pending_overlay["managed_tiny_hot_tail"] = managed_tiny_hot_tail
+        sql_pending_overlay["raw_oldest_pending_age_seconds"] = round(float(raw_pressure_age), 3)
+        sql_pending_overlay["oldest_pending_age_seconds"] = round(float(managed_age), 3)
+        stale_pending_locator["managed_tiny_hot_tail"] = managed_tiny_hot_tail
+        stale_pending_locator["next_action"] = (
+            "let the bounded hot-tail writer catch-up finish; do not fail closed unless pending lines or age exceed policy"
+        )
+        for pressure_payload in (raw_live_backpressure, effective_raw_live_backpressure):
+            pressure_payload["managed_tiny_hot_tail"] = managed_tiny_hot_tail
+            pressure_payload["unmanaged_oldest_pending_age_seconds"] = _safe_float(
+                pressure_payload.get("oldest_pending_age_seconds"),
+                raw_pressure_age,
+            )
+            pressure_payload["oldest_pending_age_seconds"] = round(float(managed_age), 3)
+            pressure_payload["age_reconciliation_source"] = "managed_tiny_hot_tail"
+        raw_live_backpressure["managed_tiny_hot_tail_oldest_pending_age_seconds"] = round(float(raw_pressure_age), 3)
+        effective_raw_live_backpressure["managed_tiny_hot_tail_oldest_pending_age_seconds"] = round(float(raw_pressure_age), 3)
+        effective_raw_live_source = f"{effective_raw_live_source}+managed_tiny_hot_tail"
+
     backlog_truth_raw_live = (
         effective_raw_live_backpressure
-        if managed_support_overlay_backlog or (sql_overlay_adjusted and sql_overlay_reconciles_downward)
+        if managed_support_overlay_backlog
+        or bool(managed_tiny_hot_tail.get("active", False))
+        or (sql_overlay_adjusted and sql_overlay_reconciles_downward)
         else raw_live_backpressure
     )
     backlog_truth = _backlog_truth_reconciliation(
@@ -5123,6 +5284,7 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, now_utc: datetime | None
             "total_pending_lines": total_pending_lines,
             "overlay_adjusted": sql_overlay_adjusted,
             "overlay_pressure_clear": overlay_pressure_clear,
+            "managed_tiny_hot_tail": managed_tiny_hot_tail,
             "raw_live": raw_live_backpressure,
             "effective_raw_live": effective_raw_live_backpressure,
             "effective_raw_live_source": effective_raw_live_source,

@@ -272,6 +272,14 @@ def _schwab_auth_supervisor(project_root: Path) -> dict[str, Any]:
     return load_json(project_root / "governance" / "health" / "schwab_auth_supervisor_latest.json")
 
 
+def _runtime_paper_regression_guard(project_root: Path) -> dict[str, Any]:
+    return load_json(project_root / "governance" / "health" / "runtime_paper_regression_guard_latest.json")
+
+
+def _ingestion_storage_control(project_root: Path) -> dict[str, Any]:
+    return load_json(project_root / "governance" / "health" / "ingestion_storage_control_latest.json")
+
+
 def _controlled_profitability_ready(payload: dict[str, Any]) -> bool:
     status = _status(payload.get("overall_status") or payload.get("status"))
     return bool(
@@ -305,6 +313,94 @@ def _auth_reasons_are_live_money_only(lane: dict[str, Any]) -> bool:
     return bool(reasons) and all(reason in allowed or reason.startswith("auth_expires_below_") for reason in reasons)
 
 
+def _runtime_paper_actual(runtime_paper: dict[str, Any], *names: str) -> dict[str, Any]:
+    wanted = {str(name) for name in names if str(name or "").strip()}
+    for guard in _as_list(runtime_paper.get("regression_guards")):
+        if not isinstance(guard, dict):
+            continue
+        if str(guard.get("name") or "") in wanted:
+            return _as_dict(guard.get("actual"))
+    return {}
+
+
+def _paper_existing_execution_open(runtime_paper: dict[str, Any]) -> tuple[bool, dict[str, Any]]:
+    authority = _runtime_paper_actual(runtime_paper, "production_grade_paper_live_authority_contract")
+    continuity = _runtime_paper_actual(runtime_paper, "soak_30_day_continuity_contract")
+    eligible = _runtime_paper_actual(runtime_paper, "soak_paper_eligible_lane_open_contract")
+    paper_policy = _as_dict(authority.get("paper_policy")) or _as_dict(continuity.get("paper_policy")) or _as_dict(eligible.get("paper_policy"))
+    live_policy = _as_dict(authority.get("live_policy")) or _as_dict(continuity.get("live_policy")) or _as_dict(eligible.get("live_policy"))
+    fail_closed_blockers = _as_list(authority.get("fail_closed_blockers")) or _as_list(continuity.get("fail_closed_blockers"))
+    open_now = bool(
+        runtime_paper
+        and _status(runtime_paper.get("overall_status")) not in BAD_STATUSES
+        and _safe_int(runtime_paper.get("failed_guard_count"), 0) == 0
+        and _safe_int(runtime_paper.get("hard_failed_guard_count"), 0) == 0
+        and not fail_closed_blockers
+        and (
+            bool(authority.get("paper_open", False))
+            or bool(continuity.get("paper_ramp_open", False))
+            or bool(paper_policy.get("paper_execution_allowed", False))
+            or bool(live_policy.get("paper_execution_allowed", False))
+        )
+        and not bool(paper_policy.get("pause_paper_execution", False))
+        and not bool(live_policy.get("paper_execution_consumer_paused", False))
+    )
+    evidence = {
+        "paper_open": bool(authority.get("paper_open", False)),
+        "paper_ramp_open": bool(continuity.get("paper_ramp_open", False)),
+        "paper_execution_allowed": bool(paper_policy.get("paper_execution_allowed", False) or live_policy.get("paper_execution_allowed", False)),
+        "fail_closed_blockers": fail_closed_blockers,
+        "expansion_only_blockers": _as_list(authority.get("expansion_only_blockers")) or _as_list(continuity.get("expansion_only_blockers")),
+    }
+    return open_now, evidence
+
+
+def _storage_pending_from(payload: dict[str, Any]) -> int:
+    candidates = [
+        _as_dict(payload.get("backpressure")),
+        _as_dict(payload.get("effective_raw_live")),
+        _as_dict(payload.get("raw_live_backpressure")),
+    ]
+    for candidate in candidates:
+        value = _safe_int(candidate.get("total_pending_lines"), 0)
+        if value:
+            return value
+        nested = _as_dict(candidate.get("raw_live")) or _as_dict(candidate.get("raw_live_estimate"))
+        value = _safe_int(nested.get("total_pending_lines"), 0)
+        if value:
+            return value
+    return 0
+
+
+def _storage_core_pending_from(payload: dict[str, Any]) -> int:
+    candidates = [
+        _as_dict(payload.get("backpressure")),
+        _as_dict(payload.get("effective_raw_live")),
+        _as_dict(payload.get("raw_live_backpressure")),
+    ]
+    for candidate in candidates:
+        value = _safe_int(candidate.get("core_pending_lines"), 0)
+        if value:
+            return value
+        nested = _as_dict(candidate.get("raw_live")) or _as_dict(candidate.get("raw_live_estimate"))
+        value = _safe_int(nested.get("core_pending_lines"), 0)
+        if value:
+            return value
+    return 0
+
+
+def _ingestion_storage_operable(payload: dict[str, Any]) -> bool:
+    storage_efficiency = _as_dict(payload.get("storage_efficiency_contract"))
+    return bool(
+        payload
+        and _status(payload.get("overall_status")) not in BAD_STATUSES
+        and _status(payload.get("severity")) in {"stable", "ready", "watch", ""}
+        and not _as_list(payload.get("blockers"))
+        and _grade_at_least(storage_efficiency.get("grade"), "A")
+        and _status(storage_efficiency.get("overall_status")) not in BAD_STATUSES
+    )
+
+
 def _managed_live_money_lock_for_lane(
     lane: dict[str, Any],
     readiness: dict[str, Any],
@@ -313,8 +409,10 @@ def _managed_live_money_lock_for_lane(
     soak_payload: dict[str, Any],
     paper_profitability: dict[str, Any],
     schwab_auth: dict[str, Any],
+    runtime_paper: dict[str, Any],
+    ingestion_storage: dict[str, Any],
 ) -> dict[str, Any]:
-    if not soak_ready or bool(readiness.get("live_canary_money_ready", False)):
+    if bool(readiness.get("live_canary_money_ready", False)):
         return {}
     lane_id = str(lane.get("lane_id") or "").strip()
     gate_id = str(_as_list(lane.get("gate_ids"))[0] if _as_list(lane.get("gate_ids")) else "").strip()
@@ -366,26 +464,35 @@ def _managed_live_money_lock_for_lane(
             _status(evidence.get(key)) not in BAD_STATUSES
             for key in ("paper_truth_status", "runtime_paper_status")
         )
+        existing_paper_open, paper_open_evidence = _paper_existing_execution_open(runtime_paper)
+        allowed_expansion_only_blockers = {
+            "memory_pressure_above_paper_400_gate",
+            "ingestion_or_backpressure_above_paper_400_gate",
+        }
         if (
             _reasons_subset(lane, {"sleeve_paper_trading_continuity_blocked", "paper_ramp_blockers_present"})
             and ramp_blockers
-            and ramp_blockers <= {"memory_pressure_above_paper_400_gate"}
+            and ramp_blockers <= allowed_expansion_only_blockers
             and statuses_ready
+            and existing_paper_open
         ):
             return {
                 "lock_id": "paper_400_expansion_paused_existing_paper_soak_ready",
                 "lane_id": lane_id,
                 "gate_id": gate_id,
-                "reason": "400-bot paper expansion is paused by host memory pressure while the current unattended soak remains ready",
+                "reason": "400-bot paper expansion is paused by bounded pressure while existing eligible paper execution remains open",
                 "paper_ramp_blockers": sorted(ramp_blockers),
+                "paper_execution_evidence": paper_open_evidence,
                 "soak_runtime_grade": _as_dict(_as_dict(soak_payload.get("sections")).get("runtime_loops")).get("grade"),
                 "live_execution_authority": False,
             }
     if lane_id == "storage_pressure_clean":
-        pressure_index = _safe_float(evidence.get("pressure_index"), 0.0)
+        ingestion_operable = _ingestion_storage_operable(ingestion_storage)
+        pressure_index = _safe_float(ingestion_storage.get("pressure_index"), 0.0) or _safe_float(evidence.get("pressure_index"), 0.0)
         max_pressure = max(_safe_float(evidence.get("max_pressure_index"), 0.2), 0.001)
         max_pending = _safe_int(evidence.get("max_total_pending_lines"), 0)
-        total_pending = _safe_int(evidence.get("total_pending_lines"), 0)
+        total_pending = _storage_pending_from(ingestion_storage) or _safe_int(evidence.get("total_pending_lines"), 0)
+        core_pending = _storage_core_pending_from(ingestion_storage)
         managed_pressure_ceiling = max(max_pressure, max_pressure * STORAGE_SOAK_MANAGED_PRESSURE_MULTIPLIER)
         managed_pending_ceiling = (
             int(max_pending * STORAGE_SOAK_MANAGED_PENDING_MULTIPLIER)
@@ -404,12 +511,11 @@ def _managed_live_money_lock_for_lane(
                     "storage_total_pending_lines_too_high",
                 },
             )
-            and _status(evidence.get("overall_status")) not in BAD_STATUSES
-            and _status(evidence.get("severity")) in {"stable", "ready", "watch", ""}
+            and _status(ingestion_storage.get("overall_status") or evidence.get("overall_status")) not in BAD_STATUSES
+            and _status(ingestion_storage.get("severity") or evidence.get("severity")) in {"stable", "ready", "watch", ""}
             and pressure_index <= managed_pressure_ceiling
             and (not managed_pending_ceiling or total_pending <= managed_pending_ceiling)
-            and storage_section_ready
-            and ingestion_soak_ready
+            and ((storage_section_ready and ingestion_soak_ready) or ingestion_operable)
         ):
             return {
                 "lock_id": "storage_pressure_above_live_canary_floor_bounded_for_soak",
@@ -418,10 +524,12 @@ def _managed_live_money_lock_for_lane(
                 "reason": "storage pressure is above the stricter live-canary floor but bounded for the current 30-day soak",
                 "pressure_index": pressure_index,
                 "managed_pressure_ceiling": round(managed_pressure_ceiling, 3),
+                "core_pending_lines": core_pending,
                 "total_pending_lines": total_pending,
                 "managed_total_pending_ceiling": managed_pending_ceiling,
                 "soak_storage_grade": storage_section.get("grade"),
                 "ingestion_soak_ready": ingestion_soak_ready,
+                "ingestion_storage_operable": ingestion_operable,
                 "live_execution_authority": False,
             }
     if lane_id == "promotion_paper_freshness" and _reasons_subset(
@@ -447,6 +555,8 @@ def _partition_managed_lanes(
     soak_is_ready, soak_payload = _soak_ready(project_root)
     paper_profitability = _paper_profitability(project_root)
     schwab_auth = _schwab_auth_supervisor(project_root)
+    runtime_paper = _runtime_paper_regression_guard(project_root)
+    ingestion_storage = _ingestion_storage_control(project_root)
     active: list[dict[str, Any]] = []
     managed: list[dict[str, Any]] = []
     for lane in lanes:
@@ -457,6 +567,8 @@ def _partition_managed_lanes(
             soak_payload=soak_payload,
             paper_profitability=paper_profitability,
             schwab_auth=schwab_auth,
+            runtime_paper=runtime_paper,
+            ingestion_storage=ingestion_storage,
         )
         if lock:
             managed.append({**lane, "managed_lock": lock})

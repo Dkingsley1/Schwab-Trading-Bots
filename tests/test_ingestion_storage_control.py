@@ -959,6 +959,180 @@ def test_ingestion_storage_control_keeps_support_training_tail_out_of_critical_p
     assert "stale_old_pending_work" not in payload["backlog_relief_contract"]["active_issue_ids"]
 
 
+def test_ingestion_storage_control_manages_tiny_hot_tail_without_blocking_soak(tmp_path: Path) -> None:
+    now = datetime(2026, 7, 30, 13, 0, tzinfo=timezone.utc)
+    health = tmp_path / "governance" / "health"
+    _write_json(
+        health / "ingestion_backpressure_latest.json",
+        {
+            "timestamp_utc": (now - timedelta(minutes=2)).isoformat(),
+            "pending_lines": 75,
+            "pending_lines_total": 198,
+            "pending_lines_deferred": 123,
+            "pending_lines_cold": 0,
+            "pending_lines_support_telemetry": 0,
+            "pending_lines_stale_stage": 0,
+            "pending_lines_threshold": 15000,
+            "oldest_pending_age_seconds": 361.883,
+            "oldest_age_threshold_seconds": 240.0,
+            "overload": False,
+            "line_estimation": {
+                "sparse_large_line_files": 0,
+                "sparse_large_line_pending_lines": 0,
+                "sparse_large_line_pending_bytes": 0,
+                "sparse_large_line_active": False,
+            },
+            "top_pending_files": [
+                {
+                    "source_rel": "decisions/shadow_crypto/trade_decisions_20260730.jsonl",
+                    "pending_lines": 74,
+                    "oldest_pending_age_seconds": 361.883,
+                    "total_lines": 3378,
+                    "last_line": 3304,
+                },
+                {
+                    "source_rel": "governance/events/premarket_token_guard_20260730.jsonl",
+                    "pending_lines": 1,
+                    "oldest_pending_age_seconds": 107.573,
+                    "total_lines": 16,
+                    "last_line": 15,
+                },
+            ],
+            "top_deferred_pending_files": [
+                {
+                    "source_rel": "governance/health/infrabot_adaptive_feedback.jsonl",
+                    "pending_lines": 90,
+                    "oldest_pending_age_seconds": 32.584,
+                    "total_lines": 51569,
+                    "last_line": 51479,
+                }
+            ],
+        },
+    )
+    _write_json(
+        health / "jsonl_sql_ingestion_health_crypto_trading_latest.json",
+        {
+            "timestamp_utc": now.isoformat(),
+            "sqlite": {
+                "pending_lines": 116,
+                "oldest_uningested_age_seconds": 564.016,
+                "files_with_pending": 2,
+                "inserted": 4351,
+                "invalid": 0,
+                "oversize_payloads": 0,
+                "ops_write_failures": 0,
+                "top_pending_files": [
+                    {
+                        "source_rel": "decisions/shadow_crypto/trade_decisions_20260730.jsonl",
+                        "stream": "decisions",
+                        "storage_temperature": "hot",
+                        "ingestion_lane": "hot_lane",
+                        "pending_lines": 74,
+                        "oldest_pending_age_seconds": 542.692,
+                        "total_lines": 3378,
+                        "last_line": 3304,
+                    },
+                    {
+                        "source_rel": "governance/channels/decision/default_crypto_schwab/decision_20260730.jsonl",
+                        "stream": "decisions",
+                        "storage_temperature": "hot",
+                        "ingestion_lane": "nearline_lane",
+                        "pending_lines": 42,
+                        "oldest_pending_age_seconds": 564.016,
+                        "total_lines": 330,
+                        "last_line": 288,
+                    },
+                ],
+            },
+        },
+    )
+    _write_json(
+        health / "sql_link_service_progress_latest.json",
+        {
+            "cycle_started_utc": (now - timedelta(minutes=1)).isoformat(),
+            "merged_rows_this_cycle": 4351,
+        },
+    )
+    _write_json(health / "sql_link_service_latest.json", {"sqlite_wal_size_gb": 0.0})
+    _write_json(
+        health / "health_gates_latest.json",
+        {
+            "hard_gate_triggered": False,
+            "hard_gates": {},
+            "recommended_operating_mode": "live_cautious",
+            "storage_pressure": {"retention_debt_gb": 0.0, "severe_backpressure_overload": False},
+            "ingestion_pressure": {"severe_backpressure_overload": False},
+        },
+    )
+    _write_json(
+        health / "ingestion_storage_governor_latest.json",
+        {
+            "profile": "steady_state",
+            "sql_primary_db": {"route_drift": False},
+            "queue_watermarks": {"overall_status": "ready"},
+            "writer_shedding": {"active": False, "level": "normal"},
+        },
+    )
+    _write_json(health / "external_backlog_drain_latest.json", {"overall_status": "idle", "recommended_now": False, "aged_candidate_files": 0})
+    _write_json(
+        health / "storage_failback_sync_latest.json",
+        {"route_verification": {"verification_state": "curated_ready", "mismatches": []}},
+    )
+    _write_json(
+        health / "storage_resilience_control_latest.json",
+        {
+            "overall_status": "ready",
+            "resilience_score": 100,
+            "restore_drill_fresh": True,
+            "dual_root_ready": True,
+            "warm_standby_ready": True,
+            "unresolved_split_brain_conflicts": 0,
+        },
+    )
+    _write_json(
+        health / "storage_growth_forecast_latest.json",
+        {"status": "stable_or_improving", "days_until_pressure_free": 90.0},
+    )
+    _write_json(
+        health / "storage_retention_unison_latest.json",
+        {"continuous_run_contract": {"status": "ready", "ready": True, "available_margin_gb": 64.0}},
+    )
+    _write_json(health / "data_collection_storage_guard_latest.json", {"duplicate_cleanup": {}, "safe_space_recovery": {}})
+    _write_json(
+        health / "raw_training_compaction_intelligence_latest.json",
+        {
+            "raw_summary": {
+                "raw_jsonl_count": 2,
+                "eligible_training_source_count": 1,
+                "compression_candidate_count": 0,
+                "compression_candidate_gb": 0.0,
+                "local_fallback_reconciliation_count": 0,
+                "current_day_protected_count": 2,
+            }
+        },
+    )
+    _write_json(health / "storage_quota_guard_latest.json", {"quota_summary": {"hard_breaches": 0, "soft_breaches": 0}, "lanes": []})
+    _write_json(health / "storage_mount_guard_latest.json", {"external_available": True, "storage_mode": "external"})
+
+    payload = src.build_payload(tmp_path, now_utc=now)
+
+    managed_tail = payload["backpressure"]["managed_tiny_hot_tail"]
+    assert managed_tail["active"] is True
+    assert managed_tail["stale_pending_lines"] == 116
+    assert payload["backpressure"]["oldest_pending_age_seconds"] == 0.0
+    assert payload["backpressure"]["effective_raw_live"]["unmanaged_oldest_pending_age_seconds"] == 564.016
+    assert payload["backpressure"]["effective_raw_live"]["age_reconciliation_source"] == "managed_tiny_hot_tail"
+    assert payload["sql_ingestion_pending_overlay"]["raw_oldest_pending_age_seconds"] == 564.016
+    assert payload["pressure_index"] < 0.75
+    assert payload["overall_status"] == "ready"
+    assert payload["severity"] == "stable"
+    assert payload["backlog_relief_contract"]["overall_grade"] == "A+"
+    assert "raw_live_expansion_headroom" not in payload["backlog_relief_contract"]["active_issue_ids"]
+    assert "stale_old_pending_work" not in payload["backlog_relief_contract"]["active_issue_ids"]
+    assert payload["storage_efficiency_contract"]["grade"] == "A+"
+    assert payload["continuous_run_soak_contract"]["soak_ready"] is True
+
+
 def test_ingestion_storage_control_estimates_drain_time_and_retention_pressure(tmp_path: Path) -> None:
     now = datetime.now(timezone.utc)
     health = tmp_path / "governance" / "health"
