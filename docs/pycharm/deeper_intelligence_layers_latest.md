@@ -1,6 +1,6 @@
 # Deeper Intelligence Layers
 
-- Updated UTC: `2026-07-28T14:09:32.954742+00:00`
+- Updated UTC: `2026-07-30T18:50:57.000945+00:00`
 - Status: `advisory`
 - Layers: `10`
 - Ready/Advisory/Degraded/Blocked: `9/1/0/0`
@@ -14,7 +14,7 @@
 
 | Layer | Status | Score | Decision |
 | --- | --- | ---: | --- |
-| `causal_world_model` | `ready` | `92` | rank_root_causes_before_restart_retrain_or_expansion |
+| `causal_world_model` | `ready` | `94` | rank_root_causes_before_restart_retrain_or_expansion |
 | `belief_ledger_confidence` | `advisory` | `84` | require_confidence_floor_and_freshness_age_on_all_promotions |
 | `digital_twin_replay` | `ready` | `90` | simulate_upgrade_and_policy_changes_against_shadow_replay_before_promotion |
 | `adversarial_market_infra_simulator` | `ready` | `92` | stress_bad_ticks_broker_lag_queue_refill_storage_route_failure_and_fanout_spikes |

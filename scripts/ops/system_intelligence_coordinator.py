@@ -99,6 +99,7 @@ SIGNAL_SOURCES: tuple[dict[str, str], ...] = (
     {"name": "training_runtime", "category": "training", "path": "governance/health/training_runtime_control_latest.json"},
     {"name": "training_data_intake", "category": "training", "path": "governance/health/training_data_intake_expansion_latest.json"},
     {"name": "bot_quality", "category": "quality", "path": "governance/health/bot_quality_autopilot_latest.json"},
+    {"name": "bot_fleet_production_posture", "category": "quality", "path": "governance/health/bot_fleet_production_posture_latest.json", "optional": "true"},
     {"name": "core_materialization", "category": "quality", "path": "governance/health/core_bot_materialization_guard_latest.json"},
     {"name": "system_self_model", "category": "self_model", "path": "governance/health/system_self_model_latest.json"},
     {"name": "platform_brain_v6", "category": "brain", "path": "governance/health/platform_brain_v6_latest.json"},
@@ -132,6 +133,7 @@ SIGNAL_REFRESH_COMMANDS: dict[str, list[str]] = {
     "sleeve_ingestion_production_control": ["./scripts/ops/opsctl.sh", "sleeve-ingestion-production-control", "--json"],
     "sleeve_strategy_coverage": ["./scripts/ops/opsctl.sh", "sleeve-strategy-coverage", "--json"],
     "bot_quality": ["./scripts/ops/opsctl.sh", "bot-quality-autopilot", "--json"],
+    "bot_fleet_production_posture": ["./scripts/ops/opsctl.sh", "bot-fleet-production-posture", "--json"],
     "operating_platform_upgrade": ["./scripts/ops/opsctl.sh", "operating-platform-upgrade", "--apply", "--json"],
     "distributed_cell_architecture": ["./scripts/ops/opsctl.sh", "distributed-cell-architecture", "--apply", "--json"],
     "cell_federation_intelligence": ["./scripts/ops/opsctl.sh", "cell-federation-intelligence", "--apply", "--json"],
@@ -161,6 +163,7 @@ STALE_SIGNAL_LIMITS: dict[str, float] = {
     "sleeve_ingestion_production_control": 240.0,
     "sleeve_strategy_coverage": 240.0,
     "bot_quality": 240.0,
+    "bot_fleet_production_posture": 240.0,
     "operating_platform_upgrade": 240.0,
     "system_self_model": 240.0,
     "bot_intelligence_mesh": 240.0,
@@ -813,6 +816,32 @@ def _bot_quality_metrics(project_root: Path, payload: dict[str, Any]) -> dict[st
     }
 
 
+def _bot_fleet_production_metrics(payload: dict[str, Any]) -> dict[str, Any]:
+    posture = _as_dict(payload.get("production_posture_contract"))
+    registry = _as_dict(payload.get("registry_contract"))
+    quality = _as_dict(payload.get("quality_lane_contract"))
+    mesh = _as_dict(payload.get("mesh_contract"))
+    overfit = _as_dict(payload.get("overfitting_contract"))
+    paper = _as_dict(payload.get("paper_standard_contract"))
+    return {
+        "grade": str(posture.get("grade") or ""),
+        "score": _safe_float(posture.get("score"), 0.0),
+        "state": str(posture.get("state") or ""),
+        "missing": [str(item) for item in _as_list(posture.get("missing"))],
+        "active_bots": _safe_int(registry.get("active_bots"), 0),
+        "non_deleted_bots": _safe_int(registry.get("non_deleted_bots"), 0),
+        "paper_live_data_enabled_bots": _safe_int(paper.get("paper_live_data_enabled_bots"), 0),
+        "live_execution_locked": bool(paper.get("live_execution_locked", False)),
+        "live_authority_count": _safe_int(registry.get("live_authority_count"), 0),
+        "quality_debt_mode": str(quality.get("quality_debt_mode") or ""),
+        "planned_queue_count": _safe_int(quality.get("planned_queue_count"), 0),
+        "weak_sleeve_count": _safe_int(quality.get("weak_sleeve_count"), 0),
+        "mesh_route_ready": bool(mesh.get("route_ready", False)),
+        "communication_readiness_score": _safe_float(mesh.get("communication_readiness_score"), 0.0),
+        "overfit_risk_bot_count": _safe_int(overfit.get("risk_bot_count"), 0),
+    }
+
+
 def _guarded_paper_soak_green(project_root: Path) -> bool:
     health = load_json(project_root / "governance" / "health" / "health_fast_latest.json")
     readiness = _as_dict(health.get("operational_readiness"))
@@ -963,6 +992,8 @@ def _metrics_for_signal(name: str, project_root: Path, payload: dict[str, Any]) 
         return _training_runtime_metrics(payload)
     if name == "bot_quality":
         return _bot_quality_metrics(project_root, payload)
+    if name == "bot_fleet_production_posture":
+        return _bot_fleet_production_metrics(payload)
     if name == "writer_process_intelligence":
         return _writer_metrics(payload)
     if name in {"drainer_intelligence", "backpressure_drainer_fleet", "backpressure_super_drainer"}:
@@ -1208,6 +1239,13 @@ def _severity_for_signal(name: str, status: str, metrics: dict[str, Any], loaded
             score = max(score, 100)
         elif _safe_float(metrics.get("score"), 100.0) < 94.0:
             score = max(score, 55)
+    elif name == "bot_fleet_production_posture":
+        if not bool(metrics.get("live_execution_locked", True)) or _safe_int(metrics.get("live_authority_count"), 0) > 0:
+            score = max(score, 100)
+        elif _as_list(metrics.get("missing")):
+            score = max(score, 75)
+        elif _safe_float(metrics.get("score"), 100.0) < 94.0:
+            score = max(score, 55)
     elif name == "sleeve_strategy_coverage":
         if _as_list(metrics.get("missing_runtime_sleeves")):
             score = max(score, 80)
@@ -1362,6 +1400,14 @@ def _signal_summary(name: str, metrics: dict[str, Any]) -> str:
             f"coverage_shortfall={metrics.get('coverage_shortfall_bots', 0)} "
             f"teachers={metrics.get('qualified_teacher_count', 0)}/{metrics.get('elite_teacher_count', 0)} "
             f"guarded_advisory={metrics.get('guarded_paper_quality_debt_advisory', False)}"
+        )
+    if name == "bot_fleet_production_posture":
+        return (
+            f"grade={metrics.get('grade', '')} "
+            f"active={metrics.get('active_bots', 0)} "
+            f"queue={metrics.get('planned_queue_count', 0)} "
+            f"weak_sleeves={metrics.get('weak_sleeve_count', 0)} "
+            f"missing={len(_as_list(metrics.get('missing')))}"
         )
     if name == "writer_process_intelligence":
         return f"writer={metrics.get('writer_state', '')} action={metrics.get('action', '')}"

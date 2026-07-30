@@ -1,8 +1,8 @@
 # Intelligence Layers PyCharm Index
 
-- Updated UTC: `2026-07-28T18:59:16.791694+00:00`
+- Updated UTC: `2026-07-30T18:55:10.159819+00:00`
 - Whole-System Status: `advisory`
-- Top Risk: `training_runtime`
+- Top Risk: `macro_event_intelligence`
 - Safe Next Command: `./scripts/ops/opsctl.sh expansion-capacity --json`
 
 ## Bot Activity Snapshot
@@ -10,7 +10,7 @@
 - Active Bots: `1742`
 - Data-Collection Bots: `1742`
 - Paper-Live-Data Bots: `1584`
-- Sleeve Profiles: `7`
+- Sleeve Profiles: `202`
 - Active Marker: <span style="color:#0b5cad;font-weight:700">ACTIVE</span>
 - PyCharm Note: bots can be running under launchd or Terminal even when PyCharm's Run panel is empty.
 
@@ -58,8 +58,8 @@
 
 ## Intelligence Layers
 
-- `super_intelligence`: status `advisory`, mode `expand`, action `cautious_expansion_rehearsal`
-- `outcome_learning`: status `ready`, verdict `monitoring`
+- `super_intelligence`: status `ready`, mode `expand`, action `cautious_expansion_rehearsal`
+- `outcome_learning`: status `ready`, verdict `effective`
 - `paper_lane_governor`: status `ready`, mode `full_eligible_paper_soak_active`, score `1584`
 - `symbol_universe_intelligence`: status `ready`, score `100.0`
 - `cognitive_twin_counterfactuals`: status `ready`, score `38`, next `base_case`

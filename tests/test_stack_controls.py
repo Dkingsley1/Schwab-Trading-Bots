@@ -872,6 +872,20 @@ def test_opsctl_exposes_sleeve_ingestion_production_control() -> None:
     assert "sleeve_ingestion_production_control" in intelligence_text
 
 
+def test_opsctl_exposes_bot_fleet_production_posture() -> None:
+    text = _read(OPSCTL_PATH)
+    env_text = _read(PROJECT_ROOT / "scripts" / "ops" / "load_runtime_env.sh")
+    intelligence_text = _read(PROJECT_ROOT / "scripts" / "ops" / "system_intelligence_coordinator.py")
+
+    assert "bot-fleet-production-posture|bot-fleet-posture|all-bot-production-posture|all-bots-production" in text
+    assert "bot_fleet_production_posture.py" in text
+    assert "bot-fleet-production-posture [--apply] [--json]" in text
+    assert ".env.bot_fleet_production_posture_override" in env_text
+    assert env_text.index(".env.sleeve_ingestion_production_override") < env_text.index(".env.bot_fleet_production_posture_override")
+    assert "bot_fleet_production_posture_latest.json" in intelligence_text
+    assert "_bot_fleet_production_metrics" in intelligence_text
+
+
 def test_opsctl_exposes_income_operating_platform() -> None:
     text = _read(OPSCTL_PATH)
 

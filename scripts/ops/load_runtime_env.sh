@@ -90,6 +90,7 @@ for candidate in \
   "$PROJECT_ROOT/config/.env.sleeve_ticker_universe_override" \
   "$PROJECT_ROOT/config/.env.paper_live_data_standard_override" \
   "$PROJECT_ROOT/config/.env.sleeve_ingestion_production_override" \
+  "$PROJECT_ROOT/config/.env.bot_fleet_production_posture_override" \
   "$PROJECT_ROOT/config/.env.paper_execution_calibration_override" \
   "$PROJECT_ROOT/config/.env.paper_400_ramp_override" \
   "$PROJECT_ROOT/config/.env.swap_pressure_override" \

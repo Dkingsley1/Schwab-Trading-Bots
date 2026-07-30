@@ -1198,6 +1198,9 @@ case "$cmd" in
   bot-intelligence-mesh|bot-communication-mesh|teacher-student-mesh|hierarchical-bot-mesh|bot-mesh)
     run_then_refresh_self_model "$PY" "$PROJECT_ROOT/scripts/ops/bot_intelligence_mesh.py" "$@"
     ;;
+  bot-fleet-production-posture|bot-fleet-posture|all-bot-production-posture|all-bots-production)
+    run_then_refresh_self_model "$PY" "$PROJECT_ROOT/scripts/ops/bot_fleet_production_posture.py" "$@"
+    ;;
   overfitting-awareness|overfit-awareness|generalization-awareness|overfit-guard)
     exec "$PY" "$PROJECT_ROOT/scripts/ops/overfitting_awareness_layer.py" "$@"
     ;;
@@ -2879,6 +2882,7 @@ opsctl commands:
   cell-federation-intelligence|cell-intelligence [--apply] [--json]
   deeper-intelligence-layers|deeper-self-awareness [--apply] [--json]
   bot-intelligence-mesh|teacher-student-mesh [--edge-limit N] [--json]
+  bot-fleet-production-posture [--apply] [--json]
   overfitting-awareness|overfit-awareness [--json]
   distillation-plan|teacher-student-plan [--teacher-max N] [--student-max-runs N] [--teachers-per-student N] [--json]
   pycharm-active-bot-highlights [--apply] [--json]
