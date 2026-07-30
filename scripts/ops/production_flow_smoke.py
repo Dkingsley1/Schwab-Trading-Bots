@@ -27,6 +27,7 @@ POLICY_FILES = {
     "credential_runtime": "config/credential_runtime_policy.json",
     "promotion_gate_snapshots": "config/promotion_gate_snapshot_policy.json",
     "generated_artifacts": "config/generated_artifact_policy.json",
+    "use_mode_compliance": "config/use_mode_compliance_policy_v1.json",
     "commercial_readiness": "config/commercial_readiness_framework_v1.json",
     "live_canary_readiness": "config/live_canary_readiness_contract.json",
 }
@@ -186,6 +187,7 @@ def check_policy_configs(project_root: Path) -> dict[str, Any]:
     credential = loaded["credential_runtime"]
     promotion = loaded["promotion_gate_snapshots"]
     generated = loaded["generated_artifacts"]
+    use_mode = loaded["use_mode_compliance"]
     commercial = loaded["commercial_readiness"]
     canary = loaded["live_canary_readiness"]
     forbidden_paths = loaded["self_healing"].get("forbidden_source_paths") or []
@@ -205,6 +207,24 @@ def check_policy_configs(project_root: Path) -> dict[str, Any]:
         "snapshot_versioning_required": bool((promotion.get("snapshot_versioning") or {}).get("required")),
         "generated_autocommit_disabled": generated.get("auto_commit_generated_changes") is False,
         "large_reports_externalized": generated.get("large_report_storage") == "ci_or_release_artifact",
+        "use_mode_has_operator_grade_personal_autonomy": {
+            str(row.get("criterion_id") or "")
+            for row in (use_mode.get("personal_use_operator_grade_criteria") or [])
+            if isinstance(row, dict)
+        }
+        >= {
+            "base_personal_a_plus_ready",
+            "a_plus_operating_packet_all_lanes",
+            "unattended_soak_green",
+            "source_mutation_guard_clean",
+            "production_flow_smoke_ready",
+            "autonomy_recovery_score",
+            "disaster_recovery_blackstart_ready",
+            "data_plane_recovery_managed",
+            "live_money_boundaries_locked",
+            "commercial_personal_boundary_clean",
+            "security_privacy_runtime_clean",
+        },
         "commercial_framework_has_7_sections": set(commercial.get("seven_sections") or []) == {
             "commercial_use_modes",
             "registration_review_gates",
@@ -245,6 +265,7 @@ def check_ci_guardrails(project_root: Path) -> dict[str, Any]:
         "ok": "production_flow_smoke.py --json" in text
         and "command_validity_bot.py --help" in text
         and "commands_hygiene_bot.py --help" in text
+        and "use_mode_compliance_guard.py --help" in text
         and "commercial_readiness_control.py --help" in text
         and "source_mutation_guard.py --check-clean --json" in text
         and "production_hardening_watch.py --help" in text
@@ -257,6 +278,7 @@ def check_ci_guardrails(project_root: Path) -> dict[str, Any]:
         "production_smoke_in_ci": "production_flow_smoke.py --json" in text,
         "command_validity_bot_in_ci": "command_validity_bot.py --help" in text,
         "commands_hygiene_bot_in_ci": "commands_hygiene_bot.py --help" in text,
+        "use_mode_compliance_guard_in_ci": "use_mode_compliance_guard.py --help" in text,
         "commercial_readiness_control_in_ci": "commercial_readiness_control.py --help" in text,
         "source_mutation_guard_in_ci": "source_mutation_guard.py --check-clean --json" in text,
         "production_hardening_watch_in_ci": "production_hardening_watch.py --help" in text,

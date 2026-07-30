@@ -91,6 +91,64 @@
       "artifact": "governance/health/paper_runtime_profitability_controls_latest.json"
     }
   ],
+  "personal_use_operator_grade_criteria": [
+    {
+      "criterion_id": "base_personal_a_plus_ready",
+      "title": "Base Personal A+ Ready",
+      "artifact": "governance/health/use_mode_compliance_guard_latest.json"
+    },
+    {
+      "criterion_id": "a_plus_operating_packet_all_lanes",
+      "title": "A+ Operating Packet All Lanes",
+      "artifact": "governance/health/a_plus_operating_packet_latest.json"
+    },
+    {
+      "criterion_id": "unattended_soak_green",
+      "title": "Unattended Soak Green",
+      "artifact": "governance/health/unattended_soak_readiness_latest.json"
+    },
+    {
+      "criterion_id": "source_mutation_guard_clean",
+      "title": "Source Mutation Guard Clean",
+      "artifact": "computed:source_mutation_guard"
+    },
+    {
+      "criterion_id": "production_flow_smoke_ready",
+      "title": "Production Flow Smoke Ready",
+      "artifact": "computed:production_flow_smoke"
+    },
+    {
+      "criterion_id": "autonomy_recovery_score",
+      "title": "Autonomy Recovery Score",
+      "artifact": "governance/health/autonomy_control_plane_latest.json",
+      "minimum_score": 95.0
+    },
+    {
+      "criterion_id": "disaster_recovery_blackstart_ready",
+      "title": "Disaster Recovery And Blackstart Ready",
+      "artifact": "governance/health/storage_disaster_recovery_latest.json"
+    },
+    {
+      "criterion_id": "data_plane_recovery_managed",
+      "title": "Data Plane Recovery Managed",
+      "artifact": "governance/health/data_plane_recovery_controller_latest.json"
+    },
+    {
+      "criterion_id": "live_money_boundaries_locked",
+      "title": "Live Money Boundaries Locked",
+      "artifact": "governance/health/live_canary_readiness_contract_latest.json"
+    },
+    {
+      "criterion_id": "commercial_personal_boundary_clean",
+      "title": "Commercial Personal Boundary Clean",
+      "artifact": "governance/health/commercial_readiness_control_latest.json"
+    },
+    {
+      "criterion_id": "security_privacy_runtime_clean",
+      "title": "Security And Privacy Runtime Clean",
+      "artifact": "governance/health/security_audit_latest.json"
+    }
+  ],
   "commercial_boundary_triggers": [
     {
       "trigger_id": "compensated_securities_advice",

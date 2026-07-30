@@ -1213,8 +1213,18 @@ def _use_mode_compliance_awareness(use_mode: dict[str, Any]) -> dict[str, Any]:
         }
     commercial = use_mode.get("commercial_use") if isinstance(use_mode.get("commercial_use"), dict) else {}
     personal = use_mode.get("personal_use") if isinstance(use_mode.get("personal_use"), dict) else {}
+    personal_autonomy = (
+        personal.get("operator_grade_personal_autonomy")
+        if isinstance(personal.get("operator_grade_personal_autonomy"), dict)
+        else {}
+    )
     authority = use_mode.get("authority_boundaries") if isinstance(use_mode.get("authority_boundaries"), dict) else {}
     commercial_blockers = [str(item) for item in commercial.get("blockers", []) if str(item).strip()] if isinstance(commercial.get("blockers"), list) else []
+    personal_autonomy_blockers = (
+        [str(item) for item in personal_autonomy.get("blockers", []) if str(item).strip()]
+        if isinstance(personal_autonomy.get("blockers"), list)
+        else []
+    )
     awareness_status = "ready"
     if guard_status == "blocked" or commercial_blockers or bool(authority.get("live_execution_authority", False)):
         awareness_status = "blocked"
@@ -1226,6 +1236,12 @@ def _use_mode_compliance_awareness(use_mode: dict[str, Any]) -> dict[str, Any]:
         "guard_status": guard_status or "missing",
         "personal_grade": str(personal.get("grade") or "unknown"),
         "perfect_personal_use_ready": bool(personal.get("perfect_personal_use_ready", False)),
+        "operator_grade_personal_autonomy_ready": bool(personal_autonomy.get("ready", False)),
+        "personal_strength_tier": str(personal_autonomy.get("tier") or "unknown"),
+        "personal_strength_score": _safe_float(personal_autonomy.get("score"), 0.0),
+        "personal_strength_blocker_count": len(personal_autonomy_blockers),
+        "personal_strength_blockers": personal_autonomy_blockers,
+        "next_after_production_personal": str(personal_autonomy.get("next_after_production") or "operator_grade_personal_autonomy"),
         "personal_live_money_ready": bool(personal.get("personal_live_money_ready", False)),
         "commercial_use_intent_detected": bool(commercial.get("commercial_use_intent_detected", False)),
         "commercial_clearance_status": str(commercial.get("commercial_clearance_status") or ""),
@@ -1237,10 +1253,11 @@ def _use_mode_compliance_awareness(use_mode: dict[str, Any]) -> dict[str, Any]:
         "raw_profitability_is_not_live_money_proof": bool(authority.get("raw_profitability_is_not_live_money_proof", True)),
         "needs": [
             *([] if bool(personal.get("perfect_personal_use_ready", False)) else ["resolve_personal_use_posture_blockers"]),
+            *([] if bool(personal_autonomy.get("ready", False)) else ["clear_operator_grade_personal_autonomy_blockers"]),
             *([] if not commercial_blockers else ["clear_commercial_boundary_blockers_before_public_or_customer_use"]),
         ],
         "next_safe_command": ["./scripts/ops/opsctl.sh", "use-mode-compliance", "--json"],
-        "control_contract": "personal_a_plus_is_guarded_paper_data_collection_readiness_commercial_or_customer_use_requires_explicit_review_evidence",
+        "control_contract": "personal_a_plus_is_guarded_paper_data_collection_readiness_operator_grade_personal_autonomy_is_the_next_private_use_bar_commercial_or_customer_use_requires_explicit_review_evidence",
     }
 
 

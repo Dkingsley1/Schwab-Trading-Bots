@@ -19,9 +19,12 @@ def test_production_flow_smoke_passes_current_contract() -> None:
     assert "showcase_generated_artifact_flow" in names
     assert "stale_latest_ticker_universe_contract" in names
     assert "ci_production_smoke_coverage" in names
+    policy_check = next(item for item in payload["checks"] if item["name"] == "deployment_healing_credential_promotion_policies")
+    assert policy_check["conditions"]["use_mode_has_operator_grade_personal_autonomy"] is True
     ci_check = next(item for item in payload["checks"] if item["name"] == "ci_production_smoke_coverage")
     assert ci_check["command_validity_bot_in_ci"] is True
     assert ci_check["commands_hygiene_bot_in_ci"] is True
+    assert ci_check["use_mode_compliance_guard_in_ci"] is True
     assert ci_check["production_hardening_watch_in_ci"] is True
     assert ci_check["infrabot_library_self_awareness_control_in_ci"] is True
     assert ci_check["paper_400_ramp_control_in_ci"] is True

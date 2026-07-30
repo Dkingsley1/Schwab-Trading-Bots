@@ -75,6 +75,77 @@ def _seed_personal_ready(project_root: Path) -> None:
     )
 
 
+def _seed_operator_grade_ready(project_root: Path) -> None:
+    now = datetime.now(timezone.utc).isoformat()
+    health = project_root / "governance" / "health"
+    _write_json(
+        health / "a_plus_operating_packet_latest.json",
+        {
+            "timestamp_utc": now,
+            "overall_status": "ready",
+            "ok": True,
+            "overall_score": 100.0,
+            "a_plus_ready": True,
+            "lane_count": 10,
+            "a_plus_lane_count": 10,
+            "non_a_plus_lane_count": 0,
+            "blocker_count": 0,
+        },
+    )
+    _write_json(
+        health / "unattended_soak_readiness_latest.json",
+        {
+            "timestamp_utc": now,
+            "overall_status": "ready",
+            "ok": True,
+            "overall_grade": "A+",
+            "safe_to_leave_unattended": True,
+            "blockers": [],
+        },
+    )
+    _write_json(health / "autonomy_control_plane_latest.json", {"timestamp_utc": now, "overall_status": "ready", "ok": True, "autonomy_score": 98.5})
+    _write_json(health / "storage_disaster_recovery_latest.json", {"timestamp_utc": now, "overall_status": "ready", "ok": True})
+    _write_json(health / "blackstart_recovery_latest.json", {"timestamp_utc": now, "overall_status": "ready", "ok": True})
+    _write_json(
+        health / "data_plane_recovery_controller_latest.json",
+        {
+            "timestamp_utc": now,
+            "overall_status": "degraded",
+            "recovery_state": "recovering_under_guard",
+            "write_failure_count": 2,
+            "queue_depth": 125,
+        },
+    )
+    _write_json(
+        health / "live_canary_readiness_contract_latest.json",
+        {
+            "timestamp_utc": now,
+            "overall_status": "blocked",
+            "live_canary_money_ready": False,
+            "blocked_milestones": ["m01_continuous_soak_no_hard_blockers"],
+            "authority_boundaries": {"live_execution_authority": False},
+            "live_money_canary_milestones": [
+                {"milestone_id": "m11_use_mode_and_commercial_boundary", "ready": True, "blockers": []}
+            ],
+        },
+    )
+    _write_json(
+        health / "commercial_readiness_control_latest.json",
+        {
+            "timestamp_utc": now,
+            "overall_status": "ready",
+            "commercial_product_mode": "personal_only",
+            "commercial_intent": False,
+            "commercial_release_blocked": False,
+            "grade": "A+",
+            "blockers": [],
+        },
+    )
+    _write_json(health / "security_audit_latest.json", {"timestamp_utc": now, "overall_status": "ready", "ok": True})
+    _write_json(health / "secret_scan_latest.json", {"timestamp_utc": now, "overall_status": "ready", "findings_count": 0})
+    _write_json(health / "telemetry_redaction_canary_latest.json", {"timestamp_utc": now, "overall_status": "ready", "ok": True})
+
+
 def test_use_mode_guard_grades_clean_personal_paper_use_a_plus(tmp_path: Path) -> None:
     project_root = tmp_path / "project"
     _seed_personal_ready(project_root)
@@ -89,6 +160,44 @@ def test_use_mode_guard_grades_clean_personal_paper_use_a_plus(tmp_path: Path) -
     assert payload["commercial_use"]["commercial_use_intent_detected"] is False
     assert payload["authority_boundaries"]["live_execution_authority"] is False
     assert payload["authority_boundaries"]["does_not_enable_live_execution"] is True
+
+
+def test_use_mode_guard_promotes_clean_personal_to_operator_grade_autonomy(tmp_path: Path, monkeypatch) -> None:
+    project_root = tmp_path / "project"
+    _seed_personal_ready(project_root)
+    _seed_operator_grade_ready(project_root)
+    monkeypatch.setattr(src.source_mutation_guard, "build_payload", lambda _root: {"overall_status": "ready", "ok": True, "dirty_count": 0, "dirty_entries": []})
+    monkeypatch.setattr(src.production_flow_smoke, "build_payload", lambda _root: {"overall_status": "ready", "ok": True, "failed_checks": []})
+
+    payload = src.build_payload(project_root, env={})
+
+    strength = payload["personal_use"]["operator_grade_personal_autonomy"]
+    assert payload["personal_use"]["grade"] == "A+"
+    assert strength["ready"] is True
+    assert strength["tier"] == "operator_grade_personal_autonomy"
+    assert strength["score"] == 100.0
+    assert strength["blockers"] == []
+    assert payload["authority_boundaries"]["live_execution_authority"] is False
+
+
+def test_operator_grade_personal_autonomy_blocks_without_a_plus_packet(tmp_path: Path, monkeypatch) -> None:
+    project_root = tmp_path / "project"
+    _seed_personal_ready(project_root)
+    _seed_operator_grade_ready(project_root)
+    _write_json(
+        project_root / "governance" / "health" / "a_plus_operating_packet_latest.json",
+        {"overall_status": "needs_work", "ok": False, "a_plus_ready": False, "non_a_plus_lane_count": 1},
+    )
+    monkeypatch.setattr(src.source_mutation_guard, "build_payload", lambda _root: {"overall_status": "ready", "ok": True, "dirty_count": 0, "dirty_entries": []})
+    monkeypatch.setattr(src.production_flow_smoke, "build_payload", lambda _root: {"overall_status": "ready", "ok": True, "failed_checks": []})
+
+    payload = src.build_payload(project_root, env={})
+
+    strength = payload["personal_use"]["operator_grade_personal_autonomy"]
+    assert payload["personal_use"]["perfect_personal_use_ready"] is True
+    assert strength["ready"] is False
+    assert "a_plus_operating_packet_all_lanes:a_plus_operating_packet_not_ready" in strength["blockers"]
+    assert "a_plus_operating_packet_all_lanes:non_a_plus_lanes=1" in strength["blockers"]
 
 
 def test_use_mode_guard_blocks_customer_execution_without_review(tmp_path: Path) -> None:

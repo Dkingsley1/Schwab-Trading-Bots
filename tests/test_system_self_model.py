@@ -574,6 +574,13 @@ def test_system_self_model_includes_use_mode_compliance_awareness(tmp_path: Path
                 "grade": "A+",
                 "perfect_personal_use_ready": True,
                 "personal_live_money_ready": False,
+                "operator_grade_personal_autonomy": {
+                    "ready": True,
+                    "tier": "operator_grade_personal_autonomy",
+                    "score": 100.0,
+                    "next_after_production": "operator_grade_personal_autonomy",
+                    "blockers": [],
+                },
             },
             "commercial_use": {
                 "commercial_use_intent_detected": False,
@@ -596,6 +603,9 @@ def test_system_self_model_includes_use_mode_compliance_awareness(tmp_path: Path
     assert use_mode["status"] == "ready"
     assert use_mode["use_mode"] == "personal"
     assert use_mode["personal_grade"] == "A+"
+    assert use_mode["operator_grade_personal_autonomy_ready"] is True
+    assert use_mode["personal_strength_tier"] == "operator_grade_personal_autonomy"
+    assert use_mode["next_after_production_personal"] == "operator_grade_personal_autonomy"
     assert use_mode["live_execution_authority"] is False
     assert "use_mode_compliance" in payload["control_contract"]["memory_surfaces"]
 

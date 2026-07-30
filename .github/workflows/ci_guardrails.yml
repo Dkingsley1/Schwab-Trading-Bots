@@ -37,6 +37,7 @@ jobs:
             scripts/weekly_gate_blocker_report.py \
             scripts/ops/command_validity_bot.py \
             scripts/ops/commands_hygiene_bot.py \
+            scripts/ops/use_mode_compliance_guard.py \
             scripts/ops/commercial_readiness_control.py \
             scripts/ops/live_canary_readiness_contract.py \
             scripts/ops/paper_400_ramp_control.py \
@@ -63,6 +64,7 @@ jobs:
           python scripts/weekly_gate_blocker_report.py --help >/dev/null
           python scripts/ops/command_validity_bot.py --help >/dev/null
           python scripts/ops/commands_hygiene_bot.py --help >/dev/null
+          python scripts/ops/use_mode_compliance_guard.py --help >/dev/null
           python scripts/ops/commercial_readiness_control.py --help >/dev/null
           python scripts/ops/live_canary_readiness_contract.py --help >/dev/null
           python scripts/ops/paper_400_ramp_control.py --help >/dev/null

@@ -560,6 +560,12 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
             "use_mode": use_mode.get("use_mode") or "personal",
             "personal_grade": _dict(use_mode.get("personal_use")).get("grade"),
             "perfect_personal_use_ready": bool(_dict(use_mode.get("personal_use")).get("perfect_personal_use_ready", False)),
+            "operator_grade_personal_autonomy_ready": bool(
+                _dict(_dict(use_mode.get("personal_use")).get("operator_grade_personal_autonomy")).get("ready", False)
+            ),
+            "personal_strength_tier": _dict(_dict(use_mode.get("personal_use")).get("operator_grade_personal_autonomy")).get("tier"),
+            "personal_strength_score": _safe_float(_dict(_dict(use_mode.get("personal_use")).get("operator_grade_personal_autonomy")).get("score"), 0.0),
+            "personal_strength_blockers": _dict(_dict(use_mode.get("personal_use")).get("operator_grade_personal_autonomy")).get("blockers", []),
             "commercial_use_intent_detected": bool(_dict(use_mode.get("commercial_use")).get("commercial_use_intent_detected", False)),
             "commercial_clearance_status": _dict(use_mode.get("commercial_use")).get("commercial_clearance_status"),
             "commercial_blockers": _dict(use_mode.get("commercial_use")).get("blockers", []),

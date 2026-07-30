@@ -13,8 +13,10 @@ if __package__ in {None, ""}:
     if str(PROJECT_ROOT) not in sys.path:
         sys.path.insert(0, str(PROJECT_ROOT))
     from scripts.ops.long_runtime_common import PROJECT_ROOT, iso_now, load_json, ordered_unique, write_payload
+    from scripts.ops import production_flow_smoke, source_mutation_guard
 else:
     from .long_runtime_common import PROJECT_ROOT, iso_now, load_json, ordered_unique, write_payload
+    from . import production_flow_smoke, source_mutation_guard
 
 
 DEFAULT_CONFIG_PATH = PROJECT_ROOT / "config" / "use_mode_compliance_policy_v1.json"
@@ -60,6 +62,18 @@ def _grade_at_least(raw: Any, floor: str) -> bool:
     return GRADE_RANK.get(_grade(raw), -1) >= GRADE_RANK.get(_grade(floor), 99)
 
 
+def _payload_ready(payload: dict[str, Any], *, allow_guarded_recovery: bool = False) -> bool:
+    if not payload:
+        return False
+    status = _status(payload.get("overall_status") or payload.get("status"))
+    ok = payload.get("ok")
+    if ok is not None:
+        return bool(ok) and status not in BAD_STATUSES
+    if allow_guarded_recovery and status in {"ready", "guarded_ready", "stable", "advisory", "degraded"}:
+        return True
+    return status in READY_STATUSES
+
+
 def _env_bool(env: dict[str, str], name: str, default: bool = False) -> bool:
     value = str(env.get(name, "")).strip().lower()
     if not value:
@@ -70,6 +84,17 @@ def _env_bool(env: dict[str, str], name: str, default: bool = False) -> bool:
 def _health(project_root: Path, name: str) -> dict[str, Any]:
     payload = load_json(project_root / "governance" / "health" / name)
     return payload if isinstance(payload, dict) else {}
+
+
+def _computed_control_payload(name: str, project_root: Path) -> dict[str, Any]:
+    try:
+        if name == "source_mutation_guard":
+            return source_mutation_guard.build_payload(project_root)
+        if name == "production_flow_smoke":
+            return production_flow_smoke.build_payload(project_root)
+    except Exception as exc:
+        return {"overall_status": "blocked", "ok": False, "error": f"{type(exc).__name__}: {exc}"}
+    return {}
 
 
 def _criterion(
@@ -174,6 +199,234 @@ def _commercial_boundary(
         "blockers": blockers,
         "approvals": approvals,
         "policy": "commercial_or_customer_facing_use_is_blocked_until_review_evidence_is_explicitly_present",
+    }
+
+
+def _operator_grade_personal_autonomy(
+    project_root: Path,
+    *,
+    personal: dict[str, Any],
+    commercial: dict[str, Any],
+) -> dict[str, Any]:
+    a_plus_packet = _health(project_root, "a_plus_operating_packet_latest.json")
+    unattended_soak = _health(project_root, "unattended_soak_readiness_latest.json")
+    autonomy = _health(project_root, "autonomy_control_plane_latest.json")
+    storage_dr = _health(project_root, "storage_disaster_recovery_latest.json")
+    blackstart = _health(project_root, "blackstart_recovery_latest.json")
+    data_plane = _health(project_root, "data_plane_recovery_controller_latest.json")
+    live_canary = _health(project_root, "live_canary_readiness_contract_latest.json")
+    commercial_readiness = _health(project_root, "commercial_readiness_control_latest.json")
+    security = _health(project_root, "security_audit_latest.json")
+    secret = _health(project_root, "secret_scan_latest.json")
+    redaction = _health(project_root, "telemetry_redaction_canary_latest.json")
+    source_guard = _computed_control_payload("source_mutation_guard", project_root)
+    production_flow = _computed_control_payload("production_flow_smoke", project_root)
+
+    live_milestones = [row for row in _as_list(live_canary.get("live_money_canary_milestones")) if isinstance(row, dict)]
+    m11 = next((row for row in live_milestones if str(row.get("milestone_id") or "") == "m11_use_mode_and_commercial_boundary"), {})
+    data_plane_state = _status(data_plane.get("recovery_state"))
+    data_plane_managed = bool(
+        data_plane
+        and _status(data_plane.get("overall_status") or data_plane.get("status")) not in {"blocked", "critical", "failed"}
+        and data_plane_state not in {"blocked_backpressure", "blocked", "critical"}
+    )
+    commercial_mode_clean = bool(
+        commercial_readiness
+        and _status(commercial_readiness.get("overall_status") or commercial_readiness.get("status")) not in BAD_STATUSES
+        and not bool(commercial_readiness.get("commercial_intent", False))
+        and not bool(commercial_readiness.get("commercial_release_blocked", False))
+        and not _as_list(commercial_readiness.get("blockers"))
+    )
+    secret_findings = _safe_int(secret.get("findings_count", _as_dict(secret.get("summary")).get("findings_count", 0)), 0)
+    secret_clean = bool(secret and secret_findings == 0 and _status(secret.get("overall_status") or secret.get("status")) not in BAD_STATUSES)
+
+    criteria = [
+        _criterion(
+            "base_personal_a_plus_ready",
+            "Base Personal A+ Ready",
+            bool(personal.get("perfect_personal_use_ready", False) and _grade_at_least(personal.get("grade"), "A+")),
+            ["base_personal_a_plus_not_ready" if not bool(personal.get("perfect_personal_use_ready", False)) else ""],
+            {"personal_grade": personal.get("grade"), "perfect_personal_use_ready": bool(personal.get("perfect_personal_use_ready", False))},
+        ),
+        _criterion(
+            "a_plus_operating_packet_all_lanes",
+            "A+ Operating Packet All Lanes",
+            bool(a_plus_packet and a_plus_packet.get("a_plus_ready", False) and _safe_int(a_plus_packet.get("non_a_plus_lane_count"), 0) == 0),
+            [
+                "a_plus_operating_packet_missing" if not a_plus_packet else "",
+                "a_plus_operating_packet_not_ready" if a_plus_packet and not bool(a_plus_packet.get("a_plus_ready", False)) else "",
+                f"non_a_plus_lanes={_safe_int(a_plus_packet.get('non_a_plus_lane_count'), 0)}" if a_plus_packet and _safe_int(a_plus_packet.get("non_a_plus_lane_count"), 0) > 0 else "",
+            ],
+            {
+                "overall_status": a_plus_packet.get("overall_status") or "missing",
+                "overall_score": _safe_float(a_plus_packet.get("overall_score"), 0.0),
+                "a_plus_ready": bool(a_plus_packet.get("a_plus_ready", False)),
+                "a_plus_lane_count": _safe_int(a_plus_packet.get("a_plus_lane_count"), 0),
+                "lane_count": _safe_int(a_plus_packet.get("lane_count"), 0),
+                "non_a_plus_lane_count": _safe_int(a_plus_packet.get("non_a_plus_lane_count"), 0),
+            },
+        ),
+        _criterion(
+            "unattended_soak_green",
+            "Unattended Soak Green",
+            bool(unattended_soak and _payload_ready(unattended_soak) and unattended_soak.get("safe_to_leave_unattended", False) and _grade_at_least(unattended_soak.get("overall_grade") or unattended_soak.get("grade"), "A")),
+            [
+                "unattended_soak_missing" if not unattended_soak else "",
+                "unattended_soak_not_ready" if unattended_soak and not _payload_ready(unattended_soak) else "",
+                "safe_to_leave_unattended_not_true" if unattended_soak and not bool(unattended_soak.get("safe_to_leave_unattended", False)) else "",
+            ],
+            {
+                "overall_status": unattended_soak.get("overall_status") or "missing",
+                "overall_grade": unattended_soak.get("overall_grade") or unattended_soak.get("grade"),
+                "safe_to_leave_unattended": bool(unattended_soak.get("safe_to_leave_unattended", False)),
+                "blockers": _as_list(unattended_soak.get("blockers")),
+            },
+        ),
+        _criterion(
+            "source_mutation_guard_clean",
+            "Source Mutation Guard Clean",
+            bool(source_guard.get("ok", False)),
+            [
+                "source_mutation_guard_not_clean" if source_guard and not bool(source_guard.get("ok", False)) else "",
+                "source_mutation_guard_missing" if not source_guard else "",
+            ],
+            {
+                "overall_status": source_guard.get("overall_status") or "missing",
+                "dirty_count": _safe_int(source_guard.get("dirty_count"), 0),
+                "dirty_entries": _as_list(source_guard.get("dirty_entries"))[:12],
+                "error": source_guard.get("error"),
+            },
+        ),
+        _criterion(
+            "production_flow_smoke_ready",
+            "Production Flow Smoke Ready",
+            bool(production_flow.get("ok", False)),
+            [
+                "production_flow_smoke_not_ready" if production_flow and not bool(production_flow.get("ok", False)) else "",
+                "production_flow_smoke_missing" if not production_flow else "",
+            ],
+            {
+                "overall_status": production_flow.get("overall_status") or "missing",
+                "failed_checks": _as_list(production_flow.get("failed_checks")),
+                "error": production_flow.get("error"),
+            },
+        ),
+        _criterion(
+            "autonomy_recovery_score",
+            "Autonomy Recovery Score",
+            bool(autonomy and _payload_ready(autonomy, allow_guarded_recovery=True) and _safe_float(autonomy.get("autonomy_score"), 0.0) >= 95.0),
+            [
+                "autonomy_control_plane_missing" if not autonomy else "",
+                "autonomy_control_plane_not_ready" if autonomy and not _payload_ready(autonomy, allow_guarded_recovery=True) else "",
+                "autonomy_score_below_operator_floor" if autonomy and _safe_float(autonomy.get("autonomy_score"), 0.0) < 95.0 else "",
+            ],
+            {
+                "overall_status": autonomy.get("overall_status") or "missing",
+                "autonomy_score": _safe_float(autonomy.get("autonomy_score"), 0.0),
+            },
+        ),
+        _criterion(
+            "disaster_recovery_blackstart_ready",
+            "Disaster Recovery And Blackstart Ready",
+            bool(_payload_ready(storage_dr) and _payload_ready(blackstart)),
+            [
+                "storage_disaster_recovery_not_ready" if not _payload_ready(storage_dr) else "",
+                "blackstart_recovery_not_ready" if not _payload_ready(blackstart) else "",
+            ],
+            {
+                "storage_disaster_recovery_status": storage_dr.get("overall_status") or storage_dr.get("status") or "missing",
+                "blackstart_recovery_status": blackstart.get("overall_status") or blackstart.get("status") or "missing",
+            },
+        ),
+        _criterion(
+            "data_plane_recovery_managed",
+            "Data Plane Recovery Managed",
+            data_plane_managed,
+            [
+                "data_plane_recovery_missing" if not data_plane else "",
+                "data_plane_recovery_not_managed" if data_plane and not data_plane_managed else "",
+            ],
+            {
+                "overall_status": data_plane.get("overall_status") or data_plane.get("status") or "missing",
+                "recovery_state": data_plane.get("recovery_state"),
+                "write_failure_count": _safe_int(data_plane.get("write_failure_count"), 0),
+                "queue_depth": _safe_int(data_plane.get("queue_depth"), 0),
+            },
+        ),
+        _criterion(
+            "live_money_boundaries_locked",
+            "Live Money Boundaries Locked",
+            bool(live_canary and not bool(live_canary.get("live_canary_money_ready", False)) and not bool(_as_dict(live_canary.get("authority_boundaries")).get("live_execution_authority", False)) and (not m11 or bool(m11.get("ready", False)))),
+            [
+                "live_canary_readiness_contract_missing" if not live_canary else "",
+                "live_canary_money_ready_should_not_be_true_for_personal_operator_grade" if live_canary and bool(live_canary.get("live_canary_money_ready", False)) else "",
+                "live_execution_authority_leaked" if bool(_as_dict(live_canary.get("authority_boundaries")).get("live_execution_authority", False)) else "",
+                "use_mode_commercial_boundary_milestone_not_ready" if m11 and not bool(m11.get("ready", False)) else "",
+            ],
+            {
+                "overall_status": live_canary.get("overall_status") or "missing",
+                "live_canary_money_ready": bool(live_canary.get("live_canary_money_ready", False)),
+                "blocked_milestones": _as_list(live_canary.get("blocked_milestones")),
+                "m11_ready": bool(m11.get("ready", False)) if m11 else None,
+            },
+        ),
+        _criterion(
+            "commercial_personal_boundary_clean",
+            "Commercial Personal Boundary Clean",
+            bool(not commercial.get("commercial_use_intent_detected", False) and commercial_mode_clean),
+            [
+                "commercial_use_intent_detected" if commercial.get("commercial_use_intent_detected", False) else "",
+                "commercial_readiness_not_personal_clean" if not commercial_mode_clean else "",
+            ],
+            {
+                "use_mode_commercial_intent": bool(commercial.get("commercial_use_intent_detected", False)),
+                "commercial_readiness_status": commercial_readiness.get("overall_status") or "missing",
+                "commercial_product_mode": commercial_readiness.get("commercial_product_mode") or "personal_only",
+                "commercial_readiness_grade": commercial_readiness.get("grade"),
+            },
+        ),
+        _criterion(
+            "security_privacy_runtime_clean",
+            "Security And Privacy Runtime Clean",
+            bool(_payload_ready(security) and secret_clean and _payload_ready(redaction)),
+            [
+                "security_audit_not_ready" if not _payload_ready(security) else "",
+                "secret_scan_not_clean" if not secret_clean else "",
+                "telemetry_redaction_not_ready" if not _payload_ready(redaction) else "",
+            ],
+            {
+                "security_audit_status": security.get("overall_status") or security.get("status") or "missing",
+                "secret_scan_findings": secret_findings if secret else None,
+                "telemetry_redaction_status": redaction.get("overall_status") or redaction.get("status") or "missing",
+            },
+        ),
+    ]
+
+    ready_count = sum(1 for row in criteria if bool(row.get("ready", False)))
+    score = round((ready_count / max(len(criteria), 1)) * 100.0, 2)
+    ready = bool(ready_count == len(criteria))
+    tier = "operator_grade_personal_autonomy" if ready else (
+        "near_operator_grade_personal_autonomy" if score >= 90.0 else (
+            "a_plus_personal_production" if bool(personal.get("perfect_personal_use_ready", False)) else "personal_needs_work"
+        )
+    )
+    blockers = ordered_unique(
+        f"{row['criterion_id']}:{blocker}"
+        for row in criteria
+        if not bool(row.get("ready", False))
+        for blocker in _as_list(row.get("blockers"))
+    )
+    return {
+        "ready": ready,
+        "tier": tier,
+        "score": score,
+        "strength_grade": "A+ / operator-grade" if ready else "A+ / operator-grade-pending",
+        "next_after_production": "operator_grade_personal_autonomy",
+        "criterion_count": len(criteria),
+        "ready_criterion_count": ready_count,
+        "blockers": blockers,
+        "criteria": criteria,
+        "policy": "operator_grade_personal_autonomy_is_the_next_personal_use_bar_after_production_grade_and_never_grants_live_execution",
     }
 
 
@@ -408,7 +661,7 @@ def _personal_use_posture(project_root: Path, flags: dict[str, bool]) -> dict[st
     if required_ratio < 1.0:
         grade = "A" if required_ratio >= 0.9 else "B" if required_ratio >= 0.8 else "C" if required_ratio >= 0.7 else "D"
     perfect_ready = bool(required_ratio == 1.0)
-    return {
+    personal = {
         "perfect_personal_use_ready": perfect_ready,
         "personal_soak_ready": perfect_ready,
         "personal_live_money_ready": False,
@@ -429,6 +682,7 @@ def _personal_use_posture(project_root: Path, flags: dict[str, bool]) -> dict[st
         },
         "policy": "personal_use_perfection_means_clean_guarded_paper_data_collection_and_read_only_boundaries_not_live_money_or_commercial_clearance",
     }
+    return personal
 
 
 def build_payload(
@@ -456,6 +710,11 @@ def build_payload(
     approvals = _approval_snapshot(config, runtime_env)
     commercial = _commercial_boundary(config=config, env=runtime_env, use_mode=use_mode, flags=flags, approvals=approvals)
     personal = _personal_use_posture(project_root, flags)
+    personal["operator_grade_personal_autonomy"] = _operator_grade_personal_autonomy(
+        project_root,
+        personal=personal,
+        commercial=commercial,
+    )
     active_commercial_block = bool(commercial["commercial_use_intent_detected"] and commercial["blockers"])
     overall_status = "blocked" if active_commercial_block else ("ready" if personal["perfect_personal_use_ready"] else "needs_work")
     authority_boundaries = _as_dict(config.get("authority_boundaries"))
@@ -492,6 +751,9 @@ def build_payload(
                 "keep live orders disabled; this guard never grants live execution authority",
                 "treat personal A+ as guarded paper/data-collection readiness only",
                 "resolve personal-use blockers before calling the system unattended" if not personal["perfect_personal_use_ready"] else "",
+                "clear operator-grade personal autonomy blockers before treating personal use as beyond-production unattended"
+                if not _as_dict(personal.get("operator_grade_personal_autonomy")).get("ready", False)
+                else "",
                 "complete commercial legal and compliance review before marketing, paid signals, customer accounts, custody, copy trading, or customer order execution"
                 if commercial["commercial_use_intent_detected"]
                 else "",
