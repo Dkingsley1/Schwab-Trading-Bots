@@ -87,6 +87,11 @@ HOT_BACKLOG_SUPPORT_TARGET_LINES = 5_000
 STALE_BACKLOG_AGE_SECONDS = 4 * 60
 LIVE_MONEY_BACKLOG_TOTAL_TARGET_LINES = 15_000
 LIVE_MONEY_BACKLOG_AGE_TARGET_SECONDS = 15 * 60
+HIGH_BACKLOG_HOT_PATH_AGE_SLO_SECONDS = 15 * 60
+HIGH_BACKLOG_OPERATOR_NOTICE_AGE_SECONDS = 2 * 60 * 60
+HIGH_BACKLOG_NO_PROGRESS_CYCLE_LIMIT = 2
+HIGH_BACKLOG_MAX_QUICK_CYCLES_PER_WINDOW = 3
+HIGH_BACKLOG_MAX_OFF_HOURS_CYCLES_PER_WINDOW = 8
 
 
 def _safe_float(raw: Any, default: float = 0.0) -> float:
@@ -584,6 +589,15 @@ def _high_backlog_control(
     repair_names = [str(row.get("name") or "") for row in repair_plan if str(row.get("name") or "").strip()]
     attempted_names = [str(row.get("name") or "") for row in attempts if str(row.get("name") or "").strip()]
     attempt_statuses = [str(row.get("status") or "") for row in attempts if isinstance(row, dict)]
+    failed_attempts = [row for row in attempts if str(row.get("status") or "") in {"error", "timed_out"}]
+    no_progress_cycle_count = sum(
+        1
+        for row in cycle_records
+        if isinstance(row, dict)
+        and not bool(_as_dict(row.get("progress")).get("progress_observed", False))
+        and _safe_int(row.get("repair_step_count"), 0) > 0
+    )
+    last_cycle_progress = cycle_records[-1].get("progress") if cycle_records and isinstance(cycle_records[-1], dict) else {}
 
     high_backlog = bool(
         total_pending >= max(pending_threshold * 4, HIGH_BACKLOG_TOTAL_MIN_LINES)
@@ -651,13 +665,18 @@ def _high_backlog_control(
         or raw_expansion.get("expansion_ready") is False
     )
     no_operator_required = bool(route_ready and integrity_clean and single_writer_only and (always_armed or bool(repair_plan)))
+    safe_to_auto_apply = bool(high_backlog and no_operator_required and not failed_attempts)
+    hot_tail_age_breached = bool(stale_tail and oldest_age > HIGH_BACKLOG_HOT_PATH_AGE_SLO_SECONDS)
+    operator_notice_age_breached = bool(stale_tail and oldest_age > HIGH_BACKLOG_OPERATOR_NOTICE_AGE_SECONDS)
+    repeated_no_progress = bool(no_progress_cycle_count >= HIGH_BACKLOG_NO_PROGRESS_CYCLE_LIMIT)
+    fatal_control_gap = bool(not route_ready or not integrity_clean or failed_attempts or repeated_no_progress)
 
     if not high_backlog:
         self_healing_status = "monitoring_green"
         next_system_action = "monitor"
-    elif "error" in attempt_statuses or "timed_out" in attempt_statuses:
+    elif "error" in attempt_statuses or "timed_out" in attempt_statuses or repeated_no_progress:
         self_healing_status = "needs_operator_attention"
-        next_system_action = "inspect_failed_backlog_repair_attempt"
+        next_system_action = "inspect_failed_or_no_progress_backlog_repair_attempt"
     elif apply_requested and attempts:
         self_healing_status = "bounded_cycle_executed"
         next_system_action = "rescore_after_bounded_cycle"
@@ -698,12 +717,81 @@ def _high_backlog_control(
     operator_followups = ordered_unique(
         [
             "system owns high backlog through storage_backpressure_autopilot; operator action is not required while route, integrity, and single-writer checks stay ready"
-            if high_backlog and no_operator_required
+            if high_backlog and no_operator_required and not fatal_control_gap
             else "",
             "operator attention required only if route verification, integrity, memory relief, or writer locks fail" if high_backlog else "",
             "bulk deferred backlog remains live-money-blocking evidence until raw/live totals and age are green" if live_money_blocked else "",
         ]
     )
+    slo_breaches = ordered_unique(
+        [
+            "core_pending_over_hot_path_target" if core_pending > HOT_BACKLOG_CORE_TARGET_LINES else "",
+            "support_pending_over_hot_tail_target" if support_pending > HOT_BACKLOG_SUPPORT_TARGET_LINES else "",
+            "hot_tail_age_over_slo" if hot_tail_age_breached else "",
+            "operator_notice_age_over_slo" if operator_notice_age_breached else "",
+            "total_pending_over_live_money_target" if total_pending > LIVE_MONEY_BACKLOG_TOTAL_TARGET_LINES else "",
+            "oldest_age_over_live_money_target" if oldest_age > LIVE_MONEY_BACKLOG_AGE_TARGET_SECONDS else "",
+            "pressure_index_over_critical_ceiling" if pressure_index >= 1.0 else "",
+            "repeated_no_progress_cycles" if repeated_no_progress else "",
+        ]
+    )
+    must_haves = {
+        "classified": bool(backlog_class and backlog_class != "green_or_elevated" if high_backlog else True),
+        "route_ready": route_ready,
+        "integrity_clean": integrity_clean,
+        "single_writer_only": single_writer_only,
+        "live_money_blocked_while_raw_backlog_hot": bool(live_money_blocked if high_backlog else True),
+        "paper_advisory_refuses_hot_core": bool((not hot_core) or not paper_boundary_ready),
+        "has_backpressure_governor": bool("backpressure_slo_bot" in repair_names or not high_backlog),
+        "has_writer_handoff": bool("writer_cycle_coordinator" in repair_names or not high_backlog),
+        "has_drain_or_manifest_route": bool(
+            not high_backlog
+            or any(name in repair_names for name in ("backpressure_drainer_fleet", "raw_training_manifest_refresh", "raw_training_compaction"))
+            or hot_core
+        ),
+        "automatic_owner_available": bool(always_armed or bool(repair_plan) or not high_backlog),
+        "failed_attempts_absent": not bool(failed_attempts),
+        "progress_not_repeatedly_stalled": not repeated_no_progress,
+    }
+    missing_must_haves = [key for key, value in must_haves.items() if not bool(value)]
+    production_score = 100.0
+    if high_backlog:
+        production_score -= 18.0 if not route_ready else 0.0
+        production_score -= 18.0 if not integrity_clean else 0.0
+        production_score -= 14.0 if not always_armed and not repair_plan else 0.0
+        production_score -= 10.0 if "backpressure_slo_bot" not in repair_names else 0.0
+        production_score -= 12.0 if "writer_cycle_coordinator" not in repair_names else 0.0
+        production_score -= 35.0 if not live_money_blocked else 0.0
+        production_score -= 20.0 if failed_attempts else 0.0
+        production_score -= 16.0 if repeated_no_progress else 0.0
+        production_score -= 8.0 if hot_core and paper_boundary_ready else 0.0
+        production_score -= 3.0 if operator_notice_age_breached and not off_hours_active else 0.0
+    production_score = round(max(min(production_score, 100.0), 0.0), 2)
+    if production_score >= 98.0:
+        production_grade = "A+"
+    elif production_score >= 94.0:
+        production_grade = "A"
+    elif production_score >= 90.0:
+        production_grade = "A-"
+    elif production_score >= 85.0:
+        production_grade = "B+"
+    elif production_score >= 80.0:
+        production_grade = "B"
+    elif production_score >= 70.0:
+        production_grade = "C"
+    else:
+        production_grade = "D"
+    notify_operator = bool(high_backlog and (fatal_control_gap or operator_notice_age_breached))
+    if not high_backlog:
+        pager_severity = "none"
+    elif fatal_control_gap:
+        pager_severity = "critical"
+    elif hot_core or operator_notice_age_breached:
+        pager_severity = "watch"
+    else:
+        pager_severity = "info"
+    quick_apply_command = ["./scripts/ops/opsctl.sh", "storage-backpressure-autopilot", "--apply", "--quick-bounded", "--json"]
+    off_hours_apply_command = ["./scripts/ops/opsctl.sh", "storage-backpressure-autopilot", "--apply", "--json"]
 
     return {
         "active": high_backlog,
@@ -743,11 +831,67 @@ def _high_backlog_control(
             "repair_plan_names": repair_names,
             "attempted_names": attempted_names,
             "cycle_count": len(cycle_records),
-            "last_cycle_progress": (
-                cycle_records[-1].get("progress") if cycle_records and isinstance(cycle_records[-1], dict) else {}
-            ),
-            "safe_to_auto_apply": bool(high_backlog and no_operator_required),
+            "last_cycle_progress": last_cycle_progress,
+            "no_progress_cycle_count": no_progress_cycle_count,
+            "safe_to_auto_apply": safe_to_auto_apply,
+            "quick_apply_command": quick_apply_command,
+            "off_hours_apply_command": off_hours_apply_command,
+            "retry_budget": {
+                "quick_cycles_per_window": HIGH_BACKLOG_MAX_QUICK_CYCLES_PER_WINDOW,
+                "off_hours_cycles_per_window": HIGH_BACKLOG_MAX_OFF_HOURS_CYCLES_PER_WINDOW,
+                "no_progress_cycle_limit": HIGH_BACKLOG_NO_PROGRESS_CYCLE_LIMIT,
+                "policy": "retry bounded cycles automatically until progress stalls repeatedly or a hard safety invariant fails",
+            },
             "policy": "classify backlog, protect intake, run bounded single-writer repair, and defer bulk cold/deferred work to off-hours without operator babysitting",
+        },
+        "slo_contract": {
+            "breaches": slo_breaches,
+            "targets": {
+                "hot_core_pending_lines": HOT_BACKLOG_CORE_TARGET_LINES,
+                "hot_support_pending_lines": HOT_BACKLOG_SUPPORT_TARGET_LINES,
+                "hot_tail_age_seconds": HIGH_BACKLOG_HOT_PATH_AGE_SLO_SECONDS,
+                "operator_notice_age_seconds": HIGH_BACKLOG_OPERATOR_NOTICE_AGE_SECONDS,
+                "live_money_total_pending_lines": LIVE_MONEY_BACKLOG_TOTAL_TARGET_LINES,
+                "live_money_oldest_pending_age_seconds": LIVE_MONEY_BACKLOG_AGE_TARGET_SECONDS,
+            },
+            "next_checkpoint": "off_hours_window" if deferred_dominant and not off_hours_active else "next_autopilot_cycle",
+            "policy": "SLOs describe backlog ownership quality; live-money promotion still requires raw backlog green, not merely managed",
+        },
+        "production_grade_contract": {
+            "grade": production_grade,
+            "score": production_score,
+            "state": "production_owned" if high_backlog and not missing_must_haves else "production_attention_required" if high_backlog else "production_monitoring",
+            "must_haves": must_haves,
+            "missing": missing_must_haves,
+            "regression_guards": [
+                "high backlog must classify before scoring",
+                "hot-core backlog must not receive paper advisory relief",
+                "live money remains blocked while raw backlog exceeds targets",
+                "backlog repair must stay single-writer",
+                "repeated no-progress cycles require operator notification",
+            ],
+        },
+        "escalation_contract": {
+            "notify_operator": notify_operator,
+            "pager_severity": pager_severity,
+            "fatal_control_gap": fatal_control_gap,
+            "operator_attention_triggers": ordered_unique(
+                [
+                    "route_verification_not_ready" if not route_ready else "",
+                    "sql_integrity_not_clean" if not integrity_clean else "",
+                    "repair_attempt_failed_or_timed_out" if failed_attempts else "",
+                    "repeated_no_progress_cycles" if repeated_no_progress else "",
+                    "hot_tail_age_exceeded_operator_notice_slo" if operator_notice_age_breached else "",
+                ]
+            ),
+            "owner": "storage_backpressure_autopilot",
+            "supporting_owners": [
+                "backpressure_slo_bot",
+                "backpressure_drainer_fleet",
+                "writer_cycle_coordinator",
+                "raw_training_compaction_intelligence",
+            ],
+            "operator_role": "observe_only_unless_escalation_contract_notify_operator_is_true",
         },
         "paper_soak_boundary": {
             "allowed_with_advisory": paper_boundary_ready,
