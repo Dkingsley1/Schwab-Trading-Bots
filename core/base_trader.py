@@ -23,6 +23,7 @@ from core.decision_logger import DecisionLogger, compact_decision_features
 from core.derivatives_features import _days_to_expiry, _extract_option_rows, _option_row_strike, _option_side
 from core.exotic_derivatives_plumbing import exotic_direct_execution_allowed, is_exotic_derivative_sleeve
 from core.live_execution_controls import LiveExecutionGuard, LiveRiskConfig, production_order_firewall_check
+from core.live_order_ledger import LiveOrderLedger
 from core.path_registry import auth_events_path, decision_explanations_paths, execution_guard_path, live_softguard_path
 from core.brokers import (
     BrokerAdapter,
@@ -230,6 +231,7 @@ class BaseTrader:
         self.client = None
 
         self.project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+        self._live_order_ledger: Optional[LiveOrderLedger] = None
         self.mode = "shadow"
         self.profile = os.getenv("SHADOW_PROFILE", "").strip().lower()
         self.shadow_domain = ""
@@ -3121,6 +3123,17 @@ class BaseTrader:
             "details": {},
         }
 
+    def _durable_live_order_ledger(self) -> LiveOrderLedger:
+        if self._live_order_ledger is None:
+            configured = os.getenv("LIVE_ORDER_LEDGER_PATH", "").strip()
+            path = (
+                Path(configured).expanduser()
+                if configured
+                else Path(self.project_root) / "governance" / "runtime" / "live_order_ledger.sqlite3"
+            )
+            self._live_order_ledger = LiveOrderLedger(path)
+        return self._live_order_ledger
+
     def _live_place_order(
         self,
         *,
@@ -3128,18 +3141,47 @@ class BaseTrader:
         action: str,
         quantity: float,
         order_spec: Dict[str, Any],
+        intent_id: str = "",
+        reference_price: float = 0.0,
+        risk_reducing_exit: bool = False,
     ) -> Dict[str, Any]:
         if not self._supports_broker_capability("supports_order_place"):
             return self._unsupported_broker_operation("place_order", "supports_order_place")
         # The mock adapter never reaches a broker and is used to exercise PAPER
         # execution contracts. Every real broker still passes the live firewall.
-        if str(self.broker_name or "").strip().lower() != "mock":
+        real_broker = str(self.broker_name or "").strip().lower() != "mock"
+        durable_intent_id = str(intent_id or "").strip()
+        ledger: Optional[LiveOrderLedger] = None
+        if real_broker:
+            ledger = self._durable_live_order_ledger()
+            ambiguity_rows = [
+                row
+                for row in ledger.unresolved()
+                if str(row.get("state") or "") in {"submitting", "submit_unknown", "cancel_pending", "cancel_unknown"}
+            ]
+            if ambiguity_rows:
+                return {
+                    "ok": False,
+                    "operation": "place_order",
+                    "error": "unresolved_broker_operation_requires_reconciliation",
+                    "broker_reconciliation_required": True,
+                    "unresolved_broker_operations": [
+                        {
+                            "intent_id": row.get("intent_id"),
+                            "broker_order_id": row.get("broker_order_id"),
+                            "state": row.get("state"),
+                        }
+                        for row in ambiguity_rows[:20]
+                    ],
+                }
             firewall = production_order_firewall_check(
                 project_root=self.project_root,
                 symbol=symbol,
                 action=action,
                 quantity=quantity,
                 order_spec=order_spec,
+                reference_price=reference_price,
+                risk_reducing_exit=risk_reducing_exit,
             )
             if not firewall.ok:
                 details = {
@@ -3169,6 +3211,43 @@ class BaseTrader:
                         "details": firewall.details,
                     },
                 }
+            if not durable_intent_id:
+                return {
+                    "ok": False,
+                    "operation": "place_order",
+                    "error": "missing_live_order_intent_id",
+                    "details": {
+                        "symbol": str(symbol).upper(),
+                        "action": str(action).upper(),
+                        "policy": "every real broker submit requires a stable decision intent id",
+                    },
+                }
+            reservation = ledger.reserve(
+                intent_id=durable_intent_id,
+                payload={
+                    "broker": self.broker_name,
+                    "account_reference": self.live_account_hash,
+                    "symbol": str(symbol).upper(),
+                    "action": str(action).upper(),
+                    "quantity": float(quantity),
+                    "order_spec": order_spec,
+                },
+                requested_quantity=quantity,
+            )
+            if not reservation.get("reserved", False):
+                self._log_softguard_event(
+                    event="live_order_idempotency",
+                    status="blocked",
+                    reason=str(reservation.get("reason") or "intent_already_reserved"),
+                    details=reservation,
+                )
+                return {
+                    "ok": False,
+                    "operation": "place_order",
+                    "error": str(reservation.get("reason") or "intent_already_reserved"),
+                    "durable_order_intent": reservation,
+                }
+            ledger.mark_submitting(durable_intent_id)
         order_request = self._build_live_order_request(
             symbol=symbol,
             action=action,
@@ -3183,6 +3262,36 @@ class BaseTrader:
             ),
             context={"symbol": str(symbol).upper(), "action": str(action).upper(), "quantity": float(quantity)},
         )
+        if ledger is not None:
+            broker_result = self._broker_order_result_from_output(out)
+            status_code = self._as_float(out.get("status_code"), 0.0)
+            definitive_rejection = bool(
+                not out.get("ok", False)
+                and 400 <= int(status_code) < 500
+                and int(status_code) not in {408, 409, 425, 429}
+            )
+            ledger_state = ledger.mark_submit_result(
+                intent_id=durable_intent_id,
+                acknowledged=bool(out.get("ok", False)),
+                broker_order_id=str(broker_result.order_id or ""),
+                error=str(out.get("error") or ""),
+                definitively_rejected=definitive_rejection,
+            )
+            out["durable_order_intent"] = ledger_state
+            if str(ledger_state.get("state") or "") == "submit_unknown":
+                out["ok"] = False
+                out["error"] = "broker_submit_outcome_unknown"
+                out["broker_submission_may_have_succeeded"] = True
+                out["broker_reconciliation_required"] = True
+                out["auto_halt"] = self._engage_global_halt(
+                    reason="broker_submit_outcome_unknown",
+                    details={
+                        "intent_id": durable_intent_id,
+                        "symbol": str(symbol).upper(),
+                        "action": str(action).upper(),
+                        "quantity": float(quantity),
+                    },
+                )
         out["order_request"] = order_request.to_dict()
         out["order_result"] = self._broker_order_result_from_output(out).to_dict()
         return out
@@ -3251,6 +3360,30 @@ class BaseTrader:
         if not self._supports_broker_capability("supports_order_cancel"):
             return self._unsupported_broker_operation("cancel_order", "supports_order_cancel")
 
+        ledger: Optional[LiveOrderLedger] = None
+        ledger_row: Dict[str, Any] = {}
+        if str(self.broker_name or "").strip().lower() != "mock":
+            ledger = self._durable_live_order_ledger()
+            ledger_row = ledger.get_by_broker_order_id(oid)
+            ledger_state = str(ledger_row.get("state") or "")
+            if ledger_state in {"filled", "canceled", "rejected", "expired"}:
+                return {
+                    "ok": False,
+                    "operation": "cancel_order",
+                    "error": "order_already_terminal",
+                    "durable_order_intent": ledger_row,
+                }
+            if ledger_state in {"cancel_pending", "cancel_unknown"}:
+                return {
+                    "ok": False,
+                    "operation": "cancel_order",
+                    "error": "cancel_reconciliation_required",
+                    "broker_reconciliation_required": True,
+                    "durable_order_intent": ledger_row,
+                }
+            if ledger_row:
+                ledger_row = ledger.mark_cancel_pending(oid)
+
         out = self._invoke_client_candidates(
             operation="cancel_order",
             candidates=self.broker_adapter.cancel_order_candidates(
@@ -3260,8 +3393,21 @@ class BaseTrader:
             context={"order_id": oid},
         )
         out["order_result"] = self._broker_order_result_from_output(out).to_dict()
-        if out.get("ok"):
+        if ledger is not None and ledger_row:
+            try:
+                if not out.get("ok"):
+                    out["durable_order_intent"] = ledger.mark_cancel_unknown(
+                        oid,
+                        error=str(out.get("error") or "cancel_result_unknown"),
+                    )
+                else:
+                    out["durable_order_intent"] = ledger.get_by_broker_order_id(oid)
+            except (KeyError, ValueError) as exc:
+                out["durable_order_ledger_error"] = f"{type(exc).__name__}:{exc}"
+        if out.get("ok") and not ledger_row:
             self.live_guard.close_open_order(oid)
+        elif out.get("ok") and ledger_row:
+            out["cancellation_pending_reconciliation"] = True
         return out
 
     def _live_fetch_order(self, order_id: str) -> Dict[str, Any]:
@@ -3346,8 +3492,23 @@ class BaseTrader:
                     inst = legs[0].get("instrument") if isinstance(legs[0].get("instrument"), dict) else {}
                     symbol = str(inst.get("symbol", "")).strip().upper()
 
+            qty, price = self._filled_qty_price(payload)
+            ledger_state: Optional[Dict[str, Any]] = None
+            ledger_error = ""
+            if str(self.broker_name or "").strip().lower() != "mock":
+                try:
+                    ledger = self._durable_live_order_ledger()
+                    if ledger.get_by_broker_order_id(oid):
+                        ledger_state = ledger.record_broker_update(
+                            broker_order_id=oid,
+                            broker_status=status,
+                            filled_quantity=qty,
+                            average_fill_price=price,
+                        )
+                except (KeyError, ValueError) as exc:
+                    ledger_error = f"{type(exc).__name__}:{exc}"
+
             if status in {"FILLED", "EXECUTED"}:
-                qty, price = self._filled_qty_price(payload)
                 action = self._extract_fill_action(payload)
                 fill_state = None
                 if qty > 0.0 and price > 0.0 and symbol:
@@ -3361,13 +3522,15 @@ class BaseTrader:
                         "filled_qty": float(qty),
                         "fill_price": float(price),
                         "fill_state": fill_state,
+                        "durable_order_intent": ledger_state,
+                        "durable_order_ledger_error": ledger_error,
                     }
                 )
             elif status in {"CANCELED", "REJECTED", "EXPIRED"}:
                 self.live_guard.close_open_order(oid)
-                rows.append({"order_id": oid, "status": status, "symbol": symbol})
+                rows.append({"order_id": oid, "status": status, "symbol": symbol, "durable_order_intent": ledger_state, "durable_order_ledger_error": ledger_error})
             else:
-                rows.append({"order_id": oid, "status": status, "symbol": symbol})
+                rows.append({"order_id": oid, "status": status, "symbol": symbol, "durable_order_intent": ledger_state, "durable_order_ledger_error": ledger_error})
 
         return {
             "status": "ok",
@@ -3726,6 +3889,11 @@ class BaseTrader:
                     action=action,
                     quantity=qty,
                     order_spec=spec,
+                    risk_reducing_exit=True,
+                    intent_id=(
+                        f"emergency-liquidation:{datetime.now(timezone.utc).strftime('%Y%m%d')}:"
+                        f"{self.live_account_hash}:{symbol}:{action}:{qty:.8f}"
+                    ),
                 )
                 orders.append(
                     {
@@ -4110,6 +4278,7 @@ class BaseTrader:
                     quantity=quantity,
                     reference_price=ref_price,
                     intended_price=intended_price,
+                    enforce_long_only=False,
                 )
                 if not paper_guard.ok:
                     status = "PAPER_GUARD_BLOCKED"
@@ -4542,10 +4711,13 @@ class BaseTrader:
                         action=action,
                         quantity=quantity,
                         order_spec=order_spec,
+                        intent_id=str(decision_entry.get("decision_id") or ""),
+                        reference_price=guard_reference_price,
                     )
 
                     if not place.get("ok"):
-                        status = "LIVE_ORDER_SUBMIT_FAILED"
+                        unknown_outcome = bool(place.get("broker_submission_may_have_succeeded", False))
+                        status = "LIVE_ORDER_OUTCOME_UNKNOWN" if unknown_outcome else "LIVE_ORDER_SUBMIT_FAILED"
                         result = {
                             "status": status,
                             "mode": self.mode,
@@ -4556,6 +4728,10 @@ class BaseTrader:
                                 "quantity": float(quantity),
                                 "order_spec": order_spec,
                                 "error": place.get("error", "submit_failed"),
+                                "broker_submission_may_have_succeeded": unknown_outcome,
+                                "broker_reconciliation_required": bool(place.get("broker_reconciliation_required", False)),
+                                "durable_order_intent": place.get("durable_order_intent", {}),
+                                "auto_halt": place.get("auto_halt", {}),
                                 "details": {
                                     **(prepared_order.get("details", {}) if isinstance(prepared_order.get("details"), dict) else {}),
                                     **(place.get("details", {}) if isinstance(place.get("details"), dict) else {}),

@@ -4,7 +4,7 @@ Use these exact commands as the current source of truth.
 
 This file is generated from the curated operator inventory in `scripts/ops/commands_hygiene_bot.py`.
 Rebuild it with `./scripts/ops/opsctl.sh commands-hygiene --apply` after changing that inventory.
-Command contract hash: `31dede7e0af2dbef9d57529d85c9344291965423e905e01201e168ab4ad1001e`.
+Command contract hash: `455874c1ceda325159855f5a46fa3ff7bba19aea4284e618a5e76d005022ad91`.
 Command contract artifact: `governance/health/commands_contract_latest.json`.
 
 This file is intentionally trimmed down with Most Used pinned first and the remaining sections alphabetized by section and command title:
@@ -23,7 +23,7 @@ Fast search tokens: `start` `stop` `paper` `profitability` `soak` `halt` `auth` 
 
 Useful compound searches: `paper profitability`, `global halt`, `token refresh`, `livefeed heavy`, `storage prune`, `soak readiness`.
 
-Search coverage: `155` generated command entries from the current command contract.
+Search coverage: `158` generated command entries from the current command contract.
 
 <datalist id="command-search-index-options">
   <option value="Keep the Mac awake (Most Used)"></option>
@@ -150,6 +150,7 @@ Search coverage: `155` generated command entries from the current command contra
   <option value="Deeper self-awareness intelligence layers (Status And Health)"></option>
   <option value="Docs, commands, and reporting intelligence (Status And Health)"></option>
   <option value="Doctor (Status And Health)"></option>
+  <option value="Freeze or accept a production candidate (Status And Health)"></option>
   <option value="Golden replay regression guard (Status And Health)"></option>
   <option value="Health snapshot (Status And Health)"></option>
   <option value="Master infrastructure supervisor (Status And Health)"></option>
@@ -164,11 +165,13 @@ Search coverage: `155` generated command entries from the current command contra
   <option value="Reporter quality infrabot (Status And Health)"></option>
   <option value="Review Codex project guardrails (Status And Health)"></option>
   <option value="Review system plumbing control (Status And Health)"></option>
+  <option value="Review ten-pillar production excellence (Status And Health)"></option>
   <option value="Review the cross-system drift mesh (Status And Health)"></option>
   <option value="Run production hardening watch (Status And Health)"></option>
   <option value="Runtime gate dashboard (Status And Health)"></option>
   <option value="Runtime status (Status And Health)"></option>
   <option value="Track production-quality SLO recurrence (Status And Health)"></option>
+  <option value="Verify the durable live-order ledger (Status And Health)"></option>
   <option value="Repair local stateful storage regressions (Storage)"></option>
   <option value="Review or prune eligible local standby SQLite copies after BOT_LOGS soak (Storage)"></option>
   <option value="Run the storage disaster recovery bot (Storage)"></option>
@@ -184,7 +187,7 @@ Search coverage: `155` generated command entries from the current command contra
 </datalist>
 
 <details>
-<summary>Generated command search index (155 commands; rebuilt by commands-hygiene)</summary>
+<summary>Generated command search index (158 commands; rebuilt by commands-hygiene)</summary>
 
 Each row is generated from `governance/health/commands_contract_latest.json`, so added, removed, renamed, or cleaned-up commands change this index automatically.
 
@@ -312,6 +315,7 @@ Each row is generated from `governance/health/commands_contract_latest.json`, so
 - search-entry:09cf953d33c1c2c51af8ddb9720af132cea3194741a0b6c46c87a25c79f1fab7 section:`Status And Health` section_key:`status-and-health` title:Deeper self-awareness intelligence layers title_key:`deeper-self-awareness-intelligence-layers` opsctl:`deeper-intelligence-layers` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
 - search-entry:2f0e9268604a8480a375e0753d1e5a598d4c3d85b4074cab4800bb561be986c3 section:`Status And Health` section_key:`status-and-health` title:Docs, commands, and reporting intelligence title_key:`docs-commands-and-reporting-intelligence` opsctl:`docs-reporting-intelligence` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
 - search-entry:bb08a7f936a589c1fdc675f4cc2b1f53276020381016ff2fe5330de5867df9de section:`Status And Health` section_key:`status-and-health` title:Doctor title_key:`doctor` opsctl:`doctor` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
+- search-entry:5537215dbb9b08a933a0732ec1c96b7a3ca909e287b18c75ccd20eaff09fb297 section:`Status And Health` section_key:`status-and-health` title:Freeze or accept a production candidate title_key:`freeze-or-accept-a-production-candidate` opsctl:`production-excellence` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
 - search-entry:b21f08f7efcb5b9fbff0e11eb5a1438336432259f1d661951d864b1c1f1df7fe section:`Status And Health` section_key:`status-and-health` title:Golden replay regression guard title_key:`golden-replay-regression-guard` opsctl:`golden-replay-regression` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
 - search-entry:bb83bdc55a9aed896c6bf2546beaec680166951d130a809fc32298ed8be150e9 section:`Status And Health` section_key:`status-and-health` title:Health snapshot title_key:`health-snapshot` opsctl:`health` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
 - search-entry:153348628b2a3d25ae47aeef540a0d30820f1d4e97e21762b45f1a7a50b64f8f section:`Status And Health` section_key:`status-and-health` title:Master infrastructure supervisor title_key:`master-infrastructure-supervisor` opsctl:`master-infra-supervisor` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
@@ -326,11 +330,13 @@ Each row is generated from `governance/health/commands_contract_latest.json`, so
 - search-entry:bbdaeb098be7903b2af2e606229145d9c1ce937bbaef0d84edcdb06e6918f3bd section:`Status And Health` section_key:`status-and-health` title:Reporter quality infrabot title_key:`reporter-quality-infrabot` opsctl:`report-quality-guard` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
 - search-entry:0941a33ecf2e9d9f31579a2d05664240e0d893fcecf01959db65122fbe2c1e4e section:`Status And Health` section_key:`status-and-health` title:Review Codex project guardrails title_key:`review-codex-project-guardrails` opsctl:`codex-project-guard` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
 - search-entry:d0744ed396c14397231a43061bd3c0f98192ec9c7038b35f4658ee641ba21bde section:`Status And Health` section_key:`status-and-health` title:Review system plumbing control title_key:`review-system-plumbing-control` opsctl:`system-plumbing-control` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
+- search-entry:75509af8d32c7f8dff82ce44dfdf3f8f7ce0061733c12acf69dd9a9ca9aead39 section:`Status And Health` section_key:`status-and-health` title:Review ten-pillar production excellence title_key:`review-ten-pillar-production-excellence` opsctl:`production-excellence` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
 - search-entry:f048a90ce2aa3a66196801c0d0c06873fb5102bd888d7e89498b2ec0524f0891 section:`Status And Health` section_key:`status-and-health` title:Review the cross-system drift mesh title_key:`review-the-cross-system-drift-mesh` opsctl:`system-drift-guard` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
 - search-entry:d67c3b8bfd796b7ba5fa9ed44fcb628b61eb71f3dfa841091a1309c3e6e0bf1b section:`Status And Health` section_key:`status-and-health` title:Run production hardening watch title_key:`run-production-hardening-watch` opsctl:`production-hardening-watch` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
 - search-entry:c9994d1b6c30bba687625646026da154e91899e5294beab70202f89283afe2da section:`Status And Health` section_key:`status-and-health` title:Runtime gate dashboard title_key:`runtime-gate-dashboard` opsctl:`dashboard` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
 - search-entry:4b60f2351646885db58bcc2366437e4dd736dd6cf55ce08a2fdac505a3c85bbe section:`Status And Health` section_key:`status-and-health` title:Runtime status title_key:`runtime-status` opsctl:`status` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
 - search-entry:52642cb66c25bfe102046b575959fdfd7da8862ee6b3d1d79bb05d5fb84d03f5 section:`Status And Health` section_key:`status-and-health` title:Track production-quality SLO recurrence title_key:`track-production-quality-slo-recurrence` opsctl:`production-quality-slo` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
+- search-entry:fd56b63365456606b1ac88f79b682e6d632c16386f7d6b35209bb22c71d6b94e section:`Status And Health` section_key:`status-and-health` title:Verify the durable live-order ledger title_key:`verify-the-durable-live-order-ledger` opsctl:`live-order-ledger` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
 - search-entry:7162b1728aa0badca09eeab49bafe5d36d327687a0c9f6a6c059cd95e147c9c3 section:`Storage` section_key:`storage` title:Repair local stateful storage regressions title_key:`repair-local-stateful-storage-regressions` opsctl:`stateful-storage-regression-guard` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
 - search-entry:e8dce5198877685a4116a8d493aabd0e79f722defb26ff3e3ba27bf329fee8b0 section:`Storage` section_key:`storage` title:Review or prune eligible local standby SQLite copies after BOT_LOGS soak title_key:`review-or-prune-eligible-local-standby-sqlite-copies-after-bot-logs-soak` opsctl:`storage-prune-standby` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
 - search-entry:8abb179beed85141e8937968e8cf4c59f087200b63c0574248d16b70591e8e8d section:`Storage` section_key:`storage` title:Run the storage disaster recovery bot title_key:`run-the-storage-disaster-recovery-bot` opsctl:`storage-disaster-recovery` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
@@ -1411,6 +1417,15 @@ cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
 ./scripts/ops/opsctl.sh doctor
 ```
 
+### Freeze or accept a production candidate
+```bash
+cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
+./scripts/ops/opsctl.sh production-excellence --apply --initialize-candidate --json
+./scripts/ops/opsctl.sh production-excellence --apply --accept-candidate-change --change-reason "Describe the reviewed production change" --json
+```
+
+Initialize only after the intended production code is committed. Accepted changes reset only the affected evidence scopes and preserve historical profitability.
+
 ### Golden replay regression guard
 ```bash
 cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
@@ -1522,6 +1537,15 @@ cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
 
 Publishes the shared queue, storage, writer, data-plane, and paper/live boundary contract used to diagnose present degradation.
 
+### Review ten-pillar production excellence
+```bash
+cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
+./scripts/ops/opsctl.sh production-excellence --json
+```
+
+Reports the frozen candidate, clean soak, recovery drills, live execution, independent fills, promotion candidates, profitability, canary, grading integrity, and institutional evidence as ten fail-closed pillars.
+Evidence debt is visible but does not interrupt healthy paper collection; live order submission stays locked until all ten pillars are ready.
+
 ### Review the cross-system drift mesh
 ```bash
 cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
@@ -1559,6 +1583,15 @@ cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
 ```
 
 This keeps state across checks so repeated production-quality lane failures become watch, warning, or breach evidence instead of isolated snapshots.
+
+### Verify the durable live-order ledger
+```bash
+cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
+./scripts/ops/opsctl.sh live-order-ledger --json
+```
+
+Checks the transactional order-intent ledger, hash-chained lifecycle events, and unresolved submit or cancel outcomes. Unknown broker outcomes require reconciliation and are never auto-retried.
+After independently verifying broker truth, use `--resolve-intent ID --resolution STATE --evidence TEXT`; the evidence-backed resolution is appended to the ledger event chain.
 
 ## Storage
 

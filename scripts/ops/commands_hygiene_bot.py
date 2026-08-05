@@ -1438,6 +1438,35 @@ def _commands_inventory(project_root: Path) -> list[dict[str, Any]]:
             ),
             _command_entry(
                 project_root,
+                "Review ten-pillar production excellence",
+                ["./scripts/ops/opsctl.sh production-excellence --json"],
+                notes=[
+                    "Reports the frozen candidate, clean soak, recovery drills, live execution, independent fills, promotion candidates, profitability, canary, grading integrity, and institutional evidence as ten fail-closed pillars.",
+                    "Evidence debt is visible but does not interrupt healthy paper collection; live order submission stays locked until all ten pillars are ready.",
+                ],
+            ),
+            _command_entry(
+                project_root,
+                "Freeze or accept a production candidate",
+                [
+                    "./scripts/ops/opsctl.sh production-excellence --apply --initialize-candidate --json",
+                    "./scripts/ops/opsctl.sh production-excellence --apply --accept-candidate-change --change-reason \"Describe the reviewed production change\" --json",
+                ],
+                notes=[
+                    "Initialize only after the intended production code is committed. Accepted changes reset only the affected evidence scopes and preserve historical profitability.",
+                ],
+            ),
+            _command_entry(
+                project_root,
+                "Verify the durable live-order ledger",
+                ["./scripts/ops/opsctl.sh live-order-ledger --json"],
+                notes=[
+                    "Checks the transactional order-intent ledger, hash-chained lifecycle events, and unresolved submit or cancel outcomes. Unknown broker outcomes require reconciliation and are never auto-retried.",
+                    "After independently verifying broker truth, use `--resolve-intent ID --resolution STATE --evidence TEXT`; the evidence-backed resolution is appended to the ledger event chain.",
+                ],
+            ),
+            _command_entry(
+                project_root,
                 "Refresh health gates",
                 ["./scripts/ops/opsctl.sh health-gates --json"],
                 notes=[

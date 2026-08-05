@@ -6,11 +6,18 @@
     "market_data_only_default": true,
     "allow_order_execution_env": "ALLOW_ORDER_EXECUTION",
     "market_data_only_env": "MARKET_DATA_ONLY",
-    "max_single_order_notional": 1000.0,
-    "max_daily_loss": 250.0,
-    "max_order_quantity": 100,
+    "max_single_order_notional": 100.0,
+    "max_daily_loss": 25.0,
+    "max_order_quantity": 5,
     "max_quote_age_seconds": 15.0,
     "max_spread_bps": 75.0,
+    "allowed_asset_types": ["EQUITY"],
+    "allowed_instructions": ["BUY", "SELL"],
+    "allow_new_short_positions": false,
+    "permit_verified_emergency_risk_reduction": true,
+    "canary_allowlist_path": "governance/runtime/live_canary_allowlist.json",
+    "production_excellence_artifact": "governance/health/production_excellence_control_latest.json",
+    "require_production_excellence_for_live_submit": true,
     "required_safety_flags": [
       "governance/health/PAPER_TRADE_LOCK.flag"
     ],
@@ -19,7 +26,7 @@
       "governance/health/GLOBAL_TRADING_HALT.flag"
     ],
     "order_intent_path": "governance/health/live_order_intents_latest.json",
-    "policy": "reject_by_default_unless_live_execution_is_explicitly_armed_and_every_order_intent_passes_limits"
+    "policy": "reject_by_default_unless_live_execution_is_explicitly_armed_and_every_order_intent_passes_limits_and_the_ten_pillar_production_excellence_contract"
   },
   "deterministic_replay": {
     "required_artifacts": [

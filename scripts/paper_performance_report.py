@@ -693,6 +693,23 @@ def _sample_stddev(values: list[float]) -> float:
     return math.sqrt(max(variance, 0.0))
 
 
+def _candidate_profitability_cutoff(project_root: Path) -> datetime | None:
+    try:
+        state = json.loads(
+            (project_root / "governance" / "runtime" / "production_candidate_state.json").read_text(
+                encoding="utf-8"
+            )
+        )
+    except Exception:
+        return None
+    windows = state.get("scope_windows_started_utc", {}) if isinstance(state, dict) else {}
+    candidates = [
+        _parse_ts(windows.get(scope))
+        for scope in ("strategy", "execution", "risk", "data", "promotion", "dependencies")
+    ]
+    return max((value for value in candidates if value is not None), default=None)
+
+
 def _post_cost_expectancy(
     rows: Iterable[dict[str, Any]],
     *,
@@ -736,6 +753,17 @@ def _post_cost_expectancy(
     return_lcb = mean_return - (1.96 * return_se)
     evidence_sufficient = sample_count >= required
     positive_lcb = evidence_sufficient and pnl_lcb > 0.0 and return_lcb > 0.0
+    ordered_samples = sorted(
+        samples,
+        key=lambda item: _parse_ts(item[2].get("timestamp_utc")) or datetime.min.replace(tzinfo=timezone.utc),
+    )
+    cumulative = 0.0
+    peak = 0.0
+    max_drawdown = 0.0
+    for pnl_delta, _return_bps, _row in ordered_samples:
+        cumulative += pnl_delta
+        peak = max(peak, cumulative)
+        max_drawdown = max(max_drawdown, peak - cumulative)
     if not evidence_sufficient:
         status = "insufficient_evidence"
     elif positive_lcb:
@@ -764,6 +792,7 @@ def _post_cost_expectancy(
         "mean_post_cost_return_bps": round(float(mean_return), 6),
         "standard_error_post_cost_return_bps": round(float(return_se), 6),
         "lower_confidence_bound_95_post_cost_return_bps": round(float(return_lcb), 6),
+        "max_cumulative_drawdown_post_cost_pnl": round(float(max_drawdown), 6),
         "execution_notional_total": round(
             float(sum(max(_safe_float(item[2].get("execution_notional"), 0.0), 0.0) for item in samples)),
             6,
@@ -1258,6 +1287,7 @@ def build_paper_performance_report(project_root: Path, *, day: str, week_days: i
     stats_by_day: dict[str, dict[str, Any]] = defaultdict(_empty_stats)
     post_cost_rows_by_profile: dict[str, list[dict[str, Any]]] = defaultdict(list)
     all_post_cost_rows: list[dict[str, Any]] = []
+    profitability_cutoff = _candidate_profitability_cutoff(project_root)
 
     for row in _iter_rows(files):
         ts = _parse_ts(row.get("timestamp_utc"))
@@ -1267,7 +1297,12 @@ def build_paper_performance_report(project_root: Path, *, day: str, week_days: i
         profile = _profile_of(row)
         strategy = _paper_snapshot_key(row)
         _update_stats(stats_by_day[dkey], row)
-        if _pnl_schema_version(row) >= 2 and "post_cost_pnl_delta" in row and "post_cost_return_bps" in row:
+        if (
+            _pnl_schema_version(row) >= 2
+            and "post_cost_pnl_delta" in row
+            and "post_cost_return_bps" in row
+            and (profitability_cutoff is None or ts >= profitability_cutoff)
+        ):
             post_cost_rows_by_profile[profile].append(row)
             all_post_cost_rows.append(row)
         current = latest_by_day_profile[dkey][profile].get(strategy)
@@ -1401,6 +1436,11 @@ def build_paper_performance_report(project_root: Path, *, day: str, week_days: i
         "day": day_summary,
         "week": week_summary,
         "post_cost_expectancy": _post_cost_expectancy(all_post_cost_rows),
+        "profitability_evidence_window": {
+            "candidate_cutoff_utc": profitability_cutoff.isoformat() if profitability_cutoff is not None else "",
+            "candidate_filter_active": profitability_cutoff is not None,
+            "policy": "post-cost promotion evidence excludes samples before the latest affected candidate scope window",
+        },
     }
 
 

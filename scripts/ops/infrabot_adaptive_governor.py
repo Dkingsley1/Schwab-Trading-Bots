@@ -262,6 +262,24 @@ def _capability_registry() -> list[dict[str, Any]]:
             success_artifact="governance/health/production_quality_control_latest.json",
         ),
         _capability(
+            capability_id="production_excellence_control",
+            title="Ten-Pillar Production Excellence Control",
+            owns=["frozen_candidate", "selective_evidence_windows", "ten_pillar_live_money_bar"],
+            command=_opsctl("production-excellence", "--apply", "--json"),
+            advisory_only=True,
+            safe_under_pressure=True,
+            success_artifact="governance/health/production_excellence_control_latest.json",
+        ),
+        _capability(
+            capability_id="live_order_ledger_control",
+            title="Durable Live Order Ledger Control",
+            owns=["live_order_idempotency", "durable_order_state", "ambiguous_submit_reconciliation"],
+            command=_opsctl("live-order-ledger", "--json"),
+            advisory_only=True,
+            safe_under_pressure=True,
+            success_artifact="governance/health/live_order_ledger_control_latest.json",
+        ),
+        _capability(
             capability_id="production_quality_slo_guard",
             title="Production Quality SLO Guard",
             owns=["production_quality_slo", "recurring_degradation_memory", "bounded_repair_escalation"],
@@ -909,6 +927,8 @@ def _needs_contract(project_root: Path, *, refresh_needs: bool = False) -> dict[
     live_canary_readiness = _health(project_root, "live_canary_readiness_contract_latest.json")
     production_quality = _health(project_root, "production_quality_control_latest.json")
     production_quality_slo = _health(project_root, "production_quality_slo_guard_latest.json")
+    production_excellence = _health(project_root, "production_excellence_control_latest.json")
+    live_order_ledger = _health(project_root, "live_order_ledger_control_latest.json")
     source_verification = _health(project_root, "source_verification_latest.json")
     provider_mesh = _health(project_root, "provider_mesh_latest.json")
     market_explainer = _health(project_root, "market_move_explainer_latest.json")
@@ -1030,6 +1050,36 @@ def _needs_contract(project_root: Path, *, refresh_needs: bool = False) -> dict[
                 ],
                 stop_when="live_canary_readiness_contract reports live_canary_money_ready=true after the sustained production-hardening window.",
                 expected_impact="Keeps infrastructure bots focused on hardening paper/auth/storage/source/CI/gate freshness before any live-money canary.",
+            )
+        )
+
+    excellence_ready = bool(production_excellence.get("ten_out_of_ten_ready", False))
+    if production_excellence and not excellence_ready:
+        blocked_pillars = [str(item) for item in _as_list(production_excellence.get("blocked_pillars"))]
+        candidate = _as_dict(production_excellence.get("candidate"))
+        needs.append(
+            _need(
+                need_id="production_excellence_evidence_debt",
+                title="Ten-pillar live-money evidence remains incomplete",
+                category="live_canary",
+                severity="medium",
+                evidence=[
+                    f"grade={production_excellence.get('overall_grade', 'unknown')}",
+                    f"pillars={production_excellence.get('ready_pillar_count', 0)}/{production_excellence.get('pillar_count', 10)}",
+                    f"blocked_pillars={','.join(blocked_pillars) or 'none'}",
+                    f"candidate_id={candidate.get('candidate_id', 'none')}",
+                    f"candidate_drift={candidate.get('candidate_drift', False)}",
+                    "paper_runtime_impact=none",
+                ],
+                target_capabilities=[
+                    "production_excellence_control",
+                    "live_order_ledger_control",
+                    "live_canary_readiness_contract",
+                    "promotion_quality_gate",
+                    "paper_execution_truth_layer",
+                ],
+                stop_when="production_excellence_control reports ten_out_of_ten_ready=true for the frozen candidate.",
+                expected_impact="Keeps live-money evidence debt explicit while leaving healthy paper collection and the unattended soak untouched.",
             )
         )
 
@@ -1743,6 +1793,8 @@ def _needs_contract(project_root: Path, *, refresh_needs: bool = False) -> dict[
             "live_canary_readiness_contract": bool(live_canary_readiness),
             "production_quality_control": bool(production_quality),
             "production_quality_slo_guard": bool(production_quality_slo),
+            "production_excellence_control": bool(production_excellence),
+            "live_order_ledger_control": bool(live_order_ledger),
             "source_verification": bool(source_verification),
             "provider_mesh": bool(provider_mesh),
             "market_move_explainer": bool(market_explainer),
@@ -1856,6 +1908,8 @@ def _capability_healing_lane(capability: dict[str, Any]) -> str:
         "live_canary_readiness_contract",
         "production_quality_control",
         "production_quality_slo_guard",
+        "production_excellence_control",
+        "live_order_ledger_control",
         "source_mutation_guard",
         "production_flow_smoke",
     }:

@@ -242,6 +242,8 @@ cp "$DAILY_RUNTIME_SUMMARY_JSON" "$PROJECT_ROOT/governance/health/daily_runtime_
 "$PYTHON_BIN" "$PROJECT_ROOT/scripts/slo_burn_rate_guard.py" || true
 "$PYTHON_BIN" "$PROJECT_ROOT/scripts/security_hardening_audit.py" || true
 "$PYTHON_BIN" "$PROJECT_ROOT/scripts/backup_restore_verify.py" || true
+"$PYTHON_BIN" "$PROJECT_ROOT/scripts/ops/live_order_ledger_control.py" --json || true
+"$PYTHON_BIN" "$PROJECT_ROOT/scripts/ops/production_excellence_control.py" --apply --json || true
 
 if [[ "${DAILY_ENABLE_COLD_LANE_REFRESH:-1}" == "1" ]]; then
   if ! pgrep -f "scripts/ops/cold_lane_refresh.py" >/dev/null 2>&1; then

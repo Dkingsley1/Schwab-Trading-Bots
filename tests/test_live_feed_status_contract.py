@@ -151,7 +151,10 @@ def test_ready_contract_reports_fresh_consistent_runtime(tmp_path: Path) -> None
     assert payload["operator_summary"]["paper_impact"] == "none"
     assert payload["active_operational_rows"] == {}
     assert payload["managed_operational_watches"] == []
-    assert payload["fresh_source_count"] == payload["source_count"] == 8
+    assert payload["fresh_source_count"] == 8
+    assert payload["source_count"] == 9
+    assert payload["rows"]["production_excellence"]["status"] == "missing"
+    assert payload["rows"]["production_excellence"]["paper_impact"] == "none"
     assert payload["contradictions"] == []
     assert payload["rows"]["auth"]["status"] == "ready"
     assert payload["rows"]["auth"]["consistency"] == "consistent"
@@ -542,7 +545,7 @@ def test_formatted_lines_expose_cause_recovery_impact_and_action(tmp_path: Path)
     lines = contract.format_status_lines(payload)
     joined = "\n".join(lines)
 
-    assert len(lines) == 8
+    assert len(lines) == 9
     assert "[status-contract]" in joined
     assert "[system]" in joined
     assert "[collection]" in joined
@@ -550,6 +553,7 @@ def test_formatted_lines_expose_cause_recovery_impact_and_action(tmp_path: Path)
     assert "[storage]" in joined
     assert "[throttle]" in joined
     assert "[soak]" in joined
+    assert "[production-excellence]" in joined
     assert "cause=" in joined
     assert "recovery=" in joined
     assert "impact=" in joined

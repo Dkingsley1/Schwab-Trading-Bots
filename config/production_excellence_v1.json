@@ -1,0 +1,155 @@
+{
+  "schema_version": 1,
+  "policy_id": "production_excellence_10_pillar_v1",
+  "candidate": {
+    "state_path": "governance/runtime/production_candidate_state.json",
+    "event_log_path": "governance/evidence/production_candidate_events.jsonl",
+    "minimum_change_reason_chars": 12,
+    "scope_globs": {
+      "strategy": [
+        "core/**/*.py",
+        "scripts/quant_models/**/*.py",
+        "scripts/run_*training*.py",
+        "scripts/run_*shadow*.py",
+        "master_bot_registry.json"
+      ],
+      "execution": [
+        "core/brokers/**/*.py",
+        "core/base_trader.py",
+        "core/execution*.py",
+        "core/live_*.py",
+        "scripts/brokers/**/*.py",
+        "scripts/*execution*.py",
+        "scripts/ops/*execution*.py",
+        "config/production_readiness_control_v1.json"
+      ],
+      "risk": [
+        "core/risk*.py",
+        "scripts/*risk*.py",
+        "scripts/ops/*risk*.py",
+        "config/*risk*.json",
+        "config/live_canary_readiness_contract.json"
+      ],
+      "data": [
+        "core/*data*.py",
+        "scripts/*ingestion*.py",
+        "scripts/*provider*.py",
+        "scripts/*storage*.py",
+        "scripts/ops/*ingestion*.py",
+        "scripts/ops/*provider*.py",
+        "scripts/ops/*storage*.py",
+        "config/*provider*.json",
+        "config/*storage*.json"
+      ],
+      "promotion": [
+        "scripts/*promotion*.py",
+        "scripts/*walk_forward*.py",
+        "scripts/*graduation*.py",
+        "scripts/*overfit*.py",
+        "scripts/ops/*promotion*.py",
+        "scripts/ops/*canary*.py",
+        "config/*promotion*.json",
+        "config/production_excellence_v1.json"
+      ],
+      "operations": [
+        ".github/workflows/*.yml",
+        ".githooks/*",
+        "scripts/**/*.sh",
+        "scripts/ops/**/*.py",
+        "config/production*.json",
+        "config/deployment_profiles.json"
+      ],
+      "dependencies": [
+        "config/*.lock.txt",
+        "config/runtime_profiles/*.lock.txt",
+        "requirements*.txt"
+      ]
+    },
+    "soak_scopes": ["strategy", "execution", "risk", "data", "promotion", "operations", "dependencies"],
+    "profitability_scopes": ["strategy", "execution", "risk", "data", "promotion", "dependencies"]
+  },
+  "soak": {
+    "required_hours": 720,
+    "checkpoint_hours": 168,
+    "max_artifact_age_hours": 2,
+    "artifact": "governance/health/unattended_soak_readiness_latest.json"
+  },
+  "recovery": {
+    "max_artifact_age_hours": 24,
+    "max_drill_age_days": 7,
+    "max_recovery_seconds": 300,
+    "artifact": "governance/health/chaos_drill_coordinator_latest.json",
+    "required_drills": [
+      "auth_expiry",
+      "broker_network_outage",
+      "managed_process_crash",
+      "reboot_blackstart",
+      "disk_capacity_exhaustion",
+      "external_storage_loss",
+      "memory_pressure",
+      "database_corruption_or_lock",
+      "market_data_delay_or_malformed_payload",
+      "order_reject_partial_fill_cancel_replace"
+    ]
+  },
+  "live_execution": {
+    "max_artifact_age_hours": 12,
+    "max_initial_canary_weight": 0.01,
+    "max_single_order_notional": 100.0,
+    "max_daily_loss": 25.0,
+    "allowed_asset_types": ["EQUITY"],
+    "allowed_instructions": ["BUY", "SELL"],
+    "required_source_paths": [
+      "core/live_execution_controls.py",
+      "core/live_order_ledger.py",
+      "core/base_trader.py"
+    ]
+  },
+  "fill_evidence": {
+    "artifact": "governance/health/paper_execution_calibration_latest.json",
+    "max_artifact_age_hours": 12,
+    "minimum_independent_samples": 30,
+    "minimum_promotion_samples": 100
+  },
+  "promotion": {
+    "artifact": "governance/health/promotion_quality_gate_latest.json",
+    "packet_artifact": "governance/champion_challenger/promotion_packet_latest.json",
+    "max_artifact_age_hours": 24,
+    "minimum_considered_bots": 4,
+    "minimum_candidate_bots": 4
+  },
+  "profitability": {
+    "performance_artifact": "governance/health/paper_performance_latest.json",
+    "control_artifact": "governance/health/paper_profitability_control_latest.json",
+    "max_artifact_age_hours": 12,
+    "minimum_post_cost_samples": 100,
+    "minimum_profitable_sleeves": 3,
+    "maximum_single_sleeve_positive_pnl_share": 0.5,
+    "require_positive_lower_confidence_bound_95": true
+  },
+  "canary": {
+    "control_artifact": "governance/health/live_canary_control_latest.json",
+    "rollout_artifact": "governance/health/canary_rollout_latest.json",
+    "minimum_baseline_samples": 400,
+    "minimum_canary_samples": 400,
+    "max_initial_weight": 0.01,
+    "require_supervision": true,
+    "prohibit_leverage": true,
+    "prohibit_options_futures_and_short_sales": true
+  },
+  "grading_integrity": {
+    "max_artifact_age_hours": 12,
+    "require_raw_and_controlled_grade_separation": true,
+    "require_hash_chained_candidate_events": true,
+    "missing_evidence_score": 0,
+    "a_plus_requires_all_checks": true
+  },
+  "institutional_operations": {
+    "production_readiness_artifact": "governance/health/production_readiness_control_latest.json",
+    "security_artifact": "governance/health/security_audit_latest.json",
+    "remote_alert_artifact": "governance/health/remote_alert_control_latest.json",
+    "backup_restore_artifact": "governance/health/storage_disaster_recovery_latest.json",
+    "blackstart_artifact": "governance/health/blackstart_recovery_latest.json",
+    "max_artifact_age_hours": 36
+  }
+}

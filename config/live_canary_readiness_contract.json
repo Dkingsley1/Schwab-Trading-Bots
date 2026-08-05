@@ -9,7 +9,7 @@
   "storage_max_total_pending_lines": 15000,
   "require_live_money_canary_milestones": true,
   "live_money_canary_min_soak_hours": 720,
-  "max_initial_live_canary_weight": 0.04,
+  "max_initial_live_canary_weight": 0.01,
   "gate_freshness_hours": {
     "health_gates": 2,
     "promotion_quality_gate": 24,

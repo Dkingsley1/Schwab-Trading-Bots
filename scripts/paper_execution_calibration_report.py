@@ -28,7 +28,21 @@ def _calibration_cutoff_utc() -> datetime | None:
         os.getenv("PAPER_EXECUTION_CALIBRATION_MIN_TIMESTAMP_UTC", "").strip()
         or os.getenv("PAPER_EXECUTION_REALISTIC_FILL_CUTOFF_UTC", "").strip()
     )
-    return _parse_ts(raw)
+    configured = _parse_ts(raw)
+    candidate_cutoff = None
+    try:
+        state = json.loads(
+            (PROJECT_ROOT / "governance" / "runtime" / "production_candidate_state.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        windows = state.get("scope_windows_started_utc", {}) if isinstance(state, dict) else {}
+        candidates = [_parse_ts(windows.get(scope)) for scope in ("execution", "data", "dependencies")]
+        candidate_cutoff = max((value for value in candidates if value is not None), default=None)
+    except Exception:
+        candidate_cutoff = None
+    values = [value for value in (configured, candidate_cutoff) if value is not None]
+    return max(values) if values else None
 
 
 def _is_synthetic_guard_row(row: Dict[str, Any]) -> bool:

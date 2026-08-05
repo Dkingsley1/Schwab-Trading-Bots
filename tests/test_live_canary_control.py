@@ -30,8 +30,8 @@ def test_live_canary_control_reports_ready_when_supervised_canary_is_fully_clear
         champion / "promotion_autopilot_packet_latest.json",
         {"overall_status": "ready", "autopilot_state": "awaiting_approval", "promotion_ready": True},
     )
-    _write_json(health / "canary_auto_tuner_latest.json", {"target_canary_max_weight": 0.05})
-    _write_json(health / "canary_rollout_latest.json", {"eligible": True, "promote_canary": True, "applied_weight": 0.05})
+    _write_json(health / "canary_auto_tuner_latest.json", {"target_canary_max_weight": 0.01})
+    _write_json(health / "canary_rollout_latest.json", {"eligible": True, "promote_canary": True, "applied_weight": 0.01})
 
     payload = src.build_payload(tmp_path)
 
@@ -56,8 +56,8 @@ def test_live_canary_control_blocks_when_faithful_live_money_contract_is_not_rea
         champion / "promotion_autopilot_packet_latest.json",
         {"overall_status": "ready", "autopilot_state": "awaiting_approval", "promotion_ready": True},
     )
-    _write_json(health / "canary_auto_tuner_latest.json", {"target_canary_max_weight": 0.05})
-    _write_json(health / "canary_rollout_latest.json", {"eligible": True, "promote_canary": True, "applied_weight": 0.05})
+    _write_json(health / "canary_auto_tuner_latest.json", {"target_canary_max_weight": 0.01})
+    _write_json(health / "canary_rollout_latest.json", {"eligible": True, "promote_canary": True, "applied_weight": 0.01})
     _write_json(
         health / "live_money_readiness_contract_latest.json",
         {
@@ -104,8 +104,8 @@ def test_live_canary_control_surfaces_packet_preclearance_when_only_seeded_commi
             "readiness_repair_contract": {"critical_repair_gate_count": 4},
         },
     )
-    _write_json(health / "canary_auto_tuner_latest.json", {"target_canary_max_weight": 0.04})
-    _write_json(health / "canary_rollout_latest.json", {"eligible": False, "promote_canary": False, "applied_weight": 0.04})
+    _write_json(health / "canary_auto_tuner_latest.json", {"target_canary_max_weight": 0.01})
+    _write_json(health / "canary_rollout_latest.json", {"eligible": False, "promote_canary": False, "applied_weight": 0.01})
 
     payload = src.build_payload(tmp_path)
 
@@ -145,8 +145,8 @@ def test_live_canary_control_treats_managed_coverage_stage_as_recoverable(tmp_pa
             "readiness_repair_contract": {"critical_repair_gate_count": 2},
         },
     )
-    _write_json(health / "canary_auto_tuner_latest.json", {"target_canary_max_weight": 0.04})
-    _write_json(health / "canary_rollout_latest.json", {"eligible": False, "promote_canary": False, "applied_weight": 0.04})
+    _write_json(health / "canary_auto_tuner_latest.json", {"target_canary_max_weight": 0.01})
+    _write_json(health / "canary_rollout_latest.json", {"eligible": False, "promote_canary": False, "applied_weight": 0.01})
 
     payload = src.build_payload(tmp_path)
 
@@ -182,8 +182,8 @@ def test_live_canary_control_preapproves_seeded_packet_when_runtime_is_already_c
             "readiness_repair_contract": {"critical_repair_gate_count": 1},
         },
     )
-    _write_json(health / "canary_auto_tuner_latest.json", {"target_canary_max_weight": 0.04})
-    _write_json(health / "canary_rollout_latest.json", {"eligible": True, "promote_canary": True, "applied_weight": 0.04})
+    _write_json(health / "canary_auto_tuner_latest.json", {"target_canary_max_weight": 0.01})
+    _write_json(health / "canary_rollout_latest.json", {"eligible": True, "promote_canary": True, "applied_weight": 0.01})
 
     payload = src.build_payload(tmp_path)
 
@@ -239,8 +239,8 @@ def test_live_canary_control_marks_coverage_cycles_ready_as_runnable_release_win
             "canary_packet_ready": True,
         },
     )
-    _write_json(health / "canary_auto_tuner_latest.json", {"target_canary_max_weight": 0.04})
-    _write_json(health / "canary_rollout_latest.json", {"eligible": False, "promote_canary": False, "applied_weight": 0.04})
+    _write_json(health / "canary_auto_tuner_latest.json", {"target_canary_max_weight": 0.01})
+    _write_json(health / "canary_rollout_latest.json", {"eligible": False, "promote_canary": False, "applied_weight": 0.01})
 
     payload = src.build_payload(tmp_path)
 

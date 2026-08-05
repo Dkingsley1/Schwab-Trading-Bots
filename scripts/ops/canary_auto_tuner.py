@@ -53,8 +53,8 @@ def _one_numbers_data_quality() -> float:
 def main() -> int:
     parser = argparse.ArgumentParser(description='Auto-tune canary weight from fail-share and data-quality trends.')
     parser.add_argument('--apply-env', action='store_true', default=True)
-    parser.add_argument('--min-weight', type=float, default=float(os.getenv('CANARY_TUNER_MIN_WEIGHT', '0.04')))
-    parser.add_argument('--max-weight', type=float, default=float(os.getenv('CANARY_TUNER_MAX_WEIGHT', '0.12')))
+    parser.add_argument('--min-weight', type=float, default=float(os.getenv('CANARY_TUNER_MIN_WEIGHT', '0.0025')))
+    parser.add_argument('--max-weight', type=float, default=float(os.getenv('CANARY_TUNER_MAX_WEIGHT', '0.01')))
     parser.add_argument('--json', action='store_true')
     args = parser.parse_args()
 
@@ -63,19 +63,19 @@ def main() -> int:
     dq = _one_numbers_data_quality()
 
     if dq < 75 or fail_share > 0.90:
-        target = 0.04
+        target = 0.0025
         reason = 'defensive_floor'
     elif dq < 82 or fail_share > 0.75:
-        target = 0.06
+        target = 0.005
         reason = 'high_risk'
     elif dq < 88 or fail_share > 0.55:
-        target = 0.08
+        target = 0.0075
         reason = 'moderate_risk'
     elif fail_share > 0.35:
-        target = 0.10
+        target = 0.01
         reason = 'cautious_expand'
     else:
-        target = 0.12
+        target = 0.01
         reason = 'healthy_expand'
 
     target = max(min(float(target), float(args.max_weight)), float(args.min_weight))

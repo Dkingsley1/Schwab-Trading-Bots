@@ -18,6 +18,18 @@ else:
 
 DEFAULT_OUT_PATH = PROJECT_ROOT / "governance" / "health" / "chaos_drill_coordinator_latest.json"
 DEFAULT_STATE_PATH = PROJECT_ROOT / "governance" / "runtime" / "chaos_drill_state.json"
+REQUIRED_PRODUCTION_DRILLS = (
+    "auth_expiry",
+    "broker_network_outage",
+    "managed_process_crash",
+    "reboot_blackstart",
+    "disk_capacity_exhaustion",
+    "external_storage_loss",
+    "memory_pressure",
+    "database_corruption_or_lock",
+    "market_data_delay_or_malformed_payload",
+    "order_reject_partial_fill_cancel_replace",
+)
 
 
 def _load_state(path: Path) -> dict[str, Any]:
@@ -53,36 +65,61 @@ def build_payload(
     snapshot_drill_script = project_root / "scripts" / "daily_state_snapshot_drill.py"
     backup_restore_script = project_root / "scripts" / "backup_restore_verify.py"
 
-    default_sources = {
+    observed_sources = {
         "snapshot_restore": snapshot_drill.get("timestamp_utc"),
         "reboot_blackstart": reboot_resilience.get("timestamp_utc"),
-        "storage_failover": storage_resilience.get("timestamp_utc"),
+        "external_storage_loss": storage_resilience.get("timestamp_utc"),
         "auth_expiry": token_guard.get("timestamp_utc"),
-        "queue_backlog_surge": process_watchdog.get("timestamp_utc"),
-        "sql_writer_stall": process_watchdog.get("timestamp_utc"),
+        "managed_process_crash": process_watchdog.get("timestamp_utc"),
     }
 
     overdue: list[dict[str, Any]] = []
     drills: list[dict[str, Any]] = []
     cutoff_days = float(overdue_days)
-    for drill_name, source_ts in default_sources.items():
+    failed_drills: list[dict[str, Any]] = []
+    unverified_drills: list[dict[str, Any]] = []
+    for drill_name in REQUIRED_PRODUCTION_DRILLS:
+        source_ts = observed_sources.get(drill_name)
         recorded = ((state.get("drills") or {}).get(drill_name)) if isinstance(state.get("drills"), dict) else None
         ts = parse_iso_utc((recorded or {}).get("completed_at_utc")) if isinstance(recorded, dict) else None
-        if ts is None:
-            ts = parse_iso_utc(source_ts)
+        observed_ts = parse_iso_utc(source_ts)
         age_days = None
         if ts is not None:
             age_days = max((utc_now() - ts).total_seconds() / 86400.0, 0.0)
-        is_overdue = age_days is None or float(age_days) > cutoff_days
+        recorded_drill = bool(isinstance(recorded, dict) and ts is not None)
+        result = str((recorded or {}).get("result") or "").strip().lower() if isinstance(recorded, dict) else ""
+        containment_verified = bool((recorded or {}).get("containment_verified", False)) if isinstance(recorded, dict) else False
+        no_duplicate_orders = bool((recorded or {}).get("no_duplicate_orders", False)) if isinstance(recorded, dict) else False
+        recovery_seconds = None
+        if isinstance(recorded, dict) and recorded.get("recovery_seconds") is not None:
+            try:
+                recovery_seconds = max(float(recorded.get("recovery_seconds")), 0.0)
+            except Exception:
+                recovery_seconds = None
+        verified = bool(recorded_drill and result == "pass" and containment_verified and no_duplicate_orders and recovery_seconds is not None)
+        is_overdue = not verified or age_days is None or float(age_days) > cutoff_days
         row = {
             "drill": drill_name,
             "completed_at_utc": ts.isoformat() if ts is not None else "",
+            "observed_runtime_evidence_at_utc": observed_ts.isoformat() if observed_ts is not None else "",
             "age_days": round(float(age_days), 4) if age_days is not None else None,
             "overdue": bool(is_overdue),
+            "recorded_drill": recorded_drill,
+            "result": result or "pending",
+            "containment_verified": containment_verified,
+            "no_duplicate_orders": no_duplicate_orders,
+            "recovery_seconds": recovery_seconds,
+            "evidence": str((recorded or {}).get("evidence") or "") if isinstance(recorded, dict) else "",
+            "note": str((recorded or {}).get("note") or "") if isinstance(recorded, dict) else "",
+            "verified": verified,
         }
         drills.append(row)
         if is_overdue:
             overdue.append(row)
+        if result == "fail":
+            failed_drills.append(row)
+        elif not verified:
+            unverified_drills.append(row)
 
     restore_discipline = {
         "snapshot_restore_present": bool(snapshot_drill),
@@ -97,15 +134,15 @@ def build_payload(
         "discipline_ready": weekly_drill_installer.exists() and snapshot_drill_script.exists() and backup_restore_script.exists(),
     }
     overall_status = "ready"
-    if overdue and (not schedule_contract["discipline_ready"] or not restore_discipline["restore_proof_ready"]):
+    if failed_drills or (overdue and (not schedule_contract["discipline_ready"] or not restore_discipline["restore_proof_ready"])):
         overall_status = "blocked"
-    elif overdue:
-        overall_status = "degraded"
+    elif unverified_drills or overdue:
+        overall_status = "evidence_pending"
 
     recommended_actions = ordered_unique(
         [
-            "record the next storage failover and black-start rehearsal in the chaos drill state file" if overdue else "",
-            "exercise auth-expiry, SQL writer stall, and backlog surge scenarios weekly during the long-run window" if len(overdue) >= 1 else "",
+            "record every required production drill with pass/fail, containment, recovery time, and duplicate-order proof" if overdue else "",
+            "exercise auth, broker network, process, storage, memory, database, market-data, and order-lifecycle faults weekly" if len(overdue) >= 1 else "",
             "keep the weekly restore drill installer and snapshot/restore scripts present so resilience stays a scheduled discipline"
             if not weekly_drill_installer.exists()
             else "",
@@ -126,6 +163,11 @@ def build_payload(
         "overdue_days_threshold": cutoff_days,
         "drills": drills,
         "overdue_drills": overdue,
+        "unverified_drills": unverified_drills,
+        "failed_drills": failed_drills,
+        "required_drills": list(REQUIRED_PRODUCTION_DRILLS),
+        "verified_drill_count": sum(1 for row in drills if row.get("verified", False)),
+        "required_drill_count": len(REQUIRED_PRODUCTION_DRILLS),
         "drill_program": {
             "program_score": program_score,
             "next_priority_drill": next_priority_drill,
@@ -147,6 +189,11 @@ def main() -> int:
     parser.add_argument("--overdue-days", type=float, default=7.0)
     parser.add_argument("--record-drill", default="")
     parser.add_argument("--note", default="")
+    parser.add_argument("--result", choices=("pass", "fail"), default="pass")
+    parser.add_argument("--recovery-seconds", type=float)
+    parser.add_argument("--containment-verified", action="store_true")
+    parser.add_argument("--no-duplicate-orders", action="store_true")
+    parser.add_argument("--evidence", default="")
     parser.add_argument("--out-file", default=str(DEFAULT_OUT_PATH))
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args()
@@ -155,7 +202,20 @@ def main() -> int:
     if str(args.record_drill or "").strip():
         state = _load_state(state_path)
         drills = state.get("drills") if isinstance(state.get("drills"), dict) else {}
-        drills[str(args.record_drill).strip()] = {"completed_at_utc": iso_now(), "note": str(args.note or "")}
+        drill_name = str(args.record_drill).strip()
+        if drill_name not in REQUIRED_PRODUCTION_DRILLS:
+            parser.error(f"unknown drill {drill_name!r}; choose one of: {', '.join(REQUIRED_PRODUCTION_DRILLS)}")
+        if args.recovery_seconds is None:
+            parser.error("--record-drill requires --recovery-seconds")
+        drills[drill_name] = {
+            "completed_at_utc": iso_now(),
+            "result": str(args.result),
+            "recovery_seconds": max(float(args.recovery_seconds), 0.0),
+            "containment_verified": bool(args.containment_verified),
+            "no_duplicate_orders": bool(args.no_duplicate_orders),
+            "evidence": str(args.evidence or ""),
+            "note": str(args.note or ""),
+        }
         state["drills"] = drills
         _save_state(state_path, state)
 
@@ -170,7 +230,7 @@ def main() -> int:
             f"overall_status={payload.get('overall_status', '')} "
             f"overdue={len(payload.get('overdue_drills') or [])}"
         )
-    return 0 if payload.get("overall_status") in {"ready", "degraded"} else 2
+    return 0 if payload.get("overall_status") in {"ready", "evidence_pending"} else 2
 
 
 if __name__ == "__main__":

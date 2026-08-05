@@ -1,5 +1,4 @@
 import json
-import os
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -467,12 +466,13 @@ class _FuturesPlaceOrderClient:
         return _DummyResponse(201, {})
 
 
-def test_live_place_order_retries_transient_failure(monkeypatch):
+def test_live_place_order_retries_transient_failure(monkeypatch, tmp_path: Path):
     _allow_production_order_firewall(monkeypatch)
     monkeypatch.setenv("LIVE_API_RETRY_ATTEMPTS", "4")
     monkeypatch.setenv("LIVE_API_RETRY_BACKOFF_SECONDS", "0")
     monkeypatch.setenv("LIVE_API_RETRY_JITTER_SECONDS", "0")
     trader = _mk_trader("live")
+    trader.project_root = str(tmp_path)
     trader.client = _FlakyPlaceOrderClient()
 
     order_spec = trader._build_live_order_spec(
@@ -482,7 +482,13 @@ def test_live_place_order_retries_transient_failure(monkeypatch):
         limit_price=0.0,
         asset_type="EQUITY",
     )
-    out = trader._live_place_order(symbol="AAPL", action="BUY", quantity=1.0, order_spec=order_spec)
+    out = trader._live_place_order(
+        symbol="AAPL",
+        action="BUY",
+        quantity=1.0,
+        order_spec=order_spec,
+        intent_id="decision-retry-success",
+    )
 
     assert out.get("ok") is True
     assert out.get("order_id") == "retry-success"
@@ -490,12 +496,13 @@ def test_live_place_order_retries_transient_failure(monkeypatch):
     assert trader.client.calls == 3
 
 
-def test_live_place_order_does_not_retry_non_retryable_http(monkeypatch):
+def test_live_place_order_does_not_retry_non_retryable_http(monkeypatch, tmp_path: Path):
     _allow_production_order_firewall(monkeypatch)
     monkeypatch.setenv("LIVE_API_RETRY_ATTEMPTS", "4")
     monkeypatch.setenv("LIVE_API_RETRY_BACKOFF_SECONDS", "0")
     monkeypatch.setenv("LIVE_API_RETRY_JITTER_SECONDS", "0")
     trader = _mk_trader("live")
+    trader.project_root = str(tmp_path)
     trader.client = _UnauthorizedPlaceOrderClient()
 
     order_spec = trader._build_live_order_spec(
@@ -505,12 +512,59 @@ def test_live_place_order_does_not_retry_non_retryable_http(monkeypatch):
         limit_price=0.0,
         asset_type="EQUITY",
     )
-    out = trader._live_place_order(symbol="AAPL", action="BUY", quantity=1.0, order_spec=order_spec)
+    out = trader._live_place_order(
+        symbol="AAPL",
+        action="BUY",
+        quantity=1.0,
+        order_spec=order_spec,
+        intent_id="decision-unauthorized",
+    )
 
     assert out.get("ok") is False
     assert "http_status_401" in str(out.get("error", ""))
     assert out.get("attempts_made") == 1
     assert trader.client.calls == 1
+    assert out["durable_order_intent"]["state"] == "rejected"
+
+
+def test_unknown_broker_submit_halts_and_blocks_unrelated_intents(monkeypatch, tmp_path: Path):
+    _allow_production_order_firewall(monkeypatch)
+    trader = _mk_trader("live")
+    trader.project_root = str(tmp_path)
+    trader.global_halt_flag_path = str(tmp_path / "governance" / "health" / "GLOBAL_TRADING_HALT.flag")
+    trader.client = _OptionsPlaceOrderClient()
+    order_spec = trader._build_live_order_spec(
+        symbol="AAPL",
+        action="BUY",
+        quantity=1.0,
+        limit_price=10.0,
+        asset_type="EQUITY",
+    )
+
+    first = trader._live_place_order(
+        symbol="AAPL",
+        action="BUY",
+        quantity=1.0,
+        order_spec=order_spec,
+        intent_id="decision-unknown-1",
+        reference_price=10.0,
+    )
+    second = trader._live_place_order(
+        symbol="AAPL",
+        action="BUY",
+        quantity=1.0,
+        order_spec=order_spec,
+        intent_id="decision-unknown-2",
+        reference_price=10.0,
+    )
+
+    assert first["ok"] is False
+    assert first["error"] == "broker_submit_outcome_unknown"
+    assert first["auto_halt"]["ok"] is True
+    assert Path(trader.global_halt_flag_path).exists()
+    assert second["ok"] is False
+    assert second["error"] == "unresolved_broker_operation_requires_reconciliation"
+    assert len(trader.client.placed_specs) == 1
 
 
 def test_account_snapshot_api_circuit_is_debounced_before_global_halt(monkeypatch, tmp_path: Path):
@@ -602,11 +656,13 @@ def test_build_live_order_spec_supports_multi_leg_options_plan():
 
 
 def test_live_execute_uses_options_plan_order_spec(monkeypatch, tmp_path: Path):
+    _allow_production_order_firewall(monkeypatch)
     monkeypatch.setenv("ALLOW_ORDER_EXECUTION", "1")
     monkeypatch.setenv("MARKET_DATA_ONLY", "0")
     monkeypatch.setenv("LIVE_PRETRADE_RECONCILE_REQUIRED", "0")
 
     trader = _mk_trader("live")
+    trader.project_root = str(tmp_path)
     trader.global_halt_flag_path = str(tmp_path / "GLOBAL_TRADING_HALT.flag")
     trader.execution_enabled = True
     trader.market_data_only = False
@@ -636,7 +692,8 @@ def test_live_execute_uses_options_plan_order_spec(monkeypatch, tmp_path: Path):
         },
     )
 
-    assert out.get("status") == "LIVE_ORDER_ACK_NO_ID"
+    assert out.get("status") == "LIVE_ORDER_OUTCOME_UNKNOWN"
+    assert out["live_order"]["broker_submission_may_have_succeeded"] is True
     assert trader.client.placed_specs
     placed = trader.client.placed_specs[-1]
     assert placed.get("complexOrderStrategyType") == "VERTICAL"
@@ -679,11 +736,13 @@ def test_build_live_order_spec_supports_options_roll_plan():
 
 
 def test_live_execute_uses_futures_plan_order_spec(monkeypatch, tmp_path: Path):
+    _allow_production_order_firewall(monkeypatch)
     monkeypatch.setenv("ALLOW_ORDER_EXECUTION", "1")
     monkeypatch.setenv("MARKET_DATA_ONLY", "0")
     monkeypatch.setenv("LIVE_PRETRADE_RECONCILE_REQUIRED", "0")
 
     trader = _mk_trader("live")
+    trader.project_root = str(tmp_path)
     trader.global_halt_flag_path = str(tmp_path / "GLOBAL_TRADING_HALT.flag")
     trader.execution_enabled = True
     trader.market_data_only = False
@@ -713,7 +772,7 @@ def test_live_execute_uses_futures_plan_order_spec(monkeypatch, tmp_path: Path):
         },
     )
 
-    assert out.get("status") == "LIVE_ORDER_ACK_NO_ID"
+    assert out.get("status") == "LIVE_ORDER_OUTCOME_UNKNOWN"
     placed = trader.client.placed_specs[-1]
     assert len(placed.get("orderLegCollection", [])) == 2
     assert placed["orderLegCollection"][0]["instrument"]["assetType"] == "FUTURE"
@@ -722,11 +781,13 @@ def test_live_execute_uses_futures_plan_order_spec(monkeypatch, tmp_path: Path):
 
 
 def test_live_execute_uses_futures_roll_legs(monkeypatch, tmp_path: Path):
+    _allow_production_order_firewall(monkeypatch)
     monkeypatch.setenv("ALLOW_ORDER_EXECUTION", "1")
     monkeypatch.setenv("MARKET_DATA_ONLY", "0")
     monkeypatch.setenv("LIVE_PRETRADE_RECONCILE_REQUIRED", "0")
 
     trader = _mk_trader("live")
+    trader.project_root = str(tmp_path)
     trader.global_halt_flag_path = str(tmp_path / "GLOBAL_TRADING_HALT.flag")
     trader.execution_enabled = True
     trader.market_data_only = False
@@ -761,7 +822,7 @@ def test_live_execute_uses_futures_roll_legs(monkeypatch, tmp_path: Path):
         },
     )
 
-    assert out.get("status") == "LIVE_ORDER_ACK_NO_ID"
+    assert out.get("status") == "LIVE_ORDER_OUTCOME_UNKNOWN"
     placed = trader.client.placed_specs[-1]
     assert placed["orderLegCollection"][0]["instruction"] == "SELL"
     assert placed["orderLegCollection"][1]["instruction"] == "BUY"

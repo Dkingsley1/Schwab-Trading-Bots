@@ -52,6 +52,7 @@ class LiveRiskConfig:
     max_reject_probability: float = 0.80
     max_cancel_probability: float = 0.85
     max_stale_quote_probability: float = 0.80
+    allow_new_short_positions: bool = False
 
     @classmethod
     def from_env(cls) -> "LiveRiskConfig":
@@ -72,6 +73,7 @@ class LiveRiskConfig:
             max_reject_probability=max(float(os.getenv("LIVE_MAX_REJECT_PROBABILITY", "0.80")), 0.0),
             max_cancel_probability=max(float(os.getenv("LIVE_MAX_CANCEL_PROBABILITY", "0.85")), 0.0),
             max_stale_quote_probability=max(float(os.getenv("LIVE_MAX_STALE_QUOTE_PROBABILITY", "0.80")), 0.0),
+            allow_new_short_positions=_truthy(os.getenv("LIVE_ALLOW_NEW_SHORT_POSITIONS", "0"), False),
         )
 
 
@@ -116,6 +118,8 @@ def production_order_firewall_check(
     action: str,
     quantity: float,
     order_spec: Dict[str, Any],
+    reference_price: float = 0.0,
+    risk_reducing_exit: bool = False,
     env: Optional[Dict[str, str]] = None,
 ) -> GuardDecision:
     env_map = env if isinstance(env, dict) else dict(os.environ)
@@ -132,6 +136,24 @@ def production_order_firewall_check(
     if market_data_only:
         blockers.append("market_data_only_active")
 
+    production_excellence: dict[str, Any] = {}
+    excellence_path = _project_path(
+        project_root,
+        policy.get("production_excellence_artifact")
+        or "governance/health/production_excellence_control_latest.json",
+    )
+    if bool(policy.get("require_production_excellence_for_live_submit", True)) and not risk_reducing_exit:
+        try:
+            loaded = json.loads(excellence_path.read_text(encoding="utf-8"))
+            production_excellence = loaded if isinstance(loaded, dict) else {}
+        except Exception:
+            production_excellence = {}
+        if not bool(
+            production_excellence.get("ten_out_of_ten_ready", False)
+            and production_excellence.get("live_money_consideration_ready", False)
+        ):
+            blockers.append("production_excellence_not_ready")
+
     active_halt_flags: list[str] = []
     if _truthy(env_map.get("OPERATOR_STOP"), False):
         active_halt_flags.append("env:OPERATOR_STOP")
@@ -141,7 +163,7 @@ def production_order_firewall_check(
         path = _project_path(project_root, raw_path)
         if path.exists():
             active_halt_flags.append(str(path))
-    if active_halt_flags:
+    if active_halt_flags and not risk_reducing_exit:
         blockers.append("halt_flags_active")
 
     missing_safety_flags: list[str] = []
@@ -149,12 +171,12 @@ def production_order_firewall_check(
         path = _project_path(project_root, raw_path)
         if not path.exists():
             missing_safety_flags.append(str(path))
-    if missing_safety_flags:
+    if missing_safety_flags and not risk_reducing_exit:
         blockers.append("required_safety_flag_missing")
 
     qty = max(float(quantity or 0.0), 0.0)
     max_qty = float(policy.get("max_order_quantity") or 0.0)
-    if max_qty > 0.0 and qty > max_qty:
+    if not risk_reducing_exit and max_qty > 0.0 and qty > max_qty:
         blockers.append("quantity_exceeds_cap")
 
     order_price = 0.0
@@ -162,18 +184,60 @@ def production_order_firewall_check(
         order_price = float((order_spec or {}).get("price") or 0.0)
     except Exception:
         order_price = 0.0
+    if order_price <= 0.0:
+        try:
+            order_price = max(float(reference_price or 0.0), 0.0)
+        except Exception:
+            order_price = 0.0
     max_notional = float(policy.get("max_single_order_notional") or 0.0)
-    if max_notional > 0.0 and order_price > 0.0:
-        legs = (order_spec or {}).get("orderLegCollection")
-        asset_types = [
+    legs = (order_spec or {}).get("orderLegCollection")
+    asset_types = [
             str(((leg or {}).get("instrument") or {}).get("assetType") or "").upper()
             for leg in legs
             if isinstance(leg, dict)
         ] if isinstance(legs, list) else []
+    instructions = [
+        str((leg or {}).get("instruction") or "").upper()
+        for leg in legs
+        if isinstance(leg, dict)
+    ] if isinstance(legs, list) else []
+    leg_symbols = [
+        str(((leg or {}).get("instrument") or {}).get("symbol") or "").strip().upper()
+        for leg in legs
+        if isinstance(leg, dict)
+    ] if isinstance(legs, list) else []
+    allowed_asset_types = {str(item).upper() for item in _string_list(policy.get("allowed_asset_types"))}
+    allowed_instructions = {str(item).upper() for item in _string_list(policy.get("allowed_instructions"))}
+    if allowed_asset_types and (not asset_types or any(item not in allowed_asset_types for item in asset_types)):
+        blockers.append("asset_type_not_allowed")
+    effective_instructions = instructions or [str(action or "").strip().upper()]
+    if not risk_reducing_exit and allowed_instructions and any(item not in allowed_instructions for item in effective_instructions):
+        blockers.append("instruction_not_allowed")
+
+    symbol_key = str(symbol or "").strip().upper()
+    if not leg_symbols or any(item != symbol_key for item in leg_symbols):
+        blockers.append("order_symbol_mismatch")
+    allowlist_path = _project_path(project_root, policy.get("canary_allowlist_path") or "")
+    canary_allowlist: list[str] = []
+    if allowlist_path.exists():
+        try:
+            loaded_allowlist = json.loads(allowlist_path.read_text(encoding="utf-8"))
+            raw_symbols = loaded_allowlist.get("symbols", []) if isinstance(loaded_allowlist, dict) else []
+            canary_allowlist = [str(item).strip().upper() for item in raw_symbols if str(item).strip()]
+        except Exception:
+            canary_allowlist = []
+    is_new_entry = str(action or "").strip().upper() in {"BUY", "BUY_TO_OPEN", "SELL_SHORT", "SELL_TO_OPEN"}
+    if is_new_entry and not risk_reducing_exit and (not canary_allowlist or symbol_key not in set(canary_allowlist)):
+        blockers.append("symbol_not_in_live_canary_allowlist")
+
+    if not risk_reducing_exit and max_notional > 0.0 and order_price > 0.0:
         multiplier = 100.0 if "OPTION" in asset_types else 1.0
         notional = abs(order_price * qty * multiplier)
         if notional > max_notional:
             blockers.append("notional_exceeds_cap")
+    elif not risk_reducing_exit and max_notional > 0.0:
+        notional = 0.0
+        blockers.append("reference_price_required_for_notional_cap")
     else:
         notional = 0.0
 
@@ -189,8 +253,18 @@ def production_order_firewall_check(
         "missing_safety_flags": missing_safety_flags,
         "order_price": float(order_price),
         "estimated_notional": float(notional),
+        "asset_types": asset_types,
+        "instructions": effective_instructions,
+        "leg_symbols": leg_symbols,
+        "risk_reducing_exit": bool(risk_reducing_exit),
+        "allowed_asset_types": sorted(allowed_asset_types),
+        "allowed_instructions": sorted(allowed_instructions),
+        "canary_allowlist_path": str(allowlist_path),
+        "canary_allowlist": canary_allowlist,
+        "production_excellence_path": str(excellence_path),
+        "production_excellence_ready": bool(production_excellence.get("ten_out_of_ten_ready", False)),
         "config_path": str(config_path),
-        "policy": "reject_by_default_until_production_firewall_is_armed_and_clear",
+        "policy": "reject_by_default_until_production_firewall_is_armed_and_clear; verified emergency exits remain risk reducing",
     }
     if blockers:
         return GuardDecision(
@@ -288,6 +362,7 @@ class LiveExecutionGuard:
         avg_daily_volume: float = 0.0,
         open_interest: float = 0.0,
         live_fill_slippage_bps: float = 0.0,
+        enforce_long_only: bool = True,
     ) -> GuardDecision:
         side = str(action or "").strip().upper()
         if side not in TRADE_ACTIONS:
@@ -380,6 +455,20 @@ class LiveExecutionGuard:
         position = self._positions.get(symbol_key, {"qty": 0.0, "avg_price": 0.0})
         current_qty = float(position.get("qty", 0.0) or 0.0)
         projected_qty = current_qty + signed_qty
+
+        if enforce_long_only and projected_qty < 0.0 and not self.config.allow_new_short_positions:
+            return GuardDecision(
+                ok=False,
+                gate="short_position_limit",
+                reason="new_short_positions_disabled",
+                details={
+                    "symbol": symbol_key,
+                    "current_qty": float(current_qty),
+                    "signed_qty": float(signed_qty),
+                    "projected_qty": float(projected_qty),
+                    "allow_new_short_positions": False,
+                },
+            )
 
         if abs(projected_qty) > self.config.max_position_qty_per_symbol:
             return GuardDecision(

@@ -83,7 +83,7 @@ def main() -> int:
 
     if args.apply_env:
         env_file = PROJECT_ROOT / "governance" / "health" / "canary_rollout.env"
-        weight = "0.12" if promote else "0.08"
+        weight = "0.0100" if promote else "0.0025"
         env_file.write_text(f"CANARY_MAX_WEIGHT={weight}\n", encoding="utf-8")
 
     print(f"canary_eligible={eligible} promote_canary={promote} edge_delta={edge_delta:.6f} samples_canary={canary_n} samples_baseline={base_n}")

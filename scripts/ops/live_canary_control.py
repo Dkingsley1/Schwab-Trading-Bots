@@ -17,7 +17,7 @@ else:
 
 
 DEFAULT_OUT_PATH = PROJECT_ROOT / "governance" / "health" / "live_canary_control_latest.json"
-DEFAULT_MAX_CANARY_WEIGHT = 0.12
+DEFAULT_MAX_CANARY_WEIGHT = 0.01
 RECOVERABLE_RUNTIME_CLEARANCE_STATES = {
     "awaiting_cold_lane",
     "awaiting_coverage_cycles",

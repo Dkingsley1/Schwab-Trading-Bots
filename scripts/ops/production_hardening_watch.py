@@ -12,10 +12,10 @@ if __package__ in {None, ""}:
     if str(PROJECT_ROOT) not in sys.path:
         sys.path.insert(0, str(PROJECT_ROOT))
     from scripts.ops.long_runtime_common import PROJECT_ROOT, iso_now, write_payload
-    from scripts.ops import infrabot_adaptive_governor, production_quality_control, production_quality_slo_guard
+    from scripts.ops import infrabot_adaptive_governor, production_excellence_control, production_quality_control, production_quality_slo_guard
 else:
     from .long_runtime_common import PROJECT_ROOT, iso_now, write_payload
-    from . import infrabot_adaptive_governor, production_quality_control, production_quality_slo_guard
+    from . import infrabot_adaptive_governor, production_excellence_control, production_quality_control, production_quality_slo_guard
 
 
 DEFAULT_OUT_PATH = PROJECT_ROOT / "governance" / "health" / "production_hardening_watch_latest.json"
@@ -69,6 +69,12 @@ def build_payload(
         command_timeout_seconds=command_timeout_seconds,
     )
     slo = production_quality_slo_guard.build_payload(project_root, refresh_quality=False, apply=apply)
+    excellence = production_excellence_control.build_payload(project_root)
+    if apply:
+        write_payload(
+            project_root / "governance" / "health" / "production_excellence_control_latest.json",
+            excellence,
+        )
     warning_count = _safe_int(slo.get("warning_count"), 0)
     breach_count = _safe_int(slo.get("breach_count"), 0)
     active_lane_count = _safe_int(slo.get("active_lane_count"), 0)
@@ -106,6 +112,17 @@ def build_payload(
             "warning_lane_ids": [str(row.get("lane_id") or "") for row in _as_list(slo.get("warning_lanes")) if isinstance(row, dict)],
             "breached_lane_ids": [str(row.get("lane_id") or "") for row in _as_list(slo.get("breached_lanes")) if isinstance(row, dict)],
         },
+        "production_excellence": {
+            "overall_status": excellence.get("overall_status"),
+            "overall_grade": excellence.get("overall_grade"),
+            "overall_score": excellence.get("overall_score"),
+            "ready_pillar_count": excellence.get("ready_pillar_count", 0),
+            "pillar_count": excellence.get("pillar_count", 10),
+            "blocked_pillars": excellence.get("blocked_pillars", []),
+            "candidate": excellence.get("candidate", {}),
+            "live_money_consideration_ready": excellence.get("live_money_consideration_ready", False),
+            "paper_runtime_impact": "none",
+        },
         "governor": {
             "overall_status": governor.get("overall_status"),
             "action_counts": _as_dict(_as_dict(governor.get("adaptive_policy_router")).get("action_counts")),
@@ -142,6 +159,7 @@ def build_payload(
             "keep default execution gated until warning or breach unless operator chooses execute-on-watch",
             "use production-quality-slo state to distinguish fresh issues from recurring production blockers",
             "keep live orders disabled until live-canary readiness and production-quality SLO both clear",
+            "treat incomplete ten-pillar evidence as live-money debt without degrading a healthy paper soak",
         ],
     }
     if apply:

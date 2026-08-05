@@ -1131,7 +1131,7 @@ def test_chaos_drill_coordinator_degrades_overdue_drills_when_discipline_is_read
 
     payload = chaos_src.build_payload(project_root, state_path=state_path, overdue_days=7.0)
 
-    assert payload["overall_status"] == "degraded"
+    assert payload["overall_status"] == "evidence_pending"
     assert len(payload["overdue_drills"]) >= 2
     assert payload["restore_discipline"]["restore_proof_ready"] is True
     assert payload["schedule_contract"]["discipline_ready"] is True

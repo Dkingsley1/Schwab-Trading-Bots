@@ -30,6 +30,7 @@ POLICY_FILES = {
     "use_mode_compliance": "config/use_mode_compliance_policy_v1.json",
     "commercial_readiness": "config/commercial_readiness_framework_v1.json",
     "live_canary_readiness": "config/live_canary_readiness_contract.json",
+    "production_excellence": "config/production_excellence_v1.json",
 }
 
 
@@ -190,6 +191,7 @@ def check_policy_configs(project_root: Path) -> dict[str, Any]:
     use_mode = loaded["use_mode_compliance"]
     commercial = loaded["commercial_readiness"]
     canary = loaded["live_canary_readiness"]
+    excellence = loaded["production_excellence"]
     forbidden_paths = loaded["self_healing"].get("forbidden_source_paths") or []
 
     conditions = {
@@ -250,6 +252,11 @@ def check_policy_configs(project_root: Path) -> dict[str, Any]:
                 "sustained window",
             )
         ),
+        "production_excellence_has_ten_pillars": set((excellence.get("candidate") or {}).get("soak_scopes") or [])
+        >= {"strategy", "execution", "risk", "data", "promotion", "operations", "dependencies"}
+        and len((excellence.get("recovery") or {}).get("required_drills") or []) == 10
+        and float((excellence.get("soak") or {}).get("required_hours", 0) or 0) >= 720
+        and float((excellence.get("canary") or {}).get("max_initial_weight", 1) or 1) <= 0.01,
     }
     return {
         "ok": all(conditions.values()),
@@ -274,7 +281,9 @@ def check_ci_guardrails(project_root: Path) -> dict[str, Any]:
         and "runtime_throttle_control.py --help" in text
         and "production_level_upgrade_hardener_control.py --help" in text
         and "production_quality_control.py --help" in text
-        and "production_quality_slo_guard.py --help" in text,
+        and "production_quality_slo_guard.py --help" in text
+        and "production_excellence_control.py --help" in text
+        and "live_order_ledger_control.py --help" in text,
         "production_smoke_in_ci": "production_flow_smoke.py --json" in text,
         "command_validity_bot_in_ci": "command_validity_bot.py --help" in text,
         "commands_hygiene_bot_in_ci": "commands_hygiene_bot.py --help" in text,
@@ -288,6 +297,8 @@ def check_ci_guardrails(project_root: Path) -> dict[str, Any]:
         "production_level_upgrade_hardener_control_in_ci": "production_level_upgrade_hardener_control.py --help" in text,
         "production_quality_control_in_ci": "production_quality_control.py --help" in text,
         "production_quality_slo_guard_in_ci": "production_quality_slo_guard.py --help" in text,
+        "production_excellence_control_in_ci": "production_excellence_control.py --help" in text,
+        "live_order_ledger_control_in_ci": "live_order_ledger_control.py --help" in text,
     }
 
 

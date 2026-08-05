@@ -48,6 +48,9 @@ jobs:
             scripts/ops/production_level_upgrade_hardener_control.py \
             scripts/ops/production_quality_control.py \
             scripts/ops/production_quality_slo_guard.py \
+            scripts/ops/production_excellence_control.py \
+            scripts/ops/live_order_ledger_control.py \
+            core/live_order_ledger.py \
             scripts/ops/runtime_throttle_control.py \
             scripts/ops/source_mutation_guard.py
 
@@ -75,6 +78,8 @@ jobs:
           python scripts/ops/production_level_upgrade_hardener_control.py --help >/dev/null
           python scripts/ops/production_quality_control.py --help >/dev/null
           python scripts/ops/production_quality_slo_guard.py --help >/dev/null
+          python scripts/ops/production_excellence_control.py --help >/dev/null
+          python scripts/ops/live_order_ledger_control.py --help >/dev/null
           python scripts/ops/runtime_throttle_control.py --help >/dev/null
           python scripts/ops/source_mutation_guard.py --help >/dev/null
 

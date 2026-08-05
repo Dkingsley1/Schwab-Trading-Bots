@@ -92,8 +92,8 @@ def _seed_ready_artifacts(project_root: Path) -> None:
             "timestamp_utc": now,
             "overall_status": "blocked",
             "recommended_mode": "validate_only",
-            "target_canary_weight": 0.02,
-            "applied_canary_weight": 0.02,
+            "target_canary_weight": 0.01,
+            "applied_canary_weight": 0.01,
             "canary_weight_ok": True,
         },
     )
@@ -271,7 +271,7 @@ def test_live_canary_readiness_contract_blocks_oversized_initial_canary_weight(t
     assert "m08_microscopic_canary_plan" in payload["blocked_milestones"]
     milestone = next(row for row in payload["live_money_canary_milestones"] if row["milestone_id"] == "m08_microscopic_canary_plan")
     assert milestone["ready"] is False
-    assert "initial_canary_weight_above_0.0400" in milestone["blockers"]
+    assert "initial_canary_weight_above_0.0100" in milestone["blockers"]
 
 
 def test_live_canary_readiness_contract_blocks_when_production_bar_not_ready(tmp_path: Path, monkeypatch) -> None:

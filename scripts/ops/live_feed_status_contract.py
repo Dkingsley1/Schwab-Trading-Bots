@@ -21,6 +21,7 @@ ARTIFACT_SPECS = {
     "throttle": ("runtime_throttle_control_latest.json", 10 * 60),
     "paper_ramp": ("paper_400_ramp_latest.json", 10 * 60),
     "unattended_soak": ("unattended_soak_readiness_latest.json", 45 * 60),
+    "production_excellence": ("production_excellence_control_latest.json", 15 * 60),
 }
 REQUIRED_SOURCES = {
     "health_fast",
@@ -703,6 +704,36 @@ def _soak_row(sources: dict[str, dict[str, Any]], system: dict[str, Any], storag
     }
 
 
+def _production_excellence_row(sources: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    source = sources["production_excellence"]
+    payload = source["payload"]
+    if not source["present"]:
+        status = "missing"
+    elif not source["fresh"]:
+        status = "stale"
+    elif payload.get("ten_out_of_ten_ready", False):
+        status = "ready"
+    else:
+        status = "evidence_pending"
+    blocked = payload.get("blocked_pillars") if isinstance(payload.get("blocked_pillars"), list) else []
+    candidate = payload.get("candidate") if isinstance(payload.get("candidate"), dict) else {}
+    return {
+        "status": status,
+        "grade": str(payload.get("overall_grade") or "unknown"),
+        "score": _as_float(payload.get("overall_score")),
+        "ready_pillars": _as_int(payload.get("ready_pillar_count")),
+        "pillar_count": _as_int(payload.get("pillar_count"), 10),
+        "candidate_id": str(candidate.get("candidate_id") or "none"),
+        "candidate_drift": bool(candidate.get("candidate_drift", False)),
+        "blocked_pillars": blocked,
+        "live_consideration": bool(payload.get("live_money_consideration_ready", False)),
+        "live_locked": bool(payload.get("live_orders_must_remain_disabled", True)),
+        "paper_impact": "none",
+        "artifact_age_seconds": source.get("age_seconds"),
+        "action": "none" if status == "ready" else "production-excellence",
+    }
+
+
 def _effective_operational_state(name: str, row: dict[str, Any]) -> tuple[str, bool]:
     status = str(row.get("status") or "unknown").strip().lower()
     if name == "throttle" and bool(row.get("managed_control")):
@@ -830,6 +861,7 @@ def build_status_snapshot(project_root: Path, source: str = "main", now: datetim
             system["action"] = throttle.get("action") or "runtime-throttle"
         storage["paper_status"] = "blocked"
     soak = _soak_row(artifacts, system, storage)
+    production_excellence = _production_excellence_row(artifacts)
     fx_provider = _fx_provider_row(project_root, now)
     source_states = {name: artifact["state"] for name, artifact in artifacts.items()}
     missing = sorted(name for name in REQUIRED_SOURCES if source_states[name] == "missing")
@@ -907,6 +939,7 @@ def build_status_snapshot(project_root: Path, source: str = "main", now: datetim
             "storage": storage,
             "throttle": throttle,
             "soak": soak,
+            "production_excellence": production_excellence,
             **({"fx_provider": fx_provider} if fx_provider else {}),
         },
         "contract": {
@@ -973,6 +1006,7 @@ def format_status_lines(snapshot: dict[str, Any]) -> list[str]:
     storage = rows.get("storage") if isinstance(rows.get("storage"), dict) else {}
     throttle = rows.get("throttle") if isinstance(rows.get("throttle"), dict) else {}
     soak = rows.get("soak") if isinstance(rows.get("soak"), dict) else {}
+    production_excellence = rows.get("production_excellence") if isinstance(rows.get("production_excellence"), dict) else {}
     fx_provider = rows.get("fx_provider") if isinstance(rows.get("fx_provider"), dict) else {}
     operator = snapshot.get("operator_summary") if isinstance(snapshot.get("operator_summary"), dict) else {}
     lines = [
@@ -1134,6 +1168,24 @@ def format_status_lines(snapshot: dict[str, Any]) -> list[str]:
                 ("cause", soak.get("cause")),
                 ("age", _age(soak.get("artifact_age_seconds"))),
                 ("action", soak.get("action")),
+            ],
+        ),
+        _line(
+            "production-excellence",
+            [
+                ("level", "ok" if production_excellence.get("status") == "ready" else "watch"),
+                ("status", production_excellence.get("status")),
+                ("grade", production_excellence.get("grade")),
+                ("score", production_excellence.get("score")),
+                ("pillars", f"{production_excellence.get('ready_pillars', 0)}/{production_excellence.get('pillar_count', 10)}"),
+                ("candidate", production_excellence.get("candidate_id")),
+                ("drift", production_excellence.get("candidate_drift")),
+                ("blocked", ",".join(production_excellence.get("blocked_pillars") or []) or "none"),
+                ("live_consideration", production_excellence.get("live_consideration")),
+                ("live_locked", production_excellence.get("live_locked")),
+                ("paper_impact", production_excellence.get("paper_impact")),
+                ("age", _age(production_excellence.get("artifact_age_seconds"))),
+                ("action", production_excellence.get("action")),
             ],
         ),
     ]
