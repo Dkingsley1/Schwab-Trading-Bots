@@ -1,9 +1,9 @@
 # Intelligence Layers PyCharm Index
 
-- Updated UTC: `2026-08-02T01:48:47.487992+00:00`
-- Whole-System Status: `ready`
-- Top Risk: `training_data_intake`
-- Safe Next Command: `./scripts/ops/opsctl.sh backpressure-super-drainer --apply --max-waves 1 --target-pending-lines 5000 --json`
+- Updated UTC: `2026-08-05T20:56:51.409128+00:00`
+- Whole-System Status: `degraded`
+- Top Risk: `bot_quality`
+- Safe Next Command: `./scripts/ops/opsctl.sh memory-efficiency status --json`
 
 ## Bot Activity Snapshot
 
@@ -33,18 +33,18 @@
 
 ## Live Visibility
 
-- Memory Pressure High: `False`
+- Memory Pressure High: `True`
 - Runtime Pressure High: `False`
 - Storage Critical: `False`
-- Writer Active: `False`
+- Writer Active: `True`
 - Guard Policy Mode: `full_schwab_observe`
 
 ## Docs Commands Reporting
 
-- Layer Status: `ready`
-- Action: `observe_docs_reporting_contract`
-- Command Contract Entries: `155`
-- Command Issues: `0`
+- Layer Status: `blocked`
+- Action: `run_commands_hygiene_apply`
+- Command Contract Entries: `158`
+- Command Issues: `2`
 - Report Bundle Entries: `38`
 - Report Bundle Errors: `0`
 - Report Permission Errors: `0`
@@ -58,15 +58,15 @@
 
 ## Intelligence Layers
 
-- `super_intelligence`: status `advisory`, mode `rethink`, action `run_outcome_verified_micro_drain`
-- `outcome_learning`: status `ready`, verdict `effective`
+- `super_intelligence`: status `degraded`, mode `precheck`, action `refresh_precheck_surfaces`
+- `outcome_learning`: status `ready`, verdict `monitoring`
 - `paper_lane_governor`: status `ready`, mode `full_eligible_paper_soak_active`, score `1584`
 - `symbol_universe_intelligence`: status `ready`, score `100.0`
-- `cognitive_twin_counterfactuals`: status `ready`, score `38`, next `base_case`
-- `recursive_policy_evolution`: status `ready`, score `72.0`, next `cognitive_twin_counterfactual_simulator`
+- `cognitive_twin_counterfactuals`: status `advisory`, score `46`, next `pressure_relief_success`
+- `recursive_policy_evolution`: status `advisory`, score `66.0`, next `cognitive_twin_counterfactual_simulator`
 - `deeper_self_awareness_layers`: status `ready`, mode `advisory_control_plane_with_constitutional_lockout_attestation`, score `9`, next `belief_ledger_confidence`
-- `codex_handoff`: status `ready`
-- `documentation_reporting_intelligence`: status `ready`, action `observe_docs_reporting_contract`, score `155`
+- `codex_handoff`: status `advisory`
+- `documentation_reporting_intelligence`: status `blocked`, action `run_commands_hygiene_apply`, score `158`
 
 ## PyCharm Open Paths
 

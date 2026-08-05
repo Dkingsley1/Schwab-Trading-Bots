@@ -269,6 +269,12 @@ def _step_specs(project_root: Path) -> list[dict[str, Any]]:
             "timeout_sec": 120,
         },
         {
+            "name": "paper_performance",
+            "payload_path": health_root / "paper_performance_latest.json",
+            "cmd": [str(PY), str(project_root / "scripts" / "paper_performance_report.py"), "--week-days", "7", "--json-only", "--json"],
+            "timeout_sec": 180,
+        },
+        {
             "name": "paper_profitability_control",
             "payload_path": health_root / "paper_profitability_control_latest.json",
             "additional_payload_paths": [health_root / "paper_runtime_profitability_controls_latest.json"],

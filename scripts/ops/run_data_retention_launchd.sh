@@ -36,6 +36,16 @@ trap finish_slot EXIT INT TERM
 
 "$PYTHON_BIN" "$PROJECT_ROOT/scripts/data_retention_policy.py" --apply --skip-sqlite-vacuum --json
 
+if [[ "${RETENTION_INCLUDE_EXTERNAL_STALE_ROOT:-1}" != "0" ]]; then
+  if ! "$PYTHON_BIN" "$PROJECT_ROOT/scripts/ops/stale_artifact_reaper_bot.py" \
+      --include-external-stale-root \
+      --max-reindex-files "${RETENTION_STALE_REINDEX_MAX_FILES:-2048}" \
+      --max-reindex-gb "${RETENTION_STALE_REINDEX_MAX_GB:-4}" \
+      --json >/dev/null; then
+    echo "data_retention stale_artifact_reaper=degraded detail=health_artifact_written"
+  fi
+fi
+
 if [[ "${BOT_COLD_ARCHIVE_COMPACTION_ON_RETENTION:-1}" != "0" ]]; then
   if ! archive_output="$(
     "$PYTHON_BIN" "$PROJECT_ROOT/scripts/ops/cold_archive_compactor.py" \

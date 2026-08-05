@@ -1,6 +1,7 @@
 import json
 from pathlib import Path
 import sys
+from types import SimpleNamespace
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
@@ -160,9 +161,16 @@ def test_paper_performance_report_json_only_skips_render_bundle(tmp_path, monkey
     def _raise_if_called(*_args, **_kwargs):
         raise AssertionError("render bundle should be skipped in json-only mode")
 
+    sync_calls = []
+
+    def _fake_sync(project_root_arg, performance_path, *, enabled):
+        sync_calls.append((project_root_arg, performance_path, enabled))
+        return {"ok": True, "attempted": True, "reason": "hash_bound"}
+
     monkeypatch.setattr(report, "PROJECT_ROOT", project_root)
     monkeypatch.setattr(report, "render_paper_performance_graphs", _raise_if_called)
     monkeypatch.setattr(report, "_render_pdf_from_html", _raise_if_called)
+    monkeypatch.setattr(report, "_sync_profitability_control", _fake_sync)
     monkeypatch.setattr(
         sys,
         "argv",
@@ -209,6 +217,50 @@ def test_paper_performance_report_json_only_skips_render_bundle(tmp_path, monkey
     assert not monthly_chart.exists()
     assert not quarterly_chart.exists()
     assert not sleeves_chart.exists()
+    assert sync_calls == [(project_root, out_file, True)]
+
+
+def test_profitability_generation_sync_requires_matching_hash(tmp_path, monkeypatch) -> None:
+    project_root = tmp_path / "project"
+    performance_path = project_root / "governance" / "health" / "paper_performance_latest.json"
+    performance_path.parent.mkdir(parents=True, exist_ok=True)
+    performance_path.write_text(json.dumps({"timestamp_utc": "2026-08-05T20:00:00+00:00"}), encoding="utf-8")
+    control_script = project_root / "scripts" / "ops" / "paper_profitability_control.py"
+    control_script.parent.mkdir(parents=True, exist_ok=True)
+    control_script.write_text("# test placeholder\n", encoding="utf-8")
+    expected_hash = report._file_sha256(performance_path)
+
+    def _fake_run(cmd, **kwargs):
+        assert cmd[-1] == "--apply"
+        assert kwargs["env"][report.PAPER_PROFITABILITY_LOCK_ENV] == "1"
+        control_path = project_root / "governance" / "health" / "paper_profitability_control_latest.json"
+        control_path.write_text(
+            json.dumps(
+                {
+                    "paper_performance_input_contract": {
+                        "sha256": expected_hash,
+                        "usable_for_profitability_grade": True,
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        return SimpleNamespace(returncode=0, stdout="ok", stderr="")
+
+    monkeypatch.setattr(report.subprocess, "run", _fake_run)
+
+    result = report._sync_profitability_control(project_root, performance_path, enabled=True)
+    sync_payload = json.loads(
+        (project_root / "governance" / "health" / "paper_profitability_generation_sync_latest.json").read_text(
+            encoding="utf-8"
+        )
+    )
+
+    assert result["ok"] is True
+    assert result["reason"] == "hash_bound"
+    assert result["paper_performance_sha256"] == expected_hash
+    assert result["profitability_source_sha256"] == expected_hash
+    assert sync_payload["generation_id"] == expected_hash[:16]
 
 
 def test_sleeve_chart_profiles_keeps_all_unique_profiles() -> None:

@@ -10,14 +10,25 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 import tempfile
+import time
 import math
 from collections import Counter, defaultdict
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterable
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
+SOURCE_PROJECT_ROOT = Path(__file__).resolve().parents[1]
+PROJECT_ROOT = SOURCE_PROJECT_ROOT
+if str(SOURCE_PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(SOURCE_PROJECT_ROOT))
+
+from scripts.ops.artifact_generation_lock import (
+    PAPER_PROFITABILITY_LOCK_ENV,
+    paper_profitability_generation_lock,
+)
+
 DEFAULT_JSON_PATH = PROJECT_ROOT / "governance" / "health" / "paper_performance_latest.json"
 DEFAULT_MD_PATH = PROJECT_ROOT / "exports" / "reports" / "paper_performance_latest.md"
 DEFAULT_HTML_PATH = PROJECT_ROOT / "exports" / "reports" / "paper_performance_latest.html"
@@ -78,6 +89,145 @@ def _run(cmd: list[str]) -> tuple[int, str, str]:
         return 124, "", f"timeout_after_{timeout_seconds:.0f}s"
     except Exception as exc:
         return 1, "", str(exc)
+
+
+def _atomic_write_json(path: Path, payload: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temp_path = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    try:
+        with temp_path.open("w", encoding="utf-8") as handle:
+            handle.write(json.dumps(payload, ensure_ascii=True, indent=2))
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temp_path, path)
+    finally:
+        try:
+            temp_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
+def _file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    try:
+        with path.open("rb") as handle:
+            while chunk := handle.read(1024 * 1024):
+                digest.update(chunk)
+    except OSError:
+        return ""
+    return digest.hexdigest()
+
+
+def _load_json(path: Path) -> dict[str, Any]:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _sync_profitability_control(
+    project_root: Path,
+    performance_path: Path,
+    *,
+    enabled: bool,
+) -> dict[str, Any]:
+    sync_path = project_root / "governance" / "health" / "paper_profitability_generation_sync_latest.json"
+    performance_hash = _file_sha256(performance_path)
+    result: dict[str, Any] = {
+        "timestamp_utc": _utc_now().isoformat(),
+        "schema_version": 1,
+        "ok": True,
+        "overall_status": "ready",
+        "attempted": False,
+        "reason": "disabled" if not enabled else "pending",
+        "generation_id": performance_hash[:16],
+        "paper_performance_path": str(performance_path),
+        "paper_performance_sha256": performance_hash,
+        "profitability_control_path": str(
+            project_root / "governance" / "health" / "paper_profitability_control_latest.json"
+        ),
+        "lock_coordinated": True,
+    }
+    if not enabled:
+        _atomic_write_json(sync_path, result)
+        return result
+
+    control_script = project_root / "scripts" / "ops" / "paper_profitability_control.py"
+    if not control_script.exists():
+        result.update(
+            {
+                "attempted": False,
+                "reason": "custom_project_root_without_profitability_control",
+                "overall_status": "not_applicable",
+                "ok": project_root != SOURCE_PROJECT_ROOT,
+            }
+        )
+        _atomic_write_json(sync_path, result)
+        return result
+
+    env = os.environ.copy()
+    env[PAPER_PROFITABILITY_LOCK_ENV] = "1"
+    timeout_seconds = max(float(os.getenv("PAPER_PROFITABILITY_SYNC_TIMEOUT_SECONDS", "30") or 30.0), 1.0)
+    started = time.monotonic()
+    try:
+        proc = subprocess.run(
+            [
+                sys.executable,
+                str(control_script),
+                "--project-root",
+                str(project_root),
+                "--apply",
+            ],
+            cwd=str(project_root),
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=timeout_seconds,
+        )
+        rc = int(proc.returncode)
+        stdout_tail = str(proc.stdout or "")[-500:]
+        stderr_tail = str(proc.stderr or "")[-500:]
+    except subprocess.TimeoutExpired as exc:
+        rc = 124
+        stdout_tail = str(exc.stdout or "")[-500:]
+        stderr_tail = f"timeout_after_{timeout_seconds:.1f}s"
+    except Exception as exc:
+        rc = 1
+        stdout_tail = ""
+        stderr_tail = str(exc)[-500:]
+
+    control_path = project_root / "governance" / "health" / "paper_profitability_control_latest.json"
+    control = _load_json(control_path)
+    source_contract = control.get("paper_performance_input_contract")
+    source_contract = source_contract if isinstance(source_contract, dict) else {}
+    current_hash = _file_sha256(performance_path)
+    synchronized = bool(
+        rc == 0
+        and current_hash
+        and current_hash == performance_hash
+        and source_contract.get("usable_for_profitability_grade", False)
+        and str(source_contract.get("sha256") or "") == current_hash
+    )
+    result.update(
+        {
+            "timestamp_utc": _utc_now().isoformat(),
+            "ok": synchronized,
+            "overall_status": "ready" if synchronized else "degraded",
+            "attempted": True,
+            "reason": "hash_bound" if synchronized else "profitability_generation_sync_failed",
+            "return_code": rc,
+            "duration_seconds": round(time.monotonic() - started, 3),
+            "paper_performance_sha256_after": current_hash,
+            "profitability_source_sha256": str(source_contract.get("sha256") or ""),
+            "source_usable_for_grade": bool(source_contract.get("usable_for_profitability_grade", False)),
+            "stdout_tail": stdout_tail,
+            "stderr_tail": stderr_tail,
+        }
+    )
+    _atomic_write_json(sync_path, result)
+    return result
 
 
 def _default_allow_gui_pdf_renderer() -> bool:
@@ -1979,6 +2129,12 @@ def main() -> int:
     ap.add_argument("--sleeves-chart-file", default=str(DEFAULT_SLEEVES_CHART_PATH))
     ap.add_argument("--allow-gui-pdf-renderer", action=argparse.BooleanOptionalAction, default=_default_allow_gui_pdf_renderer())
     ap.add_argument("--json-only", action="store_true", help="Write the JSON snapshot only and skip charts/markdown/html/pdf artifacts.")
+    ap.add_argument(
+        "--sync-profitability-control",
+        action=argparse.BooleanOptionalAction,
+        default=os.getenv("PAPER_PERFORMANCE_SYNC_PROFITABILITY", "1").strip() == "1",
+        help="Publish paper performance and its exact-hash profitability control as one coordinated generation.",
+    )
     ap.add_argument("--json", action="store_true")
     args = ap.parse_args()
 
@@ -2039,7 +2195,37 @@ def main() -> int:
             "pdf_path": str(pdf_path),
             "detail": str(pdf_detail),
         }
-    out_path.write_text(json.dumps(payload, ensure_ascii=True, indent=2), encoding="utf-8")
+    canonical_performance_path = PROJECT_ROOT / "governance" / "health" / "paper_performance_latest.json"
+    sync_result: dict[str, Any] = {
+        "ok": True,
+        "attempted": False,
+        "reason": "noncanonical_performance_output",
+    }
+    with paper_profitability_generation_lock(
+        PROJECT_ROOT,
+        timeout_seconds=float(os.getenv("PAPER_PROFITABILITY_GENERATION_LOCK_TIMEOUT_SECONDS", "120") or 120.0),
+    ):
+        existing = _load_json(out_path)
+        existing_timestamp = _parse_ts(existing.get("timestamp_utc"))
+        payload_timestamp = _parse_ts(payload.get("timestamp_utc"))
+        if existing_timestamp is not None and payload_timestamp is not None and existing_timestamp > payload_timestamp:
+            sync_result = {
+                "ok": True,
+                "attempted": False,
+                "reason": "newer_generation_already_published",
+            }
+        else:
+            _atomic_write_json(out_path, payload)
+            try:
+                canonical_output = out_path.resolve(strict=False) == canonical_performance_path.resolve(strict=False)
+            except Exception:
+                canonical_output = str(out_path) == str(canonical_performance_path)
+            if canonical_output:
+                sync_result = _sync_profitability_control(
+                    PROJECT_ROOT,
+                    out_path,
+                    enabled=bool(args.sync_profitability_control),
+                )
 
     if args.json:
         print(json.dumps(payload, ensure_ascii=True))
@@ -2053,7 +2239,9 @@ def main() -> int:
             f"day_change={float(day_summary.get('change_vs_previous_day', 0.0) or 0.0):.4f} "
             f"wtd_change={float(week_summary.get('week_to_date_change', 0.0) or 0.0):.4f}"
         )
-    return 0 if payload.get("ok") else 2
+    if not payload.get("ok"):
+        return 2
+    return 0 if bool(sync_result.get("ok", False)) else 3
 
 
 if __name__ == "__main__":

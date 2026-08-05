@@ -392,6 +392,9 @@ def test_main_can_stage_old_files_into_stale_section(monkeypatch, tmp_path):
     assert all(row['storage_tier'] in {'warm_stage', 'cool_stage', 'cold_stage'} for row in manifest_rows)
     assert all(row['age_bucket'] for row in manifest_rows)
     assert all(row['stale_reason'] for row in manifest_rows)
+    assert all(row['sha256'] for row in manifest_rows)
+    assert all(row['integrity_verified'] is True for row in manifest_rows)
+    assert all(row['manifest_backed'] is True for row in manifest_rows)
 
 
 def test_main_can_purge_old_stale_stage_files(monkeypatch, tmp_path):
@@ -405,6 +408,20 @@ def test_main_can_purge_old_stale_stage_files(monkeypatch, tmp_path):
 
     old_epoch = 1_735_689_600
     os.utime(stale_file, (old_epoch, old_epoch))
+    manifest_path = stale_root / 'stale_manifest.jsonl'
+    manifest_path.write_text(
+        json.dumps(
+            {
+                'event': 'staged',
+                'staged_path': str(stale_file),
+                'sha256': data_retention_policy._path_sha256(stale_file),
+                'integrity_verified': True,
+                'economic_value': 'low',
+                'protected_evidence': False,
+            }
+        ) + '\n',
+        encoding='utf-8',
+    )
 
     monkeypatch.setattr(
         data_retention_policy.sys,
@@ -441,6 +458,23 @@ def test_main_tiered_stale_purge_preserves_high_value_and_budget_limits_low_valu
     old_epoch = 1_735_689_600
     for path in (low_a, low_b, high):
         os.utime(path, (old_epoch, old_epoch))
+    manifest_path = stale_root / 'stale_manifest.jsonl'
+    manifest_path.write_text(
+        ''.join(
+            json.dumps(
+                {
+                    'event': 'staged',
+                    'staged_path': str(path),
+                    'sha256': data_retention_policy._path_sha256(path),
+                    'integrity_verified': True,
+                    'economic_value': 'high' if path == high else 'low',
+                    'protected_evidence': path == high,
+                }
+            ) + '\n'
+            for path in (low_a, low_b, high)
+        ),
+        encoding='utf-8',
+    )
 
     monkeypatch.setattr(
         data_retention_policy.sys,
@@ -469,13 +503,14 @@ def test_main_tiered_stale_purge_preserves_high_value_and_budget_limits_low_valu
     assert purge['deleted_files'] == 1
     assert purge['candidate_files_raw'] == 2
     assert purge['skipped_by_budget_files'] == 1
-    assert purge['skipped_by_tier_files'] == 1
+    assert purge['skipped_by_tier_files'] == 0
+    assert purge['skipped_protected_evidence_files'] == 1
     assert purge['budget_limited'] is True
     assert high.exists() is True
     assert sum(1 for path in (low_a, low_b) if path.exists()) == 1
 
 
-def test_main_stage_only_can_stage_all_candidate_labels(monkeypatch, tmp_path):
+def test_main_stage_only_protects_decision_evidence(monkeypatch, tmp_path):
     monkeypatch.setattr(data_retention_policy, 'PROJECT_ROOT', tmp_path)
 
     log_dir = tmp_path / 'logs'
@@ -516,12 +551,96 @@ def test_main_stage_only_can_stage_all_candidate_labels(monkeypatch, tmp_path):
 
     assert rc == 0
     assert old_log.exists() is False
-    assert old_decision.exists() is False
+    assert old_decision.exists() is True
     assert payload['deleted_files'] == 0
     assert payload['stale_stage']['stage_only'] is True
-    assert payload['stale_stage']['staged_files'] == 2
+    assert payload['stale_stage']['staged_files'] == 1
+    assert payload['stale_stage']['protected_files'] == 1
     assert (stale_root / 'logs').exists() is True
-    assert (stale_root / 'decisions').exists() is True
+    assert (stale_root / 'decisions').exists() is False
+
+
+def test_retention_protects_stale_canonical_latest_pointer(tmp_path):
+    latest = tmp_path / 'governance' / 'health' / 'dashboard_latest.json'
+    latest.parent.mkdir(parents=True)
+    latest.write_text('{}', encoding='utf-8')
+
+    eligible, protected = data_retention_policy._partition_retention_candidates(
+        'governance_health',
+        [latest],
+    )
+
+    assert eligible == []
+    assert protected == [
+        {
+            'path': str(latest),
+            'reason': 'canonical_latest_pointer_requires_refresh_or_explicit_retirement',
+        }
+    ]
+
+    state = latest.with_name('collector_state.json')
+    state.write_text('{}', encoding='utf-8')
+    eligible, protected = data_retention_policy._partition_retention_candidates(
+        'governance_health',
+        [state],
+    )
+    assert eligible == []
+    assert protected[0]['reason'] == 'canonical_latest_pointer_requires_refresh_or_explicit_retirement'
+
+
+def test_legacy_stale_reindex_is_bounded_and_protects_evidence(tmp_path):
+    stale_root = tmp_path / 'stale_stage'
+    fallback = stale_root / 'external_live_sqlite' / 'external' / 'data' / 'book.sqlite3.local_fallback.1'
+    evidence = stale_root / 'decisions' / 'project' / 'decisions' / 'trade_decisions_20250101.jsonl'
+    for path in (fallback, evidence):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(path.name, encoding='utf-8')
+    manifest = stale_root / 'stale_manifest.jsonl'
+
+    result = data_retention_policy._reindex_legacy_stale_stage(
+        stale_root=stale_root,
+        manifest_path=manifest,
+        max_files=2,
+        max_bytes=1024 * 1024,
+    )
+    rows = [json.loads(line) for line in manifest.read_text(encoding='utf-8').splitlines()]
+    by_path = {row['staged_path']: row for row in rows}
+
+    assert result['reindexed_files'] == 2
+    assert by_path[str(fallback)]['protected_evidence'] is False
+    assert by_path[str(fallback)]['economic_value'] == 'low'
+    assert by_path[str(evidence)]['protected_evidence'] is True
+    assert by_path[str(evidence)]['economic_value'] == 'critical'
+    assert all(row['sha256'] for row in rows)
+    assert all(row['integrity_basis'] == 'legacy_quarantine_baseline' for row in rows)
+    assert result['manifest_write_mode'] == 'single_fsync_batch'
+
+
+def test_legacy_stale_reindex_commits_manifest_in_one_batch(monkeypatch, tmp_path):
+    stale_root = tmp_path / 'stale_stage'
+    paths = [stale_root / 'logs' / f'old-{index}.log' for index in range(3)]
+    for path in paths:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(path.name, encoding='utf-8')
+    manifest = stale_root / 'stale_manifest.jsonl'
+    calls = []
+    real_append = data_retention_policy._append_jsonl_rows
+
+    def _capture(path, rows):
+        calls.append(len(rows))
+        real_append(path, rows)
+
+    monkeypatch.setattr(data_retention_policy, '_append_jsonl_rows', _capture)
+
+    result = data_retention_policy._reindex_legacy_stale_stage(
+        stale_root=stale_root,
+        manifest_path=manifest,
+        max_files=3,
+        max_bytes=1024 * 1024,
+    )
+
+    assert result['reindexed_files'] == 3
+    assert calls == [3]
 
 
 def test_main_stage_only_leaves_unmatched_candidates_in_place(monkeypatch, tmp_path):

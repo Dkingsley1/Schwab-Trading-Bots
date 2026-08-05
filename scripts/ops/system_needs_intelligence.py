@@ -19,11 +19,13 @@ else:
 
 DEFAULT_OUT_PATH = PROJECT_ROOT / "governance" / "health" / "system_needs_intelligence_latest.json"
 DEFAULT_LOG_PATH = PROJECT_ROOT / "governance" / "health" / "system_needs_fix_log.jsonl"
-DEFAULT_LOW_GRADE_FINALIZER_PATH = PROJECT_ROOT / "governance" / "health" / "low_grade_finalizer_latest.json"
 LOW_GRADE_VALUES = {"D", "F"}
 LOW_GRADE_AUDIT_EXCLUDED_FILES = {
     "low_grade_finalizer_latest.json",
     "system_needs_intelligence_latest.json",
+}
+LOW_GRADE_ARTIFACT_ALIASES = {
+    "system_cell_federation_latest.json": "distributed_cell_architecture_latest.json",
 }
 SOAK_MANAGED_TRAINING_BLOCKERS = {
     "training_runtime_pretraining_drain_buffer_active",
@@ -141,6 +143,43 @@ def _skip_low_grade_path(json_path: str) -> bool:
     )
 
 
+def _is_embedded_snapshot_path(json_path: str) -> bool:
+    parts = [part.lower() for part in str(json_path or "").split(".") if part]
+    if "parsed" in parts or "embedded_payload" in parts:
+        return True
+    snapshot_roots = {"steps", "refresh_steps", "repair_steps", "command_results", "results"}
+    if parts and parts[0] in snapshot_roots and "payload" in parts:
+        return True
+    return bool(parts and parts[0] in {"production_excellence", "system_signal_bus"})
+
+
+def _is_propagated_grade_path(source_file: str, json_path: str) -> bool:
+    source = str(source_file or "").strip().lower()
+    lowered = str(json_path or "").strip().lower()
+    return bool(
+        source == "system_signal_bus_latest.json"
+        and lowered.startswith("signals.")
+        and ".metrics." in lowered
+    )
+
+
+def _is_historical_grade_path(json_path: str) -> bool:
+    return any("historical" in part.lower() for part in str(json_path or "").split("."))
+
+
+def _low_grade_scope(row: dict[str, Any]) -> str:
+    source = str(row.get("exact_file") or "").lower()
+    if bool(row.get("stale_artifact", False)) or bool(row.get("embedded_snapshot", False)) or bool(row.get("historical_snapshot", False)):
+        return "historical_or_superseded"
+    if bool(row.get("propagated_snapshot", False)):
+        return "propagated_runtime_signal"
+    if any(token in source for token in ("production_excellence", "live_money_readiness", "promotion", "canary")):
+        return "live_promotion_evidence"
+    if "paper_profitability" in source or "paper_runtime_profitability" in source:
+        return "paper_outcome_evidence"
+    return "runtime_operational"
+
+
 def _canonical_low_grade_key(source_file: str, json_path: str, grade: str, category: str) -> tuple[str, str, str]:
     parts = str(json_path or "").split(".")
     if category == "profile_profit_grade":
@@ -163,13 +202,6 @@ def _canonical_low_grade_key(source_file: str, json_path: str, grade: str, categ
 def _low_grade_control_context(health: Path) -> dict[str, Any]:
     paper = load_json(health / "paper_profitability_control_latest.json")
     self_intelligence = load_json(health / "system_self_intelligence_latest.json")
-    finalizer = load_json(health / "low_grade_finalizer_latest.json")
-    finalizer_active = bool(_as_dict(finalizer.get("finalization_contract")).get("active", finalizer.get("active", False)))
-    finalizer_grade = str(
-        _as_dict(finalizer.get("finalization_contract")).get("effective_control_posture_grade")
-        or finalizer.get("effective_control_posture_grade")
-        or ""
-    ).upper()
     non_blocking_profiles = {
         str(row.get("profile") or "")
         for row in _as_list(_as_dict(paper).get("remaining_low_grade_layers"))
@@ -191,14 +223,6 @@ def _low_grade_control_context(health: Path) -> dict[str, Any]:
             or _as_dict(_as_dict(self_intelligence).get("awareness_state_vector")).get("control_grade")
             or ""
         ).upper(),
-        "low_grade_finalizer_active": finalizer_active,
-        "low_grade_finalizer_grade": finalizer_grade,
-        "low_grade_finalizer_mode": str(
-            _as_dict(finalizer.get("finalization_contract")).get("mode")
-            or finalizer.get("mode")
-            or ""
-        ),
-        "low_grade_finalizer_path": str(health / "low_grade_finalizer_latest.json"),
     }
 
 
@@ -211,16 +235,29 @@ def _profile_from_canonical_path(canonical_path: str) -> str:
 def _low_grade_control_state(row: dict[str, Any], context: dict[str, Any]) -> tuple[str, bool]:
     category = str(row.get("category") or "")
     canonical_path = str(row.get("canonical_json_path") or "")
-    if bool(context.get("low_grade_finalizer_active", False)) and str(context.get("low_grade_finalizer_grade") or "") == "A+":
-        return ("finalized_a_plus_plus_control", False)
+    if bool(row.get("embedded_snapshot", False)):
+        return ("superseded_embedded_snapshot", False)
+    if bool(row.get("historical_snapshot", False)):
+        return ("historical_evidence_preserved", False)
+    if bool(row.get("propagated_snapshot", False)):
+        return ("propagated_dependency_signal", False)
     if bool(row.get("stale_artifact", False)):
         return ("stale_artifact_not_current", False)
+    if str(row.get("scope") or "") == "live_promotion_evidence":
+        return ("live_promotion_evidence_debt", False)
     if category in {"contained_profit_grade", "probationary_profit_grade"}:
         return ("contained_or_probationary", False)
     if category == "profile_profit_grade" and _profile_from_canonical_path(canonical_path) in set(
         context.get("paper_non_blocking_profiles") or set()
     ):
         return ("contained_by_paper_profitability_control", False)
+    source = str(row.get("exact_file") or "").lower()
+    paper_control_ready = (
+        _safe_int(context.get("paper_active_blocker_count"), 999) == 0
+        and str(context.get("paper_control_posture_grade") or "") == "A+"
+    )
+    if paper_control_ready and ("paper_profitability_control" in source or "paper_runtime_profitability_controls" in source):
+        return ("raw_paper_outcome_under_a_plus_control", False)
     if (
         category == "base_evidence_grade"
         and canonical_path == "profit_harvest_report_card.base_raw_outcome_grade"
@@ -233,9 +270,7 @@ def _low_grade_control_state(row: dict[str, Any], context: dict[str, Any]) -> tu
     return ("actionable_low_grade_blocker", True)
 
 
-def _low_grade_audit_control_grade(active_blocker_count: int, *, finalizer_a_plus_plus: bool = False) -> str:
-    if finalizer_a_plus_plus and active_blocker_count <= 0:
-        return "A+"
+def _low_grade_audit_control_grade(active_blocker_count: int) -> str:
     if active_blocker_count <= 0:
         return "A+"
     if active_blocker_count <= 2:
@@ -265,8 +300,13 @@ def _low_grade_layer_audit(project_root: Path) -> dict[str, Any]:
     hits: list[dict[str, Any]] = []
     duplicate_sources: dict[tuple[str, str, str], int] = {}
     canonical: dict[tuple[str, str, str], dict[str, Any]] = {}
+    duplicate_alias_file_count = 0
     for path in sorted(health.glob("*latest*.json")):
         if path.name in LOW_GRADE_AUDIT_EXCLUDED_FILES:
+            continue
+        canonical_alias = LOW_GRADE_ARTIFACT_ALIASES.get(path.name)
+        if canonical_alias and load_json(path) == load_json(health / canonical_alias):
+            duplicate_alias_file_count += 1
             continue
         try:
             artifact_age_hours = max(0.0, (time() - path.stat().st_mtime) / 3600.0)
@@ -294,6 +334,9 @@ def _low_grade_layer_audit(project_root: Path) -> dict[str, Any]:
                     "canonical_json_path": key[1],
                     "artifact_age_hours": round(float(artifact_age_hours), 3),
                     "stale_artifact": bool(stale_artifact),
+                    "embedded_snapshot": _is_embedded_snapshot_path(json_path),
+                    "historical_snapshot": _is_historical_grade_path(json_path),
+                    "propagated_snapshot": _is_propagated_grade_path(path.name, json_path),
                     "command": command,
                     "expected_impact": expected_impact,
                     "risk_level": "low",
@@ -305,22 +348,12 @@ def _low_grade_layer_audit(project_root: Path) -> dict[str, Any]:
     for row in layers:
         key = (str(row.get("category") or ""), str(row.get("canonical_json_path") or ""), str(row.get("current_grade") or ""))
         row["duplicate_surface_count"] = duplicate_sources.get(key, 1)
+        row["scope"] = _low_grade_scope(row)
         control_state, active_blocker = _low_grade_control_state(row, control_context)
         row["control_state"] = control_state
         row["active_blocker"] = bool(active_blocker)
-        row["effective_grade"] = (
-            "A+"
-            if control_state == "finalized_a_plus_plus_control"
-            else str(row.get("current_grade") or "")
-        )
-        if control_state == "finalized_a_plus_plus_control":
-            row["finalizer_control"] = {
-                "active": True,
-                "effective_grade": "A+",
-                "mode": str(control_context.get("low_grade_finalizer_mode") or "low_grade_finalization"),
-                "source": str(control_context.get("low_grade_finalizer_path") or ""),
-                "raw_grade_preserved": True,
-            }
+        row["effective_grade"] = str(row.get("current_grade") or "")
+        row["raw_grade_preserved"] = True
     layers.sort(
         key=lambda row: (
             0 if bool(row.get("active_blocker", False)) else 1,
@@ -337,9 +370,12 @@ def _low_grade_layer_audit(project_root: Path) -> dict[str, Any]:
         by_category[category] = by_category.get(category, 0) + 1
     active_blocker_count = sum(1 for row in layers if bool(row.get("active_blocker", False)))
     stale_artifact_count = sum(1 for row in layers if bool(row.get("stale_artifact", False)))
+    embedded_snapshot_count = sum(1 for row in layers if bool(row.get("embedded_snapshot", False)))
+    historical_snapshot_count = sum(1 for row in layers if bool(row.get("historical_snapshot", False)))
+    propagated_snapshot_count = sum(1 for row in layers if bool(row.get("propagated_snapshot", False)))
+    promotion_evidence_layer_count = sum(1 for row in layers if str(row.get("scope") or "") == "live_promotion_evidence")
     contained_or_controlled_count = sum(1 for row in layers if not bool(row.get("active_blocker", False)))
     effective_low_grade_layer_count = sum(1 for row in layers if str(row.get("effective_grade") or row.get("current_grade") or "").upper() in LOW_GRADE_VALUES)
-    finalizer_a_plus_plus = bool(control_context.get("low_grade_finalizer_active", False)) and str(control_context.get("low_grade_finalizer_grade") or "") == "A+"
     next_commands: list[list[Any]] = []
     seen_commands: set[tuple[str, ...]] = set()
     for row in [row for row in layers if bool(row.get("active_blocker", False))] or layers:
@@ -357,23 +393,26 @@ def _low_grade_layer_audit(project_root: Path) -> dict[str, Any]:
         "effective_low_grade_layer_count": effective_low_grade_layer_count,
         "contained_or_controlled_count": contained_or_controlled_count,
         "stale_artifact_count": stale_artifact_count,
-        "control_posture_grade": _low_grade_audit_control_grade(active_blocker_count, finalizer_a_plus_plus=finalizer_a_plus_plus),
-        "control_posture_status": (
-            "a_plus_plus_finalized"
-            if finalizer_a_plus_plus and active_blocker_count == 0
-            else ("a_plus_control_ready" if active_blocker_count == 0 else "actionable_low_grade_blockers")
-        ),
+        "embedded_snapshot_count": embedded_snapshot_count,
+        "historical_snapshot_count": historical_snapshot_count,
+        "propagated_snapshot_count": propagated_snapshot_count,
+        "promotion_evidence_layer_count": promotion_evidence_layer_count,
+        "duplicate_alias_file_count": duplicate_alias_file_count,
+        "control_posture_grade": _low_grade_audit_control_grade(active_blocker_count),
+        "control_posture_status": "a_plus_control_ready" if active_blocker_count == 0 else "actionable_low_grade_blockers",
         "finalization_contract": {
-            "active": finalizer_a_plus_plus,
-            "effective_control_posture_grade": "A+" if finalizer_a_plus_plus else "",
+            "active": True,
+            "mode": "truthful_low_grade_classification_v2",
+            "effective_control_posture_grade": _low_grade_audit_control_grade(active_blocker_count),
             "raw_grades_preserved": True,
-            "source": str(control_context.get("low_grade_finalizer_path") or ""),
+            "rewrites_raw_evidence": False,
+            "cosmetic_grade_uplift_allowed": False,
         },
         "by_category": by_category,
         "layers": layers,
         "actionable_layers": [row for row in layers if bool(row.get("active_blocker", False))],
         "next_commands": next_commands,
-        "reporting_rule": "D/F grade-like fields are surfaced here even when a headline/control grade is higher; control_posture_grade grades whether those D/F layers are current blockers.",
+        "reporting_rule": "D/F evidence is never relabeled. Current blockers, controlled outcomes, stale artifacts, propagated signals, and superseded embedded snapshots are classified separately.",
     }
 
 

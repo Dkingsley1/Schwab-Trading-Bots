@@ -553,7 +553,9 @@ def test_runtime_artifact_refresh_step_specs_include_training_storage_and_harden
     assert "storage_failback_sync" in names
     assert "promotion_autopilot_packet" in names
     assert "source_verification" in names
+    assert "paper_performance" in names
     assert "paper_profitability_control" in names
+    assert names.index("paper_performance") < names.index("paper_profitability_control")
     assert "paper_replay_drill" in names
     assert "paper_execution_truth" in names
     assert "retrain_schema_compatibility" in names
@@ -827,6 +829,8 @@ def test_runtime_artifact_refresh_step_specs_include_training_storage_and_harden
     paper_profitability_spec = next(row for row in specs if row["name"] == "paper_profitability_control")
     assert "--apply" in paper_profitability_spec["cmd"]
     assert paper_profitability_spec["additional_payload_paths"]
+    paper_performance_spec = next(row for row in specs if row["name"] == "paper_performance")
+    assert "--json-only" in paper_performance_spec["cmd"]
     indicator_spec = next(row for row in specs if row["name"] == "schwab_indicator_intelligence_verified")
     assert "--offline" in indicator_spec["cmd"]
     runtime_throttle_spec = next(row for row in specs if row["name"] == "runtime_throttle_control")

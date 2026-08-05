@@ -15,8 +15,10 @@ if __package__ in {None, ""}:
     PROJECT_ROOT = Path(__file__).resolve().parents[2]
     if str(PROJECT_ROOT) not in sys.path:
         sys.path.insert(0, str(PROJECT_ROOT))
+    from scripts.ops.artifact_generation_lock import paper_profitability_generation_lock
     from scripts.ops.long_runtime_common import load_json, parse_iso_utc, payload_age_minutes, write_payload
 else:
+    from .artifact_generation_lock import paper_profitability_generation_lock
     from .long_runtime_common import PROJECT_ROOT, load_json, parse_iso_utc, payload_age_minutes, write_payload
 
 
@@ -118,6 +120,42 @@ def _hash_scope(project_root: Path, paths: list[Path]) -> str:
                     digest.update(chunk)
         digest.update(b"\0")
     return digest.hexdigest()
+
+
+def _file_sha256(path: Path) -> str:
+    if not path.is_file():
+        return ""
+    digest = hashlib.sha256()
+    try:
+        with path.open("rb") as handle:
+            while chunk := handle.read(1024 * 1024):
+                digest.update(chunk)
+    except OSError:
+        return ""
+    return digest.hexdigest()
+
+
+def _profitability_grade_labels_honest(control_payload: dict[str, Any]) -> bool:
+    raw_grade = _grade(control_payload.get("raw_profitability_grade"))
+    controlled_grade = _grade(control_payload.get("controlled_profitability_grade"))
+    display = str(control_payload.get("profitability_display_grade") or "")
+    if not raw_grade or not controlled_grade:
+        return False
+    if raw_grade == controlled_grade:
+        return display == raw_grade
+    return f"{controlled_grade} controlled" in display and f"{raw_grade} raw" in display
+
+
+def _profitability_source_matches(performance: dict[str, Any], control_payload: dict[str, Any]) -> bool:
+    source = _as_dict(control_payload.get("paper_performance_input_contract"))
+    path = Path(str(performance.get("path") or ""))
+    expected_hash = str(source.get("sha256") or "")
+    return bool(
+        performance.get("fresh", False)
+        and source.get("usable_for_profitability_grade", False)
+        and expected_hash
+        and expected_hash == _file_sha256(path)
+    )
 
 
 def candidate_fingerprints(project_root: Path, config: dict[str, Any]) -> dict[str, Any]:
@@ -635,12 +673,14 @@ def build_payload(
     drawdown_ratio = drawdown / post_cost_total if post_cost_total > 0.0 and drawdown != float("inf") else None
     raw_grade = _grade(control_payload.get("raw_profitability_grade"))
     controlled_grade = _grade(control_payload.get("controlled_profitability_grade"))
-    grade_separated = bool(raw_grade and controlled_grade and raw_grade != controlled_grade and f"{raw_grade} raw" in str(control_payload.get("profitability_display_grade") or ""))
+    grade_separated = _profitability_grade_labels_honest(control_payload)
+    profitability_source_current = _profitability_source_matches(performance, control_payload)
     pillar_7 = _pillar(
         "p07_profitability_evidence",
         "Post-Cost Profitability Evidence",
         [
             _check("profit_artifacts_fresh", "Profitability evidence is fresh", bool(performance.get("fresh", False) and profit_control.get("fresh", False)), evidence={"performance_age_minutes": performance.get("age_minutes"), "control_age_minutes": profit_control.get("age_minutes")}, action="refresh paper performance and profitability control from current trade deltas"),
+            _check("profit_control_matches_performance", "Profitability control is hash-bound to current performance", profitability_source_current, evidence=_as_dict(control_payload.get("paper_performance_input_contract")), action="refresh paper performance immediately before profitability control"),
             _check("profit_window_matches_candidate", "Post-cost samples belong to the frozen candidate", bool(profit_start and first_profit_sample and first_profit_sample >= profit_start), evidence={"candidate_window_start_utc": profit_start.isoformat() if profit_start else "", "first_sample_timestamp_utc": first_profit_sample.isoformat() if first_profit_sample else ""}, action="exclude pre-candidate trade deltas from the forward profitability cohort"),
             _check("post_cost_sample_floor", "Post-cost sample floor is met", _safe_int(expectancy.get("sample_count"), 0) >= _safe_int(profit_policy.get("minimum_post_cost_samples"), 100), evidence=expectancy.get("sample_count", 0), action="continue collecting schema-v2 post-cost trade deltas"),
             _check("positive_post_cost_lcb", "The 95% lower confidence bound is positive", bool(expectancy.get("positive_lower_confidence_bound_95", False)), evidence=expectancy, action="do not promote until post-cost expectancy is positive with confidence"),
@@ -687,6 +727,7 @@ def build_payload(
             _check("missing_evidence_scores_zero", "Missing evidence scores zero", _safe_int(grading_policy.get("missing_evidence_score"), -1) == 0, evidence=grading_policy.get("missing_evidence_score"), action="set missing evidence to a zero score"),
             _check("candidate_chain_tamper_evident", "Candidate evidence is hash-chained", bool(chain.get("ok", False) and _safe_int(chain.get("event_count"), 0) >= 1), evidence=chain, action="repair the tamper-evident candidate event chain"),
             _check("raw_controlled_labels_honest", "Raw and controlled profitability labels are separate", grade_separated, evidence={"raw_grade": raw_grade, "controlled_grade": controlled_grade, "display": control_payload.get("profitability_display_grade")}, action="do not allow controlled safety grades to overwrite raw financial results"),
+            _check("profitability_source_hash_current", "Profitability grade uses the current performance source", profitability_source_current, evidence=_as_dict(control_payload.get("paper_performance_input_contract")), action="derive profitability from the exact current paper-performance hash"),
             _check("content_store_fresh_and_clean", "Immutable content-store evidence is fresh and clean", bool(content_store.get("fresh", False) and content_payload.get("ok", False) and _safe_int(content_payload.get("unsafe_skipped_blob_count"), 0) == 0), evidence={"age_minutes": content_store.get("age_minutes"), "ok": content_payload.get("ok"), "unsafe_skipped_blob_count": content_payload.get("unsafe_skipped_blob_count")}, action="refresh and verify the content-addressed evidence store"),
             _check("source_verification_ready", "Source provenance is verified", bool(source_verification.get("fresh", False) and source_payload.get("ok", False) and _status(source_payload.get("overall_status")) == "ready"), evidence={"status": source_payload.get("overall_status"), "unverified_sources": source_payload.get("unverified_sources", [])}, action="verify or quarantine every unverified decision input source"),
         ],
@@ -797,15 +838,19 @@ def main(argv: list[str] | None = None) -> int:
     project_root = args.project_root.resolve()
     config_path = args.config if args.config.is_absolute() else project_root / args.config
     out_path = args.out if args.out.is_absolute() else project_root / args.out
-    payload = build_payload(
+    with paper_profitability_generation_lock(
         project_root,
-        config_path=config_path,
-        initialize_candidate=args.initialize_candidate,
-        accept_candidate_change=args.accept_candidate_change,
-        change_reason=args.change_reason,
-    )
-    if args.apply:
-        write_payload(out_path, payload)
+        timeout_seconds=float(os.getenv("PAPER_PROFITABILITY_GENERATION_LOCK_TIMEOUT_SECONDS", "120") or 120.0),
+    ):
+        payload = build_payload(
+            project_root,
+            config_path=config_path,
+            initialize_candidate=args.initialize_candidate,
+            accept_candidate_change=args.accept_candidate_change,
+            change_reason=args.change_reason,
+        )
+        if args.apply:
+            write_payload(out_path, payload)
     if args.json:
         print(json.dumps(payload, ensure_ascii=True, indent=2))
     else:

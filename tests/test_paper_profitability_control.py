@@ -1,5 +1,6 @@
 import importlib.util
 import json
+import sys
 from collections import Counter
 from pathlib import Path
 
@@ -334,6 +335,48 @@ def test_paper_profitability_control_is_ready_without_active_losses(tmp_path: Pa
     assert payload["active_profile_control_count"] == 0
     assert payload["profitability_grade"] == "A"
     assert payload["financial_profitability_grade"] == "A"
+    assert payload["paper_performance_input_contract"]["usable_for_profitability_grade"] is True
+    assert payload["paper_performance_input_contract"]["sha256"]
+
+
+def test_paper_profitability_control_fails_closed_without_execution_evidence(tmp_path: Path) -> None:
+    module = _load_module()
+    health = tmp_path / "governance" / "health"
+    _write_json(
+        health / "paper_performance_latest.json",
+        {"ok": True, "sleeve_latest": [{"profile": "default", "executions": 0}]},
+    )
+    control_path = health / "paper_runtime_profitability_controls_latest.json"
+    _write_json(control_path, {"sentinel": "preserve"})
+
+    payload = module.build_payload(tmp_path)
+
+    assert payload["overall_status"] == "blocked_missing_evidence"
+    assert payload["financial_profitability_grade"] == "N/A"
+    assert payload["raw_profitability_grade"] == "N/A"
+    assert payload["controlled_profitability_grade"] == "N/A"
+    assert payload["paper_performance_input_contract"]["usable_for_profitability_grade"] is False
+    assert "paper_performance_has_no_execution_evidence" in payload["paper_performance_input_contract"]["blockers"]
+
+    old_argv = sys.argv
+    try:
+        sys.argv = [
+            "paper_profitability_control.py",
+            "--project-root",
+            str(tmp_path),
+            "--out-file",
+            str(health / "paper_profitability_control_latest.json"),
+            "--control-out",
+            str(control_path),
+            "--apply",
+        ]
+        assert module.main() == 0
+    finally:
+        sys.argv = old_argv
+
+    assert json.loads(control_path.read_text(encoding="utf-8")) == {"sentinel": "preserve"}
+    written = json.loads((health / "paper_profitability_control_latest.json").read_text(encoding="utf-8"))
+    assert written["runtime_control_write_blocked"] is True
 
 
 def test_financial_grade_lift_contract_maps_b_grade_to_exact_recovery_gaps(tmp_path: Path) -> None:

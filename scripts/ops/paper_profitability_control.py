@@ -3,7 +3,9 @@ from __future__ import annotations
 
 import argparse
 import gzip
+import hashlib
 import json
+import os
 import sys
 from collections import Counter
 from datetime import datetime, timezone
@@ -14,8 +16,10 @@ if __package__ in {None, ""}:
     PROJECT_ROOT = Path(__file__).resolve().parents[2]
     if str(PROJECT_ROOT) not in sys.path:
         sys.path.insert(0, str(PROJECT_ROOT))
+    from scripts.ops.artifact_generation_lock import paper_profitability_generation_lock
     from scripts.ops.long_runtime_common import load_json, ordered_unique, write_payload
 else:
+    from .artifact_generation_lock import paper_profitability_generation_lock
     from .long_runtime_common import PROJECT_ROOT, load_json, ordered_unique, write_payload
 
 
@@ -807,6 +811,76 @@ def _as_dict(value: Any) -> dict[str, Any]:
     return value if isinstance(value, dict) else {}
 
 
+def _load_paper_performance_input(path: Path) -> tuple[dict[str, Any], dict[str, Any]]:
+    parse_error = ""
+    try:
+        stat_before = path.stat()
+        raw = path.read_bytes()
+        stat_after = path.stat()
+        decoded = json.loads(raw)
+        paper = decoded if isinstance(decoded, dict) else {}
+    except Exception as exc:
+        stat_before = None
+        stat_after = None
+        raw = b""
+        paper = {}
+        parse_error = str(exc)
+    sleeves = _as_list(paper.get("sleeve_latest"))
+    executions = sum(
+        max(_safe_int(row.get("executions"), 0), 0)
+        for row in sleeves
+        if isinstance(row, dict)
+    )
+    if stat_after is not None:
+        age_seconds = max((datetime.now(timezone.utc).timestamp() - stat_after.st_mtime), 0.0)
+        size_bytes = int(stat_after.st_size)
+        mtime_ns = int(stat_after.st_mtime_ns)
+    else:
+        age_seconds = float("inf")
+        size_bytes = 0
+        mtime_ns = 0
+    source_stable = bool(
+        stat_before is not None
+        and stat_after is not None
+        and stat_before.st_mtime_ns == stat_after.st_mtime_ns
+        and stat_before.st_size == stat_after.st_size
+        and len(raw) == stat_after.st_size
+    )
+    source_fresh = age_seconds <= 3600.0
+    payload_ok = bool(paper) and paper.get("ok", True) is not False
+    usable = bool(payload_ok and sleeves and executions > 0 and source_fresh and source_stable)
+    blockers: list[str] = []
+    if not payload_ok:
+        blockers.append("paper_performance_missing_or_not_ok")
+    if not sleeves:
+        blockers.append("paper_performance_has_no_sleeves")
+    if executions <= 0:
+        blockers.append("paper_performance_has_no_execution_evidence")
+    if not source_fresh:
+        blockers.append("paper_performance_source_stale")
+    if not source_stable:
+        blockers.append("paper_performance_source_changed_during_read")
+    contract = {
+        "mode": "hash_bound_paper_performance_input_v1",
+        "path": str(path),
+        "sha256": hashlib.sha256(raw).hexdigest() if raw else "",
+        "payload_timestamp_utc": str(paper.get("timestamp_utc") or ""),
+        "source_mtime_ns": mtime_ns,
+        "source_age_seconds": None if age_seconds == float("inf") else round(age_seconds, 3),
+        "source_max_age_seconds": 3600,
+        "source_size_bytes": size_bytes,
+        "sleeve_count": len([row for row in sleeves if isinstance(row, dict)]),
+        "execution_count": executions,
+        "source_fresh": source_fresh,
+        "source_stable_during_read": source_stable,
+        "usable_for_profitability_grade": usable,
+        "blockers": blockers,
+        "parse_error": parse_error,
+        "fail_closed": True,
+    }
+    return paper, contract
+
+
 def _clamp(value: float, low: float = 0.0, high: float = 1.0) -> float:
     return min(max(float(value), low), high)
 
@@ -1093,6 +1167,8 @@ def _financial_grade(
     change_vs_previous_day: float,
     executions: int,
 ) -> str:
+    if executions <= 0:
+        return "N/A"
     if (
         net_sum >= FINANCIAL_APLUS_MIN_NET_PNL
         and realized_sum >= FINANCIAL_APLUS_MIN_REALIZED_PNL
@@ -1145,10 +1221,16 @@ def _financial_grade_basis_contract(
     excluded_net_sum = sum(_safe_float(row.get("ending_net_pnl_total"), 0.0) for row in excluded)
     excluded_realized_sum = sum(_safe_float(row.get("ending_realized_pnl_total"), 0.0) for row in excluded)
     excluded_unrealized_sum = sum(_safe_float(row.get("ending_unrealized_pnl_total"), 0.0) for row in excluded)
+    evidence_ready = bool(basis_rows and execution_sum > 0)
     return {
-        "active": bool(gradeable),
+        "active": evidence_ready,
         "mode": "fresh_current_exposure_raw_financial_grade_v1",
-        "basis": "fresh_current_exposure_excluding_stale_latest_available" if gradeable else "fallback_all_sleeves",
+        "basis": (
+            "fresh_current_exposure_excluding_stale_latest_available"
+            if gradeable
+            else ("fallback_all_sleeves" if evidence_ready else "insufficient_execution_evidence")
+        ),
+        "evidence_ready": evidence_ready,
         "gradeable_sleeve_count": len(basis_rows),
         "excluded_stale_sleeve_count": len(excluded),
         "all_sleeve_totals": {
@@ -2054,8 +2136,11 @@ def _controlled_profitability_grade_contract(
     lift_control_grade = str(financial_lift_contract.get("control_posture_grade") or "").strip().upper()
     lift_active = bool(financial_lift_contract.get("active", False))
     raw_financial_can_raise = bool(financial_lift_contract.get("can_raise_reported_financial_grade_now", False))
+    raw_evidence_gradeable = raw_financial in {"D", "C", "B", "A", "A+"}
     control_ready = (
-        control_grade == "A+"
+        raw_evidence_gradeable
+        and raw_profitability in {"D", "C", "B", "A", "A+"}
+        and control_grade == "A+"
         and weak_control_ready
         and lift_control_grade == "A+"
         and (weak_contract_active or raw_financial in {"D", "C", "B"})
@@ -2066,7 +2151,7 @@ def _controlled_profitability_grade_contract(
     elif control_ready:
         controlled_financial = "A+"
         controlled_profitability = "A+"
-    elif control_grade == "A+" and weak_control_ready and weak_contract_active:
+    elif raw_evidence_gradeable and control_grade == "A+" and weak_control_ready and weak_contract_active:
         controlled_financial = "A+"
         controlled_profitability = "A+"
     else:
@@ -7272,7 +7357,7 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
     paper_path = health / "paper_performance_latest.json"
     training_quality_path = health / "training_quality_control_latest.json"
     previous_control_path = DEFAULT_CONTROL_PATH if project_root == PROJECT_ROOT else health / "paper_runtime_profitability_controls_latest.json"
-    paper = load_json(paper_path)
+    paper, paper_performance_input_contract = _load_paper_performance_input(paper_path)
     training_quality = load_json(training_quality_path)
     previous_runtime_control = load_json(previous_control_path)
     previous_daily_goal_contract = (
@@ -7539,6 +7624,8 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
         overall_status = "needs_tuning"
     if any(row.get("action") == "quarantine_new_entries" for row in active_profile_controls.values()):
         overall_status = "protective_tightening"
+    if not bool(paper_performance_input_contract.get("usable_for_profitability_grade", False)):
+        overall_status = "blocked_missing_evidence"
 
     training_score = _safe_float(training_quality.get("training_quality_score"), 0.0)
     raw_operational_outcome_grade = str(
@@ -7721,6 +7808,7 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
         "schema_version": 1,
         "ok": overall_status in {"ready", "needs_tuning", "protective_tightening"},
         "overall_status": overall_status,
+        "paper_performance_input_contract": paper_performance_input_contract,
         "profitability_grade": net_grade,
         "raw_profitability_grade": raw_profitability_grade,
         "financial_profitability_grade": financial_grade,
@@ -8252,6 +8340,7 @@ def build_runtime_control_payload(payload: dict[str, Any]) -> dict[str, Any]:
         "weak_sleeve_recurrence_guard_contract": weak_sleeve_recurrence_guard_contract,
         "weak_sleeve_systemic_weak_point_contract": weak_sleeve_systemic_weak_point_contract,
         "financial_grade_basis_contract": financial_grade_basis_contract,
+        "paper_performance_input_contract": _as_dict(payload.get("paper_performance_input_contract")),
         "financial_grade_lift_contract": financial_grade_lift_contract,
         "raw_profitability_a_recovery_contract": raw_profitability_a_recovery_contract,
         "raw_profitability_improvement_contract": raw_profitability_improvement_contract,
@@ -8508,23 +8597,36 @@ def main() -> int:
     args = parser.parse_args()
 
     project_root = Path(args.project_root).expanduser().resolve()
-    payload = build_payload(project_root)
-    if args.apply:
-        control_payload = build_runtime_control_payload(payload)
-        control_path = Path(args.control_out).expanduser()
-        if not control_path.is_absolute():
-            control_path = project_root / control_path
-        write_payload(control_path, control_payload)
-        payload["applied_runtime_control_file"] = str(control_path)
-        payload["applied_runtime_control_summary"] = {
-            "profile_control_count": len(control_payload.get("profile_controls") or {}),
-            "strategy_control_count": len(control_payload.get("strategy_controls") or {}),
-        }
+    with paper_profitability_generation_lock(
+        project_root,
+        timeout_seconds=float(os.getenv("PAPER_PROFITABILITY_GENERATION_LOCK_TIMEOUT_SECONDS", "120") or 120.0),
+    ):
+        payload = build_payload(project_root)
+        input_contract = _as_dict(payload.get("paper_performance_input_contract"))
+        if args.apply and bool(input_contract.get("usable_for_profitability_grade", False)):
+            control_payload = build_runtime_control_payload(payload)
+            control_path = Path(args.control_out).expanduser()
+            if not control_path.is_absolute():
+                control_path = project_root / control_path
+            write_payload(control_path, control_payload)
+            payload["applied_runtime_control_file"] = str(control_path)
+            payload["applied_runtime_control_summary"] = {
+                "profile_control_count": len(control_payload.get("profile_controls") or {}),
+                "strategy_control_count": len(control_payload.get("strategy_controls") or {}),
+            }
+        elif args.apply:
+            payload["runtime_control_write_blocked"] = True
+            payload["runtime_control_write_blocked_reason"] = "paper_performance_input_not_gradeable"
+            payload["applied_runtime_control_summary"] = {
+                "profile_control_count": 0,
+                "strategy_control_count": 0,
+                "preserved_previous_control": True,
+            }
 
-    out_path = Path(args.out_file).expanduser()
-    if not out_path.is_absolute():
-        out_path = project_root / out_path
-    write_payload(out_path, payload)
+        out_path = Path(args.out_file).expanduser()
+        if not out_path.is_absolute():
+            out_path = project_root / out_path
+        write_payload(out_path, payload)
 
     if args.json:
         print(json.dumps(payload, ensure_ascii=True))

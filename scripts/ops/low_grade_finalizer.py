@@ -55,32 +55,35 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
                 "canonical_json_path": row.get("canonical_json_path", ""),
                 "category": row.get("category", "low_grade_layer"),
                 "base_grade": row.get("current_grade", ""),
-                "effective_grade": "A+",
-                "active_blocker_after_finalization": False,
+                "effective_grade": row.get("current_grade", ""),
+                "active_blocker_after_finalization": bool(row.get("active_blocker", False)),
                 "raw_grade_preserved": True,
-                "control_state": "finalized_a_plus_plus_control",
+                "control_state": row.get("control_state", "actionable_low_grade_blocker"),
                 "command": row.get("command", []),
             }
         )
+    active_blockers = int(audit.get("active_blocker_count", 0) or 0)
+    control_grade = str(audit.get("control_posture_grade") or "D")
     return {
         "timestamp_utc": iso_now(),
-        "schema_version": 1,
-        "ok": True,
-        "overall_status": "ready",
+        "schema_version": 2,
+        "ok": active_blockers == 0,
+        "overall_status": "ready" if active_blockers == 0 else "needs_action",
         "raw_low_grade_layer_count": len(layers),
-        "effective_low_grade_layer_count": 0,
-        "active_blocker_count_after_finalization": 0,
-        "contained_or_controlled_count_after_finalization": len(layers),
+        "effective_low_grade_layer_count": int(audit.get("effective_low_grade_layer_count", len(layers)) or 0),
+        "active_blocker_count_after_finalization": active_blockers,
+        "contained_or_controlled_count_after_finalization": int(audit.get("contained_or_controlled_count", 0) or 0),
         "finalization_contract": {
             "active": True,
-            "mode": "low_grade_a_plus_plus_finalization",
-            "effective_control_posture_grade": "A+",
+            "mode": "truthful_low_grade_classification_v2",
+            "effective_control_posture_grade": control_grade,
             "target_effective_grade": "A+",
             "raw_grades_preserved": True,
             "rewrites_raw_evidence": False,
+            "cosmetic_grade_uplift_allowed": False,
             "reason": (
-                "Every remaining D/F surface has a control, containment, stale-artifact, or repair path; "
-                "the system-needs audit should grade the effective control posture A+ without erasing raw evidence."
+                "Low grades are classified by current authority and control state. A repair command or containment "
+                "does not upgrade the underlying evidence grade."
             ),
             "stop_condition": "system-needs low_grade_layer_audit.active_blocker_count is 0 and control_posture_grade is A+",
         },
@@ -88,7 +91,7 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
         "source_audit": {
             "raw_hit_count": audit.get("raw_hit_count", 0),
             "unique_low_grade_layer_count": audit.get("unique_low_grade_layer_count", 0),
-            "active_blocker_count_before_finalization": audit.get("active_blocker_count", 0),
+            "active_blocker_count_before_finalization": active_blockers,
             "by_category": audit.get("by_category", {}),
         },
         "protected_volumes": ["/Volumes/VIDEO"],

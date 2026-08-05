@@ -123,3 +123,43 @@ def test_candidate_event_log_tampering_blocks_candidate(tmp_path: Path) -> None:
     assert payload["candidate"]["event_chain"]["ok"] is False
     pillar = next(item for item in payload["pillars"] if item["pillar_id"] == "p01_frozen_candidate")
     assert "candidate_event_chain_valid" in pillar["failed_checks"]
+
+
+def test_profitability_grade_integrity_allows_honest_equal_grades() -> None:
+    assert control._profitability_grade_labels_honest(
+        {
+            "raw_profitability_grade": "A",
+            "controlled_profitability_grade": "A",
+            "profitability_display_grade": "A",
+        }
+    ) is True
+    assert control._profitability_grade_labels_honest(
+        {
+            "raw_profitability_grade": "C",
+            "controlled_profitability_grade": "A+",
+            "profitability_display_grade": "A+ controlled / C raw",
+        }
+    ) is True
+    assert control._profitability_grade_labels_honest(
+        {
+            "raw_profitability_grade": "C",
+            "controlled_profitability_grade": "A+",
+            "profitability_display_grade": "A+",
+        }
+    ) is False
+
+
+def test_profitability_source_match_requires_exact_hash(tmp_path: Path) -> None:
+    performance = tmp_path / "performance.json"
+    performance.write_text('{"executions": 10}', encoding="utf-8")
+    artifact = {"path": str(performance), "fresh": True}
+    payload = {
+        "paper_performance_input_contract": {
+            "usable_for_profitability_grade": True,
+            "sha256": control._file_sha256(performance),
+        }
+    }
+
+    assert control._profitability_source_matches(artifact, payload) is True
+    performance.write_text('{"executions": 11}', encoding="utf-8")
+    assert control._profitability_source_matches(artifact, payload) is False

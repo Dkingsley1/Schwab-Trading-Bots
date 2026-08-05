@@ -61,7 +61,16 @@ def test_stale_artifact_reaper_build_payload_purges_old_staged_files(tmp_path) -
     manifest_path.write_text(
         "\n".join(
             [
-                json.dumps({"event": "staged", "staged_path": str(stale_file)}),
+                json.dumps(
+                    {
+                        "event": "staged",
+                        "staged_path": str(stale_file),
+                        "sha256": stale_artifact_reaper_bot.retention._path_sha256(stale_file),
+                        "integrity_verified": True,
+                        "economic_value": "low",
+                        "protected_evidence": False,
+                    }
+                ),
                 json.dumps({"event": "purged", "staged_path": str(stale_root / "logs" / "project" / "logs" / "older.log")}),
                 json.dumps({"event": "purged", "staged_path": str(stale_root / "logs" / "project" / "logs" / "oldest.log")}),
             ]
@@ -86,7 +95,75 @@ def test_stale_artifact_reaper_build_payload_purges_old_staged_files(tmp_path) -
     assert payload["summary"]["deleted_files"] == 1
     assert payload["summary"]["manifest_lines_after"] == 3
     assert payload["summary"]["purge_policy"]["low_value_days"] >= 0
+    assert payload["summary"]["purge_policy"]["manifest_backed_only"] is True
     assert payload["summary"]["budget_limited"] is False
     assert stale_file.exists() is False
     assert any(row.get("event") == "purged" for row in manifest_rows)
     assert len(manifest_rows) == 3
+
+
+def test_stale_artifact_reaper_reindexes_then_holds_unmanifested_file(tmp_path) -> None:
+    project_root = tmp_path / "project"
+    stale_root = project_root / "data" / "stale_stage"
+    stale_file = stale_root / "logs" / "unmanifested.log"
+    stale_file.parent.mkdir(parents=True, exist_ok=True)
+    stale_file.write_text("keep", encoding="utf-8")
+    old_epoch = 1_735_689_600
+    os.utime(stale_file, (old_epoch, old_epoch))
+
+    payload = stale_artifact_reaper_bot.build_payload(
+        project_root,
+        stale_stage_root=stale_root,
+        stale_stage_manifest="",
+        stale_purge_days=1,
+    )
+
+    assert stale_file.exists() is True
+    assert payload["summary"]["deleted_files"] == 0
+    assert payload["summary"]["legacy_reindexed_files"] == 1
+    assert payload["summary"]["skipped_legacy_reindex_hold_files"] == 1
+    assert payload["legacy_manifest_reindex"]["hold_hours"] == 24
+
+
+def test_stale_artifact_reaper_merges_all_root_health_and_work() -> None:
+    primary = {
+        "ok": True,
+        "reason": "ok",
+        "summary": {
+            "deleted_files": 2,
+            "deleted_bytes": 20,
+            "legacy_reindex_remaining_files": 3,
+            "legacy_reindex_errors": 0,
+            "budget_limited": False,
+        },
+        "artifacts": {"stale_root": "/primary"},
+    }
+    external = {
+        "ok": False,
+        "reason": "reindex_or_purge_errors",
+        "summary": {
+            "deleted_files": 4,
+            "deleted_bytes": 40,
+            "legacy_reindex_remaining_files": 5,
+            "legacy_reindex_errors": 1,
+            "budget_limited": True,
+        },
+        "artifacts": {"stale_root": "/external"},
+    }
+
+    merged = stale_artifact_reaper_bot._merge_additional_root(primary, external)
+
+    assert merged["ok"] is False
+    assert merged["reason"] == "one_or_more_stale_roots_failed"
+    assert merged["summary"]["deleted_files"] == 6
+    assert merged["summary"]["deleted_bytes"] == 60
+    assert merged["summary"]["legacy_reindex_remaining_files"] == 8
+    assert merged["summary"]["legacy_reindex_errors"] == 1
+    assert merged["summary"]["budget_limited"] is True
+    assert merged["summary"]["root_count"] == 2
+    assert merged["summary"]["all_roots_ok"] is False
+    assert [row["stale_root"] for row in merged["root_results"]] == ["/primary", "/external"]
+
+
+def test_stale_artifact_reaper_uses_shared_retention_lock() -> None:
+    assert stale_artifact_reaper_bot.DEFAULT_LOCK_PATH.name == "data_retention.lock"

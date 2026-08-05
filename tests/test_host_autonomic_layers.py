@@ -2859,11 +2859,40 @@ def test_system_needs_marks_controlled_low_grades_as_a_plus_posture(tmp_path: Pa
     assert audit["active_blocker_count"] == 0
     assert audit["control_posture_grade"] == "A+"
     assert {row["control_state"] for row in audit["layers"]} == {
-        "raw_harvest_evidence_under_a_plus_control",
+        "raw_paper_outcome_under_a_plus_control",
         "contained_by_paper_profitability_control",
         "self_awareness_under_a_plus_control",
     }
     assert not any(item.get("blocker") == "low_grade_layers_still_present" for item in payload["what_do_you_need"])
+
+
+def test_system_needs_preserves_but_deduplicates_propagated_low_grades(tmp_path: Path) -> None:
+    health = tmp_path / "governance" / "health"
+    _write_json(
+        health / "distributed_cell_architecture_latest.json",
+        {"operational_health": {"grade": "F"}},
+    )
+    _write_json(
+        health / "system_signal_bus_latest.json",
+        {"signals": [{"metrics": {"operational_grade": "F"}}]},
+    )
+    _write_json(
+        health / "whole_system_intelligence_latest.json",
+        {"system_signal_bus": {"signals": [{"metrics": {"operational_grade": "F"}}]}},
+    )
+
+    audit = system_needs_intelligence._low_grade_layer_audit(tmp_path)
+
+    assert audit["unique_low_grade_layer_count"] == 3
+    assert audit["active_blocker_count"] == 1
+    assert audit["embedded_snapshot_count"] == 1
+    assert audit["propagated_snapshot_count"] == 1
+    assert {row["current_grade"] for row in audit["layers"]} == {"F"}
+    assert {row["control_state"] for row in audit["layers"]} == {
+        "actionable_low_grade_blocker",
+        "propagated_dependency_signal",
+        "superseded_embedded_snapshot",
+    }
 
 
 def test_system_needs_embeds_raw_profitability_burn_down_plan(tmp_path: Path) -> None:

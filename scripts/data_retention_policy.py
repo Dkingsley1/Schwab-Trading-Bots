@@ -1,5 +1,6 @@
 import argparse
 import fcntl
+import hashlib
 import json
 import math
 import os
@@ -34,6 +35,23 @@ DEFAULT_EXTERNAL_PROJECT = "schwab_trading_bot"
 LOCAL_FALLBACK_STORAGE_MODES = {"local_fallback", "local_fallback_split_brain"}
 DEFAULT_STALE_STAGE_DIRNAME = "stale_stage"
 DEFAULT_STALE_STAGE_SECTION_TOKENS = ("logs", "governance", "exports")
+PROTECTED_STALE_EVIDENCE_TOKENS = (
+    "audit",
+    "candidate",
+    "compliance",
+    "evidence",
+    "execution",
+    "incident",
+    "ledger",
+    "pnl",
+    "position",
+    "promotion",
+    "recovery",
+    "restore",
+    "risk",
+    "tax",
+    "trade",
+)
 
 
 def _acquire_singleton_lock(lock_path: Path):
@@ -94,10 +112,75 @@ def _path_size_bytes(path: Path) -> int:
     return total
 
 
-def _append_jsonl(path: Path, row: dict[str, object]) -> None:
+def _append_jsonl_rows(path: Path, rows: list[dict[str, object]]) -> None:
+    if not rows:
+        return
     path.parent.mkdir(parents=True, exist_ok=True)
+    payload = "".join(json.dumps(row, ensure_ascii=True) + "\n" for row in rows)
     with open(path, "a", encoding="utf-8") as fh:
-        fh.write(json.dumps(row, ensure_ascii=True) + "\n")
+        written = fh.write(payload)
+        if written != len(payload):
+            raise OSError(f"short manifest append: wrote {written} of {len(payload)} characters")
+        fh.flush()
+        os.fsync(fh.fileno())
+
+
+def _append_jsonl(path: Path, row: dict[str, object]) -> None:
+    _append_jsonl_rows(path, [row])
+
+
+def _path_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    try:
+        if path.is_symlink():
+            digest.update(f"symlink:{os.readlink(path)}".encode("utf-8"))
+            return digest.hexdigest()
+        if path.is_file():
+            with path.open("rb") as handle:
+                while chunk := handle.read(1024 * 1024):
+                    digest.update(chunk)
+            return digest.hexdigest()
+        if path.is_dir():
+            for child in sorted((item for item in path.rglob("*") if item.is_file() or item.is_symlink()), key=str):
+                digest.update(str(child.relative_to(path)).encode("utf-8"))
+                digest.update(b"\0")
+                digest.update(_path_sha256(child).encode("ascii"))
+                digest.update(b"\0")
+            return digest.hexdigest()
+    except OSError:
+        return ""
+    return ""
+
+
+def _stale_stage_protection_reason(label: str, path: Path) -> str:
+    section = str(label or "").strip().lower()
+    name = path.name.lower()
+    text = f"{section}/{name}"
+    if ".local_fallback" in name:
+        return ""
+    if section in {"decisions", "decision_explanations"}:
+        return "immutable_decision_evidence"
+    if any(token in text for token in PROTECTED_STALE_EVIDENCE_TOKENS):
+        return "durable_audit_or_financial_evidence"
+    if section.startswith("governance") and (
+        name.endswith("_latest.json")
+        or name.endswith("_state.json")
+        or name.endswith("_last_verified.json")
+    ):
+        return "canonical_latest_pointer_requires_refresh_or_explicit_retirement"
+    return ""
+
+
+def _partition_retention_candidates(label: str, paths: list[Path]) -> tuple[list[Path], list[dict[str, str]]]:
+    eligible: list[Path] = []
+    protected: list[dict[str, str]] = []
+    for path in _dedupe_paths(paths):
+        reason = _stale_stage_protection_reason(label, path)
+        if reason:
+            protected.append({"path": str(path), "reason": reason})
+        else:
+            eligible.append(path)
+    return eligible, protected
 
 
 def _default_stale_stage_root(project_root: Path) -> Path:
@@ -217,12 +300,16 @@ def _stale_stage_storage_tier(label: str, path: Path) -> str:
 def _stale_stage_economic_value(label: str, path: Path) -> str:
     section = str(label or "").strip().lower()
     name = path.name.lower()
+    if _stale_stage_protection_reason(label, path):
+        return "critical"
     if ".local_fallback" in name:
         return "low"
     if section == "decisions":
         return "critical"
     if section == "decision_explanations":
         return "high"
+    if section == "governance_health":
+        return "low"
     if section.startswith("governance"):
         return "medium"
     if section == "logs" or section.startswith("exports") or section == "debug_snapshots":
@@ -304,6 +391,14 @@ def _move_paths_to_stale_stage(
         if not path.exists():
             continue
         size_bytes = _path_size_bytes(path)
+        original_sha256 = _path_sha256(path)
+        if not original_sha256:
+            errors.append(f"{path}:source_hash_unavailable")
+            continue
+        try:
+            original_mtime_ns = int(path.stat().st_mtime_ns)
+        except OSError:
+            original_mtime_ns = 0
         temperature = _stale_stage_temperature_label(label, path)
         storage_tier = _stale_stage_storage_tier(label, path)
         age_bucket = _stale_stage_age_bucket(path)
@@ -317,6 +412,20 @@ def _move_paths_to_stale_stage(
         except OSError as exc:
             errors.append(f"{path}:{exc}")
             continue
+        staged_sha256 = _path_sha256(dest)
+        staged_size_bytes = _path_size_bytes(dest)
+        integrity_verified = bool(staged_sha256 == original_sha256 and staged_size_bytes == size_bytes)
+        if not integrity_verified:
+            try:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                if not path.exists() and dest.exists():
+                    shutil.move(str(dest), str(path))
+            except OSError as rollback_exc:
+                errors.append(f"{path}:integrity_mismatch_rollback_failed:{rollback_exc}")
+            else:
+                errors.append(f"{path}:integrity_mismatch_move_rolled_back")
+            continue
+        protection_reason = _stale_stage_protection_reason(label, path)
         row = {
             "timestamp_utc": datetime.now(timezone.utc).isoformat(),
             "event": "staged",
@@ -324,6 +433,12 @@ def _move_paths_to_stale_stage(
             "original_path": str(path),
             "staged_path": str(dest),
             "size_bytes": int(size_bytes),
+            "original_mtime_ns": original_mtime_ns,
+            "sha256": original_sha256,
+            "integrity_verified": True,
+            "manifest_backed": True,
+            "protected_evidence": bool(protection_reason),
+            "protection_reason": protection_reason,
             "temperature_label": temperature,
             "storage_tier": storage_tier,
             "age_bucket": age_bucket,
@@ -397,7 +512,18 @@ def _compact_stale_manifest(
     compacted_text = "\n".join(json.dumps(row, ensure_ascii=True) for row in compacted_rows)
     if compacted_text:
         compacted_text += "\n"
-    manifest_path.write_text(compacted_text, encoding="utf-8")
+    tmp_path = manifest_path.with_name(f".{manifest_path.name}.{os.getpid()}.tmp")
+    try:
+        with tmp_path.open("w", encoding="utf-8") as handle:
+            handle.write(compacted_text)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp_path, manifest_path)
+    finally:
+        try:
+            tmp_path.unlink(missing_ok=True)
+        except OSError:
+            pass
 
     return {
         "ran": True,
@@ -407,6 +533,178 @@ def _compact_stale_manifest(
         "lines_dropped": int(max(lines_before - len(compacted_rows), 0)),
         "active_rows_kept": int(len(active_rows)),
         "purged_rows_kept": int(len(kept_purged)),
+    }
+
+
+def _active_stale_manifest_rows(manifest_path: Path) -> dict[str, dict[str, object]]:
+    active: dict[str, dict[str, object]] = {}
+    if not manifest_path.exists():
+        return active
+    try:
+        lines = manifest_path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return active
+    for raw in lines:
+        try:
+            row = json.loads(raw)
+        except Exception:
+            continue
+        if not isinstance(row, dict):
+            continue
+        staged_path = str(row.get("staged_path") or "").strip()
+        if not staged_path:
+            continue
+        event = str(row.get("event") or "").strip().lower()
+        if event == "staged":
+            active[staged_path] = row
+        elif event == "purged":
+            active.pop(staged_path, None)
+    return active
+
+
+def _reindex_legacy_stale_stage(
+    *,
+    stale_root: Path,
+    manifest_path: Path,
+    max_files: int = 2048,
+    max_bytes: int = 4 * (1024**3),
+) -> dict[str, object]:
+    active = _active_stale_manifest_rows(manifest_path)
+    candidates: list[dict[str, object]] = []
+    if stale_root.exists():
+        for root, dirs, files in os.walk(stale_root):
+            dirs.sort()
+            for name in files:
+                path = Path(root) / name
+                if path == manifest_path:
+                    continue
+                current = active.get(str(path), {})
+                if bool(current.get("integrity_verified", False)) and str(current.get("sha256") or ""):
+                    continue
+                try:
+                    rel = path.relative_to(stale_root)
+                except ValueError:
+                    continue
+                label = str(rel.parts[0] if rel.parts else "unknown")
+                protection_reason = _stale_stage_protection_reason(label, path)
+                economic_value = _stale_stage_economic_value(label, path)
+                candidates.append(
+                    {
+                        "path": path,
+                        "label": label,
+                        "size_bytes": _path_size_bytes(path),
+                        "age_days": _path_age_days(path),
+                        "economic_value": economic_value,
+                        "protected_evidence": bool(protection_reason),
+                        "protection_reason": protection_reason,
+                        "original_path": str(current.get("original_path") or ""),
+                        "previous_manifest_row": bool(current),
+                    }
+                )
+    candidates.sort(
+        key=lambda row: (
+            1 if bool(row.get("protected_evidence", False)) else 0,
+            _economic_value_score(str(row.get("economic_value") or "medium")),
+            -float(row.get("age_days") or 0.0),
+            -int(row.get("size_bytes") or 0),
+            str(row.get("path") or ""),
+        )
+    )
+    selected: list[dict[str, object]] = []
+    selected_bytes = 0
+    file_budget = max(int(max_files), 0)
+    byte_budget = max(int(max_bytes), 0)
+    for row in candidates:
+        size_bytes = int(row.get("size_bytes") or 0)
+        if file_budget and len(selected) >= file_budget:
+            break
+        if byte_budget and size_bytes > byte_budget:
+            continue
+        if byte_budget and selected and selected_bytes + size_bytes > byte_budget:
+            continue
+        selected.append(row)
+        selected_bytes += size_bytes
+
+    reindexed = 0
+    reindexed_bytes = 0
+    errors: list[str] = []
+    protected_reindexed = 0
+    pending_manifest_rows: list[dict[str, object]] = []
+    for row in selected:
+        path = row.get("path")
+        if not isinstance(path, Path) or not path.exists():
+            continue
+        try:
+            stat_before = path.stat()
+        except OSError as exc:
+            errors.append(f"{path}:legacy_stat_before_failed:{exc}")
+            continue
+        sha256 = _path_sha256(path)
+        if not sha256:
+            errors.append(f"{path}:legacy_hash_unavailable")
+            continue
+        try:
+            stat_after = path.stat()
+        except OSError as exc:
+            errors.append(f"{path}:legacy_stat_after_failed:{exc}")
+            continue
+        if (
+            int(stat_before.st_size) != int(stat_after.st_size)
+            or int(stat_before.st_mtime_ns) != int(stat_after.st_mtime_ns)
+        ):
+            errors.append(f"{path}:legacy_file_changed_during_hash")
+            continue
+        timestamp = datetime.now(timezone.utc).isoformat()
+        pending_manifest_rows.append(
+            {
+                "timestamp_utc": timestamp,
+                "event": "staged",
+                "label": str(row.get("label") or "unknown"),
+                "original_path": str(row.get("original_path") or ""),
+                "staged_path": str(path),
+                "size_bytes": int(stat_after.st_size),
+                "original_mtime_ns": int(stat_after.st_mtime_ns),
+                "sha256": sha256,
+                "integrity_verified": True,
+                "integrity_basis": "legacy_quarantine_baseline",
+                "legacy_reindexed": True,
+                "legacy_reindex_hold_hours": 24,
+                "manifest_backed": True,
+                "protected_evidence": bool(row.get("protected_evidence", False)),
+                "protection_reason": str(row.get("protection_reason") or ""),
+                "economic_value": str(row.get("economic_value") or "medium"),
+                "economic_value_score": _economic_value_score(str(row.get("economic_value") or "medium")),
+                "age_days": round(float(row.get("age_days") or 0.0), 3),
+                "stale_reason": "legacy_stale_stage_manifest_reindexed",
+            }
+        )
+    if pending_manifest_rows:
+        try:
+            _append_jsonl_rows(manifest_path, pending_manifest_rows)
+        except OSError as exc:
+            errors.append(f"{manifest_path}:legacy_manifest_batch_append_failed:{exc}")
+        else:
+            reindexed = len(pending_manifest_rows)
+            reindexed_bytes = sum(int(row.get("size_bytes") or 0) for row in pending_manifest_rows)
+            protected_reindexed = sum(int(bool(row.get("protected_evidence", False))) for row in pending_manifest_rows)
+    return {
+        "candidate_files": len(candidates),
+        "candidate_bytes": sum(int(row.get("size_bytes") or 0) for row in candidates),
+        "selected_files": len(selected),
+        "selected_bytes": selected_bytes,
+        "reindexed_files": reindexed,
+        "reindexed_bytes": reindexed_bytes,
+        "protected_reindexed_files": protected_reindexed,
+        "remaining_files": max(len(candidates) - reindexed, 0),
+        "oversized_candidate_files": sum(
+            1 for row in candidates if byte_budget and int(row.get("size_bytes") or 0) > byte_budget
+        ),
+        "max_files": file_budget,
+        "max_bytes": byte_budget,
+        "hold_hours": 24,
+        "manifest_write_mode": "single_fsync_batch",
+        "errors": errors,
+        "bounded": True,
     }
 
 
@@ -431,6 +729,12 @@ def _purge_old_stale_stage(
     }
     candidates: list[dict[str, object]] = []
     skipped_by_tier = 0
+    skipped_unmanifested = 0
+    skipped_unverified = 0
+    skipped_hash_mismatch = 0
+    skipped_protected = 0
+    skipped_legacy_hold = 0
+    active_manifest_rows = _active_stale_manifest_rows(manifest_path)
     if stale_root.exists():
         for root, dirs, files in os.walk(stale_root):
             dirs.sort()
@@ -438,6 +742,30 @@ def _purge_old_stale_stage(
                 path = Path(root) / name
                 if path == manifest_path:
                     continue
+                manifest_row = active_manifest_rows.get(str(path))
+                if not manifest_row:
+                    skipped_unmanifested += 1
+                    continue
+                expected_sha256 = str(manifest_row.get("sha256") or "")
+                if not bool(manifest_row.get("integrity_verified", False)) or not expected_sha256:
+                    skipped_unverified += 1
+                    continue
+                if _path_sha256(path) != expected_sha256:
+                    skipped_hash_mismatch += 1
+                    continue
+                if bool(manifest_row.get("protected_evidence", False)):
+                    skipped_protected += 1
+                    continue
+                if bool(manifest_row.get("legacy_reindexed", False)):
+                    try:
+                        indexed_at = datetime.fromisoformat(str(manifest_row.get("timestamp_utc") or "").replace("Z", "+00:00"))
+                        indexed_age_hours = (datetime.now(timezone.utc) - indexed_at.astimezone(timezone.utc)).total_seconds() / 3600.0
+                    except Exception:
+                        indexed_age_hours = 0.0
+                    hold_hours = max(float(manifest_row.get("legacy_reindex_hold_hours") or 24.0), 24.0)
+                    if indexed_age_hours < hold_hours:
+                        skipped_legacy_hold += 1
+                        continue
                 try:
                     mt = datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc)
                 except OSError:
@@ -449,7 +777,7 @@ def _purge_old_stale_stage(
                         label = str(rel.parts[0] or "unknown")
                 except ValueError:
                     label = "unknown"
-                economic_value = _stale_stage_economic_value(label, path)
+                economic_value = str(manifest_row.get("economic_value") or _stale_stage_economic_value(label, path))
                 purge_window_days = purge_windows.get(economic_value, fallback_window)
                 cutoff = datetime.now(timezone.utc) - timedelta(days=purge_window_days)
                 if mt >= cutoff:
@@ -465,6 +793,8 @@ def _purge_old_stale_stage(
                         "purge_window_days": int(purge_window_days),
                         "age_days": float(age_days),
                         "size_bytes": int(size_bytes),
+                        "sha256": expected_sha256,
+                        "manifest_row": manifest_row,
                     }
                 )
     candidates = sorted(
@@ -521,6 +851,11 @@ def _purge_old_stale_stage(
         economic_value = str(row.get("economic_value") or _stale_stage_economic_value(label, path))
         age_days = float(row.get("age_days") or _path_age_days(path))
         purge_window_days = int(row.get("purge_window_days") or fallback_window)
+        expected_sha256 = str(row.get("sha256") or "")
+        if not expected_sha256 or _path_sha256(path) != expected_sha256:
+            errors += 1
+            error_rows.append(f"{path}:hash_changed_after_selection")
+            continue
         try:
             if path.is_dir():
                 shutil.rmtree(path)
@@ -545,6 +880,9 @@ def _purge_old_stale_stage(
                 "label": label,
                 "staged_path": str(path),
                 "size_bytes": int(size_bytes),
+                "sha256": expected_sha256,
+                "integrity_verified_before_purge": True,
+                "manifest_backed": True,
                 "temperature_label": temperature,
                 "storage_tier": storage_tier,
                 "age_bucket": age_bucket,
@@ -576,6 +914,11 @@ def _purge_old_stale_stage(
         "selected_bytes": int(selected_bytes),
         "skipped_by_budget_files": int(skipped_by_budget),
         "skipped_by_tier_files": int(skipped_by_tier),
+        "skipped_unmanifested_files": int(skipped_unmanifested),
+        "skipped_unverified_manifest_files": int(skipped_unverified),
+        "skipped_hash_mismatch_files": int(skipped_hash_mismatch),
+        "skipped_protected_evidence_files": int(skipped_protected),
+        "skipped_legacy_reindex_hold_files": int(skipped_legacy_hold),
         "budget_limited": bool(skipped_by_budget > 0),
         "purge_policy": {
             "fallback_days": int(fallback_window),
@@ -586,6 +929,9 @@ def _purge_old_stale_stage(
             "max_files": int(max_files_value),
             "max_bytes": int(max_bytes_value),
             "selection_order": "lowest_economic_value_then_oldest_then_largest",
+            "manifest_backed_only": True,
+            "sha256_required": True,
+            "protected_evidence_purge_allowed": False,
         },
         "deleted_files": int(deleted),
         "deleted_bytes": int(deleted_bytes),
@@ -1206,7 +1552,7 @@ def main() -> int:
     parser.add_argument("--watchdog-events-days", type=int, default=int(os.getenv("RETENTION_WATCHDOG_EVENTS_DAYS", "30")))
     parser.add_argument("--governance-channels-days", type=int, default=int(os.getenv("RETENTION_GOVERNANCE_CHANNELS_DAYS", "7")))
     parser.add_argument("--governance-shadow-days", type=int, default=int(os.getenv("RETENTION_GOVERNANCE_SHADOW_DAYS", "7")))
-    parser.add_argument("--governance-health-days", type=int, default=int(os.getenv("RETENTION_GOVERNANCE_HEALTH_DAYS", "14")))
+    parser.add_argument("--governance-health-days", type=int, default=int(os.getenv("RETENTION_GOVERNANCE_HEALTH_DAYS", "3")))
     parser.add_argument("--data-local-fallback-days", type=int, default=int(os.getenv("RETENTION_DATA_LOCAL_FALLBACK_DAYS", "1")))
     parser.add_argument(
         "--external-live-sqlite-days",
@@ -1272,12 +1618,14 @@ def main() -> int:
     parser.add_argument("--stale-stage-sections", default=os.getenv("RETENTION_STALE_STAGE_SECTIONS", ",".join(DEFAULT_STALE_STAGE_SECTION_TOKENS)))
     parser.add_argument("--stale-purge", action=argparse.BooleanOptionalAction, default=os.getenv("RETENTION_STALE_PURGE_ENABLED", "0").strip() == "1")
     parser.add_argument("--stale-purge-days", type=int, default=int(os.getenv("RETENTION_STALE_PURGE_DAYS", "30")))
-    parser.add_argument("--stale-purge-low-value-days", type=int, default=int(os.environ["RETENTION_STALE_PURGE_LOW_VALUE_DAYS"]) if "RETENTION_STALE_PURGE_LOW_VALUE_DAYS" in os.environ else None)
-    parser.add_argument("--stale-purge-medium-value-days", type=int, default=int(os.environ["RETENTION_STALE_PURGE_MEDIUM_VALUE_DAYS"]) if "RETENTION_STALE_PURGE_MEDIUM_VALUE_DAYS" in os.environ else None)
-    parser.add_argument("--stale-purge-high-value-days", type=int, default=int(os.environ["RETENTION_STALE_PURGE_HIGH_VALUE_DAYS"]) if "RETENTION_STALE_PURGE_HIGH_VALUE_DAYS" in os.environ else None)
-    parser.add_argument("--stale-purge-critical-value-days", type=int, default=int(os.environ["RETENTION_STALE_PURGE_CRITICAL_VALUE_DAYS"]) if "RETENTION_STALE_PURGE_CRITICAL_VALUE_DAYS" in os.environ else None)
+    parser.add_argument("--stale-purge-low-value-days", type=int, default=int(os.getenv("RETENTION_STALE_PURGE_LOW_VALUE_DAYS", "3")))
+    parser.add_argument("--stale-purge-medium-value-days", type=int, default=int(os.getenv("RETENTION_STALE_PURGE_MEDIUM_VALUE_DAYS", "14")))
+    parser.add_argument("--stale-purge-high-value-days", type=int, default=int(os.getenv("RETENTION_STALE_PURGE_HIGH_VALUE_DAYS", "30")))
+    parser.add_argument("--stale-purge-critical-value-days", type=int, default=int(os.getenv("RETENTION_STALE_PURGE_CRITICAL_VALUE_DAYS", "90")))
     parser.add_argument("--stale-purge-max-files", type=int, default=int(os.getenv("RETENTION_STALE_PURGE_MAX_FILES", "5000")))
     parser.add_argument("--stale-purge-max-gb", type=float, default=float(os.getenv("RETENTION_STALE_PURGE_MAX_GB", "10")))
+    parser.add_argument("--stale-reindex-max-files", type=int, default=int(os.getenv("RETENTION_STALE_REINDEX_MAX_FILES", "2048")))
+    parser.add_argument("--stale-reindex-max-gb", type=float, default=float(os.getenv("RETENTION_STALE_REINDEX_MAX_GB", "4")))
     parser.add_argument("--json", action="store_true", help="Accepted for orchestrator compatibility; JSON is always printed.")
     parser.add_argument("--apply", action="store_true")
     args = parser.parse_args()
@@ -1338,12 +1686,19 @@ def main() -> int:
 
     to_delete: list[Path] = []
     candidate_rows_by_label: dict[str, list[Path]] = {}
+    protected_rows_by_label: dict[str, list[dict[str, str]]] = {}
     summary: dict[str, dict[str, int]] = {}
     for label, (base, days) in targets.items():
-        rows = _collect_old_files(base, days)
+        raw_rows = _collect_old_files(base, days)
+        rows, protected_rows = _partition_retention_candidates(label, raw_rows)
         to_delete.extend(rows)
         candidate_rows_by_label[label] = list(rows)
-        summary[label] = {"candidates": len(rows), "older_than_days": int(days)}
+        protected_rows_by_label[label] = protected_rows
+        summary[label] = {
+            "candidates": len(rows),
+            "protected_files": len(protected_rows),
+            "older_than_days": int(days),
+        }
 
     data_local_fallback_rows = _collect_old_top_level_pattern_files(
         PROJECT_ROOT / "data",
@@ -1542,6 +1897,22 @@ def main() -> int:
         "candidate_by_storage_tier": candidate_storage_tier_summary,
         "candidate_by_age_bucket": candidate_age_bucket_summary,
         "candidate_by_economic_value": candidate_economic_value_summary,
+        "protected_files": int(sum(len(rows) for rows in protected_rows_by_label.values())),
+        "protected_by_label": {
+            label: {
+                "count": len(rows),
+                "reasons": sorted({str(row.get("reason") or "") for row in rows if str(row.get("reason") or "")}),
+            }
+            for label, rows in protected_rows_by_label.items()
+            if rows
+        },
+        "retention_contract": {
+            "manifest_backed_purge_only": True,
+            "sha256_verified_moves": True,
+            "canonical_latest_requires_refresh_or_explicit_retirement": True,
+            "protected_evidence_purge_allowed": False,
+            "governance_health_days": int(args.governance_health_days),
+        },
         "staged_files": 0,
         "staged_bytes": 0,
         "delete_errors": 0,
@@ -1551,6 +1922,7 @@ def main() -> int:
         "staged_by_age_bucket": {},
         "staged_by_economic_value": {},
         "purge_enabled": bool(args.stale_purge),
+        "legacy_manifest_reindex": {},
         "purge": {},
     }
 
@@ -1601,6 +1973,12 @@ def main() -> int:
             stale_stage_payload["staged_by_age_bucket"] = staged_age_bucket_summary
             stale_stage_payload["staged_by_economic_value"] = staged_economic_value_summary
         if args.stale_purge:
+            stale_stage_payload["legacy_manifest_reindex"] = _reindex_legacy_stale_stage(
+                stale_root=stale_stage_root,
+                manifest_path=stale_stage_manifest,
+                max_files=int(args.stale_reindex_max_files),
+                max_bytes=int(max(float(args.stale_reindex_max_gb), 0.0) * (1024**3)),
+            )
             stale_stage_payload["purge"] = _purge_old_stale_stage(
                 stale_root=stale_stage_root,
                 manifest_path=stale_stage_manifest,

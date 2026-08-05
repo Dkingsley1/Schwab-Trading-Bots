@@ -143,6 +143,7 @@ def build_payload(
             "staged_files": int(stale_stage.get("staged_files", 0) or 0),
             "staged_bytes": int(stale_stage.get("staged_bytes", 0) or 0),
             "delete_errors": int(stale_stage.get("delete_errors", 0) or 0),
+            "protected_files": int(stale_stage.get("protected_files", 0) or 0),
             "stage_sections": list(stale_stage.get("sections") or []),
         },
         "stale_stage": stale_stage,
