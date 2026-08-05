@@ -187,7 +187,9 @@ def surface_specs(project_root: Path = PROJECT_ROOT) -> list[dict[str, Any]]:
             "status_key": "overall_status",
             "ok_key": "ok",
             "max_age_minutes": 120,
+            "guarded_paper_stale_advisory": True,
             "repair_commands": [["./scripts/ops/opsctl.sh", "report-pdfs", "--json"]],
+            "notes": ["PDF rendering is optional during a strict green paper soak and must not open headless browsers."],
         },
         {
             "name": "architecture_upgrade_scoreboard",

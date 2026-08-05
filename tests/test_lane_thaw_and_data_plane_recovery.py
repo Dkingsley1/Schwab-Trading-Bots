@@ -369,6 +369,50 @@ def test_data_plane_recovery_controller_uses_effective_raw_live_when_fresh_empty
     assert payload["hot_path_over_budget_bytes"] == 0
 
 
+def test_data_plane_recovery_controller_uses_stable_raw_live_truth_without_overlay_adjustment(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    health = project_root / "governance" / "health"
+    _write_json(health / "incident_timeline_latest.json", {"recent_incidents": []})
+    _write_json(health / "external_backlog_drain_latest.json", {"overall_status": "drain_active"})
+    _write_json(health / "ingestion_priority_queue_latest.json", {"queue_depth": 6175})
+    _write_json(health / "storage_tier_policy_latest.json", {"pressure": {"hot_path_over_budget_bytes": 0}})
+    _write_json(
+        health / "ingestion_storage_control_latest.json",
+        {
+            "overall_status": "ready",
+            "severity": "stable",
+            "pressure_index": 0.031,
+            "backpressure_quality_score": 100,
+            "steady_state": {"target_status": {"steady_state_ready": True}},
+            "external_route_verification": {"verification_state": "active_local_ready"},
+            "backpressure": {
+                "overlay_adjusted": False,
+                "effective_raw_live_source": "raw_live_backpressure",
+                "effective_raw_live": {
+                    "core_pending_lines": 471,
+                    "total_pending_lines": 1575,
+                    "oldest_pending_age_seconds": 7.5,
+                },
+            },
+            "data_integrity": {
+                "sql_overlay_invalid_lines": 0,
+                "sql_overlay_oversize_payloads": 0,
+                "sql_overlay_ops_write_failures": 0,
+            },
+        },
+    )
+    _write_json(health / "sql_link_service_progress_latest.json", {"status": "running", "current_step": "shard_linking"})
+    _write_json(health / "live_runtime_separation_control_latest.json", {"clearance_plan": {"clearance_state": "ready"}})
+
+    payload = data_plane_src.build_payload(project_root)
+
+    assert payload["overall_status"] == "ready"
+    assert payload["recovery_state"] == "stable"
+    assert payload["queue_depth"] == 1575
+    assert payload["queue_depth_source"] == "raw_live_backpressure"
+    assert payload["write_path_recovery_evidence"]["effective_backpressure"]["stable_raw_live_truth"] is True
+
+
 def test_data_plane_recovery_controller_clears_snapshot_failures_after_fresh_cache(tmp_path: Path) -> None:
     project_root = tmp_path / "project"
     health = project_root / "governance" / "health"

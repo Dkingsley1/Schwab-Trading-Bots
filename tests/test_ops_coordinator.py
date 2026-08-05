@@ -16,7 +16,14 @@ def test_build_ops_coordinator_payload_runs_core_steps(tmp_path, monkeypatch) ->
 
     calls: list[list[str]] = []
 
-    def _fake_run(cmd: list[str], *, cwd: Path, payload_path: Path | None = None) -> dict:
+    def _fake_run(
+        cmd: list[str],
+        *,
+        cwd: Path,
+        payload_path: Path | None = None,
+        timeout_seconds: float = 180.0,
+    ) -> dict:
+        _ = timeout_seconds
         calls.append(cmd)
         joined = " ".join(cmd)
         if "resource_guard.py" in joined:
@@ -255,7 +262,14 @@ def test_build_ops_coordinator_payload_fails_when_watchdog_reports_not_ok(tmp_pa
     (project_root / "governance" / "health").mkdir(parents=True, exist_ok=True)
     monkeypatch.setattr(ops_coordinator, "PY", Path("/usr/bin/python3"))
 
-    def _fake_run(cmd: list[str], *, cwd: Path, payload_path: Path | None = None) -> dict:
+    def _fake_run(
+        cmd: list[str],
+        *,
+        cwd: Path,
+        payload_path: Path | None = None,
+        timeout_seconds: float = 180.0,
+    ) -> dict:
+        _ = timeout_seconds
         joined = " ".join(cmd)
         if "resource_guard.py" in joined:
             payload = {"ok": True}

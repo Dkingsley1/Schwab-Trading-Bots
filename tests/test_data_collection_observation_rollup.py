@@ -262,6 +262,25 @@ def test_observation_rollup_counts_governance_channel_events(tmp_path: Path) -> 
     assert registry["sub_bots"][0]["data_collection_observations"] == 2
 
 
+def test_iter_tail_lines_bounds_sparse_large_line(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(src, "DEFAULT_CHANNEL_TAIL_BYTES", 128)
+    path = tmp_path / "sparse_channel.jsonl"
+    path.write_bytes(
+        b"x" * 4096
+        + b"\n"
+        + json.dumps({"bot_id": "brain_refinery_v171_intraday_relative_volume_surge_chaser"}).encode("utf-8")
+        + b"\n"
+        + json.dumps({"bot_id": "brain_refinery_v172_intraday_breakout_retest_quality"}).encode("utf-8")
+        + b"\n"
+    )
+
+    lines = src._iter_tail_lines(path, limit=2)
+
+    assert len(lines) == 2
+    assert all("bot_id" in line for line in lines)
+    assert sum(len(line) for line in lines) < 256
+
+
 def test_observation_rollup_manages_training_labeling_observer_zero_debt(tmp_path: Path) -> None:
     project_root = tmp_path / "project"
     bot_id = "brain_refinery_v1661_training_labeling_label_contract_normalizer_telemetry_collector_bot"

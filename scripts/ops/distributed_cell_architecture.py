@@ -1226,10 +1226,13 @@ def _markdown(payload: dict[str, Any]) -> str:
             "- Rule: controlled grades describe protection strength; raw profitability only improves after fresh paper PnL evidence improves.",
         ]
     )
+    top_needs = [need for need in payload.get("top_needs", [])[:12] if isinstance(need, dict)]
     lines.extend(["", "## Next Needs", ""])
-    for need in payload.get("top_needs", [])[:12]:
+    for need in top_needs:
         cmd = " ".join(str(part) for part in need.get("recommended_command") or [])
         lines.append(f"- `{need.get('cell_id')}` `{need.get('surface')}`: {need.get('exact_blocker')} -> `{cmd}`")
+    if not top_needs:
+        lines.append("- None.")
     return "\n".join(lines) + "\n"
 
 

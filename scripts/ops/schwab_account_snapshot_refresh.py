@@ -153,6 +153,43 @@ def refresh(*, quiet_auth: bool, rebuild_derived: bool) -> dict[str, Any]:
             [str(PY), str(PROJECT_ROOT / "scripts" / "ops" / "account_position_study.py"), "--json"],
             timeout=120,
         )
+        derived["schwab_tax_ledger_refresh"] = _run_artifact(
+            [str(PY), str(PROJECT_ROOT / "scripts" / "ops" / "schwab_tax_ledger_refresh.py"), "--json"],
+            timeout=180,
+        )
+        derived["trading_tax_estimate"] = _run_artifact(
+            [str(PY), str(PROJECT_ROOT / "scripts" / "ops" / "trading_tax_estimator.py"), "--json"],
+            timeout=120,
+        )
+        derived["position_opportunity_watch"] = _run_artifact(
+            [str(PY), str(PROJECT_ROOT / "scripts" / "ops" / "position_opportunity_watch.py"), "--json"],
+            timeout=120,
+        )
+        derived["sleeve_allocator"] = _run_artifact(
+            [str(PY), str(PROJECT_ROOT / "scripts" / "sleeve_allocator.py"), "--json"],
+            timeout=120,
+        )
+        derived["portfolio_risk_ledger"] = _run_artifact(
+            [str(PY), str(PROJECT_ROOT / "scripts" / "portfolio_risk_ledger.py"), "--json"],
+            timeout=120,
+        )
+        derived["position_round_trip_watch"] = _run_artifact(
+            [
+                str(PROJECT_ROOT / "scripts" / "ops" / "opsctl.sh"),
+                "position-round-trip-watch",
+                "--refresh-market-data",
+                "--json",
+            ],
+            timeout=240,
+        )
+        derived["portfolio_allocator_service"] = _run_artifact(
+            [str(PY), str(PROJECT_ROOT / "scripts" / "portfolio_allocator_service.py"), "--json"],
+            timeout=120,
+        )
+        derived["account_buildout_plan"] = _run_artifact(
+            [str(PY), str(PROJECT_ROOT / "scripts" / "ops" / "account_buildout_planner.py"), "--json"],
+            timeout=120,
+        )
 
     payload = fetched.get("payload") if isinstance(fetched.get("payload"), dict) else {}
     broker_truth_ok = bool(broker_truth_state.get("ok", False)) if broker_truth_state else bool(fetched.get("ok", False))

@@ -143,6 +143,13 @@ def test_distributed_cell_architecture_markdown_includes_sleeve_guard_posture(tm
     assert "source_quality:low" in markdown
 
 
+def test_distributed_cell_architecture_markdown_has_stable_empty_needs_footer() -> None:
+    markdown = cells._markdown({"top_needs": []})
+
+    assert "## Next Needs\n\n- None.\n" in markdown
+    assert markdown.endswith("- None.\n")
+
+
 def test_distributed_cell_architecture_normalizes_controlled_production_states(tmp_path: Path) -> None:
     health = tmp_path / "governance" / "health"
     now = cells.iso_now()

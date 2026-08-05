@@ -1,5 +1,7 @@
 import json
+import os
 import sys
+import time
 from pathlib import Path
 
 
@@ -246,6 +248,204 @@ def test_training_requalification_apply_repair_reactivates_deleted_sample_starve
     assert row["paper_execution_allowed"] is False
     assert row["weight"] == 0.0
     assert row["minimum_training_observations"] >= 200
+
+
+def test_training_requalification_uses_fresh_bot_needs_to_repair_missing_diagnostic(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    bot_id = "brain_refinery_v11_stoch_vol"
+    _write_json(
+        project_root / "master_bot_registry.json",
+        {
+            "sub_bots": [
+                {
+                    "bot_id": bot_id,
+                    "active": False,
+                    "deleted_from_rotation": True,
+                    "lifecycle_state": "deleted",
+                    "bot_role": "signal_sub_bot",
+                    "weight": 0.4,
+                    "allocation_weight": 0.4,
+                    "paper_trading_enabled": True,
+                }
+            ]
+        },
+    )
+    _write_json(
+        project_root / "governance" / "health" / "bot_needs_intelligence_latest.json",
+        {
+            "timestamp_utc": "2026-07-31T23:46:55+00:00",
+            "ok": True,
+            "bot_needs": [
+                {
+                    "bot_id": bot_id,
+                    "primary_need": "reactivate_sample_starved_collection",
+                    "evidence": {"sample_count": 0, "eligible_sequences": 0, "observation_count": 7},
+                }
+            ],
+        },
+    )
+
+    payload = requal_src.build_payload(project_root, include_sample_starved_deleted=True)
+
+    assert payload["sample_starved_collection_candidate_count"] == 1
+    assert payload["bot_needs_reactivation_authority"]["status"] == "ready"
+    assert payload["top_candidates"][0]["bot_needs_authorized_missing_diagnostic"] is True
+    assert "refresh_training_diagnostics" not in payload["top_candidates"][0]["actions"]
+
+    repair = requal_src.apply_repairs(
+        project_root,
+        include_bot_ids=[bot_id],
+        include_sample_starved_deleted=True,
+    )
+    registry = json.loads((project_root / "master_bot_registry.json").read_text(encoding="utf-8"))
+    row = registry["sub_bots"][0]
+    diagnostic_path = project_root / "governance" / "training_diagnostics" / f"{bot_id}_latest.json"
+    diagnostic = json.loads(diagnostic_path.read_text(encoding="utf-8"))
+
+    assert repair["collection_requalification_count"] == 1
+    assert repair["synthesized_diagnostic_count"] == 1
+    assert repair["unresolved_count"] == 0
+    assert Path(repair["registry_backup_path"]).exists()
+    assert diagnostic["status"] == "deferred_sample_starved"
+    assert diagnostic["reason"] == "bot_needs_missing_diagnostic_collection_requalification"
+    assert diagnostic["training_performed"] is False
+    assert diagnostic["master_update_applied"] is False
+    assert diagnostic["execution_allowed"] is False
+    assert diagnostic["paper_execution_allowed"] is False
+    assert diagnostic["live_execution_allowed"] is False
+    assert diagnostic["runtime_meta"]["synthetic_missing_diagnostic_repair"] is True
+    assert row["active"] is True
+    assert row["lifecycle_state"] == "data_collection_only"
+    assert row["data_collection_active"] is True
+    assert row["training_excluded"] is True
+    assert row["paper_trading_enabled"] is False
+    assert row["paper_execution_allowed"] is False
+    assert row["execution_enabled"] is False
+    assert row["live_trading_enabled"] is False
+    assert row["weight"] == 0.0
+    assert row["allocation_weight"] == 0.0
+
+
+def test_training_requalification_rejects_stale_bot_needs_missing_diagnostic_authority(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    bot_id = "brain_refinery_v12_stale_authority"
+    _write_json(
+        project_root / "master_bot_registry.json",
+        {
+            "sub_bots": [
+                {
+                    "bot_id": bot_id,
+                    "active": False,
+                    "deleted_from_rotation": True,
+                    "lifecycle_state": "deleted",
+                }
+            ]
+        },
+    )
+    bot_needs_path = project_root / "governance" / "health" / "bot_needs_intelligence_latest.json"
+    _write_json(
+        bot_needs_path,
+        {
+            "ok": True,
+            "bot_needs": [
+                {
+                    "bot_id": bot_id,
+                    "primary_need": "reactivate_sample_starved_collection",
+                    "evidence": {"sample_count": 0, "eligible_sequences": 0},
+                }
+            ],
+        },
+    )
+    stale_timestamp = time.time() - (requal_src.BOT_NEEDS_REACTIVATION_MAX_AGE_HOURS + 1.0) * 3600.0
+    os.utime(bot_needs_path, (stale_timestamp, stale_timestamp))
+
+    payload = requal_src.build_payload(project_root, include_sample_starved_deleted=True)
+
+    assert payload["sample_starved_collection_candidate_count"] == 0
+    assert payload["bot_needs_reactivation_authority"]["status"] == "stale"
+
+
+def test_training_requalification_preserves_true_collect_only_bootstrap(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    bot_id = "brain_refinery_v1614_collect_only"
+    _write_json(
+        project_root / "master_bot_registry.json",
+        {
+            "sub_bots": [
+                {
+                    "bot_id": bot_id,
+                    "active": True,
+                    "lifecycle_state": "data_collection_only",
+                    "data_collection_active": True,
+                    "training_excluded": True,
+                    "bot_role": "infrastructure_sub_bot",
+                }
+            ]
+        },
+    )
+    _write_json(project_root / "logs" / f"{bot_id}_latest.json", {"status": "failed", "sample_count": 1})
+    diagnostic_path = project_root / "governance" / "training_diagnostics" / f"{bot_id}_latest.json"
+    _write_json(
+        diagnostic_path,
+        {
+            "status": "collect_only_label_contract_ready",
+            "sample_count": 0,
+            "runtime_meta": {"diagnostic_kind": "collect_only_label_contract_bootstrap"},
+        },
+    )
+
+    repair = requal_src.apply_repairs(project_root, include_bot_ids=[bot_id])
+    diagnostic = json.loads(diagnostic_path.read_text(encoding="utf-8"))
+
+    assert repair["repaired_rows"][0]["diagnostic_rebuilt"] is False
+    assert diagnostic["status"] == "collect_only_label_contract_ready"
+
+
+def test_training_requalification_replaces_bootstrap_for_paper_live_bot(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    bot_id = "brain_refinery_v17_mixed_regime"
+    _write_json(
+        project_root / "master_bot_registry.json",
+        {
+            "sub_bots": [
+                {
+                    "bot_id": bot_id,
+                    "active": True,
+                    "lifecycle_state": "paper_live_data",
+                    "data_collection_active": True,
+                    "training_excluded": True,
+                    "bot_role": "signal_sub_bot",
+                }
+            ]
+        },
+    )
+    _write_json(
+        project_root / "logs" / f"{bot_id}_latest.json",
+        {
+            "metrics": {
+                "acted_count": 40,
+                "acted_accuracy": 0.7,
+                "accuracy_lift_over_majority": 0.12,
+                "positive_rate": 0.5,
+            }
+        },
+    )
+    diagnostic_path = project_root / "governance" / "training_diagnostics" / f"{bot_id}_latest.json"
+    _write_json(
+        diagnostic_path,
+        {
+            "status": "collect_only_label_contract_ready",
+            "sample_count": 0,
+            "runtime_meta": {"diagnostic_kind": "collect_only_label_contract_bootstrap"},
+        },
+    )
+
+    repair = requal_src.apply_repairs(project_root, include_bot_ids=[bot_id])
+    diagnostic = json.loads(diagnostic_path.read_text(encoding="utf-8"))
+
+    assert repair["repaired_rows"][0]["diagnostic_rebuilt"] is True
+    assert diagnostic["status"] == "passed"
+    assert diagnostic["repaired_from_log"] is True
 
 
 def test_training_requalification_apply_repair_restores_registry_and_diagnostic(tmp_path: Path) -> None:
@@ -633,6 +833,54 @@ def test_coverage_gap_closer_blocks_launch_for_preflight_repairs_even_without_ru
     assert payload["autopilot_contract"]["can_launch_now"] is False
     assert payload["autopilot_contract"]["launch_state"] == "coverage_preflight_repair_required"
     assert "coverage_preflight_repair_required" in payload["autopilot_contract"]["blocking_reasons"]
+
+
+def test_coverage_gap_closer_treats_rebuild_and_targeted_retrain_as_launch_work(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    _write_json(
+        project_root / "governance" / "walk_forward" / "coverage_seed_latest.json",
+        {
+            "seed_queue": [
+                {
+                    "bot_id": "brain_refinery_v35_dmi_state_machine",
+                    "bot_role": "signal_sub_bot",
+                    "priority": 100.0,
+                    "current_runs": 0,
+                    "runs_remaining": 12,
+                    "needs_runtime_input_repair": False,
+                    "actions": [
+                        "rebuild_model_artifact",
+                        "targeted_retrain",
+                        "generate_walk_forward_runs",
+                    ],
+                }
+            ]
+        },
+    )
+    _write_json(
+        project_root / "governance" / "walk_forward" / "promotion_readiness_latest.json",
+        {"coverage_shortfall_bots": 1, "considered_bots": 3, "thresholds": {"min_considered_bots": 4}},
+    )
+    _write_json(
+        project_root / "governance" / "health" / "training_runtime_control_latest.json",
+        {"overall_status": "ready", "snapshot_ready": True, "coverage_repair_ready": True},
+    )
+    _write_json(project_root / "governance" / "health" / "resource_guard_latest.json", {"swap_used_gb": 0.1})
+    _write_json(
+        project_root / "governance" / "health" / "live_runtime_separation_control_latest.json",
+        {"overall_status": "ready", "release_contract": {"live_lane_should_be_read_only": False}},
+    )
+
+    payload = gap_closer_src._build_payload(
+        project_root,
+        candidate_limit=4,
+        stage_count=1,
+        retrain_profile="coverage_canary",
+    )
+
+    assert payload["autopilot_contract"]["preflight_repair_required_count"] == 0
+    assert payload["autopilot_contract"]["can_launch_now"] is True
+    assert payload["autopilot_contract"]["launch_state"] == "ready_to_launch"
 
 
 def test_coverage_gap_closer_prefers_sample_viable_candidates_over_recent_failed_bot(tmp_path: Path) -> None:
@@ -1343,3 +1591,38 @@ def test_calibration_abstention_control_preserves_existing_precision_overrides(t
 
     assert "brain_refinery_v42_tick_to_swing_alignment" in override_payload["bot_overrides"]
     assert "brain_refinery_v47_swing_1w_3w" in override_payload["bot_overrides"]
+
+
+def test_calibration_abstention_control_retires_unsafe_loosen_override(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    bot_id = "brain_refinery_v999_sparse_underactor"
+    _write_json(
+        project_root / "governance" / "health" / "training_label_audit_latest.json",
+        {
+            "active_underacting": [
+                {
+                    "bot_id": bot_id,
+                    "acted_coverage": 0.0,
+                    "acceptance_rate": 0.0,
+                    "abstention_evidence_sufficient": False,
+                }
+            ]
+        },
+    )
+    existing = {
+        "bot_overrides": {
+            bot_id: {
+                "mode": "loosen",
+                "acted_prob_threshold_uplift": -0.05,
+            }
+        },
+        "family_overrides": {},
+    }
+
+    payload = calibration_src.build_payload(project_root)
+    overrides = calibration_src.build_override_payload(payload, existing)
+
+    assert payload["recommendations"][0]["mode"] == "collect_evidence"
+    assert payload["recommendations"][0]["direct_loosen_allowed"] is False
+    assert bot_id not in overrides["bot_overrides"]
+    assert overrides["retired_overrides"][0]["reason"] == "unsafe_direct_loosen_retired"

@@ -9,7 +9,7 @@ from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 SCRIPT_PATH = PROJECT_ROOT / "scripts" / "sql_runtime_report.py"
-PYTHON_BIN = PROJECT_ROOT / ".venv312" / "bin" / "python"
+PYTHON_BIN = Path(sys.executable)
 
 
 def _init_db(path: Path) -> None:

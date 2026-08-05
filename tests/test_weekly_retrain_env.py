@@ -14,6 +14,33 @@ if str(PROJECT_ROOT) not in sys.path:
 import scripts.weekly_retrain as retrain
 
 
+def test_lifecycle_hygiene_mutations_require_committed_master_update() -> None:
+    assert not retrain._lifecycle_hygiene_mutations_allowed(
+        skip_master_update=True,
+        master_update_status="updated",
+    )
+    assert not retrain._lifecycle_hygiene_mutations_allowed(
+        skip_master_update=False,
+        master_update_status="skipped_by_flag",
+    )
+    assert not retrain._lifecycle_hygiene_mutations_allowed(
+        skip_master_update=False,
+        master_update_status="precheck_failed",
+    )
+    assert not retrain._lifecycle_hygiene_mutations_allowed(
+        skip_master_update=False,
+        master_update_status="rolled_back",
+    )
+    assert retrain._lifecycle_hygiene_mutations_allowed(
+        skip_master_update=False,
+        master_update_status="updated",
+    )
+    assert retrain._lifecycle_hygiene_mutations_allowed(
+        skip_master_update=False,
+        master_update_status="updated_precheck_override",
+    )
+
+
 def test_weekly_retrain_child_env_pins_project_root_on_pythonpath(monkeypatch) -> None:
     monkeypatch.setenv("PYTHONPATH", "/tmp/existing_path")
 
@@ -124,6 +151,31 @@ def test_configured_runtime_snapshot_summary_falls_back_to_coverage_canary_snaps
 
     assert path == str(fallback_path)
     assert summary["health_path"] == "fallback"
+
+
+def test_held_out_training_refreshes_walk_forward_evidence(monkeypatch, tmp_path: Path) -> None:
+    validator = tmp_path / "walk_forward_validate.py"
+    validator.write_text("", encoding="utf-8")
+    calls: list[list[str]] = []
+    monkeypatch.setattr(retrain, "WALK_FORWARD_VALIDATE_SCRIPT", str(validator))
+    monkeypatch.setattr(retrain, "VENV_PY", "/runtime/python")
+    monkeypatch.setattr(
+        retrain,
+        "run_cmd",
+        lambda command, dry_run, env, extra_nice=0: calls.append(command) or 0,
+    )
+
+    result = retrain._refresh_held_out_walk_forward_evidence(
+        target_outcomes=[{"bot_id": "brain_refinery_v58", "status": "trained"}],
+        enabled=True,
+        dry_run=False,
+        env={},
+        extra_nice=0,
+    )
+
+    assert result["status"] == "refreshed"
+    assert result["trained_bot_ids"] == ["brain_refinery_v58"]
+    assert calls == [["/runtime/python", str(validator)]]
 
 
 def test_weekly_retrain_memory_gate_allows_green_advisory_swap_relief(monkeypatch, tmp_path: Path) -> None:

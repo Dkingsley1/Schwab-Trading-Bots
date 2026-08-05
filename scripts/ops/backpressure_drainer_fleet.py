@@ -1718,8 +1718,9 @@ def _apply_age_pressure_priority(
     canonical_core_pending = _safe_int(guard_raw_live.get("canonical_core_pending_lines"), _safe_int(guard_raw_live.get("core_pending_lines"), 0))
     hot_source_oldest = _safe_float(guard_raw_live.get("hot_source_oldest_pending_age_seconds"), 0.0)
     reserve_core = max(_safe_int(guard_targets.get("core_reserve_lines"), 0), 1)
+    core_reserve_breached = canonical_core_pending >= reserve_core
     raw_core_needs_first_handoff = bool(
-        canonical_core_pending >= reserve_core
+        core_reserve_breached
         or (
             hot_source_oldest >= threshold_seconds
             and _safe_int(guard_raw_live.get("age_guard_source_pending_lines"), 0) >= MIN_MATERIAL_PENDING_LINES
@@ -1755,10 +1756,17 @@ def _apply_age_pressure_priority(
             and pending_lines >= max(reserve_core, MIN_MATERIAL_PENDING_LINES)
             and canonical_core_pending < reserve_core
         )
+        dominant_risk_support_pressure = bool(
+            guard_active
+            and name == "risk_support_drainer"
+            and pending_lines >= max(1_000_000, reserve_core * 100, canonical_core_pending * 100)
+            and canonical_core_pending <= reserve_core * 2
+        )
         raw_live_priority_drainer = bool(
             name in RAW_LIVE_EXPANSION_HOT_DRAINERS
             or dominant_support_pressure
             or risk_channel_pressure
+            or dominant_risk_support_pressure
         )
         raw_bonus = int(live_priority_bonus if guard_active and raw_live_priority_drainer and pending_lines > 0 else 0)
         raw_size_bonus = (
@@ -1767,7 +1775,15 @@ def _apply_age_pressure_priority(
             else 0
         )
         cold_penalty = int(cold_stage_penalty if guard_active and name == "cold_stage_drainer" else 0)
-        if preemption_active and raw_live_priority_drainer and pending_lines > 0:
+        core_first_preemption = bool(
+            preemption_active
+            and core_reserve_breached
+            and name == "core_decision_drainer"
+            and pending_lines > 0
+        )
+        if core_first_preemption:
+            preemption_tier = 4
+        elif preemption_active and raw_live_priority_drainer and pending_lines > 0:
             preemption_tier = 3
         elif preemption_active and name in RAW_LIVE_EXPANSION_SUPPORT_DRAINERS and pending_lines > 0:
             preemption_tier = 1
@@ -1780,10 +1796,12 @@ def _apply_age_pressure_priority(
         row["raw_live_expansion_core_handoff_required"] = raw_core_needs_first_handoff
         row["raw_live_expansion_preemption_active"] = preemption_active
         row["raw_live_expansion_preemption_tier"] = preemption_tier
+        row["raw_live_expansion_core_first_preemption"] = core_first_preemption
         row["raw_live_expansion_priority_bonus"] = raw_bonus
         row["raw_live_expansion_size_priority_bonus"] = raw_size_bonus
         row["raw_live_expansion_cold_penalty"] = cold_penalty
-        row["raw_live_expansion_risk_channel_pressure"] = risk_channel_pressure
+        row["raw_live_expansion_risk_channel_pressure"] = bool(risk_channel_pressure or dominant_risk_support_pressure)
+        row["raw_live_expansion_dominant_risk_support_pressure"] = dominant_risk_support_pressure
         row["effective_priority_score"] = int(priority_score + bonus + raw_bonus + raw_size_bonus - cold_penalty)
         if guard_active and (raw_bonus or raw_size_bonus or cold_penalty):
             env = row.get("env_overrides") if isinstance(row.get("env_overrides"), dict) else {}
@@ -1823,6 +1841,9 @@ def _is_aggressive_decision_source(source_rel: str) -> bool:
             "shadow_aggressive_",
             "shadow_intraday_aggressive_",
             "shadow_swing_aggressive_",
+            "governance/channels/decision/aggressive_equities_schwab/",
+            "governance/channels/decision/intraday_aggressive_equities_schwab/",
+            "governance/channels/decision/swing_aggressive_equities_schwab/",
         )
     )
 
@@ -1869,6 +1890,16 @@ def _decision_drainer_env(base: dict[str, str], core_rows: list[dict[str, Any]])
         row_sparse = bool(row.get("sparse_large_line", False))
         if _is_core_signal_source(source_rel):
             signal_focus.append(source_rel)
+        elif row_shard == "crypto_trading":
+            crypto_focus.append(source_rel)
+            sparse_crypto_focus = sparse_crypto_focus or row_sparse
+        elif row_shard == "aggressive_trading":
+            aggressive_focus.append(source_rel)
+            sparse_aggressive_focus = sparse_aggressive_focus or row_sparse
+        elif row_shard == "trading":
+            regular_focus.append(source_rel)
+            regular_focus_shards.add(row_shard)
+            sparse_regular_focus = sparse_regular_focus or row_sparse
         elif _is_crypto_decision_source(source_rel):
             crypto_focus.append(source_rel)
             sparse_crypto_focus = sparse_crypto_focus or row_sparse
@@ -2019,14 +2050,14 @@ def _api_ingress_drainer_env(base: dict[str, str], rows: list[dict[str, Any]], *
         env["SQL_LINK_SERVICE_SHARD_CRYPTO_API_INGRESS_MAX_LINES_PER_FILE"] = "32000" if critical else "16000"
         env["SQL_LINK_SERVICE_SHARD_CRYPTO_API_INGRESS_STATE_CHECKPOINT_LINES"] = "1500"
     if regular_focus:
-        shards.append("governance")
-        env["SQL_LINK_SERVICE_SHARD_GOVERNANCE_PATH_CONTAINS"] = ",".join(regular_focus[:8])
-        env["SQL_LINK_SERVICE_SHARD_GOVERNANCE_MAX_FILES"] = "12" if critical else "8"
-        env["SQL_LINK_SERVICE_SHARD_GOVERNANCE_MAX_LINES_PER_FILE"] = "32000" if critical else "16000"
-        env["SQL_LINK_SERVICE_SHARD_GOVERNANCE_STATE_CHECKPOINT_LINES"] = "1500"
+        shards.append("api_ingress")
+        env["SQL_LINK_SERVICE_SHARD_API_INGRESS_PATH_CONTAINS"] = ",".join(regular_focus[:12])
+        env["SQL_LINK_SERVICE_SHARD_API_INGRESS_MAX_FILES"] = "24" if critical else "16"
+        env["SQL_LINK_SERVICE_SHARD_API_INGRESS_MAX_LINES_PER_FILE"] = "64000" if critical else "32000"
+        env["SQL_LINK_SERVICE_SHARD_API_INGRESS_STATE_CHECKPOINT_LINES"] = "1500"
 
     if not shards:
-        shards = ["governance", "crypto_api_ingress"]
+        shards = ["api_ingress", "crypto_api_ingress"]
     shards = ordered_unique([*shards, "health_fast"])
     env["SQL_LINK_SERVICE_SHARDS"] = ",".join(shards)
     return shards, env
@@ -2629,6 +2660,12 @@ def _candidate_drainers(
                 "SQL_LINK_SERVICE_SHARD_TRADING_MERGE_MAX_JSONL_ROWS": str(STALE_DECISION_CATCH_UP_MERGE_MAX_JSONL_ROWS),
                 "SQL_LINK_SERVICE_SHARD_AGGRESSIVE_TRADING_MERGE_MAX_JSONL_ROWS": str(STALE_DECISION_CATCH_UP_MERGE_MAX_JSONL_ROWS),
                 "SQL_LINK_SERVICE_SHARD_CRYPTO_TRADING_MERGE_MAX_JSONL_ROWS": str(STALE_DECISION_CATCH_UP_MERGE_MAX_JSONL_ROWS),
+                "SQL_LINK_SERVICE_SHARD_TRADING_MAX_BYTES_PER_FILE": str(STALE_DECISION_CATCH_UP_MAX_BYTES_PER_FILE),
+                "SQL_LINK_SERVICE_SHARD_AGGRESSIVE_TRADING_MAX_BYTES_PER_FILE": str(STALE_DECISION_CATCH_UP_MAX_BYTES_PER_FILE),
+                "SQL_LINK_SERVICE_SHARD_CRYPTO_TRADING_MAX_BYTES_PER_FILE": str(STALE_DECISION_CATCH_UP_MAX_BYTES_PER_FILE),
+                "SQL_LINK_SERVICE_SHARD_TRADING_SQLITE_BATCH_MAX_BYTES": str(STALE_DECISION_CATCH_UP_SQLITE_BATCH_MAX_BYTES),
+                "SQL_LINK_SERVICE_SHARD_AGGRESSIVE_TRADING_SQLITE_BATCH_MAX_BYTES": str(STALE_DECISION_CATCH_UP_SQLITE_BATCH_MAX_BYTES),
+                "SQL_LINK_SERVICE_SHARD_CRYPTO_TRADING_SQLITE_BATCH_MAX_BYTES": str(STALE_DECISION_CATCH_UP_SQLITE_BATCH_MAX_BYTES),
                 "INGEST_MAX_BYTES_PER_FILE": str(STALE_DECISION_CATCH_UP_MAX_BYTES_PER_FILE),
                 "SQLITE_BATCH_MAX_BYTES": str(STALE_DECISION_CATCH_UP_SQLITE_BATCH_MAX_BYTES),
             }
@@ -2702,6 +2739,12 @@ def _candidate_drainers(
                 "SQL_LINK_SERVICE_SHARD_TRADING_MERGE_MAX_JSONL_ROWS": str(STALE_DECISION_CATCH_UP_MERGE_MAX_JSONL_ROWS),
                 "SQL_LINK_SERVICE_SHARD_AGGRESSIVE_TRADING_MERGE_MAX_JSONL_ROWS": str(STALE_DECISION_CATCH_UP_MERGE_MAX_JSONL_ROWS),
                 "SQL_LINK_SERVICE_SHARD_CRYPTO_TRADING_MERGE_MAX_JSONL_ROWS": str(STALE_DECISION_CATCH_UP_MERGE_MAX_JSONL_ROWS),
+                "SQL_LINK_SERVICE_SHARD_TRADING_MAX_BYTES_PER_FILE": str(STALE_DECISION_CATCH_UP_MAX_BYTES_PER_FILE),
+                "SQL_LINK_SERVICE_SHARD_AGGRESSIVE_TRADING_MAX_BYTES_PER_FILE": str(STALE_DECISION_CATCH_UP_MAX_BYTES_PER_FILE),
+                "SQL_LINK_SERVICE_SHARD_CRYPTO_TRADING_MAX_BYTES_PER_FILE": str(STALE_DECISION_CATCH_UP_MAX_BYTES_PER_FILE),
+                "SQL_LINK_SERVICE_SHARD_TRADING_SQLITE_BATCH_MAX_BYTES": str(STALE_DECISION_CATCH_UP_SQLITE_BATCH_MAX_BYTES),
+                "SQL_LINK_SERVICE_SHARD_AGGRESSIVE_TRADING_SQLITE_BATCH_MAX_BYTES": str(STALE_DECISION_CATCH_UP_SQLITE_BATCH_MAX_BYTES),
+                "SQL_LINK_SERVICE_SHARD_CRYPTO_TRADING_SQLITE_BATCH_MAX_BYTES": str(STALE_DECISION_CATCH_UP_SQLITE_BATCH_MAX_BYTES),
                 "INGEST_MAX_BYTES_PER_FILE": str(STALE_DECISION_CATCH_UP_MAX_BYTES_PER_FILE),
                 "SQLITE_BATCH_MAX_BYTES": str(STALE_DECISION_CATCH_UP_SQLITE_BATCH_MAX_BYTES),
                 "WRITER_CYCLE_MAX_CATCH_UP_WAVES": str(stale_wave_limit),

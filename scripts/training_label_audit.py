@@ -16,6 +16,8 @@ DEFAULT_DIAGNOSTICS_DIR = PROJECT_ROOT / "governance" / "training_diagnostics"
 DEFAULT_OUTPUT_PATH = PROJECT_ROOT / "governance" / "health" / "training_label_audit_latest.json"
 DEFAULT_MAX_DIAGNOSTIC_AGE_HOURS = 72.0
 DEFAULT_COLLECTION_TRAINING_THRESHOLD = 250
+DEFAULT_ABSTENTION_TUNING_MIN_SAMPLES = 250
+DEFAULT_ABSTENTION_TUNING_MIN_ACTED = 30
 
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
@@ -270,6 +272,7 @@ def _recommendation(row: dict[str, Any]) -> str:
     positive_rate = _float(row.get("positive_rate"))
     acted_coverage = _float(row.get("acted_coverage"), -1.0)
     acted_accuracy = _float(row.get("acted_accuracy"), -1.0)
+    acted_count = _int(row.get("acted_count"), 0)
     accuracy_lift = _float(row.get("accuracy_lift_over_majority"), 0.0)
     long_precision = _float(row.get("long_precision"), 0.0)
     short_precision = _float(row.get("short_precision"), 0.0)
@@ -302,7 +305,13 @@ def _recommendation(row: dict[str, Any]) -> str:
     if acted_coverage >= 0.50 and accuracy_lift < 0.0:
         return "tighten_abstention_thresholds"
     if 0.0 <= acted_coverage <= 0.02 and sample_count > 0:
-        return "loosen_abstention_thresholds"
+        if (
+            sample_count < DEFAULT_ABSTENTION_TUNING_MIN_SAMPLES
+            or acted_count < DEFAULT_ABSTENTION_TUNING_MIN_ACTED
+            or not bool(row.get("diagnostic_fresh", False))
+        ):
+            return "collect_abstention_evidence"
+        return "run_abstention_counterfactual_replay"
     if acted_accuracy >= 0.0 and acted_accuracy < 0.53 and accuracy_lift < 0.0:
         return "tighten_or_relabel_for_quality"
     if long_precision > 0.0 and short_precision > 0.0 and abs(long_precision - short_precision) >= 0.18:
@@ -346,6 +355,18 @@ def _audit_row(registry_row: dict[str, Any], diag_dir: Path, *, max_diagnostic_a
     skipped_low_confidence = _int(diag.get("skipped_low_confidence", runtime_meta.get("skipped_low_confidence", 0)))
     skipped_labels = _int(diag.get("skipped_labels", runtime_meta.get("skipped_labels", 0)))
     attempted = max(sample_count + skipped_filtered + skipped_low_confidence + skipped_labels, 0)
+    acted_coverage = _float(metrics.get("acted_coverage"), -1.0)
+    long_acted_count = _int(metrics.get("long_acted_count", 0))
+    short_acted_count = _int(metrics.get("short_acted_count", 0))
+    acted_count = max(long_acted_count + short_acted_count, 0)
+    diagnostic_fresh = bool(
+        diagnostic_age_hours is not None and float(diagnostic_age_hours) <= max(float(max_diagnostic_age_hours), 0.0)
+    )
+    abstention_evidence_sufficient = bool(
+        diagnostic_fresh
+        and sample_count >= DEFAULT_ABSTENTION_TUNING_MIN_SAMPLES
+        and acted_count >= DEFAULT_ABSTENTION_TUNING_MIN_ACTED
+    )
     required_context = list(label_contract.get("required_context") or [])
     free_source_candidates = _free_source_candidates_for_contexts(required_context)
     out = {
@@ -359,28 +380,33 @@ def _audit_row(registry_row: dict[str, Any], diag_dir: Path, *, max_diagnostic_a
         "status": str(diag.get("status") or "missing_diagnostic"),
         "diagnostic_present": bool(diag_path and diag_path.exists()),
         "diagnostic_age_hours": round(float(diagnostic_age_hours), 3) if diagnostic_age_hours is not None else None,
-        "diagnostic_fresh": bool(
-            diagnostic_age_hours is not None and float(diagnostic_age_hours) <= max(float(max_diagnostic_age_hours), 0.0)
-        ),
+        "diagnostic_fresh": diagnostic_fresh,
         "sample_count": sample_count,
         "eligible_sequences": _int(diag.get("eligible_sequences", runtime_meta.get("eligible_sequences", 0))),
         "sequence_count": _int(diag.get("sequence_count", runtime_meta.get("sequence_count", 0))),
         "observation_count": _int(diag.get("observation_count", runtime_meta.get("observation_count", 0))),
         "positive_rate": _float(diag.get("positive_rate", runtime_meta.get("positive_rate", 0.0))),
-        "acted_coverage": _float(metrics.get("acted_coverage"), -1.0),
+        "acted_coverage": acted_coverage,
         "acted_accuracy": _float(metrics.get("acted_accuracy"), -1.0),
         "accuracy_lift_over_majority": _float(metrics.get("accuracy_lift_over_majority"), 0.0),
         "long_precision": _float(metrics.get("long_precision"), 0.0),
         "short_precision": _float(metrics.get("short_precision"), 0.0),
         "label_balance_score": _float(metrics.get("label_balance_score"), 0.0),
         "precision_balance_score": _float(metrics.get("precision_balance_score"), 0.0),
-        "long_acted_count": _int(metrics.get("long_acted_count", 0)),
-        "short_acted_count": _int(metrics.get("short_acted_count", 0)),
+        "long_acted_count": long_acted_count,
+        "short_acted_count": short_acted_count,
+        "acted_count": acted_count,
         "skipped_filtered": skipped_filtered,
         "skipped_low_confidence": skipped_low_confidence,
         "skipped_labels": skipped_labels,
-        "acceptance_rate": round((sample_count / attempted), 6) if attempted > 0 else 0.0,
+        "acceptance_rate": round(max(acted_coverage, 0.0), 6),
+        "label_materialization_rate": round((sample_count / attempted), 6) if attempted > 0 else 0.0,
         "attempted_candidate_count": attempted,
+        "abstention_evidence_sufficient": abstention_evidence_sufficient,
+        "abstention_tuning_min_samples": DEFAULT_ABSTENTION_TUNING_MIN_SAMPLES,
+        "abstention_tuning_min_acted": DEFAULT_ABSTENTION_TUNING_MIN_ACTED,
+        "direct_loosen_allowed": False,
+        "direct_loosen_policy": "counterfactual_replay_required_before_any_threshold_reduction",
         "label_audit": label_audit,
         "label_depth_status": str(diag.get("label_depth_status") or label_depth_contract.get("status") or ""),
         "label_depth_contract": label_depth_contract,
@@ -461,6 +487,8 @@ def build_label_audit_payload(
         "relax_confidence_gate",
         "rebalance_label_builder",
         "tighten_abstention_thresholds",
+        "collect_abstention_evidence",
+        "run_abstention_counterfactual_replay",
         "use_side_specific_thresholds",
     ]:
         if recommendation_counts.get(name, 0) > 0:

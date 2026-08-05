@@ -3,6 +3,7 @@ import json
 import sys
 import tempfile
 import unittest
+from datetime import datetime, timezone
 from pathlib import Path
 
 
@@ -115,7 +116,7 @@ class SnapshotSyncPipelineTests(unittest.TestCase):
             _write_json(
                 project_root / "governance" / "health" / "snapshot_training_coverage_latest.json",
                 {
-                    "timestamp_utc": "2026-03-11T12:00:00+00:00",
+                    "timestamp_utc": datetime.now(timezone.utc).isoformat(),
                     "all_snapshot_data_incorporated": True,
                     "snapshot_raw_sql_ingest_ratio": 1.0,
                     "snapshot_cov_fill_ratio": 1.0,

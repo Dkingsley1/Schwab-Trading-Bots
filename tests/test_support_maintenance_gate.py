@@ -1,4 +1,5 @@
 import json
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from scripts.ops import support_maintenance_gate as src
@@ -37,7 +38,16 @@ def test_support_maintenance_gate_activates_from_runtime_override(tmp_path: Path
 
 def test_frozen_health_payload_preserves_previous_shape(tmp_path: Path) -> None:
     previous_path = tmp_path / "governance" / "health" / "storage_failback_sync_latest.json"
-    _write_json(previous_path, {"mode": "external", "certified_mode": "external", "split_brain_conflicts": 0})
+    previous_timestamp = (datetime.now(timezone.utc) - timedelta(hours=2)).isoformat()
+    _write_json(
+        previous_path,
+        {
+            "timestamp_utc": previous_timestamp,
+            "mode": "external",
+            "certified_mode": "external",
+            "split_brain_conflicts": 0,
+        },
+    )
 
     payload = src.frozen_health_payload(
         previous_path,
@@ -48,6 +58,11 @@ def test_frozen_health_payload_preserves_previous_shape(tmp_path: Path) -> None:
     assert payload["certified_mode"] == "external"
     assert payload["support_maintenance_frozen"] is True
     assert payload["skipped_reason"] == "support_maintenance_frozen_for_mac_fluidity"
+    assert payload["timestamp_utc"] == previous_timestamp
+    assert payload["controller_timestamp_utc"] != previous_timestamp
+    assert payload["source_age_seconds"] >= 7_199
+    assert payload["measurement_refreshed"] is False
+    assert payload["freshness_state"] == "preserved_previous_measurement"
 
 
 def test_support_maintenance_gate_cli_writes_status_artifact(tmp_path: Path) -> None:

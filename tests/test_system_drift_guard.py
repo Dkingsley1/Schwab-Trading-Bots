@@ -100,6 +100,45 @@ def test_system_drift_guard_marks_stale_artifact_degraded(monkeypatch, tmp_path:
     assert payload["surfaces"][0]["stale"] is True
 
 
+def test_system_drift_guard_manages_optional_stale_report_during_green_paper_soak(monkeypatch, tmp_path: Path) -> None:
+    health_root = tmp_path / "governance" / "health"
+    artifact = health_root / "report_pdf_bundle_latest.json"
+    _write_guarded_paper_health_fast(health_root)
+    _write_json(
+        artifact,
+        {
+            "overall_status": "ready",
+            "ok": True,
+            "timestamp_utc": "2020-01-01T00:00:00+00:00",
+        },
+    )
+    monkeypatch.setattr(
+        src,
+        "surface_specs",
+        lambda _root: [
+            {
+                "name": "report_pdf_bundle",
+                "family": "reporting_surface",
+                "artifact_path": artifact,
+                "status_key": "overall_status",
+                "ok_key": "ok",
+                "max_age_minutes": 120,
+                "guarded_paper_stale_advisory": True,
+                "repair_commands": [["./scripts/ops/opsctl.sh", "report-pdfs", "--json"]],
+            }
+        ],
+    )
+
+    payload = src.build_payload(tmp_path)
+
+    row = payload["surfaces"][0]
+    assert payload["overall_status"] == "ready"
+    assert row["status"] == "ready"
+    assert row["stale"] is True
+    assert row["managed_stale"] is True
+    assert row["recovery_deferred_reason"] == "guarded_paper_optional_report_stale"
+
+
 def test_system_drift_guard_treats_written_commands_hygiene_apply_as_ready(monkeypatch, tmp_path: Path) -> None:
     health_root = tmp_path / "governance" / "health"
     artifact = health_root / "commands_hygiene_latest.json"
@@ -372,6 +411,53 @@ def test_system_drift_guard_marks_guarded_scoreboard_warning_debt_ready(monkeypa
     assert payload["surfaces"][0]["recovery_deferred_reason"] == "guarded_paper_architecture_scoreboard_advisory_debt"
 
 
+def test_system_drift_guard_keeps_managed_recovery_deferred_row_ready_when_stale(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    health_root = tmp_path / "governance" / "health"
+    artifact = health_root / "architecture_upgrade_scoreboard_latest.json"
+    _write_guarded_paper_health_fast(health_root)
+    _write_json(
+        artifact,
+        {
+            "overall_status": "degraded",
+            "ok": False,
+            "rows": [
+                {"slug": "self_healing_ops_plane", "status": "degraded"},
+                {"slug": "immutable_incident_review", "status": "degraded"},
+            ],
+            "timestamp_utc": "2020-01-01T00:00:00+00:00",
+        },
+    )
+
+    monkeypatch.setattr(
+        src,
+        "surface_specs",
+        lambda _root: [
+            {
+                "name": "architecture_upgrade_scoreboard",
+                "family": "architecture_surface",
+                "artifact_path": artifact,
+                "status_key": "overall_status",
+                "ok_key": "ok",
+                "max_age_minutes": 90,
+                "repair_commands": [["python", "scripts/ops/architecture_upgrade_scoreboard.py", "--json"]],
+            }
+        ],
+    )
+
+    payload = src.build_payload(tmp_path)
+
+    assert payload["overall_status"] == "ready"
+    assert payload["metrics"]["degraded_surface_count"] == 0
+    assert payload["metrics"]["stale_surface_count"] == 1
+    assert payload["surfaces"][0]["status"] == "ready"
+    assert payload["surfaces"][0]["stale"] is True
+    assert payload["surfaces"][0]["managed_stale"] is True
+    assert payload["surfaces"][0]["recovery_deferred_reason"] == "guarded_paper_architecture_scoreboard_advisory_debt"
+
+
 def test_system_drift_guard_marks_guarded_incident_closeout_warning_debt_ready(monkeypatch, tmp_path: Path) -> None:
     health_root = tmp_path / "governance" / "health"
     artifact = health_root / "incident_closeout_autopilot_latest.json"
@@ -619,4 +705,63 @@ def test_system_drift_guard_marks_executed_architecture_autopilot_self_reference
     assert payload["overall_status"] == "ready"
     assert payload["metrics"]["degraded_surface_count"] == 0
     assert payload["surfaces"][0]["status"] == "ready"
+    assert payload["surfaces"][0]["recovery_deferred_reason"] == "guarded_paper_architecture_autopilot_self_reference_debt"
+
+
+def test_system_drift_guard_marks_converged_architecture_repair_plan_self_reference_ready(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    health_root = tmp_path / "governance" / "health"
+    _write_guarded_paper_health_fast(health_root)
+    artifact = health_root / "system_architecture_autopilot_latest.json"
+    _write_json(
+        artifact,
+        {
+            "overall_status": "degraded",
+            "ok": False,
+            "execute_safe_repairs": True,
+            "attempt_count": 3,
+            "attempts": [
+                {"node_id": "storage_control", "rc": 0},
+                {"node_id": "system_drift_guard", "rc": 0},
+                {"node_id": "system_self_model", "rc": 0},
+            ],
+            "final_graph": {
+                "blocked_node_count": 0,
+                "degraded_node_count": 2,
+                "blocked_edge_count": 0,
+                "authority_violation_count": 0,
+                "blocked_nodes": [],
+                "degraded_nodes": ["system_drift_guard", "system_self_model"],
+            },
+            "repair_plan": [
+                {"node_id": "storage_control"},
+                {"node_id": "system_drift_guard"},
+                {"node_id": "system_self_model"},
+            ],
+            "timestamp_utc": "2099-04-23T20:00:00+00:00",
+        },
+    )
+
+    monkeypatch.setattr(
+        src,
+        "surface_specs",
+        lambda _root: [
+            {
+                "name": "system_architecture_autopilot",
+                "family": "architecture_surface",
+                "artifact_path": artifact,
+                "status_key": "overall_status",
+                "ok_key": "ok",
+                "max_age_minutes": 30,
+                "repair_commands": [["./scripts/ops/opsctl.sh", "system-architecture-autopilot", "--apply", "--json"]],
+            }
+        ],
+    )
+
+    payload = src.build_payload(tmp_path)
+
+    assert payload["overall_status"] == "ready"
+    assert payload["metrics"]["degraded_surface_count"] == 0
     assert payload["surfaces"][0]["recovery_deferred_reason"] == "guarded_paper_architecture_autopilot_self_reference_debt"

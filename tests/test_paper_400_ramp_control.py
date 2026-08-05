@@ -1123,3 +1123,58 @@ def test_paper_400_ramp_counts_only_explicit_paper_live_data_bots(tmp_path: Path
 
     assert counts["active_bot_count"] == 3
     assert counts["paper_tagged_count"] == 2
+
+
+def test_paper_storage_gate_allows_bounded_raw_live_drain_below_hard_envelope() -> None:
+    gate = src._storage_gate(
+        {
+            "overall_status": "ready",
+            "severity": "elevated",
+            "pressure_index": 0.91,
+            "backpressure": {
+                "core_pending_lines": 991,
+                "total_pending_lines": 2237,
+                "effective_raw_live": {
+                    "core_pending_lines": 991,
+                    "total_pending_lines": 2237,
+                    "oldest_pending_age_seconds": 219.0,
+                },
+            },
+            "external_route_verification": {"verification_state": "ready"},
+            "data_integrity": {
+                "sql_invalid_lines": 0,
+                "sql_overlay_invalid_lines": 0,
+                "sql_overlay_oversize_payloads": 0,
+                "sql_overlay_ops_write_failures": 0,
+            },
+        }
+    )
+
+    assert gate["ok"] is True
+    assert gate["status"] == "bounded_raw_live_advisory"
+    assert gate["bounded_raw_live_relief"]["active"] is True
+
+
+def test_paper_storage_gate_keeps_hard_pressure_envelope_blocking() -> None:
+    gate = src._storage_gate(
+        {
+            "overall_status": "ready",
+            "severity": "elevated",
+            "pressure_index": 1.0,
+            "backpressure": {
+                "core_pending_lines": 991,
+                "total_pending_lines": 2237,
+                "effective_raw_live": {
+                    "core_pending_lines": 991,
+                    "total_pending_lines": 2237,
+                    "oldest_pending_age_seconds": 219.0,
+                },
+            },
+            "external_route_verification": {"verification_state": "ready"},
+            "data_integrity": {},
+        }
+    )
+
+    assert gate["ok"] is False
+    assert gate["status"] == "blocked"
+    assert gate["bounded_raw_live_relief"]["active"] is False

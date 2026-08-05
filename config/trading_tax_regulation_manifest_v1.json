@@ -1,0 +1,31 @@
+{
+  "schema_version": 1,
+  "jurisdiction": "US_FEDERAL",
+  "active_tax_year": 2026,
+  "policy_paths_by_tax_year": {
+    "2026": "config/trading_tax_policy_us_federal_2026.json"
+  },
+  "trusted_source_hosts": [
+    "irs.gov",
+    "www.irs.gov"
+  ],
+  "annual_rollover": {
+    "enabled": true,
+    "check_interval_seconds": 86400,
+    "expected_release_window_start_month": 9,
+    "must_be_verified_before_tax_year_start": true,
+    "automatic_numeric_rollover_allowed": true,
+    "automatic_structural_law_change_activation_allowed": false,
+    "candidate_directory": "governance/tax/regulation_candidates",
+    "active_generated_directory": "governance/tax/regulations"
+  },
+  "activation_guards": [
+    "official IRS source URLs only",
+    "tax year matches requested calculation year",
+    "ordinary and preferential brackets are monotonic and terminate with an open upper band",
+    "all tax rates are between zero and one",
+    "NIIT and Section 1256 rules validate",
+    "structural changes require explicit review instead of automatic activation",
+    "a stale or missing current-year policy blocks an exact estimate"
+  ]
+}

@@ -438,6 +438,29 @@ def test_a_plus_packet_treats_inactive_event_watch_as_managed_cold_lane(tmp_path
     assert "event_policy_not_explicitly_monitoring_only" not in lane["warnings"]
 
 
+def test_a_plus_packet_treats_expired_monitoring_watch_as_managed_cold_lane(tmp_path: Path) -> None:
+    _write_sources(
+        tmp_path,
+        {
+            "spacex_ipo_watch": {
+                "ok": True,
+                "overall_status": "expired",
+                "symbol": "SPCX",
+                "policy": "monitoring_only_no_order_instruction",
+                "alert": {"triggered": False},
+                "quote": {"ok": False, "error": "watch_expired"},
+            }
+        },
+    )
+
+    payload = packet.build_payload(tmp_path)
+    lane = next(row for row in payload["lanes"] if row["id"] == "event_mode")
+
+    assert lane["a_plus"] is True
+    assert lane["evidence"]["event_watch_managed_cold_lane"] is True
+    assert "ipo_watch_stale" not in lane["warnings"]
+
+
 def test_a_plus_packet_defers_promotion_repairs_while_paper_soak_green(tmp_path: Path) -> None:
     _write_sources(
         tmp_path,
@@ -472,6 +495,111 @@ def test_a_plus_packet_defers_promotion_repairs_while_paper_soak_green(tmp_path:
     assert lane["evidence"]["promotion_deferred_while_paper_soak_green"] is True
     assert "promotion_deferred_while_paper_soak_green" in lane["warnings"]
     assert "promotion_repairs_deferred_while_live_money_locked" in lane["warnings"]
+
+
+def test_a_plus_packet_manages_only_known_promotion_evidence_gaps(tmp_path: Path) -> None:
+    operational_checks = {
+        key: True
+        for key in (
+            "daily_verify_ok",
+            "bot_support_owner_guard_ok",
+            "feature_store_manifest_ready",
+            "retrain_schema_compatibility_ok",
+            "golden_replay_regression_ok",
+            "cohort_drift_baseline_ok",
+            "leak_overfit_ok",
+            "replay_ok",
+            "replay_hash_registry_ok",
+            "champion_challenger_probation_ok",
+            "reconciliation_slo_ok",
+            "promotion_packet_ok",
+            "snapshot_coverage_ok",
+            "data_source_divergence_ok",
+            "artifact_freshness_ok",
+            "nightly_resilience_ok",
+            "state_snapshot_drill_ok",
+            "db_integrity_ok",
+            "execution_queue_stress_ok",
+            "paper_execution_truth_layer_operational_ok",
+        )
+    }
+    _write_sources(
+        tmp_path,
+        {
+            "promotion_quality": {
+                "ok": False,
+                "failed_checks": [
+                    "promotion_gate_blocked",
+                    "insufficient_considered_bots",
+                    "paper_execution_truth_layer_not_ok",
+                ],
+                "details": operational_checks,
+            },
+            "promotion_packet": {
+                "overall_status": "degraded",
+                "promotion_ready": False,
+                "autopilot_state": "repairing_readiness",
+                "blockers": [
+                    "coverage_shortfall_bots=4",
+                    "promotion_readiness:insufficient_walk_forward_coverage",
+                    "promotion_quality_gate_failed",
+                    "promotion_pipeline_failed",
+                ],
+                "readiness_repair_contract": {
+                    "critical_repair_gate_count": 1,
+                    "warning_repair_gate_count": 2,
+                },
+            },
+            "promotion_pipeline": {
+                "ok": False,
+                "overall_status": "blocked",
+                "evidence_only": True,
+                "promotion_candidate_ids": [],
+            },
+        },
+    )
+
+    payload = packet.build_payload(tmp_path)
+    lane = next(row for row in payload["lanes"] if row["id"] == "promotion_discipline")
+
+    assert lane["a_plus"] is True
+    assert lane["blockers"] == []
+    assert lane["evidence"]["promotion_deferred_while_paper_soak_green"] is True
+    assert "promotion_quality_evidence_managed_while_paper_soak_green" in lane["warnings"]
+
+
+def test_a_plus_packet_blocks_unknown_promotion_quality_failure(tmp_path: Path) -> None:
+    _write_sources(
+        tmp_path,
+        {
+            "promotion_quality": {
+                "ok": False,
+                "overall_status": "blocked",
+                "failed_checks": ["replay_integrity_failed"],
+                "details": {"replay_ok": False},
+            },
+            "promotion_packet": {
+                "overall_status": "degraded",
+                "promotion_ready": False,
+                "autopilot_state": "repairing_readiness",
+                "blockers": ["promotion_quality_gate_failed"],
+                "readiness_repair_contract": {"critical_repair_gate_count": 1},
+            },
+            "promotion_pipeline": {
+                "ok": False,
+                "overall_status": "blocked",
+                "evidence_only": True,
+                "promotion_candidate_ids": [],
+            },
+        },
+    )
+
+    payload = packet.build_payload(tmp_path)
+    lane = next(row for row in payload["lanes"] if row["id"] == "promotion_discipline")
+
+    assert lane["a_plus"] is False
+    assert "promotion_quality_gate_not_ok" in lane["blockers"]
+    assert lane["evidence"]["promotion_deferred_while_paper_soak_green"] is False
 
 
 def test_a_plus_packet_blocks_on_missing_imessage_delivery(tmp_path: Path) -> None:

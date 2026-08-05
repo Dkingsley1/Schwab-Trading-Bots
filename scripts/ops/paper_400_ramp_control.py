@@ -574,6 +574,34 @@ def _storage_gate(storage: dict[str, Any], memory: dict[str, Any] | None = None,
     total_pending = _safe_int(backpressure.get("total_pending_lines"), 0)
     overlay_relief = _overlay_only_storage_relief(backpressure)
     deferred_relief = _paper_hot_path_storage_relief(storage, plumbing)
+    route = storage.get("external_route_verification") if isinstance(storage.get("external_route_verification"), dict) else {}
+    bounded_recovery = storage.get("bounded_recovery_contract") if isinstance(storage.get("bounded_recovery_contract"), dict) else {}
+    integrity = storage.get("data_integrity") if isinstance(storage.get("data_integrity"), dict) else {}
+    route_ready = bool(
+        str(route.get("verification_state") or "").strip().lower() in {"ready", "verified", "ok"}
+        or bounded_recovery.get("route_verified", False)
+    )
+    integrity_clean = all(
+        _safe_int(integrity.get(key), 0) == 0
+        for key in ("sql_invalid_lines", "sql_overlay_invalid_lines", "sql_overlay_oversize_payloads", "sql_overlay_ops_write_failures")
+    )
+    bounded_raw_live_relief = {
+        "active": bool(
+            str(storage.get("overall_status") or "").strip().lower() == "ready"
+            and severity not in {"high", "critical", "blocked"}
+            and pressure_index < 1.0
+            and core_pending < 5000
+            and total_pending < 12000
+            and bool(overlay_relief.get("raw_live_clear", False))
+            and route_ready
+            and integrity_clean
+        ),
+        "route_ready": route_ready,
+        "integrity_clean": integrity_clean,
+        "raw_live_clear": bool(overlay_relief.get("raw_live_clear", False)),
+        "max_pressure_index": 1.0,
+        "policy": "paper-only admission may use bounded raw-live headroom below the hard envelope; live-money canary remains strict",
+    }
     soft_quota_relief = _managed_stateful_sql_storage_relief(memory or {})
     soft_quota_managed = bool(soft_quota_relief.get("managed", False))
     pressure_advisory = bool(
@@ -586,6 +614,7 @@ def _storage_gate(storage: dict[str, Any], memory: dict[str, Any] | None = None,
     hard_block = bool(
         not bool(overlay_relief.get("active", False))
         and not bool(deferred_relief.get("active", False))
+        and not bool(bounded_raw_live_relief.get("active", False))
         and not soft_quota_managed
         and (
             severity in {"high", "critical", "blocked"}
@@ -602,6 +631,8 @@ def _storage_gate(storage: dict[str, Any], memory: dict[str, Any] | None = None,
         if soft_quota_managed
         else "managed_deferred_backlog_advisory"
         if bool(deferred_relief.get("active", False))
+        else "bounded_raw_live_advisory"
+        if bool(bounded_raw_live_relief.get("active", False))
         else "overlay_drain_advisory"
         if bool(overlay_relief.get("active", False))
         else "storage_pressure_advisory"
@@ -620,6 +651,7 @@ def _storage_gate(storage: dict[str, Any], memory: dict[str, Any] | None = None,
         "total_pending_lines": total_pending,
         "overlay_only_relief": overlay_relief,
         "managed_deferred_backlog_relief": deferred_relief,
+        "bounded_raw_live_relief": bounded_raw_live_relief,
         "stateful_sql_soft_quota_relief": soft_quota_relief,
     }
 

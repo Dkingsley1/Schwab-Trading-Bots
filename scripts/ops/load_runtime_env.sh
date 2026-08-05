@@ -96,6 +96,7 @@ for candidate in \
   "$PROJECT_ROOT/config/.env.swap_pressure_override" \
   "$PROJECT_ROOT/config/.env.browser_quiet_override" \
   "$PROJECT_ROOT/config/.env.storage_pressure_override" \
+  "$PROJECT_ROOT/config/.env.local_storage_reserve_override" \
   "$PROJECT_ROOT/config/.env.hot_lane_retention_override" \
   "$PROJECT_ROOT/config/.env.storage_target_override" \
   "$PROJECT_ROOT/config/.env.storage_override" \

@@ -18,6 +18,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from core.channel_queue import default_queue_db_path
+from core.runtime_maintenance import maintenance_hold_snapshot
 from core.runtime_python import resolve_runtime_python
 from core.sqlite_runtime import connect_sqlite, resolve_sqlite_runtime_settings
 from scripts import ops_data_plane
@@ -87,7 +88,19 @@ def _is_broken_symlink(path: Path) -> bool:
 
 def _routed_or_local_fallback_path(path: Path) -> Path:
     candidate = Path(path).expanduser()
-    if _is_broken_symlink(candidate):
+    force_local = str(os.getenv("SQL_LINK_SERVICE_FORCE_LOCAL_FALLBACK", "0") or "0").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+    prefer_external = str(os.getenv("BOT_LOGS_PREFER_EXTERNAL", "1") or "1").strip().lower() not in {
+        "0",
+        "false",
+        "no",
+        "off",
+    }
+    if force_local or not prefer_external or _is_broken_symlink(candidate):
         return _local_fallback_equivalent(candidate)
     return candidate
 
@@ -239,6 +252,21 @@ DEFAULT_SHARD_DEFS = {
         "merge_priority": "low",
         "merge_to_primary": False,
     },
+    "api_ingress": {
+        "include_streams": "governance",
+        "path_contains": "governance/channels/api/,governance/channels/ingress/",
+        "path_not_contains": (
+            "shadow_crypto/,shadow_crypto_futures_crypto/,"
+            "default_crypto_coinbase,crypto_futures_crypto_coinbase,"
+            "default_crypto_schwab,crypto_futures_crypto_schwab"
+        ),
+        "skip_json_files": True,
+        "max_files": 24,
+        "max_lines_per_file": 32000,
+        "state_checkpoint_lines": 2000,
+        "merge_priority": "low",
+        "merge_to_primary": False,
+    },
     "crypto_runtime": {
         "include_streams": "governance",
         "path_contains": (
@@ -329,6 +357,8 @@ DEFAULT_SHARD_DEFS = {
             "default_crypto_schwab,crypto_futures_crypto_schwab,"
             "governance/watchdog/,"
             "governance/channels/risk/,"
+            "governance/channels/api/,"
+            "governance/channels/ingress/,"
             "governance/channels/runtime/,"
             "governance/events/channel_schema_violations_"
         ),
@@ -620,7 +650,8 @@ ARCHIVE_MAINTENANCE_GLOBS = ("*.compact.sqlite3", "*.precompact.bak.sqlite3")
 LEGACY_DEFAULT_SHARDS = "trading,governance,data"
 PRE_FAST_DEFAULT_SHARDS = "crypto_governance,crypto_trading,governance,trading,data"
 PRE_BACKLOG_SPLIT_DEFAULT_SHARDS = "health_fast,crypto_trading_fast,trading_fast,crypto_governance,crypto_trading,governance,trading,data"
-CURRENT_DEFAULT_SHARDS = "health_fast,trading_fast,crypto_trading_fast,writer_progress,runtime,crypto_runtime,crypto_api_ingress,aggressive_trading,trading,crypto_trading,predictive_stability,self_healing,hot_path_storage,risk_support,governance,support_watchdog,crypto_governance,schema_violations,collector_utility,admission_evidence,data,reports,explanations,crypto_explanations,shadow_attribution,crypto_shadow_attribution"
+PRE_API_INGRESS_DEFAULT_SHARDS = "health_fast,trading_fast,crypto_trading_fast,writer_progress,runtime,crypto_runtime,crypto_api_ingress,aggressive_trading,trading,crypto_trading,predictive_stability,self_healing,hot_path_storage,risk_support,governance,support_watchdog,crypto_governance,schema_violations,collector_utility,admission_evidence,data,reports,explanations,crypto_explanations,shadow_attribution,crypto_shadow_attribution"
+CURRENT_DEFAULT_SHARDS = "health_fast,trading_fast,crypto_trading_fast,writer_progress,runtime,crypto_runtime,api_ingress,crypto_api_ingress,aggressive_trading,trading,crypto_trading,predictive_stability,self_healing,hot_path_storage,risk_support,governance,support_watchdog,crypto_governance,schema_violations,collector_utility,admission_evidence,data,reports,explanations,crypto_explanations,shadow_attribution,crypto_shadow_attribution"
 SENTINEL_SHARDS = {"health_fast", "writer_progress"}
 HOT_SHARDS = {
     "trading_fast",
@@ -630,6 +661,7 @@ HOT_SHARDS = {
     "crypto_trading",
     "runtime",
     "crypto_runtime",
+    "api_ingress",
     "crypto_api_ingress",
 }
 WARM_SHARDS = {
@@ -1299,6 +1331,11 @@ def _write_service_progress(
     _write_json(PROGRESS_HEALTH, payload)
 
 
+def _cycle_boundary_maintenance_hold(project_root: Path = PROJECT_ROOT) -> dict[str, object]:
+    hold = maintenance_hold_snapshot(project_root)
+    return hold if bool(hold.get("active", False)) else {}
+
+
 def _as_float(raw: object, default: float = 0.0) -> float:
     try:
         return float(raw)
@@ -1690,7 +1727,12 @@ def _env_path_filter_or_default(name: str, default: object) -> str:
 
 def _normalized_shard_config(raw: str) -> str:
     cleaned = ",".join(_parse_csv(raw))
-    if not cleaned or cleaned in {LEGACY_DEFAULT_SHARDS, PRE_FAST_DEFAULT_SHARDS, PRE_BACKLOG_SPLIT_DEFAULT_SHARDS}:
+    if not cleaned or cleaned in {
+        LEGACY_DEFAULT_SHARDS,
+        PRE_FAST_DEFAULT_SHARDS,
+        PRE_BACKLOG_SPLIT_DEFAULT_SHARDS,
+        PRE_API_INGRESS_DEFAULT_SHARDS,
+    }:
         return CURRENT_DEFAULT_SHARDS
     return cleaned
 
@@ -3202,6 +3244,16 @@ def main() -> int:
     parser.add_argument("--once", action="store_true")
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args()
+    maintenance_hold = maintenance_hold_snapshot(PROJECT_ROOT)
+    if bool(maintenance_hold.get("active", False)):
+        payload = {
+            "ok": True,
+            "overall_status": "guarded_hold",
+            "reason": "runtime_maintenance_hold_active",
+            "runtime_maintenance_hold": maintenance_hold,
+        }
+        print(json.dumps(payload, ensure_ascii=True) if args.json else "sql_link_shard_manager guarded_hold=runtime_maintenance_hold_active")
+        return 75
     args.cli_shards_explicit = "--shards" in sys.argv[1:]
 
     shard_names = _parse_csv(_normalized_shard_config(args.shards))
@@ -3259,6 +3311,18 @@ def main() -> int:
     last_queue_retention_ts = 0.0
 
     while True:
+        boundary_hold = _cycle_boundary_maintenance_hold(PROJECT_ROOT)
+        if boundary_hold:
+            _write_service_progress(
+                cycle_started_utc=_now_utc(),
+                current_step="maintenance_handoff",
+                lock_path=lock_path,
+                primary_db=primary_db,
+                running=False,
+                ok=True,
+                note=f"runtime_maintenance_hold:{boundary_hold.get('reason', 'runtime_maintenance')}",
+            )
+            break
         ts = _now_utc()
         cycle_ts = time.time()
         active_request = _load_active_request(REQUEST_PATH)

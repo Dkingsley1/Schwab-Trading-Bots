@@ -15,11 +15,11 @@ if __package__ in {None, ""}:
     if str(PROJECT_ROOT) not in sys.path:
         sys.path.insert(0, str(PROJECT_ROOT))
     from scripts.ops import one_numbers_regression_guard
-    from scripts.ops.long_runtime_common import iso_now, load_json, ordered_unique, write_payload
+    from scripts.ops.long_runtime_common import iso_now, load_json, ordered_unique, payload_age_minutes, write_payload
 else:
     PROJECT_ROOT = Path(__file__).resolve().parents[2]
     from . import one_numbers_regression_guard
-    from .long_runtime_common import iso_now, load_json, ordered_unique, write_payload
+    from .long_runtime_common import iso_now, load_json, ordered_unique, payload_age_minutes, write_payload
 
 
 DEFAULT_OUT_PATH = PROJECT_ROOT / "governance" / "health" / "master_infrastructure_supervisor_latest.json"
@@ -727,6 +727,18 @@ def _storage_route_check(project_root: Path) -> dict[str, Any]:
     reconciler_summary = _as_dict(reconciler.get("summary"))
     unresolved_resilience = _safe_int(resilience.get("unresolved_split_brain_conflicts"), conflicts)
     unresolved_reconciler = _safe_int(reconciler_summary.get("unresolved_conflicts"), conflicts)
+    mount_guard = load_json(_health_path(project_root, "storage_mount_guard_latest.json"))
+    mode = str(payload.get("certified_mode") or payload.get("mode") or "").strip().lower()
+    intentional_local_hot_route = bool(
+        mode.startswith("local_fallback")
+        and verification_state == "active_local_ready"
+        and not bool(mount_guard.get("external_required_for_hot_path", True))
+        and bool(mount_guard.get("hot_storage_available", False))
+        and conflicts == 0
+        and unresolved_resilience == 0
+        and unresolved_reconciler == 0
+        and _guarded_paper_strict_clear(project_root)
+    )
     reconciled_legacy_split_brain = bool(
         conflicts > 0
         and verification_state in {"ready", "verified", "curated_ready"}
@@ -735,7 +747,9 @@ def _storage_route_check(project_root: Path) -> dict[str, Any]:
         and unresolved_reconciler == 0
         and _guarded_paper_strict_clear(project_root)
     )
-    status = "ready" if verification_state in {"ready", "verified", "curated_ready"} and conflicts == 0 else "degraded"
+    status = "ready" if (
+        verification_state in {"ready", "verified", "curated_ready"} and conflicts == 0
+    ) or intentional_local_hot_route else "degraded"
     if verification_state in {"blocked", "missing_external_copy"} or conflicts > 0:
         status = "blocked"
     if reconciled_legacy_split_brain:
@@ -757,6 +771,9 @@ def _storage_route_check(project_root: Path) -> dict[str, Any]:
             "unresolved_split_brain_conflicts": unresolved_resilience,
             "reconciler_unresolved_conflicts": unresolved_reconciler,
             "reconciled_legacy_split_brain": reconciled_legacy_split_brain,
+            "intentional_local_hot_route": intentional_local_hot_route,
+            "external_required_for_hot_path": bool(mount_guard.get("external_required_for_hot_path", True)),
+            "hot_storage_available": bool(mount_guard.get("hot_storage_available", False)),
         },
         repair_commands=[["./scripts/ops/opsctl.sh", "storage-resilience", "--json"]],
     )
@@ -844,20 +861,54 @@ def _governance_freshness_check(project_root: Path) -> dict[str, Any]:
     degraded = _safe_int(metrics.get("degraded_surface_count"), 0)
     stale = _safe_int(metrics.get("stale_surface_count"), 0)
     missing = _safe_int(metrics.get("missing_surface_count"), 0)
+    surfaces = payload.get("surfaces") if isinstance(payload.get("surfaces"), list) else []
+    managed_stale = sum(
+        1
+        for row in surfaces
+        if isinstance(row, dict) and bool(row.get("stale", False)) and bool(row.get("managed_stale", False))
+    )
+    unmanaged_stale = max(stale - managed_stale, 0)
     status = _artifact_status(payload)
     blocked_names = _blocked_surface_names(payload)
     self_referential_blocked = bool(blocked_names) and blocked_names <= {"master_infrastructure_supervisor"}
+    degraded_names = {
+        str(row.get("name") or "").strip()
+        for row in surfaces
+        if isinstance(row, dict)
+        and str(row.get("status") or "").strip().lower() in {"degraded", "warn", "warning", "needs_work"}
+        and str(row.get("name") or "").strip()
+    }
+    self_referential_degraded = bool(
+        degraded > 0
+        and degraded == len(degraded_names)
+        and degraded_names <= {"master_infrastructure_supervisor"}
+        and blocked == 0
+        and missing == 0
+        and unmanaged_stale == 0
+        and _guarded_paper_strict_clear(project_root)
+    )
     if (blocked and not self_referential_blocked) or missing:
         status = "blocked"
-    elif degraded or stale or self_referential_blocked:
+    elif (degraded and not self_referential_degraded) or unmanaged_stale or self_referential_blocked:
         status = "degraded"
-    summary = f"blocked={blocked} degraded={degraded} stale={stale} missing={missing}"
+    elif self_referential_degraded:
+        status = "ready"
+    summary = (
+        f"blocked={blocked} degraded={degraded} stale={stale} "
+        f"managed_stale={managed_stale} missing={missing}"
+    )
     return _check(
         "governance_artifact_freshness",
         family="governance_surface",
         status=status,
         summary=summary,
-        evidence={"metrics": metrics},
+        evidence={
+            "metrics": metrics,
+            "managed_stale_surface_count": managed_stale,
+            "unmanaged_stale_surface_count": unmanaged_stale,
+            "self_referential_degraded_reconciled": self_referential_degraded,
+            "degraded_surface_names": sorted(degraded_names),
+        },
         repair_commands=[["./scripts/ops/opsctl.sh", "system-drift-autopilot", "--apply", "--json"]],
     )
 
@@ -1120,6 +1171,22 @@ def _point_in_time_replay_check(project_root: Path) -> dict[str, Any]:
     return check
 
 
+def _backlog_organizer_paper_soak_advisory(payload: dict[str, Any]) -> bool:
+    summary = _as_dict(payload.get("summary"))
+    if not bool(summary.get("guarded_paper_soak_green", False)):
+        return False
+    lanes = [row for row in payload.get("lanes") or [] if isinstance(row, dict)]
+    blocked_or_needs_work = [
+        row
+        for row in lanes
+        if str(row.get("status") or "").strip().lower() in {"blocked", "needs_work", "critical", "failed"}
+    ]
+    if not blocked_or_needs_work:
+        return False
+    managed_lane_ids = {"admission_contracts", "promotion_training_quality"}
+    return all(str(row.get("lane_id") or "").strip() in managed_lane_ids for row in blocked_or_needs_work)
+
+
 def _self_auditing_infra_bots_check(project_root: Path) -> dict[str, Any]:
     expected = [
         ("one_numbers_regression_guard", "governance/health/one_numbers_regression_guard_latest.json"),
@@ -1139,11 +1206,13 @@ def _self_auditing_infra_bots_check(project_root: Path) -> dict[str, Any]:
     paper_soak_advisory_bots = {
         "infrastructure_autofix",
         "system_drift_autopilot",
+        "storage_backpressure_autopilot",
         "storage_pressure_clearance",
         "backlog_organizer",
     }
     for label, raw_path in expected:
         path, payload = _load_artifact(project_root, raw_path)
+        artifact_age_minutes = payload_age_minutes(payload, path) if payload else None
         artifact_status = _artifact_status(payload, missing="degraded")
         initial_artifact_status = artifact_status
         if label == "command_validity" and payload:
@@ -1197,6 +1266,14 @@ def _self_auditing_infra_bots_check(project_root: Path) -> dict[str, Any]:
         ):
             artifact_status = "degraded"
             unmitigated_failed_attempts = []
+        managed_blocking_backlog = bool(
+            label == "backlog_organizer"
+            and artifact_status == "blocked"
+            and _backlog_organizer_paper_soak_advisory(payload)
+        )
+        if managed_blocking_backlog:
+            artifact_status = "degraded"
+            unmitigated_failed_attempts = []
         no_action_with_plan = bool(repair_plan and not attempts and str(payload.get("apply") or payload.get("apply_requested") or "").lower() in {"true", "1"})
         row_status = artifact_status
         if payload and (not has_status or not has_timestamp):
@@ -1210,10 +1287,35 @@ def _self_auditing_infra_bots_check(project_root: Path) -> dict[str, Any]:
         paper_soak_advisory_only = bool(
             guarded_paper_clear
             and row_status == "degraded"
-            and initial_artifact_status != "blocked"
+            and (initial_artifact_status != "blocked" or managed_blocking_backlog)
             and label in paper_soak_advisory_bots
             and not unmitigated_failed_attempts
         )
+        authoritative_recovery = False
+        authoritative_recovery_source = ""
+        if guarded_paper_clear and isinstance(artifact_age_minutes, (int, float)) and artifact_age_minutes > 30:
+            if label == "system_drift_autopilot":
+                current_guard = load_json(_health_path(project_root, "system_drift_guard_latest.json"))
+                guard_metrics = _as_dict(current_guard.get("metrics"))
+                authoritative_recovery = bool(
+                    _artifact_status(current_guard, missing="degraded") == "ready"
+                    and _safe_int(guard_metrics.get("blocked_surface_count"), 0) == 0
+                    and _safe_int(guard_metrics.get("degraded_surface_count"), 0) == 0
+                )
+                authoritative_recovery_source = "system_drift_guard"
+            elif label in {"storage_backpressure_autopilot", "storage_pressure_clearance"}:
+                current_storage = load_json(_health_path(project_root, "ingestion_storage_control_latest.json"))
+                storage_backpressure = _as_dict(current_storage.get("backpressure"))
+                authoritative_recovery = bool(
+                    _artifact_status(current_storage, missing="degraded") == "ready"
+                    and str(current_storage.get("severity") or "stable").strip().lower() == "stable"
+                    and _safe_float(current_storage.get("pressure_index"), 1.0) < 0.5
+                    and _safe_int(storage_backpressure.get("total_pending_lines"), 0) <= 15000
+                )
+                authoritative_recovery_source = "ingestion_storage_control"
+        stale_snapshot_superseded = bool(authoritative_recovery and not unmitigated_failed_attempts)
+        if stale_snapshot_superseded:
+            paper_soak_advisory_only = True
         if paper_soak_advisory_only:
             row_status = "advisory"
         rows.append(
@@ -1229,17 +1331,23 @@ def _self_auditing_infra_bots_check(project_root: Path) -> dict[str, Any]:
                 "failed_attempt_count": len(unmitigated_failed_attempts),
                 "mitigated_active_recovery_attempt_count": len(mitigated_attempts),
                 "paper_soak_advisory_only": paper_soak_advisory_only,
+                "artifact_age_minutes": artifact_age_minutes,
+                "stale_snapshot_superseded": stale_snapshot_superseded,
+                "authoritative_recovery_source": authoritative_recovery_source if stale_snapshot_superseded else "",
             }
         )
-    if status == "degraded" and guarded_paper_clear:
-        non_advisory_degraded = [
-            row
-            for row in rows
-            if row.get("status") == "degraded" and not bool(row.get("paper_soak_advisory_only", False))
-        ]
-        blocked_rows = [row for row in rows if row.get("status") == "blocked"]
-        if not blocked_rows and not non_advisory_degraded:
-            status = "ready"
+    # Rows can be downgraded to advisory after their source status is read, for
+    # example when a stale storage-repair snapshot is superseded by current
+    # healthy storage evidence. Derive the aggregate from the finalized rows so
+    # an earlier blocked value cannot survive after every blocker is reconciled.
+    blocked_rows = [row for row in rows if row.get("status") == "blocked"]
+    degraded_rows = [row for row in rows if row.get("status") == "degraded"]
+    if blocked_rows:
+        status = "blocked"
+    elif degraded_rows:
+        status = "degraded"
+    else:
+        status = "ready"
     summary = f"bots={len(rows)} degraded={sum(1 for row in rows if row['status'] == 'degraded')} blocked={sum(1 for row in rows if row['status'] == 'blocked')}"
     return _check(
         "self_auditing_infra_bots",

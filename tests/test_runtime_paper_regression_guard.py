@@ -99,6 +99,9 @@ def test_runtime_guard_accepts_full_force_paper_ready_hot_lane() -> None:
             "paper_execution_hot": True,
             "paper_hot_low_priority": True,
             "paper_execution_cpu_percent": 105.0,
+            "research_training_hot": True,
+            "research_hot_low_priority": True,
+            "research_training_cpu_percent": 69.0,
             "bot_owned_cpu_percent": 124.3,
             "bot_owned_non_operator_cpu_percent": 113.8,
             "bot_owned_pressure_dominant": True,
@@ -110,6 +113,7 @@ def test_runtime_guard_accepts_full_force_paper_ready_hot_lane() -> None:
         {
             "max_guarded_ready_full_force_bot_owned_cpu_percent": 340.0,
             "max_guarded_ready_full_force_operator_cpu_percent": 45.0,
+            "max_guarded_ready_bounded_research_cpu_percent": 80.0,
         }
     )
 
@@ -117,6 +121,38 @@ def test_runtime_guard_accepts_full_force_paper_ready_hot_lane() -> None:
 
     assert guard["ok"] is True
     assert guard["status"] == "ready"
+
+
+def test_runtime_guard_rejects_full_force_research_above_bounded_limit() -> None:
+    runtime = _runtime_payload(blocked_paper=False)
+    soft_cap = runtime["soft_cap_advisory_reclassification"]
+    soft_cap["reason"] = "full_force_paper_ramp_pressure_is_guarded_runtime_ready"
+    soft_cap["measurements"].update(
+        {
+            "full_force_paper_ramp_guarded_ready": True,
+            "paper_execution_hot": True,
+            "paper_hot_low_priority": True,
+            "paper_execution_cpu_percent": 73.0,
+            "research_training_hot": True,
+            "research_hot_low_priority": True,
+            "research_training_cpu_percent": 90.0,
+            "bot_owned_cpu_percent": 250.0,
+            "bot_owned_non_operator_cpu_percent": 250.0,
+            "bot_owned_pressure_dominant": True,
+            "storage_ready_for_runtime_advisory": True,
+        }
+    )
+    soft_cap["thresholds"].update(
+        {
+            "max_guarded_ready_full_force_bot_owned_cpu_percent": 340.0,
+            "max_guarded_ready_bounded_research_cpu_percent": 80.0,
+        }
+    )
+
+    guard = src._runtime_guarded_ready_lane_guard(runtime)
+
+    assert guard["ok"] is False
+    assert "research_training_hot" in guard["actual"]["hot_lanes"]
 
 
 def test_runtime_guard_accepts_niced_support_pressure_when_paper_is_open() -> None:
@@ -692,6 +728,34 @@ def test_runtime_paper_guard_accepts_fresh_launcher_certification_when_watchdog_
     continuity = next(row for row in payload["regression_guards"] if row["name"] == "soak_30_day_continuity_contract")
     assert lane_guard["actual"]["all_sleeves"]["launcher_artifact_certified_fanout"] is True
     assert continuity["actual"]["all_sleeves"]["launcher_artifact_certified_fanout"] is True
+
+
+def test_runtime_paper_guard_accepts_complete_launcher_during_startup_readiness_window(tmp_path: Path) -> None:
+    health = tmp_path / "governance" / "health"
+    launcher_path = health / "all_sleeves_launcher_latest.json"
+    _write_json(
+        launcher_path,
+        {
+            "timestamp_utc": src.iso_now(),
+            "overall_status": "ready",
+            "phase": "running",
+            "running_job_count": 7,
+            "expected_job_count": 7,
+            "problem_job_count": 0,
+            "launcher_readiness_contract": {
+                "readiness_status": "starting",
+                "problem_job_count": 0,
+            },
+        },
+    )
+
+    certification = src._launcher_fanout_certification(
+        tmp_path,
+        {"path": str(launcher_path)},
+    )
+
+    assert certification["ok"] is True
+    assert certification["startup_complete_certification"] is True
 
 
 def test_runtime_paper_guard_degrades_on_stale_profitability_without_pausing_paper(tmp_path: Path) -> None:

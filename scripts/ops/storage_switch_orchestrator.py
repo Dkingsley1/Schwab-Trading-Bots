@@ -15,11 +15,13 @@ if __package__ in {None, ""}:
     PROJECT_ROOT = Path(__file__).resolve().parents[2]
     if str(PROJECT_ROOT) not in sys.path:
         sys.path.insert(0, str(PROJECT_ROOT))
+    from core.runtime_maintenance import maintenance_hold_snapshot
     from core.runtime_python import resolve_runtime_python
     from core.storage_mounts import resolve_external_storage
     from scripts.ops import writer_cycle_coordinator as writer_src
 else:
     PROJECT_ROOT = Path(__file__).resolve().parents[2]
+    from core.runtime_maintenance import maintenance_hold_snapshot
     from core.runtime_python import resolve_runtime_python
     from core.storage_mounts import resolve_external_storage
     from scripts.ops import writer_cycle_coordinator as writer_src
@@ -168,7 +170,23 @@ def build_payload(
     if eject and target_mode != "local":
         raise ValueError("eject is only supported when target_mode=local")
 
-    resolved_mount_root = resolve_external_storage().mount_root
+    maintenance_hold = maintenance_hold_snapshot(project_root)
+    if bool(maintenance_hold.get("active", False)):
+        return {
+            "timestamp_utc": _utc_now(),
+            "schema_version": 1,
+            "ok": False,
+            "overall_status": "blocked_runtime_maintenance_hold",
+            "target_mode": target_mode,
+            "route_mutation_performed": False,
+            "runtime_maintenance_hold": maintenance_hold,
+        }
+
+    resolved_mount_root = (
+        Path(os.getenv("BOT_LOGS_EXTERNAL_MOUNT", "/Volumes/BOT_LOGS")).expanduser()
+        if target_mode == "local"
+        else resolve_external_storage().mount_root
+    )
     mount_root = str(mount_root or resolved_mount_root).strip() or str(resolved_mount_root)
     opsctl = project_root / "scripts" / "ops" / "opsctl.sh"
     health_root = project_root / "governance" / "health"
@@ -178,7 +196,7 @@ def build_payload(
     writer_before = writer_src.writer_state_snapshot(project_root)
     wait_for_writer = {
         "requested": False,
-        "completed": not bool(writer_before.get("active", False)) if should_stop else True,
+        "completed": not bool(writer_before.get("active", False)),
         "timed_out": False,
         "attempts": 0,
         "waited_seconds": 0.0,
@@ -197,13 +215,37 @@ def build_payload(
         )
         writer_after_wait = wait_for_writer.get("final_state") if isinstance(wait_for_writer.get("final_state"), dict) else writer_before
 
+    writer_still_active = bool(writer_after_wait.get("active", False))
+    if writer_still_active or (should_stop and not bool(wait_for_writer.get("completed", False))):
+        return {
+            "timestamp_utc": _utc_now(),
+            "schema_version": 1,
+            "ok": False,
+            "overall_status": "blocked_writer_active",
+            "target_mode": target_mode,
+            "restart": bool(restart),
+            "quiesce_only": bool(quiesce_only),
+            "eject": bool(eject),
+            "mount_root": mount_root,
+            "route_mutation_performed": False,
+            "writer_state_before": writer_before,
+            "wait_for_writer": wait_for_writer,
+            "writer_state_after_wait": writer_after_wait,
+            "steps": steps,
+            "reason": "storage_route_switch_requires_writer_quiet_point",
+            "out_file": str(health_root / "storage_switch_orchestrator_latest.json"),
+        }
+
     override_result = _write_storage_override(target_mode, override_path)
     prefer_external = "1" if target_mode == "external" else "0"
     failback = _run_command(
         [str(PY), str(project_root / "scripts" / "ops" / "storage_failback_sync.py"), "--json"],
         cwd=project_root,
         timeout_sec=240,
-        env_overrides={"BOT_LOGS_PREFER_EXTERNAL": prefer_external},
+        env_overrides={
+            "BOT_LOGS_PREFER_EXTERNAL": prefer_external,
+            "BOT_STORAGE_ROUTE_EXPLICIT_SWITCH": "1",
+        },
     )
     steps["storage_failback_sync"] = _step_record(failback)
     failback_payload = failback.get("payload") if isinstance(failback.get("payload"), dict) else {}
@@ -288,6 +330,7 @@ def build_payload(
         "quiesce_only": bool(quiesce_only),
         "eject": bool(eject),
         "mount_root": mount_root,
+        "route_mutation_performed": True,
         "override": override_result,
         "writer_state_before": writer_before,
         "wait_for_writer": wait_for_writer,

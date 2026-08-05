@@ -4,11 +4,13 @@ import json
 import os
 import filecmp
 import shutil
+import time
 from fnmatch import fnmatchcase
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
 
+from core.runtime_maintenance import maintenance_hold_snapshot
 from core.storage_mounts import resolve_external_storage_paths
 
 DEFAULT_EXTERNAL_MOUNT = "/Volumes/BOT_LOGS"
@@ -24,6 +26,23 @@ DEFAULT_LINK_DIRS: tuple[str, ...] = (
     "data",
     "models",
 )
+NESTED_SQLITE_ROUTE_RELS: tuple[str, ...] = (
+    "data/jsonl_link.sqlite3",
+    "data/jsonl_link.sqlite3-wal",
+    "data/jsonl_link.sqlite3-shm",
+    "data/bot_channel_queue.sqlite3",
+    "data/bot_channel_queue.sqlite3-wal",
+    "data/bot_channel_queue.sqlite3-shm",
+    "data/snapshot_context.sqlite3",
+    "data/snapshot_context.sqlite3-wal",
+    "data/snapshot_context.sqlite3-shm",
+)
+NESTED_LOCAL_ROUTE_ROOTS: tuple[str, ...] = ("governance", "data")
+NESTED_LOCAL_ROUTE_SKIP_MARKERS: tuple[str, ...] = (
+    ".__external_symlink_backup_",
+    ".symlink_disabled_",
+    ".route_symlink_disabled_",
+)
 
 
 @dataclass(frozen=True)
@@ -36,12 +55,20 @@ class StorageRoutingResult:
     autosync_copy_errors: int = 0
     autosync_pruned_files: int = 0
     autosync_error_details: tuple[str, ...] = ()
+    autosync_skip_details: tuple[str, ...] = ()
     autosync_skipped_reason: str = ""
     autosync_free_bytes: int | None = None
     autosync_min_free_bytes: int = 0
     split_brain_conflicts: int = 0
     ops_event_recorded: bool = False
     ops_event_error: str = ""
+
+
+def _normalized_path_no_io(path: Path | str) -> Path:
+    text = os.path.abspath(str(Path(path).expanduser()))
+    if text == "/var" or text.startswith("/var/") or text == "/tmp" or text.startswith("/tmp/"):
+        text = f"/private{text}"
+    return Path(text)
 
 
 def _resolve_link_target(link_path: Path) -> Path | None:
@@ -52,7 +79,7 @@ def _resolve_link_target(link_path: Path) -> Path | None:
     target = Path(raw)
     if not target.is_absolute():
         target = (link_path.parent / target)
-    return target.resolve(strict=False)
+    return _normalized_path_no_io(target)
 
 
 def _is_writable_directory(path: Path) -> bool:
@@ -66,6 +93,15 @@ def _is_writable_directory(path: Path) -> bool:
 def _external_project_root() -> Path:
     _, external_root = resolve_external_storage_paths()
     return external_root
+
+
+def _configured_external_project_root_no_io() -> Path:
+    configured = str(os.getenv("BOT_LOGS_EXTERNAL_PROJECT_ROOT", "") or "").strip()
+    if configured:
+        return Path(configured).expanduser()
+    mount_root = Path(os.getenv("BOT_LOGS_EXTERNAL_MOUNT", DEFAULT_EXTERNAL_MOUNT)).expanduser()
+    project_dir = str(os.getenv("BOT_LOGS_EXTERNAL_PROJECT_DIR", DEFAULT_EXTERNAL_PROJECT) or DEFAULT_EXTERNAL_PROJECT).strip()
+    return mount_root / project_dir
 
 
 def _env_flag(name: str, default: str = "0") -> bool:
@@ -130,6 +166,20 @@ def _external_root_ready(path: Path) -> bool:
     return free_bytes >= min_free_bytes
 
 
+def _external_root_ready_read_only(path: Path) -> bool:
+    try:
+        if not path.is_dir() or not os.access(path, os.W_OK):
+            return False
+    except OSError:
+        return False
+
+    min_free_bytes = _external_min_free_bytes()
+    if min_free_bytes <= 0:
+        return True
+    free_bytes = _available_free_bytes(path)
+    return bool(free_bytes is not None and free_bytes >= min_free_bytes)
+
+
 def _auto_sync_pressure_gate(external_root: Path) -> tuple[bool, str, int | None, int]:
     min_free_bytes = _auto_sync_min_free_bytes()
     free_bytes = _available_free_bytes(external_root)
@@ -182,6 +232,34 @@ def _record_autosync_error(details: list[str], rel_path: str, exc: Exception) ->
     details.append(f"{rel}:{exc.__class__.__name__}:{exc}")
 
 
+def _record_autosync_skip(details: list[str], value: str) -> None:
+    limit = _bounded_env_int("BOT_LOGS_AUTO_SYNC_SKIP_DETAIL_LIMIT", 100)
+    if limit <= 0 or len(details) >= limit:
+        return
+    details.append(str(value))
+
+
+def _bounded_env_int(name: str, default: int) -> int:
+    try:
+        return max(int(float(os.getenv(name, str(default)) or default)), 0)
+    except Exception:
+        return max(int(default), 0)
+
+
+def _atomic_copy2(src: Path, dst: Path) -> None:
+    before = src.stat()
+    tmp = dst.with_name(f"{dst.name}.tmp.autosync.{os.getpid()}")
+    try:
+        tmp.unlink(missing_ok=True)
+        shutil.copy2(src, tmp)
+        after = src.stat()
+        if before.st_size != after.st_size or before.st_mtime_ns != after.st_mtime_ns:
+            raise RuntimeError("source_changed_during_autosync")
+        os.replace(tmp, dst)
+    finally:
+        tmp.unlink(missing_ok=True)
+
+
 def _auto_sync_local_to_external(
     local_root: Path,
     external_root: Path,
@@ -189,11 +267,17 @@ def _auto_sync_local_to_external(
     *,
     prune_local: bool,
     max_copy_files: int,
+    max_file_bytes: int = 0,
+    max_total_bytes: int = 0,
+    min_file_age_seconds: float = 0.0,
+    skip_details: list[str] | None = None,
 ) -> tuple[int, int, int, list[str]]:
     copied = 0
     errors = 0
     pruned = 0
     error_details: list[str] = []
+    skipped = skip_details if skip_details is not None else []
+    copied_bytes = 0
 
     if max_copy_files <= 0:
         return 0, 0, 0, error_details
@@ -214,6 +298,9 @@ def _auto_sync_local_to_external(
         dst_dir = external_root / name
         if not src_dir.exists() or not src_dir.is_dir():
             continue
+        if src_dir.is_symlink():
+            _record_autosync_skip(skipped, f"{name}:source_route_is_symlink")
+            continue
 
         for root, _, files in os.walk(src_dir):
             root_path = Path(root)
@@ -228,7 +315,7 @@ def _auto_sync_local_to_external(
 
             for fname in files:
                 if copied >= max_copy_files:
-                    return copied, errors, pruned
+                    return copied, errors, pruned, error_details
 
                 src_file = root_path / fname
                 dst_file = dst_base / fname
@@ -236,10 +323,35 @@ def _auto_sync_local_to_external(
 
                 if _should_skip_failback_rel(rel_file):
                     continue
+                try:
+                    src_stat = src_file.stat()
+                except FileNotFoundError:
+                    continue
+                if src_file.is_symlink():
+                    _record_autosync_skip(skipped, f"{rel_file}:source_file_is_symlink")
+                    continue
+                if max_file_bytes > 0 and src_stat.st_size > max_file_bytes:
+                    _record_autosync_skip(
+                        skipped,
+                        f"{rel_file}:file_bytes={src_stat.st_size}>max_file_bytes={max_file_bytes}",
+                    )
+                    continue
+                age_seconds = max(time.time() - src_stat.st_mtime, 0.0)
+                if min_file_age_seconds > 0 and age_seconds < min_file_age_seconds:
+                    _record_autosync_skip(
+                        skipped,
+                        f"{rel_file}:file_age_seconds={age_seconds:.3f}<min_file_age_seconds={min_file_age_seconds:.3f}"
+                    )
+                    continue
+                if max_total_bytes > 0 and copied_bytes + src_stat.st_size > max_total_bytes:
+                    _record_autosync_skip(
+                        skipped,
+                        f"{rel_file}:copy_budget_bytes={copied_bytes + src_stat.st_size}>max_total_bytes={max_total_bytes}"
+                    )
+                    continue
 
                 if dst_file.exists():
                     try:
-                        src_stat = src_file.stat()
                         dst_stat = dst_file.stat()
                         same_size = src_stat.st_size == dst_stat.st_size
                         same_content = same_size and filecmp.cmp(src_file, dst_file, shallow=False)
@@ -251,7 +363,7 @@ def _auto_sync_local_to_external(
                             continue
 
                         if copied >= max_copy_files:
-                            return copied, errors, pruned
+                            return copied, errors, pruned, error_details
 
                         # Preserve local-only deltas under a suffix instead of dropping them.
                         conflict = dst_file.with_name(f"{dst_file.name}.local_fallback")
@@ -260,8 +372,9 @@ def _auto_sync_local_to_external(
                             conflict = dst_file.with_name(f"{dst_file.name}.local_fallback.{seq}")
                             seq += 1
 
-                        shutil.copy2(src_file, conflict)
+                        _atomic_copy2(src_file, conflict)
                         copied += 1
+                        copied_bytes += src_stat.st_size
                         if prune_local:
                             src_file.unlink()
                             pruned += 1
@@ -275,8 +388,9 @@ def _auto_sync_local_to_external(
                     continue
 
                 try:
-                    shutil.copy2(src_file, dst_file)
+                    _atomic_copy2(src_file, dst_file)
                     copied += 1
+                    copied_bytes += src_stat.st_size
                     if prune_local:
                         try:
                             src_file.unlink()
@@ -361,6 +475,7 @@ def _record_route_event_safe(project_root: Path, result: StorageRoutingResult) -
                 split_brain_conflicts=result.split_brain_conflicts,
                 metadata={
                     "autosync_error_details": list(result.autosync_error_details),
+                    "autosync_skip_details": list(result.autosync_skip_details),
                     "autosync_skipped_reason": result.autosync_skipped_reason,
                     "autosync_free_bytes": result.autosync_free_bytes,
                     "autosync_min_free_bytes": result.autosync_min_free_bytes,
@@ -390,9 +505,143 @@ def _links_route_to_root(project_root: Path, link_dirs: Iterable[str], target_ro
     return saw_symlink
 
 
-def route_runtime_storage(project_root: str | Path, link_dirs: Iterable[str] = DEFAULT_LINK_DIRS) -> StorageRoutingResult:
+def _reconcile_nested_sqlite_routes(
+    project_root: Path,
+    active_root: Path,
+) -> tuple[list[str], list[str]]:
+    switched: list[str] = []
+    skipped: list[str] = []
+    for rel in NESTED_SQLITE_ROUTE_RELS:
+        repo_path = project_root / rel
+        target = active_root / rel
+        primary_target = active_root / rel.removesuffix("-wal").removesuffix("-shm")
+        target_available = bool(target.exists() or primary_target.exists())
+        if not target_available:
+            skipped.append(f"nested_sqlite_skipped:{rel}")
+            continue
+        if not repo_path.is_symlink() and repo_path.exists():
+            skipped.append(f"nested_sqlite_passthrough:{rel}")
+            continue
+        current_target = _resolve_link_target(repo_path) if repo_path.is_symlink() else None
+        desired_target = target.resolve(strict=False)
+        if current_target == desired_target:
+            continue
+        repo_path.parent.mkdir(parents=True, exist_ok=True)
+        if repo_path.is_symlink() or repo_path.exists():
+            repo_path.unlink()
+        repo_path.symlink_to(target)
+        switched.append(rel)
+    return switched, skipped
+
+
+def _reconcile_nested_local_routes(project_root: Path, local_root: Path) -> tuple[list[str], list[str]]:
+    switched: list[str] = []
+    skipped: list[str] = []
+    for root_name in NESTED_LOCAL_ROUTE_ROOTS:
+        scan_root = project_root / root_name
+        if not scan_root.is_dir() or scan_root.is_symlink():
+            continue
+        for current_root, dir_names, file_names in os.walk(scan_root, followlinks=False):
+            current = Path(current_root)
+            symlink_dirs = [name for name in dir_names if (current / name).is_symlink()]
+            dir_names[:] = [name for name in dir_names if name not in symlink_dirs]
+            for name in [*symlink_dirs, *file_names]:
+                repo_path = current / name
+                if not repo_path.is_symlink():
+                    continue
+                rel = repo_path.relative_to(project_root)
+                rel_text = rel.as_posix()
+                if any(marker in rel_text for marker in NESTED_LOCAL_ROUTE_SKIP_MARKERS):
+                    skipped.append(f"nested_local_route_backup_skipped:{rel_text}")
+                    continue
+                target = local_root / rel
+                if name in symlink_dirs:
+                    target.mkdir(parents=True, exist_ok=True)
+                elif not target.exists():
+                    skipped.append(f"nested_local_route_target_missing:{rel_text}")
+                    continue
+                if _resolve_link_target(repo_path) == target.resolve(strict=False):
+                    continue
+                repo_path.unlink()
+                repo_path.symlink_to(target)
+                switched.append(rel_text)
+    return switched, skipped
+
+
+def inspect_runtime_storage(
+    project_root: str | Path,
+    link_dirs: Iterable[str] = DEFAULT_LINK_DIRS,
+) -> StorageRoutingResult:
+    """Resolve the effective route without copying data, changing links, or recording events."""
     root = Path(project_root).resolve()
-    external_root = _external_project_root()
+    local_root = Path(
+        os.getenv(
+            "BOT_LOGS_LOCAL_FALLBACK_ROOT",
+            str(root / DEFAULT_LOCAL_FALLBACK),
+        )
+    ).expanduser()
+    external_root = _configured_external_project_root_no_io()
+
+    active_mode = str(os.getenv("BOT_LOGS_ACTIVE_MODE", "") or "").strip().lower()
+    active_root_text = str(os.getenv("BOT_LOGS_ACTIVE_ROOT", "") or "").strip()
+    if active_root_text and active_mode in {"external", "local_fallback", "local_fallback_split_brain"}:
+        active_root = Path(active_root_text).expanduser()
+        if active_root.exists():
+            return StorageRoutingResult(
+                mode=active_mode,
+                active_root=active_root,
+                switched_links=(),
+                passthrough_paths=(),
+                autosync_skipped_reason="inspection_only_no_route_mutation",
+            )
+
+    local_link_count = 0
+    external_link_count = 0
+    local_prefix = str(_normalized_path_no_io(local_root))
+    external_prefix = str(_normalized_path_no_io(external_root))
+    for rel_name in link_dirs:
+        target = _resolve_link_target(root / str(rel_name).strip().strip("/"))
+        if target is None:
+            continue
+        target_text = str(target)
+        if target_text == local_prefix or target_text.startswith(f"{local_prefix}/"):
+            local_link_count += 1
+        elif target_text == external_prefix or target_text.startswith(f"{external_prefix}/"):
+            external_link_count += 1
+
+    prefer_external = os.getenv("BOT_LOGS_PREFER_EXTERNAL", "1").strip().lower() not in {"0", "false", "no", "off"}
+    external_ready = bool(prefer_external and _external_root_ready_read_only(external_root))
+    if local_link_count > external_link_count:
+        mode = "local_fallback"
+        active_root = local_root
+    elif external_link_count > local_link_count and external_ready:
+        mode = "external"
+        active_root = external_root
+    else:
+        mode = "external" if external_ready else "local_fallback"
+        active_root = external_root if external_ready else local_root
+    return StorageRoutingResult(
+        mode=mode,
+        active_root=active_root,
+        switched_links=(),
+        passthrough_paths=(),
+        autosync_skipped_reason="inspection_only_no_route_mutation",
+    )
+
+
+def route_runtime_storage(
+    project_root: str | Path,
+    link_dirs: Iterable[str] = DEFAULT_LINK_DIRS,
+    *,
+    allow_autosync: bool = False,
+) -> StorageRoutingResult:
+    root = Path(project_root).resolve()
+    maintenance_hold = maintenance_hold_snapshot(root)
+    if bool(maintenance_hold.get("active", False)) and not _env_flag(
+        "BOT_STORAGE_ROUTE_ALLOW_DURING_MAINTENANCE",
+        "0",
+    ):
+        raise RuntimeError("runtime_maintenance_hold_blocks_storage_route_mutation")
     local_root = Path(
         os.getenv(
             "BOT_LOGS_LOCAL_FALLBACK_ROOT",
@@ -401,6 +650,7 @@ def route_runtime_storage(project_root: str | Path, link_dirs: Iterable[str] = D
     ).expanduser()
 
     prefer_external = os.getenv("BOT_LOGS_PREFER_EXTERNAL", "1").strip().lower() not in {"0", "false", "no", "off"}
+    external_root = _external_project_root() if prefer_external else _configured_external_project_root_no_io()
     external_ready = prefer_external and _external_root_ready(external_root)
     active_root = external_root if external_ready else local_root
     mode = "external" if external_ready else "local_fallback"
@@ -411,6 +661,7 @@ def route_runtime_storage(project_root: str | Path, link_dirs: Iterable[str] = D
     autosync_errors = 0
     autosync_pruned = 0
     autosync_error_details: list[str] = []
+    autosync_skip_details: list[str] = []
     autosync_skipped_reason = ""
     autosync_free_bytes: int | None = None
     autosync_min_free_bytes = 0
@@ -418,7 +669,8 @@ def route_runtime_storage(project_root: str | Path, link_dirs: Iterable[str] = D
 
     link_dirs_tuple = tuple(link_dirs)
 
-    if mode == "external" and _env_flag("BOT_LOGS_AUTO_SYNC_ON_RECONNECT", "1"):
+    autosync_enabled = bool(allow_autosync and _env_flag("BOT_LOGS_AUTO_SYNC_ON_RECONNECT", "1"))
+    if mode == "external" and autosync_enabled:
         allowed, skipped_reason, autosync_free_bytes, autosync_min_free_bytes = _auto_sync_pressure_gate(external_root)
         if allowed:
             prune_local = _env_flag("BOT_LOGS_AUTO_SYNC_PRUNE_LOCAL", "1")
@@ -429,10 +681,18 @@ def route_runtime_storage(project_root: str | Path, link_dirs: Iterable[str] = D
                 link_dirs=link_dirs_tuple,
                 prune_local=prune_local,
                 max_copy_files=max_copy_files,
+                max_file_bytes=_bounded_env_int("BOT_LOGS_AUTO_SYNC_MAX_FILE_BYTES", 1024 ** 3),
+                max_total_bytes=_bounded_env_int("BOT_LOGS_AUTO_SYNC_MAX_TOTAL_BYTES", 4 * (1024 ** 3)),
+                min_file_age_seconds=float(
+                    _bounded_env_int("BOT_LOGS_AUTO_SYNC_MIN_FILE_AGE_SECONDS", 300)
+                ),
+                skip_details=autosync_skip_details,
             )
         else:
             autosync_skipped_reason = skipped_reason
             autosync_error_details = [skipped_reason] if skipped_reason else []
+    elif mode == "external" and _env_flag("BOT_LOGS_AUTO_SYNC_ON_RECONNECT", "1"):
+        autosync_skipped_reason = "autosync_requires_explicit_failback_owner"
 
     if mode == "external" and _env_flag("BOT_LOGS_BLOCK_SPLIT_BRAIN", "1"):
         scan_max_files = max(int(os.getenv("BOT_LOGS_SPLIT_BRAIN_SCAN_MAX_FILES", "5000") or 5000), 100)
@@ -475,12 +735,21 @@ def route_runtime_storage(project_root: str | Path, link_dirs: Iterable[str] = D
         path_in_repo.symlink_to(target)
         switched.append(name)
 
+    nested_switched, nested_skipped = _reconcile_nested_sqlite_routes(root, active_root)
+    switched.extend(nested_switched)
+    passthrough.extend(nested_skipped)
+    if mode.startswith("local_fallback"):
+        local_switched, local_skipped = _reconcile_nested_local_routes(root, local_root)
+        switched.extend(local_switched)
+        passthrough.extend(local_skipped)
+
     os.environ["BOT_LOGS_ACTIVE_MODE"] = mode
     os.environ["BOT_LOGS_ACTIVE_ROOT"] = str(active_root)
     os.environ["BOT_LOGS_AUTOSYNC_COPIED_FILES"] = str(autosync_copied)
     os.environ["BOT_LOGS_AUTOSYNC_COPY_ERRORS"] = str(autosync_errors)
     os.environ["BOT_LOGS_AUTOSYNC_PRUNED_FILES"] = str(autosync_pruned)
     os.environ["BOT_LOGS_AUTOSYNC_ERROR_DETAILS"] = json.dumps(autosync_error_details, ensure_ascii=True)
+    os.environ["BOT_LOGS_AUTOSYNC_SKIP_DETAILS"] = json.dumps(autosync_skip_details, ensure_ascii=True)
     os.environ["BOT_LOGS_AUTOSYNC_SKIPPED_REASON"] = str(autosync_skipped_reason)
     os.environ["BOT_LOGS_AUTOSYNC_FREE_BYTES"] = "" if autosync_free_bytes is None else str(autosync_free_bytes)
     os.environ["BOT_LOGS_AUTOSYNC_MIN_FREE_BYTES"] = str(autosync_min_free_bytes)
@@ -494,6 +763,7 @@ def route_runtime_storage(project_root: str | Path, link_dirs: Iterable[str] = D
         autosync_copy_errors=int(autosync_errors),
         autosync_pruned_files=int(autosync_pruned),
         autosync_error_details=tuple(autosync_error_details),
+        autosync_skip_details=tuple(autosync_skip_details),
         autosync_skipped_reason=str(autosync_skipped_reason),
         autosync_free_bytes=autosync_free_bytes,
         autosync_min_free_bytes=int(autosync_min_free_bytes),
@@ -509,6 +779,7 @@ def route_runtime_storage(project_root: str | Path, link_dirs: Iterable[str] = D
         autosync_copy_errors=provisional_result.autosync_copy_errors,
         autosync_pruned_files=provisional_result.autosync_pruned_files,
         autosync_error_details=provisional_result.autosync_error_details,
+        autosync_skip_details=provisional_result.autosync_skip_details,
         autosync_skipped_reason=provisional_result.autosync_skipped_reason,
         autosync_free_bytes=provisional_result.autosync_free_bytes,
         autosync_min_free_bytes=provisional_result.autosync_min_free_bytes,

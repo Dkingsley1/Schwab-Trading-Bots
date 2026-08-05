@@ -287,6 +287,100 @@ def test_paper_performance_report_aggregates_multiple_strategies_within_profile(
     assert sleeve["ending_net_pnl_total"] == 7.0
 
 
+def test_schema_v2_counts_each_profile_book_once_and_keeps_strategy_books(tmp_path, monkeypatch) -> None:
+    project_root = tmp_path / "project"
+    log_dir = project_root / "exports" / "paper_broker_bridge" / "paper"
+    log_dir.mkdir(parents=True, exist_ok=True)
+
+    base = {
+        "metadata": {"source_profile": "intraday_aggressive"},
+        "paper_pnl_schema_version": 2,
+        "paper_profile": "intraday_aggressive",
+        "action": "BUY",
+        "execution_notional": 1000.0,
+        "expected_execution_cost_amount": 1.0,
+    }
+    rows = [
+        {
+            **base,
+            "timestamp_utc": "2026-03-31T20:00:00+00:00",
+            "symbol": "SPY",
+            "strategy": "paper_mirror::alpha",
+            "paper_book_id": "book-a",
+            "paper_profile_realized_pnl_total": 10.0,
+            "paper_profile_unrealized_pnl_total": 2.0,
+            "paper_strategy_net_pnl_total": 3.0,
+            "post_cost_pnl_delta": 1.0,
+            "post_cost_return_bps": 10.0,
+        },
+        {
+            **base,
+            "timestamp_utc": "2026-03-31T20:01:00+00:00",
+            "symbol": "QQQ",
+            "strategy": "paper_mirror::beta",
+            "paper_book_id": "book-a",
+            "paper_profile_realized_pnl_total": 12.0,
+            "paper_profile_unrealized_pnl_total": 3.0,
+            "paper_strategy_net_pnl_total": -1.0,
+            "post_cost_pnl_delta": -0.5,
+            "post_cost_return_bps": -5.0,
+        },
+        {
+            **base,
+            "timestamp_utc": "2026-03-31T20:02:00+00:00",
+            "symbol": "IWM",
+            "strategy": "paper_mirror::alpha",
+            "paper_book_id": "book-b",
+            "paper_profile_realized_pnl_total": 2.0,
+            "paper_profile_unrealized_pnl_total": 1.0,
+            "paper_strategy_net_pnl_total": 2.0,
+            "post_cost_pnl_delta": 2.0,
+            "post_cost_return_bps": 20.0,
+        },
+    ]
+    (log_dir / "paper_bridge_orders_20260331.jsonl").write_text(
+        "\n".join(json.dumps(row) for row in rows) + "\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(report, "PROJECT_ROOT", project_root)
+    payload = report.build_paper_performance_report(project_root, day="20260331", week_days=7)
+
+    sleeve = next(row for row in payload["sleeve_latest"] if row["profile"] == "intraday_aggressive")
+    assert sleeve["ending_realized_pnl_total"] == 14.0
+    assert sleeve["ending_unrealized_pnl_total"] == 4.0
+    assert sleeve["ending_net_pnl_total"] == 18.0
+    assert sleeve["accounting_scope"] == "persistent_profile_book"
+    assert sleeve["paper_book_count"] == 2
+    assert sleeve["strategy_count"] == 3
+    assert sleeve["top_winning_strategies"][0]["strategy"] == "paper_mirror::alpha"
+    assert sleeve["top_losing_strategies"][0]["strategy"] == "paper_mirror::beta"
+    assert payload["post_cost_expectancy"]["sample_count"] == 3
+    assert payload["post_cost_expectancy"]["mean_post_cost_pnl_delta"] == 0.833333
+    assert payload["post_cost_expectancy"]["status"] == "insufficient_evidence"
+
+
+def test_post_cost_expectancy_requires_positive_confidence_bound() -> None:
+    rows = [
+        {
+            "timestamp_utc": f"2026-03-31T20:{idx:02d}:00+00:00",
+            "paper_pnl_schema_version": 2,
+            "post_cost_pnl_delta": 1.0,
+            "post_cost_return_bps": 10.0,
+            "execution_notional": 1000.0,
+            "expected_execution_cost_amount": 1.0,
+        }
+        for idx in range(30)
+    ]
+
+    expectancy = report._post_cost_expectancy(rows)
+
+    assert expectancy["sample_count"] == 30
+    assert expectancy["evidence_sufficient"] is True
+    assert expectancy["positive_lower_confidence_bound_95"] is True
+    assert expectancy["status"] == "positive_with_95pct_confidence"
+
+
 def test_paper_performance_report_includes_win_rate_by_non_flat_strategy(tmp_path, monkeypatch) -> None:
     project_root = tmp_path / "project"
     log_dir = project_root / "exports" / "paper_broker_bridge" / "paper"

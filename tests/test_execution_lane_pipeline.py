@@ -8,6 +8,7 @@ import pytest
 from core.base_trader import BaseTrader
 from core.channel_queue import ChannelMessage, ChannelQueue, default_queue_db_path
 from core.execution_lane_pipeline import (
+    EXECUTION_TRANSPORT_FEATURE_KEYS,
     EXECUTION_INTENT_CHANNEL,
     EXECUTION_PROMOTED_CHANNEL,
     EXECUTION_PROMOTION_CHANNEL,
@@ -236,6 +237,11 @@ def test_publish_execution_intent_enqueues_channel_message(tmp_path: Path) -> No
             "model_score": 0.66,
             "threshold": 0.55,
             "strategy": "grand_master_bot",
+            "features": {
+                "last_price": 500.0,
+                "spread_bps": 2.0,
+                "training_only_feature": 123.0,
+            },
             "metadata": {"snapshot_id": "snap-1"},
         },
     )
@@ -247,6 +253,12 @@ def test_publish_execution_intent_enqueues_channel_message(tmp_path: Path) -> No
     assert len(messages) == 1
     assert messages[0].payload["symbol"] == "SPY"
     assert messages[0].payload["strategy"] == "grand_master_bot"
+    assert messages[0].payload["features"] == {"last_price": 500.0, "spread_bps": 2.0}
+    assert messages[0].payload["execution_transport"]["compacted"] is True
+    assert set(messages[0].payload["features"]) <= EXECUTION_TRANSPORT_FEATURE_KEYS
+    intent_path = tmp_path / "governance" / "execution_lanes" / f"execution_intents_{datetime.now(timezone.utc):%Y%m%d}.jsonl"
+    persisted = json.loads(intent_path.read_text(encoding="utf-8").splitlines()[-1])
+    assert "training_only_feature" not in persisted["features"]
 
 
 def test_publish_execution_intent_retries_locked_queue(monkeypatch, tmp_path: Path) -> None:

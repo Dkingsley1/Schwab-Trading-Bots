@@ -22,8 +22,15 @@ CORE_REQUIRED_LABELS = [
     'com.dankingsley.shadow_watchdog',
     'com.dankingsley.caffeinate_guard',
     'com.dankingsley.ops.watchdog',
+    'com.dankingsley.ops.sql_link_writer',
     'com.dankingsley.failover_hot_standby',
+    'com.dankingsley.observability_exporter',
+    'com.dankingsley.livefeed-local',
+    'com.dankingsley.premarket_token_guard',
+    'com.dankingsley.ops.schwab_auth_supervisor',
 ]
+
+STACK_STOPPED_FLAG = PROJECT_ROOT / 'governance' / 'health' / 'STACK_STOPPED.flag'
 
 PRESSURE_RELIEF_ENV_FILES = [
     PROJECT_ROOT / 'config' / '.env.pressure_relief_override',
@@ -147,6 +154,16 @@ def _is_loaded(domain: str, label: str) -> bool:
     return rc == 0
 
 
+def _enable_label(domain: str, label: str) -> Dict[str, Any]:
+    rc, out, err = _run(['launchctl', 'enable', f'{domain}/{label}'])
+    return {
+        'action': 'enable',
+        'rc': int(rc),
+        'stdout': out[-200:],
+        'stderr': err[-200:],
+    }
+
+
 
 def _recover_label(domain: str, label: str) -> Dict[str, Any]:
     row: Dict[str, Any] = {
@@ -162,8 +179,7 @@ def _recover_label(domain: str, label: str) -> Dict[str, Any]:
     loaded_before = _is_loaded(domain, label)
     row['loaded_before'] = bool(loaded_before)
 
-    rc_en, out_en, err_en = _run(['launchctl', 'enable', f'{domain}/{label}'])
-    row['actions'].append({'action': 'enable', 'rc': int(rc_en), 'stdout': out_en[-200:], 'stderr': err_en[-200:]})
+    row['actions'].append(_enable_label(domain, label))
 
     if plist.exists():
         rc_bootout, out_bootout, err_bootout = _run(['launchctl', 'bootout', domain, str(plist)])
@@ -215,12 +231,27 @@ def main() -> int:
     critical = _split_csv(args.critical_labels) if args.critical_labels.strip() else list(required)
     pressure_relief = _pressure_relief_context()
     pressure_skip_labels = set(str(label) for label in pressure_relief.get('skip_labels', []))
+    explicit_stack_stop = STACK_STOPPED_FLAG.exists()
 
     recovered: List[Dict[str, Any]] = []
     healthy: List[Dict[str, Any]] = []
     skipped: List[Dict[str, Any]] = []
 
     for label in required:
+        if explicit_stack_stop:
+            loaded = _is_loaded(domain, label)
+            skipped.append(
+                {
+                    'label': label,
+                    'loaded_before': loaded,
+                    'loaded_after': loaded,
+                    'ok': True,
+                    'skipped': True,
+                    'reason': 'explicit_stack_stop',
+                    'actions': [],
+                }
+            )
+            continue
         if bool(pressure_relief.get('active', False)) and label in pressure_skip_labels:
             skipped.append(
                 {
@@ -235,7 +266,15 @@ def main() -> int:
             )
             continue
         if _is_loaded(domain, label):
-            healthy.append({'label': label, 'loaded_before': True, 'loaded_after': True, 'ok': True, 'actions': []})
+            healthy.append(
+                {
+                    'label': label,
+                    'loaded_before': True,
+                    'loaded_after': True,
+                    'ok': True,
+                    'actions': [_enable_label(domain, label)],
+                }
+            )
             continue
         recovered.append(_recover_label(domain, label))
 
@@ -278,6 +317,12 @@ def main() -> int:
         'domain': domain,
         'required_labels': required,
         'critical_labels': critical,
+        'overall_status': 'stopped' if explicit_stack_stop else ('ready' if ok else 'blocked'),
+        'explicit_stack_stop': {
+            'active': explicit_stack_stop,
+            'path': str(STACK_STOPPED_FLAG),
+            'policy': 'never recover launchd runtime services across an explicit stack stop',
+        },
         'pressure_relief': pressure_relief,
         'healthy': healthy,
         'skipped': skipped,

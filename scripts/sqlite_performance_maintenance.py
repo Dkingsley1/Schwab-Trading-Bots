@@ -3,12 +3,18 @@ import json
 import os
 import shutil
 import sqlite3
+import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from core.runtime_maintenance import maintenance_hold_snapshot
+
 DEFAULT_DB = PROJECT_ROOT / "data" / "jsonl_link.sqlite3"
 DEFAULT_OUT = PROJECT_ROOT / "governance" / "health" / "sqlite_maintenance_latest.json"
 
@@ -414,6 +420,24 @@ def main() -> int:
     max_runtime_seconds = max(float(args.max_runtime_seconds), 0.0)
     deadline_monotonic = started_monotonic + max_runtime_seconds if max_runtime_seconds > 0.0 else None
 
+    maintenance_hold = maintenance_hold_snapshot(PROJECT_ROOT)
+    if bool(maintenance_hold.get("active", False)):
+        return _emit(
+            {
+                "timestamp_utc": timestamp_utc,
+                "ok": True,
+                "overall_status": "runtime_maintenance_hold",
+                "db_path": str(db_path),
+                "running": False,
+                "checkpoint_only": bool(args.checkpoint_only),
+                "route_mutation_performed": False,
+                "runtime_maintenance_hold": maintenance_hold,
+                "reason": "runtime_maintenance_hold_blocks_sqlite_maintenance",
+            },
+            out_path,
+            args.json,
+        )
+
     if not db_path.exists():
         payload = {
             "timestamp_utc": timestamp_utc,
@@ -583,21 +607,22 @@ def main() -> int:
                 )
                 created_indexes += 1
 
-        _sqlite_exec_with_retry(
-            conn,
-            """
-            CREATE TABLE IF NOT EXISTS db_maintenance_events (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                timestamp_utc TEXT NOT NULL,
-                db_path TEXT NOT NULL,
-                vacuum_ran INTEGER NOT NULL,
-                indexes_touched INTEGER NOT NULL,
-                notes TEXT NOT NULL
+        if not args.checkpoint_only:
+            _sqlite_exec_with_retry(
+                conn,
+                """
+                CREATE TABLE IF NOT EXISTS db_maintenance_events (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    timestamp_utc TEXT NOT NULL,
+                    db_path TEXT NOT NULL,
+                    vacuum_ran INTEGER NOT NULL,
+                    indexes_touched INTEGER NOT NULL,
+                    notes TEXT NOT NULL
+                )
+                """,
+                lock_retries=max(args.sqlite_lock_retries, 0),
+                lock_retry_delay_seconds=max(args.sqlite_lock_retry_delay_seconds, 0.01),
             )
-            """,
-            lock_retries=max(args.sqlite_lock_retries, 0),
-            lock_retry_delay_seconds=max(args.sqlite_lock_retry_delay_seconds, 0.01),
-        )
 
         analyze_ran = False
         optimize_ran = False
@@ -755,20 +780,21 @@ def main() -> int:
                 as_json=args.json,
             )
 
-        _sqlite_exec_with_retry(
-            conn,
-            "INSERT INTO db_maintenance_events(timestamp_utc, db_path, vacuum_ran, indexes_touched, notes) VALUES (?, ?, ?, ?, ?)",
-            (
-                timestamp_utc,
-                str(db_path),
-                1 if do_vacuum else 0,
-                created_indexes,
-                (f"checkpoint_only:{payload['checkpoint_mode_applied'] or payload['checkpoint_skipped_reason']}" if args.checkpoint_only else "auto_maintenance"),
-            ),
-            lock_retries=max(args.sqlite_lock_retries, 0),
-            lock_retry_delay_seconds=max(args.sqlite_lock_retry_delay_seconds, 0.01),
-        )
-        conn.commit()
+        if not args.checkpoint_only:
+            _sqlite_exec_with_retry(
+                conn,
+                "INSERT INTO db_maintenance_events(timestamp_utc, db_path, vacuum_ran, indexes_touched, notes) VALUES (?, ?, ?, ?, ?)",
+                (
+                    timestamp_utc,
+                    str(db_path),
+                    1 if do_vacuum else 0,
+                    created_indexes,
+                    "auto_maintenance",
+                ),
+                lock_retries=max(args.sqlite_lock_retries, 0),
+                lock_retry_delay_seconds=max(args.sqlite_lock_retry_delay_seconds, 0.01),
+            )
+            conn.commit()
 
         size_gb_after = db_path.stat().st_size / (1024 ** 3)
         wal_size_gb_after = _size_gb(wal_path)

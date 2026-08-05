@@ -43,7 +43,13 @@ SECTION_COMMANDS: dict[str, list[list[str]]] = {
     ],
     "data_ingestion_and_storage": [
         ["./scripts/ops/opsctl.sh", "ingestion-storage-control", "--json"],
-        ["./scripts/ops/opsctl.sh", "storage-backpressure-autopilot", "--apply", "--json"],
+        [
+            "./scripts/ops/opsctl.sh",
+            "storage-backpressure-autopilot",
+            "--apply",
+            "--quick-bounded",
+            "--json",
+        ],
         ["./scripts/ops/opsctl.sh", "cost-telemetry", "--json"],
     ],
     "training_and_model_quality": [
@@ -92,6 +98,7 @@ STORAGE_PAPER_SOAK_ADVISORY_SECTION = "data_ingestion_and_storage"
 STORAGE_SOAK_RAW_LIVE_MAX_CORE_LINES = 10_000
 STORAGE_SOAK_RAW_LIVE_MAX_TOTAL_LINES = 15_000
 STORAGE_SOAK_RAW_LIVE_MAX_AGE_SECONDS = 900.0
+STORAGE_SOAK_BOUNDED_PRESSURE_MAX = 1.0
 GUARDED_READ_ONLY_RUNTIME_STATES = {
     "guarded_live_read_only",
     "managed_cold_lane_deferred",
@@ -174,8 +181,7 @@ def _storage_section_advisory_for_paper_soak(project_root: Path) -> bool:
         return False
     if severity not in {"", "ready", "stable", "low", "normal"}:
         return False
-    if _safe_float(storage.get("pressure_index"), 1.0) > 0.50:
-        return False
+    pressure_index = _safe_float(storage.get("pressure_index"), 1.0)
     soak_contract = (
         storage.get("continuous_run_soak_contract")
         if isinstance(storage.get("continuous_run_soak_contract"), dict)
@@ -187,7 +193,34 @@ def _storage_section_advisory_for_paper_soak(project_root: Path) -> bool:
         if str(item or "").strip()
     }
     soak_ready = bool(soak_contract.get("ready", False) or soak_contract.get("soak_ready", False))
-    if blockers or not soak_ready:
+    bounded = storage.get("bounded_recovery_contract") if isinstance(storage.get("bounded_recovery_contract"), dict) else {}
+    integrity = storage.get("data_integrity") if isinstance(storage.get("data_integrity"), dict) else {}
+    writer = storage.get("writer_shedding") if isinstance(storage.get("writer_shedding"), dict) else {}
+    efficiency = storage.get("storage_efficiency_contract") if isinstance(storage.get("storage_efficiency_contract"), dict) else {}
+    bounded_transient_ready = bool(
+        pressure_index <= STORAGE_SOAK_BOUNDED_PRESSURE_MAX
+        and bool(bounded.get("route_verified", False))
+        and bool(bounded.get("active_drain_progress", False) or bounded.get("drain_delta_signal_observed", False))
+        and not bool(bounded.get("hard_gate_active", False))
+        and not bool(bounded.get("effective_hard_gate_active", False))
+        and not writer.get("hard_breaches")
+        and not writer.get("elevated_breaches")
+        and all(
+            _safe_int(integrity.get(key), 0) == 0
+            for key in (
+                "sql_invalid_lines",
+                "sql_overlay_invalid_lines",
+                "sql_overlay_oversize_payloads",
+                "sql_overlay_ops_write_failures",
+            )
+        )
+        and str(efficiency.get("overall_status") or "ready").strip().lower() in {"ready", "ok"}
+        and str(efficiency.get("grade") or "A").strip().upper() in {"A", "A+"}
+        and blockers.issubset({"steady_state_targets_not_clear"})
+    )
+    if pressure_index > 0.50 and not bounded_transient_ready:
+        return False
+    if (blockers or not soak_ready) and not bounded_transient_ready:
         return False
     return _raw_live_storage_backlog_clear(storage)
 

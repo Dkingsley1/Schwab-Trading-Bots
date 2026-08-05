@@ -1,7 +1,8 @@
 {
-  "generated_at_utc": "2026-07-28T15:28:11.794579+00:00",
+  "generated_at_utc": "2026-08-03T13:19:09.735214+00:00",
   "training_labeling_intelligence_version": "training_labeling_intelligence_v1",
   "universal_label_contract_version": "universal_training_label_contract_v1",
+  "label_materialization_contract_version": "training_label_materialization_contract_v2",
   "pack": {
     "slug": "training_labeling_intelligence",
     "display_name": "Training And Labeling Intelligence Pack",
@@ -125,6 +126,7 @@
         "governance/training_labeling_intelligence/coverage_repair_orchestrator",
         "governance/training_labeling_intelligence/schema_lineage_gatekeeper",
         "governance/training_labeling_intelligence/retrain_outcome_memory",
+        "governance/training_labeling_intelligence/all_bot_label_materialization_latest.json",
         "governance/health/training_labeling_intelligence_latest.json"
       ],
       "max_daily_mb_per_bot": 1,

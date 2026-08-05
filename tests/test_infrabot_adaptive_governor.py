@@ -1,4 +1,5 @@
 import json
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from scripts.ops import infrabot_adaptive_governor
@@ -87,6 +88,14 @@ def _base_ready_health(project_root: Path) -> Path:
         },
     )
     _write_json(health / "livefeed_local_latest.json", {"status": "running", "alive": True, "idle_heartbeat_seconds": 10, "skipped_files": 0})
+    _write_json(
+        health / "livefeed_refresh_guard_latest.json",
+        {
+            "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+            "ok": True,
+            "overall_status": "ready",
+        },
+    )
     _write_json(health / "live_feed_heavy_view_latest.json", {"mode": "active"})
     _write_json(health / "commands_hygiene_latest.json", {"overall_status": "ready", "commands_changed": False, "issues": []})
     _write_json(
@@ -374,6 +383,27 @@ def test_infrabot_adaptive_governor_routes_livefeed_refresh_guard(tmp_path: Path
     assert routes["livefeed_refresh_guard"]["command"] == ["./scripts/ops/opsctl.sh", "livefeed-refresh-guard", "--apply", "--json"]
 
 
+def test_infrabot_adaptive_governor_refreshes_stale_livefeed_route_contract(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    health = _base_ready_health(project_root)
+    _write_json(
+        health / "livefeed_refresh_guard_latest.json",
+        {
+            "timestamp_utc": (datetime.now(timezone.utc) - timedelta(minutes=16)).isoformat(),
+            "ok": True,
+            "overall_status": "ready",
+        },
+    )
+
+    payload = infrabot_adaptive_governor.build_payload(project_root)
+
+    needs = {need["id"]: need for need in payload["system_needs_contract"]["needs"]}
+    routes = {row["capability_id"]: row for row in payload["adaptive_policy_router"]["routes"]}
+    assert "livefeed_continuity" in needs
+    assert "refresh_guard_age_seconds=" in " ".join(needs["livefeed_continuity"]["evidence"])
+    assert routes["livefeed_refresh_guard"]["action"] == "run_now"
+
+
 def test_infrabot_adaptive_governor_routes_broker_auth_self_heal_before_paper_ramp(tmp_path: Path) -> None:
     project_root = tmp_path / "project"
     health = _base_ready_health(project_root)
@@ -507,6 +537,8 @@ def test_infrabot_adaptive_governor_routes_cleanup_handoff_specialists(tmp_path:
     ]
     assert routes["raw_training_cleanup_handoff"]["action"] == "run_now"
     assert routes["deep_cold_second_cold_handoff"]["action"] == "run_now"
+    assert "--adaptive" in routes["deep_cold_second_cold_handoff"]["command"]
+    assert "--include-critical" not in routes["deep_cold_second_cold_handoff"]["command"]
     assert routes["storage_retention_unison_handoff"]["action"] == "run_now"
     assert routes["stateful_sql_quota_relief"]["action"] == "run_now"
 

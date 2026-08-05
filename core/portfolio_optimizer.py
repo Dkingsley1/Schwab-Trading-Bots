@@ -35,6 +35,7 @@ class AllocatedIntent:
     factor_exposure: float
     score: float
     volatility_1m: float
+    price: float = 1.0
     capacity_fraction: float = 1.0
     venue: str = "primary"
     clock_bucket: str = "all_day"
@@ -135,6 +136,7 @@ def allocate_portfolio_intents(
                     factor_exposure=float(intent.factor_exposure or 0.0),
                     score=round(float(intent.score or 0.0), 6),
                     volatility_1m=round(float(intent.volatility_1m or 0.0), 6),
+                    price=round(max(float(intent.price or 1.0), 1e-6), 6),
                     capacity_fraction=round(float(intent.capacity_fraction or 1.0), 6),
                     venue=str(intent.venue or "primary"),
                     clock_bucket=str(intent.clock_bucket or "all_day"),
@@ -202,6 +204,7 @@ def allocate_portfolio_intents(
                 factor_exposure=round(float(intent.factor_exposure or 0.0), 6),
                 score=round(float(intent.score or 0.0), 6),
                 volatility_1m=round(float(intent.volatility_1m or 0.0), 6),
+                price=round(max(float(intent.price or 1.0), 1e-6), 6),
                 capacity_fraction=round(float(intent.capacity_fraction or 1.0), 6),
                 venue=str(intent.venue or "primary"),
                 clock_bucket=str(intent.clock_bucket or "all_day"),

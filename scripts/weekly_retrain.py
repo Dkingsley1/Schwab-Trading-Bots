@@ -1442,7 +1442,8 @@ def _apply_retrain_profile_defaults(args: argparse.Namespace) -> str:
             if profile in {"coverage_canary", "coverage_batch10_canary"}
             else 420
         )
-        if int(args.memory_max_wait_seconds) <= 0 or int(args.memory_max_wait_seconds) > memory_wait_cap:
+        memory_max_wait_seconds = int(getattr(args, "memory_max_wait_seconds", 0) or 0)
+        if memory_max_wait_seconds <= 0 or memory_max_wait_seconds > memory_wait_cap:
             args.memory_max_wait_seconds = memory_wait_cap
         if hasattr(args, "ops_timeout_seconds") and (
             int(args.ops_timeout_seconds) <= 0 or int(args.ops_timeout_seconds) > 120
@@ -2717,6 +2718,10 @@ def _apply_nice(nice_value: int) -> None:
         print(f"WARN: could not apply nice={nice_value}: {exc}")
 
 
+def _lifecycle_hygiene_mutations_allowed(*, skip_master_update: bool, master_update_status: str) -> bool:
+    return bool(not skip_master_update and str(master_update_status or "").startswith("updated"))
+
+
 def _child_output_quiet(env: dict[str, str]) -> bool:
     return str((env or {}).get("RETRAIN_QUIET_CHILD_OUTPUT", os.getenv("RETRAIN_QUIET_CHILD_OUTPUT", "0"))).strip() == "1"
 
@@ -2745,6 +2750,46 @@ def run_cmd(cmd: list[str], dry_run: bool, env: dict[str, str], extra_nice: int 
         return proc.returncode
     proc = subprocess.run(full_cmd, cwd=PROJECT_ROOT, env=env)
     return proc.returncode
+
+
+def _refresh_held_out_walk_forward_evidence(
+    *,
+    target_outcomes: list[dict],
+    enabled: bool,
+    dry_run: bool,
+    env: dict[str, str],
+    extra_nice: int,
+) -> dict[str, Any]:
+    trained_bot_ids = [
+        str(row.get("bot_id") or "").strip()
+        for row in target_outcomes
+        if isinstance(row, dict)
+        and str(row.get("bot_id") or "").strip()
+        and str(row.get("status") or "").strip().lower() in {"trained", "success", "ok"}
+    ]
+    result = {
+        "status": "disabled" if not enabled else "no_trained_targets",
+        "ok": not enabled or not trained_bot_ids,
+        "trained_bot_ids": trained_bot_ids,
+        "command": [],
+        "returncode": None,
+    }
+    if not enabled or not trained_bot_ids:
+        return result
+    if not os.path.exists(WALK_FORWARD_VALIDATE_SCRIPT):
+        result.update({"status": "validator_missing", "ok": False})
+        return result
+    command = [VENV_PY, WALK_FORWARD_VALIDATE_SCRIPT]
+    rc = run_cmd(command, dry_run, env, extra_nice=max(int(extra_nice), 0))
+    result.update(
+        {
+            "status": "dry_run" if dry_run else ("refreshed" if rc == 0 else "refresh_failed"),
+            "ok": rc == 0,
+            "command": command,
+            "returncode": rc,
+        }
+    )
+    return result
 
 
 def run_cmd_capture(
@@ -3877,7 +3922,13 @@ def main() -> int:
         "--skip-master-update",
         action="store_true",
         default=os.getenv("RETRAIN_SKIP_MASTER_UPDATE", "0").strip() == "1",
-        help="Train targets without refreshing promotion artifacts or updating master registry.",
+        help="Train held-out targets without updating promotion artifacts or the master registry.",
+    )
+    parser.add_argument(
+        "--refresh-held-out-walk-forward",
+        action=argparse.BooleanOptionalAction,
+        default=os.getenv("RETRAIN_REFRESH_HELD_OUT_WALK_FORWARD", "1").strip() == "1",
+        help="Refresh counted walk-forward evidence after a successful held-out training run.",
     )
     parser.add_argument(
         "--weekly-gate-blocker-report",
@@ -5078,6 +5129,19 @@ def main() -> int:
     if args.skip_master_update:
         master_update_status = "skipped_by_flag"
         print("Master registry update skipped by flag.")
+        held_out_walk_forward_refresh = _refresh_held_out_walk_forward_evidence(
+            target_outcomes=target_outcomes,
+            enabled=bool(getattr(args, "refresh_held_out_walk_forward", True)),
+            dry_run=bool(args.dry_run),
+            env=child_env,
+            extra_nice=max(args.ops_extra_nice, 0),
+        )
+        launch_record["held_out_walk_forward_refresh"] = held_out_walk_forward_refresh
+        if not bool(held_out_walk_forward_refresh.get("ok", False)):
+            print(
+                "WARN: held-out walk-forward evidence refresh did not complete: "
+                f"{held_out_walk_forward_refresh.get('status')}"
+            )
     elif _wait_for_memory_gate(
         enabled=args.memory_guard,
         min_free_pct=args.min_free_pct,
@@ -5585,6 +5649,10 @@ def main() -> int:
         _ = run_cmd([VENV_PY, PROMOTION_PACKET_BUILDER_SCRIPT, "--json"], args.dry_run, child_env, extra_nice=max(args.ops_extra_nice, 0))
 
     if args.lifecycle_hygiene and os.path.exists(MODEL_LIFECYCLE_HYGIENE_SCRIPT):
+        lifecycle_mutations_allowed = _lifecycle_hygiene_mutations_allowed(
+            skip_master_update=bool(args.skip_master_update),
+            master_update_status=str(master_update_status),
+        )
         lifecycle_cmd = [
             VENV_PY,
             MODEL_LIFECYCLE_HYGIENE_SCRIPT,
@@ -5594,11 +5662,11 @@ def main() -> int:
             str(max(float(args.lifecycle_min_free_gb), 0.0)),
             "--json",
         ]
-        if args.lifecycle_apply_prune:
+        if args.lifecycle_apply_prune and lifecycle_mutations_allowed:
             lifecycle_cmd.append("--apply-prune")
         if args.lifecycle_repair_stale_artifacts:
             lifecycle_cmd.append("--repair-stale-artifacts")
-        if args.lifecycle_apply_repair and args.lifecycle_apply_prune:
+        if args.lifecycle_apply_repair and args.lifecycle_apply_prune and lifecycle_mutations_allowed:
             lifecycle_cmd.append("--apply-repair")
         if str(master_update_status).startswith("updated") or str(master_update_status).startswith("rolled_back"):
             lifecycle_cmd.append("--update-last-known-good")

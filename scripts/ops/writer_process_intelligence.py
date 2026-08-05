@@ -31,6 +31,7 @@ HOT_LANES = {
     "crypto_trading",
     "runtime",
     "crypto_runtime",
+    "api_ingress",
     "crypto_api_ingress",
     "writer_progress",
 }
@@ -297,7 +298,7 @@ def _lane_family(name: str) -> str:
         return "writer_health"
     if "trading" in text or text in {"aggressive_trading"}:
         return "trading_hot_path"
-    if "runtime" in text or "schema" in text:
+    if "runtime" in text or "schema" in text or "api_ingress" in text:
         return "runtime_contracts"
     if text in {"predictive_stability", "self_healing", "hot_path_storage"}:
         return text

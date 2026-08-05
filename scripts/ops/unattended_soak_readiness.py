@@ -12,6 +12,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
+from dotenv import dotenv_values
+
 if __package__ in {None, ""}:
     PROJECT_ROOT = Path(__file__).resolve().parents[2]
     if str(PROJECT_ROOT) not in sys.path:
@@ -25,6 +27,9 @@ else:
 DEFAULT_OUT_PATH = PROJECT_ROOT / "governance" / "health" / "unattended_soak_readiness_latest.json"
 DEFAULT_TARGET_DAYS = 30.0
 DEFAULT_EXTERNAL_ROOT = Path("/Volumes/BOT_LOGS/schwab_trading_bot")
+BOUNDED_TRANSIENT_CORE_MAX_LINES = 10_000
+BOUNDED_TRANSIENT_TOTAL_MAX_LINES = 15_000
+BOUNDED_TRANSIENT_AGE_MAX_SECONDS = 300.0
 DiskSnapshotFn = Callable[[Path], dict[str, Any]]
 MANAGED_WARNING_NAMES = {
     "host_not_on_ac_power_operator_approved_battery_override",
@@ -49,6 +54,56 @@ def _safe_int(raw: Any, default: int = 0) -> int:
 
 def _env_truthy(name: str) -> bool:
     return str(os.getenv(name, "")).strip().lower() in {"1", "true", "yes", "on", "operator_approved"}
+
+
+def _truthy(value: Any) -> bool:
+    return str(value or "").strip().lower() in {"1", "true", "yes", "on", "operator_approved"}
+
+
+def _battery_override_settings(project_root: Path) -> dict[str, Any]:
+    override_path = project_root / "config" / ".env.unattended_soak_override"
+    try:
+        persisted = dotenv_values(override_path) if override_path.is_file() else {}
+    except Exception:
+        persisted = {}
+
+    def resolve(name: str) -> tuple[str, str]:
+        if name in os.environ:
+            return str(os.getenv(name, "")), "environment"
+        if name in persisted:
+            return str(persisted.get(name) or ""), "config/.env.unattended_soak_override"
+        return "", "default"
+
+    enabled_raw, enabled_source = resolve("BOT_UNATTENDED_SOAK_ALLOW_BATTERY")
+    reason, reason_source = resolve("BOT_UNATTENDED_SOAK_BATTERY_REASON")
+    expires_raw, expires_source = resolve("BOT_UNATTENDED_SOAK_BATTERY_EXPIRES_AT_UTC")
+    expires_at: datetime | None = None
+    if expires_raw:
+        try:
+            expires_at = datetime.fromisoformat(expires_raw.replace("Z", "+00:00"))
+            if expires_at.tzinfo is None:
+                expires_at = expires_at.replace(tzinfo=timezone.utc)
+            expires_at = expires_at.astimezone(timezone.utc)
+        except ValueError:
+            expires_at = None
+    expired = bool(expires_at and expires_at <= datetime.now(timezone.utc))
+    enabled = _truthy(enabled_raw)
+    reason_present = bool(reason.strip())
+    expiry_valid = bool(not expires_raw or expires_at is not None)
+    allowed = bool(enabled and reason_present and expiry_valid and not expired)
+    return {
+        "allowed": allowed,
+        "enabled": enabled,
+        "reason": reason.strip(),
+        "reason_present": reason_present,
+        "expires_at_utc": expires_at.isoformat() if expires_at else "",
+        "expiry_configured": bool(expires_raw),
+        "expiry_valid": expiry_valid,
+        "expired": expired,
+        "source": enabled_source,
+        "reason_source": reason_source,
+        "expiry_source": expires_source,
+    }
 
 
 def _warning_is_managed_for_soak(warning: Any) -> bool:
@@ -129,6 +184,7 @@ def _process_has_caffeinate(process_text: str | None = None) -> bool:
 
 def _host_power_contract(
     *,
+    project_root: Path = PROJECT_ROOT,
     pmset_custom_text: str | None = None,
     pmset_batt_text: str | None = None,
     process_text: str | None = None,
@@ -140,8 +196,9 @@ def _host_power_contract(
     ac = profiles.get("AC Power", {})
     caffeinate_active = _process_has_caffeinate(process_text)
     ac_attached = "AC Power" in str(batt_text or "") or "AC attached" in str(batt_text or "")
-    battery_override_allowed = _env_truthy("BOT_UNATTENDED_SOAK_ALLOW_BATTERY")
-    battery_override_reason = os.getenv("BOT_UNATTENDED_SOAK_BATTERY_REASON", "").strip()
+    battery_override = _battery_override_settings(project_root)
+    battery_override_allowed = bool(battery_override.get("allowed"))
+    battery_override_reason = str(battery_override.get("reason") or "")
 
     blockers: list[str] = []
     warnings: list[str] = []
@@ -154,6 +211,12 @@ def _host_power_contract(
             managed_controls.append("host_not_on_ac_power_operator_approved_battery_override")
         else:
             blockers.append("host_not_on_ac_power")
+            if battery_override.get("enabled") and not battery_override.get("reason_present"):
+                warnings.append("battery_override_missing_operator_reason")
+            if battery_override.get("enabled") and not battery_override.get("expiry_valid"):
+                warnings.append("battery_override_expiry_invalid")
+            if battery_override.get("expired"):
+                warnings.append("battery_override_expired")
 
     sleep = _safe_float(ac.get("sleep"), -1.0)
     disksleep = _safe_float(ac.get("disksleep"), -1.0)
@@ -189,6 +252,9 @@ def _host_power_contract(
         "ac_attached": bool(ac_attached),
         "battery_override_allowed": bool(battery_override_allowed),
         "battery_override_reason": battery_override_reason,
+        "battery_override_source": str(battery_override.get("source") or "default"),
+        "battery_override_expires_at_utc": str(battery_override.get("expires_at_utc") or ""),
+        "battery_override_expired": bool(battery_override.get("expired")),
         "caffeinate_active": bool(caffeinate_active),
         "pmset_profiles": profiles,
         "settings": {
@@ -248,7 +314,13 @@ def _managed_ingestion_soak_watch(ingestion: dict[str, Any], ingestion_contract:
     stale_locator = _dict(ingestion.get("stale_pending_locator"))
     stale_clear = str(stale_locator.get("status") or "clear").lower() in {"clear", "ready", ""}
     route = _dict(ingestion.get("external_route_verification"))
-    route_ready = str(route.get("verification_state") or "").lower() in {"ready", "verified", "ok"}
+    route_ready = str(route.get("verification_state") or "").lower() in {
+        "ready",
+        "verified",
+        "ok",
+        "active_local_ready",
+        "active_passthrough",
+    }
     resilience = _dict(ingestion.get("storage_resilience"))
     resilience_ready = str(resilience.get("overall_status") or "").lower() in {"ready", "ok", ""}
     data_integrity = _dict(ingestion.get("data_integrity"))
@@ -319,9 +391,9 @@ def _managed_ingestion_soak_watch(ingestion: dict[str, Any], ingestion_contract:
         raw_grade in {"A+", "A", ""}
         and severity in {"stable", "low", "ready", "normal", "watch", "elevated"}
         and pressure_index <= 1.05
-        and total_pending <= 10000
-        and core_pending <= 5000
-        and oldest_age <= 300.0
+        and total_pending <= BOUNDED_TRANSIENT_TOTAL_MAX_LINES
+        and core_pending <= BOUNDED_TRANSIENT_CORE_MAX_LINES
+        and oldest_age <= BOUNDED_TRANSIENT_AGE_MAX_SECONDS
         and stale_clear
         and route_ready
         and resilience_ready
@@ -349,6 +421,7 @@ def _storage_contract(
     mount_guard = load_json(health_root / "storage_mount_guard_latest.json")
     external_root = _external_root(project_root, health_root)
     disk = disk_snapshot_fn(external_root)
+    local_disk = disk_snapshot_fn(project_root)
 
     retention_contract = retention.get("continuous_run_contract") if isinstance(retention.get("continuous_run_contract"), dict) else {}
     ingestion_contract = ingestion.get("continuous_run_soak_contract") if isinstance(ingestion.get("continuous_run_soak_contract"), dict) else {}
@@ -365,8 +438,15 @@ def _storage_contract(
     margin = round(current_free - required_free, 3)
     projected_margin = round(projected_free - required_free, 3)
     cold_archive_spillover_ready = bool(retention_contract.get("cold_archive_spillover_ready", False))
+    cold_archive_spillover_available = bool(retention_contract.get("cold_archive_spillover_available", False))
+    cold_archive_spillover_status = str(retention_contract.get("cold_archive_spillover_status") or "")
     cold_archive_adjusted_margin = _safe_float(retention_contract.get("cold_archive_adjusted_margin_gb"), margin)
     cold_archive_capacity = _safe_float(retention_contract.get("cold_archive_spillover_capacity_gb"), 0.0)
+    cold_archive_required = _safe_float(retention_contract.get("cold_archive_required_spillover_gb"), max(-margin, 0.0))
+    cold_archive_shortfall = _safe_float(
+        retention_contract.get("cold_archive_capacity_shortfall_gb"),
+        max(-cold_archive_adjusted_margin, 0.0),
+    )
     primary_pressure_buffer = _safe_float(retention_contract.get("cold_archive_primary_pressure_buffer_gb"), 16.0)
     primary_above_pressure_guard = bool(current_free >= pressure_free + primary_pressure_buffer)
     storage_margin_ready = bool(
@@ -377,6 +457,19 @@ def _storage_contract(
     blockers: list[str] = []
     warnings: list[str] = []
     managed_controls: list[str] = []
+    local_target_free = max(_safe_float(os.getenv("BOT_LOCAL_STORAGE_TARGET_FREE_GB"), 64.0), 1.0)
+    local_pressure_free = min(
+        max(_safe_float(os.getenv("BOT_LOCAL_STORAGE_PRESSURE_FREE_GB"), 32.0), 1.0),
+        local_target_free,
+    )
+    local_free = _safe_float(local_disk.get("free_gb"), 0.0)
+    local_known = bool(local_free > 0.0 and _safe_float(local_disk.get("used_pct"), 100.0) < 100.0)
+    if not local_known:
+        blockers.append("local_hot_storage_free_space_unknown")
+    elif local_free < local_pressure_free:
+        blockers.append("local_hot_storage_pressure_reserve_breached")
+    elif local_free < local_target_free:
+        warnings.append("local_hot_storage_below_unattended_target")
     if current_free <= 0.0:
         blockers.append("external_free_space_unknown")
     if not storage_margin_ready:
@@ -421,13 +514,25 @@ def _storage_contract(
         "target_days": round(float(target_days), 3),
         "external_root": str(external_root),
         "disk": disk,
+        "local_hot_storage": {
+            "disk": local_disk,
+            "free_gb": round(local_free, 3),
+            "target_free_gb": round(local_target_free, 3),
+            "pressure_free_gb": round(local_pressure_free, 3),
+            "ready": bool(local_known and local_free >= local_target_free),
+        },
         "required_external_free_gb": required_free,
         "current_external_free_gb": round(current_free, 3),
         "available_margin_gb": margin,
         "projected_margin_gb": projected_margin,
+        "cold_archive_spillover_available": cold_archive_spillover_available,
         "cold_archive_spillover_ready": cold_archive_spillover_ready,
+        "cold_archive_spillover_status": cold_archive_spillover_status,
         "cold_archive_spillover_capacity_gb": round(cold_archive_capacity, 3),
+        "cold_archive_required_spillover_gb": round(cold_archive_required, 3),
+        "cold_archive_capacity_shortfall_gb": round(cold_archive_shortfall, 3),
         "cold_archive_adjusted_margin_gb": round(cold_archive_adjusted_margin, 3),
+        "cold_archive_capacity_policy": str(retention_contract.get("cold_archive_capacity_policy") or ""),
         "primary_above_pressure_guard": primary_above_pressure_guard,
         "primary_pressure_buffer_gb": round(primary_pressure_buffer, 3),
         "effective_daily_growth_gb": round(effective_daily, 4),
@@ -700,7 +805,12 @@ def build_payload(
 ) -> dict[str, Any]:
     target = max(float(target_days), 1.0)
     storage = _storage_contract(project_root=project_root, target_days=target, disk_snapshot_fn=disk_snapshot_fn)
-    host = _host_power_contract(pmset_custom_text=pmset_custom_text, pmset_batt_text=pmset_batt_text, process_text=process_text)
+    host = _host_power_contract(
+        project_root=project_root,
+        pmset_custom_text=pmset_custom_text,
+        pmset_batt_text=pmset_batt_text,
+        process_text=process_text,
+    )
     runtime = _runtime_contract(project_root)
     alerting = _alerting_contract(project_root)
     freshness = _freshness_contract(project_root)
@@ -764,6 +874,7 @@ def build_payload(
             ["./scripts/install_caffeinate_launchd.sh"],
             ["./scripts/ops/opsctl.sh", "notification-escalation-ladder", "--json"],
             ["./scripts/ops/opsctl.sh", "storage-resilience-control", "--fast", "--json"],
+            ["./scripts/ops/opsctl.sh", "local-storage-reserve-guard", "--apply", "--json"],
         ],
         "next_action": (
             "all unattended soak gates are ready; leave live money locked and let the soak run"

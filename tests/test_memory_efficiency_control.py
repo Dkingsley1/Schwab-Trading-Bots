@@ -16,6 +16,54 @@ def _write_json(path: Path, payload: dict) -> None:
     path.write_text(json.dumps(payload, ensure_ascii=True, indent=2), encoding="utf-8")
 
 
+def test_memory_efficiency_treats_startup_disk_exhaustion_as_application_memory_risk(tmp_path: Path) -> None:
+    _write_json(
+        tmp_path / "governance" / "health" / "resource_guard_latest.json",
+        {
+            "memory_pressure_state": "red",
+            "memory_pressure_kind": "disk_swap_headroom",
+            "memory_pressure_thresholds": {
+                "yellow_local_disk_gb": 32.0,
+                "red_local_disk_gb": 8.0,
+            },
+            "memory_free_pct": 83.0,
+            "swap_used_gb": 1.6,
+            "compressed_store_gb": 2.8,
+            "compressor_gb": 2.8,
+            "local_disk_free_gb": 0.25,
+            "local_disk_used_pct": 99.97,
+        },
+    )
+    _write_json(
+        tmp_path / "governance" / "health" / "apple_silicon_profile_latest.json",
+        {
+            "applied_tier": "max_throughput",
+            "env_overrides": {"ASYNC_PIPELINE_WORKERS": "6"},
+            "hardware": {"memory_gb": 32.0},
+        },
+    )
+    _write_json(
+        tmp_path / "governance" / "health" / "ingestion_storage_control_latest.json",
+        {"severity": "stable", "pressure_index": 0.0},
+    )
+
+    payload = src.build_payload(
+        tmp_path,
+        action="status",
+        override_path=tmp_path / "config" / ".env.memory_efficiency_override",
+    )
+
+    assert payload["overall_status"] == "blocked"
+    assert payload["recommended_profile"] == "constrained"
+    assert "local_disk_swap_temp_headroom_low" in payload["reasons"]
+    contract = payload["local_disk_headroom_contract"]
+    assert contract["active"] is True
+    assert contract["severity"] == "critical"
+    assert contract["swap_and_temp_allocation_at_risk"] is True
+    assert payload["recommended_env_overrides"]["BOT_LOCAL_DISK_HEADROOM_RELIEF_ACTIVE"] == "1"
+    assert payload["recommended_env_overrides"]["ASYNC_PIPELINE_WORKERS"] == "1"
+
+
 def test_memory_efficiency_control_recommends_constrained_profile_under_pressure(tmp_path: Path) -> None:
     _write_json(
         tmp_path / "governance" / "health" / "resource_guard_latest.json",
@@ -684,6 +732,54 @@ def test_memory_efficiency_control_treats_light_cotenant_with_stable_storage_as_
     assert payload["ok"] is True
     assert payload["cotenant_awareness"]["mode"] == "managed_cotenant"
     assert payload["cotenant_awareness"]["storage_pressure_clear"] is True
+
+
+def test_memory_efficiency_control_manages_green_compression_with_normal_swap_and_light_cotenant(
+    tmp_path: Path,
+) -> None:
+    _write_json(
+        tmp_path / "governance" / "health" / "resource_guard_latest.json",
+        {
+            "memory_pressure_state": "green",
+            "memory_pressure_kind": "none",
+            "memory_free_pct": 50.0,
+            "swap_used_gb": 3.8,
+            "compressed_store_gb": 26.6,
+            "compressor_gb": 12.2,
+            "pages_throttled": 0,
+            "co_running_apps_active": True,
+            "co_running_class_count": 1,
+            "co_running_classes": ["browser"],
+            "co_running_apps": ["Google Chrome"],
+            "co_running_session_level": "light_competition",
+            "co_running_cpu_sum": 3.4,
+        },
+    )
+    _write_json(
+        tmp_path / "governance" / "health" / "apple_silicon_profile_latest.json",
+        {
+            "applied_tier": "max_throughput",
+            "env_overrides": {"COINBASE_SNAPSHOT_MAX_WORKERS": "4"},
+            "hardware": {"memory_gb": 32.0},
+        },
+    )
+    _write_json(
+        tmp_path / "governance" / "health" / "ingestion_storage_control_latest.json",
+        {"severity": "stable", "pressure_index": 0.115},
+    )
+
+    payload = src.build_payload(
+        tmp_path,
+        action="status",
+        override_path=tmp_path / "config" / ".env.memory_efficiency_override",
+    )
+
+    assert payload["overall_status"] == "advisory"
+    assert payload["ok"] is True
+    assert payload["compressed_memory_relief_contract"]["managed"] is True
+    assert payload["compressed_memory_relief_contract"]["managed_swap_ceiling_gb"] == 8.0
+    assert payload["cotenant_awareness"]["mode"] == "managed_cotenant"
+    assert payload["recommended_env_overrides"]["BOT_COMPRESSED_MEMORY_RELIEF_ACTIVE"] == "1"
 
 
 def test_memory_efficiency_control_treats_music_plus_light_cotenant_as_advisory(tmp_path: Path) -> None:

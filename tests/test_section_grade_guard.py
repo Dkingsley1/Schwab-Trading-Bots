@@ -280,6 +280,91 @@ def test_section_grade_guard_makes_bounded_storage_floor_debt_advisory_for_paper
     assert payload["advisory_below_floor_sections"] == ["data_ingestion_and_storage"]
 
 
+def test_section_grade_guard_accepts_safe_transient_storage_drain_during_paper_soak(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    health = tmp_path / "governance" / "health"
+    _write_json(
+        health / "health_fast_latest.json",
+        {
+            "overall_status": "ready",
+            "ok": True,
+            "strict_all_clear": True,
+            "operational_readiness": {
+                "guarded_paper": {"ok": True, "status": "ready", "blockers": []},
+                "live_execution": {"ok": False, "status": "blocked_read_only"},
+            },
+        },
+    )
+    _write_json(
+        health / "ingestion_storage_control_latest.json",
+        {
+            "overall_status": "ready",
+            "severity": "stable",
+            "pressure_index": 0.697,
+            "continuous_run_soak_contract": {
+                "status": "blocked",
+                "soak_ready": False,
+                "blockers": ["steady_state_targets_not_clear"],
+            },
+            "bounded_recovery_contract": {
+                "route_verified": True,
+                "active_drain_progress": True,
+                "hard_gate_active": False,
+                "effective_hard_gate_active": False,
+            },
+            "storage_efficiency_contract": {"overall_status": "ready", "grade": "A+"},
+            "writer_shedding": {"hard_breaches": [], "elevated_breaches": []},
+            "data_integrity": {},
+            "backpressure": {
+                "raw_live": {
+                    "core_pending_lines": 2056,
+                    "total_pending_lines": 3479,
+                    "oldest_pending_age_seconds": 167.287,
+                }
+            },
+        },
+    )
+
+    def section(slug: str) -> dict:
+        below = slug == "data_ingestion_and_storage"
+        return {
+            "floor_state": "below_floor" if below else "at_floor",
+            "letter_grade": "A-" if below else "A+",
+            "raw_letter_grade": "A-" if below else "A+",
+            "score": 89.43 if below else 96.0,
+            "raw_score": 89.43 if below else 96.0,
+            "target_floor_letter_grade": "A",
+            "target_floor_score": 92.0,
+            "floor_contract_active": False,
+            "floor_reason": "",
+            "signals": {},
+        }
+
+    class DummyConnector:
+        exposed_endpoints = [object()] * 16
+
+    monkeypatch.setattr(src, "DefaultLicensingAPIConnector", lambda: DummyConnector())
+    monkeypatch.setattr(
+        src,
+        "build_grade_snapshot",
+        lambda **_: {
+            "overall_score": 97.0,
+            "overall_letter_grade": "A+",
+            "raw_overall_score": 97.0,
+            "raw_overall_letter_grade": "A+",
+            "section_grades": {slug: section(slug) for slug in src.SECTION_COMMANDS},
+        },
+    )
+
+    payload = src.build_payload(tmp_path)
+
+    assert payload["overall_status"] == "ready"
+    assert payload["blocking_below_floor_sections"] == []
+    assert payload["advisory_below_floor_sections"] == ["data_ingestion_and_storage"]
+
+
 def test_section_grade_guard_reports_degraded_when_sections_are_floor_protected(tmp_path: Path) -> None:
     health = tmp_path / "governance" / "health"
     champion = tmp_path / "governance" / "champion_challenger"

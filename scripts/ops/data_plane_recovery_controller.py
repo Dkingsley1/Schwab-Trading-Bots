@@ -72,6 +72,11 @@ def _effective_storage_backpressure(storage_control: dict[str, Any]) -> dict[str
         and pressure_index < PAPER_STORAGE_PRESSURE_ADVISORY_CEILING
         and effective
     )
+    stable_raw_live_truth = bool(
+        storage_ready
+        and effective
+        and source not in {"fresh_empty_sql_ingestion_overlay", "sql_ingestion_overlay"}
+    )
     overlay_clear = bool(backpressure.get("overlay_pressure_clear", False) or source == "fresh_empty_sql_ingestion_overlay")
     data_clean = bool(
         _safe_int(data_integrity.get("sql_overlay_invalid_lines"), 0) <= 0
@@ -79,10 +84,15 @@ def _effective_storage_backpressure(storage_control: dict[str, Any]) -> dict[str
         and _safe_int(data_integrity.get("sql_overlay_ops_write_failures"), 0) <= 0
     )
     authoritative = bool(
-        (storage_ready or stable_overlay_truth)
-        and bool(backpressure.get("overlay_adjusted", False))
-        and overlay_clear
-        and data_clean
+        data_clean
+        and (
+            stable_raw_live_truth
+            or (
+                (storage_ready or stable_overlay_truth)
+                and bool(backpressure.get("overlay_adjusted", False))
+                and overlay_clear
+            )
+        )
     )
     if not authoritative:
         return {
@@ -90,6 +100,7 @@ def _effective_storage_backpressure(storage_control: dict[str, Any]) -> dict[str
             "source": source,
             "storage_ready": storage_ready,
             "stable_overlay_truth": stable_overlay_truth,
+            "stable_raw_live_truth": stable_raw_live_truth,
             "pressure_index": round(pressure_index, 3),
             "overlay_clear": overlay_clear,
             "data_clean": data_clean,
@@ -105,6 +116,7 @@ def _effective_storage_backpressure(storage_control: dict[str, Any]) -> dict[str
         "oldest_pending_age_seconds": round(oldest, 3),
         "storage_ready": storage_ready,
         "stable_overlay_truth": stable_overlay_truth,
+        "stable_raw_live_truth": stable_raw_live_truth,
         "pressure_index": round(pressure_index, 3),
         "overlay_clear": overlay_clear,
         "data_clean": data_clean,

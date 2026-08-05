@@ -44,6 +44,23 @@ def _db_size_gb(path: Path) -> float:
         return 0.0
 
 
+def _effective_acked_retention_hours(
+    *,
+    db_size_gb: float,
+    acked_days: int,
+    acked_hours: float,
+    pressure_db_gb: float,
+    pressure_acked_hours: float,
+) -> tuple[float, str]:
+    if float(acked_hours) >= 0.0:
+        return max(float(acked_hours), 0.0), "explicit_hours"
+
+    configured_hours = float(max(int(acked_days), 1) * 24)
+    if float(pressure_db_gb) > 0.0 and float(db_size_gb) >= float(pressure_db_gb):
+        return min(configured_hours, max(float(pressure_acked_hours), 0.25)), "capacity_pressure"
+    return configured_hours, "configured_days"
+
+
 def _delete_ids(conn: sqlite3.Connection, table: str, ids: list[int]) -> int:
     if not ids:
         return 0
@@ -139,6 +156,23 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Prune safely acknowledged rows from bot_channel_queue SQLite.")
     parser.add_argument("--db", default=str(DEFAULT_QUEUE_DB))
     parser.add_argument("--acked-days", type=int, default=7)
+    parser.add_argument(
+        "--acked-hours",
+        type=float,
+        default=float(os.getenv("SQL_QUEUE_RETENTION_ACKED_HOURS", "-1") or -1),
+        help="Override acknowledged-message retention in hours; negative keeps the day policy.",
+    )
+    parser.add_argument(
+        "--pressure-db-gb",
+        type=float,
+        default=float(os.getenv("SQL_QUEUE_RETENTION_PRESSURE_DB_GB", "8") or 8),
+        help="Use the shorter pressure retention once the queue reaches this size (0 disables).",
+    )
+    parser.add_argument(
+        "--pressure-acked-hours",
+        type=float,
+        default=float(os.getenv("SQL_QUEUE_RETENTION_PRESSURE_ACKED_HOURS", "6") or 6),
+    )
     parser.add_argument("--batch-size", type=int, default=50000)
     parser.add_argument("--max-rows", type=int, default=0, help="Maximum rows to delete in one pass (0 = unlimited).")
     parser.add_argument("--cleanup-consumer-state-days", type=int, default=30)
@@ -146,6 +180,11 @@ def main() -> int:
     parser.add_argument("--orphan-days", type=int, default=45)
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--vacuum", action="store_true")
+    parser.add_argument(
+        "--incremental-vacuum-pages",
+        type=int,
+        default=int(float(os.getenv("SQL_QUEUE_RETENTION_INCREMENTAL_VACUUM_PAGES", "131072") or 131072)),
+    )
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args()
 
@@ -167,7 +206,14 @@ def main() -> int:
         conn.execute("CREATE INDEX IF NOT EXISTS idx_channel_consumer_state_updated_at ON channel_consumer_state(updated_at)")
 
         consumer_state_rows = _consumer_state_count(conn)
-        acked_cutoff = (_now_utc() - timedelta(days=max(int(args.acked_days), 1))).isoformat()
+        acked_retention_hours, acked_retention_mode = _effective_acked_retention_hours(
+            db_size_gb=db_size_before,
+            acked_days=int(args.acked_days),
+            acked_hours=float(args.acked_hours),
+            pressure_db_gb=float(args.pressure_db_gb),
+            pressure_acked_hours=float(args.pressure_acked_hours),
+        )
+        acked_cutoff = (_now_utc() - timedelta(hours=acked_retention_hours)).isoformat()
         consumer_state_cutoff = (
             _now_utc() - timedelta(days=max(int(args.cleanup_consumer_state_days), max(int(args.acked_days), 1)))
         ).isoformat()
@@ -243,6 +289,8 @@ def main() -> int:
 
         if args.vacuum and deleted_rows_total > 0 and not args.dry_run:
             conn.execute("VACUUM")
+        elif deleted_rows_total > 0 and not args.dry_run and int(args.incremental_vacuum_pages) > 0:
+            conn.execute(f"PRAGMA incremental_vacuum({max(int(args.incremental_vacuum_pages), 1)})")
     finally:
         conn.close()
 
@@ -253,7 +301,12 @@ def main() -> int:
         "db_size_gb_after": round(_db_size_gb(db_path), 3),
         "consumer_state_rows": int(consumer_state_rows),
         "acked_days": int(args.acked_days),
+        "acked_hours": float(args.acked_hours),
+        "effective_acked_retention_hours": float(acked_retention_hours),
+        "acked_retention_mode": acked_retention_mode,
         "acked_cutoff_utc": acked_cutoff,
+        "pressure_db_gb": float(args.pressure_db_gb),
+        "pressure_acked_hours": float(args.pressure_acked_hours),
         "cleanup_consumer_state_days": int(args.cleanup_consumer_state_days),
         "consumer_state_cutoff_utc": consumer_state_cutoff,
         "prune_orphans": bool(args.prune_orphans),
@@ -263,6 +316,7 @@ def main() -> int:
         "max_rows": int(max_rows),
         "dry_run": bool(args.dry_run),
         "vacuum": bool(args.vacuum and not args.dry_run and deleted_rows_total > 0),
+        "incremental_vacuum_pages": int(args.incremental_vacuum_pages),
         "deleted_acked_rows": int(deleted_acked_rows),
         "deleted_orphan_rows": int(deleted_orphan_rows),
         "deleted_consumer_state_rows": int(deleted_consumer_state_rows),

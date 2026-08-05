@@ -17,10 +17,12 @@ if __package__ in {None, ""}:
     PROJECT_ROOT = Path(__file__).resolve().parents[2]
     if str(PROJECT_ROOT) not in sys.path:
         sys.path.insert(0, str(PROJECT_ROOT))
+    from core.provider_access_guard import provider_access_status
     from scripts.brokers.schwab.common import token_needs_refresh, token_status
     from scripts.ops.long_runtime_common import iso_now, load_json, load_recent_jsonl, write_payload
 else:
     PROJECT_ROOT = Path(__file__).resolve().parents[2]
+    from core.provider_access_guard import provider_access_status
     from scripts.brokers.schwab.common import token_needs_refresh, token_status
     from .long_runtime_common import iso_now, load_json, load_recent_jsonl, write_payload
 
@@ -285,6 +287,7 @@ def build_payload(
     broker_readiness = load_json(health_root / "broker_readiness_latest.json")
     auth_lease = load_json(health_root / "auth_lease_manager_latest.json")
     auth_refresh = load_json(health_root / "schwab_auth_refresh_latest.json")
+    provider_access = provider_access_status(project_root, "schwab")
     signals = _recent_auth_signals(project_root)
     processes = _list_auth_processes()
     callback_port_in_use = _callback_port_open(callback_host, int(callback_port))
@@ -308,6 +311,8 @@ def build_payload(
         broker_readiness=broker_readiness,
         auth_lease=auth_lease,
     )
+    if bool(provider_access.get("active", False)):
+        paper_soak_auth_operable = False
 
     status = "ready"
     findings: list[str] = []
@@ -328,6 +333,12 @@ def build_payload(
     if not guard_ok or (broker_readiness and not broker_ready):
         status = "blocked"
         findings.append("broker_readiness_not_ready")
+    if bool(provider_access.get("active", False)):
+        if status == "ready":
+            status = "degraded"
+        findings.append(
+            f"schwab_provider_cooldown_http_{int(provider_access.get('status_code', 0) or 0)}"
+        )
     if auth_lease_status == "blocked" or auth_lease_state == "critical":
         if paper_soak_auth_operable:
             if status == "ready":
@@ -337,9 +348,12 @@ def build_payload(
             status = "blocked"
             findings.append(f"auth_lease_{auth_lease_state or auth_lease_status}")
     elif auth_lease_status == "degraded" or auth_lease_state == "warning":
-        if status == "ready":
-            status = "degraded"
-        findings.append(f"auth_lease_{auth_lease_state or auth_lease_status}")
+        if paper_soak_auth_operable:
+            findings.append(f"auth_lease_{auth_lease_state or auth_lease_status}_paper_soak_grace")
+        else:
+            if status == "ready":
+                status = "degraded"
+            findings.append(f"auth_lease_{auth_lease_state or auth_lease_status}")
 
     if stale_processes:
         if status == "ready":
@@ -364,6 +378,7 @@ def build_payload(
         and auth_lease_state != "critical"
         and not stale_processes
         and not callback_port_in_use
+        and not bool(provider_access.get("active", False))
     )
     if signals["auth_error_markers"]:
         if not token_ready or not broker_ready:
@@ -377,7 +392,7 @@ def build_payload(
             recovered_findings.append("historical_schwab_auth_errors_after_current_recovery")
 
     if signals["callback_error_markers"] or auth_refresh_reason.startswith("auth_error:RedirectTimeoutError"):
-        if active_contract_ok and str(auth_refresh.get("reason") or "") == "token_already_ready":
+        if active_contract_ok:
             recovered_findings.append("historical_callback_flow_errors_after_current_recovery")
         elif status == "ready":
             status = "degraded"
@@ -393,28 +408,60 @@ def build_payload(
 
     repair_plan.extend(
         [
-            {"name": "refresh_token_guard", "cmd": ["./scripts/ops/opsctl.sh", "token-refresh", "--json"]},
-            {"name": "refresh_auth_lease", "cmd": ["./scripts/ops/opsctl.sh", "auth-lease", "--json"]},
+            {
+                "name": "refresh_auth_dependent_paper_truth",
+                "cmd": ["./scripts/ops/opsctl.sh", "schwab-auth-post-refresh", "--json"],
+            },
         ]
     )
 
     attempts: list[dict[str, Any]] = []
     if apply:
+        initial_status = status
+        initial_findings = sorted(set(findings))
         for row in stale_processes:
             attempts.append({"action": "kill_stale_auth_helper", **_kill_process(row.pid)})
-        attempts.append(_run_json(["./scripts/ops/opsctl.sh", "token-refresh", "--json"], cwd=project_root, timeout_sec=90))
-        attempts.append(_run_json(["./scripts/ops/opsctl.sh", "auth-lease", "--json"], cwd=project_root, timeout_sec=60))
-
-    failed_attempts = [
-        row
-        for row in attempts
-        if row.get("ok") is False
-        or bool(row.get("timed_out", False))
-        or ("rc" in row and _safe_int(row.get("rc"), 1) not in {0, 2})
-    ]
-    if failed_attempts:
-        status = "blocked"
-        findings.append("supervisor_apply_failed")
+        attempts.append(
+            _run_json(
+                ["./scripts/ops/opsctl.sh", "schwab-auth-post-refresh", "--json"],
+                cwd=project_root,
+                timeout_sec=540,
+            )
+        )
+        failed_attempts = [
+            row
+            for row in attempts
+            if row.get("ok") is False
+            or bool(row.get("timed_out", False))
+            or ("rc" in row and _safe_int(row.get("rc"), 1) not in {0, 2})
+        ]
+        refreshed = build_payload(
+            project_root,
+            apply=False,
+            token_path=token_path,
+            min_expires_seconds=min_expires_seconds,
+            min_ready_expires_seconds=min_ready_expires_seconds,
+            callback_host=callback_host,
+            callback_port=callback_port,
+            stale_auth_process_seconds=stale_auth_process_seconds,
+        )
+        refreshed["apply"] = True
+        refreshed["attempts"] = attempts
+        refreshed["post_repair_recheck"] = True
+        refreshed["initial_evaluation"] = {
+            "overall_status": initial_status,
+            "findings": initial_findings,
+        }
+        cleared = sorted(set(initial_findings) - set(refreshed.get("findings") or []))
+        refreshed["recovered_findings"] = sorted(
+            set(refreshed.get("recovered_findings") or [])
+            | {f"repaired_same_run:{item}" for item in cleared}
+        )
+        if failed_attempts:
+            refreshed["ok"] = False
+            refreshed["overall_status"] = "blocked"
+            refreshed["findings"] = sorted(set(refreshed.get("findings") or []) | {"supervisor_apply_failed"})
+        return refreshed
 
     summary = (
         f"token_ready={int(token_ready)} expires_in_seconds={round(token_expires_in, 1)} "
@@ -458,6 +505,14 @@ def build_payload(
             "reason": auth_refresh_reason,
             "skipped": auth_refresh.get("skipped"),
         },
+        "provider_access": {
+            "active": bool(provider_access.get("active", False)),
+            "state": provider_access.get("state"),
+            "status_code": int(provider_access.get("status_code", 0) or 0),
+            "remaining_seconds": int(provider_access.get("remaining_seconds", 0) or 0),
+            "cooldown_until_utc": provider_access.get("cooldown_until_utc"),
+            "reason": provider_access.get("reason"),
+        },
         "callback": {
             "host": callback_host,
             "port": int(callback_port),
@@ -486,6 +541,9 @@ def build_payload(
             "callback_port_conflict_is_infra_failure": True,
             "oauth_errors_are_broker_auth_failures_not_symbol_failures": True,
             "paper_soak_auth_grace_keeps_live_execution_locked": True,
+            "apply_reloads_fresh_artifacts_before_reporting": True,
+            "successful_auth_refresh_rebuilds_account_position_and_paper_truth": True,
+            "historical_oauth_errors_clear_after_current_contract_proof": True,
         },
         "paper_soak_auth_operable": bool(paper_soak_auth_operable),
     }

@@ -20,6 +20,7 @@ DEFAULT_SOURCE_QUEUE_PATH = PROJECT_ROOT / "governance" / "training" / "raw_trai
 DEFAULT_ELIGIBLE_QUEUE_PATH = PROJECT_ROOT / "governance" / "training" / "raw_training_eligible_source_queue_latest.jsonl"
 DEFAULT_HISTORY_DIR = PROJECT_ROOT / "governance" / "training" / "raw_training_compaction_history"
 DEFAULT_BOT_LOGS_ROOT = Path(os.environ.get("BOT_LOGS_ROOT", "/Volumes/BOT_LOGS/schwab_trading_bot"))
+DEFAULT_MATERIAL_COMPACTION_GB = 1.0
 PROTECTED_VOLUME_PREFIXES = ("/Volumes/VIDEO",)
 EXCLUDED_DIR_NAMES = {
     ".git",
@@ -162,6 +163,8 @@ def _is_live_local_fallback_artifact(path: Path) -> bool:
     parts = _path_parts_lower(path)
     if ".local_fallback" in name or name.endswith(".local_fallback"):
         return True
+    if "local_fallback" in parts:
+        return True
     if "fallback_local" in parts or "fallback_local" in text:
         return True
     if "local_fallback_storage" in parts:
@@ -256,6 +259,7 @@ def _classify_row(path: Path, *, now_ts: float, today: str, min_age_hours: float
     age_seconds = max(0.0, now_ts - float(stat.st_mtime))
     age_hours = age_seconds / 3600.0
     current_day = _date_token_matches_current_day(path, today) or age_hours < min(6.0, min_age_hours)
+    active_latest_artifact = path.name.lower().endswith("_latest.jsonl")
     local_fallback = _is_live_local_fallback_artifact(path)
     protected = _is_under_protected_volume(path)
     training_candidate = bool(_contains_hint(path, TRAINING_PATH_HINTS) or size_bytes > 0)
@@ -274,11 +278,13 @@ def _classify_row(path: Path, *, now_ts: float, today: str, min_age_hours: float
     compaction_blockers = list(queue_blockers)
     if current_day:
         compaction_blockers.append("current_day_or_recent_source_protected")
+    if active_latest_artifact:
+        compaction_blockers.append("active_latest_artifact_protected")
     if not old_enough:
         compaction_blockers.append("min_age_not_met")
     prefix_hash, hashed_bytes = _prefix_sha256(path, sample_bytes)
     training_eligible = bool(training_candidate and not protected and not local_fallback and size_bytes > 0)
-    compression_candidate = bool(training_eligible and not current_day and old_enough)
+    compression_candidate = bool(training_eligible and not current_day and not active_latest_artifact and old_enough)
     clear_action = "compress_then_remove_raw"
     if already_compressed_sibling and compression_candidate:
         clear_action = "remove_raw_duplicate_of_compressed_sibling"
@@ -303,6 +309,7 @@ def _classify_row(path: Path, *, now_ts: float, today: str, min_age_hours: float
         "mtime_utc": datetime.fromtimestamp(float(stat.st_mtime), timezone.utc).isoformat(),
         "age_hours": round(age_hours, 3),
         "current_day_protected": bool(current_day),
+        "active_latest_artifact_protected": bool(active_latest_artifact),
         "training_candidate": bool(training_candidate),
         "training_eligible": bool(training_eligible),
         "compression_candidate": bool(compression_candidate),
@@ -553,10 +560,56 @@ def _line_count(path: Path) -> int:
         return 0
 
 
-def _training_clearance_snapshot() -> dict[str, Any]:
-    runtime_path = PROJECT_ROOT / "exports" / "training" / "runtime_training_snapshot_latest.jsonl"
-    quality_path = PROJECT_ROOT / "governance" / "health" / "training_quality_latest.json"
-    runtime_rows = _line_count(runtime_path) if runtime_path.exists() else 0
+def _training_clearance_snapshot(
+    scan_roots: list[Path] | None = None,
+    *,
+    snapshot_health_path: Path | None = None,
+) -> dict[str, Any]:
+    health_path = snapshot_health_path or PROJECT_ROOT / "governance" / "health" / "runtime_training_snapshot_latest.json"
+    snapshot_health: dict[str, Any] = {}
+    if health_path.exists():
+        try:
+            loaded = json.loads(health_path.read_text(encoding="utf-8"))
+            snapshot_health = loaded if isinstance(loaded, dict) else {}
+        except Exception:
+            snapshot_health = {}
+    contracted_candidate = Path(str(snapshot_health.get("rows_path") or "")).expanduser()
+    explicit_root_candidates = [
+        root.expanduser() / "exports" / "training" / "runtime_training_snapshot_latest.jsonl"
+        for root in (scan_roots or [])
+    ]
+    fallback_candidates = [
+        PROJECT_ROOT / "exports" / "training" / "runtime_training_snapshot_latest.jsonl",
+        DEFAULT_BOT_LOGS_ROOT / "exports" / "training" / "runtime_training_snapshot_latest.jsonl",
+    ]
+    candidates = [contracted_candidate, *explicit_root_candidates, *fallback_candidates]
+    resolved_candidates: list[Path] = []
+    seen: set[str] = set()
+    for candidate in candidates:
+        if not str(candidate):
+            continue
+        key = str(candidate)
+        if key in seen:
+            continue
+        seen.add(key)
+        resolved_candidates.append(candidate)
+    existing = [path for path in resolved_candidates if path.is_file() and path.stat().st_size > 0]
+    contracted_existing = contracted_candidate if contracted_candidate in existing else None
+    explicit_existing = [path for path in explicit_root_candidates if path in existing]
+    fallback_existing = [path for path in fallback_candidates if path in existing]
+    if contracted_existing is not None:
+        runtime_path = contracted_existing
+    elif explicit_existing:
+        runtime_path = max(explicit_existing, key=lambda path: path.stat().st_mtime)
+    elif fallback_existing:
+        runtime_path = max(fallback_existing, key=lambda path: path.stat().st_mtime)
+    else:
+        runtime_path = resolved_candidates[0]
+    contracted_rows = _safe_int(snapshot_health.get("row_count"), 0)
+    runtime_rows = contracted_rows if contracted_rows > 0 and existing else (_line_count(runtime_path) if runtime_path.exists() else 0)
+    quality_path = PROJECT_ROOT / "governance" / "health" / "training_quality_control_latest.json"
+    if not quality_path.exists():
+        quality_path = PROJECT_ROOT / "governance" / "health" / "training_quality_latest.json"
     quality_payload: dict[str, Any] = {}
     if quality_path.exists():
         try:
@@ -568,8 +621,16 @@ def _training_clearance_snapshot() -> dict[str, Any]:
         "runtime_snapshot_path": str(runtime_path),
         "runtime_snapshot_ready": runtime_rows > 0,
         "runtime_snapshot_row_count": runtime_rows,
+        "runtime_snapshot_sequence_count": _safe_int(snapshot_health.get("sequence_count"), 0),
+        "runtime_snapshot_health_path": str(health_path),
+        "runtime_snapshot_candidate_paths": [str(path) for path in resolved_candidates],
+        "runtime_snapshot_source": "health_contract_and_resolved_rows" if contracted_rows > 0 and existing else "bounded_row_probe",
         "training_quality_status": quality_payload.get("overall_status", ""),
-        "training_quality_score": quality_payload.get("overall_score", quality_payload.get("score", 0)),
+        "training_quality_score": quality_payload.get(
+            "training_quality_score",
+            quality_payload.get("overall_score", quality_payload.get("score", 0)),
+        ),
+        "training_quality_path": str(quality_path),
         "raw_hard_delete_allowed": False,
         "gzip_compaction_allowed": True,
         "raw_hard_delete_reason": "raw evidence is only cleared by verified gzip compaction or verified compressed sibling removal",
@@ -584,6 +645,7 @@ def _summary(rows: list[dict[str, Any]], selected: list[dict[str, Any]], apply_r
     compression_rows = [row for row in rows if row.get("compression_candidate")]
     sibling_rows = [row for row in compression_rows if row.get("already_compressed_sibling")]
     current_day_rows = [row for row in rows if row.get("current_day_protected")]
+    active_latest_rows = [row for row in rows if row.get("active_latest_artifact_protected")]
     local_fallback_rows = [row for row in rows if row.get("local_fallback_reconciliation_required")]
     protected_rows = [row for row in rows if row.get("protected_volume")]
     cleared_bytes = sum(_safe_int(record.get("estimated_raw_bytes_cleared"), 0) for record in apply_records if record.get("status") == "ok")
@@ -599,6 +661,7 @@ def _summary(rows: list[dict[str, Any]], selected: list[dict[str, Any]], apply_r
         "compression_candidate_gb": round(sum(_safe_int(row.get("size_bytes"), 0) for row in compression_rows) / (1024**3), 6),
         "already_compressed_sibling_count": len(sibling_rows),
         "current_day_protected_count": len(current_day_rows),
+        "active_latest_artifact_protected_count": len(active_latest_rows),
         "local_fallback_reconciliation_count": len(local_fallback_rows),
         "protected_volume_count": len(protected_rows),
         "selected_compaction_count": len(selected),
@@ -612,8 +675,14 @@ def _summary(rows: list[dict[str, Any]], selected: list[dict[str, Any]], apply_r
 
 def _score_report(summary: dict[str, Any], apply_requested: bool) -> tuple[float, str, list[str], list[str]]:
     raw_count = _safe_int(summary.get("raw_jsonl_count"), 0)
-    eligible_count = _safe_int(summary.get("eligible_training_source_count"), 0)
+    queued_count = _safe_int(summary.get("raw_source_queue_count"), raw_count)
     compression_count = _safe_int(summary.get("compression_candidate_count"), 0)
+    compression_gb = _safe_float(summary.get("compression_candidate_gb"), 0.0)
+    material_floor_gb = max(
+        _safe_float(os.getenv("BOT_RAW_TRAINING_MATERIAL_COMPACTION_GB"), DEFAULT_MATERIAL_COMPACTION_GB),
+        0.0,
+    )
+    submaterial_tail = bool(compression_count > 0 and compression_gb < material_floor_gb)
     selected_count = _safe_int(summary.get("selected_compaction_count"), 0)
     failed_count = _safe_int(summary.get("apply_failed_count"), 0)
     blockers: list[str] = []
@@ -622,18 +691,23 @@ def _score_report(summary: dict[str, Any], apply_requested: bool) -> tuple[float
         score = 100.0
         next_actions.append("no raw JSONL sources found; training queue is empty and raw backlog is clear")
         return score, "queued_and_clear", blockers, next_actions
-    queue_coverage = eligible_count / max(1, raw_count)
-    score = 60.0 + min(30.0, queue_coverage * 30.0)
+    queue_coverage = min(queued_count / max(1, raw_count), 1.0)
+    score = 82.0 + min(10.0, queue_coverage * 10.0)
     if compression_count <= 0:
         score += 8.0
         next_actions.append("no eligible old raw sources need compaction right now")
     elif apply_requested and selected_count > 0 and failed_count == 0:
         score += 7.0
         next_actions.append("continue bounded compaction waves until compression candidates reach zero")
+    elif submaterial_tail:
+        score += 8.0
+        next_actions.append("keep the sub-material compaction tail manifest-indexed until it crosses the bounded wave floor")
     elif apply_requested and selected_count <= 0:
+        score -= 15.0
         blockers.append("no_compaction_batch_selected_under_current_caps")
         next_actions.append("increase --max-gb or lower active intake before clearing larger raw files")
     else:
+        score -= 12.0
         blockers.append("raw_compaction_not_applied")
         next_actions.append("run with --apply to clear the queued old raw sources by verified gzip compaction")
     if failed_count > 0:
@@ -691,10 +765,27 @@ def build_report(args: argparse.Namespace) -> dict[str, Any]:
     source_count = _write_jsonl(Path(args.source_queue_path), rows)
     eligible_count = _write_jsonl(Path(args.eligible_queue_path), eligible_rows)
     summary = _summary(rows, selected, apply_records)
+    material_floor_gb = max(
+        _safe_float(os.getenv("BOT_RAW_TRAINING_MATERIAL_COMPACTION_GB"), DEFAULT_MATERIAL_COMPACTION_GB),
+        0.0,
+    )
+    compression_candidate_gb = _safe_float(summary.get("compression_candidate_gb"), 0.0)
+    summary.update(
+        {
+            "raw_source_queue_count": source_count,
+            "raw_source_queue_coverage_ratio": round(source_count / max(len(rows), 1), 6),
+            "eligible_source_selection_ratio": round(eligible_count / max(len(rows), 1), 6),
+            "material_compaction_floor_gb": round(material_floor_gb, 6),
+            "submaterial_compaction_tail": bool(
+                _safe_int(summary.get("compression_candidate_count"), 0) > 0
+                and compression_candidate_gb < material_floor_gb
+            ),
+        }
+    )
     score, status, blockers, next_actions = _score_report(summary, bool(args.apply))
     grade = _grade(score)
     timestamp = _utc_now()
-    training_clearance = _training_clearance_snapshot()
+    training_clearance = _training_clearance_snapshot(scan_roots)
     decision_packet = {
         "action": "queue_all_raw_sources_then_clear_eligible_by_verified_gzip" if args.apply else "queue_all_raw_sources_dry_run",
         "raw_sources_queued": source_count,
@@ -713,6 +804,11 @@ def build_report(args: argparse.Namespace) -> dict[str, Any]:
             "keep_raw_after_compress": bool(args.keep_raw_after_compress),
         },
         "blocked_reasons": blockers,
+        "managed_debts": (
+            ["submaterial_raw_compaction_tail"]
+            if bool(summary.get("submaterial_compaction_tail", False)) and not blockers
+            else []
+        ),
         "risk_flags": [
             "manifest_only_queue_does_not_copy_raw_payload",
             "current_day_sources_protected",
@@ -736,8 +832,10 @@ def build_report(args: argparse.Namespace) -> dict[str, Any]:
             "hard_delete_raw_without_compressed_evidence": False,
             "protected_volumes": list(PROTECTED_VOLUME_PREFIXES),
             "current_day_protected": True,
+            "active_latest_jsonl_protected": True,
             "local_fallback_requires_reconciliation": True,
             "clearance_method": "verified_gzip_compaction",
+            "material_compaction_floor_gb": round(material_floor_gb, 6),
             "live_execution_unchanged": "paper_read_only",
         },
         "raw_summary": summary,

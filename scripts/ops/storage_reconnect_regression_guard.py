@@ -27,6 +27,9 @@ REQUIRED_GUARD_SNIPPETS = {
     "disappearance_grace": "confirmDisappearAndRestartLocal",
     "false_disappear_suppression": "external_still_available_after_disappear",
     "mount_poll_timer": "startMountPollTimer",
+    "auto_failback_opt_in": "BOT_LOGS_AUTO_FAILBACK_ON_APPEAR",
+    "explicit_external_certification": "automatic external failback suppressed; explicit storage-switch-external certification required",
+    "local_override_mount_suppression": "guard externalPreferredByConfig() else { return }",
     "external_switch": "storage-switch-external --no-refresh",
     "local_switch": "storage-switch-local --no-refresh",
     "transition_coordinator": "storage-transition-coordinator --transition-mode external --apply --json",
@@ -36,6 +39,11 @@ REQUIRED_GUARD_SNIPPETS = {
     "halt_refresh": "global-halt-refresh --json",
     "halt_auto_clear": "global-halt-auto-clear --json",
     "operator_cockpit": "operator-cockpit --json",
+}
+
+REQUIRED_OPSCTL_SNIPPETS = {
+    "transactional_sqlite_local_failover": "storage_sqlite_local_failover.py",
+    "quiesced_local_switch": "ORCH_ARGS+=(--quiesce-only)",
 }
 
 
@@ -140,12 +148,26 @@ def build_payload(
     guard_path = project_root / "scripts" / "ops" / "storage_eject_guard.swift"
     install_path = project_root / "scripts" / "install_storage_eject_guard_launchd.sh"
     runner_path = project_root / "scripts" / "ops" / "run_storage_eject_guard_launchd.sh"
+    opsctl_path = project_root / "scripts" / "ops" / "opsctl.sh"
+    sqlite_failover_path = project_root / "scripts" / "ops" / "storage_sqlite_local_failover.py"
     text = guard_path.read_text(encoding="utf-8") if guard_path.exists() else ""
+    opsctl_text = opsctl_path.read_text(encoding="utf-8") if opsctl_path.exists() else ""
 
     contract_rows = []
     for name, snippet in REQUIRED_GUARD_SNIPPETS.items():
         present = snippet in text
-        contract_rows.append({"name": name, "required_snippet": snippet, "present": present})
+        contract_rows.append({"name": name, "scope": "storage_eject_guard.swift", "required_snippet": snippet, "present": present})
+    for name, snippet in REQUIRED_OPSCTL_SNIPPETS.items():
+        present = snippet in opsctl_text
+        contract_rows.append({"name": name, "scope": "opsctl.sh", "required_snippet": snippet, "present": present})
+    contract_rows.append(
+        {
+            "name": "sqlite_local_failover_implementation",
+            "scope": "scripts/ops/storage_sqlite_local_failover.py",
+            "required_snippet": "file_exists",
+            "present": sqlite_failover_path.exists(),
+        }
+    )
 
     missing = [row["name"] for row in contract_rows if not bool(row.get("present", False))]
     launchd = _launchd_state(project_root, check_launchd=check_launchd)
@@ -155,20 +177,39 @@ def build_payload(
     storage_control = load_json(project_root / "governance" / "health" / "ingestion_storage_control_latest.json")
     split_brain = load_json(project_root / "governance" / "health" / "storage_split_brain_reconciler_latest.json")
     halt_status = load_json(project_root / "governance" / "health" / "global_risk_killswitch_latest.json")
+    failback_status = load_json(project_root / "governance" / "health" / "storage_failback_sync_latest.json")
 
     split_summary = split_brain.get("summary") if isinstance(split_brain.get("summary"), dict) else {}
     unresolved_conflicts = _safe_int(split_summary.get("unresolved_conflicts"), 0)
     backpressure = storage_control.get("backpressure") if isinstance(storage_control.get("backpressure"), dict) else {}
     storage_status = str(storage_control.get("overall_status") or "missing")
     halt_clear_blockers = halt_status.get("clear_blockers") if isinstance(halt_status.get("clear_blockers"), list) else []
+    storage_mode = str(
+        failback_status.get("certified_mode")
+        or failback_status.get("mode")
+        or storage_mount.get("storage_mode")
+        or storage_mount.get("mode")
+        or ""
+    )
+    sqlite_report = failback_status.get("sqlite_skip_report") if isinstance(failback_status.get("sqlite_skip_report"), dict) else {}
+    sqlite_entries = sqlite_report.get("entries") if isinstance(sqlite_report.get("entries"), list) else []
+    external_sqlite_routes = [
+        str(row.get("relative_path") or "")
+        for row in sqlite_entries
+        if isinstance(row, dict) and str(row.get("classification") or "") == "active_external_route"
+    ]
+    external_required_for_hot_path = bool(storage_mount.get("external_required_for_hot_path", True))
+    external_available = bool(storage_mount.get("external_available", storage_mount.get("mount_present", True)))
+    local_mode_external_sqlite = bool(storage_mode.startswith("local_fallback") and external_sqlite_routes)
     live_recovery_blockers = ordered_unique(
         [
             "external_mount_unavailable"
-            if storage_mount and not bool(storage_mount.get("external_available", storage_mount.get("mount_present", True)))
+            if storage_mount and external_required_for_hot_path and not external_available
             else "",
             "split_brain_unresolved" if unresolved_conflicts > 0 else "",
             "storage_pressure_active" if storage_status in {"blocked", "critical"} else "",
             "global_halt_clear_blocked" if halt_clear_blockers else "",
+            "local_mode_external_sqlite_route" if local_mode_external_sqlite else "",
         ]
     )
 
@@ -194,12 +235,15 @@ def build_payload(
             if "storage_pressure_active" in live_recovery_blockers
             else "",
             "run split-brain reconciliation before deleting local fallback artifacts" if unresolved_conflicts > 0 else "",
+            "keep the stack quiesced and run storage-sqlite-local-failover --apply before restarting local mode"
+            if local_mode_external_sqlite
+            else "",
         ]
     )
 
     return {
         "timestamp_utc": iso_now(),
-        "schema_version": 1,
+        "schema_version": 2,
         "ok": overall_status == "ready",
         "overall_status": overall_status,
         "contract_ok": contract_ok,
@@ -211,17 +255,23 @@ def build_payload(
             "install_script_exists": install_path.exists(),
             "runner_script": str(runner_path),
             "runner_script_exists": runner_path.exists(),
+            "sqlite_failover_script": str(sqlite_failover_path),
+            "sqlite_failover_script_exists": sqlite_failover_path.exists(),
             "launchd": launchd,
             "swift_parse": swift_parse,
         },
         "live_recovery": {
             "blockers": live_recovery_blockers,
-            "storage_mode": str(storage_mount.get("storage_mode") or storage_mount.get("mode") or ""),
-            "external_available": bool(storage_mount.get("external_available", False)) if storage_mount else False,
+            "storage_mode": storage_mode,
+            "external_available": external_available if storage_mount else False,
+            "external_required_for_hot_path": external_required_for_hot_path,
+            "external_probe_skipped": bool(storage_mount.get("probe_skipped_external_io", False)),
+            "external_sqlite_routes": external_sqlite_routes,
             "split_brain_unresolved_conflicts": unresolved_conflicts,
             "storage_control_status": storage_status,
             "core_pending_lines": _safe_int(backpressure.get("core_pending_lines"), 0),
             "total_pending_lines": _safe_int(backpressure.get("total_pending_lines"), 0),
+            "external_sqlite_route_count": len(external_sqlite_routes),
             "halt_clear_blockers": halt_clear_blockers,
         },
         "metrics": {
@@ -237,6 +287,10 @@ def build_payload(
             "requires_global_halt_refresh": True,
             "requires_global_halt_auto_clear": True,
             "requires_operator_cockpit_refresh": True,
+            "requires_auto_failback_opt_in": True,
+            "requires_local_override_mount_suppression": True,
+            "requires_explicit_external_certification": True,
+            "requires_transactional_sqlite_local_failover": True,
         },
         "recommended_actions": recommended_actions,
     }

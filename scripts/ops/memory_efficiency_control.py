@@ -80,6 +80,27 @@ COMPRESSED_MEMORY_RELIEF_OVERRIDES = {
     "SHADOW_LOOP_RUNTIME_PAUSE_SLEEP_SECONDS": "90",
 }
 
+LOCAL_DISK_HEADROOM_RELIEF_OVERRIDES = {
+    "BOT_LOCAL_DISK_HEADROOM_RELIEF_ACTIVE": "1",
+    "BOT_MEMORY_REMEDY_MODE": "disk_swap_headroom_relief",
+    "BOT_MEMORY_REMEDY_SELF_APPLY_READY": "1",
+    "DATA_COLLECTION_RESOURCE_CAPTURE_MODE": "sampled",
+    "DATA_COLLECTION_RESOURCE_SAMPLE_RATE": "0.10",
+    "ONE_NUMBERS_REFRESH_INTERVAL_SECONDS": "1800",
+    "INGESTION_BACKPRESSURE_REFRESH_INTERVAL_SECONDS": "600",
+    "DATA_SOURCE_DIVERGENCE_REFRESH_INTERVAL_SECONDS": "1800",
+    "COINBASE_SNAPSHOT_MAX_WORKERS": "1",
+    "ASYNC_PIPELINE_WORKERS": "1",
+    "RUNTIME_FEATURE_CACHE_MAX_ENTRIES": "24",
+    "TRAINING_RUNTIME_GOVERNOR_MODE": "micro_canary_only",
+    "TRAINING_RUNTIME_MAX_PARALLEL": "1",
+    "SQL_LINK_SERVICE_INTERVAL_SECONDS": "120",
+    "SQL_LINK_SERVICE_HOT_BATCH_SIZE": "20000",
+    "SQL_LINK_SERVICE_QUEUE_BATCH_SIZE": "12000",
+    "SQL_LINK_SERVICE_PREPROCESS_WORKERS": "1",
+    "SHADOW_LOOP_RUNTIME_PAUSE_SLEEP_SECONDS": "120",
+}
+
 CONCENTRATED_DRAIN_SQL_OVERRIDES = {
     **DRAIN_FRIENDLY_SQL_OVERRIDES,
     "SQL_LINK_SERVICE_CONCENTRATED_CORE_DRAIN": "1",
@@ -1278,7 +1299,15 @@ def _compressed_memory_relief_contract(
     compressor_gb = _safe_float(resource_guard.get("compressor_gb"), _safe_float(raw_resource_guard.get("compressor_gb"), 0.0))
     swap_used_gb = _safe_float(resource_guard.get("swap_used_gb"), 0.0)
     pages_throttled = _safe_float(resource_guard.get("pages_throttled"), _safe_float(raw_resource_guard.get("pages_throttled"), 0.0))
-    pressure_clear = bool(_memory_pressure_clear(resource_guard) and pages_throttled <= 0.0 and swap_used_gb < 3.0)
+    managed_swap_ceiling_gb = max(
+        0.0,
+        _safe_float(os.getenv("MEMORY_EFFICIENCY_MANAGED_COMPRESSION_SWAP_MAX_GB"), 8.0),
+    )
+    pressure_clear = bool(
+        _memory_pressure_clear(resource_guard)
+        and pages_throttled <= 0.0
+        and swap_used_gb < managed_swap_ceiling_gb
+    )
     stateful_sql_soft_quota_relief = _managed_stateful_sql_soft_quota_contract(project_root, ingestion_storage)
     storage_clear = _storage_pressure_clear(ingestion_storage, project_root=project_root)
     compressor_bounded = compressor_gb < 14.0
@@ -1293,6 +1322,7 @@ def _compressed_memory_relief_contract(
         "effective_compressed_store_gb": round(effective_compressed_store_gb, 3),
         "compressor_gb": round(compressor_gb, 3),
         "swap_used_gb": round(swap_used_gb, 3),
+        "managed_swap_ceiling_gb": round(managed_swap_ceiling_gb, 3),
         "pages_throttled": round(pages_throttled, 3),
         "pressure_clear": pressure_clear,
         "storage_clear": storage_clear,
@@ -1602,6 +1632,12 @@ def _recommended_profile(
     co_running_session = _co_running_session_summary(resource_guard)
     co_running_overlay: dict[str, str] = {}
 
+    local_disk_headroom = _local_disk_headroom_contract(resource_guard)
+    if bool(local_disk_headroom.get("active", False)):
+        recommended = _cap_profile(recommended, "constrained")
+        status = "blocked" if str(local_disk_headroom.get("severity") or "") == "critical" else "needs_work"
+        reasons.append("local_disk_swap_temp_headroom_low")
+
     if memory_state == "red" or memory_kind in {"throttled", "red"}:
         recommended = "constrained"
         status = "blocked"
@@ -1728,6 +1764,51 @@ def _recommended_profile(
     return recommended, reasons, status, creative_session, {**creative_overlay, **co_running_overlay}, co_running_session
 
 
+def _local_disk_headroom_contract(resource_guard: dict[str, Any]) -> dict[str, Any]:
+    thresholds = (
+        resource_guard.get("memory_pressure_thresholds")
+        if isinstance(resource_guard.get("memory_pressure_thresholds"), dict)
+        else {}
+    )
+    free_raw = resource_guard.get("local_disk_free_gb")
+    known = free_raw is not None
+    free_gb = _safe_float(free_raw, 0.0)
+    warning_gb = max(
+        _safe_float(
+            thresholds.get("yellow_local_disk_gb"),
+            _safe_float(os.getenv("RESOURCE_GUARD_MEMORY_YELLOW_LOCAL_DISK_GB"), 32.0),
+        ),
+        1.0,
+    )
+    critical_gb = max(
+        _safe_float(
+            thresholds.get("red_local_disk_gb"),
+            _safe_float(os.getenv("RESOURCE_GUARD_MEMORY_RED_LOCAL_DISK_GB"), 8.0),
+        ),
+        0.5,
+    )
+    pressure_kind = str(resource_guard.get("memory_pressure_kind") or "").strip().lower()
+    active = bool(known and free_gb < warning_gb) or pressure_kind == "disk_swap_headroom"
+    severity = "critical" if known and free_gb < critical_gb else ("warning" if active else "clear")
+    return {
+        "known": known,
+        "active": active,
+        "severity": severity,
+        "local_disk_free_gb": round(free_gb, 3) if known else None,
+        "warning_free_gb": round(warning_gb, 3),
+        "critical_free_gb": round(critical_gb, 3),
+        "swap_and_temp_allocation_at_risk": bool(active),
+        "automatic_remedies": [
+            "downshift_noncritical_fanout",
+            "reconcile_runtime_storage_to_external",
+            "run_bounded_storage_pressure_clearance",
+            "compact_then_verified_offload_to_second_cold_when_critical",
+            "refresh_resource_guard_before_restoring_normal_fanout",
+        ] if active else [],
+        "policy": "reserve startup-disk capacity for macOS swap and temporary files even when current RAM pressure is green",
+    }
+
+
 def _override_lines(profile_name: str, env_overrides: dict[str, str]) -> list[str]:
     def _shell_assignment(name: str, value: str) -> str:
         return f"{name}={shlex.quote(str(value))}"
@@ -1763,6 +1844,7 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, action: str, override_pa
     backpressure_fleet = _load_json(health_root / "backpressure_drainer_fleet_latest.json")
     expansion_session = _expansion_session_summary(project_root)
     expansion_overlay = _expansion_pressure_overlay(expansion_session)
+    local_disk_headroom = _local_disk_headroom_contract(resource_guard)
 
     base_tier = _base_tier(apple_profile)
     base_env = apple_profile.get("env_overrides") if isinstance(apple_profile.get("env_overrides"), dict) else {}
@@ -1798,8 +1880,21 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, action: str, override_pa
     non_compression_reasons = [
         reason for reason in reasons if reason not in {"compressed_memory_high", "compressed_memory_critical"}
     ]
-    if bool(compressed_memory_relief.get("managed", False)) and overall_status == "needs_work" and not non_compression_reasons:
+    soft_cotenant_reasons = {"co_running_light_competition", "co_running_interactive"}
+    managed_soft_cotenant = bool(non_compression_reasons) and all(
+        reason in soft_cotenant_reasons for reason in non_compression_reasons
+    )
+    if (
+        bool(compressed_memory_relief.get("managed", False))
+        and overall_status == "needs_work"
+        and (not non_compression_reasons or managed_soft_cotenant)
+    ):
         overall_status = "advisory"
+        if managed_soft_cotenant:
+            cotenant_awareness["mode"] = "managed_cotenant"
+            cotenant_awareness["status_adjusted"] = True
+            cotenant_awareness["overall_status"] = "advisory"
+            cotenant_awareness["policy"] = "compressed-memory relief keeps soft co-tenants managed while pressure gates stay active"
     recommended_env = {
         **base_env,
         **FALLBACK_PRESETS.get(recommended_profile, {}),
@@ -1815,6 +1910,8 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, action: str, override_pa
         recommended_env.update(_drain_friendly_sql_overrides(sql_writer_coordination))
     if bool(compressed_memory_relief.get("managed", False)):
         recommended_env.update(COMPRESSED_MEMORY_RELIEF_OVERRIDES)
+    if bool(local_disk_headroom.get("active", False)):
+        recommended_env.update(LOCAL_DISK_HEADROOM_RELIEF_OVERRIDES)
     recommended_env = _disable_sqlite_mmap_env(recommended_env)
     hardware = apple_profile.get("hardware") if isinstance(apple_profile.get("hardware"), dict) else {}
     unified_memory = apple_profile.get("unified_memory_telemetry") if isinstance(apple_profile.get("unified_memory_telemetry"), dict) else {}
@@ -1859,6 +1956,8 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, action: str, override_pa
             "compressed_store_gb": _safe_float(resource_guard.get("compressed_store_gb"), 0.0),
             "compressor_gb": _safe_float(resource_guard.get("compressor_gb"), 0.0),
             "allocation_relief_active": bool(resource_guard.get("allocation_relief_active", False)),
+            "local_disk_free_gb": resource_guard.get("local_disk_free_gb"),
+            "local_disk_used_pct": resource_guard.get("local_disk_used_pct"),
         },
         "raw_memory_snapshot": {
             "memory_pressure_state": str(raw_resource_guard.get("memory_pressure_state") or ""),
@@ -1869,6 +1968,7 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, action: str, override_pa
             "compressor_gb": _safe_float(raw_resource_guard.get("compressor_gb"), 0.0),
         },
         "memory_truth_reconciliation": memory_truth,
+        "local_disk_headroom_contract": local_disk_headroom,
         "compressed_memory_relief_contract": compressed_memory_relief,
         "storage_snapshot": {
             "severity": str(ingestion_storage.get("severity") or ""),
@@ -1878,11 +1978,13 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, action: str, override_pa
             "bounded_overlay_relief": _bounded_overlay_storage_relief(ingestion_storage),
             "stateful_sql_soft_quota_relief": _managed_stateful_sql_soft_quota_contract(project_root, ingestion_storage),
             "sql_writer_coordination": sql_writer_coordination,
+            "local_disk_headroom": local_disk_headroom,
             "backlog_drain_status": str(((ingestion_storage.get("storage") or {}).get("backlog_drain_status")) if isinstance(ingestion_storage.get("storage"), dict) else ""),
             "recommended_operating_mode": str(ingestion_storage.get("recommended_operating_mode") or ""),
         },
         "recommended_env_overrides": recommended_env,
         "compressed_memory_relief_overrides": COMPRESSED_MEMORY_RELIEF_OVERRIDES if bool(compressed_memory_relief.get("managed", False)) else {},
+        "local_disk_headroom_relief_overrides": LOCAL_DISK_HEADROOM_RELIEF_OVERRIDES if bool(local_disk_headroom.get("active", False)) else {},
         "quant_model_caps": QUANT_MODEL_CAPS_BY_PROFILE.get(recommended_profile, {}),
         "expansion_pressure_overrides": expansion_overlay,
         "recommendations": [

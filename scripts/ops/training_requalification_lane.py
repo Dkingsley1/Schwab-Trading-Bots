@@ -18,9 +18,12 @@ DEFAULT_OUT_PATH = PROJECT_ROOT / "governance" / "health" / "training_requalific
 DEFAULT_QUEUE_PATH = PROJECT_ROOT / "governance" / "training_diagnostics" / "requalification_queue_latest.jsonl"
 DEFAULT_REPAIR_OUT_PATH = PROJECT_ROOT / "governance" / "training_diagnostics" / "requalification_repairs_latest.json"
 DEFAULT_WALK_FORWARD_PATH = PROJECT_ROOT / "governance" / "walk_forward" / "walk_forward_latest.json"
+DEFAULT_BOT_NEEDS_PATH = PROJECT_ROOT / "governance" / "health" / "bot_needs_intelligence_latest.json"
 SAMPLE_STARVED_REQUALIFICATION_REASON = "sample_starved_requalification_collect_only"
+SAMPLE_STARVED_MISSING_DIAGNOSTIC_REASON = "bot_needs_missing_diagnostic_collection_requalification"
 SAMPLE_STARVED_MIN_OBSERVATIONS = 200
 SAMPLE_STARVED_MIN_SEQUENCES = 12
+BOT_NEEDS_REACTIVATION_MAX_AGE_HOURS = 24.0
 
 
 def _load_json(path: Path) -> dict[str, Any]:
@@ -83,6 +86,56 @@ def _age_hours(path: Path) -> float | None:
         return max((datetime.now(timezone.utc) - datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc)).total_seconds() / 3600.0, 0.0)
     except Exception:
         return None
+
+
+def _sample_starved_reactivation_authority(
+    project_root: Path,
+) -> tuple[dict[str, dict[str, Any]], dict[str, Any]]:
+    path = project_root / "governance" / "health" / "bot_needs_intelligence_latest.json"
+    age_hours = _age_hours(path) if path.exists() else None
+    metadata: dict[str, Any] = {
+        "path": str(path),
+        "status": "unavailable",
+        "age_hours": round(float(age_hours), 3) if age_hours is not None else None,
+        "maximum_age_hours": BOT_NEEDS_REACTIVATION_MAX_AGE_HOURS,
+        "reactivation_id_count": 0,
+    }
+    if age_hours is None:
+        metadata["reason"] = "bot_needs_artifact_missing"
+        return {}, metadata
+    if age_hours > BOT_NEEDS_REACTIVATION_MAX_AGE_HOURS:
+        metadata["status"] = "stale"
+        metadata["reason"] = "bot_needs_artifact_too_old_for_reactivation"
+        return {}, metadata
+
+    payload = _load_json(path)
+    rows = payload.get("bot_needs") if isinstance(payload.get("bot_needs"), list) else []
+    if not payload or payload.get("ok") is False or not isinstance(rows, list):
+        metadata["status"] = "invalid"
+        metadata["reason"] = "bot_needs_artifact_not_healthy"
+        return {}, metadata
+
+    authority: dict[str, dict[str, Any]] = {}
+    for item in rows:
+        if not isinstance(item, dict):
+            continue
+        bot_id = str(item.get("bot_id") or "").strip().lower()
+        if not bot_id or str(item.get("primary_need") or "").strip().lower() != "reactivate_sample_starved_collection":
+            continue
+        evidence = item.get("evidence") if isinstance(item.get("evidence"), dict) else {}
+        if _safe_int(evidence.get("sample_count"), 0) > 0 or _safe_int(evidence.get("eligible_sequences"), 0) > 0:
+            continue
+        authority[bot_id] = item
+
+    metadata.update(
+        {
+            "status": "ready",
+            "reason": "fresh_bot_needs_reactivation_authority",
+            "reactivation_id_count": len(authority),
+            "source_timestamp_utc": str(payload.get("timestamp_utc") or ""),
+        }
+    )
+    return authority, metadata
 
 
 def _latest_artifact(base: Path, bot_id: str, suffixes: tuple[str, ...]) -> Path | None:
@@ -258,6 +311,66 @@ def _is_sample_starved_diagnostic(diag: dict[str, Any]) -> bool:
 def _is_terminal_or_deleted(row: dict[str, Any]) -> bool:
     lifecycle_state = str(row.get("lifecycle_state") or "").strip().lower()
     return bool(lifecycle_state in {"retired", "deleted", "deactivated"} or row.get("deleted_from_rotation", False))
+
+
+def _missing_diagnostic_sample_starved_payload(
+    row: dict[str, Any],
+    *,
+    bot_id: str,
+    bot_need: dict[str, Any],
+    authority_path: str,
+    authority_timestamp_utc: str,
+    now: str,
+) -> dict[str, Any]:
+    evidence = bot_need.get("evidence") if isinstance(bot_need.get("evidence"), dict) else {}
+    observation_count = max(
+        _safe_int(row.get("data_collection_observations"), 0),
+        _safe_int(row.get("collected_observation_count"), 0),
+        _safe_int(row.get("observation_count"), 0),
+        _safe_int(evidence.get("observation_count"), 0),
+    )
+    sequence_count = max(
+        _safe_int(row.get("data_collection_sequences"), 0),
+        _safe_int(row.get("collected_sequence_count"), 0),
+        _safe_int(row.get("sequence_count"), 0),
+    )
+    label_contract = _label_contract_from_registry_row(row)
+    runtime_meta: dict[str, Any] = {
+        "diagnostic_kind": "sample_starved_collection_requalification",
+        "synthetic_missing_diagnostic_repair": True,
+        "source": SAMPLE_STARVED_MISSING_DIAGNOSTIC_REASON,
+        "source_bot_needs_path": authority_path,
+        "source_bot_needs_timestamp_utc": authority_timestamp_utc,
+        "sample_count": 0,
+        "eligible_sequences": 0,
+        "observation_count": observation_count,
+        "sequence_count": sequence_count,
+        "training_performed": False,
+        "master_update_applied": False,
+        "paper_execution_allowed": False,
+        "live_execution_allowed": False,
+    }
+    if label_contract:
+        runtime_meta["label_contract"] = label_contract
+    return {
+        "schema_version": 1,
+        "timestamp_utc": now,
+        "bot_id": bot_id,
+        "run_tag": bot_id,
+        "status": "deferred_sample_starved",
+        "reason": SAMPLE_STARVED_MISSING_DIAGNOSTIC_REASON,
+        "sample_count": 0,
+        "eligible_sequences": 0,
+        "observation_count": observation_count,
+        "sequence_count": sequence_count,
+        "training_performed": False,
+        "master_update_applied": False,
+        "execution_allowed": False,
+        "paper_execution_allowed": False,
+        "live_execution_allowed": False,
+        "promotion_allowed": False,
+        "runtime_meta": runtime_meta,
+    }
 
 
 def _mark_sample_starved_collection_only(
@@ -488,6 +601,7 @@ def apply_repairs(
     rows = registry_payload.get("sub_bots") if isinstance(registry_payload.get("sub_bots"), list) else []
     registry_changed = False
     include = {str(bot_id or "").strip().lower() for bot_id in (include_bot_ids or []) if str(bot_id or "").strip()}
+    reactivation_authority, reactivation_authority_meta = _sample_starved_reactivation_authority(project_root)
     diagnostics_dir = project_root / "governance" / "training_diagnostics"
     snapshot = _load_json(project_root / "governance" / "health" / "runtime_training_snapshot_latest.json")
     snapshot_ready = bool(_safe_int(snapshot.get("row_count"), 0) > 0 and _safe_int(snapshot.get("sequence_count"), 0) > 0)
@@ -495,6 +609,7 @@ def apply_repairs(
     unresolved_rows: list[dict[str, Any]] = []
     registry_backup_path = ""
     collection_requalification_count = 0
+    synthesized_diagnostic_count = 0
     now = datetime.now(timezone.utc).isoformat()
 
     for row in rows:
@@ -517,7 +632,34 @@ def apply_repairs(
             latest_log and diag_path.exists() and latest_log.stat().st_mtime > diag_path.stat().st_mtime
         )
         diag_payload = _load_json(diag_path) if diag_path.exists() else {}
+        bot_need_authority = reactivation_authority.get(bot_id, {})
+        synthetic_missing_diagnostic_repair = bool(
+            include_sample_starved_deleted
+            and _is_terminal_or_deleted(row)
+            and not diag_payload
+            and bot_need_authority
+        )
+        if synthetic_missing_diagnostic_repair:
+            diag_payload = _missing_diagnostic_sample_starved_payload(
+                row,
+                bot_id=bot_id,
+                bot_need=bot_need_authority,
+                authority_path=str(reactivation_authority_meta.get("path") or ""),
+                authority_timestamp_utc=str(reactivation_authority_meta.get("source_timestamp_utc") or ""),
+                now=now,
+            )
+            _write_json(diag_path, diag_payload)
+            diag_rebuilt = True
+            synthesized_diagnostic_count += 1
         diag_runtime_meta = diag_payload.get("runtime_meta") if isinstance(diag_payload.get("runtime_meta"), dict) else {}
+        lifecycle_state = str(row.get("lifecycle_state") or "").strip().lower()
+        diagnostic_kind = str(diag_runtime_meta.get("diagnostic_kind") or "").strip().lower()
+        collect_only_bootstrap = bool(
+            str(diag_payload.get("status") or "").strip().lower() == "collect_only_label_contract_ready"
+            or diagnostic_kind == "collect_only_label_contract_bootstrap"
+        )
+        preserve_collect_only_bootstrap = bool(lifecycle_state == "data_collection_only" and collect_only_bootstrap)
+        replace_misrouted_collect_only_bootstrap = bool(lifecycle_state != "data_collection_only" and collect_only_bootstrap)
         diag_missing_label_contract = bool(
             _label_contract_from_registry_row(row)
             and not isinstance(diag_runtime_meta.get("label_contract"), dict)
@@ -531,11 +673,12 @@ def apply_repairs(
             row["log_file"] = str(latest_log)
             registry_row_changed = True
 
-        if latest_log and (
+        if latest_log and not preserve_collect_only_bootstrap and not synthetic_missing_diagnostic_repair and (
             (not diag_exists_before)
             or latest_log_newer_than_diag
             or (diag_age_hours is not None and diag_age_hours > 72.0)
             or diag_missing_label_contract
+            or replace_misrouted_collect_only_bootstrap
         ):
             log_payload = _load_json(latest_log)
             recovered = _diagnostic_from_source_payload(
@@ -613,6 +756,8 @@ def apply_repairs(
         "runtime_snapshot_ready": snapshot_ready,
         "repaired_count": len(repaired_rows),
         "collection_requalification_count": int(collection_requalification_count),
+        "synthesized_diagnostic_count": int(synthesized_diagnostic_count),
+        "bot_needs_reactivation_authority": reactivation_authority_meta,
         "repaired_rows": repaired_rows,
         "unresolved_count": len(unresolved_rows),
         "unresolved_rows": unresolved_rows,
@@ -628,6 +773,7 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, include_sample_starved_d
     roster_resilience = _load_json(project_root / "governance" / "health" / "roster_resilience_planner_latest.json")
     rows = _load_registry_rows(registry_path)
     live_regime, regime_priority_index = _current_regime_priority_index(roster_resilience)
+    reactivation_authority, reactivation_authority_meta = _sample_starved_reactivation_authority(project_root)
     candidates: list[dict[str, Any]] = []
     excluded_rows: list[dict[str, Any]] = []
     sample_starved_collection_candidates: list[dict[str, Any]] = []
@@ -638,10 +784,11 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, include_sample_starved_d
         diag_path = diagnostics_dir / f"{bot_id}_latest.json"
         diag = _load_json(diag_path) if diag_path.exists() else {}
         diag_counts = _diagnostic_counts(diag)
+        missing_diagnostic_authorized = bool(not diag and bot_id in reactivation_authority)
         sample_starved_requalification_candidate = bool(
             include_sample_starved_deleted
             and _is_terminal_or_deleted(row)
-            and _is_sample_starved_diagnostic(diag)
+            and (_is_sample_starved_diagnostic(diag) or missing_diagnostic_authorized)
         )
         threshold_ready, threshold_meta = _data_collection_threshold(row)
         if bool(row.get("training_excluded", False)) and not threshold_ready and not sample_starved_requalification_candidate:
@@ -681,7 +828,7 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, include_sample_starved_d
             actions.append("rebuild_model_artifact")
         if not log_path and not bootstrap_candidate:
             actions.append("recover_training_log")
-        if not diag and not bootstrap_candidate:
+        if not diag and not bootstrap_candidate and not sample_starved_requalification_candidate:
             actions.append("refresh_training_diagnostics")
         elif diag_age_hours is not None and diag_age_hours > 72.0:
             actions.append("refresh_training_diagnostics")
@@ -744,6 +891,9 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, include_sample_starved_d
             "regime_fit_score": regime_fit_score,
             "live_regime": live_regime,
             "sample_starved_requalification_candidate": sample_starved_requalification_candidate,
+            "bot_needs_authorized_missing_diagnostic": bool(
+                sample_starved_requalification_candidate and missing_diagnostic_authorized
+            ),
             "data_collection_threshold": threshold_meta if bool(row.get("data_collection_active", False)) else {},
         }
         candidates.append(candidate)
@@ -761,6 +911,7 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, include_sample_starved_d
         "training_excluded": excluded_rows[:80],
         "sample_starved_collection_candidate_count": len(sample_starved_collection_candidates),
         "sample_starved_collection_candidates": sample_starved_collection_candidates[:20],
+        "bot_needs_reactivation_authority": reactivation_authority_meta,
         "reactivation_ready_count": len(ready_candidates),
         "top_candidates": candidates[:20],
         "top_reactivation_ready": ready_candidates[:10],
@@ -820,6 +971,7 @@ def main() -> int:
             "ok": bool(repair_result.get("ok", False)),
             "repaired_count": int(repair_result.get("repaired_count", 0) or 0),
             "collection_requalification_count": int(repair_result.get("collection_requalification_count", 0) or 0),
+            "synthesized_diagnostic_count": int(repair_result.get("synthesized_diagnostic_count", 0) or 0),
             "unresolved_count": int(repair_result.get("unresolved_count", 0) or 0),
             "repaired_bot_ids": [
                 str(row.get("bot_id") or "")

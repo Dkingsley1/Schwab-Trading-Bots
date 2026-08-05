@@ -105,11 +105,28 @@ def support_maintenance_freeze_contract(project_root: Path, component: str) -> d
 def frozen_health_payload(previous_path: Path, contract: dict[str, Any], *, ok: bool = True) -> dict[str, Any]:
     previous = _load_json(Path(previous_path))
     payload = dict(previous)
+    now = datetime.now(timezone.utc)
+    source_timestamp = str(previous.get("timestamp_utc") or "").strip()
+    source_dt = None
+    if source_timestamp:
+        try:
+            source_dt = datetime.fromisoformat(source_timestamp.replace("Z", "+00:00")).astimezone(timezone.utc)
+        except Exception:
+            source_dt = None
+    source_age_seconds = max((now - source_dt).total_seconds(), 0.0) if source_dt is not None else None
     for key in ("busy", "lock_owner", "lock_path"):
         payload.pop(key, None)
     payload.update(
         {
-            "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+            # A frozen controller did not resample its underlying measurements.
+            # Preserve their timestamp so freshness guards cannot mistake old data
+            # for a new observation merely because the skip contract was written.
+            "timestamp_utc": source_timestamp or now.isoformat(),
+            "controller_timestamp_utc": now.isoformat(),
+            "source_timestamp_utc": source_timestamp,
+            "source_age_seconds": round(source_age_seconds, 3) if source_age_seconds is not None else None,
+            "measurement_refreshed": False,
+            "freshness_state": "preserved_previous_measurement" if previous else "no_previous_measurement",
             "ok": bool(ok),
             "overall_status": "ready" if ok else "blocked",
             "support_maintenance_frozen": True,

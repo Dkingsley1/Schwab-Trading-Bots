@@ -3,7 +3,7 @@ from pathlib import Path
 from core import runtime_python as src
 
 
-def test_resolve_runtime_python_prefers_mlx_capable_env_in_auto_mode(monkeypatch, tmp_path: Path) -> None:
+def test_resolve_runtime_python_prefers_promoted_py314_env_in_auto_mode(monkeypatch, tmp_path: Path) -> None:
     root = tmp_path
     py312 = root / ".venv312" / "bin" / "python"
     py314 = root / ".venv314" / "bin" / "python"
@@ -21,7 +21,7 @@ def test_resolve_runtime_python_prefers_mlx_capable_env_in_auto_mode(monkeypatch
 
     resolved = src.resolve_runtime_python(root)
 
-    assert resolved == py312
+    assert resolved == py314
 
 
 def test_resolve_runtime_python_falls_back_to_portable_env_without_mlx(monkeypatch, tmp_path: Path) -> None:
@@ -45,7 +45,7 @@ def test_resolve_runtime_python_falls_back_to_portable_env_without_mlx(monkeypat
     assert resolved == py314
 
 
-def test_resolve_training_python_prefers_mlx_capable_env(monkeypatch, tmp_path: Path) -> None:
+def test_resolve_training_python_prefers_promoted_py314_env(monkeypatch, tmp_path: Path) -> None:
     root = tmp_path
     py312 = root / ".venv312" / "bin" / "python"
     py314 = root / ".venv314" / "bin" / "python"
@@ -60,7 +60,7 @@ def test_resolve_training_python_prefers_mlx_capable_env(monkeypatch, tmp_path: 
 
     resolved = src.resolve_training_python(root)
 
-    assert resolved == py312
+    assert resolved == py314
 
 
 def test_resolve_training_python_falls_back_when_no_env_has_mlx(monkeypatch, tmp_path: Path) -> None:
@@ -78,4 +78,4 @@ def test_resolve_training_python_falls_back_when_no_env_has_mlx(monkeypatch, tmp
 
     resolved = src.resolve_training_python(root)
 
-    assert resolved == py312
+    assert resolved == py314

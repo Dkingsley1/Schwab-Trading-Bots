@@ -401,6 +401,59 @@ def test_runtime_gate_dashboard_manages_paper_soak_cold_lane_degradations(tmp_pa
     assert "daily_auto_verify_not_ok" in payload["overall"]["managed_attention"]
 
 
+def test_runtime_gate_dashboard_accepts_verified_bounded_transient_storage_drain(tmp_path: Path) -> None:
+    health_path = tmp_path / "governance" / "health" / "ingestion_storage_control_latest.json"
+    _write_json(
+        health_path,
+        {
+            "overall_status": "ready",
+            "severity": "stable",
+            "pressure_index": 0.62,
+            "continuous_run_soak_contract": {
+                "ready": False,
+                "soak_ready": False,
+                "blockers": ["steady_state_targets_not_clear"],
+            },
+            "bounded_recovery_contract": {
+                "route_verified": True,
+                "active_drain_progress": True,
+                "drain_delta_signal_observed": True,
+                "hard_gate_active": False,
+                "effective_hard_gate_active": False,
+            },
+            "backpressure": {
+                "raw_live": {
+                    "core_pending_lines": 2200,
+                    "total_pending_lines": 4100,
+                    "oldest_pending_age_seconds": 180.0,
+                }
+            },
+            "data_integrity": {
+                "sql_invalid_lines": 0,
+                "sql_overlay_invalid_lines": 0,
+                "sql_overlay_oversize_payloads": 0,
+                "sql_overlay_ops_write_failures": 0,
+            },
+            "writer_shedding": {"hard_breaches": [], "elevated_breaches": []},
+        },
+    )
+    artifacts = {
+        "ingestion_storage_control": {
+            "path": str(health_path),
+            "summary": {"overall_status": "ready", "severity": "stable", "pressure_index": 0.62},
+        }
+    }
+
+    assert runtime_gate_dashboard._ingestion_soak_ready_for_dashboard(artifacts) is True
+
+    payload = json.loads(health_path.read_text(encoding="utf-8"))
+    payload["bounded_recovery_contract"]["active_drain_progress"] = False
+    payload["bounded_recovery_contract"]["drain_delta_signal_observed"] = False
+    _write_json(health_path, payload)
+
+    assert runtime_gate_dashboard._ingestion_soak_ready_for_dashboard(artifacts) is False
+
+
 def test_runtime_gate_dashboard_resolves_recovered_nightly_resilience_and_artifact_freshness(tmp_path: Path) -> None:
     now = datetime.now(timezone.utc)
     health_root = tmp_path / "governance" / "health"
@@ -2257,3 +2310,49 @@ def test_health_gates_accepts_guarded_age_clean_sql_overlay_storage_control() ->
     assert override["active"] is True
     assert override["pending_lines_total"] == 0
     assert override["reason"] == "fresh_sql_overlay_clear"
+
+
+def test_health_gates_accepts_fresh_sql_shard_state_reconciliation_proof() -> None:
+    now = datetime.now(timezone.utc)
+
+    override = health_gates._storage_control_backpressure_override(
+        {
+            "timestamp_utc": now.isoformat(),
+            "overall_status": "ready",
+            "severity": "stable",
+            "backpressure": {
+                "overlay_adjusted": False,
+                "overlay_pressure_clear": False,
+                "effective_raw_live_source": "raw_live_backpressure",
+                "effective_raw_live": {
+                    "total_pending_lines": 1830,
+                    "core_pending_lines": 1612,
+                    "oldest_pending_age_seconds": 24.0,
+                    "artifact_stale_for_overlay_reconciliation": False,
+                    "sql_shard_state_reconciliation": {
+                        "active": True,
+                        "checked_top_rows": 21,
+                        "reconciled_source_count": 5,
+                        "pending_line_reduction": 23309,
+                    },
+                },
+            },
+            "data_integrity": {
+                "sql_overlay_invalid_lines": 0,
+                "sql_overlay_oversize_payloads": 0,
+                "sql_overlay_ops_write_failures": 0,
+            },
+            "steady_state": {
+                "targets": {
+                    "total_pending_lines": 15000,
+                    "core_pending_lines": 5000,
+                    "oldest_pending_age_seconds": 600,
+                }
+            },
+        }
+    )
+
+    assert override["active"] is True
+    assert override["pending_lines_total"] == 1830
+    assert override["shard_reconciliation_active"] is True
+    assert override["reason"] == "fresh_sql_shard_state_reconciled_queue_clear"

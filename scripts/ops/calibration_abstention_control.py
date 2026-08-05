@@ -142,16 +142,24 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
     for row in underacting:
         if not isinstance(row, dict):
             continue
-        acceptance_rate = max(_safe_float(row.get("acceptance_rate"), 0.0), 0.0)
+        acceptance_rate = max(_safe_float(row.get("acted_coverage", row.get("acceptance_rate")), 0.0), 0.0)
+        evidence_sufficient = bool(row.get("abstention_evidence_sufficient", False))
         recommendations.append(
             {
                 "bot_id": str(row.get("bot_id") or ""),
                 "family": _infer_family(str(row.get("bot_id") or "")),
-                "mode": "loosen",
+                "mode": "counterfactual_replay" if evidence_sufficient else "collect_evidence",
                 "current_acceptance_rate": round(acceptance_rate, 6),
-                "target_acceptance_rate": round(min(0.22, max(acceptance_rate * 1.15, 0.08)), 6),
+                "target_acceptance_rate": round(acceptance_rate, 6),
                 "confidence_threshold_uplift": 0.0,
-                "recommended_abstention_budget": round(max(0.0, 1.0 - min(0.22, max(acceptance_rate * 1.15, 0.08))), 6),
+                "recommended_abstention_budget": round(max(0.0, 1.0 - acceptance_rate), 6),
+                "abstention_evidence_sufficient": evidence_sufficient,
+                "direct_loosen_allowed": False,
+                "next_action": (
+                    "run_counterfactual_threshold_replay_and_require_positive_post_cost_expectancy"
+                    if evidence_sufficient
+                    else "collect_more_acted_outcomes_before_threshold_replay"
+                ),
             }
         )
 
@@ -223,16 +231,23 @@ def build_override_payload(control_payload: dict[str, Any], existing_overrides: 
     recommendations = control_payload.get("recommendations") if isinstance(control_payload.get("recommendations"), list) else []
     family_recommendations = control_payload.get("family_recommendations") if isinstance(control_payload.get("family_recommendations"), list) else []
     existing = existing_overrides if isinstance(existing_overrides, dict) else {}
+    retired_overrides: list[dict[str, str]] = []
     bot_overrides: dict[str, dict[str, Any]] = {
         str(bot_id): dict(value)
         for bot_id, value in (existing.get("bot_overrides") or {}).items()
-        if isinstance(value, dict)
+        if isinstance(value, dict) and str(value.get("mode") or "").strip().lower() != "loosen"
     }
     family_overrides: dict[str, dict[str, Any]] = {
         str(family): dict(value)
         for family, value in (existing.get("family_overrides") or {}).items()
-        if isinstance(value, dict)
+        if isinstance(value, dict) and str(value.get("mode") or "").strip().lower() != "loosen"
     }
+    for scope, values in (("bot", existing.get("bot_overrides") or {}), ("family", existing.get("family_overrides") or {})):
+        if not isinstance(values, dict):
+            continue
+        for key, value in values.items():
+            if isinstance(value, dict) and str(value.get("mode") or "").strip().lower() == "loosen":
+                retired_overrides.append({"scope": scope, "key": str(key), "reason": "unsafe_direct_loosen_retired"})
 
     for row in recommendations:
         if not isinstance(row, dict):
@@ -241,6 +256,8 @@ def build_override_payload(control_payload: dict[str, Any], existing_overrides: 
         if not bot_id:
             continue
         mode = str(row.get("mode") or "tighten").strip().lower()
+        if mode != "tighten":
+            continue
         uplift = _safe_float(row.get("confidence_threshold_uplift"), 0.0)
         bot_overrides[bot_id] = {
             "mode": mode,
@@ -257,6 +274,8 @@ def build_override_payload(control_payload: dict[str, Any], existing_overrides: 
         if not family:
             continue
         mode = str(row.get("mode") or "tighten").strip().lower()
+        if mode != "tighten":
+            continue
         uplift = _safe_float(row.get("confidence_threshold_uplift"), 0.0)
         family_overrides[family] = {
             "mode": mode,
@@ -270,6 +289,8 @@ def build_override_payload(control_payload: dict[str, Any], existing_overrides: 
         "schema_version": 1,
         "bot_overrides": bot_overrides,
         "family_overrides": family_overrides,
+        "retired_overrides": retired_overrides,
+        "direct_loosen_policy": "never_apply_without_counterfactual_replay_and_positive_post_cost_expectancy",
         "recommended_actions": _ordered_unique(
             [
                 "apply per-bot threshold uplifts first for active overacting bots",

@@ -395,13 +395,20 @@ def _launcher_fanout_certification(project_root: Path, launcher_health: dict[str
     )
     readiness_status = _lower(readiness.get("readiness_status"))
     status = _lower(payload.get("overall_status") or payload.get("status"))
+    complete_fanout = bool(
+        running > 0
+        and (expected <= 0 or running >= expected)
+        and problem <= 0
+    )
+    startup_complete = bool(
+        readiness_status in {"starting", "startup_grace"}
+        and complete_fanout
+    )
     ok = bool(
         not stale
         and status in READY_LIKE_STATUSES
-        and readiness_status in {"", "ready", "ok"}
-        and running > 0
-        and (expected <= 0 or running >= expected)
-        and problem <= 0
+        and (readiness_status in {"", "ready", "ok"} or startup_complete)
+        and complete_fanout
     )
     return {
         "ok": ok,
@@ -410,6 +417,7 @@ def _launcher_fanout_certification(project_root: Path, launcher_health: dict[str
         "stale": stale,
         "overall_status": status,
         "readiness_status": readiness_status,
+        "startup_complete_certification": startup_complete,
         "running_job_count": running,
         "expected_job_count": expected,
         "problem_job_count": int(problem),
@@ -616,6 +624,15 @@ def _runtime_guarded_ready_lane_guard(runtime: dict[str, Any]) -> dict[str, Any]
         allowed_hot_flags.update({"paper_execution_hot", "storage_writer_hot", "bot_owned_pressure_dominant"})
         if _safe_float(measurements.get("throttle_candidate_support_cpu_percent"), 0.0) <= 80.0:
             allowed_hot_flags.add("support_jobs_hot")
+        bounded_research_limit = _safe_float(
+            thresholds.get("max_guarded_ready_bounded_research_cpu_percent"),
+            80.0,
+        )
+        if (
+            _bool(measurements.get("research_hot_low_priority", False))
+            and _safe_float(measurements.get("research_training_cpu_percent"), 0.0) <= bounded_research_limit
+        ):
+            allowed_hot_flags.add("research_training_hot")
     if protected_lane_ready:
         allowed_hot_flags.add("bot_owned_pressure_dominant")
     if niced_support_ready and _bool(measurements.get("support_hot_low_priority", True)):
@@ -684,6 +701,12 @@ def _runtime_guarded_ready_lane_guard(runtime: dict[str, Any]) -> dict[str, Any]
             "hot_lanes": hot_lanes,
             "storage_writer_cooling_guarded_ready": storage_writer_ready,
             "bounded_protected_lane_guarded_ready": protected_lane_ready,
+            "research_hot_low_priority": _bool(measurements.get("research_hot_low_priority", False)),
+            "research_training_cpu_percent": _safe_float(measurements.get("research_training_cpu_percent"), 0.0),
+            "bounded_research_limit": _safe_float(
+                thresholds.get("max_guarded_ready_bounded_research_cpu_percent"),
+                80.0,
+            ),
             "storage_ready_for_runtime_advisory": storage_ready,
             "bot_owned_cpu_percent": bot_owned_raw,
             "bot_owned_non_operator_cpu_percent": bot_owned,

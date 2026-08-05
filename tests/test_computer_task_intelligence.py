@@ -119,7 +119,7 @@ def test_computer_task_intelligence_detects_music_dev_backlog_and_caps(tmp_path:
     assert "backlog_drain" in payload["task_profile"]["active_tasks"]
     assert env["SYSTEM_OPERATOR_MODE_REQUESTED"] == "daily_driver"
     assert env["TRAINING_RUNTIME_PAUSED_FOR_COMPUTER_TASK"] == "1"
-    assert env["BOT_COLLECTION_DUTY_CYCLE_MAX_ACTIVE_RATIO"] == "0.35"
+    assert env["BOT_COLLECTION_DUTY_CYCLE_MAX_ACTIVE_RATIO"] == "0.25"
     assert env["COMPUTER_TASK_FOREGROUND_HARDENING_ACTIVE"] == "1"
     assert env["BOT_CPU_SCHEDULER_INTENT"] == "daily_driver_no_background_writer"
     assert env["SQL_LINK_WRITER_BACKGROUND_POLICY"] == "0"

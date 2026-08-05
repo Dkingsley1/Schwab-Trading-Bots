@@ -1,0 +1,30 @@
+{
+  "schema_version": 1,
+  "tax_year": 2026,
+  "filing_status": "unknown",
+  "tax_residency": {
+    "country": "US",
+    "state": "unknown",
+    "locality": "unknown"
+  },
+  "taxable_ordinary_income_before_trading_usd": null,
+  "preferential_income_before_trading_usd": null,
+  "modified_adjusted_gross_income_before_trading_usd": null,
+  "net_investment_income_before_trading_usd": null,
+  "short_term_capital_loss_carryover_usd": null,
+  "long_term_capital_loss_carryover_usd": null,
+  "prior_year_total_tax_usd": null,
+  "projected_current_year_withholding_and_estimated_payments_usd": null,
+  "account_tax_treatment_by_label": {},
+  "state_tax_model": {
+    "status": "unconfigured",
+    "method": "unsupported",
+    "effective_rate": null
+  },
+  "facts_last_confirmed_at_utc": null,
+  "notes": [
+    "Unknown values are deliberate and block an exact estimate rather than being treated as zero.",
+    "Use taxable income after deductions for the baseline income fields.",
+    "Account labels must match the redacted labels in the account position study; never store account numbers here."
+  ]
+}

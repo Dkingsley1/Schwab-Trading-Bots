@@ -51,6 +51,47 @@ def test_system_drift_autopilot_repairs_blocked_surfaces(tmp_path: Path) -> None
     assert calls == [["./scripts/ops/opsctl.sh", "command-validity", "--apply", "--json"]]
 
 
+def test_system_drift_autopilot_publishes_final_guard_after_apply(tmp_path: Path, monkeypatch) -> None:
+    guards = [
+        {
+            "overall_status": "degraded",
+            "metrics": {"blocked_surface_count": 0, "degraded_surface_count": 1},
+            "surfaces": [
+                {
+                    "name": "commands_hygiene",
+                    "family": "command_surface",
+                    "status": "degraded",
+                    "repair_commands": [["./scripts/ops/opsctl.sh", "commands-hygiene", "--apply", "--json"]],
+                }
+            ],
+        },
+        {
+            "overall_status": "ready",
+            "ok": True,
+            "metrics": {"blocked_surface_count": 0, "degraded_surface_count": 0},
+            "surfaces": [],
+        },
+    ]
+
+    monkeypatch.setattr(src.system_drift_guard, "build_payload", lambda _project_root: guards.pop(0))
+    payload = src.build_payload(
+        tmp_path,
+        apply=True,
+        runner=lambda cmd, _root, _timeout: {
+            "cmd": cmd,
+            "rc": 0,
+            "payload": {"overall_status": "ready"},
+            "stdout_tail": "",
+            "stderr_tail": "",
+        },
+    )
+
+    published = tmp_path / "governance" / "health" / "system_drift_guard_latest.json"
+    assert payload["final_guard"]["published"] is True
+    assert published.exists()
+    assert '"overall_status": "ready"' in published.read_text(encoding="utf-8")
+
+
 def test_system_drift_autopilot_surfaces_operator_followup_when_no_safe_repair_exists(tmp_path: Path) -> None:
     def guard_builder(_project_root: Path) -> dict:
         return {

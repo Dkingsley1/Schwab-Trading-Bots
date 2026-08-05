@@ -343,6 +343,246 @@ def test_master_supervisor_manages_self_auditing_debt_during_guarded_paper(tmp_p
     assert infra_row["status"] == "advisory"
 
 
+def test_master_supervisor_manages_backlog_admission_debt_during_guarded_paper(tmp_path: Path, monkeypatch) -> None:
+    project_root = tmp_path / "project"
+    health = project_root / "governance" / "health"
+    monkeypatch.setenv("ONE_NUMBERS_ORIGINAL_START_DAY", "20260422")
+    _write_ready_fixture(project_root)
+    _write_json(
+        health / "health_fast_latest.json",
+        {
+            "strict_all_clear": True,
+            "operational_readiness": {
+                "guarded_paper": {"ok": True, "status": "ready", "blockers": []},
+                "live_execution": {"ok": False, "status": "blocked_read_only"},
+            },
+        },
+    )
+    _write_json(
+        health / "backlog_organizer_latest.json",
+        {
+            "timestamp_utc": "2099-04-23T20:00:00+00:00",
+            "overall_status": "blocked",
+            "ok": False,
+            "summary": {"guarded_paper_soak_green": True, "blocking_lane_count": 1},
+            "lanes": [
+                {"lane_id": "admission_contracts", "status": "blocked"},
+                {"lane_id": "promotion_training_quality", "status": "needs_work"},
+                {"lane_id": "runtime_pressure", "status": "ready"},
+                {"lane_id": "auth_runtime_separation", "status": "ready"},
+            ],
+        },
+    )
+
+    payload = supervisor.build_payload(project_root)
+    self_check = next(row for row in payload["checks"] if row["name"] == "self_auditing_infra_bots")
+    backlog_row = next(row for row in self_check["evidence"]["bots"] if row["name"] == "backlog_organizer")
+
+    assert payload["overall_status"] == "ready"
+    assert self_check["status"] == "ready"
+    assert backlog_row["status"] == "advisory"
+    assert backlog_row["paper_soak_advisory_only"] is True
+
+
+def test_master_supervisor_blocks_operational_backlog_lane_during_guarded_paper(tmp_path: Path, monkeypatch) -> None:
+    project_root = tmp_path / "project"
+    health = project_root / "governance" / "health"
+    monkeypatch.setenv("ONE_NUMBERS_ORIGINAL_START_DAY", "20260422")
+    _write_ready_fixture(project_root)
+    _write_json(
+        health / "health_fast_latest.json",
+        {
+            "strict_all_clear": True,
+            "operational_readiness": {
+                "guarded_paper": {"ok": True, "status": "ready", "blockers": []},
+                "live_execution": {"ok": False, "status": "blocked_read_only"},
+            },
+        },
+    )
+    _write_json(
+        health / "backlog_organizer_latest.json",
+        {
+            "timestamp_utc": "2099-04-23T20:00:00+00:00",
+            "overall_status": "blocked",
+            "ok": False,
+            "summary": {"guarded_paper_soak_green": True, "blocking_lane_count": 1},
+            "lanes": [{"lane_id": "runtime_pressure", "status": "blocked"}],
+        },
+    )
+
+    payload = supervisor.build_payload(project_root)
+    self_check = next(row for row in payload["checks"] if row["name"] == "self_auditing_infra_bots")
+    backlog_row = next(row for row in self_check["evidence"]["bots"] if row["name"] == "backlog_organizer")
+
+    assert payload["overall_status"] == "blocked"
+    assert self_check["status"] == "blocked"
+    assert backlog_row["status"] == "blocked"
+    assert backlog_row["paper_soak_advisory_only"] is False
+
+
+def test_master_supervisor_recomputes_self_audit_after_stale_blocker_is_superseded(tmp_path: Path, monkeypatch) -> None:
+    project_root = tmp_path / "project"
+    health = project_root / "governance" / "health"
+    monkeypatch.setenv("ONE_NUMBERS_ORIGINAL_START_DAY", "20260422")
+    _write_ready_fixture(project_root)
+    _write_json(
+        health / "health_fast_latest.json",
+        {
+            "strict_all_clear": True,
+            "operational_readiness": {
+                "guarded_paper": {"ok": True, "status": "ready", "blockers": []},
+                "live_execution": {"ok": False, "status": "blocked_read_only"},
+            },
+        },
+    )
+    _write_json(
+        health / "storage_backpressure_autopilot_latest.json",
+        {
+            "timestamp_utc": "2020-04-23T20:00:00+00:00",
+            "overall_status": "blocked",
+            "ok": False,
+            "repair_plan": [{"name": "storage_pressure"}],
+            "attempts": [{"rc": 0}],
+            "operator_followups": [],
+        },
+    )
+    _write_json(
+        health / "ingestion_storage_control_latest.json",
+        {
+            "overall_status": "ready",
+            "severity": "stable",
+            "pressure_index": 0.0,
+            "backpressure": {"total_pending_lines": 0},
+            "storage": {"backlog_drain_status": "idle"},
+        },
+    )
+
+    payload = supervisor.build_payload(project_root)
+    self_check = next(row for row in payload["checks"] if row["name"] == "self_auditing_infra_bots")
+    storage_row = next(
+        row for row in self_check["evidence"]["bots"] if row["name"] == "storage_backpressure_autopilot"
+    )
+
+    assert payload["overall_status"] == "ready"
+    assert self_check["status"] == "ready"
+    assert self_check["summary"].endswith("degraded=0 blocked=0")
+    assert storage_row["status"] == "advisory"
+    assert storage_row["stale_snapshot_superseded"] is True
+
+
+def test_master_supervisor_accepts_intentional_local_hot_storage_route(tmp_path: Path, monkeypatch) -> None:
+    project_root = tmp_path / "project"
+    health = project_root / "governance" / "health"
+    monkeypatch.setenv("ONE_NUMBERS_ORIGINAL_START_DAY", "20260422")
+    _write_ready_fixture(project_root)
+    _write_json(
+        health / "health_fast_latest.json",
+        {
+            "strict_all_clear": True,
+            "operational_readiness": {
+                "guarded_paper": {"ok": True, "status": "ready", "blockers": []},
+                "live_execution": {"ok": False, "status": "blocked_read_only"},
+            },
+        },
+    )
+    _write_json(
+        health / "storage_route_status_latest.json",
+        {
+            "mode": "local_fallback",
+            "certified_mode": "local_fallback",
+            "split_brain_conflicts": 0,
+            "route_verification": {"verification_state": "active_local_ready"},
+        },
+    )
+    _write_json(
+        health / "storage_mount_guard_latest.json",
+        {"external_required_for_hot_path": False, "hot_storage_available": True},
+    )
+
+    payload = supervisor.build_payload(project_root)
+
+    route = next(row for row in payload["checks"] if row["name"] == "external_drive_route_health")
+    assert payload["overall_status"] == "ready"
+    assert route["status"] == "ready"
+    assert route["evidence"]["intentional_local_hot_route"] is True
+
+
+def test_master_supervisor_ignores_managed_stale_governance_surface(tmp_path: Path, monkeypatch) -> None:
+    project_root = tmp_path / "project"
+    health = project_root / "governance" / "health"
+    monkeypatch.setenv("ONE_NUMBERS_ORIGINAL_START_DAY", "20260422")
+    _write_ready_fixture(project_root)
+    _write_json(
+        health / "system_drift_guard_latest.json",
+        {
+            "overall_status": "ready",
+            "ok": True,
+            "metrics": {
+                "blocked_surface_count": 0,
+                "degraded_surface_count": 0,
+                "stale_surface_count": 1,
+                "missing_surface_count": 0,
+            },
+            "surfaces": [{"name": "report_pdf_bundle", "stale": True, "managed_stale": True}],
+        },
+    )
+
+    payload = supervisor.build_payload(project_root)
+
+    freshness = next(row for row in payload["checks"] if row["name"] == "governance_artifact_freshness")
+    assert payload["overall_status"] == "ready"
+    assert freshness["status"] == "ready"
+    assert freshness["evidence"]["unmanaged_stale_surface_count"] == 0
+
+
+def test_master_supervisor_reconciles_its_own_degraded_drift_snapshot_for_strict_paper(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    health = project_root / "governance" / "health"
+    _write_json(
+        health / "health_fast_latest.json",
+        {
+            "strict_all_clear": True,
+            "operational_readiness": {
+                "guarded_paper": {"ok": True, "status": "ready"},
+                "live_execution": {"status": "blocked_read_only"},
+            },
+        },
+    )
+    _write_json(
+        health / "system_drift_guard_latest.json",
+        {
+            "overall_status": "degraded",
+            "ok": False,
+            "metrics": {
+                "blocked_surface_count": 0,
+                "degraded_surface_count": 1,
+                "stale_surface_count": 1,
+                "missing_surface_count": 0,
+            },
+            "surfaces": [
+                {
+                    "name": "master_infrastructure_supervisor",
+                    "status": "degraded",
+                    "stale": False,
+                    "managed_stale": False,
+                },
+                {
+                    "name": "report_pdf_bundle",
+                    "status": "ready",
+                    "stale": True,
+                    "managed_stale": True,
+                },
+            ],
+        },
+    )
+
+    freshness = supervisor._governance_freshness_check(project_root)
+
+    assert freshness["status"] == "ready"
+    assert freshness["evidence"]["self_referential_degraded_reconciled"] is True
+    assert freshness["evidence"]["degraded_surface_names"] == ["master_infrastructure_supervisor"]
+
+
 def test_master_supervisor_allows_operator_gated_command_validity(tmp_path: Path, monkeypatch) -> None:
     project_root = tmp_path / "project"
     monkeypatch.setenv("ONE_NUMBERS_ORIGINAL_START_DAY", "20260422")

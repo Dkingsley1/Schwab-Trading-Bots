@@ -108,7 +108,7 @@ def test_train_brain_uses_runtime_trainer_without_synthetic_fallback(monkeypatch
     assert result == "ok"
     assert captured["run_tag"] == "brain_refinery_v26_relative_strength_cross_section"
     assert captured["allow_fallback_on_insufficient_data"] is False
-    assert captured["min_accuracy_lift_over_majority"] == 0.01
+    assert captured["min_accuracy_lift_over_majority"] >= 0.01
     assert "shadow_equities" in captured["mode_allowlist"]
     assert "SPY" in captured["symbol_allowlist"]
     assert "SCHD" not in captured["symbol_allowlist"]

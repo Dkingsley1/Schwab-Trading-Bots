@@ -142,14 +142,22 @@ def main() -> int:
     parser.add_argument("--teacher-min-registry-accuracy", type=float, default=0.65)
     parser.add_argument("--teacher-min-registry-quality", type=float, default=0.75)
     parser.add_argument("--teacher-quality", default=str(PROJECT_ROOT / "governance" / "distillation" / "teacher_quality_latest.json"))
-    parser.add_argument("--training-quality", default=str(PROJECT_ROOT / "governance" / "health" / "training_quality_control_latest.json"))
+    parser.add_argument("--training-quality", default="")
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args()
 
     wf = _load_json(Path(args.walk_forward), default={})
     bots = (wf.get("bots") or {}) if isinstance(wf, dict) else {}
     registry = _load_json(Path(args.registry), default={})
-    training_quality = _load_json(Path(args.training_quality), default={})
+    training_quality_path = (
+        Path(args.training_quality)
+        if str(args.training_quality or "").strip()
+        else Path(args.registry).expanduser().resolve().parent
+        / "governance"
+        / "health"
+        / "training_quality_control_latest.json"
+    )
+    training_quality = _load_json(training_quality_path, default={})
     blocked_teacher_ids = _blocked_teacher_ids(training_quality)
     role_by_bot = _role_map(registry)
     curated_teachers = _curated_teacher_candidates(Path(args.teacher_quality))

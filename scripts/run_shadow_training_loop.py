@@ -33,14 +33,17 @@ except Exception:
 PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 PROJECT_ROOT_PATH = Path(PROJECT_ROOT)
 STORAGE_PRESSURE_OVERRIDE_PATH = PROJECT_ROOT_PATH / "config" / ".env.storage_pressure_override"
+LOCAL_STORAGE_RESERVE_OVERRIDE_PATH = PROJECT_ROOT_PATH / "config" / ".env.local_storage_reserve_override"
 HOT_LANE_RETENTION_OVERRIDE_PATH = PROJECT_ROOT_PATH / "config" / ".env.hot_lane_retention_override"
 STORAGE_OVERRIDE_PATH = PROJECT_ROOT_PATH / "config" / ".env.storage_override"
 RUNTIME_RESOURCE_GUARD_OVERRIDE_PATH = PROJECT_ROOT_PATH / "config" / ".env.runtime_resource_guard_override"
 DYNAMIC_STORAGE_OVERRIDE_PATHS = (
     STORAGE_PRESSURE_OVERRIDE_PATH,
-    HOT_LANE_RETENTION_OVERRIDE_PATH,
     STORAGE_OVERRIDE_PATH,
     RUNTIME_RESOURCE_GUARD_OVERRIDE_PATH,
+    LOCAL_STORAGE_RESERVE_OVERRIDE_PATH,
+    # Keep targeted hot-lane containment authoritative over broader profiles.
+    HOT_LANE_RETENTION_OVERRIDE_PATH,
 )
 _DYNAMIC_STORAGE_OVERRIDE_CACHE: Dict[str, Any] = {
     "checked_at_monotonic": 0.0,
@@ -106,6 +109,7 @@ from core.market_context_features import (
     summarize_structured_news_items,
 )
 from core.runtime_python import resolve_runtime_python, resolve_training_python
+from core.runtime_maintenance import maintenance_hold_snapshot
 from core.runtime_layers import (
     BackpressureController,
     CanaryRollout,
@@ -120,6 +124,16 @@ from core.fx_twelve_data_guard import (
     classify_twelve_data_failure,
     mark_twelve_data_cooldown,
     twelve_data_cooldown_status,
+)
+from core.provider_access_guard import (
+    activate_provider_cooldown,
+    load_shared_market_snapshot,
+    mark_provider_recovered,
+    provider_access_status,
+    provider_cooldown_seconds,
+    provider_http_status_code,
+    provider_request_slot,
+    write_shared_market_snapshot,
 )
 from core.path_registry import (
     build_shadow_context,
@@ -1808,13 +1822,21 @@ def _paper_runtime_controls_snapshot() -> Dict[str, Any]:
         symbol = str(row.get("symbol") or "").strip().upper()
         if not profile or not symbol:
             continue
-        net = float(
-            row.get(
-                "ending_net_pnl_total",
-                float(row.get("realized_pnl_total", 0.0) or 0.0) + float(row.get("unrealized_pnl_total", 0.0) or 0.0),
+        pnl_schema = int(row.get("paper_pnl_schema_version", 0) or 0)
+        if pnl_schema >= 2:
+            net = float(
+                row.get(
+                    "paper_profile_net_pnl_delta",
+                    row.get("paper_ledger_net_pnl_delta", row.get("post_cost_pnl_delta", 0.0)),
+                )
+                or 0.0
             )
-            or 0.0
-        )
+        else:
+            # Legacy rows lack scoped deltas; row-level outcomes avoid
+            # multiplying cumulative book snapshots once per execution.
+            net = float(row.get("realized_pnl", row.get("realized", 0.0)) or 0.0) + float(
+                row.get("unrealized_pnl", row.get("unrealized", 0.0)) or 0.0
+            )
         fill_bucket = str(row.get("expected_fill_quality_bucket") or "").strip().lower()
         slippage_gap = abs(float(row.get("slippage_gap_bps", 0.0) or 0.0))
         stats = aggregates.setdefault((profile, symbol), {"count": 0.0, "losses": 0.0, "net_total": 0.0, "fill_drag": 0.0})
@@ -4221,6 +4243,82 @@ def _market_snapshot_from_schwab(client: Any, symbol: str) -> Dict[str, float]:
         )
     )
     return out
+
+
+def _market_snapshot_from_schwab_guarded(client: Any, symbol: str) -> Dict[str, float]:
+    cache_ttl_seconds = max(
+        float(os.getenv("SCHWAB_SHARED_MARKET_SNAPSHOT_TTL_SECONDS", "3") or 3.0),
+        0.0,
+    )
+    cached = load_shared_market_snapshot(
+        PROJECT_ROOT,
+        "schwab",
+        symbol,
+        max_age_seconds=cache_ttl_seconds,
+    )
+    if cached is not None:
+        return {key: value for key, value in cached.items()}
+
+    access = provider_access_status(PROJECT_ROOT, "schwab")
+    if bool(access.get("active", False)):
+        raise RuntimeError(
+            "schwab_provider_cooldown_active "
+            f"status={int(access.get('status_code', 0) or 0)} "
+            f"remaining_seconds={int(access.get('remaining_seconds', 0) or 0)}"
+        )
+
+    slot_count = max(int(os.getenv("SCHWAB_PROVIDER_REQUEST_SLOTS", "4") or 4), 1)
+    slot_wait_seconds = max(
+        float(os.getenv("SCHWAB_PROVIDER_REQUEST_SLOT_WAIT_SECONDS", "20") or 20.0),
+        0.1,
+    )
+    with provider_request_slot(
+        PROJECT_ROOT,
+        "schwab",
+        symbol,
+        slot_count=slot_count,
+        wait_seconds=slot_wait_seconds,
+    ):
+        cached = load_shared_market_snapshot(
+            PROJECT_ROOT,
+            "schwab",
+            symbol,
+            max_age_seconds=cache_ttl_seconds,
+        )
+        if cached is not None:
+            return {key: value for key, value in cached.items()}
+
+        access = provider_access_status(PROJECT_ROOT, "schwab")
+        if bool(access.get("active", False)):
+            raise RuntimeError(
+                "schwab_provider_cooldown_active "
+                f"status={int(access.get('status_code', 0) or 0)} "
+                f"remaining_seconds={int(access.get('remaining_seconds', 0) or 0)}"
+            )
+
+        try:
+            snapshot = _market_snapshot_from_schwab(client, symbol)
+        except Exception as exc:
+            status_code = provider_http_status_code(exc)
+            if status_code in {401, 403, 429}:
+                activate_provider_cooldown(
+                    PROJECT_ROOT,
+                    "schwab",
+                    status_code=status_code,
+                    reason=str(exc),
+                    symbol=symbol,
+                    profile=_shadow_profile_name() or "default",
+                    domain=_shadow_domain_name(broker="schwab"),
+                )
+            raise
+
+        write_shared_market_snapshot(PROJECT_ROOT, "schwab", symbol, snapshot)
+        mark_provider_recovered(
+            PROJECT_ROOT,
+            "schwab",
+            evidence=f"market_snapshot_success:{str(symbol).strip().upper()}",
+        )
+        return snapshot
 
 
 
@@ -12981,6 +13079,82 @@ def _clear_critical_alert_latest(
     return {"cleared": True, "path": str(path)}
 
 
+_BROKER_TRUTH_ALERT_EVENTS = {
+    "broker_truth_reconcile",
+    "broker_access_degraded",
+    "broker_truth_unavailable",
+}
+
+
+def _broker_truth_alert_route(state: Dict[str, Any]) -> Dict[str, Any]:
+    mismatch_count = int(state.get("mismatch_count", 0) or 0)
+    if mismatch_count > 0:
+        return {
+            "event": "broker_truth_reconcile",
+            "message": "position_or_account_mismatch",
+            "severity": "critical",
+            "failure_class": "broker_truth_mismatch",
+            "status_code": 0,
+        }
+    if bool(state.get("ok", False)):
+        return {
+            "event": "",
+            "message": "",
+            "severity": "info",
+            "failure_class": "none",
+            "status_code": 0,
+        }
+
+    status_code = provider_http_status_code(state)
+    if status_code <= 0:
+        status_code = provider_http_status_code(state.get("error"))
+    soft_failure = bool(state.get("soft_failure", False))
+    soft_streak = int(state.get("soft_fail_streak", 0) or 0)
+    soft_grace = int(state.get("soft_fail_grace", 0) or 0)
+    persistent = bool(not soft_failure and (soft_grace <= 0 or soft_streak > soft_grace))
+
+    if status_code in {401, 403, 429}:
+        if status_code == 401:
+            failure_class = "broker_auth_rejected"
+        elif status_code == 403:
+            failure_class = "broker_access_denied"
+        else:
+            failure_class = "broker_rate_limited"
+        return {
+            "event": "broker_access_degraded",
+            "message": f"schwab_http_{status_code}_{failure_class}",
+            "severity": "critical" if persistent else "warn",
+            "failure_class": failure_class,
+            "status_code": int(status_code),
+        }
+
+    return {
+        "event": "broker_truth_unavailable",
+        "message": str(state.get("status") or "broker_truth_unavailable"),
+        "severity": "warn" if soft_failure else "critical",
+        "failure_class": "broker_truth_fetch_failure",
+        "status_code": int(status_code),
+    }
+
+
+def _clear_broker_truth_alert_latest(*, project_root: str, broker: str) -> Dict[str, Any]:
+    path = Path(_critical_alert_latest_path(project_root, broker))
+    payload = _load_json_dict(path)
+    event = str(payload.get("event") or "")
+    if event not in _BROKER_TRUTH_ALERT_EVENTS:
+        return {
+            "cleared": False,
+            "reason": "event_not_owned_by_broker_truth",
+            "path": str(path),
+            "event": event,
+        }
+    return _clear_critical_alert_latest(
+        project_root=project_root,
+        broker=broker,
+        event=event,
+    )
+
+
 def _broker_truth_latest_path(project_root: str, broker: str) -> str:
     ctx = _path_context(broker=broker)
     return os.path.join(project_root, "governance", "health", f"broker_truth_{ctx.key}_latest.json")
@@ -14061,10 +14235,17 @@ def _fetch_broker_truth_snapshot(
 
     if not bool(fetched.get("ok", False)):
         soft_failure = bool(fetched.get("soft_failure", False))
+        status_code = provider_http_status_code(fetched)
         out["ok"] = False
         out["status"] = "transient_error" if soft_failure else "error"
         out["source"] = "schwab_accounts_snapshot"
         out["error"] = str(fetched.get("error", "accounts_fetch_failed"))
+        out["status_code"] = int(status_code)
+        out["retryable"] = bool(fetched.get("retryable", False))
+        out["attempts_made"] = int(fetched.get("attempts_made", 0) or 0)
+        out["soft_failure"] = bool(soft_failure)
+        out["soft_fail_streak"] = int(fetched.get("soft_fail_streak", 0) or 0)
+        out["soft_fail_grace"] = int(fetched.get("soft_fail_grace", 0) or 0)
         shared_snapshot_cache_hit = bool(fetched.get("_shared_snapshot_cache_hit", False))
         if shared_snapshot_cache_hit:
             out["shared_snapshot_cache_hit"] = True
@@ -14074,10 +14255,16 @@ def _fetch_broker_truth_snapshot(
         if bool(fetched.get("_shared_snapshot_write_skipped", False)):
             out["shared_snapshot_write_skipped"] = True
             out["shared_snapshot_write_skip_reason"] = str(fetched.get("_shared_snapshot_write_skip_reason") or "")
+        if status_code in {401, 403, 429} and not shared_snapshot_cache_hit:
+            activate_provider_cooldown(
+                PROJECT_ROOT,
+                "schwab",
+                status_code=status_code,
+                reason=str(out.get("error") or "broker_truth_access_denied"),
+                profile=_shadow_profile_name() or "default",
+                domain=_shadow_domain_name(broker="schwab"),
+            )
         if soft_failure:
-            out["soft_failure"] = True
-            out["soft_fail_streak"] = int(fetched.get("soft_fail_streak", 0) or 0)
-            out["soft_fail_grace"] = int(fetched.get("soft_fail_grace", 0) or 0)
             if shared_snapshot_cache_hit and int(fetched.get("_shared_snapshot_cache_owner_pid", 0) or 0) != int(os.getpid()):
                 out["alert_suppressed"] = True
         return out
@@ -14269,6 +14456,65 @@ def _dynamic_storage_value(name: str, default: str = "") -> str:
     return str(raw or "").strip()
 
 
+def _compact_infrastructure_governance_rows(
+    rows: Iterable[Dict[str, Any]],
+    *,
+    max_rows: Optional[int] = None,
+) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
+    source_rows = [dict(row) for row in rows if isinstance(row, dict)]
+    if max_rows is None:
+        try:
+            max_rows = int(_dynamic_storage_value("MASTER_CONTROL_INFRA_ROWS_MAX", "64") or 64)
+        except Exception:
+            max_rows = 64
+    cap = max(min(int(max_rows), 256), 0)
+
+    def _margin(row: Dict[str, Any]) -> float:
+        try:
+            return abs(float(row.get("score", 0.0) or 0.0) - float(row.get("threshold", 0.0) or 0.0))
+        except Exception:
+            return 0.0
+
+    eligible = sorted(
+        (row for row in source_rows if bool(row.get("eligible_for_master_vote", False))),
+        key=lambda row: str(row.get("bot_id") or ""),
+    )
+    observers = sorted(
+        (row for row in source_rows if not bool(row.get("eligible_for_master_vote", False))),
+        key=lambda row: (-_margin(row), str(row.get("bot_id") or "")),
+    )
+    retained = (eligible + observers)[:cap]
+
+    digest = hashlib.sha256()
+    for row in sorted(source_rows, key=lambda item: str(item.get("bot_id") or "")):
+        digest.update(
+            (
+                f"{row.get('bot_id', '')}|{row.get('action', '')}|{row.get('score', '')}|"
+                f"{row.get('threshold', '')}|{int(bool(row.get('eligible_for_master_vote', False)))}|"
+                f"{row.get('lifecycle_state', '')}\n"
+            ).encode("utf-8")
+        )
+
+    action_counts = Counter(str(row.get("action") or "UNKNOWN").upper() for row in source_rows)
+    lifecycle_counts = Counter(str(row.get("lifecycle_state") or "unspecified") for row in source_rows)
+    contract = {
+        "mode": "bounded_infrastructure_governance_snapshot",
+        "source_row_count": len(source_rows),
+        "retained_row_count": len(retained),
+        "omitted_row_count": max(len(source_rows) - len(retained), 0),
+        "max_rows": cap,
+        "vote_eligible_source_count": len(eligible),
+        "all_vote_eligible_rows_retained": len(eligible) <= cap,
+        "action_counts": dict(sorted(action_counts.items())),
+        "lifecycle_counts": dict(sorted(lifecycle_counts.items())),
+        "source_digest_sha256": digest.hexdigest(),
+        "selection": "all_vote_eligible_then_largest_score_threshold_margin",
+        "decision_evaluation_used_full_rows": True,
+        "paper_execution_behavior_changed": False,
+    }
+    return retained, contract
+
+
 def _apply_runtime_research_self_nice() -> Dict[str, Any]:
     raw = (
         _dynamic_storage_value("RUNTIME_RESEARCH_TRAINING_NICE", "")
@@ -14304,6 +14550,8 @@ _HOT_CHANNEL_PRIMARY_TARGETS = {"runtime", "api", "loop_state", "gate", "ingress
 
 def _resolve_hot_channel_write_targets(path: str, *, channel: str) -> tuple[str, list[str]]:
     normalized_channel = str(channel or "").strip()
+    if normalized_channel == "risk" and not _dynamic_storage_flag("RISK_CHANNEL_MIRROR_ENABLED", False):
+        return path, []
     default_mirrors = default_channel_mirror_paths(path, project_root=PROJECT_ROOT, ctx=_path_context())
     if normalized_channel not in _HOT_CHANNEL_PRIMARY_TARGETS:
         return path, default_mirrors
@@ -14646,6 +14894,22 @@ def _normalize_runtime_symbol(broker: str, symbol: str) -> str:
     if str(broker or "").strip().lower() == "coinbase":
         return CoinbaseMarketDataClient.normalize_symbol(raw)
     return raw.upper()
+
+
+def _reconcile_provider_cooldown_deadline(
+    current_deadline: float,
+    provider_access: Dict[str, Any],
+    *,
+    now_ts: float,
+) -> float:
+    if bool(provider_access.get("active", False)):
+        return max(
+            float(current_deadline),
+            float(provider_access.get("cooldown_until_epoch", 0.0) or 0.0),
+        )
+    if str(provider_access.get("state") or "").strip().lower() == "ready":
+        return 0.0
+    return 0.0 if float(current_deadline) <= float(now_ts) else float(current_deadline)
 
 
 def _coinbase_runtime_prefix(profile: str) -> str:
@@ -15072,6 +15336,7 @@ def run_loop(
         raise RuntimeError(f"Unsupported market-data broker: {broker} supported={supported_text}")
     paper_execution_broker = normalize_broker_name(broker_runtime.broker_for_role("paper"))
 
+    os.environ["DATA_BROKER"] = broker
     os.environ["SHADOW_BROKER"] = broker
     os.environ["SHADOW_DOMAIN"] = _shadow_domain_name(broker=broker)
 
@@ -15284,22 +15549,21 @@ def run_loop(
     def _market_data_error_counts_as_anomaly(exc: Exception, *, default: bool) -> bool:
         if broker != "schwab":
             return bool(default)
-        text = str(exc)
-        match = re.search(r"status=([0-9]{3})", text)
-        status_code = match.group(1) if match else ""
-        if status_code in {"403", "429"} and not _env_flag("SCHWAB_QUOTE_HTTP_403_429_COUNT_AS_ANOMALY", "0"):
+        status_code = provider_http_status_code(exc)
+        if status_code in {401, 403, 429} and not _env_flag("SCHWAB_QUOTE_HTTP_403_429_COUNT_AS_ANOMALY", "0"):
             return False
         return bool(default)
 
     def _provider_cooldown_seconds_for_market_data_error(exc: Exception) -> int:
         if broker != "schwab":
             return 0
-        text = str(exc)
-        match = re.search(r"status=([0-9]{3})", text)
-        status_code = match.group(1) if match else ""
-        if status_code not in {"403", "429"}:
+        status_code = provider_http_status_code(exc)
+        if status_code not in {401, 403, 429}:
             return 0
-        return max(int(os.getenv("SCHWAB_QUOTE_HTTP_403_429_COOLDOWN_SECONDS", "180")), 15)
+        legacy_seconds = os.getenv("SCHWAB_QUOTE_HTTP_403_429_COOLDOWN_SECONDS")
+        if legacy_seconds:
+            return max(int(float(legacy_seconds)), 15)
+        return provider_cooldown_seconds("schwab", status_code)
 
     # Runtime layers: cache, circuit breaker, telemetry, checkpoint, backpressure, canary rollout.
     state_cache = StateCache(default_ttl_seconds=float(os.getenv("RUNTIME_CACHE_TTL_SECONDS", "2.0")))
@@ -16154,38 +16418,52 @@ def run_loop(
             )
 
             if bool(broker_truth_state.get("ok", False)):
-                _clear_critical_alert_latest(
+                _clear_broker_truth_alert_latest(
                     project_root=PROJECT_ROOT,
                     broker=broker,
-                    event="broker_truth_reconcile",
                 )
             elif not bool(broker_truth_state.get("ok", False)):
-                broker_truth_status = str(broker_truth_state.get("status", "broker_truth_failed") or "broker_truth_failed")
                 broker_truth_source = str(broker_truth_state.get("source", "") or "")
                 broker_truth_soft_failure = bool(broker_truth_state.get("soft_failure", False))
                 broker_truth_alert_suppressed = bool(broker_truth_state.get("alert_suppressed", False))
-                alert_severity = "warn" if broker_truth_soft_failure else "critical"
+                broker_truth_alert_route = _broker_truth_alert_route(broker_truth_state)
                 if broker_truth_alert_suppressed:
-                    _clear_critical_alert_latest(
-                        project_root=PROJECT_ROOT,
-                        broker=broker,
-                        event="broker_truth_reconcile",
-                    )
+                    latest_broker_alert = _load_json_dict(Path(_critical_alert_latest_path(PROJECT_ROOT, broker)))
+                    if (
+                        str(latest_broker_alert.get("event") or "") == "broker_truth_reconcile"
+                        and int(broker_truth_state.get("mismatch_count", 0) or 0) == 0
+                    ):
+                        _clear_critical_alert_latest(
+                            project_root=PROJECT_ROOT,
+                            broker=broker,
+                            event="broker_truth_reconcile",
+                        )
                 if not broker_truth_alert_suppressed:
+                    latest_broker_alert = _load_json_dict(Path(_critical_alert_latest_path(PROJECT_ROOT, broker)))
+                    if (
+                        str(latest_broker_alert.get("event") or "") in _BROKER_TRUTH_ALERT_EVENTS
+                        and str(latest_broker_alert.get("event") or "") != str(broker_truth_alert_route.get("event") or "")
+                    ):
+                        _clear_broker_truth_alert_latest(
+                            project_root=PROJECT_ROOT,
+                            broker=broker,
+                        )
                     _emit_critical_alert(
                         project_root=PROJECT_ROOT,
                         broker=broker,
-                        event="broker_truth_reconcile",
-                        message=broker_truth_status,
+                        event=str(broker_truth_alert_route.get("event") or "broker_truth_unavailable"),
+                        message=str(broker_truth_alert_route.get("message") or "broker_truth_unavailable"),
                         details={
                             "iter": int(iter_count),
                             "mismatch_count": int(broker_truth_state.get("mismatch_count", 0) or 0),
                             "source": broker_truth_source,
+                            "failure_class": str(broker_truth_alert_route.get("failure_class") or ""),
+                            "status_code": int(broker_truth_alert_route.get("status_code", 0) or 0),
                             "soft_failure": broker_truth_soft_failure,
                             "soft_fail_streak": int(broker_truth_state.get("soft_fail_streak", 0) or 0),
                             "soft_fail_grace": int(broker_truth_state.get("soft_fail_grace", 0) or 0),
                         },
-                        severity=alert_severity,
+                        severity=str(broker_truth_alert_route.get("severity") or "critical"),
                     )
                 if bool(broker_truth_state.get("mismatch_count", 0)):
                     print(
@@ -16291,14 +16569,21 @@ def run_loop(
             time.sleep(max(min(rem, effective_interval_seconds), 5))
             continue
 
+        shared_provider_access = provider_access_status(PROJECT_ROOT, broker) if broker == "schwab" else {}
+        market_data_provider_cooldown_until_ts = _reconcile_provider_cooldown_deadline(
+            market_data_provider_cooldown_until_ts,
+            shared_provider_access,
+            now_ts=time.time(),
+        )
         provider_cooldown_active = bool(time.time() < market_data_provider_cooldown_until_ts)
-        _log_gate("*", "market_data_provider_cooldown", not provider_cooldown_active, reason=("provider_http_403_429" if provider_cooldown_active else "clear"))
+        provider_cooldown_reason = "provider_http_401_403_429" if provider_cooldown_active else "clear"
+        _log_gate("*", "market_data_provider_cooldown", not provider_cooldown_active, reason=provider_cooldown_reason)
         if provider_cooldown_active:
             rem = int(market_data_provider_cooldown_until_ts - time.time())
-            print(f"[MarketDataProvider] paused reason=provider_http_403_429 remaining_s={max(rem, 0)}")
+            print(f"[MarketDataProvider] paused reason={provider_cooldown_reason} remaining_s={max(rem, 0)}")
             _record_snapshot_debug('*', 'market_data_provider_cooldown', remaining_seconds=max(rem, 0))
-            _set_loop_state("paused_market_data_provider_cooldown", reason="provider_http_403_429", remaining_seconds=max(rem, 0))
-            _publish_ingress_state(pause_gate="market_data_provider_cooldown", pause_reason="provider_http_403_429")
+            _set_loop_state("paused_market_data_provider_cooldown", reason=provider_cooldown_reason, remaining_seconds=max(rem, 0))
+            _publish_ingress_state(pause_gate="market_data_provider_cooldown", pause_reason=provider_cooldown_reason)
             time.sleep(max(min(rem, effective_interval_seconds), 10))
             continue
 
@@ -16546,7 +16831,7 @@ def run_loop(
                     if use_fx_realtime_quotes:
                         snap = _market_snapshot_from_twelve_data(sym)
                     elif broker == "schwab":
-                        snap = _market_snapshot_from_schwab(client, sym)
+                        snap = _market_snapshot_from_schwab_guarded(client, sym)
                     elif broker == "coinbase":
                         snap = _market_snapshot_from_coinbase(client, sym)
                     else:
@@ -17022,6 +17307,31 @@ def run_loop(
                             print(f"[CircuitBreaker] opened symbol={ctx_symbol} layer=context")
                         print(f"[Context] symbol={ctx_symbol} market_data_error={exc}")
 
+        if broker == "schwab":
+            shared_provider_access = provider_access_status(PROJECT_ROOT, "schwab")
+            market_data_provider_cooldown_until_ts = _reconcile_provider_cooldown_deadline(
+                market_data_provider_cooldown_until_ts,
+                shared_provider_access,
+                now_ts=time.time(),
+            )
+            if bool(shared_provider_access.get("active", False)):
+                rem = max(int(market_data_provider_cooldown_until_ts - time.time()), 0)
+                _set_loop_state(
+                    "paused_market_data_provider_cooldown",
+                    reason="provider_http_401_403_429",
+                    remaining_seconds=rem,
+                )
+                _publish_ingress_state(
+                    pause_gate="market_data_provider_cooldown",
+                    pause_reason="provider_http_401_403_429",
+                )
+                print(
+                    "[MarketDataProvider] context_fanout_stopped "
+                    f"reason=provider_http_401_403_429 remaining_s={rem}"
+                )
+                time.sleep(max(min(rem, effective_interval_seconds), 10))
+                continue
+
         live_macro_snapshot = _load_external_context_category("live_macro")
         official_macro_snapshot = _load_external_context_category("official_macro_context")
         tradingeconomics_snapshot = _load_external_context_category("tradingeconomics")
@@ -17102,7 +17412,6 @@ def run_loop(
             try:
                 mkt = _fetch_symbol_snapshot(symbol)
             except Exception as exc:
-                symbol_fail_counts[symbol] = symbol_fail_counts.get(symbol, 0) + 1
                 provider_cooldown_seconds = _provider_cooldown_seconds_for_market_data_error(exc)
                 if provider_cooldown_seconds > 0:
                     market_data_provider_cooldown_until_ts = max(
@@ -17110,9 +17419,24 @@ def run_loop(
                         time.time() + provider_cooldown_seconds,
                     )
                     print(
-                        f"[MarketDataProvider] cooldown reason=schwab_http_403_429 "
+                        f"[MarketDataProvider] cooldown reason=schwab_http_401_403_429 "
                         f"symbol={symbol} cooldown_s={provider_cooldown_seconds}"
                     )
+                    _record_anomaly_failure(
+                        "market_data_provider_access_denied",
+                        counts_as_anomaly=False,
+                        symbol=symbol,
+                    )
+                    _record_snapshot_debug(symbol, 'market_data_provider_cooldown', error=str(exc))
+                    _set_loop_state(
+                        "paused_market_data_provider_cooldown",
+                        reason="provider_http_401_403_429",
+                        symbol=symbol,
+                        error=str(exc),
+                    )
+                    break
+
+                symbol_fail_counts[symbol] = symbol_fail_counts.get(symbol, 0) + 1
                 _record_anomaly_failure(
                     "market_data_errors",
                     counts_as_anomaly=_market_data_error_counts_as_anomaly(
@@ -19479,6 +19803,9 @@ def run_loop(
                         _pnl_attribution_path(PROJECT_ROOT, broker=broker),
                         {
                             "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+                            "broker": broker,
+                            "profile": current_profile or "default",
+                            "domain": _shadow_domain_name(broker=broker),
                             "snapshot_id": snapshot_id,
                             "symbol": symbol,
                             "bot_id": row.get("bot_id"),
@@ -19488,12 +19815,16 @@ def run_loop(
                             "weight": row.get("weight"),
                             "return_1m": ret_1m,
                             "pnl_proxy": float(row.get("direction", 0.0)) * ret_1m * float(row.get("weight", 0.0)),
+                            "reused": bool(row.get("reused", False)),
                         },
                     )
                 _append_jsonl(
                     _pnl_attribution_path(PROJECT_ROOT, broker=broker),
                     {
                         "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+                        "broker": broker,
+                        "profile": current_profile or "default",
+                        "domain": _shadow_domain_name(broker=broker),
                         "snapshot_id": snapshot_id,
                         "symbol": symbol,
                         "bot_id": "grand_master_bot",
@@ -19576,6 +19907,9 @@ def run_loop(
 
             recs = _governance_recommendations(bots)
             latest_recs = recs
+            infra_governance_rows, infra_governance_contract = _compact_infrastructure_governance_rows(
+                infra_observer_rows
+            )
             gov_row = {
                 "timestamp_utc": datetime.now(timezone.utc).isoformat(),
                 "symbol": symbol,
@@ -19623,7 +19957,8 @@ def run_loop(
                     "throttle": float(shared_features.get("infra_risk_throttle_norm", 0.0) or 0.0),
                     "veto_active": float(shared_features.get("infra_veto_active", 0.0) or 0.0),
                 },
-                "infrastructure_rows": infra_observer_rows,
+                "infrastructure_rows": infra_governance_rows,
+                "infrastructure_row_contract": infra_governance_contract,
                 "news_features": {k: float(shared_features.get(k, 0.0) or 0.0) for k in _NEWS_FEATURE_KEYS},
                 "options_chain_features": {k: float(shared_features.get(k, 0.0) or 0.0) for k in OPTIONS_FEATURE_KEYS},
                 "futures_features": {k: float(shared_features.get(k, 0.0) or 0.0) for k in FUTURES_FEATURE_KEYS},
@@ -20056,6 +20391,13 @@ def main() -> None:
         help="Minutes to wait before retrying a quarantined symbol.",
     )
     args = parser.parse_args()
+    maintenance_hold = maintenance_hold_snapshot(PROJECT_ROOT_PATH)
+    if bool(maintenance_hold.get("active", False)):
+        print(
+            "RUNTIME_MAINTENANCE_HOLD=1 set; refusing to start shadow loop. "
+            f"reason={maintenance_hold.get('reason', 'runtime_maintenance')}"
+        )
+        return
     nice_result = _apply_runtime_research_self_nice()
     if bool(nice_result.get("applied", False)):
         print(

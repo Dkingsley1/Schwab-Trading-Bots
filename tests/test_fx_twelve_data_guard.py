@@ -16,6 +16,8 @@ def test_classify_twelve_data_failure_detects_daily_quota() -> None:
         == "daily_quota"
     )
     assert classify_twelve_data_failure(code="429", message="Too many requests") == "rate_limit"
+    assert classify_twelve_data_failure(code="401", message="HTTP Error 401: Unauthorized") == "auth"
+    assert classify_twelve_data_failure(code="403", message="Forbidden") == "auth"
 
 
 def test_mark_twelve_data_cooldown_uses_next_reset(monkeypatch, tmp_path) -> None:
@@ -38,3 +40,24 @@ def test_mark_twelve_data_cooldown_uses_next_reset(monkeypatch, tmp_path) -> Non
     assert state["remaining_seconds"] > 0
     persisted = twelve_data_cooldown_status(tmp_path, now_ts=now_dt.timestamp())
     assert persisted["active"] is True
+
+
+def test_mark_twelve_data_auth_failure_uses_long_bounded_cooldown(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("FX_TWELVE_DATA_AUTH_COOLDOWN_SECONDS", "7200")
+    now_dt = datetime(2026, 8, 4, 23, 0, tzinfo=timezone.utc)
+
+    state = mark_twelve_data_cooldown(
+        project_root=tmp_path,
+        kind="auth",
+        code="401",
+        message="HTTP Error 401: Unauthorized",
+        symbol="EURUSD",
+        source="test",
+        now_ts=now_dt.timestamp(),
+    )
+
+    assert state["active"] is True
+    assert state["kind"] == "auth"
+    assert state["credential_action_required"] is True
+    assert state["retry_policy"] == "credential_fix_or_bounded_cooldown"
+    assert state["remaining_seconds"] == 7200.0

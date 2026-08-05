@@ -2,11 +2,12 @@ from __future__ import annotations
 
 import glob
 import gzip
+import hashlib
 import json
 import math
 import os
 import sys
-from collections import defaultdict
+from collections import Counter, defaultdict
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
@@ -409,10 +410,15 @@ def _runtime_strategy_priority(strategy: Any, metadata: Mapping[str, Any] | None
 def _runtime_row_mode(row: Mapping[str, Any], metadata: Mapping[str, Any] | None = None) -> str:
     metadata = metadata if isinstance(metadata, Mapping) else {}
     explicit = str(row.get("mode") or metadata.get("mode") or "").strip().lower()
+    profile = str(row.get("shadow_profile") or metadata.get("source_profile") or "").strip().lower()
+    shadow_domain = str(metadata.get("shadow_domain") or "").strip().lower()
+    if explicit == "shadow" and shadow_domain == "crypto":
+        if "future" in profile:
+            return "shadow_crypto_futures_crypto"
+        return "shadow_crypto"
     if explicit:
         return explicit
     broker = str(row.get("broker") or "").strip().lower()
-    profile = str(row.get("shadow_profile") or "").strip().lower()
     if broker == "coinbase":
         if "future" in profile:
             return "shadow_crypto_futures_crypto"
@@ -1041,6 +1047,8 @@ def _recent_decision_paths(project_root: Path, *, lookback_days: int) -> List[Pa
         root / "decision_explanations" / "shadow*" / "decision_explanations_*.jsonl.gz",
         root / "decision_explanations" / "shadow*" / "latest_decisions.log",
         root / "decision_explanations" / "shadow*" / "latest_decisions.log.gz",
+        root / "decisions" / "*" / "trade_decisions_*.jsonl",
+        root / "decisions" / "*" / "trade_decisions_*.jsonl.gz",
         root / "governance" / "channels" / "decision" / "*" / "decision_*.jsonl",
         root / "governance" / "channels" / "decision" / "*" / "decision_*.jsonl.gz",
     ]
@@ -1248,6 +1256,10 @@ def _runtime_sqlite_like_patterns(*, lookback_days: int) -> List[str]:
         f"decision_explanations/%/decision_explanations_{(now_utc - timedelta(days=offset)).strftime('%Y%m%d')}.jsonl%"
         for offset in range(day_count)
     )
+    patterns.extend(
+        f"decisions/%/trade_decisions_{(now_utc - timedelta(days=offset)).strftime('%Y%m%d')}.jsonl%"
+        for offset in range(day_count)
+    )
     patterns.append("decision_explanations/%/latest_decisions.log%")
     return patterns
 
@@ -1404,6 +1416,207 @@ def future_return(sequence: Sequence[RuntimeObservation], idx: int, horizon: int
     if curr_price <= 0.0 or fut_price <= 0.0:
         return 0.0
     return (fut_price / max(curr_price, 1e-8)) - 1.0
+
+
+def _runtime_observation_timestamp(observation: Mapping[str, Any]) -> Optional[datetime]:
+    timestamp = _parse_ts(observation.get("timestamp_utc"))
+    if timestamp is not None:
+        return timestamp
+    try:
+        epoch = float(observation.get("ts_epoch"))
+    except Exception:
+        return None
+    if epoch <= 0.0 or not math.isfinite(epoch):
+        return None
+    return datetime.fromtimestamp(epoch, tz=timezone.utc)
+
+
+def _runtime_contract_outcome_horizon(
+    sequence: Sequence[RuntimeObservation],
+    idx: int,
+    configured_horizon: int,
+    *,
+    minimum_maturity_seconds: float,
+    maximum_maturity_seconds: float,
+) -> Tuple[Optional[int], str]:
+    base_horizon = max(int(configured_horizon), 1)
+    minimum_seconds = max(float(minimum_maturity_seconds), 0.0)
+    maximum_seconds = max(float(maximum_maturity_seconds), 0.0)
+    if minimum_seconds <= 0.0:
+        return base_horizon, ""
+
+    anchor_ts = _runtime_observation_timestamp(sequence[idx])
+    if anchor_ts is None:
+        return base_horizon, ""
+    for outcome_idx in range(idx + base_horizon, len(sequence)):
+        outcome_ts = _runtime_observation_timestamp(sequence[outcome_idx])
+        if outcome_ts is None:
+            continue
+        maturity_seconds = float((outcome_ts - anchor_ts).total_seconds())
+        if maturity_seconds < minimum_seconds:
+            continue
+        if maximum_seconds > 0.0 and maturity_seconds > maximum_seconds:
+            return None, "label_maturity_after_contract_maximum"
+        return outcome_idx - idx, ""
+    return None, "label_horizon_not_mature_for_contract"
+
+
+def runtime_label_evidence(
+    sequence: Sequence[RuntimeObservation],
+    idx: int,
+    horizon: int,
+    *,
+    expected_mode: str = "",
+    expected_symbol: str = "",
+    label_owner_id: str = "",
+    semantic_horizon: str = "",
+    minimum_maturity_seconds: float = 0.0,
+    maximum_maturity_seconds: float = 0.0,
+    label_contract_sha256: str = "",
+) -> Dict[str, Any]:
+    """Validate and identify the point-in-time evidence behind one label."""
+    h = max(int(horizon), 1)
+    reasons: List[str] = []
+    if idx < 0 or (idx + h) >= len(sequence):
+        return {
+            "eligible": False,
+            "reasons": ["label_horizon_not_mature"],
+            "lineage_sha256": "",
+            "maturity_seconds": 0.0,
+        }
+
+    anchor = sequence[idx]
+    outcome = sequence[idx + h]
+    anchor_ts = _runtime_observation_timestamp(anchor)
+    outcome_ts = _runtime_observation_timestamp(outcome)
+    if anchor_ts is None:
+        reasons.append("missing_feature_timestamp")
+    if outcome_ts is None:
+        reasons.append("missing_label_maturity_timestamp")
+    maturity_seconds = 0.0
+    if anchor_ts is not None and outcome_ts is not None:
+        maturity_seconds = float((outcome_ts - anchor_ts).total_seconds())
+        if maturity_seconds <= 0.0:
+            reasons.append("noncausal_label_maturity")
+        minimum_seconds = max(float(minimum_maturity_seconds), 0.0)
+        maximum_seconds = max(float(maximum_maturity_seconds), 0.0)
+        if minimum_seconds > 0.0 and maturity_seconds < minimum_seconds:
+            reasons.append("label_maturity_before_contract_minimum")
+        if maximum_seconds > 0.0 and maturity_seconds > maximum_seconds:
+            reasons.append("label_maturity_after_contract_maximum")
+
+    expected_mode_norm = str(expected_mode or "").strip().lower()
+    expected_symbol_norm = str(expected_symbol or "").strip().upper()
+    anchor_mode = str(anchor.get("mode") or expected_mode_norm).strip().lower()
+    outcome_mode = str(outcome.get("mode") or expected_mode_norm).strip().lower()
+    anchor_symbol = str(anchor.get("symbol") or expected_symbol_norm).strip().upper()
+    outcome_symbol = str(outcome.get("symbol") or expected_symbol_norm).strip().upper()
+    if expected_mode_norm and (anchor_mode != expected_mode_norm or outcome_mode != expected_mode_norm):
+        reasons.append("cross_mode_label_join")
+    if expected_symbol_norm and (anchor_symbol != expected_symbol_norm or outcome_symbol != expected_symbol_norm):
+        reasons.append("cross_symbol_label_join")
+    if anchor_mode and outcome_mode and anchor_mode != outcome_mode:
+        reasons.append("cross_mode_label_join")
+    if anchor_symbol and outcome_symbol and anchor_symbol != outcome_symbol:
+        reasons.append("cross_symbol_label_join")
+
+    anchor_snapshot_id = str(anchor.get("snapshot_id") or "").strip()
+    outcome_snapshot_id = str(outcome.get("snapshot_id") or "").strip()
+    if not anchor_snapshot_id:
+        reasons.append("missing_feature_snapshot_id")
+    if not outcome_snapshot_id:
+        reasons.append("missing_label_snapshot_id")
+    if anchor_snapshot_id and outcome_snapshot_id and anchor_snapshot_id == outcome_snapshot_id:
+        reasons.append("duplicate_snapshot_label_join")
+
+    anchor_price = observation_feature(anchor, "last_price", 0.0)
+    outcome_price = observation_feature(outcome, "last_price", 0.0)
+    if anchor_price <= 0.0:
+        reasons.append("invalid_feature_price")
+    if outcome_price <= 0.0:
+        reasons.append("invalid_label_price")
+
+    reasons = sorted(set(reasons))
+    lineage_payload = {
+        "schema_version": "runtime_label_evidence_v2",
+        "label_owner_id": str(label_owner_id or "").strip().lower(),
+        "label_contract_sha256": str(label_contract_sha256 or "").strip().lower(),
+        "semantic_horizon": str(semantic_horizon or "").strip().lower(),
+        "minimum_maturity_seconds": round(max(float(minimum_maturity_seconds), 0.0), 6),
+        "maximum_maturity_seconds": round(max(float(maximum_maturity_seconds), 0.0), 6),
+        "mode": anchor_mode or expected_mode_norm,
+        "symbol": anchor_symbol or expected_symbol_norm,
+        "feature_timestamp_utc": anchor_ts.isoformat() if anchor_ts is not None else "",
+        "label_matured_at_utc": outcome_ts.isoformat() if outcome_ts is not None else "",
+        "feature_snapshot_id": anchor_snapshot_id,
+        "label_snapshot_id": outcome_snapshot_id,
+        "horizon_rows": h,
+    }
+    lineage_sha256 = hashlib.sha256(
+        json.dumps(lineage_payload, ensure_ascii=True, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+    return {
+        **lineage_payload,
+        "eligible": not reasons,
+        "reasons": reasons,
+        "lineage_sha256": lineage_sha256,
+        "maturity_seconds": round(max(maturity_seconds, 0.0), 6),
+    }
+
+
+def _runtime_label_evidence_summary(
+    *,
+    candidate_count: int,
+    valid_candidate_count: int,
+    accepted_count: int,
+    rejected_candidate_count: int,
+    selected_training_sample_count: int,
+    rejection_counts: Mapping[str, int],
+    maturity_seconds: Sequence[float],
+    lineage_hashes: Sequence[str],
+    effective_horizon_rows: Sequence[int],
+    label_contract: Mapping[str, Any] | None,
+    label_owner_id: str,
+) -> Dict[str, Any]:
+    maturity = np.asarray([float(value) for value in maturity_seconds if float(value) >= 0.0], dtype=np.float64)
+    hashes = [str(value) for value in lineage_hashes if str(value)]
+    effective_horizons = np.asarray([int(value) for value in effective_horizon_rows if int(value) > 0], dtype=np.int64)
+    objective_class = str((label_contract or {}).get("objective_class") or "market_outcome")
+    horizon_policy = (label_contract or {}).get("label_horizon_policy")
+    horizon_policy = dict(horizon_policy) if isinstance(horizon_policy, Mapping) else {}
+    rejection_reason_occurrence_count = int(sum(int(value) for value in rejection_counts.values()))
+    return {
+        "schema_version": "runtime_label_evidence_v2",
+        "label_owner_id": str(label_owner_id or "").strip().lower(),
+        "objective_class": objective_class,
+        "semantic_horizon": str((label_contract or {}).get("primary_horizon") or horizon_policy.get("semantic_horizon") or ""),
+        "horizon_enforcement_mode": str(horizon_policy.get("enforcement_mode") or "configured_row_horizon"),
+        "minimum_maturity_seconds_required": int((label_contract or {}).get("minimum_label_maturity_seconds", horizon_policy.get("minimum_maturity_seconds", 0)) or 0),
+        "maximum_maturity_seconds_allowed": int((label_contract or {}).get("maximum_label_maturity_seconds", horizon_policy.get("maximum_maturity_seconds", 0)) or 0),
+        "candidate_count": int(candidate_count),
+        "point_in_time_valid_candidate_count": int(valid_candidate_count),
+        "accepted_label_count": int(accepted_count),
+        "accepted_materialized_label_count": int(accepted_count),
+        "selected_training_sample_count": int(selected_training_sample_count),
+        "unmaterialized_after_evidence_count": max(int(valid_candidate_count) - int(accepted_count), 0),
+        "rejected_evidence_count": int(rejected_candidate_count),
+        "rejected_evidence_candidate_count": int(rejected_candidate_count),
+        "rejection_reason_occurrence_count": rejection_reason_occurrence_count,
+        "rejection_counts": dict(sorted((str(key), int(value)) for key, value in rejection_counts.items())),
+        "lineage_record_count": len(hashes),
+        "unique_lineage_count": len(set(hashes)),
+        "lineage_collision_count": max(len(hashes) - len(set(hashes)), 0),
+        "maturity_seconds_min": round(float(np.min(maturity)), 6) if maturity.size else 0.0,
+        "maturity_seconds_median": round(float(np.median(maturity)), 6) if maturity.size else 0.0,
+        "maturity_seconds_max": round(float(np.max(maturity)), 6) if maturity.size else 0.0,
+        "effective_horizon_rows_min": int(np.min(effective_horizons)) if effective_horizons.size else 0,
+        "effective_horizon_rows_median": round(float(np.median(effective_horizons)), 6) if effective_horizons.size else 0.0,
+        "effective_horizon_rows_max": int(np.max(effective_horizons)) if effective_horizons.size else 0,
+        "point_in_time_guard_enforced": True,
+        "invalid_evidence_admitted": 0,
+        "training_eligible": bool(accepted_count > 0 and objective_class == "market_outcome"),
+        "policy": "reject invalid label evidence; never convert missing or noncausal outcomes into class zero",
+    }
 
 
 def _label_repair_direction_label(
@@ -1912,6 +2125,12 @@ def load_runtime_observation_sequences(
     mode_allow = {str(x).strip().lower() for x in (mode_allowlist or []) if str(x).strip()}
     symbol_allow = {str(x).strip().upper() for x in (symbol_allowlist or []) if str(x).strip()}
     gap_fill_context = _load_runtime_gap_fill_context(root)
+    sidecar_paths = _recent_decision_paths(root, lookback_days=max(int(lookback_days), 1))
+    sidecar_max_rows = max(int(os.getenv("RUNTIME_TRAIN_PRICE_SIDECAR_MAX_ROWS", "200000") or 200000), 1000)
+    price_sidecar = _build_runtime_price_sidecar_from_rows(
+        _iter_runtime_price_sidecar_rows(sidecar_paths, max_rows=sidecar_max_rows),
+        max_rows=sidecar_max_rows,
+    )
     effective_prefer_sqlite = _env_flag("RUNTIME_TRAIN_PREFER_SQLITE", False) if prefer_sqlite is None else bool(prefer_sqlite)
 
     if allow_snapshot and _env_flag("RUNTIME_TRAIN_USE_SNAPSHOT", False):
@@ -1984,10 +2203,17 @@ def load_runtime_observation_sequences(
         metadata = row.get("metadata") if isinstance(row.get("metadata"), dict) else {}
         if not metadata:
             metadata = dict(_runtime_row_metadata(row))
-        if str(metadata.get("layer") or "").strip().lower() != "grand_master":
+        layer = str(metadata.get("layer") or "").strip().lower()
+        trusted_runtime_layer = (
+            layer == "grand_master"
+            or "master" in layer
+            or layer == "sub_bot_paper_mirror"
+        )
+        if not trusted_runtime_layer:
             continue
         strategy = _runtime_row_strategy(row, metadata)
-        if strategy not in _ROOT_STRATEGY_PRIORITY:
+        strategy_priority = _runtime_strategy_priority(strategy, metadata)
+        if strategy_priority is None:
             continue
 
         ts = _parse_ts(row.get("timestamp_utc"))
@@ -2006,21 +2232,30 @@ def load_runtime_observation_sequences(
         if ("market_data_ok" in gates) and (not bool(gates.get("market_data_ok"))):
             continue
 
+        snapshot_ids = _runtime_snapshot_id_candidates(row, metadata)
         features = _runtime_row_features(row)
         price = _safe_float(features.get("last_price"), 0.0)
         if price <= 0.0:
             price = _runtime_row_price(row, features)
         if price <= 0.0:
+            sidecar_entry = _lookup_runtime_sidecar_context(
+                price_sidecar,
+                symbol=symbol,
+                snapshot_ids=snapshot_ids,
+                ts=ts,
+            )
+            features = _runtime_features_with_sidecar_context(features, sidecar_entry)
+            price = _runtime_row_price(row, features)
+        if price <= 0.0:
             continue
 
-        snapshot_ids = _runtime_snapshot_id_candidates(row, metadata)
         snapshot_id = str(snapshot_ids[0] if snapshot_ids else "").strip()
         if not snapshot_id:
             snapshot_id = f"{symbol}:{ts.isoformat()}"
 
         obs = {
             "strategy": strategy,
-            "strategy_priority": _ROOT_STRATEGY_PRIORITY[strategy],
+            "strategy_priority": int(strategy_priority),
             "snapshot_id": snapshot_id,
             "ts_epoch": float(ts.timestamp()),
             "price": price,
@@ -2274,6 +2509,8 @@ def make_runtime_windowed_dataset(
     sequences: RuntimeSequenceMap,
     feature_builder: RuntimeFeatureBuilder,
     label_builder: RuntimeLabelBuilder,
+    label_contract: Optional[Mapping[str, Any]] = None,
+    label_owner_id: str = "",
     sample_filter: Optional[RuntimeSampleFilter] = None,
     confidence_builder: Optional[RuntimeConfidenceBuilder] = None,
     min_confidence: float = 0.0,
@@ -2304,15 +2541,76 @@ def make_runtime_windowed_dataset(
     skipped_low_confidence = 0
     repaired_labels = 0
     feature_dim = 0
+    evidence_candidate_count = 0
+    evidence_valid_candidate_count = 0
+    evidence_rejected_candidate_count = 0
+    evidence_rejection_counts: Counter[str] = Counter()
+    accepted_maturity_seconds: List[float] = []
+    accepted_lineage_hashes: List[str] = []
+    accepted_lineage_set: set[str] = set()
+    accepted_effective_horizons: List[int] = []
+    objective_class = str((label_contract or {}).get("objective_class") or "market_outcome").strip().lower()
+    horizon_policy = (label_contract or {}).get("label_horizon_policy")
+    horizon_policy = dict(horizon_policy) if isinstance(horizon_policy, Mapping) else {}
+    semantic_horizon = str((label_contract or {}).get("primary_horizon") or horizon_policy.get("semantic_horizon") or "")
+    minimum_maturity_seconds = max(
+        _safe_float((label_contract or {}).get("minimum_label_maturity_seconds", horizon_policy.get("minimum_maturity_seconds", 0)), 0.0),
+        0.0,
+    )
+    maximum_maturity_seconds = max(
+        _safe_float((label_contract or {}).get("maximum_label_maturity_seconds", horizon_policy.get("maximum_maturity_seconds", 0)), 0.0),
+        0.0,
+    )
+    label_contract_sha256 = str((label_contract or {}).get("contract_sha256") or "")
 
     for (mode_key, symbol_key), rows in sequences.items():
         if len(rows) < (w + h):
             continue
         eligible_sequences += 1
         for idx in range(w - 1, len(rows) - h, stride):
+            evidence_candidate_count += 1
+            if objective_class != "market_outcome":
+                evidence_rejected_candidate_count += 1
+                evidence_rejection_counts["objective_requires_non_market_outcome"] += 1
+                continue
+            effective_horizon, horizon_rejection_reason = _runtime_contract_outcome_horizon(
+                rows,
+                idx,
+                h,
+                minimum_maturity_seconds=minimum_maturity_seconds,
+                maximum_maturity_seconds=maximum_maturity_seconds,
+            )
+            if effective_horizon is None:
+                evidence_rejected_candidate_count += 1
+                evidence_rejection_counts[horizon_rejection_reason or "label_horizon_not_mature_for_contract"] += 1
+                continue
+            evidence = runtime_label_evidence(
+                rows,
+                idx,
+                effective_horizon,
+                expected_mode=str(mode_key),
+                expected_symbol=str(symbol_key),
+                label_owner_id=label_owner_id,
+                semantic_horizon=semantic_horizon,
+                minimum_maturity_seconds=minimum_maturity_seconds,
+                maximum_maturity_seconds=maximum_maturity_seconds,
+                label_contract_sha256=label_contract_sha256,
+            )
+            if not bool(evidence.get("eligible", False)):
+                evidence_rejected_candidate_count += 1
+                reasons = evidence.get("reasons") if isinstance(evidence.get("reasons"), list) else []
+                for reason in reasons or ["invalid_label_evidence"]:
+                    evidence_rejection_counts[str(reason)] += 1
+                continue
+            lineage_sha256 = str(evidence.get("lineage_sha256") or "")
+            if not lineage_sha256 or lineage_sha256 in accepted_lineage_set:
+                evidence_rejected_candidate_count += 1
+                evidence_rejection_counts["duplicate_label_lineage"] += 1
+                continue
+            evidence_valid_candidate_count += 1
             if sample_filter is not None and not bypass_sample_filter:
                 try:
-                    include_sample = bool(sample_filter(rows, idx, h))
+                    include_sample = bool(sample_filter(rows, idx, effective_horizon))
                 except Exception:
                     include_sample = False
                 if not include_sample:
@@ -2322,7 +2620,7 @@ def make_runtime_windowed_dataset(
             confidence = 1.0
             if confidence_builder is not None:
                 try:
-                    confidence = _safe_float(confidence_builder(rows, idx, h), 0.0)
+                    confidence = _safe_float(confidence_builder(rows, idx, effective_horizon), 0.0)
                 except Exception:
                     confidence = 0.0
                 confidence = min(max(confidence, 0.0), 1.0)
@@ -2343,13 +2641,13 @@ def make_runtime_windowed_dataset(
             if not per_step:
                 continue
 
-            label = label_builder(rows, idx, h)
+            label = label_builder(rows, idx, effective_horizon)
             if label is None or (not math.isfinite(float(label))):
                 if fallback_direction_label:
                     label = _label_repair_direction_label(
                         rows,
                         idx,
-                        h,
+                        effective_horizon,
                         min_abs_return=fallback_min_abs_return,
                     )
                     if label is not None and math.isfinite(float(label)):
@@ -2361,7 +2659,12 @@ def make_runtime_windowed_dataset(
             sample = np.concatenate(per_step, axis=0)
             samples.append(sample.astype(np.float32))
             labels.append(float(label))
-            anchor_ts.append(float(rows[idx].get("ts_epoch", 0.0)))
+            accepted_maturity_seconds.append(float(evidence.get("maturity_seconds", 0.0) or 0.0))
+            accepted_lineage_hashes.append(lineage_sha256)
+            accepted_lineage_set.add(lineage_sha256)
+            accepted_effective_horizons.append(int(effective_horizon))
+            anchor_datetime = _runtime_observation_timestamp(rows[idx])
+            anchor_ts.append(float(anchor_datetime.timestamp()) if anchor_datetime is not None else 0.0)
             sample_confidence.append(float(confidence))
             sample_symbols.append(str(rows[idx].get("symbol") or symbol_key or "").strip().upper())
             sample_modes.append(str(rows[idx].get("mode") or mode_key or "").strip().lower())
@@ -2369,6 +2672,19 @@ def make_runtime_windowed_dataset(
             sample_sessions.append(_sample_session_label(rows[idx]))
 
     if not samples:
+        evidence_audit = _runtime_label_evidence_summary(
+            candidate_count=evidence_candidate_count,
+            valid_candidate_count=evidence_valid_candidate_count,
+            accepted_count=0,
+            rejected_candidate_count=evidence_rejected_candidate_count,
+            selected_training_sample_count=0,
+            rejection_counts=evidence_rejection_counts,
+            maturity_seconds=accepted_maturity_seconds,
+            lineage_hashes=accepted_lineage_hashes,
+            effective_horizon_rows=accepted_effective_horizons,
+            label_contract=label_contract,
+            label_owner_id=label_owner_id,
+        )
         return np.zeros((0, 0), dtype=np.float32), np.zeros((0, 1), dtype=np.float32), {
             "sequence_count": len(sequences),
             "eligible_sequences": eligible_sequences,
@@ -2388,6 +2704,8 @@ def make_runtime_windowed_dataset(
             "confidence_min": 0.0,
             "confidence_max": 0.0,
             "min_confidence": float(min_conf),
+            "label_contract": dict(label_contract or {}),
+            "label_evidence_audit": evidence_audit,
             "_sample_confidence": np.zeros((0,), dtype=np.float32),
         }
 
@@ -2438,6 +2756,19 @@ def make_runtime_windowed_dataset(
         memory_sample_cap_applied = True
     positive_rate = float(np.mean(y[:, 0])) if y.size else 0.0
     label_audit = _build_label_audit(y, symbols, modes, regimes, sessions)
+    evidence_audit = _runtime_label_evidence_summary(
+        candidate_count=evidence_candidate_count,
+        valid_candidate_count=evidence_valid_candidate_count,
+        accepted_count=len(accepted_lineage_hashes),
+        rejected_candidate_count=evidence_rejected_candidate_count,
+        selected_training_sample_count=int(X.shape[0]),
+        rejection_counts=evidence_rejection_counts,
+        maturity_seconds=accepted_maturity_seconds,
+        lineage_hashes=accepted_lineage_hashes,
+        effective_horizon_rows=accepted_effective_horizons,
+        label_contract=label_contract,
+        label_owner_id=label_owner_id,
+    )
     return X, y, {
         "sequence_count": len(sequences),
         "eligible_sequences": eligible_sequences,
@@ -2460,6 +2791,8 @@ def make_runtime_windowed_dataset(
         "memory_sample_cap_limit": int(memory_sample_cap_limit),
         "memory_sample_cap_applied": bool(memory_sample_cap_applied),
         "memory_sample_cap_original_count": int(memory_sample_cap_original_count),
+        "label_contract": dict(label_contract or {}),
+        "label_evidence_audit": evidence_audit,
         "_sample_confidence": conf,
         "label_audit": label_audit,
         **balance_meta,

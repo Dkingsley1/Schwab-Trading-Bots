@@ -54,6 +54,7 @@ SUPPORT_SQL_SHARD_MARKERS = (
     "support_watchdog",
     "writer_progress",
     "schema_violations",
+    "api_ingress",
 )
 
 FAMILY_TO_ROLE = {

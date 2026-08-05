@@ -139,24 +139,101 @@ def _mentor_ids(teacher_quality: dict[str, Any], *, bot_role: str, limit: int = 
     return selected[: max(int(limit), 1)]
 
 
+def _guard_targeted_retrain_queue(
+    queue_map: dict[str, dict[str, Any]],
+    *,
+    requalification_rows: list[dict[str, Any]],
+    overfit_rows: list[dict[str, Any]],
+    min_sample_count: int,
+) -> dict[str, Any]:
+    requalification_by_bot = {
+        str(row.get("bot_id") or "").strip().lower(): row
+        for row in requalification_rows
+        if isinstance(row, dict) and str(row.get("bot_id") or "").strip()
+    }
+    overfit_by_bot = {
+        str(row.get("bot_id") or "").strip().lower(): row
+        for row in overfit_rows
+        if isinstance(row, dict) and str(row.get("bot_id") or "").strip()
+    }
+    guarded_overfit_statuses = {"high_accuracy_guarded", "leak_like", "overfit_watch", "severe_overfit"}
+    rerouted: list[dict[str, Any]] = []
+
+    for bot_id, queue_row in queue_map.items():
+        if str(queue_row.get("next_step") or "") != "targeted_retrain":
+            continue
+        evidence = requalification_by_bot.get(bot_id)
+        overfit = overfit_by_bot.get(bot_id, {})
+        sample_count = _safe_int(evidence.get("sample_count"), 0) if evidence else None
+        eligible_sequences = _safe_int(evidence.get("eligible_sequences"), 0) if evidence else None
+        overfit_status = str(overfit.get("status") or "").strip().lower()
+        blockers: list[str] = []
+        next_step = ""
+        minimum = max(int(min_sample_count), 1)
+        if evidence and (sample_count < minimum or eligible_sequences <= 0):
+            next_step = "collect_more_data"
+            if sample_count < minimum:
+                blockers.append("minimum_sample_floor_not_met")
+            if eligible_sequences <= 0:
+                blockers.append("eligible_sequences_not_ready")
+        if overfit_status in guarded_overfit_statuses:
+            blockers.append(f"overfit_status_{overfit_status}")
+            if not next_step:
+                next_step = "reduce_overfitting"
+        if not next_step:
+            continue
+
+        queue_row["next_step"] = next_step
+        queue_row["training_candidate_guard"] = {
+            "eligible_for_targeted_retrain": False,
+            "sample_count": sample_count,
+            "eligible_sequences": eligible_sequences,
+            "minimum_sample_count": minimum,
+            "overfit_status": overfit_status,
+            "blockers": blockers,
+        }
+        for reason in blockers:
+            if reason not in queue_row["reasons"]:
+                queue_row["reasons"].append(reason)
+        rerouted.append({"bot_id": bot_id, "next_step": next_step, "blockers": blockers})
+
+    return {
+        "active": True,
+        "minimum_sample_count": max(int(min_sample_count), 1),
+        "rerouted_count": len(rerouted),
+        "rerouted": rerouted,
+        "policy": "stale queue labels cannot override current sample, sequence, or overfit evidence",
+    }
+
+
 def build_payload(
     project_root: Path = PROJECT_ROOT,
     *,
     apply: bool = False,
     timeout_sec: int = 900,
     mentor_limit: int = 3,
+    min_train_samples: int = 200,
 ) -> dict[str, Any]:
     health_root = project_root / "governance" / "health"
     training_quality = load_json(health_root / "training_quality_control_latest.json")
     supportability = load_json(health_root / "supportability_control_latest.json")
     teacher_quality = load_json(project_root / "governance" / "distillation" / "teacher_quality_latest.json")
     requalification = load_json(health_root / "training_requalification_latest.json")
+    overfitting_awareness = load_json(health_root / "overfitting_awareness_latest.json")
     coverage_seed = load_json(project_root / "governance" / "walk_forward" / "coverage_seed_latest.json")
     runtime_control = load_json(health_root / "training_runtime_control_latest.json")
     writer_cycle = load_json(health_root / "writer_cycle_coordinator_latest.json")
     storage_control = load_json(health_root / "ingestion_storage_control_latest.json")
     role_by_bot = _load_registry_roles(project_root)
     coverage_seed_rows = coverage_seed.get("seed_queue") if isinstance(coverage_seed.get("seed_queue"), list) else []
+    requalification_rows = (
+        requalification.get("top_candidates") if isinstance(requalification.get("top_candidates"), list) else []
+    )
+    overfit_rows = (
+        overfitting_awareness.get("top_risk_bots")
+        if isinstance(overfitting_awareness.get("top_risk_bots"), list)
+        else []
+    )
 
     targeted = training_quality.get("targeted_actions") if isinstance(training_quality.get("targeted_actions"), dict) else {}
     refresh_ids = [str(raw or "").strip().lower() for raw in targeted.get("refresh_diagnostics_bot_ids") or [] if str(raw or "").strip()]
@@ -198,7 +275,7 @@ def build_payload(
     for bot_id in retrain_ids:
         add_queue(bot_id, reason="targeted_retrain_shortlist", priority=92.0, next_step="targeted_retrain")
 
-    for row in requalification.get("top_candidates") or []:
+    for row in requalification_rows:
         if not isinstance(row, dict):
             continue
         bot_id = str(row.get("bot_id") or "").strip().lower()
@@ -234,6 +311,12 @@ def build_payload(
         queue_map[bot_id]["queue_bucket"] = "infrastructure_support"
         infrastructure_helper_count += 1
 
+    training_candidate_guard = _guard_targeted_retrain_queue(
+        queue_map,
+        requalification_rows=requalification_rows,
+        overfit_rows=overfit_rows,
+        min_sample_count=max(int(min_train_samples), 1),
+    )
     quality_queue = sorted(
         queue_map.values(),
         key=lambda row: (-float(row.get("priority", 0.0) or 0.0), str(row.get("bot_id") or "")),
@@ -244,6 +327,12 @@ def build_payload(
             bot_role=str(row.get("bot_role") or "unknown"),
             limit=mentor_limit,
         )
+
+    eligible_targeted_retrain_ids = [
+        str(row.get("bot_id") or "")
+        for row in quality_queue
+        if str(row.get("next_step") or "") == "targeted_retrain"
+    ]
 
     assignment_preview = [
         {
@@ -341,6 +430,9 @@ def build_payload(
         [
             "run the bot-quality autopilot in apply mode on a timer so teacher curation and requalification queues stay fresh",
             "repair runtime inputs before targeted retrains so sample-starved bots are not repeatedly retrained on broken inputs" if repair_ids else "",
+            "honor current sample, sequence, and overfit guards before consuming targeted retrain capacity"
+            if _safe_int(training_candidate_guard.get("rerouted_count"), 0) > 0
+            else "",
             "assign high-quality teachers to uncovered students before expanding distillation breadth" if students_without_teachers > 0 else "",
             "seed walk-forward coverage continuously so teacher selection reflects current regime winners" if coverage_shortfall_bots > 0 else "",
             "keep infrastructure helper bots in their own retrain lane so control-plane recovery does not crowd out signal promotion" if infrastructure_helper_count > 0 else "",
@@ -359,6 +451,10 @@ def build_payload(
             "repair_runtime_input_bot_ids": repair_ids,
             "quality_probation_bot_ids": probation_ids,
             "targeted_retrain_bot_ids": retrain_ids,
+            "eligible_targeted_retrain_bot_ids": eligible_targeted_retrain_ids,
+            "rerouted_targeted_retrain_bot_ids": [
+                str(row.get("bot_id") or "") for row in training_candidate_guard.get("rerouted") or []
+            ],
             "students_without_teachers": students_without_teachers,
             "coverage_shortfall_bots": coverage_shortfall_bots,
             "infrastructure_helper_count": infrastructure_helper_count,
@@ -370,6 +466,7 @@ def build_payload(
             "elite_teacher_count": elite_teachers,
             "teacher_quality_status": str(teacher_quality.get("overall_status") or ""),
         },
+        "training_candidate_guard": training_candidate_guard,
         "quality_upgrade_queue": quality_queue[:20],
         "infrastructure_helper_queue": [
             row for row in quality_queue
@@ -406,6 +503,11 @@ def main() -> int:
     parser.add_argument("--apply", action="store_true")
     parser.add_argument("--timeout-sec", type=int, default=900)
     parser.add_argument("--mentor-limit", type=int, default=3)
+    parser.add_argument(
+        "--min-train-samples",
+        type=int,
+        default=_safe_int(os.getenv("BOT_QUALITY_AUTOPILOT_MIN_TRAIN_SAMPLES", "200"), 200),
+    )
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args()
 
@@ -414,6 +516,7 @@ def main() -> int:
         apply=bool(args.apply),
         timeout_sec=int(args.timeout_sec),
         mentor_limit=int(args.mentor_limit),
+        min_train_samples=max(int(args.min_train_samples), 1),
     )
     out_path = Path(args.out_file).expanduser()
     write_payload(out_path, payload)

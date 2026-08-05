@@ -116,6 +116,54 @@ def test_schwab_auth_supervisor_keeps_refresh_watch_ready_above_ready_floor(tmp_
     assert payload["regression_contract"]["refresh_recommendation_above_ready_floor_is_advisory"] is True
 
 
+def test_schwab_auth_supervisor_keeps_warning_probe_denied_paper_soak_ready(tmp_path: Path, monkeypatch) -> None:
+    project_root = tmp_path / "project"
+    health = project_root / "governance" / "health"
+    token_path = project_root / "token.json"
+    project_root.mkdir(parents=True)
+    _token(token_path, expires_at=int(time.time()) + 1120)
+    _write_json(health / "premarket_token_guard_latest.json", {"ok": True})
+    _write_json(
+        health / "broker_readiness_latest.json",
+        {
+            "ready_for_open": True,
+            "auth_ok": False,
+            "network_ok": True,
+            "token_expires_in_seconds": 1120,
+            "preflight_checks": {"token_exists": True, "token_ready_for_open": True},
+        },
+    )
+    _write_json(
+        health / "auth_lease_manager_latest.json",
+        {
+            "overall_status": "degraded",
+            "lease_state": "warning",
+            "lease_budget": {"expires_in_seconds": 1120, "critical_lease_seconds": 600, "token_lease_grace": True},
+            "broker_state": {
+                "broker_operable": True,
+                "network_ok": True,
+                "configured_for_refresh": True,
+            },
+        },
+    )
+
+    monkeypatch.setattr(supervisor, "_list_auth_processes", lambda: [])
+    monkeypatch.setattr(supervisor, "_callback_port_open", lambda *args, **kwargs: False)
+    monkeypatch.setattr(supervisor, "_recent_auth_signals", lambda root: {"auth_error_markers": ["Access Denied"], "callback_error_markers": [], "auth_error_count": 1, "callback_error_count": 0, "circuit_breaker_with_auth_error": False})
+
+    payload = supervisor.build_payload(
+        project_root,
+        token_path=token_path,
+        min_expires_seconds=1500,
+        min_ready_expires_seconds=900,
+    )
+
+    assert payload["overall_status"] == "ready"
+    assert payload["paper_soak_auth_operable"] is True
+    assert "auth_lease_warning_paper_soak_grace" in payload["findings"]
+    assert "auth_lease_warning" not in payload["findings"]
+
+
 def test_schwab_auth_supervisor_keeps_probe_denied_paper_soak_operable_degraded(tmp_path: Path, monkeypatch) -> None:
     project_root = tmp_path / "project"
     health = project_root / "governance" / "health"
@@ -219,3 +267,85 @@ def test_schwab_auth_supervisor_blocks_auth_errors_misclassified_as_symbol_failu
     assert payload["overall_status"] == "blocked"
     assert "auth_error_misclassified_as_symbol_data" in payload["findings"]
     assert payload["operator_followups"] == ["./scripts/ops/opsctl.sh token-refresh-interactive --force --json"]
+
+
+def test_schwab_auth_supervisor_does_not_report_ready_during_shared_provider_cooldown(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    project_root = tmp_path / "project"
+    health = project_root / "governance" / "health"
+    token_path = project_root / "token.json"
+    project_root.mkdir(parents=True)
+    _token(token_path)
+    _write_json(health / "premarket_token_guard_latest.json", {"ok": True})
+    _write_json(health / "broker_readiness_latest.json", {"ready_for_open": True, "auth_ok": True, "network_ok": True})
+    _write_json(health / "auth_lease_manager_latest.json", {"overall_status": "ready", "lease_state": "healthy"})
+
+    monkeypatch.setattr(supervisor, "_list_auth_processes", lambda: [])
+    monkeypatch.setattr(supervisor, "_callback_port_open", lambda *args, **kwargs: False)
+    monkeypatch.setattr(supervisor, "_recent_auth_signals", lambda root: {"auth_error_markers": [], "callback_error_markers": [], "auth_error_count": 0, "callback_error_count": 0, "circuit_breaker_with_auth_error": False})
+    monkeypatch.setattr(
+        supervisor,
+        "provider_access_status",
+        lambda root, provider: {
+            "active": True,
+            "state": "cooldown",
+            "status_code": 403,
+            "remaining_seconds": 600,
+            "cooldown_until_utc": "2026-07-31T19:00:00+00:00",
+            "reason": "access_denied",
+        },
+    )
+
+    payload = supervisor.build_payload(project_root, token_path=token_path)
+
+    assert payload["overall_status"] == "degraded"
+    assert payload["paper_soak_auth_operable"] is False
+    assert "schwab_provider_cooldown_http_403" in payload["findings"]
+    assert payload["provider_access"]["active"] is True
+
+
+def test_schwab_auth_supervisor_apply_reloads_fresh_repair_artifacts_same_run(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    project_root = tmp_path / "project"
+    health = project_root / "governance" / "health"
+    token_path = project_root / "token.json"
+    project_root.mkdir(parents=True)
+    _token(token_path)
+    _write_json(health / "premarket_token_guard_latest.json", {"ok": False})
+    _write_json(health / "broker_readiness_latest.json", {"ready_for_open": False, "auth_ok": False})
+    _write_json(health / "auth_lease_manager_latest.json", {"overall_status": "blocked", "lease_state": "critical"})
+    _write_json(health / "schwab_auth_refresh_latest.json", {"ok": True, "reason": "auth_success"})
+
+    monkeypatch.setattr(supervisor, "_list_auth_processes", lambda: [])
+    monkeypatch.setattr(supervisor, "_callback_port_open", lambda *args, **kwargs: False)
+    monkeypatch.setattr(
+        supervisor,
+        "_recent_auth_signals",
+        lambda root: {
+            "auth_error_markers": ["Access Denied"],
+            "callback_error_markers": ["RedirectTimeoutError"],
+            "auth_error_count": 1,
+            "callback_error_count": 1,
+            "circuit_breaker_with_auth_error": False,
+        },
+    )
+
+    def fake_run(cmd, **kwargs):
+        _write_json(health / "premarket_token_guard_latest.json", {"ok": True})
+        _write_json(health / "broker_readiness_latest.json", {"ready_for_open": True, "auth_ok": True, "network_ok": True})
+        _write_json(health / "auth_lease_manager_latest.json", {"overall_status": "ready", "lease_state": "healthy"})
+        return {"cmd": cmd, "rc": 0, "timed_out": False, "payload": {"overall_status": "ready"}}
+
+    monkeypatch.setattr(supervisor, "_run_json", fake_run)
+    payload = supervisor.build_payload(project_root, apply=True, token_path=token_path)
+
+    assert payload["overall_status"] == "ready"
+    assert payload["post_repair_recheck"] is True
+    assert payload["initial_evaluation"]["overall_status"] == "blocked"
+    assert payload["auth_lease"]["lease_state"] == "healthy"
+    assert "historical_schwab_auth_errors_after_current_recovery" in payload["recovered_findings"]
+    assert "historical_callback_flow_errors_after_current_recovery" in payload["recovered_findings"]

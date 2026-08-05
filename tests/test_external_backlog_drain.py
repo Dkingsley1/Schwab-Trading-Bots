@@ -80,6 +80,43 @@ def test_external_backlog_drain_drops_blank_shard_path_filters() -> None:
     assert all(value.strip() for key, value in env.items() if key.endswith("_PATH_CONTAINS"))
 
 
+def test_external_backlog_drain_memory_caps_override_operator_burst_width(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    _write_json(
+        project_root / "governance" / "health" / "memory_efficiency_control_latest.json",
+        {
+            "overall_status": "advisory",
+            "recommended_profile": "air_safe",
+            "reasons": ["compressed_memory_high"],
+            "compressed_memory_relief_contract": {"active": True, "managed": True},
+            "recommended_env_overrides": {
+                "BACKLOG_PCORE_PREPROCESS_WORKERS": "1",
+                "SQL_LINK_SERVICE_PREPROCESS_WORKERS": "1",
+                "SQL_LINK_SERVICE_SHARD_WRITER_LANES": "1",
+                "SQL_LINK_SERVICE_MAX_SHARD_WRITER_LANES": "1",
+            },
+        },
+    )
+
+    capped, contract = src._apply_memory_safety_caps(
+        project_root,
+        {
+            "BACKLOG_PCORE_PREPROCESS_WORKERS": "7",
+            "SQL_LINK_SERVICE_PREPROCESS_WORKERS": "7",
+            "SQL_LINK_SERVICE_SHARD_WRITER_LANES": "7",
+            "SQL_LINK_SERVICE_MAX_SHARD_WRITER_LANES": "8",
+            "BACKLOG_ACCELERATOR_PREPROCESS_WORKERS": "7",
+            "BACKLOG_ACCELERATOR_TARGET_PLANNED_SHARDS": "7",
+        },
+    )
+
+    assert contract["active"] is True
+    assert contract["applied"] is True
+    assert {capped[key] for key in src._MEMORY_SAFETY_WORKER_KEYS} == {"1"}
+    assert capped["BACKLOG_ACCELERATOR_PREPROCESS_WORKERS"] == "1"
+    assert capped["BACKLOG_ACCELERATOR_TARGET_PLANNED_SHARDS"] == "1"
+
+
 def test_external_backlog_drain_builds_offhours_plan(tmp_path: Path) -> None:
     project_root = tmp_path / "project"
     health = project_root / "governance" / "health"
@@ -158,6 +195,45 @@ def test_external_backlog_drain_builds_offhours_plan(tmp_path: Path) -> None:
     assert any("compact or archive" in item for item in payload["top_actions"])
     assert any("dominant core backlog files" in item for item in payload["top_actions"])
     assert any("governance shard pinned" in item for item in payload["top_actions"])
+
+
+def test_external_backlog_drain_accepts_pinned_local_hot_storage(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    health = project_root / "governance" / "health"
+    _write_json(
+        health / "ingestion_backpressure_latest.json",
+        {
+            "pending_lines": 20,
+            "pending_lines_total": 40,
+            "pending_lines_deferred": 20,
+            "pending_lines_cold": 0,
+        },
+    )
+    _write_json(health / "ingestion_priority_queue_latest.json", {"queue_depth": 2})
+    _write_json(health / "ingestion_storage_control_latest.json", {"overall_status": "ready"})
+    _write_json(
+        health / "storage_mount_guard_latest.json",
+        {
+            "external_available": False,
+            "storage_mode": "external",
+            "hot_storage_available": True,
+            "external_required_for_hot_path": False,
+            "probe_skipped_external_io": True,
+        },
+    )
+    _write_json(health / "storage_split_brain_reconciler_latest.json", {"summary": {"unresolved_conflicts": 0}})
+
+    payload = src.build_payload(
+        project_root,
+        apply=False,
+        now_utc=datetime(2026, 4, 6, 21, 0, tzinfo=timezone.utc),
+    )
+
+    assert payload["reported_storage_mode"] == "external"
+    assert payload["storage_mode"] == "local_fallback"
+    assert payload["local_hot_storage_ready"] is True
+    assert payload["routed_hot_storage_ready"] is True
+    assert "routed_hot_storage_unavailable" not in payload["blocked_reasons"]
 
 
 def test_external_backlog_drain_waits_cleanly_for_market_hours_guard(tmp_path: Path) -> None:
@@ -1217,3 +1293,15 @@ def test_follow_through_retry_marks_progressing_timeout(tmp_path: Path, monkeypa
     assert result["progress_state"] == "progressing"
     assert result["progress_observed"] is True
     assert result["progress_events"] >= 1
+
+
+def test_run_json_command_returns_after_hard_child_timeout(tmp_path: Path) -> None:
+    result = src._run_json_command(
+        [sys.executable, "-c", "import time; time.sleep(30)"],
+        cwd=tmp_path,
+        timeout_seconds=1.0,
+    )
+
+    assert result["timed_out"] is True
+    assert result["rc"] == 124
+    assert result["duration_ms"] < 5000

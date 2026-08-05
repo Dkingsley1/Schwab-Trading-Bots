@@ -36,6 +36,7 @@ DEFAULT_STATE_PATH = PROJECT_ROOT / "governance" / "health" / "storage_disaster_
 DEFAULT_LOCK_PATH = PROJECT_ROOT / "governance" / "locks" / "storage_disaster_recovery.lock"
 DEFAULT_RECOVERY_ROOT = Path.home() / "Documents" / "BOT_LOGS_recovery_auto"
 DEFAULT_LOCAL_ROOT = PROJECT_ROOT / "local_fallback_storage"
+DEFAULT_ROUTE_OVERRIDE_PATH = PROJECT_ROOT / "config" / ".env.storage_override"
 DEFAULT_TARGET_OVERRIDE_PATH = DEFAULT_STORAGE_TARGET_OVERRIDE_PATH
 IMPORTANT_DIRS: tuple[str, ...] = (
     "governance",
@@ -50,9 +51,15 @@ IMPORTANT_FILES: tuple[str, ...] = (
     "data/snapshot_context.sqlite3-wal",
     "data/snapshot_context.sqlite3-shm",
 )
+GIB = float(1024**3)
 LOCAL_MODES = {"local_fallback", "local_fallback_split_brain"}
 EXTERNAL_CERTIFIED_MODES = {"external", "external_curated"}
 EXTERNAL_RECOVERY_MODES = EXTERNAL_CERTIFIED_MODES | {"external_available_unverified", "unknown"}
+TRACKED_SQLITE_ROUTES: tuple[str, ...] = (
+    "data/jsonl_link.sqlite3",
+    "data/bot_channel_queue.sqlite3",
+    "data/snapshot_context.sqlite3",
+)
 
 
 def _utc_now() -> str:
@@ -132,6 +139,40 @@ def _run_command(cmd: list[str], *, cwd: Path, timeout_sec: int = 180) -> dict[s
 
 
 def _probe_storage() -> dict[str, Any]:
+    prefer_external = str(os.getenv("BOT_LOGS_PREFER_EXTERNAL", "1") or "1").strip().lower() not in {
+        "0",
+        "false",
+        "no",
+        "off",
+    }
+    if not prefer_external:
+        mount_root = Path(os.getenv("BOT_LOGS_EXTERNAL_MOUNT", "/Volumes/BOT_LOGS")).expanduser()
+        configured_root = str(os.getenv("BOT_LOGS_EXTERNAL_PROJECT_ROOT", "") or "").strip()
+        project_dir = str(os.getenv("BOT_LOGS_EXTERNAL_PROJECT_DIR", "schwab_trading_bot") or "schwab_trading_bot").strip()
+        external_root = Path(configured_root).expanduser() if configured_root else mount_root / project_dir
+        return {
+            "mount_root": str(mount_root),
+            "external_root": str(external_root),
+            "configured_mount_root": str(mount_root),
+            "configured_project_root": str(external_root),
+            "candidate_mount_roots": [str(mount_root)],
+            "matched_mount_root": "",
+            "match_reason": "external_io_probe_skipped_local_hot_storage_policy",
+            "target_volume_device_identifier": str(os.getenv("BOT_LOGS_EXTERNAL_DISK_IDENTIFIER", "") or ""),
+            "target_volume_name": str(os.getenv("BOT_LOGS_EXTERNAL_VOLUME_NAME", "BOT_LOGS") or "BOT_LOGS"),
+            "target_volume_uuid": str(os.getenv("BOT_LOGS_EXTERNAL_VOLUME_UUID", "") or ""),
+            "target_volume_mount_point": "",
+            "target_volume_present": False,
+            "target_volume_mounted": False,
+            "mount_present": False,
+            "external_root_exists": False,
+            "external_root_writable": False,
+            "external_available": False,
+            "external_unavailable_reason": "cold_archive_only_local_hot_storage_policy",
+            "external_required_for_hot_path": False,
+            "hot_storage_available": True,
+            "probe_skipped_external_io": True,
+        }
     resolution = resolve_external_storage()
     mount_root = resolution.mount_root
     external_root = resolution.external_root
@@ -176,7 +217,48 @@ def _probe_storage() -> dict[str, Any]:
     }
 
 
+def _path_is_within(path: Path, root: Path) -> bool:
+    try:
+        Path(os.path.abspath(str(path.expanduser()))).relative_to(Path(os.path.abspath(str(root.expanduser()))))
+    except ValueError:
+        return False
+    return True
+
+
+def _physical_sqlite_route_mode(project_root: Path, probe: dict[str, Any] | None = None) -> str:
+    live_probe = probe if isinstance(probe, dict) else _probe_storage()
+    local_root = Path(os.getenv("BOT_LOGS_LOCAL_FALLBACK_ROOT", str(project_root / "local_fallback_storage"))).expanduser()
+    external_text = str(live_probe.get("external_root") or "").strip()
+    external_root = Path(external_text).expanduser() if external_text else None
+    families: list[str] = []
+    for relative_path in TRACKED_SQLITE_ROUTES:
+        route = project_root / relative_path
+        if not route.is_symlink():
+            return ""
+        try:
+            raw_target = Path(os.readlink(route))
+        except OSError:
+            return ""
+        target = raw_target if raw_target.is_absolute() else route.parent / raw_target
+        if _path_is_within(target, local_root):
+            families.append("local")
+        elif external_root is not None and _path_is_within(target, external_root):
+            families.append("external")
+        else:
+            return ""
+    if families and all(family == "local" for family in families):
+        return "local_fallback"
+    if families and all(family == "external" for family in families):
+        return "external"
+    if families:
+        return "local_fallback_split_brain"
+    return ""
+
+
 def _current_storage_mode(project_root: Path, probe: dict[str, Any] | None = None) -> str:
+    physical_mode = _physical_sqlite_route_mode(project_root, probe)
+    if physical_mode:
+        return physical_mode
     failback = _load_json(project_root / "governance" / "health" / "storage_failback_sync_latest.json")
     mount_guard = _load_json(project_root / "governance" / "health" / "storage_mount_guard_latest.json")
     mode = str(failback.get("certified_mode") or failback.get("mode") or mount_guard.get("storage_mode") or "").strip()
@@ -188,29 +270,127 @@ def _current_storage_mode(project_root: Path, probe: dict[str, Any] | None = Non
     return "unknown"
 
 
+def _route_policy(project_root: Path) -> dict[str, Any]:
+    override_path = project_root / "config" / ".env.storage_override"
+    try:
+        override_body = override_path.read_text(encoding="utf-8")
+    except Exception:
+        override_body = ""
+    local_pinned = any(
+        line.strip().lower() in {
+            "bot_logs_prefer_external=0",
+            "bot_logs_prefer_external=false",
+            "bot_logs_prefer_external=no",
+            "bot_logs_prefer_external=off",
+        }
+        for line in override_body.splitlines()
+    )
+    return {
+        "override_path": str(override_path),
+        "local_route_pinned": local_pinned,
+        "automatic_external_failback_enabled": _env_flag("BOT_LOGS_RECOVERY_AUTO_FAILBACK_EXTERNAL", "0"),
+        "policy": "preserve_explicit_local_route_and_keep_external_as_standby",
+    }
+
+
 def _recovery_selected_paths(local_root: Path) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
-    for rel_path in IMPORTANT_DIRS:
+    for rel_path, kind in (
+        *((rel_path, "dir") for rel_path in IMPORTANT_DIRS),
+        *((rel_path, "file") for rel_path in IMPORTANT_FILES),
+    ):
         src = local_root / rel_path
+        exists = bool(src.exists() and (src.is_dir() if kind == "dir" else src.is_file()))
+        try:
+            resolved = src.resolve(strict=exists)
+        except (OSError, RuntimeError):
+            resolved = src.absolute()
+        local_physical_source = bool(exists and _path_is_within(resolved, local_root.resolve()))
         rows.append(
             {
                 "rel_path": rel_path,
-                "kind": "dir",
+                "kind": kind,
                 "source": str(src),
-                "exists": bool(src.exists() and src.is_dir()),
-            }
-        )
-    for rel_path in IMPORTANT_FILES:
-        src = local_root / rel_path
-        rows.append(
-            {
-                "rel_path": rel_path,
-                "kind": "file",
-                "source": str(src),
-                "exists": bool(src.exists() and src.is_file()),
+                "resolved_source": str(resolved),
+                "is_symlink": src.is_symlink(),
+                "exists": exists,
+                "eligible": local_physical_source,
+                "skip_reason": "" if local_physical_source else "missing" if not exists else "outside_local_fallback_root",
             }
         )
     return rows
+
+
+def _selected_size_bytes(source_root: Path, selected_rows: list[dict[str, Any]]) -> int:
+    total = 0
+    seen: set[tuple[int, int]] = set()
+    physical_root = source_root.resolve()
+    for row in selected_rows:
+        if not bool(row.get("eligible", row.get("exists", False))):
+            continue
+        src = source_root / str(row.get("rel_path") or "")
+        candidates = src.rglob("*") if str(row.get("kind") or "") == "dir" else (src,)
+        for candidate in candidates:
+            try:
+                if not candidate.is_file():
+                    continue
+                if not _path_is_within(candidate.resolve(strict=True), physical_root):
+                    continue
+                stat = candidate.stat()
+            except (FileNotFoundError, OSError):
+                continue
+            identity = (int(stat.st_dev), int(stat.st_ino))
+            if identity in seen:
+                continue
+            seen.add(identity)
+            total += max(int(stat.st_size), 0)
+    return total
+
+
+def _cleanup_snapshot_workspace(recovery_root: Path, *, apply: bool) -> dict[str, Any]:
+    if apply:
+        recovery_root.mkdir(parents=True, exist_ok=True)
+    staging_roots = sorted(recovery_root.glob(".latest_staging_*"))
+    previous_root = recovery_root / ".latest_previous"
+    latest_root = recovery_root / "latest"
+    previous_present = previous_root.exists()
+    deleted_bytes = 0
+    deleted_paths: list[str] = []
+    errors: list[str] = []
+
+    if apply and previous_root.exists() and not latest_root.exists():
+        try:
+            previous_root.rename(latest_root)
+        except Exception as exc:
+            errors.append(f"{previous_root}:{type(exc).__name__}:{exc}")
+    elif apply and previous_root.exists():
+        try:
+            shutil.rmtree(previous_root)
+            deleted_paths.append(str(previous_root))
+        except Exception as exc:
+            errors.append(f"{previous_root}:{type(exc).__name__}:{exc}")
+
+    for path in staging_roots:
+        try:
+            path_bytes = _selected_size_bytes(path, [{"rel_path": ".", "kind": "dir", "eligible": True}])
+            if apply:
+                shutil.rmtree(path)
+                deleted_paths.append(str(path))
+                deleted_bytes += path_bytes
+        except Exception as exc:
+            errors.append(f"{path}:{type(exc).__name__}:{exc}")
+
+    return {
+        "apply_requested": bool(apply),
+        "candidate_count": len(staging_roots) + int(previous_present),
+        "deleted_count": len(deleted_paths),
+        "deleted_bytes": int(deleted_bytes),
+        "deleted_gb": round(float(deleted_bytes) / GIB, 3),
+        "deleted_paths": deleted_paths,
+        "error_count": len(errors),
+        "errors": errors,
+        "ok": not errors,
+    }
 
 
 def _writer_quiet_point(
@@ -348,7 +528,6 @@ def _switch_storage_mode(project_root: Path, target_mode: str, *, apply: bool) -
             str(project_root / "scripts" / "ops" / "storage_switch_orchestrator.py"),
             "--target-mode",
             str(target_mode),
-            "--no-restart",
         ],
         cwd=project_root,
         timeout_sec=240,
@@ -437,6 +616,8 @@ def _stage_selected_paths(
     skipped_paths: list[str] = []
     transient_missing: list[str] = []
     errors: list[str] = []
+    unsafe_skipped_paths: list[str] = []
+    physical_source_root = source_root.resolve()
     for row in selected_rows:
         rel_path = str(row.get("rel_path") or "").strip()
         kind = str(row.get("kind") or "").strip()
@@ -452,6 +633,13 @@ def _stage_selected_paths(
                 if not child.is_file():
                     continue
                 rel_child = child.relative_to(source_root)
+                try:
+                    child_is_local = _path_is_within(child.resolve(strict=True), physical_source_root)
+                except (FileNotFoundError, OSError, RuntimeError):
+                    child_is_local = False
+                if not child_is_local:
+                    unsafe_skipped_paths.append(str(rel_child))
+                    continue
                 state, detail = _copy_file_transactional(child, target_root / rel_child, compare_existing=compare_existing)
                 if state == "copied":
                     copied_paths.append(str(rel_child))
@@ -461,6 +649,13 @@ def _stage_selected_paths(
                     transient_missing.append(detail)
                 else:
                     errors.append(detail)
+            continue
+        try:
+            src_is_local = _path_is_within(src.resolve(strict=True), physical_source_root)
+        except (FileNotFoundError, OSError, RuntimeError):
+            src_is_local = False
+        if not src_is_local:
+            unsafe_skipped_paths.append(rel_path)
             continue
         state, detail = _copy_file_transactional(src, dst, compare_existing=compare_existing)
         if state == "copied":
@@ -476,6 +671,7 @@ def _stage_selected_paths(
         "skipped_paths": skipped_paths,
         "transient_missing": transient_missing,
         "errors": errors,
+        "unsafe_skipped_paths": unsafe_skipped_paths,
     }
 
 
@@ -500,10 +696,11 @@ def _take_curated_snapshot(
     project_root: Path = PROJECT_ROOT,
 ) -> dict[str, Any]:
     selected = _recovery_selected_paths(local_root)
-    available = [row for row in selected if bool(row.get("exists", False))]
+    available = [row for row in selected if bool(row.get("eligible", row.get("exists", False)))]
     last_epoch = _safe_float(state.get("last_snapshot_epoch"), 0.0)
     latest_root = recovery_root / "latest"
     cooldown_remaining = max(last_epoch + max(float(cooldown_seconds), 0.0) - time.time(), 0.0)
+    workspace_cleanup = _cleanup_snapshot_workspace(recovery_root, apply=apply)
 
     payload: dict[str, Any] = {
         "attempted": False,
@@ -513,12 +710,16 @@ def _take_curated_snapshot(
         "selected_paths": selected,
         "available_path_count": int(len(available)),
         "cooldown_remaining_seconds": round(float(cooldown_remaining), 3),
+        "workspace_cleanup": workspace_cleanup,
     }
     if not apply:
         payload["skipped_reason"] = "apply_disabled"
         return payload
     if not available:
         payload["skipped_reason"] = "no_curated_paths_available"
+        return payload
+    if not bool(workspace_cleanup.get("ok", False)):
+        payload["skipped_reason"] = "snapshot_workspace_cleanup_failed"
         return payload
     if latest_root.exists() and cooldown_remaining > 0.0:
         payload["ok"] = True
@@ -529,6 +730,42 @@ def _take_curated_snapshot(
     payload["quiet_point"] = quiet_point
     if not bool(quiet_point.get("ok", False)):
         payload["skipped_reason"] = str(quiet_point.get("skipped_reason") or "writer_not_quiet")
+        return payload
+
+    estimated_bytes = _selected_size_bytes(local_root, available)
+    min_free_after_gb = max(
+        _safe_float(
+            os.getenv("BOT_LOGS_RECOVERY_MIN_FREE_AFTER_SNAPSHOT_GB"),
+            _safe_float(os.getenv("BOT_LOCAL_STORAGE_TARGET_FREE_GB"), 64.0),
+        ),
+        0.0,
+    )
+    headroom_ratio = max(_safe_float(os.getenv("BOT_LOGS_RECOVERY_SNAPSHOT_HEADROOM_RATIO"), 1.10), 1.0)
+    try:
+        usage = shutil.disk_usage(recovery_root)
+        free_bytes = int(usage.free)
+        capacity_known = True
+        capacity_error = ""
+    except Exception as exc:
+        free_bytes = 0
+        capacity_known = False
+        capacity_error = f"{type(exc).__name__}:{exc}"
+    required_free_bytes = int((min_free_after_gb * GIB) + (estimated_bytes * headroom_ratio))
+    capacity = {
+        "known": capacity_known,
+        "free_bytes": free_bytes,
+        "free_gb": round(float(free_bytes) / GIB, 3),
+        "estimated_snapshot_bytes": int(estimated_bytes),
+        "estimated_snapshot_gb": round(float(estimated_bytes) / GIB, 3),
+        "headroom_ratio": round(float(headroom_ratio), 3),
+        "min_free_after_snapshot_gb": round(float(min_free_after_gb), 3),
+        "required_free_bytes": required_free_bytes,
+        "sufficient": bool(capacity_known and free_bytes >= required_free_bytes),
+        "error": capacity_error,
+    }
+    payload["capacity_preflight"] = capacity
+    if not bool(capacity["sufficient"]):
+        payload["skipped_reason"] = "insufficient_local_capacity"
         return payload
 
     staging_root = recovery_root / f".latest_staging_{int(time.time() * 1000)}"
@@ -567,6 +804,7 @@ def _take_curated_snapshot(
             "transient_missing": staged["transient_missing"],
             "error_count": int(len(staged["errors"])),
             "errors": staged["errors"],
+            "unsafe_skipped_paths": staged["unsafe_skipped_paths"],
             "manifest_path": str(manifest_path),
         }
     )
@@ -581,7 +819,7 @@ def _transactional_curated_restore(
     project_root: Path = PROJECT_ROOT,
 ) -> dict[str, Any]:
     selected = _recovery_selected_paths(source_root)
-    available = [row for row in selected if bool(row.get("exists", False))]
+    available = [row for row in selected if bool(row.get("eligible", row.get("exists", False)))]
     payload: dict[str, Any] = {
         "attempted": False,
         "ok": False,
@@ -611,12 +849,13 @@ def _transactional_curated_restore(
             "transient_missing": restored["transient_missing"],
             "error_count": int(len(restored["errors"])),
             "errors": restored["errors"],
+            "unsafe_skipped_paths": restored["unsafe_skipped_paths"],
         }
     )
     return payload
 
 
-def _recommended_actions(probe: dict[str, Any], current_mode: str) -> list[str]:
+def _recommended_actions(probe: dict[str, Any], current_mode: str, route_policy: dict[str, Any]) -> list[str]:
     actions: list[str] = []
     if not bool(probe.get("external_available", False)):
         actions.append("keep BOT_LOGS routed to local fallback until the target APFS volume is mounted and writable again")
@@ -626,12 +865,24 @@ def _recommended_actions(probe: dict[str, Any], current_mode: str) -> list[str]:
     if current_mode == "external_available_unverified":
         actions.append("refresh the storage failback artifacts if you want the route controller to certify the rebuilt BOT_LOGS volume as the active live SQLite route")
     if current_mode in LOCAL_MODES:
-        actions.append("when BOT_LOGS returns, the bot can switch the runtime back to the external route automatically without touching VIDEO")
+        if bool(route_policy.get("local_route_pinned", False)):
+            actions.append("keep the verified local hot route pinned; use an explicit certified storage switch when an external live route is wanted")
+        elif not bool(route_policy.get("automatic_external_failback_enabled", False)):
+            actions.append("keep the local hot route until an operator explicitly certifies an external failback")
     return actions
 
 
-def _overall_status(probe: dict[str, Any], current_mode: str) -> str:
+def _overall_status(probe: dict[str, Any], current_mode: str, route_policy: dict[str, Any]) -> str:
     if bool(probe.get("external_available", False)) and current_mode in EXTERNAL_CERTIFIED_MODES:
+        return "ready"
+    if (
+        bool(probe.get("external_available", False))
+        and current_mode in LOCAL_MODES
+        and (
+            bool(route_policy.get("local_route_pinned", False))
+            or not bool(route_policy.get("automatic_external_failback_enabled", False))
+        )
+    ):
         return "ready"
     if bool(probe.get("external_available", False)) and current_mode == "external_available_unverified":
         return "degraded"
@@ -673,9 +924,11 @@ def build_payload(
     snapshot_cooldown_seconds: float,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     state = _load_json(state_path)
+    route_policy = _route_policy(project_root)
     initial_probe = _probe_storage()
     current_mode = _current_storage_mode(project_root, probe=initial_probe)
     local_root = Path(os.getenv("BOT_LOGS_LOCAL_FALLBACK_ROOT", str(DEFAULT_LOCAL_ROOT))).expanduser()
+    snapshot_workspace_cleanup = _cleanup_snapshot_workspace(recovery_root, apply=apply)
 
     mount_attempt = _mount_target_volume(
         initial_probe,
@@ -702,6 +955,7 @@ def build_payload(
         "ok": False,
         "skipped_reason": "not_required",
         "recovery_root": str(recovery_root),
+        "snapshot_workspace_cleanup": snapshot_workspace_cleanup,
         "latest_snapshot_root": str(recovery_root / "latest"),
         "selected_paths": _recovery_selected_paths(local_root),
     }
@@ -740,9 +994,22 @@ def build_payload(
         "target_mode": "external",
         "skipped_reason": "not_required",
     }
-    if bool(probe_after_snapshot.get("external_available", False)) and current_mode_after_snapshot in (LOCAL_MODES | EXTERNAL_RECOVERY_MODES):
+    external_failback_allowed = bool(route_policy.get("automatic_external_failback_enabled", False)) and not bool(
+        route_policy.get("local_route_pinned", False)
+    )
+    if (
+        bool(probe_after_snapshot.get("external_available", False))
+        and current_mode_after_snapshot in (LOCAL_MODES | EXTERNAL_RECOVERY_MODES)
+        and external_failback_allowed
+    ):
         restore_external = _switch_storage_mode(project_root, "external", apply=apply)
         current_mode_after_snapshot = _current_storage_mode(project_root, probe=probe_after_snapshot)
+    elif bool(probe_after_snapshot.get("external_available", False)) and current_mode_after_snapshot in LOCAL_MODES:
+        restore_external["skipped_reason"] = (
+            "local_route_pinned"
+            if bool(route_policy.get("local_route_pinned", False))
+            else "automatic_external_failback_disabled"
+        )
 
     final_probe = _probe_storage()
     final_mode = _current_storage_mode(project_root, probe=final_probe)
@@ -756,19 +1023,21 @@ def build_payload(
     if any(bool(step.get("attempted", False)) for step in (mount_attempt, switch_local, snapshot, curated_restore, restore_external)) or bool(target_override.get("changed", False)):
         finder_sync = _sync_finder_shortcuts(project_root, apply=apply)
 
+    overall_status = _overall_status(final_probe, final_mode, route_policy)
     payload = {
         "timestamp_utc": _utc_now(),
         "schema_version": 1,
         "project_root": str(project_root),
         "apply_requested": bool(apply),
-        "overall_status": _overall_status(final_probe, final_mode),
-        "ok": _overall_status(final_probe, final_mode) != "blocked",
+        "overall_status": overall_status,
+        "ok": overall_status != "blocked",
         "current_storage_mode": final_mode,
+        "route_policy": route_policy,
         "local_fallback_root": str(local_root),
         "recovery_root": str(recovery_root),
         "storage_probe": final_probe,
         "initial_storage_probe": initial_probe,
-        "recommended_actions": _recommended_actions(final_probe, final_mode),
+        "recommended_actions": _recommended_actions(final_probe, final_mode, route_policy),
         "mount_attempt": mount_attempt,
         "switch_local": switch_local,
         "recovery_snapshot": snapshot,
@@ -781,6 +1050,7 @@ def build_payload(
             "run_command": "./scripts/ops/opsctl.sh storage-disaster-recovery --apply --json",
             "interval_seconds": max(int(float(os.getenv("BOT_LOGS_RECOVERY_AUTO_INTERVAL_SECONDS", "300") or 300)), 60),
             "enabled_by_default": True,
+            "automatic_external_failback_enabled_by_default": False,
         },
         "upgrade_track": {
             "upgradeable": True,

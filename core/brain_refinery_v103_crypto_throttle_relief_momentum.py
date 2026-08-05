@@ -177,7 +177,7 @@ def train_brain():
         max_final_val_loss=0.706,
         min_long_precision=0.0,
         min_short_precision=0.54,
-        require_both_sides_precision=False,
+        require_both_sides_precision=True,
         min_acted_accuracy=0.58,
         min_long_acted_count=0,
         min_short_acted_count=5,

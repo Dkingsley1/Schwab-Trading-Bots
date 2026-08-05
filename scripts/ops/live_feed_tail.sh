@@ -53,7 +53,7 @@ VISIBLE_KEEPALIVE_ALLOWED="${LIVE_FEED_VISIBLE_KEEPALIVE_ALLOWED:-0}"
 IMPORTANT_ONLY="${LIVE_FEED_IMPORTANT_ONLY_DEFAULT:-auto}"
 HEAVY_REQUESTED="${LIVE_FEED_HEAVY_DEFAULT:-0}"
 COLOR_MODE="${LIVE_FEED_COLOR:-auto}"
-COLOR_PALETTE="${LIVE_FEED_COLOR_PALETTE:-red}"
+COLOR_PALETTE="${LIVE_FEED_COLOR_PALETTE:-semantic}"
 HEAVY_TTL_ENABLED_OVERRIDE=""
 HEAVY_TTL_SECONDS_OVERRIDE=""
 FOLLOW_RESTART_COUNT=0
@@ -931,8 +931,22 @@ start_heavy_ttl_guard() {
   [[ "$HEAVY_TTL_ENABLED" == "1" ]] || return 0
   [[ "$HEAVY_TTL_SECONDS" -gt 0 ]] || return 0
   (
+    zmodload zsh/system 2>/dev/null || true
+    ttl_guard_pid="${sysparams[pid]:-0}"
+    terminate_livefeed_descendants() {
+      local parent_pid="${1:-}"
+      local child_pid
+      [[ "$parent_pid" =~ ^[0-9]+$ ]] || return 0
+      for child_pid in ${(f)"$(pgrep -P "$parent_pid" 2>/dev/null || true)"}; do
+        [[ "$child_pid" =~ ^[0-9]+$ ]] || continue
+        [[ "$child_pid" == "$ttl_guard_pid" ]] && continue
+        terminate_livefeed_descendants "$child_pid"
+        kill -TERM "$child_pid" >/dev/null 2>&1 || true
+      done
+    }
     sleep "$HEAVY_TTL_SECONDS"
     printf 'live_feed_heavy_ttl_expired ttl_seconds=%s source=%s\n' "$HEAVY_TTL_SECONDS" "$SOURCE" >&2
+    terminate_livefeed_descendants "$LIVE_FEED_MAIN_PID"
     kill -TERM "$LIVE_FEED_MAIN_PID" >/dev/null 2>&1 || true
   ) &
   HEAVY_TTL_PID=$!
@@ -1147,6 +1161,7 @@ truncate_live_lines() {
   function important_operator_line(line, lower) {
     lower = tolower(line)
     if (paper_mirror_selection_line(line)) return 0
+    if (line ~ /^\[(status-contract|system|collection|fx-provider|auth|schwab-auth|storage|throttle|soak|dashboard|paper|paper-data|paper-profit|paper-truth|decision-latest|decision-route)\]/) return 1
     if (line ~ /\[Decision\]|\[decision\]|ExecutionIntent|ShadowLoop|RegimeCooldown|AdaptiveInterval/) return 1
     if (line ~ /"symbol"[[:space:]]*:/ && line ~ /"action"[[:space:]]*:|"master_action"[[:space:]]*:|"master_intent_action"[[:space:]]*:|"grand_action"[[:space:]]*:/) return 1
     if (line ~ /symbol=[^[:space:]]+/ && line ~ /action=|grand_action=|futures_action=|options_action=|master_action=/) return 1
@@ -1229,25 +1244,36 @@ truncate_live_lines() {
   function blocked_metric_is_clear(lower) {
     return lower ~ /blocked/ && (lower ~ /false/ || lower ~ /"[[:space:]]*0[[:space:]]*"/ || lower ~ /"[[:space:]]*0\.0+[[:space:]]*"/ || lower ~ /:[[:space:]]*0([,}[:space:]]|$)/ || lower ~ /:[[:space:]]*0\.0+([,}[:space:]]|$)/)
   }
-  function colorize_line(line, lower, prefix, clear_blocked_metric, red_alert) {
+  function colorize_line(line, lower, prefix, clear_blocked_metric, red_alert, explicit_level, explicit_status) {
     if (color != "1") return line
     lower = tolower(line)
     prefix = ""
     clear_blocked_metric = blocked_metric_is_clear(lower)
-    red_alert = !paper_mirror_selection_line(line) && lower ~ /global_trading_halt|operator_stop|halt=true|halt_state[^a-z0-9_]*active|hard_gate|critical|failed|tripwire|killswitch|kill_switch|margin_guard/
-    if (!clear_blocked_metric && lower ~ /blocked/ && !intentional_data_only_blocked(lower)) {
+    explicit_level = token_value(lower, "level")
+    explicit_status = token_value(lower, "status")
+    red_alert = explicit_level == "alert" || (!paper_mirror_selection_line(line) && lower ~ /global_trading_halt|operator_stop|halt=true|halt_state[^a-z0-9_]*active|hard_gate|critical|failed=[^[:space:]][^[:space:]]*|failed_checks=[^[:space:]][^[:space:]]*|tripwire|killswitch|kill_switch|margin_guard/)
+    if (explicit_level == "ok") {
+      red_alert = 0
+      prefix = bold green "[OK] " reset
+    } else if (explicit_level == "flow") {
+      red_alert = 0
+      prefix = bold cyan "[FLOW] " reset
+    } else if (explicit_level == "watch") {
+      red_alert = 0
+      prefix = bold yellow "[WATCH] " reset
+    } else if (!clear_blocked_metric && lower ~ /blocked/ && !intentional_data_only_blocked(lower) && explicit_status !~ /blocked_read_only|locked/) {
       red_alert = 1
     }
     if (red_alert) {
       prefix = bold red "[ALERT] " reset
-    } else if (lower ~ /degraded|warning|backpressure|storage_pressure|sql_wal_pressure|awaiting|timeout|throttle|pressure|stale|low_grade_blockers=[1-9]/) {
+    } else if (prefix == "" && lower ~ /degraded|warning=[^[:space:]][^[:space:]]*|warnings=[^[:space:]][^[:space:]]*|backpressure|storage_pressure|sql_wal_pressure|awaiting|timeout|pressure|stale|low_grade_blockers=[1-9]/) {
       prefix = bold yellow "[WATCH] " reset
-    } else if (lower ~ /clear_ready|healthy|heartbeat_ok|broker_ready|ready|status[=:][[:space:]]*ok|\"ok\"[[:space:]]*:[[:space:]]*true/) {
+    } else if (prefix == "" && lower ~ /clear_ready|healthy|heartbeat_ok|broker_ready|ready|status[=:][[:space:]]*ok|\"ok\"[[:space:]]*:[[:space:]]*true/) {
       prefix = bold green "[OK] " reset
-    } else if (line ~ /\[Decision\]|\[decision\]|\[decision-latest\]|ShadowLoop|ExecutionIntent|RegimeCooldown|AdaptiveInterval/) {
+    } else if (prefix == "" && line ~ /\[Decision\]|\[decision\]|\[decision-latest\]|ShadowLoop|ExecutionIntent|RegimeCooldown|AdaptiveInterval/) {
       prefix = bold cyan "[FLOW] " reset
     }
-    line = highlight_token(line, "GLOBAL_TRADING_HALT|OPERATOR_STOP|halt=true|failed|critical|tripwire|killswitch|margin_guard", bold red)
+    line = highlight_token(line, "GLOBAL_TRADING_HALT|OPERATOR_STOP|halt=true|critical|tripwire|killswitch|margin_guard", bold red)
     if (!clear_blocked_metric && !intentional_data_only_blocked(lower)) {
       line = highlight_token(line, "blocked", bold red)
     }
@@ -1357,6 +1383,8 @@ root = Path(sys.argv[1])
 source = sys.argv[2]
 health = root / "governance" / "health"
 external = root / "data" / "external_context"
+if str(root) not in sys.path:
+    sys.path.insert(0, str(root))
 
 
 def load(path: Path) -> dict:
@@ -1496,31 +1524,16 @@ print(
     f"live_orders={broker_cfg['live_orders']}"
 )
 
-auth_lease = load(health / "auth_lease_manager_latest.json")
-if auth_lease:
-    broker_state = auth_lease.get("broker_state") if isinstance(auth_lease.get("broker_state"), dict) else {}
-    budget = auth_lease.get("lease_budget") if isinstance(auth_lease.get("lease_budget"), dict) else {}
-    print(
-        "[auth] "
-        f"status={auth_lease.get('overall_status', 'unknown')} "
-        f"lease={auth_lease.get('lease_state', '')} "
-        f"broker_ready={as_bool(broker_state.get('broker_ready'))} "
-        f"network={as_bool(broker_state.get('network_ok'))} "
-        f"auth={as_bool(broker_state.get('auth_ok'))} "
-        f"probe={as_bool(broker_state.get('auth_probe_ok'))} "
-        f"expires={seconds(budget.get('expires_in_seconds'))}"
-    )
+try:
+    from scripts.ops.live_feed_status_contract import build_status_snapshot, format_status_lines
 
-schwab_auth = load(health / "schwab_auth_supervisor_latest.json")
-if schwab_auth:
-    token = schwab_auth.get("token") if isinstance(schwab_auth.get("token"), dict) else {}
+    for status_line in format_status_lines(build_status_snapshot(root, source=source)):
+        print(status_line)
+except Exception as exc:
     print(
-        "[schwab-auth] "
-        f"status={schwab_auth.get('overall_status', 'unknown')} "
-        f"token_ready={as_bool(token.get('ready'))} "
-        f"refresh_needed={as_bool(token.get('refresh_needed'))} "
-        f"expires={seconds(token.get('expires_in_seconds'))} "
-        f"age={seconds(token.get('age_seconds'))}"
+        f"[status-contract] level=watch schema=3 status=degraded visibility=degraded "
+        f"operational=unknown paper=unknown walkaway=false cause=status_contract_error "
+        f"owner=livefeed impact=paper_unverified error={compact(exc, 140)} action=livefeed-status-contract"
     )
 
 remote = load(health / "remote_alert_control_latest.json")
@@ -1550,11 +1563,21 @@ if watchdog:
 dashboard = load(health / "runtime_gate_dashboard_latest.json")
 if dashboard:
     overall = dashboard.get("overall") if isinstance(dashboard.get("overall"), dict) else {}
+    active_attention = overall.get("attention") if isinstance(overall.get("attention"), list) else []
+    managed_attention = overall.get("managed_attention") if isinstance(overall.get("managed_attention"), list) else []
+    dashboard_status = str(overall.get("status") or "unknown").strip().lower()
+    dashboard_level = "alert" if dashboard_status in {"critical", "blocked", "failed"} else ("watch" if dashboard_status in {"degraded", "warn", "warning"} else "ok")
+    forensic_attention = overall.get("forensic_attention") if isinstance(overall.get("forensic_attention"), list) else []
+    promotion_state = "evidence_pending" if "promotion_not_ready" in forensic_attention else "ready"
     print(
         "[dashboard] "
-        f"status={overall.get('status', 'unknown')} "
+        f"level={dashboard_level} "
+        f"status={dashboard_status} "
         f"ok={as_bool(overall.get('ok'))} "
-        f"attention={joined(overall.get('attention') or [], 160)}"
+        f"active={len(active_attention)} "
+        f"managed={len(managed_attention)} "
+        f"promotion={promotion_state} "
+        f"attention={joined(active_attention, 160)}"
     )
 
 hdf5 = load(health / "hdf5_training_cache_latest.json")
@@ -1593,126 +1616,6 @@ if coord:
         f"terminal_restart={as_bool(terminal.get('safe'))}"
     )
 
-storage = load(health / "ingestion_storage_control_latest.json")
-if storage:
-    print(
-        "[storage] "
-        f"status={storage.get('overall_status', 'unknown')} "
-        f"severity={storage.get('severity', '')} "
-        f"pressure={storage.get('pressure_index', '')} "
-        f"profile={storage.get('pressure_profile', '')}"
-    )
-
-throttle = load(health / "runtime_throttle_control_latest.json")
-if throttle:
-    print(
-        "[throttle] "
-        f"status={throttle.get('overall_status', 'unknown')} "
-        f"profile={throttle.get('throttle_profile', '')} "
-        f"compute={throttle.get('compute_pressure_level', '')} "
-        f"memory={throttle.get('memory_pressure_level', '')}"
-    )
-
-profit = load(health / "paper_runtime_profitability_controls_latest.json")
-if profit:
-    current = profit.get("current") if isinstance(profit.get("current"), dict) else {}
-    controlled_contract = (
-        profit.get("controlled_profitability_grade_contract")
-        if isinstance(profit.get("controlled_profitability_grade_contract"), dict)
-        else {}
-    )
-    raw_recovery = (
-        profit.get("raw_profitability_a_recovery_contract")
-        if isinstance(profit.get("raw_profitability_a_recovery_contract"), dict)
-        else {}
-    )
-    raw_improvement = (
-        profit.get("raw_profitability_improvement_contract")
-        if isinstance(profit.get("raw_profitability_improvement_contract"), dict)
-        else {}
-    )
-    exact_gate = (
-        controlled_contract.get("exact_raw_upgrade_gate")
-        if isinstance(controlled_contract.get("exact_raw_upgrade_gate"), dict)
-        else {}
-    )
-    current_gap = (
-        exact_gate.get("current_gap_to_next_grade")
-        if isinstance(exact_gate.get("current_gap_to_next_grade"), dict)
-        else {}
-    )
-    gap_to_raw_a = (
-        raw_recovery.get("gap_to_raw_a")
-        if isinstance(raw_recovery.get("gap_to_raw_a"), dict)
-        else {}
-    )
-    burn_down = (
-        raw_improvement.get("burn_down_contract")
-        if isinstance(raw_improvement.get("burn_down_contract"), dict)
-        else {}
-    )
-    recovery_current = (
-        raw_recovery.get("current")
-        if isinstance(raw_recovery.get("current"), dict)
-        else {}
-    )
-    burn_down_current = (
-        burn_down.get("current")
-        if isinstance(burn_down.get("current"), dict)
-        else {}
-    )
-    runtime_enforcement = (
-        raw_improvement.get("runtime_enforcement")
-        if isinstance(raw_improvement.get("runtime_enforcement"), dict)
-        else {}
-    )
-    raw_grade = str(profit.get("raw_profitability_grade") or "").strip().upper()
-    controlled_grade = str(
-        profit.get("controlled_profitability_grade")
-        or profit.get("controlled_financial_grade")
-        or ""
-    ).strip().upper()
-    raw_evidence_based = bool(
-        raw_recovery.get("raw_grade_remains_evidence_based")
-        or raw_improvement.get("raw_grade_remains_evidence_based")
-        or (
-            isinstance(controlled_contract.get("runtime_enforcement"), dict)
-            and controlled_contract["runtime_enforcement"].get("do_not_raise_raw_financial_grade_without_pnl_evidence")
-        )
-    )
-    control_ready = bool(
-        controlled_grade in {"A", "A+", "A++"}
-        and (
-            controlled_contract.get("control_ready", True)
-            or raw_improvement.get("control_ready", False)
-            or raw_recovery.get("active", False)
-        )
-    )
-    raw_gap_to_a = (
-        current_gap.get("net_pnl_needed")
-        if current_gap.get("net_pnl_needed") is not None
-        else gap_to_raw_a.get("net_pnl_gap")
-    )
-    if raw_gap_to_a is None:
-        raw_gap_to_a = burn_down.get("net_pnl_gap_to_raw_a")
-    raw_state = "ready"
-    if raw_grade and raw_grade not in {"A", "A+", "A++"}:
-        raw_state = "recovery_debt" if control_ready and raw_evidence_based else "needs_attention"
-    raw_blocking_soak = raw_state == "needs_attention"
-    print(
-        "[paper-profit] "
-        f"ts={profit.get('timestamp_utc', '')} "
-        f"grade={profit.get('profitability_display_grade') or profit.get('profitability_grade', '')} "
-        f"raw={raw_grade} "
-        f"raw_state={raw_state} "
-        f"raw_blocking_soak={as_bool(raw_blocking_soak)} "
-        f"raw_gap_to_a={as_num(raw_gap_to_a)} "
-        f"control={controlled_grade} "
-        f"weak_zero_entry={as_bool(runtime_enforcement.get('block_new_entries_on_weak_profiles'))} "
-        f"reduce_only_open={as_bool(runtime_enforcement.get('keep_sells_and_reduce_only_paths_open'))} "
-        f"net_pnl={as_num(current.get('portfolio_net_pnl_total') or current.get('net_pnl') or recovery_current.get('net_pnl') or burn_down_current.get('net_pnl'))}"
-    )
-
 print("live_feed_status_snapshot=end")
 PY
 }
@@ -1744,6 +1647,14 @@ except Exception:
     tail_bytes = 4194304
 
 health = root / "governance" / "health"
+if str(root) not in sys.path:
+    sys.path.insert(0, str(root))
+try:
+    from core.accountability import enrich_log_row as normalize_decision_record
+except Exception:
+    normalize_decision_record = None
+
+ROUTE_PLACEHOLDERS = {"", "unknown", "unclassified", "none", "na", "n_a"}
 
 
 def compact(value: Any, max_len: int = 96) -> str:
@@ -1809,6 +1720,38 @@ def nested(payload: dict[str, Any], *keys: str) -> Any:
             return None
         current = current.get(key)
     return current
+
+
+def usable_route_label(value: Any) -> str:
+    label = re.sub(r"[^a-z0-9]+", "_", str(value or "").strip().lower()).strip("_")
+    return "" if label in ROUTE_PLACEHOLDERS else label
+
+
+def normalized_decision(payload: dict[str, Any], path: Path) -> dict[str, Any]:
+    if normalize_decision_record is not None:
+        try:
+            return normalize_decision_record(
+                payload,
+                include_correlation=False,
+                include_schema=False,
+                path_hint=str(path),
+                channel="decision" if "/decision/" in str(path).replace("\\", "/") else "",
+            )
+        except Exception:
+            pass
+    return dict(payload)
+
+
+def decision_contract_state(original: dict[str, Any], normalized: dict[str, Any]) -> str:
+    if original.get("schema_valid") is True:
+        return "valid"
+    errors = original.get("schema_errors") if isinstance(original.get("schema_errors"), list) else []
+    repaired_action = bool(str(normalized.get("action") or "").strip())
+    if repaired_action and errors and set(str(item) for item in errors).issubset({"missing:action"}):
+        return "legacy_repaired"
+    if original.get("schema_valid") is False or errors:
+        return "invalid"
+    return "unchecked"
 
 
 def newest_jsonl(pattern: str) -> Path | None:
@@ -1897,6 +1840,7 @@ def decision_action(payload: dict[str, Any]) -> Any:
 def emit_decisions() -> None:
     rows: list[tuple[datetime, str]] = []
     seen: set[tuple[str, str, str, str]] = set()
+    unresolved_routes: list[str] = []
     for path in decision_candidates():
         for line in reversed(recent_lines(path)):
             try:
@@ -1905,32 +1849,52 @@ def emit_decisions() -> None:
                 continue
             if not isinstance(payload, dict):
                 continue
-            timestamp = first_value(payload, ("timestamp_utc", "ts_utc", "created_at_utc")) or ""
-            parsed = parse_ts(timestamp) or datetime.fromtimestamp(path.stat().st_mtime, timezone.utc)
-            symbol = compact(first_value(payload, ("symbol", "ticker", "underlying")) or "?", 28)
-            profile = compact(first_value(payload, ("shadow_profile", "profile", "mode", "source_profile")) or path.parent.name, 48)
-            status = compact(first_value(payload, ("status", "state", "loop_state")) or "", 32)
-            action = compact(decision_action(payload) or "?", 24)
-            broker = compact(first_value(payload, ("broker", "source_broker", "source_provider")) or "", 24)
-            score = as_num(first_value(payload, ("model_score", "master_intent_score", "master_score", "score", "decision_score")))
-            threshold = as_num(first_value(payload, ("threshold", "master_threshold", "decision_threshold")))
-            route = payload.get("data_route") if isinstance(payload.get("data_route"), dict) else {}
-            lane = compact(route.get("routing_lane") or payload.get("routing_lane") or "", 42)
+            normalized = normalized_decision(payload, path)
+            timestamp = first_value(normalized, ("timestamp_utc", "ts_utc", "created_at_utc")) or ""
+            file_timestamp = datetime.fromtimestamp(path.stat().st_mtime, timezone.utc)
+            parsed_timestamp = parse_ts(timestamp)
+            parsed = parsed_timestamp or file_timestamp
+            age_source = "record_timestamp" if parsed_timestamp else "file_mtime"
+            symbol = compact(first_value(normalized, ("symbol", "ticker", "underlying")) or "?", 28)
+            profile = compact(first_value(normalized, ("shadow_profile", "profile", "mode", "source_profile")) or path.parent.name, 48)
+            status = compact(first_value(normalized, ("status", "state", "loop_state")) or "", 32)
+            action = compact(decision_action(normalized) or "?", 24)
+            broker = compact(first_value(normalized, ("broker", "source_broker", "source_provider")) or "", 24)
+            score = as_num(first_value(normalized, ("model_score", "master_intent_score", "master_score", "score", "decision_score")))
+            threshold = as_num(first_value(normalized, ("threshold", "master_threshold", "decision_threshold")))
+            original_route = payload.get("data_route") if isinstance(payload.get("data_route"), dict) else {}
+            raw_lane = usable_route_label(original_route.get("routing_lane") or payload.get("routing_lane"))
+            route = normalized.get("data_route") if isinstance(normalized.get("data_route"), dict) else {}
+            lane = compact(usable_route_label(route.get("routing_lane") or normalized.get("routing_lane")), 42)
+            lane_source = "record" if raw_lane else ("inferred" if lane else "unresolved")
+            asset_class = compact(usable_route_label(route.get("asset_class") or normalized.get("asset_class")), 24)
+            quality = compact(usable_route_label(route.get("source_quality_label") or normalized.get("source_quality_label")), 28)
+            contract_state = decision_contract_state(payload, normalized)
+            if not lane:
+                unresolved_routes.append(f"{profile}:{symbol}:{path.parent.name}")
+                lane = "unknown"
             key = (symbol, profile, status, action)
             if key in seen:
                 continue
             seen.add(key)
             parts = [
                 "[decision-latest]",
-                f"age={age_text(timestamp)}",
+                "level=flow",
+                f"age={age_text(timestamp) if parsed_timestamp else age_text(file_timestamp.isoformat())}",
+                f"age_source={age_source}",
+                f"file_age={age_text(file_timestamp.isoformat())}",
                 f"profile={profile}",
                 f"broker={broker}" if broker else "",
-                f"lane={lane}" if lane else "",
+                f"lane={lane}",
+                f"lane_source={lane_source}",
+                f"asset={asset_class}" if asset_class else "",
+                f"quality={quality}" if quality else "",
                 f"symbol={symbol}",
                 f"status={status}" if status else "",
                 f"action={action}",
                 f"score={score}" if score else "",
                 f"threshold={threshold}" if threshold else "",
+                f"schema={contract_state}",
                 f"file={path.parent.name}/{path.name}",
             ]
             rows.append((parsed, " ".join(part for part in parts if part)))
@@ -1943,6 +1907,14 @@ def emit_decisions() -> None:
         return
     for _timestamp, line in sorted(rows, key=lambda item: item[0], reverse=True)[:max_lines]:
         print(line)
+    if unresolved_routes:
+        examples = ",".join(dict.fromkeys(unresolved_routes))
+        print(
+            "[decision-route] level=watch status=degraded "
+            f"unresolved_count={len(unresolved_routes)} "
+            f"examples={compact(examples, 160)} "
+            "action=inspect_data_route_contract"
+        )
 
 
 def emit_paper() -> None:
@@ -1951,6 +1923,7 @@ def emit_paper() -> None:
         gateway = lane.get("execution_gateway") if isinstance(lane.get("execution_gateway"), dict) else {}
         print(
             "[paper] "
+            f"level={'ok' if lane.get('auth_ok') and not lane.get('auth_error') else 'alert'} "
             f"age={age_text(lane.get('timestamp_utc'))} "
             f"mode={lane.get('mode', 'paper')} "
             f"processed={lane.get('processed_count', '')} "
@@ -1967,6 +1940,7 @@ def emit_paper() -> None:
         safety = standard.get("safety_contract") if isinstance(standard.get("safety_contract"), dict) else {}
         print(
             "[paper-data] "
+            f"level={'ok' if str(standard.get('overall_status') or '').lower() == 'ready' else 'watch'} "
             f"age={age_text(standard.get('timestamp_utc'))} "
             f"status={standard.get('overall_status', '')} "
             f"collectors={counts.get('data_collection_active_bots', '')} "
@@ -2064,6 +2038,7 @@ def emit_paper() -> None:
         raw_blocking_soak = raw_state == "needs_attention"
         print(
             "[paper-profit] "
+            f"level={'alert' if raw_state == 'needs_attention' else ('watch' if raw_state == 'recovery_debt' else 'ok')} "
             f"age={age_text(profit.get('timestamp_utc'))} "
             f"grade={profit.get('profitability_display_grade') or profit.get('profitability_grade', '')} "
             f"raw={raw_grade} "
@@ -2082,6 +2057,7 @@ def emit_paper() -> None:
         warnings = truth.get("warnings") if isinstance(truth.get("warnings"), list) else []
         print(
             "[paper-truth] "
+            f"level={'ok' if str(truth.get('overall_status') or '').lower() == 'ready' and not failed else ('alert' if failed else 'watch')} "
             f"age={age_text(truth.get('timestamp_utc'))} "
             f"status={truth.get('overall_status', '')} "
             f"grade={truth.get('grade', '')} "
@@ -2192,6 +2168,9 @@ if [[ "$SNAPSHOT" == "1" ]]; then
     snapshot_line_limit="$HEAVY_SNAPSHOT_MAX_LINES"
   fi
   emit_livefeed_status_snapshot | truncate_live_lines 80 || true
+  if [[ "$HEAVY_REQUESTED" == "1" && "$INCLUDE_DECISIONS" == "1" ]]; then
+    emit_livefeed_decision_paper_snapshot | truncate_live_lines 0 0 || true
+  fi
   if [[ "$HEAVY_REQUESTED" == "1" ]]; then
     run_filtered_state_safe_snapshot "$filter_pat" "$snapshot_line_limit" || true
   else

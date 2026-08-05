@@ -56,15 +56,36 @@ def build_payload(
         token_after.get("expires_in_seconds", token_before.get("expires_in_seconds", 0.0)) or 0.0
     )
     guard_age_minutes = payload_age_minutes(token_guard, token_guard_path)
+    broker_age_minutes = payload_age_minutes(broker_readiness, broker_readiness_path)
     network_ok = bool((token_guard.get("network") or {}).get("ok", False))
     auth_ok = bool((token_guard.get("auth") or {}).get("ok", True))
     broker_ready = bool(broker_readiness.get("ready_for_open", broker_readiness.get("auth_ok", False)))
+    broker_auth_ok = bool(broker_readiness.get("auth_ok", broker_ready))
+    broker_network_ok = bool(broker_readiness.get("network_ok", network_ok))
+    broker_artifact_fresh = bool(
+        broker_age_minutes is not None
+        and float(broker_age_minutes) <= float(max_guard_age_minutes)
+    )
     configured_for_refresh = bool(token_before.get("exists", False) or token_after.get("exists", False))
     market_window = _market_window()
     account_probe_status = int(broker_readiness.get("account_probe_status_code", 0) or 0)
-    probe_backed = bool(200 <= account_probe_status < 300 or (broker_ready and network_ok and auth_ok))
+    broker_auth_probe_backed = bool(
+        broker_artifact_fresh
+        and broker_ready
+        and broker_auth_ok
+        and broker_network_ok
+    )
+    probe_backed = bool(
+        200 <= account_probe_status < 300
+        or broker_auth_probe_backed
+        or (broker_ready and network_ok and auth_ok)
+    )
     auth_reason = str((token_guard.get("auth") or {}).get("reason", "") or "")
-    auth_probe_ok = bool(auth_ok or (probe_backed and auth_reason.startswith("auth_succeeded_but_token_not_ready")))
+    auth_probe_ok = bool(
+        auth_ok
+        or broker_auth_probe_backed
+        or (probe_backed and auth_reason.startswith("auth_succeeded_but_token_not_ready"))
+    )
     broker_operable = bool(broker_ready or probe_backed)
     token_lease_grace = bool(
         expires_in_seconds >= float(critical_lease_seconds)
@@ -152,6 +173,7 @@ def build_payload(
             "critical_lease_seconds": int(critical_lease_seconds),
             "guard_age_minutes": round(float(guard_age_minutes), 4) if guard_age_minutes is not None else None,
             "probe_backed": bool(probe_backed),
+            "broker_auth_probe_backed": bool(broker_auth_probe_backed),
             "token_lease_grace": bool(token_lease_grace),
             "off_hours_probe_grace": bool(off_hours_probe_grace),
             "market_hours_probe_grace": bool(market_hours_probe_grace),
@@ -162,6 +184,12 @@ def build_payload(
             "network_ok": bool(network_ok),
             "auth_ok": bool(auth_ok),
             "auth_probe_ok": bool(auth_probe_ok),
+            "broker_auth_ok": bool(broker_auth_ok),
+            "broker_network_ok": bool(broker_network_ok),
+            "broker_artifact_age_minutes": (
+                round(float(broker_age_minutes), 4) if broker_age_minutes is not None else None
+            ),
+            "broker_auth_probe_backed": bool(broker_auth_probe_backed),
             "auth_reason": auth_reason,
             "configured_for_refresh": bool(configured_for_refresh),
             "restart_storms": len(process_watchdog.get("restart_storms") or []),

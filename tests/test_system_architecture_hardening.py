@@ -169,6 +169,57 @@ def test_architecture_hardening_manages_closed_training_budget_during_guarded_pa
     assert contract["reason"] == "training_budget_closed_is_managed_during_guarded_paper_soak"
 
 
+def test_architecture_hardening_treats_no_training_candidates_as_healthy_idle(tmp_path: Path) -> None:
+    _seed_ready_project(tmp_path)
+    health = tmp_path / "governance" / "health"
+    _write_json(
+        health / "training_runtime_control_latest.json",
+        {
+            "overall_status": "constrained",
+            "prep_allowed": True,
+            "launch_allowed": False,
+            "launch_blockers": ["no_bot_needs_training_candidates"],
+        },
+    )
+
+    payload = src.build_payload(tmp_path)
+    training = payload["sections"]["training_evidence_contract"]
+    contract = training["evidence"]["managed_training_evidence_contract"]
+
+    assert payload["overall_status"] == "ready"
+    assert training["overall_status"] == "ready"
+    assert training["watch_items"] == []
+    assert contract["active"] is True
+    assert contract["training_idle_no_candidates_managed"] is True
+    assert contract["reason"] == "no_training_candidates_is_healthy_idle_during_guarded_paper_soak"
+
+
+def test_architecture_hardening_manages_no_candidates_with_closed_budget(tmp_path: Path) -> None:
+    _seed_ready_project(tmp_path)
+    health = tmp_path / "governance" / "health"
+    _write_json(
+        health / "training_runtime_control_latest.json",
+        {
+            "overall_status": "constrained",
+            "prep_allowed": True,
+            "launch_allowed": False,
+            "launch_blockers": ["no_bot_needs_training_candidates", "autonomic_training_budget_closed"],
+        },
+    )
+
+    payload = src.build_payload(tmp_path)
+    training = payload["sections"]["training_evidence_contract"]
+    contract = training["evidence"]["managed_training_evidence_contract"]
+
+    assert payload["overall_status"] == "ready"
+    assert training["overall_status"] == "ready"
+    assert training["watch_items"] == []
+    assert contract["active"] is True
+    assert contract["training_budget_closed_managed"] is True
+    assert contract["training_idle_no_candidates_managed"] is True
+    assert contract["reason"] == "no_training_candidates_is_healthy_idle_during_guarded_paper_soak"
+
+
 def test_architecture_hardening_uses_actionable_collection_zero_contract(tmp_path: Path) -> None:
     _seed_ready_project(tmp_path)
     health = tmp_path / "governance" / "health"
@@ -247,6 +298,46 @@ def test_architecture_hardening_treats_plumbed_sql_overlay_cleanup_as_watch(tmp_
     assert payload["sections"]["storage_writer_data_plane"]["overall_status"] == "watch"
     assert payload["sections"]["storage_writer_data_plane"]["blocks_guarded_paper"] is False
     assert payload["sections"]["storage_writer_data_plane"]["evidence"]["storage_overlay_relief"]["active"] is True
+
+
+def test_architecture_hardening_manages_bounded_transient_writer_pressure(tmp_path: Path) -> None:
+    _seed_ready_project(tmp_path)
+    health = tmp_path / "governance" / "health"
+    _write_json(
+        health / "ingestion_storage_control_latest.json",
+        {
+            "overall_status": "ready",
+            "severity": "stable",
+            "pressure_index": 0.504,
+            "backpressure": {
+                "total_pending_lines": 2076,
+                "pending_lines_threshold": 15000,
+                "raw_live": {
+                    "core_pending_lines": 950,
+                    "total_pending_lines": 2076,
+                    "oldest_pending_age_seconds": 45.0,
+                },
+            },
+            "bounded_recovery_contract": {
+                "route_verified": True,
+                "active_drain_progress": True,
+                "hard_gate_active": False,
+                "effective_hard_gate_active": False,
+            },
+        },
+    )
+    _write_json(
+        health / "system_plumbing_control_latest.json",
+        {"overall_status": "ready", "plumbing_score": 100, "blockers": [], "warnings": []},
+    )
+
+    payload = src.build_payload(tmp_path)
+    writer = payload["sections"]["storage_writer_data_plane"]
+
+    assert payload["ok"] is True
+    assert writer["overall_status"] == "ready"
+    assert writer["blocks_guarded_paper"] is False
+    assert writer["evidence"]["bounded_writer_pressure_managed"] is True
 
 
 def test_architecture_hardening_allows_isolated_read_only_collector_watch(tmp_path: Path) -> None:

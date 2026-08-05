@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import argparse
 import json
-import subprocess
+import os
 import sys
 from pathlib import Path
 from typing import Any, Callable
@@ -13,10 +13,10 @@ if __package__ in {None, ""}:
     if str(PROJECT_ROOT) not in sys.path:
         sys.path.insert(0, str(PROJECT_ROOT))
     from scripts.ops import grade_regression_guard
-    from scripts.ops.long_runtime_common import PROJECT_ROOT, eastern_off_hours_window, iso_now, ordered_unique, write_payload
+    from scripts.ops.long_runtime_common import PROJECT_ROOT, eastern_off_hours_window, iso_now, ordered_unique, run_bounded_process_group, write_payload
 else:
     from . import grade_regression_guard
-    from .long_runtime_common import PROJECT_ROOT, eastern_off_hours_window, iso_now, ordered_unique, write_payload
+    from .long_runtime_common import PROJECT_ROOT, eastern_off_hours_window, iso_now, ordered_unique, run_bounded_process_group, write_payload
 
 
 DEFAULT_OUT_PATH = PROJECT_ROOT / "governance" / "health" / "grade_regression_autopilot_latest.json"
@@ -37,32 +37,17 @@ def _parse_json_output(text: str) -> dict[str, Any]:
 
 
 def _run(cmd: list[str], project_root: Path, timeout_sec: int) -> dict[str, Any]:
-    try:
-        proc = subprocess.run(
-            cmd,
-            cwd=str(project_root),
-            capture_output=True,
-            text=True,
-            check=False,
-            timeout=max(int(timeout_sec), 1),
-        )
-        return {
-            "cmd": list(cmd),
-            "rc": int(proc.returncode),
-            "payload": _parse_json_output(proc.stdout or ""),
-            "stdout_tail": "\n".join((proc.stdout or "").splitlines()[-12:]),
-            "stderr_tail": "\n".join((proc.stderr or "").splitlines()[-12:]),
-        }
-    except subprocess.TimeoutExpired as exc:
-        stdout = exc.stdout.decode("utf-8", errors="ignore") if isinstance(exc.stdout, bytes) else str(exc.stdout or "")
-        stderr = exc.stderr.decode("utf-8", errors="ignore") if isinstance(exc.stderr, bytes) else str(exc.stderr or "")
-        return {
-            "cmd": list(cmd),
-            "rc": 124,
-            "payload": _parse_json_output(stdout),
-            "stdout_tail": "\n".join(stdout.splitlines()[-12:]),
-            "stderr_tail": "\n".join(stderr.splitlines()[-12:]) or "timeout",
-        }
+    result = run_bounded_process_group(cmd, cwd=project_root, timeout_seconds=max(int(timeout_sec), 1))
+    stdout = str(result.get("stdout") or "")
+    stderr = str(result.get("stderr") or "")
+    return {
+        "cmd": list(cmd),
+        "rc": int(result.get("rc", 1)),
+        "payload": _parse_json_output(stdout),
+        "stdout_tail": "\n".join(stdout.splitlines()[-12:]),
+        "stderr_tail": "\n".join(stderr.splitlines()[-12:]) or ("timeout" if result.get("timed_out") else ""),
+        "timeout_cleanup": result.get("timeout_cleanup") if isinstance(result.get("timeout_cleanup"), dict) else {},
+    }
 
 
 def _surface_policy(row: dict[str, Any], *, default_timeout_sec: int) -> dict[str, Any]:
@@ -127,19 +112,20 @@ def _repair_plan(project_root: Path, guard_payload: dict[str, Any], *, storage_m
             add(surface, state, [str(PYTHON_BIN), str(ops_root / "promotion_autopilot_packet.py"), "--json"], 180)
         elif surface == "storage_control":
             add(surface, state, [str(PYTHON_BIN), str(ops_root / "ingestion_storage_control.py"), "--json"], 180)
-            add(
-                surface,
-                state,
-                [
-                    str(PYTHON_BIN),
-                    str(ops_root / "storage_backpressure_autopilot.py"),
-                    "--apply",
-                    "--max-cycles",
-                    str(max(int(storage_max_cycles), 1)),
-                    "--json",
-                ],
-                900,
-            )
+            if str(os.getenv("RUNTIME_ARTIFACT_REFRESH_ACTIVE", "")).strip().lower() not in {"1", "true", "yes", "on"}:
+                add(
+                    surface,
+                    state,
+                    [
+                        str(PYTHON_BIN),
+                        str(ops_root / "storage_backpressure_autopilot.py"),
+                        "--apply",
+                        "--max-cycles",
+                        str(max(int(storage_max_cycles), 1)),
+                        "--json",
+                    ],
+                    900,
+                )
         elif surface == "security_audit":
             add(surface, state, [str(PYTHON_BIN), str(ops_root / "security_evidence_autofix.py"), "--json"], 300)
             add(surface, state, [str(PYTHON_BIN), str(project_root / "scripts" / "security_hardening_audit.py")], 180)
@@ -156,7 +142,8 @@ def _repair_plan(project_root: Path, guard_payload: dict[str, Any], *, storage_m
         elif surface == "promotion_autopilot":
             add(surface, state, [str(PYTHON_BIN), str(ops_root / "promotion_autopilot_packet.py"), "--json"], 180)
 
-    add("artifact_refresh", "prevent_stale_contracts", [str(PYTHON_BIN), str(ops_root / "runtime_artifact_refresh.py"), "--json"], 300)
+    if str(os.getenv("RUNTIME_ARTIFACT_REFRESH_ACTIVE", "")).strip().lower() not in {"1", "true", "yes", "on"}:
+        add("artifact_refresh", "prevent_stale_contracts", [str(PYTHON_BIN), str(ops_root / "runtime_artifact_refresh.py"), "--json"], 300)
     return plan
 
 

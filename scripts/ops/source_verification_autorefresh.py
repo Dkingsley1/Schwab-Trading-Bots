@@ -123,28 +123,91 @@ def _append_option_if_missing(command: list[str], option: str, value: str) -> li
     return out
 
 
-def _guarded_heavy_command(command: list[str], runtime_contract: dict[str, Any]) -> list[str]:
-    if str(runtime_contract.get("heavy_refresh_mode") or "") != "guarded_single_heavy":
-        return command
+def _set_option(command: list[str], option: str, value: str) -> list[str]:
+    out = list(command)
+    try:
+        option_index = out.index(option)
+    except ValueError:
+        return _append_option_if_missing(out, option, value)
+    if option_index + 1 < len(out):
+        out[option_index + 1] = value
+    else:
+        out.append(value)
+    return out
+
+
+def _bounded_heavy_command(
+    command: list[str],
+    *,
+    outer_timeout_seconds: int,
+) -> list[str]:
     joined = " ".join(str(part) for part in command)
     if "ticker-news-sync" not in joined:
         return command
+    configured_runtime_seconds = max(
+        _safe_int(
+            os.getenv(
+                "SOURCE_VERIFICATION_TICKER_MAX_RUNTIME_SECONDS",
+                os.getenv("SOURCE_VERIFICATION_GUARDED_TICKER_MAX_RUNTIME_SECONDS", "180"),
+            ),
+            180,
+        ),
+        30,
+    )
+    child_runtime_seconds = min(
+        configured_runtime_seconds,
+        max(int(outer_timeout_seconds) - 30, 30),
+    )
     out = list(command)
     out = _append_option_if_missing(
         out,
         "--max-symbols",
-        str(max(_safe_int(os.getenv("SOURCE_VERIFICATION_GUARDED_TICKER_MAX_SYMBOLS"), 300), 1)),
+        str(
+            max(
+                _safe_int(
+                    os.getenv(
+                        "SOURCE_VERIFICATION_TICKER_MAX_SYMBOLS",
+                        os.getenv("SOURCE_VERIFICATION_GUARDED_TICKER_MAX_SYMBOLS", "300"),
+                    ),
+                    300,
+                ),
+                1,
+            )
+        ),
     )
     out = _append_option_if_missing(
         out,
         "--limit-per-symbol",
-        str(max(_safe_int(os.getenv("SOURCE_VERIFICATION_GUARDED_TICKER_LIMIT_PER_SYMBOL"), 6), 1)),
+        str(
+            max(
+                _safe_int(
+                    os.getenv(
+                        "SOURCE_VERIFICATION_TICKER_LIMIT_PER_SYMBOL",
+                        os.getenv("SOURCE_VERIFICATION_GUARDED_TICKER_LIMIT_PER_SYMBOL", "6"),
+                    ),
+                    6,
+                ),
+                1,
+            )
+        ),
     )
     out = _append_option_if_missing(
         out,
         "--timeout-seconds",
-        str(max(_safe_float(os.getenv("SOURCE_VERIFICATION_GUARDED_TICKER_TIMEOUT_SECONDS"), 2.5), 0.5)),
+        str(
+            max(
+                _safe_float(
+                    os.getenv(
+                        "SOURCE_VERIFICATION_TICKER_TIMEOUT_SECONDS",
+                        os.getenv("SOURCE_VERIFICATION_GUARDED_TICKER_TIMEOUT_SECONDS", "2.5"),
+                    ),
+                    2.5,
+                ),
+                0.5,
+            )
+        ),
     )
+    out = _set_option(out, "--max-runtime-seconds", str(child_runtime_seconds))
     return out
 
 
@@ -310,7 +373,11 @@ def build_payload(
     batch_cap = min(max(int(max_commands), 0), _safe_int(runtime_contract.get("max_command_batch"), 1))
     heavy_cap = max(_safe_int(max_heavy_commands, 0), 0)
     for command in refresh_candidates:
-        command = _guarded_heavy_command(command, runtime_contract)
+        policy = _command_policy(command, default_timeout_seconds=int(timeout_seconds))
+        command = _bounded_heavy_command(
+            command,
+            outer_timeout_seconds=_safe_int(policy.get("timeout_seconds"), int(timeout_seconds)),
+        )
         policy = _command_policy(command, default_timeout_seconds=int(timeout_seconds))
         source_id = _source_id_for_command(command, source_by_command)
         if source_id == "macro_crossstack" and stale_sources.intersection(MACRO_CROSSCHECK_STALE_DEPENDENCIES):

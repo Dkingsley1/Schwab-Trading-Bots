@@ -100,6 +100,49 @@ def test_acquire_singleton_lock_reports_busy_owner(tmp_path):
     fh.close()
 
 
+def test_preserve_verified_local_route_intent_repairs_missing_override(monkeypatch, tmp_path):
+    project_root = tmp_path / "project"
+    local_root = project_root / "local_fallback_storage"
+    monkeypatch.setenv("BOT_LOGS_LOCAL_FALLBACK_ROOT", str(local_root))
+    monkeypatch.setenv("BOT_LOGS_PREFER_EXTERNAL", "1")
+    monkeypatch.delenv("BOT_STORAGE_ROUTE_EXPLICIT_SWITCH", raising=False)
+    for relative_path in storage_failback_sync.TRACKED_SQLITE_ROUTES:
+        target = local_root / relative_path
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.touch()
+        route = project_root / relative_path
+        route.parent.mkdir(parents=True, exist_ok=True)
+        route.symlink_to(target)
+
+    payload = storage_failback_sync._preserve_verified_local_route_intent(project_root)
+
+    override = project_root / "config" / ".env.storage_override"
+    assert payload["physical_local_sqlite_routes"] is True
+    assert payload["override_repaired"] is True
+    assert "BOT_LOGS_PREFER_EXTERNAL=0" in override.read_text(encoding="utf-8")
+    assert os.environ["BOT_LOGS_PREFER_EXTERNAL"] == "0"
+
+
+def test_preserve_verified_local_route_intent_yields_to_explicit_switch(monkeypatch, tmp_path):
+    project_root = tmp_path / "project"
+    local_root = project_root / "local_fallback_storage"
+    monkeypatch.setenv("BOT_LOGS_LOCAL_FALLBACK_ROOT", str(local_root))
+    monkeypatch.setenv("BOT_STORAGE_ROUTE_EXPLICIT_SWITCH", "1")
+    for relative_path in storage_failback_sync.TRACKED_SQLITE_ROUTES:
+        target = local_root / relative_path
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.touch()
+        route = project_root / relative_path
+        route.parent.mkdir(parents=True, exist_ok=True)
+        route.symlink_to(target)
+
+    payload = storage_failback_sync._preserve_verified_local_route_intent(project_root)
+
+    assert payload["explicit_route_switch"] is True
+    assert payload["override_repaired"] is False
+    assert not (project_root / "config" / ".env.storage_override").exists()
+
+
 def test_lock_busy_payload_preserves_last_completed_route(tmp_path):
     out = tmp_path / 'governance' / 'health' / 'storage_failback_sync_latest.json'
     out.parent.mkdir(parents=True, exist_ok=True)
@@ -426,6 +469,19 @@ def test_support_freeze_bypass_reason_requires_real_routing_when_previous_not_ex
     reason = storage_failback_sync._support_freeze_bypass_reason(previous_path, tmp_path / 'external')
 
     assert reason == 'previous_route_not_external:local_fallback_split_brain'
+
+
+def test_support_freeze_bypass_reason_honors_explicit_local_route(monkeypatch, tmp_path):
+    previous_path = tmp_path / 'storage_failback_sync_latest.json'
+    previous_path.write_text(
+        json.dumps({'mode': 'external', 'certified_mode': 'external', 'split_brain_conflicts': 0}),
+        encoding='utf-8',
+    )
+    monkeypatch.setenv('BOT_LOGS_PREFER_EXTERNAL', '0')
+
+    reason = storage_failback_sync._support_freeze_bypass_reason(previous_path, tmp_path / 'external')
+
+    assert reason == 'explicit_local_route_requested'
 
 
 def test_support_freeze_bypass_reason_allows_freeze_when_external_is_healthy(monkeypatch, tmp_path):

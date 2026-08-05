@@ -58,7 +58,23 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, max_session_age_minutes:
     session_age_minutes = payload_age_minutes(session_ready, session_ready_path)
     live_age_minutes = payload_age_minutes(live_readiness, live_readiness_path)
     launchd_ok = bool(reboot_resilience.get("ok", False))
-    storage_ok = bool(storage_route.get("ok", storage_resilience.get("ok", False)))
+    route_verification = storage_route.get("route_verification") if isinstance(storage_route.get("route_verification"), dict) else {}
+    route_state = str(route_verification.get("verification_state") or "").strip().lower()
+    route_mismatches = route_verification.get("mismatches") if isinstance(route_verification.get("mismatches"), list) else []
+    route_coverage = float(route_verification.get("coverage_ratio", 0.0) or 0.0)
+    route_ok_value = storage_route.get("ok")
+    if isinstance(route_ok_value, bool):
+        storage_route_ok = route_ok_value
+    elif storage_route:
+        storage_route_ok = bool(
+            route_state in {"active_local_ready", "active_external_ready", "ready"}
+            and route_coverage >= 1.0
+            and not route_mismatches
+        )
+    else:
+        storage_route_ok = True
+    storage_resilience_ok = bool(storage_resilience.get("ok", False))
+    storage_ok = bool(storage_route_ok and storage_resilience_ok)
     lease_state = str(auth_lease.get("lease_state") or "").strip().lower()
     broker_state = auth_lease.get("broker_state") if isinstance(auth_lease.get("broker_state"), dict) else {}
     auth_ok = True
@@ -119,7 +135,10 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, max_session_age_minutes:
     recommended_actions = ordered_unique(
         [
             "recover launchd labels before starting sleeves after a reboot" if not launchd_ok else "",
-            "remount or fail back storage before reopening the runtime lane" if not storage_ok else "",
+            "remount or fail back storage before reopening the runtime lane" if not storage_route_ok else "",
+            "refresh the restore drill and storage resilience proof before reopening the runtime lane"
+            if storage_route_ok and not storage_resilience_ok
+            else "",
             "refresh the broker auth lease before resuming live loops" if not auth_ok else "",
             "clear process restart storms before trusting a post-reboot runtime handoff" if not restart_ok else "",
             "run restart sanity and live readiness after black-start sequencing completes" if overall_status != "ready" else "",
@@ -145,6 +164,9 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, max_session_age_minutes:
             "session_freshness_inferred_from_shadow_loop": session_freshness_inferred_from_shadow_loop,
             "live_readiness_age_minutes": round(float(live_age_minutes), 4) if live_age_minutes is not None else None,
             "storage_mode": str(storage_route.get("mode") or ""),
+            "storage_route_verification_state": route_state,
+            "storage_route_verified": storage_route_ok,
+            "storage_resilience_ready": storage_resilience_ok,
             "recovered_labels": len(reboot_resilience.get("recovered") or []),
             "restart_storm_count": restart_storm_count,
             "lease_state": str(auth_lease.get("lease_state") or ""),

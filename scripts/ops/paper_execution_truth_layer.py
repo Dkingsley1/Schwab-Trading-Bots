@@ -34,6 +34,7 @@ BROKER_RECONCILIATION_CORE_SOURCE_IDS = {
 MIN_BLOCKING_COUNTERFACTUAL_KEPT_COUNT = 50
 NON_GRADE_BLOCKING_REPLAY_REASONS = {
     "counterfactual_candidates_pending_collecting",
+    "counterfactual_outcome_attribution_pending",
     "paper_replay_rows_low_collecting",
     "counterfactual_low_sample_win_rate_below_floor",
     "counterfactual_low_sample_aggregate_nonpositive",
@@ -178,36 +179,49 @@ def _build_calibration_gate(calibration: dict[str, Any], *, max_mae_bps: float, 
     metrics = calibration.get("metrics") if isinstance(calibration.get("metrics"), dict) else {}
     calibration_window = calibration.get("calibration_window") if isinstance(calibration.get("calibration_window"), dict) else {}
     reset_active = bool(calibration_window.get("reset_active", False))
-    samples = _safe_int(calibration.get("samples"), 0)
+    samples = _safe_int(calibration.get("independent_samples"), _safe_int(calibration.get("samples"), 0))
+    model_derived_samples = _safe_int(calibration.get("model_derived_samples"), 0)
+    minimum_independent_samples = max(_safe_int(calibration.get("minimum_independent_samples"), 1), 1)
+    independent_evidence_ready = bool(
+        calibration.get("independent_evidence_ready", samples >= minimum_independent_samples)
+    )
     mae = _safe_float(metrics.get("mae_bps"), 0.0)
     p95 = _safe_float(metrics.get("p95_bps"), 0.0)
     reasons: list[str] = []
     if not calibration:
         reasons.append("calibration_artifact_missing")
-    if samples <= 0:
-        if reset_active and _artifact_ok(calibration):
+    elif not independent_evidence_ready:
+        if samples <= 0 and model_derived_samples > 0:
+            reasons.append("model_derived_fills_are_not_independent_calibration_evidence")
+        if reset_active and samples <= 0:
             reasons.append("calibration_window_reset_waiting_for_samples")
         else:
-            reasons.append("no_calibration_samples")
-    if mae > max_mae_bps:
+            reasons.append("independent_calibration_evidence_pending")
+    if samples > 0 and mae > max_mae_bps:
         reasons.append("calibration_mae_above_limit")
-    if p95 > max_p95_bps:
+    if samples > 0 and p95 > max_p95_bps:
         reasons.append("calibration_p95_above_limit")
-    if not reasons:
+    metric_failure = bool({"calibration_mae_above_limit", "calibration_p95_above_limit"}.intersection(reasons))
+    if "calibration_artifact_missing" in reasons or metric_failure:
+        status = "blocked"
+    elif not reasons:
         status = "ready"
-    elif reasons == ["calibration_window_reset_waiting_for_samples"]:
-        status = "warn"
     else:
-        status = "warn" if samples > 0 and mae <= max_mae_bps * 1.5 else "blocked"
+        status = "warn"
     score = 100.0 - (mae / max(max_mae_bps, 1.0)) * 35.0 - (p95 / max(max_p95_bps, 1.0)) * 20.0
-    if status == "warn" and reasons == ["calibration_window_reset_waiting_for_samples"]:
+    evidence_pending = bool(status == "warn" and not independent_evidence_ready)
+    if evidence_pending:
         score = 82.0
-    reset_waiting_for_samples = bool(status == "warn" and reasons == ["calibration_window_reset_waiting_for_samples"])
     return _gate(
         status,
         score,
         reasons,
         samples=samples,
+        independent_samples=samples,
+        model_derived_samples=model_derived_samples,
+        minimum_independent_samples=minimum_independent_samples,
+        independent_evidence_ready=independent_evidence_ready,
+        promotion_evidence_eligible=bool(status == "ready" and independent_evidence_ready),
         calibration_window=calibration_window,
         metrics={
             "mae_bps": round(mae, 6),
@@ -215,11 +229,63 @@ def _build_calibration_gate(calibration: dict[str, Any], *, max_mae_bps: float, 
             "mean_bias_bps": round(_safe_float(metrics.get("mean_bias_bps"), 0.0), 6),
         },
         recommendations=calibration.get("recommendations", {}),
-        grade_blocking=not reset_waiting_for_samples,
-        advisory_only=reset_waiting_for_samples,
+        grade_blocking=not evidence_pending,
+        advisory_only=evidence_pending,
         advisory_policy=(
-            "post-reset calibration windows remain visible while collecting fresh fill samples, "
-            "but do not downgrade soak posture unless samples exist and violate calibration limits"
+            "independent fill evidence debt remains visible while paper collection continues, but model-derived fills "
+            "cannot satisfy the live-money promotion contract"
+        ),
+    )
+
+
+def _build_post_cost_expectancy_gate(paper_performance: dict[str, Any]) -> dict[str, Any]:
+    expectancy = (
+        paper_performance.get("post_cost_expectancy")
+        if isinstance(paper_performance.get("post_cost_expectancy"), dict)
+        else {}
+    )
+    sample_count = _safe_int(expectancy.get("sample_count"), 0)
+    minimum_samples = max(_safe_int(expectancy.get("minimum_samples"), 30), 1)
+    evidence_sufficient = bool(expectancy.get("evidence_sufficient", sample_count >= minimum_samples))
+    positive_lcb = bool(expectancy.get("positive_lower_confidence_bound_95", False))
+    mean_pnl = _safe_float(expectancy.get("mean_post_cost_pnl_delta"), 0.0)
+    mean_return_bps = _safe_float(expectancy.get("mean_post_cost_return_bps"), 0.0)
+    pnl_lcb = _safe_float(expectancy.get("lower_confidence_bound_95_post_cost_pnl_delta"), 0.0)
+    return_lcb = _safe_float(expectancy.get("lower_confidence_bound_95_post_cost_return_bps"), 0.0)
+    reasons: list[str] = []
+    if not expectancy or not bool(expectancy.get("available", False)):
+        reasons.append("post_cost_expectancy_evidence_missing")
+    elif not evidence_sufficient:
+        reasons.append("post_cost_expectancy_samples_pending")
+    elif not positive_lcb:
+        if mean_pnl <= 0.0 or mean_return_bps <= 0.0:
+            reasons.append("post_cost_expectancy_nonpositive")
+        else:
+            reasons.append("post_cost_expectancy_confidence_pending")
+    status = "ready" if not reasons else "warn"
+    if status == "ready":
+        score = 100.0
+    elif evidence_sufficient and (mean_pnl <= 0.0 or mean_return_bps <= 0.0):
+        score = 60.0
+    else:
+        score = 84.0
+    return _gate(
+        status,
+        score,
+        reasons,
+        sample_count=sample_count,
+        minimum_samples=minimum_samples,
+        evidence_sufficient=evidence_sufficient,
+        promotion_evidence_eligible=bool(evidence_sufficient and positive_lcb),
+        mean_post_cost_pnl_delta=round(mean_pnl, 6),
+        mean_post_cost_return_bps=round(mean_return_bps, 6),
+        lower_confidence_bound_95_post_cost_pnl_delta=round(pnl_lcb, 6),
+        lower_confidence_bound_95_post_cost_return_bps=round(return_lcb, 6),
+        grade_blocking=False,
+        advisory_only=status == "warn",
+        advisory_policy=(
+            "paper collection continues while post-cost expectancy matures; live-money promotion requires enough "
+            "samples and positive 95% lower confidence bounds for both PnL delta and return"
         ),
     )
 
@@ -366,10 +432,21 @@ def _build_replay_gate(counterfactual: dict[str, Any], paper_replay: dict[str, A
     reasons: list[str] = []
     warnings: list[str] = []
     advisory_reasons: list[str] = []
+    paper_replay_failed = {
+        str(item or "").strip()
+        for item in (paper_replay.get("failed_checks") if isinstance(paper_replay.get("failed_checks"), list) else [])
+        if str(item or "").strip()
+    }
+    paper_replay_collecting_only = bool(
+        paper_replay
+        and not _artifact_ok(paper_replay)
+        and paper_replay_failed
+        and paper_replay_failed.issubset({"paper_rows_low"})
+    )
     if not _artifact_ok(counterfactual):
         reasons.append("counterfactual_replay_not_ok")
     if not top:
-        if _artifact_ok(counterfactual) and _artifact_ok(paper_replay):
+        if _artifact_ok(counterfactual) and (_artifact_ok(paper_replay) or paper_replay_collecting_only):
             warnings.append("counterfactual_candidates_pending_collecting")
         else:
             reasons.append("no_counterfactual_candidates")
@@ -388,15 +465,10 @@ def _build_replay_gate(counterfactual: dict[str, Any], paper_replay: dict[str, A
         warnings.append("counterfactual_low_sample_outcome_attribution_pending")
     elif top and aggregate == 0.0 and not has_win_rate:
         warnings.append("counterfactual_outcome_attribution_pending")
-    paper_replay_failed = {
-        str(item or "").strip()
-        for item in (paper_replay.get("failed_checks") if isinstance(paper_replay.get("failed_checks"), list) else [])
-        if str(item or "").strip()
-    }
     if paper_replay and not _artifact_ok(paper_replay):
         if "stale_execution_skips_only" in paper_replay_failed:
             reasons.append("paper_replay_stale_skips_only")
-        elif paper_replay_failed and paper_replay_failed.issubset({"paper_rows_low"}) and low_sample:
+        elif paper_replay_collecting_only and (low_sample or not top):
             warnings.append("paper_replay_rows_low_collecting")
         else:
             reasons.append("paper_replay_drill_not_ok")
@@ -847,6 +919,7 @@ def evaluate_truth_layer(
         max_mae_bps=max_calibration_mae_bps,
         max_p95_bps=max_calibration_p95_bps,
     )
+    post_cost_expectancy_gate = _build_post_cost_expectancy_gate(paper_performance)
     scorecards = _sleeve_rows(paper_performance, calibration, max_slippage_gap_bps=max_slippage_gap_bps)
     sleeve_gate = _build_sleeve_gate(scorecards, min_sleeve_score=min_sleeve_score)
     replay_gate = _build_replay_gate(counterfactual, paper_replay, min_win_rate=min_replay_win_rate)
@@ -871,6 +944,7 @@ def evaluate_truth_layer(
     promotion_warnings: list[str] = []
     gate_map = {
         "live_quote_fill_calibration": calibration_gate,
+        "post_cost_expectancy_evidence": post_cost_expectancy_gate,
         "sleeve_execution_scorecards": sleeve_gate,
         "decision_replay_harness": replay_gate,
         "options_specific_realism": options_gate,
@@ -884,6 +958,8 @@ def evaluate_truth_layer(
     for name, gate in gate_map.items():
         if str(gate.get("status") or "") == "blocked":
             promotion_reasons.append(f"{name}_blocked")
+        elif gate.get("promotion_evidence_eligible") is False:
+            promotion_reasons.append(f"{name}_promotion_evidence_not_ready")
     promotion_quality_effective_ok = _artifact_ok(promotion_quality) or _promotion_quality_self_referential(promotion_quality)
     promotion_quality_blockers = _promotion_quality_blocking_failed_checks(promotion_quality) if promotion_quality else []
     if promotion_quality and not promotion_quality_effective_ok:
@@ -911,6 +987,7 @@ def evaluate_truth_layer(
         promotion_quality_blocking_failed_checks=promotion_quality_blockers,
         hardened_requirements=[
             "calibration",
+            "confidence_bounded_post_cost_expectancy",
             "sleeve_scorecards",
             "counterfactual_replay",
             "options_realism",
@@ -923,19 +1000,23 @@ def evaluate_truth_layer(
             "paper_broker_truth_reconciliation",
             "promotion_quality",
         ],
+        promotion_only=True,
     )
 
     all_gates = {**gate_map, "paper_pnl_haircut_ledger": {"ok": True, "status": "ready", **haircut_ledger}, "promotion_gate_hardening": promotion_gate}
-    blocked = [name for name, gate in all_gates.items() if str(gate.get("status") or "") == "blocked"]
+    operational_gates = {
+        name: gate for name, gate in all_gates.items() if not bool(gate.get("promotion_only", False))
+    }
+    blocked = [name for name, gate in operational_gates.items() if str(gate.get("status") or "") == "blocked"]
     grade_blocking_warnings = [
-        name for name, gate in all_gates.items() if _grade_blocking_warning(name, gate)
+        name for name, gate in operational_gates.items() if _grade_blocking_warning(name, gate)
     ]
     advisory_warnings = [
-        name for name, gate in all_gates.items() if _advisory_warning(name, gate)
+        name for name, gate in operational_gates.items() if _advisory_warning(name, gate)
     ]
     warnings = grade_blocking_warnings
-    ready_count = len(all_gates) - len(blocked) - len(grade_blocking_warnings)
-    raw_metric_score = sum(_safe_float(gate.get("score"), 85.0) for gate in all_gates.values()) / max(len(all_gates), 1)
+    ready_count = len(operational_gates) - len(blocked) - len(grade_blocking_warnings)
+    raw_metric_score = sum(_safe_float(gate.get("score"), 85.0) for gate in operational_gates.values()) / max(len(operational_gates), 1)
     status = "ready" if not blocked else "blocked"
     if grade_blocking_warnings and not blocked:
         status = "watch"
@@ -946,6 +1027,7 @@ def evaluate_truth_layer(
         overall_score = min(overall_score, 89.9)
     grade = _grade_from_score(overall_score, status)
     a_plus_ready = bool(status == "ready" and grade == "A+")
+    promotion_ready = bool(not blocked and str(promotion_gate.get("status") or "") == "ready")
     return {
         "timestamp_utc": iso_now(),
         "schema_version": 2,
@@ -955,6 +1037,10 @@ def evaluate_truth_layer(
         "raw_metric_score": round(_clamp(raw_metric_score), 6),
         "grade": grade,
         "a_plus_ready": a_plus_ready,
+        "promotion_ready": promotion_ready,
+        "live_money_promotion_ready": promotion_ready,
+        "promotion_status": str(promotion_gate.get("status") or "blocked"),
+        "promotion_failed_checks": list(promotion_gate.get("reasons") or []),
         "ready_gates": ready_count,
         "warning_gates": len(grade_blocking_warnings),
         "advisory_warning_gates": len(advisory_warnings),
@@ -982,6 +1068,7 @@ def evaluate_truth_layer(
                 if isinstance(action, dict)
             ]
             + calibration_gate.get("reasons", [])
+            + post_cost_expectancy_gate.get("reasons", [])
             + sleeve_gate.get("reasons", [])
             + replay_gate.get("reasons", [])
             + options_gate.get("reasons", [])

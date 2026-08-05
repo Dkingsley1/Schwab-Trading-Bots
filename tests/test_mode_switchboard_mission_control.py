@@ -135,7 +135,7 @@ def test_operator_mode_uses_computer_task_budget_when_available(tmp_path: Path, 
 
     assert operator_mode["computer_task_budget_used"] is True
     assert operator_mode["computer_task_profile"] == "music_playback"
-    assert env["BOT_COLLECTION_DUTY_CYCLE_MAX_ACTIVE_RATIO"] == "0.40"
+    assert env["BOT_COLLECTION_DUTY_CYCLE_MAX_ACTIVE_RATIO"] == "0.20"
     assert env["LIVE_FEED_HEAVY_DEFAULT_LINES"] == "25"
     assert env["LIVE_FEED_HEAVY_MAX_FOLLOW_FILES"] == "6"
 
@@ -175,7 +175,7 @@ def test_operator_mode_uses_hardened_computer_task_env_when_available(tmp_path: 
     operator_mode = src.build_payload(project_root)["operator_mode"]
     env = operator_mode["env_overrides"]
 
-    assert env["BOT_COLLECTION_DUTY_CYCLE_MAX_ACTIVE_RATIO"] == "0.35"
+    assert env["BOT_COLLECTION_DUTY_CYCLE_MAX_ACTIVE_RATIO"] == "0.20"
     assert env["ASYNC_PIPELINE_WORKERS"] == "1"
     assert env["LIVE_FEED_HEAVY_DEFAULT_LINES"] == "20"
     assert env["LIVE_FEED_HEAVY_MAX_FOLLOW_FILES"] == "5"

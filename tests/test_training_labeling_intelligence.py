@@ -200,6 +200,141 @@ def test_apply_adds_bots_and_normalizes_all_label_contracts(tmp_path: Path) -> N
     assert (tmp_path / "governance" / "training_labeling_intelligence" / "label_coverage_latest.json").exists()
     assert (tmp_path / "governance" / "training_labeling_intelligence" / "free_label_source_enrichment_latest.json").exists()
     assert (tmp_path / "governance" / "training_labeling_intelligence" / "label_materialization_plan_latest.json").exists()
+    assert (tmp_path / "governance" / "training_labeling_intelligence" / "all_bot_label_materialization_latest.json").exists()
+
+
+def test_apply_repairs_directional_infrastructure_labels_and_routes_all_bots(tmp_path: Path) -> None:
+    registry_path = tmp_path / "master_bot_registry.json"
+    registry_path.write_text(
+        json.dumps(
+            {
+                "summary": {"total_bots": 2, "active_bots": 2, "max_bot_version": 20},
+                "sub_bots": [
+                    {
+                        "bot_id": "brain_refinery_v19_daily_brief_composer",
+                        "bot_role": "infrastructure_sub_bot",
+                        "active": True,
+                        "training_excluded": True,
+                        "lifecycle_state": "data_collection_only",
+                        "label_contract": {
+                            "label_family": "generic_directional",
+                            "primary_horizon": "1d_forward_return",
+                            "required_context": ["price_bars"],
+                        },
+                    },
+                    {
+                        "bot_id": "brain_refinery_v20_options_surface_signal",
+                        "bot_role": "options_sub_bot",
+                        "active": True,
+                        "label_contract": {
+                            "label_family": "options_surface",
+                            "primary_horizon": "iv_realized_1d_5d",
+                            "required_context": ["options_chain", "iv_surface"],
+                        },
+                    },
+                    {
+                        "bot_id": "brain_refinery_v21_crypto_activity_guard",
+                        "bot_role": "signal_sub_bot",
+                        "active": True,
+                        "label_contract": {
+                            "label_family": "operational_guard_effect",
+                            "primary_horizon": "guard_prevents_bad_runtime_action",
+                            "required_context": ["runtime_health", "incident_log"],
+                        },
+                    },
+                ],
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    payload = tli.apply_registry(tmp_path)
+    registry = json.loads(registry_path.read_text(encoding="utf-8"))
+    infra = next(row for row in registry["sub_bots"] if row["bot_id"] == "brain_refinery_v19_daily_brief_composer")
+    options = next(row for row in registry["sub_bots"] if row["bot_id"] == "brain_refinery_v20_options_surface_signal")
+    crypto_guard = next(row for row in registry["sub_bots"] if row["bot_id"] == "brain_refinery_v21_crypto_activity_guard")
+
+    assert infra["training_label_contract_status"] == "role_mismatch_label_repair"
+    assert infra["label_contract"]["label_family"] == "operational_guard_effect"
+    infra_materialization = infra["training_label_materialization_contract"]
+    assert infra_materialization["objective_class"] == "operational_effect"
+    assert infra_materialization["runtime_price_labeling_allowed"] is False
+    assert infra_materialization["directional_fallback_allowed"] is False
+    assert options["training_label_materialization_contract"]["objective_class"] == "market_outcome"
+    assert options["training_label_materialization_contract"]["directional_fallback_allowed"] is False
+    assert options["training_label_materialization_contract"]["minimum_label_maturity_seconds"] == 24 * 60 * 60
+    assert options["training_label_materialization_contract"]["maximum_label_maturity_seconds"] == 8 * 24 * 60 * 60
+    assert crypto_guard["training_label_contract_status"] == "signal_market_label_repair"
+    assert crypto_guard["label_contract"]["label_family"] == "crypto_microstructure"
+    assert crypto_guard["training_label_materialization_contract"]["objective_class"] == "market_outcome"
+    coverage = payload["all_bot_label_materialization"]
+    assert coverage["route_coverage_ratio"] == 1.0
+    assert coverage["misrouted_directional_infrastructure_before_count"] == 1
+    assert coverage["misrouted_directional_infrastructure_after_count"] == 0
+    assert coverage["misrouted_market_signal_guards_before_count"] == 1
+    assert coverage["misrouted_market_signal_guards_after_count"] == 0
+    refreshed_coverage = tli._all_bot_label_materialization_coverage(registry["sub_bots"])
+    assert refreshed_coverage["misrouted_directional_infrastructure_before_count"] == 1
+    assert refreshed_coverage["misrouted_market_signal_guards_before_count"] == 1
+
+
+def test_research_stability_bots_do_not_use_market_price_outcomes() -> None:
+    row = {
+        "bot_id": "brain_refinery_v739_bayesian_neural_uncertainty_bot",
+        "bot_role": "signal_sub_bot",
+        "lifecycle_state": "data_collection_only",
+        "training_excluded": True,
+        "label_contract": {
+            "label_family": "quant_research_control",
+            "primary_horizon": "research_signal_stability",
+            "required_context": ["walk_forward_trace"],
+        },
+    }
+
+    universal = tli._universal_contract(row)
+    materialization = tli._bot_label_materialization_contract(row, universal)
+
+    assert universal["training_lane"] == "research_quant_proxy"
+    assert materialization["objective_class"] == "research_validation"
+    assert materialization["outcome_authority"] == "walk_forward_out_of_sample_evidence"
+    assert materialization["runtime_price_labeling_allowed"] is False
+
+    infrastructure_row = {
+        **row,
+        "bot_id": "brain_refinery_v738_bayesian_neural_uncertainty_evidence_writer_bot",
+        "bot_role": "infrastructure_sub_bot",
+    }
+    infrastructure_contract = tli._bot_label_materialization_contract(
+        infrastructure_row,
+        tli._universal_contract(infrastructure_row),
+    )
+    assert infrastructure_contract["objective_class"] == "operational_effect"
+    assert infrastructure_contract["outcome_authority"] == "verified_internal_control_outcome"
+
+
+def test_market_horizon_policy_is_wall_clock_bounded() -> None:
+    intraday = tli._label_horizon_policy("5m_30m_forward_return", "market_outcome")
+    daily = tli._label_horizon_policy("1d_forward_return", "market_outcome")
+
+    assert intraday["enforcement_mode"] == "strict_wall_clock_range"
+    assert intraday["minimum_maturity_seconds"] == 5 * 60
+    assert intraday["maximum_maturity_seconds"] == 2 * 60 * 60
+    assert daily["minimum_maturity_seconds"] == 24 * 60 * 60
+    assert daily["maximum_maturity_seconds"] == 4 * 24 * 60 * 60
+
+
+def test_refresh_artifacts_does_not_mutate_registry(tmp_path: Path) -> None:
+    _write_registry(tmp_path)
+    before = (tmp_path / "master_bot_registry.json").read_bytes()
+
+    payload = tli.refresh_artifacts(tmp_path)
+
+    assert payload["mode"] == "refreshed_artifacts"
+    assert (tmp_path / "master_bot_registry.json").read_bytes() == before
+    route_path = tmp_path / "governance" / "training_labeling_intelligence" / "all_bot_label_materialization_latest.json"
+    route_payload = json.loads(route_path.read_text(encoding="utf-8"))
+    assert route_payload["routed_bot_count"] == 2
 
 
 def test_apply_is_idempotent_by_slot_kind(tmp_path: Path) -> None:
@@ -390,6 +525,39 @@ def test_collect_only_diagnostics_include_collection_only_even_without_training_
     diag = json.loads(diag_path.read_text(encoding="utf-8"))
     assert diag["training_excluded"] is True
     assert diag["label_depth_status"] == "label_depth_ready_for_real_diagnostic_refresh"
+
+
+def test_collect_only_diagnostic_overwrite_preserves_real_paper_diagnostic(tmp_path: Path) -> None:
+    _write_registry(tmp_path)
+    registry_path = tmp_path / "master_bot_registry.json"
+    registry = json.loads(registry_path.read_text(encoding="utf-8"))
+    bot_id = "brain_refinery_v17_mixed_regime"
+    registry["sub_bots"].append(
+        {
+            "bot_id": bot_id,
+            "bot_role": "signal_sub_bot",
+            "active": True,
+            "data_collection_active": True,
+            "training_excluded": True,
+            "lifecycle_state": "paper_live_data",
+        }
+    )
+    registry_path.write_text(json.dumps(registry) + "\n", encoding="utf-8")
+    diagnostic_path = tmp_path / "governance" / "training_diagnostics" / f"{bot_id}_latest.json"
+    diagnostic_path.parent.mkdir(parents=True, exist_ok=True)
+    diagnostic_path.write_text(json.dumps({"status": "passed", "sample_count": 400}) + "\n", encoding="utf-8")
+
+    payload = tli.apply_registry(
+        tmp_path,
+        materialize_collect_only_diagnostics=True,
+        collect_only_diagnostic_min_version=0,
+        overwrite_collect_only_diagnostics=True,
+    )
+    diagnostic = json.loads(diagnostic_path.read_text(encoding="utf-8"))
+
+    assert bot_id in payload["collect_only_diagnostics"]["skipped_existing_bot_ids"]
+    assert diagnostic["status"] == "passed"
+    assert diagnostic["sample_count"] == 400
 
 
 def test_training_process_intelligence_reads_walk_forward_coverage_artifacts(tmp_path: Path) -> None:

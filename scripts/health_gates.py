@@ -151,6 +151,18 @@ def _storage_control_backpressure_override(storage_control: dict[str, Any]) -> d
     source = str(backpressure.get("effective_raw_live_source") or effective.get("source") or "").strip()
     overlay_adjusted = bool(backpressure.get("overlay_adjusted", False))
     overlay_clear = bool(backpressure.get("overlay_pressure_clear", False) or source == "fresh_empty_sql_ingestion_overlay")
+    shard_reconciliation = (
+        effective.get("sql_shard_state_reconciliation")
+        if isinstance(effective.get("sql_shard_state_reconciliation"), dict)
+        else {}
+    )
+    shard_reconciliation_active = bool(
+        shard_reconciliation.get("active")
+        and not effective.get("artifact_stale_for_overlay_reconciliation", False)
+        and _to_int(shard_reconciliation.get("checked_top_rows"), 0) > 0
+        and _to_int(shard_reconciliation.get("reconciled_source_count"), 0) > 0
+        and _to_int(shard_reconciliation.get("pending_line_reduction"), 0) > 0
+    )
     storage_ready = bool(
         str(storage_control.get("overall_status") or "").strip().lower() == "ready"
         and str(storage_control.get("severity") or "").strip().lower() == "stable"
@@ -171,6 +183,7 @@ def _storage_control_backpressure_override(storage_control: dict[str, Any]) -> d
         effective.get("age_reconciled_from_stale_locator", False)
         or effective.get("oldest_age_reconciled", False)
         or "fresh_empty_sql" in source
+        or shard_reconciliation_active
     )
     age_clear = bool(oldest_age <= oldest_target and (oldest_age > 0.0 or age_reconciled or overlay_clear))
     authoritative_clear = bool(storage_ready and overlay_adjusted and overlay_clear)
@@ -189,6 +202,7 @@ def _storage_control_backpressure_override(storage_control: dict[str, Any]) -> d
             "queue_clear": queue_clear,
             "age_clear": age_clear,
             "age_reconciled": age_reconciled,
+            "shard_reconciliation_active": shard_reconciliation_active,
             "data_clean": data_clean,
             "age_seconds": round(age_seconds, 3),
             "pending_lines": int(core_pending),
@@ -212,7 +226,14 @@ def _storage_control_backpressure_override(storage_control: dict[str, Any]) -> d
         "queue_clear": queue_clear,
         "age_clear": age_clear,
         "age_reconciled": age_reconciled,
-        "reason": "fresh_sql_overlay_clear" if authoritative_clear else "fresh_storage_control_queue_clear",
+        "shard_reconciliation_active": shard_reconciliation_active,
+        "reason": (
+            "fresh_sql_overlay_clear"
+            if authoritative_clear
+            else "fresh_sql_shard_state_reconciled_queue_clear"
+            if shard_reconciliation_active
+            else "fresh_storage_control_queue_clear"
+        ),
     }
 
 

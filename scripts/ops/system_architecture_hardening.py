@@ -592,6 +592,28 @@ def _storage_writer_data_plane(ctx: dict[str, dict[str, Any]]) -> dict[str, Any]
     plumbing_status = _status(plumbing.get("overall_status"))
     overlay_relief = _storage_overlay_relief(storage, plumbing)
     overlay_relief_active = bool(overlay_relief.get("active", False))
+    bounded_recovery = _as_dict(storage.get("bounded_recovery_contract"))
+    raw_live = _as_dict(backpressure.get("effective_raw_live")) or _as_dict(backpressure.get("raw_live"))
+    bounded_writer_pressure_managed = bool(
+        0.35 <= pressure_index < 1.0
+        and storage_status in {"stable", "ready", "normal", "calm"}
+        and total_pending < pending_threshold
+        and _safe_int(raw_live.get("core_pending_lines"), total_pending) <= 5000
+        and _safe_int(raw_live.get("total_pending_lines"), total_pending) <= 15000
+        and _safe_float(raw_live.get("oldest_pending_age_seconds"), 0.0) <= 300.0
+        and bool(bounded_recovery.get("route_verified", False))
+        and bool(
+            bounded_recovery.get("active_drain_progress", False)
+            or bounded_recovery.get("drain_delta_signal_observed", False)
+        )
+        and not bool(bounded_recovery.get("hard_gate_active", False))
+        and not bool(bounded_recovery.get("effective_hard_gate_active", False))
+        and data_status in {"ready", "ok"}
+        and plumbing_status in {"ready", "guarded_ready"}
+        and not plumbing.get("blockers")
+        and single_primary
+        and not risk_flags
+    )
     findings: list[str] = []
     watch_items: list[str] = []
     recommendations: list[str] = []
@@ -624,7 +646,7 @@ def _storage_writer_data_plane(ctx: dict[str, dict[str, Any]]) -> dict[str, Any]
         findings.append(f"storage_status={storage_status}")
     elif storage_status in {"blocked", "critical", "high"} and overlay_relief_active:
         watch_items.append("storage_status_managed_by_sql_overlay_relief")
-    if pressure_index >= 0.35 and not overlay_relief_active:
+    if pressure_index >= 0.35 and not overlay_relief_active and not bounded_writer_pressure_managed:
         findings.append("storage_pressure_index_high")
     elif pressure_index >= 0.35 and overlay_relief_active:
         watch_items.append("storage_pressure_index_managed_by_sql_overlay_relief")
@@ -672,6 +694,7 @@ def _storage_writer_data_plane(ctx: dict[str, dict[str, Any]]) -> dict[str, Any]
             "storage_status": storage_status,
             "storage_pressure_index": pressure_index,
             "storage_overlay_relief": overlay_relief,
+            "bounded_writer_pressure_managed": bounded_writer_pressure_managed,
             "total_pending_lines": total_pending,
             "pending_lines_threshold": pending_threshold,
             "data_plane_status": data_status,
@@ -1124,7 +1147,11 @@ def _training_evidence_contract(ctx: dict[str, dict[str, Any]]) -> dict[str, Any
     quality_status = _status(quality.get("overall_status"))
     quality_score = _safe_float(quality.get("training_quality_score", quality.get("training_quality_index")), 0.0)
     launch_blockers = [str(item) for item in _as_list(runtime.get("launch_blockers")) if str(item).strip()]
-    budget_only_launch_blockers = bool(launch_blockers) and set(launch_blockers) <= {"autonomic_training_budget_closed"}
+    launch_blocker_set = set(launch_blockers)
+    managed_idle_blockers = {"autonomic_training_budget_closed", "no_bot_needs_training_candidates"}
+    managed_idle_launch_blockers = bool(launch_blockers) and launch_blocker_set <= managed_idle_blockers
+    budget_only_launch_blockers = bool(launch_blockers) and launch_blocker_set <= {"autonomic_training_budget_closed"}
+    idle_only_launch_blockers = bool(launch_blockers) and launch_blocker_set <= {"no_bot_needs_training_candidates"}
     findings: list[str] = []
     watch_items: list[str] = []
 
@@ -1142,7 +1169,7 @@ def _training_evidence_contract(ctx: dict[str, dict[str, Any]]) -> dict[str, Any
         watch_items.append("training_quality_watch")
     elif not quality:
         watch_items.append("training_quality_missing")
-    if launch_blockers and not budget_only_launch_blockers:
+    if launch_blockers and not managed_idle_launch_blockers:
         watch_items.append("training_runtime_launch_blockers_present")
     if not rollup:
         watch_items.append("collection_rollup_missing")
@@ -1155,18 +1182,24 @@ def _training_evidence_contract(ctx: dict[str, dict[str, Any]]) -> dict[str, Any
         "collection_flowing": bool(collector_count > 0 and observed_count > 0 and _safe_int(rollup.get("total_observations"), 0) > 0),
         "training_quality_score": quality_score,
         "training_budget_closed_managed": False,
+        "training_idle_no_candidates_managed": False,
         "managed_zero_observation_count": managed_zero_count,
         "raw_zero_observation_count": raw_zero_count,
         "unmanaged_zero_observation_count": zero_count,
     }
     if (
-        budget_only_launch_blockers
+        managed_idle_launch_blockers
         and managed_training_evidence_contract["guarded_paper_ready"]
         and managed_training_evidence_contract["strict_all_clear"]
         and managed_training_evidence_contract["collection_flowing"]
         and quality_score >= 75.0
     ):
-        managed_training_evidence_contract["training_budget_closed_managed"] = True
+        managed_training_evidence_contract["training_budget_closed_managed"] = (
+            "autonomic_training_budget_closed" in launch_blocker_set
+        )
+        managed_training_evidence_contract["training_idle_no_candidates_managed"] = (
+            "no_bot_needs_training_candidates" in launch_blocker_set
+        )
 
     if findings:
         if (
@@ -1185,6 +1218,14 @@ def _training_evidence_contract(ctx: dict[str, dict[str, Any]]) -> dict[str, Any
             status = "needs_work"
     elif watch_items:
         status = "watch"
+    elif bool(managed_training_evidence_contract.get("training_idle_no_candidates_managed", False)):
+        managed_training_evidence_contract.update(
+            {
+                "active": True,
+                "reason": "no_training_candidates_is_healthy_idle_during_guarded_paper_soak",
+            }
+        )
+        status = "ready"
     elif bool(managed_training_evidence_contract.get("training_budget_closed_managed", False)):
         managed_training_evidence_contract.update(
             {

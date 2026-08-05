@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import argparse
 import json
-import subprocess
+import os
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -14,21 +14,23 @@ if __package__ in {None, ""}:
     if str(PROJECT_ROOT) not in sys.path:
         sys.path.insert(0, str(PROJECT_ROOT))
     from core.runtime_python import resolve_runtime_python
-    from scripts.ops.long_runtime_common import iso_now, ordered_unique, write_payload
+    from scripts.ops.long_runtime_common import iso_now, ordered_unique, run_bounded_process_group, write_payload
 else:
     PROJECT_ROOT = Path(__file__).resolve().parents[2]
     from core.runtime_python import resolve_runtime_python
-    from .long_runtime_common import iso_now, ordered_unique, write_payload
+    from .long_runtime_common import iso_now, ordered_unique, run_bounded_process_group, write_payload
 
 
 PY = resolve_runtime_python(PROJECT_ROOT)
 DEFAULT_OUT_PATH = PROJECT_ROOT / "governance" / "health" / "runtime_artifact_refresh_latest.json"
+REFRESH_ACTIVE_ENV = "RUNTIME_ARTIFACT_REFRESH_ACTIVE"
 PAPER_SOAK_MANAGED_STEPS = {
     "training_lineage_manifest",
     "training_quality_control",
     "architecture_upgrade_scoreboard",
     "system_architecture_contract_graph",
     "system_architecture_autopilot",
+    "system_drift_guard_pre_architecture",
     "portfolio_capacity_curve_report",
     "canary_rollout_guard",
     "promotion_autopilot_packet",
@@ -119,8 +121,41 @@ def _parse_json_output(text: str) -> dict[str, Any]:
     return {}
 
 
+def _tail_text(text: str, *, max_lines: int = 12, max_chars: int = 1000) -> str:
+    tail = "\n".join(str(text or "").splitlines()[-max(int(max_lines), 1) :])
+    limit = max(int(max_chars), 1)
+    if len(tail) <= limit:
+        return tail
+    return f"...[truncated {len(tail) - limit} chars]...\n{tail[-limit:]}"
+
+
 def _artifact_present(path: Path) -> bool:
     return path.exists() and bool(_load_json(path))
+
+
+def _artifact_signature(path: Path) -> tuple[int, int, int] | None:
+    try:
+        stat = path.stat()
+    except OSError:
+        return None
+    return (int(stat.st_mtime_ns), int(stat.st_size), int(stat.st_ino))
+
+
+def _artifact_refreshed_since(
+    path: Path,
+    started: datetime,
+    *,
+    previous_signature: tuple[int, int, int] | None = None,
+) -> bool:
+    if not _artifact_present(path):
+        return False
+    current_signature = _artifact_signature(path)
+    if current_signature is None:
+        return False
+    modified_during_cycle = current_signature[0] >= int(started.timestamp() * 1_000_000_000) - 1_000_000_000
+    if previous_signature is None:
+        return modified_during_cycle
+    return modified_during_cycle and current_signature != previous_signature
 
 
 def _step_specs(project_root: Path) -> list[dict[str, Any]]:
@@ -236,7 +271,8 @@ def _step_specs(project_root: Path) -> list[dict[str, Any]]:
         {
             "name": "paper_profitability_control",
             "payload_path": health_root / "paper_profitability_control_latest.json",
-            "cmd": [str(PY), str(ops_root / "paper_profitability_control.py"), "--json"],
+            "additional_payload_paths": [health_root / "paper_runtime_profitability_controls_latest.json"],
+            "cmd": [str(PY), str(ops_root / "paper_profitability_control.py"), "--apply", "--json"],
             "timeout_sec": 180,
         },
         {
@@ -294,6 +330,17 @@ def _step_specs(project_root: Path) -> list[dict[str, Any]]:
             "timeout_sec": 180,
         },
         {
+            "name": "storage_quota_guard",
+            "payload_path": health_root / "storage_quota_guard_latest.json",
+            "cmd": [str(PY), str(ops_root / "storage_quota_guard.py"), "--json"],
+        },
+        {
+            "name": "state_snapshot_restore_drill",
+            "payload_path": project_root / "exports" / "state_snapshot_drills" / "latest.json",
+            "cmd": [str(PY), str(project_root / "scripts" / "daily_state_snapshot_drill.py"), "--json"],
+            "timeout_sec": 180,
+        },
+        {
             "name": "ingestion_storage_control",
             "payload_path": health_root / "ingestion_storage_control_latest.json",
             "cmd": [str(PY), str(ops_root / "ingestion_storage_control.py"), "--json"],
@@ -312,21 +359,22 @@ def _step_specs(project_root: Path) -> list[dict[str, Any]]:
             "timeout_sec": 180,
         },
         {
+            "name": "storage_retention_unison",
+            "payload_path": health_root / "storage_retention_unison_latest.json",
+            "cmd": [str(PY), str(ops_root / "storage_retention_unison.py"), "--json"],
+            "timeout_sec": 240,
+        },
+        {
+            "name": "storage_resilience_control_terminal",
+            "payload_path": health_root / "storage_resilience_control_latest.json",
+            "cmd": [str(PY), str(ops_root / "storage_resilience_control.py"), "--fast", "--json"],
+            "timeout_sec": 180,
+        },
+        {
             "name": "notification_escalation_ladder",
             "payload_path": health_root / "notification_escalation_ladder_latest.json",
             "cmd": [str(PY), str(ops_root / "notification_escalation_ladder.py"), "--json"],
             "timeout_sec": 60,
-        },
-        {
-            "name": "unattended_soak_readiness",
-            "payload_path": health_root / "unattended_soak_readiness_latest.json",
-            "cmd": [str(PY), str(ops_root / "unattended_soak_readiness.py"), "--json"],
-            "timeout_sec": 60,
-        },
-        {
-            "name": "live_runtime_separation_control",
-            "payload_path": health_root / "live_runtime_separation_control_latest.json",
-            "cmd": [str(PY), str(ops_root / "live_runtime_separation_control.py"), "--json"],
         },
         {
             "name": "auth_lease_manager",
@@ -337,11 +385,6 @@ def _step_specs(project_root: Path) -> list[dict[str, Any]]:
             "name": "schwab_auth_supervisor",
             "payload_path": health_root / "schwab_auth_supervisor_latest.json",
             "cmd": [str(PY), str(ops_root / "schwab_auth_supervisor.py"), "--json"],
-        },
-        {
-            "name": "blackstart_recovery",
-            "payload_path": health_root / "blackstart_recovery_latest.json",
-            "cmd": [str(PY), str(ops_root / "blackstart_recovery.py"), "--json"],
         },
         {
             "name": "sleeve_isolation_guard",
@@ -366,7 +409,30 @@ def _step_specs(project_root: Path) -> list[dict[str, Any]]:
         {
             "name": "schwab_account_snapshot_refresh",
             "payload_path": health_root / "schwab_account_snapshot_refresh_latest.json",
-            "cmd": [str(PY), str(ops_root / "schwab_account_snapshot_refresh.py"), "--json", "--skip-derived"],
+            "cmd": [
+                str(ops_root / "opsctl.sh"),
+                "schwab-account-snapshot-refresh",
+                "--json",
+                "--skip-derived",
+            ],
+            "timeout_sec": 120,
+        },
+        {
+            "name": "tax_regulation_update",
+            "payload_path": health_root / "tax_regulation_update_latest.json",
+            "cmd": [str(PY), str(ops_root / "tax_regulation_update.py"), "--auto", "--json"],
+            "timeout_sec": 180,
+        },
+        {
+            "name": "schwab_tax_ledger_refresh",
+            "payload_path": health_root / "schwab_tax_ledger_refresh_latest.json",
+            "cmd": [str(ops_root / "opsctl.sh"), "schwab-tax-ledger-refresh", "--json"],
+            "timeout_sec": 180,
+        },
+        {
+            "name": "trading_tax_estimate",
+            "payload_path": health_root / "trading_tax_estimate_latest.json",
+            "cmd": [str(PY), str(ops_root / "trading_tax_estimator.py"), "--json"],
             "timeout_sec": 120,
         },
         {
@@ -380,9 +446,56 @@ def _step_specs(project_root: Path) -> list[dict[str, Any]]:
             "cmd": [str(PY), str(ops_root / "account_position_study.py"), "--json"],
         },
         {
-            "name": "storage_quota_guard",
-            "payload_path": health_root / "storage_quota_guard_latest.json",
-            "cmd": [str(PY), str(ops_root / "storage_quota_guard.py"), "--json"],
+            "name": "position_opportunity_watch",
+            "payload_path": health_root / "position_opportunity_watch_latest.json",
+            "cmd": [str(PY), str(ops_root / "position_opportunity_watch.py"), "--json"],
+            "timeout_sec": 120,
+        },
+        {
+            "name": "one_numbers_portfolio_prerequisite",
+            "payload_path": health_root / "one_numbers_regression_guard_latest.json",
+            "cmd": [
+                str(ops_root / "opsctl.sh"),
+                "one-numbers-regression-guard",
+                "--apply",
+                "--json",
+            ],
+            "timeout_sec": 180,
+        },
+        {
+            "name": "sleeve_allocator",
+            "payload_path": project_root / "governance" / "allocator" / "sleeve_allocator_latest.json",
+            "cmd": [str(PY), str(project_root / "scripts" / "sleeve_allocator.py"), "--json"],
+            "timeout_sec": 120,
+        },
+        {
+            "name": "portfolio_risk_ledger",
+            "payload_path": project_root / "governance" / "risk" / "portfolio_risk_latest.json",
+            "cmd": [str(PY), str(project_root / "scripts" / "portfolio_risk_ledger.py"), "--json"],
+            "timeout_sec": 120,
+        },
+        {
+            "name": "position_round_trip_watch",
+            "payload_path": health_root / "position_round_trip_watch_latest.json",
+            "cmd": [
+                str(ops_root / "opsctl.sh"),
+                "position-round-trip-watch",
+                "--refresh-market-data",
+                "--json",
+            ],
+            "timeout_sec": 240,
+        },
+        {
+            "name": "portfolio_allocator_service",
+            "payload_path": project_root / "governance" / "allocator" / "portfolio_allocator_service_latest.json",
+            "cmd": [str(PY), str(project_root / "scripts" / "portfolio_allocator_service.py"), "--json"],
+            "timeout_sec": 120,
+        },
+        {
+            "name": "account_buildout_plan",
+            "payload_path": health_root / "account_buildout_plan_latest.json",
+            "cmd": [str(PY), str(ops_root / "account_buildout_planner.py"), "--json"],
+            "timeout_sec": 120,
         },
         {
             "name": "release_freeze_guard",
@@ -406,6 +519,51 @@ def _step_specs(project_root: Path) -> list[dict[str, Any]]:
             "cmd": [str(PY), str(ops_root / "rolling_restart_controller.py"), "--json"],
         },
         {
+            "name": "runtime_throttle_control",
+            "payload_path": health_root / "runtime_throttle_control_latest.json",
+            "cmd": [str(PY), str(ops_root / "runtime_throttle_control.py"), "--apply", "--json"],
+            "timeout_sec": 180,
+        },
+        {
+            "name": "paper_400_ramp",
+            "payload_path": health_root / "paper_400_ramp_latest.json",
+            "cmd": [str(PY), str(ops_root / "paper_400_ramp_control.py"), "--apply", "--json"],
+            "timeout_sec": 180,
+        },
+        {
+            "name": "runtime_paper_regression_guard",
+            "payload_path": health_root / "runtime_paper_regression_guard_latest.json",
+            "cmd": [str(PY), str(ops_root / "runtime_paper_regression_guard.py"), "--json"],
+            "timeout_sec": 180,
+        },
+        {
+            "name": "live_runtime_separation_control",
+            "payload_path": health_root / "live_runtime_separation_control_latest.json",
+            "cmd": [str(PY), str(ops_root / "live_runtime_separation_control.py"), "--json"],
+        },
+        {
+            "name": "live_canary_control",
+            "payload_path": health_root / "live_canary_control_latest.json",
+            "cmd": [str(PY), str(ops_root / "live_canary_control.py"), "--json"],
+        },
+        {
+            "name": "live_readiness_smoke",
+            "payload_path": health_root / "live_readiness_smoke_latest.json",
+            "cmd": [str(PY), str(project_root / "scripts" / "live_readiness_smoke.py"), "--json"],
+            "timeout_sec": 180,
+        },
+        {
+            "name": "blackstart_recovery",
+            "payload_path": health_root / "blackstart_recovery_latest.json",
+            "cmd": [str(PY), str(ops_root / "blackstart_recovery.py"), "--json"],
+        },
+        {
+            "name": "live_money_readiness_contract",
+            "payload_path": health_root / "live_money_readiness_contract_latest.json",
+            "cmd": [str(PY), str(ops_root / "live_money_readiness_contract.py"), "--json"],
+            "timeout_sec": 120,
+        },
+        {
             "name": "incident_timeline",
             "payload_path": health_root / "incident_timeline_latest.json",
             "cmd": [str(PY), str(ops_root / "incident_timeline.py"), "--json"],
@@ -421,27 +579,52 @@ def _step_specs(project_root: Path) -> list[dict[str, Any]]:
             "cmd": [str(PY), str(ops_root / "incident_closeout_autopilot.py"), "--json"],
         },
         {
-            "name": "live_canary_control",
-            "payload_path": health_root / "live_canary_control_latest.json",
-            "cmd": [str(PY), str(ops_root / "live_canary_control.py"), "--json"],
-        },
-        {
-            "name": "live_readiness_smoke",
-            "payload_path": health_root / "live_readiness_smoke_latest.json",
-            "cmd": [str(PY), str(project_root / "scripts" / "live_readiness_smoke.py"), "--json"],
+            "name": "ingestion_backpressure_final",
+            "payload_path": health_root / "ingestion_backpressure_latest.json",
+            "cmd": [str(PY), str(project_root / "scripts" / "ingestion_backpressure_guard.py"), "--json"],
             "timeout_sec": 180,
         },
         {
-            "name": "live_money_readiness_contract",
-            "payload_path": health_root / "live_money_readiness_contract_latest.json",
-            "cmd": [str(PY), str(ops_root / "live_money_readiness_contract.py"), "--json"],
-            "timeout_sec": 120,
+            "name": "ingestion_storage_control_final",
+            "payload_path": health_root / "ingestion_storage_control_latest.json",
+            "cmd": [str(PY), str(ops_root / "ingestion_storage_control.py"), "--json"],
+            "timeout_sec": 180,
         },
         {
-            "name": "runtime_throttle_control",
-            "payload_path": health_root / "runtime_throttle_control_latest.json",
-            "cmd": [str(PY), str(ops_root / "runtime_throttle_control.py"), "--json"],
+            "name": "ingestion_storage_governor_final",
+            "payload_path": health_root / "ingestion_storage_governor_latest.json",
+            "cmd": [str(PY), str(ops_root / "ingestion_storage_governor.py"), "apply", "--json"],
             "timeout_sec": 180,
+        },
+        {
+            "name": "ingestion_storage_control_post_governor",
+            "payload_path": health_root / "ingestion_storage_control_latest.json",
+            "cmd": [str(PY), str(ops_root / "ingestion_storage_control.py"), "--json"],
+            "timeout_sec": 180,
+        },
+        {
+            "name": "ingestion_storage_governor_verify",
+            "payload_path": health_root / "ingestion_storage_governor_latest.json",
+            "cmd": [str(PY), str(ops_root / "ingestion_storage_governor.py"), "apply", "--json"],
+            "timeout_sec": 180,
+        },
+        {
+            "name": "ingestion_storage_control_verified",
+            "payload_path": health_root / "ingestion_storage_control_latest.json",
+            "cmd": [str(PY), str(ops_root / "ingestion_storage_control.py"), "--json"],
+            "timeout_sec": 180,
+        },
+        {
+            "name": "health_fast",
+            "payload_path": health_root / "health_fast_latest.json",
+            "cmd": [str(PY), str(ops_root / "health_fast.py"), "--project-root", str(project_root), "--json"],
+            "timeout_sec": 180,
+        },
+        {
+            "name": "unattended_soak_readiness",
+            "payload_path": health_root / "unattended_soak_readiness_latest.json",
+            "cmd": [str(PY), str(ops_root / "unattended_soak_readiness.py"), "--json"],
+            "timeout_sec": 60,
         },
         {
             "name": "regime_control_plane",
@@ -480,9 +663,725 @@ def _step_specs(project_root: Path) -> list[dict[str, Any]]:
             "timeout_sec": 180,
         },
         {
+            "name": "health_gates",
+            "payload_path": health_root / "health_gates_latest.json",
+            "cmd": [
+                str(PY),
+                str(project_root / "scripts" / "health_gates.py"),
+                "--project-root",
+                str(project_root),
+                "--json",
+            ],
+            "timeout_sec": 180,
+        },
+        {
             "name": "service_control_plane",
             "payload_path": health_root / "service_control_plane_latest.json",
             "cmd": [str(PY), str(project_root / "scripts" / "service_control_plane.py"), "--json"],
+            "timeout_sec": 180,
+        },
+        {
+            "name": "runtime_throttle_control_verified",
+            "payload_path": health_root / "runtime_throttle_control_latest.json",
+            "cmd": [str(PY), str(ops_root / "runtime_throttle_control.py"), "--apply", "--json"],
+            "timeout_sec": 180,
+        },
+        {
+            "name": "paper_400_ramp_verified",
+            "payload_path": health_root / "paper_400_ramp_latest.json",
+            "cmd": [str(PY), str(ops_root / "paper_400_ramp_control.py"), "--apply", "--json"],
+            "timeout_sec": 180,
+        },
+        {
+            "name": "runtime_paper_regression_guard_verified",
+            "payload_path": health_root / "runtime_paper_regression_guard_latest.json",
+            "cmd": [str(PY), str(ops_root / "runtime_paper_regression_guard.py"), "--json"],
+            "timeout_sec": 180,
+        },
+        {
+            "name": "halt_trigger_control_plane_verified",
+            "payload_path": health_root / "halt_trigger_control_plane_latest.json",
+            "cmd": [str(PY), str(ops_root / "halt_trigger_control_plane.py"), "--json"],
+            "timeout_sec": 180,
+        },
+        {
+            "name": "coordination_state_control_verified",
+            "payload_path": health_root / "coordination_state_latest.json",
+            "cmd": [str(PY), str(ops_root / "coordination_state_control.py"), "--json"],
+            "timeout_sec": 60,
+        },
+        {
+            "name": "health_fast_verified",
+            "payload_path": health_root / "health_fast_latest.json",
+            "cmd": [str(PY), str(ops_root / "health_fast.py"), "--project-root", str(project_root), "--json"],
+            "timeout_sec": 180,
+        },
+        {
+            "name": "unattended_soak_readiness_verified",
+            "payload_path": health_root / "unattended_soak_readiness_latest.json",
+            "cmd": [str(PY), str(ops_root / "unattended_soak_readiness.py"), "--json"],
+            "timeout_sec": 60,
+        },
+        {
+            "name": "replay_hash_registry_final",
+            "payload_path": health_root / "replay_hash_registry_guard_latest.json",
+            "cmd": [str(PY), str(project_root / "scripts" / "replay_hash_registry_guard.py"), "--json"],
+            "timeout_sec": 180,
+        },
+        {
+            "name": "golden_replay_regression_final",
+            "payload_path": health_root / "golden_replay_regression_latest.json",
+            "cmd": [str(PY), str(project_root / "scripts" / "golden_replay_regression_guard.py"), "--json"],
+            "timeout_sec": 180,
+        },
+        {
+            "name": "paper_execution_truth_verified",
+            "payload_path": health_root / "paper_execution_truth_layer_latest.json",
+            "cmd": [str(PY), str(ops_root / "paper_execution_truth_layer.py"), "--json"],
+            "timeout_sec": 180,
+        },
+        {
+            "name": "stateful_storage_regression_guard_verified",
+            "payload_path": health_root / "stateful_storage_regression_guard_latest.json",
+            "cmd": [
+                str(ops_root / "opsctl.sh"),
+                "stateful-storage-regression-guard",
+                "--apply",
+                "--json",
+            ],
+            "timeout_sec": 180,
+        },
+        {
+            "name": "one_numbers_regression_guard_verified",
+            "payload_path": health_root / "one_numbers_regression_guard_latest.json",
+            "cmd": [
+                str(ops_root / "opsctl.sh"),
+                "one-numbers-regression-guard",
+                "--apply",
+                "--json",
+            ],
+            "timeout_sec": 180,
+        },
+        {
+            "name": "grade_regression_guard_verified",
+            "payload_path": health_root / "grade_regression_guard_latest.json",
+            "cmd": [str(PY), str(ops_root / "grade_regression_guard.py"), "--json"],
+            "timeout_sec": 180,
+        },
+        {
+            "name": "section_grade_guard_verified",
+            "payload_path": health_root / "section_grade_guard_latest.json",
+            "cmd": [str(PY), str(ops_root / "section_grade_guard.py"), "--json"],
+            "timeout_sec": 180,
+        },
+        {
+            "name": "system_drift_registry_verified",
+            "payload_path": health_root / "system_drift_registry_latest.json",
+            "cmd": [str(PY), str(ops_root / "system_drift_registry.py"), "--json"],
+            "timeout_sec": 180,
+        },
+        {
+            "name": "codex_project_guard_verified",
+            "payload_path": health_root / "codex_project_guard_latest.json",
+            "cmd": [str(ops_root / "opsctl.sh"), "codex-project-guard", "--staged", "--json"],
+            "timeout_sec": 180,
+        },
+        {
+            "name": "coinbase_api_health_verified",
+            "payload_path": health_root / "coinbase_api_health_latest.json",
+            "cmd": [str(ops_root / "opsctl.sh"), "coinbase-api-health", "--json"],
+            "timeout_sec": 180,
+        },
+        {
+            "name": "infrastructure_autofix_verified",
+            "payload_path": health_root / "infrastructure_autofix_bot_latest.json",
+            "cmd": [str(PY), str(ops_root / "infrastructure_autofix_bot.py"), "--apply", "--json"],
+            "timeout_sec": 300,
+        },
+        {
+            "name": "master_infrastructure_supervisor_verified",
+            "payload_path": health_root / "master_infrastructure_supervisor_latest.json",
+            "cmd": [str(PY), str(ops_root / "master_infrastructure_supervisor.py"), "--json"],
+            "timeout_sec": 180,
+        },
+        {
+            "name": "process_watchdog_verified",
+            "payload_path": health_root / "process_watchdog_latest.json",
+            "cmd": [str(ops_root / "opsctl.sh"), "process-watchdog", "--json"],
+            "timeout_sec": 180,
+        },
+        {
+            "name": "livefeed_refresh_guard_verified",
+            "payload_path": health_root / "livefeed_refresh_guard_latest.json",
+            "cmd": [str(PY), str(ops_root / "livefeed_refresh_guard.py"), "--apply", "--json"],
+            "timeout_sec": 90,
+        },
+        {
+            "name": "runtime_throttle_control_final",
+            "payload_path": health_root / "runtime_throttle_control_latest.json",
+            "cmd": [str(PY), str(ops_root / "runtime_throttle_control.py"), "--apply", "--json"],
+            "timeout_sec": 180,
+        },
+        {
+            "name": "paper_400_ramp_final",
+            "payload_path": health_root / "paper_400_ramp_latest.json",
+            "cmd": [str(PY), str(ops_root / "paper_400_ramp_control.py"), "--apply", "--json"],
+            "timeout_sec": 180,
+        },
+        {
+            "name": "runtime_paper_regression_guard_final",
+            "payload_path": health_root / "runtime_paper_regression_guard_latest.json",
+            "cmd": [str(PY), str(ops_root / "runtime_paper_regression_guard.py"), "--json"],
+            "timeout_sec": 180,
+        },
+        {
+            "name": "halt_trigger_control_plane_final",
+            "payload_path": health_root / "halt_trigger_control_plane_latest.json",
+            "cmd": [str(PY), str(ops_root / "halt_trigger_control_plane.py"), "--json"],
+            "timeout_sec": 180,
+        },
+        {
+            "name": "coordination_state_control_final",
+            "payload_path": health_root / "coordination_state_latest.json",
+            "cmd": [str(PY), str(ops_root / "coordination_state_control.py"), "--json"],
+            "timeout_sec": 60,
+        },
+        {
+            "name": "health_fast_final",
+            "payload_path": health_root / "health_fast_latest.json",
+            "cmd": [str(PY), str(ops_root / "health_fast.py"), "--project-root", str(project_root), "--json"],
+            "timeout_sec": 180,
+        },
+        {
+            "name": "adaptive_regression_guard_final",
+            "payload_path": health_root / "adaptive_regression_guard_latest.json",
+            "cmd": [str(PY), str(ops_root / "adaptive_regression_guard.py"), "--apply", "--json"],
+            "timeout_sec": 180,
+        },
+        {
+            "name": "system_drift_guard_pre_architecture",
+            "payload_path": health_root / "system_drift_guard_latest.json",
+            "cmd": [str(PY), str(ops_root / "system_drift_guard.py"), "--json"],
+            "timeout_sec": 180,
+        },
+        {
+            "name": "schwab_indicator_intelligence_verified",
+            "payload_path": health_root / "schwab_indicator_intelligence_latest.json",
+            "cmd": [str(ops_root / "opsctl.sh"), "schwab-indicator-intelligence", "--offline", "--json"],
+            "timeout_sec": 180,
+        },
+        {
+            "name": "system_expansion_execution_verified",
+            "payload_path": health_root / "system_expansion_execution_layer_latest.json",
+            "cmd": [str(ops_root / "opsctl.sh"), "system-expansion-execution", "--json"],
+            "timeout_sec": 180,
+        },
+        {
+            "name": "distributed_cell_architecture_verified",
+            "payload_path": health_root / "distributed_cell_architecture_latest.json",
+            "cmd": [str(ops_root / "opsctl.sh"), "distributed-cell-architecture", "--apply", "--json"],
+            "timeout_sec": 180,
+        },
+        {
+            "name": "system_architecture_hardening_verified",
+            "payload_path": health_root / "system_architecture_hardening_latest.json",
+            "cmd": [str(ops_root / "opsctl.sh"), "system-architecture-hardening", "--apply", "--json"],
+            "timeout_sec": 180,
+        },
+        {
+            "name": "system_self_model_pre_architecture",
+            "payload_path": health_root / "system_self_model_latest.json",
+            "cmd": [str(ops_root / "opsctl.sh"), "big-platform-brain", "--json"],
+            "timeout_sec": 180,
+        },
+        {
+            "name": "system_architecture_contract_graph_final",
+            "payload_path": health_root / "system_architecture_contract_graph_latest.json",
+            "cmd": [str(PY), str(ops_root / "system_architecture_contract_graph.py"), "--apply", "--json"],
+            "timeout_sec": 180,
+        },
+        {
+            "name": "system_architecture_autopilot_final",
+            "payload_path": health_root / "system_architecture_autopilot_latest.json",
+            "cmd": [str(PY), str(ops_root / "system_architecture_autopilot.py"), "--apply", "--json"],
+            "timeout_sec": 180,
+        },
+        {
+            "name": "system_drift_guard_verified",
+            "payload_path": health_root / "system_drift_guard_latest.json",
+            "cmd": [str(PY), str(ops_root / "system_drift_guard.py"), "--json"],
+            "timeout_sec": 180,
+        },
+        {
+            "name": "system_drift_autopilot_verified",
+            "payload_path": health_root / "system_drift_autopilot_latest.json",
+            "cmd": [str(PY), str(ops_root / "system_drift_autopilot.py"), "--apply", "--json"],
+            "timeout_sec": 300,
+        },
+        {
+            "name": "master_infrastructure_supervisor_final",
+            "payload_path": health_root / "master_infrastructure_supervisor_latest.json",
+            "cmd": [str(PY), str(ops_root / "master_infrastructure_supervisor.py"), "--json"],
+            "timeout_sec": 180,
+        },
+        {
+            "name": "system_self_model_verified",
+            "payload_path": health_root / "system_self_model_latest.json",
+            "cmd": [str(ops_root / "opsctl.sh"), "big-platform-brain", "--json"],
+            "timeout_sec": 180,
+        },
+        {
+            "name": "system_architecture_contract_graph_verified",
+            "payload_path": health_root / "system_architecture_contract_graph_latest.json",
+            "cmd": [str(PY), str(ops_root / "system_architecture_contract_graph.py"), "--apply", "--json"],
+            "timeout_sec": 180,
+        },
+        {
+            "name": "system_architecture_autopilot_verified",
+            "payload_path": health_root / "system_architecture_autopilot_latest.json",
+            "cmd": [str(PY), str(ops_root / "system_architecture_autopilot.py"), "--apply", "--json"],
+            "timeout_sec": 180,
+        },
+        {
+            "name": "broker_readiness_terminal",
+            "payload_path": health_root / "broker_readiness_latest.json",
+            "cmd": [str(PY), str(ops_root / "premarket_token_guard.py"), "--json"],
+            "timeout_sec": 180,
+        },
+        {
+            "name": "auth_lease_manager_terminal",
+            "payload_path": health_root / "auth_lease_manager_latest.json",
+            "cmd": [str(PY), str(ops_root / "auth_lease_manager.py"), "--json"],
+            "timeout_sec": 180,
+        },
+        {
+            "name": "schwab_auth_supervisor_terminal",
+            "payload_path": health_root / "schwab_auth_supervisor_latest.json",
+            "cmd": [str(PY), str(ops_root / "schwab_auth_supervisor.py"), "--json"],
+            "timeout_sec": 180,
+        },
+        {
+            "name": "backlog_pcore_accelerator_terminal",
+            "payload_path": health_root / "backlog_pcore_accelerator_latest.json",
+            "cmd": [
+                str(ops_root / "opsctl.sh"),
+                "backlog-pcore-accelerator",
+                "--apply",
+                "--json",
+            ],
+            "timeout_sec": 180,
+        },
+        {
+            "name": "backpressure_drainer_fleet_terminal",
+            "payload_path": health_root / "backpressure_drainer_fleet_latest.json",
+            "cmd": [str(PY), str(ops_root / "backpressure_drainer_fleet.py"), "--json"],
+            "timeout_sec": 180,
+        },
+        {
+            "name": "ingestion_storage_control_terminal",
+            "payload_path": health_root / "ingestion_storage_control_latest.json",
+            "cmd": [str(PY), str(ops_root / "ingestion_storage_control.py"), "--json"],
+            "timeout_sec": 180,
+        },
+        {
+            "name": "runtime_throttle_control_terminal",
+            "payload_path": health_root / "runtime_throttle_control_latest.json",
+            "cmd": [str(PY), str(ops_root / "runtime_throttle_control.py"), "--apply", "--json"],
+            "timeout_sec": 180,
+        },
+        {
+            "name": "paper_400_ramp_terminal",
+            "payload_path": health_root / "paper_400_ramp_latest.json",
+            "cmd": [str(PY), str(ops_root / "paper_400_ramp_control.py"), "--apply", "--json"],
+            "timeout_sec": 180,
+        },
+        {
+            "name": "runtime_paper_regression_guard_terminal",
+            "payload_path": health_root / "runtime_paper_regression_guard_latest.json",
+            "cmd": [str(PY), str(ops_root / "runtime_paper_regression_guard.py"), "--json"],
+            "timeout_sec": 180,
+        },
+        {
+            "name": "halt_trigger_control_plane_terminal",
+            "payload_path": health_root / "halt_trigger_control_plane_latest.json",
+            "cmd": [str(PY), str(ops_root / "halt_trigger_control_plane.py"), "--json"],
+            "timeout_sec": 180,
+        },
+        {
+            "name": "coordination_state_control_terminal",
+            "payload_path": health_root / "coordination_state_latest.json",
+            "cmd": [str(PY), str(ops_root / "coordination_state_control.py"), "--json"],
+            "timeout_sec": 60,
+        },
+        {
+            "name": "health_fast_terminal",
+            "payload_path": health_root / "health_fast_latest.json",
+            "cmd": [str(PY), str(ops_root / "health_fast.py"), "--project-root", str(project_root), "--json"],
+            "timeout_sec": 180,
+        },
+        {
+            "name": "unattended_soak_readiness_terminal",
+            "payload_path": health_root / "unattended_soak_readiness_latest.json",
+            "cmd": [str(PY), str(ops_root / "unattended_soak_readiness.py"), "--json"],
+            "timeout_sec": 60,
+        },
+        {
+            "name": "one_numbers_regression_guard_terminal",
+            "payload_path": health_root / "one_numbers_regression_guard_latest.json",
+            "cmd": [
+                str(ops_root / "opsctl.sh"),
+                "one-numbers-regression-guard",
+                "--apply",
+                "--json",
+            ],
+            "timeout_sec": 180,
+        },
+        {
+            "name": "grade_regression_guard_terminal",
+            "payload_path": health_root / "grade_regression_guard_latest.json",
+            "cmd": [str(PY), str(ops_root / "grade_regression_guard.py"), "--json"],
+            "timeout_sec": 180,
+        },
+        {
+            "name": "section_grade_guard_terminal",
+            "payload_path": health_root / "section_grade_guard_latest.json",
+            "cmd": [str(PY), str(ops_root / "section_grade_guard.py"), "--json"],
+            "timeout_sec": 180,
+        },
+        {
+            "name": "livefeed_refresh_guard_terminal",
+            "payload_path": health_root / "livefeed_refresh_guard_latest.json",
+            "cmd": [str(PY), str(ops_root / "livefeed_refresh_guard.py"), "--apply", "--json"],
+            "timeout_sec": 90,
+        },
+        {
+            "name": "adaptive_regression_guard_terminal",
+            "payload_path": health_root / "adaptive_regression_guard_latest.json",
+            "cmd": [str(PY), str(ops_root / "adaptive_regression_guard.py"), "--apply", "--json"],
+            "timeout_sec": 180,
+        },
+        {
+            "name": "system_self_model_convergence",
+            "payload_path": health_root / "system_self_model_latest.json",
+            "cmd": [str(ops_root / "opsctl.sh"), "big-platform-brain", "--json"],
+            "timeout_sec": 180,
+        },
+        {
+            "name": "system_architecture_contract_graph_convergence",
+            "payload_path": health_root / "system_architecture_contract_graph_latest.json",
+            "cmd": [str(PY), str(ops_root / "system_architecture_contract_graph.py"), "--apply", "--json"],
+            "timeout_sec": 180,
+        },
+        {
+            "name": "system_architecture_autopilot_convergence",
+            "payload_path": health_root / "system_architecture_autopilot_latest.json",
+            "cmd": [str(PY), str(ops_root / "system_architecture_autopilot.py"), "--apply", "--json"],
+            "timeout_sec": 180,
+        },
+        {
+            "name": "system_drift_guard_terminal",
+            "payload_path": health_root / "system_drift_guard_latest.json",
+            "cmd": [str(PY), str(ops_root / "system_drift_guard.py"), "--json"],
+            "timeout_sec": 180,
+        },
+        {
+            "name": "system_drift_autopilot_terminal",
+            "payload_path": health_root / "system_drift_autopilot_latest.json",
+            "cmd": [str(PY), str(ops_root / "system_drift_autopilot.py"), "--apply", "--json"],
+            "timeout_sec": 300,
+        },
+        {
+            "name": "system_drift_guard_post_autopilot_terminal",
+            "payload_path": health_root / "system_drift_guard_latest.json",
+            "cmd": [str(PY), str(ops_root / "system_drift_guard.py"), "--json"],
+            "timeout_sec": 180,
+        },
+        {
+            "name": "master_infrastructure_supervisor_terminal",
+            "payload_path": health_root / "master_infrastructure_supervisor_latest.json",
+            "cmd": [str(PY), str(ops_root / "master_infrastructure_supervisor.py"), "--json"],
+            "timeout_sec": 180,
+        },
+        {
+            "name": "infrastructure_autofix_terminal",
+            "payload_path": health_root / "infrastructure_autofix_bot_latest.json",
+            "cmd": [str(PY), str(ops_root / "infrastructure_autofix_bot.py"), "--apply", "--json"],
+            "timeout_sec": 300,
+        },
+        {
+            "name": "system_self_model_final",
+            "payload_path": health_root / "system_self_model_latest.json",
+            "cmd": [str(ops_root / "opsctl.sh"), "big-platform-brain", "--json"],
+            "timeout_sec": 180,
+        },
+        {
+            "name": "system_architecture_contract_graph_terminal",
+            "payload_path": health_root / "system_architecture_contract_graph_latest.json",
+            "cmd": [str(PY), str(ops_root / "system_architecture_contract_graph.py"), "--apply", "--json"],
+            "timeout_sec": 180,
+        },
+        {
+            "name": "system_architecture_autopilot_terminal",
+            "payload_path": health_root / "system_architecture_autopilot_latest.json",
+            "cmd": [str(PY), str(ops_root / "system_architecture_autopilot.py"), "--apply", "--json"],
+            "timeout_sec": 180,
+        },
+        {
+            "name": "system_drift_guard_settled",
+            "payload_path": health_root / "system_drift_guard_latest.json",
+            "cmd": [str(PY), str(ops_root / "system_drift_guard.py"), "--json"],
+            "timeout_sec": 180,
+        },
+        {
+            "name": "system_drift_autopilot_settled",
+            "payload_path": health_root / "system_drift_autopilot_latest.json",
+            "cmd": [str(PY), str(ops_root / "system_drift_autopilot.py"), "--apply", "--json"],
+            "timeout_sec": 300,
+        },
+        {
+            "name": "system_drift_guard_post_settled",
+            "payload_path": health_root / "system_drift_guard_latest.json",
+            "cmd": [str(PY), str(ops_root / "system_drift_guard.py"), "--json"],
+            "timeout_sec": 180,
+        },
+        {
+            "name": "master_infrastructure_supervisor_settled",
+            "payload_path": health_root / "master_infrastructure_supervisor_latest.json",
+            "cmd": [str(PY), str(ops_root / "master_infrastructure_supervisor.py"), "--json"],
+            "timeout_sec": 180,
+        },
+        {
+            "name": "infrastructure_autofix_settled",
+            "payload_path": health_root / "infrastructure_autofix_bot_latest.json",
+            "cmd": [str(PY), str(ops_root / "infrastructure_autofix_bot.py"), "--apply", "--json"],
+            "timeout_sec": 300,
+        },
+        {
+            "name": "system_self_model_settled",
+            "payload_path": health_root / "system_self_model_latest.json",
+            "cmd": [str(ops_root / "opsctl.sh"), "big-platform-brain", "--json"],
+            "timeout_sec": 180,
+        },
+        {
+            "name": "system_architecture_contract_graph_settled",
+            "payload_path": health_root / "system_architecture_contract_graph_latest.json",
+            "cmd": [str(PY), str(ops_root / "system_architecture_contract_graph.py"), "--apply", "--json"],
+            "timeout_sec": 180,
+        },
+        {
+            "name": "system_architecture_autopilot_settled",
+            "payload_path": health_root / "system_architecture_autopilot_latest.json",
+            "cmd": [str(PY), str(ops_root / "system_architecture_autopilot.py"), "--apply", "--json"],
+            "timeout_sec": 180,
+        },
+        {
+            "name": "system_drift_guard_final",
+            "payload_path": health_root / "system_drift_guard_latest.json",
+            "cmd": [str(PY), str(ops_root / "system_drift_guard.py"), "--json"],
+            "timeout_sec": 180,
+        },
+        {
+            "name": "master_infrastructure_supervisor_final_settled",
+            "payload_path": health_root / "master_infrastructure_supervisor_latest.json",
+            "cmd": [str(PY), str(ops_root / "master_infrastructure_supervisor.py"), "--json"],
+            "timeout_sec": 180,
+        },
+        {
+            "name": "broker_readiness_post_settlement",
+            "payload_path": health_root / "broker_readiness_latest.json",
+            "cmd": [str(PY), str(ops_root / "premarket_token_guard.py"), "--json"],
+            "timeout_sec": 180,
+        },
+        {
+            "name": "auth_lease_manager_post_settlement",
+            "payload_path": health_root / "auth_lease_manager_latest.json",
+            "cmd": [str(PY), str(ops_root / "auth_lease_manager.py"), "--json"],
+            "timeout_sec": 180,
+        },
+        {
+            "name": "schwab_auth_supervisor_post_settlement",
+            "payload_path": health_root / "schwab_auth_supervisor_latest.json",
+            "cmd": [str(PY), str(ops_root / "schwab_auth_supervisor.py"), "--json"],
+            "timeout_sec": 180,
+        },
+        {
+            "name": "backpressure_drainer_fleet_post_settlement",
+            "payload_path": health_root / "backpressure_drainer_fleet_latest.json",
+            "cmd": [str(PY), str(ops_root / "backpressure_drainer_fleet.py"), "--json"],
+            "timeout_sec": 180,
+        },
+        {
+            "name": "ingestion_storage_control_post_settlement",
+            "payload_path": health_root / "ingestion_storage_control_latest.json",
+            "cmd": [str(PY), str(ops_root / "ingestion_storage_control.py"), "--json"],
+            "timeout_sec": 180,
+        },
+        {
+            "name": "runtime_throttle_control_post_settlement",
+            "payload_path": health_root / "runtime_throttle_control_latest.json",
+            "cmd": [str(PY), str(ops_root / "runtime_throttle_control.py"), "--apply", "--json"],
+            "timeout_sec": 180,
+        },
+        {
+            "name": "paper_400_ramp_post_settlement",
+            "payload_path": health_root / "paper_400_ramp_latest.json",
+            "cmd": [str(PY), str(ops_root / "paper_400_ramp_control.py"), "--apply", "--json"],
+            "timeout_sec": 180,
+        },
+        {
+            "name": "runtime_throttle_control_post_settlement_verified",
+            "payload_path": health_root / "runtime_throttle_control_latest.json",
+            "cmd": [str(PY), str(ops_root / "runtime_throttle_control.py"), "--apply", "--json"],
+            "timeout_sec": 180,
+        },
+        {
+            "name": "paper_400_ramp_post_settlement_verified",
+            "payload_path": health_root / "paper_400_ramp_latest.json",
+            "cmd": [str(PY), str(ops_root / "paper_400_ramp_control.py"), "--apply", "--json"],
+            "timeout_sec": 180,
+        },
+        {
+            "name": "runtime_paper_regression_guard_post_settlement",
+            "payload_path": health_root / "runtime_paper_regression_guard_latest.json",
+            "cmd": [str(PY), str(ops_root / "runtime_paper_regression_guard.py"), "--json"],
+            "timeout_sec": 180,
+        },
+        {
+            "name": "halt_trigger_control_plane_post_settlement",
+            "payload_path": health_root / "halt_trigger_control_plane_latest.json",
+            "cmd": [str(PY), str(ops_root / "halt_trigger_control_plane.py"), "--json"],
+            "timeout_sec": 180,
+        },
+        {
+            "name": "coordination_state_control_post_settlement",
+            "payload_path": health_root / "coordination_state_latest.json",
+            "cmd": [str(PY), str(ops_root / "coordination_state_control.py"), "--json"],
+            "timeout_sec": 60,
+        },
+        {
+            "name": "health_fast_post_settlement",
+            "payload_path": health_root / "health_fast_latest.json",
+            "cmd": [str(PY), str(ops_root / "health_fast.py"), "--project-root", str(project_root), "--json"],
+            "timeout_sec": 180,
+        },
+        {
+            "name": "live_runtime_separation_post_settlement",
+            "payload_path": health_root / "live_runtime_separation_control_latest.json",
+            "cmd": [str(PY), str(ops_root / "live_runtime_separation_control.py"), "--json"],
+            "timeout_sec": 180,
+        },
+        {
+            "name": "incident_closeout_autopilot_post_settlement",
+            "payload_path": health_root / "incident_closeout_autopilot_latest.json",
+            "cmd": [str(PY), str(ops_root / "incident_closeout_autopilot.py"), "--json"],
+            "timeout_sec": 180,
+        },
+        {
+            "name": "sleeve_isolation_guard_post_settlement",
+            "payload_path": health_root / "sleeve_isolation_guard_latest.json",
+            "cmd": [str(PY), str(ops_root / "sleeve_isolation_guard.py"), "--json"],
+            "timeout_sec": 180,
+        },
+        {
+            "name": "section_grade_guard_post_settlement",
+            "payload_path": health_root / "section_grade_guard_latest.json",
+            "cmd": [str(PY), str(ops_root / "section_grade_guard.py"), "--json"],
+            "timeout_sec": 180,
+        },
+        {
+            "name": "unattended_soak_readiness_post_settlement",
+            "payload_path": health_root / "unattended_soak_readiness_latest.json",
+            "cmd": [str(PY), str(ops_root / "unattended_soak_readiness.py"), "--json"],
+            "timeout_sec": 60,
+        },
+        {
+            "name": "livefeed_refresh_guard_post_settlement",
+            "payload_path": health_root / "livefeed_refresh_guard_latest.json",
+            "cmd": [str(PY), str(ops_root / "livefeed_refresh_guard.py"), "--apply", "--json"],
+            "timeout_sec": 90,
+        },
+        {
+            "name": "adaptive_regression_guard_post_settlement",
+            "payload_path": health_root / "adaptive_regression_guard_latest.json",
+            "cmd": [str(PY), str(ops_root / "adaptive_regression_guard.py"), "--apply", "--json"],
+            "timeout_sec": 180,
+        },
+        {
+            "name": "system_drift_guard_post_evidence_probe",
+            "payload_path": health_root / "system_drift_guard_latest.json",
+            "cmd": [str(PY), str(ops_root / "system_drift_guard.py"), "--json"],
+            "timeout_sec": 180,
+        },
+        {
+            "name": "system_architecture_contract_graph_post_evidence_probe",
+            "payload_path": health_root / "system_architecture_contract_graph_latest.json",
+            "cmd": [str(PY), str(ops_root / "system_architecture_contract_graph.py"), "--apply", "--json"],
+            "timeout_sec": 180,
+        },
+        {
+            "name": "system_drift_guard_post_evidence_reconciled",
+            "payload_path": health_root / "system_drift_guard_latest.json",
+            "cmd": [str(PY), str(ops_root / "system_drift_guard.py"), "--json"],
+            "timeout_sec": 180,
+        },
+        {
+            "name": "system_architecture_contract_graph_post_evidence_verified",
+            "payload_path": health_root / "system_architecture_contract_graph_latest.json",
+            "cmd": [str(PY), str(ops_root / "system_architecture_contract_graph.py"), "--apply", "--json"],
+            "timeout_sec": 180,
+        },
+        {
+            "name": "system_architecture_autopilot_post_evidence_verified",
+            "payload_path": health_root / "system_architecture_autopilot_latest.json",
+            "cmd": [str(PY), str(ops_root / "system_architecture_autopilot.py"), "--apply", "--json"],
+            "timeout_sec": 180,
+        },
+        {
+            "name": "system_drift_guard_post_architecture_verified",
+            "payload_path": health_root / "system_drift_guard_latest.json",
+            "cmd": [str(PY), str(ops_root / "system_drift_guard.py"), "--json"],
+            "timeout_sec": 180,
+        },
+        {
+            "name": "system_drift_autopilot_post_evidence_verified",
+            "payload_path": health_root / "system_drift_autopilot_latest.json",
+            "cmd": [str(PY), str(ops_root / "system_drift_autopilot.py"), "--apply", "--json"],
+            "timeout_sec": 300,
+        },
+        {
+            "name": "runtime_gate_dashboard_pre_master",
+            "payload_path": health_root / "runtime_gate_dashboard_latest.json",
+            "cmd": [str(PY), str(ops_root / "runtime_gate_dashboard.py"), "--json"],
+            "timeout_sec": 180,
+        },
+        {
+            "name": "master_infrastructure_supervisor_post_evidence_probe",
+            "payload_path": health_root / "master_infrastructure_supervisor_latest.json",
+            "cmd": [str(PY), str(ops_root / "master_infrastructure_supervisor.py"), "--json"],
+            "timeout_sec": 180,
+        },
+        {
+            "name": "infrastructure_autofix_post_evidence_verified",
+            "payload_path": health_root / "infrastructure_autofix_bot_latest.json",
+            "cmd": [str(PY), str(ops_root / "infrastructure_autofix_bot.py"), "--apply", "--json"],
+            "timeout_sec": 300,
+        },
+        {
+            "name": "system_self_model_post_evidence_verified",
+            "payload_path": health_root / "system_self_model_latest.json",
+            "cmd": [str(ops_root / "opsctl.sh"), "big-platform-brain", "--json"],
+            "timeout_sec": 180,
+        },
+        {
+            "name": "master_infrastructure_supervisor_post_evidence_verified",
+            "payload_path": health_root / "master_infrastructure_supervisor_latest.json",
+            "cmd": [str(PY), str(ops_root / "master_infrastructure_supervisor.py"), "--json"],
+            "timeout_sec": 180,
+        },
+        {
+            "name": "runtime_gate_dashboard_pre_operator",
+            "payload_path": health_root / "runtime_gate_dashboard_latest.json",
+            "cmd": [str(PY), str(ops_root / "runtime_gate_dashboard.py"), "--json"],
             "timeout_sec": 180,
         },
         {
@@ -497,35 +1396,133 @@ def _step_specs(project_root: Path) -> list[dict[str, Any]]:
 def _run_spec(spec: dict[str, Any], project_root: Path) -> dict[str, Any]:
     started = datetime.now(timezone.utc)
     payload_path = Path(spec["payload_path"]).expanduser()
-    try:
-        proc = subprocess.run(
-            list(spec["cmd"]),
-            cwd=str(project_root),
-            capture_output=True,
-            text=True,
-            check=False,
-            timeout=max(int(spec.get("timeout_sec", 120) or 120), 1),
-        )
-        payload = _parse_json_output(proc.stdout or "")
-        if not payload:
-            payload = _load_json(payload_path)
-        rc = int(proc.returncode)
-        stdout_tail = "\n".join((proc.stdout or "").splitlines()[-12:])
-        stderr_tail = "\n".join((proc.stderr or "").splitlines()[-12:])
-    except subprocess.TimeoutExpired as exc:
-        rc = 124
+    child_env = os.environ.copy()
+    child_env[REFRESH_ACTIVE_ENV] = "1"
+    result = run_bounded_process_group(
+        list(spec["cmd"]),
+        cwd=project_root,
+        timeout_seconds=max(int(spec.get("timeout_sec", 120) or 120), 1),
+        env=child_env,
+    )
+    stdout = str(result.get("stdout") or "")
+    stderr = str(result.get("stderr") or "")
+    payload = _parse_json_output(stdout)
+    payload_source = "stdout" if payload else "artifact_fallback"
+    if not payload:
         payload = _load_json(payload_path)
-        stdout_tail = "\n".join((exc.stdout or "").splitlines()[-12:]) if isinstance(exc.stdout, str) else ""
-        stderr_tail = "\n".join((exc.stderr or "").splitlines()[-12:]) if isinstance(exc.stderr, str) else "timeout"
+    rc = int(result.get("rc", 1) or 0)
+    stdout_tail = _tail_text(stdout)
+    stderr_tail = _tail_text(stderr or ("timeout" if result.get("timed_out") else ""))
     duration_ms = round((datetime.now(timezone.utc) - started).total_seconds() * 1000.0, 3)
     return {
         "cmd": list(spec["cmd"]),
         "rc": rc,
         "payload": payload,
+        "payload_source": payload_source,
         "stdout_tail": stdout_tail,
         "stderr_tail": stderr_tail,
         "duration_ms": duration_ms,
+        "timed_out": bool(result.get("timed_out", False)),
+        "timeout_cleanup": result.get("timeout_cleanup") if isinstance(result.get("timeout_cleanup"), dict) else {},
     }
+
+
+def _run_spec_with_freshness(
+    spec: dict[str, Any],
+    project_root: Path,
+    run_step: RefreshRunner,
+) -> dict[str, Any]:
+    payload_path = Path(spec["payload_path"]).expanduser()
+    additional_payload_paths = [
+        Path(path).expanduser()
+        for path in spec.get("additional_payload_paths", [])
+        if str(path or "").strip()
+    ]
+    tracked_paths = [payload_path, *additional_payload_paths]
+    attempt_rows: list[dict[str, Any]] = []
+    published_from_stdout = False
+    result: dict[str, Any] = {}
+    refreshed_this_cycle = False
+    path_freshness: dict[Path, bool] = {path: False for path in tracked_paths}
+
+    for attempt in range(1, 3):
+        attempt_started = datetime.now(timezone.utc)
+        previous_signatures = {path: _artifact_signature(path) for path in tracked_paths}
+        result = run_step(spec, project_root)
+        payload = result.get("payload") if isinstance(result.get("payload"), dict) else {}
+        path_freshness = {
+            path: _artifact_refreshed_since(
+                path,
+                attempt_started,
+                previous_signature=previous_signatures[path],
+            )
+            for path in tracked_paths
+        }
+        published_this_attempt = False
+        if not path_freshness[payload_path] and result.get("payload_source") == "stdout" and payload:
+            write_payload(payload_path, payload)
+            published_from_stdout = True
+            published_this_attempt = True
+            path_freshness[payload_path] = _artifact_refreshed_since(
+                payload_path,
+                attempt_started,
+                previous_signature=previous_signatures[payload_path],
+            )
+        refreshed_this_cycle = all(path_freshness.values())
+        attempt_rows.append(
+            {
+                "attempt": attempt,
+                "rc": int(result.get("rc", 1)),
+                "payload_source": str(result.get("payload_source") or "runner"),
+                "artifact_refreshed": refreshed_this_cycle,
+                "artifact_paths_refreshed": {
+                    str(path): bool(path_freshness[path]) for path in tracked_paths
+                },
+                "published_from_stdout": published_this_attempt,
+            }
+        )
+        if refreshed_this_cycle:
+            break
+
+    result = dict(result)
+    failure_envelope_published = False
+    failure_envelope_paths: list[str] = []
+    if not refreshed_this_cycle:
+        for stale_path in (path for path, fresh in path_freshness.items() if not fresh):
+            failure_envelope = {
+                "timestamp_utc": iso_now(),
+                "schema_version": 1,
+                "ok": False,
+                "overall_status": "degraded" if bool(spec.get("optional", False)) else "blocked",
+                "artifact_refresh_failed": True,
+                "stale_source_rejected": True,
+                "producer": str(spec.get("name") or ""),
+                "producer_rc": int(result.get("rc", 1)),
+                "artifact_path": str(stale_path),
+                "refresh_attempt_count": len(attempt_rows),
+                "recommended_actions": [
+                    "inspect the producer stderr and restore current-cycle publication before trusting this artifact"
+                ],
+            }
+            write_payload(stale_path, failure_envelope)
+            if _artifact_present(stale_path):
+                failure_envelope_paths.append(str(stale_path))
+            if stale_path == payload_path:
+                result["payload"] = failure_envelope
+                result["payload_source"] = "refresh_failure_envelope"
+        failure_envelope_published = len(failure_envelope_paths) == sum(
+            1 for fresh in path_freshness.values() if not fresh
+        )
+    result["refresh_attempt_count"] = len(attempt_rows)
+    result["refresh_attempts"] = attempt_rows
+    result["artifact_refreshed_this_cycle"] = refreshed_this_cycle
+    result["artifact_path_freshness"] = {
+        str(path): bool(path_freshness[path]) for path in tracked_paths
+    }
+    result["published_from_stdout"] = published_from_stdout
+    result["failure_envelope_published"] = failure_envelope_published
+    result["failure_envelope_paths"] = failure_envelope_paths
+    return result
 
 
 def _paper_soak_contract_ready(project_root: Path) -> bool:
@@ -638,6 +1635,35 @@ def _paper_soak_managed_step(name: str, payload: dict[str, Any], *, project_root
             )
         )
         return bool(status in PAPER_SOAK_MANAGED_STATUSES and checkpoint_only and scope in {"", "none"})
+    if name.startswith("halt_trigger_control_plane"):
+        execution_policy = _as_dict(payload.get("execution_policy"))
+        manual_flags = _as_dict(payload.get("manual_flags"))
+        operator_stop = _as_dict(manual_flags.get("operator_stop"))
+        global_halt = _as_dict(manual_flags.get("global_halt"))
+        issue_names = {
+            str(row.get("name") or "").strip()
+            for row in payload.get("issues", [])
+            if isinstance(row, dict) and str(row.get("name") or "").strip()
+        }
+        expected_lock_issues = {
+            "paper_trade_lock_active",
+            "runtime_release_live_read_only",
+            "runtime_clearance_not_thaw_safe",
+            "live_runtime_release_read_only",
+            "heavy_research_must_stay_cold_lane",
+        }
+        return bool(
+            status in PAPER_SOAK_MANAGED_STATUSES
+            and str(payload.get("effective_state") or "").strip().lower() == "live_read_only"
+            and bool(execution_policy.get("paper_trade_lock_active", False))
+            and not bool(execution_policy.get("effective_live_order_execution_allowed", False))
+            and not bool(operator_stop.get("active", False))
+            and not bool(global_halt.get("active", False))
+            and issue_names
+            and issue_names.issubset(expected_lock_issues)
+        )
+    if name.startswith("coordination_state_control") and status in PAPER_SOAK_MANAGED_STATUSES:
+        return True
     if name not in PAPER_SOAK_MANAGED_STEPS:
         return False
     if status in PAPER_SOAK_MANAGED_STATUSES:
@@ -749,6 +1775,10 @@ def _payload_summary(payload: dict[str, Any]) -> dict[str, Any]:
         "signing_material_ready",
         "compatibility_score",
         "compatibility_seed_ready",
+        "artifact_refresh_failed",
+        "stale_source_rejected",
+        "producer",
+        "producer_rc",
     ):
         if key in payload:
             summary[key] = payload.get(key)
@@ -766,6 +1796,7 @@ def build_payload(
     specs: list[dict[str, Any]] | None = None,
     runner: RefreshRunner | None = None,
 ) -> dict[str, Any]:
+    cycle_started = datetime.now(timezone.utc)
     refresh_specs = list(specs or _step_specs(project_root))
     run_step = runner or _run_spec
     missing_before = [str(spec["name"]) for spec in refresh_specs if not _artifact_present(Path(spec["payload_path"]))]
@@ -777,12 +1808,15 @@ def build_payload(
     paper_soak_ready_before_refresh = _paper_soak_contract_ready(project_root)
     for spec in refresh_specs:
         payload_path = Path(spec["payload_path"])
-        result = run_step(spec, project_root)
+        result = _run_spec_with_freshness(spec, project_root, run_step)
         payload = result.get("payload") if isinstance(result.get("payload"), dict) else {}
         present_after = _artifact_present(payload_path)
-        if str(spec["name"]) in missing_before and present_after:
+        refreshed_this_cycle = bool(result.get("artifact_refreshed_this_cycle", False))
+        failure_envelope_published = bool(result.get("failure_envelope_published", False))
+        producer_artifact_present = bool(present_after and not failure_envelope_published)
+        if str(spec["name"]) in missing_before and refreshed_this_cycle:
             recovered += 1
-        if not present_after:
+        if not producer_artifact_present:
             missing_after.append(str(spec["name"]))
         steps.append(
             {
@@ -791,6 +1825,8 @@ def build_payload(
                 "payload": payload,
                 "payload_path": payload_path,
                 "present_after": present_after,
+                "producer_artifact_present": producer_artifact_present,
+                "refreshed_this_cycle": refreshed_this_cycle,
                 "optional": bool(spec.get("optional", False)),
             }
         )
@@ -798,6 +1834,7 @@ def build_payload(
     paper_soak_ready_after_refresh = _paper_soak_contract_ready(project_root)
     paper_soak_ready = bool(paper_soak_ready_before_refresh or paper_soak_ready_after_refresh)
     rendered_steps: list[dict[str, Any]] = []
+    stale_after_refresh: list[str] = []
     for row in steps:
         payload_path = Path(row["payload_path"])
         result = row["result"] if isinstance(row.get("result"), dict) else {}
@@ -809,6 +1846,11 @@ def build_payload(
             project_root=project_root,
             paper_soak_ready=paper_soak_ready,
         )
+        refreshed_this_cycle = bool(row.get("refreshed_this_cycle", False))
+        if bool(row.get("present_after", False)) and not refreshed_this_cycle:
+            stale_after_refresh.append(str(row["name"]))
+            if not (optional and status == "managed_paper_soak"):
+                status = "optional_advisory" if optional else "stale"
         if status == "error" and optional:
             status = "optional_advisory" if paper_soak_ready else "degraded"
         statuses.append(status)
@@ -821,6 +1863,12 @@ def build_payload(
                 "payload_path": str(payload_path),
                 "optional": optional,
                 "artifact_present": bool(row.get("present_after", False)),
+                "producer_artifact_present": bool(row.get("producer_artifact_present", False)),
+                "artifact_refreshed_this_cycle": refreshed_this_cycle,
+                "artifact_path_freshness": dict(result.get("artifact_path_freshness") or {}),
+                "refresh_attempt_count": int(result.get("refresh_attempt_count", 1) or 1),
+                "published_from_stdout": bool(result.get("published_from_stdout", False)),
+                "failure_envelope_published": bool(result.get("failure_envelope_published", False)),
                 "payload_summary": _payload_summary(payload),
                 "cmd": list(result.get("cmd") or []),
                 "stdout_tail": str(result.get("stdout_tail") or ""),
@@ -828,9 +1876,27 @@ def build_payload(
             }
         )
 
+    last_step_index_by_artifact: dict[str, int] = {}
+    for index, row in enumerate(rendered_steps):
+        last_step_index_by_artifact[str(row["payload_path"])] = index
+    for index, row in enumerate(rendered_steps):
+        terminal = last_step_index_by_artifact[str(row["payload_path"])] == index
+        row["counts_toward_overall"] = terminal
+        row["superseded_by_later_verifier"] = not terminal
+
+    effective_steps = [row for row in rendered_steps if bool(row.get("counts_toward_overall", False))]
+    statuses = [str(row.get("status") or "") for row in effective_steps]
+    missing_after = [str(row["name"]) for row in effective_steps if not bool(row.get("producer_artifact_present", False))]
+    stale_after_refresh = [
+        str(row["name"])
+        for row in effective_steps
+        if bool(row.get("artifact_present", False)) and not bool(row.get("artifact_refreshed_this_cycle", False))
+    ]
+
     optional_names = {str(spec["name"]) for spec in refresh_specs if bool(spec.get("optional", False))}
     required_missing_after = [name for name in missing_after if name not in optional_names]
-    error_statuses = {"error"}
+    required_stale_after = [name for name in stale_after_refresh if name not in optional_names]
+    error_statuses = {"error", "stale"}
     degraded_statuses = {"warn", "thin", "degraded", "needs_work", "needs_review", "blocked", "busy", "skipped"}
     error_step_count = sum(1 for status in statuses if status in error_statuses)
     degraded_step_count = sum(1 for status in statuses if status in degraded_statuses)
@@ -838,7 +1904,7 @@ def build_payload(
     managed_paper_soak_step_count = sum(1 for status in statuses if status == "managed_paper_soak")
     optional_advisory_step_count = sum(1 for status in statuses if status == "optional_advisory")
     overall_status = "ready"
-    if error_step_count > 0 or required_missing_after:
+    if error_step_count > 0 or required_missing_after or required_stale_after:
         overall_status = "blocked"
     elif degraded_step_count > 0:
         overall_status = "degraded"
@@ -846,15 +1912,21 @@ def build_payload(
     return {
         "timestamp_utc": iso_now(),
         "schema_version": 1,
+        "refresh_cycle_started_utc": cycle_started.isoformat(),
         "project_root": str(project_root),
         "ok": overall_status != "blocked",
         "overall_status": overall_status,
-        "target_artifact_count": len(refresh_specs),
-        "artifact_present_count_after": len(refresh_specs) - len(missing_after),
+        "target_refresh_step_count": len(refresh_specs),
+        "target_artifact_count": len(effective_steps),
+        "artifact_present_count_after": len(effective_steps) - len(missing_after),
+        "superseded_step_count": len(refresh_specs) - len(effective_steps),
         "artifacts_recovered_count": recovered,
         "missing_before": missing_before,
         "missing_after": missing_after,
         "required_missing_after": required_missing_after,
+        "stale_after_refresh": stale_after_refresh,
+        "required_stale_after": required_stale_after,
+        "all_required_artifacts_fresh": not required_missing_after and not required_stale_after,
         "blocked_step_count": blocked_step_count,
         "degraded_step_count": degraded_step_count,
         "error_step_count": error_step_count,
@@ -866,12 +1938,37 @@ def build_payload(
             [
                 "./scripts/ops/opsctl.sh dashboard" if not missing_after and error_step_count == 0 else "",
                 "inspect the step stderr tails for the artifacts that are still missing" if required_missing_after else "",
+                "required stale inputs were retried and cannot be trusted until their producers publish current-cycle evidence" if required_stale_after else "",
                 "treat optional proof steps like canary rollout diagnostics as advisory when they time out under live load" if any(name in optional_names for name in missing_after) else "",
                 "treat blocked refresh outputs as real runtime issues instead of silent dashboard omissions" if blocked_step_count else "",
                 "paper soak is green; proof, promotion, and research debts are tracked as managed_paper_soak without blocking collection" if managed_paper_soak_step_count else "",
             ]
         ),
         "steps": rendered_steps,
+    }
+
+
+def _publish_dashboard(project_root: Path) -> dict[str, Any]:
+    dashboard_path = project_root / "governance" / "health" / "runtime_gate_dashboard_latest.json"
+    spec = {
+        "name": "runtime_gate_dashboard",
+        "payload_path": dashboard_path,
+        "cmd": [str(PY), str(project_root / "scripts" / "ops" / "runtime_gate_dashboard.py"), "--json"],
+        "timeout_sec": 180,
+    }
+    result = _run_spec_with_freshness(spec, project_root, _run_spec)
+    dashboard_payload = result.get("payload") if isinstance(result.get("payload"), dict) else {}
+    overall = dashboard_payload.get("overall") if isinstance(dashboard_payload.get("overall"), dict) else {}
+    return {
+        "ok": bool(result.get("artifact_refreshed_this_cycle", False)),
+        "status": str(overall.get("status") or dashboard_payload.get("overall_status") or "unknown"),
+        "producer_rc": int(result.get("rc", 1)),
+        "artifact_path": str(dashboard_path),
+        "artifact_present": _artifact_present(dashboard_path),
+        "artifact_refreshed_this_cycle": bool(result.get("artifact_refreshed_this_cycle", False)),
+        "refresh_attempt_count": int(result.get("refresh_attempt_count", 1) or 1),
+        "published_from_stdout": bool(result.get("published_from_stdout", False)),
+        "stderr_tail": str(result.get("stderr_tail") or ""),
     }
 
 
@@ -882,8 +1979,39 @@ def main() -> int:
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args()
 
+    if str(os.getenv(REFRESH_ACTIVE_ENV, "")).strip().lower() in {"1", "true", "yes", "on"}:
+        payload = {
+            "timestamp_utc": iso_now(),
+            "schema_version": 1,
+            "ok": True,
+            "overall_status": "nested_refresh_skipped",
+            "nested_refresh_skipped": True,
+            "reason": "runtime_artifact_refresh_already_active",
+        }
+        if args.json:
+            print(json.dumps(payload, ensure_ascii=True))
+        else:
+            print("runtime_artifact_refresh overall_status=nested_refresh_skipped")
+        return 0
+
     payload = build_payload(Path(args.project_root).resolve())
     out_path = Path(args.out_file).expanduser()
+    write_payload(out_path, payload)
+    dashboard_publish = _publish_dashboard(Path(args.project_root).resolve())
+    payload["dashboard_publish"] = dashboard_publish
+    payload["all_required_artifacts_fresh"] = bool(
+        payload.get("all_required_artifacts_fresh", False)
+        and dashboard_publish.get("artifact_refreshed_this_cycle", False)
+    )
+    if not dashboard_publish.get("artifact_refreshed_this_cycle", False):
+        payload["ok"] = False
+        payload["overall_status"] = "blocked"
+        payload["recommended_actions"] = ordered_unique(
+            [
+                *(payload.get("recommended_actions") or []),
+                "runtime dashboard publication remained stale after a bounded retry; inspect its producer stderr before trusting the dashboard",
+            ]
+        )
     write_payload(out_path, payload)
     if args.json:
         print(json.dumps(payload, ensure_ascii=True))

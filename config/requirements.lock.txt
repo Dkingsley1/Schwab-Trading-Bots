@@ -164,6 +164,7 @@ pydantic==2.13.4
 pydantic_core==2.46.4
 pyinstrument==5.1.2
 pyparsing==3.3.2
+pypdf==6.14.2
 pyrate-limiter==4.4.0
 pytest==9.0.3
 python-dateutil==2.9.0.post0

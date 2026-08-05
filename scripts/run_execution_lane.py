@@ -14,6 +14,7 @@ PAPER_TRADE_LOCK_PATH = PROJECT_ROOT / "governance" / "health" / "PAPER_TRADE_LO
 CONTROL_ENV_FILES = (
     PROJECT_ROOT / "config" / ".env.runtime_resource_guard_override",
     PROJECT_ROOT / "config" / ".env.paper_400_ramp_override",
+    PROJECT_ROOT / "config" / ".env.local_storage_reserve_override",
 )
 CONTROL_ENV_KEYS = {
     "EXECUTION_LANE_BATCH_SLEEP_SECONDS",
@@ -33,10 +34,12 @@ CONTROL_ENV_KEYS = {
     "PAPER_EXECUTION_QUEUE_CONSUMER_ENABLED",
     "PAPER_EXECUTION_RUNTIME_NICE",
     "PAPER_EXECUTION_RUNTIME_PAUSED_FOR_PRESSURE",
+    "PAPER_EXECUTION_RUNTIME_PAUSED_FOR_LOCAL_STORAGE",
     "PAPER_RECONCILIATION_HEARTBEAT_WHEN_PAUSED",
     "PAPER_RECONCILIATION_HEARTBEAT_SECONDS",
     "PAPER_SHADOW_RUNTIME_NICE",
 }
+_CONTROL_ENV_VALUES: dict[str, str] = {}
 
 from core.base_trader import BaseTrader
 from core.brokers import BrokerRuntimeConfig, available_broker_names, normalize_broker_name
@@ -54,7 +57,7 @@ from core.execution_lane_pipeline import (
 
 
 def _env_flag(name: str, default: str = "0") -> bool:
-    return os.getenv(name, default).strip().lower() in {"1", "true", "yes", "on"}
+    return _control_env_value(name, default).strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _clean_env_value(raw: str) -> str:
@@ -65,6 +68,7 @@ def _clean_env_value(raw: str) -> str:
 
 
 def _load_control_env() -> None:
+    values: dict[str, str] = {}
     for path in CONTROL_ENV_FILES:
         if not path.exists() or not path.is_file():
             continue
@@ -79,19 +83,27 @@ def _load_control_env() -> None:
             key, value = line.split("=", 1)
             key = key.strip()
             if key in CONTROL_ENV_KEYS:
-                os.environ[key] = _clean_env_value(value)
+                values[key] = _clean_env_value(value)
+    _CONTROL_ENV_VALUES.clear()
+    _CONTROL_ENV_VALUES.update(values)
+
+
+def _control_env_value(name: str, default: str = "") -> str:
+    if name in _CONTROL_ENV_VALUES:
+        return _CONTROL_ENV_VALUES[name]
+    return os.getenv(name, default)
 
 
 def _env_int(name: str, default: int, *, minimum: int = 1) -> int:
     try:
-        return max(int(os.getenv(name, str(default))), minimum)
+        return max(int(_control_env_value(name, str(default))), minimum)
     except ValueError:
         return max(int(default), minimum)
 
 
 def _env_float(name: str, default: float, *, minimum: float = 0.2) -> float:
     try:
-        return max(float(os.getenv(name, str(default))), minimum)
+        return max(float(_control_env_value(name, str(default))), minimum)
     except ValueError:
         return max(float(default), minimum)
 
@@ -251,8 +263,8 @@ def _publish_stale_skip_audit(row: dict, *, queue_db_override: str) -> None:
             project_root=str(PROJECT_ROOT),
             payload={
                 "timestamp_utc": row["timestamp_utc"],
-                "mode": str(mode),
-                "consumer": str(mode),
+                "mode": str(row.get("mode") or "paper"),
+                "consumer": f"execution_lane_{str(row.get('mode') or 'paper')}",
                 "intent_channel": row["channel"],
                 "intent_message_id": row["last_message_id"],
                 "intent_created_at": row["newest_created_at"],
@@ -332,8 +344,8 @@ def _drain_stale_prefix(
 
 def _paper_execution_target_nice() -> int | None:
     raw = (
-        os.getenv("PAPER_EXECUTION_RUNTIME_NICE", "").strip()
-        or os.getenv("PAPER_SHADOW_RUNTIME_NICE", "").strip()
+        _control_env_value("PAPER_EXECUTION_RUNTIME_NICE", "").strip()
+        or _control_env_value("PAPER_SHADOW_RUNTIME_NICE", "").strip()
     )
     if not raw:
         return None
@@ -367,9 +379,10 @@ def _live_execution_enabled() -> bool:
 
 def _paper_execution_paused_for_runtime() -> bool:
     _load_control_env()
-    consumer_enabled = os.getenv("PAPER_EXECUTION_QUEUE_CONSUMER_ENABLED", "1").strip().lower()
+    consumer_enabled = _control_env_value("PAPER_EXECUTION_QUEUE_CONSUMER_ENABLED", "1").strip().lower()
     return (
         _env_flag("PAPER_EXECUTION_RUNTIME_PAUSED_FOR_PRESSURE", "0")
+        or _env_flag("PAPER_EXECUTION_RUNTIME_PAUSED_FOR_LOCAL_STORAGE", "0")
         or _env_flag("PAPER_400_RAMP_BLOCKED_RUNTIME_PAUSE", "0")
         or consumer_enabled in {"0", "false", "no", "off"}
     )
@@ -479,7 +492,7 @@ def main() -> int:
     processed_total = 0
     skipped_stale_total = 0
     last_paper_reconcile_heartbeat = 0.0
-    heartbeat_interval = max(float(os.getenv("PAPER_RECONCILIATION_HEARTBEAT_SECONDS", "180") or 180.0), 30.0)
+    heartbeat_interval = max(float(_control_env_value("PAPER_RECONCILIATION_HEARTBEAT_SECONDS", "180") or 180.0), 30.0)
     trader: BaseTrader | None = None
     auth_ok = True
     auth_error = ""
@@ -526,7 +539,7 @@ def main() -> int:
         return 2
 
     last_lane_health_update = 0.0
-    lane_health_interval = max(float(os.getenv("EXECUTION_LANE_HEALTH_UPDATE_SECONDS", "60") or 60.0), 10.0)
+    lane_health_interval = max(float(_control_env_value("EXECUTION_LANE_HEALTH_UPDATE_SECONDS", "60") or 60.0), 10.0)
     update_lane_health(
         project_root=str(PROJECT_ROOT),
         mode=args.mode,

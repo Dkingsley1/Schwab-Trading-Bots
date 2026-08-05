@@ -372,6 +372,7 @@ def test_training_runtime_control_recommends_fast_handoff_for_completed_writer_l
     _write_json(
         health / "health_gates_latest.json",
         {
+            "timestamp_utc": _fresh_ts(),
             "recommended_operating_mode": "normal",
             "inputs": {
                 "backpressure_overload_severe": True,
@@ -1360,6 +1361,159 @@ def test_training_runtime_control_fills_batch20_from_bot_needs_topoff(monkeypatc
     assert any("brain_refinery_v20_needs_topoff" in part for part in contract["recommended_retrain_command"])
 
 
+def test_training_runtime_launch_intersects_fresh_bot_needs_selector(tmp_path: Path) -> None:
+    selected_bot = "brain_refinery_v58_ensemble_diversity_controller"
+    blocked_bot = "brain_refinery_v107_cross_asset_master_candidate"
+    bot_needs = {
+        "timestamp_utc": _fresh_ts(),
+        "training_candidate_selector": {
+            "active": True,
+            "mode": "training_candidate_selector_v2",
+            "selected_candidates": [
+                {
+                    "bot_id": selected_bot,
+                    "priority": 82.0,
+                    "walk_forward_runs": 0,
+                    "walk_forward_runs_remaining": 12,
+                }
+            ],
+        },
+        "next_batches": {"training_topoff": [blocked_bot, selected_bot]},
+        "bot_needs": [
+            {
+                "bot_id": bot_id,
+                "priority": 82.0,
+                "evidence": {"walk_forward_runs": 0, "walk_forward_runs_remaining": 12},
+            }
+            for bot_id in (blocked_bot, selected_bot)
+        ],
+    }
+    selector = src._training_candidate_selector_contract(bot_needs, max_age_minutes=60)
+    targets = src._build_precompute_targets(
+        training_quality={},
+        retrain_scorecard={},
+        coverage_seed={},
+        coverage_gap_closer={},
+        training_requalification={},
+        bot_needs=bot_needs,
+        candidate_selector=selector,
+    )
+
+    contract = src._build_training_launch_contract(
+        project_root=tmp_path,
+        snapshot_fresh=True,
+        resource_guard_ok=True,
+        memory_pressure_state="green",
+        resource_guard_gate={"launch_blockers": [], "recommended_command": []},
+        storage_quota_gate={"launch_blockers": [], "recommended_command": []},
+        parity_state="ready",
+        mlx_failure_active=False,
+        backpressure_gate={"severe": False, "cooling_down": False},
+        pretraining_drain_buffer={"launch_blocker": "", "batch_cap": 4, "recommended_command": []},
+        host_headroom_gate={
+            "launch_blockers": [],
+            "batch_cap": 4,
+            "selected_training_profile": "coverage_micro_canary",
+            "recommended_command": [],
+        },
+        training_quality_blocked=False,
+        training_quality_score=90.0,
+        precompute_targets=targets,
+        candidate_selector=selector,
+        fresh_minutes=60,
+        batch_limit=4,
+    )
+
+    assert selector["authoritative"] is True
+    assert contract["launch_allowed"] is True
+    assert contract["recommended_batch_size"] == 1
+    assert [row["bot_id"] for row in contract["canary_batch"]] == [selected_bot]
+    assert contract["eligibility_blocked_target_count"] == 1
+    assert contract["eligibility_blocked_targets"][0]["bot_id"] == blocked_bot
+    assert contract["recommended_retrain_command"][3] == selected_bot
+
+
+def test_training_runtime_cools_down_recently_trained_selector_target() -> None:
+    selected_bot = "brain_refinery_v58_ensemble_diversity_controller"
+    bot_needs = {
+        "timestamp_utc": _fresh_ts(),
+        "training_candidate_selector": {
+            "active": True,
+            "mode": "training_candidate_selector_v2",
+            "selected_candidates": [{"bot_id": selected_bot, "priority": 82.0}],
+        },
+    }
+    selector = src._training_candidate_selector_contract(bot_needs, max_age_minutes=60)
+
+    cooled = src._apply_training_target_cooldown(
+        selector,
+        {
+            "ended_utc": _fresh_ts(),
+            "target_outcomes": [{"bot_id": selected_bot, "status": "trained"}],
+        },
+        cooldown_minutes=1440,
+    )
+
+    assert cooled["authoritative"] is True
+    assert cooled["status"] == "cooldown"
+    assert cooled["upstream_selected_count"] == 1
+    assert cooled["selected_count"] == 0
+    assert cooled["selected_candidates"] == []
+    assert cooled["cooldown"]["blocked_bot_ids"] == [selected_bot]
+    assert cooled["cooldown"]["blocked_candidates"][0]["cooldown_remaining_minutes"] > 1439
+
+
+def test_training_runtime_launch_fails_closed_when_active_bot_needs_selector_is_stale(tmp_path: Path) -> None:
+    bot_needs = {
+        "timestamp_utc": "2020-01-01T00:00:00+00:00",
+        "training_candidate_selector": {
+            "active": True,
+            "selected_candidates": [{"bot_id": "brain_refinery_v58_ensemble_diversity_controller"}],
+        },
+        "next_batches": {"training_topoff": ["brain_refinery_v58_ensemble_diversity_controller"]},
+    }
+    selector = src._training_candidate_selector_contract(bot_needs, max_age_minutes=60)
+    targets = src._build_precompute_targets(
+        training_quality={},
+        retrain_scorecard={},
+        coverage_seed={},
+        coverage_gap_closer={},
+        training_requalification={},
+        bot_needs=bot_needs,
+        candidate_selector=selector,
+    )
+
+    contract = src._build_training_launch_contract(
+        project_root=tmp_path,
+        snapshot_fresh=True,
+        resource_guard_ok=True,
+        memory_pressure_state="green",
+        resource_guard_gate={"launch_blockers": [], "recommended_command": []},
+        storage_quota_gate={"launch_blockers": [], "recommended_command": []},
+        parity_state="ready",
+        mlx_failure_active=False,
+        backpressure_gate={"severe": False, "cooling_down": False},
+        pretraining_drain_buffer={"launch_blocker": "", "batch_cap": 4, "recommended_command": []},
+        host_headroom_gate={
+            "launch_blockers": [],
+            "batch_cap": 4,
+            "selected_training_profile": "coverage_micro_canary",
+            "recommended_command": [],
+        },
+        training_quality_blocked=False,
+        training_quality_score=90.0,
+        precompute_targets=targets,
+        candidate_selector=selector,
+        fresh_minutes=60,
+        batch_limit=4,
+    )
+
+    assert selector["status"] == "stale"
+    assert contract["launch_allowed"] is False
+    assert contract["recommended_batch_size"] == 0
+    assert "training_candidate_selector_not_fresh" in contract["launch_blockers"]
+
+
 def test_training_runtime_control_allows_guarded_recovery_batch_when_quality_is_blocked(monkeypatch, tmp_path: Path) -> None:
     project_root = tmp_path / "project"
     health = project_root / "governance" / "health"
@@ -2047,6 +2201,7 @@ def test_training_runtime_control_trusts_health_gate_storage_override_over_stale
     _write_json(
         health / "health_gates_latest.json",
         {
+            "timestamp_utc": _fresh_ts(),
             "recommended_operating_mode": "normal",
             "inputs": {
                 "backpressure_overload_severe": False,
@@ -2115,6 +2270,47 @@ def test_training_runtime_control_trusts_health_gate_storage_override_over_stale
     assert payload["backpressure_training_gate"]["severe"] is False
     assert "health_gate_storage_control_override" in payload["backpressure_training_gate"]["sources"]
     assert "backpressure_overload_severe" not in payload["training_launch_contract"]["launch_blockers"]
+
+
+def test_training_runtime_control_ignores_frozen_age_from_stale_health_gate_override() -> None:
+    payload = src._build_backpressure_training_gate(
+        health_gates={
+            "timestamp_utc": "2020-01-01T00:00:00+00:00",
+            "inputs": {
+                "backpressure_storage_control_override": {
+                    "active": True,
+                    "source": "fresh_empty_sql_ingestion_overlay",
+                    "age_seconds": 9.0,
+                    "pending_lines": 0,
+                    "pending_lines_total": 0,
+                    "oldest_pending_age_seconds": 0.0,
+                    "overload": False,
+                    "overlay_clear": True,
+                    "queue_clear": True,
+                }
+            },
+        },
+        storage_control={
+            "overall_status": "blocked",
+            "severity": "critical",
+            "pressure_index": 16.0,
+            "backpressure": {
+                "total_pending_lines": 752181,
+                "oldest_pending_age_seconds": 3800.0,
+                "pending_lines_threshold": 15000,
+                "oldest_age_threshold_seconds": 240.0,
+            },
+        },
+        ingestion_backpressure={},
+        super_drainer={},
+    )
+
+    assert payload["storage_control_override_clear"] is False
+    assert payload["stale_storage_control_override_ignored"] is True
+    assert payload["health_gates_fresh_for_override"] is False
+    assert payload["pending_lines"] == 752181
+    assert payload["severe"] is True
+    assert "stale_health_gate_storage_control_override_ignored" in payload["sources"]
 
 
 def test_training_runtime_control_trusts_stable_needs_work_storage_over_stale_super_drainer(monkeypatch, tmp_path: Path) -> None:

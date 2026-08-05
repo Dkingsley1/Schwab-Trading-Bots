@@ -53,3 +53,41 @@ def test_build_strategy_attribution_report_rolls_up_lane_layer_and_symbols(tmp_p
     assert payload["by_lane"][0]["samples"] == 2
     assert payload["top_positive_symbols"][0]["symbol"] == "NVDA"
 
+
+def test_strategy_attribution_deduplicates_aliases_and_bounds_large_bootstrap(tmp_path):
+    module = _load_module()
+    governance = tmp_path / "governance"
+    lane_dir = governance / "shadow_crypto"
+    lane_dir.mkdir(parents=True)
+    path = lane_dir / "shadow_pnl_attribution_20260801.jsonl"
+    rows = [
+        {
+            "timestamp_utc": f"2026-08-01T14:{minute:02d}:00+00:00",
+            "symbol": "BTC-USD",
+            "bot_id": f"bot_{minute}",
+            "layer": "sub_bot",
+            "action": "HOLD",
+            "return_1m": 0.0,
+            "pnl_proxy": 0.0,
+            "padding": "x" * 256,
+        }
+        for minute in range(20)
+    ]
+    path.write_text("\n".join(json.dumps(row, ensure_ascii=True) for row in rows) + "\n", encoding="utf-8")
+    backup_alias = governance / "shadow_crypto.__external_symlink_backup_20260508T174945Z"
+    backup_alias.symlink_to(lane_dir, target_is_directory=True)
+
+    payload = module.build_strategy_attribution_report(
+        tmp_path,
+        day="20260801",
+        bootstrap_max_bytes_per_file=1024,
+        incremental_max_bytes_per_file=1024,
+    )
+
+    assert payload["file_count"] == 1
+    assert payload["processing"]["mode"] == "bounded_bootstrap_tail"
+    assert payload["processing"]["bootstrap_tail_files"] == 1
+    assert payload["processing"]["complete_history"] is False
+    assert payload["processing"]["bytes_scanned"] < path.stat().st_size
+    assert 0 < payload["row_count"] < len(rows)
+    assert all(".__external_symlink_backup_" not in source for source in payload["source_files"])

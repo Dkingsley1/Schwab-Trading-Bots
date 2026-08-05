@@ -24,10 +24,8 @@ LOCAL_TZ = ZoneInfo("America/New_York") if ZoneInfo is not None else timezone.ut
 OFF_HOURS_START = dt_time(16, 15)
 OFF_HOURS_END = dt_time(9, 20)
 PREFLIGHT_REPAIR_ACTIONS = {
-    "rebuild_model_artifact",
     "recover_training_log",
     "refresh_training_diagnostics",
-    "targeted_retrain",
 }
 
 

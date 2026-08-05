@@ -17,6 +17,7 @@ else:
 
 
 DEFAULT_OUT_PATH = PROJECT_ROOT / "governance" / "health" / "health_fast_latest.json"
+ROUTE_READY_STATES = {"ready", "verified", "ok", "curated_ready", "active_passthrough", "active_local_ready"}
 
 
 def _safe_float(value: Any, default: float = 0.0) -> float:
@@ -105,7 +106,7 @@ def _paper_hot_path_storage_relief(storage: dict[str, Any], plumbing: dict[str, 
     total_pending = _safe_int(backpressure.get("total_pending_lines"), 0)
     oldest = _safe_float(backpressure.get("oldest_pending_age_seconds"), 0.0)
     pending_threshold = max(_safe_int(backpressure.get("pending_lines_threshold"), 15000), 1)
-    route_ready = _status(route.get("verification_state")) in {"ready", "verified", "ok"}
+    route_ready = _status(route.get("verification_state")) in ROUTE_READY_STATES
     integrity_clean = all(
         _safe_int(integrity.get(key), 0) == 0
         for key in ("sql_invalid_lines", "sql_overlay_invalid_lines", "sql_overlay_oversize_payloads", "sql_overlay_ops_write_failures")
@@ -125,8 +126,18 @@ def _paper_hot_path_storage_relief(storage: dict[str, Any], plumbing: dict[str, 
     if not plumbing_raw_live and not plumbing_managed_deferred:
         hot_path_ok = bool(core_pending <= 5000 and support_pending <= 12000 and oldest <= 3600.0)
     backlog_status = _status(storage_section.get("backlog_drain_status") or storage.get("backlog_drain_status"))
+    small_residual_drain_managed = bool(
+        deferred_pending > 0
+        and backlog_status in {"drain_active", "ready", "steady_state"}
+        and total_pending < pending_threshold
+        and total_pending <= 1000
+        and core_pending <= 5000
+        and support_pending <= 12000
+        and oldest <= 300.0
+    )
     deferred_managed = bool(
         plumbing_managed_deferred
+        or small_residual_drain_managed
         or deferred_pending > 0
         and backlog_status in {"waiting_for_off_hours", "off_hours_scheduled", "market_hours_guard", "handoff_requested"}
     )
@@ -142,13 +153,18 @@ def _paper_hot_path_storage_relief(storage: dict[str, Any], plumbing: dict[str, 
         and writer_breaches_managed
         and core_pending <= 5000
         and support_pending <= 12000
-        and total_pending >= pending_threshold
+        and (total_pending >= pending_threshold or small_residual_drain_managed)
     )
     return {
         "active": active,
-        "status": "managed_deferred_backlog_waiting_for_off_hours" if active else "inactive",
+        "status": (
+            "managed_small_residual_drain"
+            if active and small_residual_drain_managed
+            else ("managed_deferred_backlog_waiting_for_off_hours" if active else "inactive")
+        ),
         "hot_path_ok": hot_path_ok,
         "deferred_backlog_managed": deferred_managed,
+        "small_residual_drain_managed": small_residual_drain_managed,
         "route_ready": route_ready,
         "integrity_clean": integrity_clean,
         "writer_breaches_managed": writer_breaches_managed,
@@ -205,7 +221,7 @@ def _storage_ready(storage: dict[str, Any], plumbing: dict[str, Any] | None = No
     storage_section = _dict(storage.get("storage"))
     efficiency_status = _status(efficiency.get("overall_status") or storage.get("storage_efficiency_status"))
     efficiency_grade = str(efficiency.get("grade") or storage_section.get("efficiency_grade") or storage.get("storage_efficiency_grade") or "").strip().upper()
-    route_ready = _status(route.get("verification_state")) in {"ready", "verified", "ok"}
+    route_ready = _status(route.get("verification_state")) in ROUTE_READY_STATES
     resilience_ready = _status(resilience.get("overall_status")) in {"", "ready", "ok"}
     integrity_clean = all(
         _safe_int(integrity.get(key), 0) == 0

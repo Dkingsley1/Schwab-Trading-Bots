@@ -69,6 +69,7 @@ STORAGE_OVERRIDE_FILE="$PROJECT_ROOT/config/.env.storage_override"
 HEALTH_DIR="$PROJECT_ROOT/governance/health"
 OPERATOR_STOP_FLAG="$HEALTH_DIR/OPERATOR_STOP.flag"
 GLOBAL_HALT_FLAG="$HEALTH_DIR/GLOBAL_TRADING_HALT.flag"
+RUNTIME_MAINTENANCE_HOLD_FLAG="$HEALTH_DIR/RUNTIME_MAINTENANCE_HOLD.flag"
 PAPER_TRADE_LOCK_FILE="$PROJECT_ROOT/governance/health/PAPER_TRADE_LOCK.flag"
 
 flag_summary() {
@@ -131,6 +132,14 @@ abort_loop_refresh_if_safety_flags_active() {
     echo "${action_name}_blocked=global_halt" >&2
     echo "global_halt_flag=$GLOBAL_HALT_FLAG" >&2
     echo "global_halt_detail=$(flag_summary "$GLOBAL_HALT_FLAG")" >&2
+  fi
+
+  if [[ -f "$RUNTIME_MAINTENANCE_HOLD_FLAG" ]]; then
+    if "$PY" "$PROJECT_ROOT/scripts/ops/runtime_maintenance_hold.py" --json | "$PY" -c 'import json,sys; raise SystemExit(0 if json.load(sys.stdin).get("active") else 1)'; then
+      blocked=1
+      echo "${action_name}_blocked=runtime_maintenance_hold" >&2
+      echo "runtime_maintenance_hold_flag=$RUNTIME_MAINTENANCE_HOLD_FLAG" >&2
+    fi
   fi
 
   if [[ "$blocked" == "1" ]]; then
@@ -235,6 +244,8 @@ stop_launchd_service() {
 }
 
 stop_core_stack_supervisors() {
+  stop_launchd_service "com.dankingsley.reboot_resilience_guard"
+  stop_launchd_service "com.dankingsley.failover_hot_standby"
   stop_launchd_service "com.dankingsley.shadow_watchdog"
   stop_launchd_service "com.dankingsley.all_sleeves"
   stop_launchd_service "com.dankingsley.ops.watchdog"
@@ -724,6 +735,9 @@ case "$cmd" in
       echo "stop_targets=core_stack_supervisors,runtime_loops"
       exit 0
     fi
+    mkdir -p "$HEALTH_DIR"
+    printf 'timestamp_utc=%s\nreason=explicit_opsctl_stop\npolicy=prevent_automatic_runtime_recovery_until_next_explicit_start\n' \
+      "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$HEALTH_DIR/STACK_STOPPED.flag"
     stop_core_stack_supervisors
     stop_all_runtime_loops
     echo "stopped stack services"
@@ -973,6 +987,12 @@ case "$cmd" in
   operator-release)
     run_then_refresh_self_model "$PY" "$PROJECT_ROOT/scripts/operator_control.py" --release "$@"
     ;;
+  runtime-maintenance-hold|maintenance-hold|maintenance-hold-status)
+    exec "$PY" "$PROJECT_ROOT/scripts/ops/runtime_maintenance_hold.py" "$@"
+    ;;
+  runtime-maintenance-release|maintenance-release)
+    exec "$PY" "$PROJECT_ROOT/scripts/ops/runtime_maintenance_hold.py" --release "$@"
+    ;;
   mlx-audit|mlx-runtime-audit)
     exec "$PY" "$PROJECT_ROOT/scripts/ops/mlx_runtime_audit.py" "$@"
     ;;
@@ -1086,6 +1106,9 @@ case "$cmd" in
     ;;
   ingestion-storage-governor|storage-pressure-governor|governor)
     exec "$PY" "$PROJECT_ROOT/scripts/ops/ingestion_storage_governor.py" "$@"
+    ;;
+  local-storage-reserve|local-storage-reserve-guard|hot-storage-reserve)
+    exec "$PY" "$PROJECT_ROOT/scripts/ops/local_storage_reserve_guard.py" "$@"
     ;;
   external-backlog-drain|backlog-drain|external-drain)
     exec "$PY" "$PROJECT_ROOT/scripts/ops/external_backlog_drain.py" "$@"
@@ -1226,7 +1249,7 @@ case "$cmd" in
     exec "$PY" "$PROJECT_ROOT/scripts/ops/storage_split_brain_reconciler.py" "$@"
     ;;
   storage-resilience|storage-resilience-control)
-    exec "$PY" "$PROJECT_ROOT/scripts/ops/storage_resilience_control.py" "$@"
+    exec "$PY" "$PROJECT_ROOT/scripts/ops/storage_resilience_control.py" --fast "$@"
     ;;
   notification-escalation-ladder|notification-ladder|alert-ladder)
     exec "$PY" "$PROJECT_ROOT/scripts/ops/notification_escalation_ladder.py" "$@"
@@ -1245,6 +1268,9 @@ case "$cmd" in
     ;;
   deep-cold-storage-layer|deep-cold-layer|cold-archive-layer)
     exec "$PY" "$PROJECT_ROOT/scripts/ops/deep_cold_storage_layer.py" "$@"
+    ;;
+  cold-archive-compactor|compact-cold-archive|cold-archive-compact)
+    exec "$PY" "$PROJECT_ROOT/scripts/ops/cold_archive_compactor.py" "$@"
     ;;
   retention-intelligence-v2|retention-v2|retention-intelligence|retention-report-card)
     exec "$PY" "$PROJECT_ROOT/scripts/ops/retention_intelligence_v2.py" "$@"
@@ -1359,6 +1385,9 @@ case "$cmd" in
     ;;
   schwab-auth-supervisor|schwab-auth-guard|auth-supervisor)
     exec "$PY" "$PROJECT_ROOT/scripts/ops/schwab_auth_supervisor.py" "$@"
+    ;;
+  schwab-auth-post-refresh|auth-post-refresh|schwab-post-auth-recovery)
+    exec "$PY" "$PROJECT_ROOT/scripts/ops/schwab_auth_post_refresh.py" "$@"
     ;;
   schwab-credentials|schwab-creds|schwab-credentials-setup|schwab-auth-creds)
     exec "$PY" "$PROJECT_ROOT/scripts/ops/schwab_credentials_setup.py" "$@"
@@ -1531,8 +1560,26 @@ case "$cmd" in
   account-position-study|position-study|portfolio-position-study|study-positions)
     exec "$PY" "$PROJECT_ROOT/scripts/ops/account_position_study.py" "$@"
     ;;
+  position-opportunity-watch|position-opportunities|held-position-watch)
+    exec "$PY" "$PROJECT_ROOT/scripts/ops/position_opportunity_watch.py" "$@"
+    ;;
+  position-round-trip-watch|position-round-trip|held-position-round-trip)
+    exec "$PY" "$PROJECT_ROOT/scripts/ops/position_round_trip_watch.py" "$@"
+    ;;
+  account-buildout-plan|account-buildout|portfolio-buildout|build-account)
+    exec "$PY" "$PROJECT_ROOT/scripts/ops/account_buildout_planner.py" "$@"
+    ;;
   schwab-account-snapshot-refresh|account-snapshot-refresh|refresh-account-positions|refresh-position-study)
     exec "$PY" "$PROJECT_ROOT/scripts/ops/schwab_account_snapshot_refresh.py" "$@"
+    ;;
+  schwab-tax-ledger-refresh|tax-ledger-refresh|refresh-tax-ledger)
+    exec "$PY" "$PROJECT_ROOT/scripts/ops/schwab_tax_ledger_refresh.py" "$@"
+    ;;
+  trading-tax-estimate|tax-estimate|tax-posture)
+    exec "$PY" "$PROJECT_ROOT/scripts/ops/trading_tax_estimator.py" "$@"
+    ;;
+  tax-regulation-update|tax-policy-update|annual-tax-rollover)
+    exec "$PY" "$PROJECT_ROOT/scripts/ops/tax_regulation_update.py" "$@"
     ;;
   covered-call-roll-watch|covered-call-watch|roll-covered-calls)
     exec "$PY" "$PROJECT_ROOT/scripts/ops/covered_call_roll_watch.py" "$@"
@@ -1593,6 +1640,12 @@ case "$cmd" in
     ;;
   portfolio-allocator|portfolio-allocator-service)
     exec "$PY" "$PROJECT_ROOT/scripts/portfolio_allocator_service.py" "$@"
+    ;;
+  portfolio-risk-ledger|portfolio-risk-refresh|risk-ledger)
+    exec "$PY" "$PROJECT_ROOT/scripts/portfolio_risk_ledger.py" "$@"
+    ;;
+  sleeve-allocator|sleeve-allocator-refresh)
+    exec "$PY" "$PROJECT_ROOT/scripts/sleeve_allocator.py" "$@"
     ;;
   portfolio-capacity-curves|capacity-curves)
     exec "$PY" "$PROJECT_ROOT/scripts/portfolio_capacity_curve_report.py" "$@"
@@ -2403,7 +2456,7 @@ case "$cmd" in
 
     ORCH_ARGS=(--target-mode local)
     if [[ "$DO_REFRESH" != "1" ]]; then
-      ORCH_ARGS+=(--no-restart)
+      ORCH_ARGS+=(--quiesce-only)
     fi
     if [[ "$DO_EJECT" == "1" ]]; then
       ORCH_ARGS+=(--eject)
@@ -2440,7 +2493,7 @@ case "$cmd" in
 
     ORCH_ARGS=(--target-mode external)
     if [[ "$DO_REFRESH" != "1" ]]; then
-      ORCH_ARGS+=(--no-restart)
+      ORCH_ARGS+=(--quiesce-only)
     fi
 
     if [[ "$DRY_RUN" == "1" ]]; then
@@ -2462,6 +2515,9 @@ case "$cmd" in
     ;;
   storage-sqlite-hot-route|sqlite-hot-route|storage-hot-sqlite)
     exec "$PY" "$PROJECT_ROOT/scripts/ops/storage_sqlite_hot_route.py" "$@"
+    ;;
+  storage-sqlite-local-failover|sqlite-local-failover|storage-local-sqlite)
+    exec "$PY" "$PROJECT_ROOT/scripts/ops/storage_sqlite_local_failover.py" "$@"
     ;;
   storage-disaster-recovery|storage-recovery-bot)
     exec "$PY" "$PROJECT_ROOT/scripts/ops/storage_disaster_recovery.py" "$@"
@@ -2843,7 +2899,7 @@ opsctl commands:
   sql-audit [--json]
   training-registry-audit [--json]
   training-label-audit [--json]
-  training-labeling-intelligence [--apply] [--materialize-collect-only-diagnostics] [--collect-only-diagnostic-min-version N] [--collect-only-diagnostic-limit N] [--json]
+  training-labeling-intelligence [--apply|--refresh-artifacts] [--materialize-collect-only-diagnostics] [--collect-only-diagnostic-min-version N] [--collect-only-diagnostic-limit N] [--json]
   training-data-intake|data-intake-expansion|bot-data-intake [--apply] [--focus-limit N] [--include-bot-ids CSV] [--json]
   training-quality [--json]
   training-lineage [--json]
@@ -2857,6 +2913,7 @@ opsctl commands:
   ingestion-storage-control [--json]
   data-plane-recovery|write-path-recovery [--json]
   ingestion-storage-governor [status|apply] [--json]
+  local-storage-reserve-guard [--apply] [--json]
   external-backlog-drain [--apply] [--follow-through] [--poll-seconds N] [--wait-timeout-seconds N] [--force-live-window] [--json]
   raw-backlog-refiner [--apply] [--skip-drain] [--skip-intake] [--skip-cleanup] [--allow-stale-reaper] [--json]
   raw-training-compaction|raw-training-queue|raw-training-clear [--apply] [--max-files N] [--max-gb N] [--jumbo-gb N] [--min-age-hours N] [--json]
@@ -2896,7 +2953,7 @@ opsctl commands:
   storage-tier-policy [--top-n N] [--hot-budget-gb N] [--cold-candidate-min-mb N] [--offload-manifest-max-gb N] [--json]
   retention-intelligence-v2 [--apply] [--sample-limit N] [--json]
   hot-lane-retention-control [--apply] [--target-free-gb N] [--hot-total-thin-gb N] [--json]
-  storage-retention-unison [--apply] [--raw-max-files N] [--raw-max-gb N] [--cleanup-max-delete-gb N] [--telemetry-max-gb N] [--lifecycle-max-gb N] [--decision-max-gb N] [--target-free-gb N] [--json]
+  storage-retention-unison [--apply] [--raw-max-files N] [--raw-max-gb N] [--cold-archive-max-files N] [--cold-archive-max-gb N] [--cleanup-max-delete-gb N] [--telemetry-max-gb N] [--lifecycle-max-gb N] [--decision-max-gb N] [--target-free-gb N] [--json]
   manifest-backed-offload [--apply] [--target-root PATH] [--max-files N] [--max-gb N] [--release-source-after-verify] [--json]
   governance-telemetry-compactor [--apply] [--channels CSV|all] [--target-free-gb N] [--min-file-mb N] [--json]
   governance-lifecycle-compactor [--apply] [--target-free-gb N] [--keep-latest N] [--json]
@@ -2912,7 +2969,7 @@ opsctl commands:
   regime-control [--json]
   supportability-control [--limit N] [--json]
   teacher-quality [--json]
-  bot-quality-autopilot [--apply] [--timeout-sec N] [--mentor-limit N] [--json]
+  bot-quality-autopilot [--apply] [--timeout-sec N] [--mentor-limit N] [--min-train-samples N] [--json]
   bot-needs [--include-bot-ids CSV] [--limit N] [--json]
   commands-hygiene [--apply] [--json]
   command-validity|commands-verify|command-audit [--apply] [--timeout-sec N] [--json]
@@ -2955,6 +3012,7 @@ opsctl commands:
   global-halt-auto-clear|halt-auto-clear [--json]
   clear-all-halts|clear-global-halts [--json]
   operator-control|operator-stop-status [--json]
+  runtime-maintenance-hold [--engage|--release] [--reason TEXT] [--ttl-seconds N] [--json]
   operator-release [--json]
   live-runtime-separation [--live-fresh-minutes N] [--json]
   rolling-restart [--max-session-age-minutes N] [--swap-restart-gb N] [--json]
@@ -3045,6 +3103,8 @@ opsctl commands:
   chaos-drills [--record-drill NAME] [--note TEXT] [--json]
   calibration-control [--apply] [--json]
   portfolio-allocator [--intents-file PATH] [--json]
+  portfolio-risk-ledger [--allocator PATH] [--one-numbers PATH] [--out PATH] [--json]
+  sleeve-allocator [--one-numbers PATH] [--slo PATH] [--bot-stack PATH] [--broker schwab|coinbase] [--out PATH] [--json]
   portfolio-capacity-curves [--json]
   risk-service [--json]
   execution-lab [--json]
@@ -3115,15 +3175,17 @@ opsctl commands:
   apple-profile [status|apply] [--tier air_safe|pro_balanced|max_throughput] [--json]
   storage-switch-local [--no-refresh]
   storage-switch-external [--no-refresh]
+  storage-sqlite-local-failover [--apply] [--json]
   storage-prune-standby [--apply] [--include-curated-standby] [--min-route-soak-hours N] [--relative-path PATH] [--json]
   storage-transition-coordinator [--transition-mode local|external] [--apply] [--json]
   storage-disaster-recovery|storage-recovery-bot [--apply] [--json]
   storage-safe-eject [--no-refresh] [--no-eject]
   soak-self-heal|soak-self-healing [--apply] [--target-days N] [--daily-max-age-minutes N] [--json]
-  deep-cold-storage-layer [--apply] [--min-size-mb N] [--json]
+  deep-cold-storage-layer [--apply] [--adaptive] [--move-to-second-cold] [--planning-horizon-days N] [--json]
+  cold-archive-compactor [--apply] [--max-files N] [--max-raw-gb N] [--coordinate-writer-handoff] [--vacuum-sqlite] [--allow-active-writer] [--json]
   retention-intelligence-v2 [--apply] [--sample-limit N] [--json]
   hot-lane-retention-control [--apply] [--target-free-gb N] [--hot-total-thin-gb N] [--json]
-  storage-retention-unison [--apply] [--raw-max-files N] [--raw-max-gb N] [--cleanup-max-delete-gb N] [--telemetry-max-gb N] [--lifecycle-max-gb N] [--decision-max-gb N] [--target-free-gb N] [--json]
+  storage-retention-unison [--apply] [--raw-max-files N] [--raw-max-gb N] [--cold-archive-max-files N] [--cold-archive-max-gb N] [--cleanup-max-delete-gb N] [--telemetry-max-gb N] [--lifecycle-max-gb N] [--decision-max-gb N] [--target-free-gb N] [--json]
   sql-maint|sqlite-maint [--vacuum] [--json]
   health-gates|health-gate-refresh [--json]
   health|daily-auto-verify|daily-verify
@@ -3192,8 +3254,13 @@ opsctl commands:
   token-refresh-interactive [--force] [--callback-timeout-seconds N] [--requested-browser BROWSER] [--prompt-before-browser] [--skip-account-probe] [--json]
   token-install-autorefresh
   account-position-study [--json] [--day YYYYMMDD] [--profiles CSV]
+  position-round-trip-watch [--refresh-market-data] [--study-file PATH] [--chart-file PATH] [--risk-file PATH] [--tax-estimate-file PATH] [--tax-profile-file PATH] [--dividend-file PATH] [--policy-file PATH] [--state-file PATH] [--events-file PATH] [--json]
+  account-buildout-plan [--study-file PATH] [--opportunity-file PATH] [--round-trip-file PATH] [--allocator-file PATH] [--risk-file PATH] [--policy-file PATH] [--json]
   covered-call-roll-watch [--json] [--today YYYY-MM-DD]
   schwab-account-snapshot-refresh [--json] [--skip-derived]
+  schwab-tax-ledger-refresh [--tax-year YYYY] [--json]
+  trading-tax-estimate [--tax-year YYYY] [--ledger PATH] [--profile PATH] [--json]
+  tax-regulation-update [--tax-year YYYY] [--refresh|--auto] [--json]
   notify-watch [--poll-seconds N] [--enable-imessage] [--imessage-recipient DEST] [--imessage-min-severity info|warn|critical] [--imessage-event-allowlist CSV]
   notify-start [--poll-seconds N] [--enable-imessage] [--imessage-recipient DEST] [--imessage-min-severity info|warn|critical] [--imessage-event-allowlist CSV]
   startup-start-prompt [--install|--uninstall] [--delay-seconds N] [--timeout-seconds N] [--force-restart|--no-force-restart] [--no-browser|--allow-browser] [--kickstart-now|--no-kickstart]

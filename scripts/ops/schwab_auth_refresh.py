@@ -63,6 +63,66 @@ def _write_json(path: Path, payload: Dict[str, Any]) -> None:
     tmp.replace(path)
 
 
+def _run_post_refresh_cascade(*, project_root: Path = PROJECT_ROOT, timeout_seconds: int = 480) -> Dict[str, Any]:
+    env = os.environ.copy()
+    env.update(
+        {
+            "MARKET_DATA_ONLY": "1",
+            "ALLOW_ORDER_EXECUTION": "0",
+            "TOP_BOT_ENABLE_LIVE_EXECUTION": "0",
+            "EXECUTION_LANE_LIVE_ENABLED": "0",
+            "RUN_ALL_SLEEVES_WITH_LIVE_EXECUTOR": "0",
+            "BOT_LIVE_MONEY_LOCKED_DURING_SOAK": "1",
+        }
+    )
+    cmd = [
+        str(project_root / "scripts" / "ops" / "opsctl.sh"),
+        "schwab-auth-post-refresh",
+        "--json",
+    ]
+    try:
+        proc = subprocess.run(
+            cmd,
+            cwd=str(project_root),
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=max(int(timeout_seconds), 1),
+        )
+        stdout = proc.stdout or ""
+        stderr = proc.stderr or ""
+        rc = int(proc.returncode)
+        timed_out = False
+    except subprocess.TimeoutExpired as exc:
+        stdout = exc.stdout.decode("utf-8", errors="ignore") if isinstance(exc.stdout, bytes) else str(exc.stdout or "")
+        stderr = exc.stderr.decode("utf-8", errors="ignore") if isinstance(exc.stderr, bytes) else str(exc.stderr or "")
+        rc = 124
+        timed_out = True
+
+    cascade: Dict[str, Any] = {}
+    for raw in reversed([line.strip() for line in stdout.splitlines() if line.strip()]):
+        try:
+            parsed = json.loads(raw)
+        except Exception:
+            continue
+        if isinstance(parsed, dict):
+            cascade = parsed
+            break
+    return {
+        "attempted": True,
+        "rc": rc,
+        "timed_out": timed_out,
+        "ok": str(cascade.get("overall_status") or "").strip().lower() == "ready",
+        "overall_status": str(cascade.get("overall_status") or "blocked"),
+        "refresh_completed": bool(cascade.get("refresh_completed", False)),
+        "paper_truth_ready": bool(cascade.get("paper_truth_ready", False)),
+        "hard_failure": str(cascade.get("hard_failure") or ""),
+        "steps": list(cascade.get("steps") or []),
+        "stderr_tail": "\n".join(stderr.splitlines()[-6:]),
+    }
+
+
 def _normalize_browser_app_name(requested_browser: str | None) -> str | None:
     raw = str(requested_browser or "").strip()
     if not raw:
@@ -216,6 +276,7 @@ def main() -> int:
     payload: Dict[str, Any] = {
         "timestamp_utc": datetime.now(timezone.utc).isoformat(),
         "ok": False,
+        "overall_status": "blocked",
         "interactive": True,
         "token_before": before,
         "token_after": {},
@@ -228,6 +289,16 @@ def main() -> int:
         "account_probe_ok": None,
         "account_probe_status_code": None,
         "reason": "",
+        "post_refresh_cascade": {
+            "attempted": False,
+            "ok": False,
+            "reason": "auth_not_complete",
+        },
+        "regression_contract": {
+            "successful_account_probe_triggers_post_refresh_cascade": True,
+            "post_refresh_cascade_is_paper_only": True,
+            "post_refresh_cascade_never_opens_a_browser": True,
+        },
     }
 
     refresh_needed_before, refresh_reason_before = _token_needs_refresh(
@@ -238,11 +309,17 @@ def main() -> int:
     payload["refresh_reason_before"] = refresh_reason_before
     if not args.force and not refresh_needed_before:
         payload["ok"] = True
+        payload["overall_status"] = "ready"
         payload["skipped"] = True
         payload["reason"] = "token_already_ready"
         payload["token_after"] = before
         payload["refresh_needed_after"] = False
         payload["refresh_reason_after"] = refresh_reason_before
+        payload["post_refresh_cascade"] = {
+            "attempted": False,
+            "ok": True,
+            "reason": "token_already_ready_no_interactive_recovery_needed",
+        }
         _write_json(out_path, payload)
         if args.json:
             print(json.dumps(payload, indent=2, ensure_ascii=True))
@@ -325,6 +402,25 @@ def main() -> int:
     if payload["ok"] and refresh_needed_after:
         payload["ok"] = False
         payload["reason"] = f"token_not_ready_after_auth:{refresh_reason_after}"
+
+    if payload["ok"]:
+        payload["overall_status"] = "ready"
+        if not args.skip_account_probe and payload.get("account_probe_ok") is True:
+            # Persist successful authentication before rebuilding dependent truth so
+            # an interrupted recovery cannot erase proof that OAuth itself succeeded.
+            _write_json(out_path, payload)
+            cascade = _run_post_refresh_cascade(project_root=PROJECT_ROOT)
+            payload["post_refresh_cascade"] = cascade
+            if str(cascade.get("overall_status") or "").strip().lower() != "ready":
+                payload["overall_status"] = "degraded"
+        else:
+            payload["post_refresh_cascade"] = {
+                "attempted": False,
+                "ok": True,
+                "reason": "account_probe_skipped" if args.skip_account_probe else "account_probe_not_verified",
+            }
+    else:
+        payload["overall_status"] = "blocked"
     _write_json(out_path, payload)
     if args.json:
         print(json.dumps(payload, indent=2, ensure_ascii=True))

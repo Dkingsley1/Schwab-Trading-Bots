@@ -2,10 +2,10 @@
 from __future__ import annotations
 
 import argparse
+import fcntl
 import json
 import math
 import os
-import subprocess
 import sys
 import time
 from pathlib import Path
@@ -15,12 +15,13 @@ if __package__ in {None, ""}:
     PROJECT_ROOT = Path(__file__).resolve().parents[2]
     if str(PROJECT_ROOT) not in sys.path:
         sys.path.insert(0, str(PROJECT_ROOT))
-    from scripts.ops.long_runtime_common import PROJECT_ROOT, iso_now, load_json, ordered_unique, payload_age_minutes, write_payload
+    from scripts.ops.long_runtime_common import PROJECT_ROOT, iso_now, load_json, ordered_unique, payload_age_minutes, run_bounded_process_group, write_payload
 else:
-    from .long_runtime_common import PROJECT_ROOT, iso_now, load_json, ordered_unique, payload_age_minutes, write_payload
+    from .long_runtime_common import PROJECT_ROOT, iso_now, load_json, ordered_unique, payload_age_minutes, run_bounded_process_group, write_payload
 
 
 DEFAULT_OUT_PATH = PROJECT_ROOT / "governance" / "health" / "infrastructure_autofix_bot_latest.json"
+DEFAULT_LOCK_PATH = PROJECT_ROOT / "governance" / "locks" / "infrastructure_autofix_bot.lock"
 PYTHON_BIN = Path(sys.executable)
 COMMANDS_HYGIENE_SCRIPT = Path(__file__).resolve().with_name("commands_hygiene_bot.py")
 COMMAND_VALIDITY_SCRIPT = Path(__file__).resolve().with_name("command_validity_bot.py")
@@ -53,6 +54,21 @@ REQUIRED_COLLECTOR_REFRESH_NAMES = {
 }
 SYSTEM_DRIFT_AUTOFIX_STEP_TIMEOUT_SECONDS = 90
 REPAIR_CALL_STACK_ENV = "INFRA_REPAIR_CALL_STACK"
+
+
+def _try_singleton_lock(path: Path) -> Any | None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    handle = path.open("a+", encoding="utf-8")
+    try:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        handle.close()
+        return None
+    handle.seek(0)
+    handle.truncate()
+    handle.write(f"pid={os.getpid()} started={iso_now()}\n")
+    handle.flush()
+    return handle
 
 
 def _repair_call_stack() -> list[str]:
@@ -189,25 +205,16 @@ def _required_collector_refresh_command(project_root: Path, collector_name: str)
 
 
 def _run_json(cmd: list[str], *, cwd: Path, timeout_sec: int) -> dict[str, Any]:
-    try:
-        proc = subprocess.run(
-            cmd,
-            cwd=str(cwd),
-            capture_output=True,
-            text=True,
-            check=False,
-            timeout=max(int(timeout_sec), 1),
-            env=_child_env("infrastructure_autofix_bot"),
-        )
-        stdout = proc.stdout or ""
-        stderr = proc.stderr or ""
-        rc = int(proc.returncode)
-        timed_out = False
-    except subprocess.TimeoutExpired as exc:
-        stdout = exc.stdout.decode("utf-8", errors="ignore") if isinstance(exc.stdout, bytes) else str(exc.stdout or "")
-        stderr = exc.stderr.decode("utf-8", errors="ignore") if isinstance(exc.stderr, bytes) else str(exc.stderr or "")
-        rc = 124
-        timed_out = True
+    result = run_bounded_process_group(
+        cmd,
+        cwd=cwd,
+        timeout_seconds=max(int(timeout_sec), 1),
+        env=_child_env("infrastructure_autofix_bot"),
+    )
+    stdout = str(result.get("stdout") or "")
+    stderr = str(result.get("stderr") or "")
+    rc = _safe_int(result.get("rc"), 1)
+    timed_out = bool(result.get("timed_out", False))
     payload = {}
     for raw in reversed([line.strip() for line in stdout.splitlines() if line.strip()]):
         try:
@@ -221,6 +228,7 @@ def _run_json(cmd: list[str], *, cwd: Path, timeout_sec: int) -> dict[str, Any]:
         "cmd": list(cmd),
         "rc": rc,
         "timed_out": timed_out,
+        "timeout_cleanup": result.get("timeout_cleanup") if isinstance(result.get("timeout_cleanup"), dict) else {},
         "timeout_sec": max(int(timeout_sec), 1),
         "stdout_tail": "\n".join(stdout.splitlines()[-10:]),
         "stderr_tail": "\n".join(stderr.splitlines()[-10:]),
@@ -287,6 +295,35 @@ def _health_gates_stale_from_halt_control(halt_trigger: dict[str, Any]) -> bool:
     )
 
 
+def _intentional_paper_lock_halt_state(halt_trigger: dict[str, Any]) -> bool:
+    if str(halt_trigger.get("effective_state") or "").strip().lower() != "live_read_only":
+        return False
+    execution_policy = halt_trigger.get("execution_policy") if isinstance(halt_trigger.get("execution_policy"), dict) else {}
+    manual_flags = halt_trigger.get("manual_flags") if isinstance(halt_trigger.get("manual_flags"), dict) else {}
+    operator_stop = manual_flags.get("operator_stop") if isinstance(manual_flags.get("operator_stop"), dict) else {}
+    global_halt = manual_flags.get("global_halt") if isinstance(manual_flags.get("global_halt"), dict) else {}
+    issue_names = {
+        str(row.get("name") or "").strip()
+        for row in halt_trigger.get("issues", [])
+        if isinstance(row, dict) and str(row.get("name") or "").strip()
+    }
+    expected_lock_issues = {
+        "paper_trade_lock_active",
+        "runtime_release_live_read_only",
+        "runtime_clearance_not_thaw_safe",
+        "live_runtime_release_read_only",
+        "heavy_research_must_stay_cold_lane",
+    }
+    return bool(
+        execution_policy.get("paper_trade_lock_active", False)
+        and not execution_policy.get("effective_live_order_execution_allowed", False)
+        and not operator_stop.get("active", False)
+        and not global_halt.get("active", False)
+        and issue_names
+        and issue_names.issubset(expected_lock_issues)
+    )
+
+
 def _system_drift_is_self_referential(payload: dict[str, Any]) -> bool:
     blocked = _blocked_surface_names(payload)
     return bool(blocked) and blocked <= {"infrastructure_autofix", "master_infrastructure_supervisor"}
@@ -343,6 +380,12 @@ def build_payload(
     apply: bool = False,
     timeout_sec: int = 1200,
 ) -> dict[str, Any]:
+    refresh_context_active = str(os.getenv("RUNTIME_ARTIFACT_REFRESH_ACTIVE", "")).strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
     daily_verify = _load_freshest_json(project_root, "governance/health/daily_auto_verify_latest.json")
     health_gates, health_gates_path = _load_freshest_json_with_path(project_root, "governance/health/health_gates_latest.json")
     storage_control = _load_freshest_json(project_root, "governance/health/ingestion_storage_control_latest.json")
@@ -382,6 +425,13 @@ def build_payload(
     stale_surface_autohealer = _load_freshest_json(project_root, "governance/health/stale_surface_autohealer_latest.json")
 
     failed_checks = daily_verify.get("failed_checks") if isinstance(daily_verify.get("failed_checks"), list) else []
+    paper_trade_lock_active = (project_root / "governance" / "health" / "PAPER_TRADE_LOCK.flag").exists()
+    managed_promotion_checks = [
+        str(check)
+        for check in failed_checks
+        if str(check) in {"promotion_packet_builder", "promotion_quality_gate"} and paper_trade_lock_active
+    ]
+    actionable_failed_checks = [str(check) for check in failed_checks if str(check) not in managed_promotion_checks]
     repair_plan: list[dict[str, Any]] = []
     advisory_repair_plan: list[dict[str, Any]] = []
     operator_followups: list[str] = []
@@ -390,11 +440,18 @@ def build_payload(
         target = advisory_repair_plan if advisory else repair_plan
         target.append({"name": name, "reason": reason, "cmd": cmd})
 
-    if failed_checks:
+    if actionable_failed_checks:
         add_plan(
             "daily_verify_auto_remediation",
-            f"failed_checks={len(failed_checks)}",
+            f"failed_checks={len(actionable_failed_checks)}",
             [str(PYTHON_BIN), str(project_root / "scripts" / "ops" / "daily_verify_auto_remediation_bot.py"), "--apply", "--json"],
+        )
+    if managed_promotion_checks:
+        add_plan(
+            "promotion_evidence_milestone",
+            "promotion packet and quality gates remain intentionally deferred while the paper-trade lock is active",
+            [str(PYTHON_BIN), str(project_root / "scripts" / "promotion_quality_gate.py"), "--json"],
+            advisory=True,
         )
 
     storage_status = str(storage_control.get("overall_status") or "")
@@ -491,11 +548,15 @@ def build_payload(
         for row in coordination_state.get("artifact_issues", [])
         if isinstance(row, dict)
     ]
+    intentional_paper_lock_halt = _intentional_paper_lock_halt_state(halt_trigger)
     if (
         not halt_trigger
         or halt_status in {"stale", "missing", "invalid_json"}
         or health_gates_stale
-        or any("halt_trigger_control_plane" in name for name in coordination_issue_names)
+        or (
+            any("halt_trigger_control_plane" in name for name in coordination_issue_names)
+            and not intentional_paper_lock_halt
+        )
     ):
         add_plan(
             "halt_trigger_control_plane",
@@ -784,7 +845,10 @@ def build_payload(
             [str(PYTHON_BIN), str(STALE_SURFACE_AUTOHEALER_SCRIPT), "--apply", "--timeout-sec", "60", "--json"],
         )
 
-    if str(snapshot_cache.get("overall_status") or "") in {"blocked", "degraded"}:
+    if (
+        str(snapshot_cache.get("overall_status") or "") in {"blocked", "degraded"}
+        and not refresh_context_active
+    ):
         add_plan(
             "runtime_snapshot_refresh",
             f"snapshot_cache_status={str(snapshot_cache.get('overall_status') or '')}",
@@ -905,6 +969,7 @@ def build_payload(
         "ok": overall_status == "ready",
         "overall_status": overall_status,
         "apply": bool(apply),
+        "refresh_context_active": refresh_context_active,
         "repair_plan": remaining_repair_plan,
         "advisory_repair_plan": remaining_advisory_repair_plan,
         "pre_apply_repair_plan": repair_plan if apply else [],
@@ -929,10 +994,14 @@ def build_payload(
             "pre_apply_advisory_repair_count": len(advisory_repair_plan),
             "post_apply_recheck_enabled": bool(post_apply_recheck.get("enabled", False)),
             "daily_verify_failed_checks": len(failed_checks),
+            "daily_verify_actionable_failed_checks": len(actionable_failed_checks),
+            "daily_verify_managed_promotion_checks": len(managed_promotion_checks),
+            "paper_trade_lock_active": paper_trade_lock_active,
             "retention_debt_gb": retention_debt_gb,
             "auth_expires_in_seconds": _safe_float(((auth_lease.get("lease_budget") or {}).get("expires_in_seconds")), 0.0),
             "health_gates_age_minutes": _safe_float(health_gates_age_minutes, -1.0) if health_gates_age_minutes is not None else -1.0,
             "health_gates_stale": bool(health_gates_stale),
+            "intentional_paper_lock_halt_managed": bool(intentional_paper_lock_halt),
             "snapshot_ready": bool(((snapshot_cache.get("cache_health") or {}).get("snapshot_ready", False))),
             "unsent_critical_alerts": _safe_int(((remote_alert.get("critical_backlog") or {}).get("unsent_count")), 0),
             "storage_total_pending_lines": total_pending_lines,
@@ -1010,6 +1079,23 @@ def main() -> int:
     parser.add_argument("--timeout-sec", type=int, default=1200)
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args()
+
+    lock_handle = _try_singleton_lock(DEFAULT_LOCK_PATH)
+    if lock_handle is None:
+        payload = {
+            "timestamp_utc": iso_now(),
+            "schema_version": 1,
+            "ok": True,
+            "overall_status": "active",
+            "skipped": True,
+            "reason": "singleton_already_running",
+            "lock_path": str(DEFAULT_LOCK_PATH),
+        }
+        if args.json:
+            print(json.dumps(payload, ensure_ascii=True))
+        else:
+            print("infrastructure_autofix_bot overall_status=active reason=singleton_already_running")
+        return 0
 
     payload = build_payload(Path(args.project_root).resolve(), apply=bool(args.apply), timeout_sec=int(args.timeout_sec))
     out_path = Path(args.out_file).expanduser()

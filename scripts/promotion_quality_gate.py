@@ -91,6 +91,22 @@ def _new_bot_admission_relevant_blockers(
     return [bot_id for bot_id in blocking_ids if bot_id in candidate_set], candidate_ids
 
 
+def _paper_truth_promotion_ready(payload: dict[str, Any] | None) -> bool:
+    snapshot = payload or {}
+    if "promotion_ready" in snapshot:
+        return bool(snapshot.get("promotion_ready", False))
+    if "live_money_promotion_ready" in snapshot:
+        return bool(snapshot.get("live_money_promotion_ready", False))
+    return bool(snapshot.get("ok", False))
+
+
+def _calibration_promotion_ready(payload: dict[str, Any] | None) -> bool:
+    snapshot = payload or {}
+    if "independent_evidence_ready" in snapshot:
+        return bool(snapshot.get("ok", False) and snapshot.get("independent_evidence_ready", False))
+    return bool(snapshot.get("ok", False))
+
+
 def _resolve_daily_verify_failures(
     daily_verify: dict[str, Any],
     *,
@@ -179,10 +195,16 @@ def _resolve_daily_verify_failures(
         if name == "paper_reconciliation_slo_guard" and bool(paper_reconciliation_slo_guard.get("ok", False)):
             resolved.append(name)
             continue
-        if name == "paper_execution_truth_layer" and bool((paper_execution_truth_layer or {}).get("ok", False)):
+        if name == "paper_execution_truth_layer" and bool(
+            (paper_execution_truth_layer or {}).get("ok", False)
+            and (not promotion_scope_active or _paper_truth_promotion_ready(paper_execution_truth_layer))
+        ):
             resolved.append(name)
             continue
-        if name == "paper_execution_calibration_report" and bool((paper_execution_calibration or {}).get("ok", False)):
+        if name == "paper_execution_calibration_report" and bool(
+            (paper_execution_calibration or {}).get("ok", False)
+            and (not promotion_scope_active or _calibration_promotion_ready(paper_execution_calibration))
+        ):
             resolved.append(name)
             continue
         if name == "snapshot_coverage_sentinel" and bool(snapshot_coverage_guard.get("ok", False)):
@@ -386,7 +408,7 @@ def evaluate_quality(
     if promotion_scope_active and has_promotion_packet and not bool(promotion_packet.get("ok", False)):
         failed.append("promotion_packet_not_ready")
 
-    if promotion_scope_active and has_paper_execution_truth_layer and not bool(paper_execution_truth_layer.get("ok", False)):
+    if promotion_scope_active and has_paper_execution_truth_layer and not _paper_truth_promotion_ready(paper_execution_truth_layer):
         failed.append("paper_execution_truth_layer_not_ok")
 
     details = {
@@ -433,13 +455,21 @@ def evaluate_quality(
         "db_integrity_ok": bool(db_integrity_guard.get("ok", False)) if db_integrity_guard else None,
         "execution_queue_stress_ok": bool(execution_queue_stress_guard.get("ok", False)) if execution_queue_stress_guard else None,
         "paper_execution_truth_layer_ok": (
+            _paper_truth_promotion_ready(paper_execution_truth_layer) if has_paper_execution_truth_layer else None
+        ),
+        "paper_execution_truth_layer_operational_ok": (
             bool(paper_execution_truth_layer.get("ok", False)) if has_paper_execution_truth_layer else None
         ),
         "paper_execution_truth_layer_status": (
             str(paper_execution_truth_layer.get("overall_status") or "") if has_paper_execution_truth_layer else None
         ),
         "paper_execution_truth_layer_failed_checks": (
-            paper_execution_truth_layer.get("failed_checks", []) if has_paper_execution_truth_layer else None
+            paper_execution_truth_layer.get(
+                "promotion_failed_checks",
+                paper_execution_truth_layer.get("failed_checks", []),
+            )
+            if has_paper_execution_truth_layer
+            else None
         ),
     }
     return len(failed) == 0, failed, details

@@ -364,6 +364,38 @@ def _memory_efficiency_soft_guard(row: dict[str, Any]) -> bool:
     return bool(memory_clear and (not reasons or reasons.issubset(advisory_reasons)))
 
 
+def _local_disk_headroom_recovery_contract(memory_payload: dict[str, Any]) -> dict[str, Any]:
+    contract = _as_dict(memory_payload.get("local_disk_headroom_contract"))
+    memory = _as_dict(memory_payload.get("memory_snapshot"))
+    reasons = {str(item or "") for item in _as_list(memory_payload.get("reasons"))}
+    free_raw = contract.get("local_disk_free_gb", memory.get("local_disk_free_gb"))
+    free_known = free_raw is not None
+    free_gb = _safe_float(free_raw, 0.0)
+    warning_gb = max(_safe_float(contract.get("warning_free_gb"), 32.0), 1.0)
+    critical_gb = max(_safe_float(contract.get("critical_free_gb"), 8.0), 0.5)
+    active = bool(
+        contract.get("active", False)
+        or "local_disk_swap_temp_headroom_low" in reasons
+        or (free_known and free_gb < warning_gb)
+    )
+    critical = bool(
+        active
+        and (
+            str(contract.get("severity") or "").strip().lower() == "critical"
+            or (free_known and free_gb < critical_gb)
+        )
+    )
+    return {
+        "active": active,
+        "critical": critical,
+        "severity": "critical" if critical else ("warning" if active else "clear"),
+        "local_disk_free_gb": round(free_gb, 3) if free_known else None,
+        "warning_free_gb": round(warning_gb, 3),
+        "critical_free_gb": round(critical_gb, 3),
+        "policy": "recover startup-disk headroom before restoring normal fanout because macOS swap and temp files share that capacity",
+    }
+
+
 def _hard_step_failed(row: dict[str, Any]) -> bool:
     if bool(row.get("ok", False)):
         return False
@@ -531,6 +563,144 @@ def build_payload(
             cooldown_seconds=300 if name in {"livefeed_refresh_guard", "nightly_resilience"} else 0,
             respect_cooldowns=respect_cooldowns,
         )
+
+    memory_payload = _latest_step_payload(steps, "memory_efficiency")
+    local_disk_recovery_initial = _local_disk_headroom_recovery_contract(memory_payload)
+    local_disk_recovery_payloads: dict[str, dict[str, Any]] = {}
+    if apply and bool(local_disk_recovery_initial.get("active", False)):
+        route_row = _run_step(
+            steps,
+            name="local_disk_external_route_reconcile",
+            cmd=_cmd(opsctl, "storage-transition-coordinator", "--transition-mode", "external", "--apply", "--json"),
+            project_root=project_root,
+            timeout_sec=max(int(step_timeout_sec), 180),
+            env=env,
+            state=state,
+            cooldown_seconds=int(max(float(ingestion_repair_cooldown_minutes), 1.0) * 60),
+            respect_cooldowns=respect_cooldowns,
+        )
+        local_disk_recovery_payloads["external_route_reconcile"] = _as_dict(route_row.get("parsed"))
+        queue_row = _run_step(
+            steps,
+            name="local_disk_acknowledged_queue_retention",
+            cmd=_cmd(
+                py,
+                project_root / "scripts" / "sql_queue_retention.py",
+                "--acked-hours",
+                "1",
+                "--batch-size",
+                "50000",
+                "--max-rows",
+                "1000000",
+                "--json",
+            ),
+            project_root=project_root,
+            timeout_sec=max(int(step_timeout_sec), 300),
+            env=env,
+            state=state,
+            cooldown_seconds=int(max(float(storage_cooldown_minutes), 1.0) * 60),
+            respect_cooldowns=respect_cooldowns,
+        )
+        local_disk_recovery_payloads["acknowledged_queue_retention"] = _as_dict(queue_row.get("parsed"))
+        if bool(local_disk_recovery_initial.get("critical", False)):
+            compactor_row = _run_step(
+                steps,
+                name="local_disk_governance_telemetry_compaction",
+                cmd=_cmd(
+                    opsctl,
+                    "governance-telemetry-compactor",
+                    "--apply",
+                    "--channels",
+                    "all",
+                    "--target-free-gb",
+                    "64",
+                    "--min-file-mb",
+                    "256",
+                    "--include-current-day",
+                    "--json",
+                ),
+                project_root=project_root,
+                timeout_sec=max(int(step_timeout_sec), 300),
+                env=env,
+                state=state,
+                cooldown_seconds=int(max(float(storage_cooldown_minutes), 1.0) * 60),
+                respect_cooldowns=respect_cooldowns,
+            )
+            local_disk_recovery_payloads["governance_telemetry_compaction"] = _as_dict(compactor_row.get("parsed"))
+            if str(env.get("BOT_SECOND_COLD_ROOT") or "").strip():
+                deep_cold_row = _run_step(
+                    steps,
+                    name="local_disk_resumable_deep_cold_offload",
+                    cmd=_cmd(
+                        opsctl,
+                        "deep-cold-storage-layer",
+                        "--apply",
+                        "--adaptive",
+                        "--move-to-second-cold",
+                        "--planning-horizon-days",
+                        str(round(float(target_days), 3)),
+                        "--json",
+                    ),
+                    project_root=project_root,
+                    timeout_sec=max(int(step_timeout_sec), 600),
+                    env=env,
+                    state=state,
+                    cooldown_seconds=int(max(float(storage_cooldown_minutes), 1.0) * 60),
+                    respect_cooldowns=respect_cooldowns,
+                )
+                local_disk_recovery_payloads["resumable_deep_cold_offload"] = _as_dict(deep_cold_row.get("parsed"))
+        clearance_row = _run_step(
+            steps,
+            name="local_disk_storage_pressure_clearance",
+            cmd=_cmd(
+                opsctl,
+                "storage-pressure-clearance",
+                "--apply",
+                "--force-clear-stale-gate",
+                "--checkpoint-mode",
+                "passive",
+                "--json",
+            ),
+            project_root=project_root,
+            timeout_sec=max(int(step_timeout_sec), 300),
+            env=env,
+            state=state,
+            cooldown_seconds=int(max(float(storage_cooldown_minutes), 1.0) * 60),
+            respect_cooldowns=respect_cooldowns,
+        )
+        local_disk_recovery_payloads["storage_pressure_clearance"] = _as_dict(clearance_row.get("parsed"))
+        _run_step(
+            steps,
+            name="local_disk_resource_guard_recheck",
+            cmd=_cmd(
+                py,
+                project_root / "scripts" / "resource_guard.py",
+                "--project-root",
+                project_root,
+                "--profile",
+                "collection",
+                "--json",
+            ),
+            project_root=project_root,
+            timeout_sec=min(max(int(step_timeout_sec), 30), 90),
+            env=env,
+            state=state,
+            cooldown_seconds=0,
+            respect_cooldowns=False,
+        )
+        memory_recheck_row = _run_step(
+            steps,
+            name="memory_efficiency",
+            cmd=_cmd(py, project_root / "scripts" / "ops" / "memory_efficiency_control.py", "status", "--json"),
+            project_root=project_root,
+            timeout_sec=min(max(int(step_timeout_sec), 30), 90),
+            env=env,
+            state=state,
+            cooldown_seconds=0,
+            respect_cooldowns=False,
+        )
+        memory_payload = _as_dict(memory_recheck_row.get("parsed"))
+    local_disk_recovery_final = _local_disk_headroom_recovery_contract(memory_payload)
 
     if "process_watchdog" in _latest_hard_failures(steps):
         _run_step(
@@ -1074,6 +1244,8 @@ def build_payload(
         operator_followups.append("inspect_unattended_soak_non_storage_blockers")
     if production_hard_blockers:
         operator_followups.append("inspect_production_hard_blocker_cascade")
+    if bool(local_disk_recovery_final.get("active", False)):
+        operator_followups.append("local_disk_swap_temp_headroom_recovery_still_required")
 
     if core_failures or production_hard_blockers:
         overall_status = "blocked"
@@ -1108,6 +1280,7 @@ def build_payload(
             "approved_video_cold_archive_subtree_only": True,
             "destructive_manual_delete_allowed": False,
             "promotion_gate_autounlock_allowed": False,
+            "startup_disk_swap_temp_reserve_required": True,
         },
         "runtime_ok": not core_failures,
         "production_hard_blockers_clear": not production_hard_blockers,
@@ -1145,6 +1318,36 @@ def build_payload(
                     _as_dict(storage_recovery_payloads.get("retention_after_cold_offload")).get("overall_status") or ""
                 ),
             },
+        },
+        "application_memory_protection": {
+            "incident_class": "startup_disk_exhaustion_can_starve_swap_and_temp_files",
+            "recovery_attempted": bool(local_disk_recovery_payloads),
+            "initial": local_disk_recovery_initial,
+            "final": local_disk_recovery_final,
+            "external_route_reconcile_status": str(
+                _as_dict(local_disk_recovery_payloads.get("external_route_reconcile")).get("overall_status") or ""
+            ),
+            "acknowledged_queue_rows_deleted": _safe_int(
+                _as_dict(local_disk_recovery_payloads.get("acknowledged_queue_retention")).get("deleted_acked_rows"),
+                0,
+            ),
+            "telemetry_compaction_status": str(
+                _as_dict(local_disk_recovery_payloads.get("governance_telemetry_compaction")).get("overall_status") or ""
+            ),
+            "deep_cold_offload_status": str(
+                _as_dict(local_disk_recovery_payloads.get("resumable_deep_cold_offload")).get("overall_status") or ""
+            ),
+            "storage_pressure_clearance_status": str(
+                _as_dict(local_disk_recovery_payloads.get("storage_pressure_clearance")).get("overall_status") or ""
+            ),
+            "automatic_recovery_order": [
+                "external_storage_route_reconcile",
+                "acknowledged_queue_retention",
+                "critical_only_governance_telemetry_compaction",
+                "critical_only_resumable_verified_deep_cold_offload",
+                "bounded_storage_pressure_clearance",
+                "resource_and_memory_guard_recheck",
+            ],
         },
         "ingestion_soak_repair": {
             "attempted": bool(ingestion_repair_payloads),

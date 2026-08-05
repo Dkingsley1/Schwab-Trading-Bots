@@ -120,6 +120,7 @@ def _managed_hot_path_budget_contract(
     configured_hot_budget_bytes: int,
     live_hot_path_bytes: int,
     by_service_role: dict[str, dict[str, int]],
+    active_explanation_buffer_bytes: int = 0,
 ) -> dict[str, Any]:
     health_root = project_root / "governance" / "health"
     retention = _load_json(health_root / "storage_retention_unison_latest.json")
@@ -158,9 +159,27 @@ def _managed_hot_path_budget_contract(
         _safe_float((ingestion_contract.get("forecast") or {}).get("continuous_run_margin_gb") if isinstance(ingestion_contract.get("forecast"), dict) else 0.0, 0.0),
         0.0,
     )
+    hot_lane = _load_json(health_root / "hot_lane_retention_control_latest.json")
+    hot_lane_mode = str(hot_lane.get("mode") or "").strip()
+    hot_lane_status = str(hot_lane.get("overall_status") or "").strip()
+    hot_lane_active = bool(
+        hot_lane.get("ok", False)
+        and hot_lane_mode in {"thin_optional_sub_bot_decisions", "emergency_hot_thin"}
+        and hot_lane_status in {"active", "critical", "watching", "ready"}
+    )
+    explanation_allowance_bytes = int(
+        max(_safe_float(os.getenv("STORAGE_TIER_ACTIVE_EXPLANATION_BUFFER_ALLOWANCE_GB"), 16.0), 0.0)
+        * float(GIB)
+    )
+    protected_explanation_bytes = (
+        min(max(int(active_explanation_buffer_bytes), 0), explanation_allowance_bytes)
+        if hot_lane_active
+        else 0
+    )
     protected_hot_floor_bytes = int(
         (by_service_role.get("live_decisioning") or {}).get("bytes", 0)
         + (by_service_role.get("stateful_sql") or {}).get("bytes", 0)
+        + protected_explanation_bytes
     )
     raw_over_budget_bytes = max(int(live_hot_path_bytes) - int(configured_hot_budget_bytes), 0)
     blockers = [
@@ -196,6 +215,15 @@ def _managed_hot_path_budget_contract(
         "effective_hot_budget_bytes": int(effective_hot_budget_bytes),
         "protected_hot_floor_bytes": int(protected_hot_floor_bytes),
         "managed_margin_allowance_bytes": int(managed_allowance_bytes),
+        "active_explanation_buffer_contract": {
+            "hot_lane_active": bool(hot_lane_active),
+            "hot_lane_mode": hot_lane_mode,
+            "active_bytes": max(int(active_explanation_buffer_bytes), 0),
+            "allowance_bytes": int(explanation_allowance_bytes),
+            "protected_bytes": int(protected_explanation_bytes),
+            "within_allowance": bool(int(active_explanation_buffer_bytes) <= explanation_allowance_bytes),
+            "policy": "bounded current-day explanation writes are protected only while targeted hot-lane containment is active",
+        },
         "live_hot_path_bytes": int(live_hot_path_bytes),
         "raw_hot_path_over_budget_bytes": int(raw_over_budget_bytes),
         "hot_path_over_budget_bytes": int(controlled_over_budget_bytes),
@@ -288,6 +316,48 @@ def _service_role(source_rel: str) -> str:
     if rel.startswith("data/stale_stage/"):
         return "staging_reaper"
     return "analytics"
+
+
+def _storage_semantic_overrides(path: Path, source_rel: str) -> dict[str, str]:
+    """Keep archives and quarantine targets out of the live-write budget."""
+    rel = str(source_rel or "").replace("\\", "/")
+    try:
+        resolved = str(path.resolve(strict=False)).replace("\\", "/")
+    except Exception:
+        resolved = str(path).replace("\\", "/")
+
+    if any(marker in resolved for marker in ("/quarantine/", "/data/stale_stage/")):
+        return {
+            "temperature": "cold",
+            "storage_tier": "archive_cold",
+            "ingestion_lane": "deferred_lane",
+            "economic_value": "medium",
+            "family": "stale_stage",
+            "service_role": "staging_reaper",
+        }
+
+    if rel.startswith("decision_explanations/") and (
+        path.name.endswith(".gz") or path.name.startswith("latest_decisions.log")
+    ):
+        return {
+            "temperature": "cool",
+            "storage_tier": "compatibility_cool",
+            "ingestion_lane": "nearline_lane",
+            "economic_value": "high",
+            "family": "decision_explanations",
+            "service_role": "explainability_archive",
+        }
+    return {}
+
+
+def _is_current_day_explanation(path: Path, source_rel: str, tokens: set[str]) -> bool:
+    rel = str(source_rel or "").replace("\\", "/")
+    return bool(
+        rel.startswith("decision_explanations/")
+        and path.name.endswith(".jsonl")
+        and not any(marker in path.name for marker in (".local_fallback", ".tmp.", ".compact_pending"))
+        and any(token in path.name for token in tokens)
+    )
 
 
 def _recommended_action(*, role: str, value: str, lane: str) -> str:
@@ -611,6 +681,12 @@ def main() -> int:
     cold_path_candidates: list[dict[str, Any]] = []
     async_offload_bytes = 0
     live_hot_path_bytes = 0
+    active_explanation_buffer_bytes = 0
+    today_tokens = {now_utc.strftime("%Y%m%d")}
+    try:
+        today_tokens.add(now_utc.astimezone().strftime("%Y%m%d"))
+    except Exception:
+        pass
     candidate_min_bytes = max(int(float(args.cold_candidate_min_mb) * 1024 * 1024), 1)
 
     for path in files:
@@ -625,6 +701,13 @@ def main() -> int:
         value = _economic_value(rel)
         family = _path_family(rel)
         service_role = _service_role(rel)
+        semantic_overrides = _storage_semantic_overrides(path, rel)
+        temperature = semantic_overrides.get("temperature", temperature)
+        tier = semantic_overrides.get("storage_tier", tier)
+        lane = semantic_overrides.get("ingestion_lane", lane)
+        value = semantic_overrides.get("economic_value", value)
+        family = semantic_overrides.get("family", family)
+        service_role = semantic_overrides.get("service_role", service_role)
         row = {
             "relative_path": rel,
             "size_bytes": int(size_bytes),
@@ -650,6 +733,8 @@ def main() -> int:
         all_rows.append(row)
         if service_role in {"live_decisioning", "stateful_sql", "explainability"}:
             live_hot_path_bytes += int(size_bytes)
+        if service_role == "explainability" and _is_current_day_explanation(path, rel, today_tokens):
+            active_explanation_buffer_bytes += int(size_bytes)
         if (
             int(size_bytes) >= candidate_min_bytes
             and value != "critical"
@@ -674,6 +759,7 @@ def main() -> int:
         configured_hot_budget_bytes=configured_hot_budget_bytes,
         live_hot_path_bytes=int(live_hot_path_bytes),
         by_service_role=by_service_role,
+        active_explanation_buffer_bytes=int(active_explanation_buffer_bytes),
     )
     hot_budget_bytes = int(budget_contract.get("effective_hot_budget_bytes", configured_hot_budget_bytes) or configured_hot_budget_bytes)
     hot_path_over_budget_bytes = int(budget_contract.get("hot_path_over_budget_bytes", 0) or 0)

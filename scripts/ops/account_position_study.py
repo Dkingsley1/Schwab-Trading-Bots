@@ -15,6 +15,7 @@ if __package__ in {None, ""}:
         sys.path.insert(0, str(PROJECT_ROOT))
     from scripts.ops.covered_call_roll_watch import (
         DEFAULT_ACCOUNT_ALIAS_PATH,
+        _account_meta,
         _account_alias_for,
         _alias_text,
         _instrument,
@@ -26,6 +27,7 @@ if __package__ in {None, ""}:
 else:
     from .covered_call_roll_watch import (
         DEFAULT_ACCOUNT_ALIAS_PATH,
+        _account_meta,
         _account_alias_for,
         _alias_text,
         _instrument,
@@ -107,6 +109,141 @@ def _positions(snapshot: dict[str, Any], account_aliases: dict[str, Any] | None 
     return out
 
 
+def _first_number(*values: Any, default: float = 0.0) -> float:
+    for value in values:
+        if value in {None, ""}:
+            continue
+        try:
+            return float(value)
+        except Exception:
+            continue
+    return float(default)
+
+
+def _account_nodes(snapshot: dict[str, Any]) -> list[tuple[dict[str, Any], dict[str, Any], int]]:
+    fetched = snapshot.get("fetched") if isinstance(snapshot.get("fetched"), dict) else {}
+    payload = fetched.get("payload") if isinstance(fetched.get("payload"), dict) else {}
+    raw_accounts = payload.get("accounts")
+    nodes = [node for node in raw_accounts if isinstance(node, dict)] if isinstance(raw_accounts, list) else []
+    if not nodes and any(key in payload for key in ("securitiesAccount", "positions", "currentBalances", "_broker_account")):
+        nodes = [payload]
+
+    out: list[tuple[dict[str, Any], dict[str, Any], int]] = []
+    for index, node in enumerate(nodes):
+        securities = node.get("securitiesAccount") if isinstance(node.get("securitiesAccount"), dict) else node
+        if isinstance(securities, dict):
+            out.append((node, securities, index))
+    return out
+
+
+def _account_summaries(
+    snapshot: dict[str, Any],
+    positions: list[dict[str, Any]],
+    account_aliases: dict[str, Any] | None,
+) -> list[dict[str, Any]]:
+    position_groups: dict[str, list[dict[str, Any]]] = {}
+    for row in positions:
+        position_groups.setdefault(str(row.get("account_label") or "account_1"), []).append(row)
+
+    summaries: list[dict[str, Any]] = []
+    for node, securities, index in _account_nodes(snapshot):
+        meta_source = securities if isinstance(securities.get("_broker_account"), dict) else node
+        meta = _account_meta(meta_source, index=index)
+        account_label = str(meta.get("account_label") or f"account_{index + 1}")
+        alias = _account_alias_for(
+            {
+                "_account_key": meta.get("account_key"),
+                "_account_label": account_label,
+                "_account_number_tail": meta.get("account_number_tail"),
+                "_account_reference_tail": meta.get("account_reference_tail"),
+            },
+            account_aliases,
+        )
+        current = securities.get("currentBalances") if isinstance(securities.get("currentBalances"), dict) else {}
+        initial = securities.get("initialBalances") if isinstance(securities.get("initialBalances"), dict) else {}
+        rows = position_groups.get(account_label, [])
+        liquidation_value = _first_number(
+            current.get("liquidationValue"),
+            current.get("equity"),
+            initial.get("liquidationValue"),
+            initial.get("accountValue"),
+            initial.get("equity"),
+        )
+        equity = _first_number(current.get("equity"), current.get("liquidationValue"), initial.get("equity"))
+        summaries.append(
+            {
+                "account_label": account_label,
+                "account_index": int(meta.get("account_index", index) or index),
+                "operator_account_label": _alias_text(alias, "operator_account_label", "label", "name"),
+                "operator_account_kind": _alias_text(alias, "operator_account_kind", "account_kind", "kind"),
+                "operator_trading_type": _alias_text(alias, "trading_type", "operator_trading_type"),
+                "account_type": str(securities.get("type") or "").strip().upper(),
+                "flags": {
+                    "closing_only": bool(securities.get("isClosingOnlyRestricted", False)),
+                    "day_trader": bool(securities.get("isDayTrader", False)),
+                    "portfolio_margin": bool(securities.get("isPortfolioMargin", False)),
+                    "in_margin_call": bool(current.get("maintenanceCall", 0.0) or initial.get("isInCall", False)),
+                },
+                "liquidation_value": round(liquidation_value, 4),
+                "equity": round(equity, 4),
+                "cash_balance": round(_first_number(current.get("cashBalance"), initial.get("cashBalance")), 4),
+                "available_funds": round(
+                    _first_number(current.get("availableFunds"), initial.get("availableFundsNonMarginableTrade")), 4
+                ),
+                "available_funds_nonmarginable": round(
+                    _first_number(
+                        current.get("availableFundsNonMarginableTrade"),
+                        initial.get("availableFundsNonMarginableTrade"),
+                    ),
+                    4,
+                ),
+                "buying_power": round(_first_number(current.get("buyingPower"), initial.get("buyingPower")), 4),
+                "buying_power_nonmarginable": round(
+                    _first_number(current.get("buyingPowerNonMarginableTrade"), initial.get("availableFundsNonMarginableTrade")),
+                    4,
+                ),
+                "day_trading_buying_power": round(
+                    _first_number(current.get("dayTradingBuyingPower"), initial.get("dayTradingBuyingPower")), 4
+                ),
+                "margin_balance": round(_first_number(current.get("marginBalance"), initial.get("marginBalance")), 4),
+                "long_market_value": round(
+                    _first_number(current.get("longMarketValue"), current.get("longMarginValue"), initial.get("longStockValue")),
+                    4,
+                ),
+                "short_market_value": round(
+                    _first_number(current.get("shortMarketValue"), initial.get("shortStockValue")), 4
+                ),
+                "long_option_market_value": round(
+                    _first_number(current.get("longOptionMarketValue"), initial.get("longOptionMarketValue")), 4
+                ),
+                "short_option_market_value": round(
+                    _first_number(current.get("shortOptionMarketValue"), initial.get("shortOptionMarketValue")), 4
+                ),
+                "gross_position_market_value": round(sum(abs(_safe_float(row.get("market_value"), 0.0)) for row in rows), 4),
+                "net_position_market_value": round(sum(_safe_float(row.get("market_value"), 0.0) for row in rows), 4),
+                "position_count": len(rows),
+            }
+        )
+    return summaries
+
+
+def _portfolio_summary(accounts: list[dict[str, Any]], positions: list[dict[str, Any]]) -> dict[str, Any]:
+    def total(key: str) -> float:
+        return round(sum(_safe_float(row.get(key), 0.0) for row in accounts), 4)
+
+    return {
+        "account_count": len(accounts),
+        "position_count": len(positions),
+        "liquidation_value": total("liquidation_value"),
+        "equity": total("equity"),
+        "cash_balance": total("cash_balance"),
+        "available_funds": total("available_funds"),
+        "buying_power": total("buying_power"),
+        "gross_position_market_value": round(sum(abs(_safe_float(row.get("market_value"), 0.0)) for row in positions), 4),
+        "net_position_market_value": round(sum(_safe_float(row.get("market_value"), 0.0) for row in positions), 4),
+    }
+
+
 def _decision_paths(profiles: list[str], day: str) -> list[Path]:
     root = PROJECT_ROOT / "governance" / "channels" / "decision"
     return [root / profile / f"decision_{day}.jsonl" for profile in profiles]
@@ -172,8 +309,13 @@ def _latest_decision_context(symbols: set[str], profiles: list[str], day: str) -
                 "stance": {
                     "master_action": row.get("master_action"),
                     "master_score": row.get("master_score"),
+                    "master_threshold": row.get("master_threshold"),
                     "master_vote": row.get("master_vote"),
                     "directional_trigger": grand.get("directional_trigger"),
+                    "deployability": grand.get("deployability"),
+                    "quant_resource_pressure": grand.get("quant_resource_pressure"),
+                    "quant_tail_pressure": grand.get("quant_tail_pressure"),
+                    "label_contract_quality": grand.get("label_contract_quality"),
                     "specialist_consensus": grand.get("specialist_consensus"),
                     "sleeve_consensus": grand.get("sleeve_consensus"),
                     "options_master": row.get("options_master"),
@@ -307,20 +449,23 @@ def evaluate(
     account_aliases: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     positions = _positions(snapshot, account_aliases=account_aliases)
+    accounts = _account_summaries(snapshot, positions, account_aliases)
     underlyings = {str(pos.get("underlying") or "").strip().upper() for pos in positions if pos.get("underlying")}
     fallback = _fallback_position_context(positions, roll_watch)
     decisions = {**fallback, **_latest_decision_context(underlyings, profiles, day)}
     roll_rows = roll_watch.get("covered_calls") if isinstance(roll_watch.get("covered_calls"), list) else []
     return {
         "timestamp_utc": iso_now(),
-        "schema_version": 1,
+        "schema_version": 2,
         "ok": True,
         "source": str(DEFAULT_SNAPSHOT_PATH),
         "account_aliases_source": str(DEFAULT_ACCOUNT_ALIAS_PATH),
         "position_count": len(positions),
-        "account_count": len({str(pos.get("account_label") or "") for pos in positions if pos.get("account_label")}),
+        "account_count": len(accounts),
         "underlying_count": len(underlyings),
         "decision_context_count": len(decisions),
+        "accounts": accounts,
+        "portfolio_summary": _portfolio_summary(accounts, positions),
         "positions": positions,
         "underlyings": _underlying_summary(positions, decisions),
         "covered_call_roll_watch": {
@@ -332,6 +477,7 @@ def evaluate(
         "notes": [
             "Account labels are redacted; raw account numbers are not emitted.",
             "Operator account labels come from the local redacted account alias map.",
+            "Balance and exposure summaries include accounts with no open positions.",
             "Chart context uses latest local decision market features and does not place orders.",
         ],
     }

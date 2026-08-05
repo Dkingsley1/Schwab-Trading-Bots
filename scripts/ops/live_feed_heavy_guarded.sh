@@ -107,6 +107,28 @@ fi
 HEAVY_PID=""
 VIEWER_PID=""
 
+terminate_process_tree() {
+  local root_pid="${1:-}"
+  local signal_name="${2:-TERM}"
+  local child_pid
+  [[ "$root_pid" =~ ^[0-9]+$ ]] || return 0
+  for child_pid in ${(f)"$(pgrep -P "$root_pid" 2>/dev/null || true)"}; do
+    [[ "$child_pid" =~ ^[0-9]+$ ]] || continue
+    terminate_process_tree "$child_pid" "$signal_name"
+  done
+  kill -"$signal_name" "$root_pid" >/dev/null 2>&1 || true
+}
+
+stop_heavy_tree() {
+  local root_pid="${1:-}"
+  [[ "$root_pid" =~ ^[0-9]+$ ]] || return 0
+  terminate_process_tree "$root_pid" TERM
+  sleep 1
+  if kill -0 "$root_pid" >/dev/null 2>&1; then
+    terminate_process_tree "$root_pid" KILL
+  fi
+}
+
 write_state() {
   local state_status="$1"
   local allowed="$2"
@@ -288,9 +310,7 @@ cleanup() {
     kill "$VIEWER_PID" >/dev/null 2>&1 || true
   fi
   if [[ -n "${HEAVY_PID:-}" ]]; then
-    kill "$HEAVY_PID" >/dev/null 2>&1 || true
-    sleep 1
-    kill -TERM -- "-$HEAVY_PID" >/dev/null 2>&1 || true
+    stop_heavy_tree "$HEAVY_PID"
   fi
   write_state "stopped" "false" "operator_closed" ""
 }
@@ -353,9 +373,7 @@ while true; do
       if (( now_epoch - HEAVY_STARTED_EPOCH >= HEAVY_TTL_SECONDS )); then
         echo "live_feed_heavy_guard_cycle ttl_seconds=$HEAVY_TTL_SECONDS action=refreshing_heavy"
         write_state "cycling" "true" "ttl_refresh" "$HEAVY_PID"
-        kill "$HEAVY_PID" >/dev/null 2>&1 || true
-        sleep 1
-        kill -TERM -- "-$HEAVY_PID" >/dev/null 2>&1 || true
+        stop_heavy_tree "$HEAVY_PID"
         break
       fi
     fi
@@ -365,9 +383,7 @@ while true; do
     if [[ "$allowed" != "true" ]]; then
       echo "live_feed_heavy_guard_wait reason=$reason action=stopping_heavy next_check_seconds=$WAIT_SECONDS"
       write_state "waiting" "false" "$reason" "$HEAVY_PID"
-      kill "$HEAVY_PID" >/dev/null 2>&1 || true
-      sleep 1
-      kill -TERM -- "-$HEAVY_PID" >/dev/null 2>&1 || true
+      stop_heavy_tree "$HEAVY_PID"
       break
     fi
     write_state "running" "true" "clear" "$HEAVY_PID"

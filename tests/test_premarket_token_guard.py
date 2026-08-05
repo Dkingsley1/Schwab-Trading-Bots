@@ -109,6 +109,58 @@ def test_guard_warns_but_stays_ready_when_early_refresh_fails_above_ready_floor(
     assert broker_readiness["preflight_checks"]["token_ready_for_open"] is True
 
 
+def test_guard_clears_pre_refresh_warning_after_successful_token_renewal() -> None:
+    captured: list[dict] = []
+    before = {
+        "exists": True,
+        "size_bytes": 808,
+        "age_seconds": 300.0,
+        "expires_in_seconds": 1400.0,
+    }
+    after = {
+        "exists": True,
+        "size_bytes": 808,
+        "age_seconds": 0.0,
+        "expires_in_seconds": 1800.0,
+    }
+
+    def _capture_payload(_path: Path, _fallback: Path, payload: dict) -> str:
+        captured.append(payload)
+        return "/tmp/premarket_token_guard_latest.json"
+
+    with mock.patch.object(ptg, "_token_status", side_effect=[before, after]):
+        with mock.patch.object(ptg, "_probe_network", return_value={"hostport": "api.schwabapi.com:443", "ok": True}):
+            with mock.patch.object(
+                ptg,
+                "_direct_refresh_token_grant",
+                return_value={"attempted": True, "ok": True, "reason": "refresh_token_grant_success"},
+            ):
+                with mock.patch.object(ptg, "_write_json", side_effect=_capture_payload):
+                    with mock.patch.object(ptg, "_append_jsonl", return_value="/tmp/premarket_token_guard_events.jsonl"):
+                        with mock.patch.object(ptg, "_alert", return_value={"attempted": False}):
+                            with mock.patch.object(
+                                sys,
+                                "argv",
+                                [
+                                    "premarket_token_guard.py",
+                                    "--min-expires-seconds",
+                                    "1500",
+                                    "--ready-min-expires-seconds",
+                                    "900",
+                                ],
+                            ):
+                                rc = ptg.main()
+
+    primary_payload = next(row for row in captured if "ok" in row)
+    broker_readiness = next(row for row in captured if "ready_for_open" in row)
+    assert rc == 0
+    assert primary_payload["refresh_needed_before"] is True
+    assert primary_payload["refresh_needed_after"] is False
+    assert broker_readiness["ready_for_open"] is True
+    assert broker_readiness["token_expires_in_seconds"] == 1800.0
+    assert broker_readiness["warnings"] == []
+
+
 def test_browser_disabled_skips_premarket_client_auth_fallback(monkeypatch) -> None:
     captured: list[dict] = []
     status = {

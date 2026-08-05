@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import gzip
+import json
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -98,6 +99,67 @@ def test_compactor_apply_rotates_to_stale_stage_and_keeps_fresh_path(tmp_path: P
         archived = handle.read()
     assert archived.count("\n") == 8
     assert "BTC-USD" in archived
+
+
+def test_compactor_recovers_orphaned_pending_file_after_interrupted_run(tmp_path: Path) -> None:
+    source = _write_channel_file(tmp_path, channel="risk")
+    original = source.read_text(encoding="utf-8")
+    pending = source.with_name(f"{source.name}.compact_pending_20260730T150733Z_55014")
+    source.rename(pending)
+    source.touch()
+
+    payload = src.build_payload(
+        project_root=tmp_path,
+        apply=True,
+        channels=["risk"],
+        min_file_mb=0.000001,
+        target_free_gb=0,
+        max_files=4,
+        include_current_day=True,
+        compression_level=1,
+    )
+
+    assert payload["overall_status"] == "applied"
+    assert payload["summary"]["orphaned_compaction_candidate_count"] == 1
+    assert payload["summary"]["orphaned_compaction_recovered_count"] == 1
+    assert not pending.exists()
+    assert source.exists()
+    assert source.read_text(encoding="utf-8") == ""
+    record = payload["records"][0]
+    assert record["orphaned_compaction_recovered"] is True
+    assert ".compact_pending_" not in record["archive_path"]
+    assert ".segment_" in record["archive_path"]
+    with gzip.open(tmp_path / record["archive_path"], "rt", encoding="utf-8") as handle:
+        assert handle.read() == original
+
+
+def test_compactor_keeps_active_and_orphaned_segments_in_distinct_archives(tmp_path: Path) -> None:
+    source = _write_channel_file(tmp_path, channel="risk")
+    active_payload = source.read_text(encoding="utf-8")
+    pending = source.with_name(f"{source.name}.compact_pending_20260730T150733Z_55014")
+    pending_payload = json.dumps({"segment": "orphaned"}) + "\n"
+    pending.write_text(pending_payload, encoding="utf-8")
+
+    payload = src.build_payload(
+        project_root=tmp_path,
+        apply=True,
+        channels=["risk"],
+        min_file_mb=0.000001,
+        target_free_gb=0,
+        max_files=4,
+        include_current_day=True,
+        compression_level=1,
+    )
+
+    assert payload["summary"]["archived_count"] == 2
+    archive_paths = [tmp_path / row["archive_path"] for row in payload["records"]]
+    assert len({str(path) for path in archive_paths}) == 2
+    archived_payloads = []
+    for path in archive_paths:
+        with gzip.open(path, "rt", encoding="utf-8") as handle:
+            archived_payloads.append(handle.read())
+    assert active_payload in archived_payloads
+    assert pending_payload in archived_payloads
 
 
 def test_compactor_can_skip_current_day_files(tmp_path: Path) -> None:

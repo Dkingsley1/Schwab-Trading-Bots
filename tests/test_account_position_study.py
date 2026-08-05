@@ -96,3 +96,41 @@ def test_position_study_attaches_operator_account_alias() -> None:
     assert position["operator_account_kind"] == "roth"
     assert payload["underlyings"][0]["operator_accounts"] == ["roth"]
     assert payload["underlyings"][0]["account_kinds"] == ["roth"]
+
+
+def test_position_study_emits_redacted_balance_truth_for_empty_accounts() -> None:
+    snapshot = {
+        "fetched": {
+            "payload": {
+                "accounts": [
+                    {
+                        "_broker_account": {"account_label": "account_1_1234", "account_number_tail": "1234"},
+                        "securitiesAccount": {
+                            "type": "CASH",
+                            "isClosingOnlyRestricted": False,
+                            "currentBalances": {
+                                "liquidationValue": 2500.0,
+                                "equity": 2500.0,
+                                "cashBalance": 2500.0,
+                                "availableFunds": 2500.0,
+                                "buyingPower": 2500.0,
+                                "marginBalance": 0.0,
+                            },
+                            "positions": [],
+                        },
+                    }
+                ]
+            }
+        }
+    }
+
+    payload = src.evaluate(snapshot=snapshot, roll_watch={}, profiles=[], day="20260804")
+
+    assert payload["schema_version"] == 2
+    assert payload["account_count"] == 1
+    assert payload["position_count"] == 0
+    assert payload["accounts"][0]["account_label"] == "account_1_1234"
+    assert payload["accounts"][0]["liquidation_value"] == 2500.0
+    assert payload["accounts"][0]["cash_balance"] == 2500.0
+    assert payload["accounts"][0]["position_count"] == 0
+    assert payload["portfolio_summary"]["liquidation_value"] == 2500.0

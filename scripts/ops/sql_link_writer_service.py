@@ -13,6 +13,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from core.channel_queue import default_queue_db_path
+from core.runtime_maintenance import maintenance_hold_snapshot
 
 PY = PROJECT_ROOT / '.venv314' / 'bin' / 'python'
 LINK_SCRIPT = PROJECT_ROOT / 'scripts' / 'link_jsonl_to_sql.py'
@@ -260,6 +261,16 @@ def main() -> int:
     parser.add_argument('--once', action='store_true')
     parser.add_argument('--json', action='store_true')
     args = parser.parse_args()
+    maintenance_hold = maintenance_hold_snapshot(PROJECT_ROOT)
+    if bool(maintenance_hold.get('active', False)):
+        payload = {
+            'ok': True,
+            'overall_status': 'guarded_hold',
+            'reason': 'runtime_maintenance_hold_active',
+            'runtime_maintenance_hold': maintenance_hold,
+        }
+        print(json.dumps(payload, ensure_ascii=True) if args.json else 'sql_link_writer_service guarded_hold=runtime_maintenance_hold_active')
+        return 75
 
     lock_path = Path(args.lock_path)
     lock_path.parent.mkdir(parents=True, exist_ok=True)

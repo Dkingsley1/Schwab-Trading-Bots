@@ -19,7 +19,9 @@ PROFILE="${BOT_RUNTIME_PROFILE:-live}"
 cd "$PROJECT_ROOT"
 
 "$PROJECT_ROOT/.venv314/bin/python" "$PROJECT_ROOT/scripts/ops/apple_silicon_profile.py" apply >/dev/null 2>&1 || true
-"$PROJECT_ROOT/.venv314/bin/python" "$PROJECT_ROOT/scripts/ops/computer_task_intelligence.py" --apply --json >/dev/null 2>&1 || true
+# Startup consumes the latest bounded host snapshot. Live probe refreshes run on
+# their own timer and must never delay the watchdog behind storage inspection.
+"$PROJECT_ROOT/.venv314/bin/python" "$PROJECT_ROOT/scripts/ops/computer_task_intelligence.py" --apply --skip-refresh --json >/dev/null 2>&1 || true
 
 if [[ -f "$PROJECT_ROOT/scripts/ops/load_runtime_env.sh" ]]; then
   # shellcheck disable=SC1091

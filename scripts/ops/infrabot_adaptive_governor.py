@@ -378,17 +378,17 @@ def _capability_registry() -> list[dict[str, Any]]:
                 "deep-cold-storage-layer",
                 "--apply",
                 "--move-to-second-cold",
+                "--adaptive",
                 "--second-cold-root",
                 "/Volumes/VIDEO/schwab_trading_bot_cold",
                 "--max-move-gb",
                 "96",
                 "--max-move-files",
                 "500",
-                "--include-critical",
                 "--json",
             ),
             risk_level="medium",
-            cost_class="medium",
+            cost_class="high",
             apply_safe=True,
             safe_under_pressure=True,
             success_artifact="governance/health/deep_cold_storage_layer_latest.json",
@@ -893,6 +893,7 @@ def _needs_contract(project_root: Path, *, refresh_needs: bool = False) -> dict[
     writer = _health(project_root, "writer_cycle_coordinator_latest.json")
     training = _health(project_root, "training_runtime_control_latest.json")
     livefeed = _health(project_root, "livefeed_local_latest.json")
+    livefeed_refresh_guard = _health(project_root, "livefeed_refresh_guard_latest.json")
     heavy_view = _health(project_root, "live_feed_heavy_view_latest.json")
     commands = _health(project_root, "commands_hygiene_latest.json")
     command_validity = _health(project_root, "command_validity_latest.json")
@@ -1343,12 +1344,26 @@ def _needs_contract(project_root: Path, *, refresh_needs: bool = False) -> dict[
     idle_heartbeat = _safe_float(livefeed.get("idle_heartbeat_seconds"), 0.0)
     heavy_mode = _status(heavy_view.get("mode") or heavy_view.get("status"))
     skipped_files = _safe_int(livefeed.get("skipped_files") or livefeed.get("skipped_unreadable_files"), 0)
+    refresh_guard_status = _status(livefeed_refresh_guard.get("overall_status"))
+    refresh_guard_stamp = _parse_utc(livefeed_refresh_guard.get("timestamp_utc"))
+    refresh_guard_age_seconds = (
+        max(0.0, (_utc_now() - refresh_guard_stamp).total_seconds())
+        if refresh_guard_stamp is not None
+        else None
+    )
+    refresh_guard_due = bool(
+        not livefeed_refresh_guard
+        or refresh_guard_status not in GOOD_STATUSES
+        or refresh_guard_age_seconds is None
+        or refresh_guard_age_seconds > 15 * 60
+    )
     if (
         (livefeed_status and livefeed_status not in GOOD_STATUSES)
         or not livefeed_alive
         or idle_heartbeat > 90.0
         or heavy_mode in {"expired_or_closed", "closed", "expired", "missing"}
         or skipped_files > 0
+        or refresh_guard_due
     ):
         needs.append(
             _need(
@@ -1362,9 +1377,11 @@ def _needs_contract(project_root: Path, *, refresh_needs: bool = False) -> dict[
                     f"idle_heartbeat_seconds={idle_heartbeat:.1f}",
                     f"heavy_view_mode={heavy_mode or 'unknown'}",
                     f"skipped_files={skipped_files}",
+                    f"refresh_guard_status={refresh_guard_status or 'missing'}",
+                    f"refresh_guard_age_seconds={refresh_guard_age_seconds:.1f}" if refresh_guard_age_seconds is not None else "refresh_guard_age_seconds=unknown",
                 ],
                 target_capabilities=["livefeed_refresh_guard"],
-                stop_when="livefeed health reports alive/running and the heavy view is active without unreadable-file churn.",
+                stop_when="livefeed health reports alive/running, route validation is under 15 minutes old, and the heavy view has no unreadable-file churn.",
                 expected_impact="Restores the operator feed without restarting trading sleeves or creating extra writer load.",
             )
         )

@@ -459,6 +459,80 @@ def test_full_main_reports_trade_decision_day_when_explanations_lag(tmp_path: Pa
     assert payload["stocks_decision_rows"] == "1"
 
 
+def test_full_main_ignores_stale_explanation_state_when_trade_rows_are_indexed(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setattr(one_numbers, "PROJECT_ROOT", tmp_path)
+    out_dir = tmp_path / "exports" / "one_numbers"
+    db_path = tmp_path / "data" / "jsonl_link.sqlite3"
+    health_dir = tmp_path / "governance" / "health"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    health_dir.mkdir(parents=True, exist_ok=True)
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    conn = one_numbers.sqlite3.connect(str(db_path))
+    conn.execute(
+        """
+        CREATE TABLE jsonl_records (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            source_file TEXT NOT NULL,
+            source_rel TEXT NOT NULL,
+            line_no INTEGER NOT NULL,
+            ingested_at TEXT NOT NULL,
+            payload_sha1 TEXT NOT NULL,
+            payload_json TEXT NOT NULL
+        )
+        """
+    )
+    trade_rel = "decisions/shadow_default/trade_decisions_20260331.jsonl"
+    conn.execute(
+        """
+        INSERT INTO jsonl_records (source_file, source_rel, line_no, ingested_at, payload_sha1, payload_json)
+        VALUES (?, ?, ?, ?, ?, ?)
+        """,
+        (
+            "trade_decisions_20260331.jsonl",
+            trade_rel,
+            1,
+            "2026-03-31T15:00:00+00:00",
+            "sha1-trade",
+            json.dumps({"timestamp_utc": "2026-03-31T15:00:00+00:00", "action": "BUY", "decision": "EXECUTE", "symbol": "SPY"}),
+        ),
+    )
+    conn.commit()
+    conn.close()
+    stale_explanation_rel = "decision_explanations/shadow_default/decision_explanations_20260331.jsonl"
+    (tmp_path / "governance" / "jsonl_sql_link_state.json").write_text(
+        json.dumps({"sqlite": {stale_explanation_rel: {}, trade_rel: {}}}),
+        encoding="utf-8",
+    )
+    (health_dir / "ingestion_storage_control_latest.json").write_text(
+        json.dumps({"pressure_index": 0.1, "backpressure": {}, "steady_state": {"quality_score": 99.0}}),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "build_one_numbers_report.py",
+            "--day",
+            "20260331",
+            "--out-dir",
+            str(out_dir),
+            "--db",
+            str(db_path),
+            "--no-sql-write",
+        ],
+    )
+
+    rc = one_numbers.main()
+    payload = json.loads((health_dir / "one_numbers_latest.json").read_text(encoding="utf-8"))
+
+    assert rc == 0
+    assert payload["combined_decision_total_rows"] == "1"
+    assert payload["decision_source_files"] == "1"
+    assert payload["detail_source"] == "trade_decision_fallback"
+
+
 def test_resolve_report_day_prefers_latest_decision_day_over_governance_only_today() -> None:
     sqlite_state = {
         "decision_explanations/shadow_default/decision_explanations_20260330.jsonl": {},

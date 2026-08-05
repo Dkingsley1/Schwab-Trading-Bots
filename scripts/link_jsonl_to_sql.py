@@ -17,6 +17,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from core.sqlite_runtime import connect_sqlite
+from core.runtime_maintenance import maintenance_hold_snapshot
 from scripts import ops_data_plane
 
 DEFAULT_INCLUDE_GLOBS = [
@@ -2222,6 +2223,13 @@ def main() -> int:
     if not project_root.exists():
         print(f"Project root missing: {project_root}")
         return 2
+    maintenance_hold = maintenance_hold_snapshot(project_root)
+    if bool(maintenance_hold.get("active", False)) and not bool(args.dry_run):
+        print(
+            "link_jsonl_to_sql guarded_hold=runtime_maintenance_hold_active "
+            f"reason={maintenance_hold.get('reason', 'runtime_maintenance')}"
+        )
+        return 75
 
     include_streams = _parse_csv_values(args.include_streams)
     exclude_streams = _parse_csv_values(args.exclude_streams)

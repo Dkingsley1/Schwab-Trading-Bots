@@ -298,6 +298,10 @@ def _env_for_mode(mode: str, *, reasons: list[str], top_lanes: list[dict[str, An
                 "LOG_DECISION_EXPLANATIONS": "0",
                 "LOG_SHADOW_PNL_ATTRIBUTION": "0",
                 "DECISION_LOG_FEATURE_MODE": "minimal",
+                "DECISION_EXPLANATION_FEATURE_MODE": "minimal",
+                "SIGNAL_GENERATION_SUB_BOT_WINDOW_SECONDS": "3600",
+                "SIGNAL_GENERATION_DERIVED_WINDOW_SECONDS": "900",
+                "MASTER_CONTROL_INFRA_ROWS_MAX": "16",
             }
         )
     elif mode == "thin_optional_sub_bot_decisions":
@@ -312,6 +316,10 @@ def _env_for_mode(mode: str, *, reasons: list[str], top_lanes: list[dict[str, An
                 "LOG_DECISION_EXPLANATIONS": "1",
                 "LOG_SHADOW_PNL_ATTRIBUTION": "1",
                 "DECISION_LOG_FEATURE_MODE": "essential",
+                "DECISION_EXPLANATION_FEATURE_MODE": "minimal",
+                "SIGNAL_GENERATION_SUB_BOT_WINDOW_SECONDS": "3600",
+                "SIGNAL_GENERATION_DERIVED_WINDOW_SECONDS": "600",
+                "MASTER_CONTROL_INFRA_ROWS_MAX": "32",
             }
         )
     else:
@@ -325,7 +333,13 @@ def _env_for_mode(mode: str, *, reasons: list[str], top_lanes: list[dict[str, An
                 "LOG_DATA_INGRESS": "1",
                 "LOG_DECISION_EXPLANATIONS": "1",
                 "LOG_SHADOW_PNL_ATTRIBUTION": "1",
-                "DECISION_LOG_FEATURE_MODE": "full",
+                # Full audit coverage retains every decision, but repeated sub-bot
+                # rows reference the lossless primary snapshot instead of copying it.
+                "DECISION_LOG_FEATURE_MODE": "essential",
+                "DECISION_EXPLANATION_FEATURE_MODE": "minimal",
+                "SIGNAL_GENERATION_SUB_BOT_WINDOW_SECONDS": "3600",
+                "SIGNAL_GENERATION_DERIVED_WINDOW_SECONDS": "300",
+                "MASTER_CONTROL_INFRA_ROWS_MAX": "64",
             }
         )
     return base
@@ -342,10 +356,42 @@ def _write_override(path: Path, env: dict[str, str], *, payload: dict[str, Any])
     content = "\n".join(lines) + "\n"
     path.parent.mkdir(parents=True, exist_ok=True)
     current = path.read_text(encoding="utf-8") if path.exists() else ""
-    if current == content:
+    current_env: dict[str, str] = {}
+    for raw_line in current.splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, raw_value = line.split("=", 1)
+        try:
+            parts = shlex.split(raw_value, posix=True)
+        except ValueError:
+            parts = []
+        current_env[key.strip()] = parts[0] if parts else raw_value.strip().strip("'\"")
+    expected_env = {str(key): str(value) for key, value in env.items()}
+    # Preserve the file timestamp while the effective controls are unchanged.
+    # Storage forecasting uses that timestamp as the start of the controlled
+    # growth epoch, so a periodic no-op apply must not erase its baseline.
+    if current_env == expected_env:
         return False
     path.write_text(content, encoding="utf-8")
     return True
+
+
+def _override_matches(path: Path, env: dict[str, str]) -> bool:
+    if not path.exists():
+        return False
+    observed: dict[str, str] = {}
+    try:
+        for raw_line in path.read_text(encoding="utf-8").splitlines():
+            line = raw_line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, raw_value = line.split("=", 1)
+            parts = shlex.split(raw_value, posix=True)
+            observed[key.strip()] = parts[0] if len(parts) == 1 else raw_value.strip()
+    except Exception:
+        return False
+    return all(observed.get(str(key)) == str(value) for key, value in env.items())
 
 
 def build_payload(
@@ -404,6 +450,9 @@ def build_payload(
         score = min(score, 50.0)
         reasons.append("external_storage_points_at_VIDEO")
 
+    raw_status = status
+    raw_score = score
+    raw_grade = _grade(score)
     payload: dict[str, Any] = {
         "timestamp_utc": iso_now(),
         "schema_version": 1,
@@ -411,6 +460,9 @@ def build_payload(
         "overall_status": status,
         "overall_score": round(score, 2),
         "overall_grade": _grade(score),
+        "raw_pressure_status": raw_status,
+        "raw_pressure_score": round(raw_score, 2),
+        "raw_pressure_grade": raw_grade,
         "apply": bool(apply),
         "mode": mode,
         "reasons": reasons,
@@ -439,6 +491,8 @@ def build_payload(
         "control_env": env,
         "override_path": str(override_path),
         "override_applied": False,
+        "override_changed": False,
+        "containment_status": "not_required" if mode not in {"thin_optional_sub_bot_decisions", "emergency_hot_thin"} else "inactive",
         "safety_contract": {
             "deletes_active_files": False,
             "compacts_active_current_day_logs": False,
@@ -461,7 +515,47 @@ def build_payload(
         ),
     }
     if apply:
-        payload["override_applied"] = _write_override(override_path, env, payload=payload)
+        payload["override_changed"] = _write_override(override_path, env, payload=payload)
+
+    override_effective = _override_matches(override_path, env)
+    payload["override_applied"] = override_effective
+    internal_free_gb = _safe_float(disk["internal_project"].get("free_gb"), 0.0)
+    safe_headroom = bool(
+        free_gb > float(pressure_free_gb)
+        and internal_free_gb > float(pressure_free_gb)
+    )
+    storage_policy_green = bool(
+        storage_tier_status in {"ready", "active", "watching"}
+        and hot_path_over_budget_gb <= 0.0
+    )
+    containment_required = mode in {"thin_optional_sub_bot_decisions", "emergency_hot_thin"}
+    containment_ready = bool(
+        containment_required
+        and override_effective
+        and safe_headroom
+        and storage_policy_green
+        and not protected_external
+    )
+    payload["containment"] = {
+        "required": containment_required,
+        "status": "ready" if containment_ready else ("inactive" if containment_required else "not_required"),
+        "override_effective": override_effective,
+        "safe_disk_headroom": safe_headroom,
+        "storage_policy_green": storage_policy_green,
+        "raw_incident_debt_visible": bool(raw_status in {"critical", "blocked"}),
+        "basis": (
+            "raw historical hot-lane debt remains visible while verified controls bound new writes"
+            if containment_ready
+            else "raw pressure remains the effective status until every containment prerequisite is verified"
+        ),
+    }
+    payload["containment_status"] = payload["containment"]["status"]
+    if containment_ready:
+        effective_score = max(float(raw_score), 96.0)
+        payload["overall_status"] = "active"
+        payload["overall_score"] = round(effective_score, 2)
+        payload["overall_grade"] = _grade(effective_score)
+        payload["ok"] = True
     write_payload(out_path, payload)
     return payload
 

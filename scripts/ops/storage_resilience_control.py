@@ -122,6 +122,7 @@ def build_payload(
     mount_guard = _load_json(health_root / "storage_mount_guard_latest.json")
     failback = _load_json(health_root / "storage_failback_sync_latest.json")
     split_brain = _load_json(health_root / "storage_split_brain_reconciler_latest.json")
+    retention = _load_json(health_root / "storage_retention_unison_latest.json")
     state_snapshot = _load_json(project_root / "exports" / "state_snapshot_drills" / "latest.json")
     backup_restore_event_files = sorted((project_root / "governance" / "watchdog").glob("backup_restore_events.jsonl*"))
     checksum_targets = [
@@ -172,9 +173,38 @@ def build_payload(
 
     snapshot_ts = _parse_iso(state_snapshot.get("timestamp_utc") or state_snapshot.get("generated_utc"))
     snapshot_age_hours = max((datetime.now(timezone.utc) - snapshot_ts).total_seconds() / 3600.0, 0.0) if snapshot_ts else None
-    dual_root_ready = bool(mount_guard.get("external_available", False)) and (project_root / "local_fallback_storage").exists()
     warm_standby_ready = (project_root / "local_fallback_storage").exists()
-    restore_drill_fresh = snapshot_age_hours is not None and snapshot_age_hours <= 168.0
+    retention_contract = retention.get("continuous_run_contract") if isinstance(retention.get("continuous_run_contract"), dict) else {}
+    retention_disk = retention.get("disk") if isinstance(retention.get("disk"), dict) else {}
+    external_disk = retention_disk.get("external") if isinstance(retention_disk.get("external"), dict) else {}
+    external_archive_disk_ready = bool(
+        external_disk.get("exists", False)
+        and not external_disk.get("protected", False)
+        and _safe_float(external_disk.get("free_gb"), 0.0) > 0.0
+    )
+    archive_standby_ready = bool(
+        external_archive_disk_ready
+        or (
+            retention_contract.get("cold_archive_spillover_available", False)
+            and _safe_float(retention_contract.get("current_external_free_gb"), 0.0) > 0.0
+            and _safe_float(retention_contract.get("cold_archive_capacity_shortfall_gb"), 0.0) <= 0.0
+        )
+    )
+    local_hot_policy_ready = bool(
+        mount_guard.get("external_required_for_hot_path") is False
+        and mount_guard.get("hot_storage_available", False)
+        and mount_guard.get("probe_skipped_external_io", False)
+    )
+    active_route_ready = bool(mount_guard.get("external_available", False) or local_hot_policy_ready)
+    dual_root_ready = bool(
+        warm_standby_ready
+        and (mount_guard.get("external_available", False) or archive_standby_ready)
+    )
+    restore_drill_fresh = bool(
+        state_snapshot.get("ok", False)
+        and snapshot_age_hours is not None
+        and snapshot_age_hours <= 168.0
+    )
     unresolved_split_brain = int(((split_brain.get("summary") or {}).get("unresolved_conflicts", 0) or 0))
     reliability_score = sum(
         [
@@ -185,16 +215,32 @@ def build_payload(
             15 if bool(checksum_rows) else 0,
         ]
     )
-    if database_integrity_checks and not all(bool(row.get("ok", False)) for row in database_integrity_checks if bool(row.get("present", False))):
+    database_integrity_ready = bool(
+        not database_integrity_checks
+        or all(bool(row.get("ok", False)) for row in database_integrity_checks if bool(row.get("present", False)))
+    )
+    if not database_integrity_ready:
         reliability_score = max(reliability_score - 20, 0)
+    ready = bool(
+        reliability_score >= 75
+        and active_route_ready
+        and dual_root_ready
+        and warm_standby_ready
+        and restore_drill_fresh
+        and unresolved_split_brain == 0
+        and database_integrity_ready
+    )
     payload = {
         "timestamp_utc": datetime.now(timezone.utc).isoformat(),
         "schema_version": 1,
-        "ok": reliability_score >= 75,
-        "overall_status": "ready" if reliability_score >= 75 else "needs_work",
+        "ok": ready,
+        "overall_status": "ready" if ready else "needs_work",
         "resilience_score": reliability_score,
         "dual_root_ready": dual_root_ready,
         "warm_standby_ready": warm_standby_ready,
+        "archive_standby_ready": archive_standby_ready,
+        "active_route_ready": active_route_ready,
+        "local_hot_policy_ready": local_hot_policy_ready,
         "restore_drill_fresh": restore_drill_fresh,
         "snapshot_age_hours": round(float(snapshot_age_hours), 3) if snapshot_age_hours is not None else None,
         "unresolved_split_brain_conflicts": unresolved_split_brain,
@@ -204,6 +250,15 @@ def build_payload(
         "max_quick_check_db_gb": round(float(max_quick_check_db_gb), 3),
         "database_integrity_checks": database_integrity_checks,
         "wal_health_checks": wal_health_checks,
+        "route_topology": {
+            "policy": "local_hot_external_archive" if local_hot_policy_ready else "external_hot_with_local_standby",
+            "active_route_ready": active_route_ready,
+            "local_hot_policy_ready": local_hot_policy_ready,
+            "archive_standby_ready": archive_standby_ready,
+            "external_archive_disk_ready": external_archive_disk_ready,
+            "dual_root_ready": dual_root_ready,
+            "external_required_for_hot_path": bool(mount_guard.get("external_required_for_hot_path", True)),
+        },
         "mount_guard": mount_guard,
         "failback": failback,
         "top_actions": [

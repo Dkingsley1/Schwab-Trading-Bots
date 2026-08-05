@@ -142,3 +142,128 @@ def test_storage_pressure_clearance_clears_only_stale_storage_gate(tmp_path: Pat
     assert payload["metrics"]["active_storage_pressure"] is False
     assert any("health_gates.py" in cmd for cmd in seen)
     assert any("global_risk_killswitch.py" in cmd for cmd in seen)
+
+
+def test_storage_pressure_clearance_keeps_bounded_draining_soft_target_paper_safe(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    health = project_root / "governance" / "health"
+    _write_json(
+        health / "ingestion_storage_control_latest.json",
+        {
+            "overall_status": "ready",
+            "severity": "elevated",
+            "pressure_index": 0.91,
+            "backpressure": {
+                "core_pending_lines": 991,
+                "total_pending_lines": 2237,
+                "oldest_pending_age_seconds": 219.0,
+            },
+            "storage": {"sqlite_wal_size_gb": 0.0, "backlog_drain_status": "drain_active"},
+            "data_integrity": {
+                "sql_overlay_invalid_lines": 0,
+                "sql_overlay_oversize_payloads": 0,
+                "sql_overlay_ops_write_failures": 0,
+            },
+            "bounded_recovery_contract": {"route_verified": True, "active_drain_progress": True},
+            "steady_state": {
+                "targets": {"pressure_index": 0.25, "core_pending_lines": 5000},
+                "target_status": {"steady_state_ready": False},
+            },
+        },
+    )
+    _write_json(
+        health / "health_gates_latest.json",
+        {
+            "hard_gates": {},
+            "thresholds": {"sql_wal_size_gb_limit": 24.0, "ingestion_pending_lines_limit": 20000},
+            "inputs": {
+                "backpressure_overload_severe": False,
+                "backpressure_pending_lines": 2237,
+                "sql_wal_size_gb_live": 0.0,
+            },
+        },
+    )
+
+    payload = clearance_src.build_payload(project_root)
+
+    assert payload["overall_status"] == "ready"
+    after = payload["storage_pressure"]["after"]
+    assert after["active_storage_pressure"] is False
+    assert after["bounded_soft_target_pressure"] is True
+    assert after["soft_pressure_advisory_reasons"] == ["pressure_index_above_target"]
+
+
+def test_storage_pressure_clearance_accepts_verified_intentional_local_hot_route(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    health = project_root / "governance" / "health"
+    _write_json(
+        health / "ingestion_storage_control_latest.json",
+        {
+            "overall_status": "ready",
+            "severity": "stable",
+            "pressure_index": 0.01,
+            "backpressure": {"core_pending_lines": 100, "total_pending_lines": 200},
+            "storage": {"sqlite_wal_size_gb": 0.0, "backlog_drain_status": "drain_active"},
+            "bounded_recovery_contract": {"route_verified": True, "active_drain_progress": True},
+            "steady_state": {
+                "targets": {"pressure_index": 0.25, "core_pending_lines": 5000},
+                "target_status": {"steady_state_ready": True},
+            },
+        },
+    )
+    _write_json(health / "health_gates_latest.json", {"hard_gates": {}, "thresholds": {}})
+    _write_json(
+        health / "storage_mount_guard_latest.json",
+        {
+            "storage_mode": "local_fallback",
+            "external_available": False,
+            "external_unavailable_reason": "cold_archive_only_local_hot_storage_policy",
+            "external_required_for_hot_path": False,
+            "hot_storage_available": True,
+        },
+    )
+
+    payload = clearance_src.build_payload(project_root)
+
+    assert payload["overall_status"] == "ready"
+    after = payload["storage_pressure"]["after"]
+    assert after["intentional_local_hot_route"] is True
+    assert after["route_blocked"] is False
+
+
+def test_storage_pressure_clearance_still_blocks_at_hard_pressure_envelope(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    health = project_root / "governance" / "health"
+    _write_json(
+        health / "ingestion_storage_control_latest.json",
+        {
+            "overall_status": "ready",
+            "severity": "elevated",
+            "pressure_index": 1.0,
+            "backpressure": {"core_pending_lines": 991, "total_pending_lines": 2237},
+            "storage": {"sqlite_wal_size_gb": 0.0, "backlog_drain_status": "drain_active"},
+            "data_integrity": {
+                "sql_overlay_invalid_lines": 0,
+                "sql_overlay_oversize_payloads": 0,
+                "sql_overlay_ops_write_failures": 0,
+            },
+            "bounded_recovery_contract": {"route_verified": True, "active_drain_progress": True},
+            "steady_state": {
+                "targets": {"pressure_index": 0.25, "core_pending_lines": 5000},
+                "target_status": {"steady_state_ready": False},
+            },
+        },
+    )
+    _write_json(
+        health / "health_gates_latest.json",
+        {
+            "hard_gates": {},
+            "thresholds": {"sql_wal_size_gb_limit": 24.0, "ingestion_pending_lines_limit": 20000},
+            "inputs": {},
+        },
+    )
+
+    payload = clearance_src.build_payload(project_root)
+
+    assert payload["overall_status"] == "blocked"
+    assert payload["storage_pressure"]["after"]["active_storage_pressure"] is True

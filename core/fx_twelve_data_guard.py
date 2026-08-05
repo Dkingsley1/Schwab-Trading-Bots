@@ -38,6 +38,11 @@ def classify_twelve_data_failure(*, code: str = "", message: str = "") -> str:
     )
     if code_text == "429" and any(fragment in lowered for fragment in daily_fragments):
         return "daily_quota"
+    if code_text in {"401", "403"} or any(
+        fragment in lowered
+        for fragment in ("unauthorized", "invalid api key", "apikey is invalid", "authentication failed")
+    ):
+        return "auth"
     if code_text == "429" or "too many requests" in lowered or "rate limit" in lowered:
         return "rate_limit"
     return ""
@@ -70,8 +75,14 @@ def mark_twelve_data_cooldown(
     root = Path(project_root).resolve()
     now_value = float(time.time() if now_ts is None else now_ts)
     prior = load_twelve_data_guard(root)
-    if str(kind or "").strip().lower() == "daily_quota":
+    normalized_kind = str(kind or "").strip().lower()
+    if normalized_kind == "daily_quota":
         cooldown_until_ts = _next_daily_quota_reset_ts(now_value)
+    elif normalized_kind == "auth":
+        cooldown_until_ts = now_value + max(
+            float(os.getenv("FX_TWELVE_DATA_AUTH_COOLDOWN_SECONDS", "21600") or 21600.0),
+            60.0,
+        )
     else:
         cooldown_until_ts = now_value + max(
             float(os.getenv("FX_TWELVE_DATA_RATE_LIMIT_COOLDOWN_SECONDS", "900") or 900.0),
@@ -82,13 +93,15 @@ def mark_twelve_data_cooldown(
         "timestamp_utc": datetime.fromtimestamp(now_value, tz=timezone.utc).isoformat(),
         "source": str(source or "").strip(),
         "symbol": str(symbol or "").strip().upper(),
-        "kind": str(kind or "").strip().lower() or "rate_limit",
+        "kind": normalized_kind or "rate_limit",
         "code": str(code or "").strip(),
         "message": str(message or "").strip(),
         "cooldown_until_ts": float(cooldown_until_ts),
         "cooldown_until_utc": datetime.fromtimestamp(cooldown_until_ts, tz=timezone.utc).isoformat(),
         "failure_count": int(prior.get("failure_count", 0) or 0) + 1,
         "last_failure_utc": datetime.fromtimestamp(now_value, tz=timezone.utc).isoformat(),
+        "credential_action_required": normalized_kind == "auth",
+        "retry_policy": "credential_fix_or_bounded_cooldown" if normalized_kind == "auth" else "bounded_cooldown",
     }
     safe_write_json_atomic(
         str(twelve_data_guard_path(root)),

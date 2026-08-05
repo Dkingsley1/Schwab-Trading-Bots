@@ -190,6 +190,7 @@ class ChannelQueue:
     def _ensure_schema(self) -> None:
         conn = self._connect()
         try:
+            conn.execute("PRAGMA auto_vacuum=INCREMENTAL")
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS channel_messages (

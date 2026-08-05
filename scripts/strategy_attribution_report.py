@@ -4,16 +4,19 @@ from __future__ import annotations
 import argparse
 import glob
 import json
+import os
 from collections import defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_JSON_PATH = PROJECT_ROOT / "governance" / "health" / "strategy_attribution_latest.json"
 DEFAULT_MD_PATH = PROJECT_ROOT / "exports" / "reports" / "strategy_attribution_latest.md"
 DEFAULT_STATE_PATH = PROJECT_ROOT / "governance" / "health" / "strategy_attribution_state.json"
+DEFAULT_BOOTSTRAP_MAX_BYTES_PER_FILE = 64 * 1024 * 1024
+DEFAULT_INCREMENTAL_MAX_BYTES_PER_FILE = 64 * 1024 * 1024
 
 
 def _utc_now() -> str:
@@ -49,7 +52,22 @@ def _write_json(path: Path, payload: dict[str, Any]) -> None:
 
 
 def _glob_day_paths(project_root: Path, day: str) -> list[Path]:
-    return sorted((project_root / "governance").glob(f"shadow*/shadow_pnl_attribution_{day}.jsonl"))
+    candidates = sorted((project_root / "governance").glob(f"shadow*/shadow_pnl_attribution_{day}.jsonl"))
+    paths: list[Path] = []
+    seen_targets: set[str] = set()
+    for path in candidates:
+        # Storage migration aliases can point at the same multi-gigabyte file.
+        if ".__external_symlink_backup_" in path.parent.name:
+            continue
+        try:
+            target = str(path.resolve(strict=True))
+        except Exception:
+            target = str(path.absolute())
+        if target in seen_targets:
+            continue
+        seen_targets.add(target)
+        paths.append(path)
+    return paths
 
 
 def _default_state_path(project_root: Path) -> Path:
@@ -170,12 +188,35 @@ def _runtime_to_state(runtime: dict[str, Any], *, source_files: dict[str, dict[s
     }
 
 
-def _iter_jsonl_rows(path: Path, *, offset_bytes: int = 0) -> tuple[list[dict[str, Any]], int]:
-    rows: list[dict[str, Any]] = []
+def _positive_int_env(name: str, default: int) -> int:
+    try:
+        value = int(os.getenv(name, str(default)))
+    except Exception:
+        value = int(default)
+    return max(value, 1)
+
+
+def _stream_jsonl_rows(
+    path: Path,
+    *,
+    offset_bytes: int = 0,
+    max_bytes: int,
+    discard_partial_start: bool = False,
+    consumer: Callable[[dict[str, Any]], None],
+) -> dict[str, Any]:
+    requested_offset = max(int(offset_bytes), 0)
+    max_scan_bytes = max(int(max_bytes), 1)
+    row_count = 0
     try:
         with path.open("rb") as handle:
-            handle.seek(max(int(offset_bytes), 0))
-            for raw in handle:
+            handle.seek(requested_offset)
+            if discard_partial_start and requested_offset > 0:
+                handle.readline()
+            scan_start = int(handle.tell())
+            while int(handle.tell()) - scan_start < max_scan_bytes:
+                raw = handle.readline()
+                if not raw:
+                    break
                 line = raw.decode("utf-8", errors="ignore").strip()
                 if not line:
                     continue
@@ -184,10 +225,31 @@ def _iter_jsonl_rows(path: Path, *, offset_bytes: int = 0) -> tuple[list[dict[st
                 except Exception:
                     continue
                 if isinstance(row, dict):
-                    rows.append(row)
-            return rows, int(handle.tell())
+                    consumer(row)
+                    row_count += 1
+            final_offset = int(handle.tell())
+        file_size = int(path.stat().st_size)
+        return {
+            "row_count": row_count,
+            "requested_offset_bytes": requested_offset,
+            "scan_start_offset_bytes": scan_start,
+            "final_offset_bytes": final_offset,
+            "scanned_bytes": max(final_offset - scan_start, 0),
+            "pending_bytes": max(file_size - final_offset, 0),
+            "file_size_bytes": file_size,
+            "eof_reached": final_offset >= file_size,
+        }
     except Exception:
-        return [], max(int(offset_bytes), 0)
+        return {
+            "row_count": row_count,
+            "requested_offset_bytes": requested_offset,
+            "scan_start_offset_bytes": requested_offset,
+            "final_offset_bytes": requested_offset,
+            "scanned_bytes": 0,
+            "pending_bytes": 0,
+            "file_size_bytes": 0,
+            "eof_reached": False,
+        }
 
 
 def _update_runtime_from_row(runtime: dict[str, Any], lane: str, row: dict[str, Any]) -> None:
@@ -265,14 +327,53 @@ def _summarize_group(rows: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def build_strategy_attribution_report(project_root: Path, *, day: str, state_file: Path | None = None) -> dict[str, Any]:
+def build_strategy_attribution_report(
+    project_root: Path,
+    *,
+    day: str,
+    state_file: Path | None = None,
+    bootstrap_max_bytes_per_file: int | None = None,
+    incremental_max_bytes_per_file: int | None = None,
+) -> dict[str, Any]:
     project_root = project_root.resolve()
     state_path = Path(state_file).resolve() if state_file is not None else _default_state_path(project_root)
     current_paths = _glob_day_paths(project_root, day)
     state = _load_json(state_path)
 
     processing_mode = "rebuild"
-    file_scan_counts = {"full_files": 0, "incremental_files": 0, "reused_files": 0}
+    file_scan_counts = {
+        "full_files": 0,
+        "incremental_files": 0,
+        "reused_files": 0,
+        "bounded_files": 0,
+        "bootstrap_tail_files": 0,
+        "rows_scanned": 0,
+        "bytes_scanned": 0,
+        "bootstrap_bytes_skipped": 0,
+        "pending_bytes": 0,
+    }
+    bootstrap_budget = max(
+        int(
+            bootstrap_max_bytes_per_file
+            if bootstrap_max_bytes_per_file is not None
+            else _positive_int_env(
+                "STRATEGY_ATTRIBUTION_BOOTSTRAP_MAX_BYTES_PER_FILE",
+                DEFAULT_BOOTSTRAP_MAX_BYTES_PER_FILE,
+            )
+        ),
+        1,
+    )
+    incremental_budget = max(
+        int(
+            incremental_max_bytes_per_file
+            if incremental_max_bytes_per_file is not None
+            else _positive_int_env(
+                "STRATEGY_ATTRIBUTION_INCREMENTAL_MAX_BYTES_PER_FILE",
+                DEFAULT_INCREMENTAL_MAX_BYTES_PER_FILE,
+            )
+        ),
+        1,
+    )
 
     if _can_incrementally_reuse(state, day, current_paths):
         runtime = _state_to_runtime(state, day)
@@ -288,11 +389,35 @@ def build_strategy_attribution_report(project_root: Path, *, day: str, state_fil
 
     for path in current_paths:
         meta = tracked.get(str(path)) if isinstance(tracked, dict) else None
-        offset = int(meta.get("offset_bytes", 0) or 0) if isinstance(meta, dict) else 0
-        rows, final_offset = _iter_jsonl_rows(path, offset_bytes=offset)
         lane = path.parent.name
-        for row in rows:
-            _update_runtime_from_row(runtime, lane, row)
+        try:
+            file_size = int(path.stat().st_size)
+        except Exception:
+            file_size = 0
+        new_source = not isinstance(meta, dict)
+        bootstrap_tail = bool(new_source and file_size > bootstrap_budget)
+        if bootstrap_tail:
+            offset = max(file_size - bootstrap_budget, 0)
+            scan_budget = bootstrap_budget
+        else:
+            offset = int(meta.get("offset_bytes", 0) or 0) if isinstance(meta, dict) else 0
+            scan_budget = incremental_budget if isinstance(meta, dict) else bootstrap_budget
+        scan = _stream_jsonl_rows(
+            path,
+            offset_bytes=offset,
+            max_bytes=scan_budget,
+            discard_partial_start=bootstrap_tail,
+            consumer=lambda row, lane=lane: _update_runtime_from_row(runtime, lane, row),
+        )
+        final_offset = int(scan.get("final_offset_bytes", offset) or offset)
+        file_scan_counts["rows_scanned"] += int(scan.get("row_count", 0) or 0)
+        file_scan_counts["bytes_scanned"] += int(scan.get("scanned_bytes", 0) or 0)
+        file_scan_counts["pending_bytes"] += int(scan.get("pending_bytes", 0) or 0)
+        if bootstrap_tail:
+            file_scan_counts["bootstrap_tail_files"] += 1
+            file_scan_counts["bootstrap_bytes_skipped"] += int(scan.get("scan_start_offset_bytes", offset) or offset)
+        if not bool(scan.get("eof_reached", False)):
+            file_scan_counts["bounded_files"] += 1
         if isinstance(meta, dict):
             if final_offset > offset:
                 file_scan_counts["incremental_files"] += 1
@@ -307,6 +432,8 @@ def build_strategy_attribution_report(project_root: Path, *, day: str, state_fil
                 "offset_bytes": int(final_offset if final_offset > 0 else st.st_size),
                 "mtime": float(st.st_mtime),
                 "lane": lane,
+                "bootstrap_tail": bootstrap_tail,
+                "pending_bytes": int(scan.get("pending_bytes", 0) or 0),
             }
         except Exception:
             next_source_files[str(path)] = {
@@ -314,7 +441,14 @@ def build_strategy_attribution_report(project_root: Path, *, day: str, state_fil
                 "offset_bytes": int(final_offset),
                 "mtime": 0.0,
                 "lane": lane,
+                "bootstrap_tail": bootstrap_tail,
+                "pending_bytes": int(scan.get("pending_bytes", 0) or 0),
             }
+
+    if file_scan_counts["bootstrap_tail_files"] > 0:
+        processing_mode = "bounded_bootstrap_tail"
+    elif file_scan_counts["bounded_files"] > 0:
+        processing_mode = "bounded_incremental"
 
     persisted_state = _runtime_to_state(runtime, source_files=next_source_files, processing_mode=processing_mode)
     _write_json(state_path, persisted_state)
@@ -376,6 +510,16 @@ def build_strategy_attribution_report(project_root: Path, *, day: str, state_fil
             "full_files": int(file_scan_counts["full_files"]),
             "incremental_files": int(file_scan_counts["incremental_files"]),
             "reused_files": int(file_scan_counts["reused_files"]),
+            "bounded_files": int(file_scan_counts["bounded_files"]),
+            "bootstrap_tail_files": int(file_scan_counts["bootstrap_tail_files"]),
+            "rows_scanned": int(file_scan_counts["rows_scanned"]),
+            "bytes_scanned": int(file_scan_counts["bytes_scanned"]),
+            "bootstrap_bytes_skipped": int(file_scan_counts["bootstrap_bytes_skipped"]),
+            "pending_bytes": int(file_scan_counts["pending_bytes"]),
+            "bootstrap_max_bytes_per_file": bootstrap_budget,
+            "incremental_max_bytes_per_file": incremental_budget,
+            "complete_history": file_scan_counts["bootstrap_tail_files"] == 0,
+            "source_deduplication": "resolved_target",
         },
     }
 

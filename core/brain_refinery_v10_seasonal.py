@@ -1,6 +1,5 @@
 import mlx.core as mx
 import mlx.nn as nn
-import mlx.optimizers as optim
 import numpy as np
 import json
 from datetime import datetime
@@ -156,10 +155,27 @@ def predict_demo(model, sample_input):
 # Seasonal/cyclical: repeating patterns
 
 def simulate_seasonal(n=5000):
-    t = np.arange(n)
-    seasonal = 0.02 * np.sin(2 * np.pi * t / 200)
-    noise = 0.005 * np.random.randn(n)
-    returns = seasonal + noise
+    if n <= 0:
+        return np.zeros(0, dtype=np.float64)
+
+    t = np.arange(n, dtype=np.float64)
+    regime_size = max(min(n // 8, 500), 40)
+    regime_index = np.minimum(t.astype(np.int64) // regime_size, 7)
+    regime_drift = np.array([0.0002, -0.0001, 0.0, 0.00035, -0.0003, 0.0001, 0.0, -0.00015])
+    regime_scale = np.array([1.0, 0.55, 1.25, 0.75, 0.35, 1.1, 0.6, 0.9])
+    regime_volatility = np.array([0.75, 1.25, 0.9, 1.4, 0.65, 1.1, 0.8, 1.3])
+
+    slow_cycle = 0.0014 * np.sin((2 * np.pi * t / 210.0) + 0.35)
+    fast_cycle = 0.0007 * np.sin((2 * np.pi * t / 63.0) - 0.8)
+    seasonal = regime_scale[regime_index] * (slow_cycle + fast_cycle)
+    volatility = regime_volatility[regime_index] * (
+        0.0028 + 0.0018 * (1.0 + np.sin(2 * np.pi * t / 320.0)) / 2.0
+    )
+    noise = volatility * np.random.standard_t(df=7, size=n) / np.sqrt(7.0 / 5.0)
+    shocks = np.zeros(n, dtype=np.float64)
+    shock_mask = np.random.random(n) < 0.004
+    shocks[shock_mask] = np.random.normal(0.0, 0.012, int(shock_mask.sum()))
+    returns = np.clip(regime_drift[regime_index] + seasonal + noise + shocks, -0.04, 0.04)
     prices = 100.0 * np.exp(np.cumsum(returns))
     return prices
 

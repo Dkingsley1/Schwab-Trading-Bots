@@ -1,6 +1,7 @@
 import json
 import os
 from pathlib import Path
+from types import SimpleNamespace
 
 import core.base_trader as base_src
 import core.decision_logger as decision_logger_src
@@ -30,6 +31,14 @@ def _reset_paper_profitability_guard_cache() -> None:
             "fingerprint": (),
             "payload": {},
         }
+    )
+
+
+def _allow_production_order_firewall(monkeypatch) -> None:
+    monkeypatch.setattr(
+        base_src,
+        "production_order_firewall_check",
+        lambda **_kwargs: SimpleNamespace(ok=True, gate="production_order_firewall", reason="ok", details={}),
     )
 
 
@@ -459,6 +468,7 @@ class _FuturesPlaceOrderClient:
 
 
 def test_live_place_order_retries_transient_failure(monkeypatch):
+    _allow_production_order_firewall(monkeypatch)
     monkeypatch.setenv("LIVE_API_RETRY_ATTEMPTS", "4")
     monkeypatch.setenv("LIVE_API_RETRY_BACKOFF_SECONDS", "0")
     monkeypatch.setenv("LIVE_API_RETRY_JITTER_SECONDS", "0")
@@ -481,6 +491,7 @@ def test_live_place_order_retries_transient_failure(monkeypatch):
 
 
 def test_live_place_order_does_not_retry_non_retryable_http(monkeypatch):
+    _allow_production_order_firewall(monkeypatch)
     monkeypatch.setenv("LIVE_API_RETRY_ATTEMPTS", "4")
     monkeypatch.setenv("LIVE_API_RETRY_BACKOFF_SECONDS", "0")
     monkeypatch.setenv("LIVE_API_RETRY_JITTER_SECONDS", "0")
@@ -828,7 +839,7 @@ def test_paper_profitability_guard_blocks_weak_profile_new_buy_entries(tmp_path:
     assert "paper_profitability_weak_profile_new_entry_block" in event_files[-1].read_text(encoding="utf-8")
 
 
-def test_paper_profitability_guard_keeps_weak_profile_sells_open(tmp_path: Path, monkeypatch) -> None:
+def test_paper_profitability_guard_allows_weak_profile_sell_reduction(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("ALLOW_ORDER_EXECUTION", "1")
     monkeypatch.setenv("MARKET_DATA_ONLY", "0")
     _write_paper_profitability_control(tmp_path, weak_profile="default")
@@ -838,6 +849,12 @@ def test_paper_profitability_guard_keeps_weak_profile_sells_open(tmp_path: Path,
     trader.set_mode("paper")
     trader.execution_enabled = True
     trader.market_data_only = False
+    seeded_position = {"qty": 100.0, "avg_price": 0.00001, "mark_price": 0.00001}
+    trader._paper_positions["PEPE-USD"] = dict(seeded_position)
+    trader._paper_profile_positions.setdefault("default", {})["PEPE-USD"] = dict(seeded_position)
+    trader._paper_strategy_positions.setdefault("paper_profitability_guard_test", {})["PEPE-USD"] = dict(
+        seeded_position
+    )
 
     out = trader.execute_decision(
         symbol="PEPE-USD",
@@ -854,6 +871,63 @@ def test_paper_profitability_guard_keeps_weak_profile_sells_open(tmp_path: Path,
 
     assert out.get("status") == "PAPER_EXECUTED"
     assert Path(trader.paper_log_path).exists()
+    assert out["paper_order"]["position_qty"] == 0.0
+
+
+def test_paper_book_state_survives_restart_and_preserves_reduction_semantics(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("ALLOW_ORDER_EXECUTION", "1")
+    monkeypatch.setenv("MARKET_DATA_ONLY", "0")
+    monkeypatch.setenv("SHADOW_PROFILE", "restart_persistence")
+    monkeypatch.setenv("SHADOW_DOMAIN", "equities")
+
+    first = _mk_trader("paper")
+    first.project_root = str(tmp_path)
+    first.set_mode("paper")
+    first.execution_enabled = True
+    first.market_data_only = False
+    opened = first.execute_decision(
+        symbol="AAPL",
+        action="BUY",
+        quantity=2.0,
+        model_score=0.62,
+        threshold=0.55,
+        features={"last_price": 100.0, "tradeability_score": 1.0},
+        gates={"model_gate": True, "market_data_ok": True},
+        reasons=["unit_test"],
+        strategy="paper_restart_state_test",
+        metadata={"source_profile": "restart_persistence", "shadow_domain": "equities"},
+    )
+    assert opened["status"] == "PAPER_EXECUTED"
+    state_path = Path(first._paper_state_path)
+    state_payload = json.loads(state_path.read_text(encoding="utf-8"))
+    first_book_id = state_payload["paper_book_id"]
+
+    restarted = _mk_trader("paper")
+    restarted.project_root = str(tmp_path)
+    restarted.set_mode("paper")
+    restarted.execution_enabled = True
+    restarted.market_data_only = False
+
+    assert restarted._paper_book_id == first_book_id
+    assert restarted._paper_profile_positions["restart_persistence"]["AAPL"]["qty"] == 2.0
+
+    closed = restarted.execute_decision(
+        symbol="AAPL",
+        action="SELL",
+        quantity=2.0,
+        model_score=0.62,
+        threshold=0.55,
+        features={"last_price": 101.0, "tradeability_score": 1.0},
+        gates={"model_gate": True, "market_data_ok": True},
+        reasons=["unit_test"],
+        strategy="paper_restart_state_test",
+        metadata={"source_profile": "restart_persistence", "shadow_domain": "equities"},
+    )
+
+    assert closed["status"] == "PAPER_EXECUTED"
+    assert closed["paper_order"]["paper_book_id"] == first_book_id
+    assert closed["paper_order"]["paper_profile_net_pnl_delta"] > 0.0
+    assert restarted._paper_profile_positions["restart_persistence"]["AAPL"]["qty"] == 0.0
 
 
 def test_paper_execute_can_block_on_guard(tmp_path: Path, monkeypatch):

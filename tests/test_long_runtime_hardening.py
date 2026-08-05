@@ -473,6 +473,58 @@ def test_live_runtime_separation_treats_ok_cold_lane_refresh_as_managed_stage(tm
     assert payload["clearance_plan"]["clearance_state"] == "managed_coverage_stage_deferred"
 
 
+def test_live_runtime_separation_isolates_coverage_preflight_debt_from_paper_runtime(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    health = project_root / "governance" / "health"
+    walk = project_root / "governance" / "walk_forward"
+    _write_json(
+        health / "live_readiness_smoke_latest.json",
+        {
+            "timestamp_utc": separation_src.iso_now(),
+            "ok": True,
+            "broker_ready": True,
+            "session_ready": True,
+            "live_lane_running": True,
+        },
+    )
+    _write_json(
+        health / "training_runtime_control_latest.json",
+        {"overall_status": "constrained", "snapshot_ready": True},
+    )
+    _write_json(
+        health / "storage_tier_policy_latest.json",
+        {"overall_status": "ready", "pressure": {"hot_path_over_budget_bytes": 0}},
+    )
+    _write_json(health / "resource_guard_latest.json", {"swap_used_gb": 0.0})
+    _write_json(health / "process_watchdog_latest.json", {"restart_storms": []})
+    _write_json(health / "cold_lane_refresh_latest.json", {"ok": True, "reason": "ok", "ran": True})
+    _write_json(walk / "coverage_seed_latest.json", {"coverage_shortfall_bots": 4})
+    _write_json(
+        walk / "coverage_gap_closer_latest.json",
+        {
+            "overall_status": "needs_cycles",
+            "staged_candidate_count": 4,
+            "autopilot_contract": {
+                "overall_status": "degraded",
+                "launch_state": "coverage_preflight_repair_required",
+                "off_hours_preferred": True,
+                "launch_contract": {
+                    "training_launch_blocked": True,
+                    "launch_guard": "off_hours_only",
+                },
+            },
+        },
+    )
+
+    payload = separation_src.build_payload(project_root)
+
+    assert payload["overall_status"] == "ready"
+    assert payload["clearance_plan"]["clearance_state"] == "managed_coverage_stage_deferred"
+    assert payload["training_plane"]["coverage_shortfall_bots"] == 4
+    assert payload["release_contract"]["promotions_should_wait_for_cold_lane"] is True
+    assert payload["release_contract"]["shared_host_training_resume_allowed"] is False
+
+
 def test_live_runtime_separation_accepts_guarded_paper_soak_when_live_lane_is_intentionally_off(tmp_path: Path) -> None:
     project_root = tmp_path / "project"
     health = project_root / "governance" / "health"
@@ -585,6 +637,35 @@ def test_blackstart_infers_stale_session_ready_from_fresh_shadow_loop(tmp_path: 
     assert blackstart["evidence"]["session_freshness_inferred_from_shadow_loop"] is True
 
 
+def test_blackstart_accepts_verified_local_route_without_legacy_top_level_ok(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    health = project_root / "governance" / "health"
+    now = blackstart_src.iso_now()
+    _write_json(health / "reboot_resilience_latest.json", {"ok": True, "recovered": []})
+    _write_json(health / "session_ready_latest.json", {"timestamp_utc": now, "ok": True})
+    _write_json(health / "live_readiness_smoke_latest.json", {"timestamp_utc": now, "ok": True})
+    _write_json(health / "storage_resilience_control_latest.json", {"ok": True, "overall_status": "ready"})
+    _write_json(
+        health / "storage_route_status_latest.json",
+        {
+            "mode": "local_fallback",
+            "route_verification": {
+                "verification_state": "active_local_ready",
+                "coverage_ratio": 1.0,
+                "mismatches": [],
+            },
+        },
+    )
+    _write_json(health / "process_watchdog_latest.json", {"restart_storms": []})
+    _write_json(health / "auth_lease_manager_latest.json", {"ok": True, "lease_state": "healthy"})
+
+    payload = blackstart_src.build_payload(project_root)
+
+    assert payload["overall_status"] == "ready"
+    assert payload["evidence"]["storage_route_verified"] is True
+    assert payload["evidence"]["storage_resilience_ready"] is True
+
+
 def test_auth_lease_default_accepts_fresh_schwab_half_hour_token(tmp_path: Path) -> None:
     project_root = tmp_path / "project"
     health = project_root / "governance" / "health"
@@ -640,6 +721,39 @@ def test_auth_lease_treats_probe_denied_but_token_operable_as_warning(tmp_path: 
     assert auth["lease_state"] == "warning"
     assert auth["lease_budget"]["token_lease_grace"] is True
     assert auth["broker_state"]["auth_ok"] is False
+
+
+def test_auth_lease_accepts_fresh_broker_auth_proof_when_shell_refresh_credentials_are_absent(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    health = project_root / "governance" / "health"
+    _write_json(
+        health / "premarket_token_guard_latest.json",
+        {
+            "timestamp_utc": auth_src.iso_now(),
+            "network": {"ok": True},
+            "auth": {"ok": False, "reason": "missing_credentials"},
+            "token_before": {"exists": True, "expires_in_seconds": 1480},
+            "token_after": {"exists": True, "expires_in_seconds": 1480},
+        },
+    )
+    _write_json(
+        health / "broker_readiness_latest.json",
+        {
+            "timestamp_utc": auth_src.iso_now(),
+            "ready_for_open": True,
+            "auth_ok": True,
+            "network_ok": True,
+        },
+    )
+    _write_json(health / "process_watchdog_latest.json", {"restart_storms": []})
+
+    auth = auth_src.build_payload(project_root)
+
+    assert auth["overall_status"] == "ready"
+    assert auth["lease_state"] == "healthy"
+    assert auth["lease_budget"]["broker_auth_probe_backed"] is True
+    assert auth["broker_state"]["auth_ok"] is False
+    assert auth["broker_state"]["auth_probe_ok"] is True
 
 
 def test_auth_lease_uses_off_hours_probe_grace_for_short_schwab_lease(tmp_path: Path, monkeypatch) -> None:
@@ -847,6 +961,60 @@ def test_sleeve_isolation_excludes_session_pauses_and_resolves_repaired_daily_ch
     assert isolation["sleeve_matrix"]["session_paused_lane_count"] == 2
     assert isolation["sleeve_matrix"]["running_lane_count"] == 1
     assert isolation["gates"]["unresolved_daily_verify_checks"] == []
+
+
+def test_sleeve_isolation_detects_alive_lane_with_sustained_ingestion_failure(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    health = project_root / "governance" / "health"
+    _write_json(health / "quarantine_pressure_latest.json", {"quarantine_events": 0})
+    _write_json(health / "daily_auto_verify_latest.json", {"failed_checks": []})
+    _write_json(
+        health / "data_ingress_latest_fx_equities_schwab.json",
+        {
+            "profile": "fx",
+            "domain": "equities",
+            "broker": "schwab",
+            "loop_state": "running",
+            "iter_total_requests": 6,
+            "iter_error_rate": 1.0,
+            "total_counts": {"api_error": 702, "api_ok": 0, "cache_ok": 0, "simulate_ok": 0},
+        },
+    )
+
+    isolation = isolation_src.build_payload(project_root)
+
+    assert isolation["overall_status"] == "degraded"
+    assert isolation["sleeve_matrix"]["running_lane_count"] == 1
+    assert isolation["sleeve_matrix"]["healthy_running_lane_count"] == 0
+    assert isolation["sleeve_matrix"]["failed_ingestion_lane_count"] == 1
+    assert isolation["sleeve_matrix"]["failed_ingestion_lanes"][0]["total_error_rate"] == 1.0
+    assert isolation["gates"]["isolation_required"] is True
+    assert isolation["blast_radius_score"] == 0.0
+
+
+def test_sleeve_isolation_does_not_escalate_single_bad_iteration_after_healthy_history(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    health = project_root / "governance" / "health"
+    _write_json(health / "quarantine_pressure_latest.json", {"quarantine_events": 0})
+    _write_json(health / "daily_auto_verify_latest.json", {"failed_checks": []})
+    _write_json(
+        health / "data_ingress_latest_dividend_equities_schwab.json",
+        {
+            "profile": "dividend",
+            "domain": "equities",
+            "broker": "schwab",
+            "loop_state": "running",
+            "iter_total_requests": 6,
+            "iter_error_rate": 1.0,
+            "total_counts": {"api_error": 6, "api_ok": 194, "cache_ok": 0, "simulate_ok": 0},
+        },
+    )
+
+    isolation = isolation_src.build_payload(project_root)
+
+    assert isolation["overall_status"] == "ready"
+    assert isolation["sleeve_matrix"]["healthy_running_lane_count"] == 1
+    assert isolation["sleeve_matrix"]["failed_ingestion_lane_count"] == 0
 
 
 def test_storage_quota_guard_recommends_actions_for_decision_and_governance_breaches(tmp_path: Path) -> None:

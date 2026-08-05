@@ -623,6 +623,238 @@ def test_make_runtime_windowed_dataset_builds_chronological_samples(tmp_path) ->
     assert list(y[:, 0]) == [1.0, 0.0, 1.0]
 
 
+def test_runtime_label_evidence_is_deterministic_and_point_in_time_safe() -> None:
+    base_ts = datetime.now(timezone.utc)
+    sequence = [
+        {
+            "timestamp_utc": (base_ts + timedelta(minutes=i)).isoformat(),
+            "mode": "paper",
+            "symbol": "SPY",
+            "snapshot_id": f"snap-{i}",
+            "price": 100.0 + i,
+            "features": {"last_price": 100.0 + i},
+        }
+        for i in range(3)
+    ]
+
+    first = rtc.runtime_label_evidence(
+        sequence,
+        0,
+        2,
+        expected_mode="paper",
+        expected_symbol="SPY",
+        label_owner_id="brain_refinery_v1",
+    )
+    second = rtc.runtime_label_evidence(
+        sequence,
+        0,
+        2,
+        expected_mode="paper",
+        expected_symbol="SPY",
+        label_owner_id="brain_refinery_v1",
+    )
+
+    assert first["eligible"] is True
+    assert first["maturity_seconds"] == 120.0
+    assert first["lineage_sha256"] == second["lineage_sha256"]
+    assert len(first["lineage_sha256"]) == 64
+
+
+def test_runtime_label_evidence_rejects_cross_symbol_and_noncausal_outcomes() -> None:
+    base_ts = datetime.now(timezone.utc)
+    sequence = [
+        {
+            "timestamp_utc": base_ts.isoformat(),
+            "mode": "paper",
+            "symbol": "SPY",
+            "snapshot_id": "same-snapshot",
+            "price": 100.0,
+        },
+        {
+            "timestamp_utc": (base_ts - timedelta(seconds=1)).isoformat(),
+            "mode": "paper",
+            "symbol": "QQQ",
+            "snapshot_id": "same-snapshot",
+            "price": 101.0,
+        },
+    ]
+
+    evidence = rtc.runtime_label_evidence(
+        sequence,
+        0,
+        1,
+        expected_mode="paper",
+        expected_symbol="SPY",
+    )
+
+    assert evidence["eligible"] is False
+    assert "cross_symbol_label_join" in evidence["reasons"]
+    assert "noncausal_label_maturity" in evidence["reasons"]
+    assert "duplicate_snapshot_label_join" in evidence["reasons"]
+
+    missing_timestamps = rtc.runtime_label_evidence(
+        [
+            {"mode": "paper", "symbol": "SPY", "snapshot_id": "a", "price": 100.0},
+            {"mode": "paper", "symbol": "SPY", "snapshot_id": "b", "price": 101.0},
+        ],
+        0,
+        1,
+        expected_mode="paper",
+        expected_symbol="SPY",
+    )
+    assert "missing_feature_timestamp" in missing_timestamps["reasons"]
+    assert "missing_label_maturity_timestamp" in missing_timestamps["reasons"]
+
+
+def test_runtime_dataset_refuses_market_proxy_labels_for_operational_objectives() -> None:
+    base_ts = datetime.now(timezone.utc)
+    rows = [
+        {
+            "timestamp_utc": (base_ts + timedelta(minutes=i)).isoformat(),
+            "mode": "paper",
+            "symbol": "SPY",
+            "snapshot_id": f"op-{i}",
+            "ts_epoch": float((base_ts + timedelta(minutes=i)).timestamp()),
+            "price": 100.0 + i,
+            "features": {"last_price": 100.0 + i},
+        }
+        for i in range(5)
+    ]
+
+    X, y, meta = rtc.make_runtime_windowed_dataset(
+        sequences={("paper", "SPY"): rows},
+        feature_builder=lambda seq, idx: np.asarray([rtc.observation_feature(seq[idx], "last_price")]),
+        label_builder=rtc.direction_label_builder(),
+        label_contract={"objective_class": "operational_effect"},
+        label_owner_id="brain_refinery_v1000_infrastructure_bot",
+        window=2,
+        horizon=1,
+    )
+
+    assert X.shape == (0, 0)
+    assert y.shape == (0, 1)
+    audit = meta["label_evidence_audit"]
+    assert audit["training_eligible"] is False
+    assert audit["rejected_evidence_candidate_count"] == 3
+    assert audit["rejection_reason_occurrence_count"] == 3
+    assert audit["rejection_counts"]["objective_requires_non_market_outcome"] == 3
+
+
+def test_runtime_dataset_counts_rejected_candidates_separately_from_reasons() -> None:
+    base_ts = datetime.now(timezone.utc)
+    rows = [
+        {
+            "timestamp_utc": base_ts.isoformat(),
+            "mode": "paper",
+            "symbol": "SPY",
+            "snapshot_id": "duplicate",
+            "price": 100.0,
+        },
+        {
+            "timestamp_utc": (base_ts - timedelta(seconds=1)).isoformat(),
+            "mode": "paper",
+            "symbol": "QQQ",
+            "snapshot_id": "duplicate",
+            "price": 101.0,
+        },
+    ]
+
+    _, _, meta = rtc.make_runtime_windowed_dataset(
+        sequences={("paper", "SPY"): rows},
+        feature_builder=lambda seq, idx: np.asarray([1.0], dtype=np.float32),
+        label_builder=rtc.direction_label_builder(),
+        label_contract={"objective_class": "market_outcome"},
+        label_owner_id="brain_refinery_v1",
+        window=1,
+        horizon=1,
+    )
+
+    audit = meta["label_evidence_audit"]
+    assert audit["candidate_count"] == 1
+    assert audit["rejected_evidence_candidate_count"] == 1
+    assert audit["rejection_reason_occurrence_count"] == 3
+    assert audit["selected_training_sample_count"] == 0
+
+
+def test_runtime_dataset_selects_outcome_at_semantic_wall_clock_horizon() -> None:
+    base_ts = datetime.now(timezone.utc)
+    offsets = [0, 10 * 60, 20 * 60, 24 * 60 * 60, 25 * 60 * 60]
+    rows = [
+        {
+            "timestamp_utc": (base_ts + timedelta(seconds=offset)).isoformat(),
+            "mode": "paper",
+            "symbol": "SPY",
+            "snapshot_id": f"daily-{index}",
+            "price": 100.0 + index,
+            "features": {"last_price": 100.0 + index},
+        }
+        for index, offset in enumerate(offsets)
+    ]
+    contract = {
+        "objective_class": "market_outcome",
+        "primary_horizon": "1d_forward_return",
+        "minimum_label_maturity_seconds": 24 * 60 * 60,
+        "maximum_label_maturity_seconds": 4 * 24 * 60 * 60,
+        "label_horizon_policy": {"enforcement_mode": "strict_wall_clock_range"},
+    }
+
+    X, _, meta = rtc.make_runtime_windowed_dataset(
+        sequences={("paper", "SPY"): rows},
+        feature_builder=lambda seq, idx: np.asarray([rtc.observation_feature(seq[idx], "last_price")]),
+        label_builder=rtc.direction_label_builder(),
+        label_contract=contract,
+        label_owner_id="brain_refinery_v10_seasonal",
+        window=1,
+        horizon=1,
+    )
+
+    audit = meta["label_evidence_audit"]
+    assert X.shape[0] == 3
+    assert audit["candidate_count"] == 4
+    assert audit["selected_training_sample_count"] == 3
+    assert audit["rejection_counts"]["label_horizon_not_mature_for_contract"] == 1
+    assert audit["maturity_seconds_min"] >= 24 * 60 * 60
+    assert audit["effective_horizon_rows_min"] == 2
+    assert audit["effective_horizon_rows_max"] == 3
+
+
+def test_runtime_dataset_rejects_outcome_after_contract_maximum() -> None:
+    base_ts = datetime.now(timezone.utc)
+    rows = [
+        {
+            "timestamp_utc": base_ts.isoformat(),
+            "mode": "paper",
+            "symbol": "SPY",
+            "snapshot_id": "late-0",
+            "price": 100.0,
+        },
+        {
+            "timestamp_utc": (base_ts + timedelta(days=5)).isoformat(),
+            "mode": "paper",
+            "symbol": "SPY",
+            "snapshot_id": "late-1",
+            "price": 101.0,
+        },
+    ]
+
+    X, _, meta = rtc.make_runtime_windowed_dataset(
+        sequences={("paper", "SPY"): rows},
+        feature_builder=lambda seq, idx: np.asarray([1.0], dtype=np.float32),
+        label_builder=rtc.direction_label_builder(),
+        label_contract={
+            "objective_class": "market_outcome",
+            "primary_horizon": "1d_forward_return",
+            "minimum_label_maturity_seconds": 24 * 60 * 60,
+            "maximum_label_maturity_seconds": 4 * 24 * 60 * 60,
+        },
+        window=1,
+        horizon=1,
+    )
+
+    assert X.shape == (0, 0)
+    assert meta["label_evidence_audit"]["rejection_counts"]["label_maturity_after_contract_maximum"] == 1
+
+
 def test_make_runtime_windowed_dataset_label_repair_can_recover_abstained_samples(tmp_path) -> None:
     base_ts = datetime.now(timezone.utc)
     prices = [100.0, 100.4, 100.1, 100.8, 100.2, 101.0]

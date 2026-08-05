@@ -24,6 +24,7 @@ RECOVERABLE_RUNTIME_CLEARANCE_STATES = {
     "coverage_cycles_ready",
     "off_hours_cold_lane_launch_ready",
     "scheduled_off_hours_launch",
+    "managed_cold_lane_deferred",
     "managed_coverage_stage_deferred",
 }
 GUARDED_READ_ONLY_RUNTIME_STATES = {
@@ -72,6 +73,11 @@ def _guarded_read_only_runtime(runtime: dict[str, Any]) -> bool:
 def _managed_coverage_stage_deferred_runtime(runtime: dict[str, Any]) -> bool:
     clearance_state = str(((runtime.get("clearance_plan") or {}).get("clearance_state") or "")).strip().lower()
     return bool(clearance_state == "managed_coverage_stage_deferred" and str(runtime.get("overall_status") or "").strip().lower() == "ready")
+
+
+def _managed_cold_lane_deferred_runtime(runtime: dict[str, Any]) -> bool:
+    clearance_state = str(((runtime.get("clearance_plan") or {}).get("clearance_state") or "")).strip().lower()
+    return bool(clearance_state == "managed_cold_lane_deferred" and str(runtime.get("overall_status") or "").strip().lower() == "ready")
 
 
 def _recoverable_review_gate(review: dict[str, Any]) -> bool:
@@ -204,6 +210,7 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
 
     blockers: list[dict[str, Any]] = []
     guarded_read_only_runtime = _guarded_read_only_runtime(runtime)
+    managed_cold_lane_deferred_runtime = _managed_cold_lane_deferred_runtime(runtime)
     managed_coverage_stage_deferred_runtime = _managed_coverage_stage_deferred_runtime(runtime)
     recoverable_runtime_clearance = _recoverable_runtime_clearance(runtime)
     recoverable_review_gate = _recoverable_review_gate(review)
@@ -216,6 +223,8 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
                 summary=(
                     "runtime is intentionally parked in guarded live read-only for paper soak"
                     if guarded_read_only_runtime
+                    else "runtime cold-lane training is deferred while guarded paper soak remains green"
+                    if managed_cold_lane_deferred_runtime
                     else "runtime coverage repair is deferred while guarded paper soak remains green"
                     if managed_coverage_stage_deferred_runtime
                     else f"runtime clearance remains {clearance_state or 'unknown'}"
@@ -385,6 +394,7 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
         "bounded_data_plane_recovery": bounded_data_plane_recovery,
         "bounded_auth_lease": bounded_auth_lease,
         "guarded_read_only_runtime": guarded_read_only_runtime,
+        "managed_cold_lane_deferred_runtime": managed_cold_lane_deferred_runtime,
         "managed_coverage_stage_deferred_runtime": managed_coverage_stage_deferred_runtime,
         "isolated_read_only_watchdog": isolated_read_only_watchdog,
         "recoverable_runtime_clearance": recoverable_runtime_clearance,

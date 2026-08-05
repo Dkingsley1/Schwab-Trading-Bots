@@ -160,6 +160,35 @@ def test_resolve_hot_channel_write_targets_can_keep_legacy_mirror(monkeypatch, t
     assert mirrors == [path]
 
 
+def test_bulk_risk_attribution_keeps_one_canonical_file_by_default(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr(loop, "PROJECT_ROOT", str(tmp_path))
+    monkeypatch.setattr(
+        loop,
+        "_dynamic_storage_overrides",
+        lambda: {
+            "CHANNEL_LOG_PRIMARY_MODE": "channel",
+            "RISK_CHANNEL_MIRROR_ENABLED": "0",
+        },
+    )
+
+    path = str(tmp_path / "governance" / "shadow_crypto" / "shadow_pnl_attribution_20260802.jsonl")
+    primary, mirrors = loop._resolve_hot_channel_write_targets(path, channel="risk")
+
+    assert primary == path
+    assert mirrors == []
+
+
+def test_shadow_broker_context_precedes_generic_data_broker(monkeypatch) -> None:
+    monkeypatch.setenv("DATA_BROKER", "schwab")
+    monkeypatch.setenv("SHADOW_BROKER", "coinbase")
+    monkeypatch.setenv("SHADOW_DOMAIN", "crypto")
+
+    ctx = loop.build_shadow_context()
+
+    assert ctx.broker == "coinbase"
+    assert ctx.domain == "crypto"
+
+
 def test_paper_options_profile_allowlist_defaults_exclude_slow_sleeves(monkeypatch) -> None:
     monkeypatch.delenv("TOP_BOT_PAPER_TRADING_OPTIONS_PROFILES", raising=False)
 

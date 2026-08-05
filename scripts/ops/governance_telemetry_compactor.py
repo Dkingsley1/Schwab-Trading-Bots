@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import fcntl
 import gzip
+import hashlib
 import json
 import os
 import shutil
@@ -95,6 +96,7 @@ def _iter_channel_files(project_root: Path, channels: list[str]) -> list[Path]:
         if not root.exists():
             continue
         files.extend(path for path in root.rglob("*.jsonl") if path.is_file())
+        files.extend(path for path in root.rglob("*.jsonl.compact_pending_*") if path.is_file())
     return sorted(files, key=lambda path: (-_safe_int(path.stat().st_size if path.exists() else 0), str(path)))
 
 
@@ -107,6 +109,7 @@ def _iter_master_control_files(project_root: Path) -> list[Path]:
         if not sleeve_dir.is_dir():
             continue
         files.extend(path for path in sleeve_dir.glob("master_control_*.jsonl") if path.is_file())
+        files.extend(path for path in sleeve_dir.glob("master_control_*.jsonl.compact_pending_*") if path.is_file())
     return files
 
 
@@ -114,14 +117,24 @@ def _iter_execution_lane_files(project_root: Path) -> list[Path]:
     root = project_root / "governance" / "execution_lanes"
     if not root.exists():
         return []
-    return [path for path in root.glob("*.jsonl") if path.is_file()]
+    return [
+        path
+        for pattern in ("*.jsonl", "*.jsonl.compact_pending_*")
+        for path in root.glob(pattern)
+        if path.is_file()
+    ]
 
 
 def _iter_event_files(project_root: Path) -> list[Path]:
     root = project_root / "governance" / "events"
     if not root.exists():
         return []
-    return [path for path in root.glob("*.jsonl") if path.is_file()]
+    return [
+        path
+        for pattern in ("*.jsonl", "*.jsonl.compact_pending_*")
+        for path in root.glob(pattern)
+        if path.is_file()
+    ]
 
 
 def _iter_family_files(project_root: Path, *, channels: list[str], families: list[str]) -> list[Path]:
@@ -183,6 +196,7 @@ def _candidate_rows(
         if is_current_day and not include_current_day:
             continue
         family = _candidate_family(project_root, path)
+        orphaned_compaction = ".compact_pending_" in path.name
         rows.append(
             {
                 "relative_path": _relative(project_root, path),
@@ -191,7 +205,12 @@ def _candidate_rows(
                 "size_gb": _gb(size_bytes),
                 "day": day,
                 "current_day": is_current_day,
-                "action": f"rotate_and_archive_oversized_governance_{family}",
+                "orphaned_compaction": orphaned_compaction,
+                "action": (
+                    f"recover_and_archive_orphaned_governance_{family}_compaction"
+                    if orphaned_compaction
+                    else f"rotate_and_archive_oversized_governance_{family}"
+                ),
             }
         )
     rows.sort(key=lambda row: (-int(row.get("size_bytes", 0) or 0), str(row.get("relative_path") or "")))
@@ -228,16 +247,37 @@ def _archive_one(
     except OSError as exc:
         return {"relative_path": source_rel, "status": "error", "error": str(exc)}
 
-    pending_path = source_path.with_name(f"{source_path.name}.compact_pending_{stamp}_{os.getpid()}")
-    archive_path = archive_root / stamp / source_rel
-    archive_path = archive_path.with_name(f"{archive_path.name}.gz")
+    orphaned_compaction = ".compact_pending_" in source_path.name
+    if orphaned_compaction:
+        canonical_path = source_path.with_name(source_path.name.split(".compact_pending_", 1)[0])
+        canonical_rel = _relative(project_root, canonical_path)
+        pending_path = source_path
+    else:
+        canonical_path = source_path
+        canonical_rel = source_rel
+        pending_path = source_path.with_name(f"{source_path.name}.compact_pending_{stamp}_{os.getpid()}")
+
+    archive_path = archive_root / stamp / canonical_rel
+    if orphaned_compaction:
+        pending_suffix = source_path.name.split(".compact_pending_", 1)[1]
+        safe_suffix = "".join(char if char.isalnum() or char in {"-", "_"} else "_" for char in pending_suffix)
+        archive_path = archive_path.with_name(f"{archive_path.name}.segment_{safe_suffix}.gz")
+    else:
+        archive_path = archive_path.with_name(f"{archive_path.name}.gz")
+    if archive_path.exists():
+        source_key = hashlib.sha1(source_rel.encode("utf-8")).hexdigest()[:12]
+        archive_path = archive_path.with_name(f"{archive_path.stem}.segment_{source_key}{archive_path.suffix}")
     archive_path.parent.mkdir(parents=True, exist_ok=True)
     tmp_archive = archive_path.with_name(f"{archive_path.name}.tmp")
 
     try:
-        source_path.rename(pending_path)
-        source_path.parent.mkdir(parents=True, exist_ok=True)
-        source_path.touch(exist_ok=True)
+        if orphaned_compaction:
+            canonical_path.parent.mkdir(parents=True, exist_ok=True)
+            canonical_path.touch(exist_ok=True)
+        else:
+            source_path.rename(pending_path)
+            source_path.parent.mkdir(parents=True, exist_ok=True)
+            source_path.touch(exist_ok=True)
         with pending_path.open("rb") as src, gzip.open(tmp_archive, "wb", compresslevel=max(min(int(compression_level), 9), 1)) as dst:
             shutil.copyfileobj(src, dst, length=1024 * 1024)
         tmp_archive.replace(archive_path)
@@ -253,10 +293,11 @@ def _archive_one(
             "archive_gb": _gb(archive_bytes),
             "estimated_hot_reduction_bytes": max(raw_bytes - archive_bytes, 0),
             "estimated_hot_reduction_gb": _gb(max(raw_bytes - archive_bytes, 0)),
+            "orphaned_compaction_recovered": orphaned_compaction,
         }
     except Exception as exc:
         try:
-            if pending_path.exists() and not source_path.exists():
+            if not orphaned_compaction and pending_path.exists() and not source_path.exists():
                 pending_path.rename(source_path)
         except Exception:
             pass
@@ -325,6 +366,8 @@ def build_payload(
 
     archived_records = [row for row in records if str(row.get("status") or "") == "archived"]
     error_records = [row for row in records if str(row.get("status") or "") == "error"]
+    orphan_candidates = [row for row in candidates if bool(row.get("orphaned_compaction", False))]
+    recovered_orphans = [row for row in archived_records if bool(row.get("orphaned_compaction_recovered", False))]
     selected_bytes = sum(int(row.get("size_bytes", row.get("raw_bytes", 0)) or 0) for row in selected)
     raw_archived_bytes = sum(int(row.get("raw_bytes", 0) or 0) for row in archived_records)
     archive_bytes = sum(int(row.get("archive_bytes", 0) or 0) for row in archived_records)
@@ -356,6 +399,7 @@ def build_payload(
             "archive_root": _relative(project_root, archive_base),
             "compression_level": int(compression_level),
             "rotation_policy": "rename_active_file_then_touch_fresh_path",
+            "orphan_recovery_policy": "recover_compact_pending_files_only_while_the_exclusive_compactor_lock_is_held",
         },
         "summary": {
             "candidate_count": len(candidates),
@@ -363,6 +407,8 @@ def build_payload(
             "selected_bytes": int(selected_bytes),
             "selected_gb": _gb(selected_bytes),
             "archived_count": len(archived_records),
+            "orphaned_compaction_candidate_count": len(orphan_candidates),
+            "orphaned_compaction_recovered_count": len(recovered_orphans),
             "raw_archived_bytes": int(raw_archived_bytes),
             "raw_archived_gb": _gb(raw_archived_bytes),
             "archive_bytes": int(archive_bytes),

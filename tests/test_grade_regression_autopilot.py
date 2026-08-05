@@ -48,3 +48,28 @@ def test_grade_regression_autopilot_runs_targeted_repairs_and_reports_final_guar
     assert payload["regression_autopilot_contract"]["uses_per_surface_retry_budgets"] is True
     assert any(step["quiet_hours_preferred"] for step in payload["repair_plan"])
     assert payload["upgrade_track"]["upgradeable"] is True
+
+
+def test_grade_regression_autopilot_omits_recursive_refresh_inside_refresh_context(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setenv("RUNTIME_ARTIFACT_REFRESH_ACTIVE", "1")
+
+    plan = src._repair_plan(
+        tmp_path,
+        {
+            "surfaces": [
+                {
+                    "surface": "storage_control",
+                    "state": "degraded",
+                    "retry_budget": {"step_timeout_sec": 30},
+                }
+            ]
+        },
+        storage_max_cycles=1,
+    )
+
+    assert not any("runtime_artifact_refresh.py" in " ".join(step.get("cmd") or []) for step in plan)
+    assert any("ingestion_storage_control.py" in " ".join(step.get("cmd") or []) for step in plan)
+    assert not any("storage_backpressure_autopilot.py" in " ".join(step.get("cmd") or []) for step in plan)

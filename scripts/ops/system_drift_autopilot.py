@@ -377,6 +377,11 @@ def build_payload(
             )
 
     final_guard = build_guard(project_root)
+    final_guard_published = False
+    final_guard_path = project_root / "governance" / "health" / "system_drift_guard_latest.json"
+    if apply and guard_builder is None:
+        write_payload(final_guard_path, final_guard)
+        final_guard_published = True
     operator_followups = [
         str(row.get("name") or "")
         for row in list(final_guard.get("surfaces") or [])
@@ -421,6 +426,8 @@ def build_payload(
             "overall_status": str(final_guard.get("overall_status") or ""),
             "blocked_surface_count": int(((final_guard.get("metrics") or {}).get("blocked_surface_count")) or 0),
             "degraded_surface_count": int(((final_guard.get("metrics") or {}).get("degraded_surface_count")) or 0),
+            "published": final_guard_published,
+            "artifact_path": str(final_guard_path),
         },
         "repair_plan": repair_plan,
         "skipped_steps": skipped_steps,

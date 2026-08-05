@@ -45,6 +45,7 @@ ADVISORY_RECOVERY_DEFERRED_REASONS = {
     "guarded_paper_infrastructure_autofix_advisory_debt",
     "guarded_paper_infrastructure_recovery_debt",
     "guarded_paper_infrastructure_self_reference_debt",
+    "guarded_paper_optional_report_stale",
 }
 
 
@@ -183,18 +184,34 @@ def _recovery_deferred_reason(spec: dict[str, Any], payload: dict[str, Any], sta
             for row in _safe_list(payload.get("repair_plan"))
             if isinstance(row, dict) and str(row.get("node_id") or "").strip()
         }
+        final_non_ready_count = _safe_int(final_graph.get("blocked_node_count"), 0) + _safe_int(
+            final_graph.get("degraded_node_count"), 0
+        )
+        final_nodes_are_explainable = bool(final_non_ready_nodes) or final_non_ready_count == 0
+        final_debt_is_self_reference_only = bool(
+            final_nodes_are_explainable and final_non_ready_nodes <= final_self_reference_nodes
+        )
+        attempts = [row for row in _safe_list(payload.get("attempts")) if isinstance(row, dict)]
+        executed_repairs_converged = bool(
+            _safe_bool(payload.get("execute_safe_repairs"))
+            and attempts
+            and all(_safe_int(row.get("rc"), 1) == 0 for row in attempts)
+            and final_debt_is_self_reference_only
+        )
+        repair_plan_is_self_reference_only = bool(
+            not repair_nodes
+            or repair_nodes
+            <= (final_self_reference_nodes | {"adaptive_regression_guard", "section_grade_guard", "grade_regression_guard"})
+        )
         if (
             (
                 _safe_int(final_graph.get("blocked_node_count"), 0) == 0
                 or final_blocked_nodes <= final_self_reference_nodes
             )
             and _safe_int(final_graph.get("blocked_edge_count"), 0) == 0
-            and (not final_non_ready_nodes or final_non_ready_nodes <= final_self_reference_nodes)
-            and (
-                not repair_nodes
-                or repair_nodes
-                <= (final_self_reference_nodes | {"adaptive_regression_guard", "section_grade_guard", "grade_regression_guard"})
-            )
+            and _safe_int(final_graph.get("authority_violation_count"), 0) == 0
+            and final_debt_is_self_reference_only
+            and (repair_plan_is_self_reference_only or executed_repairs_converged)
         ):
             return "guarded_paper_architecture_autopilot_self_reference_debt"
 
@@ -506,9 +523,20 @@ def _generic_row(spec: dict[str, Any]) -> dict[str, Any]:
         if recovery_deferred_reason:
             detail = f"{detail} recovery_deferred={recovery_deferred_reason}"
     stale = False
+    managed_stale = False
     max_age_minutes = spec.get("max_age_minutes")
     if payload and isinstance(max_age_minutes, (int, float)) and isinstance(age_minutes, (int, float)) and age_minutes > float(max_age_minutes):
-        if status == "ready":
+        if (
+            status == "ready"
+            and bool(spec.get("guarded_paper_stale_advisory", False))
+            and _guarded_paper_strict_clear_for_spec(spec)
+        ):
+            recovery_deferred_reason = "guarded_paper_optional_report_stale"
+        managed_stale = bool(
+            status == "ready"
+            and recovery_deferred_reason in ADVISORY_RECOVERY_DEFERRED_REASONS
+        )
+        if status == "ready" and not managed_stale:
             status = "degraded"
         stale = True
         detail = f"{detail} stale_minutes={age_minutes:.2f}"
@@ -521,6 +549,7 @@ def _generic_row(spec: dict[str, Any]) -> dict[str, Any]:
         "ok": status == "ready",
         "age_minutes": age_minutes,
         "stale": stale,
+        "managed_stale": managed_stale,
         "detail": detail,
         "recovery_deferred": bool(recovery_deferred_reason),
         "recovery_deferred_reason": recovery_deferred_reason,

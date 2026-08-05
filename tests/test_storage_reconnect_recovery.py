@@ -26,6 +26,67 @@ def test_storage_reconnect_regression_guard_contract_is_ready() -> None:
     assert payload["regression_guard_contract"]["requires_split_brain_reconcile"] is True
     assert payload["regression_guard_contract"]["requires_storage_pressure_clearance"] is True
     assert payload["regression_guard_contract"]["requires_global_halt_auto_clear"] is True
+    assert payload["regression_guard_contract"]["requires_auto_failback_opt_in"] is True
+    assert payload["regression_guard_contract"]["requires_local_override_mount_suppression"] is True
+    assert payload["regression_guard_contract"]["requires_transactional_sqlite_local_failover"] is True
+
+
+def test_storage_reconnect_guard_flags_external_sqlite_dependency_in_local_mode(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    scripts_ops = project_root / "scripts" / "ops"
+    scripts_ops.mkdir(parents=True)
+    guard_contract = "\n".join(guard_src.REQUIRED_GUARD_SNIPPETS.values())
+    opsctl_contract = "\n".join(guard_src.REQUIRED_OPSCTL_SNIPPETS.values())
+    (scripts_ops / "storage_eject_guard.swift").write_text(guard_contract, encoding="utf-8")
+    (scripts_ops / "opsctl.sh").write_text(opsctl_contract, encoding="utf-8")
+    (scripts_ops / "storage_sqlite_local_failover.py").write_text("# contract\n", encoding="utf-8")
+    (scripts_ops / "run_storage_eject_guard_launchd.sh").write_text("#!/bin/zsh\n", encoding="utf-8")
+    (project_root / "scripts" / "install_storage_eject_guard_launchd.sh").write_text("#!/bin/zsh\n", encoding="utf-8")
+    health = project_root / "governance" / "health"
+    _write_json(
+        health / "storage_failback_sync_latest.json",
+        '{"mode":"local_fallback","certified_mode":"local_fallback","sqlite_skip_report":{"entries":[{"relative_path":"data/jsonl_link.sqlite3","classification":"active_external_route"}]}}\n',
+    )
+    _write_json(health / "storage_mount_guard_latest.json", '{"external_available":true}\n')
+    _write_json(health / "ingestion_storage_control_latest.json", '{"overall_status":"ready"}\n')
+
+    payload = guard_src.build_payload(project_root, check_launchd=False, check_swift_parse=False)
+
+    assert payload["contract_ok"] is True
+    assert "local_mode_external_sqlite_route" in payload["live_recovery"]["blockers"]
+    assert payload["live_recovery"]["external_sqlite_routes"] == ["data/jsonl_link.sqlite3"]
+    assert "storage-sqlite-local-failover --apply" in " ".join(payload["recommended_actions"])
+
+
+def test_storage_reconnect_guard_allows_intentional_local_hot_storage(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    scripts_ops = project_root / "scripts" / "ops"
+    scripts_ops.mkdir(parents=True)
+    (scripts_ops / "storage_eject_guard.swift").write_text(
+        "\n".join(guard_src.REQUIRED_GUARD_SNIPPETS.values()), encoding="utf-8"
+    )
+    (scripts_ops / "opsctl.sh").write_text(
+        "\n".join(guard_src.REQUIRED_OPSCTL_SNIPPETS.values()), encoding="utf-8"
+    )
+    (scripts_ops / "storage_sqlite_local_failover.py").write_text("# contract\n", encoding="utf-8")
+    (scripts_ops / "run_storage_eject_guard_launchd.sh").write_text("#!/bin/zsh\n", encoding="utf-8")
+    (project_root / "scripts" / "install_storage_eject_guard_launchd.sh").write_text(
+        "#!/bin/zsh\n", encoding="utf-8"
+    )
+    health = project_root / "governance" / "health"
+    _write_json(health / "storage_failback_sync_latest.json", '{"certified_mode":"local_fallback"}\n')
+    _write_json(
+        health / "storage_mount_guard_latest.json",
+        '{"external_available":false,"external_required_for_hot_path":false,"probe_skipped_external_io":true}\n',
+    )
+    _write_json(health / "ingestion_storage_control_latest.json", '{"overall_status":"ready"}\n')
+
+    payload = guard_src.build_payload(project_root, check_launchd=False, check_swift_parse=False)
+
+    assert payload["overall_status"] == "ready"
+    assert "external_mount_unavailable" not in payload["live_recovery"]["blockers"]
+    assert payload["live_recovery"]["external_required_for_hot_path"] is False
+    assert payload["live_recovery"]["external_probe_skipped"] is True
 
 
 def test_storage_reconnect_infrabot_plans_safe_repairs(tmp_path: Path, monkeypatch) -> None:

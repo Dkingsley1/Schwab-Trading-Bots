@@ -57,7 +57,14 @@ def build_shadow_context(*, profile: str = "", domain: str = "", broker: str = "
         prof = ""
 
     dom_raw = (domain or os.getenv("SHADOW_DOMAIN", "")).strip().lower()
-    brk = _safe_token((broker or os.getenv("DATA_BROKER", "schwab")).strip().lower() or "schwab")
+    brk = _safe_token(
+        (
+            broker
+            or os.getenv("SHADOW_BROKER", "")
+            or os.getenv("DATA_BROKER", "schwab")
+        ).strip().lower()
+        or "schwab"
+    )
     if dom_raw not in {"equities", "crypto"}:
         dom_raw = "crypto" if brk == "coinbase" else "equities"
     dom = _safe_token(dom_raw)

@@ -3,9 +3,10 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import subprocess
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -32,6 +33,8 @@ TRAINING_BATCH_PROFILES = {
 }
 TRAINING_BATCH_MAX = 30
 TRAINING_TIMEOUT_FALLBACK_WINDOW_MINUTES = 24 * 60
+TRAINING_TARGET_COOLDOWN_MINUTES = 24 * 60
+STORAGE_OVERRIDE_MAX_AGE_SECONDS = 900.0
 SUPPORT_MAINTENANCE_FREEZE_REASON = "support_maintenance_frozen_for_mac_fluidity"
 CREATIVE_SESSION_ACTIVE_REASON = "creative_session_active"
 
@@ -82,6 +85,133 @@ def _age_minutes(raw: Any) -> float | None:
     if ts is None:
         return None
     return max((datetime.now(timezone.utc) - ts).total_seconds() / 60.0, 0.0)
+
+
+def _training_candidate_selector_contract(
+    bot_needs: dict[str, Any],
+    *,
+    max_age_minutes: int,
+) -> dict[str, Any]:
+    selector = bot_needs.get("training_candidate_selector") if isinstance(bot_needs.get("training_candidate_selector"), dict) else {}
+    active = bool(selector.get("active", False))
+    age_minutes = _age_minutes(bot_needs.get("timestamp_utc"))
+    fresh = bool(age_minutes is not None and age_minutes <= max(int(max_age_minutes), 1))
+    selected_candidates = [
+        row
+        for row in selector.get("selected_candidates") or []
+        if isinstance(row, dict) and str(row.get("bot_id") or "").strip()
+    ]
+    selected_bot_ids = _ordered_unique(
+        [str(row.get("bot_id") or "").strip().lower() for row in selected_candidates]
+    )
+    if not selector:
+        status = "unavailable"
+        reason = "training_candidate_selector_missing"
+    elif not active:
+        status = "inactive"
+        reason = "training_candidate_selector_inactive"
+    elif not fresh:
+        status = "stale"
+        reason = "training_candidate_selector_not_fresh"
+    else:
+        status = "ready"
+        reason = "fresh_training_candidate_selector_authoritative"
+    return {
+        "status": status,
+        "reason": reason,
+        "active": active,
+        "fresh": fresh,
+        "authoritative": bool(active and fresh),
+        "age_minutes": round(float(age_minutes), 3) if age_minutes is not None else None,
+        "maximum_age_minutes": max(int(max_age_minutes), 1),
+        "selected_count": len(selected_bot_ids),
+        "selected_bot_ids": selected_bot_ids,
+        "selected_candidates": selected_candidates,
+        "mode": str(selector.get("mode") or ""),
+        "policy": "launch_only_the_intersection_of_runtime_safe_and_fresh_bot_needs_selected_candidates",
+    }
+
+
+def _apply_training_target_cooldown(
+    selector: dict[str, Any],
+    retrain_scorecard: dict[str, Any],
+    *,
+    cooldown_minutes: int,
+) -> dict[str, Any]:
+    out = dict(selector)
+    selected_candidates = [
+        dict(row)
+        for row in selector.get("selected_candidates") or []
+        if isinstance(row, dict) and str(row.get("bot_id") or "").strip()
+    ]
+    scorecard_timestamp = str(
+        retrain_scorecard.get("ended_utc")
+        or retrain_scorecard.get("timestamp_utc")
+        or retrain_scorecard.get("started_utc")
+        or ""
+    ).strip()
+    age_minutes = _age_minutes(scorecard_timestamp)
+    window_minutes = max(int(cooldown_minutes), 0)
+    successful_bot_ids = {
+        str(row.get("bot_id") or "").strip().lower()
+        for row in retrain_scorecard.get("target_outcomes") or []
+        if isinstance(row, dict)
+        and str(row.get("bot_id") or "").strip()
+        and str(row.get("status") or "").strip().lower() in {"trained", "success", "ok"}
+    }
+    active = bool(
+        window_minutes > 0
+        and age_minutes is not None
+        and age_minutes <= window_minutes
+        and successful_bot_ids
+    )
+    available: list[dict[str, Any]] = []
+    blocked: list[dict[str, Any]] = []
+    remaining_minutes = max(float(window_minutes) - float(age_minutes or 0.0), 0.0) if active else 0.0
+    for row in selected_candidates:
+        bot_id = str(row.get("bot_id") or "").strip()
+        if active and bot_id.lower() in successful_bot_ids:
+            blocked.append(
+                {
+                    **row,
+                    "cooldown_reason": "recent_successful_training_run",
+                    "cooldown_remaining_minutes": round(remaining_minutes, 3),
+                }
+            )
+        else:
+            available.append(row)
+
+    scorecard_dt = _parse_ts(scorecard_timestamp)
+    cooldown_until_utc = (
+        (scorecard_dt + timedelta(minutes=window_minutes)).isoformat()
+        if active and scorecard_dt is not None
+        else ""
+    )
+    out["upstream_selected_count"] = len(selected_candidates)
+    out["selected_candidates"] = available
+    out["selected_bot_ids"] = _ordered_unique(
+        [str(row.get("bot_id") or "").strip().lower() for row in available]
+    )
+    out["selected_count"] = len(out["selected_bot_ids"])
+    out["cooldown"] = {
+        "active": bool(active and blocked),
+        "window_minutes": window_minutes,
+        "scorecard_timestamp_utc": scorecard_timestamp,
+        "scorecard_age_minutes": round(float(age_minutes), 3) if age_minutes is not None else None,
+        "cooldown_until_utc": cooldown_until_utc,
+        "blocked_count": len(blocked),
+        "blocked_bot_ids": [str(row.get("bot_id") or "") for row in blocked],
+        "blocked_candidates": blocked,
+        "policy": "a successful target may run at most once per cooldown window while evidence artifacts catch up",
+    }
+    if bool(out.get("authoritative", False)) and blocked and not available:
+        out["status"] = "cooldown"
+        out["reason"] = "recent_successful_training_target_cooldown"
+    out["policy"] = (
+        "launch_only_the_intersection_of_runtime_safe, fresh bot-needs candidates, "
+        "and targets outside the successful-run cooldown"
+    )
+    return out
 
 
 def _ordered_unique(items: list[str]) -> list[str]:
@@ -316,8 +446,15 @@ def _build_precompute_targets(
     coverage_gap_closer: dict[str, Any],
     training_requalification: dict[str, Any],
     bot_needs: dict[str, Any],
+    candidate_selector: dict[str, Any],
 ) -> list[dict[str, Any]]:
     targets: dict[str, dict[str, Any]] = {}
+    selector_authoritative = bool(candidate_selector.get("authoritative", False))
+    selector_selected_ids = {
+        str(bot_id or "").strip().lower()
+        for bot_id in candidate_selector.get("selected_bot_ids") or []
+        if str(bot_id or "").strip()
+    }
 
     def ensure(bot_id: str) -> dict[str, Any]:
         row = targets.setdefault(
@@ -332,6 +469,10 @@ def _build_precompute_targets(
                 "current_runs": 0,
                 "runs_remaining": 0,
                 "needs_runtime_input_repair": False,
+                "bot_needs_selector_authoritative": selector_authoritative,
+                "bot_needs_can_train_now": bool(
+                    selector_authoritative and bot_id.strip().lower() in selector_selected_ids
+                ),
             },
         )
         return row
@@ -536,6 +677,27 @@ def _build_precompute_targets(
             if bucket in {"repair_first", "collect_more_data"}:
                 row["needs_runtime_input_repair"] = True
 
+    for rank, selected in enumerate(candidate_selector.get("selected_candidates") or []):
+        if not isinstance(selected, dict):
+            continue
+        bot = str(selected.get("bot_id") or "").strip()
+        if not bot:
+            continue
+        row = ensure(bot)
+        row["priority"] = float(row["priority"]) + max(30.0 - (rank * 0.1), 20.0)
+        row["reasons"].append("bot_needs_training_candidate_selector")
+        row["actions"].append("prepare_authorized_micro_canary")
+        row["current_runs"] = max(
+            _safe_int(row.get("current_runs"), 0),
+            _safe_int(selected.get("walk_forward_runs"), 0),
+        )
+        row["runs_remaining"] = max(
+            _safe_int(row.get("runs_remaining"), 0),
+            _safe_int(selected.get("walk_forward_runs_remaining"), 0),
+        )
+        row["bot_needs_selector_authoritative"] = selector_authoritative
+        row["bot_needs_can_train_now"] = bool(selector_authoritative and bot.lower() in selector_selected_ids)
+
     out: list[dict[str, Any]] = []
     for row in targets.values():
         row["reasons"] = _ordered_unique(list(row.get("reasons") or []))
@@ -543,7 +705,9 @@ def _build_precompute_targets(
         row["candidate_actions"] = _ordered_unique(list(row.get("candidate_actions") or []))
         all_actions = {str(action or "").strip() for action in list(row["actions"]) + list(row["candidate_actions"])}
         repair_first = bool(row.get("needs_runtime_input_repair", False) or all_actions.intersection(TRAINING_REPAIR_ACTIONS))
-        if repair_first:
+        if selector_authoritative and bool(row.get("bot_needs_can_train_now", False)):
+            row["training_stage"] = "selector_approved_canary"
+        elif repair_first:
             row["training_stage"] = "repair_first"
         elif _safe_int(row.get("runs_remaining"), 0) > 0:
             row["training_stage"] = "coverage_topoff"
@@ -567,6 +731,8 @@ def _public_target(row: dict[str, Any]) -> dict[str, Any]:
         "current_runs": _safe_int(row.get("current_runs"), 0),
         "runs_remaining": _safe_int(row.get("runs_remaining"), 0),
         "needs_runtime_input_repair": bool(row.get("needs_runtime_input_repair", False)),
+        "bot_needs_selector_authoritative": bool(row.get("bot_needs_selector_authoritative", False)),
+        "bot_needs_can_train_now": bool(row.get("bot_needs_can_train_now", False)),
         "reasons": list(row.get("reasons") or [])[:6],
         "actions": list(row.get("actions") or [])[:6],
         "candidate_actions": list(row.get("candidate_actions") or [])[:8],
@@ -591,6 +757,18 @@ def _build_backpressure_training_gate(
         inputs.get("backpressure_storage_control_override")
         if isinstance(inputs.get("backpressure_storage_control_override"), dict)
         else {}
+    )
+    health_gates_age_minutes = _age_minutes(
+        health_gates.get("timestamp_utc") or health_gates.get("generated_utc")
+    )
+    health_gates_age_seconds = (
+        max(float(health_gates_age_minutes), 0.0) * 60.0
+        if health_gates_age_minutes is not None
+        else None
+    )
+    health_gates_fresh_for_override = bool(
+        health_gates_age_seconds is not None
+        and health_gates_age_seconds <= STORAGE_OVERRIDE_MAX_AGE_SECONDS
     )
     super_summary = super_drainer.get("summary") if isinstance(super_drainer.get("summary"), dict) else {}
     super_drainer_age_minutes = _age_minutes(super_drainer.get("timestamp_utc")) if super_drainer else None
@@ -622,8 +800,14 @@ def _build_backpressure_training_gate(
         _safe_int(storage_control_override.get("pending_lines_total"), 0),
     )
     override_oldest_age = _safe_float(storage_control_override.get("oldest_pending_age_seconds"), 0.0)
+    embedded_override_age_seconds = _safe_float(storage_control_override.get("age_seconds"), 0.0)
+    effective_override_age_seconds = max(
+        embedded_override_age_seconds,
+        float(health_gates_age_seconds or 0.0),
+    )
     override_clear = bool(
         storage_control_override.get("active", False)
+        and health_gates_fresh_for_override
         and override_pending_lines <= pending_threshold
         and override_oldest_age <= oldest_threshold
         and not bool(storage_control_override.get("overload", False))
@@ -632,7 +816,7 @@ def _build_backpressure_training_gate(
             or bool(storage_control_override.get("overlay_clear", False))
             or str(storage_control_override.get("source") or "").strip() == "fresh_empty_sql_ingestion_overlay"
         )
-        and _safe_float(storage_control_override.get("age_seconds"), 0.0) <= 900.0
+        and effective_override_age_seconds <= STORAGE_OVERRIDE_MAX_AGE_SECONDS
     )
     effective_pressure_index = 0.0 if override_clear else pressure_index
     storage_pending_lines = _safe_int(storage_bp.get("total_pending_lines"), 0)
@@ -726,6 +910,8 @@ def _build_backpressure_training_gate(
         sources.append("sql_overlay_reconciled_downward")
     if override_clear:
         sources.append("health_gate_storage_control_override")
+    elif storage_control_override and not health_gates_fresh_for_override:
+        sources.append("stale_health_gate_storage_control_override_ignored")
     if ingestion_backpressure:
         sources.append("ingestion_backpressure")
     if super_drainer_fresh:
@@ -754,6 +940,11 @@ def _build_backpressure_training_gate(
         "storage_status_backpressure_ignored": bool(storage_status in {"blocked", "critical"} and storage_numeric_clear),
         "storage_severity_backpressure_ignored": bool(storage_severity in {"blocked", "critical"} and storage_numeric_clear),
         "storage_control_override_clear": bool(override_clear),
+        "storage_control_override_embedded_age_seconds": round(float(embedded_override_age_seconds), 3),
+        "storage_control_override_effective_age_seconds": round(float(effective_override_age_seconds), 3),
+        "health_gates_age_minutes": round(float(health_gates_age_minutes), 3) if health_gates_age_minutes is not None else None,
+        "health_gates_fresh_for_override": bool(health_gates_fresh_for_override),
+        "stale_storage_control_override_ignored": bool(storage_control_override and not health_gates_fresh_for_override),
         "super_drainer_fresh": bool(super_drainer_fresh),
         "super_drainer_age_minutes": round(float(super_drainer_age_minutes), 3) if super_drainer_age_minutes is not None else None,
         "stale_super_drainer_ignored": bool(super_drainer and not super_drainer_fresh),
@@ -1263,6 +1454,7 @@ def _build_training_launch_contract(
     training_quality_blocked: bool,
     training_quality_score: float,
     precompute_targets: list[dict[str, Any]],
+    candidate_selector: dict[str, Any],
     fresh_minutes: int,
     batch_limit: int,
 ) -> dict[str, Any]:
@@ -1279,18 +1471,34 @@ def _build_training_launch_contract(
         ]
     )
     repair_first = [_public_target(row) for row in precompute_targets if str(row.get("training_stage") or "") == "repair_first"]
-    canary_pool = [
+    unfiltered_canary_pool = [
         _public_target(row)
         for row in precompute_targets
         if str(row.get("training_stage") or "") != "repair_first"
     ]
+    selector_active = bool(candidate_selector.get("active", False))
+    selector_authoritative = bool(candidate_selector.get("authoritative", False))
+    if selector_active:
+        canary_pool = [
+            row
+            for row in unfiltered_canary_pool
+            if selector_authoritative and bool(row.get("bot_needs_can_train_now", False))
+        ]
+        eligibility_blocked_targets = [
+            row
+            for row in unfiltered_canary_pool
+            if not bool(row.get("bot_needs_can_train_now", False))
+        ]
+    else:
+        canary_pool = unfiltered_canary_pool
+        eligibility_blocked_targets = []
     requested_batch = min(max(int(batch_limit), 1), TRAINING_BATCH_MAX)
     selected_profile = str(
         host_headroom_gate.get("selected_training_profile")
         or host_headroom_gate.get("governor_profile")
         or ""
     ).strip()
-    recovery_pool = canary_pool if canary_pool else repair_first
+    recovery_pool = canary_pool if selector_active else (canary_pool if canary_pool else repair_first)
     recovery_min_pool = 1 if selected_profile in {"coverage_micro_canary", "coverage_small_canary"} else min(requested_batch, 10)
     quality_recovery_canary = bool(
         training_quality_blocked
@@ -1304,6 +1512,12 @@ def _build_training_launch_contract(
     if not snapshot_fresh:
         launch_blockers.append("runtime_snapshot_not_fresh")
         prep_blockers.append("runtime_snapshot_not_fresh")
+    if selector_active and not selector_authoritative:
+        launch_blockers.append("training_candidate_selector_not_fresh")
+    elif selector_authoritative and _safe_int(candidate_selector.get("selected_count"), 0) <= 0:
+        launch_blockers.append("no_bot_needs_training_candidates")
+    elif selector_authoritative and not canary_pool:
+        launch_blockers.append("bot_needs_training_candidates_not_runtime_ready")
     if not resource_guard_ok or memory_pressure_state not in {"green", "unknown"}:
         launch_blockers.append("resource_guard_not_green")
         prep_blockers.append("resource_guard_not_green")
@@ -1423,6 +1637,10 @@ def _build_training_launch_contract(
         "prep_targets": [_public_target(row) for row in precompute_targets[: max(int(batch_limit), 1)]],
         "requested_batch_size": int(requested_batch),
         "available_canary_pool_size": len(canary_pool),
+        "unfiltered_canary_pool_size": len(unfiltered_canary_pool),
+        "eligibility_blocked_target_count": len(eligibility_blocked_targets),
+        "eligibility_blocked_targets": eligibility_blocked_targets[: max(int(batch_limit), 1)],
+        "training_candidate_selector": candidate_selector,
         "available_repair_first_pool_size": len(repair_first),
         "effective_launch_pool_size": len(launch_pool),
         "drain_batch_cap": int(drain_batch_cap),
@@ -1477,6 +1695,21 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, fresh_minutes: int = 360
     sequence_count = _safe_int(snapshot.get("sequence_count"), 0)
     row_count = _safe_int(snapshot.get("row_count"), 0)
     targeted_actions = training_quality.get("targeted_actions") if isinstance(training_quality.get("targeted_actions"), dict) else {}
+    training_candidate_selector = _training_candidate_selector_contract(
+        bot_needs,
+        max_age_minutes=max(int(fresh_minutes), 1),
+    )
+    training_candidate_selector = _apply_training_target_cooldown(
+        training_candidate_selector,
+        retrain_scorecard,
+        cooldown_minutes=max(
+            _safe_int(
+                os.getenv("BOT_TRAINING_TARGET_COOLDOWN_MINUTES"),
+                TRAINING_TARGET_COOLDOWN_MINUTES,
+            ),
+            0,
+        ),
+    )
     precompute_targets = _build_precompute_targets(
         training_quality=training_quality,
         retrain_scorecard=retrain_scorecard,
@@ -1484,6 +1717,7 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, fresh_minutes: int = 360
         coverage_gap_closer=coverage_gap_closer,
         training_requalification=training_requalification,
         bot_needs=bot_needs,
+        candidate_selector=training_candidate_selector,
     )
     resource_guard_raw_ok = bool(resource_guard.get("resource_guard_ok", True))
     memory_pressure_state = str(resource_guard.get("memory_pressure_state") or "").strip().lower() or "unknown"
@@ -1551,6 +1785,7 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, fresh_minutes: int = 360
         training_quality_blocked=training_quality_blocked,
         training_quality_score=_safe_float(training_quality.get("training_quality_score"), 0.0),
         precompute_targets=precompute_targets,
+        candidate_selector=training_candidate_selector,
         fresh_minutes=fresh_minutes,
         batch_limit=limit,
     )
@@ -1576,10 +1811,28 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, fresh_minutes: int = 360
         overall_status = "degraded" if coverage_repair_ready else "blocked"
     elif not bool(host_headroom_gate.get("safe_for_training", True)):
         overall_status = "constrained"
+    if bool(training_candidate_selector.get("active", False)) and not bool(training_candidate_selector.get("authoritative", False)):
+        overall_status = "blocked"
+    elif (
+        bool(training_candidate_selector.get("authoritative", False))
+        and _safe_int(training_candidate_selector.get("selected_count"), 0) > 0
+        and "bot_needs_training_candidates_not_runtime_ready" in training_launch_blockers
+        and overall_status == "ready"
+    ):
+        overall_status = "constrained"
 
     recommended_actions: list[str] = []
     if not snapshot_fresh:
         recommended_actions.append("refresh the shared runtime training snapshot before retrying targeted retrains")
+    selector_status = str(training_candidate_selector.get("status") or "")
+    if selector_status == "stale":
+        recommended_actions.append("refresh bot-needs intelligence before launching any training candidate")
+    elif selector_status == "cooldown":
+        recommended_actions.append("keep recently trained targets idle until their per-bot evidence cooldown expires")
+    elif bool(training_candidate_selector.get("authoritative", False)) and _safe_int(training_candidate_selector.get("selected_count"), 0) <= 0:
+        recommended_actions.append("keep training idle because the fresh bot-needs selector has no eligible candidates")
+    elif "bot_needs_training_candidates_not_runtime_ready" in training_launch_blockers:
+        recommended_actions.append("repair the selector-approved candidates until they also clear runtime launch requirements")
     if any("loading_sequences_timeout" in list(row.get("reasons") or []) for row in precompute_targets[: max(int(limit), 1)]):
         recommended_actions.append("precompute or reuse shared sequence caches for bots that timed out in loading_sequences")
     if not resource_guard_training_ok or memory_pressure_state not in {"green", "unknown"}:
@@ -1718,6 +1971,7 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, fresh_minutes: int = 360
                 ((bot_needs.get("next_batches") if isinstance(bot_needs.get("next_batches"), dict) else {}).get("training_topoff") or [])
             ),
             "need_counts": bot_needs.get("need_counts") if isinstance(bot_needs.get("need_counts"), dict) else {},
+            "training_candidate_selector": training_candidate_selector,
         },
         "backpressure_training_gate": backpressure_gate,
         "pretraining_drain_buffer": pretraining_drain_buffer,

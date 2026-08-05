@@ -15,6 +15,37 @@ if str(PROJECT_ROOT) not in sys.path:
 import scripts.ops.sql_link_shard_manager as shard_manager
 
 
+def test_sql_link_routes_hot_shards_local_when_external_hot_storage_is_disabled(tmp_path: Path, monkeypatch) -> None:
+    project_root = tmp_path / "repo"
+    project_root.mkdir()
+    monkeypatch.setattr(shard_manager, "PROJECT_ROOT", project_root)
+    monkeypatch.setattr(shard_manager, "LOCAL_FALLBACK_ROOT", project_root / "local_fallback_storage")
+    monkeypatch.setenv("BOT_LOGS_PREFER_EXTERNAL", "0")
+
+    routed = shard_manager._routed_or_local_fallback_path(project_root / "data" / "sql_link_shards")
+
+    assert routed == project_root / "local_fallback_storage" / "data" / "sql_link_shards"
+
+
+def test_cycle_boundary_maintenance_hold_requests_clean_writer_handoff(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(
+        shard_manager,
+        "maintenance_hold_snapshot",
+        lambda _root: {"active": True, "reason": "cold_archive_compaction"},
+    )
+
+    hold = shard_manager._cycle_boundary_maintenance_hold(tmp_path)
+
+    assert hold["active"] is True
+    assert hold["reason"] == "cold_archive_compaction"
+
+
+def test_cycle_boundary_maintenance_hold_keeps_writer_running_without_hold(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(shard_manager, "maintenance_hold_snapshot", lambda _root: {"active": False})
+
+    assert shard_manager._cycle_boundary_maintenance_hold(tmp_path) == {}
+
+
 def test_child_python_inherits_manager_runtime(monkeypatch, tmp_path: Path) -> None:
     fake_parent = tmp_path / ".venv314" / "bin" / "python"
     fake_parent.parent.mkdir(parents=True, exist_ok=True)
@@ -525,6 +556,7 @@ def test_normalized_shard_config_upgrades_old_default_layouts() -> None:
     assert shard_manager._normalized_shard_config(shard_manager.LEGACY_DEFAULT_SHARDS) == shard_manager.CURRENT_DEFAULT_SHARDS
     assert shard_manager._normalized_shard_config(shard_manager.PRE_FAST_DEFAULT_SHARDS) == shard_manager.CURRENT_DEFAULT_SHARDS
     assert shard_manager._normalized_shard_config(shard_manager.PRE_BACKLOG_SPLIT_DEFAULT_SHARDS) == shard_manager.CURRENT_DEFAULT_SHARDS
+    assert shard_manager._normalized_shard_config(shard_manager.PRE_API_INGRESS_DEFAULT_SHARDS) == shard_manager.CURRENT_DEFAULT_SHARDS
 
 
 def test_build_shards_separates_fast_trading_streams() -> None:
@@ -539,6 +571,7 @@ def test_build_shards_separates_fast_trading_streams() -> None:
                     "predictive_stability",
                     "self_healing",
                     "hot_path_storage",
+                    "api_ingress",
                     "crypto_api_ingress",
                     "aggressive_trading",
                     "trading",
@@ -584,6 +617,11 @@ def test_build_shards_separates_fast_trading_streams() -> None:
     assert shards["crypto_api_ingress"]["include_streams"] == "governance"
     assert "default_crypto_schwab" in str(shards["crypto_api_ingress"]["path_contains"])
     assert shards["crypto_api_ingress"]["merge_to_primary"] is False
+    assert shards["api_ingress"]["include_streams"] == "governance"
+    assert "governance/channels/ingress/" in str(shards["api_ingress"]["path_contains"])
+    assert "default_crypto_schwab" in str(shards["api_ingress"]["path_not_contains"])
+    assert shards["api_ingress"]["max_files"] == 24
+    assert shards["api_ingress"]["merge_to_primary"] is False
     assert shards["schema_violations"]["include_streams"] == "schema_violations"
     assert "channel_schema_violations_" in str(shards["schema_violations"]["path_contains"])
     assert shards["schema_violations"]["merge_to_primary"] is False
@@ -636,6 +674,7 @@ def test_build_shards_separates_fast_trading_streams() -> None:
     assert "governance_walk_forward" in str(shards["governance"]["include_streams"])
     assert "governance/watchdog/" in str(shards["governance"]["path_not_contains"])
     assert "governance/channels/risk/" in str(shards["governance"]["path_not_contains"])
+    assert "governance/channels/ingress/" in str(shards["governance"]["path_not_contains"])
     assert "governance/channels/runtime/" in str(shards["governance"]["path_not_contains"])
     assert "channel_schema_violations_" in str(shards["governance"]["path_not_contains"])
     assert shards["governance"]["max_lines_per_file"] == 8000

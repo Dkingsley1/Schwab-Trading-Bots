@@ -293,17 +293,49 @@ def _storage_metrics(artifacts: dict[str, dict[str, Any]]) -> dict[str, Any]:
         _safe_int(storage_failback_sync.get("split_brain_conflicts"), 0),
         _safe_int(storage_route_status.get("split_brain_conflicts"), 0),
     )
+    external_unavailable_reason = str(storage_mount_guard.get("external_unavailable_reason") or "").strip().lower()
+    external_required_for_hot_path = _safe_bool(storage_mount_guard.get("external_required_for_hot_path"), True)
+    hot_storage_available = _safe_bool(storage_mount_guard.get("hot_storage_available"), False)
+    intentional_local_hot_route = bool(
+        any(value.startswith("local_fallback") for value in storage_mode_values if value)
+        and route_verified
+        and hot_storage_available
+        and not external_required_for_hot_path
+    )
     route_blocked = bool(
         split_brain_conflicts > 0
         or any("split_brain" in value for value in storage_mode_values if value)
-        or str(storage_mount_guard.get("external_unavailable_reason") or "").strip().lower()
-        not in {"", "ok"}
+        or (external_unavailable_reason not in {"", "ok"} and not intentional_local_hot_route)
     )
     hard_gate_set = set(hard_gate_names)
     recoverable_hard_gate_only = bool(hard_gate_set and hard_gate_set.issubset(RECOVERABLE_STORAGE_GATES))
+    bounded_soft_target_pressure = bool(
+        active_reasons == ["pressure_index_above_target"]
+        and str(storage_control.get("overall_status") or "").strip().lower() == "ready"
+        and pressure_index < 1.0
+        and core_pending_lines <= core_target
+        and total_pending_lines <= pending_limit
+        and sqlite_wal_size_gb <= wal_limit_gb
+        and bool(effective_backpressure.get("data_clean", False))
+        and route_verified
+        and not route_blocked
+        and (
+            bool(bounded.get("active_drain_progress", False))
+            or str(storage.get("backlog_drain_status") or "").strip().lower()
+            in {"drain_active", "handoff_requested", "idle", "steady_state"}
+        )
+    )
+    soft_pressure_advisory_reasons = ["pressure_index_above_target"] if bounded_soft_target_pressure else []
+    if bounded_soft_target_pressure:
+        active_reasons = [reason for reason in active_reasons if reason != "pressure_index_above_target"]
     active_storage_pressure = bool(active_reasons)
     stale_gate_candidate = bool(recoverable_hard_gate_only and not active_storage_pressure and route_verified and not route_blocked)
-    clearance_ready = bool(not hard_gate_names and not active_storage_pressure and not route_blocked and bool(steady_status.get("steady_state_ready", False)))
+    clearance_ready = bool(
+        not hard_gate_names
+        and not active_storage_pressure
+        and not route_blocked
+        and (bool(steady_status.get("steady_state_ready", False)) or bounded_soft_target_pressure)
+    )
     if not hard_gate_names and not active_storage_pressure and not storage_control:
         clearance_ready = False
 
@@ -316,12 +348,18 @@ def _storage_metrics(artifacts: dict[str, dict[str, Any]]) -> dict[str, Any]:
         "recoverable_hard_gate_only": recoverable_hard_gate_only,
         "active_storage_pressure": active_storage_pressure,
         "active_pressure_reasons": active_reasons,
+        "bounded_soft_target_pressure": bounded_soft_target_pressure,
+        "soft_pressure_advisory_reasons": soft_pressure_advisory_reasons,
+        "soft_pressure_policy": "keep sub-critical drain latency visible without pausing paper; pressure_index>=1 or any hard limit still blocks",
         "effective_backpressure": effective_backpressure,
         "stale_hard_gate_suppressed": stale_hard_gate_suppressed,
         "stale_gate_candidate": stale_gate_candidate,
         "clearance_ready": clearance_ready,
         "route_verified": route_verified,
         "route_blocked": route_blocked,
+        "intentional_local_hot_route": intentional_local_hot_route,
+        "external_required_for_hot_path": external_required_for_hot_path,
+        "hot_storage_available": hot_storage_available,
         "storage_modes": sorted(value for value in storage_mode_values if value),
         "split_brain_conflicts": split_brain_conflicts,
         "autopilot_active": _autopilot_active(autopilot),

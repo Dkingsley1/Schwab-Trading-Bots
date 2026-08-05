@@ -3,8 +3,12 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+import re
+import signal
 import subprocess
 import sys
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -30,6 +34,87 @@ def _safe_int(raw: Any, default: int = 0) -> int:
 
 def _tail(text: str, lines: int = 20) -> str:
     return "\n".join((text or "").splitlines()[-max(int(lines), 1) :])
+
+
+def _elapsed_seconds(raw: str) -> int:
+    text = str(raw or "").strip()
+    if not text:
+        return 0
+    day_count = 0
+    if "-" in text:
+        day_text, text = text.split("-", 1)
+        day_count = _safe_int(day_text, 0)
+    parts = [_safe_int(part, 0) for part in text.split(":")]
+    if len(parts) == 3:
+        hours, minutes, seconds = parts
+    elif len(parts) == 2:
+        hours, minutes, seconds = 0, parts[0], parts[1]
+    else:
+        hours, minutes, seconds = 0, 0, parts[0] if parts else 0
+    return max(day_count * 86400 + hours * 3600 + minutes * 60 + seconds, 0)
+
+
+def _heavy_ttl_seconds(command: str) -> int:
+    text = str(command or "")
+    if "--no-heavy-ttl" in text or "--disable-heavy-ttl" in text:
+        return 0
+    match = re.search(r"--(?:heavy-ttl-seconds|ttl-seconds)\s+(\d+)", text)
+    return _safe_int(match.group(1), 0) if match else 0
+
+
+def _terminate_process_tree(root_pid: int) -> dict[str, Any]:
+    root = int(root_pid)
+    if root <= 0 or root == os.getpid():
+        return {"root_pid": root, "ok": False, "terminated_pids": [], "reason": "invalid_root_pid"}
+    try:
+        proc = subprocess.run(
+            ["ps", "-axo", "pid=,ppid="],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=5,
+        )
+        child_map: dict[int, list[int]] = {}
+        for line in proc.stdout.splitlines() if proc.returncode == 0 else []:
+            parts = line.split()
+            if len(parts) != 2:
+                continue
+            pid, ppid = _safe_int(parts[0], 0), _safe_int(parts[1], 0)
+            if pid > 0 and ppid > 0:
+                child_map.setdefault(ppid, []).append(pid)
+    except Exception:
+        child_map = {}
+
+    ordered: list[int] = []
+
+    def visit(pid: int) -> None:
+        for child in child_map.get(pid, []):
+            visit(child)
+        ordered.append(pid)
+
+    visit(root)
+    terminated: list[int] = []
+    for pid in ordered:
+        try:
+            os.kill(pid, signal.SIGTERM)
+            terminated.append(pid)
+        except ProcessLookupError:
+            continue
+        except PermissionError:
+            continue
+    time.sleep(0.2)
+    for pid in ordered:
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            continue
+        except PermissionError:
+            continue
+        try:
+            os.kill(pid, signal.SIGKILL)
+        except (ProcessLookupError, PermissionError):
+            pass
+    return {"root_pid": root, "ok": bool(terminated), "terminated_pids": terminated, "reason": "expired_heavy_ttl"}
 
 
 def _process_snapshot(project_root: Path, *, source: str, health_pid: int | None = None) -> dict[str, Any]:
@@ -61,8 +146,8 @@ def _process_snapshot(project_root: Path, *, source: str, health_pid: int | None
         pid = _safe_int(pid_text, -1)
         if pid <= 0:
             continue
-        is_tail = script_path in command or "scripts/ops/live_feed_tail.sh" in command
-        is_guarded = guarded_path in command or "scripts/ops/live_feed_heavy_guarded.sh" in command
+        is_tail = script_path in command
+        is_guarded = guarded_path in command
         if not is_tail and not is_guarded:
             continue
         row = {
@@ -81,17 +166,39 @@ def _process_snapshot(project_root: Path, *, source: str, health_pid: int | None
         elif is_tail and "--snapshot" not in command and (source_arg in command or not source):
             local_rows.append(row)
 
+    heavy_pid_set = {int(row["pid"]) for row in heavy_rows}
+    local_pid_set = {int(row["pid"]) for row in local_rows}
+    guarded_pid_set = {int(row["pid"]) for row in guarded_rows}
+    heavy_roots = [row for row in heavy_rows if int(row.get("ppid", 0)) not in heavy_pid_set]
+    local_roots = [row for row in local_rows if int(row.get("ppid", 0)) not in local_pid_set]
+    expired_ttl_rows: list[dict[str, Any]] = []
+    for row in heavy_roots:
+        ttl_seconds = _heavy_ttl_seconds(str(row.get("command") or ""))
+        elapsed_seconds = _elapsed_seconds(str(row.get("etime") or ""))
+        row["elapsed_seconds"] = elapsed_seconds
+        row["ttl_seconds"] = ttl_seconds
+        row["ttl_expired"] = bool(ttl_seconds > 0 and elapsed_seconds > ttl_seconds + 60)
+        guarded_parent = int(row.get("ppid", 0)) in guarded_pid_set
+        row["guarded_parent"] = guarded_parent
+        row["cleanup_target_pid"] = int(row.get("ppid", 0)) if guarded_parent else int(row["pid"])
+        if row["ttl_expired"]:
+            expired_ttl_rows.append(dict(row))
+
     return {
         "source": source,
         "health_pid": health_pid,
         "health_pid_alive": health_pid_alive if health_pid is not None else None,
-        "local_mirror_process_count": len(local_rows),
-        "heavy_process_count": len(heavy_rows),
+        "local_mirror_process_count": len(local_roots),
+        "local_mirror_worker_process_count": len(local_rows),
+        "heavy_process_count": len(heavy_roots),
+        "heavy_worker_process_count": len(heavy_rows),
         "guarded_heavy_process_count": len(guarded_rows),
-        "process_count": len(local_rows) + len(heavy_rows) + len(guarded_rows),
-        "local_mirror_processes": local_rows[:6],
-        "heavy_processes": heavy_rows[:6],
+        "process_count": len(local_roots) + len(heavy_roots) + len(guarded_rows),
+        "worker_process_count": len(local_rows) + len(heavy_rows) + len(guarded_rows),
+        "local_mirror_processes": local_roots[:6],
+        "heavy_processes": heavy_roots[:6],
         "guarded_heavy_processes": guarded_rows[:6],
+        "expired_ttl_heavy_processes": expired_ttl_rows[:6],
     }
 
 
@@ -201,6 +308,8 @@ def _health_check(project_root: Path, *, freshness_minutes: float) -> dict[str, 
         blockers.append("livefeed_supervised_mirror_missing_while_heavy_active")
     if process.get("guarded_heavy_process_count", 0) and local_mirror_process_count == 0:
         blockers.append("livefeed_supervised_mirror_missing_while_guarded_heavy_active")
+    if process.get("expired_ttl_heavy_processes"):
+        warnings.append("livefeed_heavy_ttl_expired")
     if ok:
         operating_mode = "supervised_local_mirror"
     elif process.get("heavy_process_count", 0) or process.get("guarded_heavy_process_count", 0):
@@ -243,6 +352,8 @@ def _recommended_actions(blockers: list[str], warnings: list[str]) -> list[str]:
         actions.append("./scripts/ops/opsctl.sh livefeed-refresh-guard --apply --json")
     if "livefeed_skipped_unreadable_files" in issue_set:
         actions.append("check local livefeed log file permissions, then rerun livefeed-refresh-guard --apply")
+    if "livefeed_heavy_ttl_expired" in issue_set:
+        actions.append("./scripts/ops/opsctl.sh livefeed-refresh-guard --apply --json")
     if any(item.startswith("route_failed:") for item in issue_set):
         actions.append("fix the failed opsctl feed-refresh dry-run route before relying on automation")
     return actions
@@ -281,13 +392,25 @@ def build_payload(
             **raw,
         }
     health = _health_check(project_root, freshness_minutes=freshness_minutes)
+    expired_ttl_cleanup: list[dict[str, Any]] = []
+    if apply:
+        expired_rows = list(((health.get("process") or {}).get("expired_ttl_heavy_processes") or []))
+        cleanup_targets = sorted(
+            {
+                _safe_int(row.get("cleanup_target_pid"), 0)
+                for row in expired_rows
+                if isinstance(row, dict) and _safe_int(row.get("cleanup_target_pid"), 0) > 0
+            }
+        )
+        expired_ttl_cleanup = [_terminate_process_tree(pid) for pid in cleanup_targets]
+        if cleanup_targets:
+            health = _health_check(project_root, freshness_minutes=freshness_minutes)
     blockers = list(route_blockers)
     warnings: list[str] = []
     if apply and not bool(apply_result.get("ok", False)):
         blockers.append("livefeed_refresh_apply_failed")
-    if not bool(health.get("ok", False)):
-        warnings.extend(str(item) for item in health.get("warnings", []))
-        blockers.extend(str(item) for item in health.get("blockers", []))
+    warnings.extend(str(item) for item in health.get("warnings", []))
+    blockers.extend(str(item) for item in health.get("blockers", []))
     status = "ready" if not blockers and not warnings else ("advisory" if not blockers else "blocked")
     recommended_actions = _recommended_actions(blockers, warnings)
     payload = {
@@ -301,6 +424,7 @@ def build_payload(
         "route_ok_count": sum(1 for row in route_checks if bool(row.get("ok", False))),
         "route_count": len(route_checks),
         "apply_result": apply_result,
+        "expired_ttl_cleanup": expired_ttl_cleanup,
         "health": health,
         "blockers": blockers,
         "warnings": warnings,
@@ -323,6 +447,8 @@ def build_payload(
             "checks_health_artifact_after_refresh": True,
             "verifies_health_pid_when_present": True,
             "separates_operator_heavy_viewer_from_supervised_mirror": True,
+            "deduplicates_livefeed_pipeline_workers": True,
+            "expires_bounded_heavy_process_trees": True,
         },
         "next_action": (
             "livefeed refresh routes and health are ready"

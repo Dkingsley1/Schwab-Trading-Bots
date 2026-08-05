@@ -172,7 +172,8 @@ def _runtime_sample_filter(sequence, idx, horizon):
     return (
         observation_feature(obs, "data_quality_quote_agreement_norm", 1.0) >= 0.72
         and observation_feature(obs, "data_quality_quote_deviation_norm", 0.0) <= 0.34
-        and max(corr_conf, corr_strength) >= 0.08
+        and corr_conf >= 0.30
+        and corr_strength >= 0.08
         and _overlap_context_signal(obs) >= 0.16
         and _overlap_regime_gap(obs) >= -0.06
         and abs(_overlap_bias(obs)) >= 0.04
@@ -275,15 +276,15 @@ def train_brain():
         symbol_allowlist=_OVERLAP_SYMBOLS,
         sample_filter=_runtime_sample_filter,
         confidence_builder=_runtime_confidence,
-        min_confidence=0.22,
+        min_confidence=0.30,
         sample_stride=1,
         lookback_days=90,
         window=18,
         horizon=4,
-        min_samples=160,
+        min_samples=96,
         min_sequences=4,
-        min_positive_samples=8,
-        min_negative_samples=8,
+        min_positive_samples=16,
+        min_negative_samples=16,
         acted_prob_threshold=0.66,
         fallback_trainer=_train_synthetic,
         allow_fallback_on_insufficient_data=False,
@@ -295,7 +296,7 @@ def train_brain():
         min_acted_accuracy=0.60,
         min_long_acted_count=4,
         min_short_acted_count=4,
-        min_accuracy_lift_over_majority=0.015,
+        min_accuracy_lift_over_majority=0.02,
         min_precision_balance_score=0.24,
     )
 

@@ -22,10 +22,17 @@ RUNTIME_SMOOTH_MODE_RUN_PATH = PROJECT_ROOT / "scripts" / "ops" / "run_runtime_s
 PRODUCTION_HARDENING_WATCH_RUN_PATH = PROJECT_ROOT / "scripts" / "ops" / "run_production_hardening_watch_launchd.sh"
 RETRAIN_DAILY_PATH = PROJECT_ROOT / "scripts" / "retrain_daily_small_batch.sh"
 RETRAIN_WEEKLY_PATH = PROJECT_ROOT / "scripts" / "retrain_weekly_full_sweep.sh"
+DAILY_AUTO_VERIFY_RUN_PATH = PROJECT_ROOT / "scripts" / "ops" / "run_daily_auto_verify_launchd.sh"
 
 
 def _read(path: Path) -> str:
     return path.read_text(encoding="utf-8")
+
+
+def test_storage_resilience_opsctl_uses_bounded_fast_integrity_checks() -> None:
+    text = _read(OPSCTL_PATH)
+
+    assert 'storage_resilience_control.py" --fast "$@"' in text
 
 
 def test_infra_stack_installer_includes_ops_and_daily_verify() -> None:
@@ -33,6 +40,14 @@ def test_infra_stack_installer_includes_ops_and_daily_verify() -> None:
 
     assert "install_daily_auto_verify_launchd.sh" in text
     assert "scripts/ops/install_ops_automation_launchd.sh" in text
+
+
+def test_daily_auto_verify_runs_annual_tax_policy_rollover_check() -> None:
+    text = _read(DAILY_AUTO_VERIFY_RUN_PATH)
+
+    assert "tax_regulation_update.py" in text
+    assert "--auto" in text
+    assert "daily_tax_regulation_update_end" in text
 
 
 def test_ops_automation_installer_includes_context_jobs() -> None:
@@ -220,6 +235,82 @@ def test_run_all_sleeves_breaker_enforces_data_quality_after_warmup() -> None:
 
     assert domain == "stocks"
     assert reasons == ["data_quality_low:25.00"]
+
+
+def test_run_all_sleeves_breaker_ignores_stale_metrics() -> None:
+    args = argparse.Namespace(
+        broker="schwab",
+        breaker_min_data_quality=75.0,
+        breaker_max_blocked_rate=0.35,
+        breaker_min_pnl_proxy=-0.02,
+        breaker_data_quality_grace_seconds=900,
+        breaker_max_metric_age_seconds=300,
+    )
+    metrics = {
+        "_breaker_source_present": True,
+        "_breaker_source_age_seconds": 301.0,
+        "data_quality_score": "25.00",
+        "combined_blocked_rate": "0.000000",
+        "stocks_pnl_proxy": "0.000000",
+    }
+
+    actionable, reason = run_all_sleeves._breaker_metrics_actionable(metrics, args)
+    reasons, domain = run_all_sleeves._breaker_reasons(metrics, args, runtime_seconds=901.0)
+
+    assert actionable is False
+    assert reason == "source_stale"
+    assert domain == "stocks"
+    assert reasons == []
+
+
+def test_run_all_sleeves_breaker_ignores_closed_schwab_session() -> None:
+    args = argparse.Namespace(
+        broker="schwab",
+        breaker_min_data_quality=75.0,
+        breaker_max_blocked_rate=0.35,
+        breaker_min_pnl_proxy=-0.02,
+        breaker_data_quality_grace_seconds=900,
+        breaker_max_metric_age_seconds=300,
+    )
+    metrics = {
+        "data_quality_session_aware": "true",
+        "data_quality_session_open": "false",
+        "data_quality_score": "25.00",
+        "combined_blocked_rate": "0.000000",
+        "stocks_pnl_proxy": "0.000000",
+    }
+
+    actionable, reason = run_all_sleeves._breaker_metrics_actionable(metrics, args)
+    reasons, _domain = run_all_sleeves._breaker_reasons(metrics, args, runtime_seconds=901.0)
+
+    assert actionable is False
+    assert reason == "market_session_closed"
+    assert reasons == []
+
+
+def test_run_all_sleeves_breaker_parks_execution_without_parking_collectors() -> None:
+    specs = {
+        "baseline_parallel": run_all_sleeves.JobSpec(
+            "baseline_parallel", [], {}, breaker_group=run_all_sleeves.COLLECTION_BREAKER_GROUP
+        ),
+        "bond": run_all_sleeves.JobSpec(
+            "bond", [], {}, breaker_group=run_all_sleeves.COLLECTION_BREAKER_GROUP
+        ),
+        "paper_executor": run_all_sleeves.JobSpec(
+            "paper_executor", [], {}, breaker_group=run_all_sleeves.EXECUTION_BREAKER_GROUP
+        ),
+    }
+
+    parked = run_all_sleeves._breaker_policy_parked_jobs(
+        specs,
+        {
+            run_all_sleeves.COLLECTION_BREAKER_GROUP: 0.0,
+            run_all_sleeves.EXECUTION_BREAKER_GROUP: 200.0,
+        },
+        now=100.0,
+    )
+
+    assert parked == {"paper_executor"}
 
 
 def test_run_all_sleeves_heartbeat_watch_respects_startup_grace(tmp_path) -> None:
@@ -705,6 +796,14 @@ def test_start_stack_blocks_cleanly_on_operator_stop_or_global_halt() -> None:
     assert "OPERATOR_STOP.flag" in text
     assert "GLOBAL_TRADING_HALT.flag" in text
     assert "stack_start_status=blocked_by_safety_flags" in text
+
+
+def test_start_stack_waits_for_launchd_watchdog_readiness() -> None:
+    text = _read(PROJECT_ROOT / "scripts" / "ops" / "start_stack.sh")
+
+    assert "wait_for_process_match" in text
+    assert "SHADOW_WATCHDOG_START_TIMEOUT_SECONDS" in text
+    assert 'wait_for_process_match "$WD_MATCH"' in text
     assert "global-halt-status --json" in text
     assert "global-halt-refresh --json" in text
     assert "operator-release --json" in text
@@ -712,6 +811,59 @@ def test_start_stack_blocks_cleanly_on_operator_stop_or_global_halt() -> None:
     assert "clear-all-halts --json" in text
     assert "--dry-run" in text
     assert "stack_start_dry_run=1" in text
+
+
+def test_stop_start_lifecycle_restores_unattended_supervisors() -> None:
+    opsctl = _read(OPSCTL_PATH)
+    start_stack = _read(PROJECT_ROOT / "scripts" / "ops" / "start_stack.sh")
+
+    assert "STACK_STOPPED.flag" in opsctl
+    assert 'stop_launchd_service "com.dankingsley.reboot_resilience_guard"' in opsctl
+    assert 'stop_launchd_service "com.dankingsley.failover_hot_standby"' in opsctl
+    assert "restore_unattended_support_services" in start_stack
+    assert 'recover_launchd_label "com.dankingsley.ops.watchdog" 1' in start_stack
+    assert 'recover_launchd_label "com.dankingsley.ops.sql_link_writer" 1' in start_stack
+    assert 'recover_launchd_label "com.dankingsley.reboot_resilience_guard" 1' in start_stack
+    assert 'rm -f "$STACK_STOPPED_FLAG"' in start_stack
+
+
+def test_start_stack_certifies_all_sleeves_restart_handoff() -> None:
+    text = _read(PROJECT_ROOT / "scripts" / "ops" / "start_stack.sh")
+
+    assert "wait_for_process_absent" in text
+    assert "ALL_SLEEVES_STOP_TIMEOUT_SECONDS" in text
+    assert "wait_for_process_stable" in text
+    assert "ALL_SLEEVES_START_TIMEOUT_SECONDS" in text
+    assert "ALL_SLEEVES_START_STABLE_SECONDS" in text
+    assert "all_sleeves=failed_to_stop_before_restart" in text
+    assert "all_sleeves=failed_to_start" in text
+    assert "all_sleeves=started pid=" in text
+
+
+def test_start_stack_uses_process_watchdog_as_single_worker_owner() -> None:
+    text = _read(PROJECT_ROOT / "scripts" / "ops" / "start_stack.sh")
+
+    assert "run_process_watchdog_handoff" in text
+    assert 'OPS_WATCHDOG_REQUIRE_ALL_SLEEVES=1' in text
+    assert 'OPS_WATCHDOG_REQUIRE_COINBASE="$WITH_COINBASE"' in text
+    assert 'OPS_WATCHDOG_REQUIRE_COINBASE_FUTURES="$WITH_COINBASE"' in text
+    assert 'stack_start_owner=process_watchdog' in text
+    assert 'all_sleeves_log=logs/watchdog_all_sleeves.log' in text
+    assert 'coinbase_log=logs/watchdog_coinbase_loop.log' in text
+    assert 'coinbase_futures_log=logs/watchdog_coinbase_futures_loop.log' in text
+    assert 'nohup "${CMD[@]}"' not in text
+    assert 'nohup "${CB_CMD[@]}"' not in text
+
+
+def test_start_stack_preflight_is_idempotent_for_running_managed_stack() -> None:
+    text = _read(PROJECT_ROOT / "scripts" / "ops" / "start_stack.sh")
+
+    allow_running = 'PREFLIGHT_ARGS+=(--allow-running)'
+    kill_duplicates = 'PREFLIGHT_ARGS+=(--apply-kill-duplicates)'
+    assert 'grep -F "scripts/run_all_sleeves.py"' in text
+    assert allow_running in text
+    assert kill_duplicates in text
+    assert text.index(allow_running) < text.index(kill_duplicates)
 
 
 def test_paper_trade_lock_is_present_on_stack_entrypoints() -> None:
@@ -829,6 +981,9 @@ def test_opsctl_exposes_commands_hygiene() -> None:
     assert "paper-400-ramp|paper-ramp-400|paper-cap-400" in text
     assert "paper_400_ramp_control.py" in text
     assert "account-position-study [--json] [--day YYYYMMDD] [--profiles CSV]" in text
+    assert "account-buildout-plan [--study-file PATH]" in text
+    assert "portfolio-risk-ledger [--allocator PATH]" in text
+    assert "sleeve-allocator [--one-numbers PATH]" in text
     assert "covered-call-roll-watch [--json] [--today YYYY-MM-DD]" in text
     assert "schwab-account-snapshot-refresh [--json] [--skip-derived]" in text
     assert "notify-test [--enable-imessage]" in text
@@ -1204,9 +1359,18 @@ def test_live_feed_tail_has_memory_aware_heavy_defaults() -> None:
     assert "visible_keepalive_allowed" in text
     assert "emit_live_feed_keepalive \"0\"" in text
     assert "emit_livefeed_decision_paper_snapshot" in text
+    assert 'if [[ "$HEAVY_REQUESTED" == "1" && "$INCLUDE_DECISIONS" == "1" ]]' in text
     assert "truncate_live_lines 0 0" in text
     assert 'important_override="${2:-$IMPORTANT_ONLY}"' in text
     assert "[decision-latest]" in text
+    assert "normalize_decision_record" in text
+    assert "lane_source=" in text
+    assert "age_source=" in text
+    assert "file_age=" in text
+    assert "schema={contract_state}" in text
+    assert "[decision-route] level=watch status=degraded" in text
+    assert 'explicit_level = token_value(lower, "level")' in text
+    assert 'failed=[^[:space:]][^[:space:]]*' in text
     assert "[paper]" in text
     assert "[paper-data]" in text
     assert "[paper-profit]" in text
@@ -1224,13 +1388,17 @@ def test_live_feed_tail_has_memory_aware_heavy_defaults() -> None:
     assert "keepalive_count=0" in text
     assert "important_only" in text
     assert "important_operator_line" in text
+    assert "(status-contract|system|collection|fx-provider|auth|schwab-auth|storage|throttle|soak|dashboard|paper|paper-data|paper-profit|paper-truth|decision-latest|decision-route)" in text
     assert "important_pat" in text
     assert "live_feed_files_hidden" in text
     assert "emit_livefeed_status_snapshot" in text
     assert "env_broker_config" in text
     assert "[broker]" in text
-    assert "[auth]" in text
-    assert "[schwab-auth]" in text
+    assert "live_feed_status_contract" in text
+    assert "[status-contract]" in text
+    assert "build_status_snapshot" in text
+    assert "format_status_lines" in text
+    assert 'promotion_state = "evidence_pending"' in text
     assert "drop_stale_bootstrap_state_lines" in text
     assert "run_filtered_state_safe_snapshot" in text
     assert "spacex_ipo_downside_watch_latest.json" in text
@@ -1244,6 +1412,10 @@ def test_live_feed_tail_has_memory_aware_heavy_defaults() -> None:
     assert "include_coinbase_watchdog_log" in text
     assert "HEAVY_TTL_ENABLED_OVERRIDE" in text
     assert "HEAVY_TTL_SECONDS_OVERRIDE" in text
+    assert "terminate_livefeed_descendants" in text
+    guarded_text = _read(LIVE_FEED_HEAVY_GUARDED_PATH)
+    assert "terminate_process_tree" in guarded_text
+    assert "stop_heavy_tree" in guarded_text
     assert 'tail -c "$HEAVY_TAIL_BYTES"' in text
     assert "truncate_live_lines" in text
     assert "colorize_line" in text

@@ -117,6 +117,36 @@ def test_build_label_audit_marks_missing_diagnostics_for_refresh(tmp_path: Path)
     assert payload["active_zero_sample"][0]["bot_id"] == "brain_refinery_v17_mixed_regime"
 
 
+def test_sparse_underacting_bot_collects_evidence_instead_of_loosening(tmp_path: Path) -> None:
+    registry_path = tmp_path / "master_bot_registry.json"
+    diagnostics_dir = tmp_path / "governance" / "training_diagnostics"
+    bot_id = "brain_refinery_v999_sparse_underactor"
+    _write_json(registry_path, {"sub_bots": [{"bot_id": bot_id, "active": True}]})
+    _write_json(
+        diagnostics_dir / f"{bot_id}_latest.json",
+        {
+            "status": "failed",
+            "sample_count": 1,
+            "positive_rate": 0.5,
+            "metrics": {
+                "acted_coverage": 0.0,
+                "acted_accuracy": 0.0,
+                "long_acted_count": 0,
+                "short_acted_count": 0,
+                "label_balance_score": 1.0,
+            },
+        },
+    )
+
+    payload = audit.build_label_audit_payload(registry_path=registry_path, diagnostics_dir=diagnostics_dir)
+    row = payload["active_underacting"][0]
+
+    assert row["acceptance_rate"] == 0.0
+    assert row["label_materialization_rate"] == 1.0
+    assert row["recommendation"] == "collect_abstention_evidence"
+    assert row["direct_loosen_allowed"] is False
+
+
 def test_registry_label_contract_clears_legacy_diagnostic_contract_gap(tmp_path: Path) -> None:
     registry_path = tmp_path / "master_bot_registry.json"
     diagnostics_dir = tmp_path / "governance" / "training_diagnostics"

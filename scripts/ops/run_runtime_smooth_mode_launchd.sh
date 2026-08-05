@@ -49,19 +49,19 @@ trap cleanup EXIT INT TERM
 
 if [[ "${RUNTIME_SMOOTH_MODE_MEMORY_REFRESH:-1}" == "1" ]]; then
   /usr/bin/nice -n "$SMOOTH_NICE" "$PROJECT_ROOT/scripts/ops/opsctl.sh" \
-    memory-pressure-intelligence --apply --json || true
+    memory-pressure-intelligence --apply --json >/dev/null || true
 fi
 
 /usr/bin/nice -n "$SMOOTH_NICE" "$PROJECT_ROOT/scripts/ops/opsctl.sh" \
-  runtime-throttle --apply --json
+  runtime-throttle --apply --json >/dev/null
 
 if [[ "${RUNTIME_SMOOTH_MODE_PAPER_REFRESH:-1}" == "1" ]]; then
   /usr/bin/nice -n "$SMOOTH_NICE" "$PROJECT_ROOT/scripts/ops/opsctl.sh" \
-    paper-400-ramp --apply --json || true
+    paper-400-ramp --apply --json >/dev/null || true
   /usr/bin/nice -n "$SMOOTH_NICE" "$PROJECT_ROOT/scripts/ops/opsctl.sh" \
-    paper-live-data-standard --apply --json || true
+    paper-live-data-standard --apply --json >/dev/null || true
   /usr/bin/nice -n "$SMOOTH_NICE" "$PROJECT_ROOT/scripts/ops/opsctl.sh" \
-    paper-trade-lock-infrabot --apply --json || true
+    paper-trade-lock-infrabot --apply --json >/dev/null || true
 fi
 
 if [[ "${RUNTIME_SMOOTH_MODE_ADAPTIVE_NEEDS:-1}" == "1" ]]; then
@@ -73,5 +73,7 @@ if [[ "${RUNTIME_SMOOTH_MODE_ADAPTIVE_NEEDS:-1}" == "1" ]]; then
     --execute-safe-repairs \
     --max-execute-actions "${RUNTIME_SMOOTH_MODE_ADAPTIVE_MAX_EXECUTE_ACTIONS:-3}" \
     --command-timeout-seconds "${RUNTIME_SMOOTH_MODE_ADAPTIVE_COMMAND_TIMEOUT_SECONDS:-240}" \
-    --json || true
+    --json >/dev/null || true
 fi
+
+print -r -- "runtime_smooth_mode status=complete profile=$BOT_RUNTIME_PROFILE"

@@ -9,6 +9,7 @@ if str(SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPTS_DIR))
 
 import resource_guard
+from core.storage_router import StorageRoutingResult
 
 
 def test_memory_pressure_state_turns_yellow_on_low_available(monkeypatch) -> None:
@@ -24,6 +25,34 @@ def test_memory_pressure_state_turns_yellow_on_low_available(monkeypatch) -> Non
     assert any("available_pct" in reason for reason in reasons)
 
 
+def test_storage_disk_snapshot_uses_read_only_route_inspection(tmp_path: Path, monkeypatch) -> None:
+    from core import storage_router
+
+    inspected = {"count": 0}
+
+    def inspect(project_root: Path) -> StorageRoutingResult:
+        inspected["count"] += 1
+        return StorageRoutingResult(
+            mode="local_fallback",
+            active_root=Path(project_root),
+            switched_links=(),
+            passthrough_paths=(),
+        )
+
+    monkeypatch.setattr(storage_router, "inspect_runtime_storage", inspect)
+    monkeypatch.setattr(
+        storage_router,
+        "route_runtime_storage",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("mutating route API called by health probe")),
+    )
+
+    snapshot = resource_guard._storage_disk_snapshot(tmp_path)
+
+    assert inspected["count"] == 1
+    assert snapshot["disk_storage_mode"] == "local_fallback"
+    assert snapshot["disk_route_error"] == ""
+
+
 def test_memory_pressure_state_turns_red_on_throttled_pages(monkeypatch) -> None:
     monkeypatch.setenv("RESOURCE_GUARD_MEMORY_RED_THROTTLED_PAGES", "1")
     snapshot = {
@@ -35,6 +64,41 @@ def test_memory_pressure_state_turns_red_on_throttled_pages(monkeypatch) -> None
     state, reasons, _thresholds = resource_guard._memory_pressure_state(snapshot)
     assert state == "red"
     assert any("pages_throttled" in reason for reason in reasons)
+
+
+def test_memory_pressure_state_turns_red_when_startup_disk_cannot_support_swap(monkeypatch) -> None:
+    monkeypatch.setenv("RESOURCE_GUARD_MEMORY_RED_LOCAL_DISK_GB", "8")
+    snapshot = {
+        "memory_available_pct": 90.0,
+        "memory_free_pct": 83.0,
+        "swap_used_gb": 1.0,
+        "pages_throttled": 0,
+        "local_disk_free_gb": 0.25,
+    }
+
+    state, reasons, _thresholds = resource_guard._memory_pressure_state(snapshot)
+
+    assert state == "red"
+    assert reasons == ["local_disk_swap_headroom_gb:0.25<8.0"]
+    assert resource_guard._memory_pressure_kind(snapshot, state, reasons) == "disk_swap_headroom"
+
+
+def test_memory_pressure_state_warns_before_startup_disk_starves_temp_files(monkeypatch) -> None:
+    monkeypatch.setenv("RESOURCE_GUARD_MEMORY_YELLOW_LOCAL_DISK_GB", "32")
+    monkeypatch.setenv("RESOURCE_GUARD_MEMORY_RED_LOCAL_DISK_GB", "8")
+    snapshot = {
+        "memory_available_pct": 90.0,
+        "memory_free_pct": 83.0,
+        "swap_used_gb": 1.0,
+        "pages_throttled": 0,
+        "local_disk_free_gb": 20.0,
+    }
+
+    state, reasons, _thresholds = resource_guard._memory_pressure_state(snapshot)
+
+    assert state == "yellow"
+    assert reasons == ["local_disk_swap_headroom_gb:20.0<32.0"]
+    assert resource_guard._memory_pressure_kind(snapshot, state, reasons) == "disk_swap_headroom"
 
 
 def test_optional_job_blocks_on_yellow_pressure(monkeypatch) -> None:
@@ -265,6 +329,23 @@ def test_named_process_scan_ignores_helper_and_path_false_positives(monkeypatch)
     assert "itunescloudd" not in str(commands)
     assert "Codex Computer Use" not in str(commands)
     assert "SafariWidgetExtension" not in str(commands)
+
+
+def test_command_bundle_scan_handles_giant_non_app_command_line() -> None:
+    command = "/opt/homebrew/bin/python run_all_sleeves.py --symbols " + ",".join(
+        f"SYMBOL{index}" for index in range(20_000)
+    )
+
+    assert resource_guard._command_bundle_names(command) == []
+
+
+def test_command_bundle_scan_extracts_path_bundles_only() -> None:
+    command = (
+        "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome "
+        "/Users/example/My Tool.app/Contents/MacOS/tool"
+    )
+
+    assert resource_guard._command_bundle_names(command) == ["google chrome", "my tool"]
 
 
 def test_refresh_job_blocks_dual_creative_session(monkeypatch) -> None:

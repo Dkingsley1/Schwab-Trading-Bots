@@ -37,6 +37,8 @@ SESSION_PAUSE_REASONS = {
     "session_gate",
     "outside_session",
 }
+SUSTAINED_INGESTION_ERROR_RATE = 0.80
+SUSTAINED_INGESTION_MIN_REQUESTS = 12
 
 
 def _daily_verify_check_resolved(project_root: Path, daily_verify: dict[str, Any], name: str) -> bool:
@@ -93,12 +95,32 @@ def _is_isolated_pause(row: dict[str, Any]) -> bool:
     )
 
 
+def _is_failed_ingestion(row: dict[str, Any]) -> bool:
+    loop_state = str(row.get("loop_state") or "").strip().lower()
+    if loop_state != "running":
+        return False
+    iter_requests = int(row.get("iter_total_requests", 0) or 0)
+    total_requests = int(row.get("total_request_count", 0) or 0)
+    iter_error_rate = float(row.get("iter_error_rate", 0.0) or 0.0)
+    total_error_rate = float(row.get("total_error_rate", 0.0) or 0.0)
+    return bool(
+        iter_requests > 0
+        and total_requests >= SUSTAINED_INGESTION_MIN_REQUESTS
+        and iter_error_rate >= SUSTAINED_INGESTION_ERROR_RATE
+        and total_error_rate >= SUSTAINED_INGESTION_ERROR_RATE
+    )
+
+
 def _ingress_rows(project_root: Path) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     for path in sorted((project_root / "governance" / "health").glob("data_ingress_latest_*.json")):
         payload = load_json(path)
         if not payload:
             continue
+        total_counts = payload.get("total_counts") if isinstance(payload.get("total_counts"), dict) else {}
+        total_errors = int(total_counts.get("api_error", 0) or 0)
+        total_successes = sum(int(total_counts.get(key, 0) or 0) for key in ("api_ok", "cache_ok", "simulate_ok"))
+        total_requests = total_errors + total_successes
         rows.append(
             {
                 "artifact": path.name,
@@ -108,6 +130,10 @@ def _ingress_rows(project_root: Path) -> list[dict[str, Any]]:
                 "loop_state": str(payload.get("loop_state") or ""),
                 "pause_reason": str(payload.get("pause_reason") or ""),
                 "iter_error_rate": float(payload.get("iter_error_rate", 0.0) or 0.0),
+                "iter_total_requests": int(payload.get("iter_total_requests", 0) or 0),
+                "total_request_count": total_requests,
+                "total_error_count": total_errors,
+                "total_error_rate": round(total_errors / total_requests, 6) if total_requests > 0 else 0.0,
             }
         )
     return rows
@@ -121,24 +147,27 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, max_quarantine_events: i
     ingress_rows = _ingress_rows(project_root)
 
     isolated_lanes = [row for row in ingress_rows if _is_isolated_pause(row)]
+    failed_ingestion_lanes = [row for row in ingress_rows if _is_failed_ingestion(row)]
     session_paused_lanes = [
         row
         for row in ingress_rows
         if _is_session_pause(row) and not _is_isolated_pause(row)
     ]
     running_lanes = [row for row in ingress_rows if str(row.get("loop_state") or "") == "running"]
+    healthy_running_lanes = [row for row in running_lanes if row not in failed_ingestion_lanes]
     quarantine_events = int(quarantine_pressure.get("quarantine_events", 0) or 0)
     unresolved_checks = _unresolved_daily_verify_checks(project_root, daily_verify)
 
     overall_status = "ready"
-    if len(isolated_lanes) >= 2 or quarantine_events > int(max_quarantine_events):
+    unhealthy_lane_count = len(isolated_lanes) + len(failed_ingestion_lanes)
+    if unhealthy_lane_count >= 2 or quarantine_events > int(max_quarantine_events):
         overall_status = "blocked"
-    elif isolated_lanes or quarantine_events > 0:
+    elif unhealthy_lane_count > 0 or quarantine_events > 0:
         overall_status = "degraded"
     isolated_lane_count = len(isolated_lanes)
     running_lane_count = len(running_lanes)
     total_lane_count = max(isolated_lane_count + running_lane_count, 1)
-    blast_radius_score = round((running_lane_count / total_lane_count) * 100.0, 2)
+    blast_radius_score = round((len(healthy_running_lanes) / total_lane_count) * 100.0, 2)
     thaw_candidates = lane_thaw.get("candidates") if isinstance(lane_thaw.get("candidates"), list) else []
     thaw_blocked = lane_thaw.get("blocked") if isinstance(lane_thaw.get("blocked"), list) else []
     thaw_rows = lane_thaw.get("lanes") if isinstance(lane_thaw.get("lanes"), list) else []
@@ -184,6 +213,7 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, max_quarantine_events: i
     recommended_actions = ordered_unique(
         [
             "keep healthy sleeves running while anomaly-killed lanes stay quarantined" if isolated_lanes else "",
+            "route sustained ingestion failures to the provider fallback before lane kill switches accumulate" if failed_ingestion_lanes else "",
             "route investigation to the paused sleeves instead of draining the entire runtime" if len(isolated_lanes) >= 1 else "",
             "reduce quarantine churn before expanding sleeve count again" if quarantine_events > int(max_quarantine_events) else "",
             "clear unresolved daily verify blockers before reenabling isolated sleeves" if unresolved_checks else "",
@@ -211,11 +241,14 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, max_quarantine_events: i
             "session_paused_lanes": session_paused_lanes[:12],
             "session_paused_lane_count": len(session_paused_lanes),
             "running_lane_count": running_lane_count,
+            "healthy_running_lane_count": len(healthy_running_lanes),
             "running_examples": running_lanes[:6],
+            "failed_ingestion_lanes": failed_ingestion_lanes[:12],
+            "failed_ingestion_lane_count": len(failed_ingestion_lanes),
         },
         "gates": {
             "unresolved_daily_verify_checks": unresolved_checks,
-            "isolation_required": bool(isolated_lanes),
+            "isolation_required": bool(isolated_lanes or failed_ingestion_lanes),
         },
         "repeatable_thaw_contract": {
             "ready": repeatable_thaw_ready,

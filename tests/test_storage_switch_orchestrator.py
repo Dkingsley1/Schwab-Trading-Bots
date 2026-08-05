@@ -110,3 +110,32 @@ def test_build_payload_no_restart_skips_stop_and_restart(tmp_path: Path, monkeyp
     assert payload["steps"].keys() == {"storage_failback_sync", "storage_split_brain_reconciler"}
     assert all(cmd[-1] != "stop" for cmd in calls)
     json.dumps(payload, ensure_ascii=True)
+
+
+def test_build_payload_no_restart_blocks_active_writer_before_route_mutation(tmp_path: Path, monkeypatch) -> None:
+    project_root = tmp_path / "project"
+    calls: list[list[str]] = []
+    monkeypatch.setattr(
+        src,
+        "_run_command",
+        lambda cmd, **kwargs: calls.append(list(cmd)) or {"cmd": list(cmd), "rc": 0, "timed_out": False},
+    )
+    monkeypatch.setattr(
+        src.writer_src,
+        "writer_state_snapshot",
+        lambda project_root: {"active": True, "writer_pid": 123},
+    )
+
+    payload = src.build_payload(
+        project_root,
+        target_mode="external",
+        restart=False,
+        eject=False,
+        quiesce_only=False,
+    )
+
+    assert payload["ok"] is False
+    assert payload["overall_status"] == "blocked_writer_active"
+    assert payload["route_mutation_performed"] is False
+    assert calls == []
+    assert not (project_root / "config" / ".env.storage_override").exists()

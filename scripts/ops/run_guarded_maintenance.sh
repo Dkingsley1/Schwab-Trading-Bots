@@ -32,6 +32,9 @@ else
   BACKGROUND_POLICY="${MAINTENANCE_SLOT_BACKGROUND_POLICY:-${OPS_SUPPORT_JOBS_BACKGROUND_POLICY:-1}}"
 fi
 case "$SLOT" in
+  sql_link_writer)
+    DEFAULT_MAX_RUNTIME_SECONDS="${MAINTENANCE_SLOT_SQL_LINK_WRITER_MAX_RUNTIME_SECONDS:-900}"
+    ;;
   sqlite_maintenance)
     DEFAULT_MAX_RUNTIME_SECONDS="${SQLITE_MAINTENANCE_SLOT_MAX_RUNTIME_SECONDS:-14400}"
     ;;
@@ -91,13 +94,20 @@ if [[ "$MAX_RUNTIME_SECONDS" == <-> ]] && (( MAX_RUNTIME_SECONDS > 0 )); then
         if (( SECONDS - grace_start >= TIMEOUT_TERM_GRACE_SECONDS )); then
           echo "maintenance_slot_timeout_force_kill slot=$SLOT pid=$child_pid" >&2
           kill -KILL "$child_pid" >/dev/null 2>&1 || true
+          sleep 1
+          if kill -0 "$child_pid" >/dev/null 2>&1; then
+            echo "maintenance_slot_timeout_uninterruptible slot=$SLOT pid=$child_pid" >&2
+            exit 124
+          fi
           break
         fi
         sleep 1
       done
-      set +e
-      wait "$child_pid" >/dev/null 2>&1
-      set -e
+      if ! kill -0 "$child_pid" >/dev/null 2>&1; then
+        set +e
+        wait "$child_pid" >/dev/null 2>&1
+        set -e
+      fi
       exit 124
     fi
     sleep 1

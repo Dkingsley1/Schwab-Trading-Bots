@@ -12,6 +12,36 @@ def _write_json(path: Path, payload: dict) -> None:
     path.write_text(json.dumps(payload, ensure_ascii=True, indent=2), encoding="utf-8")
 
 
+def test_master_infra_self_audit_cycle_is_advisory_only_for_green_paper_soak() -> None:
+    context = {
+        "enabled": True,
+        "managed_by": "runtime_gate_dashboard",
+        "soak_grade": "A+",
+        "paper_stage": "armed",
+        "health_fast_status": "ready",
+    }
+    payload = {
+        "overall_status": "degraded",
+        "metrics": {"blocked_check_count": 0, "hard_failed_attempt_count": 0},
+        "checks": [
+            {"name": "governance_artifact_freshness", "status": "degraded"},
+            {"name": "self_auditing_infra_bots", "status": "degraded"},
+        ],
+    }
+
+    status, metadata = src._normalize_guarded_paper_surface("master_infra", "degraded", payload, context)
+
+    assert status == "advisory"
+    assert metadata["guarded_paper_advisory_only"] is True
+    assert metadata["managed_control_state"] == "self_auditing_infra_debt_deferred_while_hot_path_is_green"
+
+    payload["metrics"]["blocked_check_count"] = 1
+    status, metadata = src._normalize_guarded_paper_surface("master_infra", "degraded", payload, context)
+
+    assert status == "degraded"
+    assert metadata == {}
+
+
 def test_system_self_model_builds_awareness_domains_and_optimizations(tmp_path: Path) -> None:
     rows = [
         {

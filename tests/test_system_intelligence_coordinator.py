@@ -819,6 +819,22 @@ def test_signal_bus_defers_training_runtime_and_data_plane_under_guarded_paper_s
     assert signals["data_plane_recovery"]["metrics"]["normalization_reason"] == "guarded_paper_soak_green_and_data_plane_recovering_under_guard"
 
 
+def test_training_runtime_idle_without_candidates_is_not_scored_as_degraded() -> None:
+    severity = src._severity_for_signal(
+        "training_runtime",
+        "ready",
+        {
+            "launch_allowed": False,
+            "prep_allowed": True,
+            "launch_blockers": ["no_bot_needs_training_candidates"],
+            "recommended_batch_size": 0,
+        },
+        True,
+    )
+
+    assert severity == 0
+
+
 def test_signal_bus_normalizes_bounded_training_canary_and_platform_brain_under_guarded_paper_soak(tmp_path: Path) -> None:
     _seed_pressure_project(tmp_path)
     health = tmp_path / "governance" / "health"
@@ -903,6 +919,477 @@ def test_signal_bus_keeps_optional_support_staleness_managed_under_guarded_paper
         assert signals[name]["stale"] is False
         assert signals[name]["raw_stale"] is True
         assert signals[name]["managed_stale"] is True
+
+    payload = src.build_payload(tmp_path)
+    assert payload["system_self_intelligence"]["uncertainty"]["stale_signals"] == []
+    blind_spot_names = {
+        str(row.get("name") or "")
+        for row in payload["system_self_intelligence"]["awareness_state_vector"]["blind_spots"]
+    }
+    assert not any(name.startswith("stale_signal:") for name in blind_spot_names)
+
+
+def test_signal_bus_normalizes_managed_soak_advisories_when_runtime_is_green(tmp_path: Path) -> None:
+    _seed_pressure_project(tmp_path)
+    health = tmp_path / "governance" / "health"
+    _write_json(
+        health / "health_fast_latest.json",
+        {
+            "ok": True,
+            "overall_status": "ready",
+            "strict_all_clear": True,
+            "operational_readiness": {
+                "guarded_paper": {"ok": True, "status": "ready", "blockers": []},
+                "live_execution": {"ok": False, "status": "blocked_read_only", "blockers": ["operator_required"]},
+            },
+        },
+    )
+    _write_json(health / "runtime_paper_regression_guard_latest.json", {"ok": True, "overall_status": "ready"})
+    _write_json(
+        health / "ingestion_storage_control_latest.json",
+        {
+            "overall_status": "ready",
+            "severity": "stable",
+            "pressure_index": 0.01,
+            "backpressure": {"total_pending_lines": 844, "core_pending_lines": 227, "pending_lines_threshold": 15000},
+        },
+    )
+    _write_json(
+        health / "memory_efficiency_control_latest.json",
+        {
+            "overall_status": "ready",
+            "memory_snapshot": {
+                "memory_pressure_state": "green",
+                "memory_pressure_kind": "none",
+                "swap_used_gb": 1.3,
+                "compressed_store_gb": 5.4,
+            },
+            "cotenant_awareness": {"memory_pressure_clear": True},
+        },
+    )
+    _write_json(
+        health / "runtime_throttle_control_latest.json",
+        {"overall_status": "advisory", "memory_pressure_level": "normal", "cpu_pressure_level": "normal", "host_saturation_score": 36.0},
+    )
+    _write_json(
+        health / "macro_event_intelligence_latest.json",
+        {
+            "overall_status": "ready",
+            "market_relevance": "high",
+            "source": "Federal Reserve",
+            "transcript_quality": "live_excerpt",
+            "live_detected": False,
+            "replay_contract": {"replay_pending": False, "replay_completed": False, "full_video_required": False},
+            "calendar_verification": {"status": "not_requested", "ok": False, "reason": "disabled"},
+        },
+    )
+    _write_json(
+        health / "training_quality_control_latest.json",
+        {"overall_status": "ready", "training_quality_score": 100.0},
+    )
+    _write_json(
+        health / "bot_quality_autopilot_latest.json",
+        {
+            "overall_status": "needs_work",
+            "quality_blockers": {
+                "refresh_diagnostics_bot_ids": ["brain_refinery_v265_crypto_risk_off_contagion_shock_guard"],
+                "repair_runtime_input_bot_ids": [],
+                "quality_probation_bot_ids": [],
+                "targeted_retrain_bot_ids": [],
+                "students_without_teachers": 0,
+                "coverage_shortfall_bots": 0,
+                "infrastructure_helper_count": 0,
+                "planned_queue_count": 14,
+            },
+            "teacher_summary": {"qualified_teacher_count": 7, "elite_teacher_count": 2},
+            "quality_upgrade_queue": [{"bot_id": "brain_refinery_v10_seasonal"}],
+            "attempts": [{"cmd": ["python", "scripts/ops/teacher_quality_guard.py", "--json"], "rc": 0, "timed_out": False}],
+        },
+    )
+    _write_json(
+        health / "writer_cycle_coordinator_latest.json",
+        {
+            "overall_status": "waiting_for_writer",
+            "ok": True,
+            "summary": {
+                "handoff_only": True,
+                "writer_active_initial": True,
+                "writer_active_after_wait": True,
+                "writer_current_step": "shard_linking",
+                "completed_writer_lock_handoff_needed": False,
+                "wait_timed_out": False,
+            },
+            "writer_state_before": {
+                "active": True,
+                "running": True,
+                "writer_owner_pid_live": True,
+                "writer_lock_held": True,
+                "child_writer_active": True,
+                "active_child_writer_count": 1,
+                "progress_orphaned": False,
+                "complete_lock_handoff_needed": False,
+                "progress_age_minutes": 0.1,
+                "completed_shard_count": 5,
+                "planned_shard_count": 18,
+                "timed_out_shard_count": 0,
+            },
+        },
+    )
+    _write_json(
+        health / "training_data_intake_expansion_latest.json",
+        {
+            "overall_status": "ready",
+            "collector_count": 1742,
+            "weak_record_count": 1742,
+            "trainable_candidate_count": 6,
+            "collect_first_count": 1603,
+            "summaries": {"weakness_counts": {"sample_starved": 1731, "sequence_starved": 1741}},
+        },
+    )
+    _write_json(
+        health / "operating_platform_upgrade_latest.json",
+        {
+            "overall_status": "applied_with_work_items",
+            "ok": True,
+            "sections": [
+                {"status": "needs_work", "blockers": ["market_posture_control_missing"], "evidence": {"live_execution_allowed": False}},
+                {"status": "ready", "blockers": [], "evidence": {"live_execution_allowed": False}},
+            ],
+        },
+    )
+    _write_json(
+        health / "deeper_intelligence_layers_latest.json",
+        {
+            "overall_status": "advisory",
+            "layer_count": 10,
+            "ready_count": 9,
+            "advisory_count": 1,
+            "degraded_count": 0,
+            "blocked_count": 0,
+            "missing_surfaces": ["belief_ledger_confidence"],
+            "surface_snapshot": {"storage": {"pending_ratio": 0.04}, "runtime": {"pressure_high": False}},
+        },
+    )
+    _write_json(
+        health / "backpressure_super_drainer_latest.json",
+        {
+            "overall_status": "waiting_for_writer",
+            "decision_packet": {"selected_drainer": "alert_notification_drainer", "total_pending_lines": 844, "target_pending_lines": 5000},
+            "settings": {"target_pending_lines": 5000},
+            "summary": {"final_pending_lines": 844, "stop_reason": "target_already_met"},
+        },
+    )
+    _write_json(
+        health / "mlx_intelligence_router_latest.json",
+        {
+            "overall_status": "advisory",
+            "ok": True,
+            "library_coverage": {"coverage_ratio": 1.0, "missing_count": 0, "compatibility_excluded_count": 3},
+            "route_coverage": {"route_coverage_ratio": 1.0, "blocked_lane_count": 0, "excluded_lane_count": 2},
+            "runtime_caps": {
+                "profile": "foreground_safe",
+                "memory_pressure_level": "normal",
+                "cpu_pressure_level": "normal",
+                "memory_free_pct": 90.0,
+                "swap_used_gb": 1.3,
+                "host_saturation_score": 36.0,
+                "max_concurrent_mlx_jobs": 1,
+                "compile_smoke_ok": True,
+                "metal_available": True,
+            },
+            "lane_optimization_summary": {"allowed_lane_count": 3},
+            "readiness_repair_plan": {"status": "ready"},
+        },
+    )
+    cell_payload = {
+        "overall_status": "advisory",
+        "score": 100.0,
+        "grade": "A+",
+        "operational_health": {
+            "status": "ready",
+            "grade": "A",
+            "raw_status": "blocked",
+            "raw_grade": "F",
+            "managed_raw_need_count": 15,
+            "guarded_paper_soak_health": {"ready": True, "status": "ready"},
+        },
+        "cells": [{"cell_id": "storage_writer_cell", "overall_status": "blocked"}],
+        "top_needs": [{"cell_id": "storage_writer_cell"}],
+    }
+    _write_json(health / "distributed_cell_architecture_latest.json", cell_payload)
+    _write_json(
+        health / "cell_federation_intelligence_latest.json",
+        {**cell_payload, "intelligence_score": 100.0, "intelligence_grade": "A+"},
+    )
+
+    signal_bus = src.build_signal_bus(tmp_path)
+    signals = {str(row["name"]): row for row in signal_bus["signals"]}
+    normalized = {
+        "macro_event_intelligence",
+        "runtime_throttle",
+        "bot_quality",
+        "writer_cycle_coordinator",
+        "training_data_intake",
+        "operating_platform_upgrade",
+        "deeper_intelligence_layers",
+        "backpressure_super_drainer",
+        "mlx_intelligence_router",
+        "distributed_cell_architecture",
+        "cell_federation_intelligence",
+    }
+
+    assert signal_bus["overall_status"] == "ready"
+    assert signal_bus["summary"]["top_risk_score"] <= 20
+    assert set(signal_bus["summary"]["guarded_paper_advisory_signals"]).issuperset(normalized)
+    for name in normalized:
+        assert signals[name]["status"] == "ready"
+        assert signals[name]["severity_score"] == 20
+        assert signals[name]["metrics"]["does_not_block_guarded_paper_soak"] is True
+
+
+def test_signal_bus_normalizes_complete_writer_and_empty_drainer_handoffs_under_guarded_paper_soak(tmp_path: Path) -> None:
+    _seed_pressure_project(tmp_path)
+    health = tmp_path / "governance" / "health"
+    _write_json(
+        health / "health_fast_latest.json",
+        {
+            "ok": True,
+            "overall_status": "ready",
+            "strict_all_clear": True,
+            "operational_readiness": {
+                "guarded_paper": {"ok": True, "status": "ready", "blockers": []},
+                "live_execution": {"ok": False, "status": "blocked_read_only", "blockers": ["operator_required"]},
+            },
+        },
+    )
+    _write_json(health / "runtime_paper_regression_guard_latest.json", {"ok": True, "overall_status": "ready"})
+    _write_json(
+        health / "ingestion_storage_control_latest.json",
+        {
+            "overall_status": "ready",
+            "severity": "stable",
+            "pressure_index": 0.0,
+            "backpressure": {"total_pending_lines": 0, "core_pending_lines": 0, "pending_lines_threshold": 15000},
+        },
+    )
+    _write_json(
+        health / "memory_efficiency_control_latest.json",
+        {
+            "overall_status": "ready",
+            "memory_snapshot": {"memory_pressure_state": "green", "memory_pressure_kind": "none", "swap_used_gb": 1.0, "compressed_store_gb": 3.0},
+            "cotenant_awareness": {"memory_pressure_clear": True},
+        },
+    )
+    _write_json(
+        health / "runtime_throttle_control_latest.json",
+        {"overall_status": "ready", "memory_pressure_level": "normal", "cpu_pressure_level": "normal", "host_saturation_score": 24.0},
+    )
+    _write_json(
+        health / "writer_cycle_coordinator_latest.json",
+        {
+            "overall_status": "handoff_released",
+            "ok": True,
+            "summary": {
+                "handoff_only": True,
+                "writer_active_initial": True,
+                "writer_active_after_wait": False,
+                "writer_current_step": "complete",
+                "completed_writer_lock_handoff_needed": True,
+                "wait_timed_out": False,
+                "wait_completed": True,
+            },
+            "writer_state_before": {
+                "active": True,
+                "running": False,
+                "writer_owner_pid_live": True,
+                "writer_lock_held": True,
+                "child_writer_active": False,
+                "active_child_writer_count": 0,
+                "progress_orphaned": False,
+                "complete_lock_handoff_needed": True,
+                "progress_age_minutes": 0.5,
+                "timed_out_shard_count": 0,
+            },
+            "safety_envelope": {"single_writer_only": True},
+        },
+    )
+    _write_json(
+        health / "backpressure_drainer_fleet_latest.json",
+        {
+            "overall_status": "handoff_requested",
+            "ok": True,
+            "decision_packet": {
+                "action": "park_and_observe",
+                "selected_drainer": "core_decision_drainer",
+                "total_pending_lines": 0,
+                "target_pending_lines": 5000,
+                "risk_flags": [],
+            },
+            "summary": {
+                "initial_pending_lines": 0,
+                "final_pending_lines": 0,
+                "pending_lines_delta": 0,
+                "waves_run": 0,
+                "progress_waves": 0,
+                "any_progress": False,
+            },
+        },
+    )
+
+    signal_bus = src.build_signal_bus(tmp_path)
+    signals = {str(row["name"]): row for row in signal_bus["signals"]}
+
+    assert signal_bus["overall_status"] == "ready"
+    assert signals["writer_cycle_coordinator"]["status"] == "ready"
+    assert signals["writer_cycle_coordinator"]["source_status"] == "handoff_released"
+    assert signals["writer_cycle_coordinator"]["severity_score"] == 20
+    assert signals["writer_cycle_coordinator"]["metrics"]["normalization_reason"] == "guarded_paper_soak_green_and_writer_handoff_released_complete"
+    assert signals["backpressure_drainer_fleet"]["status"] == "ready"
+    assert signals["backpressure_drainer_fleet"]["source_status"] == "handoff_requested"
+    assert signals["backpressure_drainer_fleet"]["severity_score"] == 20
+    assert signals["backpressure_drainer_fleet"]["metrics"]["normalization_reason"] == "guarded_paper_soak_green_and_drainer_handoff_has_no_pending_backlog"
+
+
+def test_signal_bus_marks_guarded_paper_advisory_staleness_as_managed(tmp_path: Path) -> None:
+    _seed_pressure_project(tmp_path)
+    health = tmp_path / "governance" / "health"
+    old_timestamp = "2026-01-01T00:00:00+00:00"
+    _write_json(
+        health / "health_fast_latest.json",
+        {
+            "ok": True,
+            "overall_status": "ready",
+            "strict_all_clear": True,
+            "operational_readiness": {
+                "guarded_paper": {"ok": True, "status": "ready", "blockers": []},
+                "live_execution": {"ok": False, "status": "blocked_read_only", "blockers": ["operator_required"]},
+            },
+        },
+    )
+    _write_json(health / "runtime_paper_regression_guard_latest.json", {"ok": True, "overall_status": "ready"})
+    _write_json(
+        health / "ingestion_storage_control_latest.json",
+        {
+            "overall_status": "ready",
+            "severity": "stable",
+            "pressure_index": 0.0,
+            "backpressure": {"total_pending_lines": 0, "core_pending_lines": 0, "pending_lines_threshold": 15000},
+        },
+    )
+    _write_json(
+        health / "memory_efficiency_control_latest.json",
+        {
+            "overall_status": "ready",
+            "memory_snapshot": {"memory_pressure_state": "green", "memory_pressure_kind": "none", "swap_used_gb": 1.0, "compressed_store_gb": 3.0},
+            "cotenant_awareness": {"memory_pressure_clear": True},
+        },
+    )
+    _write_json(
+        health / "runtime_throttle_control_latest.json",
+        {"overall_status": "ready", "memory_pressure_level": "normal", "cpu_pressure_level": "normal", "host_saturation_score": 24.0},
+    )
+    _write_json(
+        health / "training_data_intake_expansion_latest.json",
+        {
+            "timestamp_utc": old_timestamp,
+            "overall_status": "ready",
+            "collector_count": 1742,
+            "trainable_candidate_count": 6,
+            "collect_first_count": 1603,
+            "summaries": {"weakness_counts": {"sample_starved": 1731}},
+        },
+    )
+    _write_json(
+        health / "macro_event_intelligence_latest.json",
+        {
+            "timestamp_utc": old_timestamp,
+            "overall_status": "ready",
+            "market_relevance": "high",
+            "source": "Federal Reserve",
+            "transcript_quality": "live_excerpt",
+            "live_detected": False,
+            "replay_contract": {"replay_pending": False, "replay_completed": False, "full_video_required": False},
+            "calendar_verification": {"status": "not_requested", "ok": False, "reason": "disabled"},
+        },
+    )
+
+    signal_bus = src.build_signal_bus(tmp_path)
+    signals = {str(row["name"]): row for row in signal_bus["signals"]}
+
+    assert signal_bus["overall_status"] == "ready"
+    for name in {"training_data_intake", "macro_event_intelligence"}:
+        assert signals[name]["status"] == "ready"
+        assert signals[name]["stale"] is False
+        assert signals[name]["raw_stale"] is True
+        assert signals[name]["managed_stale"] is True
+        assert signals[name]["metrics"]["source_stale"] is True
+        assert signals[name]["metrics"]["managed_by"] == "system_signal_bus_guarded_paper_advisory"
+
+
+def test_signal_bus_manages_auth_warning_above_paper_readiness_floor(tmp_path: Path) -> None:
+    _seed_pressure_project(tmp_path)
+    health = tmp_path / "governance" / "health"
+    _write_json(
+        health / "health_fast_latest.json",
+        {
+            "ok": True,
+            "overall_status": "ready",
+            "strict_all_clear": True,
+            "operational_readiness": {
+                "guarded_paper": {"ok": True, "status": "ready", "blockers": []},
+                "live_execution": {"ok": False, "status": "blocked_read_only", "blockers": ["operator_required"]},
+            },
+        },
+    )
+    _write_json(health / "runtime_paper_regression_guard_latest.json", {"ok": True, "overall_status": "ready"})
+    _write_json(
+        health / "ingestion_storage_control_latest.json",
+        {
+            "overall_status": "ready",
+            "severity": "stable",
+            "pressure_index": 0.0,
+            "backpressure": {"total_pending_lines": 0, "core_pending_lines": 0, "pending_lines_threshold": 15000},
+        },
+    )
+    _write_json(
+        health / "memory_efficiency_control_latest.json",
+        {
+            "overall_status": "ready",
+            "memory_snapshot": {"memory_pressure_state": "green", "memory_pressure_kind": "none", "swap_used_gb": 1.0, "compressed_store_gb": 3.0},
+            "cotenant_awareness": {"memory_pressure_clear": True},
+        },
+    )
+    _write_json(
+        health / "runtime_throttle_control_latest.json",
+        {"overall_status": "ready", "memory_pressure_level": "normal", "cpu_pressure_level": "normal", "host_saturation_score": 24.0},
+    )
+    _write_json(
+        health / "auth_lease_manager_latest.json",
+        {
+            "overall_status": "degraded",
+            "lease_state": "warning",
+            "lease_budget": {"expires_in_seconds": 1120, "critical_lease_seconds": 600, "token_lease_grace": True},
+            "broker_state": {
+                "broker_ready": True,
+                "broker_operable": True,
+                "network_ok": True,
+                "auth_ok": False,
+                "auth_probe_ok": False,
+                "configured_for_refresh": True,
+                "auth_reason": "account_probe_failed:403",
+            },
+        },
+    )
+
+    signal_bus = src.build_signal_bus(tmp_path)
+    auth = next(row for row in signal_bus["signals"] if row["name"] == "auth_lease_manager")
+
+    assert signal_bus["overall_status"] == "ready"
+    assert auth["status"] == "ready"
+    assert auth["source_status"] == "degraded"
+    assert auth["raw_severity_score"] == 90
+    assert auth["severity_score"] == 20
+    assert auth["metrics"]["normalization_reason"] == "guarded_paper_soak_green_and_auth_warning_above_paper_readiness_floor"
 
 
 def test_system_intelligence_routes_storage_quota_top_risk_to_quota_remediation(tmp_path: Path) -> None:

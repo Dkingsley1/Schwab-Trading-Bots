@@ -33,6 +33,78 @@ class StorageRouterTests(unittest.TestCase):
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(content, encoding='utf-8')
 
+    def test_runtime_maintenance_hold_blocks_route_mutation(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td) / 'repo'
+            root.mkdir()
+            hold_path = root / 'maintenance.flag'
+            hold_path.write_text('{"reason":"test"}', encoding='utf-8')
+            previous = self._set_env({'RUNTIME_MAINTENANCE_HOLD_PATH': str(hold_path)})
+            try:
+                with self.assertRaisesRegex(RuntimeError, 'runtime_maintenance_hold_blocks_storage_route_mutation'):
+                    storage_router.route_runtime_storage(root, link_dirs=('logs',))
+            finally:
+                self._restore_env(previous)
+
+            self.assertFalse((root / 'logs').exists())
+
+    def test_pinned_local_hot_storage_never_probes_external_root(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td) / 'repo'
+            root.mkdir()
+            local_root = root / 'local_fallback_storage'
+            (local_root / 'logs').mkdir(parents=True)
+            (root / 'logs').symlink_to('/Volumes/unresponsive/schwab_trading_bot/logs')
+            previous = self._set_env(
+                {
+                    'BOT_LOGS_PREFER_EXTERNAL': '0',
+                    'BOT_LOGS_LOCAL_FALLBACK_ROOT': str(local_root),
+                    'BOT_LOGS_EXTERNAL_PROJECT_ROOT': '/Volumes/unresponsive/schwab_trading_bot',
+                }
+            )
+            try:
+                with mock.patch.object(
+                    storage_router,
+                    '_external_project_root',
+                    side_effect=AssertionError('external filesystem must not be probed'),
+                ):
+                    result = storage_router.route_runtime_storage(root, link_dirs=('logs',))
+            finally:
+                self._restore_env(previous)
+
+            self.assertEqual(result.mode, 'local_fallback')
+            self.assertEqual(
+                storage_router._resolve_link_target(root / 'logs'),
+                (local_root / 'logs').resolve(strict=False),
+            )
+
+    def test_pinned_local_hot_storage_repoints_nested_governance_routes(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td) / 'repo'
+            (root / 'governance').mkdir(parents=True)
+            local_root = root / 'local_fallback_storage'
+            local_lane = local_root / 'governance' / 'shadow_example_equities'
+            local_lane.mkdir(parents=True)
+            lane = root / 'governance' / 'shadow_example_equities'
+            lane.symlink_to('/Volumes/unresponsive/schwab_trading_bot/governance/shadow_example_equities')
+            backup = root / 'governance' / 'shadow_example_equities.__external_symlink_backup_20260802'
+            backup.symlink_to('/Volumes/unresponsive/backup')
+            previous = self._set_env(
+                {
+                    'BOT_LOGS_PREFER_EXTERNAL': '0',
+                    'BOT_LOGS_LOCAL_FALLBACK_ROOT': str(local_root),
+                    'BOT_LOGS_EXTERNAL_PROJECT_ROOT': '/Volumes/unresponsive/schwab_trading_bot',
+                }
+            )
+            try:
+                result = storage_router.route_runtime_storage(root, link_dirs=('governance',))
+            finally:
+                self._restore_env(previous)
+
+            self.assertIn('governance/shadow_example_equities', result.switched_links)
+            self.assertEqual(storage_router._resolve_link_target(lane), local_lane.resolve(strict=False))
+            self.assertEqual(os.readlink(backup), '/Volumes/unresponsive/backup')
+
     def test_split_brain_conflict_blocks_initial_failback(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             root = Path(td) / 'repo'
@@ -233,7 +305,7 @@ class StorageRouterTests(unittest.TestCase):
                     'disk_usage',
                     return_value=type(usage)(usage.total, usage.used, 50),
                 ):
-                    result = storage_router.route_runtime_storage(root, link_dirs=('logs',))
+                    result = storage_router.route_runtime_storage(root, link_dirs=('logs',), allow_autosync=True)
             finally:
                 self._restore_env(previous)
 
@@ -244,6 +316,62 @@ class StorageRouterTests(unittest.TestCase):
             self.assertIn('autosync_skipped_external_low_space', result.autosync_skipped_reason)
             self.assertTrue((local_root / 'logs' / 'state.json').exists())
             self.assertFalse((external_root / 'logs' / 'state.json').exists())
+
+    def test_route_runtime_storage_requires_explicit_failback_owner_for_autosync(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td) / 'repo'
+            root.mkdir()
+            external_root = Path(td) / 'external'
+            external_root.mkdir(parents=True, exist_ok=True)
+            local_root = root / 'local_fallback_storage'
+            self._write_text(local_root / 'logs' / 'state.json', 'local-backlog')
+
+            previous = self._set_env(
+                {
+                    'BOT_LOGS_EXTERNAL_PROJECT_ROOT': str(external_root),
+                    'BOT_LOGS_LOCAL_FALLBACK_ROOT': str(local_root),
+                    'BOT_LOGS_AUTO_SYNC_ON_RECONNECT': '1',
+                    'BOT_LOGS_AUTO_SYNC_MIN_FREE_BYTES': '0',
+                    'BOT_LOGS_BLOCK_SPLIT_BRAIN': '0',
+                }
+            )
+            try:
+                result = storage_router.route_runtime_storage(root, link_dirs=('logs',))
+            finally:
+                self._restore_env(previous)
+
+            self.assertEqual(result.mode, 'external')
+            self.assertEqual(result.autosync_copied_files, 0)
+            self.assertEqual(result.autosync_skipped_reason, 'autosync_requires_explicit_failback_owner')
+            self.assertTrue((local_root / 'logs' / 'state.json').exists())
+            self.assertFalse((external_root / 'logs' / 'state.json').exists())
+
+    def test_inspect_runtime_storage_has_no_copy_link_or_event_side_effects(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td) / 'repo'
+            root.mkdir()
+            external_root = Path(td) / 'external'
+            external_root.mkdir(parents=True, exist_ok=True)
+            local_root = root / 'local_fallback_storage'
+            self._write_text(local_root / 'logs' / 'state.json', 'local-backlog')
+
+            previous = self._set_env(
+                {
+                    'BOT_LOGS_EXTERNAL_PROJECT_ROOT': str(external_root),
+                    'BOT_LOGS_LOCAL_FALLBACK_ROOT': str(local_root),
+                    'BOT_LOGS_AUTO_SYNC_ON_RECONNECT': '1',
+                    'BOT_OPS_CONTROL_DB': str(root / 'governance' / 'ops_data_plane.sqlite3'),
+                }
+            )
+            try:
+                result = storage_router.inspect_runtime_storage(root, link_dirs=('logs',))
+            finally:
+                self._restore_env(previous)
+
+            self.assertEqual(result.autosync_skipped_reason, 'inspection_only_no_route_mutation')
+            self.assertFalse((root / 'logs').exists())
+            self.assertFalse((external_root / 'logs' / 'state.json').exists())
+            self.assertFalse((root / 'governance' / 'ops_data_plane.sqlite3').exists())
 
     def test_auto_sync_skips_sqlite_sidecars_for_failback_paths(self) -> None:
         with tempfile.TemporaryDirectory() as td:
@@ -270,6 +398,68 @@ class StorageRouterTests(unittest.TestCase):
             self.assertEqual(details, [])
             self.assertTrue((local_root / 'data' / 'jsonl_link.sqlite3-wal').exists())
             self.assertFalse((external_root / 'data' / 'jsonl_link.sqlite3-wal').exists())
+
+    def test_auto_sync_skips_symlinked_fallback_tree_instead_of_recopying_external_data(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            local_root = root / 'local'
+            external_root = root / 'external'
+            offloaded_fallback = root / 'offloaded_fallback'
+            self._write_text(offloaded_fallback / 'logs' / 'large.jsonl', 'already-external')
+            local_root.mkdir(parents=True, exist_ok=True)
+            (local_root / 'logs').symlink_to(offloaded_fallback / 'logs')
+            external_root.mkdir(parents=True, exist_ok=True)
+            skip_details: list[str] = []
+
+            copied, errors, pruned, details = storage_router._auto_sync_local_to_external(
+                local_root=local_root,
+                external_root=external_root,
+                link_dirs=('logs',),
+                prune_local=True,
+                max_copy_files=10,
+                skip_details=skip_details,
+            )
+
+            self.assertEqual((copied, errors, pruned, details), (0, 0, 0, []))
+            self.assertEqual(skip_details, ['logs:source_route_is_symlink'])
+            self.assertFalse((external_root / 'logs' / 'large.jsonl').exists())
+
+    def test_auto_sync_skips_oversized_or_recent_files_before_copy(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            local_root = root / 'local'
+            external_root = root / 'external'
+            self._write_text(local_root / 'logs' / 'large.jsonl', '12345')
+            self._write_text(local_root / 'logs' / 'recent.jsonl', '123')
+            external_root.mkdir(parents=True, exist_ok=True)
+            skip_details: list[str] = []
+
+            copied, errors, pruned, details = storage_router._auto_sync_local_to_external(
+                local_root=local_root,
+                external_root=external_root,
+                link_dirs=('logs',),
+                prune_local=False,
+                max_copy_files=10,
+                max_file_bytes=4,
+                min_file_age_seconds=300,
+                skip_details=skip_details,
+            )
+
+            self.assertEqual((copied, errors, pruned, details), (0, 0, 0, []))
+            self.assertTrue(any('large.jsonl:file_bytes=5>max_file_bytes=4' in item for item in skip_details))
+            self.assertTrue(any('recent.jsonl:file_age_seconds=' in item for item in skip_details))
+            self.assertFalse((external_root / 'logs' / 'large.jsonl').exists())
+
+    def test_auto_sync_bounds_skip_diagnostics(self) -> None:
+        previous = self._set_env({'BOT_LOGS_AUTO_SYNC_SKIP_DETAIL_LIMIT': '1'})
+        try:
+            details: list[str] = []
+            storage_router._record_autosync_skip(details, 'first')
+            storage_router._record_autosync_skip(details, 'second')
+        finally:
+            self._restore_env(previous)
+
+        self.assertEqual(details, ['first'])
 
     def test_route_runtime_storage_records_route_event(self) -> None:
         with tempfile.TemporaryDirectory() as td:

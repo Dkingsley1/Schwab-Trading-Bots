@@ -136,6 +136,33 @@ def test_unattended_soak_readiness_blocks_storage_margin_and_host_sleep(tmp_path
     assert payload["safe_to_leave_unattended"] is False
 
 
+def test_unattended_soak_readiness_blocks_live_local_pressure_even_when_external_is_healthy(
+    tmp_path: Path, monkeypatch
+) -> None:
+    project_root = tmp_path / "project"
+    external_root = tmp_path / "BOT_LOGS" / "schwab_trading_bot"
+    external_root.mkdir(parents=True)
+    _ready_artifacts(project_root, external_root)
+    monkeypatch.setattr(src.platform, "system", lambda: "Darwin")
+
+    def disk_snapshot(path: Path) -> dict:
+        free_gb = 12.0 if Path(path) == project_root else 180.0
+        return {"path": str(path), "exists": True, "free_gb": free_gb, "used_pct": 90.0}
+
+    payload = src.build_payload(
+        project_root,
+        pmset_custom_text="AC Power:\n sleep 0\n disksleep 0\n standby 0\n autopoweroff 0\n",
+        pmset_batt_text="Now drawing from 'AC Power'\n -InternalBattery-0; AC attached; not charging present: true",
+        process_text="",
+        disk_snapshot_fn=disk_snapshot,
+    )
+
+    assert payload["overall_status"] == "blocked"
+    assert "local_hot_storage_pressure_reserve_breached" in payload["blockers"]
+    assert payload["sections"]["storage"]["current_external_free_gb"] == 180.0
+    assert payload["sections"]["storage"]["local_hot_storage"]["free_gb"] == 12.0
+
+
 def test_unattended_soak_readiness_accepts_approved_cold_archive_spillover(tmp_path: Path, monkeypatch) -> None:
     project_root = tmp_path / "project"
     external_root = tmp_path / "BOT_LOGS" / "schwab_trading_bot"
@@ -175,6 +202,53 @@ def test_unattended_soak_readiness_accepts_approved_cold_archive_spillover(tmp_p
     assert payload["sections"]["storage"]["cold_archive_adjusted_margin_gb"] == 58.0
     assert "approved_cold_archive_spillover" in payload["managed_controls"]
     assert "storage_margin_not_30_day_ready" not in payload["blockers"]
+
+
+def test_unattended_soak_readiness_surfaces_adaptive_cold_archive_shortfall(tmp_path: Path, monkeypatch) -> None:
+    project_root = tmp_path / "project"
+    external_root = tmp_path / "BOT_LOGS" / "schwab_trading_bot"
+    external_root.mkdir(parents=True)
+    _ready_artifacts(project_root, external_root)
+    health = project_root / "governance" / "health"
+    _write_json(
+        health / "storage_retention_unison_latest.json",
+        {
+            "timestamp_utc": src.iso_now(),
+            "continuous_run_contract": {
+                "status": "blocked",
+                "ready": False,
+                "pressure_free_gb": 64.0,
+                "safety_buffer_gb": 32.0,
+                "effective_daily_growth_gb": 0.5,
+                "cold_archive_spillover_available": True,
+                "cold_archive_spillover_ready": False,
+                "cold_archive_spillover_status": "insufficient_capacity_for_horizon",
+                "cold_archive_spillover_capacity_gb": 20.0,
+                "cold_archive_required_spillover_gb": 31.0,
+                "cold_archive_capacity_shortfall_gb": 11.0,
+                "cold_archive_adjusted_margin_gb": -11.0,
+                "cold_archive_capacity_policy": "live_destination_free_minus_reserve_with_optional_configured_cap",
+            },
+        },
+    )
+    monkeypatch.setattr(src.platform, "system", lambda: "Darwin")
+
+    payload = src.build_payload(
+        project_root,
+        pmset_custom_text="AC Power:\n sleep 0\n disksleep 0\n standby 0\n autopoweroff 0\n",
+        pmset_batt_text="Now drawing from 'AC Power'\n -InternalBattery-0; AC attached; not charging present: true",
+        process_text="",
+        disk_snapshot_fn=lambda path: {"path": str(path), "exists": True, "free_gb": 80.0, "used_pct": 92.0},
+    )
+    storage = payload["sections"]["storage"]
+
+    assert storage["cold_archive_spillover_available"] is True
+    assert storage["cold_archive_spillover_ready"] is False
+    assert storage["cold_archive_spillover_status"] == "insufficient_capacity_for_horizon"
+    assert storage["cold_archive_spillover_capacity_gb"] == 20.0
+    assert storage["cold_archive_required_spillover_gb"] == 31.0
+    assert storage["cold_archive_capacity_shortfall_gb"] == 11.0
+    assert "storage_margin_not_30_day_ready" in payload["blockers"]
 
 
 def test_unattended_soak_readiness_manages_bounded_ingestion_steady_state_watch(
@@ -217,7 +291,7 @@ def test_unattended_soak_readiness_manages_bounded_ingestion_steady_state_watch(
                 }
             },
             "stale_pending_locator": {"status": "clear"},
-            "external_route_verification": {"verification_state": "ready"},
+            "external_route_verification": {"verification_state": "active_local_ready"},
             "storage_resilience": {"overall_status": "ready"},
             "data_integrity": {
                 "sql_invalid_lines": 0,
@@ -289,7 +363,7 @@ def test_unattended_soak_readiness_manages_elevated_ingestion_when_bounded_drain
             "backlog_truth": {
                 "raw_live": {
                     "grade": "A+",
-                    "core_pending_lines": 4938,
+                    "core_pending_lines": 6200,
                     "total_pending_lines": 7751,
                     "oldest_pending_age_seconds": 234.997,
                 }
@@ -303,7 +377,7 @@ def test_unattended_soak_readiness_manages_elevated_ingestion_when_bounded_drain
             "storage": {"efficiency_grade": "A+", "storage_plane_phase": "deep_cold_managed_steady_state"},
             "storage_efficiency_contract": {"overall_status": "ready", "grade": "A+"},
             "stale_pending_locator": {"status": "clear"},
-            "external_route_verification": {"verification_state": "ready"},
+            "external_route_verification": {"verification_state": "active_local_ready"},
             "storage_resilience": {"overall_status": "ready", "unresolved_split_brain_conflicts": 0},
             "data_integrity": {
                 "sql_invalid_lines": 0,
@@ -439,6 +513,40 @@ def test_unattended_soak_readiness_allows_operator_approved_battery_runtime(tmp_
     assert payload["sections"]["host_power"]["ac_attached"] is False
     assert payload["sections"]["host_power"]["battery_override_allowed"] is True
     assert payload["sections"]["host_power"]["battery_override_reason"] == "operator_approved_mobile_runtime_test"
+    assert payload["sections"]["host_power"]["battery_override_source"] == "environment"
+
+
+def test_unattended_soak_readiness_loads_durable_operator_battery_override(tmp_path: Path, monkeypatch) -> None:
+    project_root = tmp_path / "project"
+    external_root = tmp_path / "BOT_LOGS" / "schwab_trading_bot"
+    external_root.mkdir(parents=True)
+    _ready_artifacts(project_root, external_root)
+    override_path = project_root / "config" / ".env.unattended_soak_override"
+    override_path.parent.mkdir(parents=True, exist_ok=True)
+    override_path.write_text(
+        "BOT_UNATTENDED_SOAK_ALLOW_BATTERY=1\n"
+        "BOT_UNATTENDED_SOAK_BATTERY_REASON=operator_approved_mobile_runtime_test\n"
+        "BOT_UNATTENDED_SOAK_BATTERY_EXPIRES_AT_UTC=2099-09-01T04:00:00+00:00\n",
+        encoding="utf-8",
+    )
+    monkeypatch.delenv("BOT_UNATTENDED_SOAK_ALLOW_BATTERY", raising=False)
+    monkeypatch.delenv("BOT_UNATTENDED_SOAK_BATTERY_REASON", raising=False)
+    monkeypatch.delenv("BOT_UNATTENDED_SOAK_BATTERY_EXPIRES_AT_UTC", raising=False)
+    monkeypatch.setattr(src.platform, "system", lambda: "Darwin")
+
+    payload = src.build_payload(
+        project_root,
+        pmset_custom_text="AC Power:\n sleep 0\n disksleep 0\n standby 0\n autopoweroff 0\n",
+        pmset_batt_text="Now drawing from 'Battery Power'\n -InternalBattery-0; discharging; present: true",
+        process_text="/usr/bin/caffeinate -dimsu\n",
+        disk_snapshot_fn=lambda path: {"path": str(path), "exists": True, "free_gb": 160.0, "used_pct": 60.0},
+    )
+
+    host = payload["sections"]["host_power"]
+    assert payload["overall_status"] == "ready"
+    assert host["battery_override_allowed"] is True
+    assert host["battery_override_source"] == "config/.env.unattended_soak_override"
+    assert host["battery_override_expires_at_utc"] == "2099-09-01T04:00:00+00:00"
 
 
 def test_unattended_soak_readiness_treats_live_plane_ready_cold_lane_defer_as_managed_control(tmp_path: Path, monkeypatch) -> None:

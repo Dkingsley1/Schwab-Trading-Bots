@@ -92,6 +92,7 @@ HIGH_BACKLOG_OPERATOR_NOTICE_AGE_SECONDS = 2 * 60 * 60
 HIGH_BACKLOG_NO_PROGRESS_CYCLE_LIMIT = 2
 HIGH_BACKLOG_MAX_QUICK_CYCLES_PER_WINDOW = 3
 HIGH_BACKLOG_MAX_OFF_HOURS_CYCLES_PER_WINDOW = 8
+CHILD_REPORTING_GRACE_SECONDS = 30
 
 
 def _safe_float(raw: Any, default: float = 0.0) -> float:
@@ -130,15 +131,31 @@ def _fresh_payload(payload: dict[str, Any], *, max_age_seconds: float = 600.0) -
     return bool(age is None or age <= max(float(max_age_seconds), 0.0))
 
 
-def _fallback_payload_for_cmd(cmd: list[str], *, cwd: Path) -> dict[str, Any]:
+def _fallback_payload_path_for_cmd(cmd: list[str], *, cwd: Path) -> Path | None:
     script_names = {Path(str(part)).name for part in cmd if str(part).strip()}
     for script_name, artifact_name in FALLBACK_PAYLOAD_BY_SCRIPT.items():
         if script_name not in script_names:
             continue
-        payload = load_json(cwd / "governance" / "health" / artifact_name)
+        return cwd / "governance" / "health" / artifact_name
+    return None
+
+
+def _fallback_payload_for_cmd(cmd: list[str], *, cwd: Path) -> dict[str, Any]:
+    path = _fallback_payload_path_for_cmd(cmd, cwd=cwd)
+    if path is not None:
+        payload = load_json(path)
         if payload:
             return payload
     return {}
+
+
+def _mtime_ns(path: Path | None) -> int | None:
+    if path is None:
+        return None
+    try:
+        return int(path.stat().st_mtime_ns)
+    except OSError:
+        return None
 
 
 def _env_flag(name: str, default: bool = False) -> bool:
@@ -158,6 +175,8 @@ def _disk_free_gb(path: Path) -> float:
 
 
 def _run_json(cmd: list[str], *, cwd: Path, timeout_sec: int) -> dict[str, Any]:
+    fallback_path = _fallback_payload_path_for_cmd(cmd, cwd=cwd)
+    fallback_mtime_before = _mtime_ns(fallback_path)
     try:
         proc = subprocess.run(
             cmd,
@@ -177,6 +196,7 @@ def _run_json(cmd: list[str], *, cwd: Path, timeout_sec: int) -> dict[str, Any]:
         rc = 124
         timed_out = True
     payload = {}
+    payload_source = "none"
     for raw in reversed([line.strip() for line in stdout.splitlines() if line.strip()]):
         try:
             parsed = json.loads(raw)
@@ -184,9 +204,21 @@ def _run_json(cmd: list[str], *, cwd: Path, timeout_sec: int) -> dict[str, Any]:
             continue
         if isinstance(parsed, dict):
             payload = parsed
+            payload_source = "stdout"
             break
     if not payload:
         payload = _fallback_payload_for_cmd(cmd, cwd=cwd)
+        if payload:
+            payload_source = "artifact_fallback"
+    fallback_mtime_after = _mtime_ns(fallback_path)
+    payload_current_attempt = bool(
+        payload_source == "stdout"
+        or (
+            payload_source == "artifact_fallback"
+            and fallback_mtime_after is not None
+            and fallback_mtime_after != fallback_mtime_before
+        )
+    )
     return {
         "cmd": list(cmd),
         "rc": rc,
@@ -194,6 +226,8 @@ def _run_json(cmd: list[str], *, cwd: Path, timeout_sec: int) -> dict[str, Any]:
         "stdout_tail": "\n".join(stdout.splitlines()[-10:]),
         "stderr_tail": "\n".join(stderr.splitlines()[-10:]),
         "payload": payload,
+        "payload_source": payload_source,
+        "payload_current_attempt": payload_current_attempt,
     }
 
 
@@ -250,6 +284,34 @@ def _acquire_nonblocking_lock(path: Path):
     handle.write(f"pid={os.getpid()} timestamp_utc={iso_now()}\n")
     handle.flush()
     return handle
+
+
+def _already_running_payload(
+    *,
+    out_file: Path,
+    host_lock_file: Path,
+    route_lock_file: Path,
+    lock_scope: str,
+) -> dict[str, Any]:
+    active_payload = load_json(out_file)
+    active_metrics = _as_dict(active_payload.get("metrics"))
+    return {
+        "timestamp_utc": iso_now(),
+        "schema_version": 1,
+        "ok": True,
+        "overall_status": "already_running",
+        "busy": True,
+        "lock_scope": str(lock_scope),
+        "host_lock_file": str(host_lock_file),
+        "route_lock_file": str(route_lock_file),
+        "latest_artifact_preserved": True,
+        "active_run_snapshot": {
+            "timestamp_utc": str(active_payload.get("timestamp_utc") or ""),
+            "overall_status": str(active_payload.get("overall_status") or ""),
+            "repair_step_count": _safe_int(active_metrics.get("repair_step_count"), 0),
+            "attempt_count": _safe_int(active_metrics.get("attempt_count"), 0),
+        },
+    }
 
 
 def _status_rank(value: str) -> int:
@@ -982,12 +1044,19 @@ def _lane_cmd(
                 str(wait_timeout),
                 "--command-timeout-seconds",
                 str(command_timeout),
+                "--sql-manager-timeout-cap-seconds",
+                str(command_timeout),
+                "--max-catch-up-waves",
+                "1",
             ]
         )
         if maintenance_force:
             cmd.append("--maintenance-force")
         cmd.append("--json")
-        timeout_sec = max(command_timeout, int(wait_timeout) + (15 if quick_bounded else 240))
+        timeout_sec = max(
+            command_timeout + int(wait_timeout) + CHILD_REPORTING_GRACE_SECONDS,
+            int(wait_timeout) + (15 if quick_bounded else 240),
+        )
         return (cmd, timeout_sec)
     if lane == "retention_debt_sheriff":
         cmd = [
@@ -1004,7 +1073,10 @@ def _lane_cmd(
         if sheriff_force:
             cmd.append("--force")
         cmd.append("--json")
-        timeout_sec = max(command_timeout, int(wait_timeout) + (15 if quick_bounded else 240))
+        timeout_sec = max(
+            command_timeout + CHILD_REPORTING_GRACE_SECONDS,
+            int(wait_timeout) + (15 if quick_bounded else 240),
+        )
         return (cmd, timeout_sec)
     if lane == "data_collection_storage_guard":
         cmd = [
@@ -1141,6 +1213,28 @@ def _repair_plan(
         or core_focus.get("concentrated_core_backlog", False)
     )
     sheriff_force = bool(severe_focus or targeted_retention_debt_gb >= 5.0)
+    coordinator_handoff_only = _coordinator_completed_handoff_pending(coordinator_preview)
+    writer_handoff_pressure_active = bool(
+        coordinator_handoff_only
+        or overall_status in {"blocked", "needs_work", "degraded"}
+        or severity in {"high", "critical"}
+        or _safe_float(storage_control.get("pressure_index"), 0.0) >= 1.0
+        or total_pending_lines >= max(pending_threshold, LIVE_MONEY_BACKLOG_TOTAL_TARGET_LINES)
+        or total_drain_minutes >= 60.0
+        or retention_debt_gb > DEFAULT_TARGET_RETENTION_DEBT_GB
+        or backlog_drain_recommended
+        or backlog_quarantine_candidate_files > 0
+        or sql_invalid_lines > 0
+        or severe_focus
+        or targeted_retention_debt_gb >= 1.0
+        or bool(core_focus.get("concentrated_core_backlog", False))
+        or storage_plane_phase in {"emergency_disk_guard", "storage_reserve_rebuild", "fallback_reconciliation"}
+    )
+    drainer_pressure_active = bool(
+        writer_handoff_pressure_active
+        or total_pending_lines >= max(HOT_BACKLOG_CORE_TARGET_LINES, pending_threshold // 3)
+        or total_drain_minutes >= 30.0
+    )
 
     plan: list[dict[str, Any]] = []
 
@@ -1206,7 +1300,7 @@ def _repair_plan(
             }
         )
 
-    if drainer_ready:
+    if drainer_ready and drainer_pressure_active:
         cmd, timeout = _lane_cmd(
             "backpressure_drainer_fleet",
             project_root=project_root,
@@ -1226,9 +1320,10 @@ def _repair_plan(
 
     coordinator_reasons = ordered_unique(
         [
-            "coordinator_actionable" if bool(coordinator_preview.get("actionable", False)) else "",
-            "drain_ready" if bool(coordinator_preview.get("drain_ready", False)) else "",
-            "maintenance_ready" if bool(coordinator_preview.get("maintenance_ready", False)) else "",
+            "completed_writer_lock_handoff_pending" if coordinator_handoff_only else "",
+            "coordinator_actionable" if writer_handoff_pressure_active and bool(coordinator_preview.get("actionable", False)) else "",
+            "drain_ready" if writer_handoff_pressure_active and bool(coordinator_preview.get("drain_ready", False)) else "",
+            "maintenance_ready" if writer_handoff_pressure_active and bool(coordinator_preview.get("maintenance_ready", False)) else "",
             "backlog_drain_recommended" if backlog_drain_recommended else "",
             "quarantine_candidates_present" if backlog_quarantine_candidate_files > 0 else "",
             "sql_invalid_lines_present" if sql_invalid_lines > 0 else "",
@@ -1238,9 +1333,6 @@ def _repair_plan(
         ]
     )
     if coordinator_reasons:
-        coordinator_handoff_only = _coordinator_completed_handoff_pending(coordinator_preview)
-        if coordinator_handoff_only:
-            coordinator_reasons = ordered_unique(["completed_writer_lock_handoff_pending"] + coordinator_reasons)
         cmd, timeout = _lane_cmd(
             "writer_cycle_coordinator",
             project_root=project_root,
@@ -1425,8 +1517,8 @@ def _preview_bundle(
     }
 
 
-def _writer_timeout_followup(payload: dict[str, Any]) -> bool:
-    if not payload or not _fresh_payload(payload):
+def _writer_timeout_followup(payload: dict[str, Any], *, current_attempt: bool = False) -> bool:
+    if not payload or (not current_attempt and not _fresh_payload(payload)):
         return False
     overall_status = str(payload.get("overall_status") or "")
     summary = _as_dict(payload.get("summary"))
@@ -1459,13 +1551,15 @@ def _attempt_record(result: dict[str, Any]) -> dict[str, Any]:
     step_name = str(payload.get("bot") or "")
     status = "ok"
     if bool(result.get("timed_out", False)):
-        if step_name == "writer_cycle_coordinator" and _writer_timeout_followup(payload):
+        if step_name == "writer_cycle_coordinator" and _writer_timeout_followup(
+            payload,
+            current_attempt=bool(result.get("payload_current_attempt", False)),
+        ):
             status = "followup"
         else:
             status = "timed_out"
     elif (
         step_name == "raw_training_manifest_refresh"
-        and int(result.get("rc", 0)) == 0
         and overall_status in {"blocked", "needs_work", "idle"}
     ):
         status = "deferred"
@@ -1481,6 +1575,8 @@ def _attempt_record(result: dict[str, Any]) -> dict[str, Any]:
         "rc": int(result.get("rc", 1)),
         "timed_out": bool(result.get("timed_out", False)),
         "timeout_managed": bool(status == "followup" and result.get("timed_out", False)),
+        "payload_source": str(result.get("payload_source") or ""),
+        "payload_current_attempt": bool(result.get("payload_current_attempt", False)),
         "overall_status": overall_status,
         "stdout_tail": str(result.get("stdout_tail") or ""),
         "stderr_tail": str(result.get("stderr_tail") or ""),
@@ -2052,16 +2148,12 @@ def main() -> int:
     }
     host_handle = _acquire_nonblocking_lock(host_lock_file)
     if host_handle is None:
-        payload.update(
-            {
-                "overall_status": "already_running",
-                "busy": True,
-                "lock_scope": "host",
-                "host_lock_file": str(host_lock_file),
-                "route_lock_file": str(lock_file),
-            }
+        payload = _already_running_payload(
+            out_file=out_file,
+            host_lock_file=host_lock_file,
+            route_lock_file=lock_file,
+            lock_scope="host",
         )
-        write_payload(out_file, payload)
         if args.json:
             print(json.dumps(payload, ensure_ascii=True))
         else:
@@ -2071,15 +2163,12 @@ def main() -> int:
     with host_handle:
         route_handle = _acquire_nonblocking_lock(lock_file)
         if route_handle is None:
-            payload.update({"overall_status": "already_running", "busy": True})
-            payload.update(
-                {
-                    "lock_scope": "route",
-                    "host_lock_file": str(host_lock_file),
-                    "route_lock_file": str(lock_file),
-                }
+            payload = _already_running_payload(
+                out_file=out_file,
+                host_lock_file=host_lock_file,
+                route_lock_file=lock_file,
+                lock_scope="route",
             )
-            write_payload(out_file, payload)
             if args.json:
                 print(json.dumps(payload, ensure_ascii=True))
             else:
@@ -2091,16 +2180,12 @@ def main() -> int:
 
         route_handle = _acquire_nonblocking_lock(lock_file)
         if route_handle is None:
-            payload.update(
-                {
-                    "overall_status": "already_running",
-                    "busy": True,
-                    "lock_scope": "route",
-                    "host_lock_file": str(host_lock_file),
-                    "route_lock_file": str(lock_file),
-                }
+            payload = _already_running_payload(
+                out_file=out_file,
+                host_lock_file=host_lock_file,
+                route_lock_file=lock_file,
+                lock_scope="route",
             )
-            write_payload(out_file, payload)
             if args.json:
                 print(json.dumps(payload, ensure_ascii=True))
             else:

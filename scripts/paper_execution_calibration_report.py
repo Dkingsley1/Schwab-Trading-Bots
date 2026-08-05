@@ -2,6 +2,7 @@ import argparse
 import glob
 import json
 import os
+from collections import Counter
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict
@@ -64,6 +65,48 @@ def _market_kind_from_symbol(symbol: Any) -> str:
     return "equities"
 
 
+def _fill_evidence_class(row: Dict[str, Any], *, fill: float, expected_fill: float) -> tuple[str, str]:
+    metadata = row.get("metadata") if isinstance(row.get("metadata"), dict) else {}
+    source = str(row.get("paper_fill_source") or metadata.get("paper_fill_source") or "").strip().lower()
+    if source in {
+        "expected_fill_model",
+        "mark_price",
+        "model",
+        "execution_simulator",
+        "simulated_fill",
+    }:
+        return "model_derived", source or "model_derived"
+    if source in {
+        "explicit_fill",
+        "broker_paper_fill",
+        "broker_fill",
+        "observed_fill",
+        "market_replay_fill",
+        "venue_replay_fill",
+    }:
+        return "independent", source
+    tolerance = max(abs(float(expected_fill)) * 1e-10, 1e-10)
+    if abs(float(fill) - float(expected_fill)) <= tolerance:
+        return "model_derived", "inferred_fill_equals_expected_model"
+    return "independent", source or "legacy_unknown_independent_difference"
+
+
+def _metrics(values: list[float], observed: list[float], expected: list[float]) -> dict[str, float]:
+    ordered = sorted(float(value) for value in values)
+    count = len(ordered)
+    mae = (sum(ordered) / count) if count else 0.0
+    p95 = ordered[min(max(int(0.95 * count) - 1, 0), count - 1)] if count else 0.0
+    observed_mean = (sum(observed) / len(observed)) if observed else 0.0
+    expected_mean = (sum(expected) / len(expected)) if expected else 0.0
+    return {
+        "mae_bps": round(float(mae), 6),
+        "p95_bps": round(float(p95), 6),
+        "mean_observed_slippage_bps": round(float(observed_mean), 6),
+        "mean_expected_slippage_bps": round(float(expected_mean), 6),
+        "mean_bias_bps": round(float(observed_mean - expected_mean), 6),
+    }
+
+
 def _record_group(group: Dict[str, Any], observed_bps: float, expected_bps: float, abs_error_bps: float) -> None:
     group["samples"] = int(group.get("samples", 0)) + 1
     group["observed_sum"] = float(group.get("observed_sum", 0.0)) + float(observed_bps)
@@ -118,6 +161,11 @@ def main() -> int:
     ap.add_argument("--hours", type=int, default=24)
     ap.add_argument("--bucket-hours", type=int, default=1)
     ap.add_argument("--max-mae-bps", type=float, default=35.0)
+    ap.add_argument(
+        "--min-independent-samples",
+        type=int,
+        default=int(float(os.getenv("PAPER_EXECUTION_CALIBRATION_MIN_INDEPENDENT_SAMPLES", "30") or 30)),
+    )
     ap.add_argument("--out-file", default=str(PROJECT_ROOT / "governance" / "health" / "paper_execution_calibration_latest.json"))
     ap.add_argument("--json", action="store_true")
     args = ap.parse_args()
@@ -129,6 +177,10 @@ def main() -> int:
     vals: list[float] = []
     observed_vals: list[float] = []
     expected_vals: list[float] = []
+    model_vals: list[float] = []
+    model_observed_vals: list[float] = []
+    model_expected_vals: list[float] = []
+    evidence_sources: Counter[str] = Counter()
     files_scanned = 0
     skipped_before_cutoff = 0
     skipped_synthetic_guard = 0
@@ -169,6 +221,14 @@ def main() -> int:
                     observed_bps = _bps(fill, ref, action)
                     expected_bps = model_bps if model_bps > 0.0 else _bps(exp, ref, action)
                     abs_error = abs(observed_bps - expected_bps)
+                    evidence_class, evidence_source = _fill_evidence_class(row, fill=fill, expected_fill=exp)
+                    evidence_sources[f"{evidence_class}:{evidence_source}"] += 1
+                    if evidence_class != "independent":
+                        model_vals.append(abs_error)
+                        model_observed_vals.append(observed_bps)
+                        model_expected_vals.append(expected_bps)
+                        continue
+
                     vals.append(abs_error)
                     observed_vals.append(observed_bps)
                     expected_vals.append(expected_bps)
@@ -185,12 +245,12 @@ def main() -> int:
         except Exception:
             continue
 
-    vals.sort()
     n = len(vals)
-    mae = (sum(vals) / n) if n > 0 else 0.0
-    p95 = vals[min(max(int(0.95 * n) - 1, 0), n - 1)] if n > 0 else 0.0
-    observed_mean = (sum(observed_vals) / len(observed_vals)) if observed_vals else 0.0
-    expected_mean = (sum(expected_vals) / len(expected_vals)) if expected_vals else 0.0
+    independent_metrics = _metrics(vals, observed_vals, expected_vals)
+    model_metrics = _metrics(model_vals, model_observed_vals, model_expected_vals)
+    mae = float(independent_metrics["mae_bps"])
+    min_independent_samples = max(int(args.min_independent_samples), 1)
+    independent_evidence_ready = n >= min_independent_samples
 
     failed = []
     if n > 0 and mae > float(args.max_mae_bps):
@@ -235,30 +295,46 @@ def main() -> int:
         if abs(recent_bias) > abs(prior_bias) + 5.0:
             top_actions.append("recent slippage drift worsened versus the prior bucket, so treat execution realism as a live risk control rather than a static calibration")
 
+    overall_status = "needs_tuning" if failed else ("ready" if independent_evidence_ready else "evidence_pending")
+    if not independent_evidence_ready:
+        top_actions.append(
+            f"collect at least {min_independent_samples} independent broker-paper or market-replay fills before treating calibration as promotion evidence"
+        )
+    if model_vals:
+        top_actions.append("keep expected-fill-model samples in simulator diagnostics, not independent calibration evidence")
+
     out = {
         "timestamp_utc": datetime.now(timezone.utc).isoformat(),
-        "overall_status": "ready" if len(failed) == 0 else "needs_tuning",
+        "overall_status": overall_status,
         "ok": len(failed) == 0,
         "failed_checks": failed,
         "lookback_hours": int(args.hours),
         "bucket_hours": max(int(args.bucket_hours), 1),
         "files_scanned": int(files_scanned),
         "samples": int(n),
+        "independent_samples": int(n),
+        "model_derived_samples": int(len(model_vals)),
+        "independent_evidence_ready": bool(independent_evidence_ready),
+        "minimum_independent_samples": int(min_independent_samples),
+        "evidence_sources": dict(sorted(evidence_sources.items())),
         "calibration_window": {
             "cutoff_utc": cutoff_utc.isoformat() if cutoff_utc is not None else "",
             "reset_active": cutoff_utc is not None,
             "skipped_before_cutoff": int(skipped_before_cutoff),
             "skipped_synthetic_guard_rows": int(skipped_synthetic_guard),
-            "policy": "when realistic paper fills are enabled, pre-fix perfect-fill samples are excluded from readiness blocking",
+            "policy": "only independent broker-paper explicit-fill or market-replay evidence can calibrate the expected-fill model",
         },
-        "metrics": {
-            "mae_bps": round(float(mae), 6),
-            "p95_bps": round(float(p95), 6),
-            "mean_observed_slippage_bps": round(float(observed_mean), 6),
-            "mean_expected_slippage_bps": round(float(expected_mean), 6),
-            "mean_bias_bps": round(float(observed_mean - expected_mean), 6),
+        "metrics": independent_metrics,
+        "model_derived_diagnostics": {
+            "samples": int(len(model_vals)),
+            "metrics": model_metrics,
+            "promotion_evidence_eligible": False,
+            "reason": "circular_model_output_is_not_independent_fill_truth",
         },
-        "thresholds": {"max_mae_bps": float(args.max_mae_bps)},
+        "thresholds": {
+            "max_mae_bps": float(args.max_mae_bps),
+            "min_independent_samples": int(min_independent_samples),
+        },
         "by_market_kind": finalized_market_kind,
         "by_profile": finalized_profile,
         "top_symbols": finalized_symbol_rows[:10],

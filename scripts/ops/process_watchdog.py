@@ -1,4 +1,5 @@
 import argparse
+import fcntl
 import glob
 import json
 import os
@@ -19,6 +20,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from core.runtime_python import resolve_runtime_python
+from core.runtime_maintenance import maintenance_hold_snapshot
 from core.storage_mounts import find_target_external_volume, resolve_external_storage
 
 PY = resolve_runtime_python(PROJECT_ROOT)
@@ -26,6 +28,7 @@ DEFAULT_STATE_PATH = PROJECT_ROOT / 'governance' / 'health' / 'process_watchdog_
 DEFAULT_OUT_PATH = PROJECT_ROOT / 'governance' / 'health' / 'process_watchdog_latest.json'
 FALLBACK_STATE_PATH = Path('/tmp/process_watchdog_state.json')
 FALLBACK_OUT_PATH = Path('/tmp/process_watchdog_latest.json')
+DEFAULT_SINGLETON_LOCK_PATH = Path('/tmp/schwab_trading_bot/process_watchdog.lock')
 HEALTH_DIR = PROJECT_ROOT / 'governance' / 'health'
 GLOBAL_HALT_FLAG = HEALTH_DIR / 'GLOBAL_TRADING_HALT.flag'
 OPERATOR_STOP_FLAG = HEALTH_DIR / 'OPERATOR_STOP.flag'
@@ -77,6 +80,32 @@ def _env_flag(name: str, default: str = '0') -> bool:
     return os.getenv(name, default).strip().lower() in {'1', 'true', 'yes', 'on'}
 
 
+def _hot_storage_prefers_external() -> bool:
+    return str(os.getenv('BOT_LOGS_PREFER_EXTERNAL', '1') or '1').strip().lower() not in {
+        '0',
+        'false',
+        'no',
+        'off',
+    }
+
+
+def _acquire_singleton_lock(path: Path) -> tuple[Any | None, str]:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    handle = path.open('a+', encoding='utf-8')
+    try:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        handle.seek(0)
+        owner = handle.read().strip()
+        handle.close()
+        return None, owner
+    handle.seek(0)
+    handle.truncate(0)
+    handle.write(f'pid={os.getpid()} started={datetime.now(timezone.utc).isoformat()}')
+    handle.flush()
+    return handle, ''
+
+
 def _placeholder_or_empty(raw: Any) -> bool:
     return str(raw or '').strip() in SECRET_PLACEHOLDER_VALUES
 
@@ -125,8 +154,12 @@ def _default_require_paper_executor() -> bool:
 def _safety_pause_state() -> Dict[str, Any]:
     operator_stop_active = OPERATOR_STOP_FLAG.exists()
     global_halt_active = GLOBAL_HALT_FLAG.exists()
+    maintenance_hold = maintenance_hold_snapshot(PROJECT_ROOT)
+    maintenance_hold_active = bool(maintenance_hold.get('active', False))
     pause_reason = ''
-    if operator_stop_active:
+    if maintenance_hold_active:
+        pause_reason = 'runtime_maintenance_hold_active'
+    elif operator_stop_active:
         pause_reason = 'operator_stop_active'
     elif global_halt_active:
         pause_reason = 'global_halt_active'
@@ -138,7 +171,9 @@ def _safety_pause_state() -> Dict[str, Any]:
     return {
         'operator_stop_active': bool(operator_stop_active),
         'global_halt_active': bool(global_halt_active),
-        'active': bool(operator_stop_active or global_halt_active),
+        'runtime_maintenance_hold_active': maintenance_hold_active,
+        'runtime_maintenance_hold': maintenance_hold,
+        'active': bool(maintenance_hold_active or operator_stop_active or global_halt_active),
         'reason': pause_reason,
     }
 
@@ -526,19 +561,45 @@ def _spawn(cmd: List[str], log_path: Path) -> int:
 
 
 def _run(cmd: List[str], *, timeout_seconds: float | None = None) -> Tuple[int, str, str]:
+    timeout = None if timeout_seconds is None else max(float(timeout_seconds), 0.1)
+    p: subprocess.Popen[str] | None = None
     try:
-        p = subprocess.run(
+        p = subprocess.Popen(
             cmd,
             cwd=str(PROJECT_ROOT),
-            capture_output=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             text=True,
-            check=False,
-            timeout=(None if timeout_seconds is None else max(float(timeout_seconds), 0.1)),
+            start_new_session=True,
         )
-        return p.returncode, (p.stdout or '').strip(), (p.stderr or '').strip()
+        stdout, stderr = p.communicate(timeout=timeout)
+        return int(p.returncode or 0), (stdout or '').strip(), (stderr or '').strip()
     except subprocess.TimeoutExpired as exc:
         stdout = exc.stdout if isinstance(exc.stdout, str) else (exc.stdout or b'').decode('utf-8', errors='ignore')
         stderr = exc.stderr if isinstance(exc.stderr, str) else (exc.stderr or b'').decode('utf-8', errors='ignore')
+        if p is not None:
+            for sig, grace in ((signal.SIGTERM, 1.0), (signal.SIGKILL, 0.5)):
+                try:
+                    os.killpg(p.pid, sig)
+                except ProcessLookupError:
+                    break
+                except Exception:
+                    try:
+                        p.send_signal(sig)
+                    except Exception:
+                        pass
+                try:
+                    tail_out, tail_err = p.communicate(timeout=grace)
+                    stdout = tail_out or stdout
+                    stderr = tail_err or stderr
+                    break
+                except subprocess.TimeoutExpired:
+                    continue
+            else:
+                if p.stdout is not None:
+                    p.stdout.close()
+                if p.stderr is not None:
+                    p.stderr.close()
         detail = f'timeout_after_seconds={max(float(timeout_seconds or 0.0), 0.1):.1f}'
         if stderr.strip():
             detail = f'{detail} {stderr.strip()}'
@@ -1122,10 +1183,14 @@ def _forgive_resolved_restart_debt(
 def _sql_link_writer_idle_health() -> Dict[str, Any]:
     cycle_path = HEALTH_DIR / 'writer_cycle_coordinator_latest.json'
     process_path = HEALTH_DIR / 'writer_process_intelligence_latest.json'
+    progress_path = HEALTH_DIR / 'sql_link_service_progress_latest.json'
+    queue_path = HEALTH_DIR / 'ingestion_backpressure_latest.json'
+    storage_path = HEALTH_DIR / 'ingestion_storage_control_latest.json'
     cycle_payload = _load_json_payload(cycle_path)
     process_payload = _load_json_payload(process_path)
+    progress_payload = _load_json_payload(progress_path)
 
-    def _fresh(path: Path, max_age_seconds: float = 3600.0) -> bool:
+    def _fresh(path: Path, max_age_seconds: float = 600.0) -> bool:
         try:
             return (time.time() - float(path.stat().st_mtime)) <= max_age_seconds
         except Exception:
@@ -1133,6 +1198,11 @@ def _sql_link_writer_idle_health() -> Dict[str, Any]:
 
     def _state_idle(state: Dict[str, Any]) -> bool:
         if not state:
+            return False
+        if state.get('ok') is False:
+            return False
+        status = str(state.get('overall_status') or state.get('status') or '').strip().lower()
+        if status in {'critical', 'degraded', 'error', 'failed', 'failure'}:
             return False
         current_step = str(state.get('effective_current_step') or state.get('current_step') or '').strip()
         completed_shards = _safe_int(state.get('completed_shard_count'), 0)
@@ -1161,18 +1231,71 @@ def _sql_link_writer_idle_health() -> Dict[str, Any]:
     if not isinstance(process_health, dict):
         process_health = {}
 
+    queue_payload: Dict[str, Any] = {}
+    queue_source = ''
+    if _fresh(queue_path, 300.0):
+        queue_payload = _load_json_payload(queue_path)
+        queue_source = 'ingestion_backpressure'
+    elif _fresh(storage_path, 300.0):
+        storage_payload = _load_json_payload(storage_path)
+        candidate = storage_payload.get('backpressure') if isinstance(storage_payload.get('backpressure'), dict) else {}
+        if candidate:
+            queue_payload = candidate
+            queue_source = 'ingestion_storage_control.backpressure'
+    core_pending = _safe_int(
+        queue_payload.get('core_pending_lines', queue_payload.get('pending_lines')),
+        0,
+    )
+    total_pending = _safe_int(
+        queue_payload.get('total_pending_lines', queue_payload.get('pending_lines_total')),
+        core_pending,
+    )
+    oldest_pending_age = _safe_float(queue_payload.get('oldest_pending_age_seconds'), 0.0)
+    idle_max_core = max(_safe_int(os.getenv('OPS_WATCHDOG_SQL_WRITER_IDLE_MAX_CORE_PENDING_LINES'), 500), 0)
+    idle_max_total = max(_safe_int(os.getenv('OPS_WATCHDOG_SQL_WRITER_IDLE_MAX_TOTAL_PENDING_LINES'), 1500), idle_max_core)
+    idle_max_age = max(_safe_float(os.getenv('OPS_WATCHDOG_SQL_WRITER_IDLE_MAX_AGE_SECONDS'), 300.0), 0.0)
+    queue_idle_clear = bool(
+        queue_source
+        and core_pending <= idle_max_core
+        and total_pending <= idle_max_total
+        and oldest_pending_age <= idle_max_age
+    )
+
     cycle_idle = _fresh(cycle_path) and _state_idle(cycle_state)
     process_idle = _fresh(process_path) and _state_idle(process_health)
-    ok = bool(cycle_idle or process_idle)
+    progress_idle = _fresh(progress_path) and _state_idle(progress_payload)
+    artifact_idle = bool(cycle_idle or process_idle or progress_idle)
+    ok = bool(artifact_idle and queue_idle_clear)
+    if ok:
+        reason = 'sql_writer_on_demand_idle_complete'
+    elif artifact_idle and not queue_source:
+        reason = 'sql_writer_idle_queue_evidence_missing_or_stale'
+    elif artifact_idle:
+        reason = 'sql_writer_idle_backlog_pending'
+    else:
+        reason = 'sql_writer_idle_health_not_clear'
     return {
         'ok': ok,
-        'reason': 'sql_writer_on_demand_idle_complete' if ok else 'sql_writer_idle_health_not_clear',
+        'reason': reason,
         'cycle_artifact_fresh': _fresh(cycle_path),
         'process_artifact_fresh': _fresh(process_path),
+        'progress_artifact_fresh': _fresh(progress_path),
         'cycle_idle_complete': bool(cycle_idle),
         'process_idle_complete': bool(process_idle),
+        'progress_idle_complete': bool(progress_idle),
+        'queue_evidence_source': queue_source,
+        'queue_idle_clear': queue_idle_clear,
+        'core_pending_lines': core_pending,
+        'total_pending_lines': total_pending,
+        'oldest_pending_age_seconds': round(oldest_pending_age, 3),
+        'idle_limits': {
+            'core_pending_lines': idle_max_core,
+            'total_pending_lines': idle_max_total,
+            'oldest_pending_age_seconds': idle_max_age,
+        },
         'cycle_current_step': str(cycle_state.get('effective_current_step') or cycle_state.get('current_step') or ''),
         'process_current_step': str(process_health.get('current_step') or ''),
+        'progress_current_step': str(progress_payload.get('effective_current_step') or progress_payload.get('current_step') or ''),
         'completed_shard_count': _safe_int(
             cycle_state.get('completed_shard_count', process_health.get('completed_shard_count')),
             0,
@@ -1182,7 +1305,7 @@ def _sql_link_writer_idle_health() -> Dict[str, Any]:
             0,
         ),
         'writer_lock_held': bool(cycle_state.get('writer_lock_held', process_health.get('writer_lock_held', False))),
-        'policy': 'treat_complete_idle_sql_writer_as_healthy_on_demand_service',
+        'policy': 'treat fresh complete writer progress as healthy idle only while fresh queue evidence remains below bounded idle ceilings',
     }
 
 
@@ -1530,11 +1653,37 @@ def _resource_guard_allows_job(job_name: str, profile: str = 'optional') -> tupl
     return rc == 0, f'{job_name}:{detail}'
 
 
+def _refresh_health_fast(max_age_seconds: int) -> Dict[str, Any]:
+    health_fast = PROJECT_ROOT / 'governance' / 'health' / 'health_fast_latest.json'
+    freshness_budget = max(int(max_age_seconds), 60)
+    row: Dict[str, Any] = {
+        'path': str(health_fast),
+        'refreshed': False,
+        'age_seconds_before': round(_file_age_seconds(health_fast), 2),
+        'rc': 0,
+        'error': '',
+        'freshness_budget_seconds': freshness_budget,
+        'lightweight_always_on': True,
+    }
+    if _file_age_seconds(health_fast) > float(freshness_budget):
+        rc, _stdout, err = _run([
+            str(PY),
+            str(PROJECT_ROOT / 'scripts' / 'ops' / 'health_fast.py'),
+            '--json',
+        ])
+        row['refreshed'] = rc in {0, 2}
+        row['rc'] = int(rc)
+        row['error'] = err[-500:] if rc not in {0, 2} and err else ''
+    row['age_seconds_after'] = round(_file_age_seconds(health_fast), 2)
+    return row
+
+
 def _refresh_runtime_reports(
     max_age_seconds: int,
     *,
     backpressure_max_age_seconds: int | None = None,
     divergence_max_age_seconds: int | None = None,
+    health_fast_max_age_seconds: int | None = None,
 ) -> Dict[str, Any]:
     day = datetime.now(timezone.utc).strftime('%Y%m%d')
     one_numbers = PROJECT_ROOT / 'exports' / 'one_numbers' / 'one_numbers_summary.json'
@@ -1587,6 +1736,7 @@ def _refresh_runtime_reports(
             'rc': 0,
             'error': '',
         },
+        'health_fast': _refresh_health_fast(int(health_fast_max_age_seconds or 300)),
     }
 
     if _file_age_seconds(one_numbers) > float(max_age_seconds):
@@ -1813,6 +1963,8 @@ def _build_all_sleeves_target(heartbeat_max_age_seconds: int) -> Dict[str, Any]:
     cmd.extend(['--broker', broker])
     if simulate:
         cmd.append('--simulate')
+    if _env_flag('OPS_WATCHDOG_ALL_SLEEVES_DISABLE_BREAKERS', '0'):
+        cmd.append('--disable-circuit-breakers')
 
     arg_env = [
         ('--symbols-core', 'SHADOW_SYMBOLS_CORE'),
@@ -1994,10 +2146,42 @@ def _disk_free_bytes(path: Path) -> int | None:
 
 
 def _probe_storage_mount() -> Dict[str, Any]:
+    if not _hot_storage_prefers_external():
+        mount_root = Path(os.getenv('BOT_LOGS_EXTERNAL_MOUNT', '/Volumes/BOT_LOGS')).expanduser()
+        configured_root = str(os.getenv('BOT_LOGS_EXTERNAL_PROJECT_ROOT', '') or '').strip()
+        project_dir = str(os.getenv('BOT_LOGS_EXTERNAL_PROJECT_DIR', 'schwab_trading_bot') or 'schwab_trading_bot').strip()
+        external_root = Path(configured_root).expanduser() if configured_root else mount_root / project_dir
+        return {
+            'mount_root': str(mount_root),
+            'external_root': str(external_root),
+            'configured_mount_root': str(mount_root),
+            'configured_project_root': str(external_root),
+            'candidate_mount_roots': [str(mount_root)],
+            'matched_mount_root': '',
+            'match_reason': 'external_io_probe_skipped_local_hot_storage_policy',
+            'target_volume_device_identifier': str(os.getenv('BOT_LOGS_EXTERNAL_DISK_IDENTIFIER', '') or ''),
+            'target_volume_name': str(os.getenv('BOT_LOGS_EXTERNAL_VOLUME_NAME', 'BOT_LOGS') or 'BOT_LOGS'),
+            'target_volume_uuid': str(os.getenv('BOT_LOGS_EXTERNAL_VOLUME_UUID', '') or ''),
+            'target_volume_mount_point': '',
+            'target_volume_present': False,
+            'target_volume_mounted': False,
+            'mount_present': False,
+            'external_root_exists': False,
+            'external_root_writable': False,
+            'external_free_bytes': None,
+            'external_min_free_bytes': int(_external_min_free_bytes()),
+            'external_low_space': False,
+            'external_unavailable_reason': 'cold_archive_only_local_hot_storage_policy',
+            'external_available': False,
+            'external_required_for_hot_path': False,
+            'hot_storage_available': True,
+            'probe_skipped_external_io': True,
+            'storage_mode': 'local_fallback',
+        }
     resolution = resolve_external_storage()
     mount_root, external_root = resolution.mount_root, resolution.external_root
-    target_volume = find_target_external_volume()
     mount_present = bool(mount_root.exists() and mount_root.is_dir())
+    target_volume = find_target_external_volume() if not mount_present else None
     external_root_exists = bool(external_root.exists() and external_root.is_dir())
     external_root_writable = bool(external_root_exists and os.access(external_root, os.W_OK))
     probe_root = external_root if external_root_exists else mount_root
@@ -2147,26 +2331,61 @@ def main() -> int:
     parser.add_argument('--restart-storm-settle-seconds', type=int, default=int(os.getenv('OPS_WATCHDOG_RESTART_STORM_SETTLE_SECONDS', '900')))
     parser.add_argument('--alert-suppress-seconds', type=int, default=int(os.getenv('OPS_WATCHDOG_ALERT_SUPPRESS_SECONDS', '600')))
     parser.add_argument('--maintenance-timeout-seconds', type=float, default=DEFAULT_MAINTENANCE_TIMEOUT_SECONDS)
+    parser.add_argument('--singleton-lock-path', default=str(DEFAULT_SINGLETON_LOCK_PATH))
     parser.add_argument('--readonly-repair-probe-cooldown-seconds', type=int, default=int(os.getenv('OPS_WATCHDOG_READONLY_REPAIR_PROBE_COOLDOWN_SECONDS', '900')))
     parser.add_argument('--json', action='store_true')
     args = parser.parse_args()
+
+    singleton_handle, singleton_owner = _acquire_singleton_lock(Path(args.singleton_lock_path).expanduser())
+    if singleton_handle is None:
+        payload = {
+            'timestamp_utc': datetime.now(timezone.utc).isoformat(),
+            'overall_status': 'ready',
+            'skipped': True,
+            'reason': 'process_watchdog_already_running',
+            'singleton_lock_path': str(Path(args.singleton_lock_path).expanduser()),
+            'singleton_owner': singleton_owner,
+        }
+        if args.json:
+            print(json.dumps(payload, ensure_ascii=True))
+        else:
+            print(f"process_watchdog skipped=already_running owner={singleton_owner or 'unknown'}")
+        return 0
 
     state = _load_state(DEFAULT_STATE_PATH, FALLBACK_STATE_PATH)
     events = state.get('events') if isinstance(state.get('events'), list) else []
 
     maintenance: List[Dict[str, Any]] = []
+    hot_storage_prefers_external = _hot_storage_prefers_external()
     storage_mode = str(state.get('storage_mode', '') or '')
+    if not hot_storage_prefers_external:
+        storage_mode = 'local_fallback'
     storage_mode_transition: Dict[str, Any] = {}
     storage_mount_prev_raw = state.get('storage_mount_present', None)
     storage_mount_prev = None if storage_mount_prev_raw is None else bool(storage_mount_prev_raw)
     storage_mount_transition: Dict[str, Any] = {}
     storage_mount_guard: Dict[str, Any] = {}
 
-    for name, cmd in [
+    maintenance_jobs = [
         ('lock_watchdog', [str(PY), str(PROJECT_ROOT / 'scripts' / 'ops' / 'lock_watchdog.py'), '--apply', '--json']),
-        ('storage_failback_sync', _storage_failback_sync_cmd()),
         ('canary_auto_tuner', [str(PY), str(PROJECT_ROOT / 'scripts' / 'ops' / 'canary_auto_tuner.py'), '--json']),
-    ]:
+    ]
+    if hot_storage_prefers_external:
+        maintenance_jobs.insert(1, ('storage_failback_sync', _storage_failback_sync_cmd()))
+    else:
+        maintenance.append(
+            {
+                'name': 'storage_failback_sync',
+                'ok': True,
+                'rc': 0,
+                'skipped': True,
+                'reason': 'cold_archive_only_local_hot_storage_policy',
+                'stdout_tail': '',
+                'stderr_tail': '',
+            }
+        )
+
+    for name, cmd in maintenance_jobs:
         rc, out, err = _run(cmd, timeout_seconds=float(args.maintenance_timeout_seconds))
         row: Dict[str, Any] = {
             'name': name,
@@ -2208,7 +2427,11 @@ def main() -> int:
     storage_mount_guard['storage_mode'] = storage_mode or 'unknown'
     storage_mount_guard['previous_mount_present'] = storage_mount_prev
 
-    mount_transition_base = _evaluate_storage_mount_transition(storage_mount_prev, storage_mount_present)
+    mount_transition_base = (
+        {}
+        if bool(storage_mount_guard.get('probe_skipped_external_io', False))
+        else _evaluate_storage_mount_transition(storage_mount_prev, storage_mount_present)
+    )
     if mount_transition_base:
         storage_mount_transition = {
             **mount_transition_base,
@@ -2273,12 +2496,19 @@ def main() -> int:
                 )
 
     refresh_payload: Dict[str, Any] = {}
+    health_fast_refresh_age = max(int(os.getenv('OPS_WATCHDOG_HEALTH_FAST_MAX_AGE_SECONDS', '300')), 60)
     if args.refresh_reports:
         refresh_payload = _refresh_runtime_reports(
             max_age_seconds=max(int(args.refresh_max_age_seconds), 60),
             backpressure_max_age_seconds=max(int(os.getenv('OPS_WATCHDOG_BACKPRESSURE_MAX_AGE_SECONDS', '300')), 60),
             divergence_max_age_seconds=max(int(os.getenv('OPS_WATCHDOG_DIVERGENCE_MAX_AGE_SECONDS', '600')), 60),
+            health_fast_max_age_seconds=health_fast_refresh_age,
         )
+    else:
+        refresh_payload = {
+            'heavy_reports_enabled': False,
+            'health_fast': _refresh_health_fast(health_fast_refresh_age),
+        }
 
     network_payload: Dict[str, Any] = {'enabled': bool(args.network_guard), 'results': []}
     network_outage_active = False

@@ -216,6 +216,13 @@ def _reconcile_stale_allocation(snapshot: dict[str, Any], swap_pressure_payload:
     )
     vm_clear = bool(pressure_kind in {"", "none", "normal", "green", "clear"} and pages_throttled <= 0.0)
     stale_swap_relief = bool(governor_green and vm_clear and raw_swap_gb >= 2.0 and current_swap_gb + 0.5 < raw_swap_gb)
+    inactive_swap_allocation_relief = bool(
+        governor_green
+        and vm_clear
+        and raw_swap_gb >= 2.0
+        and (free_pct <= 0.0 or free_pct >= 85.0)
+        and compressor_gb <= 1.5
+    )
     stale_compression_relief = bool(
         governor_green
         and vm_clear
@@ -229,7 +236,14 @@ def _reconcile_stale_allocation(snapshot: dict[str, Any], swap_pressure_payload:
         snapshot["swap_used_gb"] = round(current_swap_gb, 3)
     if stale_compression_relief:
         snapshot["compressed_store_gb"] = round(max(compressor_gb, 8.0), 3)
-    if stale_swap_relief or stale_compression_relief:
+    effective_swap_pressure_gb = (
+        0.0
+        if inactive_swap_allocation_relief
+        else _safe_float(snapshot.get("swap_used_gb"), raw_swap_gb)
+    )
+    snapshot["effective_swap_pressure_gb"] = round(effective_swap_pressure_gb, 3)
+    snapshot["swap_allocation_only"] = inactive_swap_allocation_relief
+    if stale_swap_relief or stale_compression_relief or inactive_swap_allocation_relief:
         snapshot["pressure_level"] = "normal"
         snapshot["pressure_kind"] = "none"
         snapshot["compressed_pressure_gb"] = round(compressor_gb if compressor_gb > 0 else _safe_float(snapshot.get("compressed_store_gb"), 0.0), 3)
@@ -243,17 +257,27 @@ def _reconcile_stale_allocation(snapshot: dict[str, Any], swap_pressure_payload:
         "compressor_gb": round(compressor_gb, 3),
     }
     snapshot["memory_truth_reconciliation"] = {
-        "active": bool(stale_swap_relief or stale_compression_relief),
+        "active": bool(stale_swap_relief or stale_compression_relief or inactive_swap_allocation_relief),
         "stale_swap_relief": stale_swap_relief,
         "stale_compression_relief": stale_compression_relief,
+        "inactive_swap_allocation_relief": inactive_swap_allocation_relief,
         "raw_swap_used_gb": round(raw_swap_gb, 3),
         "effective_swap_used_gb": round(_safe_float(snapshot.get("swap_used_gb"), raw_swap_gb), 3),
+        "effective_swap_pressure_gb": round(effective_swap_pressure_gb, 3),
         "raw_compressed_store_gb": round(compressed_store_gb, 3),
         "effective_compressed_store_gb": round(_safe_float(snapshot.get("compressed_store_gb"), compressed_store_gb), 3),
         "compressor_gb": round(compressor_gb, 3),
         "free_pct": round(free_pct, 3),
         "swap_pressure_tier": swap_tier,
-        "reason": "fresh_swap_pressure_reconciled_stale_allocation" if stale_swap_relief or stale_compression_relief else "not_applicable",
+        "reason": (
+            "fresh_vm_signals_classified_retained_swap_as_allocation_only"
+            if inactive_swap_allocation_relief and not (stale_swap_relief or stale_compression_relief)
+            else (
+                "fresh_swap_pressure_reconciled_stale_allocation"
+                if stale_swap_relief or stale_compression_relief
+                else "not_applicable"
+            )
+        ),
         "policy": "classification and reopen gates use effective memory when fresh green VM evidence contradicts stale high-water allocation",
     }
     return snapshot
@@ -392,7 +416,15 @@ def _memory_trend(previous: dict[str, Any], current_snapshot: dict[str, Any], cu
         _safe_float(current_snapshot.get("compressed_store_gb"), 0.0),
     )
     compressed_delta = round(previous_compressed_pressure - current_compressed_pressure, 3)
-    swap_delta = round(_safe_float(prior_snapshot.get("swap_used_gb"), 0.0) - _safe_float(current_snapshot.get("swap_used_gb"), 0.0), 3)
+    previous_swap_pressure = _safe_float(
+        prior_snapshot.get("effective_swap_pressure_gb"),
+        _safe_float(prior_snapshot.get("swap_used_gb"), 0.0),
+    )
+    current_swap_pressure = _safe_float(
+        current_snapshot.get("effective_swap_pressure_gb"),
+        _safe_float(current_snapshot.get("swap_used_gb"), 0.0),
+    )
+    swap_delta = round(previous_swap_pressure - current_swap_pressure, 3)
     throttled_delta = round(_safe_float(prior_snapshot.get("pages_throttled"), 0.0) - _safe_float(current_snapshot.get("pages_throttled"), 0.0), 3)
     has_previous = bool(prior_snapshot)
     cooling = bool(has_previous and (compressed_delta >= 0.35 or swap_delta >= 0.1) and throttled_delta >= 0)
@@ -425,7 +457,10 @@ def _memory_trend(previous: dict[str, Any], current_snapshot: dict[str, Any], cu
 def _classify(snapshot: dict[str, Any], trend: dict[str, Any], multitasking: dict[str, Any]) -> dict[str, Any]:
     level = str(snapshot.get("pressure_level") or "normal").lower()
     kind = str(snapshot.get("pressure_kind") or "none").lower()
-    swap_gb = _safe_float(snapshot.get("swap_used_gb"), 0.0)
+    swap_gb = _safe_float(
+        snapshot.get("effective_swap_pressure_gb"),
+        _safe_float(snapshot.get("swap_used_gb"), 0.0),
+    )
     compressed_gb = _safe_float(snapshot.get("compressed_pressure_gb"), _safe_float(snapshot.get("compressed_store_gb"), 0.0))
     pages_throttled = _safe_float(snapshot.get("pages_throttled"), 0.0)
     burst_mode = str(snapshot.get("runtime_burst_mode") or "").lower()
@@ -523,7 +558,10 @@ def _reopen_gate(classification: dict[str, Any], trend: dict[str, Any], snapshot
         pressure_level == "normal" or allocation_only_pressure
     ) and pressure_kind in {"", "none", "normal"} and _safe_float(snapshot.get("pages_throttled"), 0.0) <= 0.0
     free_pct = _safe_float(snapshot.get("memory_free_pct"), 0.0)
-    swap_gb = _safe_float(snapshot.get("swap_used_gb"), 0.0)
+    swap_gb = _safe_float(
+        snapshot.get("effective_swap_pressure_gb"),
+        _safe_float(snapshot.get("swap_used_gb"), 0.0),
+    )
     compressed_gb = _safe_float(snapshot.get("compressed_pressure_gb"), _safe_float(snapshot.get("compressed_store_gb"), 0.0))
     multitasking_allows = bool(multitasking.get("training_allowed_by_multitasking", True))
     trend_heating = bool(trend.get("heating", False))
@@ -867,7 +905,10 @@ def _what_do_you_need(snapshot: dict[str, Any], classification: dict[str, Any], 
         and str(snapshot.get("pressure_level") or "normal").strip().lower() == "normal"
         and str(snapshot.get("pressure_kind") or "none").strip().lower() in {"", "none", "normal"}
         and _safe_float(snapshot.get("pages_throttled"), 0.0) <= 0.0
-        and _safe_float(snapshot.get("swap_used_gb"), 0.0) < 2.0
+        and _safe_float(
+            snapshot.get("effective_swap_pressure_gb"),
+            _safe_float(snapshot.get("swap_used_gb"), 0.0),
+        ) < 2.0
         and _safe_float(snapshot.get("compressed_pressure_gb"), 0.0) < 8.0
         and app_classes
         and set(app_classes).issubset({"media_playback"})
@@ -951,6 +992,11 @@ def _env_lines(payload: dict[str, Any]) -> list[str]:
         "MEMORY_PRESSURE_COMPRESSED_STORE_GB": str(snapshot.get("compressed_store_gb") or 0.0),
         "MEMORY_PRESSURE_COMPRESSED_PRESSURE_GB": str(snapshot.get("compressed_pressure_gb") or snapshot.get("compressed_store_gb") or 0.0),
         "MEMORY_PRESSURE_SWAP_USED_GB": str(snapshot.get("swap_used_gb") or 0.0),
+        "MEMORY_PRESSURE_EFFECTIVE_SWAP_GB": str(
+            snapshot.get("effective_swap_pressure_gb")
+            if snapshot.get("effective_swap_pressure_gb") is not None
+            else snapshot.get("swap_used_gb") or 0.0
+        ),
         "MEMORY_PRESSURE_CLEAR_SAMPLES": str(gate.get("consecutive_memory_clear_samples") or 0),
         "MULTITASKING_HEADROOM_LEVEL": str(multitasking.get("level") or "background_available"),
         "MULTITASKING_COLLECTOR_RATIO_CAP": str(multitasking.get("collector_ratio_cap") or 0.55),

@@ -238,3 +238,10 @@ def test_livefeed_refresh_guard_accepts_rotated_health_helper_when_mirror_alive(
     assert payload["health"]["pid_rotated_to_helper"] is True
     assert "livefeed_health_pid_not_running" not in payload["blockers"]
     assert payload["degradation"]["supervised_local_mirror"] is True
+
+
+def test_livefeed_elapsed_and_ttl_parsing_handles_multiday_processes() -> None:
+    assert src._elapsed_seconds("12-05:05:23") == 12 * 86400 + 5 * 3600 + 5 * 60 + 23
+    assert src._elapsed_seconds("17:03:00") == 17 * 3600 + 3 * 60
+    assert src._heavy_ttl_seconds("live_feed_tail.sh --heavy --heavy-ttl-seconds 900") == 900
+    assert src._heavy_ttl_seconds("live_feed_tail.sh --heavy --no-heavy-ttl") == 0

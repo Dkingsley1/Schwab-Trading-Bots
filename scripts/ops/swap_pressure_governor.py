@@ -20,13 +20,11 @@ if __package__ in {None, ""}:
     from scripts.ops import memory_efficiency_control as memory_src
     from scripts.ops import runtime_throttle_control as runtime_src
     from scripts.ops.long_runtime_common import load_json, parse_iso_utc, write_payload
-    from scripts.ops.support_maintenance_gate import frozen_health_payload, support_maintenance_freeze_contract
 else:
     from .. import resource_guard as resource_src
     from . import memory_efficiency_control as memory_src
     from . import runtime_throttle_control as runtime_src
     from .long_runtime_common import PROJECT_ROOT, load_json, parse_iso_utc, write_payload
-    from .support_maintenance_gate import frozen_health_payload, support_maintenance_freeze_contract
 
 
 DEFAULT_OUT_PATH = PROJECT_ROOT / "governance" / "health" / "swap_pressure_governor_latest.json"
@@ -37,14 +35,6 @@ DEFAULT_RUNTIME_OVERRIDE_PATH = PROJECT_ROOT / "config" / ".env.runtime_resource
 DEFAULT_REGISTRY_PATH = PROJECT_ROOT / "master_bot_registry.json"
 
 HEAVY_RESEARCH_PATTERNS = [
-    "scripts/run_all_sleeves.py",
-    "scripts/run_parallel_shadows.py",
-    "scripts/run_parallel_aggressive_modes.py",
-    "scripts/run_dividend_shadow.py",
-    "scripts/run_bond_shadow.py",
-    "scripts/run_fx_shadow.py",
-    "scripts/run_specialized_sleeve_shadow.py",
-    "scripts/run_shadow_training_loop.py",
     "scripts/retrain_orchestrator.py",
     "scripts/retrain_lane_scheduler.py",
     "scripts/weekly_retrain.py",
@@ -68,6 +58,19 @@ HEAVY_RESEARCH_PATTERNS = [
     "project_timeline_report.py",
     "report-bundle-pdf-open",
 ]
+
+PROTECTED_SOAK_RUNTIME_PATTERNS = (
+    "scripts/run_all_sleeves.py",
+    "scripts/run_parallel_shadows.py",
+    "scripts/run_parallel_aggressive_modes.py",
+    "scripts/run_dividend_shadow.py",
+    "scripts/run_dividend_capture_shadow.py",
+    "scripts/run_bond_shadow.py",
+    "scripts/run_fx_shadow.py",
+    "scripts/run_specialized_sleeve_shadow.py",
+    "scripts/run_shadow_training_loop.py",
+    "scripts/run_execution_lane.py --mode paper",
+)
 
 PROTECTED_MANUAL_TRAINING_PROFILES = {
     "coverage_micro_canary",
@@ -413,10 +416,16 @@ def _is_protected_manual_training(command: str) -> bool:
     return any(f"--retrain-profile {profile}" in text for profile in PROTECTED_MANUAL_TRAINING_PROFILES)
 
 
+def _is_protected_soak_runtime(command: str) -> bool:
+    text = " ".join(str(command or "").split())
+    return any(pattern in text for pattern in PROTECTED_SOAK_RUNTIME_PATTERNS)
+
+
 def _pause_heavy_research(tier: str, *, apply: bool, patterns: list[str] | None = None) -> dict[str, Any]:
     active = _research_pause_active(tier)
     selected_patterns = patterns or HEAVY_RESEARCH_PATTERNS
     matches: list[dict[str, Any]] = []
+    protected_matches: list[dict[str, Any]] = []
     terminated: list[dict[str, Any]] = []
     seen: set[int] = set()
     if active:
@@ -426,7 +435,25 @@ def _pause_heavy_research(tier: str, *, apply: bool, patterns: list[str] | None 
                     continue
                 seen.add(pid)
                 command = _command_for_pid(pid)
+                if _is_protected_soak_runtime(command):
+                    protected_matches.append(
+                        {
+                            "pid": pid,
+                            "pattern": pattern,
+                            "command": command[:500],
+                            "reason": "paper_collection_runtime_protected",
+                        }
+                    )
+                    continue
                 if _is_protected_manual_training(command):
+                    protected_matches.append(
+                        {
+                            "pid": pid,
+                            "pattern": pattern,
+                            "command": command[:500],
+                            "reason": "bounded_manual_training_protected",
+                        }
+                    )
                     continue
                 matches.append({"pid": pid, "pattern": pattern, "command": command[:500]})
                 if apply:
@@ -442,6 +469,8 @@ def _pause_heavy_research(tier: str, *, apply: bool, patterns: list[str] | None 
         "patterns": selected_patterns,
         "match_count": len(matches),
         "matches": matches,
+        "protected_match_count": len(protected_matches),
+        "protected_matches": protected_matches,
         "terminated_count": sum(1 for row in terminated if bool(row.get("ok", False))),
         "terminated": terminated,
     }
@@ -760,6 +789,8 @@ def build_payload(
         "controller_contract": {
             "mode": "applied" if apply else "advisory",
             "safe_while_live": True,
+            "support_maintenance_freeze_exempt": True,
+            "freeze_exemption_reason": "memory_safety_telemetry_must_remain_fresh",
             "scope": [
                 "stricter_memory_profile",
                 "heavy_research_pause",
@@ -787,7 +818,7 @@ def build_payload(
     return payload
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Govern macOS swap pressure by downshifting bot fanout, pausing research, and notifying safe restart/reboot advisories.")
     parser.add_argument("action", nargs="?", choices=("status", "apply"), default="status")
     parser.add_argument("--project-root", default=str(PROJECT_ROOT))
@@ -798,22 +829,10 @@ def main() -> int:
     parser.add_argument("--runtime-override-file", default=str(DEFAULT_RUNTIME_OVERRIDE_PATH))
     parser.add_argument("--registry", default=str(DEFAULT_REGISTRY_PATH))
     parser.add_argument("--json", action="store_true")
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
 
     project_root = Path(args.project_root).resolve()
     out_path = Path(args.out_file).expanduser()
-    freeze_contract = support_maintenance_freeze_contract(project_root, "swap_pressure_governor")
-    if bool(freeze_contract.get("active", False)):
-        payload = frozen_health_payload(out_path, freeze_contract)
-        payload.setdefault("swap_pressure", {"tier": "deferred_for_mac_fluidity", "swap_used_gb": 0.0})
-        payload.setdefault("controller_contract", {"mode": "support_maintenance_frozen", "safe_while_live": True})
-        write_payload(out_path, payload)
-        if args.json:
-            print(json.dumps(payload, ensure_ascii=True))
-        else:
-            print("swap_pressure_governor status=ready tier=deferred_for_mac_fluidity swap_used_gb=0.000")
-        return 0
-
     payload = build_payload(
         project_root,
         apply=args.action == "apply",

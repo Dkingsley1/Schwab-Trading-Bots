@@ -4,7 +4,6 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import subprocess
 import sys
 from pathlib import Path
 from typing import Any, Callable
@@ -14,10 +13,10 @@ if __package__ in {None, ""}:
     if str(PROJECT_ROOT) not in sys.path:
         sys.path.insert(0, str(PROJECT_ROOT))
     from scripts.ops import section_grade_guard
-    from scripts.ops.long_runtime_common import PROJECT_ROOT, iso_now, ordered_unique, write_payload
+    from scripts.ops.long_runtime_common import PROJECT_ROOT, iso_now, ordered_unique, run_bounded_process_group, write_payload
 else:
     from . import section_grade_guard
-    from .long_runtime_common import PROJECT_ROOT, iso_now, ordered_unique, write_payload
+    from .long_runtime_common import PROJECT_ROOT, iso_now, ordered_unique, run_bounded_process_group, write_payload
 
 
 DEFAULT_OUT_PATH = PROJECT_ROOT / "governance" / "health" / "section_grade_autopilot_latest.json"
@@ -48,38 +47,49 @@ def _bounded_timeout(raw: Any, *, max_step_timeout_sec: int) -> int:
     return max(1, min(timeout, max(int(max_step_timeout_sec), 1)))
 
 
+def _bounded_repair_command(raw_cmd: list[str]) -> list[str]:
+    cmd = [str(part) for part in raw_cmd]
+    if "storage-backpressure-autopilot" not in cmd or "--apply" not in cmd or "--quick-bounded" in cmd:
+        return cmd
+    insert_at = cmd.index("--json") if "--json" in cmd else len(cmd)
+    cmd.insert(insert_at, "--quick-bounded")
+    return cmd
+
+
 def _run(cmd: list[str], project_root: Path, timeout_sec: int) -> dict[str, Any]:
-    try:
-        proc = subprocess.run(
-            cmd,
-            cwd=str(project_root),
-            capture_output=True,
-            text=True,
-            check=False,
-            timeout=max(int(timeout_sec), 1),
-        )
-        return {
-            "cmd": list(cmd),
-            "rc": int(proc.returncode),
-            "payload": _parse_json_output(proc.stdout or ""),
-            "stdout_tail": "\n".join((proc.stdout or "").splitlines()[-12:]),
-            "stderr_tail": "\n".join((proc.stderr or "").splitlines()[-12:]),
-        }
-    except subprocess.TimeoutExpired as exc:
-        stdout = exc.stdout.decode("utf-8", errors="ignore") if isinstance(exc.stdout, bytes) else str(exc.stdout or "")
-        stderr = exc.stderr.decode("utf-8", errors="ignore") if isinstance(exc.stderr, bytes) else str(exc.stderr or "")
-        return {
-            "cmd": list(cmd),
-            "rc": 124,
-            "payload": _parse_json_output(stdout),
-            "stdout_tail": "\n".join(stdout.splitlines()[-12:]),
-            "stderr_tail": "\n".join(stderr.splitlines()[-12:]) or "timeout",
-        }
+    result = run_bounded_process_group(cmd, cwd=project_root, timeout_seconds=max(int(timeout_sec), 1))
+    stdout = str(result.get("stdout") or "")
+    stderr = str(result.get("stderr") or "")
+    return {
+        "cmd": list(cmd),
+        "rc": int(result.get("rc", 1)),
+        "payload": _parse_json_output(stdout),
+        "stdout_tail": "\n".join(stdout.splitlines()[-12:]),
+        "stderr_tail": "\n".join(stderr.splitlines()[-12:]) or ("timeout" if result.get("timed_out") else ""),
+        "timeout_cleanup": result.get("timeout_cleanup") if isinstance(result.get("timeout_cleanup"), dict) else {},
+    }
 
 
 def _repair_plan(guard_payload: dict[str, Any]) -> list[dict[str, Any]]:
     plan: list[dict[str, Any]] = []
     seen: set[str] = set()
+    below_floor_sections = {
+        str(item).strip()
+        for item in (guard_payload.get("below_floor_sections") or [])
+        if str(item).strip()
+    }
+    advisory_below_floor_sections = {
+        str(item).strip()
+        for item in (guard_payload.get("advisory_below_floor_sections") or [])
+        if str(item).strip()
+    }
+    blocking_below_floor_sections = {
+        str(item).strip()
+        for item in (guard_payload.get("blocking_below_floor_sections") or [])
+        if str(item).strip()
+    }
+    if not blocking_below_floor_sections and not advisory_below_floor_sections:
+        blocking_below_floor_sections = set(below_floor_sections)
 
     def add(section: str, reason: str, cmd: list[str], timeout_sec: int) -> None:
         key = " ".join(cmd)
@@ -95,7 +105,7 @@ def _repair_plan(guard_payload: dict[str, Any]) -> list[dict[str, Any]]:
             }
         )
 
-    if (guard_payload.get("below_floor_count", 0) or 0) > 0 or (guard_payload.get("protected_by_floor_count", 0) or 0) > 0:
+    if blocking_below_floor_sections or (guard_payload.get("protected_by_floor_count", 0) or 0) > 0:
         add("floor_baseline", "refresh_grade_regression_repairs", ["./scripts/ops/opsctl.sh", "grade-regression-autopilot", "--apply", "--json"], 1800)
         add("floor_baseline", "refresh_artifacts", ["./scripts/ops/opsctl.sh", "dashboard-refresh"], 900)
 
@@ -106,10 +116,12 @@ def _repair_plan(guard_payload: dict[str, Any]) -> list[dict[str, Any]]:
         if state == "at_floor":
             continue
         section = str(row.get("section") or "")
+        if state == "below_floor" and section not in blocking_below_floor_sections:
+            continue
         reason = state or "below_floor"
         for cmd in row.get("recommended_commands") or []:
             if isinstance(cmd, list) and cmd:
-                add(section, reason, [str(part) for part in cmd], 1200)
+                add(section, reason, _bounded_repair_command(cmd), 1200)
     return plan
 
 
@@ -158,13 +170,17 @@ def build_payload(
             )
 
     final_guard = build_guard(project_root)
+    final_blocking_below_floor_count = int(
+        final_guard.get("blocking_below_floor_count", final_guard.get("below_floor_count", 0)) or 0
+    )
+    final_advisory_below_floor_count = int(final_guard.get("advisory_below_floor_count", 0) or 0)
     recommended_actions = ordered_unique(
         [
             "leave the section-grade floor bot in apply mode so bounded recovery keeps A-/A sections from slipping back"
             if apply and repair_plan
             else "",
             "focus on the sections below floor first; floor-protected sections are still meeting the target contract"
-            if (final_guard.get("below_floor_count", 0) or 0) > 0
+            if final_blocking_below_floor_count > 0
             else "",
         ]
         + [str(item or "") for item in (final_guard.get("recommended_actions") or [])]
@@ -172,7 +188,7 @@ def build_payload(
     return {
         "timestamp_utc": iso_now(),
         "schema_version": 1,
-        "ok": bool((final_guard.get("below_floor_count", 0) or 0) <= 0),
+        "ok": bool(final_guard.get("ok", final_blocking_below_floor_count <= 0)),
         "overall_status": str(final_guard.get("overall_status") or ""),
         "apply": bool(apply),
         "max_step_timeout_sec": int(max_step_timeout_sec),
@@ -181,12 +197,18 @@ def build_payload(
         "initial_guard": {
             "overall_status": str(initial_guard.get("overall_status") or ""),
             "below_floor_count": int(initial_guard.get("below_floor_count", 0) or 0),
+            "blocking_below_floor_count": int(
+                initial_guard.get("blocking_below_floor_count", initial_guard.get("below_floor_count", 0)) or 0
+            ),
+            "advisory_below_floor_count": int(initial_guard.get("advisory_below_floor_count", 0) or 0),
             "protected_by_floor_count": int(initial_guard.get("protected_by_floor_count", 0) or 0),
             "overall_letter_grade": str(initial_guard.get("overall_letter_grade") or ""),
         },
         "final_guard": {
             "overall_status": str(final_guard.get("overall_status") or ""),
             "below_floor_count": int(final_guard.get("below_floor_count", 0) or 0),
+            "blocking_below_floor_count": final_blocking_below_floor_count,
+            "advisory_below_floor_count": final_advisory_below_floor_count,
             "protected_by_floor_count": int(final_guard.get("protected_by_floor_count", 0) or 0),
             "overall_letter_grade": str(final_guard.get("overall_letter_grade") or ""),
         },
@@ -196,6 +218,11 @@ def build_payload(
             "generation": "section_grade_floor_autopilot_v2",
             "floor_aware_repairs": True,
             "bounded_step_timeouts": True,
+            "bounded_storage_repairs": all(
+                "storage-backpressure-autopilot" not in (step.get("cmd") or [])
+                or "--quick-bounded" in (step.get("cmd") or [])
+                for step in repair_plan
+            ),
             "delegates_regression_repairs": any(
                 "grade-regression-autopilot" in " ".join(step.get("cmd") or [])
                 for step in repair_plan

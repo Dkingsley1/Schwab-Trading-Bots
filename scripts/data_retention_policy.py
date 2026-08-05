@@ -25,7 +25,9 @@ TIMELINE_STAMP_RE = re.compile(r"^project_timeline(?:_print)?_(\d{8}_\d{6})\.(?:
 CRASH_REPORT_STAMP_RE = re.compile(r"^crash_report_digest(?:_print)?_(\d{8}_\d{6})\.(?:md|pdf|html)$")
 TRAINING_REPORT_STAMP_RE = re.compile(r"^training_report(?:_print)?_(\d{8}_\d{6})\.(?:md|pdf|html)$")
 DAILY_OPS_REPORT_RE = re.compile(r"^daily_ops_report_(\d{8})\.(?:md|json|pdf)$")
-ONE_NUMBERS_STAMP_RE = re.compile(r"^one_numbers_\d{8}_(\d{8}_\d{6})\.(?:md|csv|pdf)$")
+ONE_NUMBERS_STAMP_RE = re.compile(
+    r"^one_numbers_\d{8}_(\d{8}_\d{6})(?:_metrics)?\.(?:md|csv|pdf|xlsx)$"
+)
 
 DEFAULT_EXTERNAL_MOUNT = "/Volumes/BOT_LOGS"
 DEFAULT_EXTERNAL_PROJECT = "schwab_trading_bot"
@@ -1478,7 +1480,7 @@ def main() -> int:
         one_numbers_dir,
         ONE_NUMBERS_STAMP_RE,
         older_than_days=args.exports_days,
-        keep_latest_runs=0,
+        keep_latest_runs=1,
         parse_stamp_fn=_parse_timeline_stamp,
     )
     to_delete.extend(one_numbers_rows)

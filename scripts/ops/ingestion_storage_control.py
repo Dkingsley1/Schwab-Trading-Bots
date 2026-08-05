@@ -5,6 +5,7 @@ import argparse
 import json
 import os
 import shutil
+import sys
 from datetime import datetime, time, timezone
 from pathlib import Path
 from typing import Any
@@ -12,6 +13,11 @@ from zoneinfo import ZoneInfo
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from core.local_storage_reserve import local_storage_reserve_contract
+
 DEFAULT_OUT_PATH = PROJECT_ROOT / "governance" / "health" / "ingestion_storage_control_latest.json"
 LOCAL_TZ = ZoneInfo("America/New_York")
 OFF_HOURS_START = time(16, 15)
@@ -278,7 +284,13 @@ def _backpressure_scorecard(
     if drain_minutes_total is None:
         core_target = max(_safe_int(targets["core_pending_lines"]), 1)
         total_unknown_ok_lines = max(core_target, int(core_target * UNKNOWN_DRAIN_TOTAL_MULTIPLIER))
-        if int(total_pending_lines) <= total_unknown_ok_lines and pressure_ratio <= 1.0 and core_ratio <= 1.0:
+        bounded_unknown_drain = bool(
+            int(total_pending_lines) <= total_unknown_ok_lines
+            and core_ratio <= 1.0
+            and str(overall_status or "") == "ready"
+            and str(severity or "") == "stable"
+        )
+        if bounded_unknown_drain:
             total_drain_ratio = 0.0
         else:
             total_drain_ratio = 0.0 if int(total_pending_lines) <= 0 else 2.0
@@ -659,6 +671,8 @@ def _raw_live_expansion_headroom_contract(
     raw_oldest = _safe_float(raw_live_backpressure.get("oldest_pending_age_seconds"), 0.0)
     core_hot_pending = 0
     core_hot_oldest = 0.0
+    core_hot_aged_pending = 0
+    core_hot_aged_oldest = 0.0
     side_hot_pending = 0
     side_hot_oldest = 0.0
     source_hot_pending = 0
@@ -689,6 +703,9 @@ def _raw_live_expansion_headroom_contract(
             if key == "top_pending_files":
                 core_hot_pending += pending
                 core_hot_oldest = max(core_hot_oldest, oldest)
+                if oldest >= reserve_age:
+                    core_hot_aged_pending += pending
+                    core_hot_aged_oldest = max(core_hot_aged_oldest, oldest)
             else:
                 side_hot_pending += pending
                 side_hot_oldest = max(side_hot_oldest, oldest)
@@ -696,17 +713,17 @@ def _raw_live_expansion_headroom_contract(
     expansion_total = max(raw_total, expansion_core + side_hot_pending)
     hot_material = bool(expansion_core >= reserve_core)
     hot_age_material_floor = max(100, int(target_core * 0.02))
+    raw_age_material = bool(raw_core >= hot_age_material_floor and raw_oldest >= reserve_age)
+    source_age_material = bool(core_hot_aged_pending >= hot_age_material_floor)
     hot_age_material = bool(
         not hot_age_reconciled_clear
-        and (raw_core >= hot_age_material_floor or core_hot_pending >= hot_age_material_floor)
-        and max(raw_oldest, core_hot_oldest) >= reserve_age
+        and (raw_age_material or source_age_material)
     )
-    expansion_oldest = (
-        max(raw_oldest, core_hot_oldest)
-        if hot_age_material
-        else raw_oldest
-        if hot_material
-        else 0.0
+    expansion_oldest = max(
+        raw_oldest if raw_age_material else 0.0,
+        core_hot_aged_oldest if source_age_material else 0.0,
+    ) if hot_age_material else (
+        raw_oldest if hot_material else 0.0
     )
     core_ratio = _target_ratio(expansion_core, reserve_core)
     total_ratio = _target_ratio(expansion_total, reserve_total)
@@ -770,6 +787,9 @@ def _raw_live_expansion_headroom_contract(
             "hot_source_oldest_pending_age_seconds": round(float(source_hot_oldest), 3),
             "core_hot_source_pending_lines": int(core_hot_pending),
             "core_hot_source_oldest_pending_age_seconds": round(float(core_hot_oldest), 3),
+            "core_aged_hot_source_pending_lines": int(core_hot_aged_pending),
+            "core_aged_hot_source_oldest_pending_age_seconds": round(float(core_hot_aged_oldest), 3),
+            "hot_age_material_floor_lines": int(hot_age_material_floor),
             "deferred_or_support_hot_source_pending_lines": int(side_hot_pending),
             "deferred_or_support_hot_source_oldest_pending_age_seconds": round(float(side_hot_oldest), 3),
             "guard_total_pending_lines": int(expansion_total),
@@ -1622,6 +1642,7 @@ def _storage_plane_disk_contract(
         raw_root = Path(str(data_collection_storage_guard.get("external_root") or "")).expanduser()
     external_live = _disk_usage_snapshot(raw_root)
     local_live = _disk_usage_snapshot(project_root)
+    local_reserve = local_storage_reserve_contract(project_root)
     guard_available_gb = _safe_float(guard_disk.get("available_gb"), 0.0)
     guard_used_percent = _safe_float(guard_disk.get("used_percent"), 0.0)
     if bool(external_live.get("exists", False)):
@@ -1641,7 +1662,7 @@ def _storage_plane_disk_contract(
     emergency_free_gb = 4.0
     low_free_gb = 8.0
     disk_known = bool(disk_source != "unknown")
-    emergency_guard = bool(
+    external_emergency_guard = bool(
         disk_known
         and (
             external_available_gb <= emergency_free_gb
@@ -1649,18 +1670,31 @@ def _storage_plane_disk_contract(
             or bool(external_live.get("protected", False))
         )
     )
-    low_free_guard = bool(disk_known and not emergency_guard and external_available_gb <= low_free_gb)
+    external_low_free_guard = bool(
+        disk_known and not external_emergency_guard and external_available_gb <= low_free_gb
+    )
+    local_emergency_guard = bool(local_reserve.get("hard_block", False))
+    local_low_free_guard = bool(
+        local_reserve.get("pressure_active", False) and not local_emergency_guard
+    )
+    emergency_guard = bool(external_emergency_guard or local_emergency_guard)
+    low_free_guard = bool(external_low_free_guard or local_low_free_guard)
     return {
         "disk_source": disk_source,
         "external_root": str(raw_root or ""),
         "external_disk": external_live,
         "local_disk": local_live,
+        "local_reserve": local_reserve,
         "external_available_gb": round(float(external_available_gb), 3),
         "external_used_percent": round(float(external_used_percent), 3),
         "min_free_gb": min_free_gb,
         "low_free_gb": low_free_gb,
         "emergency_free_gb": emergency_free_gb,
         "disk_known": bool(disk_known),
+        "external_emergency_disk_guard": bool(external_emergency_guard),
+        "external_low_free_guard": bool(external_low_free_guard),
+        "local_emergency_disk_guard": bool(local_emergency_guard),
+        "local_low_free_guard": bool(local_low_free_guard),
         "emergency_disk_guard": bool(emergency_guard),
         "low_free_guard": bool(low_free_guard),
     }
@@ -1804,6 +1838,12 @@ def _ingestion_storage_efficiency_contract(
     raw_queue_count = _safe_int(raw_summary.get("raw_jsonl_count"), 0)
     raw_eligible_count = _safe_int(raw_summary.get("eligible_training_source_count"), 0)
     fallback_reconciliation_count = _safe_int(raw_summary.get("local_fallback_reconciliation_count"), 0)
+    local_hot_storage_policy_active = bool(
+        storage_mount.get("external_required_for_hot_path") is False
+        and str(storage_mount.get("external_unavailable_reason") or "").strip()
+        == "cold_archive_only_local_hot_storage_policy"
+        and str(storage_mount.get("storage_mode") or "").strip() == "local_fallback"
+    )
     current_day_protected_count = _safe_int(raw_summary.get("current_day_protected_count"), 0)
     quota_hard_breaches = _safe_int(quota_summary.get("hard_breaches"), 0)
     quota_soft_breaches = _safe_int(quota_summary.get("soft_breaches"), 0)
@@ -1940,8 +1980,21 @@ def _ingestion_storage_efficiency_contract(
     )
     sparse_byte_window_required = sparse_pending_bytes >= 64 * 1024 * 1024
     raw_compaction_required = bool(raw_candidate_compaction_required or sparse_byte_window_required)
+    expected_local_hot_source_count = int(
+        fallback_reconciliation_count
+        if local_hot_storage_policy_active
+        and route_verified
+        and not route_drift
+        and route_mismatch_count <= 0
+        and int(unresolved_split_brain_conflicts) <= 0
+        else 0
+    )
+    actionable_fallback_reconciliation_count = max(
+        int(fallback_reconciliation_count) - int(expected_local_hot_source_count),
+        0,
+    )
     fallback_reconciliation_required = bool(
-        fallback_reconciliation_count > 0
+        actionable_fallback_reconciliation_count > 0
         or (unbacked_duplicate_count > 0 and unbacked_duplicate_gb >= 0.001)
         or route_drift
         or route_verification_state in {"blocked", "warning"}
@@ -2075,7 +2128,7 @@ def _ingestion_storage_efficiency_contract(
     else:
         storage_plane_phase = "steady_state"
     allowed_work = {
-        "hot_decision_ingest": True,
+        "hot_decision_ingest": bool(not emergency_disk_guard),
         "botlogs_space_recovery": bool(emergency_disk_guard or low_free_guard or dedupe_required or reserve_rebuild_required),
         "raw_training_manifest_refresh": bool(manifest_refresh_required),
         "raw_training_compaction_apply": bool(raw_candidate_compaction_required and compaction_apply_allowed_now and not emergency_disk_guard and not reserve_rebuild_required),
@@ -2111,7 +2164,7 @@ def _ingestion_storage_efficiency_contract(
             "steady_state",
         ],
         "exit_criteria": {
-            "emergency_disk_guard": "external_available_gb > 8 and storage pressure can refresh manifests without filling BOT_LOGS",
+            "emergency_disk_guard": "both local hot storage and BOT_LOGS are above their hard reserves",
             "storage_reserve_rebuild": "external_available_gb is above the configured recovery target or no safe backed duplicate candidates remain",
             "manifest_only_recovery": "queue watermarks below elevated and raw compaction apply is allowed by contract",
             "fallback_reconciliation": "local_fallback_reconciliation_count is 0 and route verification is ready",
@@ -2140,6 +2193,12 @@ def _ingestion_storage_efficiency_contract(
         "BOT_STORAGE_EMERGENCY_DISK_GUARD": "1" if emergency_disk_guard else "0",
         "BOT_STORAGE_EXTERNAL_FREE_GB": str(round(_safe_float(disk_contract.get("external_available_gb"), 0.0), 3)),
         "BOT_STORAGE_EXTERNAL_MIN_FREE_GB": str(round(_safe_float(disk_contract.get("min_free_gb"), 32.0), 3)),
+        "BOT_STORAGE_LOCAL_FREE_GB": str(
+            round(_safe_float((disk_contract.get("local_reserve") or {}).get("free_gb"), 0.0), 3)
+        ),
+        "BOT_STORAGE_LOCAL_TARGET_FREE_GB": str(
+            round(_safe_float((disk_contract.get("local_reserve") or {}).get("target_free_gb"), 64.0), 3)
+        ),
         "BOT_STORAGE_ALLOW_RAW_COMPACTION_APPLY": "1" if allowed_work["raw_training_compaction_apply"] else "0",
         "BOT_STORAGE_ALLOW_TRAINING": "1" if allowed_work["training"] else "0",
         "BOT_STORAGE_ALLOW_EXPANSION": "1" if allowed_work["expansion"] else "0",
@@ -2172,6 +2231,16 @@ def _ingestion_storage_efficiency_contract(
     if high_pressure:
         control_env.update(
             {
+                "HEAVY_COLLECTORS_PAUSED_FOR_BACKLOG": "1",
+                "REPORT_REFRESH_PAUSED_FOR_BACKLOG": "1",
+                "TRAINING_RUNTIME_PAUSED_FOR_BACKLOG": "1",
+            }
+        )
+    if emergency_disk_guard or low_free_guard:
+        control_env.update(
+            {
+                "BOT_COLLECTION_DUTY_CYCLE_ENABLED": "1",
+                "BOT_COLLECTION_DUTY_CYCLE_MAX_ACTIVE_RATIO": "0.05" if emergency_disk_guard else "0.15",
                 "HEAVY_COLLECTORS_PAUSED_FOR_BACKLOG": "1",
                 "REPORT_REFRESH_PAUSED_FOR_BACKLOG": "1",
                 "TRAINING_RUNTIME_PAUSED_FOR_BACKLOG": "1",
@@ -2212,7 +2281,9 @@ def _ingestion_storage_efficiency_contract(
             "id": "fallback_route_reconciliation",
             "active": bool(fallback_reconciliation_required),
             "exact_blocker": (
-                f"fallback_sources={fallback_reconciliation_count}, unbacked_duplicate_fallbacks={unbacked_duplicate_count} / {unbacked_duplicate_gb:.3f} GiB, "
+                f"fallback_sources={fallback_reconciliation_count}, actionable={actionable_fallback_reconciliation_count}, "
+                f"expected_local_hot={expected_local_hot_source_count}, "
+                f"unbacked_duplicate_fallbacks={unbacked_duplicate_count} / {unbacked_duplicate_gb:.3f} GiB, "
                 f"route_state={route_verification_state or 'unknown'}, mismatches={route_mismatch_count}, "
                 f"split_brain={int(unresolved_split_brain_conflicts)}"
             ),
@@ -2407,6 +2478,9 @@ def _ingestion_storage_efficiency_contract(
             "raw_candidate_manifest_watch": bool(raw_candidate_manifest_watch),
             "managed_raw_compaction_debt": bool(managed_raw_compaction_debt),
             "local_fallback_reconciliation_count": fallback_reconciliation_count,
+            "actionable_fallback_reconciliation_count": actionable_fallback_reconciliation_count,
+            "expected_local_hot_source_count": expected_local_hot_source_count,
+            "local_hot_storage_policy_active": local_hot_storage_policy_active,
             "current_day_protected_raw_count": current_day_protected_count,
             "quota_hard_breaches": quota_hard_breaches,
             "quota_soft_breaches": quota_soft_breaches,
@@ -2425,7 +2499,11 @@ def _ingestion_storage_efficiency_contract(
             "decision_explanations": "thin_digest_first_with_hot_retention_and_archive",
             "raw_training_sources": "manifest_only_queue_then_bounded_gzip_compaction",
             "deep_cold_archives": "manifest_indexed_retention_locked_evidence_no_delete",
-            "fallback_storage": "local_standby_only_until_external_route_verifies_clean",
+            "fallback_storage": (
+                "local_hot_is_authoritative_external_is_cold_archive"
+                if local_hot_storage_policy_active
+                else "local_standby_only_until_external_route_verifies_clean"
+            ),
             "support_telemetry": "support_shard_isolated_from_core_ingestion",
         },
         "next_action": (
@@ -3782,15 +3860,22 @@ def _reconcile_raw_backpressure_with_shard_state(
         + _safe_int(raw_live_backpressure.get("support_pending_lines"), 0)
         + _safe_int(raw_live_backpressure.get("stale_stage_pending_lines"), 0)
     )
+    material_age_min_lines = max(
+        _safe_int(raw_live_backpressure.get("oldest_age_min_pending_lines"), 100),
+        1,
+    )
     remaining_ages = [
         _safe_float(row.get("oldest_pending_age_seconds"), 0.0)
-        for key in list_lanes
-        for row in (raw_live_backpressure.get(key) if isinstance(raw_live_backpressure.get(key), list) else [])
-        if isinstance(row, dict) and _safe_int(row.get("pending_lines"), 0) > 0
+        for row in (
+            raw_live_backpressure.get("top_pending_files")
+            if isinstance(raw_live_backpressure.get("top_pending_files"), list)
+            else []
+        )
+        if isinstance(row, dict) and _safe_int(row.get("pending_lines"), 0) >= material_age_min_lines
     ]
     if remaining_ages:
         raw_live_backpressure["oldest_pending_age_seconds"] = round(max(remaining_ages), 3)
-    elif raw_live_backpressure["total_pending_lines"] <= 0:
+    else:
         raw_live_backpressure["oldest_pending_age_seconds"] = 0.0
     payload = {
         "active": bool(reconciled_rows),
@@ -4149,6 +4234,10 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, now_utc: datetime | None
         "stale_stage_pending_lines": int(stale_stage_pending_lines),
         "total_pending_lines": int(total_pending_lines),
         "oldest_pending_age_seconds": round(float(oldest_age_seconds), 3),
+        "oldest_age_min_pending_lines": max(
+            _safe_int(backpressure.get("oldest_age_min_pending_lines"), 100),
+            1,
+        ),
         "line_estimation": line_estimation,
         "top_pending_files": backpressure.get("top_pending_files") if isinstance(backpressure.get("top_pending_files"), list) else [],
         "top_deferred_pending_files": backpressure.get("top_deferred_pending_files") if isinstance(backpressure.get("top_deferred_pending_files"), list) else [],
@@ -4704,6 +4793,7 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, now_utc: datetime | None
         pending_threshold=pending_threshold,
         age_threshold_seconds=age_threshold,
     )
+    support_overlay_lane_isolated_for_pressure = False
     if managed_support_overlay_backlog:
         if candidate_support_pending > int(support_pending_lines):
             support_pending_lines = int(candidate_support_pending)
@@ -4723,9 +4813,32 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, now_utc: datetime | None
                 _safe_float(drainer_fleet_support_reconciliation.get("oldest_pending_age_seconds"), float(age_threshold)),
                 float(age_threshold),
             )
+            support_overlay_lane_isolated_for_pressure = True
         else:
             bounded_support = max(raw_support_pending, min(int(candidate_support_pending), managed_support_pressure_cap))
-            bounded_oldest_age = min(float(oldest_age_seconds), float(age_threshold) * 1.25)
+            bounded_total = (
+                int(core_pending_lines)
+                + int(deferred_pending_lines)
+                + int(cold_pending_lines)
+                + int(bounded_support)
+                + int(stale_stage_pending_lines)
+            )
+            support_overlay_lane_isolated_for_pressure = bool(
+                int(core_pending_lines) <= int(core_target_lines)
+                and int(bounded_total) <= int(pending_threshold)
+                and int(deferred_pending_lines) <= int(pending_threshold)
+                and int(cold_pending_lines) <= max(_safe_int(_steady_state_targets().get("cold_pending_lines"), 5000), 5000)
+                and int(stale_stage_pending_lines) <= 0
+                and _safe_int(sql_pending_overlay.get("invalid_lines"), 0) <= 0
+                and _safe_int(sql_pending_overlay.get("oversize_payloads"), 0) <= 0
+                and _safe_int(sql_pending_overlay.get("ops_write_failures"), 0) <= 0
+                and _safe_int(sql_ingestion.get("sqlite", {}).get("invalid"), 0) <= 0
+            )
+            bounded_oldest_age = (
+                0.0
+                if support_overlay_lane_isolated_for_pressure
+                else min(float(oldest_age_seconds), float(age_threshold) * 1.25)
+            )
         pressure_support_pending_lines = bounded_support
         pressure_total_pending_lines = (
             int(core_pending_lines)
@@ -4752,10 +4865,18 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, now_utc: datetime | None
         sql_pending_overlay["raw_oldest_pending_age_seconds"] = round(float(oldest_age_seconds), 3)
         sql_pending_overlay["pressure_oldest_pending_age_seconds"] = round(float(pressure_oldest_age_seconds), 3)
         sql_pending_overlay["drainer_fleet_support_reconciliation"] = drainer_fleet_support_reconciliation
+        sql_pending_overlay["support_overlay_lane_isolated_for_pressure"] = bool(support_overlay_lane_isolated_for_pressure)
+        sql_pending_overlay["support_overlay_age_reconciliation_source"] = (
+            "support_overlay_lane_isolated_for_pressure"
+            if support_overlay_lane_isolated_for_pressure
+            else "support_overlay_bounded_watch"
+        )
         raw_live_backpressure["managed_support_overlay_backlog"] = True
         raw_live_backpressure["pressure_total_pending_lines"] = int(pressure_total_pending_lines)
         raw_live_backpressure["pressure_support_pending_lines"] = int(pressure_support_pending_lines)
         raw_live_backpressure["pressure_oldest_pending_age_seconds"] = round(float(pressure_oldest_age_seconds), 3)
+        if support_overlay_lane_isolated_for_pressure:
+            raw_live_backpressure["age_reconciliation_source"] = "managed_support_overlay_lane_isolated"
 
     if managed_support_overlay_backlog:
         effective_raw_live_backpressure = {
@@ -4772,6 +4893,12 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, now_utc: datetime | None
             "oldest_pending_age_seconds": round(float(pressure_oldest_age_seconds), 3),
             "managed_support_overlay_backlog": True,
             "pressure_context": "managed_support_overlay_backlog",
+            "support_overlay_lane_isolated_for_pressure": bool(support_overlay_lane_isolated_for_pressure),
+            "age_reconciliation_source": (
+                "managed_support_overlay_lane_isolated"
+                if support_overlay_lane_isolated_for_pressure
+                else "managed_support_overlay_bounded_watch"
+            ),
         }
         effective_raw_live_source = f"{effective_raw_live_source}+managed_support_overlay_pressure"
 
@@ -5100,8 +5227,8 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, now_utc: datetime | None
         route_verification=route_verification,
         unresolved_split_brain_conflicts=unresolved_split_brain_conflicts,
         line_estimation=effective_line_estimation,
-        total_pending_lines=total_pending_lines,
-        core_pending_lines=core_pending_lines,
+        total_pending_lines=pressure_total_pending_lines,
+        core_pending_lines=pressure_core_pending_lines,
         retention_debt_gb=retention_debt_gb,
         overlay_pressure_clear=overlay_pressure_clear,
     )
@@ -5178,10 +5305,10 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, now_utc: datetime | None
 
     steady_state = _backpressure_scorecard(
         pressure_index=pressure_index,
-        core_pending_lines=core_pending_lines,
-        total_pending_lines=total_pending_lines,
+        core_pending_lines=pressure_core_pending_lines,
+        total_pending_lines=pressure_total_pending_lines,
         drain_minutes_total=drain_minutes_total,
-        stale_stage_pending_lines=stale_stage_pending_lines,
+        stale_stage_pending_lines=pressure_stale_stage_pending_lines,
         retention_debt_gb=retention_debt_gb,
         overall_status=overall_status,
         severity=severity,
@@ -5358,6 +5485,14 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, now_utc: datetime | None
             "support_pending_lines": support_pending_lines,
             "stale_stage_pending_lines": stale_stage_pending_lines,
             "total_pending_lines": total_pending_lines,
+            "pressure_core_pending_lines": pressure_core_pending_lines,
+            "pressure_deferred_pending_lines": pressure_deferred_pending_lines,
+            "pressure_cold_pending_lines": pressure_cold_pending_lines,
+            "pressure_support_pending_lines": pressure_support_pending_lines,
+            "pressure_stale_stage_pending_lines": pressure_stale_stage_pending_lines,
+            "pressure_total_pending_lines": pressure_total_pending_lines,
+            "pressure_oldest_pending_age_seconds": round(float(pressure_oldest_age_seconds), 3),
+            "managed_support_overlay_backlog": bool(managed_support_overlay_backlog),
             "overlay_adjusted": sql_overlay_adjusted,
             "overlay_pressure_clear": overlay_pressure_clear,
             "managed_tiny_hot_tail": managed_tiny_hot_tail,

@@ -38,6 +38,7 @@ def test_safe_space_recovery_deletes_only_bounded_safe_candidates(tmp_path: Path
     fresh_tmp = root / "fresh.partial"
     fresh_tmp.write_bytes(b"fresh")
     old_ts = time.time() - (8 * 3600)
+    os.utime(duplicate, (old_ts, old_ts))
     os.utime(stale_tmp, (old_ts, old_ts))
 
     preview = src.build_payload(

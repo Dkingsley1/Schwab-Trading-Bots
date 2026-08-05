@@ -19,6 +19,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+from core.runtime_maintenance import maintenance_hold_snapshot
 from core.runtime_python import resolve_runtime_python
 
 VENV_PY = resolve_runtime_python(PROJECT_ROOT)
@@ -36,7 +37,10 @@ DEBUG_SNAPSHOT_SCRIPT = PROJECT_ROOT / "scripts" / "collect_debug_snapshot.sh"
 CAPTURE_CONFIG_SCRIPT = PROJECT_ROOT / "scripts" / "capture_run_config.py"
 PAPER_TRADE_LOCK_PATH = PROJECT_ROOT / "governance" / "health" / "PAPER_TRADE_LOCK.flag"
 LAUNCHER_HEALTH_PATH = PROJECT_ROOT / "governance" / "health" / "all_sleeves_launcher_latest.json"
+ACCOUNT_POSITION_STUDY_PATH = PROJECT_ROOT / "governance" / "health" / "account_position_study_latest.json"
 PROCESS_FANOUT_OVERRIDE_PATH = PROJECT_ROOT / "config" / ".env.process_fanout_guard_override"
+COLLECTION_BREAKER_GROUP = "collection"
+EXECUTION_BREAKER_GROUP = "execution"
 SLEEVE_LAUNCHER_REPAIR_INFRABOTS = (
     {
         "name": "sleeve_launcher_parent_watchdog",
@@ -388,6 +392,46 @@ def _read_json(path: Path) -> dict:
         return json.loads(path.read_text(encoding="utf-8"))
     except Exception:
         return {}
+
+
+def _position_overlay_symbols(
+    study_path: Path = ACCOUNT_POSITION_STUDY_PATH,
+    *,
+    max_symbols: int = 32,
+) -> list[str]:
+    study = _read_json(study_path)
+    if not bool(study.get("ok", False)):
+        return []
+    symbols: list[str] = []
+    seen: set[str] = set()
+    for row in study.get("underlyings") or []:
+        if not isinstance(row, dict):
+            continue
+        symbol = str(row.get("underlying") or "").strip().upper()
+        valid = bool(
+            symbol
+            and len(symbol) <= 15
+            and all(char.isalnum() or char in {".", "-"} for char in symbol)
+        )
+        if not valid or symbol in seen:
+            continue
+        seen.add(symbol)
+        symbols.append(symbol)
+        if len(symbols) >= max(int(max_symbols), 0):
+            break
+    return symbols
+
+
+def _merge_symbol_csv(base: str, additions: list[str]) -> str:
+    merged: list[str] = []
+    seen: set[str] = set()
+    for raw in [*str(base or "").split(","), *additions]:
+        symbol = str(raw or "").strip().upper()
+        if not symbol or symbol in seen:
+            continue
+        seen.add(symbol)
+        merged.append(symbol)
+    return ",".join(merged)
 
 
 def _read_env_override(path: Path) -> dict[str, str]:
@@ -1020,13 +1064,96 @@ def _quarantine_release_state(
 
 def _read_one_numbers(path: Path) -> dict:
     try:
-        return json.loads(path.read_text(encoding="utf-8"))
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(payload, dict):
+            return {
+                "_breaker_source_present": False,
+                "_breaker_source_reason": "invalid_payload",
+            }
+        payload["_breaker_source_present"] = True
+        payload["_breaker_source_age_seconds"] = max(time.time() - path.stat().st_mtime, 0.0)
+        return payload
     except Exception:
-        return {}
+        return {
+            "_breaker_source_present": False,
+            "_breaker_source_reason": "missing_or_unreadable",
+        }
+
+
+def _boolish(value: object, default: bool = False) -> bool:
+    if isinstance(value, bool):
+        return value
+    normalized = str(value or "").strip().lower()
+    if normalized in {"1", "true", "yes", "on", "open"}:
+        return True
+    if normalized in {"0", "false", "no", "off", "closed"}:
+        return False
+    return default
+
+
+def _iso_age_seconds(value: object, *, now_epoch: float | None = None) -> float | None:
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    try:
+        parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        now_value = time.time() if now_epoch is None else float(now_epoch)
+        return max(now_value - parsed.timestamp(), 0.0)
+    except Exception:
+        return None
+
+
+def _breaker_metrics_actionable(
+    metrics: dict[str, object],
+    args: argparse.Namespace,
+    *,
+    now_epoch: float | None = None,
+) -> tuple[bool, str]:
+    if metrics.get("_breaker_source_present") is False:
+        return False, str(metrics.get("_breaker_source_reason") or "source_missing")
+
+    max_age_seconds = max(float(getattr(args, "breaker_max_metric_age_seconds", 900.0) or 0.0), 0.0)
+    source_age = metrics.get("_breaker_source_age_seconds")
+    if source_age is not None and max_age_seconds > 0:
+        if _safe_float(source_age, max_age_seconds + 1.0) > max_age_seconds:
+            return False, "source_stale"
+
+    measurement_age = _iso_age_seconds(
+        metrics.get("data_quality_session_local_timestamp"),
+        now_epoch=now_epoch,
+    )
+    if measurement_age is not None and max_age_seconds > 0 and measurement_age > max_age_seconds:
+        return False, "measurement_stale"
+
+    session_aware = _boolish(metrics.get("data_quality_session_aware"), False)
+    session_open = _boolish(metrics.get("data_quality_session_open"), True)
+    if str(getattr(args, "broker", "")).strip().lower() == "schwab" and session_aware and not session_open:
+        return False, "market_session_closed"
+    return True, "fresh_actionable_metrics"
+
+
+def _breaker_policy_parked_jobs(
+    specs: dict[str, JobSpec],
+    group_disabled_until: dict[str, float],
+    *,
+    now: float,
+) -> set[str]:
+    return {
+        name
+        for name, spec in specs.items()
+        if float(group_disabled_until.get(spec.breaker_group, 0.0) or 0.0) > float(now)
+    }
 
 
 def _breaker_reasons(metrics: dict, args, *, runtime_seconds: float = 0.0) -> tuple[list[str], str]:
     reasons: list[str] = []
+    broker_domain = "stocks" if args.broker == "schwab" else "crypto"
+    actionable, _reason = _breaker_metrics_actionable(metrics, args)
+    if not actionable:
+        return reasons, broker_domain
+
     dq = _safe_float(metrics.get("data_quality_score"), 0.0)
     blocked = _safe_float(metrics.get("combined_blocked_rate"), 0.0)
     data_quality_grace_seconds = max(float(getattr(args, "breaker_data_quality_grace_seconds", 0.0) or 0.0), 0.0)
@@ -1036,7 +1163,6 @@ def _breaker_reasons(metrics: dict, args, *, runtime_seconds: float = 0.0) -> tu
     if blocked > args.breaker_max_blocked_rate:
         reasons.append(f"blocked_rate_high:{blocked:.4f}")
 
-    broker_domain = "stocks" if args.broker == "schwab" else "crypto"
     pnl_key = "stocks_pnl_proxy" if broker_domain == "stocks" else "crypto_pnl_proxy"
     pnl_val = _safe_float(metrics.get(pnl_key), 0.0)
     if pnl_val < args.breaker_min_pnl_proxy:
@@ -1244,6 +1370,12 @@ def main() -> int:
         default=int(os.getenv("ALL_SLEEVES_BREAKER_DATA_QUALITY_GRACE_SECONDS", "900")),
         help="Ignore low data-quality score until fresh live observations have had time to arrive.",
     )
+    parser.add_argument(
+        "--breaker-max-metric-age-seconds",
+        type=int,
+        default=int(os.getenv("ALL_SLEEVES_BREAKER_MAX_METRIC_AGE_SECONDS", "900")),
+        help="Ignore stale one-number snapshots; stale evidence cannot terminate runtime processes.",
+    )
     parser.add_argument("--breaker-min-data-quality", type=float, default=float(os.getenv("ALL_SLEEVES_BREAKER_MIN_DQ", "75")))
     parser.add_argument("--breaker-max-blocked-rate", type=float, default=float(os.getenv("ALL_SLEEVES_BREAKER_MAX_BLOCKED", "0.35")))
     parser.add_argument("--breaker-min-pnl-proxy", type=float, default=float(os.getenv("ALL_SLEEVES_BREAKER_MIN_PNL", "-0.020")))
@@ -1256,11 +1388,19 @@ def main() -> int:
     parser.add_argument(
         "--local-hard-min-free-gb",
         type=float,
-        default=float(os.getenv("ALL_SLEEVES_LOCAL_HARD_MIN_FREE_GB", "2")),
+        default=float(os.getenv("ALL_SLEEVES_LOCAL_HARD_MIN_FREE_GB", "16")),
         help="Hard startup block if the local project volume is below this GB threshold.",
     )
 
     args = parser.parse_args()
+    maintenance_hold = maintenance_hold_snapshot(PROJECT_ROOT)
+    if bool(maintenance_hold.get("active", False)):
+        print(
+            "RUNTIME_MAINTENANCE_HOLD=1 set; refusing to start all sleeves. "
+            f"reason={maintenance_hold.get('reason', 'runtime_maintenance')}"
+        )
+        _emit_incident_snapshot("runtime_maintenance_hold_refusal", str(maintenance_hold.get("reason") or "startup"))
+        return 75
     startup_fanout_policy = _process_fanout_policy()
     fanout_policy_changes = _apply_process_fanout_policy_to_args(args, startup_fanout_policy)
     if fanout_policy_changes:
@@ -1319,6 +1459,18 @@ def main() -> int:
         print("[Preflight] startup blocked.")
         return 4
 
+    if args.broker == "schwab" and _env_flag("POSITION_AWARE_SYMBOL_OVERLAY_ENABLED", "1"):
+        position_symbols = _position_overlay_symbols(
+            max_symbols=max(int(os.getenv("POSITION_AWARE_SYMBOL_OVERLAY_MAX_SYMBOLS", "32") or 32), 0)
+        )
+        if position_symbols:
+            args.symbols_core = _merge_symbol_csv(args.symbols_core, position_symbols)
+            print(
+                "[PositionAwareUniverse] "
+                f"source=account_position_study added={len(position_symbols)} "
+                f"symbols={','.join(position_symbols)} lane=baseline_parallel"
+            )
+
     _capture_full_run_config(args)
 
     base_env = os.environ.copy()
@@ -1361,7 +1513,7 @@ def main() -> int:
         parallel_cmd.extend(["--symbols-defensive", args.symbols_defensive])
     env = dict(base_env)
     env["ASYNC_PIPELINE_WORKERS"] = str(max(args.workers_baseline, 1))
-    specs["baseline_parallel"] = JobSpec("baseline_parallel", parallel_cmd, env, breaker_group="core")
+    specs["baseline_parallel"] = JobSpec("baseline_parallel", parallel_cmd, env, breaker_group=COLLECTION_BREAKER_GROUP)
 
     dividend_cmd = [
         *_nice_prefix_for_target(args.nice_dividend, parent_nice),
@@ -1376,7 +1528,7 @@ def main() -> int:
         dividend_cmd.extend(["--symbols", args.dividend_symbols])
     env = dict(base_env)
     env["ASYNC_PIPELINE_WORKERS"] = str(max(args.workers_dividend, 1))
-    specs["dividend"] = JobSpec("dividend", dividend_cmd, env, breaker_group="core")
+    specs["dividend"] = JobSpec("dividend", dividend_cmd, env, breaker_group=COLLECTION_BREAKER_GROUP)
 
     if args.with_dividend_capture:
         dividend_capture_cmd = [
@@ -1392,7 +1544,7 @@ def main() -> int:
             dividend_capture_cmd.extend(["--symbols", args.dividend_symbols])
         env = dict(base_env)
         env["ASYNC_PIPELINE_WORKERS"] = str(max(args.workers_dividend_capture, 1))
-        specs["dividend_capture"] = JobSpec("dividend_capture", dividend_capture_cmd, env, breaker_group="core")
+        specs["dividend_capture"] = JobSpec("dividend_capture", dividend_capture_cmd, env, breaker_group=COLLECTION_BREAKER_GROUP)
 
     bond_cmd = [
         *_nice_prefix_for_target(args.nice_bond, parent_nice),
@@ -1407,7 +1559,7 @@ def main() -> int:
         bond_cmd.extend(["--symbols", args.bond_symbols])
     env = dict(base_env)
     env["ASYNC_PIPELINE_WORKERS"] = str(max(args.workers_bond, 1))
-    specs["bond"] = JobSpec("bond", bond_cmd, env, breaker_group="core")
+    specs["bond"] = JobSpec("bond", bond_cmd, env, breaker_group=COLLECTION_BREAKER_GROUP)
 
     if args.with_fx:
         fx_cmd = [
@@ -1427,7 +1579,7 @@ def main() -> int:
         env["ASYNC_PIPELINE_WORKERS"] = str(max(args.workers_fx, 1))
         env["FX_DIRECT_EXECUTION_ENABLED"] = "0"
         env["SCHWAB_FOREX_API_VERIFIED"] = os.getenv("SCHWAB_FOREX_API_VERIFIED", "0")
-        specs["fx"] = JobSpec("fx", fx_cmd, env, breaker_group="core")
+        specs["fx"] = JobSpec("fx", fx_cmd, env, breaker_group=COLLECTION_BREAKER_GROUP)
 
     if args.with_specialized_sleeves:
         specialized_profiles = _specialized_profiles_for_launch()
@@ -1453,7 +1605,7 @@ def main() -> int:
             env["AUTO_RETRAIN_ON_GOVERNANCE"] = "0"
             env["SLEEVE_LIFECYCLE_STATE"] = "data_collection_only"
             env["TRAINING_EXCLUDED_UNTIL_READY"] = "1"
-            specs[profile] = JobSpec(profile, cmd, env, breaker_group="core")
+            specs[profile] = JobSpec(profile, cmd, env, breaker_group=COLLECTION_BREAKER_GROUP)
 
     if args.with_aggressive_modes:
         aggressive_cmd = [
@@ -1466,7 +1618,7 @@ def main() -> int:
             aggressive_cmd.append("--simulate")
         env = dict(base_env)
         env["ASYNC_PIPELINE_WORKERS"] = str(max(args.workers_aggressive, 1))
-        specs["aggressive_modes"] = JobSpec("aggressive_modes", aggressive_cmd, env, breaker_group="core")
+        specs["aggressive_modes"] = JobSpec("aggressive_modes", aggressive_cmd, env, breaker_group=COLLECTION_BREAKER_GROUP)
 
     startup_policy_parked_jobs: set[str] = set()
     if args.with_paper_executor:
@@ -1485,7 +1637,7 @@ def main() -> int:
             "paper_executor",
             paper_exec_cmd,
             env,
-            breaker_group="core",
+            breaker_group=EXECUTION_BREAKER_GROUP,
             heartbeat_path=PROJECT_ROOT / "governance" / "health" / "execution_lane_paper_latest.json",
             heartbeat_stale_seconds=paper_heartbeat_stale_seconds,
             heartbeat_startup_grace_seconds=paper_heartbeat_stale_seconds,
@@ -1515,7 +1667,7 @@ def main() -> int:
             "live_executor",
             live_exec_cmd,
             env,
-            breaker_group="core",
+            breaker_group=EXECUTION_BREAKER_GROUP,
             heartbeat_path=PROJECT_ROOT / "governance" / "health" / "execution_lane_live_latest.json",
             heartbeat_stale_seconds=live_heartbeat_stale_seconds,
             heartbeat_startup_grace_seconds=live_heartbeat_stale_seconds,
@@ -1533,8 +1685,11 @@ def main() -> int:
     restart_history: dict[str, list[float]] = {name: [] for name in specs}
     quarantined_jobs: dict[str, dict[str, object]] = {}
     clean_exited_at: dict[str, float] = {}
-    breaker_streaks: dict[str, int] = {"core": 0}
-    group_disabled_until: dict[str, float] = {"core": 0.0}
+    breaker_streaks: dict[str, int] = {EXECUTION_BREAKER_GROUP: 0}
+    group_disabled_until: dict[str, float] = {
+        COLLECTION_BREAKER_GROUP: 0.0,
+        EXECUTION_BREAKER_GROUP: 0.0,
+    }
     parked_jobs_reported: set[str] = set()
     last_breaker_check_ts = 0.0
     breaker_path = Path(args.breaker_one_numbers_path)
@@ -1606,12 +1761,16 @@ def main() -> int:
             )
         )
         while True:
+            now = time.time()
             fanout_policy = _process_fanout_policy()
             policy_parked_jobs = {
                 name
                 for name in specs
                 if _job_parked_by_fanout_policy(name, fanout_policy)
             }
+            policy_parked_jobs.update(
+                _breaker_policy_parked_jobs(specs, group_disabled_until, now=now)
+            )
             if "paper_executor" in specs and not _paper_execution_consumer_enabled():
                 policy_parked_jobs.add("paper_executor")
             if not policy_parked_jobs:
@@ -1635,7 +1794,6 @@ def main() -> int:
                 )
                 return 0
 
-            now = time.time()
             for name in list(quarantined_jobs):
                 if name not in specs or name in policy_parked_jobs:
                     continue
@@ -1703,26 +1861,32 @@ def main() -> int:
                     )
                 else:
                     metrics = _read_one_numbers(breaker_path)
+                    actionable, metric_reason = _breaker_metrics_actionable(metrics, args, now_epoch=now)
                     reasons, _domain = _breaker_reasons(metrics, args, runtime_seconds=runtime_seconds)
-                    if reasons:
-                        breaker_streaks["core"] = breaker_streaks.get("core", 0) + 1
+                    breaker_group = EXECUTION_BREAKER_GROUP
+                    if not actionable:
+                        breaker_streaks[breaker_group] = 0
+                        print(f"[CircuitBreaker] observation_only reason={metric_reason} collection_continues=1")
+                    elif reasons:
+                        breaker_streaks[breaker_group] = breaker_streaks.get(breaker_group, 0) + 1
                         print(
-                            f"[CircuitBreaker] breach_streak={breaker_streaks['core']}/{max(args.breaker_consecutive_breaches,1)} "
+                            f"[CircuitBreaker] breach_streak={breaker_streaks[breaker_group]}/{max(args.breaker_consecutive_breaches,1)} "
                             f"reasons={'|'.join(reasons)}"
                         )
                     else:
-                        breaker_streaks["core"] = 0
+                        breaker_streaks[breaker_group] = 0
 
-                    if breaker_streaks["core"] >= max(args.breaker_consecutive_breaches, 1):
-                        group_disabled_until["core"] = now + max(args.breaker_cooldown_seconds, 30)
-                        breaker_streaks["core"] = 0
+                    if breaker_streaks[breaker_group] >= max(args.breaker_consecutive_breaches, 1):
+                        group_disabled_until[breaker_group] = now + max(args.breaker_cooldown_seconds, 30)
+                        breaker_streaks[breaker_group] = 0
                         print(
-                            f"[CircuitBreaker] TRIPPED group=core cooldown_s={max(args.breaker_cooldown_seconds,30)} "
-                            f"reasons={'|'.join(reasons)}"
+                            f"[CircuitBreaker] TRIPPED group={breaker_group} "
+                            f"cooldown_s={max(args.breaker_cooldown_seconds,30)} "
+                            f"reasons={'|'.join(reasons)} collection_continues=1"
                         )
                         _emit_incident_snapshot("circuit_breaker_tripped", "|".join(reasons))
                         for name, proc in list(procs.items()):
-                            if specs[name].breaker_group != "core":
+                            if specs[name].breaker_group != breaker_group:
                                 continue
                             if proc.poll() is None:
                                 _terminate_process_group(proc)

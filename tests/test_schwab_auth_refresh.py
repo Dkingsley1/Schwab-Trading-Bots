@@ -363,3 +363,76 @@ def test_main_can_restore_enter_gate_before_browser(monkeypatch) -> None:
     assert seen["interactive"] == "1"
     assert payload["prompt_before_browser"] is True
     assert install_calls["count"] == 1
+
+
+def test_successful_interactive_account_probe_triggers_post_refresh_cascade(monkeypatch) -> None:
+    fake_module = types.ModuleType("core.base_trader")
+    cascade_calls = {"count": 0}
+
+    class FakeResponse:
+        status_code = 200
+
+    class FakeBaseTrader:
+        def __init__(self, *args, **kwargs) -> None:
+            self.client = self
+            self.token_path = ""
+
+        def authenticate(self):
+            Path(self.token_path).write_text(
+                json.dumps(
+                    {
+                        "token": {
+                            "access_token": "access-token",
+                            "refresh_token": "refresh-token",
+                            "expires_at": 4102444800,
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+            return self
+
+        def get_account_numbers(self):
+            return FakeResponse()
+
+    fake_module.BaseTrader = FakeBaseTrader
+    monkeypatch.setitem(sys.modules, "core.base_trader", fake_module)
+    monkeypatch.setenv("SCHWAB_API_KEY", "real_key")
+    monkeypatch.setenv("SCHWAB_SECRET", "real_secret")
+    monkeypatch.setattr(sar, "_install_schwab_browser_fallback", lambda: True)
+
+    def fake_cascade(**kwargs):
+        cascade_calls["count"] += 1
+        return {
+            "attempted": True,
+            "ok": True,
+            "overall_status": "ready",
+            "refresh_completed": True,
+            "paper_truth_ready": True,
+            "steps": [],
+        }
+
+    monkeypatch.setattr(sar, "_run_post_refresh_cascade", fake_cascade)
+
+    with tempfile.TemporaryDirectory() as td:
+        token_path = Path(td) / "token.json"
+        out_path = Path(td) / "auth.json"
+        monkeypatch.setattr(
+            sys,
+            "argv",
+            [
+                "schwab_auth_refresh.py",
+                "--token-path",
+                str(token_path),
+                "--out-file",
+                str(out_path),
+                "--json",
+            ],
+        )
+
+        assert sar.main() == 0
+        payload = json.loads(out_path.read_text(encoding="utf-8"))
+
+    assert cascade_calls["count"] == 1
+    assert payload["overall_status"] == "ready"
+    assert payload["post_refresh_cascade"]["paper_truth_ready"] is True

@@ -22,6 +22,7 @@ except Exception:
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+DEFAULT_BUILD_FAILURE_PATH = PROJECT_ROOT / "governance" / "health" / "trade_behavior_dataset_build_failure_latest.json"
 
 from sql_dataset_io import iter_sqlite_jsonl_rows, resolve_sqlite_path, split_paths_by_sqlite_coverage
 
@@ -441,6 +442,59 @@ def _safe_load_json(path: Path, default: Dict[str, Any]) -> Dict[str, Any]:
         return default
 
 
+def _write_json_atomic(path: Path, payload: Dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    try:
+        tmp_path.write_text(_json_dumps(payload, pretty=True), encoding="utf-8")
+        os.replace(tmp_path, path)
+    finally:
+        try:
+            tmp_path.unlink(missing_ok=True)
+        except Exception:
+            pass
+
+
+def _publish_dataset(
+    payload: Dict[str, Any],
+    *,
+    out_path: Path,
+    failure_path: Path,
+    min_output_rows: int,
+) -> Dict[str, Any]:
+    rows = max(int(payload.get("rows", 0) or 0), 0)
+    required_rows = max(int(min_output_rows), 1)
+    if rows < required_rows:
+        failure_payload = {
+            "timestamp_utc": str(payload.get("timestamp_utc") or datetime.now(timezone.utc).isoformat()),
+            "ok": False,
+            "status": "insufficient_rows_preserved_previous_dataset",
+            "rows": rows,
+            "min_output_rows": required_rows,
+            "out_file": str(out_path),
+            "previous_dataset_preserved": bool(out_path.exists()),
+            "feature_dim": int(payload.get("feature_dim", 0) or 0),
+            "label_counts": payload.get("label_counts") if isinstance(payload.get("label_counts"), dict) else {},
+            "skipped": payload.get("skipped") if isinstance(payload.get("skipped"), dict) else {},
+            "source": payload.get("source") if isinstance(payload.get("source"), dict) else {},
+        }
+        _write_json_atomic(failure_path, failure_payload)
+        return {
+            "published": False,
+            "preserved_previous": bool(out_path.exists()),
+            "failure_file": str(failure_path),
+            "min_output_rows": required_rows,
+        }
+
+    _write_json_atomic(out_path, payload)
+    return {
+        "published": True,
+        "preserved_previous": False,
+        "failure_file": "",
+        "min_output_rows": required_rows,
+    }
+
+
 def _to_float(value: Any, default: float = 0.0) -> float:
     try:
         return float(value)
@@ -554,6 +608,45 @@ def _resolve_glob_paths(pattern: str, *, root: Path) -> List[Path]:
 
     uniq = {str(p): p for p in matches}
     return [uniq[k] for k in sorted(uniq.keys())]
+
+
+def _prefer_external_storage() -> bool:
+    return os.getenv("BOT_LOGS_PREFER_EXTERNAL", "1").strip().lower() not in {"0", "false", "no", "off"}
+
+
+def _routed_input_pattern(pattern: str, *, project_root: Path) -> str:
+    raw = str(pattern or "").strip()
+    if not raw or _prefer_external_storage():
+        return raw
+    if os.getenv("BEHAVIOR_DATASET_ALLOW_EXTERNAL_INPUTS", "0").strip().lower() in {"1", "true", "yes", "on"}:
+        return raw
+
+    local_root = Path(
+        os.getenv("BOT_LOGS_LOCAL_FALLBACK_ROOT", str(project_root / "local_fallback_storage"))
+    ).expanduser()
+    project_text = str(project_root.absolute()).rstrip("/")
+    normalized = raw
+    if os.path.isabs(normalized):
+        if normalized == project_text:
+            relative = ""
+        elif normalized.startswith(f"{project_text}/"):
+            relative = normalized[len(project_text) + 1 :]
+        elif normalized.startswith("/Volumes/"):
+            return ""
+        else:
+            return normalized
+    else:
+        relative = normalized.lstrip("./")
+
+    routed_prefixes = (
+        "decision_explanations/",
+        "decisions/",
+        "exports/",
+        "governance/shadow",
+    )
+    if relative.startswith(routed_prefixes):
+        return str(local_root / relative)
+    return normalized
 
 
 def _path_day_utc(path: Path) -> Optional[datetime]:
@@ -1842,6 +1935,11 @@ def _decision_feature_vector(
         _clamp01(_to_float(features.get("dividend_compound_growth_norm"), 0.0)),
         _clamp01(_to_float(features.get("dividend_compound_drawdown_norm"), 0.0)),
         _clamp01(_to_float(features.get("dividend_compound_steps_norm"), 0.0)),
+        _clamp01(_to_float(features.get("dividend_compounding_quality_norm"), 0.0)),
+        _clamp01(_to_float(features.get("dividend_capture_timing_quality_norm"), 0.0)),
+        _clamp01(_to_float(features.get("dividend_payout_stress_gate_norm"), 0.0)),
+        _clamp01(_to_float(features.get("dividend_growth_persistence_norm"), 0.0)),
+        _clamp01(_to_float(features.get("dividend_capture_ex_date_hazard_norm"), 0.0)),
         _clamp01(_to_float(features.get("dividend_strategy_mode_capture"), 0.0)),
         _clamp01(_to_float(features.get("dividend_strategy_mode_compound"), 0.0)),
         _clamp01(_to_float(features.get("dividend_strategy_mode_hybrid"), 0.0)),
@@ -2058,8 +2156,12 @@ def main() -> int:
     parser.add_argument("--max-per-symbol-regime", type=int, default=int(os.getenv("BEHAVIOR_DATASET_MAX_PER_SYMBOL_REGIME", "1200")))
     parser.add_argument("--decision-tail-bytes", type=int, default=int(os.getenv("BEHAVIOR_DATASET_DECISION_TAIL_BYTES", str(16 * 1024 * 1024))))
     parser.add_argument("--governance-tail-bytes", type=int, default=int(os.getenv("BEHAVIOR_DATASET_GOVERNANCE_TAIL_BYTES", str(8 * 1024 * 1024))))
+    parser.add_argument("--pnl-tail-bytes", type=int, default=int(os.getenv("BEHAVIOR_DATASET_PNL_TAIL_BYTES", str(64 * 1024 * 1024))))
+    parser.add_argument("--paper-trades-tail-bytes", type=int, default=int(os.getenv("BEHAVIOR_DATASET_PAPER_TRADES_TAIL_BYTES", str(64 * 1024 * 1024))))
     parser.add_argument("--channel-decision-max-files", type=int, default=int(os.getenv("BEHAVIOR_DATASET_CHANNEL_DECISION_MAX_FILES", "96")))
     parser.add_argument("--sqlite-path", default=os.getenv("BEHAVIOR_DATASET_SQLITE_PATH", ""))
+    parser.add_argument("--min-output-rows", type=int, default=int(os.getenv("BEHAVIOR_DATASET_MIN_OUTPUT_ROWS", "50")))
+    parser.add_argument("--failure-file", default=os.getenv("BEHAVIOR_DATASET_FAILURE_FILE", str(DEFAULT_BUILD_FAILURE_PATH)))
     parser.add_argument(
         "--prefer-sql",
         action=argparse.BooleanOptionalAction,
@@ -2113,33 +2215,55 @@ def main() -> int:
     aux_enabled = horizon_aux_s >= 30
     blend_alpha = _clamp(float(args.horizon_blend_alpha), 0.0, 1.0)
 
-    decision_paths = _resolve_glob_paths(args.decision_glob, root=PROJECT_ROOT)
+    decision_pattern = _routed_input_pattern(args.decision_glob, project_root=PROJECT_ROOT)
+    channel_decision_pattern = _routed_input_pattern(args.channel_decision_glob, project_root=PROJECT_ROOT)
+    governance_pattern = _routed_input_pattern(args.governance_glob, project_root=PROJECT_ROOT)
+    pnl_pattern = _routed_input_pattern(args.pnl_attribution_glob, project_root=PROJECT_ROOT)
+    paper_pattern = _routed_input_pattern(args.paper_trades_glob, project_root=PROJECT_ROOT)
+
+    decision_paths = _resolve_glob_paths(decision_pattern, root=PROJECT_ROOT)
     if not decision_paths:
-        decision_paths = sorted(Path(p) for p in PROJECT_ROOT.glob("decision_explanations/shadow*/decision_explanations_*.jsonl"))
+        fallback_pattern = _routed_input_pattern(
+            str(PROJECT_ROOT / "decision_explanations" / "shadow*" / "decision_explanations_*.jsonl"),
+            project_root=PROJECT_ROOT,
+        )
+        decision_paths = _resolve_glob_paths(fallback_pattern, root=PROJECT_ROOT)
     decision_paths = _filter_recent_paths(decision_paths, since_utc)
 
-    channel_decision_paths = _resolve_glob_paths(args.channel_decision_glob, root=PROJECT_ROOT)
+    channel_decision_paths = _resolve_glob_paths(channel_decision_pattern, root=PROJECT_ROOT)
     channel_decision_paths = _filter_recent_paths(channel_decision_paths, since_utc)
     channel_decision_paths = _limit_recent_paths(channel_decision_paths, max_files=max(int(args.channel_decision_max_files), 0))
     if channel_decision_paths:
         decision_by_path = {str(path): path for path in [*decision_paths, *channel_decision_paths]}
         decision_paths = [decision_by_path[key] for key in sorted(decision_by_path.keys())]
 
-    governance_paths = _resolve_glob_paths(args.governance_glob, root=PROJECT_ROOT)
+    governance_paths = _resolve_glob_paths(governance_pattern, root=PROJECT_ROOT)
     if not governance_paths:
-        governance_paths = sorted(Path(p) for p in PROJECT_ROOT.glob("governance/shadow*/master_control_*.jsonl"))
+        fallback_pattern = _routed_input_pattern(
+            str(PROJECT_ROOT / "governance" / "shadow*" / "master_control_*.jsonl"),
+            project_root=PROJECT_ROOT,
+        )
+        governance_paths = _resolve_glob_paths(fallback_pattern, root=PROJECT_ROOT)
     governance_paths = _filter_recent_paths(governance_paths, since_utc)
 
-    pnl_paths = _resolve_glob_paths(args.pnl_attribution_glob, root=PROJECT_ROOT)
+    pnl_paths = _resolve_glob_paths(pnl_pattern, root=PROJECT_ROOT)
     if not pnl_paths:
-        pnl_paths = sorted(Path(p) for p in PROJECT_ROOT.glob("governance/shadow*/shadow_pnl_attribution_*.jsonl"))
+        fallback_pattern = _routed_input_pattern(
+            str(PROJECT_ROOT / "governance" / "shadow*" / "shadow_pnl_attribution_*.jsonl"),
+            project_root=PROJECT_ROOT,
+        )
+        pnl_paths = _resolve_glob_paths(fallback_pattern, root=PROJECT_ROOT)
     pnl_paths = _filter_recent_paths(pnl_paths, since_utc)
 
-    paper_trade_paths = _resolve_glob_paths(args.paper_trades_glob, root=PROJECT_ROOT)
+    paper_trade_paths = _resolve_glob_paths(paper_pattern, root=PROJECT_ROOT)
     if not paper_trade_paths:
-        paper_trade_paths = sorted((PROJECT_ROOT / "exports" / "trade_logs").rglob("paper_trades_*.jsonl"))
+        fallback_pattern = _routed_input_pattern(
+            str(PROJECT_ROOT / "exports" / "trade_logs" / "**" / "paper_trades_*.jsonl"),
+            project_root=PROJECT_ROOT,
+        )
+        paper_trade_paths = _resolve_glob_paths(fallback_pattern, root=PROJECT_ROOT)
     if not paper_trade_paths:
-        paper_trade_paths = sorted(PROJECT_ROOT.glob("paper_trades_*.jsonl"))
+        paper_trade_paths = _resolve_glob_paths(str(PROJECT_ROOT / "paper_trades_*.jsonl"), root=PROJECT_ROOT)
     paper_trade_paths = _filter_recent_paths(paper_trade_paths, since_utc)
 
     sqlite_path = resolve_sqlite_path(args.sqlite_path) if bool(args.prefer_sql) else None
@@ -2175,11 +2299,11 @@ def main() -> int:
     )
     pnl_rows = chain(
         iter_sqlite_jsonl_rows(sqlite_path=sqlite_path, source_rels=pnl_sql_rels) if pnl_sql_rels else (),
-        _iter_jsonl(pnl_file_fallbacks),
+        _iter_jsonl(pnl_file_fallbacks, tail_bytes=max(int(args.pnl_tail_bytes), 0)),
     )
     paper_rows = chain(
         iter_sqlite_jsonl_rows(sqlite_path=sqlite_path, source_rels=paper_sql_rels) if paper_sql_rels else (),
-        _iter_jsonl(paper_file_fallbacks),
+        _iter_jsonl(paper_file_fallbacks, tail_bytes=max(int(args.paper_trades_tail_bytes), 0)),
     )
     decision_rows = chain(
         iter_sqlite_jsonl_rows(sqlite_path=sqlite_path, source_rels=decision_sql_rels) if decision_sql_rels else (),
@@ -2412,6 +2536,8 @@ def main() -> int:
             "max_per_symbol_regime": int(args.max_per_symbol_regime),
             "decision_tail_bytes": int(args.decision_tail_bytes),
             "governance_tail_bytes": int(args.governance_tail_bytes),
+            "pnl_tail_bytes": int(args.pnl_tail_bytes),
+            "paper_trades_tail_bytes": int(args.paper_trades_tail_bytes),
             "channel_decision_max_files": int(args.channel_decision_max_files),
         },
         "source": {
@@ -2432,6 +2558,14 @@ def main() -> int:
             "paper_trade_files": len(paper_trade_paths),
             "paper_trade_sql_files": len(paper_sql_rels),
             "paper_trade_file_fallbacks": len(paper_file_fallbacks),
+            "storage_route": "external" if _prefer_external_storage() else "local_fallback",
+            "input_patterns": {
+                "decision": decision_pattern,
+                "channel_decision": channel_decision_pattern,
+                "governance": governance_pattern,
+                "pnl_attribution": pnl_pattern,
+                "paper_trades": paper_pattern,
+            },
         },
         "thresholds": {
             "positive_bps": positive_bps,
@@ -2492,8 +2626,12 @@ def main() -> int:
     }
 
     out_path = Path(args.out_file)
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    out_path.write_text(_json_dumps(payload, pretty=True), encoding="utf-8")
+    publish_result = _publish_dataset(
+        payload,
+        out_path=out_path,
+        failure_path=Path(args.failure_file),
+        min_output_rows=max(int(args.min_output_rows), 1),
+    )
 
     summary = {
         "timestamp_utc": payload["timestamp_utc"],
@@ -2506,6 +2644,7 @@ def main() -> int:
         "skipped": payload["skipped"],
         "source": payload["source"],
         "out_file": str(out_path),
+        **publish_result,
     }
 
     if args.json:
@@ -2513,7 +2652,7 @@ def main() -> int:
     else:
         print(_json_dumps(summary, pretty=True))
 
-    return 0 if len(examples) >= 50 else 2
+    return 0 if bool(publish_result.get("published", False)) else 2
 
 
 if __name__ == "__main__":

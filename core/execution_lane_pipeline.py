@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import sqlite3
@@ -17,6 +18,35 @@ EXECUTION_INTENT_CHANNEL = "execution_intent"
 EXECUTION_RESULT_CHANNEL = "execution_result"
 EXECUTION_PROMOTION_CHANNEL = "execution_promotion"
 EXECUTION_PROMOTED_CHANNEL = "execution_promoted"
+EXECUTION_TRANSPORT_FEATURE_KEYS = frozenset(
+    {
+        "allocation_conflict_norm",
+        "ask",
+        "ask_price",
+        "ask_size",
+        "best_ask",
+        "best_bid",
+        "bid",
+        "bid_price",
+        "bid_size",
+        "calendar_event_proximity_norm",
+        "close_price",
+        "entry_price",
+        "last_price",
+        "latency_ms",
+        "mark_price",
+        "news_source_quality_norm",
+        "offer",
+        "offer_price",
+        "price",
+        "queue_depth",
+        "quote_age_ms",
+        "spread_bps",
+        "tradeability_score",
+        "vol_30m",
+        "volatility_1m",
+    }
+)
 
 
 def _now_utc() -> str:
@@ -77,6 +107,26 @@ def _write_latest(project_root: str, name: str, payload: Dict[str, Any]) -> None
         project_root=project_root,
         source=f"execution_lane_pipeline.{name}",
     )
+
+
+def _execution_transport_payload(channel: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+    row = dict(payload or {})
+    if str(channel or "") not in {EXECUTION_INTENT_CHANNEL, EXECUTION_PROMOTED_CHANNEL}:
+        return row
+
+    features = row.get("features") if isinstance(row.get("features"), dict) else {}
+    retained = {key: value for key, value in features.items() if key in EXECUTION_TRANSPORT_FEATURE_KEYS}
+    encoded_features = json.dumps(features, ensure_ascii=True, separators=(",", ":"), sort_keys=True)
+    row["features"] = retained
+    row["execution_transport"] = {
+        "schema_version": 2,
+        "compacted": len(retained) < len(features),
+        "source_feature_count": len(features),
+        "transport_feature_count": len(retained),
+        "source_features_sha256": hashlib.sha256(encoded_features.encode("utf-8")).hexdigest(),
+        "canonical_evidence_policy": "full_features_remain_in_source_decision_telemetry",
+    }
+    return row
 
 
 def execution_lane_root(project_root: str | Path) -> Path:
@@ -278,7 +328,7 @@ def publish_channel_payload(
     stem: str,
     queue_db_override: str = "",
 ) -> Dict[str, Any]:
-    row = dict(payload or {})
+    row = _execution_transport_payload(channel, payload)
     row.setdefault("timestamp_utc", _now_utc())
     out_path = execution_lane_daily_path(project_root, stem)
     safe_append_jsonl(
@@ -824,7 +874,7 @@ def process_execution_intent(
     result_payload = {
         "timestamp_utc": _now_utc(),
         "mode": str(mode),
-        "consumer": str(mode),
+        "consumer": f"execution_lane_{mode}",
         "intent_channel": str(message.channel),
         "intent_message_id": str(message.message_id),
         "intent_created_at": str(message.created_at),

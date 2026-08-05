@@ -12,6 +12,11 @@ from pathlib import Path
 from typing import Any
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from core.runtime_maintenance import maintenance_hold_snapshot
+
 RUNTIME_ROOT = Path(os.getenv("MAINTENANCE_SLOT_RUNTIME_ROOT", str(PROJECT_ROOT / "runtime" / "maintenance_slots")))
 LOCK_ROOT = RUNTIME_ROOT / "locks"
 STATE_ROOT = RUNTIME_ROOT / "state"
@@ -81,22 +86,13 @@ def _csv_set(raw: str, default: set[str] | None = None) -> set[str]:
 
 
 def _write_json(path: Path, payload: dict[str, Any]) -> None:
-    candidates = [path]
-    if path != EXTERNAL_HEALTH_PATH:
-        candidates.append(EXTERNAL_HEALTH_PATH)
-    last_error: Exception | None = None
-    for candidate in candidates:
-        try:
-            candidate.parent.mkdir(parents=True, exist_ok=True)
-            tmp = candidate.with_suffix(candidate.suffix + ".tmp")
-            tmp.write_text(json.dumps(payload, ensure_ascii=True, indent=2) + "\n", encoding="utf-8")
-            tmp.replace(candidate)
-            return
-        except Exception as exc:
-            last_error = exc
-            continue
-    if last_error is not None:
-        print(f"maintenance_slot_guard warning=status_write_failed:{type(last_error).__name__}:{last_error}", file=sys.stderr)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(path.suffix + ".tmp")
+        tmp.write_text(json.dumps(payload, ensure_ascii=True, indent=2) + "\n", encoding="utf-8")
+        tmp.replace(path)
+    except Exception as exc:
+        print(f"maintenance_slot_guard warning=status_write_failed:{type(exc).__name__}:{exc}", file=sys.stderr)
 
 
 def _read_json(path: Path) -> dict[str, Any]:
@@ -345,7 +341,10 @@ def _begin(args: argparse.Namespace) -> int:
     )
     min_interval_seconds = _slot_min_interval(args.slot, args.min_interval_seconds)
     cooldown_blocked, cooldown_reason, slot_state = _cooldown_blocked(args.slot, min_interval_seconds)
+    maintenance_hold = maintenance_hold_snapshot(PROJECT_ROOT)
     reasons: list[str] = []
+    if bool(maintenance_hold.get("active", False)):
+        reasons.append("runtime_maintenance_hold")
     if pressure_blocked and args.slot != "sql_link_writer":
         reasons.append("host_pressure")
     if quiet_enabled and (not quiet_allowed) and bool(args.defer_outside_quiet_window) and args.slot != "sql_link_writer":
@@ -391,6 +390,7 @@ def _begin(args: argparse.Namespace) -> int:
             "last_end_utc": slot_state.get("last_end_utc", ""),
         },
         "smooth_mode_gate": smooth_gate_payload,
+        "runtime_maintenance_hold": maintenance_hold,
         "runtime_root": str(RUNTIME_ROOT),
         "defer_while_sql_link_active": bool(args.defer_while_sql_link_active),
         "pid": os.getpid(),

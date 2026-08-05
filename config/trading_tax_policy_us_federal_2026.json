@@ -1,0 +1,350 @@
+{
+  "schema_version": 1,
+  "policy_id": "us_federal_individual_trading_tax_2026",
+  "jurisdiction": "US_FEDERAL",
+  "tax_year": 2026,
+  "effective_start": "2026-01-01",
+  "effective_end": "2026-12-31",
+  "verification_status": "verified_against_official_sources",
+  "verified_at_utc": "2026-08-04T15:30:33.331157+00:00",
+  "baseline_input_contract": "taxable income after deductions and before trading-tax events",
+  "ordinary_income_brackets": {
+    "single": [
+      {
+        "up_to_usd": 12400,
+        "rate": 0.1
+      },
+      {
+        "up_to_usd": 50400,
+        "rate": 0.12
+      },
+      {
+        "up_to_usd": 105700,
+        "rate": 0.22
+      },
+      {
+        "up_to_usd": 201775,
+        "rate": 0.24
+      },
+      {
+        "up_to_usd": 256225,
+        "rate": 0.32
+      },
+      {
+        "up_to_usd": 640600,
+        "rate": 0.35
+      },
+      {
+        "up_to_usd": null,
+        "rate": 0.37
+      }
+    ],
+    "married_filing_jointly": [
+      {
+        "up_to_usd": 24800,
+        "rate": 0.1
+      },
+      {
+        "up_to_usd": 100800,
+        "rate": 0.12
+      },
+      {
+        "up_to_usd": 211400,
+        "rate": 0.22
+      },
+      {
+        "up_to_usd": 403550,
+        "rate": 0.24
+      },
+      {
+        "up_to_usd": 512450,
+        "rate": 0.32
+      },
+      {
+        "up_to_usd": 768700,
+        "rate": 0.35
+      },
+      {
+        "up_to_usd": null,
+        "rate": 0.37
+      }
+    ],
+    "married_filing_separately": [
+      {
+        "up_to_usd": 12400,
+        "rate": 0.1
+      },
+      {
+        "up_to_usd": 50400,
+        "rate": 0.12
+      },
+      {
+        "up_to_usd": 105700,
+        "rate": 0.22
+      },
+      {
+        "up_to_usd": 201775,
+        "rate": 0.24
+      },
+      {
+        "up_to_usd": 256225,
+        "rate": 0.32
+      },
+      {
+        "up_to_usd": 384350,
+        "rate": 0.35
+      },
+      {
+        "up_to_usd": null,
+        "rate": 0.37
+      }
+    ],
+    "head_of_household": [
+      {
+        "up_to_usd": 17700,
+        "rate": 0.1
+      },
+      {
+        "up_to_usd": 67450,
+        "rate": 0.12
+      },
+      {
+        "up_to_usd": 105700,
+        "rate": 0.22
+      },
+      {
+        "up_to_usd": 201750,
+        "rate": 0.24
+      },
+      {
+        "up_to_usd": 256200,
+        "rate": 0.32
+      },
+      {
+        "up_to_usd": 640600,
+        "rate": 0.35
+      },
+      {
+        "up_to_usd": null,
+        "rate": 0.37
+      }
+    ],
+    "qualifying_surviving_spouse": [
+      {
+        "up_to_usd": 24800,
+        "rate": 0.1
+      },
+      {
+        "up_to_usd": 100800,
+        "rate": 0.12
+      },
+      {
+        "up_to_usd": 211400,
+        "rate": 0.22
+      },
+      {
+        "up_to_usd": 403550,
+        "rate": 0.24
+      },
+      {
+        "up_to_usd": 512450,
+        "rate": 0.32
+      },
+      {
+        "up_to_usd": 768700,
+        "rate": 0.35
+      },
+      {
+        "up_to_usd": null,
+        "rate": 0.37
+      }
+    ]
+  },
+  "preferential_capital_gain_brackets": {
+    "single": [
+      {
+        "up_to_taxable_income_usd": 49450,
+        "rate": 0.0
+      },
+      {
+        "up_to_taxable_income_usd": 545500,
+        "rate": 0.15
+      },
+      {
+        "up_to_taxable_income_usd": null,
+        "rate": 0.2
+      }
+    ],
+    "married_filing_jointly": [
+      {
+        "up_to_taxable_income_usd": 98900,
+        "rate": 0.0
+      },
+      {
+        "up_to_taxable_income_usd": 613700,
+        "rate": 0.15
+      },
+      {
+        "up_to_taxable_income_usd": null,
+        "rate": 0.2
+      }
+    ],
+    "married_filing_separately": [
+      {
+        "up_to_taxable_income_usd": 49450,
+        "rate": 0.0
+      },
+      {
+        "up_to_taxable_income_usd": 306850,
+        "rate": 0.15
+      },
+      {
+        "up_to_taxable_income_usd": null,
+        "rate": 0.2
+      }
+    ],
+    "head_of_household": [
+      {
+        "up_to_taxable_income_usd": 66200,
+        "rate": 0.0
+      },
+      {
+        "up_to_taxable_income_usd": 579600,
+        "rate": 0.15
+      },
+      {
+        "up_to_taxable_income_usd": null,
+        "rate": 0.2
+      }
+    ],
+    "qualifying_surviving_spouse": [
+      {
+        "up_to_taxable_income_usd": 98900,
+        "rate": 0.0
+      },
+      {
+        "up_to_taxable_income_usd": 613700,
+        "rate": 0.15
+      },
+      {
+        "up_to_taxable_income_usd": null,
+        "rate": 0.2
+      }
+    ]
+  },
+  "standard_deduction_usd": {
+    "single": 16100,
+    "married_filing_jointly": 32200,
+    "married_filing_separately": 16100,
+    "head_of_household": 24150,
+    "qualifying_surviving_spouse": 32200
+  },
+  "net_investment_income_tax": {
+    "rate": 0.038,
+    "magi_threshold_usd": {
+      "single": 200000,
+      "married_filing_jointly": 250000,
+      "married_filing_separately": 125000,
+      "head_of_household": 200000,
+      "qualifying_surviving_spouse": 250000
+    }
+  },
+  "capital_loss_ordinary_income_deduction_limit_usd": {
+    "default": 3000,
+    "married_filing_separately": 1500
+  },
+  "long_term_holding_period_days_minimum": 366,
+  "wash_sale_window_days_before": 30,
+  "wash_sale_window_days_after": 30,
+  "section_1256": {
+    "mark_to_market": true,
+    "long_term_fraction": 0.6,
+    "short_term_fraction": 0.4,
+    "requires_verified_contract_classification": true
+  },
+  "qualified_dividends": {
+    "uses_preferential_capital_gain_brackets": true,
+    "common_stock_minimum_holding_days": 61,
+    "common_stock_measurement_window_days": 121,
+    "requires_broker_or_issuer_classification": true
+  },
+  "equity_options": {
+    "written_option_expiration_or_close_default": "short_term_capital",
+    "exercise_or_assignment_requires_underlying_basis_adjustment": true,
+    "nonequity_option_may_be_section_1256_only_when_verified": true
+  },
+  "estimated_payment_review_threshold_usd": 1000,
+  "source_references": [
+    {
+      "title": "Revenue Procedure 2025-32 PDF",
+      "url": "https://www.irs.gov/pub/irs-drop/rp-25-32.pdf",
+      "supports": [
+        "2026 ordinary brackets",
+        "2026 capital gain thresholds",
+        "2026 standard deduction"
+      ]
+    },
+    {
+      "title": "IRS tax inflation adjustment release for 2026",
+      "url": "https://www.irs.gov/newsroom/irs-releases-tax-inflation-adjustments-for-tax-year-2026-including-amendments-from-the-one-big-beautiful-bill",
+      "supports": [
+        "official tax-year release and Revenue Procedure lineage"
+      ]
+    },
+    {
+      "title": "IRS Topic 409, Capital gains and losses",
+      "url": "https://www.irs.gov/taxtopics/tc409",
+      "supports": [
+        "short-term and long-term capital treatment",
+        "capital loss netting"
+      ]
+    },
+    {
+      "title": "IRS Publication 550, Investment Income and Expenses",
+      "url": "https://www.irs.gov/publications/p550",
+      "supports": [
+        "wash sales",
+        "qualified dividends",
+        "equity options",
+        "Section 1256 treatment"
+      ]
+    },
+    {
+      "title": "IRS Topic 559, Net investment income tax",
+      "url": "https://www.irs.gov/taxtopics/tc559",
+      "supports": [
+        "NIIT rate",
+        "NIIT filing-status thresholds",
+        "investment income scope"
+      ]
+    },
+    {
+      "title": "IRS Publication 505, Tax Withholding and Estimated Tax",
+      "url": "https://www.irs.gov/publications/p505",
+      "supports": [
+        "estimated payment review"
+      ]
+    }
+  ],
+  "limitations": [
+    "This policy estimates US federal individual income tax impact; it does not prepare or file a return.",
+    "State, local, AMT, trader-tax-status, Section 475, straddle, constructive-sale, partnership, and entity rules require separate verified facts and policies.",
+    "Broker tax forms and a qualified tax professional remain the reconciliation authority."
+  ],
+  "automatic_rollover_evidence": {
+    "generated_at_utc": "2026-08-04T15:30:33.331157+00:00",
+    "generator": "tax_regulation_update.py",
+    "source_sha256": "e9ada115fb43a4af5ea326ca91edd40ab0bf29b9be01d2c13d7b8fa96214635b",
+    "source_content_length": 260406,
+    "semantic_rule_sources_verified": true,
+    "inherited_rule_sections": [
+      "capital loss deduction limits",
+      "NIIT structure and thresholds",
+      "holding period rules",
+      "wash-sale window",
+      "Section 1256 split",
+      "qualified-dividend treatment",
+      "equity-option treatment"
+    ]
+  }
+}

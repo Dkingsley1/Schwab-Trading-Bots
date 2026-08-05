@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import argparse
+import csv
+import io
 import json
 import os
 import re
@@ -47,6 +49,15 @@ START_DAY_ENV_NAMES = (
     "INFRA_SUPERVISOR_ONE_NUMBERS_START_DAY",
 )
 SOURCE_DAY_RE = re.compile(r"(20\d{6})")
+REQUIRED_BUNDLE_FILES = (
+    "one_numbers_summary.json",
+    "latest.csv",
+    "latest_metrics.csv",
+)
+OPTIONAL_BUNDLE_FILES = (
+    "latest.md",
+    "latest.xlsx",
+)
 
 
 def _load_json(path: Path) -> dict[str, Any]:
@@ -55,6 +66,127 @@ def _load_json(path: Path) -> dict[str, Any]:
     except Exception:
         return {}
     return payload if isinstance(payload, dict) else {}
+
+
+def _atomic_write_bytes(path: Path, content: bytes) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = path.with_name(f".{path.name}.repair_{os.getpid()}.tmp")
+    try:
+        tmp_path.write_bytes(content)
+        os.replace(tmp_path, path)
+    finally:
+        tmp_path.unlink(missing_ok=True)
+
+
+def _durable_bundle_roots(project_root: Path) -> list[Path]:
+    disaster_recovery = _load_json(
+        project_root / "governance" / "health" / "storage_disaster_recovery_latest.json"
+    )
+    recovery_snapshot = (
+        disaster_recovery.get("recovery_snapshot")
+        if isinstance(disaster_recovery.get("recovery_snapshot"), dict)
+        else {}
+    )
+    raw_roots = [
+        recovery_snapshot.get("latest_snapshot_root"),
+        disaster_recovery.get("latest_snapshot_root"),
+    ]
+    roots: list[Path] = []
+    seen: set[str] = set()
+    for raw_root in raw_roots:
+        if not str(raw_root or "").strip():
+            continue
+        snapshot_root = Path(str(raw_root)).expanduser()
+        candidate = snapshot_root / "exports" / "one_numbers"
+        try:
+            key = str(candidate.resolve())
+        except Exception:
+            key = str(candidate)
+        if key in seen or not candidate.exists():
+            continue
+        seen.add(key)
+        roots.append(candidate)
+    return roots
+
+
+def _restore_bundle_from_snapshot(project_root: Path, out_dir: Path) -> dict[str, Any]:
+    for source_root in _durable_bundle_roots(project_root):
+        required_sources = [source_root / name for name in REQUIRED_BUNDLE_FILES]
+        if not all(path.exists() and path.is_file() and path.stat().st_size > 0 for path in required_sources):
+            continue
+        if not _load_json(source_root / "one_numbers_summary.json"):
+            continue
+        restored: list[str] = []
+        for name in (*REQUIRED_BUNDLE_FILES, *OPTIONAL_BUNDLE_FILES):
+            source = source_root / name
+            if not source.exists() or not source.is_file() or source.stat().st_size <= 0:
+                continue
+            _atomic_write_bytes(out_dir / name, source.read_bytes())
+            restored.append(name)
+        return {
+            "ok": True,
+            "status": "restored_from_recovery_snapshot",
+            "source_root": str(source_root),
+            "restored_files": restored,
+        }
+    return {"ok": False, "status": "recovery_snapshot_bundle_unavailable"}
+
+
+def _summary_csv_text(summary: dict[str, Any], *, metrics: bool) -> str:
+    stream = io.StringIO()
+    writer = csv.writer(stream, lineterminator="\n")
+    if metrics:
+        writer.writerow(("section", "label", "value", "metric"))
+    else:
+        writer.writerow(("label", "value"))
+    for metric, value in summary.items():
+        if isinstance(value, (dict, list)):
+            continue
+        label = str(metric).replace("_", " ").strip().title()
+        if metrics:
+            writer.writerow(("Recovered Summary", label, value, metric))
+        else:
+            writer.writerow((label, value))
+    return stream.getvalue()
+
+
+def _restore_bundle_from_health_evidence(project_root: Path, out_dir: Path) -> dict[str, Any]:
+    health_path = project_root / "governance" / "health" / "one_numbers_latest.json"
+    summary = _load_json(health_path)
+    if not summary:
+        return {"ok": False, "status": "durable_health_summary_unavailable"}
+    _atomic_write_bytes(
+        out_dir / "one_numbers_summary.json",
+        (json.dumps(summary, ensure_ascii=True, indent=2) + "\n").encode("utf-8"),
+    )
+    _atomic_write_bytes(out_dir / "latest.csv", _summary_csv_text(summary, metrics=False).encode("utf-8"))
+    _atomic_write_bytes(
+        out_dir / "latest_metrics.csv",
+        _summary_csv_text(summary, metrics=True).encode("utf-8"),
+    )
+    return {
+        "ok": True,
+        "status": "restored_from_durable_health_evidence",
+        "source_root": str(health_path),
+        "restored_files": list(REQUIRED_BUNDLE_FILES),
+    }
+
+
+def _restore_required_bundle(project_root: Path) -> dict[str, Any]:
+    out_dir = project_root / "exports" / "one_numbers"
+    snapshot_result = _restore_bundle_from_snapshot(project_root, out_dir)
+    if snapshot_result.get("ok"):
+        return snapshot_result
+    health_result = _restore_bundle_from_health_evidence(project_root, out_dir)
+    if health_result.get("ok"):
+        health_result["snapshot_status"] = snapshot_result.get("status")
+        return health_result
+    return {
+        "ok": False,
+        "status": "durable_bundle_restore_unavailable",
+        "snapshot_status": snapshot_result.get("status"),
+        "health_status": health_result.get("status"),
+    }
 
 
 def _safe_int(raw: Any, default: int = 0) -> int:
@@ -544,8 +676,35 @@ def _run_repair_command(command: list[str], project_root: Path, timeout_sec: int
 def apply_repairs(project_root: Path, payload: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(payload, dict) or not payload.get("weaknesses"):
         return {"attempted": False, "status": "no_op"}
+    weakness_names = {
+        str(row.get("name") or "")
+        for row in list(payload.get("weaknesses") or [])
+        if isinstance(row, dict)
+    }
+    artifact_weaknesses = {
+        "summary_missing",
+        "latest_csv_alias_missing",
+        "latest_metrics_alias_missing",
+    }
+    bundle_restore: dict[str, Any] = {"ok": False, "status": "not_required"}
+    if weakness_names.intersection(artifact_weaknesses):
+        bundle_restore = _restore_required_bundle(project_root)
+        if bundle_restore.get("ok"):
+            refreshed = build_payload(project_root)
+            if not refreshed.get("weaknesses"):
+                return {
+                    "attempted": True,
+                    "status": str(bundle_restore.get("status") or "restored"),
+                    "bundle_restore": bundle_restore,
+                    "attempt_count": 0,
+                }
+            payload = refreshed
     if _builder_running():
-        return {"attempted": False, "status": "skipped_builder_running"}
+        return {
+            "attempted": bool(bundle_restore.get("ok")),
+            "status": "skipped_builder_running",
+            "bundle_restore": bundle_restore,
+        }
     plan = payload.get("repair_plan") if isinstance(payload.get("repair_plan"), dict) else {}
     cmd = [str(part) for part in list(plan.get("recommended_command") or []) if str(part).strip()]
     if not cmd:
@@ -578,6 +737,7 @@ def apply_repairs(project_root: Path, payload: dict[str, Any]) -> dict[str, Any]
     return {
         "attempted": True,
         "status": "failed" if failed else ("degraded" if degraded else "applied"),
+        "bundle_restore": bundle_restore,
         "attempts": attempts,
         "attempt_count": len(attempts),
     }

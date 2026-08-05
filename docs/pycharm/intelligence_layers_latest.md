@@ -1,14 +1,14 @@
 # Intelligence Layers PyCharm Index
 
-- Updated UTC: `2026-07-30T18:55:10.159819+00:00`
-- Whole-System Status: `advisory`
-- Top Risk: `macro_event_intelligence`
-- Safe Next Command: `./scripts/ops/opsctl.sh expansion-capacity --json`
+- Updated UTC: `2026-08-02T01:48:47.487992+00:00`
+- Whole-System Status: `ready`
+- Top Risk: `training_data_intake`
+- Safe Next Command: `./scripts/ops/opsctl.sh backpressure-super-drainer --apply --max-waves 1 --target-pending-lines 5000 --json`
 
 ## Bot Activity Snapshot
 
-- Active Bots: `1742`
-- Data-Collection Bots: `1742`
+- Active Bots: `1780`
+- Data-Collection Bots: `1780`
 - Paper-Live-Data Bots: `1584`
 - Sleeve Profiles: `202`
 - Active Marker: <span style="color:#0b5cad;font-weight:700">ACTIVE</span>
@@ -36,7 +36,7 @@
 - Memory Pressure High: `False`
 - Runtime Pressure High: `False`
 - Storage Critical: `False`
-- Writer Active: `True`
+- Writer Active: `False`
 - Guard Policy Mode: `full_schwab_observe`
 
 ## Docs Commands Reporting
@@ -58,14 +58,14 @@
 
 ## Intelligence Layers
 
-- `super_intelligence`: status `ready`, mode `expand`, action `cautious_expansion_rehearsal`
+- `super_intelligence`: status `advisory`, mode `rethink`, action `run_outcome_verified_micro_drain`
 - `outcome_learning`: status `ready`, verdict `effective`
 - `paper_lane_governor`: status `ready`, mode `full_eligible_paper_soak_active`, score `1584`
 - `symbol_universe_intelligence`: status `ready`, score `100.0`
 - `cognitive_twin_counterfactuals`: status `ready`, score `38`, next `base_case`
 - `recursive_policy_evolution`: status `ready`, score `72.0`, next `cognitive_twin_counterfactual_simulator`
-- `deeper_self_awareness_layers`: status `advisory`, mode `advisory_control_plane_with_constitutional_lockout_attestation`, score `9`, next `belief_ledger_confidence`
-- `codex_handoff`: status `advisory`
+- `deeper_self_awareness_layers`: status `ready`, mode `advisory_control_plane_with_constitutional_lockout_attestation`, score `9`, next `belief_ledger_confidence`
+- `codex_handoff`: status `ready`
 - `documentation_reporting_intelligence`: status `ready`, action `observe_docs_reporting_contract`, score `155`
 
 ## PyCharm Open Paths

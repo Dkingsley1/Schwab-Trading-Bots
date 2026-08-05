@@ -18,6 +18,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from core.halt_flags import inspect_halt_flag
+from core.runtime_maintenance import maintenance_hold_snapshot
 from core.runtime_python import resolve_runtime_python
 
 VENV_PY = resolve_runtime_python(PROJECT_ROOT)
@@ -653,6 +654,19 @@ def _can_restart(target: Target, now_ts: float, max_restarts: int, window_second
     return len(target.restart_times) < max_restarts
 
 
+def _runtime_restart_halt_reason(
+    maintenance_hold: dict[str, object],
+    halt_recovery: dict[str, object],
+) -> str:
+    if bool(maintenance_hold.get("active", False)):
+        return "runtime_maintenance_hold_active"
+    if bool(halt_recovery.get("operator_stop_active", False)):
+        return "operator_stop_active"
+    if bool(halt_recovery.get("halt_active", False)):
+        return "global_halt_active"
+    return ""
+
+
 def _start_target(start_cmd: str | Sequence[str], dry_run: bool) -> tuple[bool, str]:
     try:
         args = _decode_start_cmd(start_cmd)
@@ -1120,6 +1134,8 @@ def _run_iteration(
         require_paper_only=auto_clear_global_halt_require_paper_only,
         dry_run=dry_run,
     )
+    maintenance_hold = maintenance_hold_snapshot(PROJECT_ROOT)
+    runtime_restart_halt_reason = _runtime_restart_halt_reason(maintenance_hold, halt_recovery)
 
     rows = _scan_process_rows()
     rows_by_pid = {pid: cmd for pid, cmd in rows}
@@ -1197,10 +1213,10 @@ def _run_iteration(
             pass
         elif not target.required:
             entry["note"] = entry["note"] + ",optional_target_missing"
-        elif bool(halt_recovery.get("halt_active", False)):
+        elif runtime_restart_halt_reason:
             overall_rc = 1
             entry["action"] = "halted"
-            entry["note"] = entry["note"] + ",global_halt_active"
+            entry["note"] = entry["note"] + f",{runtime_restart_halt_reason}"
         elif not target.start_cmd:
             overall_rc = 1
             entry["action"] = "error"
@@ -1254,6 +1270,7 @@ def _run_iteration(
     )
 
     payload = _status_payload(entries, halt_recovery=halt_recovery, health_prune=health_prune_summary)
+    payload["runtime_maintenance_hold"] = maintenance_hold
     payload["tripwire"] = tripwire_summary
 
     if event_log_path is not None:

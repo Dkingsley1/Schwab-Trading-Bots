@@ -368,6 +368,75 @@ def test_one_numbers_repair_command_timeout_returns_clean_failure(tmp_path: Path
     assert stderr == "timeout"
 
 
+def test_apply_repairs_restores_missing_bundle_from_recovery_snapshot(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("ONE_NUMBERS_ORIGINAL_START_DAY", "20260421")
+    health_dir = tmp_path / "governance" / "health"
+    one_numbers_dir = tmp_path / "exports" / "one_numbers"
+    recovery_root = tmp_path / "recovery" / "latest"
+    recovery_bundle = recovery_root / "exports" / "one_numbers"
+    health_dir.mkdir(parents=True, exist_ok=True)
+    one_numbers_dir.mkdir(parents=True, exist_ok=True)
+    recovery_bundle.mkdir(parents=True, exist_ok=True)
+
+    summary = {
+        "requested_day": "20260423",
+        "resolved_day": "20260423",
+        "report_mode": "full",
+        "month_to_date_days_covered": "2",
+        "all_time_days_covered": "3",
+        "combined_decision_total_rows": "100",
+        "month_to_date_decision_total_rows": "180",
+        "all_time_decision_total_rows": "260",
+        "combined_blocked_total": "4",
+        "month_to_date_blocked_total": "7",
+        "all_time_blocked_total": "11",
+        "data_blocked_total": "1",
+        "month_to_date_data_blocked_total": "2",
+        "all_time_data_blocked_total": "3",
+        "risk_blocked_total": "3",
+        "month_to_date_risk_blocked_total": "5",
+        "all_time_risk_blocked_total": "8",
+    }
+    (recovery_bundle / "one_numbers_summary.json").write_text(json.dumps(summary), encoding="utf-8")
+    (recovery_bundle / "latest.csv").write_text("label,value\nCombined Decisions,100\n", encoding="utf-8")
+    (recovery_bundle / "latest_metrics.csv").write_text(
+        "section,label,value,metric\nCombined,Decisions,100,combined_decision_total_rows\n",
+        encoding="utf-8",
+    )
+    (health_dir / "storage_disaster_recovery_latest.json").write_text(
+        json.dumps({"recovery_snapshot": {"latest_snapshot_root": str(recovery_root)}}),
+        encoding="utf-8",
+    )
+    (health_dir / "one_numbers_rollup_history.json").write_text(
+        json.dumps(
+            {
+                "history_by_day": {
+                    "20260421": {"day_utc": "20260421"},
+                    "20260422": {"day_utc": "20260422"},
+                    "20260423": {"day_utc": "20260423"},
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    (one_numbers_dir / "latest.csv").symlink_to("missing.csv")
+    (one_numbers_dir / "latest_metrics.csv").symlink_to("missing_metrics.csv")
+
+    before = guard.build_payload(tmp_path)
+    result = guard.apply_repairs(tmp_path, before)
+    after = guard.build_payload(tmp_path)
+
+    assert result["status"] == "restored_from_recovery_snapshot"
+    assert result["attempt_count"] == 0
+    assert after["overall_status"] == "ready"
+    assert not (one_numbers_dir / "latest.csv").is_symlink()
+    assert "Combined Decisions,100" in (one_numbers_dir / "latest.csv").read_text(encoding="utf-8")
+    assert json.loads((one_numbers_dir / "one_numbers_summary.json").read_text(encoding="utf-8")) == summary
+
+
 def test_one_numbers_repair_command_resumes_stopped_builder(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("ONE_NUMBERS_REPAIR_POLL_SECONDS", "1")
     rc, timed_out, stdout, stderr = guard._run_repair_command(

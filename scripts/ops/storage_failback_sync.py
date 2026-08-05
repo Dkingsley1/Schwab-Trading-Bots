@@ -6,12 +6,14 @@ import subprocess
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from core.channel_queue import default_queue_db_path
+from core.runtime_maintenance import maintenance_hold_snapshot
 from core.storage_mounts import find_target_external_volume, resolve_external_storage
 from scripts.ops.support_maintenance_gate import frozen_health_payload, support_maintenance_freeze_contract
 
@@ -20,7 +22,78 @@ def _env_flag(name: str, default: str = "0") -> bool:
     return os.getenv(name, default).strip().lower() in {"1", "true", "yes", "on"}
 
 
+TRACKED_SQLITE_ROUTES = (
+    "data/jsonl_link.sqlite3",
+    "data/bot_channel_queue.sqlite3",
+    "data/snapshot_context.sqlite3",
+)
+
+
+def _path_is_within(path: Path, root: Path) -> bool:
+    try:
+        Path(os.path.abspath(str(path.expanduser()))).relative_to(Path(os.path.abspath(str(root.expanduser()))))
+    except ValueError:
+        return False
+    return True
+
+
+def _physical_sqlite_routes_are_local(project_root: Path) -> bool:
+    local_root = Path(
+        os.getenv("BOT_LOGS_LOCAL_FALLBACK_ROOT", str(project_root / "local_fallback_storage"))
+    ).expanduser()
+    for relative_path in TRACKED_SQLITE_ROUTES:
+        route = project_root / relative_path
+        if not route.is_symlink():
+            return False
+        try:
+            raw_target = Path(os.readlink(route))
+        except OSError:
+            return False
+        target = raw_target if raw_target.is_absolute() else route.parent / raw_target
+        if not _path_is_within(target, local_root):
+            return False
+    return True
+
+
+def _preserve_verified_local_route_intent(project_root: Path) -> dict[str, Any]:
+    override_path = project_root / "config" / ".env.storage_override"
+    explicit_switch = _env_flag("BOT_STORAGE_ROUTE_EXPLICIT_SWITCH", "0")
+    physical_local = _physical_sqlite_routes_are_local(project_root)
+    payload = {
+        "physical_local_sqlite_routes": physical_local,
+        "explicit_route_switch": explicit_switch,
+        "override_path": str(override_path),
+        "override_repaired": False,
+        "effective_prefer_external": str(os.getenv("BOT_LOGS_PREFER_EXTERNAL", "") or ""),
+    }
+    if not physical_local or explicit_switch:
+        return payload
+
+    body = "# Auto-repaired by storage_failback_sync.py from verified physical SQLite routes\nBOT_LOGS_PREFER_EXTERNAL=0\n"
+    try:
+        current = override_path.read_text(encoding="utf-8")
+    except Exception:
+        current = ""
+    if "BOT_LOGS_PREFER_EXTERNAL=0" not in current:
+        override_path.parent.mkdir(parents=True, exist_ok=True)
+        temp = override_path.with_name(f".{override_path.name}.{os.getpid()}.tmp")
+        temp.write_text(body, encoding="utf-8")
+        os.replace(temp, override_path)
+        payload["override_repaired"] = True
+    os.environ["BOT_LOGS_PREFER_EXTERNAL"] = "0"
+    payload["effective_prefer_external"] = "0"
+    payload["policy"] = "preserve_verified_physical_local_route_until_explicit_switch"
+    return payload
+
+
 def _external_project_root() -> Path:
+    if str(os.getenv("BOT_LOGS_PREFER_EXTERNAL", "1") or "1").strip().lower() in {"0", "false", "no", "off"}:
+        configured = str(os.getenv("BOT_LOGS_EXTERNAL_PROJECT_ROOT", "") or "").strip()
+        if configured:
+            return Path(configured).expanduser()
+        mount_root = Path(os.getenv("BOT_LOGS_EXTERNAL_MOUNT", "/Volumes/BOT_LOGS")).expanduser()
+        project_dir = str(os.getenv("BOT_LOGS_EXTERNAL_PROJECT_DIR", "schwab_trading_bot") or "schwab_trading_bot").strip()
+        return mount_root / project_dir
     return resolve_external_storage().external_root
 
 
@@ -108,6 +181,9 @@ def _probe_external_storage(external_root: Path) -> dict[str, object]:
 
 
 def _support_freeze_bypass_reason(previous_path: Path, external_root: Path) -> str:
+    prefer_external = str(os.getenv("BOT_LOGS_PREFER_EXTERNAL", "1") or "1").strip().lower()
+    if prefer_external in {"0", "false", "no", "off"}:
+        return "explicit_local_route_requested"
     try:
         decoded = json.loads(previous_path.read_text(encoding="utf-8"))
     except Exception:
@@ -193,6 +269,14 @@ def _maybe_autoprune_external_low_space(project_root: Path, external_root: Path)
         "enabled": _env_flag("BOT_LOGS_LOW_SPACE_AUTOPRUNE_ENABLED", "1"),
         "attempted": False,
     }
+    if str(os.getenv("BOT_LOGS_PREFER_EXTERNAL", "1") or "1").strip().lower() in {"0", "false", "no", "off"}:
+        payload.update(
+            {
+                "external_root": str(external_root),
+                "skipped_reason": "cold_archive_only_local_hot_storage_policy",
+            }
+        )
+        return payload
     pressure_before = _probe_external_storage(external_root)
     payload.update(
         {
@@ -377,7 +461,16 @@ def _build_sqlite_skip_report(
         external_path = external_root / rel
         repo_meta = _path_metadata(repo_path)
         local_meta = _path_metadata(local_path)
-        external_meta = _path_metadata(external_path)
+        inspect_external = bool(
+            str(mode or "").startswith("external")
+            or str(os.getenv("BOT_LOGS_PREFER_EXTERNAL", "1") or "1").strip().lower()
+            not in {"0", "false", "no", "off"}
+        )
+        external_meta = (
+            _path_metadata(external_path)
+            if inspect_external
+            else {"path": str(external_path), "exists": False, "size_bytes": 0, "mtime_utc": ""}
+        )
         repo_exists = bool(repo_meta.get("exists", False))
         local_exists = bool(local_meta.get("exists", False))
         external_exists = bool(external_meta.get("exists", False))
@@ -390,7 +483,7 @@ def _build_sqlite_skip_report(
 
         repo_sidecars = _sqlite_sidecars(repo_path)
         local_sidecars = _sqlite_sidecars(local_path)
-        external_sidecars = _sqlite_sidecars(external_path)
+        external_sidecars = _sqlite_sidecars(external_path) if inspect_external else []
         try:
             repo_realpath = repo_path.resolve(strict=False)
         except Exception:
@@ -399,9 +492,12 @@ def _build_sqlite_skip_report(
             local_realpath = local_path.resolve(strict=False)
         except Exception:
             local_realpath = local_path
-        try:
-            external_realpath = external_path.resolve(strict=False)
-        except Exception:
+        if inspect_external:
+            try:
+                external_realpath = external_path.resolve(strict=False)
+            except Exception:
+                external_realpath = external_path
+        else:
             external_realpath = external_path
         repo_is_external_route = bool(
             (repo_path.is_symlink() or repo_exists)
@@ -674,6 +770,28 @@ def main() -> int:
     compat = PROJECT_ROOT / 'governance' / 'health' / 'storage_route_status_latest.json'
     out.parent.mkdir(parents=True, exist_ok=True)
 
+    maintenance_hold = maintenance_hold_snapshot(PROJECT_ROOT)
+    local_route_intent = _preserve_verified_local_route_intent(PROJECT_ROOT)
+    if bool(maintenance_hold.get("active", False)):
+        payload = {
+            "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+            "ok": True,
+            "mode": "runtime_maintenance_hold",
+            "certified_mode": "runtime_maintenance_hold",
+            "route_mutation_performed": False,
+            "runtime_maintenance_hold": maintenance_hold,
+            "local_route_intent": local_route_intent,
+            "reason": "runtime_maintenance_hold_blocks_storage_failback",
+        }
+        encoded = json.dumps(payload, ensure_ascii=True, indent=2)
+        out.write_text(encoded, encoding="utf-8")
+        compat.write_text(encoded, encoding="utf-8")
+        if args.json:
+            print(json.dumps(payload, ensure_ascii=True))
+        else:
+            print("[StorageRoute] skipped runtime_maintenance_hold")
+        return 0
+
     if lock_fh is None:
         payload = _lock_busy_payload(lock_path, lock_owner, out)
         encoded = json.dumps(payload, ensure_ascii=True, indent=2)
@@ -712,8 +830,30 @@ def main() -> int:
                 print("[StorageRoute] skipped support_maintenance_frozen_for_mac_fluidity")
             return 0
 
+        maintenance_hold = maintenance_hold_snapshot(PROJECT_ROOT)
+        local_route_intent = _preserve_verified_local_route_intent(PROJECT_ROOT)
+        if bool(maintenance_hold.get("active", False)):
+            payload = {
+                "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+                "ok": True,
+                "mode": "runtime_maintenance_hold",
+                "certified_mode": "runtime_maintenance_hold",
+                "route_mutation_performed": False,
+                "runtime_maintenance_hold": maintenance_hold,
+                "local_route_intent": local_route_intent,
+                "reason": "runtime_maintenance_hold_activated_before_storage_route_commit",
+            }
+            encoded = json.dumps(payload, ensure_ascii=True, indent=2)
+            out.write_text(encoded, encoding="utf-8")
+            compat.write_text(encoded, encoding="utf-8")
+            if args.json:
+                print(json.dumps(payload, ensure_ascii=True))
+            else:
+                print("[StorageRoute] skipped runtime_maintenance_hold_before_commit")
+            return 0
+
         low_space_autoprune = _maybe_autoprune_external_low_space(PROJECT_ROOT, external_root)
-        routing = route_runtime_storage(PROJECT_ROOT)
+        routing = route_runtime_storage(PROJECT_ROOT, allow_autosync=True)
 
         payload = {
             'timestamp_utc': datetime.now(timezone.utc).isoformat(),
@@ -727,6 +867,7 @@ def main() -> int:
                 'copy_errors': int(routing.autosync_copy_errors),
                 'pruned_files': int(routing.autosync_pruned_files),
                 'error_details': list(routing.autosync_error_details),
+                'skip_details': list(routing.autosync_skip_details),
                 'skipped_reason': str(getattr(routing, 'autosync_skipped_reason', '') or ''),
                 'free_bytes': getattr(routing, 'autosync_free_bytes', None),
                 'min_free_bytes': int(getattr(routing, 'autosync_min_free_bytes', 0) or 0),
@@ -741,6 +882,7 @@ def main() -> int:
             ),
             'finder_sync': _sync_bot_logs_finder_shortcuts(PROJECT_ROOT),
             'lock_path': str(lock_path),
+            'local_route_intent': local_route_intent,
         }
         if bool(freeze_contract.get("active", False)) and freeze_bypass_reason:
             payload["support_maintenance_freeze_bypassed"] = True

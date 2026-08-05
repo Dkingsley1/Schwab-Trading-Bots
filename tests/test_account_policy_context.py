@@ -23,7 +23,11 @@ def _write_json(path: Path, payload: dict) -> None:
 def test_account_policy_context_uses_safe_defaults_without_exposing_secrets(tmp_path: Path) -> None:
     module = _load_module()
 
-    payload = module.build_payload(tmp_path, registry_path=tmp_path / "missing.json")
+    payload = module.build_payload(
+        tmp_path,
+        registry_path=tmp_path / "missing.json",
+        as_of_date="2026-05-29",
+    )
 
     assert payload["overall_status"] == "ready"
     assert payload["coverage"]["configured_account_slots"] == 3

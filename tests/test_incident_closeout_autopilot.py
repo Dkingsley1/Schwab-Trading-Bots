@@ -271,6 +271,38 @@ def test_incident_closeout_autopilot_accepts_managed_coverage_stage_deferred_for
     )
 
 
+def test_incident_closeout_autopilot_accepts_managed_cold_lane_deferred_for_paper_soak(tmp_path: Path) -> None:
+    health = tmp_path / "governance" / "health"
+    _write_json(health / "incident_timeline_latest.json", {"open_incident_count": 0, "auto_close_contract": {"closure_ready": True}})
+    _write_json(health / "incident_review_packet_latest.json", {"review_required": False, "closure_contract": {"closure_ready": True}})
+    _write_json(
+        health / "live_runtime_separation_control_latest.json",
+        {
+            "overall_status": "ready",
+            "clearance_plan": {"clearance_state": "managed_cold_lane_deferred"},
+            "live_plane": {"ready": True, "guarded_paper_soak_ready": True, "live_lane_running": True},
+        },
+    )
+    _write_json(health / "auth_lease_manager_latest.json", {"lease_state": "healthy"})
+    _write_json(health / "remote_alert_control_latest.json", {"critical_backlog": {"unacked_count": 0, "unsent_count": 0}})
+    _write_json(health / "lane_thaw_controller_latest.json", {"paused_lane_count": 0, "blocked_count": 0})
+    _write_json(health / "data_plane_recovery_controller_latest.json", {"write_failure_count": 0, "account_snapshot_failure_count": 0})
+    _write_json(health / "process_watchdog_latest.json", {"restart_storms": [], "alerts": []})
+
+    payload = src.build_payload(tmp_path)
+
+    assert payload["overall_status"] == "ready"
+    assert payload["closeout_ready"] is True
+    assert payload["managed_cold_lane_deferred_runtime"] is True
+    assert payload["recoverable_runtime_clearance"] is True
+    assert any(
+        row["surface"] == "runtime_clearance"
+        and row["severity"] == "warning"
+        and "cold-lane training is deferred" in row["summary"]
+        for row in payload["blocking_surfaces"]
+    )
+
+
 def test_incident_closeout_autopilot_softens_process_watchdog_when_timeline_marks_storage_backpressure_watch(tmp_path: Path) -> None:
     health = tmp_path / "governance" / "health"
     _write_json(

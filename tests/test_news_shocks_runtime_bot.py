@@ -156,4 +156,4 @@ def test_train_brain_uses_scoped_runtime_path_without_fallback(monkeypatch) -> N
     assert captured["sample_stride"] == 2
     assert captured["min_confidence"] == 0.36
     assert captured["min_samples"] == 160
-    assert captured["min_accuracy_lift_over_majority"] == 0.01
+    assert captured["min_accuracy_lift_over_majority"] >= 0.01

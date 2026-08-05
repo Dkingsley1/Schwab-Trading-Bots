@@ -61,8 +61,18 @@ STATUS_WEIGHT = {
 }
 GUARDED_PAPER_OPTIONAL_STALE_SIGNALS = {
     "backpressure_super_drainer",
+    "bot_fleet_production_posture",
+    "bot_logs_cleanup",
+    "computer_task_intelligence",
+    "drainer_intelligence",
     "mlx_intelligence_router",
     "library_utilization_router",
+    "macro_event_intelligence",
+    "sleeve_ingestion_production_control",
+    "sleeve_strategy_coverage",
+    "training_data_intake",
+    "training_runtime",
+    "writer_process_intelligence",
 }
 
 SIGNAL_SOURCES: tuple[dict[str, str], ...] = (
@@ -692,6 +702,43 @@ def _macro_event_metrics(payload: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _writer_cycle_metrics(payload: dict[str, Any]) -> dict[str, Any]:
+    summary = _as_dict(payload.get("summary"))
+    before = _as_dict(payload.get("writer_state_before"))
+    safety = _as_dict(payload.get("safety_envelope"))
+    active = bool(before.get("active", False) or summary.get("writer_active_after_wait", False))
+    active_child_count = _safe_int(before.get("active_child_writer_count"), 0)
+    return {
+        "overall_status": _status(payload),
+        "ok": bool(payload.get("ok", False)),
+        "handoff_only": bool(summary.get("handoff_only", False)),
+        "writer_active": active,
+        "writer_active_initial": bool(summary.get("writer_active_initial", False)),
+        "writer_active_after_wait": bool(summary.get("writer_active_after_wait", False)),
+        "writer_current_step": str(summary.get("writer_current_step") or before.get("effective_current_step") or before.get("current_step") or ""),
+        "writer_running": bool(before.get("running", False)),
+        "writer_owner_pid_live": bool(before.get("writer_owner_pid_live", False)),
+        "writer_lock_held": bool(before.get("writer_lock_held", False)),
+        "child_writer_active": bool(before.get("child_writer_active", False)),
+        "active_child_writer_count": active_child_count,
+        "single_writer_only": bool(safety.get("single_writer_only", active_child_count <= 1)),
+        "progress_orphaned": bool(before.get("progress_orphaned", False)),
+        "complete_lock_handoff_needed": bool(
+            before.get("complete_lock_handoff_needed", False)
+            or summary.get("completed_writer_lock_handoff_needed", False)
+        ),
+        "wait_timed_out": bool(summary.get("wait_timed_out", False)),
+        "wait_completed": bool(summary.get("wait_completed", False)),
+        "progress_age_minutes": _safe_float(before.get("progress_age_minutes"), 0.0),
+        "cycle_age_minutes": _safe_float(before.get("cycle_age_minutes"), 0.0),
+        "completed_shard_count": _safe_int(before.get("completed_shard_count"), 0),
+        "planned_shard_count": _safe_int(before.get("planned_shard_count"), 0),
+        "timed_out_shard_count": _safe_int(before.get("timed_out_shard_count"), 0),
+        "drain_applied": bool(summary.get("drain_applied", False)),
+        "maintenance_applied": bool(summary.get("maintenance_applied", False)),
+    }
+
+
 def _training_runtime_metrics(payload: dict[str, Any]) -> dict[str, Any]:
     contract = _as_dict(payload.get("training_launch_contract"))
     host_gate = _as_dict(contract.get("host_training_headroom_gate"))
@@ -842,6 +889,79 @@ def _bot_fleet_production_metrics(payload: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _operating_platform_metrics(payload: dict[str, Any]) -> dict[str, Any]:
+    sections = [row for row in _as_list(payload.get("sections")) if isinstance(row, dict)]
+    blockers = ordered_unique(str(item) for row in sections for item in _as_list(row.get("blockers")) if str(item))
+    live_execution_allowed = any(
+        bool(_as_dict(row.get("evidence")).get("live_execution_allowed", False))
+        for row in sections
+    )
+    return {
+        "overall_status": _status(payload),
+        "ok": bool(payload.get("ok", False)),
+        "section_count": len(sections),
+        "needs_work_section_count": sum(1 for row in sections if str(row.get("status") or "").lower() == "needs_work"),
+        "blocked_section_count": sum(1 for row in sections if str(row.get("status") or "").lower() in {"blocked", "critical"}),
+        "blocker_count": len(blockers),
+        "blockers": blockers[:12],
+        "live_execution_allowed": live_execution_allowed,
+        "platform_optional_work_visible": True,
+    }
+
+
+def _mlx_router_metrics(payload: dict[str, Any]) -> dict[str, Any]:
+    coverage = _as_dict(payload.get("library_coverage"))
+    route = _as_dict(payload.get("route_coverage"))
+    caps = _as_dict(payload.get("runtime_caps"))
+    summary = _as_dict(payload.get("lane_optimization_summary"))
+    readiness = _as_dict(payload.get("readiness_repair_plan"))
+    return {
+        "overall_status": _status(payload),
+        "ok": bool(payload.get("ok", False)),
+        "coverage_ratio": _safe_float(coverage.get("coverage_ratio"), 0.0),
+        "missing_count": _safe_int(coverage.get("missing_count"), 0),
+        "compatibility_excluded_count": _safe_int(coverage.get("compatibility_excluded_count"), 0),
+        "route_coverage_ratio": _safe_float(route.get("route_coverage_ratio"), 0.0),
+        "blocked_lane_count": _safe_int(route.get("blocked_lane_count"), 0),
+        "excluded_lane_count": _safe_int(route.get("excluded_lane_count"), 0),
+        "runtime_profile": str(caps.get("profile") or ""),
+        "memory_pressure_level": str(caps.get("memory_pressure_level") or ""),
+        "cpu_pressure_level": str(caps.get("cpu_pressure_level") or ""),
+        "memory_free_pct": _safe_float(caps.get("memory_free_pct"), 0.0),
+        "swap_used_gb": _safe_float(caps.get("swap_used_gb"), 0.0),
+        "host_saturation_score": _safe_float(caps.get("host_saturation_score"), 0.0),
+        "max_concurrent_mlx_jobs": _safe_int(caps.get("max_concurrent_mlx_jobs"), 0),
+        "compile_smoke_ok": bool(caps.get("compile_smoke_ok", False)),
+        "metal_available": bool(caps.get("metal_available", False)),
+        "p_core_allocation_aware": bool(caps.get("p_core_allocation_aware", False)),
+        "allowed_lane_count": _safe_int(summary.get("allowed_lane_count"), 0),
+        "readiness_status": str(readiness.get("status") or ""),
+    }
+
+
+def _cell_platform_metrics(payload: dict[str, Any]) -> dict[str, Any]:
+    operational = _as_dict(payload.get("operational_health"))
+    guarded = _as_dict(operational.get("guarded_paper_soak_health"))
+    cells = [row for row in _as_list(payload.get("cells")) if isinstance(row, dict)]
+    return {
+        "overall_status": _status(payload),
+        "score": _safe_float(payload.get("score") or payload.get("intelligence_score"), 0.0),
+        "grade": str(payload.get("grade") or payload.get("architecture_grade") or payload.get("intelligence_grade") or ""),
+        "operational_status": str(operational.get("status") or ""),
+        "operational_grade": str(operational.get("grade") or ""),
+        "guarded_paper_ready": bool(guarded.get("ready", False)),
+        "guarded_paper_status": str(guarded.get("status") or ""),
+        "raw_status": str(operational.get("raw_status") or ""),
+        "raw_grade": str(operational.get("raw_grade") or ""),
+        "managed_raw_need_count": _safe_int(operational.get("managed_raw_need_count"), 0),
+        "low_cell_count": _safe_int(operational.get("low_cell_count"), 0),
+        "blocked_cell_count": sum(1 for row in cells if str(row.get("overall_status") or "").lower() in {"blocked", "critical"}),
+        "advisory_cell_count": sum(1 for row in cells if str(row.get("overall_status") or "").lower() == "advisory"),
+        "cell_count": len(cells) or _safe_int(payload.get("cell_count"), 0),
+        "top_need_count": len(_as_list(payload.get("top_needs"))) or len(_as_list(payload.get("ranked_needs"))),
+    }
+
+
 def _guarded_paper_soak_green(project_root: Path) -> bool:
     health = load_json(project_root / "governance" / "health" / "health_fast_latest.json")
     readiness = _as_dict(health.get("operational_readiness"))
@@ -957,9 +1077,262 @@ def _guarded_paper_platform_brain_advisory(project_root: Path, status: str, metr
     )
 
 
+def _guarded_paper_market_context_attention(project_root: Path, status: str, metrics: dict[str, Any]) -> bool:
+    if str(status or "").lower() not in {"ready", "advisory"}:
+        return False
+    if not _guarded_paper_soak_green(project_root):
+        return False
+    calendar_status = str(metrics.get("calendar_verification_status") or "").lower()
+    return bool(
+        str(metrics.get("market_relevance") or "").lower() == "high"
+        and not bool(metrics.get("live_detected", False))
+        and not bool(metrics.get("replay_pending", False))
+        and not bool(metrics.get("full_video_required", False))
+        and calendar_status not in {"unverified", "failed", "blocked"}
+    )
+
+
+def _guarded_paper_runtime_observability_advisory(project_root: Path, status: str, metrics: dict[str, Any]) -> bool:
+    if str(status or "").lower() != "advisory":
+        return False
+    if not _guarded_paper_soak_green(project_root):
+        return False
+    return bool(
+        str(metrics.get("memory_pressure_level") or "").lower() in {"", "normal", "green", "clear"}
+        and str(metrics.get("cpu_pressure_level") or metrics.get("compute_pressure_level") or "").lower() in {"", "normal", "watch", "green", "clear"}
+        and _safe_float(metrics.get("host_saturation_score"), 0.0) <= 50.0
+    )
+
+
+def _guarded_paper_bot_quality_queue_advisory(project_root: Path, status: str, metrics: dict[str, Any]) -> bool:
+    if str(status or "").lower() not in {"ready", "advisory", "needs_attention", "needs_work"}:
+        return False
+    if not _guarded_paper_soak_green(project_root):
+        return False
+    return bool(
+        str(metrics.get("training_quality_status") or "").lower() == "ready"
+        and _safe_float(metrics.get("training_quality_score"), 0.0) >= 95.0
+        and _safe_int(metrics.get("hard_failed_attempt_count"), 0) == 0
+        and _safe_int(metrics.get("timed_out_attempt_count"), 0) == 0
+        and _safe_int(metrics.get("quality_probation_bot_count"), 0) == 0
+        and _safe_int(metrics.get("targeted_retrain_bot_count"), 0) == 0
+        and _safe_int(metrics.get("repair_runtime_input_bot_count"), 0) == 0
+        and _safe_int(metrics.get("students_without_teachers"), 0) == 0
+        and _safe_int(metrics.get("coverage_shortfall_bots"), 0) == 0
+        and _safe_int(metrics.get("infrastructure_helper_count"), 0) == 0
+        and _safe_int(metrics.get("qualified_teacher_count"), 0) > 0
+        and _safe_int(metrics.get("elite_teacher_count"), 0) > 0
+        and _safe_int(metrics.get("quality_queue_count"), 0) <= 50
+    )
+
+
+def _guarded_paper_writer_cycle_active(project_root: Path, status: str, metrics: dict[str, Any]) -> bool:
+    if str(status or "").lower() not in {"writer_active", "waiting_for_writer", "ready", "advisory"}:
+        return False
+    if not _guarded_paper_soak_green(project_root):
+        return False
+    return bool(
+        bool(metrics.get("ok", False))
+        and bool(metrics.get("writer_active", False))
+        and bool(metrics.get("writer_running", False))
+        and bool(metrics.get("writer_owner_pid_live", False))
+        and bool(metrics.get("single_writer_only", False))
+        and _safe_int(metrics.get("active_child_writer_count"), 0) <= 1
+        and _safe_float(metrics.get("progress_age_minutes"), 99.0) <= 10.0
+        and not bool(metrics.get("progress_orphaned", False))
+        and not bool(metrics.get("complete_lock_handoff_needed", False))
+        and not bool(metrics.get("wait_timed_out", False))
+        and _safe_int(metrics.get("timed_out_shard_count"), 0) == 0
+    )
+
+
+def _guarded_paper_writer_handoff_complete(project_root: Path, status: str, metrics: dict[str, Any]) -> bool:
+    state = str(status or "").lower()
+    if state not in {"handoff_released", "ready", "advisory"}:
+        return False
+    if not _guarded_paper_soak_green(project_root):
+        return False
+    step = str(metrics.get("writer_current_step") or "").lower()
+    active_child_count = _safe_int(metrics.get("active_child_writer_count"), 0)
+    return bool(
+        bool(metrics.get("ok", False))
+        and (state == "handoff_released" or str(metrics.get("overall_status") or "").lower() == "handoff_released")
+        and step == "complete"
+        and bool(metrics.get("single_writer_only", True))
+        and active_child_count == 0
+        and not bool(metrics.get("child_writer_active", False))
+        and not bool(metrics.get("writer_running", False))
+        and bool(metrics.get("writer_owner_pid_live", False))
+        and bool(metrics.get("writer_lock_held", False))
+        and bool(metrics.get("complete_lock_handoff_needed", False))
+        and not bool(metrics.get("progress_orphaned", False))
+        and not bool(metrics.get("wait_timed_out", False))
+        and _safe_int(metrics.get("timed_out_shard_count"), 0) == 0
+        and _safe_float(metrics.get("progress_age_minutes"), 99.0) <= 10.0
+    )
+
+
+def _guarded_paper_training_data_accumulation(project_root: Path, status: str, metrics: dict[str, Any]) -> bool:
+    if str(status or "").lower() not in {"ready", "advisory"}:
+        return False
+    if not _guarded_paper_soak_green(project_root):
+        return False
+    return bool(
+        _safe_int(metrics.get("collector_count"), 0) > 0
+        and _safe_int(metrics.get("trainable_candidate_count"), 0) > 0
+        and _safe_int(metrics.get("collect_first_count"), 0) > 0
+        and _safe_int(metrics.get("runtime_depth_debt_count"), 0) == 0
+    )
+
+
+def _guarded_paper_optional_platform_work(project_root: Path, status: str, metrics: dict[str, Any]) -> bool:
+    if str(status or "").lower() not in {"applied_with_work_items", "needs_work", "advisory", "ready"}:
+        return False
+    if not _guarded_paper_soak_green(project_root):
+        return False
+    return bool(
+        bool(metrics.get("ok", False))
+        and _safe_int(metrics.get("section_count"), 0) > 0
+        and _safe_int(metrics.get("blocked_section_count"), 0) == 0
+        and not bool(metrics.get("live_execution_allowed", False))
+    )
+
+
+def _guarded_paper_deeper_layer_attention(project_root: Path, status: str, metrics: dict[str, Any]) -> bool:
+    if str(status or "").lower() not in {"advisory", "ready"}:
+        return False
+    if not _guarded_paper_soak_green(project_root):
+        return False
+    return bool(
+        _safe_int(metrics.get("blocked_count"), 0) == 0
+        and _safe_int(metrics.get("degraded_count"), 0) == 0
+        and _safe_int(metrics.get("advisory_count"), 0) <= 2
+        and not bool(metrics.get("runtime_pressure_high", False))
+        and _safe_float(metrics.get("storage_pending_ratio"), 0.0) <= 0.25
+        and _safe_int(metrics.get("missing_surface_count"), 0) <= 1
+    )
+
+
+def _guarded_paper_super_drainer_parked(project_root: Path, status: str, metrics: dict[str, Any]) -> bool:
+    if str(status or "").lower() not in {"waiting_for_writer", "idle", "ready", "advisory"}:
+        return False
+    if not _guarded_paper_soak_green(project_root):
+        return False
+    target = _safe_int(metrics.get("target_pending_lines"), 0)
+    total = _safe_int(metrics.get("total_pending_lines"), 0)
+    return bool(
+        target > 0
+        and total <= target
+        and str(metrics.get("stop_reason") or "").lower() in {"target_already_met", "preview_only", ""}
+    )
+
+
+def _guarded_paper_drainer_fleet_empty_handoff(project_root: Path, status: str, metrics: dict[str, Any]) -> bool:
+    state = str(status or "").lower()
+    if state not in {"handoff_requested", "ready", "advisory", "idle"}:
+        return False
+    if not _guarded_paper_soak_green(project_root):
+        return False
+    total = _safe_int(metrics.get("total_pending_lines"), 0)
+    initial = _safe_int(metrics.get("initial_pending_lines"), 0)
+    final = _safe_int(metrics.get("final_pending_lines"), total)
+    return bool(
+        state == "handoff_requested"
+        and total <= 0
+        and initial <= 0
+        and final <= 0
+        and _safe_int(metrics.get("waves_run"), 0) == 0
+        and _safe_int(metrics.get("progress_waves"), 0) == 0
+        and _safe_int(metrics.get("pending_lines_delta"), 0) == 0
+        and not bool(metrics.get("any_progress", False))
+        and not _as_list(metrics.get("risk_flags"))
+    )
+
+
+def _guarded_paper_auth_lease_warning(project_root: Path, status: str, metrics: dict[str, Any]) -> bool:
+    if str(status or "").lower() not in {"degraded", "advisory", "ready"}:
+        return False
+    if not _guarded_paper_soak_green(project_root):
+        return False
+    expires_in = _safe_float(metrics.get("expires_in_seconds"), 0.0)
+    critical_seconds = max(_safe_float(metrics.get("critical_lease_seconds"), 600.0), 600.0)
+    return bool(
+        str(metrics.get("lease_state") or "").lower() == "warning"
+        and expires_in >= max(critical_seconds, 900.0)
+        and bool(metrics.get("broker_operable", False))
+        and bool(metrics.get("network_ok", True))
+        and bool(metrics.get("configured_for_refresh", True))
+    )
+
+
+def _guarded_paper_mlx_router_advisory(project_root: Path, status: str, metrics: dict[str, Any]) -> bool:
+    if str(status or "").lower() not in {"advisory", "ready"}:
+        return False
+    if not _guarded_paper_soak_green(project_root):
+        return False
+    return bool(
+        bool(metrics.get("ok", False))
+        and _safe_float(metrics.get("coverage_ratio"), 0.0) >= 1.0
+        and _safe_float(metrics.get("route_coverage_ratio"), 0.0) >= 1.0
+        and _safe_int(metrics.get("missing_count"), 0) == 0
+        and _safe_int(metrics.get("blocked_lane_count"), 0) == 0
+        and str(metrics.get("memory_pressure_level") or "").lower() in {"", "normal", "green", "clear"}
+        and str(metrics.get("cpu_pressure_level") or "").lower() in {"", "normal", "watch", "green", "clear"}
+        and _safe_float(metrics.get("swap_used_gb"), 0.0) < 8.0
+        and bool(metrics.get("compile_smoke_ok", False))
+        and bool(metrics.get("metal_available", False))
+    )
+
+
+def _guarded_paper_cell_platform_advisory(project_root: Path, status: str, metrics: dict[str, Any]) -> bool:
+    if str(status or "").lower() not in {"advisory", "ready"}:
+        return False
+    if not _guarded_paper_soak_green(project_root):
+        return False
+    operational_ready = str(metrics.get("operational_status") or "").lower() == "ready"
+    guarded_ready = bool(metrics.get("guarded_paper_ready", False))
+    managed_raw_only = bool(
+        str(metrics.get("raw_status") or "").lower() in {"blocked", "degraded", "needs_work", "advisory", ""}
+        and str(metrics.get("raw_grade") or "").upper() in {"", "A", "A+", "B", "C", "D", "F"}
+        and _safe_int(metrics.get("managed_raw_need_count"), 0) >= 0
+        and _safe_int(metrics.get("low_cell_count"), 0) == 0
+    )
+    return bool(
+        str(metrics.get("grade") or "").upper() == "A+"
+        and _safe_float(metrics.get("score"), 0.0) >= 95.0
+        and (operational_ready or guarded_ready or managed_raw_only)
+    )
+
+
 def _guarded_paper_signal_advisory(name: str, project_root: Path, status: str, metrics: dict[str, Any]) -> tuple[bool, str]:
     if _guarded_paper_quality_debt_advisory(name, project_root, status, metrics):
         return True, "guarded_paper_soak_green_and_quality_debt_controlled"
+    if name == "runtime_throttle" and _guarded_paper_runtime_observability_advisory(project_root, status, metrics):
+        return True, "guarded_paper_soak_green_and_runtime_observability_pressure_is_managed"
+    if name == "macro_event_intelligence" and _guarded_paper_market_context_attention(project_root, status, metrics):
+        return True, "guarded_paper_soak_green_and_macro_event_is_context_attention_only"
+    if name == "bot_quality" and _guarded_paper_bot_quality_queue_advisory(project_root, status, metrics):
+        return True, "guarded_paper_soak_green_and_bot_quality_queue_is_managed"
+    if name == "writer_cycle_coordinator" and _guarded_paper_writer_cycle_active(project_root, status, metrics):
+        return True, "guarded_paper_soak_green_and_writer_active_progressing_single_writer"
+    if name == "writer_cycle_coordinator" and _guarded_paper_writer_handoff_complete(project_root, status, metrics):
+        return True, "guarded_paper_soak_green_and_writer_handoff_released_complete"
+    if name == "training_data_intake" and _guarded_paper_training_data_accumulation(project_root, status, metrics):
+        return True, "guarded_paper_soak_green_and_training_data_is_accumulating"
+    if name == "operating_platform_upgrade" and _guarded_paper_optional_platform_work(project_root, status, metrics):
+        return True, "guarded_paper_soak_green_and_platform_work_items_are_optional"
+    if name == "deeper_intelligence_layers" and _guarded_paper_deeper_layer_attention(project_root, status, metrics):
+        return True, "guarded_paper_soak_green_and_deeper_layer_attention_has_no_blockers"
+    if name == "backpressure_super_drainer" and _guarded_paper_super_drainer_parked(project_root, status, metrics):
+        return True, "guarded_paper_soak_green_and_super_drainer_target_is_met"
+    if name == "backpressure_drainer_fleet" and _guarded_paper_drainer_fleet_empty_handoff(project_root, status, metrics):
+        return True, "guarded_paper_soak_green_and_drainer_handoff_has_no_pending_backlog"
+    if name == "auth_lease_manager" and _guarded_paper_auth_lease_warning(project_root, status, metrics):
+        return True, "guarded_paper_soak_green_and_auth_warning_above_paper_readiness_floor"
+    if name == "mlx_intelligence_router" and _guarded_paper_mlx_router_advisory(project_root, status, metrics):
+        return True, "guarded_paper_soak_green_and_mlx_router_is_capped_ready"
+    if name in {"distributed_cell_architecture", "cell_federation_intelligence"} and _guarded_paper_cell_platform_advisory(project_root, status, metrics):
+        return True, "guarded_paper_soak_green_and_cell_platform_raw_backlog_is_managed"
     if name == "training_runtime" and _guarded_paper_training_runtime_deferred(project_root, status, metrics):
         return True, "guarded_paper_soak_green_and_training_runtime_deferred"
     if name == "data_plane_recovery" and _guarded_paper_data_plane_recovery_advisory(project_root, status, metrics):
@@ -996,8 +1369,16 @@ def _metrics_for_signal(name: str, project_root: Path, payload: dict[str, Any]) 
         return _bot_fleet_production_metrics(payload)
     if name == "writer_process_intelligence":
         return _writer_metrics(payload)
+    if name == "writer_cycle_coordinator":
+        return _writer_cycle_metrics(payload)
     if name in {"drainer_intelligence", "backpressure_drainer_fleet", "backpressure_super_drainer"}:
         return _drainer_metrics(payload)
+    if name == "mlx_intelligence_router":
+        return _mlx_router_metrics(payload)
+    if name == "operating_platform_upgrade":
+        return _operating_platform_metrics(payload)
+    if name in {"distributed_cell_architecture", "cell_federation_intelligence"}:
+        return _cell_platform_metrics(payload)
     if name in {"process_watchdog", "process_fanout_guard"}:
         return _process_metrics(name, payload)
     if name == "guard_intelligence":
@@ -1025,8 +1406,13 @@ def _metrics_for_signal(name: str, project_root: Path, payload: dict[str, Any]) 
         return {
             "lease_state": str(payload.get("lease_state") or ""),
             "expires_in_seconds": _safe_float(lease.get("expires_in_seconds"), 0.0),
+            "critical_lease_seconds": _safe_float(lease.get("critical_lease_seconds"), 600.0),
+            "token_lease_grace": bool(lease.get("token_lease_grace", False)),
             "auth_ok": bool(broker.get("auth_ok", False)),
             "broker_operable": bool(broker.get("broker_operable", False)),
+            "network_ok": bool(broker.get("network_ok", True)),
+            "auth_probe_ok": bool(broker.get("auth_probe_ok", False)),
+            "configured_for_refresh": bool(broker.get("configured_for_refresh", True)),
             "auth_reason": str(broker.get("auth_reason") or ""),
         }
     if name == "system_self_model":
@@ -1188,11 +1574,17 @@ def _severity_for_signal(name: str, status: str, metrics: dict[str, Any], loaded
     elif name == "training_runtime":
         launch_allowed = bool(metrics.get("launch_allowed", False))
         batch_size = _safe_int(metrics.get("recommended_batch_size"), 0)
+        launch_blockers = {str(item) for item in _as_list(metrics.get("launch_blockers"))}
         if launch_allowed and batch_size >= 20 and bool(metrics.get("quality_recovery_canary", False)):
             score = min(score, 35)
         elif launch_allowed:
             score = min(score, 45)
-        elif _as_list(metrics.get("launch_blockers")):
+        elif (
+            bool(metrics.get("prep_allowed", False))
+            and launch_blockers == {"no_bot_needs_training_candidates"}
+        ):
+            score = min(score, 20)
+        elif launch_blockers:
             score = max(score, 70)
     elif name == "writer_process_intelligence":
         risks = set(str(item) for item in _as_list(metrics.get("risk_flags")))
@@ -1411,12 +1803,40 @@ def _signal_summary(name: str, metrics: dict[str, Any]) -> str:
         )
     if name == "writer_process_intelligence":
         return f"writer={metrics.get('writer_state', '')} action={metrics.get('action', '')}"
+    if name == "writer_cycle_coordinator":
+        return (
+            f"active={metrics.get('writer_active', False)} "
+            f"step={metrics.get('writer_current_step', '') or 'none'} "
+            f"progress_age={metrics.get('progress_age_minutes', 0)} "
+            f"single_writer={metrics.get('single_writer_only', False)}"
+        )
     if name in {"drainer_intelligence", "backpressure_drainer_fleet", "backpressure_super_drainer"}:
         need = str(metrics.get("top_need_section") or "")
         need_text = f" need={need}" if need else ""
         grade = str(metrics.get("backlog_grade") or "")
         grade_text = f" grade={grade}" if grade else ""
         return f"drainer={metrics.get('selected_drainer', '')} action={metrics.get('action', '')}{grade_text}{need_text}"
+    if name == "operating_platform_upgrade":
+        return (
+            f"sections={metrics.get('section_count', 0)} "
+            f"needs={metrics.get('needs_work_section_count', 0)} "
+            f"blocked={metrics.get('blocked_section_count', 0)} "
+            f"live_allowed={metrics.get('live_execution_allowed', False)}"
+        )
+    if name == "mlx_intelligence_router":
+        return (
+            f"coverage={metrics.get('coverage_ratio', 0)} "
+            f"blocked_lanes={metrics.get('blocked_lane_count', 0)} "
+            f"profile={metrics.get('runtime_profile', '') or 'none'} "
+            f"jobs={metrics.get('max_concurrent_mlx_jobs', 0)}"
+        )
+    if name in {"distributed_cell_architecture", "cell_federation_intelligence"}:
+        return (
+            f"grade={metrics.get('grade', '')} "
+            f"operational={metrics.get('operational_status', '')} "
+            f"guarded={metrics.get('guarded_paper_ready', False)} "
+            f"raw={metrics.get('raw_grade', '')}"
+        )
     if name == "global_halt":
         return f"halt_active={metrics.get('halt_active', False)} blockers={len(_as_list(metrics.get('clear_blockers')))}"
     if name == "process_watchdog":
@@ -1535,6 +1955,9 @@ def build_signal_bus(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
         if guarded_paper_advisory:
             status = "ready"
             severity = 20
+            if stale and _guarded_paper_soak_green(project_root):
+                managed_stale = True
+                stale = False
             metrics = {
                 **metrics,
                 "source_status": source_status,
@@ -1544,6 +1967,14 @@ def build_signal_bus(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
                 "does_not_block_guarded_paper_soak": True,
                 "normalization_reason": normalization_reason,
             }
+            if managed_stale:
+                metrics = {
+                    **metrics,
+                    "source_stale": True,
+                    "managed_stale": True,
+                    "managed_by": "system_signal_bus_guarded_paper_advisory",
+                    "managed_control_state": "guarded_paper_advisory_refresh_deferred_while_soak_is_green",
+                }
         else:
             severity = _stale_adjusted_severity(name, normalized_severity, stale)
         signals.append(
@@ -2086,6 +2517,10 @@ def _stale_signal_rows(signal_bus: dict[str, Any]) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     for row in _as_list(signal_bus.get("signals")):
         if not isinstance(row, dict) or not bool(row.get("loaded", False)):
+            continue
+        # The signal bus owns freshness normalization. Recomputing from raw age here
+        # turns explicitly managed support staleness back into a false blind spot.
+        if not bool(row.get("stale", False)):
             continue
         name = str(row.get("name") or "")
         age = row.get("age_minutes")

@@ -63,12 +63,12 @@ def _obs(symbol="SPY", last_price=100.0, **overrides):
 
 def test_replacement_runtime_feature_vector_shapes() -> None:
     sequence = [_obs()]
-    assert v101._runtime_feature_vector(sequence, 0).shape == (18,)
-    assert v102._runtime_feature_vector(sequence, 0).shape == (22,)
-    assert v103._runtime_feature_vector(sequence, 0).shape == (22,)
-    assert v104._runtime_feature_vector(sequence, 0).shape == (24,)
-    assert v105._runtime_feature_vector(sequence, 0).shape == (17,)
-    assert v106._runtime_feature_vector(sequence, 0).shape == (19,)
+    assert v101._runtime_feature_vector(sequence, 0).shape == (22,)
+    assert v102._runtime_feature_vector(sequence, 0).shape == (24,)
+    assert v103._runtime_feature_vector(sequence, 0).shape == (25,)
+    assert v104._runtime_feature_vector(sequence, 0).shape == (27,)
+    assert v105._runtime_feature_vector(sequence, 0).shape == (19,)
+    assert v106._runtime_feature_vector(sequence, 0).shape == (20,)
 
 
 def test_replacement_signal_labels_can_emit_positive() -> None:

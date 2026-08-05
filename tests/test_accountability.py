@@ -108,6 +108,102 @@ def test_thin_low_signal_payloads_dedupes_repetitive_paper_guard_blocks(monkeypa
     assert len(kept) == 1
 
 
+def test_thin_low_signal_risk_attribution_preserves_signal_and_samples_zero_outcomes(monkeypatch) -> None:
+    monkeypatch.setenv("LOW_SIGNAL_LOG_THINNING_ENABLED", "1")
+    monkeypatch.setenv("RISK_ATTRIBUTION_LOW_SIGNAL_WINDOW_SECONDS", "300")
+    now = {"value": 1_000.0}
+    monkeypatch.setattr(accountability.time, "time", lambda: now["value"])
+    accountability._LOW_SIGNAL_RECENT.clear()
+    accountability._LOW_SIGNAL_SUPPRESSED.clear()
+
+    path = "/tmp/governance/shadow_crypto/shadow_pnl_attribution_20260802.jsonl"
+    low_signal = {
+        "bot_id": "brain_refinery_v10_seasonal",
+        "layer": "sub_bot",
+        "symbol": "BTC-USD",
+        "action": "HOLD",
+        "direction": 0.0,
+        "return_1m": 0.0,
+        "pnl_proxy": 0.0,
+    }
+
+    first = accountability._thin_low_signal_payloads(
+        path,
+        [low_signal, {**low_signal, "symbol": "ETH-USD", "return_1m": 0.002}],
+    )
+    assert len(first) == 1
+    assert first[0]["sampling_contract"]["window_seconds"] == 300.0
+    assert first[0]["sampling_contract"]["sample_scope"] == "bot_profile_action_direction"
+
+    now["value"] = 1_100.0
+    assert accountability._thin_low_signal_payloads(path, [low_signal]) == []
+
+    now["value"] = 1_301.0
+    next_window = accountability._thin_low_signal_payloads(path, [low_signal])
+    assert len(next_window) == 1
+    assert next_window[0]["sampling_contract"]["suppressed_since_previous"] == 2
+
+    retained = accountability._thin_low_signal_payloads(
+        path,
+        [
+            {**low_signal, "bot_id": "grand_master_bot", "layer": "grand_master"},
+            {**low_signal, "bot_id": "nonzero_pnl_bot", "return_1m": 0.001, "pnl_proxy": 0.0001},
+            {**low_signal, "bot_id": "position_bot", "action": "BUY", "quantity": 0.25},
+            {**low_signal, "action": "BUY"},
+        ],
+    )
+    assert [row["bot_id"] for row in retained] == [
+        "grand_master_bot",
+        "nonzero_pnl_bot",
+        "position_bot",
+        "brain_refinery_v10_seasonal",
+    ]
+
+    now["value"] = 1_302.0
+    moving_but_flat = {**low_signal, "return_1m": 0.01}
+    assert accountability._thin_low_signal_payloads(path, [moving_but_flat]) == []
+
+
+def test_bulk_risk_channel_queue_is_opt_in(monkeypatch) -> None:
+    monkeypatch.delenv("BOT_CHANNEL_QUEUE_RISK_ENABLED", raising=False)
+    assert accountability._queue_channel_enabled("risk") is False
+    assert accountability._queue_channel_enabled("decision") is True
+
+    monkeypatch.setenv("BOT_CHANNEL_QUEUE_RISK_ENABLED", "1")
+    assert accountability._queue_channel_enabled("risk") is True
+
+
+def test_channel_append_acknowledges_rows_intentionally_removed_by_sampling(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("LOW_SIGNAL_LOG_THINNING_ENABLED", "1")
+    monkeypatch.setenv("RISK_ATTRIBUTION_LOW_SIGNAL_WINDOW_SECONDS", "300")
+    monkeypatch.setattr(accountability.time, "time", lambda: 1_000.0)
+    accountability._LOW_SIGNAL_RECENT.clear()
+    accountability._LOW_SIGNAL_SUPPRESSED.clear()
+    path = tmp_path / "governance" / "shadow_crypto" / "shadow_pnl_attribution_20260802.jsonl"
+    base = {
+        "bot_id": "flat_bot",
+        "layer": "sub_bot",
+        "action": "HOLD",
+        "direction": 0.0,
+        "return_1m": 0.002,
+        "pnl_proxy": 0.0,
+    }
+
+    acknowledged = accountability.safe_append_channel_batch(
+        str(path),
+        [{**base, "symbol": "BTC-USD"}, {**base, "symbol": "ETH-USD"}],
+        project_root=str(tmp_path),
+        source="unit_test",
+        channel="risk",
+        schema="risk",
+    )
+
+    stored = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+    assert acknowledged == 2
+    assert len(stored) == 1
+    assert stored[0]["sampling_contract"]["representative_symbol"] == "BTC-USD"
+
+
 def test_schema_violation_log_dedupes_and_summarizes_payload(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setenv("CHANNEL_SCHEMA_VIOLATION_WINDOW_SECONDS", "60")
     monkeypatch.setattr(accountability.time, "time", lambda: 1_000.0)
@@ -271,6 +367,29 @@ def test_enrich_log_row_labels_coinbase_crypto_route() -> None:
     assert "asset_crypto" in row["data_labels"]
 
 
+def test_enrich_log_row_labels_broker_confirmed_account_snapshot_quality() -> None:
+    row = accountability.enrich_log_row(
+        {
+            "timestamp_utc": "2026-08-04T20:10:47+00:00",
+            "event": "get_accounts_snapshot",
+            "status": "ok",
+            "mode": "shadow",
+            "broker": "schwab",
+            "channel": "execution_guard",
+            "details": {
+                "status_code": 200,
+                "account_snapshot_mode": "connected_account_aggregate",
+            },
+        }
+    )
+
+    assert row["source_broker"] == "schwab"
+    assert row["routing_lane"] == "execution_guard"
+    assert row["source_quality_label"] == "broker_native"
+    assert row["source_quality_score"] == 0.95
+    assert "quality_unclassified" not in row["data_labels"]
+
+
 def test_enrich_log_row_labels_sparse_signal_generation_source_path(tmp_path: Path) -> None:
     row = accountability.enrich_log_row(
         {
@@ -328,3 +447,53 @@ def test_channel_append_enriches_sparse_schwab_equity_path(tmp_path: Path) -> No
     assert rows[0]["asset_class"] == "equities"
     assert rows[0]["routing_lane"] == "schwab_equities"
     assert rows[0]["source_quality_label"] == "broker_native"
+
+
+def test_channel_append_repairs_placeholder_route_and_canonicalizes_master_action(tmp_path: Path) -> None:
+    path = tmp_path / "governance" / "channels" / "decision" / "dividend_equities_schwab" / "decision_20260804.jsonl"
+
+    wrote = accountability.safe_append_channel_batch(
+        str(path),
+        [
+            {
+                "timestamp_utc": "2026-08-04T17:56:17+00:00",
+                "symbol": "SPYD",
+                "broker": "schwab",
+                "shadow_profile": "dividend",
+                "master_action": "HOLD",
+                "asset_class": "unknown",
+                "routing_lane": "unclassified",
+                "source_quality_label": "unclassified",
+                "source_quality_score": 0.5,
+                "data_labels": ["asset_unknown", "lane_unclassified", "quality_unclassified"],
+                "data_route": {
+                    "source_provider": "unknown",
+                    "asset_class": "unknown",
+                    "routing_lane": "unclassified",
+                    "source_quality_label": "unclassified",
+                    "source_quality_score": 0.5,
+                    "route_key": "unclassified:schwab",
+                    "labels": ["asset_unknown", "lane_unclassified", "quality_unclassified"],
+                },
+            }
+        ],
+        project_root=str(tmp_path),
+        source="unit_test",
+        channel="decision",
+        schema="decision",
+    )
+
+    row = json.loads(path.read_text(encoding="utf-8"))
+    assert wrote == 1
+    assert row["action"] == "HOLD"
+    assert row["action_source"] == "master_action"
+    assert row["schema_valid"] is True
+    assert row["asset_class"] == "equities"
+    assert row["routing_lane"] == "schwab_equities"
+    assert row["source_quality_label"] == "broker_native"
+    assert row["source_quality_score"] == 0.95
+    assert row["data_route"]["route_key"] == "schwab_equities:decision:schwab"
+    assert row["data_route"]["channel"] == "decision"
+    assert row["data_route"]["source_provider"] == "schwab"
+    assert "asset_unknown" not in row["data_labels"]
+    assert "lane_unclassified" not in row["data_route"]["labels"]

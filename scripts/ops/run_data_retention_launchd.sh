@@ -35,3 +35,21 @@ finish_slot() {
 trap finish_slot EXIT INT TERM
 
 "$PYTHON_BIN" "$PROJECT_ROOT/scripts/data_retention_policy.py" --apply --skip-sqlite-vacuum --json
+
+if [[ "${BOT_COLD_ARCHIVE_COMPACTION_ON_RETENTION:-1}" != "0" ]]; then
+  if ! archive_output="$(
+    "$PYTHON_BIN" "$PROJECT_ROOT/scripts/ops/cold_archive_compactor.py" \
+      --apply \
+      --coordinate-writer-handoff \
+      --archive-root "${BOT_VIDEO_COLD_ARCHIVE_ROOT:-/Volumes/VIDEO/schwab_trading_bot_cold}" \
+      --min-age-hours "${BOT_COLD_ARCHIVE_MIN_AGE_HOURS:-24}" \
+      --max-files "${BOT_COLD_ARCHIVE_MAX_FILES:-8}" \
+      --max-raw-gb "${BOT_COLD_ARCHIVE_MAX_RAW_GB:-16}" \
+      --compression-level "${BOT_COLD_ARCHIVE_COMPRESSION_LEVEL:-3}" \
+      2>&1
+  )"; then
+    echo "data_retention cold_archive_compaction=degraded detail=${archive_output:-unknown_error}"
+  else
+    echo "$archive_output"
+  fi
+fi

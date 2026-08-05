@@ -14,6 +14,17 @@ import scripts.promotion_quality_gate as promotion_quality_gate
 def _good_inputs() -> dict:
     paper_performance = {
         "ok": True,
+        "post_cost_expectancy": {
+            "available": True,
+            "sample_count": 100,
+            "minimum_samples": 30,
+            "evidence_sufficient": True,
+            "positive_lower_confidence_bound_95": True,
+            "mean_post_cost_pnl_delta": 0.5,
+            "mean_post_cost_return_bps": 5.0,
+            "lower_confidence_bound_95_post_cost_pnl_delta": 0.2,
+            "lower_confidence_bound_95_post_cost_return_bps": 2.0,
+        },
         "week": {
             "rolling_change": 125.0,
             "top_profiles": [{"name": "default", "executions": 250}],
@@ -38,6 +49,10 @@ def _good_inputs() -> dict:
     calibration = {
         "ok": True,
         "samples": 100,
+        "independent_samples": 100,
+        "model_derived_samples": 0,
+        "minimum_independent_samples": 30,
+        "independent_evidence_ready": True,
         "metrics": {"mae_bps": 8.0, "p95_bps": 28.0, "mean_bias_bps": 0.4},
         "by_profile": {
             "default": {
@@ -165,6 +180,7 @@ def test_paper_execution_truth_layer_builds_all_ten_upgrade_gates() -> None:
         "options_specific_realism",
         "paper_broker_truth_reconciliation",
         "paper_pnl_haircut_ledger",
+        "post_cost_expectancy_evidence",
         "promotion_gate_hardening",
         "sleeve_execution_scorecards",
     ]
@@ -202,6 +218,55 @@ def test_paper_execution_truth_layer_watches_reset_calibration_window() -> None:
     ]
     assert payload["gates"]["live_quote_fill_calibration"]["grade_blocking"] is False
     assert payload["gates"]["live_quote_fill_calibration"]["advisory_only"] is True
+    assert payload["promotion_ready"] is False
+    assert payload["gates"]["promotion_gate_hardening"]["status"] == "blocked"
+
+
+def test_model_only_calibration_is_soak_advisory_and_promotion_ineligible() -> None:
+    inputs = _good_inputs()
+    inputs["calibration"] = {
+        "ok": True,
+        "overall_status": "evidence_pending",
+        "samples": 0,
+        "independent_samples": 0,
+        "model_derived_samples": 500,
+        "minimum_independent_samples": 30,
+        "independent_evidence_ready": False,
+        "metrics": {"mae_bps": 0.0, "p95_bps": 0.0, "mean_bias_bps": 0.0},
+    }
+
+    payload = truth.evaluate_truth_layer(**inputs)
+
+    assert payload["ok"] is True
+    assert payload["overall_status"] == "ready"
+    assert payload["promotion_ready"] is False
+    calibration_gate = payload["gates"]["live_quote_fill_calibration"]
+    assert calibration_gate["status"] == "warn"
+    assert calibration_gate["grade_blocking"] is False
+    assert calibration_gate["promotion_evidence_eligible"] is False
+    assert "model_derived_fills_are_not_independent_calibration_evidence" in calibration_gate["reasons"]
+
+
+def test_sparse_post_cost_expectancy_keeps_soak_ready_but_blocks_promotion() -> None:
+    inputs = _good_inputs()
+    inputs["paper_performance"]["post_cost_expectancy"].update(
+        {
+            "sample_count": 12,
+            "evidence_sufficient": False,
+            "positive_lower_confidence_bound_95": False,
+        }
+    )
+
+    payload = truth.evaluate_truth_layer(**inputs)
+
+    assert payload["ok"] is True
+    assert payload["overall_status"] == "ready"
+    assert payload["promotion_ready"] is False
+    gate = payload["gates"]["post_cost_expectancy_evidence"]
+    assert gate["status"] == "warn"
+    assert gate["grade_blocking"] is False
+    assert gate["reasons"] == ["post_cost_expectancy_samples_pending"]
+    assert "post_cost_expectancy_evidence_promotion_evidence_not_ready" in payload["promotion_failed_checks"]
 
 
 def test_paper_execution_truth_layer_warns_when_replay_outcomes_are_flat_but_candidates_exist() -> None:
@@ -218,11 +283,15 @@ def test_paper_execution_truth_layer_warns_when_replay_outcomes_are_flat_but_can
     payload = truth.evaluate_truth_layer(**inputs)
 
     assert payload["ok"] is True
-    assert payload["overall_status"] == "watch"
+    assert payload["overall_status"] == "ready"
+    assert payload["grade"] == "A+"
     assert payload["failed_checks"] == []
-    assert payload["warnings"] == ["decision_replay_harness"]
+    assert payload["warnings"] == []
+    assert payload["advisory_warnings"] == ["decision_replay_harness"]
     gate = payload["gates"]["decision_replay_harness"]
     assert gate["status"] == "warn"
+    assert gate["grade_blocking"] is False
+    assert gate["advisory_only"] is True
     assert "counterfactual_outcome_attribution_pending" in gate["reasons"]
 
 
@@ -294,6 +363,29 @@ def test_paper_execution_truth_layer_keeps_empty_counterfactual_candidates_advis
     assert gate["grade_blocking"] is False
     assert gate["advisory_only"] is True
     assert gate["reasons"] == ["counterfactual_candidates_pending_collecting"]
+
+
+def test_paper_execution_truth_layer_keeps_empty_counterfactual_and_low_replay_rows_advisory_while_collecting() -> None:
+    inputs = _good_inputs()
+    inputs["counterfactual"]["top_candidates"] = []
+    inputs["paper_replay"] = {"ok": False, "failed_checks": ["paper_rows_low"], "rows": 11}
+
+    payload = truth.evaluate_truth_layer(**inputs)
+
+    assert payload["ok"] is True
+    assert payload["overall_status"] == "ready"
+    assert payload["grade"] == "A+"
+    assert payload["failed_checks"] == []
+    assert payload["warnings"] == []
+    assert payload["advisory_warnings"] == ["decision_replay_harness"]
+    gate = payload["gates"]["decision_replay_harness"]
+    assert gate["status"] == "warn"
+    assert gate["grade_blocking"] is False
+    assert gate["advisory_only"] is True
+    assert gate["reasons"] == [
+        "counterfactual_candidates_pending_collecting",
+        "paper_replay_rows_low_collecting",
+    ]
 
 
 def test_paper_execution_truth_layer_blocks_stale_skip_only_replay() -> None:

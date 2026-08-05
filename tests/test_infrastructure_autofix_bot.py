@@ -14,6 +14,19 @@ READY_STAMP = "2099-04-23T20:00:00+00:00"
 STALE_STAMP = "2020-04-23T20:00:00+00:00"
 
 
+def test_infrastructure_autofix_singleton_lock_rejects_overlap(tmp_path: Path) -> None:
+    lock_path = tmp_path / "governance" / "locks" / "infrastructure_autofix.lock"
+    first = src._try_singleton_lock(lock_path)
+    assert first is not None
+    try:
+        assert src._try_singleton_lock(lock_path) is None
+    finally:
+        first.close()
+    second = src._try_singleton_lock(lock_path)
+    assert second is not None
+    second.close()
+
+
 def _ready_payload(raw_path: str | Path) -> dict[str, Any]:
     path = str(raw_path)
     payload: dict[str, Any] = {"timestamp_utc": READY_STAMP, "overall_status": "ready", "ok": True}
@@ -138,3 +151,92 @@ def test_infrastructure_autofix_treats_paper_only_live_order_lock_as_managed_whe
     assert payload["repair_plan"] == []
     assert payload["overall_status"] == "ready"
     assert payload["metrics"]["health_gates_stale"] is False
+
+
+def test_infrastructure_autofix_ignores_coordination_echo_of_intentional_paper_lock(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    project_root = tmp_path / "project"
+    payloads = {
+        "governance/health/halt_trigger_control_plane_latest.json": {
+            "timestamp_utc": READY_STAMP,
+            "overall_status": "blocked",
+            "effective_state": "live_read_only",
+            "artifacts": {"health_gates": {"state": "fresh"}},
+            "execution_policy": {
+                "effective_live_order_execution_allowed": False,
+                "paper_trade_lock_active": True,
+            },
+            "manual_flags": {
+                "operator_stop": {"active": False},
+                "global_halt": {"active": False},
+            },
+            "issues": [
+                {"name": "paper_trade_lock_active"},
+                {"name": "runtime_release_live_read_only"},
+                {"name": "runtime_clearance_not_thaw_safe"},
+            ],
+        },
+        "governance/health/coordination_state_latest.json": {
+            "timestamp_utc": READY_STAMP,
+            "overall_status": "blocked",
+            "artifact_issues": [{"name": "halt_trigger_control_plane_blocked"}],
+        },
+    }
+    _install_isolated_loaders(monkeypatch, payloads)
+
+    payload = src.build_payload(project_root, apply=False, timeout_sec=120)
+
+    assert not any(row["name"] == "halt_trigger_control_plane" for row in payload["repair_plan"])
+    assert payload["metrics"]["intentional_paper_lock_halt_managed"] is True
+
+
+def test_infrastructure_autofix_defers_heavy_snapshot_rebuild_inside_artifact_refresh(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    project_root = tmp_path / "project"
+    payloads = {
+        "governance/health/runtime_snapshot_cache_control_latest.json": {
+            "timestamp_utc": READY_STAMP,
+            "overall_status": "degraded",
+            "ok": False,
+            "cache_health": {"snapshot_ready": False},
+        }
+    }
+    _install_isolated_loaders(monkeypatch, payloads)
+    monkeypatch.setenv("RUNTIME_ARTIFACT_REFRESH_ACTIVE", "1")
+
+    payload = src.build_payload(project_root, apply=False, timeout_sec=120)
+
+    assert payload["refresh_context_active"] is True
+    assert not any(row["name"] == "runtime_snapshot_refresh" for row in payload["repair_plan"])
+    assert payload["overall_status"] == "ready"
+
+
+def test_infrastructure_autofix_keeps_promotion_failure_advisory_during_paper_soak(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    project_root = tmp_path / "project"
+    lock = project_root / "governance" / "health" / "PAPER_TRADE_LOCK.flag"
+    lock.parent.mkdir(parents=True, exist_ok=True)
+    lock.write_text("paper only\n", encoding="utf-8")
+    payloads = {
+        "governance/health/daily_auto_verify_latest.json": {
+            "timestamp_utc": READY_STAMP,
+            "overall_status": "degraded",
+            "ok": False,
+            "failed_checks": ["promotion_packet_builder", "promotion_quality_gate"],
+        },
+    }
+    _install_isolated_loaders(monkeypatch, payloads)
+
+    payload = src.build_payload(project_root, apply=False, timeout_sec=120)
+
+    assert payload["repair_plan"] == []
+    assert payload["overall_status"] == "ready"
+    assert payload["metrics"]["daily_verify_actionable_failed_checks"] == 0
+    assert payload["metrics"]["daily_verify_managed_promotion_checks"] == 2
+    assert payload["advisory_repair_plan"][0]["name"] == "promotion_evidence_milestone"

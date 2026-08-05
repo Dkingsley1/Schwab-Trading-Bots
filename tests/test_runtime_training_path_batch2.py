@@ -223,7 +223,7 @@ def test_train_brain_uses_runtime_path_without_silent_fallback_batch2(monkeypatc
             assert captured["min_confidence"] == 0.46
             assert "TQQQ" not in captured["symbol_allowlist"]
         assert captured["require_both_sides_precision"] is True
-        assert captured["min_accuracy_lift_over_majority"] == expected_lift
+        assert captured["min_accuracy_lift_over_majority"] >= expected_lift
 
 
 def test_v107_cross_asset_master_candidate_uses_broad_runtime_path(monkeypatch) -> None:

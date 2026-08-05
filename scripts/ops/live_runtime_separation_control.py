@@ -11,9 +11,27 @@ if __package__ in {None, ""}:
     PROJECT_ROOT = Path(__file__).resolve().parents[2]
     if str(PROJECT_ROOT) not in sys.path:
         sys.path.insert(0, str(PROJECT_ROOT))
-    from scripts.ops.long_runtime_common import PROJECT_ROOT, eastern_off_hours_window, iso_now, load_json, ordered_unique, payload_age_minutes, write_payload
+    from scripts.ops.long_runtime_common import (
+        PROJECT_ROOT,
+        eastern_off_hours_window,
+        iso_now,
+        load_json,
+        ordered_unique,
+        payload_age_minutes,
+        payload_timestamp,
+        write_payload,
+    )
 else:
-    from .long_runtime_common import PROJECT_ROOT, eastern_off_hours_window, iso_now, load_json, ordered_unique, payload_age_minutes, write_payload
+    from .long_runtime_common import (
+        PROJECT_ROOT,
+        eastern_off_hours_window,
+        iso_now,
+        load_json,
+        ordered_unique,
+        payload_age_minutes,
+        payload_timestamp,
+        write_payload,
+    )
 
 
 DEFAULT_OUT_PATH = PROJECT_ROOT / "governance" / "health" / "live_runtime_separation_control_latest.json"
@@ -35,6 +53,52 @@ def _safe_int(value: Any, default: int = 0) -> int:
         return int(float(value))
     except (TypeError, ValueError):
         return int(default)
+
+
+def _coverage_shortfall_truth(
+    project_root: Path,
+    coverage_seed: dict[str, Any],
+    *,
+    max_gap_age_minutes: float = 120.0,
+) -> tuple[int, dict[str, Any]]:
+    seed_path = project_root / "governance" / "walk_forward" / "coverage_seed_latest.json"
+    gap_path = project_root / "governance" / "walk_forward" / "coverage_gap_closer_latest.json"
+    gap = load_json(gap_path)
+    autopilot = gap.get("autopilot_contract") if isinstance(gap.get("autopilot_contract"), dict) else {}
+
+    seed_shortfall = _safe_int(coverage_seed.get("coverage_shortfall_bots"), 0)
+    gap_shortfall = _safe_int(gap.get("coverage_shortfall_bots"), seed_shortfall)
+    seed_ts = payload_timestamp(coverage_seed, seed_path)
+    gap_ts = payload_timestamp(gap, gap_path)
+    gap_age_minutes = payload_age_minutes(gap, gap_path)
+    gap_not_older = bool(gap_ts is not None and (seed_ts is None or gap_ts >= seed_ts))
+    gap_fresh = bool(gap_age_minutes is not None and gap_age_minutes <= max(float(max_gap_age_minutes), 1.0))
+    gap_status = str(gap.get("overall_status") or "").strip().lower()
+    launch_state = str(autopilot.get("launch_state") or "").strip().lower()
+    gap_cleared = bool(
+        gap
+        and gap_not_older
+        and gap_fresh
+        and bool(gap.get("ok", False))
+        and gap_shortfall <= 0
+        and gap_status in {"ready", "cleared"}
+        and launch_state in {"", "ready", "cleared"}
+    )
+    effective_shortfall = 0 if gap_cleared else seed_shortfall
+
+    return effective_shortfall, {
+        "source": "fresh_coverage_gap_closer_clearance" if gap_cleared else "coverage_seed",
+        "seed_shortfall_bots": seed_shortfall,
+        "gap_shortfall_bots": gap_shortfall,
+        "effective_shortfall_bots": effective_shortfall,
+        "gap_cleared_override": gap_cleared,
+        "gap_not_older_than_seed": gap_not_older,
+        "gap_fresh": gap_fresh,
+        "gap_age_minutes": round(float(gap_age_minutes), 4) if gap_age_minutes is not None else None,
+        "gap_overall_status": gap_status,
+        "gap_launch_state": launch_state,
+        "policy": "a newer fresh explicit gap-closer clearance supersedes an older nonzero coverage-seed snapshot",
+    }
 
 
 def _overlay_only_storage_relief(storage_control: dict[str, Any], runtime_throttle: dict[str, Any]) -> dict[str, Any]:
@@ -142,9 +206,10 @@ def _guarded_paper_soak_ready(project_root: Path) -> dict[str, Any]:
         and bool(paper_ramp.get("armed", False))
         and not paper_ramp.get("blockers")
     )
+    health_fast_status = str(health_fast.get("overall_status") or "").strip().lower()
     health_fast_ready = bool(
-        str(health_fast.get("overall_status") or "").strip().lower() == "ready"
-        and bool(health_fast.get("strict_all_clear", health_fast.get("ok", False)))
+        health_fast_status in {"ready", "guarded_ready"}
+        and bool(health_fast.get("ok", False) or health_fast.get("strict_all_clear", False))
     )
     ready = bool((soak_ready or paper_guard_ready) and paper_ramp_armed and health_fast_ready)
     return {
@@ -153,6 +218,7 @@ def _guarded_paper_soak_ready(project_root: Path) -> dict[str, Any]:
         "paper_guard_ready": paper_guard_ready,
         "paper_ramp_armed": paper_ramp_armed,
         "health_fast_ready": health_fast_ready,
+        "health_fast_status": health_fast_status,
         "policy": "guarded paper soak can certify read-only live-plane separation without enabling live orders",
     }
 
@@ -284,7 +350,7 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, live_fresh_minutes: floa
     storage_steady_state_ready = bool(storage_steady_state_ready_strict or storage_near_steady_state_ready)
     storage_bounded_by_control = bool(storage_steady_state_ready or storage_overlay_relief.get("active", False))
     storage_blocked = bool(storage_blocked_raw and not storage_bounded_by_control)
-    coverage_shortfall_bots = int(coverage_seed.get("coverage_shortfall_bots", 0) or 0)
+    coverage_shortfall_bots, coverage_truth = _coverage_shortfall_truth(project_root, coverage_seed)
     swap_used_gb = float(resource_guard.get("swap_used_gb", 0.0) or 0.0)
     restart_storm_rows = process_watchdog.get("restart_storms") if isinstance(process_watchdog.get("restart_storms"), list) else []
     restart_storms = len(restart_storm_rows)
@@ -391,7 +457,16 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, live_fresh_minutes: floa
         and int(coverage_clearance.get("stage_candidate_count") or 0) >= min(coverage_shortfall_bots, 1)
         and str(cold_lane_contract.get("overall_status") or "") == "ready"
         and str(cold_lane_contract.get("refresh_state") or "") in {"fresh_strategy_research_reused", "not_required", "auth_success", "ready", "ok"}
-        and str(coverage_clearance.get("launch_state") or "") in {"stage_only_training_blocked", "stage_only_off_hours", "stage_only", "manual"}
+        and str(coverage_clearance.get("launch_state") or "")
+        in {
+            "stage_only_training_blocked",
+            "stage_only_off_hours",
+            "stage_only",
+            "manual",
+            "coverage_preflight_repair_required",
+            "training_launch_blocked",
+            "needs_cycles",
+        }
         and (
             bool(coverage_launch_contract.get("training_launch_blocked", False))
             or bool(coverage_clearance.get("off_hours_preferred", False))
@@ -466,6 +541,7 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, live_fresh_minutes: floa
             "snapshot_ready": bool(training_runtime.get("snapshot_ready", False)),
             "precompute_target_count": len(training_runtime.get("precompute_targets") or []),
             "coverage_shortfall_bots": coverage_shortfall_bots,
+            "coverage_truth": coverage_truth,
         },
         "shared_host_pressure": {
             "contention_score": int(contention_score),

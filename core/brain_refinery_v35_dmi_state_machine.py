@@ -320,7 +320,7 @@ def _runtime_trend_label(sequence, idx, horizon):
     instability = _trend_instability(obs)
     min_agreement = 0.36 if is_crypto else 0.38
     max_instability = 0.88 if is_crypto else 0.84
-    if not is_crypto and instability > 0.78:
+    if not is_crypto and instability > 0.66:
         return None
     if agreement < min_agreement or instability > max_instability:
         return None
@@ -433,17 +433,17 @@ def train_brain():
         symbol_allowlist=_LIQUID_TREND_SYMBOLS,
         sample_filter=_runtime_sample_filter,
         confidence_builder=_runtime_confidence,
-        min_confidence=0.38,
-        sample_stride=1,
+        min_confidence=0.46,
+        sample_stride=4,
         lookback_days=60,
         window=14,
         horizon=5,
         batch_size=16,
-        min_samples=128,
+        min_samples=80,
         min_sequences=4,
-        min_positive_samples=24,
-        min_negative_samples=24,
-        acted_prob_threshold=0.74,
+        min_positive_samples=20,
+        min_negative_samples=20,
+        acted_prob_threshold=0.70,
         fallback_trainer=_train_synthetic,
         allow_fallback_on_insufficient_data=False,
         max_best_val_loss=0.6900,

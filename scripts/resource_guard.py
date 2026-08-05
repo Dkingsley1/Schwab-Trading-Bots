@@ -46,7 +46,10 @@ def _normalize_app_marker(value: str) -> str:
 
 def _command_bundle_names(command: str) -> list[str]:
     names: list[str] = []
-    for match in re.finditer(r"([^/\n]+?)\.app(?:/|\s|$)", str(command or ""), flags=re.IGNORECASE):
+    # App bundles are path segments. Anchoring each candidate to the command
+    # start or a slash keeps giant sleeve command lines linear to scan instead
+    # of retrying a non-greedy match at every character when no `.app` exists.
+    for match in re.finditer(r"(?:^|/)([^/\n]+?)\.app(?:/|\s|$)", str(command or ""), flags=re.IGNORECASE):
         name = _normalize_app_marker(match.group(1))
         if name and name not in names:
             names.append(name)
@@ -324,13 +327,15 @@ def _co_running_apps_snapshot() -> dict[str, Any]:
 def _storage_disk_snapshot(project_root: Path) -> dict[str, Any]:
     local_disk = shutil.disk_usage(project_root)
     local_free_gb = local_disk.free / (1024.0 ** 3)
+    local_total_gb = local_disk.total / (1024.0 ** 3)
+    local_used_pct = (local_disk.used / max(local_disk.total, 1)) * 100.0
     probe_path = project_root
     storage_mode = "local_project"
     route_error = ""
     try:
-        from core.storage_router import route_runtime_storage
+        from core.storage_router import inspect_runtime_storage
 
-        routing = route_runtime_storage(project_root)
+        routing = inspect_runtime_storage(project_root)
         active_root = Path(str(getattr(routing, "active_root", "") or "")).expanduser()
         if active_root:
             probe_path = active_root
@@ -340,13 +345,19 @@ def _storage_disk_snapshot(project_root: Path) -> dict[str, Any]:
 
     storage_disk = shutil.disk_usage(probe_path)
     storage_free_gb = storage_disk.free / (1024.0 ** 3)
+    storage_total_gb = storage_disk.total / (1024.0 ** 3)
+    storage_used_pct = (storage_disk.used / max(storage_disk.total, 1)) * 100.0
     return {
         "disk_probe_path": str(probe_path),
         "disk_storage_mode": storage_mode,
         "disk_route_error": route_error,
         "disk_free_gb": round(storage_free_gb, 2),
+        "disk_total_gb": round(storage_total_gb, 2),
+        "disk_used_pct": round(storage_used_pct, 3),
         "local_disk_probe_path": str(project_root),
         "local_disk_free_gb": round(local_free_gb, 2),
+        "local_disk_total_gb": round(local_total_gb, 2),
+        "local_disk_used_pct": round(local_used_pct, 3),
     }
 
 
@@ -381,12 +392,16 @@ def _memory_pressure_state(snapshot: dict[str, Any]) -> tuple[str, list[str], di
         "red_free_pct": float(os.getenv("RESOURCE_GUARD_MEMORY_RED_FREE_PCT", "4")),
         "red_swap_gb": float(os.getenv("RESOURCE_GUARD_MEMORY_RED_SWAP_GB", "18")),
         "red_throttled_pages": float(os.getenv("RESOURCE_GUARD_MEMORY_RED_THROTTLED_PAGES", "1")),
+        "yellow_local_disk_gb": float(os.getenv("RESOURCE_GUARD_MEMORY_YELLOW_LOCAL_DISK_GB", "32")),
+        "red_local_disk_gb": float(os.getenv("RESOURCE_GUARD_MEMORY_RED_LOCAL_DISK_GB", "8")),
     }
 
     avail = snapshot.get("memory_available_pct")
     free = snapshot.get("memory_free_pct")
     swap = float(snapshot.get("swap_used_gb", 0.0) or 0.0)
     throttled = float(snapshot.get("pages_throttled", 0) or 0)
+    local_disk_free_raw = snapshot.get("local_disk_free_gb")
+    local_disk_free_gb = float(local_disk_free_raw) if local_disk_free_raw is not None else None
     reasons: list[str] = []
 
     red = False
@@ -402,6 +417,9 @@ def _memory_pressure_state(snapshot: dict[str, Any]) -> tuple[str, list[str], di
     if swap >= thresholds["red_swap_gb"] and ((avail is None) or float(avail) < thresholds["yellow_swap_relax_available_pct"]):
         red = True
         reasons.append(f"swap_used_gb:{swap}>{thresholds['red_swap_gb']}")
+    if local_disk_free_gb is not None and local_disk_free_gb < thresholds["red_local_disk_gb"]:
+        red = True
+        reasons.append(f"local_disk_swap_headroom_gb:{local_disk_free_gb}<{thresholds['red_local_disk_gb']}")
     if red:
         return "red", reasons, thresholds
 
@@ -415,6 +433,9 @@ def _memory_pressure_state(snapshot: dict[str, Any]) -> tuple[str, list[str], di
     if swap >= thresholds["yellow_swap_gb"] and ((avail is None) or float(avail) < thresholds["yellow_swap_relax_available_pct"]):
         yellow = True
         reasons.append(f"swap_used_gb:{swap}>{thresholds['yellow_swap_gb']}")
+    if local_disk_free_gb is not None and local_disk_free_gb < thresholds["yellow_local_disk_gb"]:
+        yellow = True
+        reasons.append(f"local_disk_swap_headroom_gb:{local_disk_free_gb}<{thresholds['yellow_local_disk_gb']}")
     if yellow:
         return "yellow", reasons, thresholds
     return "green", reasons, thresholds
@@ -425,6 +446,8 @@ def _memory_pressure_kind(snapshot: dict[str, Any], state: str, reasons: list[st
         return "none"
     if not reasons:
         return "unknown"
+    if all(str(reason).startswith("local_disk_swap_headroom_gb:") for reason in reasons):
+        return "disk_swap_headroom"
     if all(str(reason).startswith("swap_used_gb:") for reason in reasons):
         available_pct = snapshot.get("memory_available_pct")
         free_pct = snapshot.get("memory_free_pct")
@@ -480,7 +503,7 @@ def evaluate(
     local_floor = float(
         min_local_disk_gb
         if min_local_disk_gb is not None
-        else os.getenv("RESOURCE_GUARD_MIN_LOCAL_DISK_GB", "2")
+        else os.getenv("RESOURCE_GUARD_MIN_LOCAL_DISK_GB", "32")
     )
     if float(snapshot.get("local_disk_free_gb", snapshot.get("disk_free_gb", 0.0)) or 0.0) < max(local_floor, 0.1):
         reasons.append(f"local_disk_free_low:{snapshot.get('local_disk_free_gb')}<{max(local_floor, 0.1)}")
@@ -519,7 +542,7 @@ def evaluate_optional_job(snapshot: dict[str, Any]) -> tuple[bool, list[str], di
 
     max_load_per_core = float(os.getenv("RESOURCE_GUARD_OPTIONAL_MAX_LOAD_PER_CORE", "2.4"))
     min_disk_gb = float(os.getenv("RESOURCE_GUARD_OPTIONAL_MIN_DISK_GB", "20"))
-    min_local_disk_gb = float(os.getenv("RESOURCE_GUARD_OPTIONAL_MIN_LOCAL_DISK_GB", "2"))
+    min_local_disk_gb = float(os.getenv("RESOURCE_GUARD_OPTIONAL_MIN_LOCAL_DISK_GB", "32"))
     max_editing_cpu = float(os.getenv("RESOURCE_GUARD_OPTIONAL_MAX_EDITING_CPU", "300"))
 
     if float(snapshot.get("load1_per_core", 0.0)) > max_load_per_core:
@@ -568,7 +591,7 @@ def evaluate_refresh_job(snapshot: dict[str, Any]) -> tuple[bool, list[str], dic
         "max_swap_gb": float(os.getenv("RESOURCE_GUARD_REFRESH_MAX_SWAP_GB", "32")),
         "max_load_per_core": float(os.getenv("RESOURCE_GUARD_REFRESH_MAX_LOAD_PER_CORE", "1.2")),
         "min_disk_gb": float(os.getenv("RESOURCE_GUARD_REFRESH_MIN_DISK_GB", "20")),
-        "min_local_disk_gb": float(os.getenv("RESOURCE_GUARD_REFRESH_MIN_LOCAL_DISK_GB", "2")),
+        "min_local_disk_gb": float(os.getenv("RESOURCE_GUARD_REFRESH_MIN_LOCAL_DISK_GB", "32")),
         "max_editing_cpu": float(os.getenv("RESOURCE_GUARD_REFRESH_MAX_EDITING_CPU", "220")),
     }
 
@@ -641,7 +664,7 @@ def main() -> int:
     parser.add_argument("--profile", choices=["default", "optional", "refresh", "collection"], default="default")
     parser.add_argument("--max-load-per-core", type=float, default=float(os.getenv("RESOURCE_GUARD_MAX_LOAD_PER_CORE", "1.80")))
     parser.add_argument("--min-disk-gb", type=float, default=float(os.getenv("RESOURCE_GUARD_MIN_DISK_GB", "20")))
-    parser.add_argument("--min-local-disk-gb", type=float, default=float(os.getenv("RESOURCE_GUARD_MIN_LOCAL_DISK_GB", "2")))
+    parser.add_argument("--min-local-disk-gb", type=float, default=float(os.getenv("RESOURCE_GUARD_MIN_LOCAL_DISK_GB", "32")))
     parser.add_argument("--min-memory-free-pct", type=float, default=float(os.getenv("RESOURCE_GUARD_MIN_MEMORY_FREE_PCT", "10")))
     parser.add_argument("--max-editing-cpu", type=float, default=float(os.getenv("RESOURCE_GUARD_MAX_EDITING_CPU", "180")))
     parser.add_argument("--emit-path", default=None)

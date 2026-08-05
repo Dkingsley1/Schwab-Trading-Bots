@@ -250,6 +250,107 @@ def test_ingestion_soak_blocker_runs_bounded_repair_and_rechecks(tmp_path: Path,
     assert any("ingestion_storage_control.py" in call for call in calls)
 
 
+def test_critical_local_disk_headroom_runs_bounded_application_memory_recovery(tmp_path: Path, monkeypatch) -> None:
+    _write_daily(tmp_path, ok=True, failed_checks=[])
+    monkeypatch.setenv("BOT_SECOND_COLD_ROOT", str(tmp_path / "VIDEO" / "schwab_trading_bot_cold"))
+    calls: list[str] = []
+    memory_calls = 0
+
+    def fake_run(cmd: list[str], *, project_root: Path, timeout_sec: int, env: dict[str, str]) -> dict:
+        nonlocal memory_calls
+        text = " ".join(str(item) for item in cmd)
+        calls.append(text)
+        if "memory_efficiency_control.py" in text:
+            memory_calls += 1
+            if memory_calls == 1:
+                return _result(
+                    cmd,
+                    {
+                        "ok": False,
+                        "overall_status": "blocked",
+                        "reasons": ["local_disk_swap_temp_headroom_low", "memory_pressure_red"],
+                        "memory_snapshot": {
+                            "memory_pressure_state": "red",
+                            "memory_pressure_kind": "disk_swap_headroom",
+                            "memory_free_pct": 83.0,
+                            "swap_used_gb": 1.6,
+                            "local_disk_free_gb": 0.25,
+                        },
+                        "local_disk_headroom_contract": {
+                            "active": True,
+                            "severity": "critical",
+                            "local_disk_free_gb": 0.25,
+                            "warning_free_gb": 32.0,
+                            "critical_free_gb": 8.0,
+                        },
+                    },
+                )
+            return _result(
+                cmd,
+                {
+                    "ok": True,
+                    "overall_status": "ready",
+                    "reasons": ["memory_headroom_ok"],
+                    "memory_snapshot": {
+                        "memory_pressure_state": "green",
+                        "memory_pressure_kind": "none",
+                        "memory_free_pct": 83.0,
+                        "swap_used_gb": 1.6,
+                        "local_disk_free_gb": 96.0,
+                    },
+                    "local_disk_headroom_contract": {
+                        "active": False,
+                        "severity": "clear",
+                        "local_disk_free_gb": 96.0,
+                        "warning_free_gb": 32.0,
+                        "critical_free_gb": 8.0,
+                    },
+                },
+            )
+        if "sql_queue_retention.py" in text:
+            return _result(cmd, {"ok": True, "deleted_acked_rows": 500000})
+        if "unattended_soak_readiness.py" in text:
+            return _result(
+                cmd,
+                {
+                    "ok": True,
+                    "overall_status": "ready",
+                    "overall_grade": "A+",
+                    "safe_to_leave_unattended": True,
+                    "blockers": [],
+                    "sections": {
+                        "storage": {
+                            "current_external_free_gb": 400.0,
+                            "required_external_free_gb": 125.0,
+                            "available_margin_gb": 275.0,
+                        }
+                    },
+                },
+            )
+        if "promotion_quality_gate.py" in text:
+            return _result(cmd, {"ok": True, "overall_status": "ready", "failed_checks": []})
+        return _result(cmd, {"ok": True, "overall_status": "ready", "status": "ready"})
+
+    monkeypatch.setattr(src, "_run_command", fake_run)
+
+    payload = src.build_payload(tmp_path, apply=True, respect_cooldowns=False)
+
+    protection = payload["application_memory_protection"]
+    assert payload["ok"] is True
+    assert protection["recovery_attempted"] is True
+    assert protection["initial"]["critical"] is True
+    assert protection["final"]["active"] is False
+    assert protection["acknowledged_queue_rows_deleted"] == 500000
+    assert any("storage-transition-coordinator --transition-mode external --apply" in call for call in calls)
+    queue_call = next(call for call in calls if "sql_queue_retention.py" in call)
+    assert "--acked-hours 1" in queue_call
+    assert "--vacuum" not in queue_call
+    assert any("governance-telemetry-compactor --apply" in call for call in calls)
+    assert any("deep-cold-storage-layer --apply --adaptive --move-to-second-cold" in call for call in calls)
+    assert any("storage-pressure-clearance --apply" in call for call in calls)
+    assert memory_calls == 2
+
+
 def test_stale_profitability_runtime_controls_are_refreshed_and_rechecked(tmp_path: Path, monkeypatch) -> None:
     _write_daily(tmp_path, ok=True, failed_checks=[])
     calls: list[str] = []

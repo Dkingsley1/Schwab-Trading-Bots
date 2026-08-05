@@ -29,6 +29,7 @@ STATUS_RE = re.compile(r'"status"\s*:\s*"([^"]+)"|status=([A-Z_]+)')
 MAX_ARTIFACT_OBSERVATION_KEYS = 20000
 DEFAULT_CHANNEL_OBSERVATION_DAYS = 7
 DEFAULT_CHANNEL_TAIL_LINES = 20000
+DEFAULT_CHANNEL_TAIL_BYTES = 16 * 1024 * 1024
 
 
 def _safe_int(raw: Any, default: int = 0) -> int:
@@ -160,19 +161,22 @@ def _iter_tail_lines(path: Path, *, limit: int) -> list[str]:
         return _read_gzip_lines(path)[-max_lines:]
 
     block_size = 64 * 1024
+    byte_budget = max(DEFAULT_CHANNEL_TAIL_BYTES, max_lines * 512)
     chunks: deque[bytes] = deque()
     try:
         with path.open("rb") as handle:
             handle.seek(0, 2)
             position = handle.tell()
             newline_count = 0
-            while position > 0 and newline_count <= max_lines:
-                read_size = min(block_size, position)
+            bytes_read = 0
+            while position > 0 and newline_count <= max_lines and bytes_read < byte_budget:
+                read_size = min(block_size, position, byte_budget - bytes_read)
                 position -= read_size
                 handle.seek(position)
                 chunk = handle.read(read_size)
                 chunks.appendleft(chunk)
                 newline_count += chunk.count(b"\n")
+                bytes_read += read_size
     except Exception:
         return []
     text = b"".join(chunks).decode("utf-8", errors="ignore")

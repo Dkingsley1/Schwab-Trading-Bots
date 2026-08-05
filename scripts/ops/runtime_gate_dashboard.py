@@ -12,6 +12,7 @@ STATEFUL_SQL_SOFT_QUOTA_MAX_HARD_RATIO = 0.92
 OVERLAY_RAW_LIVE_MAX_CORE_LINES = 10_000
 OVERLAY_RAW_LIVE_MAX_TOTAL_LINES = 15_000
 OVERLAY_RAW_LIVE_MAX_AGE_SECONDS = 15 * 60
+BOUNDED_TRANSIENT_STORAGE_PRESSURE_MAX = 1.0
 
 
 def _hours_to_minutes(hours: float) -> float:
@@ -232,6 +233,11 @@ def _artifact_config(project_root: Path) -> Dict[str, Dict[str, Any]]:
         "auth_lease_manager": {
             "paths": [project_root / "governance" / "health" / "auth_lease_manager_latest.json"],
             "max_age_minutes": _days_to_minutes(1.0),
+            "required": False,
+        },
+        "schwab_auth_supervisor": {
+            "paths": [project_root / "governance" / "health" / "schwab_auth_supervisor_latest.json"],
+            "max_age_minutes": 30.0,
             "required": False,
         },
         "blackstart_recovery": {
@@ -1277,6 +1283,7 @@ _GREEN_SOAK_MANAGED_ATTENTION_REASONS = {
     "external_backlog_drain_recommended": "external_backlog_handoff_managed_while_ingestion_soak_is_green",
     "external_backlog_drain_writer_busy": "external_backlog_writer_busy_managed_while_ingestion_soak_is_green",
     "external_backlog_retry_bot_followups": "external_backlog_retry_followup_deferred_while_ingestion_soak_is_green",
+    "auth_lease_manager_needs_work": "schwab_auth_warning_managed_while_token_above_paper_readiness_floor",
     "ingestion_storage_governor_critical": "deferred_backlog_governor_profile_managed_by_storage_soak_contract",
     "infrastructure_autofix_bot_blocked": "safe_infrastructure_repair_timer_gap_deferred_while_hot_path_is_green",
     "infrastructure_autofix_bot_needs_work": "safe_infrastructure_repair_timer_gap_deferred_while_hot_path_is_green",
@@ -1332,8 +1339,19 @@ def _dashboard_soak_context(project_root: Path) -> dict[str, Any]:
         and not bool(paper_guard.get("paper_blocked", False))
     )
     health_status = str(health_fast.get("overall_status") or health_fast.get("status") or "").strip().lower()
+    operational = health_fast.get("operational_readiness") if isinstance(health_fast.get("operational_readiness"), dict) else {}
+    guarded_paper = operational.get("guarded_paper") if isinstance(operational.get("guarded_paper"), dict) else {}
+    guarded_health_ready = bool(
+        health_status == "guarded_ready"
+        and guarded_paper.get("ok", False)
+        and str(guarded_paper.get("status") or "").strip().lower() == "ready"
+    )
     return {
-        "enabled": bool(soak_ready and paper_clean and health_status in {"ready", "ok", "healthy"}),
+        "enabled": bool(
+            soak_ready
+            and paper_clean
+            and (health_status in {"ready", "ok", "healthy"} or guarded_health_ready)
+        ),
         "soak_ready": bool(soak_ready),
         "soak_status": soak_status,
         "soak_grade": soak_grade,
@@ -1343,6 +1361,7 @@ def _dashboard_soak_context(project_root: Path) -> dict[str, Any]:
         "paper_armed": bool(paper_guard.get("paper_armed", False)),
         "paper_blocked": bool(paper_guard.get("paper_blocked", False)),
         "health_fast_status": health_status,
+        "guarded_health_ready": guarded_health_ready,
     }
 
 
@@ -1372,13 +1391,44 @@ def _ingestion_soak_ready_for_dashboard(artifacts: Dict[str, Dict[str, Any]]) ->
     summary = artifacts.get("ingestion_storage_control", {}).get("summary", {})
     if str(summary.get("overall_status", "") or "") not in {"ready", "ok"}:
         return False
-    if str(summary.get("severity", "") or "") not in {"stable", "low", "normal", ""}:
+    severity = str(summary.get("severity", "") or "")
+    if severity not in {"stable", "low", "normal", "elevated", ""}:
         return False
-    if float(summary.get("pressure_index", 0.0) or 0.0) > 0.50:
+    pressure_index = float(summary.get("pressure_index", 0.0) or 0.0)
+    if pressure_index >= BOUNDED_TRANSIENT_STORAGE_PRESSURE_MAX:
         return False
     payload = _load_json(Path(str(artifacts.get("ingestion_storage_control", {}).get("path", "") or "")))
     contract = payload.get("continuous_run_soak_contract") if isinstance(payload.get("continuous_run_soak_contract"), dict) else {}
-    return bool(contract.get("ready", False) or contract.get("soak_ready", False))
+    if severity != "elevated" and bool(contract.get("ready", False) or contract.get("soak_ready", False)):
+        return True
+    bounded = payload.get("bounded_recovery_contract") if isinstance(payload.get("bounded_recovery_contract"), dict) else {}
+    integrity = payload.get("data_integrity") if isinstance(payload.get("data_integrity"), dict) else {}
+    writer = payload.get("writer_shedding") if isinstance(payload.get("writer_shedding"), dict) else {}
+    blockers = {
+        str(item or "").strip()
+        for item in (contract.get("blockers") if isinstance(contract.get("blockers"), list) else [])
+        if str(item or "").strip()
+    }
+    return bool(
+        pressure_index < BOUNDED_TRANSIENT_STORAGE_PRESSURE_MAX
+        and blockers.issubset({"steady_state_targets_not_clear"})
+        and bool(bounded.get("route_verified", False))
+        and bool(bounded.get("active_drain_progress", False) or bounded.get("drain_delta_signal_observed", False))
+        and not bool(bounded.get("hard_gate_active", False))
+        and not bool(bounded.get("effective_hard_gate_active", False))
+        and not writer.get("hard_breaches")
+        and not writer.get("elevated_breaches")
+        and all(
+            _safe_int(integrity.get(key), 0) == 0
+            for key in (
+                "sql_invalid_lines",
+                "sql_overlay_invalid_lines",
+                "sql_overlay_oversize_payloads",
+                "sql_overlay_ops_write_failures",
+            )
+        )
+        and _raw_live_backlog_clear_for_storage_soak(payload)
+    )
 
 
 def _overlay_raw_live_candidate(backpressure: dict[str, Any]) -> tuple[dict[str, Any], str]:
@@ -1639,6 +1689,31 @@ def _external_backlog_deferred_for_paper_soak(
     )
 
 
+def _auth_lease_deferred_for_paper_soak(artifacts: Dict[str, Dict[str, Any]]) -> bool:
+    auth_artifact = artifacts.get("auth_lease_manager", {})
+    supervisor_artifact = artifacts.get("schwab_auth_supervisor", {})
+    auth_payload = _load_json(Path(str(auth_artifact.get("path") or "")))
+    supervisor_payload = _load_json(Path(str(supervisor_artifact.get("path") or "")))
+    lease_budget = auth_payload.get("lease_budget") if isinstance(auth_payload.get("lease_budget"), dict) else {}
+    broker_state = auth_payload.get("broker_state") if isinstance(auth_payload.get("broker_state"), dict) else {}
+    expires_in = _safe_float(lease_budget.get("expires_in_seconds"), 0.0)
+    critical_seconds = max(_safe_float(lease_budget.get("critical_lease_seconds"), 600.0), 600.0)
+    readiness_floor = max(critical_seconds, 900.0)
+    status = str(auth_payload.get("overall_status") or "").strip().lower()
+    lease_state = str(auth_payload.get("lease_state") or "").strip().lower()
+    return bool(
+        status in {"ready", "degraded"}
+        and lease_state in {"healthy", "ready", "ok", "warning"}
+        and expires_in >= readiness_floor
+        and bool(broker_state.get("broker_operable", broker_state.get("broker_ready", False)))
+        and bool(broker_state.get("network_ok", True) is not False)
+        and (
+            bool(supervisor_payload.get("paper_soak_auth_operable", False))
+            or bool(lease_budget.get("token_lease_grace", False))
+        )
+    )
+
+
 def _attention_managed_by_green_soak(
     item: str,
     artifacts: Dict[str, Dict[str, Any]],
@@ -1658,6 +1733,8 @@ def _attention_managed_by_green_soak(
     if item == "training_quality_control_blocked" and not _training_quality_deferred_for_paper_soak(artifacts):
         return ""
     if item in {"infrastructure_autofix_bot_blocked", "infrastructure_autofix_bot_needs_work"} and not _infrastructure_autofix_deferred_for_paper_soak(artifacts):
+        return ""
+    if item == "auth_lease_manager_needs_work" and not _auth_lease_deferred_for_paper_soak(artifacts):
         return ""
     if item == "live_runtime_separation_control_needs_work" and not _live_runtime_separation_deferred_for_paper_soak(artifacts):
         return ""

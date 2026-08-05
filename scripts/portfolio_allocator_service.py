@@ -16,6 +16,12 @@ from core.portfolio_optimizer import PortfolioIntent, allocate_portfolio_intents
 
 
 DEFAULT_OUT_PATH = PROJECT_ROOT / "governance" / "allocator" / "portfolio_allocator_service_latest.json"
+SOURCE_MAX_AGE_SECONDS = {
+    "intents": 1800.0,
+    "allocator": 3600.0,
+    "risk": 3600.0,
+    "capacity_curves": 21600.0,
+}
 
 
 def _load_json(path: Path) -> dict[str, Any]:
@@ -24,6 +30,36 @@ def _load_json(path: Path) -> dict[str, Any]:
     except Exception:
         return {}
     return payload if isinstance(payload, dict) else {}
+
+
+def _source_freshness(
+    path: Path,
+    *,
+    now: datetime,
+    max_age_seconds: float,
+    absence_is_valid: bool = False,
+) -> dict[str, Any]:
+    try:
+        modified = datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc)
+        age_seconds = max((now - modified).total_seconds(), 0.0)
+        exists = True
+    except Exception:
+        modified = None
+        age_seconds = None
+        exists = False
+    fresh = bool(
+        (absence_is_valid and not exists)
+        or (exists and age_seconds is not None and age_seconds <= max(float(max_age_seconds), 0.0))
+    )
+    return {
+        "path": str(path),
+        "exists": exists,
+        "absence_is_valid": bool(absence_is_valid),
+        "modified_utc": modified.isoformat() if modified is not None else None,
+        "age_seconds": round(age_seconds, 3) if age_seconds is not None else None,
+        "max_age_seconds": float(max_age_seconds),
+        "fresh": fresh,
+    }
 
 
 def _safe_float(raw: Any, default: float = 0.0) -> float:
@@ -75,6 +111,31 @@ def build_payload(
     allocator_path = allocator_file or (project_root / "governance" / "allocator" / "sleeve_allocator_latest.json")
     risk_path = risk_file or (project_root / "governance" / "risk" / "portfolio_risk_latest.json")
     capacity_curve_path = capacity_curve_file or (project_root / "governance" / "allocator" / "portfolio_capacity_curve_latest.json")
+    now = datetime.now(timezone.utc)
+    input_freshness = {
+        "intents": _source_freshness(
+            intents_path,
+            now=now,
+            max_age_seconds=SOURCE_MAX_AGE_SECONDS["intents"],
+            absence_is_valid=True,
+        ),
+        "allocator": _source_freshness(
+            allocator_path,
+            now=now,
+            max_age_seconds=SOURCE_MAX_AGE_SECONDS["allocator"],
+        ),
+        "risk": _source_freshness(
+            risk_path,
+            now=now,
+            max_age_seconds=SOURCE_MAX_AGE_SECONDS["risk"],
+        ),
+        "capacity_curves": _source_freshness(
+            capacity_curve_path,
+            now=now,
+            max_age_seconds=SOURCE_MAX_AGE_SECONDS["capacity_curves"],
+        ),
+    }
+    input_sources_ready = all(row["fresh"] for row in input_freshness.values())
     intents_payload = _load_json(intents_path)
     allocator = _load_json(allocator_path)
     risk = _load_json(risk_path)
@@ -96,7 +157,10 @@ def build_payload(
         _curve_key(row.get("symbol"), row.get("venue"), row.get("clock_bucket"), row.get("regime")): row
         for row in _curve_rows(capacity_curves)
     }
-    regime_budget_ready = bool(capacity_curves) and int(((capacity_curves.get("summary") or {}).get("regime_count") or 0) > 0)
+    regime_budget_ready = bool(
+        capacity_curves
+        and int(((capacity_curves.get("summary") or {}).get("regime_count") or 0) > 0)
+    )
 
     intents = [
         PortfolioIntent(
@@ -163,6 +227,7 @@ def build_payload(
     approved_rows = [row for row in allocated_rows_as_dicts(allocated) if _safe_float(row.get("approved_qty"), 0.0) > 0.0]
     rejected_rows = [row for row in allocated_rows_as_dicts(allocated) if _safe_float(row.get("approved_qty"), 0.0) <= 0.0]
     curve_summary = dict(capacity_curves.get("summary") or {})
+    idle_no_intents = len(intents) == 0
     allocator_contract = {
         "factor_budget_ready": factor_cap > 0.0,
         "factor_budget_source": ("explicit_risk_limit" if risk_limits.get("max_factor_exposure") is not None else "optimizer_default"),
@@ -173,25 +238,47 @@ def build_payload(
         "venue_time_capacity_ready": int(curve_summary.get("curve_count") or 0) > 0,
         "seeded_intent_contract_ready": bool(curve_summary.get("curve_count") or 0) > 0,
     }
-    overall_status = (
-        "ready"
-        if allocator_contract["factor_budget_ready"]
+    active_allocation_ready = bool(
+        allocator_contract["factor_budget_ready"]
         and allocator_contract["sector_budget_ready"]
         and allocator_contract["regime_budget_ready"]
         and allocator_contract["capacity_curve_ready"]
         and allocator_contract["venue_time_capacity_ready"]
-        else "degraded"
+        and input_sources_ready
     )
+    idle_ready = bool(
+        idle_no_intents
+        and allocator_contract["factor_budget_ready"]
+        and allocator_contract["sector_budget_ready"]
+        and input_sources_ready
+    )
+    allocator_contract.update(
+        {
+            "operating_mode": "idle_no_intents" if idle_no_intents else "active_allocation",
+            "idle_no_intents": idle_no_intents,
+            "idle_ready": idle_ready,
+            "active_allocation_ready": active_allocation_ready,
+            "capacity_requirements_applicable": not idle_no_intents,
+            "activation_requires_capacity_curves": bool(idle_no_intents and not active_allocation_ready),
+        }
+    )
+    overall_status = "ready" if idle_ready or active_allocation_ready else "degraded"
     payload = {
-        "timestamp_utc": datetime.now(timezone.utc).isoformat(),
-        "schema_version": 1,
-        "ok": True,
+        "timestamp_utc": now.isoformat(),
+        "schema_version": 2,
+        "ok": overall_status == "ready",
         "overall_status": overall_status,
         "source_files": {
             "intents": str(intents_path),
             "allocator": str(allocator_path),
             "risk": str(risk_path),
             "capacity_curves": str(capacity_curve_path),
+        },
+        "input_freshness": {
+            "sources_ready": input_sources_ready,
+            "sources": input_freshness,
+            "stale_sources": sorted(name for name, row in input_freshness.items() if not row["fresh"]),
+            "fresh_wrapper_timestamp_does_not_override_stale_sources": True,
         },
         "summary": {
             "input_intent_count": len(intents),

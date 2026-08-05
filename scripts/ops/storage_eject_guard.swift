@@ -438,6 +438,13 @@ final class StorageEjectGuard {
     }
 
     func shouldRestoreExternalOnAppear() -> Bool {
+        let autoFailback = ProcessInfo.processInfo.environment["BOT_LOGS_AUTO_FAILBACK_ON_APPEAR"] ?? "0"
+        guard ["1", "true", "yes", "on"].contains(
+            autoFailback.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        ) else {
+            log("automatic external failback suppressed; explicit storage-switch-external certification required")
+            return false
+        }
         let mode = currentStorageMode()
         return mode.hasPrefix("local_fallback") || localOverrideActive()
     }
@@ -484,6 +491,9 @@ final class StorageEjectGuard {
     }
 
     func externalPreferredByConfig() -> Bool {
+        if localOverrideActive() {
+            return false
+        }
         let raw = ProcessInfo.processInfo.environment["BOT_LOGS_PREFER_EXTERNAL"] ?? "1"
         return !["0", "false", "no", "off"].contains(raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased())
     }

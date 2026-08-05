@@ -819,6 +819,7 @@ def test_writer_cycle_coordinator_surfaces_catch_up_followup_from_writer(tmp_pat
 
 
 def test_writer_cycle_coordinator_chains_storage_contract_catch_up_waves(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("WRITER_CYCLE_MAX_CATCH_UP_WAVES", "3")
     project_root = tmp_path / "project"
     health = project_root / "governance" / "health"
     health.mkdir(parents=True, exist_ok=True)
@@ -898,6 +899,12 @@ def test_writer_cycle_coordinator_chains_storage_contract_catch_up_waves(tmp_pat
     assert payload["summary"]["catch_up_waves_run"] == 3
     assert payload["drain_effectiveness"]["status"] in {"progress", "strong_progress"}
     assert payload["drain_effectiveness"]["total_pending_delta"] == 20000
+
+
+def test_writer_cycle_coordinator_honors_caller_wave_cap() -> None:
+    assert src._bounded_catch_up_wave_limit(5, 1) == 1
+    assert src._bounded_catch_up_wave_limit(3, 2) == 2
+    assert src._bounded_catch_up_wave_limit(3, 0) == 3
 
 
 def test_writer_cycle_coordinator_keeps_sparse_jsonl_catch_up_waves_alive(tmp_path: Path) -> None:
@@ -997,7 +1004,7 @@ def test_writer_cycle_coordinator_treats_bounded_shard_timeout_as_partial_progre
     payload = src.build_payload(project_root, apply=True, poll_seconds=0.0, wait_timeout_seconds=30.0)
 
     assert payload["overall_status"] == "applied_with_followups"
-    assert payload["ok"] is False
+    assert payload["ok"] is True
     assert payload["steps"]["sql_link_shard_manager"]["status"] == "partial_progress"
     assert payload["summary"]["partial_progress"] is True
     assert payload["summary"]["drain_applied"] is True

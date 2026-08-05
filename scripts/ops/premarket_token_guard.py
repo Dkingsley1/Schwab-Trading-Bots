@@ -583,7 +583,9 @@ def main() -> int:
             item
             for item in [
                 ('network_unavailable' if not network['ok'] else ''),
-                (refresh_reason if needs_refresh else ''),
+                # A successful refresh supersedes the pre-refresh warning. Keep
+                # it visible only while the condition remains unresolved.
+                (refresh_reason if needs_refresh and (still_stale or not_ready_after) else ''),
                 (stale_reason_after if still_stale else ''),
                 (ready_reason_after if not_ready_after else ''),
                 (str(auth.get('reason') or '') if auth.get('attempted') and not auth.get('ok') else ''),

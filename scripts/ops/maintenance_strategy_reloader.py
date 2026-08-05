@@ -2,11 +2,16 @@ import hashlib
 import json
 import os
 import subprocess
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from core.runtime_maintenance import maintenance_hold_snapshot
+
 PY = PROJECT_ROOT / ".venv314" / "bin" / "python"
 STATE_FILE = PROJECT_ROOT / "governance" / "health" / "maintenance_strategy_reloader_latest.json"
 SQL_WRITER_LABEL = f"gui/{os.getuid()}/com.dankingsley.ops.sql_link_writer"
@@ -145,7 +150,8 @@ def main() -> int:
     env_overrides = _env_overrides(rows)
     actions: list[dict[str, object]] = []
     maintenance_blockers = _maintenance_blockers()
-    deferred = bool(changed and maintenance_blockers)
+    runtime_maintenance_hold = maintenance_hold_snapshot(PROJECT_ROOT)
+    deferred = bool(changed and (maintenance_blockers or bool(runtime_maintenance_hold.get("active", False))))
     applied_fingerprint = previous_applied
 
     if changed and not deferred:
@@ -194,6 +200,7 @@ def main() -> int:
         "changed": bool(changed),
         "deferred": deferred,
         "maintenance_blockers": maintenance_blockers,
+        "runtime_maintenance_hold": runtime_maintenance_hold,
         "observed_fingerprint": observed_fingerprint,
         "applied_fingerprint": applied_fingerprint,
         "previous_applied_fingerprint": previous_applied,

@@ -158,6 +158,11 @@ def test_architecture_autopilot_executes_only_safe_steps(tmp_path: Path) -> None
     ]
     assert "start-live" not in {part for call in calls for part in call}
     assert payload["attempt_count"] == 3
+    assert payload["successful_attempt_count"] == 3
+    assert payload["failed_attempt_count"] == 0
+    assert payload["final_graph"]["blocked_nodes"] == ["adaptive_regression_guard", "unsafe_live"]
+    assert payload["final_graph"]["degraded_nodes"] == ["runtime_throttle", "system_self_model"]
+    assert payload["final_graph"]["authority_violation_count"] == 1
     unsafe_step = next(step for step in payload["repair_plan"] if step["node_id"] == "unsafe_live")
     assert unsafe_step["safe_to_execute"] is False
 

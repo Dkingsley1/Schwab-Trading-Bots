@@ -126,6 +126,8 @@ wait_for_sqlite_maintenance
 "$PYTHON_BIN" "$PROJECT_ROOT/scripts/storage_tier_policy.py" --json || true
 "$PYTHON_BIN" "$PROJECT_ROOT/scripts/build_runtime_training_snapshot.py" --json || true
 "$PYTHON_BIN" "$PROJECT_ROOT/scripts/ops/training_runtime_control.py" --json || true
+"$PYTHON_BIN" "$PROJECT_ROOT/scripts/ops/training_labeling_intelligence.py" --refresh-artifacts >/dev/null \
+  || echo "[WARN] training_labeling_intelligence artifact refresh failed; continuing daily refresh"
 
 # Explicit SQLite maintenance step (non-fatal so the rest of daily refresh still runs).
 "$PYTHON_BIN" "$PROJECT_ROOT/scripts/sqlite_performance_maintenance.py" \

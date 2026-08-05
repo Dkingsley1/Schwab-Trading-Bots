@@ -16,6 +16,8 @@ if [[ -f "$PROJECT_ROOT/scripts/ops/load_runtime_env.sh" ]]; then
 fi
 
 export BOT_RUNTIME_PROFILE="${BOT_RUNTIME_PROFILE:-$PROFILE}"
+export MAINTENANCE_SLOT_DEFER_OUTSIDE_QUIET_WINDOW=0
+export MAINTENANCE_SLOT_DEFER_WHILE_SQL_LINK_ACTIVE=0
 
 set +e
 "$PYTHON_BIN" "$PROJECT_ROOT/scripts/ops/maintenance_slot_guard.py" --slot one_numbers_refresh --begin

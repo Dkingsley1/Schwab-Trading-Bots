@@ -71,6 +71,7 @@ def test_sql_writer_slot_bypasses_host_pressure_and_cooldown(tmp_path: Path, mon
     monkeypatch.setattr(src, "_cooldown_blocked", lambda *args, **kwargs: (True, "slot_cooldown_age_seconds=1<900", {}))
     monkeypatch.setattr(src, "_load_macro_status", lambda: {})
     monkeypatch.setattr(src, "_process_running", lambda needles: False)
+    monkeypatch.setattr(src, "maintenance_hold_snapshot", lambda _project_root: {"active": False})
 
     args = argparse.Namespace(
         slot="sql_link_writer",
@@ -99,3 +100,46 @@ def test_sql_writer_slot_bypasses_host_pressure_and_cooldown(tmp_path: Path, mon
 
     end_args = argparse.Namespace(slot="sql_link_writer", json=True)
     assert src._end(end_args) == 0
+
+
+def test_runtime_maintenance_hold_blocks_even_sql_writer_slot(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(src, "RUNTIME_ROOT", tmp_path / "runtime" / "maintenance_slots")
+    monkeypatch.setattr(src, "LOCK_ROOT", tmp_path / "runtime" / "maintenance_slots" / "locks")
+    monkeypatch.setattr(src, "STATE_ROOT", tmp_path / "runtime" / "maintenance_slots" / "state")
+    monkeypatch.setattr(src, "HEALTH_PATH", tmp_path / "governance" / "health" / "maintenance_slot_guard_latest.json")
+    monkeypatch.setattr(src, "EXTERNAL_HEALTH_PATH", tmp_path / "external" / "maintenance_slot_guard_latest.json")
+    monkeypatch.setattr(src, "_host_pressure", lambda *args, **kwargs: (False, {}))
+    monkeypatch.setattr(src, "_cooldown_blocked", lambda *args, **kwargs: (False, "", {}))
+    monkeypatch.setattr(src, "_load_macro_status", lambda: {})
+    monkeypatch.setattr(src, "_process_running", lambda needles: False)
+    monkeypatch.setattr(
+        src,
+        "maintenance_hold_snapshot",
+        lambda _project_root: {"active": True, "reason": "sqlite_local_failover"},
+    )
+    args = argparse.Namespace(
+        slot="sql_link_writer",
+        max_load_ratio=0.85,
+        max_five_min_load_ratio=0.7,
+        max_one_min_load=0.0,
+        min_interval_seconds=None,
+        stale_seconds=1800.0,
+        protect_macro_before_minutes=180.0,
+        protect_macro_after_minutes=75.0,
+        allow_during_macro_event=False,
+        defer_while_sql_link_active=True,
+        quiet_windows_enabled=False,
+        defer_outside_quiet_window=False,
+        quiet_start_hour=21,
+        quiet_end_hour=6,
+        smooth_gate_enabled=False,
+        smooth_gate_max_saturation_score=68.0,
+        smooth_gate_exempt_slots="",
+        skip_exit_code=75,
+        json=True,
+    )
+
+    assert src._begin(args) == 75
+    payload = json.loads(src.HEALTH_PATH.read_text(encoding="utf-8"))
+    assert "runtime_maintenance_hold" in payload["reasons"]
+    assert not (src.LOCK_ROOT / "sql_link_writer.lock").exists()

@@ -22,8 +22,8 @@ def test_portfolio_allocator_service_nets_cross_sleeve_intents(tmp_path: Path) -
         project_root / "governance" / "allocator" / "portfolio_candidate_intents_latest.json",
         {
             "intents": [
-                {"symbol": "AAPL", "sleeve": "core", "side": "BUY", "raw_qty": 10, "score": 0.8, "volatility_1m": 0.01, "sector": "technology", "factor_exposure": 0.2, "venue": "nasdaq", "clock_bucket": "open"},
-                {"symbol": "AAPL", "sleeve": "aggressive", "side": "SELL", "raw_qty": 6, "score": 0.7, "volatility_1m": 0.02, "sector": "technology", "factor_exposure": 0.1, "venue": "nasdaq", "clock_bucket": "open"},
+                {"symbol": "AAPL", "sleeve": "core", "side": "BUY", "raw_qty": 10, "score": 0.8, "volatility_1m": 0.01, "price": 175.0, "sector": "technology", "factor_exposure": 0.2, "venue": "nasdaq", "clock_bucket": "open"},
+                {"symbol": "AAPL", "sleeve": "aggressive", "side": "SELL", "raw_qty": 6, "score": 0.7, "volatility_1m": 0.02, "price": 175.0, "sector": "technology", "factor_exposure": 0.1, "venue": "nasdaq", "clock_bucket": "open"},
             ]
         },
     )
@@ -53,8 +53,66 @@ def test_portfolio_allocator_service_nets_cross_sleeve_intents(tmp_path: Path) -
     assert payload["summary"]["capacity_curve_count"] == 1
     assert payload["allocator_contract"]["capacity_curve_ready"] is True
     assert payload["allocator_contract"]["venue_time_capacity_ready"] is True
+    assert payload["input_freshness"]["sources_ready"] is True
     assert any(float(row["weight_scale"]) < 1.0 for row in payload["approved_intents"])
     assert all(float(row["forward_cost_bps"]) >= 0.0 for row in payload["approved_intents"])
+    assert all(float(row["price"]) == 175.0 for row in payload["approved_intents"])
+
+
+def test_portfolio_allocator_service_reports_fresh_zero_intent_cycle_as_ready_idle(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    _write_json(project_root / "governance" / "allocator" / "sleeve_allocator_latest.json", {"gross_risk_budget": 0.75})
+    _write_json(project_root / "governance" / "risk" / "portfolio_risk_latest.json", {"limits": {}})
+    _write_json(
+        project_root / "governance" / "allocator" / "portfolio_capacity_curve_latest.json",
+        {"summary": {"curve_count": 0, "allocator_ready": False, "regime_count": 0}, "curves": []},
+    )
+
+    payload = allocator_src.build_payload(project_root)
+
+    assert payload["overall_status"] == "ready"
+    assert payload["ok"] is True
+    assert payload["summary"]["input_intent_count"] == 0
+    assert payload["allocator_contract"]["operating_mode"] == "idle_no_intents"
+    assert payload["allocator_contract"]["idle_ready"] is True
+    assert payload["allocator_contract"]["active_allocation_ready"] is False
+    assert payload["allocator_contract"]["capacity_requirements_applicable"] is False
+    assert payload["allocator_contract"]["activation_requires_capacity_curves"] is True
+
+
+def test_portfolio_allocator_service_blocks_active_intents_without_capacity_curves(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    _write_json(
+        project_root / "governance" / "allocator" / "portfolio_candidate_intents_latest.json",
+        {
+            "intents": [
+                {
+                    "symbol": "AAPL",
+                    "sleeve": "core",
+                    "side": "BUY",
+                    "raw_qty": 1,
+                    "score": 0.8,
+                    "volatility_1m": 0.01,
+                    "price": 175.0,
+                    "sector": "technology",
+                }
+            ]
+        },
+    )
+    _write_json(project_root / "governance" / "allocator" / "sleeve_allocator_latest.json", {"gross_risk_budget": 0.75})
+    _write_json(project_root / "governance" / "risk" / "portfolio_risk_latest.json", {"limits": {}})
+    _write_json(
+        project_root / "governance" / "allocator" / "portfolio_capacity_curve_latest.json",
+        {"summary": {"curve_count": 0, "allocator_ready": False, "regime_count": 0}, "curves": []},
+    )
+
+    payload = allocator_src.build_payload(project_root)
+
+    assert payload["overall_status"] == "degraded"
+    assert payload["ok"] is False
+    assert payload["allocator_contract"]["operating_mode"] == "active_allocation"
+    assert payload["allocator_contract"]["capacity_requirements_applicable"] is True
+    assert payload["allocator_contract"]["active_allocation_ready"] is False
 
 
 def test_risk_service_boundary_evaluates_allocator_output(tmp_path: Path) -> None:

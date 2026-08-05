@@ -2,6 +2,9 @@
 from __future__ import annotations
 
 import json
+import os
+import signal
+import subprocess
 from collections import deque
 from datetime import date, datetime, timedelta, time, timezone
 from pathlib import Path
@@ -115,6 +118,156 @@ def write_payload(path: Path, payload: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     normalized_payload = standardize_grade_labels(payload)
     path.write_text(json.dumps(normalized_payload, ensure_ascii=True, indent=2), encoding="utf-8")
+
+
+def _process_tree_targets(root_pid: int) -> tuple[set[int], set[int]]:
+    try:
+        snapshot = subprocess.run(
+            ["ps", "-axo", "pid=,ppid=,pgid="],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=3,
+        )
+    except Exception:
+        return {int(root_pid)}, {int(root_pid)}
+    rows: dict[int, tuple[int, int]] = {}
+    for raw_line in str(snapshot.stdout or "").splitlines():
+        parts = raw_line.split()
+        if len(parts) < 3:
+            continue
+        try:
+            pid, ppid, pgid = (int(parts[0]), int(parts[1]), int(parts[2]))
+        except Exception:
+            continue
+        rows[pid] = (ppid, pgid)
+    descendants: set[int] = {int(root_pid)}
+    frontier = deque([int(root_pid)])
+    while frontier:
+        parent = frontier.popleft()
+        for pid, (ppid, _pgid) in rows.items():
+            if ppid != parent or pid in descendants:
+                continue
+            descendants.add(pid)
+            frontier.append(pid)
+    pgids = {
+        int(rows.get(pid, (0, pid))[1])
+        for pid in descendants
+        if int(rows.get(pid, (0, pid))[1]) > 0
+    }
+    return descendants, pgids
+
+
+def _signal_process_tree_targets(pids: set[int], pgids: set[int], sig: int) -> None:
+    own_pgid = os.getpgrp()
+    for pgid in sorted(pgids, reverse=True):
+        if pgid <= 0 or pgid == own_pgid:
+            continue
+        try:
+            os.killpg(pgid, sig)
+        except ProcessLookupError:
+            pass
+        except Exception:
+            continue
+    for pid in sorted(pids, reverse=True):
+        if pid <= 0 or pid == os.getpid():
+            continue
+        try:
+            os.kill(pid, sig)
+        except ProcessLookupError:
+            pass
+        except Exception:
+            continue
+
+
+def run_bounded_process_group(
+    cmd: list[str],
+    *,
+    cwd: Path,
+    timeout_seconds: int,
+    env: dict[str, str] | None = None,
+    terminate_grace_seconds: float = 2.0,
+) -> dict[str, Any]:
+    """Run one maintenance command and reap its full descendant process group on timeout."""
+    timeout = max(int(timeout_seconds), 1)
+    proc = subprocess.Popen(
+        cmd,
+        cwd=str(cwd),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        env=env,
+        start_new_session=True,
+    )
+    try:
+        stdout, stderr = proc.communicate(timeout=timeout)
+        return {
+            "rc": int(proc.returncode),
+            "stdout": stdout or "",
+            "stderr": stderr or "",
+            "timed_out": False,
+            "timeout_cleanup": {"process_group": proc.pid, "signal": "", "reaped": True},
+        }
+    except subprocess.TimeoutExpired as exc:
+        stdout = exc.stdout.decode("utf-8", errors="ignore") if isinstance(exc.stdout, bytes) else str(exc.stdout or "")
+        stderr = exc.stderr.decode("utf-8", errors="ignore") if isinstance(exc.stderr, bytes) else str(exc.stderr or "")
+        cleanup_signal = "SIGTERM"
+        cleanup_pids, cleanup_pgids = _process_tree_targets(proc.pid)
+        _signal_process_tree_targets(cleanup_pids, cleanup_pgids, signal.SIGTERM)
+        try:
+            stdout, stderr = proc.communicate(timeout=max(float(terminate_grace_seconds), 0.1))
+        except subprocess.TimeoutExpired as final_exc:
+            stdout = (
+                final_exc.stdout.decode("utf-8", errors="ignore")
+                if isinstance(final_exc.stdout, bytes)
+                else str(final_exc.stdout or stdout)
+            )
+            stderr = (
+                final_exc.stderr.decode("utf-8", errors="ignore")
+                if isinstance(final_exc.stderr, bytes)
+                else str(final_exc.stderr or stderr)
+            )
+            cleanup_signal = "SIGKILL"
+            current_pids, current_pgids = _process_tree_targets(proc.pid)
+            _signal_process_tree_targets(
+                cleanup_pids | current_pids,
+                cleanup_pgids | current_pgids,
+                signal.SIGKILL,
+            )
+            try:
+                final_stdout, final_stderr = proc.communicate(timeout=1)
+                stdout = final_stdout or stdout
+                stderr = final_stderr or stderr
+            except Exception:
+                pass
+        return {
+            "rc": 124,
+            "stdout": stdout or "",
+            "stderr": stderr or "",
+            "timed_out": True,
+            "timeout_cleanup": {
+                "process_group": proc.pid,
+                "signal": cleanup_signal,
+                "reaped": proc.poll() is not None,
+            },
+        }
+    except BaseException:
+        cleanup_pids, cleanup_pgids = _process_tree_targets(proc.pid)
+        _signal_process_tree_targets(cleanup_pids, cleanup_pgids, signal.SIGTERM)
+        try:
+            proc.communicate(timeout=max(float(terminate_grace_seconds), 0.1))
+        except subprocess.TimeoutExpired:
+            current_pids, current_pgids = _process_tree_targets(proc.pid)
+            _signal_process_tree_targets(
+                cleanup_pids | current_pids,
+                cleanup_pgids | current_pgids,
+                signal.SIGKILL,
+            )
+            try:
+                proc.communicate(timeout=1)
+            except Exception:
+                pass
+        raise
 
 
 def ordered_unique(items: Iterable[str]) -> list[str]:

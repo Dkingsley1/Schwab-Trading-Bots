@@ -42,6 +42,14 @@ def _clean_label(value: Any) -> str:
     return "".join(out).strip("_")
 
 
+_ROUTE_PLACEHOLDERS = {"", "unknown", "unclassified", "none", "na", "n_a"}
+
+
+def _usable_route_label(value: Any) -> str:
+    label = _clean_label(value)
+    return "" if label in _ROUTE_PLACEHOLDERS else label
+
+
 def _first_text(*values: Any) -> str:
     for value in values:
         text = str(value or "").strip()
@@ -74,7 +82,7 @@ def _symbol_text(out: Dict[str, Any]) -> str:
 
 def _infer_source_broker(out: Dict[str, Any], *, path_hint: str = "") -> str:
     route = _nested_dict(out.get("data_route"))
-    direct = _clean_label(
+    direct = _usable_route_label(
         _first_text(
             out.get("source_broker"),
             route.get("source_broker"),
@@ -104,7 +112,7 @@ def _infer_source_broker(out: Dict[str, Any], *, path_hint: str = "") -> str:
 
 def _infer_source_provider(out: Dict[str, Any], *, broker: str, path_hint: str = "") -> str:
     route = _nested_dict(out.get("data_route"))
-    direct = _clean_label(
+    direct = _usable_route_label(
         _first_text(
             out.get("source_provider"),
             route.get("source_provider"),
@@ -137,7 +145,7 @@ def _infer_source_provider(out: Dict[str, Any], *, broker: str, path_hint: str =
 
 def _infer_source_venue(out: Dict[str, Any], *, broker: str, provider: str, path_hint: str = "") -> str:
     route = _nested_dict(out.get("data_route"))
-    direct = _clean_label(_first_text(out.get("source_venue"), route.get("source_venue"), out.get("venue")))
+    direct = _usable_route_label(_first_text(out.get("source_venue"), route.get("source_venue"), out.get("venue")))
     if direct:
         return direct
     haystack = " ".join([provider, broker, _path_hint_text(out, path_hint)]).lower()
@@ -154,7 +162,7 @@ def _infer_source_venue(out: Dict[str, Any], *, broker: str, provider: str, path
 
 def _infer_asset_class(out: Dict[str, Any], *, broker: str, provider: str, path_hint: str = "") -> str:
     route = _nested_dict(out.get("data_route"))
-    direct = _clean_label(
+    direct = _usable_route_label(
         _first_text(
             out.get("asset_class"),
             route.get("asset_class"),
@@ -183,6 +191,10 @@ def _infer_asset_class(out: Dict[str, Any], *, broker: str, provider: str, path_
         return "equities"
     if domain:
         return "equities" if domain == "equity" else domain
+    # A plain listed symbol on the Schwab lane is an equity unless one of the
+    # more specific instrument checks above identified it otherwise.
+    if broker == "schwab" and symbol:
+        return "equities"
     return "unknown"
 
 
@@ -196,7 +208,7 @@ def _infer_routing_lane(
     path_hint: str = "",
 ) -> str:
     route = _nested_dict(out.get("data_route"))
-    direct = _clean_label(_first_text(out.get("routing_lane"), route.get("routing_lane")))
+    direct = _usable_route_label(_first_text(out.get("routing_lane"), route.get("routing_lane")))
     if direct:
         return direct
     haystack = _path_hint_text(out, path_hint)
@@ -263,13 +275,20 @@ def _enrich_data_route(out: Dict[str, Any], *, path_hint: str = "", channel: str
         path_hint=path_hint,
     )
 
-    explicit_quality_label = _clean_label(out.get("source_quality_label"))
+    explicit_quality_label = _usable_route_label(out.get("source_quality_label"))
     explicit_quality_score = out.get("source_quality_score")
     inferred_quality_label, inferred_quality_score = _source_quality(" ".join([lane, venue, provider, broker]))
+    if inferred_quality_label == "unclassified" and broker == "schwab":
+        inferred_quality_label, inferred_quality_score = "broker_native", 0.95
+    elif inferred_quality_label == "unclassified" and broker == "coinbase":
+        inferred_quality_label, inferred_quality_score = "exchange_native", 0.92
     quality_label = explicit_quality_label or inferred_quality_label
-    try:
-        quality_score = float(explicit_quality_score)
-    except Exception:
+    if explicit_quality_label:
+        try:
+            quality_score = float(explicit_quality_score)
+        except Exception:
+            quality_score = inferred_quality_score
+    else:
         quality_score = inferred_quality_score
 
     channel_label = _clean_label(out.get("channel"))
@@ -286,38 +305,54 @@ def _enrich_data_route(out: Dict[str, Any], *, path_hint: str = "", channel: str
         f"domain:{domain}" if domain else "",
         f"quality:{quality_label}" if quality_label else "",
     ]
-    labels = _merge_labels(out.get("data_labels") or out.get("labels"), additions)
+    existing_labels = _merge_labels(out.get("data_labels") or out.get("labels"), ())
+    if asset_class != "unknown":
+        existing_labels = [label for label in existing_labels if label != "asset_unknown"]
+    if lane != "unclassified":
+        existing_labels = [label for label in existing_labels if label != "lane_unclassified"]
+    if quality_label != "unclassified":
+        existing_labels = [label for label in existing_labels if label != "quality_unclassified"]
+    labels = _merge_labels(existing_labels, additions)
 
-    if broker and not str(out.get("source_broker") or "").strip():
+    if broker and not _usable_route_label(out.get("source_broker")):
         out["source_broker"] = broker
-    if provider and not str(out.get("source_provider") or "").strip():
+    if provider and not _usable_route_label(out.get("source_provider")):
         out["source_provider"] = provider
-    if venue and not str(out.get("source_venue") or "").strip():
+    if venue and not _usable_route_label(out.get("source_venue")):
         out["source_venue"] = venue
-    if asset_class and not str(out.get("asset_class") or "").strip():
+    if asset_class and not _usable_route_label(out.get("asset_class")):
         out["asset_class"] = asset_class
-    if lane and not str(out.get("routing_lane") or "").strip():
+    if lane and not _usable_route_label(out.get("routing_lane")):
         out["routing_lane"] = lane
-    if quality_label and not str(out.get("source_quality_label") or "").strip():
+    if quality_label and not _usable_route_label(out.get("source_quality_label")):
         out["source_quality_label"] = quality_label
-    if "source_quality_score" not in out:
+    if "source_quality_score" not in out or not explicit_quality_label:
         out["source_quality_score"] = round(float(quality_score), 3)
     out["data_labels"] = labels
 
     route = _nested_dict(out.get("data_route"))
     route.setdefault("schema_version", 1)
-    route.setdefault("source_broker", broker)
-    route.setdefault("source_provider", provider)
-    route.setdefault("source_venue", venue)
-    route.setdefault("asset_class", asset_class)
-    route.setdefault("routing_lane", lane)
-    route.setdefault("channel", channel_label)
-    route.setdefault("profile", profile)
-    route.setdefault("domain", domain)
-    route.setdefault("source_quality_label", quality_label)
-    route.setdefault("source_quality_score", round(float(quality_score), 3))
-    route.setdefault("route_key", ":".join(part for part in (lane, channel_label, provider) if part))
-    route.setdefault("labels", labels)
+    for route_key, route_value in (
+        ("source_broker", broker),
+        ("source_provider", provider),
+        ("source_venue", venue),
+        ("channel", channel_label),
+        ("profile", profile),
+        ("domain", domain),
+    ):
+        if route_value and not _usable_route_label(route.get(route_key)):
+            route[route_key] = route_value
+    if not _usable_route_label(route.get("asset_class")):
+        route["asset_class"] = asset_class
+    if not _usable_route_label(route.get("routing_lane")):
+        route["routing_lane"] = lane
+    if not _usable_route_label(route.get("source_quality_label")):
+        route["source_quality_label"] = quality_label
+        route["source_quality_score"] = round(float(quality_score), 3)
+    route_key = _clean_label(route.get("route_key"))
+    if not route_key or route_key.startswith(("unknown_", "unclassified_")):
+        route["route_key"] = ":".join(part for part in (lane, channel_label, provider) if part)
+    route["labels"] = labels
     linked_provider = _clean_label(_first_text(out.get("linked_provider"), route.get("linked_provider")))
     if linked_provider:
         route.setdefault("linked_provider", linked_provider)
@@ -348,6 +383,14 @@ def enrich_log_row(
     channel: str = "",
 ) -> Dict[str, Any]:
     out = dict(row or {})
+    normalized_channel = _clean_label(channel or out.get("channel"))
+    if normalized_channel == "decision" and not str(out.get("action") or "").strip():
+        for source_key in ("master_action", "master_intent_action"):
+            canonical_action = str(out.get(source_key) or "").strip()
+            if canonical_action:
+                out["action"] = canonical_action
+                out["action_source"] = source_key
+                break
     if include_schema and ("log_schema_version" not in out):
         out["log_schema_version"] = log_schema_version()
 
@@ -388,9 +431,15 @@ HOT_QUEUE_CHANNELS = {
 
 
 _LOW_SIGNAL_RECENT: Dict[str, float] = {}
+_LOW_SIGNAL_SUPPRESSED: Dict[str, int] = {}
 _LOW_SIGNAL_RECENT_LOCK = threading.Lock()
 _SCHEMA_VIOLATION_RECENT: Dict[str, float] = {}
 _SCHEMA_VIOLATION_RECENT_LOCK = threading.Lock()
+_DYNAMIC_RUNTIME_CONTROL_CACHE: Dict[str, Any] = {
+    "checked_at_monotonic": 0.0,
+    "fingerprint": (),
+    "values": {},
+}
 SIGNAL_GENERATION_STATUSES = {
     "PAPER_EXECUTED",
     "LIVE_EXECUTED",
@@ -411,6 +460,57 @@ def _as_bool(value: Any) -> bool:
     return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _dynamic_runtime_control(project_root: str, name: str, default: str) -> str:
+    if not project_root:
+        return str(os.getenv(name, default) or default).strip()
+    cache = _DYNAMIC_RUNTIME_CONTROL_CACHE
+    now_monotonic = time.monotonic()
+    if (now_monotonic - float(cache.get("checked_at_monotonic", 0.0) or 0.0)) < 5.0:
+        values = cache.get("values")
+        if isinstance(values, dict):
+            return str(values.get(name, os.getenv(name, default)) or default).strip()
+
+    root = Path(project_root).resolve()
+    paths = (
+        root / "config" / ".env.storage_pressure_override",
+        root / "config" / ".env.storage_override",
+        root / "config" / ".env.runtime_resource_guard_override",
+        root / "config" / ".env.local_storage_reserve_override",
+        # Targeted hot-lane containment must win over broader runtime profiles.
+        root / "config" / ".env.hot_lane_retention_override",
+    )
+    fingerprint: list[tuple[str, int, int]] = []
+    for path in paths:
+        try:
+            stat = path.stat()
+            fingerprint.append((str(path), int(stat.st_mtime_ns), int(stat.st_size)))
+        except OSError:
+            fingerprint.append((str(path), 0, 0))
+    if tuple(fingerprint) == tuple(cache.get("fingerprint") or ()):
+        cache["checked_at_monotonic"] = now_monotonic
+        values = cache.get("values")
+        if isinstance(values, dict):
+            return str(values.get(name, os.getenv(name, default)) or default).strip()
+
+    merged: Dict[str, str] = {}
+    for path in paths:
+        try:
+            lines = path.read_text(encoding="utf-8").splitlines()
+        except OSError:
+            continue
+        for raw in lines:
+            line = str(raw or "").strip()
+            if (not line) or line.startswith("#") or "=" not in line:
+                continue
+            key, value = line.split("=", 1)
+            if key.strip():
+                merged[key.strip()] = value.strip().strip("'\"")
+    cache["checked_at_monotonic"] = now_monotonic
+    cache["fingerprint"] = tuple(fingerprint)
+    cache["values"] = dict(merged)
+    return str(merged.get(name, os.getenv(name, default)) or default).strip()
+
+
 def _low_signal_thinning_enabled() -> bool:
     return os.getenv("LOW_SIGNAL_LOG_THINNING_ENABLED", "1").strip().lower() in {"1", "true", "yes", "on"}
 
@@ -423,12 +523,40 @@ def _low_signal_execution_guard_window_seconds() -> float:
     return max(float(os.getenv("LOW_SIGNAL_EXECUTION_GUARD_WINDOW_SECONDS", "60") or 60.0), 1.0)
 
 
+def _risk_attribution_low_signal_window_seconds() -> float:
+    return max(float(os.getenv("RISK_ATTRIBUTION_LOW_SIGNAL_WINDOW_SECONDS", "900") or 900.0), 1.0)
+
+
+def _risk_attribution_reused_window_seconds() -> float:
+    return max(float(os.getenv("RISK_ATTRIBUTION_REUSED_WINDOW_SECONDS", "3600") or 3600.0), 1.0)
+
+
+def _risk_attribution_epsilon() -> float:
+    return max(float(os.getenv("RISK_ATTRIBUTION_LOW_SIGNAL_EPSILON", "1e-12") or 1e-12), 0.0)
+
+
+def _queue_channel_enabled(channel: str) -> bool:
+    normalized = str(channel or "").strip().lower()
+    if normalized == "risk":
+        return os.getenv("BOT_CHANNEL_QUEUE_RISK_ENABLED", "0").strip().lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }
+    return normalized in HOT_QUEUE_CHANNELS
+
+
 def _schema_violation_window_seconds() -> float:
     return max(float(os.getenv("CHANNEL_SCHEMA_VIOLATION_WINDOW_SECONDS", "300") or 300.0), 1.0)
 
 
-def _signal_generation_bad_signal_thinning_enabled() -> bool:
-    return os.getenv("SIGNAL_GENERATION_BAD_SIGNAL_THINNING_ENABLED", "1").strip().lower() in {
+def _signal_generation_bad_signal_thinning_enabled(project_root: str = "") -> bool:
+    return _dynamic_runtime_control(
+        project_root,
+        "SIGNAL_GENERATION_BAD_SIGNAL_THINNING_ENABLED",
+        "1",
+    ).lower() in {
         "1",
         "true",
         "yes",
@@ -436,15 +564,33 @@ def _signal_generation_bad_signal_thinning_enabled() -> bool:
     }
 
 
-def _signal_generation_bad_signal_window_seconds() -> float:
-    return max(float(os.getenv("SIGNAL_GENERATION_BAD_SIGNAL_WINDOW_SECONDS", "300") or 300.0), 1.0)
+def _signal_generation_bad_signal_window_seconds(project_root: str = "") -> float:
+    raw = _dynamic_runtime_control(project_root, "SIGNAL_GENERATION_BAD_SIGNAL_WINDOW_SECONDS", "300")
+    return max(float(raw or 300.0), 1.0)
 
 
-def _signal_generation_bad_signal_batch_cap() -> int:
+def _signal_generation_bad_signal_batch_cap(project_root: str = "") -> int:
     try:
-        return max(int(os.getenv("SIGNAL_GENERATION_BAD_SIGNAL_BATCH_CAP", "128") or 128), 0)
+        raw = _dynamic_runtime_control(project_root, "SIGNAL_GENERATION_BAD_SIGNAL_BATCH_CAP", "128")
+        return max(int(raw or 128), 0)
     except Exception:
         return 128
+
+
+def _signal_generation_sub_bot_window_seconds(project_root: str = "") -> float:
+    raw = _dynamic_runtime_control(project_root, "SIGNAL_GENERATION_SUB_BOT_WINDOW_SECONDS", "3600")
+    try:
+        return max(float(raw or 3600.0), 1.0)
+    except Exception:
+        return 3600.0
+
+
+def _signal_generation_derived_window_seconds(project_root: str = "") -> float:
+    raw = _dynamic_runtime_control(project_root, "SIGNAL_GENERATION_DERIVED_WINDOW_SECONDS", "300")
+    try:
+        return max(float(raw or 300.0), 1.0)
+    except Exception:
+        return 300.0
 
 
 def _should_emit_signal_generation_event(
@@ -453,19 +599,31 @@ def _should_emit_signal_generation_event(
     classification: str,
     reason: str,
     emitted_bad_count: int = 0,
+    project_root: str = "",
 ) -> bool:
-    if classification != "bad_signal" or not _signal_generation_bad_signal_thinning_enabled():
+    metadata = payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {}
+    layer = str(metadata.get("layer") or payload.get("layer") or "").strip().lower()
+    status = str(payload.get("status") or "").strip().upper()
+    is_execution_outcome = status in {"PAPER_EXECUTED", "LIVE_EXECUTED"}
+    is_sub_bot = "sub_bot" in layer
+    if is_sub_bot and not is_execution_outcome:
+        window = _signal_generation_sub_bot_window_seconds(project_root)
+    elif classification == "bad_signal" and _signal_generation_bad_signal_thinning_enabled(project_root):
+        window = _signal_generation_bad_signal_window_seconds(project_root)
+    elif not is_execution_outcome:
+        window = _signal_generation_derived_window_seconds(project_root)
+    else:
         return True
-    batch_cap = _signal_generation_bad_signal_batch_cap()
-    if batch_cap > 0 and int(emitted_bad_count) >= batch_cap:
+
+    batch_cap = _signal_generation_bad_signal_batch_cap(project_root)
+    if classification == "bad_signal" and batch_cap > 0 and int(emitted_bad_count) >= batch_cap:
         return False
     now_ts = time.time()
-    window = _signal_generation_bad_signal_window_seconds()
     symbol = str(payload.get("symbol") or "UNKNOWN").strip()
     action = str(payload.get("action") or "UNKNOWN").strip().upper()
     strategy = str(payload.get("strategy") or payload.get("bot_id") or "UNKNOWN").strip()
-    status = str(payload.get("status") or "").strip().upper()
-    signature = f"signal_generation:{classification}:{reason}:{symbol}:{action}:{strategy}:{status}"
+    scope_symbol = "*" if is_sub_bot else symbol
+    signature = f"signal_generation:{classification}:{reason}:{scope_symbol}:{action}:{strategy}:{status}:{layer}"
     with _LOW_SIGNAL_RECENT_LOCK:
         last_seen = _LOW_SIGNAL_RECENT.get(signature)
         if last_seen is not None and (now_ts - float(last_seen)) < window:
@@ -545,6 +703,40 @@ def _low_signal_signature(path: str, payload: Dict[str, Any]) -> tuple[str, floa
     norm_path = str(path or "").replace("\\", "/")
     status = str(payload.get("status") or "").strip()
 
+    basename = os.path.basename(norm_path)
+    risk_attribution = bool(
+        basename.startswith("shadow_pnl_attribution_")
+        or "/governance/channels/risk/" in norm_path
+        or basename.startswith("risk_")
+    )
+    if risk_attribution:
+        bot_id = str(payload.get("bot_id") or "UNKNOWN").strip()
+        layer = str(payload.get("layer") or "").strip().lower()
+        if bot_id == "grand_master_bot" or layer == "grand_master":
+            return None
+        try:
+            pnl_proxy = float(payload.get("pnl_proxy", 0.0) or 0.0)
+            quantity = float(payload.get("quantity", 0.0) or 0.0)
+        except Exception:
+            return None
+        epsilon = _risk_attribution_epsilon()
+        # Market return is shared across every bot in a symbol snapshot. Keeping it
+        # on every flat bot duplicates the same observation thousands of times.
+        # Preserve realized model outcomes and actual positions losslessly; the
+        # grand-master row remains the lossless per-symbol market-return record.
+        if abs(pnl_proxy) > epsilon or abs(quantity) > epsilon:
+            return None
+        action = str(payload.get("action") or "UNKNOWN").strip().upper()
+        direction = str(payload.get("direction") or "0").strip()
+        reused = _as_bool(payload.get("reused"))
+        signature = f"risk_attribution:{bot_id}:{action}:{direction}"
+        window = (
+            _risk_attribution_reused_window_seconds()
+            if reused
+            else _risk_attribution_low_signal_window_seconds()
+        )
+        return signature, window
+
     if "/decision_explanations/" in norm_path and status in {"DATA_ONLY_BLOCKED", "SHADOW_ONLY", "PAPER_GUARD_BLOCKED"}:
         safety = payload.get("safety") if isinstance(payload.get("safety"), dict) else {}
         observe_only = _as_bool(safety.get("market_data_only")) and (not _as_bool(safety.get("execution_enabled")))
@@ -583,7 +775,13 @@ def _thin_low_signal_payloads(path: str, payloads: Sequence[Dict[str, Any]]) -> 
         return rows
 
     now = time.time()
-    retention_window = max(_low_signal_decision_window_seconds(), _low_signal_execution_guard_window_seconds(), 300.0) * 2.0
+    retention_window = max(
+        _low_signal_decision_window_seconds(),
+        _low_signal_execution_guard_window_seconds(),
+        _risk_attribution_low_signal_window_seconds(),
+        _risk_attribution_reused_window_seconds(),
+        300.0,
+    ) * 2.0
     kept: List[Dict[str, Any]] = []
     norm_path = os.path.abspath(path)
 
@@ -591,6 +789,7 @@ def _thin_low_signal_payloads(path: str, payloads: Sequence[Dict[str, Any]]) -> 
         stale_keys = [key for key, ts in _LOW_SIGNAL_RECENT.items() if (now - ts) >= retention_window]
         for key in stale_keys:
             _LOW_SIGNAL_RECENT.pop(key, None)
+            _LOW_SIGNAL_SUPPRESSED.pop(key, None)
 
         for payload in rows:
             sig = _low_signal_signature(norm_path, payload)
@@ -601,8 +800,22 @@ def _thin_low_signal_payloads(path: str, payloads: Sequence[Dict[str, Any]]) -> 
             cache_key = f"{norm_path}:{signature}"
             last_seen = _LOW_SIGNAL_RECENT.get(cache_key)
             if last_seen is not None and (now - last_seen) < window_seconds:
+                if signature.startswith("risk_attribution:"):
+                    _LOW_SIGNAL_SUPPRESSED[cache_key] = int(_LOW_SIGNAL_SUPPRESSED.get(cache_key, 0)) + 1
                 continue
             _LOW_SIGNAL_RECENT[cache_key] = now
+            if signature.startswith("risk_attribution:"):
+                suppressed = int(_LOW_SIGNAL_SUPPRESSED.pop(cache_key, 0))
+                payload["sampling_contract"] = {
+                    "mode": "low_signal_time_window",
+                    "window_seconds": float(window_seconds),
+                    "suppressed_since_previous": suppressed,
+                    "sample_scope": "bot_profile_action_direction",
+                    "representative_symbol": str(payload.get("symbol") or "UNKNOWN"),
+                    "lossless_for_nonzero_pnl_and_positions": True,
+                    "market_return_preserved_by_grand_master": True,
+                    "grand_master_always_retained": True,
+                }
             kept.append(payload)
 
     return kept
@@ -662,6 +875,7 @@ def _signal_generation_events(
             classification=classification,
             reason=reason,
             emitted_bad_count=emitted_bad_count,
+            project_root=project_root,
         ):
             continue
         if classification == "bad_signal":
@@ -676,6 +890,11 @@ def _signal_generation_events(
             "action": action,
             "status": status,
             "strategy": str(payload.get("strategy") or payload.get("bot_id") or ""),
+            "layer": str(
+                (payload.get("metadata") or {}).get("layer")
+                if isinstance(payload.get("metadata"), dict)
+                else payload.get("layer") or ""
+            ),
             "score": payload.get("score"),
             "threshold": payload.get("threshold"),
             "message_id": str(payload.get("message_id") or ""),
@@ -761,7 +980,7 @@ def _queue_publish(
 ) -> None:
     if not project_root:
         return
-    if str(channel or "") not in HOT_QUEUE_CHANNELS:
+    if not _queue_channel_enabled(channel):
         return
 
     try:
@@ -854,6 +1073,7 @@ def safe_append_channel_batch(
     raw_payloads = [dict(r or {}) for r in rows]
     if not raw_payloads:
         return 0
+    accepted_count = len(raw_payloads)
 
     ch = str(channel or "").strip()
     sch = str(schema or ch).strip()
@@ -883,11 +1103,15 @@ def safe_append_channel_batch(
         valid_payloads.append(payload)
 
     if not valid_payloads:
-        return 0
+        # Strict-schema rejection is an intentional terminal disposition. The
+        # buffered caller must not retry invalid rows forever.
+        return accepted_count
 
     valid_payloads = _thin_low_signal_payloads(path, valid_payloads)
     if not valid_payloads:
-        return 0
+        # Sampling is also a successful terminal disposition. Return the input
+        # acknowledgment count while the file contains only retained evidence.
+        return accepted_count
     lines = [json.dumps(p, ensure_ascii=True) + "\n" for p in valid_payloads]
     if not _write_lines(path, lines):
         _emit_write_failure_event(
@@ -920,7 +1144,7 @@ def safe_append_channel_batch(
             queue_db_path=queue_db_path,
         )
 
-    return len(valid_payloads)
+    return accepted_count
 
 
 def safe_append_channel_event(

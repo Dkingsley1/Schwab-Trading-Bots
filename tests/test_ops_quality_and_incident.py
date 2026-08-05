@@ -1,8 +1,10 @@
 import json
+import os
 import subprocess
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 import urllib.error
 from datetime import datetime, timezone
 from pathlib import Path
@@ -11,7 +13,8 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from scripts.incident_auto_halt import evaluate_incident
+from scripts.incident_auto_halt import _resolve_execution_expected, evaluate_incident
+from scripts.live_reconciliation_slo_guard import _resolve_execution_mode
 import scripts.paper_replay_drill as paper_replay_drill
 from scripts.promotion_quality_gate import evaluate_quality
 from scripts.replay_end_to_end_deterministic import run_replay
@@ -55,6 +58,11 @@ class OpsQualityIncidentTests(unittest.TestCase):
                 {"timestamp_utc": now, "event": "position_reconcile", "status": "ok"},
             ]
             in_file.write_text("\n".join(json.dumps(r) for r in rows) + "\n", encoding="utf-8")
+            mode_file = td_path / "mode.json"
+            mode_file.write_text(
+                json.dumps({"market_data_only": False, "allow_order_execution": True}),
+                encoding="utf-8",
+            )
 
             script = PROJECT_ROOT / "scripts" / "live_reconciliation_slo_guard.py"
             out_file = td_path / "out.json"
@@ -66,6 +74,8 @@ class OpsQualityIncidentTests(unittest.TestCase):
                     str(in_file),
                     "--out-file",
                     str(out_file),
+                    "--mode-file",
+                    str(mode_file),
                     "--lookback-minutes",
                     "60",
                     "--max-mismatch-rate",
@@ -79,11 +89,34 @@ class OpsQualityIncidentTests(unittest.TestCase):
                 check=False,
                 capture_output=True,
                 text=True,
+                env={**os.environ, "MARKET_DATA_ONLY": "0", "ALLOW_ORDER_EXECUTION": "1"},
             )
             self.assertEqual(proc.returncode, 2)
             payload = json.loads(out_file.read_text(encoding="utf-8"))
             self.assertFalse(payload["ok"])
             self.assertIn("mismatch_rate", payload["failed_checks"])
+
+    def test_live_reconciliation_events_cannot_override_explicit_execution_lock(self) -> None:
+        with patch.dict(os.environ, {"MARKET_DATA_ONLY": "1", "ALLOW_ORDER_EXECUTION": "0"}, clear=True):
+            mode = _resolve_execution_mode({}, reconcile_events=6)
+
+        self.assertFalse(mode["execution_expected"])
+        self.assertFalse(mode["inferred_execution_from_events"])
+        self.assertTrue(mode["reconciliation_events_observed"])
+        self.assertTrue(mode["control_authority_present"])
+        self.assertEqual(mode["execution_authority_source"], "environment")
+
+    def test_incident_auto_halt_events_cannot_override_explicit_mode_file_lock(self) -> None:
+        with patch.dict(os.environ, {}, clear=True):
+            mode = _resolve_execution_expected(
+                {"market_data_only": True, "allow_order_execution": False},
+                {"metrics": {"reconcile_events": 6}},
+            )
+
+        self.assertFalse(mode["execution_expected"])
+        self.assertFalse(mode["inferred_execution_from_events"])
+        self.assertTrue(mode["reconciliation_events_observed"])
+        self.assertEqual(mode["execution_authority_source"], "mode_file")
 
     def test_promotion_quality_evaluate_requires_all_gates(self) -> None:
         ok, failed, _ = evaluate_quality(

@@ -141,6 +141,55 @@ def test_refresh_runtime_reports_flags_stuck_refresh_process(tmp_path, monkeypat
     assert out["one_numbers"]["running_seconds"] == 1200.0
 
 
+def test_refresh_runtime_reports_keeps_health_fast_inside_livefeed_budget(tmp_path, monkeypatch) -> None:
+    project_root = tmp_path / "project"
+    health = project_root / "governance" / "health"
+    health.mkdir(parents=True)
+    health_fast = health / "health_fast_latest.json"
+    monkeypatch.setattr(pw, "PROJECT_ROOT", project_root)
+    monkeypatch.setattr(
+        pw,
+        "_file_age_seconds",
+        lambda path: 420.0 if path == health_fast else 0.0,
+    )
+    calls: list[list[str]] = []
+
+    def _fake_run(cmd: list[str]):
+        calls.append(cmd)
+        return 2, json.dumps({"overall_status": "degraded"}), ""
+
+    monkeypatch.setattr(pw, "_run", _fake_run)
+
+    out = pw._refresh_runtime_reports(max_age_seconds=7200, health_fast_max_age_seconds=300)
+
+    assert out["health_fast"]["refreshed"] is True
+    assert out["health_fast"]["rc"] == 2
+    assert out["health_fast"]["freshness_budget_seconds"] == 300
+    assert out["health_fast"]["lightweight_always_on"] is True
+    assert any("health_fast.py" in " ".join(cmd) for cmd in calls)
+
+
+def test_lightweight_health_fast_refresh_does_not_depend_on_heavy_reports(tmp_path, monkeypatch) -> None:
+    project_root = tmp_path / "project"
+    health_fast = project_root / "governance" / "health" / "health_fast_latest.json"
+    monkeypatch.setattr(pw, "PROJECT_ROOT", project_root)
+    monkeypatch.setattr(pw, "_file_age_seconds", lambda path: 301.0 if path == health_fast else 0.0)
+    calls: list[list[str]] = []
+
+    def _fake_run(cmd: list[str]):
+        calls.append(cmd)
+        return 0, "{}", ""
+
+    monkeypatch.setattr(pw, "_run", _fake_run)
+
+    row = pw._refresh_health_fast(300)
+
+    assert row["refreshed"] is True
+    assert row["lightweight_always_on"] is True
+    assert len(calls) == 1
+    assert "health_fast.py" in " ".join(calls[0])
+
+
 def test_refresh_runtime_reports_blocks_daily_summary_when_resource_guard_denies(tmp_path, monkeypatch) -> None:
     project_root = tmp_path / "project"
     one_numbers = project_root / "exports" / "one_numbers" / "one_numbers_summary.json"
@@ -180,16 +229,30 @@ def test_refresh_runtime_reports_blocks_daily_summary_when_resource_guard_denies
 
 
 def test_run_returns_timeout_payload(monkeypatch) -> None:
-    def _fake_run(*_args, **_kwargs):
-        exc = subprocess.TimeoutExpired(
-            cmd=["fake-helper", "--json"],
-            timeout=12.0,
-        )
-        exc.output = "partial stdout\n"
-        exc.stderr = "partial stderr\n"
-        raise exc
+    class _FakeProcess:
+        pid = 4321
+        returncode = None
+        stdout = None
+        stderr = None
 
-    monkeypatch.setattr(pw.subprocess, "run", _fake_run)
+        def __init__(self, *_args, **_kwargs):
+            self.calls = 0
+
+        def communicate(self, timeout=None):
+            self.calls += 1
+            if self.calls == 1:
+                exc = subprocess.TimeoutExpired(cmd=["fake-helper", "--json"], timeout=timeout)
+                exc.output = "partial stdout\n"
+                exc.stderr = "partial stderr\n"
+                raise exc
+            self.returncode = -15
+            return "partial stdout\n", "partial stderr\n"
+
+        def send_signal(self, _sig):
+            return None
+
+    monkeypatch.setattr(pw.subprocess, "Popen", _FakeProcess)
+    monkeypatch.setattr(pw.os, "killpg", lambda *_args: None)
 
     rc, stdout, stderr = pw._run(["fake-helper", "--json"], timeout_seconds=12.0)
 
@@ -197,6 +260,16 @@ def test_run_returns_timeout_payload(monkeypatch) -> None:
     assert stdout == "partial stdout"
     assert "timeout_after_seconds=12.0" in stderr
     assert "partial stderr" in stderr
+
+
+def test_process_watchdog_singleton_rejects_duplicate_instance(tmp_path) -> None:
+    lock_path = tmp_path / "process_watchdog.lock"
+    first, _owner = pw._acquire_singleton_lock(lock_path)
+    assert first is not None
+    second, owner = pw._acquire_singleton_lock(lock_path)
+    assert second is None
+    assert "pid=" in owner
+    first.close()
 
 
 def test_parse_ps_etime_seconds_handles_macos_formats() -> None:

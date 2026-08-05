@@ -1,4 +1,5 @@
 import os
+import json
 import shutil
 import tempfile
 import unittest
@@ -63,6 +64,30 @@ class ProcessWatchdogStorageGuardTests(unittest.TestCase):
             finally:
                 self._restore_env(prev)
 
+    def test_probe_storage_mount_skips_external_io_for_pinned_local_hot_storage(self) -> None:
+        prev = self._set_env(
+            {
+                'BOT_LOGS_PREFER_EXTERNAL': '0',
+                'BOT_LOGS_EXTERNAL_MOUNT': '/Volumes/unresponsive',
+                'BOT_LOGS_EXTERNAL_PROJECT_ROOT': '/Volumes/unresponsive/schwab_trading_bot',
+            }
+        )
+        try:
+            with mock.patch.object(
+                pw,
+                'resolve_external_storage',
+                side_effect=AssertionError('external filesystem must not be probed'),
+            ):
+                probe = pw._probe_storage_mount()
+        finally:
+            self._restore_env(prev)
+
+        self.assertTrue(probe['probe_skipped_external_io'])
+        self.assertTrue(probe['hot_storage_available'])
+        self.assertFalse(probe['external_required_for_hot_path'])
+        self.assertEqual(probe['storage_mode'], 'local_fallback')
+        self.assertEqual(probe['external_unavailable_reason'], 'cold_archive_only_local_hot_storage_policy')
+
     def test_probe_storage_mount_uses_existing_candidate_when_primary_mount_missing(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             primary_mount = Path(td) / 'BOT_LOGS'
@@ -101,7 +126,8 @@ class ProcessWatchdogStorageGuardTests(unittest.TestCase):
                 }
             )
             try:
-                probe = pw._probe_storage_mount()
+                with mock.patch.object(pw, 'find_target_external_volume', return_value=None):
+                    probe = pw._probe_storage_mount()
                 self.assertFalse(probe['mount_present'])
                 self.assertFalse(probe['external_available'])
             finally:
@@ -220,6 +246,125 @@ class ProcessWatchdogStorageGuardTests(unittest.TestCase):
 
         self.assertEqual(payload, {'attempted': True})
         alert.assert_called_once()
+
+    def test_sql_writer_fresh_complete_progress_is_healthy_idle(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            health_dir = Path(td)
+            (health_dir / 'sql_link_service_progress_latest.json').write_text(
+                json.dumps(
+                    {
+                        'timestamp_utc': '2026-08-02T00:00:00+00:00',
+                        'status': 'ok',
+                        'ok': True,
+                        'running': False,
+                        'current_step': 'complete',
+                        'completed_shard_count': 17,
+                        'planned_shard_count': 17,
+                        'pending_shard_count': 0,
+                        'timed_out_shard_count': 0,
+                    }
+                ),
+                encoding='utf-8',
+            )
+            (health_dir / 'ingestion_backpressure_latest.json').write_text(
+                json.dumps(
+                    {
+                        'core_pending_lines': 10,
+                        'total_pending_lines': 25,
+                        'oldest_pending_age_seconds': 5,
+                    }
+                ),
+                encoding='utf-8',
+            )
+
+            with mock.patch.object(pw, 'HEALTH_DIR', health_dir):
+                result = pw._sql_link_writer_idle_health()
+
+        self.assertTrue(result['ok'])
+        self.assertTrue(result['progress_artifact_fresh'])
+        self.assertTrue(result['progress_idle_complete'])
+        self.assertEqual(result['reason'], 'sql_writer_on_demand_idle_complete')
+        self.assertTrue(result['queue_idle_clear'])
+
+    def test_sql_writer_completed_cycle_is_not_idle_healthy_when_backlog_reaccumulates(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            health_dir = Path(td)
+            (health_dir / 'sql_link_service_progress_latest.json').write_text(
+                json.dumps(
+                    {
+                        'status': 'ok',
+                        'ok': True,
+                        'running': False,
+                        'current_step': 'complete',
+                        'completed_shard_count': 6,
+                        'planned_shard_count': 6,
+                        'pending_shard_count': 0,
+                        'timed_out_shard_count': 0,
+                    }
+                ),
+                encoding='utf-8',
+            )
+            (health_dir / 'ingestion_backpressure_latest.json').write_text(
+                json.dumps(
+                    {
+                        'core_pending_lines': 4400,
+                        'total_pending_lines': 9000,
+                        'oldest_pending_age_seconds': 0,
+                    }
+                ),
+                encoding='utf-8',
+            )
+
+            with mock.patch.object(pw, 'HEALTH_DIR', health_dir):
+                result = pw._sql_link_writer_idle_health()
+
+        self.assertFalse(result['ok'])
+        self.assertFalse(result['queue_idle_clear'])
+        self.assertEqual(result['reason'], 'sql_writer_idle_backlog_pending')
+
+    def test_sql_writer_running_or_failed_progress_is_not_healthy_idle(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            health_dir = Path(td)
+            progress_path = health_dir / 'sql_link_service_progress_latest.json'
+            progress_path.write_text(
+                json.dumps(
+                    {
+                        'status': 'running',
+                        'ok': True,
+                        'running': True,
+                        'current_step': 'shard_linking',
+                        'completed_shard_count': 3,
+                        'planned_shard_count': 17,
+                        'pending_shard_count': 14,
+                    }
+                ),
+                encoding='utf-8',
+            )
+
+            with mock.patch.object(pw, 'HEALTH_DIR', health_dir):
+                running_result = pw._sql_link_writer_idle_health()
+
+            progress_path.write_text(
+                json.dumps(
+                    {
+                        'status': 'error',
+                        'ok': False,
+                        'running': False,
+                        'current_step': 'complete',
+                        'completed_shard_count': 17,
+                        'planned_shard_count': 17,
+                        'pending_shard_count': 0,
+                    }
+                ),
+                encoding='utf-8',
+            )
+            with mock.patch.object(pw, 'HEALTH_DIR', health_dir):
+                failed_result = pw._sql_link_writer_idle_health()
+
+        self.assertFalse(running_result['ok'])
+        self.assertFalse(running_result['progress_idle_complete'])
+        self.assertFalse(failed_result['ok'])
+        self.assertFalse(failed_result['progress_idle_complete'])
 
 
 if __name__ == '__main__':

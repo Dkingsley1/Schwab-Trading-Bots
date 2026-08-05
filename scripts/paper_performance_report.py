@@ -302,7 +302,26 @@ def _strategy_of(row: dict[str, Any]) -> str:
     return f"unknown::{symbol}::{action}"
 
 
+def _pnl_schema_version(row: dict[str, Any]) -> int:
+    try:
+        return int(row.get("paper_pnl_schema_version", 0) or 0)
+    except Exception:
+        return 0
+
+
+def _paper_snapshot_key(row: dict[str, Any]) -> str:
+    strategy = _strategy_of(row)
+    if _pnl_schema_version(row) < 2:
+        return strategy
+    book_id = str(row.get("paper_book_id") or "").strip()
+    if not book_id:
+        book_id = "missing_book_id"
+    return f"{book_id}::{strategy}"
+
+
 def _net_total(row: dict[str, Any]) -> float:
+    if _pnl_schema_version(row) >= 2:
+        return _safe_float(row.get("paper_strategy_net_pnl_total"), 0.0)
     realized = _safe_float(row.get("realized_pnl_total"), _safe_float(row.get("realized_pnl")))
     unrealized = _safe_float(row.get("unrealized_pnl_total"), _safe_float(row.get("unrealized_pnl")))
     return float(realized + unrealized)
@@ -481,6 +500,8 @@ def _profile_totals(profile_rows: dict[str, tuple[datetime, dict[str, Any]]] | N
             "ending_realized_pnl_total": 0.0,
             "ending_unrealized_pnl_total": 0.0,
             "ending_net_pnl_total": 0.0,
+            "accounting_scope": "none",
+            "paper_book_count": 0,
         }
 
     latest_ts: datetime | None = None
@@ -497,17 +518,40 @@ def _profile_totals(profile_rows: dict[str, tuple[datetime, dict[str, Any]]] | N
             for child in node.values():
                 yield from _iter_leaves(child)
 
-    for ts, row in _iter_leaves(profile_rows):
-        realized_sum += _realized_total(row)
-        unrealized_sum += _unrealized_total(row)
-        if latest_ts is None or ts > latest_ts:
-            latest_ts = ts
+    leaves = list(_iter_leaves(profile_rows))
+    schema_v2_leaves = [(ts, row) for ts, row in leaves if _pnl_schema_version(row) >= 2]
+    paper_book_count = 0
+    accounting_scope = "legacy_strategy_snapshot_sum"
+    if schema_v2_leaves:
+        accounting_scope = "persistent_profile_book"
+        latest_by_book: dict[tuple[str, str], tuple[datetime, dict[str, Any]]] = {}
+        for ts, row in schema_v2_leaves:
+            profile = str(row.get("paper_profile") or _profile_of(row)).strip().lower() or "default"
+            book_id = str(row.get("paper_book_id") or "").strip() or f"missing::{profile}"
+            key = (book_id, profile)
+            current = latest_by_book.get(key)
+            if current is None or ts > current[0]:
+                latest_by_book[key] = (ts, row)
+        paper_book_count = len(latest_by_book)
+        for ts, row in latest_by_book.values():
+            realized_sum += _safe_float(row.get("paper_profile_realized_pnl_total"), 0.0)
+            unrealized_sum += _safe_float(row.get("paper_profile_unrealized_pnl_total"), 0.0)
+            if latest_ts is None or ts > latest_ts:
+                latest_ts = ts
+    else:
+        for ts, row in leaves:
+            realized_sum += _realized_total(row)
+            unrealized_sum += _unrealized_total(row)
+            if latest_ts is None or ts > latest_ts:
+                latest_ts = ts
     return {
         "available": True,
         "ending_timestamp_utc": latest_ts.isoformat().replace("+00:00", "Z") if latest_ts is not None else "",
         "ending_realized_pnl_total": round(float(realized_sum), 6),
         "ending_unrealized_pnl_total": round(float(unrealized_sum), 6),
         "ending_net_pnl_total": round(float(realized_sum + unrealized_sum), 6),
+        "accounting_scope": accounting_scope,
+        "paper_book_count": int(paper_book_count),
     }
 
 
@@ -647,6 +691,88 @@ def _sample_stddev(values: list[float]) -> float:
     avg = _mean(values)
     variance = sum((value - avg) ** 2 for value in values) / float(len(values) - 1)
     return math.sqrt(max(variance, 0.0))
+
+
+def _post_cost_expectancy(
+    rows: Iterable[dict[str, Any]],
+    *,
+    minimum_samples: int = 30,
+) -> dict[str, Any]:
+    samples: list[tuple[float, float, dict[str, Any]]] = []
+    timestamps: list[datetime] = []
+    for row in rows:
+        if not isinstance(row, dict) or _pnl_schema_version(row) < 2:
+            continue
+        if "post_cost_pnl_delta" not in row or "post_cost_return_bps" not in row:
+            continue
+        pnl_delta = _safe_float(row.get("post_cost_pnl_delta"), float("nan"))
+        return_bps = _safe_float(row.get("post_cost_return_bps"), float("nan"))
+        if not math.isfinite(pnl_delta) or not math.isfinite(return_bps):
+            continue
+        samples.append((pnl_delta, return_bps, row))
+        ts = _parse_ts(row.get("timestamp_utc"))
+        if ts is not None:
+            timestamps.append(ts)
+
+    sample_count = len(samples)
+    required = max(int(minimum_samples), 1)
+    if not samples:
+        return {
+            "available": False,
+            "status": "no_schema_v2_trade_deltas",
+            "sample_count": 0,
+            "minimum_samples": required,
+            "evidence_sufficient": False,
+            "positive_lower_confidence_bound_95": False,
+        }
+
+    pnl_values = [item[0] for item in samples]
+    return_values = [item[1] for item in samples]
+    mean_pnl = _mean(pnl_values)
+    mean_return = _mean(return_values)
+    pnl_se = _sample_stddev(pnl_values) / math.sqrt(sample_count) if sample_count > 1 else 0.0
+    return_se = _sample_stddev(return_values) / math.sqrt(sample_count) if sample_count > 1 else 0.0
+    pnl_lcb = mean_pnl - (1.96 * pnl_se)
+    return_lcb = mean_return - (1.96 * return_se)
+    evidence_sufficient = sample_count >= required
+    positive_lcb = evidence_sufficient and pnl_lcb > 0.0 and return_lcb > 0.0
+    if not evidence_sufficient:
+        status = "insufficient_evidence"
+    elif positive_lcb:
+        status = "positive_with_95pct_confidence"
+    elif mean_pnl > 0.0 and mean_return > 0.0:
+        status = "positive_mean_confidence_pending"
+    else:
+        status = "nonpositive_post_cost_expectancy"
+
+    return {
+        "available": True,
+        "status": status,
+        "accounting_scope": "schema_v2_trade_delta",
+        "sample_count": int(sample_count),
+        "minimum_samples": required,
+        "evidence_sufficient": bool(evidence_sufficient),
+        "positive_lower_confidence_bound_95": bool(positive_lcb),
+        "first_sample_timestamp_utc": min(timestamps).isoformat().replace("+00:00", "Z") if timestamps else "",
+        "last_sample_timestamp_utc": max(timestamps).isoformat().replace("+00:00", "Z") if timestamps else "",
+        "positive_sample_count": int(sum(1 for value in pnl_values if value > 0.0)),
+        "positive_sample_rate": round(float(sum(1 for value in pnl_values if value > 0.0) / sample_count), 6),
+        "total_post_cost_pnl_delta": round(float(sum(pnl_values)), 6),
+        "mean_post_cost_pnl_delta": round(float(mean_pnl), 6),
+        "standard_error_post_cost_pnl_delta": round(float(pnl_se), 6),
+        "lower_confidence_bound_95_post_cost_pnl_delta": round(float(pnl_lcb), 6),
+        "mean_post_cost_return_bps": round(float(mean_return), 6),
+        "standard_error_post_cost_return_bps": round(float(return_se), 6),
+        "lower_confidence_bound_95_post_cost_return_bps": round(float(return_lcb), 6),
+        "execution_notional_total": round(
+            float(sum(max(_safe_float(item[2].get("execution_notional"), 0.0), 0.0) for item in samples)),
+            6,
+        ),
+        "expected_execution_cost_total": round(
+            float(sum(max(_safe_float(item[2].get("expected_execution_cost_amount"), 0.0), 0.0) for item in samples)),
+            6,
+        ),
+    }
 
 
 def _sleeve_risk_metric(profile: str, daily_rows: list[dict[str, Any]]) -> dict[str, Any]:
@@ -801,10 +927,11 @@ def _strategy_snapshot_rankings(
 
     ranked = [
         {
-            "strategy": str(strategy or "").strip(),
+            "strategy": _strategy_of(row),
+            "paper_book_id": str(row.get("paper_book_id") or "").strip(),
             "ending_net_pnl_total": round(float(_net_total(row)), 6),
         }
-        for strategy, (_ts, row) in strategy_rows.items()
+        for _snapshot_key, (_ts, row) in strategy_rows.items()
     ]
     ranked.sort(key=lambda item: (float(item["ending_net_pnl_total"]), item["strategy"]), reverse=True)
     winners = [row for row in ranked if float(row.get("ending_net_pnl_total", 0.0) or 0.0) > 0.0][: max(int(limit), 1)]
@@ -964,10 +1091,12 @@ def _build_sleeve_latest_summary(
     latest_by_day_profile: dict[str, dict[str, dict[str, tuple[datetime, dict[str, Any]]]]],
     stats_by_day: dict[str, dict[str, Any]],
     active_shadow_profiles: dict[str, dict[str, Any]] | None = None,
+    post_cost_rows_by_profile: dict[str, list[dict[str, Any]]] | None = None,
 ) -> list[dict[str, Any]]:
     profile_rows = latest_by_day_profile.get(day, {})
     latest_rows = _latest_profile_rows(latest_by_day_profile)
     live_profiles = active_shadow_profiles or {}
+    profile_post_cost_rows = post_cost_rows_by_profile or {}
     rows: list[dict[str, Any]] = []
     seen_profiles = set(_ordered_profiles(latest_by_day_profile))
     ordered_profiles = list(_ordered_profiles(latest_by_day_profile))
@@ -1022,6 +1151,7 @@ def _build_sleeve_latest_summary(
                     "tca_summary": {},
                     "advanced_feature_telemetry": {},
                     "advanced_feature_summary": "live_no_fills_yet" if live_no_fills_yet else "n/a",
+                    "post_cost_expectancy": _post_cost_expectancy(profile_post_cost_rows.get(profile, [])),
                 }
             )
             continue
@@ -1043,6 +1173,8 @@ def _build_sleeve_latest_summary(
                 "ending_realized_pnl_total": round(float(ending_realized), 6),
                 "ending_unrealized_pnl_total": round(float(ending_unrealized), 6),
                 "ending_net_pnl_total": round(float(ending_net), 6),
+                "accounting_scope": str(totals.get("accounting_scope") or ""),
+                "paper_book_count": int(totals.get("paper_book_count", 0) or 0),
                 "strategy_count": int(outcome.get("strategy_count", 0) or 0),
                 "winning_strategy_count": int(outcome.get("winning_strategy_count", 0) or 0),
                 "losing_strategy_count": int(outcome.get("losing_strategy_count", 0) or 0),
@@ -1056,6 +1188,7 @@ def _build_sleeve_latest_summary(
                 "tca_summary": attribution.get("tca_summary", {}),
                 "advanced_feature_telemetry": feature_telemetry,
                 "advanced_feature_summary": _format_feature_telemetry_brief(feature_telemetry),
+                "post_cost_expectancy": _post_cost_expectancy(profile_post_cost_rows.get(profile, [])),
                 "live_shadow_status": str(live_heartbeat.get("state") or ""),
                 "live_shadow_timestamp_utc": str(live_heartbeat.get("timestamp_utc") or ""),
                 "activity_note": "live heartbeat active; no paper fills yet today" if live_no_fills_yet else "",
@@ -1110,6 +1243,8 @@ def _summarize_day(
         "ending_realized_pnl_total": round(float(ending_realized), 6),
         "ending_unrealized_pnl_total": round(float(ending_unrealized), 6),
         "ending_net_pnl_total": round(float(ending_net), 6),
+        "accounting_scope": str(totals.get("accounting_scope") or ""),
+        "paper_book_count": int(totals.get("paper_book_count", 0) or 0),
         "top_profiles": _rank_counter(stats.get("profiles", Counter())),
         "top_symbols": _rank_counter(stats.get("symbols", Counter())),
         "top_strategies": _rank_counter(stats.get("strategies", Counter())),
@@ -1121,6 +1256,8 @@ def build_paper_performance_report(project_root: Path, *, day: str, week_days: i
     active_shadow_profiles = _active_shadow_profiles(project_root, day=day)
     latest_by_day_profile: dict[str, dict[str, dict[str, tuple[datetime, dict[str, Any]]]]] = defaultdict(lambda: defaultdict(dict))
     stats_by_day: dict[str, dict[str, Any]] = defaultdict(_empty_stats)
+    post_cost_rows_by_profile: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    all_post_cost_rows: list[dict[str, Any]] = []
 
     for row in _iter_rows(files):
         ts = _parse_ts(row.get("timestamp_utc"))
@@ -1128,8 +1265,11 @@ def build_paper_performance_report(project_root: Path, *, day: str, week_days: i
             continue
         dkey = _day_key(ts)
         profile = _profile_of(row)
-        strategy = _strategy_of(row)
+        strategy = _paper_snapshot_key(row)
         _update_stats(stats_by_day[dkey], row)
+        if _pnl_schema_version(row) >= 2 and "post_cost_pnl_delta" in row and "post_cost_return_bps" in row:
+            post_cost_rows_by_profile[profile].append(row)
+            all_post_cost_rows.append(row)
         current = latest_by_day_profile[dkey][profile].get(strategy)
         if current is None or ts > current[0]:
             latest_by_day_profile[dkey][profile][strategy] = (ts, row)
@@ -1247,6 +1387,7 @@ def build_paper_performance_report(project_root: Path, *, day: str, week_days: i
                 latest_by_day_profile=latest_by_day_profile,
                 stats_by_day=stats_by_day,
                 active_shadow_profiles=active_shadow_profiles,
+                post_cost_rows_by_profile=post_cost_rows_by_profile,
             ),
             sleeve_daily_series=sleeve_daily_series,
         ),
@@ -1259,6 +1400,7 @@ def build_paper_performance_report(project_root: Path, *, day: str, week_days: i
         ),
         "day": day_summary,
         "week": week_summary,
+        "post_cost_expectancy": _post_cost_expectancy(all_post_cost_rows),
     }
 
 

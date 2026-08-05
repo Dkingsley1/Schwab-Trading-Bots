@@ -93,6 +93,49 @@ def test_storage_resilience_control_uses_local_fallback_for_broken_routed_sqlite
     assert primary_check["ok"] is True
 
 
+def test_storage_resilience_accepts_verified_local_hot_external_archive_topology(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    (project_root / "local_fallback_storage").mkdir(parents=True, exist_ok=True)
+    health = project_root / "governance" / "health"
+    _write_json(
+        health / "storage_mount_guard_latest.json",
+        {
+            "external_available": False,
+            "external_required_for_hot_path": False,
+            "hot_storage_available": True,
+            "probe_skipped_external_io": True,
+        },
+    )
+    _write_json(health / "storage_failback_sync_latest.json", {"mode": "local_fallback"})
+    _write_json(health / "storage_split_brain_reconciler_latest.json", {"summary": {"unresolved_conflicts": 0}})
+    _write_json(
+        health / "storage_retention_unison_latest.json",
+        {
+            "continuous_run_contract": {"ready": True},
+            "disk": {
+                "external": {
+                    "exists": True,
+                    "protected": False,
+                    "free_gb": 300.0,
+                }
+            }
+        },
+    )
+    _write_json(
+        project_root / "exports" / "state_snapshot_drills" / "latest.json",
+        {"timestamp_utc": datetime.now(timezone.utc).isoformat(), "ok": True},
+    )
+    _write_json(health / "daily_auto_verify_latest.json", {"ok": True})
+
+    payload = resilience_src.build_payload(project_root)
+
+    assert payload["overall_status"] == "ready"
+    assert payload["active_route_ready"] is True
+    assert payload["archive_standby_ready"] is True
+    assert payload["dual_root_ready"] is True
+    assert payload["route_topology"]["policy"] == "local_hot_external_archive"
+
+
 def test_operator_cockpit_aggregates_upgrade_surfaces(tmp_path: Path) -> None:
     project_root = tmp_path / "project"
     _write_json(project_root / "governance" / "health" / "runtime_gate_dashboard_latest.json", {"overall": {"status": "degraded", "ok": False, "attention": ["storage_resilience_control_needs_work"]}})

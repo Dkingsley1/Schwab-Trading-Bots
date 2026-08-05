@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime, timezone
 from pathlib import Path
 
 from scripts.ops import autonomic_resource_governor as governor
@@ -1552,6 +1553,78 @@ def test_memory_pressure_intelligence_reopens_pcores_for_stale_allocation_high_w
     assert payload["snapshot"]["compressed_store_gb"] == 8.0
     assert payload["classification"]["status"] == "clear"
     assert payload["classification"]["recommended_p_core_worker_cap"] == 7
+    assert payload["reopen_gate"]["safe_to_widen_p_core_workers"] is True
+
+
+def test_memory_pressure_intelligence_treats_retained_swap_as_allocation_only_when_vm_is_clear(tmp_path: Path) -> None:
+    health = tmp_path / "governance" / "health"
+    host = _host_payload()
+    host["body_map"]["memory"] = {
+        "memory_gb": 32,
+        "swap_used_gb": 4.651,
+        "pressure_level": "normal",
+        "compressor_gb": 0.45,
+        "memory_snapshot": {
+            "compressed_store_gb": 7.6,
+            "compressor_gb": 0.45,
+            "swap_used_gb": 4.651,
+            "memory_free_pct": 91.0,
+            "memory_pressure_kind": "none",
+        },
+    }
+    _write_json(health / "host_capability_contract_latest.json", host)
+    _write_json(
+        health / "runtime_throttle_control_latest.json",
+        {"overall_status": "ready", "memory_pressure_level": "normal", "runtime_snapshot": {"vm_pages_throttled": 0}},
+    )
+    _write_json(
+        health / "memory_efficiency_control_latest.json",
+        {
+            "overall_status": "ready",
+            "memory_snapshot": {
+                "memory_pressure_state": "green",
+                "memory_pressure_kind": "none",
+                "memory_free_pct": 91.0,
+                "swap_used_gb": 4.651,
+                "compressed_store_gb": 7.6,
+                "compressor_gb": 0.45,
+            },
+        },
+    )
+    _write_json(
+        health / "swap_pressure_governor_latest.json",
+        {
+            "swap_pressure": {
+                "tier": "normal",
+                "swap_used_gb": 4.651,
+                "memory_pressure_state": "green",
+                "memory_pressure_kind": "none",
+            }
+        },
+    )
+    _write_json(health / "computer_task_intelligence_latest.json", {"session_context": {"open_apps": [], "creative_level": "none"}})
+    _write_json(
+        health / "memory_pressure_intelligence_latest.json",
+        {
+            "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+            "reopen_gate": {"consecutive_memory_clear_samples": 1, "consecutive_cooling_samples": 0},
+            "snapshot": {
+                "compressed_pressure_gb": 0.45,
+                "effective_swap_pressure_gb": 0.0,
+                "swap_used_gb": 4.651,
+                "pages_throttled": 0,
+            },
+        },
+    )
+
+    payload = memory_pressure_intelligence.build_payload(tmp_path)
+
+    truth = payload["snapshot"]["memory_truth_reconciliation"]
+    assert payload["snapshot"]["swap_used_gb"] == 4.651
+    assert payload["snapshot"]["effective_swap_pressure_gb"] == 0.0
+    assert payload["snapshot"]["swap_allocation_only"] is True
+    assert truth["inactive_swap_allocation_relief"] is True
+    assert payload["classification"]["status"] == "clear"
     assert payload["reopen_gate"]["safe_to_widen_p_core_workers"] is True
 
 

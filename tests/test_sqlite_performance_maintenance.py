@@ -1,6 +1,35 @@
 import scripts.sqlite_performance_maintenance as maint
 
 
+def test_sqlite_maintenance_hold_exits_before_opening_database(tmp_path, monkeypatch) -> None:
+    db_path = tmp_path / "missing.sqlite3"
+    out_path = tmp_path / "sqlite_maintenance_latest.json"
+    monkeypatch.setattr(
+        maint,
+        "maintenance_hold_snapshot",
+        lambda project_root: {"active": True, "reason": "test_cutover"},
+    )
+    monkeypatch.setattr(
+        maint.sys,
+        "argv",
+        [
+            "sqlite_performance_maintenance.py",
+            "--db",
+            str(db_path),
+            "--out-file",
+            str(out_path),
+            "--checkpoint-only",
+            "--json",
+        ],
+    )
+
+    assert maint.main() == 0
+    payload = maint._read_json(out_path)
+    assert payload["overall_status"] == "runtime_maintenance_hold"
+    assert payload["route_mutation_performed"] is False
+    assert not db_path.exists()
+
+
 def test_checkpoint_mode_for_wal_uses_truncate_for_small_wal() -> None:
     assert maint._checkpoint_mode_for_wal(1.5, "auto", 8.0) == "truncate"
 

@@ -862,6 +862,12 @@ def _storage_catch_up_wave_limit(project_root: Path) -> int:
     return max(1, min(max(_safe_int(wave.get("max_waves"), 1), _safe_int(accelerator_wave.get("max_waves"), 1)), 7))
 
 
+def _bounded_catch_up_wave_limit(configured_limit: int, requested_cap: int = 0) -> int:
+    configured = max(1, min(int(configured_limit), 7))
+    cap = int(requested_cap)
+    return min(configured, max(cap, 1)) if cap > 0 else configured
+
+
 def _storage_followup_issues(project_root: Path) -> set[str]:
     storage = _load_json(project_root / "governance" / "health" / "ingestion_storage_control_latest.json")
     contract = storage.get("backlog_relief_contract") if isinstance(storage.get("backlog_relief_contract"), dict) else {}
@@ -974,6 +980,7 @@ def build_payload(
     wait_timeout_seconds: float = DEFAULT_WAIT_TIMEOUT_SECONDS,
     command_timeout_seconds: int = DEFAULT_COMMAND_TIMEOUT_SECONDS,
     sql_manager_timeout_cap_seconds: int = 0,
+    max_catch_up_waves: int = 0,
     stale_progress_minutes: float = DEFAULT_STALE_PROGRESS_MINUTES,
     skip_drain: bool = False,
     skip_maintenance: bool = False,
@@ -1079,7 +1086,10 @@ def build_payload(
     maintenance_applied = False
     maintenance_followup_needed = False
     catch_up_followup_needed = False
-    catch_up_wave_limit = _storage_catch_up_wave_limit(project_root)
+    catch_up_wave_limit = _bounded_catch_up_wave_limit(
+        _storage_catch_up_wave_limit(project_root),
+        max_catch_up_waves,
+    )
     catch_up_wave_records: list[dict[str, Any]] = []
 
     if apply and actionable:
@@ -1104,7 +1114,10 @@ def build_payload(
             drainer_payload = drainer_apply.get("payload") if isinstance(drainer_apply.get("payload"), dict) else {}
             drainer_handoff_ok = int(drainer_apply.get("rc", 1)) == 0 and _drainer_service_request_ok(drainer_payload)
             if drainer_handoff_ok and not bool(writer_after.get("active", False)):
-                catch_up_wave_limit = max(_catch_up_wave_limit(drainer_payload), _storage_catch_up_wave_limit(project_root))
+                catch_up_wave_limit = _bounded_catch_up_wave_limit(
+                    max(_catch_up_wave_limit(drainer_payload), _storage_catch_up_wave_limit(project_root)),
+                    max_catch_up_waves,
+                )
 
                 def _run_shard_manager_wave(wave_index: int) -> dict[str, Any]:
                     return _run_json_command(
@@ -1477,6 +1490,7 @@ def main() -> int:
     parser.add_argument("--wait-timeout-seconds", type=float, default=DEFAULT_WAIT_TIMEOUT_SECONDS)
     parser.add_argument("--command-timeout-seconds", type=int, default=DEFAULT_COMMAND_TIMEOUT_SECONDS)
     parser.add_argument("--sql-manager-timeout-cap-seconds", type=int, default=int(os.getenv("WRITER_CYCLE_SQL_MANAGER_TIMEOUT_CAP_SECONDS", "0")))
+    parser.add_argument("--max-catch-up-waves", type=int, default=int(os.getenv("WRITER_CYCLE_CATCH_UP_WAVE_CAP", "0")))
     parser.add_argument("--stale-progress-minutes", type=float, default=float(os.getenv("WRITER_CYCLE_STALE_PROGRESS_MINUTES", str(DEFAULT_STALE_PROGRESS_MINUTES))))
     parser.add_argument("--handoff-only", "--fast-handoff", action="store_true")
     parser.add_argument("--handoff-grace-seconds", type=float, default=float(os.getenv("WRITER_CYCLE_HANDOFF_GRACE_SECONDS", "1.0")))
@@ -1526,6 +1540,7 @@ def main() -> int:
                 wait_timeout_seconds=float(args.wait_timeout_seconds),
                 command_timeout_seconds=int(args.command_timeout_seconds),
                 sql_manager_timeout_cap_seconds=int(args.sql_manager_timeout_cap_seconds),
+                max_catch_up_waves=int(args.max_catch_up_waves),
                 stale_progress_minutes=float(args.stale_progress_minutes),
                 skip_drain=bool(args.skip_drain),
                 skip_maintenance=bool(args.skip_maintenance),

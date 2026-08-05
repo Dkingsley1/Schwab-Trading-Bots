@@ -1,6 +1,7 @@
 import json
 import sqlite3
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 
@@ -13,6 +14,7 @@ from scripts.ops import sql_analytics_mirror as src
 
 def test_sql_analytics_mirror_builds_materialized_summaries_and_heat(tmp_path: Path) -> None:
     project_root = tmp_path / "project"
+    timestamp_utc = datetime.now(timezone.utc).isoformat()
     source_db = project_root / "data" / "jsonl_link.sqlite3"
     source_db.parent.mkdir(parents=True, exist_ok=True)
     with sqlite3.connect(str(source_db)) as conn:
@@ -45,9 +47,9 @@ def test_sql_analytics_mirror_builds_materialized_summaries_and_heat(tmp_path: P
                 str(project_root / "decisions" / "a.jsonl"),
                 "decisions/a.jsonl",
                 1,
-                "2026-04-16T12:00:00+00:00",
+                timestamp_utc,
                 "sha1",
-                json.dumps({"timestamp_utc": "2026-04-16T12:00:00+00:00", "symbol": "SPY", "action": "BUY"}),
+                json.dumps({"timestamp_utc": timestamp_utc, "symbol": "SPY", "action": "BUY"}),
                 "run-1",
                 "iter-1",
                 "d-1",

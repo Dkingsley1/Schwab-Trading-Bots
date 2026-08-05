@@ -19,7 +19,7 @@ except Exception:
     ZoneInfo = None
 from typing import Any, Dict, List, Optional, Tuple
 
-from core.decision_logger import DecisionLogger
+from core.decision_logger import DecisionLogger, compact_decision_features
 from core.derivatives_features import _days_to_expiry, _extract_option_rows, _option_row_strike, _option_side
 from core.exotic_derivatives_plumbing import exotic_direct_execution_allowed, is_exotic_derivative_sleeve
 from core.live_execution_controls import LiveExecutionGuard, LiveRiskConfig, production_order_firewall_check
@@ -121,11 +121,16 @@ def _parse_env_override_file(path: Path) -> Dict[str, str]:
     return values
 
 
-def _dynamic_storage_override_paths(project_root: str) -> Tuple[Path, Path]:
+def _dynamic_storage_override_paths(project_root: str) -> Tuple[Path, ...]:
     root = Path(project_root).resolve()
     return (
         root / "config" / ".env.storage_pressure_override",
         root / "config" / ".env.storage_override",
+        root / "config" / ".env.runtime_resource_guard_override",
+        root / "config" / ".env.local_storage_reserve_override",
+        # The targeted hot-lane policy is the final authority for overlapping
+        # logging controls while storage containment is active.
+        root / "config" / ".env.hot_lane_retention_override",
     )
 
 
@@ -166,6 +171,13 @@ def _dynamic_storage_flag(project_root: str, name: str, default: bool = True) ->
     if raw is None:
         raw = os.getenv(name, "1" if default else "0")
     return str(raw).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _dynamic_storage_value(project_root: str, name: str, default: str = "") -> str:
+    raw = _dynamic_storage_overrides(project_root).get(name)
+    if raw is None:
+        raw = os.getenv(name, default)
+    return str(raw or "").strip()
 
 
 class BaseTrader:
@@ -235,6 +247,13 @@ class BaseTrader:
         self._paper_bridge_warned_missing_url = False
         self._paper_positions: Dict[str, Dict[str, float]] = {}
         self._paper_realized_total = 0.0
+        self._paper_profile_positions: Dict[str, Dict[str, Dict[str, float]]] = {}
+        self._paper_profile_realized_totals: Dict[str, float] = {}
+        self._paper_strategy_positions: Dict[str, Dict[str, Dict[str, float]]] = {}
+        self._paper_strategy_realized_totals: Dict[str, float] = {}
+        self._paper_book_id = str(uuid.uuid4())
+        self._paper_book_started_utc = datetime.now(timezone.utc).isoformat()
+        self._paper_state_path = ""
 
         self.live_risk_config = LiveRiskConfig.from_env()
         self.live_guard = LiveExecutionGuard(self.live_risk_config)
@@ -431,12 +450,19 @@ class BaseTrader:
     def _paper_profitability_new_entry_blocked(
         self,
         *,
+        symbol: str,
         action: str,
+        quantity: float,
         metadata: Optional[Dict[str, Any]] = None,
     ) -> Tuple[bool, str, Dict[str, Any]]:
-        normalized_action = str(action or "").strip().upper()
-        if normalized_action not in {"BUY", "BUY_TO_OPEN"}:
-            return False, "not_new_entry_buy", {}
+        exposure = self._paper_exposure_change_details(
+            symbol=symbol,
+            action=action,
+            quantity=quantity,
+            metadata=metadata,
+        )
+        if not bool(exposure.get("increases_exposure", False)):
+            return False, "reduce_close_or_hold", exposure
 
         control = self._paper_profitability_control_payload()
         if not control:
@@ -480,6 +506,7 @@ class BaseTrader:
         return True, "paper_profitability_weak_profile_new_entry_block", {
             "source_profile": source_profile,
             "weak_profiles": sorted(weak_profiles),
+            "exposure_change": exposure,
             "raw_profitability_grade": str(control.get("raw_profitability_grade") or raw_recovery.get("current_raw_profitability_grade") or ""),
             "controlled_profitability_grade": str(control.get("controlled_profitability_grade") or ""),
             "control_timestamp_utc": str(control.get("timestamp_utc") or ""),
@@ -525,6 +552,136 @@ class BaseTrader:
 
         self.paper_bridge_log_dir = os.path.join(self.project_root, "exports", "paper_broker_bridge", self.mode_label)
         self.decision_logger = DecisionLogger(self.project_root, subdir=os.path.join("decisions", self.mode_label))
+        if self.mode == "paper":
+            self._load_paper_book_state()
+
+    def _paper_state_enabled(self) -> bool:
+        return str(os.getenv("PAPER_BOOK_STATE_PERSIST_ENABLED", "1") or "1").strip().lower() not in {
+            "0",
+            "false",
+            "no",
+            "off",
+        }
+
+    def _paper_state_file(self) -> Path:
+        profile = self._metadata_sleeve_profile({}) or "default"
+        domain = self._metadata_shadow_domain({}) or self._resolve_shadow_domain() or "unknown"
+        broker = str(self.broker_name or "unknown").strip().lower() or "unknown"
+
+        def _safe_component(raw: str) -> str:
+            return re.sub(r"[^a-zA-Z0-9_.-]+", "_", str(raw or "unknown")).strip("._") or "unknown"
+
+        return (
+            Path(self.project_root)
+            / "exports"
+            / "paper_state"
+            / _safe_component(broker)
+            / f"{_safe_component(profile)}__{_safe_component(domain)}.json"
+        )
+
+    def _reset_paper_book_state(self) -> None:
+        self._paper_positions = {}
+        self._paper_realized_total = 0.0
+        self._paper_profile_positions = {}
+        self._paper_profile_realized_totals = {}
+        self._paper_strategy_positions = {}
+        self._paper_strategy_realized_totals = {}
+        self._paper_book_id = str(uuid.uuid4())
+        self._paper_book_started_utc = datetime.now(timezone.utc).isoformat()
+
+    def _coerce_paper_positions(self, raw: Any) -> Dict[str, Dict[str, float]]:
+        if not isinstance(raw, dict):
+            return {}
+        out: Dict[str, Dict[str, float]] = {}
+        for symbol, value in raw.items():
+            if not isinstance(value, dict):
+                continue
+            symbol_key = str(symbol or "").strip().upper()
+            if not symbol_key:
+                continue
+            out[symbol_key] = {
+                "qty": self._as_float(value.get("qty"), 0.0),
+                "avg_price": max(self._as_float(value.get("avg_price"), 0.0), 0.0),
+                "mark_price": max(self._as_float(value.get("mark_price"), 0.0), 0.0),
+            }
+        return out
+
+    def _coerce_scoped_paper_positions(self, raw: Any) -> Dict[str, Dict[str, Dict[str, float]]]:
+        if not isinstance(raw, dict):
+            return {}
+        out: Dict[str, Dict[str, Dict[str, float]]] = {}
+        for scope, positions in raw.items():
+            scope_key = str(scope or "").strip().lower()
+            if not scope_key:
+                continue
+            coerced = self._coerce_paper_positions(positions)
+            if coerced:
+                out[scope_key] = coerced
+        return out
+
+    def _coerce_paper_totals(self, raw: Any) -> Dict[str, float]:
+        if not isinstance(raw, dict):
+            return {}
+        return {
+            str(key or "").strip().lower(): self._as_float(value, 0.0)
+            for key, value in raw.items()
+            if str(key or "").strip()
+        }
+
+    def _load_paper_book_state(self) -> None:
+        if not self._paper_state_enabled():
+            self._paper_state_path = ""
+            return
+        state_path = self._paper_state_file()
+        if self._paper_state_path == str(state_path):
+            return
+        self._paper_state_path = str(state_path)
+        try:
+            payload = json.loads(state_path.read_text(encoding="utf-8"))
+        except Exception:
+            payload = {}
+        if not isinstance(payload, dict) or int(payload.get("schema_version", 0) or 0) < 1:
+            self._reset_paper_book_state()
+            return
+
+        self._paper_positions = self._coerce_paper_positions(payload.get("positions"))
+        self._paper_realized_total = self._as_float(payload.get("realized_pnl_total"), 0.0)
+        self._paper_profile_positions = self._coerce_scoped_paper_positions(payload.get("profile_positions"))
+        self._paper_profile_realized_totals = self._coerce_paper_totals(payload.get("profile_realized_pnl_totals"))
+        self._paper_strategy_positions = self._coerce_scoped_paper_positions(payload.get("strategy_positions"))
+        self._paper_strategy_realized_totals = self._coerce_paper_totals(payload.get("strategy_realized_pnl_totals"))
+        self._paper_book_id = str(payload.get("paper_book_id") or uuid.uuid4())
+        self._paper_book_started_utc = str(payload.get("paper_book_started_utc") or datetime.now(timezone.utc).isoformat())
+
+    def _persist_paper_book_state(self) -> None:
+        if not self._paper_state_enabled() or not self._paper_state_path:
+            return
+        payload = {
+            "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+            "schema_version": 1,
+            "paper_book_id": self._paper_book_id,
+            "paper_book_started_utc": self._paper_book_started_utc,
+            "broker": self.broker_name,
+            "profile": self._metadata_sleeve_profile({}) or "default",
+            "domain": self._metadata_shadow_domain({}) or self._resolve_shadow_domain(),
+            "positions": self._paper_positions,
+            "realized_pnl_total": float(self._paper_realized_total),
+            "profile_positions": self._paper_profile_positions,
+            "profile_realized_pnl_totals": self._paper_profile_realized_totals,
+            "strategy_positions": self._paper_strategy_positions,
+            "strategy_realized_pnl_totals": self._paper_strategy_realized_totals,
+        }
+        try:
+            wrote = safe_write_json_atomic(
+                self._paper_state_path,
+                payload,
+                project_root=self.project_root,
+                source="paper_book_state",
+            )
+            if not wrote:
+                print(f"[PaperBookState] persist_failed path={self._paper_state_path} err=atomic_write_returned_false")
+        except Exception as exc:
+            print(f"[PaperBookState] persist_failed path={self._paper_state_path} err={exc}")
 
     def _resolve_trade_log_path(self, file_name: str) -> str:
         legacy_path = os.path.join(self.project_root, file_name)
@@ -839,6 +996,36 @@ class BaseTrader:
             return -qty
         return 0.0
 
+    def _paper_exposure_change_details(
+        self,
+        *,
+        symbol: str,
+        action: str,
+        quantity: float,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        profile = self._metadata_sleeve_profile(metadata) or "default"
+        symbol_key = str(symbol or "").strip().upper()
+        profile_book = self._paper_profile_positions.get(profile, {})
+        position = profile_book.get(symbol_key, {}) if isinstance(profile_book, dict) else {}
+        previous_qty = self._as_float(position.get("qty"), 0.0) if isinstance(position, dict) else 0.0
+        signed_qty = self._paper_signed_quantity(action, quantity)
+        next_qty = previous_qty + signed_qty
+        prior_abs = abs(previous_qty)
+        next_abs = abs(next_qty)
+        increase_qty = max(next_abs - prior_abs, 0.0)
+        return {
+            "profile": profile,
+            "symbol": symbol_key,
+            "action": str(action or "").strip().upper(),
+            "previous_qty": float(previous_qty),
+            "signed_order_qty": float(signed_qty),
+            "projected_qty": float(next_qty),
+            "exposure_increase_qty": float(increase_qty),
+            "increases_exposure": bool(increase_qty > 1e-12),
+            "reduces_or_closes": bool(next_abs < prior_abs - 1e-12),
+        }
+
     def _paper_fill_price(self, *, features: Dict[str, Any], metadata: Dict[str, Any]) -> float:
         for key in ("fill_price", "execution_price", "price", "mark_price", "last_price"):
             val = self._as_float(metadata.get(key), 0.0)
@@ -920,27 +1107,28 @@ class BaseTrader:
             "ask_size": float(ask_size),
         }
 
-    def _paper_pnl_fields(
+    def _update_paper_book(
         self,
         *,
-        symbol: str,
-        action: str,
-        quantity: float,
-        features: Dict[str, Any],
-        metadata: Dict[str, Any],
-    ) -> Dict[str, float]:
-        symbol_key = str(symbol).upper()
-        position = self._paper_positions.get(symbol_key, {"qty": 0.0, "avg_price": 0.0, "mark_price": 0.0})
+        positions: Dict[str, Dict[str, float]],
+        realized_total: float,
+        symbol_key: str,
+        signed_qty: float,
+        fill_price: float,
+        mark_price: float,
+    ) -> Dict[str, Any]:
+        position = positions.get(symbol_key, {"qty": 0.0, "avg_price": 0.0, "mark_price": 0.0})
         prev_qty = self._as_float(position.get("qty"), 0.0)
         prev_avg = self._as_float(position.get("avg_price"), 0.0)
-
-        fill_price = self._paper_fill_price(features=features, metadata=metadata)
-        mark_price = max(
-            self._as_float(metadata.get("mark_price"), 0.0),
-            self._as_float(features.get("last_price"), 0.0),
-            fill_price,
-        )
-        signed_qty = self._paper_signed_quantity(action, quantity)
+        previous_unrealized_total = 0.0
+        for row in positions.values():
+            qty_i = self._as_float(row.get("qty"), 0.0)
+            avg_i = self._as_float(row.get("avg_price"), 0.0)
+            mark_i = self._as_float(row.get("mark_price"), 0.0)
+            if mark_i <= 0.0:
+                mark_i = avg_i
+            previous_unrealized_total += qty_i * (mark_i - avg_i)
+        previous_net_total = float(realized_total) + previous_unrealized_total
 
         realized_delta = 0.0
         new_qty = prev_qty
@@ -975,17 +1163,17 @@ class BaseTrader:
         if mark_price <= 0.0:
             mark_price = fill_price
 
-        self._paper_realized_total += realized_delta
+        updated_realized_total = float(realized_total) + realized_delta
         position = {
             "qty": float(new_qty),
             "avg_price": float(new_avg),
             "mark_price": float(mark_price),
         }
-        self._paper_positions[symbol_key] = position
+        positions[symbol_key] = position
 
         unrealized_symbol = float(new_qty) * (float(mark_price) - float(new_avg))
         unrealized_total = 0.0
-        for row in self._paper_positions.values():
+        for row in positions.values():
             qty_i = self._as_float(row.get("qty"), 0.0)
             avg_i = self._as_float(row.get("avg_price"), 0.0)
             mark_i = self._as_float(row.get("mark_price"), 0.0)
@@ -993,17 +1181,101 @@ class BaseTrader:
                 mark_i = avg_i
             unrealized_total += qty_i * (mark_i - avg_i)
 
+        net_total = updated_realized_total + unrealized_total
+        return {
+            "position_qty": float(new_qty),
+            "position_avg_price": float(new_avg),
+            "realized_pnl_delta": float(realized_delta),
+            "unrealized_pnl_symbol": float(unrealized_symbol),
+            "realized_pnl_total": float(updated_realized_total),
+            "unrealized_pnl_total": float(unrealized_total),
+            "net_pnl_total": float(net_total),
+            "net_pnl_delta": float(net_total - previous_net_total),
+        }
+
+    def _paper_pnl_fields(
+        self,
+        *,
+        symbol: str,
+        action: str,
+        quantity: float,
+        strategy: str,
+        features: Dict[str, Any],
+        metadata: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        symbol_key = str(symbol).upper()
+        fill_price = self._paper_fill_price(features=features, metadata=metadata)
+        mark_price = max(
+            self._as_float(metadata.get("mark_price"), 0.0),
+            self._as_float(features.get("last_price"), 0.0),
+            fill_price,
+        )
+        signed_qty = self._paper_signed_quantity(action, quantity)
+
+        ledger = self._update_paper_book(
+            positions=self._paper_positions,
+            realized_total=self._paper_realized_total,
+            symbol_key=symbol_key,
+            signed_qty=signed_qty,
+            fill_price=fill_price,
+            mark_price=mark_price,
+        )
+        self._paper_realized_total = self._as_float(ledger.get("realized_pnl_total"), 0.0)
+
+        profile = self._metadata_sleeve_profile(metadata) or "default"
+        profile_positions = self._paper_profile_positions.setdefault(profile, {})
+        profile_book = self._update_paper_book(
+            positions=profile_positions,
+            realized_total=self._paper_profile_realized_totals.get(profile, 0.0),
+            symbol_key=symbol_key,
+            signed_qty=signed_qty,
+            fill_price=fill_price,
+            mark_price=mark_price,
+        )
+        self._paper_profile_realized_totals[profile] = self._as_float(profile_book.get("realized_pnl_total"), 0.0)
+
+        strategy_key = str(strategy or "unknown").strip().lower() or "unknown"
+        strategy_positions = self._paper_strategy_positions.setdefault(strategy_key, {})
+        strategy_book = self._update_paper_book(
+            positions=strategy_positions,
+            realized_total=self._paper_strategy_realized_totals.get(strategy_key, 0.0),
+            symbol_key=symbol_key,
+            signed_qty=signed_qty,
+            fill_price=fill_price,
+            mark_price=mark_price,
+        )
+        self._paper_strategy_realized_totals[strategy_key] = self._as_float(strategy_book.get("realized_pnl_total"), 0.0)
+        self._persist_paper_book_state()
+
         return {
             "fill_price": float(fill_price),
             "mark_price": float(mark_price),
-            "position_qty": float(new_qty),
-            "position_avg_price": float(new_avg),
-            "realized": float(realized_delta),
-            "unrealized": float(unrealized_symbol),
-            "realized_pnl": float(realized_delta),
-            "unrealized_pnl": float(unrealized_symbol),
-            "realized_pnl_total": float(self._paper_realized_total),
-            "unrealized_pnl_total": float(unrealized_total),
+            "position_qty": self._as_float(ledger.get("position_qty"), 0.0),
+            "position_avg_price": self._as_float(ledger.get("position_avg_price"), 0.0),
+            "realized": self._as_float(ledger.get("realized_pnl_delta"), 0.0),
+            "unrealized": self._as_float(ledger.get("unrealized_pnl_symbol"), 0.0),
+            "realized_pnl": self._as_float(ledger.get("realized_pnl_delta"), 0.0),
+            "unrealized_pnl": self._as_float(ledger.get("unrealized_pnl_symbol"), 0.0),
+            "realized_pnl_total": self._as_float(ledger.get("realized_pnl_total"), 0.0),
+            "unrealized_pnl_total": self._as_float(ledger.get("unrealized_pnl_total"), 0.0),
+            "paper_pnl_schema_version": 2,
+            "paper_pnl_scope": "persistent_profile_book",
+            "paper_book_id": self._paper_book_id,
+            "paper_book_started_utc": self._paper_book_started_utc,
+            "paper_profile": profile,
+            "paper_profile_realized_pnl_total": self._as_float(profile_book.get("realized_pnl_total"), 0.0),
+            "paper_profile_unrealized_pnl_total": self._as_float(profile_book.get("unrealized_pnl_total"), 0.0),
+            "paper_profile_net_pnl_total": self._as_float(profile_book.get("net_pnl_total"), 0.0),
+            "paper_profile_net_pnl_delta": self._as_float(profile_book.get("net_pnl_delta"), 0.0),
+            "paper_strategy": strategy_key,
+            "paper_strategy_realized_pnl_total": self._as_float(strategy_book.get("realized_pnl_total"), 0.0),
+            "paper_strategy_unrealized_pnl_total": self._as_float(strategy_book.get("unrealized_pnl_total"), 0.0),
+            "paper_strategy_net_pnl_total": self._as_float(strategy_book.get("net_pnl_total"), 0.0),
+            "paper_strategy_net_pnl_delta": self._as_float(strategy_book.get("net_pnl_delta"), 0.0),
+            "paper_ledger_realized_pnl_total": self._as_float(ledger.get("realized_pnl_total"), 0.0),
+            "paper_ledger_unrealized_pnl_total": self._as_float(ledger.get("unrealized_pnl_total"), 0.0),
+            "paper_ledger_net_pnl_total": self._as_float(ledger.get("net_pnl_total"), 0.0),
+            "paper_ledger_net_pnl_delta": self._as_float(ledger.get("net_pnl_delta"), 0.0),
         }
 
     def _explanation_log_paths(self) -> tuple[str, str]:
@@ -1054,6 +1326,36 @@ class BaseTrader:
             "unrealized_pnl": float(paper_order.get("unrealized_pnl", 0.0) or 0.0),
             "realized_pnl_total": float(paper_order.get("realized_pnl_total", 0.0) or 0.0),
             "unrealized_pnl_total": float(paper_order.get("unrealized_pnl_total", 0.0) or 0.0),
+            "paper_pnl_schema_version": int(paper_order.get("paper_pnl_schema_version", 0) or 0),
+            "paper_pnl_scope": str(paper_order.get("paper_pnl_scope", "") or ""),
+            "paper_book_id": str(paper_order.get("paper_book_id", "") or ""),
+            "paper_book_started_utc": str(paper_order.get("paper_book_started_utc", "") or ""),
+            "paper_profile": str(paper_order.get("paper_profile", "") or ""),
+            "paper_profile_realized_pnl_total": float(paper_order.get("paper_profile_realized_pnl_total", 0.0) or 0.0),
+            "paper_profile_unrealized_pnl_total": float(paper_order.get("paper_profile_unrealized_pnl_total", 0.0) or 0.0),
+            "paper_profile_net_pnl_total": float(paper_order.get("paper_profile_net_pnl_total", 0.0) or 0.0),
+            "paper_profile_net_pnl_delta": float(paper_order.get("paper_profile_net_pnl_delta", 0.0) or 0.0),
+            "paper_strategy": str(paper_order.get("paper_strategy", "") or ""),
+            "paper_strategy_realized_pnl_total": float(paper_order.get("paper_strategy_realized_pnl_total", 0.0) or 0.0),
+            "paper_strategy_unrealized_pnl_total": float(paper_order.get("paper_strategy_unrealized_pnl_total", 0.0) or 0.0),
+            "paper_strategy_net_pnl_total": float(paper_order.get("paper_strategy_net_pnl_total", 0.0) or 0.0),
+            "paper_strategy_net_pnl_delta": float(paper_order.get("paper_strategy_net_pnl_delta", 0.0) or 0.0),
+            "paper_ledger_realized_pnl_total": float(paper_order.get("paper_ledger_realized_pnl_total", 0.0) or 0.0),
+            "paper_ledger_unrealized_pnl_total": float(paper_order.get("paper_ledger_unrealized_pnl_total", 0.0) or 0.0),
+            "paper_ledger_net_pnl_total": float(paper_order.get("paper_ledger_net_pnl_total", 0.0) or 0.0),
+            "paper_ledger_net_pnl_delta": float(paper_order.get("paper_ledger_net_pnl_delta", 0.0) or 0.0),
+            "reference_price": float(paper_order.get("reference_price", 0.0) or 0.0),
+            "expected_fill_price": float(paper_order.get("expected_fill_price", 0.0) or 0.0),
+            "expected_slippage_bps": float(paper_order.get("expected_slippage_bps", 0.0) or 0.0),
+            "realized_slippage_bps": float(paper_order.get("realized_slippage_bps", 0.0) or 0.0),
+            "slippage_gap_bps": float(paper_order.get("slippage_gap_bps", 0.0) or 0.0),
+            "expected_partial_fill_ratio": float(paper_order.get("expected_partial_fill_ratio", 1.0) or 1.0),
+            "expected_fill_quality_bucket": str(paper_order.get("expected_fill_quality_bucket", "") or ""),
+            "paper_fill_source": str(paper_order.get("paper_fill_source", "") or ""),
+            "execution_notional": float(paper_order.get("execution_notional", 0.0) or 0.0),
+            "expected_execution_cost_amount": float(paper_order.get("expected_execution_cost_amount", 0.0) or 0.0),
+            "post_cost_pnl_delta": float(paper_order.get("post_cost_pnl_delta", 0.0) or 0.0),
+            "post_cost_return_bps": float(paper_order.get("post_cost_return_bps", 0.0) or 0.0),
             "decision_id": str(paper_order.get("decision_id", "") or ""),
             "parent_decision_id": str(paper_order.get("parent_decision_id", "") or ""),
             "run_id": str(paper_order.get("run_id", "") or ""),
@@ -1138,6 +1440,20 @@ class BaseTrader:
         )
         print(line)
 
+        explanation_features, explanation_feature_contract = compact_decision_features(
+            decision_entry.get("features", {}),
+            metadata=(
+                decision_entry.get("metadata", {})
+                if isinstance(decision_entry.get("metadata"), dict)
+                else {}
+            ),
+            mode=_dynamic_storage_value(
+                self.project_root,
+                "DECISION_EXPLANATION_FEATURE_MODE",
+                "minimal",
+            ),
+            preserve_primary_layers=False,
+        )
         payload = {
             "timestamp_utc": datetime.now(timezone.utc).isoformat(),
             "mode": self.mode_label,
@@ -1154,7 +1470,11 @@ class BaseTrader:
             "threshold": float(decision_entry.get("threshold", 0.0)),
             "reasons": reasons,
             "gates": gates,
-            "features": decision_entry.get("features", {}),
+            "features": explanation_features,
+            "feature_compaction_contract": {
+                "explanation": explanation_feature_contract,
+                "decision": decision_entry.get("feature_compaction_contract", {}),
+            },
             "safety": safety or {},
             "metadata": decision_entry.get("metadata", {}),
         }
@@ -1599,9 +1919,18 @@ class BaseTrader:
                 reason="api_circuit_open",
                 details={"operation": operation, **(context or {})},
             )
+            if operation == "get_accounts_snapshot":
+                self._accounts_snapshot_soft_fail_streak += 1
+                soft_streak = int(self._accounts_snapshot_soft_fail_streak)
+                soft_grace = int(self.live_accounts_snapshot_soft_fail_grace)
+                out.update(
+                    {
+                        "soft_failure": bool(soft_streak <= soft_grace),
+                        "soft_fail_streak": soft_streak,
+                        "soft_fail_grace": soft_grace,
+                    }
+                )
             if self.live_softguard_auto_halt_on_api_circuit:
-                if operation == "get_accounts_snapshot":
-                    self._accounts_snapshot_soft_fail_streak += 1
                 should_halt, halt_details = self._should_auto_halt_for_api_circuit(
                     operation=operation,
                     attempts_made=0,
@@ -1892,6 +2221,15 @@ class BaseTrader:
             "attempts_made": attempts_made,
             "max_attempts": max_attempts,
             "circuit_opened": bool(opened),
+            **(
+                {
+                    "soft_failure": False,
+                    "soft_fail_streak": int(self._accounts_snapshot_soft_fail_streak),
+                    "soft_fail_grace": int(self.live_accounts_snapshot_soft_fail_grace),
+                }
+                if operation == "get_accounts_snapshot"
+                else {}
+            ),
             "details": {
                 "failures": attempt_failures[-max_attempts:],
             },
@@ -2793,41 +3131,44 @@ class BaseTrader:
     ) -> Dict[str, Any]:
         if not self._supports_broker_capability("supports_order_place"):
             return self._unsupported_broker_operation("place_order", "supports_order_place")
-        firewall = production_order_firewall_check(
-            project_root=self.project_root,
-            symbol=symbol,
-            action=action,
-            quantity=quantity,
-            order_spec=order_spec,
-        )
-        if not firewall.ok:
-            details = {
-                **firewall.details,
-                "order_spec": order_spec,
-            }
-            self._log_live_guard_event(
-                event="place_order",
-                status="blocked",
-                reason=firewall.reason,
-                details=details,
+        # The mock adapter never reaches a broker and is used to exercise PAPER
+        # execution contracts. Every real broker still passes the live firewall.
+        if str(self.broker_name or "").strip().lower() != "mock":
+            firewall = production_order_firewall_check(
+                project_root=self.project_root,
+                symbol=symbol,
+                action=action,
+                quantity=quantity,
+                order_spec=order_spec,
             )
-            self._log_softguard_event(
-                event="production_order_firewall",
-                status="blocked",
-                reason=firewall.reason,
-                details=details,
-            )
-            return {
-                "ok": False,
-                "operation": "place_order",
-                "error": firewall.reason,
-                "production_order_firewall": {
+            if not firewall.ok:
+                details = {
+                    **firewall.details,
+                    "order_spec": order_spec,
+                }
+                self._log_live_guard_event(
+                    event="place_order",
+                    status="blocked",
+                    reason=firewall.reason,
+                    details=details,
+                )
+                self._log_softguard_event(
+                    event="production_order_firewall",
+                    status="blocked",
+                    reason=firewall.reason,
+                    details=details,
+                )
+                return {
                     "ok": False,
-                    "gate": firewall.gate,
-                    "reason": firewall.reason,
-                    "details": firewall.details,
-                },
-            }
+                    "operation": "place_order",
+                    "error": firewall.reason,
+                    "production_order_firewall": {
+                        "ok": False,
+                        "gate": firewall.gate,
+                        "reason": firewall.reason,
+                        "details": firewall.details,
+                    },
+                }
         order_request = self._build_live_order_request(
             symbol=symbol,
             action=action,
@@ -3208,6 +3549,8 @@ class BaseTrader:
                         "error": str(out.get("error") or "account_snapshot_failed"),
                         "status_code": self._as_int(out.get("status_code", 0), 0),
                         "soft_failure": bool(out.get("soft_failure", False)),
+                        "soft_fail_streak": self._as_int(out.get("soft_fail_streak", 0), 0),
+                        "soft_fail_grace": self._as_int(out.get("soft_fail_grace", 0), 0),
                     }
                 )
                 continue
@@ -3239,6 +3582,10 @@ class BaseTrader:
             "account_snapshot_partial": bool(failures),
             "error": "" if account_payloads else "all_connected_account_snapshots_failed",
             "failures": failures[:10],
+            "status_code": max([self._as_int(row.get("status_code", 0), 0) for row in failures] or [0]),
+            "soft_failure": bool(failures) and all(bool(row.get("soft_failure", False)) for row in failures),
+            "soft_fail_streak": max([self._as_int(row.get("soft_fail_streak", 0), 0) for row in failures] or [0]),
+            "soft_fail_grace": max([self._as_int(row.get("soft_fail_grace", 0), 0) for row in failures] or [0]),
         }
 
     def _live_fetch_accounts_payload(self) -> Dict[str, Any]:
@@ -3644,6 +3991,11 @@ class BaseTrader:
             reasons=reasons,
             strategy=strategy,
             metadata={"mode": self.mode, **md},
+            feature_mode=_dynamic_storage_value(
+                self.project_root,
+                "DECISION_LOG_FEATURE_MODE",
+                "full",
+            ),
         )
 
         safety: Optional[Dict[str, Any]] = None
@@ -3715,7 +4067,9 @@ class BaseTrader:
 
             if self._is_trade_action(action):
                 blocked, reason, details = self._paper_profitability_new_entry_blocked(
+                    symbol=symbol,
                     action=action,
+                    quantity=quantity,
                     metadata=paper_metadata,
                 )
                 if blocked:
@@ -3814,6 +4168,7 @@ class BaseTrader:
                 symbol=symbol,
                 action=action,
                 quantity=quantity,
+                strategy=strategy,
                 features=features,
                 metadata=paper_fill_metadata,
             )
@@ -3830,6 +4185,10 @@ class BaseTrader:
             allocation_conflict_norm = self._as_float(features.get("allocation_conflict_norm"), self._as_float(paper_metadata.get("allocation_conflict_norm"), 0.0))
             model_spread_bps = float(model_inputs.get("spread_bps", 0.0) or 0.0)
             spread_regime = "wide" if model_spread_bps >= 20.0 else ("normal" if model_spread_bps >= 8.0 else "tight")
+            execution_notional = max(float(ref_price), float(realized_fill_price), 0.0) * max(float(quantity), 0.0)
+            expected_cost_amount = execution_notional * max(float(expected_fill.get("expected_slippage_bps", 0.0) or 0.0), 0.0) / 10000.0
+            profile_net_delta = self._as_float(paper_pnl.get("paper_profile_net_pnl_delta"), 0.0)
+            post_cost_return_bps = (profile_net_delta / execution_notional) * 10000.0 if execution_notional > 0.0 else 0.0
 
             paper = self._record_jsonl(
                 self.paper_log_path,
@@ -3856,6 +4215,10 @@ class BaseTrader:
                     "expected_spread_jump_penalty_bps": float(expected_fill.get("spread_jump_penalty_bps", 0.0) or 0.0),
                     "expected_symbol_curve_multiplier": float(expected_fill.get("symbol_curve_multiplier", 1.0) or 1.0),
                     "expected_fill_quality_bucket": str(expected_fill.get("fill_quality_bucket") or ""),
+                    "execution_notional": float(execution_notional),
+                    "expected_execution_cost_amount": float(expected_cost_amount),
+                    "post_cost_pnl_delta": float(profile_net_delta),
+                    "post_cost_return_bps": float(post_cost_return_bps),
                     "realized_slippage_bps": float(realized_slippage_bps),
                     "slippage_gap_bps": round(float(realized_slippage_bps - float(expected_fill.get("expected_slippage_bps", 0.0) or 0.0)), 6),
                     "paper_fill_source": str(paper_fill_metadata.get("paper_fill_source") or ""),

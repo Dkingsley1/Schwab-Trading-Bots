@@ -1631,6 +1631,19 @@ def _sqlite_has_source_like(conn: sqlite3.Connection, pattern: str) -> bool:
     return bool(row)
 
 
+def _sqlite_sources_like(conn: sqlite3.Connection, pattern: str) -> list[str]:
+    rows = conn.execute(
+        """
+        SELECT DISTINCT source_rel
+        FROM main.jsonl_records
+        WHERE source_rel LIKE ?
+        ORDER BY source_rel
+        """,
+        (pattern,),
+    ).fetchall()
+    return [str(row[0]) for row in rows if row and str(row[0] or "").strip()]
+
+
 def _chunked(items: list[str], size: int) -> list[list[str]]:
     return [items[i : i + size] for i in range(0, len(items), max(size, 1))]
 
@@ -2753,19 +2766,28 @@ def main() -> int:
     if preferred_day != day:
         day = preferred_day
         day_sources = _sqlite_state_sources_by_day(sqlite_state).get(day, _empty_day_sources())
-    decision_sources_day = day_sources["decision"]
-    decision_source_kind = "decision_explanations"
-    if not decision_sources_day and day_sources.get("decision_trade"):
-        decision_sources_day = day_sources["decision_trade"]
+    explanation_like_for_day = f"decision_explanations/%/decision_explanations_{day}.jsonl%"
+    trade_like_for_day = f"decisions/%/trade_decisions_{day}.jsonl%"
+    indexed_explanation_sources = _sqlite_sources_like(conn, explanation_like_for_day)
+    indexed_trade_sources = _sqlite_sources_like(conn, trade_like_for_day)
+    if indexed_explanation_sources:
+        decision_sources_day = indexed_explanation_sources
+        decision_source_kind = "decision_explanations"
+    elif indexed_trade_sources:
+        decision_sources_day = indexed_trade_sources
         decision_source_kind = "trade_decisions"
-    elif not decision_sources_day:
-        explanation_like_for_day = f"decision_explanations/%/decision_explanations_{day}.jsonl"
-        trade_like_for_day = f"decisions/%/trade_decisions_{day}.jsonl"
-        if _sqlite_has_source_like(conn, trade_like_for_day) and not _sqlite_has_source_like(conn, explanation_like_for_day):
+    else:
+        decision_sources_day = day_sources["decision"]
+        decision_source_kind = "decision_explanations"
+        if not decision_sources_day and day_sources.get("decision_trade"):
+            decision_sources_day = day_sources["decision_trade"]
             decision_source_kind = "trade_decisions"
-    governance_sources_day = day_sources["governance"]
-    pnl_sources_day = day_sources["pnl"]
-    watchdog_sources_day = day_sources["watchdog"]
+    governance_like_for_day = f"governance/%/master_control_{day}.jsonl%"
+    pnl_like_for_day = f"governance/%/shadow_pnl_attribution_{day}.jsonl%"
+    watchdog_like_for_day = f"governance/watchdog/watchdog_events_{day}.jsonl%"
+    governance_sources_day = _sqlite_sources_like(conn, governance_like_for_day) or day_sources["governance"]
+    pnl_sources_day = _sqlite_sources_like(conn, pnl_like_for_day) or day_sources["pnl"]
+    watchdog_sources_day = _sqlite_sources_like(conn, watchdog_like_for_day) or day_sources["watchdog"]
 
     _emit_progress(
         f"one_numbers resolved_day={day} "
@@ -2775,12 +2797,12 @@ def main() -> int:
     )
 
     if decision_source_kind == "trade_decisions":
-        decision_like = f"decisions/%/trade_decisions_{day}.jsonl"
+        decision_like = trade_like_for_day
     else:
-        decision_like = f"decision_explanations/%/decision_explanations_{day}.jsonl"
-    governance_like = f"governance/%/master_control_{day}.jsonl"
-    pnl_like = f"governance/%/shadow_pnl_attribution_{day}.jsonl"
-    watchdog_like = f"governance/watchdog/watchdog_events_{day}.jsonl"
+        decision_like = explanation_like_for_day
+    governance_like = governance_like_for_day
+    pnl_like = pnl_like_for_day
+    watchdog_like = watchdog_like_for_day
 
     linked_source_files_total = len(sqlite_state) if sqlite_state else 0
     decision_source_files = len(decision_sources_day)

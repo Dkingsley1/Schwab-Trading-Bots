@@ -11,9 +11,94 @@ if str(PROJECT_ROOT) not in sys.path:
 from scripts.ops import swap_pressure_governor as src
 
 
-def test_swap_pressure_governor_pauses_shadow_training_loops_under_swap() -> None:
-    assert "scripts/run_shadow_training_loop.py" in src.HEAVY_RESEARCH_PATTERNS
+def test_swap_pressure_governor_protects_paper_collection_and_pauses_offline_research() -> None:
+    assert "scripts/run_all_sleeves.py" not in src.HEAVY_RESEARCH_PATTERNS
+    assert "scripts/run_shadow_training_loop.py" not in src.HEAVY_RESEARCH_PATTERNS
+    assert "scripts/run_all_sleeves.py" in src.PROTECTED_SOAK_RUNTIME_PATTERNS
+    assert "scripts/run_shadow_training_loop.py" in src.PROTECTED_SOAK_RUNTIME_PATTERNS
     assert "scripts/strategy_research_lane.py" in src.HEAVY_RESEARCH_PATTERNS
+
+
+def test_swap_pressure_governor_never_terminates_protected_soak_runtime(monkeypatch) -> None:
+    commands = {
+        101: "/venv/python /project/scripts/run_all_sleeves.py --with-aggressive-modes --broker schwab",
+        202: "/venv/python /project/scripts/strategy_research_lane.py --profile default",
+    }
+    monkeypatch.setattr(src, "_pgrep_matching_pids", lambda pattern: [101] if "all_sleeves" in pattern else [202])
+    monkeypatch.setattr(src, "_command_for_pid", lambda pid: commands[pid])
+    terminated: list[int] = []
+    monkeypatch.setattr(src.os, "kill", lambda pid, sig: terminated.append(pid))
+
+    payload = src._pause_heavy_research(
+        "pause_research",
+        apply=True,
+        patterns=["scripts/run_all_sleeves.py", "scripts/strategy_research_lane.py"],
+    )
+
+    assert terminated == [202]
+    assert payload["terminated_count"] == 1
+    assert payload["protected_match_count"] == 1
+    assert payload["protected_matches"][0]["pid"] == 101
+    assert payload["protected_matches"][0]["reason"] == "paper_collection_runtime_protected"
+
+
+def test_swap_pressure_governor_is_exempt_from_support_maintenance_freeze(monkeypatch, tmp_path: Path) -> None:
+    resource_snapshot = {
+        "memory_pressure_state": "green",
+        "memory_pressure_kind": "none",
+        "memory_free_pct": 91.0,
+        "swap_used_gb": 1.0,
+        "compressed_store_gb": 4.0,
+        "compressor_gb": 0.6,
+    }
+    _base_project(tmp_path, resource_snapshot)
+    override = tmp_path / "config" / ".env.runtime_resource_guard_override"
+    override.parent.mkdir(parents=True, exist_ok=True)
+    override.write_text("OPS_SUPPORT_MAINTENANCE_FREEZE=1\n", encoding="utf-8")
+    monkeypatch.setattr(src, "PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr(src, "_refresh_resource_guard", lambda project_root: resource_snapshot)
+    monkeypatch.setattr(src, "_parse_process_rows", lambda: [])
+    monkeypatch.setattr(
+        src,
+        "_pause_heavy_research",
+        lambda tier, apply, patterns=None: {
+            "active": False,
+            "apply": apply,
+            "action": "none",
+            "match_count": 0,
+            "terminated_count": 0,
+            "matches": [],
+            "terminated": [],
+        },
+    )
+    out = tmp_path / "governance" / "health" / "swap_pressure_governor_latest.json"
+
+    rc = src.main(
+        [
+            "status",
+            "--project-root",
+            str(tmp_path),
+            "--out-file",
+            str(out),
+            "--state-file",
+            str(tmp_path / "governance" / "health" / "swap_pressure_governor_state.json"),
+            "--override-file",
+            str(tmp_path / "config" / ".env.swap_pressure_override"),
+            "--memory-override-file",
+            str(tmp_path / "config" / ".env.memory_efficiency_override"),
+            "--runtime-override-file",
+            str(override),
+            "--registry",
+            str(tmp_path / "master_bot_registry.json"),
+            "--json",
+        ]
+    )
+
+    payload = json.loads(out.read_text(encoding="utf-8"))
+    assert rc == 0
+    assert payload["swap_pressure"]["tier"] == "normal"
+    assert payload["apply_mode"] is False
+    assert payload["controller_contract"]["support_maintenance_freeze_exempt"] is True
 
 
 def _write_json(path: Path, payload: dict) -> None:

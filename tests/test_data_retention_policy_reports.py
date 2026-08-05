@@ -62,6 +62,33 @@ def test_collect_old_stamped_files_for_one_numbers_can_keep_latest_run(tmp_path)
     assert total_runs == 2
 
 
+def test_one_numbers_retention_groups_metrics_and_workbook_with_report_run(tmp_path):
+    paths_by_stamp = {}
+    for stamp in ('20250101_010101', '20250102_010101'):
+        paths = {
+            tmp_path / f'one_numbers_20250102_{stamp}.md',
+            tmp_path / f'one_numbers_20250102_{stamp}.csv',
+            tmp_path / f'one_numbers_20250102_{stamp}_metrics.csv',
+            tmp_path / f'one_numbers_20250102_{stamp}.xlsx',
+        }
+        for path in paths:
+            path.write_text('x', encoding='utf-8')
+        paths_by_stamp[stamp] = paths
+
+    rows, total_files, total_runs = data_retention_policy._collect_old_stamped_files(
+        tmp_path,
+        data_retention_policy.ONE_NUMBERS_STAMP_RE,
+        older_than_days=30,
+        keep_latest_runs=1,
+        parse_stamp_fn=data_retention_policy._parse_timeline_stamp,
+    )
+
+    assert set(rows) == paths_by_stamp['20250101_010101']
+    assert not set(rows).intersection(paths_by_stamp['20250102_010101'])
+    assert total_files == 8
+    assert total_runs == 2
+
+
 def test_main_reports_candidates_for_new_report_families(monkeypatch, tmp_path):
     monkeypatch.setattr(data_retention_policy, 'PROJECT_ROOT', tmp_path)
 
@@ -78,6 +105,7 @@ def test_main_reports_candidates_for_new_report_families(monkeypatch, tmp_path):
     (training_dir / 'training_report_20250101_010101.md').write_text('x', encoding='utf-8')
     (reports_dir / 'daily_ops_report_20250101.md').write_text('x', encoding='utf-8')
     (one_numbers_dir / 'one_numbers_20250101_20250101_010101.md').write_text('x', encoding='utf-8')
+    (one_numbers_dir / 'one_numbers_20250102_20250102_010101.md').write_text('x', encoding='utf-8')
 
     monkeypatch.setattr(data_retention_policy.sys, 'argv', ['data_retention_policy.py', '--exports-days', '30'])
 

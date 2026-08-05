@@ -400,7 +400,7 @@ def _event_watch_managed_cold_lane(ipo: dict[str, Any], macro: dict[str, Any], e
     status = _payload_status(ipo)
     symbol = str(ipo.get("symbol") or "").strip()
     policy = _status(ipo.get("policy"))
-    inactive_watch = status in {"missing", "unknown"} or not symbol
+    inactive_watch = status in {"missing", "unknown", "expired"} or not symbol
     monitoring_policy_ok = policy in {"", "monitoring_only_no_order_instruction"}
     return bool(inactive_watch and monitoring_policy_ok)
 
@@ -413,9 +413,53 @@ def _promotion_deferred_while_paper_soak_green(
 ) -> bool:
     if not _unattended_soak_green(sources):
         return False
-    if not bool(quality.get("ok", False)):
-        return False
-    if _status(quality.get("overall_status")) in {"degraded", "blocked", "critical", "failed"}:
+    quality_failed_checks = {
+        str(item).strip()
+        for item in _as_list(quality.get("failed_checks"))
+        if str(item).strip()
+    }
+    managed_quality_failures = {
+        "promotion_gate_blocked",
+        "insufficient_considered_bots",
+        "new_bot_graduation_not_ok",
+        "new_bot_admission_not_ok",
+        "paper_execution_truth_layer_not_ok",
+    }
+    quality_details = _as_dict(quality.get("details"))
+    operational_quality_checks = (
+        "daily_verify_ok",
+        "bot_support_owner_guard_ok",
+        "feature_store_manifest_ready",
+        "retrain_schema_compatibility_ok",
+        "golden_replay_regression_ok",
+        "cohort_drift_baseline_ok",
+        "leak_overfit_ok",
+        "replay_ok",
+        "replay_hash_registry_ok",
+        "champion_challenger_probation_ok",
+        "reconciliation_slo_ok",
+        "promotion_packet_ok",
+        "snapshot_coverage_ok",
+        "data_source_divergence_ok",
+        "artifact_freshness_ok",
+        "nightly_resilience_ok",
+        "state_snapshot_drill_ok",
+        "db_integrity_ok",
+        "execution_queue_stress_ok",
+        "paper_execution_truth_layer_operational_ok",
+    )
+    quality_ready = bool(quality.get("ok", False)) and _status(quality.get("overall_status")) not in {
+        "degraded",
+        "blocked",
+        "critical",
+        "failed",
+    }
+    quality_is_managed_evidence = bool(
+        quality_failed_checks
+        and quality_failed_checks.issubset(managed_quality_failures)
+        and all(bool(quality_details.get(key, False)) for key in operational_quality_checks)
+    )
+    if not (quality_ready or quality_is_managed_evidence):
         return False
     ramp_runtime = _as_dict(_as_dict(_as_dict(sources.get("paper_ramp")).get("gates")).get("runtime"))
     live_locked = bool(ramp_runtime.get("live_execution_locked", True))
@@ -432,6 +476,8 @@ def _promotion_deferred_while_paper_soak_green(
         "promotion_packet_incomplete",
         "promotion_packet_signature_unverified",
     }
+    if quality_is_managed_evidence:
+        allowed_blocker_prefixes.add("promotion_quality_gate_failed")
     unexpected = [
         item
         for item in blockers
@@ -439,7 +485,12 @@ def _promotion_deferred_while_paper_soak_green(
     ]
     if unexpected:
         return False
-    return _status(pipeline.get("overall_status")) not in {"critical", "blocked"}
+    pipeline_status = _status(pipeline.get("overall_status"))
+    evidence_only_pipeline = bool(
+        pipeline.get("evidence_only", False)
+        and not _as_list(pipeline.get("promotion_candidate_ids"))
+    )
+    return pipeline_status != "critical" and (pipeline_status != "blocked" or evidence_only_pipeline)
 
 
 def _source_path(project_root: Path, name: str) -> Path:
@@ -1048,11 +1099,17 @@ def _promotion(project_root: Path, sources: dict[str, dict[str, Any]]) -> dict[s
     blockers: list[str] = []
     warnings: list[str] = []
     if not bool(quality.get("ok", False)):
-        score -= 25.0
-        blockers.append("promotion_quality_gate_not_ok")
+        if promotion_deferred:
+            warnings.append("promotion_quality_evidence_managed_while_paper_soak_green")
+        else:
+            score -= 25.0
+            blockers.append("promotion_quality_gate_not_ok")
     if _status(quality.get("overall_status")) in {"degraded", "blocked", "critical"}:
-        score -= 12.0
-        warnings.append(f"promotion_quality_status={quality.get('overall_status')}")
+        if promotion_deferred:
+            warnings.append("promotion_quality_status_managed_while_live_money_locked")
+        else:
+            score -= 12.0
+            warnings.append(f"promotion_quality_status={quality.get('overall_status')}")
     if not promotion_ready:
         if promotion_deferred:
             warnings.append("promotion_deferred_while_paper_soak_green")

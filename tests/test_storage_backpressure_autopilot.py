@@ -19,6 +19,43 @@ def _write_json(path: Path, payload: dict) -> None:
     path.write_text(json.dumps(payload) + "\n", encoding="utf-8")
 
 
+def test_storage_backpressure_autopilot_duplicate_run_preserves_active_artifact(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    project_root = tmp_path / "project"
+    out_file = project_root / "governance" / "health" / "storage_backpressure_autopilot_latest.json"
+    active_payload = {
+        "timestamp_utc": "2099-04-24T14:00:00+00:00",
+        "overall_status": "running",
+        "ok": True,
+        "metrics": {"repair_step_count": 4, "attempt_count": 2},
+    }
+    _write_json(out_file, active_payload)
+    original_bytes = out_file.read_bytes()
+
+    monkeypatch.setattr(autopilot_src, "_acquire_nonblocking_lock", lambda _path: None)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "storage_backpressure_autopilot.py",
+            "--project-root",
+            str(project_root),
+            "--out-file",
+            str(out_file),
+            "--lock-file",
+            str(project_root / "governance" / "locks" / "route.lock"),
+            "--host-lock-file",
+            str(project_root / ".runtime_locks" / "host.lock"),
+            "--json",
+        ],
+    )
+
+    assert autopilot_src.main() == 0
+    assert out_file.read_bytes() == original_bytes
+
+
 def test_storage_backpressure_autopilot_builds_coordinated_plan(tmp_path: Path, monkeypatch) -> None:
     project_root = tmp_path / "project"
     _write_json(
@@ -454,6 +491,76 @@ def test_attempt_record_accepts_completed_writer_handoff_release() -> None:
     assert record["overall_status"] == "handoff_released"
 
 
+def test_attempt_record_manages_timeout_when_current_attempt_published_followup() -> None:
+    record = autopilot_src._attempt_record(
+        {
+            "payload": {
+                "bot": "writer_cycle_coordinator",
+                "timestamp_utc": "2001-01-01T00:00:00+00:00",
+                "overall_status": "applied_with_followups",
+                "writer_state_after_wait": {
+                    "active": False,
+                    "current_step": "complete",
+                    "progress_orphaned": False,
+                },
+            },
+            "rc": 124,
+            "timed_out": True,
+            "payload_source": "artifact_fallback",
+            "payload_current_attempt": True,
+            "stdout_tail": "",
+            "stderr_tail": "",
+        }
+    )
+
+    assert record["status"] == "followup"
+    assert record["timeout_managed"] is True
+    assert record["payload_current_attempt"] is True
+
+
+def test_attempt_record_rejects_stale_writer_followup_from_previous_attempt() -> None:
+    record = autopilot_src._attempt_record(
+        {
+            "payload": {
+                "bot": "writer_cycle_coordinator",
+                "timestamp_utc": "2001-01-01T00:00:00+00:00",
+                "overall_status": "applied_with_followups",
+            },
+            "rc": 124,
+            "timed_out": True,
+            "payload_source": "artifact_fallback",
+            "payload_current_attempt": False,
+            "stdout_tail": "",
+            "stderr_tail": "",
+        }
+    )
+
+    assert record["status"] == "timed_out"
+    assert record["timeout_managed"] is False
+
+
+def test_attempt_record_defers_blocked_raw_manifest_refresh_even_when_child_exits_nonzero() -> None:
+    record = autopilot_src._attempt_record(
+        {
+            "payload": {
+                "bot": "raw_training_manifest_refresh",
+                "overall_status": "blocked",
+                "blockers": [
+                    "storage_pressure_above_raw_compaction_ceiling",
+                    "raw_training_candidate_gb_below_wave_floor",
+                ],
+            },
+            "rc": 2,
+            "timed_out": False,
+            "stdout_tail": "",
+            "stderr_tail": "",
+        }
+    )
+
+    assert record["status"] == "deferred"
+    assert record["overall_status"] == "blocked"
+
+
 def test_storage_backpressure_autopilot_quick_bounded_mode_limits_drainer_ttl(tmp_path: Path, monkeypatch) -> None:
     project_root = tmp_path / "project"
     health = project_root / "governance" / "health"
@@ -631,8 +738,21 @@ def test_storage_backpressure_autopilot_quick_bounded_caps_uniform_and_lane_time
     assert payload["timing_contract"]["max_cycles"] == 1
     timeouts = {row["name"]: row["timeout_sec"] for row in payload["repair_plan"]}
     assert timeouts["backpressure_slo_bot"] == 180
-    assert timeouts["writer_cycle_coordinator"] == 180
+    assert timeouts["writer_cycle_coordinator"] == 285
     assert timeouts["raw_training_manifest_refresh"] == 180
+    coordinator = next(row for row in payload["repair_plan"] if row["name"] == "writer_cycle_coordinator")
+    assert coordinator["cmd"][coordinator["cmd"].index("--sql-manager-timeout-cap-seconds") + 1] == "180"
+    assert coordinator["cmd"][coordinator["cmd"].index("--max-catch-up-waves") + 1] == "1"
+
+    _sheriff_cmd, sheriff_timeout = autopilot_src._lane_cmd(
+        "retention_debt_sheriff",
+        project_root=project_root,
+        poll_seconds=5.0,
+        wait_timeout_seconds=75.0,
+        command_timeout_seconds=180,
+        backpressure_command_timeout_seconds=120,
+    )
+    assert sheriff_timeout == 210
 
 
 def test_storage_backpressure_autopilot_applies_only_needed_lanes(tmp_path: Path, monkeypatch) -> None:
@@ -748,6 +868,104 @@ def test_storage_backpressure_autopilot_applies_only_needed_lanes(tmp_path: Path
         "writer_cycle_coordinator.py",
     ]
     assert payload["metrics"]["cycle_count"] == 1
+
+
+def test_storage_backpressure_autopilot_skips_writer_wait_when_storage_is_green(tmp_path: Path, monkeypatch) -> None:
+    project_root = tmp_path / "project"
+    _write_json(
+        project_root / "governance" / "health" / "ingestion_storage_control_latest.json",
+        {
+            "overall_status": "ready",
+            "severity": "stable",
+            "pressure_index": 0.016,
+            "backpressure": {
+                "pending_lines_threshold": 15000,
+                "total_pending_lines": 800,
+                "estimated_total_drain_minutes": 15.0,
+            },
+            "storage": {
+                "retention_debt_gb": 0.0,
+                "backlog_drain_recommended_now": False,
+                "backlog_quarantine_candidate_files": 0,
+            },
+            "data_integrity": {"sql_invalid_lines": 0},
+        },
+    )
+
+    monkeypatch.setattr(
+        autopilot_src.backpressure_src,
+        "build_payload",
+        lambda *args, **kwargs: {
+            "overall_status": "ready",
+            "actionable": True,
+            "recommended_profile": "elevated_backpressure",
+            "recommended_actions": [],
+        },
+    )
+    monkeypatch.setattr(
+        autopilot_src.drainer_src,
+        "build_payload",
+        lambda *args, **kwargs: {
+            "overall_status": "ready",
+            "ready_drainer_count": 5,
+            "active_drainer": {"name": "governance_execution_drainer"},
+            "recommended_actions": [],
+        },
+    )
+    monkeypatch.setattr(
+        autopilot_src.coordinator_src,
+        "build_payload",
+        lambda *args, **kwargs: {
+            "overall_status": "waiting_for_writer",
+            "actionable": True,
+            "drain_ready": False,
+            "maintenance_ready": False,
+            "recommended_actions": ["wait for active writer progress"],
+        },
+    )
+    monkeypatch.setattr(
+        autopilot_src.sheriff_src,
+        "build_payload",
+        lambda *args, **kwargs: {
+            "overall_status": "idle",
+            "actionable": False,
+            "focus": {"focus_shards": [], "targeted_retention_debt_gb": 0.0, "severe_focus": False},
+            "recommended_actions": [],
+        },
+    )
+
+    seen: list[str] = []
+
+    def _fake_run_json(cmd: list[str], *, cwd: Path, timeout_sec: int) -> dict:
+        script = Path(cmd[1]).name
+        seen.append(script)
+        return {
+            "cmd": list(cmd),
+            "rc": 0,
+            "timed_out": False,
+            "stdout_tail": "",
+            "stderr_tail": "",
+            "payload": {"bot": script.replace(".py", ""), "overall_status": "applied", "ok": True},
+        }
+
+    monkeypatch.setattr(autopilot_src, "_run_json", _fake_run_json)
+
+    payload = autopilot_src.build_payload(
+        project_root,
+        apply=True,
+        poll_seconds=5.0,
+        wait_timeout_seconds=30.0,
+        command_timeout_seconds=60,
+        backpressure_command_timeout_seconds=20,
+    )
+
+    assert payload["overall_status"] == "applied"
+    assert "writer_cycle_coordinator.py" not in seen
+    assert "backpressure_drainer_fleet.py" not in seen
+    assert seen == ["backpressure_slo_bot.py"]
+    assert payload["clearance_state"]["cleared"] is True
+    assert payload["metrics"]["high_backlog_active"] is False
+    assert payload["previews"]["writer_cycle_coordinator"]["actionable"] is True
 
 
 def test_storage_backpressure_autopilot_repeats_cycles_until_targets_clear(tmp_path: Path, monkeypatch) -> None:

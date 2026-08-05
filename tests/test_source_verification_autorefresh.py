@@ -59,9 +59,14 @@ def test_source_verification_autorefresh_selects_bounded_batch_when_runtime_read
     assert payload["overall_status"] == "needs_refresh"
     assert payload["runtime_refresh_contract"]["heavy_refresh_allowed"] is True
     assert [cmd[1] for cmd in payload["selected_commands"]] == ["macro-crosscheck", "ticker-news-sync"]
-    assert payload["selected_commands"][1][1] == "ticker-news-sync"
+    selected = payload["selected_commands"][1]
+    assert selected[1] == "ticker-news-sync"
+    assert selected[selected.index("--max-symbols") + 1] == "300"
+    assert selected[selected.index("--limit-per-symbol") + 1] == "6"
+    assert selected[selected.index("--timeout-seconds") + 1] == "2.5"
+    assert selected[selected.index("--max-runtime-seconds") + 1] == "150"
+    assert selected.count("--max-runtime-seconds") == 1
     assert payload["skipped_commands"][0]["reason"] == "bounded_batch_cap"
-    assert payload["selected_commands"][1][3] == "240"
 
 
 def test_source_verification_autorefresh_defers_heavy_sources_under_runtime_pressure(tmp_path: Path, monkeypatch) -> None:
@@ -123,6 +128,8 @@ def test_source_verification_autorefresh_allows_one_guarded_heavy_refresh_when_s
     assert selected[selected.index("--max-symbols") + 1] == "300"
     assert selected[selected.index("--limit-per-symbol") + 1] == "6"
     assert selected[selected.index("--timeout-seconds") + 1] == "2.5"
+    assert selected[selected.index("--max-runtime-seconds") + 1] == "150"
+    assert selected.count("--max-runtime-seconds") == 1
     assert payload["skipped_commands"][0]["reason"] == "bounded_batch_cap"
 
 

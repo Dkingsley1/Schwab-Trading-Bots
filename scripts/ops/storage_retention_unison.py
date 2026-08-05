@@ -16,11 +16,13 @@ if __package__ in {None, ""}:
     if str(PROJECT_ROOT) not in sys.path:
         sys.path.insert(0, str(PROJECT_ROOT))
     from core.storage_mounts import resolve_external_storage
-    from scripts.ops.long_runtime_common import iso_now, load_json, ordered_unique, write_payload
+    from core.local_storage_reserve import local_storage_reserve_contract
+    from scripts.ops.long_runtime_common import iso_now, ordered_unique, write_payload
 else:
     PROJECT_ROOT = Path(__file__).resolve().parents[2]
     from core.storage_mounts import resolve_external_storage
-    from .long_runtime_common import iso_now, load_json, ordered_unique, write_payload
+    from core.local_storage_reserve import local_storage_reserve_contract
+    from .long_runtime_common import iso_now, ordered_unique, write_payload
 
 
 DEFAULT_OUT_PATH = PROJECT_ROOT / "governance" / "health" / "storage_retention_unison_latest.json"
@@ -238,6 +240,30 @@ def _parse_ts(raw: Any) -> datetime | None:
     return parsed.astimezone(timezone.utc)
 
 
+def _hot_lane_control_epoch(project_root: Path) -> datetime | None:
+    path = project_root / "config" / ".env.hot_lane_retention_override"
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return None
+    active = False
+    timestamp: datetime | None = None
+    for raw_line in lines:
+        line = raw_line.strip()
+        if line.startswith("# updated_at_utc="):
+            timestamp = _parse_ts(line.split("=", 1)[1])
+        elif line.startswith("HOT_LANE_RETENTION_ACTIVE="):
+            active = line.split("=", 1)[1].strip().strip("'\"").lower() in {"1", "true", "yes", "on"}
+    if not active:
+        return None
+    if timestamp is not None:
+        return timestamp
+    try:
+        return datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc)
+    except OSError:
+        return None
+
+
 def _storage_growth_forecast(
     *,
     current_external: dict[str, Any],
@@ -245,18 +271,23 @@ def _storage_growth_forecast(
     history_rows: list[dict[str, Any]],
     target_free_gb: float,
     pressure_free_gb: float,
+    baseline_not_before_utc: datetime | None = None,
 ) -> dict[str, Any]:
     current_ts = datetime.now(timezone.utc)
     current_free = _safe_float(current_external.get("free_gb"), 0.0)
     current_internal_free = _safe_float(current_internal.get("free_gb"), 0.0)
     sustained_baseline: dict[str, Any] = {}
     burst_baseline: dict[str, Any] = {}
+    discarded_pre_control_samples = 0
     for row in reversed(history_rows):
         ts = _parse_ts(row.get("timestamp_utc"))
         disk = row.get("disk") if isinstance(row.get("disk"), dict) else {}
         external = disk.get("external") if isinstance(disk.get("external"), dict) else {}
         prior_free = _safe_float(external.get("free_gb"), -1.0)
         if ts is None or prior_free < 0.0:
+            continue
+        if baseline_not_before_utc is not None and ts < baseline_not_before_utc:
+            discarded_pre_control_samples += 1
             continue
         age_seconds = (current_ts - ts).total_seconds()
         if not burst_baseline and age_seconds >= 300:
@@ -329,6 +360,9 @@ def _storage_growth_forecast(
         "grade": _grade(score),
         "source": "storage_retention_unison_history" if baseline else "new_baseline",
         "confidence": confidence,
+        "baseline_scope": "post_hot_lane_control_epoch" if baseline_not_before_utc else "unbounded_history",
+        "baseline_not_before_utc": baseline_not_before_utc.isoformat() if baseline_not_before_utc else "",
+        "discarded_pre_control_samples": discarded_pre_control_samples,
         "baseline": baseline,
         "sustained_baseline": sustained_baseline,
         "burst_baseline": burst_baseline,
@@ -554,13 +588,13 @@ def _second_cold_preflight() -> dict[str, Any]:
     candidates = [configured] if configured else list(DEFAULT_SECOND_COLD_CANDIDATES)
     candidate_rows: list[dict[str, Any]] = []
     ready = False
-    protected_hit = False
+    configured_protected_hit = False
     for raw in candidates:
         if not raw:
             continue
         path = Path(raw).expanduser()
         protected = _is_protected_volume(path)
-        protected_hit = protected_hit or protected
+        configured_protected_hit = configured_protected_hit or bool(configured and raw == configured and protected)
         snapshot = _disk_snapshot(path)
         exists = bool(path.exists() and not protected)
         row = {
@@ -575,8 +609,8 @@ def _second_cold_preflight() -> dict[str, Any]:
         if row["ready"]:
             ready = True
         candidate_rows.append(row)
-    status = "ready" if ready else ("blocked_protected_target" if protected_hit else "prewired_waiting_for_drive")
-    score = 100.0 if ready else (50.0 if protected_hit else 96.0)
+    status = "ready" if ready else ("blocked_protected_target" if configured_protected_hit else "prewired_waiting_for_drive")
+    score = 100.0 if ready else (50.0 if configured_protected_hit else 96.0)
     return {
         "status": status,
         "score": score,
@@ -604,20 +638,21 @@ def _cold_archive_spillover_capacity_gb(second_cold: dict[str, Any]) -> float:
     if not bool(second_cold.get("ready", False)):
         return 0.0
     reserve_gb = max(_safe_float(os.getenv("BOT_COLD_ARCHIVE_RESERVE_GB"), 64.0), 0.0)
-    max_credit_gb = max(_safe_float(os.getenv("BOT_COLD_ARCHIVE_SPILLOVER_MAX_CREDIT_GB"), 64.0), 0.0)
+    max_credit_gb = max(_safe_float(os.getenv("BOT_COLD_ARCHIVE_SPILLOVER_MAX_CREDIT_GB"), 0.0), 0.0)
     best_free = 0.0
     for row in second_cold.get("candidates") if isinstance(second_cold.get("candidates"), list) else []:
         if isinstance(row, dict) and bool(row.get("ready", False)):
             best_free = max(best_free, _safe_float(row.get("free_gb"), 0.0))
-    return round(min(max(best_free - reserve_gb, 0.0), max_credit_gb), 3)
+    usable_headroom = max(best_free - reserve_gb, 0.0)
+    if max_credit_gb > 0.0:
+        usable_headroom = min(usable_headroom, max_credit_gb)
+    return round(usable_headroom, 3)
 
 
 def _apply_cold_archive_spillover_contract(continuous_run: dict[str, Any], second_cold: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(continuous_run, dict) or not bool(second_cold.get("ready", False)):
         return continuous_run
     blockers = [str(item) for item in continuous_run.get("blockers") if str(item)] if isinstance(continuous_run.get("blockers"), list) else []
-    if not blockers:
-        return continuous_run
     managed_projection_blockers = {
         "insufficient_projected_free_space",
         "projected_below_pressure_floor",
@@ -628,15 +663,64 @@ def _apply_cold_archive_spillover_contract(continuous_run: dict[str, Any], secon
     current_free = _safe_float(continuous_run.get("current_external_free_gb"), 0.0)
     pressure_free = _safe_float(continuous_run.get("pressure_free_gb"), 64.0)
     primary_guard_buffer = max(_safe_float(os.getenv("BOT_COLD_ARCHIVE_PRIMARY_PRESSURE_BUFFER_GB"), 16.0), 0.0)
-    if unmanaged or current_free < pressure_free + primary_guard_buffer:
-        return continuous_run
     margin = _safe_float(continuous_run.get("available_margin_gb"), 0.0)
     spillover_capacity = _cold_archive_spillover_capacity_gb(second_cold)
     adjusted_margin = round(margin + spillover_capacity, 3)
-    if adjusted_margin < 0.0:
-        return continuous_run
-
     out = dict(continuous_run)
+    required_spillover = round(max(-margin, 0.0), 3)
+    capacity_shortfall = round(max(-adjusted_margin, 0.0), 3)
+    primary_guard_ready = bool(current_free >= pressure_free + primary_guard_buffer)
+    projection_only_blockers = bool(blockers and not unmanaged)
+    spillover_ready = bool(
+        projection_only_blockers
+        and primary_guard_ready
+        and spillover_capacity > 0.0
+        and adjusted_margin >= 0.0
+    )
+    if not blockers:
+        archive_status = "available_not_needed"
+    elif unmanaged:
+        archive_status = "blocked_by_non_projection_controls"
+    elif not primary_guard_ready:
+        archive_status = "primary_pressure_guard_not_ready"
+    elif adjusted_margin < 0.0:
+        archive_status = "insufficient_capacity_for_horizon"
+    else:
+        archive_status = "ready_for_projection_spillover"
+
+    out.update(
+        {
+            "cold_archive_spillover_available": bool(spillover_capacity > 0.0),
+            "cold_archive_spillover_ready": spillover_ready,
+            "cold_archive_spillover_status": archive_status,
+            "cold_archive_spillover_capacity_gb": spillover_capacity,
+            "cold_archive_required_spillover_gb": required_spillover,
+            "cold_archive_capacity_shortfall_gb": capacity_shortfall,
+            "cold_archive_adjusted_margin_gb": adjusted_margin,
+            "cold_archive_primary_pressure_buffer_gb": primary_guard_buffer,
+            "cold_archive_primary_pressure_guard_ready": primary_guard_ready,
+            "cold_archive_capacity_policy": "live_destination_free_minus_reserve_with_optional_configured_cap",
+        }
+    )
+    control_env = dict(out.get("control_env") if isinstance(out.get("control_env"), dict) else {})
+    control_env.update(
+        {
+            "BOT_COLD_ARCHIVE_SPILLOVER_READY": "1" if spillover_ready else "0",
+            "BOT_COLD_ARCHIVE_SPILLOVER_CAPACITY_GB": str(spillover_capacity),
+            "BOT_COLD_ARCHIVE_REQUIRED_SPILLOVER_GB": str(required_spillover),
+            "BOT_COLD_ARCHIVE_CAPACITY_SHORTFALL_GB": str(capacity_shortfall),
+            "BOT_COLD_ARCHIVE_ADJUSTED_MARGIN_GB": str(adjusted_margin),
+        }
+    )
+    out["control_env"] = control_env
+    if not spillover_ready:
+        if archive_status == "insufficient_capacity_for_horizon":
+            out["next_action"] = (
+                f"reduce sustained storage growth; cold archive headroom={spillover_capacity:.3f} GiB "
+                f"leaves horizon shortfall={capacity_shortfall:.3f} GiB"
+            )
+        return out
+
     warnings = ordered_unique(
         [str(item) for item in out.get("warnings") if str(item)] if isinstance(out.get("warnings"), list) else []
     )
@@ -722,9 +806,11 @@ def _step_reduction_gb(step: dict[str, Any]) -> float:
 
 
 def _compaction_step_ok(step: dict[str, Any]) -> bool:
+    status = str(step.get("overall_status") or "")
+    if status == "busy":
+        return True
     if int(step.get("returncode", 1)) != 0:
         return False
-    status = str(step.get("overall_status") or "")
     return status in {"applied", "planned", "nothing_to_do", "ready", "watch", "watching"}
 
 
@@ -757,11 +843,20 @@ def _hot_plane_compaction_contract(*, steps_by_lane: dict[str, dict[str, Any]]) 
     selected_gb = round(sum(_safe_float(summary.get("selected_gb"), 0.0) for summary in summaries.values()), 3)
     reduction_gb = round(sum(_step_reduction_gb(step) for step in steps_by_lane.values()), 3)
     errors = [name for name, step in steps_by_lane.items() if not _compaction_step_ok(step)]
+    busy_lanes = [
+        name
+        for name, step in steps_by_lane.items()
+        if str(step.get("overall_status") or "") == "busy"
+    ]
     candidate_count = sum(_safe_int(summary.get("candidate_count"), 0) for summary in summaries.values())
     if errors:
         status = "degraded"
         score = 82.0
         next_action = "fix compactor failures before widening ingestion or training"
+    elif busy_lanes:
+        status = "in_progress"
+        score = 97.0
+        next_action = "let the lock-owning compactor finish, then refresh storage-tier-policy"
     elif reduction_gb > 0.0:
         status = "applied"
         score = 99.0
@@ -779,6 +874,7 @@ def _hot_plane_compaction_contract(*, steps_by_lane: dict[str, dict[str, Any]]) 
         "score": score,
         "grade": _grade(score),
         "errors": errors,
+        "busy_lanes": busy_lanes,
         "candidate_count": candidate_count,
         "selected_gb": selected_gb,
         "estimated_reduction_gb": reduction_gb,
@@ -992,6 +1088,10 @@ def build_payload(
     decision_max_gb: float = 8.0,
     decision_min_file_mb: float = 128.0,
     decision_min_age_minutes: float = 90.0,
+    cold_archive_max_files: int = 8,
+    cold_archive_max_gb: float = 16.0,
+    cold_archive_min_age_hours: float = 24.0,
+    cold_archive_compression_level: int = 3,
     target_free_gb: float = 125.0,
     pressure_free_gb: float = 64.0,
     soak_days: float = DEFAULT_CONTINUOUS_RUN_DAYS,
@@ -1008,14 +1108,20 @@ def build_payload(
         "external": _disk_snapshot(external_root),
         "internal_project": _disk_snapshot(project_root),
     }
+    local_reserve = local_storage_reserve_contract(project_root)
     history_rows = _read_history(history_path)
+    hot_lane_control_epoch = _hot_lane_control_epoch(project_root)
     forecast = _storage_growth_forecast(
         current_external=disk["external"],
         current_internal=disk["internal_project"],
         history_rows=history_rows,
         target_free_gb=float(target_free_gb),
         pressure_free_gb=float(pressure_free_gb),
+        baseline_not_before_utc=hot_lane_control_epoch,
     )
+    # Deep-cold runs as a child process and must see this pass's disk slope,
+    # not the previous retention pass's forecast.
+    write_payload(forecast_path, forecast)
     continuous_run = _continuous_run_contract(
         forecast=forecast,
         horizon_days=float(soak_days),
@@ -1041,8 +1147,11 @@ def build_payload(
             deep_cmd.extend(
                 [
                     "--move-to-second-cold",
+                    "--adaptive",
                     "--second-cold-root",
                     os.getenv("BOT_VIDEO_COLD_ARCHIVE_ROOT", DEFAULT_VIDEO_COLD_ARCHIVE_ROOT),
+                    "--planning-horizon-days",
+                    str(max(float(soak_days), 1.0)),
                     "--max-move-gb",
                     os.getenv("BOT_DEEP_COLD_MAX_MOVE_GB", "96.0"),
                     "--max-move-files",
@@ -1052,6 +1161,33 @@ def build_payload(
             if _env_truthy("BOT_DEEP_COLD_INCLUDE_CRITICAL"):
                 deep_cmd.append("--include-critical")
     steps["retention_freshness_deep_cold"] = _run_json(deep_cmd, cwd=project_root, timeout_sec=timeout_sec)
+
+    cold_archive_root = os.getenv("BOT_VIDEO_COLD_ARCHIVE_ROOT", DEFAULT_VIDEO_COLD_ARCHIVE_ROOT)
+    cold_archive_cmd = [
+        opsctl,
+        "cold-archive-compactor",
+        "--archive-root",
+        cold_archive_root,
+        "--max-files",
+        str(max(int(cold_archive_max_files), 1)),
+        "--max-raw-gb",
+        str(max(float(cold_archive_max_gb), 0.1)),
+        "--min-age-hours",
+        str(max(float(cold_archive_min_age_hours), 1.0)),
+        "--compression-level",
+        str(min(max(int(cold_archive_compression_level), 1), 9)),
+        "--sqlite-inventory-limit",
+        "200",
+        "--json",
+    ]
+    if apply:
+        cold_archive_cmd.insert(2, "--apply")
+        cold_archive_cmd.insert(3, "--coordinate-writer-handoff")
+    steps["cold_archive_compaction"] = _run_json(
+        cold_archive_cmd,
+        cwd=project_root,
+        timeout_sec=max(int(timeout_sec), 1800),
+    )
 
     retention_cmd = [opsctl, "retention-intelligence-v2", "--json"]
     if apply:
@@ -1217,6 +1353,62 @@ def build_payload(
         hot_lane_cmd.insert(2, "--apply")
     steps["hot_lane_retention"] = _run_json(hot_lane_cmd, cwd=project_root, timeout_sec=timeout_sec)
 
+    hot_lane_now = steps["hot_lane_retention"].get("payload") or {}
+    current_day_rotation_ready = bool(
+        apply
+        and str(hot_lane_now.get("mode") or "").strip().lower() == "emergency_hot_thin"
+    )
+    if current_day_rotation_ready:
+        current_explanation_cmd = [
+            opsctl,
+            "decision-log-compactor",
+            "--apply",
+            "--include-current-day",
+            "--require-current-day-safe",
+            "--families",
+            "decision_explanations",
+            "--target-free-gb",
+            str(max(float(decision_max_gb), 8.0)),
+            "--min-file-mb",
+            str(max(float(decision_min_file_mb), 32.0)),
+            "--max-files",
+            str(max(min(int(decision_max_files), 2), 1)),
+            "--min-age-minutes",
+            "20",
+            "--compression-level",
+            "1",
+            "--json",
+        ]
+        steps["current_day_explanation_compactor"] = _run_json(
+            current_explanation_cmd,
+            cwd=project_root,
+            timeout_sec=max(int(timeout_sec), 1800),
+        )
+        # Recalculate tier placement after an emergency hot-buffer rotation so
+        # quota and soak reports never grade the pre-compaction byte layout.
+        steps["storage_tier_policy"] = _run_json(
+            [opsctl, "storage-tier-policy", "--json"],
+            cwd=project_root,
+            timeout_sec=timeout_sec,
+        )
+    else:
+        steps["current_day_explanation_compactor"] = _synthetic_step(
+            command=[
+                opsctl,
+                "decision-log-compactor",
+                "--include-current-day",
+                "--require-current-day-safe",
+                "--families",
+                "decision_explanations",
+            ],
+            overall_status="nothing_to_do",
+            payload={
+                "ok": True,
+                "overall_status": "nothing_to_do",
+                "reason": "hot_lane_not_in_emergency_rotation_mode",
+            },
+        )
+
     creative_cmd = [opsctl, "creative-cotenant-guard", "apply" if apply else "status", "--json"]
     steps["foreground_app_protection"] = _run_json(creative_cmd, cwd=project_root, timeout_sec=timeout_sec)
 
@@ -1224,6 +1416,7 @@ def build_payload(
     steps["ingestion_storage_control"] = _run_json([opsctl, "ingestion-storage-control", "--json"], cwd=project_root, timeout_sec=timeout_sec)
 
     deep_payload = steps["retention_freshness_deep_cold"].get("payload") or {}
+    cold_archive_payload = steps["cold_archive_compaction"].get("payload") or {}
     retention_payload = steps["retention_freshness_v2"].get("payload") or {}
     raw_payload = steps["raw_training_usefulness"].get("payload") or {}
     cleanup_payload = steps["bot_logs_lean"].get("payload") or {}
@@ -1277,12 +1470,21 @@ def build_payload(
             "external_governance_telemetry_compactor": steps["external_governance_telemetry_compactor"],
             "governance_lifecycle_compactor": steps["governance_lifecycle_compactor"],
             "decision_log_compactor": steps["decision_log_compactor"],
+            "current_day_explanation_compactor": steps["current_day_explanation_compactor"],
         }
     )
     manifest_backed_offload = _manifest_backed_offload_evidence(tier_payload)
 
     non_hard_command_statuses = {
         "already_running",
+        "applied",
+        "busy",
+        "deferred_archive_unavailable",
+        "deferred_existing_maintenance_hold",
+        "deferred_writer_handoff_timeout",
+        "deferred_writer_busy",
+        "nothing_to_do",
+        "planned",
         "ready",
         "needs_work",
         "degraded",
@@ -1325,7 +1527,32 @@ def build_payload(
     elif foreground_status == "needs_work" and set(str(item) for item in creative_actions).issubset({"paper_execution_lane_missing"}):
         foreground_status = "ready_with_paper_lane_advisory"
 
+    cold_archive_status = str(cold_archive_payload.get("overall_status") or "unknown")
+    cold_archive_summary = (
+        cold_archive_payload.get("summary") if isinstance(cold_archive_payload.get("summary"), dict) else {}
+    )
+    cold_archive_score = {
+        "ready": 99.0,
+        "applied": 99.0,
+        "planned": 97.0,
+        "deferred_existing_maintenance_hold": 96.0,
+        "deferred_writer_handoff_timeout": 96.0,
+        "deferred_writer_busy": 97.0,
+        "deferred_archive_unavailable": 92.0,
+        "busy": 94.0,
+        "advisory": 90.0,
+    }.get(cold_archive_status, 82.0)
+
     sections = {
+        "local_hot_storage_reserve": _section(
+            "Local Hot Storage Reserve",
+            str(local_reserve.get("status") or "unknown"),
+            100.0
+            if bool(local_reserve.get("ready", False))
+            else (92.0 if not bool(local_reserve.get("pressure_active", False)) else 72.0),
+            local_reserve,
+            str(local_reserve.get("next_action") or "restore the live internal reserve"),
+        ),
         "retention_freshness": _section(
             "Retention Freshness",
             "ready" if bool(retention_payload.get("ok", False)) and bool(deep_payload.get("ok", False)) else "needs_refresh",
@@ -1351,6 +1578,38 @@ def build_payload(
                 "raw_gb_cleared": _safe_float(raw_summary.get("raw_gb_cleared"), 0.0),
             },
             "raw sources are queued manifest-only for training, then compacted only by verified gzip waves",
+        ),
+        "cold_archive_compaction": _section(
+            "Cold Archive Compaction",
+            cold_archive_status,
+            cold_archive_score,
+            {
+                "archive_root": cold_archive_payload.get("archive_root", cold_archive_root),
+                "jsonl_candidate_count": _safe_int(cold_archive_summary.get("jsonl_candidate_count"), 0),
+                "selected_jsonl_count": _safe_int(cold_archive_summary.get("selected_jsonl_count"), 0),
+                "gzip_finalize_candidate_count": _safe_int(
+                    cold_archive_summary.get("gzip_finalize_candidate_count"), 0
+                ),
+                "selected_gzip_finalize_count": _safe_int(
+                    cold_archive_summary.get("selected_gzip_finalize_count"), 0
+                ),
+                "tmp_duplicate_candidate_count": _safe_int(
+                    cold_archive_summary.get("tmp_duplicate_candidate_count"), 0
+                ),
+                "sqlite_inventory_count": _safe_int(cold_archive_summary.get("sqlite_inventory_count"), 0),
+                "sqlite_vacuum_eligible_count": _safe_int(
+                    cold_archive_summary.get("sqlite_vacuum_eligible_count"), 0
+                ),
+                "successful_action_count": _safe_int(cold_archive_summary.get("successful_action_count"), 0),
+                "error_count": _safe_int(cold_archive_summary.get("error_count"), 0),
+                "released_gb": _safe_float(cold_archive_summary.get("released_gb"), 0.0),
+                "manifest_path": cold_archive_payload.get("manifest_path", ""),
+                "readme_path": cold_archive_payload.get("readme_path", ""),
+            },
+            str(
+                cold_archive_payload.get("next_action")
+                or "retry the bounded archive pass when its mount and writer guards permit it"
+            ),
         ),
         "bot_logs_lean": _section(
             "Active BOT_LOGS Lean",
@@ -1484,8 +1743,12 @@ def build_payload(
         hard_blockers.append("storage_quota_not_ready")
     if str(continuous_run.get("status") or "") == "blocked":
         hard_blockers.append("continuous_collection_soak_not_ready")
+    if bool(local_reserve.get("pressure_active", False)) or bool(local_reserve.get("hard_block", False)):
+        hard_blockers.append("local_hot_storage_pressure_reserve_breached")
 
     overall_score = round(sum(_safe_float(row.get("score"), 0.0) for row in sections.values()) / max(len(sections), 1), 2)
+    if not bool(local_reserve.get("ready", False)):
+        overall_score = min(overall_score, 92.0)
     if hard_blockers:
         overall_score = min(overall_score, 82.0)
     overall_status = "ready" if not hard_blockers and overall_score >= 93.0 else ("blocked" if hard_blockers else "needs_work")
@@ -1504,6 +1767,7 @@ def build_payload(
         "apply": bool(apply),
         "disk": disk,
         "disk_after_work": disk_after_work,
+        "local_hot_storage_reserve": local_reserve,
         "storage_growth_forecast": forecast,
         "continuous_run_contract": continuous_run,
         "sections": sections,
@@ -1520,6 +1784,12 @@ def build_payload(
             "compacts_external_hot_governance_telemetry": True,
             "compacts_lifecycle_registry_backups": True,
             "compacts_old_decision_logs": True,
+            "compacts_cold_archive_losslessly": True,
+            "cold_archive_restore_proof_manifest": True,
+            "recovers_verified_cold_archive_gzip_orphans": True,
+            "coordinates_cold_archive_writer_handoff": True,
+            "preserves_direct_archive_readability": True,
+            "defers_cold_compaction_while_writer_active": True,
             "uses_manifest_backed_offload_contract": bool(manifest_backed_offload.get("manifest_path")),
             "has_manifest_backed_copy_verify_worker": True,
             "stateful_sql_compaction_only": bool(
@@ -1530,6 +1800,7 @@ def build_payload(
             ),
             "sql_soft_quota_managed_by_cold_spillover": quota_managed_by_cold_spillover,
             "writes_storage_growth_forecast": True,
+            "publishes_growth_forecast_before_deep_cold": True,
             "publishes_continuous_run_contract": True,
             "keeps_training_batches_efficient": True,
             "prewires_second_cold_target": True,
@@ -1577,6 +1848,20 @@ def build_payload(
                 str(max(float(decision_max_gb), 0.1)),
                 "--json",
             ],
+            "bounded_cold_archive_compaction_wave": [
+                "./scripts/ops/opsctl.sh",
+                "cold-archive-compactor",
+                "--apply",
+                "--archive-root",
+                cold_archive_root,
+                "--max-files",
+                str(max(int(cold_archive_max_files), 1)),
+                "--max-raw-gb",
+                str(max(float(cold_archive_max_gb), 0.1)),
+                "--min-age-hours",
+                str(max(float(cold_archive_min_age_hours), 1.0)),
+                "--json",
+            ],
             "refresh_manifest_backed_offload_contract": [
                 "./scripts/ops/opsctl.sh",
                 "storage-tier-policy",
@@ -1603,6 +1888,8 @@ def build_payload(
             },
             "BOT_RAW_TRAINING_MANIFEST_QUEUE_ACTIVE": "1",
             "BOT_HOT_PLANE_COMPACTION_ACTIVE": "1",
+            "BOT_COLD_ARCHIVE_COMPACTION_ACTIVE": "1",
+            "BOT_COLD_ARCHIVE_COMPACTION_MANIFEST": str(cold_archive_payload.get("manifest_path") or ""),
             "BOT_MANIFEST_BACKED_OFFLOAD_CONTRACT_ACTIVE": "1" if manifest_backed_offload.get("manifest_path") else "0",
             "BOT_MANIFEST_BACKED_OFFLOAD_PATH": str(manifest_backed_offload.get("manifest_path") or ""),
             "BOT_LOGS_PRESSURE_CLEANUP_MAX_TIER": str(effective_cleanup_max_tier),
@@ -1625,7 +1912,12 @@ def build_payload(
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Coordinate storage retention, raw training usefulness, BOT_LOGS cleanup, forecasting, second-cold readiness, and foreground protection.")
+    parser = argparse.ArgumentParser(
+        description=(
+            "Coordinate storage retention, raw training usefulness, lossless cold-archive compaction, "
+            "BOT_LOGS cleanup, forecasting, second-cold readiness, and foreground protection."
+        )
+    )
     parser.add_argument("--project-root", default=str(PROJECT_ROOT))
     parser.add_argument("--out-file", default=str(DEFAULT_OUT_PATH))
     parser.add_argument("--history-file", default=str(DEFAULT_HISTORY_PATH))
@@ -1647,6 +1939,10 @@ def main() -> int:
     parser.add_argument("--decision-max-gb", type=float, default=float(os.getenv("STORAGE_RETENTION_UNISON_DECISION_MAX_GB", "8.0")))
     parser.add_argument("--decision-min-file-mb", type=float, default=float(os.getenv("STORAGE_RETENTION_UNISON_DECISION_MIN_FILE_MB", "128.0")))
     parser.add_argument("--decision-min-age-minutes", type=float, default=float(os.getenv("STORAGE_RETENTION_UNISON_DECISION_MIN_AGE_MINUTES", "90.0")))
+    parser.add_argument("--cold-archive-max-files", type=int, default=int(os.getenv("STORAGE_RETENTION_UNISON_COLD_ARCHIVE_MAX_FILES", "8")))
+    parser.add_argument("--cold-archive-max-gb", type=float, default=float(os.getenv("STORAGE_RETENTION_UNISON_COLD_ARCHIVE_MAX_GB", "16.0")))
+    parser.add_argument("--cold-archive-min-age-hours", type=float, default=float(os.getenv("STORAGE_RETENTION_UNISON_COLD_ARCHIVE_MIN_AGE_HOURS", "24.0")))
+    parser.add_argument("--cold-archive-compression-level", type=int, default=int(os.getenv("STORAGE_RETENTION_UNISON_COLD_ARCHIVE_COMPRESSION_LEVEL", "3")))
     parser.add_argument("--target-free-gb", type=float, default=float(os.getenv("STORAGE_RETENTION_UNISON_TARGET_FREE_GB", "125.0")))
     parser.add_argument("--pressure-free-gb", type=float, default=float(os.getenv("STORAGE_RETENTION_UNISON_PRESSURE_FREE_GB", "64.0")))
     parser.add_argument("--soak-days", type=float, default=float(os.getenv("STORAGE_RETENTION_UNISON_SOAK_DAYS", str(DEFAULT_CONTINUOUS_RUN_DAYS))))
@@ -1675,6 +1971,10 @@ def main() -> int:
         decision_max_gb=float(args.decision_max_gb),
         decision_min_file_mb=float(args.decision_min_file_mb),
         decision_min_age_minutes=float(args.decision_min_age_minutes),
+        cold_archive_max_files=int(args.cold_archive_max_files),
+        cold_archive_max_gb=float(args.cold_archive_max_gb),
+        cold_archive_min_age_hours=float(args.cold_archive_min_age_hours),
+        cold_archive_compression_level=int(args.cold_archive_compression_level),
         target_free_gb=float(args.target_free_gb),
         pressure_free_gb=float(args.pressure_free_gb),
         soak_days=float(args.soak_days),

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import re
 import shutil
@@ -19,6 +20,7 @@ PACK_SLUG = "training_labeling_intelligence"
 PACK_DISPLAY_NAME = "Training And Labeling Intelligence Pack"
 SLEEVE_FAMILY = "training_labeling_intelligence"
 UNIVERSAL_LABEL_CONTRACT_VERSION = "universal_training_label_contract_v1"
+LABEL_MATERIALIZATION_CONTRACT_VERSION = "training_label_materialization_contract_v2"
 MINIMUM_TRAINING_OBSERVATIONS = 70000
 MINIMUM_COLLECTION_DAYS = 180
 SAMPLE_RATE = 0.01
@@ -172,6 +174,18 @@ FREE_LABEL_CONTEXT_SOURCE_MAP: dict[str, list[str]] = {
     "opra_nbbo_taq_sip_normalized_events": [OPTIONS_CONTEXT_SOURCE_ID, "market_micro_context", "extended_quant_context"],
     "quant_model_feature_surface": ["extended_quant_context", "source_verification"],
     "state_filter_diagnostics": ["source_verification", "collector_contracts", "market_micro_context"],
+    "auction_imbalance_context": ["market_micro_context", "market_quote_profiles"],
+    "cpi_pce_nfp_event_window": ["official_macro_context", "public_macro_feeds"],
+    "earnings_cluster_context": ["ticker_news_context", "sec_edgar_context"],
+    "fed_speaker_calendar_surprise": ["official_macro_context", "public_macro_feeds"],
+    "halt_reopen_liquidity_context": ["market_micro_context", "market_quote_profiles"],
+    "liquidity_cliff_context": ["market_micro_context", "extended_quant_context"],
+    "macro_event_bulletins": ["official_macro_context", "public_macro_feeds", "ticker_news_context"],
+    "market_microstructure_liquidity_proxy": ["market_micro_context", "extended_quant_context"],
+    "order_flow_imbalance_context": ["market_micro_context", "extended_quant_context"],
+    "quote_fade_context": ["market_micro_context", "extended_quant_context"],
+    "rate_volatility_context": ["official_macro_context", "extended_quant_context"],
+    "treasury_auction_context": ["official_macro_context", "public_macro_feeds"],
 }
 
 LABEL_CONTEXT_CLASSIFICATION_MAP: dict[str, dict[str, str]] = {
@@ -225,6 +239,114 @@ REQUIRED_LABELS = [
     "lineage_gate_status",
     "promotion_gate_status",
 ]
+
+OPERATIONAL_REQUIRED_LABELS = [
+    "action_effect_bucket",
+    "incident_prevention_outcome",
+    "false_positive_guard_outcome",
+    "runtime_health_delta_bucket",
+    "label_quality_bucket",
+    "lineage_gate_status",
+    "promotion_gate_status",
+]
+
+RESEARCH_REQUIRED_LABELS = [
+    "walk_forward_effect_bucket",
+    "out_of_sample_error_bucket",
+    "stability_delta_bucket",
+    "proxy_label_quality_bucket",
+    "overfit_gap_status",
+    "lineage_gate_status",
+    "promotion_gate_status",
+]
+
+MARKET_OUTCOME_LABEL_FAMILIES = {
+    "generic_directional",
+    "intraday_fast",
+    "multi_day",
+    "same_session",
+    "risk_adjusted_preservation",
+    "income_total_return",
+    "income_options_surface",
+    "options_surface",
+    "futures_event_session",
+    "crypto_microstructure",
+    "credit_spread",
+    "fixed_income_rates",
+    "correlation_risk_effect",
+    "execution_cost_quality",
+    "spread_convergence",
+    "sector_rotation_master",
+    "volatility_regime",
+    "position_management",
+}
+
+OPERATIONAL_LABEL_FAMILIES = {
+    "operational_guard_effect",
+    "training_process_quality",
+    "infrastructure_guard",
+    "provider_adapter_verification_research",
+    "institutional_data_plumbing_research",
+    "low_latency_agent_orchestration",
+    "privacy_zkp_controls",
+    "adversarial_ml_security",
+}
+
+RESEARCH_VALIDATION_LABEL_FAMILIES = {
+    "crowd_physics_games",
+    "gpu_quant_acceleration",
+    "limit_order_book_transformers",
+    "neural_sde_kan_hedging",
+    "quant_research_control",
+    "signature_hawkes_generators",
+}
+
+_MARKET_SIGNAL_IDENTITY_TOKENS = (
+    "alpha_",
+    "bank",
+    "bond",
+    "breadth",
+    "conservative",
+    "credit",
+    "crypto",
+    "day_trading",
+    "dividend",
+    "earnings",
+    "energy",
+    "equity",
+    "factor",
+    "fed_",
+    "fx_",
+    "halt_reopen",
+    "intraday",
+    "liquidity",
+    "market_neutral",
+    "mega_cap",
+    "momentum",
+    "options",
+    "rate",
+    "reit",
+    "russell",
+    "small_cap",
+    "spread",
+    "swing",
+    "volatility",
+)
+
+_CONTROL_PLANE_IDENTITY_TOKENS = (
+    "autonomic_governance",
+    "backlog",
+    "bot_genome",
+    "data_lineage",
+    "frontier_",
+    "institutional_operator",
+    "memory_lymphatic",
+    "operator_copilot",
+    "platform_organ",
+    "quant_operational",
+    "storage_memory",
+    "system_governor",
+)
 
 ADVANCED_QUANT_LABEL_FAMILIES = {
     "quant_pricing_research",
@@ -291,6 +413,7 @@ TARGETED_LABEL_CONTRACT_OVERRIDES: dict[str, dict[str, Any]] = {
 STORAGE_TARGETS = [
     "governance/training_labeling_intelligence",
     *[f"governance/training_labeling_intelligence/{system['slug']}" for system in INTELLIGENCE_SYSTEMS],
+    "governance/training_labeling_intelligence/all_bot_label_materialization_latest.json",
     "governance/health/training_labeling_intelligence_latest.json",
 ]
 
@@ -361,12 +484,75 @@ def _free_source_candidates_for_contexts(contexts: list[Any]) -> dict[str, list[
     return out
 
 
+_RESEARCH_CONTEXT_TOKENS = (
+    "backtest",
+    "causal",
+    "embedding",
+    "geometric",
+    "geometry",
+    "greeks",
+    "hawkes",
+    "heston",
+    "laplacian",
+    "malliavin",
+    "manifold",
+    "mckean_vlasov",
+    "mean_field",
+    "neural_sde",
+    "quantum",
+    "rough_path",
+    "rough_volatility",
+    "simulation",
+    "stochastic_differential",
+    "tatonnement",
+    "topological",
+    "wasserstein",
+    "zkp",
+)
+
+_INTERNAL_CONTEXT_SUFFIXES = (
+    "_audit",
+    "_contracts",
+    "_coverage",
+    "_detection",
+    "_guard",
+    "_health",
+    "_memory",
+    "_pressure",
+    "_profile",
+    "_queue",
+    "_rank",
+    "_requalification",
+    "_score",
+    "_state",
+    "_trace",
+    "_validation",
+)
+
+_INTERNAL_CONTEXT_NAMES = {
+    "collector_contracts",
+    "data_source_divergence",
+    "golden_replay_regression",
+    "model_drift_guard",
+    "process_watchdog",
+    "source_verification",
+    "stale_feature_detection",
+    "storage_backpressure",
+    "walk_forward_requalification",
+}
+
+
 def _context_classification(context: str, candidate_ids: list[str]) -> dict[str, str]:
-    mapped = LABEL_CONTEXT_CLASSIFICATION_MAP.get(str(context or "").strip())
+    context_id = str(context or "").strip()
+    mapped = LABEL_CONTEXT_CLASSIFICATION_MAP.get(context_id)
     if mapped:
         return dict(mapped)
     if candidate_ids:
         return {"class": "free_public_or_verified_proxy", "route": "source_verification", "authority": "free_public_or_verified_proxy"}
+    if any(token in context_id for token in _RESEARCH_CONTEXT_TOKENS):
+        return {"class": "research_only", "route": context_id, "authority": "internal_research_snapshot"}
+    if context_id in _INTERNAL_CONTEXT_NAMES or context_id.endswith(_INTERNAL_CONTEXT_SUFFIXES):
+        return {"class": "internal_trace", "route": context_id, "authority": "internal_event_store"}
     return {"class": "unclassified", "route": "manual_context_triage", "authority": "unknown"}
 
 
@@ -394,6 +580,7 @@ def _label_materialization_contract(context: str, classification: dict[str, str]
         join_mode = "research_snapshot_id_only"
     elif context_class == "internal_trace":
         join_mode = "internal_event_timestamp_only"
+    evidence_verified = bool(coverage_status == "verified")
     return {
         "context": str(context),
         "context_class": context_class,
@@ -407,7 +594,8 @@ def _label_materialization_contract(context: str, classification: dict[str, str]
             "counterfactual_opportunity_trace",
             "label_source_confidence_norm",
         ],
-        "eligible_for_training": bool(coverage_status == "verified" or context_class in {"internal_trace", "broker_truth_required"}),
+        "evidence_verification_status": "verified" if evidence_verified else "pending_source_or_artifact_verification",
+        "eligible_for_training": evidence_verified,
         "policy": "materialize_labels_before_training_use; never join future context into historical samples",
     }
 
@@ -486,7 +674,7 @@ def _free_label_source_enrichment(project_root: Path, rows: list[dict[str, Any]]
     required_context_counts: Counter[str] = Counter()
     label_family_contexts: dict[str, set[str]] = {}
     for row in rows:
-        contract = _existing_contract(row) or _universal_contract(row)
+        contract = _universal_contract(row)
         label_family = str(contract.get("label_family") or "unknown")
         contexts = [str(item or "").strip() for item in contract.get("required_context") or [] if str(item or "").strip()]
         for context in contexts:
@@ -696,7 +884,38 @@ def _contract_complete(row: dict[str, Any]) -> bool:
     return bool(primary and (isinstance(required_context, list) or isinstance(required_labels, list) or row.get("data_label_contract_version")))
 
 
+def _market_signal_label_override(row: dict[str, Any]) -> tuple[str, str, list[str], list[str]] | None:
+    if str(row.get("bot_role") or "").strip().lower() != "signal_sub_bot":
+        return None
+    text = " ".join(
+        str(row.get(key) or "").strip().lower()
+        for key in ("bot_id", "slot_kind", "slot_label", "sleeve_profile", "sleeve_family", "strategy_family")
+    )
+    if any(token in text for token in _CONTROL_PLANE_IDENTITY_TOKENS):
+        return None
+    if not any(token in text for token in _MARKET_SIGNAL_IDENTITY_TOKENS):
+        return None
+    if any(token in text for token in ("option", "gamma", "iv_", "0dte")):
+        return "options_surface", "iv_realized_1d_5d", ["gamma", "skew", "spread_quality"], ["options_chain", "iv_surface", "open_interest", "bid_ask_spread"]
+    if any(token in text for token in ("future", "curve", "basis")):
+        return "futures_event_session", "session_event_followthrough", ["basis", "curve", "macro_event_window"], ["futures_bars", "session_calendar", "basis_context", "macro_calendar"]
+    if "crypto" in text:
+        return "crypto_microstructure", "crypto_session_followthrough", ["liquidity_sweep", "basis", "funding_stress"], ["crypto_bars", "order_book_proxy", "funding_context"]
+    if any(token in text for token in ("dividend", "income", "reit")):
+        return "income_total_return", "20d_total_return_income", ["payout_safety", "dividend_cut_risk", "ex_dividend_window"], ["ex_dividend_calendar", "payout_metrics", "rate_context"]
+    if any(token in text for token in ("intraday", "day_trading", "halt_reopen", "closing_auction", "low_float")):
+        return "intraday_fast", "5m_30m_forward_return", ["1m", "5m", "15m", "60m"], ["one_minute_bars", "vwap", "spread_quality", "relative_volume"]
+    if "swing" in text:
+        return "multi_day", "2d_5d_forward_return", ["1d", "5d", "10d"], ["daily_bars", "sector_context", "macro_context", "overnight_gap"]
+    if any(token in text for token in ("conservative", "credit", "rate", "bond", "liquidity_preservation")):
+        return "risk_adjusted_preservation", "drawdown_avoidance_5d", ["vol_adjusted_return", "max_drawdown", "cash_parking"], ["volatility_budget", "credit_stress", "liquidity_state"]
+    return "generic_directional", "1d_forward_return", ["5d_forward_return", "risk_adjusted_return"], ["price_bars", "volume", "market_context"]
+
+
 def _infer_label_family(row: dict[str, Any]) -> tuple[str, str, list[str], list[str]]:
+    market_signal_override = _market_signal_label_override(row)
+    if market_signal_override is not None:
+        return market_signal_override
     text = " ".join(
         str(row.get(key) or "").lower()
         for key in (
@@ -733,6 +952,16 @@ def _infer_label_family(row: dict[str, Any]) -> tuple[str, str, list[str], list[
     for tokens, family, primary, aux, context in rules:
         if any(token in text for token in tokens):
             return family, primary, aux, context
+    role = str(row.get("bot_role") or "").strip().lower()
+    if role in {"infrastructure_bot", "infrastructure_sub_bot"}:
+        intake = row.get("data_intake_collections") if isinstance(row.get("data_intake_collections"), list) else []
+        context = _ordered_unique([*intake, "runtime_health", "incident_log", "operator_context"])
+        return (
+            "operational_guard_effect",
+            "operational_action_improves_verified_runtime_state",
+            ["incident_prevention", "false_positive_guard", "runtime_health_delta"],
+            context[:16],
+        )
     return "generic_directional", "1d_forward_return", ["5d_forward_return", "risk_adjusted_return"], ["price_bars", "volume", "market_context"]
 
 
@@ -742,6 +971,8 @@ def _training_lane_for_family(label_family: str) -> str:
     if label_family in {"training_process_quality", "operational_guard_effect"}:
         return "governance_effect"
     if label_family in ADVANCED_QUANT_LABEL_FAMILIES:
+        return "research_quant_proxy"
+    if label_family in RESEARCH_VALIDATION_LABEL_FAMILIES:
         return "research_quant_proxy"
     if label_family in {"alpha_research"}:
         return "research_walk_forward"
@@ -781,7 +1012,31 @@ def _universal_contract(row: dict[str, Any]) -> dict[str, Any]:
     existing_primary = str(existing.get("primary_horizon") or existing.get("primary_label_horizon") or "").strip()
     existing_aux = existing.get("aux_horizons") or existing.get("aux_label_horizons")
     existing_context = existing.get("required_context") or existing.get("required_label_context")
-    required_labels = existing.get("required_labels") if isinstance(existing.get("required_labels"), list) else REQUIRED_LABELS
+    role = str(row.get("bot_role") or "").strip().lower()
+    role_mismatch_repair = bool(
+        role in {"infrastructure_bot", "infrastructure_sub_bot"}
+        and existing_family == "generic_directional"
+    )
+    signal_market_mismatch_repair = bool(
+        existing_family in OPERATIONAL_LABEL_FAMILIES
+        and _market_signal_label_override(row) is not None
+    )
+    if role_mismatch_repair:
+        existing_family = ""
+        existing_primary = ""
+        existing_aux = None
+        existing_context = None
+    elif signal_market_mismatch_repair:
+        existing_family = ""
+        existing_primary = ""
+        existing_aux = None
+        existing_context = None
+    if role_mismatch_repair:
+        required_labels = OPERATIONAL_REQUIRED_LABELS
+    elif signal_market_mismatch_repair:
+        required_labels = REQUIRED_LABELS
+    else:
+        required_labels = existing.get("required_labels") if isinstance(existing.get("required_labels"), list) else REQUIRED_LABELS
     label_family = existing_family or family
     return _with_free_source_context({
         "version": UNIVERSAL_LABEL_CONTRACT_VERSION,
@@ -794,8 +1049,332 @@ def _universal_contract(row: dict[str, Any]) -> dict[str, Any]:
         "forbidden_join_modes": list(existing.get("forbidden_join_modes") or ["future_leakage", "lookahead_join", "unbounded_raw_feed_join"]),
         "quality_floor": _safe_float(existing.get("quality_floor"), 0.84),
         "training_lane": _training_lane_for_family(label_family),
-        "source": "preserved_existing_contract" if existing else "inferred_from_registry_identity",
+        "source": (
+            "role_mismatch_repair_override"
+            if role_mismatch_repair
+            else "signal_market_label_repair_override"
+            if signal_market_mismatch_repair
+            else "preserved_existing_contract"
+            if existing
+            else "inferred_from_registry_identity"
+        ),
     })
+
+
+def _label_objective_class(row: dict[str, Any], contract: dict[str, Any]) -> str:
+    family = str(contract.get("label_family") or "generic_directional").strip().lower()
+    role = str(row.get("bot_role") or "").strip().lower()
+    lane = str(contract.get("training_lane") or row.get("training_lane") or "").strip().lower()
+    if family in OPERATIONAL_LABEL_FAMILIES:
+        return "operational_effect"
+    if role in {"infrastructure_bot", "infrastructure_sub_bot"}:
+        return "operational_effect"
+    if family in RESEARCH_VALIDATION_LABEL_FAMILIES:
+        return "research_validation"
+    if family.endswith("_research") or lane in {"research_walk_forward", "research_quant_proxy"}:
+        return "research_validation"
+    if family in MARKET_OUTCOME_LABEL_FAMILIES:
+        return "market_outcome"
+    return "market_outcome"
+
+
+_HORIZON_UNIT_SECONDS = {
+    "m": 60,
+    "h": 60 * 60,
+    "d": 24 * 60 * 60,
+    "w": 7 * 24 * 60 * 60,
+}
+
+
+def _label_horizon_policy(primary_horizon: str, objective_class: str) -> dict[str, Any]:
+    semantic_horizon = str(primary_horizon or "").strip().lower()
+    if objective_class != "market_outcome":
+        return {
+            "semantic_horizon": semantic_horizon,
+            "enforcement_mode": "authority_specific_outcome_boundary",
+            "minimum_maturity_seconds": 0,
+            "maximum_maturity_seconds": 0,
+            "selection_mode": "authority_specific_join_only",
+        }
+
+    durations = sorted(
+        int(value) * _HORIZON_UNIT_SECONDS[unit]
+        for value, unit in re.findall(r"(?<![a-z0-9])(\d+)([mhdw])(?=_|$)", semantic_horizon)
+    )
+    if durations:
+        minimum_seconds = int(durations[0])
+        semantic_maximum_seconds = int(durations[-1])
+        if semantic_maximum_seconds >= _HORIZON_UNIT_SECONDS["d"]:
+            closure_slack_seconds = max(
+                3 * _HORIZON_UNIT_SECONDS["d"],
+                int(round(semantic_maximum_seconds * 0.35)),
+            )
+        elif semantic_maximum_seconds >= _HORIZON_UNIT_SECONDS["h"]:
+            closure_slack_seconds = max(2 * _HORIZON_UNIT_SECONDS["h"], semantic_maximum_seconds)
+        else:
+            closure_slack_seconds = max(30 * _HORIZON_UNIT_SECONDS["m"], semantic_maximum_seconds * 3)
+        return {
+            "semantic_horizon": semantic_horizon,
+            "enforcement_mode": "strict_wall_clock_range",
+            "minimum_maturity_seconds": minimum_seconds,
+            "semantic_maximum_maturity_seconds": semantic_maximum_seconds,
+            "maximum_maturity_seconds": int(semantic_maximum_seconds + closure_slack_seconds),
+            "closure_slack_seconds": int(closure_slack_seconds),
+            "selection_mode": "first_same_symbol_mode_snapshot_at_or_after_minimum",
+        }
+
+    if "session" in semantic_horizon or "event" in semantic_horizon:
+        return {
+            "semantic_horizon": semantic_horizon,
+            "enforcement_mode": "session_event_boundary",
+            "minimum_maturity_seconds": 5 * 60,
+            "maximum_maturity_seconds": 36 * 60 * 60,
+            "selection_mode": "first_same_symbol_mode_snapshot_at_or_after_minimum",
+        }
+    return {
+        "semantic_horizon": semantic_horizon,
+        "enforcement_mode": "explicit_event_boundary_required",
+        "minimum_maturity_seconds": 0,
+        "maximum_maturity_seconds": 0,
+        "selection_mode": "configured_row_horizon_with_evidence_audit",
+    }
+
+
+def _bot_label_materialization_contract(row: dict[str, Any], contract: dict[str, Any] | None = None) -> dict[str, Any]:
+    universal = dict(contract or _universal_contract(row))
+    objective_class = _label_objective_class(row, universal)
+    family = str(universal.get("label_family") or "generic_directional")
+    primary_horizon = str(universal.get("primary_horizon") or "").strip()
+    bot_id = str(row.get("bot_id") or "").strip()
+    if objective_class == "operational_effect":
+        authority = "verified_internal_control_outcome"
+        join_mode = "internal_event_timestamp_and_action_id_only"
+        join_keys = ["bot_id", "action_id", "event_timestamp_utc", "outcome_timestamp_utc", "artifact_sha256"]
+        outputs = list(OPERATIONAL_REQUIRED_LABELS)
+        maturity_rule = "outcome_timestamp_must_follow_action_timestamp_and_reference_a_verified_runtime_artifact"
+        source_policy = "market_price_must_not_proxy_an_operational_or_governance_outcome"
+    elif objective_class == "research_validation":
+        authority = "walk_forward_out_of_sample_evidence"
+        join_mode = "immutable_research_snapshot_and_fold_id_only"
+        join_keys = ["bot_id", "experiment_id", "snapshot_id", "fold_id", "evaluated_at_utc", "artifact_sha256"]
+        outputs = list(RESEARCH_REQUIRED_LABELS)
+        maturity_rule = "label_exists_only_after_the_out_of_sample_fold_and_stability_checks_complete"
+        source_policy = "in_sample_fit_and_unverified_proxy_outputs_are_never_promotion_labels"
+    else:
+        authority = "matured_market_and_paper_outcome_evidence"
+        join_mode = "point_in_time_symbol_mode_snapshot_only"
+        join_keys = [
+            "bot_id",
+            "symbol",
+            "mode",
+            "feature_timestamp_utc",
+            "label_matured_at_utc",
+            "feature_snapshot_id",
+            "label_snapshot_id",
+        ]
+        outputs = [
+            "forward_return_bucket",
+            "risk_adjusted_return_bucket",
+            "side_specific_outcome",
+            "abstention_outcome",
+            "counterfactual_opportunity_trace",
+            "sample_eligibility_reason",
+            "label_source_confidence_norm",
+        ]
+        maturity_rule = "label_matured_at_utc_must_be_strictly_after_feature_timestamp_utc_within_the_same_symbol_and_mode"
+        source_policy = "paper_decisions_use_broker_or_verified_market_outcomes; missing_prices_never_become_class_zero"
+
+    directional_fallback_allowed = bool(
+        objective_class == "market_outcome" and family == "generic_directional"
+    )
+    lifecycle = str(row.get("lifecycle_state") or "").strip().lower()
+    training_excluded = bool(row.get("training_excluded", row.get("exclude_from_training", False)))
+    horizon_policy = _label_horizon_policy(primary_horizon, objective_class)
+    evidence_state = (
+        "lifecycle_ineligible"
+        if lifecycle in {"deleted", "disabled", "inactive", "retired", "tombstoned"}
+        else "collection_only_evidence_pending"
+        if training_excluded or lifecycle == "data_collection_only"
+        else "runtime_evidence_gate_required"
+        if objective_class == "market_outcome"
+        else "verified_outcome_join_required"
+    )
+    payload = {
+        "version": LABEL_MATERIALIZATION_CONTRACT_VERSION,
+        "bot_id": bot_id,
+        "label_family": family,
+        "primary_horizon": primary_horizon,
+        "training_lane": str(universal.get("training_lane") or row.get("training_lane") or ""),
+        "objective_class": objective_class,
+        "outcome_authority": authority,
+        "required_join_mode": join_mode,
+        "required_join_keys": join_keys,
+        "required_outputs": outputs,
+        "maturity_rule": maturity_rule,
+        "label_horizon_policy": horizon_policy,
+        "minimum_label_maturity_seconds": int(horizon_policy.get("minimum_maturity_seconds", 0) or 0),
+        "maximum_label_maturity_seconds": int(horizon_policy.get("maximum_maturity_seconds", 0) or 0),
+        "source_policy": source_policy,
+        "point_in_time_guard_required": True,
+        "lineage_hash_required": True,
+        "sample_eligibility_reason_required": True,
+        "decision_trace_required_for_action_labels": True,
+        "directional_fallback_allowed": directional_fallback_allowed,
+        "sample_filter_bypass_allowed": False,
+        "runtime_price_labeling_allowed": objective_class == "market_outcome",
+        "evaluation_split_policy": "purged_chronological_only",
+        "split_embargo_required": True,
+        "feature_normalization_fit_scope": "train_partition_only",
+        "evidence_state": evidence_state,
+        "promotion_policy": "pending_or_unknown_outcomes_are_not_training_evidence_and_cannot_clear_promotion",
+    }
+    payload["contract_sha256"] = hashlib.sha256(
+        json.dumps(payload, ensure_ascii=True, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+    return payload
+
+
+def _all_bot_label_materialization_coverage(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    routes: list[dict[str, Any]] = []
+    objective_counts: Counter[str] = Counter()
+    evidence_state_counts: Counter[str] = Counter()
+    family_counts: Counter[str] = Counter()
+    horizon_enforcement_counts: Counter[str] = Counter()
+    misrouted_before: list[str] = []
+    misrouted_after: list[str] = []
+    market_signal_misroutes_before: list[str] = []
+    market_signal_misroutes_after: list[str] = []
+    for row in rows:
+        bot_id = str(row.get("bot_id") or "").strip()
+        role = str(row.get("bot_role") or "").strip().lower()
+        existing = row.get("universal_label_contract") if isinstance(row.get("universal_label_contract"), dict) else {}
+        if not existing:
+            existing = _existing_contract(row)
+        existing_family = str(existing.get("label_family") or "")
+        repair_status = str(row.get("training_label_contract_status") or "")
+        persisted_contract = _existing_contract(row)
+        repair_source = str(persisted_contract.get("source") or existing.get("source") or "")
+        if (
+            repair_status == "role_mismatch_label_repair"
+            or repair_source == "role_mismatch_repair_override"
+            or role in {"infrastructure_bot", "infrastructure_sub_bot"} and existing_family == "generic_directional"
+        ):
+            misrouted_before.append(bot_id)
+        if (
+            repair_status == "signal_market_label_repair"
+            or repair_source == "signal_market_label_repair_override"
+            or existing_family in OPERATIONAL_LABEL_FAMILIES and _market_signal_label_override(row) is not None
+        ):
+            market_signal_misroutes_before.append(bot_id)
+        universal = _universal_contract(row)
+        materialization = _bot_label_materialization_contract(row, universal)
+        objective = str(materialization["objective_class"])
+        if role in {"infrastructure_bot", "infrastructure_sub_bot"} and objective == "market_outcome":
+            misrouted_after.append(bot_id)
+        if (
+            existing_family in OPERATIONAL_LABEL_FAMILIES
+            and _market_signal_label_override(row) is not None
+            and objective != "market_outcome"
+        ):
+            market_signal_misroutes_after.append(bot_id)
+        objective_counts[objective] += 1
+        evidence_state_counts[str(materialization["evidence_state"])] += 1
+        family_counts[str(materialization["label_family"])] += 1
+        horizon_policy = materialization.get("label_horizon_policy") if isinstance(materialization.get("label_horizon_policy"), dict) else {}
+        horizon_enforcement_counts[str(horizon_policy.get("enforcement_mode") or "missing")] += 1
+        routes.append(
+            {
+                "bot_id": bot_id,
+                "bot_role": str(row.get("bot_role") or ""),
+                "lifecycle_state": str(row.get("lifecycle_state") or ""),
+                "training_excluded": bool(row.get("training_excluded", row.get("exclude_from_training", False))),
+                "label_family": str(materialization["label_family"]),
+                "primary_horizon": str(materialization.get("primary_horizon") or ""),
+                "training_lane": str(materialization["training_lane"]),
+                "objective_class": objective,
+                "outcome_authority": str(materialization["outcome_authority"]),
+                "evidence_state": str(materialization["evidence_state"]),
+                "directional_fallback_allowed": bool(materialization["directional_fallback_allowed"]),
+                "horizon_enforcement_mode": str(horizon_policy.get("enforcement_mode") or ""),
+                "minimum_label_maturity_seconds": int(materialization.get("minimum_label_maturity_seconds", 0) or 0),
+                "maximum_label_maturity_seconds": int(materialization.get("maximum_label_maturity_seconds", 0) or 0),
+                "contract_sha256": str(materialization["contract_sha256"]),
+            }
+        )
+    return {
+        "timestamp_utc": _utc_now(),
+        "schema_version": 2,
+        "contract_version": LABEL_MATERIALIZATION_CONTRACT_VERSION,
+        "total_bot_count": len(rows),
+        "routed_bot_count": len(routes),
+        "route_coverage_ratio": round(len(routes) / max(len(rows), 1), 6),
+        "unique_contract_hash_count": len({str(route["contract_sha256"]) for route in routes}),
+        "objective_class_counts": dict(sorted(objective_counts.items())),
+        "evidence_state_counts": dict(sorted(evidence_state_counts.items())),
+        "label_family_counts": dict(sorted(family_counts.items())),
+        "horizon_enforcement_counts": dict(sorted(horizon_enforcement_counts.items())),
+        "directional_fallback_allowed_count": sum(1 for route in routes if route["directional_fallback_allowed"]),
+        "directional_fallback_forbidden_count": sum(1 for route in routes if not route["directional_fallback_allowed"]),
+        "misrouted_directional_infrastructure_before_count": len(misrouted_before),
+        "misrouted_directional_infrastructure_before_bot_ids": misrouted_before[:500],
+        "misrouted_directional_infrastructure_after_count": len(misrouted_after),
+        "misrouted_directional_infrastructure_after_bot_ids": misrouted_after[:500],
+        "misrouted_market_signal_guards_before_count": len(market_signal_misroutes_before),
+        "misrouted_market_signal_guards_before_bot_ids": market_signal_misroutes_before[:500],
+        "misrouted_market_signal_guards_after_count": len(market_signal_misroutes_after),
+        "misrouted_market_signal_guards_after_bot_ids": market_signal_misroutes_after[:500],
+        "all_bot_routes": routes,
+        "policy": "contract coverage is not outcome evidence; each bot remains pending until its authority-specific labels mature",
+    }
+
+
+def _compact_materialization_coverage(coverage: dict[str, Any]) -> dict[str, Any]:
+    compact = {
+        key: value
+        for key, value in coverage.items()
+        if key != "all_bot_routes" and not key.endswith("_bot_ids")
+    }
+    compact["detailed_routes_artifact"] = (
+        "governance/training_labeling_intelligence/all_bot_label_materialization_latest.json"
+    )
+    compact["detailed_route_rows_omitted_from_health"] = len(coverage.get("all_bot_routes") or [])
+    return compact
+
+
+def _compact_health_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    compact = dict(payload)
+    enrichment = dict(compact.get("free_label_source_enrichment") or {})
+    context_sources = list(enrichment.pop("context_sources", []) or [])
+    source_statuses = dict(enrichment.pop("source_statuses", {}) or {})
+    enrichment["context_source_rows_omitted_from_health"] = len(context_sources)
+    enrichment["source_status_rows_omitted_from_health"] = len(source_statuses)
+    enrichment["detailed_artifact"] = (
+        "governance/training_labeling_intelligence/free_label_source_enrichment_latest.json"
+    )
+    compact["free_label_source_enrichment"] = enrichment
+
+    plan = dict(compact.get("label_materialization_plan") or {})
+    materialization_queue = list(plan.pop("materialization_queue", []) or [])
+    plan["materialization_queue_rows_omitted_from_health"] = len(materialization_queue)
+    plan["detailed_artifact"] = (
+        "governance/training_labeling_intelligence/label_materialization_plan_latest.json"
+    )
+    compact["label_materialization_plan"] = plan
+    return compact
+
+
+def _apply_bot_label_materialization_contracts(rows: list[dict[str, Any]], now: str) -> dict[str, Any]:
+    changed = 0
+    for row in rows:
+        contract = _bot_label_materialization_contract(row, _universal_contract(row))
+        if row.get("training_label_materialization_contract") != contract:
+            changed += 1
+        row["training_label_materialization_contract"] = contract
+        row["training_label_materialization_contract_version"] = LABEL_MATERIALIZATION_CONTRACT_VERSION
+        row["training_label_materialization_last_reviewed_utc"] = now
+    coverage = _all_bot_label_materialization_coverage(rows)
+    coverage["updated_bot_count"] = changed
+    return coverage
 
 
 def _apply_universal_label_contracts(rows: list[dict[str, Any]], now: str) -> dict[str, Any]:
@@ -813,15 +1392,30 @@ def _apply_universal_label_contracts(rows: list[dict[str, Any]], now: str) -> di
         if not had_any:
             missing_before += 1
         contract = _universal_contract(row)
-        targeted_override = str(contract.get("source") or "") == "targeted_labeling_repair_override"
+        source = str(contract.get("source") or "")
+        targeted_override = source == "targeted_labeling_repair_override"
+        role_mismatch_override = source == "role_mismatch_repair_override"
+        signal_market_override = source == "signal_market_label_repair_override"
         family_counts[str(contract["label_family"])] += 1
         lane_counts[str(contract["training_lane"])] += 1
-        status = "targeted_labeling_repair" if targeted_override else "preserved_explicit" if complete else "normalized_incomplete" if had_any else "normalized_missing"
+        status = (
+            "targeted_labeling_repair"
+            if targeted_override
+            else "role_mismatch_label_repair"
+            if role_mismatch_override
+            else "signal_market_label_repair"
+            if signal_market_override
+            else "preserved_explicit"
+            if complete
+            else "normalized_incomplete"
+            if had_any
+            else "normalized_missing"
+        )
         if status == "preserved_explicit":
             preserved_explicit += 1
         elif status == "normalized_incomplete":
             normalized_incomplete += 1
-        elif status == "targeted_labeling_repair":
+        elif status in {"targeted_labeling_repair", "role_mismatch_label_repair", "signal_market_label_repair"}:
             normalized_incomplete += 1
         else:
             normalized_missing += 1
@@ -831,7 +1425,7 @@ def _apply_universal_label_contracts(rows: list[dict[str, Any]], now: str) -> di
         row["training_label_contract_status"] = status
         row["training_lane"] = contract["training_lane"]
         row["label_contract_last_reviewed_utc"] = now
-        if targeted_override or not complete:
+        if targeted_override or role_mismatch_override or signal_market_override or not complete:
             row["label_contract"] = contract
             row["data_label_contract_version"] = UNIVERSAL_LABEL_CONTRACT_VERSION
             updated_bot_ids.append(str(row.get("bot_id") or ""))
@@ -1374,9 +1968,18 @@ def _materialize_collect_only_diagnostics(
     for row in selected:
         bot_id = str(row.get("bot_id") or "").strip()
         out_path = diagnostics_dir / f"{bot_id}_latest.json"
-        if out_path.exists() and not overwrite:
-            skipped_existing.append(bot_id)
-            continue
+        if out_path.exists():
+            existing = _load_json(out_path)
+            existing_runtime_meta = existing.get("runtime_meta") if isinstance(existing.get("runtime_meta"), dict) else {}
+            existing_is_collect_only = bool(
+                str(existing.get("status") or "").strip().lower() == "collect_only_label_contract_ready"
+                or str(existing_runtime_meta.get("diagnostic_kind") or "").strip().lower()
+                == "collect_only_label_contract_bootstrap"
+            )
+            lifecycle_state = str(row.get("lifecycle_state") or "").strip().lower()
+            if not overwrite or (lifecycle_state != "data_collection_only" and not existing_is_collect_only):
+                skipped_existing.append(bot_id)
+                continue
         _write_json(out_path, _collect_only_diagnostic_payload(row, now=now))
         written.append(bot_id)
     rollup = {
@@ -1772,7 +2375,11 @@ def plan_registry_expansion(registry: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _refresh_summary(registry: dict[str, Any], label_summary: dict[str, Any]) -> None:
+def _refresh_summary(
+    registry: dict[str, Any],
+    label_summary: dict[str, Any],
+    materialization_coverage: dict[str, Any] | None = None,
+) -> None:
     rows = _registry_rows(registry)
     active = [row for row in rows if bool(row.get("active"))]
     inactive = [row for row in rows if not bool(row.get("active"))]
@@ -1792,6 +2399,12 @@ def _refresh_summary(registry: dict[str, Any], label_summary: dict[str, Any]) ->
     pack_rows = [row for row in rows if str(row.get("training_labeling_intelligence_version") or "") == PACK_VERSION and str(row.get("capability_pack_slug") or "") == PACK_SLUG]
     universal_rows = [row for row in rows if str(row.get("universal_label_contract_version") or "") == UNIVERSAL_LABEL_CONTRACT_VERSION]
     contract_rows = [row for row in rows if isinstance(row.get("label_contract"), dict) or str(row.get("data_label_contract_version") or "")]
+    materialization_rows = [
+        row
+        for row in rows
+        if str(row.get("training_label_materialization_contract_version") or "")
+        == LABEL_MATERIALIZATION_CONTRACT_VERSION
+    ]
     versions = [
         int(match.group(1))
         for row in rows
@@ -1818,6 +2431,14 @@ def _refresh_summary(registry: dict[str, Any], label_summary: dict[str, Any]) ->
             "universal_label_contract_version": UNIVERSAL_LABEL_CONTRACT_VERSION,
             "training_label_contract_coverage_ratio": round(len(contract_rows) / max(len(rows), 1), 4),
             "training_label_contracts_normalized_latest": label_summary.get("updated_label_contract_bot_count", 0),
+            "training_label_materialization_contract_version": LABEL_MATERIALIZATION_CONTRACT_VERSION,
+            "training_label_materialization_contract_bot_count": len(materialization_rows),
+            "training_label_materialization_contract_coverage_ratio": round(
+                len(materialization_rows) / max(len(rows), 1), 4
+            ),
+            "training_label_objective_class_counts": dict(
+                (materialization_coverage or {}).get("objective_class_counts") or {}
+            ),
             "max_bot_version": max(versions) if versions else None,
             "target_platform_total_bots": TARGET_PLATFORM_TOTAL_BOTS,
             "target_platform_total_bots_met": len(rows) >= TARGET_PLATFORM_TOTAL_BOTS,
@@ -1839,6 +2460,9 @@ def build_payload(
     incomplete_contracts = sum(1 for row in rows if (_existing_contract(row) or row.get("data_label_contract_version")) and not _contract_complete(row))
     source_enrichment = _free_label_source_enrichment(project_root, rows)
     materialization_plan = _label_materialization_plan(source_enrichment)
+    all_bot_materialization = _compact_materialization_coverage(
+        _all_bot_label_materialization_coverage(rows)
+    )
     collection_guard = _training_labeling_collection_guard_preview(rows)
     return {
         "ok": True,
@@ -1852,6 +2476,7 @@ def build_payload(
         "planned_reaches_target_total": plan["planned_reaches_target_total"],
         "training_labeling_intelligence_version": PACK_VERSION,
         "universal_label_contract_version": UNIVERSAL_LABEL_CONTRACT_VERSION,
+        "label_materialization_contract_version": LABEL_MATERIALIZATION_CONTRACT_VERSION,
         "system_count": plan["system_count"],
         "bot_count": plan["bot_count"],
         "planned_bot_count": plan["planned_bot_count"],
@@ -1861,6 +2486,7 @@ def build_payload(
         "pack": plan["pack"],
         "free_label_source_enrichment": source_enrichment,
         "label_materialization_plan": materialization_plan,
+        "all_bot_label_materialization": all_bot_materialization,
         "training_labeling_collection_guard": collection_guard,
         "training_process_intelligence": _training_process_intelligence(project_root),
         "collect_only_diagnostics": _collect_only_diagnostic_preview(
@@ -1895,10 +2521,24 @@ def apply_registry(
     if added_rows:
         rows.extend(added_rows)
     collection_guard = _apply_training_labeling_collection_guard(rows, now)
+    materialization_before = _all_bot_label_materialization_coverage(rows)
     label_summary = _apply_universal_label_contracts(rows, now)
+    materialization_coverage = _apply_bot_label_materialization_contracts(rows, now)
+    materialization_coverage["misrouted_directional_infrastructure_before_count"] = int(
+        materialization_before.get("misrouted_directional_infrastructure_before_count", 0) or 0
+    )
+    materialization_coverage["misrouted_directional_infrastructure_before_bot_ids"] = list(
+        materialization_before.get("misrouted_directional_infrastructure_before_bot_ids") or []
+    )
+    materialization_coverage["misrouted_market_signal_guards_before_count"] = int(
+        materialization_before.get("misrouted_market_signal_guards_before_count", 0) or 0
+    )
+    materialization_coverage["misrouted_market_signal_guards_before_bot_ids"] = list(
+        materialization_before.get("misrouted_market_signal_guards_before_bot_ids") or []
+    )
     registry["sub_bots"] = rows
     registry["updated_at_utc"] = now
-    _refresh_summary(registry, label_summary)
+    _refresh_summary(registry, label_summary, materialization_coverage)
     _write_json(registry_path, registry)
 
     process = _training_process_intelligence(project_root)
@@ -1936,6 +2576,7 @@ def apply_registry(
             "target_platform_total_bots_met": len(rows) >= TARGET_PLATFORM_TOTAL_BOTS,
             "storage_targets_ready": storage_targets_ready,
             "label_contract_summary": label_summary,
+            "all_bot_label_materialization": _compact_materialization_coverage(materialization_coverage),
             "free_label_source_enrichment": source_enrichment,
             "label_materialization_plan": materialization_plan,
             "training_labeling_collection_guard": collection_guard,
@@ -1947,14 +2588,59 @@ def apply_registry(
         "generated_at_utc": _utc_now(),
         "training_labeling_intelligence_version": PACK_VERSION,
         "universal_label_contract_version": UNIVERSAL_LABEL_CONTRACT_VERSION,
+        "label_materialization_contract_version": LABEL_MATERIALIZATION_CONTRACT_VERSION,
         "pack": payload["pack"],
     }
     _write_json(project_root / "config" / "training_labeling_intelligence_v1.json", config_payload)
-    _write_json(project_root / "governance" / "health" / "training_labeling_intelligence_latest.json", payload)
+    _write_json(
+        project_root / "governance" / "health" / "training_labeling_intelligence_latest.json",
+        _compact_health_payload(payload),
+    )
     _write_json(project_root / "governance" / "training_labeling_intelligence" / "label_coverage_latest.json", label_summary)
     _write_json(project_root / "governance" / "training_labeling_intelligence" / "free_label_source_enrichment_latest.json", source_enrichment)
     _write_json(project_root / "governance" / "training_labeling_intelligence" / "label_materialization_plan_latest.json", materialization_plan)
+    _write_json(
+        project_root / "governance" / "training_labeling_intelligence" / "all_bot_label_materialization_latest.json",
+        materialization_coverage,
+    )
     _write_json(project_root / "governance" / "training_labeling_intelligence" / "training_process_intelligence_latest.json", process)
+    return payload
+
+
+def refresh_artifacts(
+    project_root: Path = PROJECT_ROOT,
+    *,
+    collect_only_diagnostic_min_version: int = DEFAULT_COLLECT_ONLY_DIAGNOSTIC_MIN_VERSION,
+    collect_only_diagnostic_limit: int = 0,
+) -> dict[str, Any]:
+    payload = build_payload(
+        project_root,
+        collect_only_diagnostic_min_version=collect_only_diagnostic_min_version,
+        collect_only_diagnostic_limit=collect_only_diagnostic_limit,
+    )
+    payload["mode"] = "refreshed_artifacts"
+    registry = _load_json(project_root / "master_bot_registry.json")
+    detailed_materialization = _all_bot_label_materialization_coverage(_registry_rows(registry))
+    _write_json(
+        project_root / "governance" / "health" / "training_labeling_intelligence_latest.json",
+        _compact_health_payload(payload),
+    )
+    _write_json(
+        project_root / "governance" / "training_labeling_intelligence" / "free_label_source_enrichment_latest.json",
+        dict(payload.get("free_label_source_enrichment") or {}),
+    )
+    _write_json(
+        project_root / "governance" / "training_labeling_intelligence" / "label_materialization_plan_latest.json",
+        dict(payload.get("label_materialization_plan") or {}),
+    )
+    _write_json(
+        project_root / "governance" / "training_labeling_intelligence" / "all_bot_label_materialization_latest.json",
+        detailed_materialization,
+    )
+    _write_json(
+        project_root / "governance" / "training_labeling_intelligence" / "training_process_intelligence_latest.json",
+        dict(payload.get("training_process_intelligence") or {}),
+    )
     return payload
 
 
@@ -1962,12 +2648,15 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Improve training process intelligence and normalize universal label contracts.")
     parser.add_argument("--project-root", default=str(PROJECT_ROOT))
     parser.add_argument("--apply", action="store_true")
+    parser.add_argument("--refresh-artifacts", action="store_true")
     parser.add_argument("--materialize-collect-only-diagnostics", action="store_true")
     parser.add_argument("--collect-only-diagnostic-min-version", type=int, default=DEFAULT_COLLECT_ONLY_DIAGNOSTIC_MIN_VERSION)
     parser.add_argument("--collect-only-diagnostic-limit", type=int, default=0)
     parser.add_argument("--overwrite-collect-only-diagnostics", action="store_true")
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args()
+    if args.apply and args.refresh_artifacts:
+        parser.error("--apply and --refresh-artifacts are mutually exclusive")
 
     project_root = Path(args.project_root).resolve()
     payload = (
@@ -1979,6 +2668,12 @@ def main() -> int:
             overwrite_collect_only_diagnostics=bool(args.overwrite_collect_only_diagnostics),
         )
         if args.apply
+        else refresh_artifacts(
+            project_root,
+            collect_only_diagnostic_min_version=int(args.collect_only_diagnostic_min_version),
+            collect_only_diagnostic_limit=int(args.collect_only_diagnostic_limit),
+        )
+        if args.refresh_artifacts
         else build_payload(
             project_root,
             collect_only_diagnostic_min_version=int(args.collect_only_diagnostic_min_version),

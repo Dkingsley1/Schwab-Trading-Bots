@@ -64,6 +64,28 @@ def test_runtime_throttle_classifies_training_requalification_as_research_pressu
     assert candidates[0]["throttle_reason"] == "research_training_loop_under_host_pressure"
 
 
+def test_runtime_throttle_classifies_strategy_research_lane_as_research_pressure() -> None:
+    classification = src._classify_process(
+        "/repo/.venv/bin/python /repo/scripts/strategy_research_lane.py --day 20260801 --max-rows 4000"
+    )
+
+    assert classification["category"] == "research_training"
+    assert classification["priority_tier"] == "research_downshift"
+    assert classification["throttle_candidate"] is False
+
+
+def test_runtime_throttle_never_marks_resource_guard_sensor_as_pauseable() -> None:
+    classification = src._classify_process(
+        "/repo/.venv/bin/python /repo/scripts/resource_guard.py --profile collection"
+    )
+
+    assert classification == {
+        "category": "support_maintenance",
+        "priority_tier": "control_plane_sensor",
+        "throttle_candidate": False,
+    }
+
+
 def test_runtime_throttle_pauses_blocked_paper_execution_consumer(tmp_path: Path, monkeypatch) -> None:
     health_root = tmp_path / "governance" / "health"
     _write_json(health_root / "resource_guard_latest.json", {"memory_pressure_state": "green", "swap_used_gb": 0.1})
@@ -173,6 +195,7 @@ def test_runtime_throttle_keeps_full_force_paper_open_on_pressure_only_ramp_bloc
     assert policy["pause_paper_execution"] is False
     assert policy["pressure_pause_bypassed"] is True
     assert policy["pressure_pause_bypass_reason"] == "full_force_paper_ramp_pressure_only_blocker"
+    assert policy["pressure_recovery_probe"] is True
 
 
 def test_runtime_throttle_capacity_limits_full_force_paper_instead_of_pausing_cpu_pressure() -> None:
@@ -232,6 +255,194 @@ def test_runtime_throttle_capacity_limits_full_force_paper_instead_of_pausing_cp
     assert overrides["EXECUTION_LANE_LIVE_MAX_INTENT_AGE_SECONDS"] == "60"
 
 
+def test_runtime_throttle_keeps_bounded_niced_paper_research_writer_mix_open() -> None:
+    base_policy = {
+        "artifact_present": True,
+        "paper_execution_allowed": True,
+        "pause_paper_execution": False,
+        "reason": "paper_ramp_armed_and_clean",
+        "stage": "armed",
+        "armed": True,
+        "ok": True,
+        "blockers": [],
+    }
+    attribution = {
+        "paper_execution_hot": True,
+        "paper_hot_low_priority": True,
+        "paper_execution_cpu_percent": 73.0,
+        "bot_owned_cpu_percent": 244.0,
+        "storage_writer_hot": True,
+        "storage_writer_cpu_percent": 102.0,
+        "support_jobs_hot": False,
+        "throttle_candidate_support_cpu_percent": 0.0,
+        "research_training_hot": True,
+        "research_hot_low_priority": True,
+        "research_pressure_dominant": True,
+        "research_training_cpu_percent": 69.0,
+        "protected_work_hot": False,
+    }
+
+    policy = src._paper_execution_pressure_pause_policy(
+        base_policy,
+        attribution,
+        throttle_profile="sustain",
+        compute_pressure_level="high",
+        memory_pressure_level="normal",
+        saturation_score=70.0,
+        live_read_only=True,
+        storage_ready_for_runtime_advisory=True,
+        full_force_paper_required=True,
+    )
+    overrides = src._runtime_env_overrides(
+        "sustain",
+        "normal",
+        "high",
+        paper_capacity_contract={"full_force_stabilization_required": True, "mode": "full_force_guarded"},
+        paper_execution_policy=policy,
+    )
+
+    assert policy["paper_execution_allowed"] is True
+    assert policy["pause_paper_execution"] is False
+    assert policy["pressure_pause_bypass_reason"] == "full_force_paper_ramp_bounded_low_priority_soak"
+    assert overrides["PAPER_EXECUTION_RUNTIME_PAUSED_FOR_PRESSURE"] == "0"
+    assert overrides["PAPER_EXECUTION_QUEUE_CONSUMER_ENABLED"] == "1"
+    assert overrides["PAPER_400_RAMP_BLOCKED_RUNTIME_PAUSE"] == "0"
+    assert overrides["INLINE_PAPER_EXECUTION_ENABLED"] == "1"
+
+
+def test_runtime_throttle_keeps_bounded_dominant_niced_research_and_paper_ready(tmp_path: Path) -> None:
+    health_root = tmp_path / "governance" / "health"
+    _write_json(health_root / "resource_guard_latest.json", {"memory_pressure_state": "green", "swap_used_gb": 0.1})
+    _write_json(health_root / "memory_efficiency_control_latest.json", {"overall_status": "ready"})
+    _write_json(
+        health_root / "live_runtime_separation_control_latest.json",
+        {"release_contract": {"live_lane_should_be_read_only": True}},
+    )
+    _write_json(
+        health_root / "paper_400_ramp_latest.json",
+        {
+            "stage": "blocked",
+            "armed": False,
+            "ok": False,
+            "blockers": ["runtime_capacity_not_ready_for_400_paper"],
+        },
+    )
+    _write_json(
+        health_root / "ingestion_storage_control_latest.json",
+        {
+            "overall_status": "ready",
+            "recommended_operating_mode": "live_full",
+            "pressure_index": 0.1,
+            "severity": "stable",
+            "storage": {"backlog_drain_status": "steady_state"},
+            "backpressure": {
+                "core_pending_lines": 100,
+                "total_pending_lines": 200,
+                "pending_lines_threshold": 15000,
+                "oldest_pending_age_seconds": 10.0,
+                "oldest_age_threshold_seconds": 240.0,
+            },
+        },
+    )
+    _write_json(
+        tmp_path / "master_bot_registry.json",
+        {
+            "sub_bots": [
+                {"bot_id": f"paper_capacity_bot_{idx}", "active": True, "lifecycle_state": "active"}
+                for idx in range(700)
+            ]
+        },
+    )
+
+    payload = src.build_payload(
+        tmp_path,
+        runtime_snapshot={
+            "cpu_count": 10,
+            "load_averages": {"one_minute": 14.0, "five_minutes": 10.0, "fifteen_minutes": 9.0},
+            "thermal": {"thermal_warning_active": False, "performance_warning_active": False},
+            "vm_stat": {},
+            "top_processes": [
+                {
+                    "pid": 601,
+                    "nice": 20,
+                    "cpu_percent": 62.0,
+                    "mem_percent": 1.0,
+                    "elapsed": "00:30",
+                    "command": "python scripts/run_execution_lane.py --mode paper",
+                    "category": "paper_execution",
+                    "priority_tier": "paper_gate_controlled",
+                    "throttle_candidate": True,
+                },
+                {
+                    "pid": 701,
+                    "nice": 20,
+                    "cpu_percent": 70.0,
+                    "mem_percent": 1.0,
+                    "elapsed": "00:30",
+                    "command": "python scripts/run_shadow_training_loop.py --broker schwab",
+                    "category": "research_training",
+                    "priority_tier": "research_downshift",
+                    "throttle_candidate": False,
+                },
+            ],
+            "category_cpu": {"paper_execution": 62.0, "research_training": 70.0},
+            "category_counts": {"paper_execution": 1, "research_training": 1},
+        },
+    )
+
+    attribution = payload["host_pressure_attribution"]
+    advisory = payload["soft_cap_advisory_reclassification"]
+    assert attribution["research_pressure_dominant"] is True
+    assert attribution["research_hot_low_priority"] is True
+    assert attribution["paper_hot_low_priority"] is True
+    assert payload["overall_status"] == "ready"
+    assert advisory["measurements"]["full_force_paper_ramp_guarded_ready"] is True
+    assert advisory["measurements"]["paper_ramp_pressure_recovery_probe"] is True
+    assert advisory["reason"] == "paper_ramp_pressure_only_cycle_recovery_is_guarded_runtime_ready"
+    assert payload["paper_execution_policy"]["paper_execution_allowed"] is True
+    assert payload["paper_execution_policy"]["pause_paper_execution"] is False
+
+
+def test_runtime_throttle_pauses_paper_when_research_exceeds_bounded_soak_limit() -> None:
+    policy = src._paper_execution_pressure_pause_policy(
+        {
+            "artifact_present": True,
+            "paper_execution_allowed": True,
+            "pause_paper_execution": False,
+            "stage": "armed",
+            "armed": True,
+            "ok": True,
+            "blockers": [],
+        },
+        {
+            "paper_execution_hot": True,
+            "paper_hot_low_priority": True,
+            "paper_execution_cpu_percent": 73.0,
+            "bot_owned_cpu_percent": 260.0,
+            "bot_owned_pressure_dominant": True,
+            "storage_writer_hot": True,
+            "storage_writer_cpu_percent": 102.0,
+            "support_jobs_hot": False,
+            "research_training_hot": True,
+            "research_hot_low_priority": True,
+            "research_pressure_dominant": False,
+            "research_training_cpu_percent": 90.0,
+            "protected_work_hot": False,
+        },
+        throttle_profile="sustain",
+        compute_pressure_level="high",
+        memory_pressure_level="normal",
+        saturation_score=70.0,
+        live_read_only=True,
+        storage_ready_for_runtime_advisory=True,
+        full_force_paper_required=True,
+    )
+
+    assert policy["paper_execution_allowed"] is False
+    assert policy["pause_paper_execution"] is True
+    assert policy["reason"] == "paper_execution_cpu_pressure"
+
+
 def test_runtime_throttle_downshifts_full_force_paper_without_restart_when_other_lanes_are_hot() -> None:
     policy = src._paper_execution_pressure_pause_policy(
         {
@@ -273,7 +484,7 @@ def test_runtime_throttle_downshifts_full_force_paper_without_restart_when_other
     assert policy["capacity_limited_paper_execution"] is True
 
 
-def test_runtime_throttle_pauses_hot_coinbase_paper_feed_under_cpu_pressure(tmp_path: Path, monkeypatch) -> None:
+def test_runtime_throttle_downshifts_hot_coinbase_paper_feed_without_terminating_collection(tmp_path: Path, monkeypatch) -> None:
     health_root = tmp_path / "governance" / "health"
     _write_json(health_root / "resource_guard_latest.json", {"memory_pressure_state": "green", "swap_used_gb": 0.1})
     _write_json(health_root / "memory_efficiency_control_latest.json", {"overall_status": "ready"})
@@ -349,11 +560,11 @@ def test_runtime_throttle_pauses_hot_coinbase_paper_feed_under_cpu_pressure(tmp_
     assert payload["paper_execution_policy"]["reason"] == "paper_execution_cpu_pressure"
     assert payload["paper_execution_policy"]["pressure_pause_active"] is True
     assert payload["paper_execution_pause_candidates"]
-    assert all(row["terminate_when_apply"] is True for row in payload["paper_execution_pause_candidates"])
+    assert all(row["terminate_when_apply"] is False for row in payload["paper_execution_pause_candidates"])
+    assert all(row["continuity_exempt"] is True for row in payload["paper_execution_pause_candidates"])
     assert "PAPER_CRYPTO_FEED_RUNTIME_PAUSED_FOR_PRESSURE=1" in override
-    assert result["paper_execution_pause"]["successful_count"] == 2
-    assert (95776, src.signal.SIGTERM) in kills
-    assert (95782, src.signal.SIGTERM) in kills
+    assert result["paper_execution_pause"]["successful_count"] == 0
+    assert all(sig != src.signal.SIGTERM for _, sig in kills)
 
 
 def test_runtime_throttle_pauses_hot_paper_execution_under_elevated_bot_owned_pressure(tmp_path: Path, monkeypatch) -> None:
@@ -423,6 +634,86 @@ def test_runtime_throttle_pauses_hot_paper_execution_under_elevated_bot_owned_pr
     assert "PAPER_EXECUTION_QUEUE_CONSUMER_ENABLED=0" in override
     assert result["paper_execution_pause"]["successful_count"] == 1
     assert (76121, src.signal.SIGTERM) in kills
+
+
+def test_runtime_throttle_downshifts_supervised_full_force_paper_workers_without_restart() -> None:
+    policy = src._paper_execution_pressure_pause_policy(
+        {
+            "artifact_present": True,
+            "paper_execution_allowed": True,
+            "pause_paper_execution": False,
+            "stage": "armed",
+            "armed": True,
+            "ok": True,
+            "blockers": [],
+        },
+        {
+            "paper_execution_hot": True,
+            "paper_hot_low_priority": False,
+            "paper_execution_pressure_dominant": True,
+            "paper_execution_cpu_percent": 270.0,
+            "bot_owned_cpu_percent": 510.0,
+            "storage_writer_cpu_percent": 205.0,
+            "protected_work_hot": False,
+            "hot_paper_processes": [
+                {
+                    "pid": 10284,
+                    "nice": 0,
+                    "cpu_percent": 145.0,
+                    "command_excerpt": "python scripts/run_shadow_training_loop.py --broker coinbase --symbols BTC-USD",
+                },
+                {
+                    "pid": 23392,
+                    "nice": 0,
+                    "cpu_percent": 125.0,
+                    "command_excerpt": "python scripts/run_shadow_training_loop.py --broker coinbase --profile crypto_futures",
+                },
+            ],
+        },
+        throttle_profile="soft_cap",
+        compute_pressure_level="elevated",
+        memory_pressure_level="normal",
+        saturation_score=52.27,
+        live_read_only=True,
+        storage_ready_for_runtime_advisory=True,
+        full_force_paper_required=True,
+    )
+
+    assert policy["paper_execution_allowed"] is True
+    assert policy["pause_paper_execution"] is False
+    assert policy["pressure_pause_bypassed"] is True
+    assert policy["pressure_pause_bypass_reason"] == "supervised_full_force_paper_soak_downshift_without_restart"
+    assert policy["capacity_limited_paper_execution"] is True
+
+
+def test_runtime_throttle_never_terminates_supervised_soak_worker_for_cpu_only_pause() -> None:
+    candidates = src._paper_execution_pressure_candidates(
+        [
+            {
+                "pid": 10284,
+                "nice": 0,
+                "cpu_percent": 145.0,
+                "command": "python scripts/run_shadow_training_loop.py --broker coinbase --symbols BTC-USD",
+                "category": "paper_execution",
+            }
+        ],
+        paper_execution_policy={
+            "paper_execution_allowed": False,
+            "pause_paper_execution": True,
+            "pressure_pause_active": True,
+            "pressure_pause_reason": "paper_execution_cpu_pressure",
+            "reason": "paper_execution_cpu_pressure",
+            "armed": True,
+            "ok": True,
+        },
+        profile="soft_cap",
+        compute_pressure_level="high",
+        memory_pressure_level="normal",
+    )
+
+    assert len(candidates) == 1
+    assert candidates[0]["terminate_when_apply"] is False
+    assert candidates[0]["continuity_exempt"] is True
 
 
 def test_runtime_guard_sigstops_hot_research_until_training_gate_clears(tmp_path: Path, monkeypatch) -> None:
@@ -631,6 +922,39 @@ def test_runtime_throttle_applies_mac_fluidity_foreground_first_overrides(tmp_pa
     assert "DATA_COLLECTION_RESOURCE_SAMPLE_RATE=0.30" in override
     assert "OPS_SUPPORT_JOB_NICE=20" in override
     assert "SHADOW_LOOP_RUNTIME_PAUSE_SLEEP_SECONDS=60" in override
+
+
+def test_silky_mac_fluidity_preserves_support_process_isolation() -> None:
+    contract = src._mac_fluidity_contract(
+        overall_status="ready",
+        throttle_profile="observe",
+        saturation_score=0.0,
+        compute_pressure_level="normal",
+        memory_pressure_level="normal",
+        storage_pressure_index=0.0,
+        storage_total_pending_lines=0,
+        storage_pending_threshold=15000,
+        storage_oldest_pending_age_seconds=0.0,
+        storage_oldest_age_threshold_seconds=240.0,
+        host_pressure_attribution={
+            "foreground_app_cpu_percent": 0.0,
+            "macos_system_cpu_percent": 0.0,
+            "throttle_candidate_support_cpu_percent": 0.0,
+            "research_training_cpu_percent": 0.0,
+            "paper_execution_cpu_percent": 0.0,
+            "protected_live_or_macro_cpu_percent": 0.0,
+            "storage_writer_cpu_percent": 0.0,
+            "operator_observability_cpu_percent": 0.0,
+        },
+        cotenant_contract={"active": False, "open_app_count": 0},
+        runtime_saturation_governor={"saturation_band": "normal"},
+    )
+
+    assert contract["fluidity_band"] == "silky"
+    assert contract["env_overrides"]["DATA_COLLECTION_RESOURCE_CAPTURE_MODE"] == "full"
+    assert contract["env_overrides"]["OPS_SUPPORT_JOB_NICE"] == "12"
+    assert contract["env_overrides"]["YTDLP_SUPPORT_NICE"] == "12"
+    assert contract["env_overrides"]["MACRO_YTDLP_SUPPORT_NICE"] == "12"
 
 
 def test_mac_fluidity_contract_pauses_hot_research_when_foreground_needs_headroom() -> None:
@@ -1944,6 +2268,8 @@ def test_support_throttle_uses_support_nice_not_research_nice(monkeypatch) -> No
 
 def test_paper_shadow_downshift_uses_paper_nice_not_research_nice(monkeypatch) -> None:
     monkeypatch.setenv("RUNTIME_THROTTLE_RESEARCH_NICE", "2")
+    monkeypatch.delenv("PAPER_EXECUTION_RUNTIME_NICE", raising=False)
+    monkeypatch.delenv("PAPER_SHADOW_RUNTIME_NICE", raising=False)
 
     target = src._target_nice_for_candidate(
         {"category": "paper_execution", "priority_tier": "paper_shadow_downshift", "throttle_candidate": True},
@@ -2005,6 +2331,45 @@ def test_runtime_throttle_attributes_macos_system_pressure(tmp_path: Path) -> No
     assert attribution["dominant_bucket"] == "macos_system"
     assert attribution["hot_external_processes"][0]["pid"] == 707
     assert any("Spotlight" in action for action in payload["recommended_actions"])
+
+
+def test_runtime_throttle_recognizes_distributed_niced_research_pressure() -> None:
+    domains = {
+        "research_training": {"cpu_percent": 43.0},
+        "paper_execution": {"cpu_percent": 47.0},
+        "storage_writer": {"cpu_percent": 97.0},
+    }
+    processes = [
+        {
+            "pid": 7000 + index,
+            "nice": nice,
+            "cpu_percent": cpu,
+            "category": "research_training",
+            "command": "python scripts/run_shadow_training_loop.py --broker schwab",
+        }
+        for index, (nice, cpu) in enumerate([(18, 12.0), (18, 11.0), (15, 10.0), (18, 10.0)])
+    ]
+
+    attribution = src._host_pressure_attribution(domains, processes)
+
+    assert attribution["research_training_hot"] is True
+    assert attribution["research_hot_low_priority"] is True
+    assert attribution["low_priority_evidence_mode"]["research_training"] == "distributed_aggregate_hot"
+
+
+def test_runtime_throttle_distributed_research_evidence_rejects_unniced_worker() -> None:
+    domains = {"research_training": {"cpu_percent": 43.0}}
+    processes = [
+        {"pid": 7101, "nice": 18, "cpu_percent": 12.0, "category": "research_training", "command": "niced"},
+        {"pid": 7102, "nice": 0, "cpu_percent": 11.0, "category": "research_training", "command": "unniced"},
+        {"pid": 7103, "nice": 18, "cpu_percent": 10.0, "category": "research_training", "command": "niced"},
+        {"pid": 7104, "nice": 18, "cpu_percent": 10.0, "category": "research_training", "command": "niced"},
+    ]
+
+    attribution = src._host_pressure_attribution(domains, processes)
+
+    assert attribution["research_training_hot"] is True
+    assert attribution["research_hot_low_priority"] is False
 
 
 def test_runtime_throttle_attributes_pmset_log_as_macos_system_pressure(tmp_path: Path) -> None:
@@ -2839,6 +3204,76 @@ def test_runtime_throttle_marks_niced_support_pressure_live_read_only_ready(tmp_
     assert advisory["measurements"]["support_low_priority_guarded_ready"] is True
 
 
+def test_runtime_throttle_keeps_niced_support_plus_hot_paper_advisory(tmp_path: Path) -> None:
+    health_root = tmp_path / "governance" / "health"
+    _write_json(health_root / "resource_guard_latest.json", {"memory_pressure_state": "green", "swap_used_gb": 0.1})
+    _write_json(health_root / "memory_efficiency_control_latest.json", {"overall_status": "ready"})
+    _write_json(
+        health_root / "live_runtime_separation_control_latest.json",
+        {"release_contract": {"live_lane_should_be_read_only": True}},
+    )
+    _write_json(
+        health_root / "ingestion_storage_control_latest.json",
+        {
+            "overall_status": "ready",
+            "recommended_operating_mode": "live_full",
+            "severity": "stable",
+            "pressure_index": 0.025,
+            "storage": {"backlog_drain_status": "steady_state"},
+            "backpressure": {
+                "core_pending_lines": 374,
+                "total_pending_lines": 374,
+                "pending_lines_threshold": 15000,
+                "oldest_pending_age_seconds": 0.0,
+                "oldest_age_threshold_seconds": 240.0,
+            },
+        },
+    )
+
+    payload = src.build_payload(
+        tmp_path,
+        runtime_snapshot={
+            "cpu_count": 10,
+            "load_averages": {"one_minute": 9.8, "five_minutes": 6.2, "fifteen_minutes": 6.7},
+            "thermal": {"thermal_warning_active": False, "performance_warning_active": False},
+            "vm_stat": {},
+            "top_processes": [
+                {
+                    "pid": 501,
+                    "nice": 20,
+                    "cpu_percent": 145.0,
+                    "mem_percent": 0.1,
+                    "elapsed": "00:04",
+                    "command": "python scripts/ops/creative_cotenant_guard.py apply --json",
+                    "category": "support_maintenance",
+                    "priority_tier": "throttle_first",
+                    "throttle_candidate": True,
+                },
+                {
+                    "pid": 502,
+                    "nice": 20,
+                    "cpu_percent": 80.0,
+                    "mem_percent": 0.2,
+                    "elapsed": "00:04",
+                    "command": "python scripts/run_execution_lane.py --mode paper",
+                    "category": "paper_execution",
+                    "priority_tier": "paper_gate_controlled",
+                    "throttle_candidate": True,
+                },
+            ],
+            "category_cpu": {"support_maintenance": 145.0, "paper_execution": 80.0},
+            "category_counts": {"support_maintenance": 1, "paper_execution": 1},
+        },
+    )
+
+    assert payload["overall_status"] == "advisory"
+    advisory = payload["soft_cap_advisory_reclassification"]
+    assert advisory["reason"] == "support_pressure_is_already_niced_and_guarded_advisory"
+    assert advisory["measurements"]["support_low_priority_guarded"] is True
+    assert advisory["measurements"]["support_low_priority_guarded_ready"] is False
+    assert advisory["measurements"]["paper_execution_hot"] is True
+
+
 def test_runtime_throttle_marks_bounded_writer_plus_support_pressure_ready(tmp_path: Path) -> None:
     health_root = tmp_path / "governance" / "health"
     _write_json(health_root / "resource_guard_latest.json", {"memory_pressure_state": "green", "swap_used_gb": 0.1})
@@ -2913,6 +3348,121 @@ def test_runtime_throttle_marks_bounded_writer_plus_support_pressure_ready(tmp_p
     assert advisory["reason"] == "bounded_writer_and_support_throttle_pending_is_guarded_runtime_ready"
     assert advisory["measurements"]["bounded_writer_with_support_guarded_ready"] is True
     assert advisory["measurements"]["support_throttle_pending_guarded_ready"] is True
+
+
+def test_runtime_throttle_bounds_niced_support_and_writer_sampling_hysteresis() -> None:
+    attribution = {
+        "bot_owned_cpu_percent": 197.164,
+        "paper_execution_cpu_percent": 3.651,
+        "storage_writer_cpu_percent": 98.582,
+        "operator_observability_cpu_percent": 3.651,
+        "protected_live_or_macro_cpu_percent": 0.0,
+        "throttle_candidate_support_cpu_percent": 91.28,
+        "research_training_cpu_percent": 0.0,
+        "support_jobs_hot": True,
+        "support_hot_low_priority": True,
+        "storage_writer_hot": True,
+        "bot_owned_pressure_dominant": True,
+    }
+    kwargs = {
+        "overall_status": "degraded",
+        "throttle_profile": "soft_cap",
+        "saturation_score": 41.39,
+        "compute_pressure_level": "normal",
+        "memory_pressure_level": "normal",
+        "storage_pressure_index": 0.0,
+        "storage_fresh_overflow": True,
+        "thermal_warning_active": False,
+        "performance_warning_active": False,
+        "host_pressure_attribution": attribution,
+        "live_read_only": True,
+        "storage_severity": "stable",
+        "storage_core_pending_lines": 0,
+        "storage_total_pending_lines": 0,
+        "storage_pending_threshold": 15000,
+        "storage_oldest_pending_age_seconds": 0.0,
+        "storage_oldest_age_threshold_seconds": 240.0,
+        "storage_overlay_relief": {"bounded": True},
+        "paper_execution_policy": {
+            "paper_execution_allowed": True,
+            "pause_paper_execution": False,
+            "armed": True,
+            "ok": True,
+        },
+        "full_force_paper_required": True,
+    }
+
+    ready = src._soft_cap_low_pressure_advisory(**kwargs)
+
+    assert ready["to_status"] == "ready"
+    assert ready["reason"] == "bounded_writer_and_niced_support_sampling_hysteresis_is_guarded_runtime_ready"
+    assert ready["measurements"]["bounded_writer_with_support_guarded_ready"] is True
+    assert ready["measurements"]["bounded_writer_support_base_cpu_bounded"] is False
+    assert ready["measurements"]["bounded_writer_support_sampling_hysteresis_guarded"] is True
+    assert ready["thresholds"]["max_guarded_ready_bounded_writer_support_cpu_percent"] == 90.0
+    assert ready["thresholds"]["max_guarded_ready_bounded_writer_support_hysteresis_cpu_percent"] == 94.5
+
+    over_limit_attribution = dict(attribution)
+    over_limit_attribution["throttle_candidate_support_cpu_percent"] = 94.6
+    over_limit = src._soft_cap_low_pressure_advisory(
+        **{**kwargs, "host_pressure_attribution": over_limit_attribution}
+    )
+
+    assert over_limit["to_status"] == "advisory"
+    assert over_limit["measurements"]["runtime_ready_guarded"] is False
+    assert over_limit["measurements"]["bounded_writer_support_sampling_hysteresis_guarded"] is False
+
+
+def test_runtime_throttle_keeps_bounded_elevated_full_force_paper_guarded_ready() -> None:
+    attribution = {
+        "bot_owned_cpu_percent": 135.2,
+        "paper_execution_cpu_percent": 128.4,
+        "storage_writer_cpu_percent": 0.0,
+        "operator_observability_cpu_percent": 0.0,
+        "protected_live_or_macro_cpu_percent": 0.0,
+        "throttle_candidate_support_cpu_percent": 6.8,
+        "research_training_cpu_percent": 0.0,
+        "paper_execution_hot": True,
+        "paper_hot_low_priority": True,
+        "support_jobs_hot": False,
+        "research_training_hot": False,
+        "storage_writer_hot": False,
+        "bot_owned_pressure_dominant": False,
+        "external_pressure_dominant": True,
+    }
+
+    advisory = src._soft_cap_low_pressure_advisory(
+        overall_status="degraded",
+        throttle_profile="sustain",
+        saturation_score=58.0,
+        compute_pressure_level="elevated",
+        memory_pressure_level="normal",
+        storage_pressure_index=0.0,
+        storage_fresh_overflow=True,
+        thermal_warning_active=False,
+        performance_warning_active=False,
+        host_pressure_attribution=attribution,
+        live_read_only=True,
+        storage_severity="stable",
+        storage_core_pending_lines=0,
+        storage_total_pending_lines=0,
+        storage_pending_threshold=15000,
+        storage_oldest_pending_age_seconds=0.0,
+        storage_oldest_age_threshold_seconds=240.0,
+        storage_overlay_relief={"bounded": True},
+        paper_execution_policy={
+            "paper_execution_allowed": True,
+            "pause_paper_execution": False,
+            "armed": True,
+            "ok": True,
+        },
+        full_force_paper_required=True,
+    )
+
+    assert advisory["to_status"] == "ready"
+    assert advisory["reason"] == "full_force_paper_ramp_pressure_is_guarded_runtime_ready"
+    assert advisory["measurements"]["full_force_paper_ramp_guarded_ready"] is True
+    assert advisory["thresholds"]["max_guarded_ready_full_force_elevated_host_saturation_score"] == 62.0
 
 
 def test_runtime_throttle_marks_bounded_writer_plus_low_priority_paper_shadow_ready(tmp_path: Path) -> None:
@@ -3077,6 +3627,147 @@ def test_runtime_throttle_treats_armed_paper_ramp_writer_heat_as_guarded_ready(t
     assert advisory["measurements"]["full_force_paper_ramp_guarded_ready"] is True
     assert advisory["measurements"]["paper_execution_allowed"] is True
     assert payload["paper_capacity_contract"]["ready_for_700_bot_paper"] is True
+
+
+def test_runtime_throttle_keeps_niced_coinbase_fanout_and_writer_guarded_ready(tmp_path: Path) -> None:
+    health_root = tmp_path / "governance" / "health"
+    _write_json(health_root / "resource_guard_latest.json", {"memory_pressure_state": "green", "swap_used_gb": 0.1})
+    _write_json(health_root / "memory_efficiency_control_latest.json", {"overall_status": "ready"})
+    _write_json(health_root / "live_runtime_separation_control_latest.json", {"release_contract": {"live_lane_should_be_read_only": True}})
+    _write_json(health_root / "PAPER_TRADE_LOCK.flag", {"policy": "live_data_paper_trade_only"})
+    _write_json(health_root / "paper_400_ramp_latest.json", {"stage": "armed", "armed": True, "ok": True, "blockers": []})
+    _write_json(
+        health_root / "ingestion_storage_control_latest.json",
+        {
+            "overall_status": "ready",
+            "recommended_operating_mode": "live_full",
+            "severity": "stable",
+            "pressure_index": 0.196,
+            "storage": {"backlog_drain_status": "drain_active"},
+            "backpressure": {
+                "core_pending_lines": 1387,
+                "total_pending_lines": 2798,
+                "pending_lines_threshold": 15000,
+                "oldest_pending_age_seconds": 1.2,
+                "oldest_age_threshold_seconds": 240.0,
+            },
+        },
+    )
+    _write_json(
+        tmp_path / "master_bot_registry.json",
+        {
+            "sub_bots": [
+                {"bot_id": f"paper_capacity_bot_{idx}", "active": True, "lifecycle_state": "active"}
+                for idx in range(700)
+            ]
+        },
+    )
+
+    payload = src.build_payload(
+        tmp_path,
+        runtime_snapshot={
+            "cpu_count": 10,
+            "load_averages": {"one_minute": 5.8, "five_minutes": 5.7, "fifteen_minutes": 5.6},
+            "thermal": {"thermal_warning_active": False, "performance_warning_active": False},
+            "vm_stat": {},
+            "top_processes": [
+                {
+                    "pid": 301,
+                    "nice": 20,
+                    "cpu_percent": 99.291,
+                    "mem_percent": 0.2,
+                    "elapsed": "00:30",
+                    "command": "python scripts/link_jsonl_to_sql.py --project-root /repo --mode sqlite",
+                    "category": "storage_writer",
+                    "priority_tier": "backlog_writer",
+                    "throttle_candidate": False,
+                },
+                {
+                    "pid": 601,
+                    "nice": 20,
+                    "cpu_percent": 126.4,
+                    "mem_percent": 2.5,
+                    "elapsed": "00:40",
+                    "command": "python scripts/run_shadow_training_loop.py --broker coinbase --symbols BTC-USD,ETH-USD",
+                    "category": "paper_execution",
+                    "priority_tier": "paper_crypto_feed",
+                    "throttle_candidate": True,
+                },
+                {
+                    "pid": 602,
+                    "nice": 20,
+                    "cpu_percent": 116.311,
+                    "mem_percent": 2.1,
+                    "elapsed": "02:30",
+                    "command": "python scripts/run_shadow_training_loop.py --broker coinbase --profile crypto_futures",
+                    "category": "paper_execution",
+                    "priority_tier": "paper_crypto_feed",
+                    "throttle_candidate": True,
+                },
+            ],
+            "category_cpu": {"storage_writer": 99.291, "paper_execution": 242.711},
+            "category_counts": {"storage_writer": 1, "paper_execution": 2},
+        },
+    )
+
+    assert payload["overall_status"] == "ready"
+    advisory = payload["soft_cap_advisory_reclassification"]
+    assert advisory["reason"] == "full_force_paper_sampling_hysteresis_is_guarded_runtime_ready"
+    assert advisory["measurements"]["full_force_paper_ramp_guarded_ready"] is True
+    assert advisory["measurements"]["full_force_paper_base_cpu_bounded"] is False
+    assert advisory["measurements"]["full_force_paper_sampling_hysteresis_guarded"] is True
+    assert advisory["thresholds"]["max_guarded_ready_full_force_paper_cpu_percent"] == 240.0
+    assert advisory["thresholds"]["max_guarded_ready_full_force_paper_hysteresis_cpu_percent"] == 252.0
+    assert advisory["thresholds"]["max_guarded_ready_full_force_bot_owned_hysteresis_cpu_percent"] == 357.0
+    assert payload["paper_execution_policy"]["paper_execution_allowed"] is True
+    assert payload["paper_capacity_contract"]["ready_for_700_bot_paper"] is True
+
+
+def test_runtime_throttle_sampling_hysteresis_does_not_hide_a_real_capacity_breach() -> None:
+    attribution = {
+        "bot_owned_cpu_percent": 351.391,
+        "paper_execution_cpu_percent": 252.1,
+        "storage_writer_cpu_percent": 99.291,
+        "operator_observability_cpu_percent": 0.0,
+        "protected_live_or_macro_cpu_percent": 0.0,
+        "throttle_candidate_support_cpu_percent": 0.0,
+        "research_training_cpu_percent": 0.0,
+        "paper_execution_hot": True,
+        "paper_hot_low_priority": True,
+        "storage_writer_hot": True,
+    }
+
+    advisory = src._soft_cap_low_pressure_advisory(
+        overall_status="degraded",
+        throttle_profile="soft_cap",
+        saturation_score=39.48,
+        compute_pressure_level="normal",
+        memory_pressure_level="normal",
+        storage_pressure_index=0.176,
+        storage_fresh_overflow=False,
+        thermal_warning_active=False,
+        performance_warning_active=False,
+        host_pressure_attribution=attribution,
+        live_read_only=True,
+        storage_severity="stable",
+        storage_core_pending_lines=2646,
+        storage_total_pending_lines=4979,
+        storage_pending_threshold=15000,
+        storage_oldest_pending_age_seconds=1.088,
+        storage_oldest_age_threshold_seconds=240.0,
+        paper_execution_policy={
+            "paper_execution_allowed": True,
+            "pause_paper_execution": False,
+            "armed": True,
+            "ok": True,
+        },
+        full_force_paper_required=True,
+    )
+
+    assert advisory["to_status"] == "advisory"
+    assert advisory["measurements"]["runtime_ready_guarded"] is False
+    assert advisory["measurements"]["full_force_paper_ramp_guarded_ready"] is False
+    assert advisory["measurements"]["full_force_paper_sampling_hysteresis_guarded"] is False
 
 
 def test_runtime_throttle_keeps_high_compute_full_paper_ramp_guarded_ready(tmp_path: Path) -> None:
@@ -4509,6 +5200,65 @@ def test_runtime_throttle_prefers_bounded_effective_raw_live_for_capacity_relief
     assert payload["runtime_snapshot"]["storage_pressure"]["overlay_capacity_relief"] is True
 
 
+def test_runtime_throttle_uses_managed_support_overlay_pressure_view(tmp_path: Path) -> None:
+    health_root = tmp_path / "governance" / "health"
+    _write_json(health_root / "resource_guard_latest.json", {"memory_pressure_state": "green", "swap_used_gb": 0.1})
+    _write_json(health_root / "memory_efficiency_control_latest.json", {"overall_status": "ready"})
+    _write_json(health_root / "live_runtime_separation_control_latest.json", {"release_contract": {"live_lane_should_be_read_only": False}})
+    _write_json(
+        health_root / "ingestion_storage_control_latest.json",
+        {
+            "overall_status": "ready",
+            "recommended_operating_mode": "normal",
+            "pressure_index": 0.42,
+            "severity": "stable",
+            "storage": {"backlog_drain_status": "drain_active"},
+            "backpressure": {
+                "core_pending_lines": 2900,
+                "deferred_pending_lines": 900,
+                "support_pending_lines": 712000,
+                "total_pending_lines": 715800,
+                "oldest_pending_age_seconds": 960.0,
+                "pending_lines_threshold": 15000,
+                "oldest_age_threshold_seconds": 240.0,
+                "managed_support_overlay_backlog": True,
+                "overlay_adjusted": True,
+                "pressure_core_pending_lines": 2900,
+                "pressure_deferred_pending_lines": 900,
+                "pressure_support_pending_lines": 5000,
+                "pressure_total_pending_lines": 8800,
+                "pressure_oldest_pending_age_seconds": 80.0,
+            },
+        },
+    )
+
+    payload = src.build_payload(
+        tmp_path,
+        runtime_snapshot={
+            "cpu_count": 12,
+            "load_averages": {"one_minute": 1.5, "five_minutes": 1.7, "fifteen_minutes": 1.6},
+            "thermal": {"thermal_warning_active": False, "performance_warning_active": False},
+            "vm_stat": {},
+            "top_processes": [],
+            "category_cpu": {},
+            "category_counts": {},
+        },
+    )
+
+    storage_pressure = payload["runtime_snapshot"]["storage_pressure"]
+    overlay = storage_pressure["overlay_relief_contract"]
+    assert payload["throttle_profile"] != "protect_live"
+    assert storage_pressure["managed_pressure_view"] is True
+    assert storage_pressure["total_pending_lines"] == 8800
+    assert storage_pressure["raw_total_pending_lines"] == 715800
+    assert storage_pressure["oldest_pending_age_seconds"] == 80.0
+    assert storage_pressure["raw_oldest_pending_age_seconds"] == 960.0
+    assert overlay["managed_pressure_view"] is True
+    assert overlay["overlay_total_pending_lines"] == 8800
+    assert overlay["raw_overlay_total_pending_lines"] == 715800
+    assert overlay["active"] is True
+
+
 def test_runtime_throttle_uses_explicit_empty_sql_overlay_for_storage_relief(tmp_path: Path) -> None:
     health_root = tmp_path / "governance" / "health"
     _write_json(health_root / "resource_guard_latest.json", {"memory_pressure_state": "green", "swap_used_gb": 0.1})
@@ -4738,6 +5488,98 @@ def test_runtime_throttle_marks_low_pressure_external_soft_cap_advisory(tmp_path
     assert payload["overall_status"] == "advisory"
     assert payload["host_pressure_attribution"]["external_pressure_dominant"] is True
     assert payload["soft_cap_advisory_reclassification"]["active"] is True
+
+
+def test_runtime_snapshot_excludes_controller_self_cpu(monkeypatch) -> None:
+    self_pid = 4242
+    monkeypatch.setattr(src.os, "getpid", lambda: self_pid)
+    monkeypatch.setattr(
+        src,
+        "_run_capture",
+        lambda cmd: (
+            "PID NI %CPU %MEM ELAPSED COMMAND\n"
+            "4242 0 95.0 0.1 00:01 python scripts/ops/runtime_throttle_control.py --apply --json\n"
+            "5000 15 12.0 0.1 00:10 python scripts/link_jsonl_to_sql.py\n"
+            if cmd and cmd[0] == "ps"
+            else ""
+        ),
+    )
+
+    snapshot = src.collect_runtime_snapshot(max_processes=12)
+
+    assert all(row["pid"] != self_pid for row in snapshot["top_processes"])
+    assert snapshot["category_cpu"].get("operator_observability", 0.0) == 0.0
+    assert snapshot["self_observation_exclusion"]["excluded_count"] == 1
+
+
+def test_runtime_process_cpu_delta_replaces_stale_ps_average() -> None:
+    rows = [
+        {"pid": 101, "cpu_percent": 72.0, "command": "sleeping paper lane"},
+        {"pid": 202, "cpu_percent": 4.0, "command": "active external worker"},
+    ]
+
+    sampled, metadata = src._apply_current_process_cpu_sample(
+        rows,
+        before_text="101 15:00.00\n202 01:00.00\n",
+        after_text="101 15:00.00\n202 01:00.25\n",
+        sample_seconds=0.25,
+    )
+    by_pid = {row["pid"]: row for row in sampled}
+
+    assert by_pid[101]["ps_cpu_percent"] == 72.0
+    assert by_pid[101]["cpu_percent"] == 0.0
+    assert by_pid[202]["cpu_percent"] == 100.0
+    assert all(row["cpu_sample_source"] == "cpu_time_delta" for row in sampled)
+    assert metadata["active"] is True
+    assert metadata["sampled_process_count"] == 2
+
+
+def test_runtime_process_cpu_time_parser_handles_day_and_hour_formats() -> None:
+    assert src._parse_process_cpu_time_seconds("02:03.50") == 123.5
+    assert src._parse_process_cpu_time_seconds("1:02:03.50") == 3723.5
+    assert src._parse_process_cpu_time_seconds("2-01:02:03.50") == 176523.5
+    assert src._parse_process_cpu_time_seconds("not-a-time") is None
+
+
+def test_runtime_throttle_uses_bounded_raw_live_relief_without_overlay_flag() -> None:
+    relief = src._storage_overlay_relief_contract(
+        {
+            "raw_live": {
+                "core_pending_lines": 991,
+                "total_pending_lines": 2237,
+                "oldest_pending_age_seconds": 219.0,
+            },
+            "core_pending_lines": 991,
+            "total_pending_lines": 2237,
+            "overlay_adjusted": False,
+        },
+        storage_severity="elevated",
+        storage_pressure_index=0.91,
+    )
+
+    assert relief["active"] is True
+    assert relief["bounded"] is True
+    assert relief["bounded_raw_live_relief"] is True
+
+
+def test_runtime_throttle_does_not_relieve_hard_raw_live_pressure() -> None:
+    relief = src._storage_overlay_relief_contract(
+        {
+            "raw_live": {
+                "core_pending_lines": 991,
+                "total_pending_lines": 2237,
+                "oldest_pending_age_seconds": 219.0,
+            },
+            "core_pending_lines": 991,
+            "total_pending_lines": 2237,
+            "overlay_adjusted": False,
+        },
+        storage_severity="elevated",
+        storage_pressure_index=1.0,
+    )
+
+    assert relief["active"] is False
+    assert relief["bounded_raw_live_relief"] is False
 
 
 def test_runtime_throttle_marks_guarded_foreground_sustain_as_advisory(tmp_path: Path) -> None:
@@ -6237,6 +7079,69 @@ def test_runtime_throttle_does_not_pause_storage_recovery_owner_during_storage_p
     assert result["pause_requested"] is True
     assert result["successful_count"] == 1
     assert [pid for pid, sig in signals if sig == signal.SIGSTOP] == [901]
+
+
+def test_runtime_throttle_does_not_pause_resource_guard_sensor(tmp_path: Path, monkeypatch) -> None:
+    signals: list[tuple[int, signal.Signals | int]] = []
+    payload = {
+        "mac_fluidity_contract": {
+            "support_pause_recommended": True,
+        },
+    }
+    candidates = [
+        {
+            "pid": 905,
+            "category": "support_maintenance",
+            "cpu_percent": 88.0,
+            "command": "python scripts/resource_guard.py --profile collection",
+        }
+    ]
+    monkeypatch.setattr(src.os, "kill", lambda pid, sig: signals.append((pid, sig)))
+
+    result = src._apply_support_maintenance_pause(
+        tmp_path,
+        candidates,
+        payload,
+        state_path=tmp_path / "runtime_support_pause_state.json",
+    )
+
+    assert result["pause_requested"] is True
+    assert result["successful_count"] == 0
+    assert [pid for pid, sig in signals if sig == signal.SIGSTOP] == []
+
+
+def test_runtime_throttle_does_not_pause_authorized_retention_during_maintenance_hold(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    signals: list[tuple[int, signal.Signals | int]] = []
+
+    monkeypatch.setattr(src.os, "kill", lambda pid, sig: signals.append((pid, sig)))
+    monkeypatch.setattr(src, "maintenance_hold_snapshot", lambda _root: {"active": True})
+    payload = {
+        "mac_fluidity_contract": {
+            "support_pause_recommended": True,
+        },
+    }
+    candidates = [
+        {
+            "pid": 904,
+            "category": "support_maintenance",
+            "cpu_percent": 88.0,
+            "command": "python scripts/sql_queue_retention.py --vacuum --json",
+        }
+    ]
+
+    result = src._apply_support_maintenance_pause(
+        tmp_path,
+        candidates,
+        payload,
+        state_path=tmp_path / "runtime_support_pause_state.json",
+    )
+
+    assert result["pause_requested"] is True
+    assert result["successful_count"] == 0
+    assert [pid for pid, sig in signals if sig == signal.SIGSTOP] == []
 
 
 def test_efficiency_guard_keeps_research_throttle_off_background_taskpolicy(tmp_path: Path, monkeypatch) -> None:

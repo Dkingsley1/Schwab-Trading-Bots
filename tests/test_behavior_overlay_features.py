@@ -36,6 +36,96 @@ def test_behavior_feature_schema_appends_lane_overlay_features() -> None:
     assert behavior_ds.BEHAVIOR_CAPITAL_FLOW_FEATURE_NAMES == loop._BEHAVIOR_CAPITAL_FLOW_FEATURE_NAMES
 
 
+def test_behavior_dataset_vector_matches_declared_feature_schema() -> None:
+    features = {
+        "dividend_compounding_quality_norm": 0.81,
+        "dividend_capture_timing_quality_norm": 0.72,
+        "dividend_payout_stress_gate_norm": 0.63,
+        "dividend_growth_persistence_norm": 0.54,
+        "dividend_capture_ex_date_hazard_norm": 0.45,
+    }
+    vector, _, _ = behavior_ds._decision_feature_vector(
+        row={
+            "features": features,
+            "ts_utc": datetime(2026, 7, 31, 12, 0, tzinfo=timezone.utc),
+            "symbol": "SPY",
+            "action": "HOLD",
+            "role_idx": 0.0,
+            "quantity": 0.0,
+        },
+        gov={},
+        lag_exec=(0.0, 0.0, 0.0),
+        paper_snapshot={},
+        lag_paper=(0.0, 0.0, 0.0),
+        snapshot_context={},
+        external_context={},
+        external_meta={},
+        event_windows=[],
+    )
+
+    assert len(vector) == len(behavior_ds.FEATURE_NAMES)
+    for name, expected in features.items():
+        assert vector[behavior_ds.FEATURE_NAMES.index(name)] == expected
+
+
+def test_behavior_dataset_failed_build_preserves_last_valid_artifact(tmp_path: Path) -> None:
+    out_path = tmp_path / "trade_learning_dataset.json"
+    failure_path = tmp_path / "build_failure.json"
+    previous = {"rows": 125, "feature_dim": len(behavior_ds.FEATURE_NAMES)}
+    _write_json(out_path, previous)
+
+    result = behavior_ds._publish_dataset(
+        {
+            "timestamp_utc": "2026-07-31T12:00:00+00:00",
+            "rows": 0,
+            "feature_dim": len(behavior_ds.FEATURE_NAMES),
+            "label_counts": {},
+            "skipped": {"low_symbol_rows": 12},
+            "source": {"decision_files": 1},
+        },
+        out_path=out_path,
+        failure_path=failure_path,
+        min_output_rows=50,
+    )
+
+    assert result["published"] is False
+    assert result["preserved_previous"] is True
+    assert json.loads(out_path.read_text(encoding="utf-8")) == previous
+    failure = json.loads(failure_path.read_text(encoding="utf-8"))
+    assert failure["status"] == "insufficient_rows_preserved_previous_dataset"
+    assert failure["previous_dataset_preserved"] is True
+
+
+def test_behavior_dataset_local_route_rewrites_external_hot_inputs(tmp_path: Path, monkeypatch) -> None:
+    project_root = tmp_path / "project"
+    local_root = project_root / "local_fallback_storage"
+    monkeypatch.setenv("BOT_LOGS_PREFER_EXTERNAL", "0")
+    monkeypatch.setenv("BOT_LOGS_LOCAL_FALLBACK_ROOT", str(local_root))
+
+    routed = behavior_ds._routed_input_pattern(
+        str(project_root / "governance" / "shadow*" / "shadow_pnl_attribution_*.jsonl"),
+        project_root=project_root,
+    )
+
+    assert routed == str(local_root / "governance" / "shadow*" / "shadow_pnl_attribution_*.jsonl")
+    assert behavior_ds._routed_input_pattern(
+        "/Volumes/BOT_LOGS/schwab_trading_bot/governance/shadow*/master_control_*.jsonl",
+        project_root=project_root,
+    ) == ""
+
+
+def test_behavior_dataset_tail_reader_bounds_large_auxiliary_inputs(tmp_path: Path) -> None:
+    path = tmp_path / "paper.jsonl"
+    rows = [{"row": idx, "payload": "x" * 64} for idx in range(6)]
+    path.write_text("".join(json.dumps(row) + "\n" for row in rows), encoding="utf-8")
+
+    observed = list(behavior_ds._iter_jsonl([path], tail_bytes=220))
+
+    assert observed
+    assert observed[-1]["row"] == 5
+    assert observed[0]["row"] > 0
+
+
 def test_behavior_feature_schema_includes_execution_realism_and_conflict_features() -> None:
     keys = [
         "execution_fitness_norm",

@@ -6,6 +6,15 @@ from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_DB = PROJECT_ROOT / "data" / "jsonl_link.sqlite3"
+CANARY_PROFILE_SQL = """
+    SELECT
+      COALESCE(json_extract(payload_json, '$.shadow_profile'), 'unknown') AS profile,
+      COUNT(*) AS n,
+      AVG(CAST(COALESCE(json_extract(payload_json, '$.pnl_proxy'), 0.0) AS REAL)) AS avg_pnl
+    FROM jsonl_records
+    WHERE source_rel GLOB ?
+    GROUP BY profile
+"""
 
 
 def _safe_float(v: object, d: float = 0.0) -> float:
@@ -13,6 +22,16 @@ def _safe_float(v: object, d: float = 0.0) -> float:
         return float(v)
     except Exception:
         return d
+
+
+def _load_profile_stats(db_path: Path, day: str) -> dict[str, dict[str, float | int]]:
+    source_glob = f"governance/*/shadow_pnl_attribution_{day}.jsonl"
+    conn = sqlite3.connect(str(db_path))
+    try:
+        rows = conn.execute(CANARY_PROFILE_SQL, (source_glob,)).fetchall()
+    finally:
+        conn.close()
+    return {str(profile): {"n": int(count), "avg_pnl": _safe_float(avg)} for profile, count, avg in rows}
 
 
 def main() -> int:
@@ -30,23 +49,7 @@ def main() -> int:
     if not db_path.exists():
         raise SystemExit(f"SQLite DB not found: {db_path}")
 
-    conn = sqlite3.connect(str(db_path))
-    like = f"governance/%/shadow_pnl_attribution_{args.day}.jsonl"
-    rows = conn.execute(
-        """
-        SELECT
-          COALESCE(json_extract(payload_json, '$.shadow_profile'), 'unknown') AS profile,
-          COUNT(*) AS n,
-          AVG(CAST(COALESCE(json_extract(payload_json, '$.pnl_proxy'), 0.0) AS REAL)) AS avg_pnl
-        FROM jsonl_records
-        WHERE source_rel LIKE ?
-        GROUP BY profile
-        """,
-        (like,),
-    ).fetchall()
-    conn.close()
-
-    profile_stats = {str(p): {"n": int(n), "avg_pnl": _safe_float(avg)} for p, n, avg in rows}
+    profile_stats = _load_profile_stats(db_path, args.day)
     canary_profiles = [x.strip() for x in args.canary_profiles.split(",") if x.strip()]
     baseline_profiles = [x.strip() for x in args.baseline_profiles.split(",") if x.strip()]
 

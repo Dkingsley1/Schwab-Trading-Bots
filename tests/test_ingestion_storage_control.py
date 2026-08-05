@@ -11,6 +11,48 @@ if str(PROJECT_ROOT) not in sys.path:
 from scripts.ops import ingestion_storage_control as src
 
 
+def test_shard_state_reconciliation_keeps_tiny_old_side_lane_out_of_core_age(
+    tmp_path: Path, monkeypatch
+) -> None:
+    raw_live = {
+        "core_pending_lines": 200,
+        "deferred_pending_lines": 14,
+        "cold_pending_lines": 0,
+        "support_pending_lines": 0,
+        "stale_stage_pending_lines": 0,
+        "total_pending_lines": 214,
+        "oldest_pending_age_seconds": 60.0,
+        "oldest_age_min_pending_lines": 100,
+        "top_pending_files": [
+            {"source_rel": "decisions/paper.jsonl", "pending_lines": 200, "oldest_pending_age_seconds": 60.0}
+        ],
+        "top_deferred_pending_files": [
+            {"source_rel": "governance/tiny.jsonl", "pending_lines": 14, "oldest_pending_age_seconds": 1000.0}
+        ],
+        "top_support_telemetry_pending_files": [],
+    }
+
+    def fake_progress(_project_root: Path, source_rel: str) -> dict:
+        if source_rel == "decisions/paper.jsonl":
+            return {
+                "reconciled": True,
+                "pending_lines": 150,
+                "last_line": 50,
+                "total_lines": 200,
+                "state_file": "state.json",
+                "line_count_method": "bounded_exact_count",
+            }
+        return {}
+
+    monkeypatch.setattr(src, "_state_progress_for_source", fake_progress)
+
+    reconciliation = src._reconcile_raw_backpressure_with_shard_state(tmp_path, raw_live)
+
+    assert reconciliation["pending_line_reduction"] == 50
+    assert raw_live["oldest_pending_age_seconds"] == 60.0
+    assert raw_live["total_pending_lines"] == 164
+
+
 def test_collector_intake_audit_accepts_stricter_a_plus_plus_target(tmp_path: Path) -> None:
     config_dir = tmp_path / "config"
     config_dir.mkdir()
@@ -1881,6 +1923,65 @@ def test_storage_efficiency_treats_tiny_raw_compaction_tail_as_manifest_watch(tm
     assert "raw_training_compaction_debt" not in contract["active_blockers"]
 
 
+def test_storage_efficiency_accepts_expected_local_hot_sources_as_managed_debt(tmp_path: Path) -> None:
+    contract = src._ingestion_storage_efficiency_contract(
+        project_root=tmp_path,
+        severity="stable",
+        queue_watermarks={"overall_status": "ready"},
+        backlog_relief_contract={"active": False, "overall_grade": "A+"},
+        data_collection_storage_guard={
+            "disk": {"available_gb": 135.0, "used_percent": 85.0},
+            "safe_space_recovery": {
+                "candidate_count": 0,
+                "candidate_gb": 0.0,
+                "selected_gb": 0.0,
+                "target_free_gb": 64.0,
+                "target_free_deficit_gb": 0.0,
+                "scan": {"unbacked_duplicate_count": 0, "unbacked_duplicate_gb": 0.0},
+            },
+            "duplicate_cleanup": {"candidate_count": 0, "candidate_gb": 0.0},
+        },
+        raw_training_compaction={
+            "raw_summary": {
+                "raw_jsonl_count": 417,
+                "eligible_training_source_count": 182,
+                "compression_candidate_count": 103,
+                "compression_candidate_gb": 94.393,
+                "local_fallback_reconciliation_count": 37,
+                "current_day_protected_count": 78,
+            }
+        },
+        storage_quota={"quota_summary": {"hard_breaches": 0, "soft_breaches": 0}, "lanes": []},
+        storage_mount={
+            "external_available": False,
+            "external_required_for_hot_path": False,
+            "external_unavailable_reason": "cold_archive_only_local_hot_storage_policy",
+            "storage_mode": "local_fallback",
+        },
+        route_drift=False,
+        route_verified=True,
+        route_verification_state="active_local_ready",
+        route_verification={"mismatches": []},
+        unresolved_split_brain_conflicts=0,
+        line_estimation={},
+        total_pending_lines=0,
+        core_pending_lines=0,
+        retention_debt_gb=0.0,
+        overlay_pressure_clear=True,
+    )
+
+    assert contract["overall_status"] == "ready"
+    assert contract["grade"] == "A+"
+    assert contract["active_blockers"] == []
+    assert contract["managed_raw_compaction_debt"] is True
+    assert contract["fallback_reconciliation_required"] is False
+    assert contract["metrics"]["local_fallback_reconciliation_count"] == 37
+    assert contract["metrics"]["expected_local_hot_source_count"] == 37
+    assert contract["metrics"]["actionable_fallback_reconciliation_count"] == 0
+    assert contract["recommended_commands"]["storage_route_reconcile"]["active"] is False
+    assert contract["storage_policy"]["fallback_storage"] == "local_hot_is_authoritative_external_is_cold_archive"
+
+
 def test_storage_efficiency_treats_bounded_raw_file_count_as_manifest_watch(tmp_path: Path) -> None:
     contract = src._ingestion_storage_efficiency_contract(
         project_root=tmp_path,
@@ -2220,6 +2321,23 @@ def test_ingestion_storage_control_tolerates_bounded_hot_queue_with_unknown_drai
     assert payload["backpressure_quality_score"] >= 95.0
 
 
+def test_backpressure_scorecard_does_not_double_penalize_bounded_unknown_drain() -> None:
+    payload = src._backpressure_scorecard(
+        pressure_index=0.296,
+        core_pending_lines=4440,
+        total_pending_lines=7429,
+        drain_minutes_total=None,
+        stale_stage_pending_lines=0,
+        retention_debt_gb=0.0,
+        overall_status="ready",
+        severity="stable",
+    )
+
+    assert payload["ratios"]["estimated_total_drain_minutes"] == 0.0
+    assert payload["penalties"]["estimated_total_drain_minutes"] == 0.0
+    assert "estimated_total_drain_minutes" not in payload["target_status"]["target_breaches"]
+
+
 def test_ingestion_storage_control_bounds_isolated_support_overlay_pressure(tmp_path: Path) -> None:
     now = datetime.now(timezone.utc)
     health = tmp_path / "governance" / "health"
@@ -2500,6 +2618,119 @@ def test_ingestion_storage_control_manages_large_support_overlay_without_critica
     assert reconciled["backpressure"]["overlay_pressure_clear"] is True
     assert reconciled["severity"] == "stable"
     assert reconciled["pressure_index"] < 0.75
+
+
+def test_ingestion_storage_control_reconciles_isolated_support_overlay_age_for_pressure(tmp_path: Path) -> None:
+    now = datetime(2026, 7, 30, 23, 55, tzinfo=timezone.utc)
+    health = tmp_path / "governance" / "health"
+    _write_json(
+        health / "ingestion_backpressure_latest.json",
+        {
+            "timestamp_utc": now.isoformat(),
+            "pending_lines": 663,
+            "pending_lines_total": 7470,
+            "pending_lines_deferred": 6797,
+            "pending_lines_cold": 0,
+            "pending_lines_support_telemetry": 10,
+            "pending_lines_stale_stage": 0,
+            "pending_lines_threshold": 15000,
+            "oldest_pending_age_seconds": 0.0,
+            "oldest_age_threshold_seconds": 240.0,
+            "overload": False,
+        },
+    )
+    _write_json(
+        health / "jsonl_sql_ingestion_health_risk_support_latest.json",
+        {
+            "timestamp_utc": now.isoformat(),
+            "sqlite": {
+                "pending_lines": 151757,
+                "files_with_pending": 2,
+                "invalid": 0,
+                "oldest_uningested_age_seconds": 943.196,
+                "top_pending_files": [
+                    {
+                        "source_rel": "governance/channels/risk/crypto_futures_crypto_schwab/risk_20260730.jsonl",
+                        "shard": "risk_support",
+                        "pending_lines": 112230,
+                        "oldest_pending_age_seconds": 825.06,
+                    },
+                    {
+                        "source_rel": "governance/channels/risk/default_crypto_schwab/risk_20260730.jsonl",
+                        "shard": "risk_support",
+                        "pending_lines": 39527,
+                        "oldest_pending_age_seconds": 943.196,
+                    },
+                ],
+            },
+        },
+    )
+    for source_rel in (
+        "governance/channels/risk/crypto_futures_crypto_schwab/risk_20260730.jsonl",
+        "governance/channels/risk/default_crypto_schwab/risk_20260730.jsonl",
+    ):
+        source_path = tmp_path / source_rel
+        source_path.parent.mkdir(parents=True, exist_ok=True)
+        source_path.write_text('{"event": "pending"}\n', encoding="utf-8")
+    _write_json(
+        health / "sql_link_service_progress_latest.json",
+        {
+            "status": "ok",
+            "cycle_started_utc": (now - timedelta(minutes=2)).isoformat(),
+            "current_step": "complete",
+            "merged_rows_this_cycle": 240000,
+        },
+    )
+    _write_json(health / "sql_link_service_latest.json", {"sqlite_wal_size_gb": 0.0})
+    _write_json(
+        health / "health_gates_latest.json",
+        {
+            "hard_gate_triggered": False,
+            "recommended_operating_mode": "live_cautious",
+            "storage_pressure": {"retention_debt_gb": 0.0, "severe_backpressure_overload": False},
+            "ingestion_pressure": {"severe_backpressure_overload": False},
+        },
+    )
+    _write_json(
+        health / "ingestion_storage_governor_latest.json",
+        {
+            "profile": "steady_state",
+            "sql_primary_db": {"route_drift": False},
+            "queue_watermarks": {"overall_status": "ready"},
+            "writer_shedding": {"active": False, "level": "normal"},
+        },
+    )
+    _write_json(health / "external_backlog_drain_latest.json", {"overall_status": "ready", "recommended_now": False, "aged_candidate_files": 0})
+    _write_json(health / "storage_maintenance_latest.json", {"reason": "ok"})
+    _write_json(
+        health / "storage_failback_sync_latest.json",
+        {"route_verification": {"verification_state": "ready", "ready_count": 3, "tracked_count": 3, "coverage_ratio": 1.0, "mismatches": []}},
+    )
+    _write_json(
+        health / "storage_resilience_control_latest.json",
+        {
+            "overall_status": "ready",
+            "resilience_score": 100,
+            "restore_drill_fresh": True,
+            "dual_root_ready": True,
+            "warm_standby_ready": True,
+            "unresolved_split_brain_conflicts": 0,
+        },
+    )
+
+    payload = src.build_payload(tmp_path, now_utc=now)
+
+    overlay = payload["sql_ingestion_pending_overlay"]
+    assert overlay["managed_support_overlay_backlog"] is True
+    assert overlay["support_overlay_lane_isolated_for_pressure"] is True
+    assert overlay["pressure_support_pending_lines"] == 5000
+    assert overlay["pressure_oldest_pending_age_seconds"] == 0.0
+    assert payload["backpressure"]["pressure_total_pending_lines"] == 12460
+    assert payload["backpressure"]["oldest_pending_age_seconds"] == 943.196
+    assert payload["backpressure"]["pressure_oldest_pending_age_seconds"] == 0.0
+    assert payload["backpressure"]["overlay_pressure_clear"] is True
+    assert payload["severity"] == "stable"
+    assert payload["pressure_index"] < 0.25
 
 
 def test_ingestion_storage_control_decays_fresh_overlay_when_raw_backpressure_cleared(tmp_path: Path) -> None:
@@ -4515,6 +4746,67 @@ def test_raw_live_expansion_headroom_contract_does_not_hard_block_on_small_defer
     assert contract["raw_live"]["guard_core_pending_lines"] == 24
     assert contract["raw_live"]["deferred_or_support_hot_source_pending_lines"] == 2065
     assert contract["control_env"]["RAW_LIVE_EXPANSION_READY"] == "1"
+
+
+def test_raw_live_expansion_headroom_does_not_mix_tiny_stale_file_age_with_fresh_material_rows() -> None:
+    contract = src._raw_live_expansion_headroom_contract(
+        raw_live_backpressure={
+            "core_pending_lines": 401,
+            "total_pending_lines": 531,
+            "oldest_pending_age_seconds": 0.1,
+            "top_pending_files": [
+                {
+                    "source_rel": "governance/events/signal_generation_20260803.jsonl",
+                    "pending_lines": 180,
+                    "oldest_pending_age_seconds": 0.1,
+                },
+                {
+                    "source_rel": "governance/events/premarket_token_guard_20260802.jsonl",
+                    "pending_lines": 14,
+                    "oldest_pending_age_seconds": 3200.0,
+                },
+            ],
+        },
+        pending_threshold=15000,
+        age_threshold_seconds=240.0,
+        core_target=5000,
+    )
+
+    assert contract["active"] is False
+    assert contract["hard_block"] is False
+    assert contract["grade"] == "A+"
+    assert contract["raw_live"]["core_aged_hot_source_pending_lines"] == 14
+    assert contract["raw_live"]["guard_oldest_pending_age_seconds"] == 0.0
+
+
+def test_raw_live_expansion_headroom_blocks_when_aged_hot_rows_are_material_in_aggregate() -> None:
+    contract = src._raw_live_expansion_headroom_contract(
+        raw_live_backpressure={
+            "core_pending_lines": 180,
+            "total_pending_lines": 180,
+            "oldest_pending_age_seconds": 0.1,
+            "top_pending_files": [
+                {
+                    "source_rel": "governance/events/signal_generation_20260803.jsonl",
+                    "pending_lines": 60,
+                    "oldest_pending_age_seconds": 360.0,
+                },
+                {
+                    "source_rel": "governance/events/premarket_token_guard_20260803.jsonl",
+                    "pending_lines": 50,
+                    "oldest_pending_age_seconds": 300.0,
+                },
+            ],
+        },
+        pending_threshold=15000,
+        age_threshold_seconds=240.0,
+        core_target=5000,
+    )
+
+    assert contract["active"] is True
+    assert contract["hard_block"] is True
+    assert contract["raw_live"]["core_aged_hot_source_pending_lines"] == 110
+    assert contract["raw_live"]["guard_oldest_pending_age_seconds"] == 360.0
 
 
 def test_backlog_relief_ignores_tiny_sparse_tail_for_training_gate() -> None:

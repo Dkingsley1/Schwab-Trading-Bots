@@ -37,6 +37,8 @@ def test_paper_execution_calibration_report_emits_grouped_recommendations(tmp_pa
             "24",
             "--max-mae-bps",
             "100",
+            "--min-independent-samples",
+            "1",
             "--out-file",
             str(out_file),
         ],
@@ -53,6 +55,46 @@ def test_paper_execution_calibration_report_emits_grouped_recommendations(tmp_pa
     assert payload["top_symbols"][0]["symbol"] == "BTC-USD"
     assert payload["drift_series"][0]["bucket_start_utc"].endswith("+00:00")
     assert payload["line_graph"]["series"][0]["key"] == "mean_observed_slippage_bps"
+
+
+def test_expected_fill_model_is_not_counted_as_independent_calibration(tmp_path, monkeypatch) -> None:
+    project_root = tmp_path / "project"
+    log_dir = project_root / "exports" / "trade_logs" / "paper"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    out_file = project_root / "governance" / "health" / "paper_execution_calibration_latest.json"
+    row = {
+        "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+        "symbol": "SPY",
+        "action": "BUY",
+        "reference_price": 100.0,
+        "fill_price": 100.1,
+        "expected_fill_price": 100.1,
+        "expected_slippage_bps": 10.0,
+        "paper_fill_source": "expected_fill_model",
+        "metadata": {"source_profile": "default"},
+    }
+    (log_dir / "paper_trades_paper.jsonl").write_text(json.dumps(row) + "\n", encoding="utf-8")
+
+    monkeypatch.setattr(report, "PROJECT_ROOT", project_root)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "paper_execution_calibration_report.py",
+            "--hours",
+            "24",
+            "--out-file",
+            str(out_file),
+        ],
+    )
+
+    assert report.main() == 0
+    payload = json.loads(out_file.read_text(encoding="utf-8"))
+    assert payload["samples"] == 0
+    assert payload["model_derived_samples"] == 1
+    assert payload["independent_evidence_ready"] is False
+    assert payload["overall_status"] == "evidence_pending"
+    assert payload["model_derived_diagnostics"]["promotion_evidence_eligible"] is False
 
 
 def test_paper_execution_calibration_report_respects_reset_cutoff(tmp_path, monkeypatch) -> None:

@@ -316,15 +316,31 @@ def split_data(X, y, train_ratio=0.7, val_ratio=0.15):
     return X_train, y_train, X_val, y_val, X_test, y_test
 
 
-def _runtime_split_plan(labels_np: np.ndarray, train_ratio=0.7, val_ratio=0.15) -> Dict[str, Any]:
+def _runtime_split_plan(
+    labels_np: np.ndarray,
+    train_ratio=0.7,
+    val_ratio=0.15,
+    *,
+    embargo_samples: int = 0,
+) -> Dict[str, Any]:
     labels = np.asarray(labels_np, dtype=np.float32).reshape(-1)
     n = int(labels.size)
     n_train = int(n * train_ratio)
     n_val = int(n * val_ratio)
+    requested_embargo = max(int(embargo_samples), 0)
+    effective_embargo = min(
+        requested_embargo,
+        max(n_train - 1, 0),
+        max(n_val - 1, 0),
+    )
+    train_end = max(n_train - effective_embargo, 0)
+    val_start = n_train
+    val_end = max(n_train + n_val - effective_embargo, val_start)
+    test_start = n_train + n_val
     chronological = {
-        "train_idx": np.arange(0, n_train, dtype=np.int32),
-        "val_idx": np.arange(n_train, n_train + n_val, dtype=np.int32),
-        "test_idx": np.arange(n_train + n_val, n, dtype=np.int32),
+        "train_idx": np.arange(0, train_end, dtype=np.int32),
+        "val_idx": np.arange(val_start, val_end, dtype=np.int32),
+        "test_idx": np.arange(test_start, n, dtype=np.int32),
     }
 
     def _split_stats(indices: np.ndarray) -> Dict[str, Any]:
@@ -340,58 +356,23 @@ def _runtime_split_plan(labels_np: np.ndarray, train_ratio=0.7, val_ratio=0.15) 
 
     overall_positive_rate = float(np.mean(labels)) if n else 0.0
     chronological_stats = {key.removesuffix("_idx"): _split_stats(value) for key, value in chronological.items()}
-    base_meta = {
-        "strategy": "chronological",
-        "overall_positive_rate": float(overall_positive_rate),
-        "chronological_stats": chronological_stats,
-        "fallback_reason": "",
-    }
-    if n < 40 or overall_positive_rate <= 0.05 or overall_positive_rate >= 0.95:
-        return {**chronological, **base_meta}
-
-    drift_limit = 0.22
-    min_side_count = 2
-    fallback_reasons: List[str] = []
-    for split_name in ("val", "test"):
+    split_warnings: List[str] = []
+    for split_name in ("train", "val", "test"):
         stats = chronological_stats[split_name]
         if int(stats["count"]) <= 0:
-            fallback_reasons.append(f"{split_name}_empty")
-            continue
-        if int(stats["positive_samples"]) < min_side_count or int(stats["negative_samples"]) < min_side_count:
-            fallback_reasons.append(f"{split_name}_one_sided")
-        if abs(float(stats["positive_rate"]) - overall_positive_rate) > drift_limit:
-            fallback_reasons.append(f"{split_name}_label_drift")
-    if not fallback_reasons:
-        return {**chronological, **base_meta}
-
-    positive_idx = np.where(labels >= 0.5)[0].astype(np.int32)
-    negative_idx = np.where(labels < 0.5)[0].astype(np.int32)
-    if int(positive_idx.size) < 6 or int(negative_idx.size) < 6:
-        return {**chronological, **base_meta, "fallback_reason": "insufficient_class_count_for_stratified_split"}
-
-    def _class_splits(indices: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-        count = int(indices.size)
-        class_train = int(count * train_ratio)
-        class_val = int(count * val_ratio)
-        return indices[:class_train], indices[class_train : class_train + class_val], indices[class_train + class_val :]
-
-    pos_train, pos_val, pos_test = _class_splits(positive_idx)
-    neg_train, neg_val, neg_test = _class_splits(negative_idx)
-    stratified = {
-        "train_idx": np.sort(np.concatenate([pos_train, neg_train])).astype(np.int32),
-        "val_idx": np.sort(np.concatenate([pos_val, neg_val])).astype(np.int32),
-        "test_idx": np.sort(np.concatenate([pos_test, neg_test])).astype(np.int32),
-    }
-    stratified_stats = {key.removesuffix("_idx"): _split_stats(value) for key, value in stratified.items()}
-    if any(int(stratified_stats[name]["count"]) <= 0 for name in ("train", "val", "test")):
-        return {**chronological, **base_meta, "fallback_reason": "empty_stratified_split"}
+            split_warnings.append(f"{split_name}_empty")
+        elif int(stats["positive_samples"]) <= 0 or int(stats["negative_samples"]) <= 0:
+            split_warnings.append(f"{split_name}_one_sided")
     return {
-        **stratified,
-        "strategy": "stratified_chronological",
+        **chronological,
+        "strategy": "purged_chronological",
         "overall_positive_rate": float(overall_positive_rate),
         "chronological_stats": chronological_stats,
-        "stratified_stats": stratified_stats,
-        "fallback_reason": ",".join(sorted(set(fallback_reasons))),
+        "requested_embargo_samples": int(requested_embargo),
+        "effective_embargo_samples": int(effective_embargo),
+        "purged_sample_count": int(effective_embargo * 2),
+        "split_warnings": sorted(set(split_warnings)),
+        "fallback_reason": "future_class_balance_is_never_moved_into_earlier_splits",
     }
 
 
@@ -904,6 +885,11 @@ def _load_registry_bot_context(project_root: Path, run_tag: str) -> Dict[str, An
             "lifecycle_state": str(row.get("lifecycle_state") or ""),
             "reason": str(row.get("reason") or ""),
             "promotion_reason": str(row.get("promotion_reason") or ""),
+            "training_lane": str(row.get("training_lane") or ""),
+            "universal_label_contract": dict(row.get("universal_label_contract") or {}),
+            "training_label_materialization_contract": dict(
+                row.get("training_label_materialization_contract") or {}
+            ),
         }
     return {
         "bot_id": run_tag,
@@ -912,6 +898,9 @@ def _load_registry_bot_context(project_root: Path, run_tag: str) -> Dict[str, An
         "lifecycle_state": "",
         "reason": "",
         "promotion_reason": "",
+        "training_lane": "",
+        "universal_label_contract": {},
+        "training_label_materialization_contract": {},
     }
 
 
@@ -2148,6 +2137,18 @@ def train_runtime_indicator_bot(
     _require_mlx_runtime(f"runtime training {run_tag}")
     np.random.seed(42)
     project_root = Path(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+    registry_context = _load_registry_bot_context(project_root, run_tag)
+    universal_label_contract = dict(registry_context.get("universal_label_contract") or {})
+    materialization_contract = dict(registry_context.get("training_label_materialization_contract") or {})
+    if not materialization_contract:
+        materialization_contract = {
+            "version": "runtime_label_materialization_compat_v1",
+            "objective_class": "market_outcome",
+            "label_family": str(universal_label_contract.get("label_family") or "generic_directional"),
+            "directional_fallback_allowed": True,
+            "source": "compatibility_default_until_registry_materialization_contract_is_applied",
+        }
+    directional_repair_allowed = bool(materialization_contract.get("directional_fallback_allowed", False))
     training_path = _resolve_runtime_training_path_profile(
         run_tag,
         lookback_days=lookback_days,
@@ -2252,6 +2253,8 @@ def train_runtime_indicator_bot(
             sequences=sequences,
             feature_builder=runtime_feature_builder,
             label_builder=runtime_label_builder,
+            label_contract=materialization_contract,
+            label_owner_id=run_tag,
             sample_filter=sample_filter,
             confidence_builder=confidence_builder,
             min_confidence=effective_min_confidence,
@@ -2319,10 +2322,11 @@ def train_runtime_indicator_bot(
     if (
         insufficiency_reason
         and _env_bool("RUNTIME_TRAIN_LABEL_REPAIR", True)
+        and directional_repair_allowed
         and int(runtime_meta.get("eligible_sequences", 0) or 0) > 0
         and "sequences" in locals()
     ):
-        repair_bypass_filter = _env_bool("RUNTIME_TRAIN_LABEL_REPAIR_BYPASS_FILTER", True)
+        repair_bypass_filter = _env_bool("RUNTIME_TRAIN_LABEL_REPAIR_BYPASS_FILTER", False)
         repair_min_confidence = max(
             0.0,
             min(
@@ -2342,6 +2346,8 @@ def train_runtime_indicator_bot(
             sequences=sequences,
             feature_builder=runtime_feature_builder,
             label_builder=runtime_label_builder,
+            label_contract=materialization_contract,
+            label_owner_id=run_tag,
             sample_filter=sample_filter,
             confidence_builder=confidence_builder,
             min_confidence=repair_min_confidence,
@@ -2396,6 +2402,10 @@ def train_runtime_indicator_bot(
         X_np, y_np, runtime_meta = X_repair, y_repair, repair_meta
         positive_rate = repair_positive_rate
         insufficiency_reason = repair_insufficiency_reason
+    elif insufficiency_reason and not directional_repair_allowed:
+        runtime_meta["label_repair_enabled"] = False
+        runtime_meta["label_repair_bypassed_filter"] = False
+        runtime_meta["label_repair_policy_reason"] = "directional_fallback_forbidden_by_materialization_contract"
 
     sample_count = int(X_np.shape[0]) if X_np.ndim == 2 else 0
     sample_confidence = np.asarray(
@@ -2485,16 +2495,21 @@ def train_runtime_indicator_bot(
             f"min_positive_samples={int(min_positive_samples)} min_negative_samples={int(min_negative_samples)}"
         )
 
-    feat_mean = X_np.mean(axis=0, keepdims=True)
-    feat_std = X_np.std(axis=0, keepdims=True) + 1e-8
+    split_plan = _runtime_split_plan(labels_np, embargo_samples=max(int(horizon), 1))
+    train_idx = np.asarray(split_plan["train_idx"], dtype=np.int32)
+    val_idx = np.asarray(split_plan["val_idx"], dtype=np.int32)
+    test_idx = np.asarray(split_plan["test_idx"], dtype=np.int32)
+    if int(train_idx.size) <= 0 or int(val_idx.size) <= 0 or int(test_idx.size) <= 0:
+        raise RuntimeError(
+            f"defer_training_temporal_split_empty run_tag={run_tag} "
+            f"train={int(train_idx.size)} val={int(val_idx.size)} test={int(test_idx.size)}"
+        )
+    feat_mean = X_np[train_idx].mean(axis=0, keepdims=True)
+    feat_std = X_np[train_idx].std(axis=0, keepdims=True) + 1e-8
     X_np = (X_np - feat_mean) / feat_std
 
     X = mx.array(X_np, dtype=mx.float32)
     y = mx.array(y_np, dtype=mx.float32)
-    split_plan = _runtime_split_plan(labels_np)
-    train_idx = np.asarray(split_plan["train_idx"], dtype=np.int32)
-    val_idx = np.asarray(split_plan["val_idx"], dtype=np.int32)
-    test_idx = np.asarray(split_plan["test_idx"], dtype=np.int32)
 
     def _take_rows(array, indices: np.ndarray):
         if int(indices.size) <= 0:
@@ -2508,6 +2523,11 @@ def train_runtime_indicator_bot(
     sample_confidence_val = sample_confidence[val_idx]
     sample_confidence_test = sample_confidence[test_idx]
     runtime_meta["split_plan"] = {key: value for key, value in split_plan.items() if not str(key).endswith("_idx")}
+    runtime_meta["feature_normalization"] = {
+        "fit_scope": "train_partition_only",
+        "feature_count": int(X_np.shape[1]),
+        "future_partition_statistics_used": False,
+    }
 
     brain = TradingBrain(int(X.shape[1]))
     mx.eval(brain.parameters())

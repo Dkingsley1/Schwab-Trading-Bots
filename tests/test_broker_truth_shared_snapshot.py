@@ -3,6 +3,7 @@ import os
 from datetime import datetime, timezone
 from pathlib import Path
 import sys
+from types import SimpleNamespace
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 SCRIPTS_DIR = PROJECT_ROOT / "scripts"
@@ -15,6 +16,7 @@ if str(SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPTS_DIR))
 
 import scripts.run_shadow_training_loop as loop
+from core.base_trader import BaseTrader
 
 
 class _FailingTrader:
@@ -257,3 +259,79 @@ def test_clear_critical_alert_latest_keeps_unrelated_alert(tmp_path, monkeypatch
     assert result["cleared"] is False
     assert result["reason"] == "event_mismatch"
     assert alert_path.exists()
+
+
+def test_broker_truth_403_without_mismatch_routes_to_access_degradation() -> None:
+    route = loop._broker_truth_alert_route(
+        {
+            "ok": False,
+            "status": "transient_error",
+            "error": "RuntimeError:http_status_403",
+            "status_code": 403,
+            "mismatch_count": 0,
+            "soft_failure": True,
+            "soft_fail_streak": 1,
+            "soft_fail_grace": 3,
+        }
+    )
+
+    assert route["event"] == "broker_access_degraded"
+    assert route["severity"] == "warn"
+    assert route["failure_class"] == "broker_access_denied"
+
+
+def test_broker_truth_real_mismatch_remains_critical_reconcile() -> None:
+    route = loop._broker_truth_alert_route(
+        {
+            "ok": False,
+            "status": "mismatch",
+            "mismatch_count": 1,
+        }
+    )
+
+    assert route["event"] == "broker_truth_reconcile"
+    assert route["severity"] == "critical"
+    assert route["failure_class"] == "broker_truth_mismatch"
+
+
+def test_persistent_broker_access_denial_escalates_without_claiming_mismatch() -> None:
+    route = loop._broker_truth_alert_route(
+        {
+            "ok": False,
+            "status": "error",
+            "error": "RuntimeError:http_status_403",
+            "status_code": 403,
+            "mismatch_count": 0,
+            "soft_failure": False,
+            "soft_fail_streak": 4,
+            "soft_fail_grace": 3,
+        }
+    )
+
+    assert route["event"] == "broker_access_degraded"
+    assert route["severity"] == "critical"
+    assert route["event"] != "broker_truth_reconcile"
+
+
+def test_connected_account_aggregate_preserves_soft_failure_metadata() -> None:
+    trader = BaseTrader.__new__(BaseTrader)
+    trader.fetch_connected_accounts = lambda: [
+        SimpleNamespace(account_reference="account-hash", account_number="123456789")
+    ]
+    trader.broker_adapter = SimpleNamespace(accounts_snapshot_candidates=lambda **kwargs: [])
+    trader._invoke_client_candidates = lambda **kwargs: {
+        "ok": False,
+        "error": "RuntimeError:http_status_403",
+        "status_code": 403,
+        "soft_failure": True,
+        "soft_fail_streak": 1,
+        "soft_fail_grace": 3,
+    }
+
+    result = trader._live_fetch_connected_accounts_payload()
+
+    assert result["ok"] is False
+    assert result["status_code"] == 403
+    assert result["soft_failure"] is True
+    assert result["soft_fail_streak"] == 1
+    assert result["soft_fail_grace"] == 3

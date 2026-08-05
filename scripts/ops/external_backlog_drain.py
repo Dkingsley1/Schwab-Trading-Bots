@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import signal
 import subprocess
 import sys
 import time as time_mod
@@ -59,6 +60,10 @@ DRAIN_RECOMMEND_MIN_SUPPORT_PENDING_LINES = 500
 SPARSE_LARGE_JSONL_PENDING_BYTES_FLOOR = 64 * 1024 * 1024
 SPARSE_LARGE_DECISION_MAX_BYTES_PER_FILE = 128 * 1024 * 1024
 SPARSE_LARGE_DECISION_SQLITE_BATCH_MAX_BYTES = 32 * 1024 * 1024
+DEFAULT_COMMAND_TIMEOUT_SECONDS = max(
+    float(os.getenv("EXTERNAL_BACKLOG_DRAIN_COMMAND_TIMEOUT_SECONDS", "300") or 300.0),
+    1.0,
+)
 
 
 def _load_json(path: Path) -> dict[str, Any]:
@@ -190,25 +195,55 @@ def _run_json_command(
     if env_overrides:
         env.update({str(key): str(value) for key, value in env_overrides.items()})
     started = datetime.now(timezone.utc)
+    effective_timeout = max(
+        float(DEFAULT_COMMAND_TIMEOUT_SECONDS if timeout_seconds is None else timeout_seconds),
+        1.0,
+    )
+    proc: subprocess.Popen[str] | None = None
     try:
-        proc = subprocess.run(
+        proc = subprocess.Popen(
             cmd,
             cwd=str(cwd),
-            capture_output=True,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             text=True,
-            check=False,
             env=env,
-            timeout=timeout_seconds,
+            start_new_session=True,
         )
-        stdout = proc.stdout or ""
-        stderr = proc.stderr or ""
-        rc = int(proc.returncode)
+        stdout, stderr = proc.communicate(timeout=effective_timeout)
+        stdout = stdout or ""
+        stderr = stderr or ""
+        rc = int(proc.returncode or 0)
         timed_out = False
     except subprocess.TimeoutExpired as exc:
         stdout = exc.stdout.decode("utf-8", errors="ignore") if isinstance(exc.stdout, bytes) else str(exc.stdout or "")
         stderr = exc.stderr.decode("utf-8", errors="ignore") if isinstance(exc.stderr, bytes) else str(exc.stderr or "")
         rc = 124
         timed_out = True
+        if proc is not None:
+            for sig, grace_seconds in ((signal.SIGTERM, 1.0), (signal.SIGKILL, 0.5)):
+                try:
+                    os.killpg(proc.pid, sig)
+                except ProcessLookupError:
+                    break
+                except Exception:
+                    try:
+                        proc.send_signal(sig)
+                    except Exception:
+                        pass
+                try:
+                    tail_out, tail_err = proc.communicate(timeout=grace_seconds)
+                    stdout = tail_out or stdout
+                    stderr = tail_err or stderr
+                    break
+                except subprocess.TimeoutExpired:
+                    continue
+            else:
+                if proc.stdout is not None:
+                    proc.stdout.close()
+                if proc.stderr is not None:
+                    proc.stderr.close()
     payload = _parse_json_output(stdout)
     if not payload and payload_path is not None:
         payload = _load_json(payload_path)
@@ -759,6 +794,77 @@ def _drop_empty_shard_path_filters(env: dict[str, str]) -> dict[str, str]:
     return cleaned
 
 
+_MEMORY_SAFETY_WORKER_KEYS = (
+    "BACKLOG_PCORE_PREPROCESS_WORKERS",
+    "SQL_LINK_SERVICE_PREPROCESS_WORKERS",
+    "SQL_LINK_SERVICE_SHARD_WRITER_LANES",
+    "SQL_LINK_SERVICE_MAX_SHARD_WRITER_LANES",
+)
+
+
+def _apply_memory_safety_caps(project_root: Path, env: dict[str, str]) -> tuple[dict[str, str], dict[str, Any]]:
+    memory = _load_json(project_root / "governance" / "health" / "memory_efficiency_control_latest.json")
+    relief = (
+        memory.get("compressed_memory_relief_contract")
+        if isinstance(memory.get("compressed_memory_relief_contract"), dict)
+        else {}
+    )
+    recommended = (
+        memory.get("recommended_env_overrides")
+        if isinstance(memory.get("recommended_env_overrides"), dict)
+        else {}
+    )
+    reasons = [str(reason) for reason in memory.get("reasons", []) if str(reason).strip()]
+    memory_guard_active = bool(
+        relief.get("active", False)
+        or str(memory.get("overall_status") or "").strip().lower() in {"blocked", "needs_work"}
+        or any(reason.startswith(("memory_", "compressed_memory_", "swap_")) for reason in reasons)
+    )
+    capped = dict(env)
+    applied: dict[str, dict[str, int]] = {}
+    if memory_guard_active:
+        for key in _MEMORY_SAFETY_WORKER_KEYS:
+            cap = _safe_int(recommended.get(key), 0)
+            current = _safe_int(capped.get(key), 0)
+            if cap <= 0:
+                continue
+            effective = cap if current <= 0 else min(current, cap)
+            capped[key] = str(effective)
+            if effective != current:
+                applied[key] = {"requested": current, "cap": cap, "effective": effective}
+
+        worker_cap = min(
+            [
+                _safe_int(capped.get(key), 0)
+                for key in (
+                    "BACKLOG_PCORE_PREPROCESS_WORKERS",
+                    "SQL_LINK_SERVICE_PREPROCESS_WORKERS",
+                    "SQL_LINK_SERVICE_SHARD_WRITER_LANES",
+                )
+                if _safe_int(capped.get(key), 0) > 0
+            ]
+            or [0]
+        )
+        if worker_cap > 0:
+            for key in ("BACKLOG_ACCELERATOR_PREPROCESS_WORKERS", "BACKLOG_ACCELERATOR_TARGET_PLANNED_SHARDS"):
+                current = _safe_int(capped.get(key), 0)
+                effective = worker_cap if current <= 0 else min(current, worker_cap)
+                capped[key] = str(effective)
+                if effective != current:
+                    applied[key] = {"requested": current, "cap": worker_cap, "effective": effective}
+
+    return capped, {
+        "active": memory_guard_active,
+        "memory_status": str(memory.get("overall_status") or "missing"),
+        "recommended_profile": str(memory.get("recommended_profile") or ""),
+        "compressed_memory_relief_active": bool(relief.get("active", False)),
+        "compressed_memory_relief_managed": bool(relief.get("managed", False)),
+        "applied": bool(applied),
+        "applied_caps": applied,
+        "policy": "memory-efficiency worker caps override backlog burst width before an automatic drain starts",
+    }
+
+
 def _drain_env(
     base_env: dict[str, str],
     *,
@@ -1115,6 +1221,7 @@ def _follow_through_retry(
     drain_env: dict[str, str],
     poll_seconds: float,
     wait_timeout_seconds: float,
+    command_timeout_seconds: float = DEFAULT_COMMAND_TIMEOUT_SECONDS,
 ) -> dict[str, Any]:
     started = datetime.now(timezone.utc)
     deadline = started.timestamp() + max(float(wait_timeout_seconds), 0.0)
@@ -1132,6 +1239,10 @@ def _follow_through_retry(
             cwd=project_root,
             payload_path=health_root / "sql_link_service_latest.json",
             env_overrides=drain_env,
+            timeout_seconds=min(
+                max(deadline - datetime.now(timezone.utc).timestamp(), 1.0),
+                max(float(command_timeout_seconds), 1.0),
+            ),
         )
         last_result = result
         payload = result.get("payload") if isinstance(result.get("payload"), dict) else {}
@@ -1182,6 +1293,7 @@ def build_payload(
     follow_through: bool = False,
     poll_seconds: float = 20.0,
     wait_timeout_seconds: float = 900.0,
+    command_timeout_seconds: float = DEFAULT_COMMAND_TIMEOUT_SECONDS,
     now_utc: datetime | None = None,
 ) -> dict[str, Any]:
     now = now_utc or datetime.now(timezone.utc)
@@ -1200,7 +1312,12 @@ def build_payload(
     split_brain = _load_json(health_root / "storage_split_brain_reconciler_latest.json")
     unresolved_conflicts = _safe_int(((split_brain.get("summary") or {}).get("unresolved_conflicts")), 0)
     external_available = bool(mount.get("external_available", False))
-    storage_mode = str(mount.get("storage_mode") or "")
+    reported_storage_mode = str(mount.get("storage_mode") or "")
+    local_hot_storage_ready = bool(
+        mount.get("hot_storage_available", False)
+        and not mount.get("external_required_for_hot_path", True)
+    )
+    storage_mode = "local_fallback" if local_hot_storage_ready else reported_storage_mode
     critical = str(governor_payload.get("profile") or "") == "critical_backpressure"
     planning_backpressure_before = _backpressure_with_storage_overlay(backpressure_before, storage_control_before)
     core_focus_before = _core_hotspots(planning_backpressure_before)
@@ -1211,10 +1328,17 @@ def build_payload(
         core_focus=core_focus_before,
         backpressure=planning_backpressure_before,
     )
+    drain_env, memory_safety_caps = _apply_memory_safety_caps(project_root, drain_env)
 
     blocked_reasons: list[str] = []
-    if not external_available or storage_mode != "external":
-        blocked_reasons.append("external_storage_unavailable")
+    routed_storage_ready = bool(
+        local_hot_storage_ready
+        or
+        (external_available and storage_mode in {"external", "external_curated"})
+        or storage_mode in {"local_fallback", "local_fallback_split_brain"}
+    )
+    if not routed_storage_ready:
+        blocked_reasons.append("routed_hot_storage_unavailable")
     if unresolved_conflicts > 0:
         blocked_reasons.append("split_brain_unresolved")
     if not bool(window.get("active", False)) and not force_live_window:
@@ -1268,6 +1392,7 @@ def build_payload(
                         core_focus=core_focus_before,
                         backpressure=planning_backpressure_before,
                     )
+                    drain_env, memory_safety_caps = _apply_memory_safety_caps(project_root, drain_env)
 
         steps["ingestion_priority_queue_before"] = _step_record(
             _run_json_command(
@@ -1297,6 +1422,7 @@ def build_payload(
                     cwd=project_root,
                     payload_path=health_root / "sql_link_service_latest.json",
                     env_overrides=drain_env,
+                    timeout_seconds=max(float(command_timeout_seconds), 1.0),
                 )
                 writer_busy = _step_status(shard_manager_initial, nonfatal_reasons={"writer_lock_busy"}) == "busy"
                 shard_manager = shard_manager_initial
@@ -1455,8 +1581,8 @@ def build_payload(
         row for row in hotspots if str(row.get("candidate_action") or "") == "drain_support_watchdog"
     ]
     top_actions: list[str] = []
-    if "external_storage_unavailable" in blocked_reasons:
-        top_actions.append("keep the writer on the routed local path until external BOT_LOGS storage is healthy again")
+    if "routed_hot_storage_unavailable" in blocked_reasons:
+        top_actions.append("restore either the pinned local hot route or a verified external hot route before draining backlog")
     if "split_brain_unresolved" in blocked_reasons:
         top_actions.append("resolve split-brain conflicts before draining the external backlog")
     if "market_hours_guard" in blocked_reasons:
@@ -1554,9 +1680,14 @@ def build_payload(
         "drain_profile": drain_profile,
         "governor_profile": str(governor_payload.get("profile") or ""),
         "storage_mode": storage_mode,
+        "reported_storage_mode": reported_storage_mode,
+        "local_hot_storage_ready": local_hot_storage_ready,
+        "routed_hot_storage_ready": routed_storage_ready,
+        "command_timeout_seconds": round(max(float(command_timeout_seconds), 1.0), 3),
         "writer_busy": bool(writer_busy),
         "service_request_path": str(health_root / "sql_link_service_request_latest.json"),
         "service_request": service_request_payload,
+        "memory_safety_caps": memory_safety_caps,
         "backpressure_before": before_snapshot,
         "backpressure_after": after_snapshot,
         "raw_backpressure_before": raw_before_snapshot,
@@ -1584,6 +1715,10 @@ def build_payload(
         "queue_depth_before": _safe_int(queue_before.get("queue_depth"), 0),
         "queue_depth_after": _safe_int(queue_after.get("queue_depth"), _safe_int(queue_before.get("queue_depth"), 0)),
         "drain_overrides": {
+            "backlog_preprocess_workers": _safe_int(drain_env.get("BACKLOG_PCORE_PREPROCESS_WORKERS"), 0),
+            "sql_preprocess_workers": _safe_int(drain_env.get("SQL_LINK_SERVICE_PREPROCESS_WORKERS"), 0),
+            "shard_writer_lanes": _safe_int(drain_env.get("SQL_LINK_SERVICE_SHARD_WRITER_LANES"), 0),
+            "max_shard_writer_lanes": _safe_int(drain_env.get("SQL_LINK_SERVICE_MAX_SHARD_WRITER_LANES"), 0),
             "deferred_files_budget": _safe_int(drain_env.get("INGEST_MAX_DEFERRED_FILES"), 0),
             "cold_files_budget": _safe_int(drain_env.get("JSONL_SQL_MAX_COLD_LANE_FILES"), 0),
             "sql_interval_seconds": _safe_int(drain_env.get("SQL_LINK_SERVICE_INTERVAL_SECONDS"), 0),
@@ -1638,6 +1773,7 @@ def main() -> int:
     parser.add_argument("--follow-through", action="store_true")
     parser.add_argument("--poll-seconds", type=float, default=20.0)
     parser.add_argument("--wait-timeout-seconds", type=float, default=900.0)
+    parser.add_argument("--command-timeout-seconds", type=float, default=DEFAULT_COMMAND_TIMEOUT_SECONDS)
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args()
 
@@ -1650,6 +1786,7 @@ def main() -> int:
         follow_through=bool(args.follow_through),
         poll_seconds=float(args.poll_seconds),
         wait_timeout_seconds=float(args.wait_timeout_seconds),
+        command_timeout_seconds=float(args.command_timeout_seconds),
     )
     out_path = Path(args.out_file).expanduser()
     _write_json(out_path, payload)

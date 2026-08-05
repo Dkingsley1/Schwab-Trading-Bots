@@ -15,6 +15,7 @@ from scripts.shadow_watchdog import (
     _parse_ps_etime_seconds,
     _parse_reason_set,
     _restart_guard_active_for_target,
+    _runtime_restart_halt_reason,
     _schwab_live_heartbeat_exclude_matches,
 )
 
@@ -28,6 +29,24 @@ def test_watchdog_restart_rate_limit() -> None:
     assert _can_restart(t, now, max_restarts=2, window_seconds=60)
     t.restart_times.append(now)
     assert not _can_restart(t, now, max_restarts=2, window_seconds=60)
+
+
+def test_runtime_maintenance_hold_suppresses_watchdog_restart() -> None:
+    reason = _runtime_restart_halt_reason(
+        {"active": True},
+        {"operator_stop_active": False, "halt_active": False},
+    )
+
+    assert reason == "runtime_maintenance_hold_active"
+
+
+def test_operator_stop_suppresses_watchdog_restart() -> None:
+    reason = _runtime_restart_halt_reason(
+        {"active": False},
+        {"operator_stop_active": True, "halt_active": False},
+    )
+
+    assert reason == "operator_stop_active"
 
 
 def test_parse_reason_set_normalizes_and_deduplicates() -> None:

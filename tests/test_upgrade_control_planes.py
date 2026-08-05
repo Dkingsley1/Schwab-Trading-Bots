@@ -235,6 +235,77 @@ def test_storage_tier_policy_accepts_clean_optional_collector_intake(tmp_path: P
     assert contract["inputs"]["collector_intake"]["safely_optional"] is True
 
 
+def test_storage_tier_policy_keeps_archives_and_quarantine_out_of_live_hot_path(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    project_root = tmp_path / "project"
+    day = datetime.now(timezone.utc).strftime("%Y%m%d")
+    decisions = project_root / "decisions" / f"trade_decisions_{day}.jsonl"
+    explanations = project_root / "decision_explanations"
+    active = explanations / "paper" / f"decision_explanations_{day}.jsonl"
+    archive = explanations / "paper" / "decision_explanations_20260701.jsonl.gz"
+    derived = explanations / "paper" / "latest_decisions.log"
+    quarantine_root = project_root / "quarantine" / "old_explanations"
+    quarantined = quarantine_root / "decision_explanations_20260701.jsonl"
+    linked = explanations / "shadow_quarantined"
+    for path, content in (
+        (decisions, "decision\n" * 32),
+        (active, "active\n" * 64),
+        (archive, "archive\n" * 512),
+        (derived, "derived\n" * 256),
+        (quarantined, "quarantine\n" * 512),
+    ):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content, encoding="utf-8")
+    linked.symlink_to(quarantine_root, target_is_directory=True)
+    _write_json(
+        project_root / "governance" / "health" / "hot_lane_retention_control_latest.json",
+        {"ok": True, "overall_status": "critical", "mode": "emergency_hot_thin"},
+    )
+    discovered = storage_tier_src.discover_storage_files(project_root)
+    discovered.append(linked / quarantined.name)
+    monkeypatch.setattr(storage_tier_src, "discover_storage_files", lambda _root: discovered)
+
+    args = [
+        "storage_tier_policy.py",
+        "--project-root",
+        str(project_root),
+        "--top-n",
+        "50",
+        "--hot-budget-gb",
+        "0.0000001",
+        "--cold-candidate-min-mb",
+        "0.000001",
+        "--offload-manifest-min-mb",
+        "0.000001",
+        "--offload-manifest-file",
+        str(project_root / "governance" / "health" / "storage_tier_offload_manifest_latest.json"),
+    ]
+    old_argv = sys.argv
+    try:
+        sys.argv = args
+        rc = storage_tier_src.main()
+    finally:
+        sys.argv = old_argv
+
+    payload = json.loads(
+        (project_root / "governance" / "health" / "storage_tier_policy_latest.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    contract = payload["hot_path_budget_contract"]
+    rows = {row["relative_path"]: row for row in payload["top_files"]}
+
+    assert rc == 0
+    assert payload["overall_status"] == "ready"
+    assert payload["pressure"]["hot_path_over_budget_bytes"] == 0
+    assert contract["active_explanation_buffer_contract"]["protected_bytes"] == active.stat().st_size
+    assert rows[str(archive.relative_to(project_root))]["service_role"] == "explainability_archive"
+    assert rows[str(derived.relative_to(project_root))]["service_role"] == "explainability_archive"
+    assert rows[str(linked.relative_to(project_root) / quarantined.name)]["service_role"] == "staging_reaper"
+
+
 def test_training_runtime_control_prioritizes_sequence_timeout_retries(tmp_path: Path) -> None:
     project_root = tmp_path / "project"
     _write_json(
