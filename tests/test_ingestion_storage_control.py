@@ -4745,6 +4745,7 @@ def test_raw_live_expansion_headroom_contract_marks_warm_raw_live_as_limited() -
     assert contract["control_env"]["SHADOW_LOOP_FRESH_BACKLOG_PAUSE_LINES"] == "4000"
     assert contract["control_env"]["SHADOW_LOOP_FRESH_BACKLOG_INFLIGHT_RESERVE_LINES"] == "2000"
     assert contract["control_env"]["SIGNAL_GENERATION_SUB_BOT_SAMPLE_MODULUS"] == "8"
+    assert contract["control_env"]["SQL_LINK_SERVICE_RAW_LIVE_PRIORITY_AGED_SOURCE_SECONDS"] == "180.0"
     assert contract["control_env"]["SHADOW_LOOP_BOOTSTRAP_BACKLOG_STAGGER_ENABLED"] == "1"
     assert contract["control_env"]["SQL_LINK_SERVICE_RAW_LIVE_AUTO_FOCUS_ENABLED"] == "1"
     assert contract["control_env"]["SQL_LINK_SERVICE_RAW_LIVE_PRIORITY_MIN_PENDING_LINES"] == "2000"

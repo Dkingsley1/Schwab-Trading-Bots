@@ -827,6 +827,9 @@ def _raw_live_expansion_headroom_contract(
             "SQL_LINK_SERVICE_RAW_LIVE_PRIORITY_MIN_PENDING_LINES": str(
                 max(reserve_core - inflight_reserve_lines, 1)
             ),
+            "SQL_LINK_SERVICE_RAW_LIVE_PRIORITY_AGED_SOURCE_SECONDS": str(
+                round(float(reserve_age), 3)
+            ),
             "SQL_LINK_SERVICE_RAW_LIVE_RESERVE_WAVE": "1" if active else "0",
             "SQL_LINK_SERVICE_COLD_STAGE_YIELDS_TO_RAW_LIVE": "1" if active else "0",
         },

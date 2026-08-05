@@ -2008,27 +2008,47 @@ def _apply_raw_live_priority_focus(
     contract["inflight_reserve_lines"] = inflight_reserve_lines
     contract["admission_pause_lines"] = admission_pause_lines
     contract["minimum_pending_lines"] = minimum_pending_lines
-    if pending_lines < minimum_pending_lines:
-        contract["reason"] = "pressure_below_focus_threshold"
-        return focused_shards, contract
-
     raw_rows = snapshot.get("top_pending_files")
     rows = [dict(row) for row in raw_rows if isinstance(row, dict)] if isinstance(raw_rows, list) else []
     rows.sort(key=lambda row: _as_int(row.get("pending_lines"), 0), reverse=True)
     source_minimum = max(_env_int("SQL_LINK_SERVICE_RAW_LIVE_PRIORITY_SOURCE_MIN_LINES", 250), 1)
+    aged_source_seconds = max(
+        _env_float("SQL_LINK_SERVICE_RAW_LIVE_PRIORITY_AGED_SOURCE_SECONDS", 180.0),
+        1.0,
+    )
+    aged_source_rows = [
+        row
+        for row in rows
+        if _as_int(row.get("pending_lines"), 0) >= source_minimum
+        and _as_float(row.get("oldest_pending_age_seconds"), 0.0) >= aged_source_seconds
+    ]
+    material_pressure = pending_lines >= minimum_pending_lines
+    aged_source_pressure = bool(aged_source_rows)
+    contract["source_minimum_pending_lines"] = source_minimum
+    contract["aged_source_seconds"] = round(aged_source_seconds, 3)
+    contract["aged_source_pressure"] = aged_source_pressure
+    contract["aged_source_count"] = len(aged_source_rows)
+    contract["aged_source_pending_lines"] = sum(
+        max(_as_int(row.get("pending_lines"), 0), 0) for row in aged_source_rows
+    )
+    if not material_pressure and not aged_source_pressure:
+        contract["reason"] = "pressure_below_focus_threshold"
+        return focused_shards, contract
+
+    candidate_rows = rows if material_pressure else aged_source_rows
     max_sources_per_shard = max(
         min(_env_int("SQL_LINK_SERVICE_RAW_LIVE_PRIORITY_MAX_SOURCES_PER_SHARD", 8), 16),
         1,
     )
     available_shards = {str(shard.get("name") or "") for shard in focused_shards}
     sources_by_shard: dict[str, list[dict[str, object]]] = {}
-    for row in rows:
+    for row in candidate_rows:
         source_rel = str(row.get("source_rel") or "").strip()
         row_pending = max(_as_int(row.get("pending_lines"), 0), 0)
         shard_name = _raw_live_priority_shard_for_source(source_rel)
         if not source_rel or not shard_name or shard_name not in available_shards:
             continue
-        if row_pending < source_minimum and sources_by_shard:
+        if row_pending < source_minimum:
             continue
         bucket = sources_by_shard.setdefault(shard_name, [])
         if len(bucket) < max_sources_per_shard:
@@ -2075,8 +2095,11 @@ def _apply_raw_live_priority_focus(
         )
 
     contract["applied"] = True
-    contract["reason"] = "fresh_material_raw_live_pressure"
-    contract["source_minimum_pending_lines"] = source_minimum
+    contract["reason"] = (
+        "fresh_material_raw_live_pressure"
+        if material_pressure
+        else "fresh_aged_raw_live_source"
+    )
     contract["focused_shards"] = focus_rows
     return focused_shards, contract
 

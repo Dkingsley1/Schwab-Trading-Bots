@@ -501,6 +501,7 @@ def test_ingestion_storage_governor_keeps_healthy_raw_live_duty_cap_authoritativ
                     "SQL_LINK_SERVICE_RAW_LIVE_PRIORITY_BOOST": "0",
                     "SQL_LINK_SERVICE_RAW_LIVE_AUTO_FOCUS_ENABLED": "1",
                     "SQL_LINK_SERVICE_RAW_LIVE_PRIORITY_MIN_PENDING_LINES": "2000",
+                    "SQL_LINK_SERVICE_RAW_LIVE_PRIORITY_AGED_SOURCE_SECONDS": "180.0",
                 },
             },
             "backlog_relief_contract": {
@@ -538,6 +539,7 @@ def test_ingestion_storage_governor_keeps_healthy_raw_live_duty_cap_authoritativ
     assert payload["env_overrides"]["SHADOW_LOOP_FRESH_BACKLOG_PAUSE_LINES"] == "4000"
     assert payload["env_overrides"]["SHADOW_LOOP_FRESH_BACKLOG_INFLIGHT_RESERVE_LINES"] == "2000"
     assert payload["env_overrides"]["SIGNAL_GENERATION_SUB_BOT_SAMPLE_MODULUS"] == "2"
+    assert payload["env_overrides"]["SQL_LINK_SERVICE_RAW_LIVE_PRIORITY_AGED_SOURCE_SECONDS"] == "180.0"
     assert payload["env_overrides"]["SHADOW_LOOP_BOOTSTRAP_BACKLOG_STAGGER_ENABLED"] == "1"
     assert payload["env_overrides"]["SQL_LINK_SERVICE_RAW_LIVE_AUTO_FOCUS_ENABLED"] == "1"
     assert payload["env_overrides"]["SQL_LINK_SERVICE_RAW_LIVE_PRIORITY_MIN_PENDING_LINES"] == "2000"

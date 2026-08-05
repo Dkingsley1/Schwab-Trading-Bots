@@ -2231,6 +2231,50 @@ def test_raw_live_priority_focus_releases_when_pressure_clears(tmp_path: Path, m
     assert focused == shards
 
 
+def test_raw_live_priority_focus_drains_aged_hot_source_below_line_threshold(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    snapshot_path = tmp_path / "ingestion_backpressure_latest.json"
+    now = shard_manager.datetime(2026, 8, 5, 16, 0, tzinfo=shard_manager.timezone.utc)
+    snapshot_path.write_text(
+        json.dumps(
+            {
+                "timestamp_utc": now.isoformat(),
+                "pending_lines": 1847,
+                "top_pending_files": [
+                    {
+                        "source_rel": "governance/events/signal_generation_20260805.jsonl",
+                        "pending_lines": 980,
+                        "oldest_pending_age_seconds": 264.0,
+                    },
+                    {
+                        "source_rel": "governance/events/auth_events_20260805.jsonl",
+                        "pending_lines": 212,
+                        "oldest_pending_age_seconds": 12.0,
+                    },
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("SQL_LINK_SERVICE_RAW_LIVE_PRIORITY_AGED_SOURCE_SECONDS", "180")
+    shards = [{"name": "governance", "path_contains": "", "max_files": 4}]
+
+    focused, contract = shard_manager._apply_raw_live_priority_focus(
+        shards,
+        backpressure_path=snapshot_path,
+        now_utc=now,
+    )
+
+    assert contract["applied"] is True
+    assert contract["reason"] == "fresh_aged_raw_live_source"
+    assert contract["aged_source_pressure"] is True
+    assert contract["aged_source_count"] == 1
+    assert contract["aged_source_pending_lines"] == 980
+    assert focused[0]["path_contains"] == "governance/events/signal_generation_20260805.jsonl"
+
+
 def test_raw_live_priority_focus_can_be_explicitly_disabled(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("SQL_LINK_SERVICE_RAW_LIVE_PRIORITY_BOOST", "0")
     monkeypatch.setenv("SQL_LINK_SERVICE_RAW_LIVE_AUTO_FOCUS_ENABLED", "0")
