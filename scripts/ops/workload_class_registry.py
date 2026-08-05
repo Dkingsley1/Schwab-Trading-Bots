@@ -51,6 +51,16 @@ WORKLOAD_CLASSES: tuple[dict[str, Any], ...] = (
         "patterns": ["collect_market", "market-correlation-sync", "macro-context-sync", "sec-edgar-sync", "extended-quant-sync"],
     },
     {
+        "class_id": "maintenance_accelerated",
+        "priority": 65,
+        "objective": "Run bounded stale-artifact hashing and indexing with pressure-gated performance-core preference.",
+        "default_cpu_policy": "darwin_user_initiated_qos_with_runtime_downshift",
+        "default_storage_policy": "bounded_manifest_backed_retention",
+        "may_run_during_user_work": True,
+        "pause_first_under_pressure": True,
+        "patterns": ["stale_artifact_reaper_bot.py"],
+    },
+    {
         "class_id": "training",
         "priority": 55,
         "objective": "Run targeted model and bot training only when memory, backlog, and user co-tenant pressure allow it.",

@@ -85,9 +85,11 @@ def test_os_adapter_layer_maps_macos_to_qos_and_launchd() -> None:
 
 def test_workload_class_registry_classifies_writer_and_user_apps() -> None:
     writer = workload_class_registry.classify_command("python scripts/ops/sql_link_shard_manager.py")
+    stale_reaper = workload_class_registry.classify_command("python scripts/ops/stale_artifact_reaper_bot.py")
     music = workload_class_registry.classify_command("/Applications/Music.app/Contents/MacOS/Music")
 
     assert writer["class_id"] == "backlog_drain"
+    assert stale_reaper["class_id"] == "maintenance_accelerated"
     assert music["class_id"] == "user_coexistent"
     payload = workload_class_registry.build_payload()
     assert "live_critical" in payload["class_order"]

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import ctypes
 import fcntl
 import json
 import os
@@ -29,10 +30,120 @@ DEFAULT_LOCK_PATH = Path(
     )
 )
 DEFAULT_STALE_STAGE_ROOT = PROJECT_ROOT / "data" / "stale_stage"
+DARWIN_QOS_CLASSES = {
+    "background": 0x09,
+    "utility": 0x11,
+    "default": 0x15,
+    "user_initiated": 0x19,
+}
 
 
 def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _env_flag(name: str, default: bool = False) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return bool(default)
+    return str(raw).strip().lower() in {"1", "true", "yes", "on", "y"}
+
+
+def _set_darwin_thread_qos(qos_class: int) -> dict[str, Any]:
+    try:
+        libc = ctypes.CDLL("/usr/lib/libSystem.B.dylib", use_errno=True)
+        setter = libc.pthread_set_qos_class_self_np
+        setter.argtypes = [ctypes.c_uint, ctypes.c_int]
+        setter.restype = ctypes.c_int
+        return_code = int(setter(int(qos_class), 0))
+        return {
+            "ok": return_code == 0,
+            "return_code": return_code,
+            "errno": int(ctypes.get_errno()),
+        }
+    except Exception as exc:
+        return {
+            "ok": False,
+            "return_code": -1,
+            "errno": int(ctypes.get_errno()),
+            "error": f"{type(exc).__name__}:{exc}",
+        }
+
+
+def _apply_scheduler_intent(*, platform_name: str | None = None) -> dict[str, Any]:
+    platform_value = str(platform_name or sys.platform).lower()
+    enabled = _env_flag("RETENTION_STALE_PCORE_ENABLED", True)
+    guard_raw = os.getenv("RETENTION_STALE_PCORE_GUARD_PASSED")
+    guard_confirmed = guard_raw is None or _env_flag("RETENTION_STALE_PCORE_GUARD_PASSED")
+    support_frozen = _env_flag("OPS_SUPPORT_MAINTENANCE_FREEZE")
+    qos_name = str(os.getenv("RETENTION_STALE_PCORE_QOS_CLASS") or "user_initiated").strip().lower()
+    if qos_name not in DARWIN_QOS_CLASSES:
+        qos_name = "user_initiated"
+    requested = bool(enabled and guard_confirmed and not support_frozen)
+    taskpolicy_applied = _env_flag("RETENTION_STALE_PCORE_TASKPOLICY_APPLIED")
+    apply_result: dict[str, Any] = {
+        "ok": False,
+        "return_code": None,
+        "errno": 0,
+    }
+    reason = "ready"
+    if not enabled:
+        reason = "disabled"
+    elif not guard_confirmed:
+        reason = "resource_guard_not_clear"
+    elif support_frozen:
+        reason = "support_maintenance_frozen"
+    elif platform_value != "darwin":
+        reason = "portable_scheduler_default"
+    else:
+        apply_result = _set_darwin_thread_qos(DARWIN_QOS_CLASSES[qos_name])
+        reason = "darwin_qos_applied" if apply_result.get("ok") else "darwin_qos_apply_failed"
+
+    qos_applied = bool(requested and platform_value == "darwin" and apply_result.get("ok"))
+    return {
+        "requested_policy": "performance_core_preferred_pressure_gated",
+        "effective_policy": (
+            f"darwin_{qos_name}_qos_application_taskpolicy"
+            if qos_applied and taskpolicy_applied
+            else f"darwin_{qos_name}_qos"
+            if qos_applied
+            else "os_scheduler_default"
+        ),
+        "enabled": enabled,
+        "requested": requested,
+        "applied": qos_applied,
+        "reason": reason,
+        "platform": platform_value,
+        "qos_class": qos_name,
+        "qos_result": apply_result,
+        "application_taskpolicy_applied": taskpolicy_applied,
+        "resource_guard_confirmed": guard_confirmed,
+        "support_maintenance_frozen": support_frozen,
+        "runtime_downshift_supported": True,
+        "hard_affinity_supported": False,
+        "macos_affinity_note": (
+            "macOS does not expose supported hard P-core pinning for this Python worker; "
+            "application task policy and user-initiated thread QoS provide a performance-core preference."
+        ),
+    }
+
+
+def _inactive_scheduler_intent(reason: str) -> dict[str, Any]:
+    return {
+        "requested_policy": "performance_core_preferred_pressure_gated",
+        "effective_policy": "not_started",
+        "enabled": _env_flag("RETENTION_STALE_PCORE_ENABLED", True),
+        "requested": False,
+        "applied": False,
+        "reason": str(reason),
+        "platform": str(sys.platform).lower(),
+        "qos_class": str(os.getenv("RETENTION_STALE_PCORE_QOS_CLASS") or "user_initiated"),
+        "application_taskpolicy_applied": _env_flag("RETENTION_STALE_PCORE_TASKPOLICY_APPLIED"),
+        "resource_guard_confirmed": _env_flag("RETENTION_STALE_PCORE_GUARD_PASSED", False),
+        "support_maintenance_frozen": _env_flag("OPS_SUPPORT_MAINTENANCE_FREEZE"),
+        "runtime_downshift_supported": True,
+        "hard_affinity_supported": False,
+    }
 
 
 def _write_json(path: Path, payload: dict[str, Any]) -> None:
@@ -254,7 +365,13 @@ def main() -> int:
         try:
             fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
-            payload.update({"busy": True, "reason": "already_running"})
+            payload.update(
+                {
+                    "busy": True,
+                    "reason": "already_running",
+                    "scheduler_intent": _inactive_scheduler_intent("already_running"),
+                }
+            )
             _write_json(out_file, payload)
             if args.json:
                 print(json.dumps(payload, ensure_ascii=True))
@@ -262,6 +379,7 @@ def main() -> int:
                 print("stale_artifact_reaper_bot busy=1 reason=already_running")
             return 0
 
+        scheduler_intent = _apply_scheduler_intent()
         primary_stale_root = Path(args.stale_stage_root).expanduser()
         payload = build_payload(
             project_root,
@@ -301,6 +419,7 @@ def main() -> int:
                     oversized_reindex_min_age_days=float(args.oversized_reindex_min_age_days),
                 )
                 payload = _merge_additional_root(payload, additional)
+        payload["scheduler_intent"] = scheduler_intent
         _write_json(out_file, payload)
 
     if args.json:

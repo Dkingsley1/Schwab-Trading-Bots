@@ -24,6 +24,8 @@ if ! guard_output="$("$PYTHON_BIN" "$PROJECT_ROOT/scripts/resource_guard.py" --p
   exit 0
 fi
 
+export RETENTION_STALE_PCORE_GUARD_PASSED=1
+
 if ! slot_output="$("$PYTHON_BIN" "$PROJECT_ROOT/scripts/ops/maintenance_slot_guard.py" --slot data_retention --begin --json 2>&1)"; then
   echo "data_retention skip maintenance_slot_blocked detail=${slot_output:-maintenance_slot_blocked}"
   exit 0
@@ -37,14 +39,26 @@ trap finish_slot EXIT INT TERM
 "$PYTHON_BIN" "$PROJECT_ROOT/scripts/data_retention_policy.py" --apply --skip-sqlite-vacuum --json
 
 if [[ "${RETENTION_INCLUDE_EXTERNAL_STALE_ROOT:-1}" != "0" ]]; then
-  if ! "$PYTHON_BIN" "$PROJECT_ROOT/scripts/ops/stale_artifact_reaper_bot.py" \
-      --include-external-stale-root \
-      --max-reindex-files "${RETENTION_STALE_REINDEX_MAX_FILES:-2048}" \
-      --max-reindex-gb "${RETENTION_STALE_REINDEX_MAX_GB:-4}" \
-      --max-oversized-reindex-files "${RETENTION_STALE_REINDEX_OVERSIZED_MAX_FILES:-1}" \
-      --max-oversized-reindex-gb "${RETENTION_STALE_REINDEX_OVERSIZED_MAX_GB:-12}" \
-      --oversized-reindex-min-age-days "${RETENTION_STALE_REINDEX_OVERSIZED_MIN_AGE_DAYS:-3}" \
-      --json >/dev/null; then
+  stale_reaper_cmd=(
+    "$PYTHON_BIN" "$PROJECT_ROOT/scripts/ops/stale_artifact_reaper_bot.py"
+    --include-external-stale-root
+    --max-reindex-files "${RETENTION_STALE_REINDEX_MAX_FILES:-2048}"
+    --max-reindex-gb "${RETENTION_STALE_REINDEX_MAX_GB:-4}"
+    --max-oversized-reindex-files "${RETENTION_STALE_REINDEX_OVERSIZED_MAX_FILES:-1}"
+    --max-oversized-reindex-gb "${RETENTION_STALE_REINDEX_OVERSIZED_MAX_GB:-12}"
+    --oversized-reindex-min-age-days "${RETENTION_STALE_REINDEX_OVERSIZED_MIN_AGE_DAYS:-3}"
+    --json
+  )
+  if [[ "$(uname -s)" == "Darwin" && "${RETENTION_STALE_PCORE_ENABLED:-1}" != "0" && "${RETENTION_STALE_PCORE_TASKPOLICY_APPLICATION:-1}" != "0" && -x /usr/sbin/taskpolicy ]]; then
+    stale_reaper_cmd=(/usr/sbin/taskpolicy -a "${stale_reaper_cmd[@]}")
+    export RETENTION_STALE_PCORE_TASKPOLICY_APPLIED=1
+  else
+    export RETENTION_STALE_PCORE_TASKPOLICY_APPLIED=0
+  fi
+  if ! BOT_WORKLOAD_CLASS=maintenance_accelerated \
+      BOT_CPU_ALLOCATION_POLICY=performance_core_preferred_pressure_gated \
+      BOT_CPU_QOS_POLICY=darwin_user_initiated_when_guarded \
+      "${stale_reaper_cmd[@]}" >/dev/null; then
     echo "data_retention stale_artifact_reaper=degraded detail=health_artifact_written"
   fi
 fi

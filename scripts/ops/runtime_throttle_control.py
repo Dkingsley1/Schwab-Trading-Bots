@@ -122,6 +122,7 @@ PROCESS_RULES: tuple[tuple[str, str, str, bool], ...] = (
     ("sql_queue_retention.py", "support_maintenance", "throttle_first", True),
     ("sql_hot_retention.py", "support_maintenance", "throttle_first", True),
     ("sqlite_performance_maintenance.py", "support_maintenance", "throttle_first", True),
+    ("scripts/ops/stale_artifact_reaper_bot.py", "support_maintenance", "throttle_first", True),
     ("data_retention_policy.py", "support_maintenance", "throttle_first", True),
     ("scripts/ops/artifact_freshness_slo.py", "support_maintenance", "throttle_first", True),
     ("scripts/ops/backpressure_slo_bot.py", "support_maintenance", "throttle_first", True),

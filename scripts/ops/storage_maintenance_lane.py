@@ -512,6 +512,7 @@ def build_storage_maintenance_payload(
     if (not resource_ok or resource_support_frozen) and not force:
         heavy_steps_skipped = True
     else:
+        env_overrides["RETENTION_STALE_PCORE_GUARD_PASSED"] = "1" if resource_ok and not resource_support_frozen else "0"
         shard_manager = _run_json_command(
             [str(PY), str(project_root / "scripts" / "ops" / "sql_link_shard_manager.py"), "--once", "--json"],
             cwd=project_root,

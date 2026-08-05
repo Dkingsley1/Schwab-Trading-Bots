@@ -8,7 +8,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from scripts.ops import stale_artifact_reaper_bot, stale_artifact_sweeper_bot
+from scripts.ops import runtime_throttle_control, stale_artifact_reaper_bot, stale_artifact_sweeper_bot
 
 
 def test_stale_artifact_sweeper_build_payload_summarizes_stage_results(tmp_path, monkeypatch) -> None:
@@ -167,3 +167,54 @@ def test_stale_artifact_reaper_merges_all_root_health_and_work() -> None:
 
 def test_stale_artifact_reaper_uses_shared_retention_lock() -> None:
     assert stale_artifact_reaper_bot.DEFAULT_LOCK_PATH.name == "data_retention.lock"
+
+
+def test_stale_artifact_reaper_applies_pressure_gated_darwin_qos(monkeypatch) -> None:
+    monkeypatch.setenv("RETENTION_STALE_PCORE_ENABLED", "1")
+    monkeypatch.setenv("RETENTION_STALE_PCORE_GUARD_PASSED", "1")
+    monkeypatch.setenv("RETENTION_STALE_PCORE_TASKPOLICY_APPLIED", "1")
+    monkeypatch.setattr(
+        stale_artifact_reaper_bot,
+        "_set_darwin_thread_qos",
+        lambda qos_class: {"ok": qos_class == 0x19, "return_code": 0, "errno": 0},
+    )
+
+    contract = stale_artifact_reaper_bot._apply_scheduler_intent(platform_name="darwin")
+
+    assert contract["applied"] is True
+    assert contract["effective_policy"] == "darwin_user_initiated_qos_application_taskpolicy"
+    assert contract["resource_guard_confirmed"] is True
+    assert contract["hard_affinity_supported"] is False
+
+
+def test_stale_artifact_reaper_holds_pcore_qos_when_guard_is_not_clear(monkeypatch) -> None:
+    monkeypatch.setenv("RETENTION_STALE_PCORE_ENABLED", "1")
+    monkeypatch.setenv("RETENTION_STALE_PCORE_GUARD_PASSED", "0")
+    called = []
+    monkeypatch.setattr(stale_artifact_reaper_bot, "_set_darwin_thread_qos", lambda qos_class: called.append(qos_class))
+
+    contract = stale_artifact_reaper_bot._apply_scheduler_intent(platform_name="darwin")
+
+    assert contract["applied"] is False
+    assert contract["reason"] == "resource_guard_not_clear"
+    assert called == []
+
+
+def test_hourly_stale_reaper_uses_application_taskpolicy_after_resource_guard() -> None:
+    runner = (PROJECT_ROOT / "scripts" / "ops" / "run_data_retention_launchd.sh").read_text(encoding="utf-8")
+
+    assert "RETENTION_STALE_PCORE_GUARD_PASSED=1" in runner
+    assert "/usr/sbin/taskpolicy -a" in runner
+    assert "BOT_WORKLOAD_CLASS=maintenance_accelerated" in runner
+
+
+def test_runtime_throttle_can_downshift_accelerated_stale_reaper() -> None:
+    classification = runtime_throttle_control._classify_process(
+        "python scripts/ops/stale_artifact_reaper_bot.py --include-external-stale-root"
+    )
+
+    assert classification == {
+        "category": "support_maintenance",
+        "priority_tier": "throttle_first",
+        "throttle_candidate": True,
+    }
