@@ -41,6 +41,9 @@ if [[ "${RETENTION_INCLUDE_EXTERNAL_STALE_ROOT:-1}" != "0" ]]; then
       --include-external-stale-root \
       --max-reindex-files "${RETENTION_STALE_REINDEX_MAX_FILES:-2048}" \
       --max-reindex-gb "${RETENTION_STALE_REINDEX_MAX_GB:-4}" \
+      --max-oversized-reindex-files "${RETENTION_STALE_REINDEX_OVERSIZED_MAX_FILES:-1}" \
+      --max-oversized-reindex-gb "${RETENTION_STALE_REINDEX_OVERSIZED_MAX_GB:-12}" \
+      --oversized-reindex-min-age-days "${RETENTION_STALE_REINDEX_OVERSIZED_MIN_AGE_DAYS:-3}" \
       --json >/dev/null; then
     echo "data_retention stale_artifact_reaper=degraded detail=health_artifact_written"
   fi

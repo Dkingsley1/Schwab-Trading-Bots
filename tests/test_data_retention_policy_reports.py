@@ -643,6 +643,41 @@ def test_legacy_stale_reindex_commits_manifest_in_one_batch(monkeypatch, tmp_pat
     assert calls == [3]
 
 
+def test_legacy_stale_reindex_paces_one_old_low_value_oversized_file(tmp_path):
+    stale_root = tmp_path / 'stale_stage'
+    small_paths = [
+        stale_root / 'external_live_sqlite' / f'small-{index}.sqlite3.local_fallback'
+        for index in range(2)
+    ]
+    oversized = stale_root / 'external_live_sqlite' / 'large.sqlite3.local_fallback'
+    for path in small_paths:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b'x')
+    oversized.write_bytes(b'x' * 12)
+    old_epoch = 1_735_689_600
+    for path in [*small_paths, oversized]:
+        os.utime(path, (old_epoch, old_epoch))
+    manifest = stale_root / 'stale_manifest.jsonl'
+
+    result = data_retention_policy._reindex_legacy_stale_stage(
+        stale_root=stale_root,
+        manifest_path=manifest,
+        max_files=3,
+        max_bytes=8,
+        oversized_max_files=1,
+        oversized_max_bytes=16,
+        oversized_min_age_days=3,
+    )
+    rows = [json.loads(line) for line in manifest.read_text(encoding='utf-8').splitlines()]
+
+    assert result['reindexed_files'] == 3
+    assert result['standard_selected_files'] == 2
+    assert result['oversized_selected_files'] == 1
+    assert result['oversized_selected_bytes'] == 12
+    assert result['deferred_oversized_candidate_files'] == 0
+    assert {row['legacy_reindex_lane'] for row in rows} == {'standard', 'oversized_low_value'}
+
+
 def test_main_stage_only_leaves_unmatched_candidates_in_place(monkeypatch, tmp_path):
     monkeypatch.setattr(data_retention_policy, 'PROJECT_ROOT', tmp_path)
 

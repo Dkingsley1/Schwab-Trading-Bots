@@ -86,6 +86,9 @@ def _merge_additional_root(payload: dict[str, Any], additional: dict[str, Any]) 
         "legacy_reindex_selected_bytes",
         "legacy_reindex_protected_files",
         "legacy_reindex_oversized_files",
+        "legacy_reindex_oversized_selected_files",
+        "legacy_reindex_oversized_selected_bytes",
+        "legacy_reindex_deferred_oversized_files",
         "legacy_reindex_errors",
     }
     for key in additive_keys:
@@ -132,6 +135,9 @@ def build_payload(
     max_delete_gb: float = 10.0,
     max_reindex_files: int = 2048,
     max_reindex_gb: float = 4.0,
+    max_oversized_reindex_files: int = 1,
+    max_oversized_reindex_gb: float = 12.0,
+    oversized_reindex_min_age_days: float = 3.0,
 ) -> dict[str, Any]:
     manifest_path = retention._stale_manifest_path(stale_stage_root, stale_stage_manifest)
     legacy_reindex = retention._reindex_legacy_stale_stage(
@@ -139,6 +145,9 @@ def build_payload(
         manifest_path=manifest_path,
         max_files=max_reindex_files,
         max_bytes=int(max(float(max_reindex_gb), 0.0) * (1024**3)),
+        oversized_max_files=max_oversized_reindex_files,
+        oversized_max_bytes=int(max(float(max_oversized_reindex_gb), 0.0) * (1024**3)),
+        oversized_min_age_days=float(oversized_reindex_min_age_days),
     )
     purge = retention._purge_old_stale_stage(
         stale_root=stale_stage_root,
@@ -185,6 +194,9 @@ def build_payload(
             "legacy_reindex_selected_bytes": int(legacy_reindex.get("selected_bytes", 0) or 0),
             "legacy_reindex_protected_files": int(legacy_reindex.get("protected_reindexed_files", 0) or 0),
             "legacy_reindex_oversized_files": int(legacy_reindex.get("oversized_candidate_files", 0) or 0),
+            "legacy_reindex_oversized_selected_files": int(legacy_reindex.get("oversized_selected_files", 0) or 0),
+            "legacy_reindex_oversized_selected_bytes": int(legacy_reindex.get("oversized_selected_bytes", 0) or 0),
+            "legacy_reindex_deferred_oversized_files": int(legacy_reindex.get("deferred_oversized_candidate_files", 0) or 0),
             "legacy_reindex_errors": len(reindex_errors),
             "purge_policy": purge.get("purge_policy") if isinstance(purge.get("purge_policy"), dict) else {},
             "manifest_lines_after": int(((purge.get("manifest_compaction") or {}).get("lines_after", 0) or 0)),
@@ -212,6 +224,9 @@ def main() -> int:
     parser.add_argument("--max-delete-gb", type=float, default=float(os.getenv("RETENTION_STALE_PURGE_MAX_GB", "10")))
     parser.add_argument("--max-reindex-files", type=int, default=int(os.getenv("RETENTION_STALE_REINDEX_MAX_FILES", "2048")))
     parser.add_argument("--max-reindex-gb", type=float, default=float(os.getenv("RETENTION_STALE_REINDEX_MAX_GB", "4")))
+    parser.add_argument("--max-oversized-reindex-files", type=int, default=int(os.getenv("RETENTION_STALE_REINDEX_OVERSIZED_MAX_FILES", "1")))
+    parser.add_argument("--max-oversized-reindex-gb", type=float, default=float(os.getenv("RETENTION_STALE_REINDEX_OVERSIZED_MAX_GB", "12")))
+    parser.add_argument("--oversized-reindex-min-age-days", type=float, default=float(os.getenv("RETENTION_STALE_REINDEX_OVERSIZED_MIN_AGE_DAYS", "3")))
     parser.add_argument(
         "--include-external-stale-root",
         action=argparse.BooleanOptionalAction,
@@ -261,6 +276,9 @@ def main() -> int:
             max_delete_gb=float(args.max_delete_gb),
             max_reindex_files=int(args.max_reindex_files),
             max_reindex_gb=float(args.max_reindex_gb),
+            max_oversized_reindex_files=int(args.max_oversized_reindex_files),
+            max_oversized_reindex_gb=float(args.max_oversized_reindex_gb),
+            oversized_reindex_min_age_days=float(args.oversized_reindex_min_age_days),
         )
         if args.include_external_stale_root:
             external_stale_root = retention._resolve_external_project_root() / "data" / "stale_stage"
@@ -278,6 +296,9 @@ def main() -> int:
                     max_delete_gb=float(args.max_delete_gb),
                     max_reindex_files=int(args.max_reindex_files),
                     max_reindex_gb=float(args.max_reindex_gb),
+                    max_oversized_reindex_files=int(args.max_oversized_reindex_files),
+                    max_oversized_reindex_gb=float(args.max_oversized_reindex_gb),
+                    oversized_reindex_min_age_days=float(args.oversized_reindex_min_age_days),
                 )
                 payload = _merge_additional_root(payload, additional)
         _write_json(out_file, payload)

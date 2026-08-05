@@ -568,6 +568,9 @@ def _reindex_legacy_stale_stage(
     manifest_path: Path,
     max_files: int = 2048,
     max_bytes: int = 4 * (1024**3),
+    oversized_max_files: int = 1,
+    oversized_max_bytes: int = 12 * (1024**3),
+    oversized_min_age_days: float = 3.0,
 ) -> dict[str, object]:
     active = _active_stale_manifest_rows(manifest_path)
     candidates: list[dict[str, object]] = []
@@ -611,7 +614,7 @@ def _reindex_legacy_stale_stage(
         )
     )
     selected: list[dict[str, object]] = []
-    selected_bytes = 0
+    standard_selected_bytes = 0
     file_budget = max(int(max_files), 0)
     byte_budget = max(int(max_bytes), 0)
     for row in candidates:
@@ -620,10 +623,47 @@ def _reindex_legacy_stale_stage(
             break
         if byte_budget and size_bytes > byte_budget:
             continue
-        if byte_budget and selected and selected_bytes + size_bytes > byte_budget:
+        if byte_budget and selected and standard_selected_bytes + size_bytes > byte_budget:
             continue
+        row["legacy_reindex_lane"] = "standard"
         selected.append(row)
-        selected_bytes += size_bytes
+        standard_selected_bytes += size_bytes
+
+    oversized_file_budget = max(int(oversized_max_files), 0)
+    oversized_byte_budget = max(int(oversized_max_bytes), 0)
+    oversized_min_age = max(float(oversized_min_age_days), 0.0)
+    oversized_candidates = [
+        row
+        for row in candidates
+        if byte_budget
+        and int(row.get("size_bytes") or 0) > byte_budget
+    ]
+    oversized_selected: list[dict[str, object]] = []
+    oversized_selected_bytes = 0
+    selected_paths = {str(row.get("path") or "") for row in selected}
+    standard_batch_has_room = not file_budget or len(selected) < file_budget
+    if standard_batch_has_room and oversized_file_budget > 0 and oversized_byte_budget > 0:
+        for row in oversized_candidates:
+            size_bytes = int(row.get("size_bytes") or 0)
+            if len(oversized_selected) >= oversized_file_budget:
+                break
+            if str(row.get("path") or "") in selected_paths:
+                continue
+            if bool(row.get("protected_evidence", False)):
+                continue
+            if str(row.get("economic_value") or "") != "low":
+                continue
+            if float(row.get("age_days") or 0.0) < oversized_min_age:
+                continue
+            if size_bytes > oversized_byte_budget:
+                continue
+            if oversized_selected and oversized_selected_bytes + size_bytes > oversized_byte_budget:
+                continue
+            row["legacy_reindex_lane"] = "oversized_low_value"
+            oversized_selected.append(row)
+            oversized_selected_bytes += size_bytes
+    selected.extend(oversized_selected)
+    selected_bytes = standard_selected_bytes + oversized_selected_bytes
 
     reindexed = 0
     reindexed_bytes = 0
@@ -676,6 +716,7 @@ def _reindex_legacy_stale_stage(
                 "economic_value_score": _economic_value_score(str(row.get("economic_value") or "medium")),
                 "age_days": round(float(row.get("age_days") or 0.0), 3),
                 "stale_reason": "legacy_stale_stage_manifest_reindexed",
+                "legacy_reindex_lane": str(row.get("legacy_reindex_lane") or "standard"),
             }
         )
     if pending_manifest_rows:
@@ -692,6 +733,10 @@ def _reindex_legacy_stale_stage(
         "candidate_bytes": sum(int(row.get("size_bytes") or 0) for row in candidates),
         "selected_files": len(selected),
         "selected_bytes": selected_bytes,
+        "standard_selected_files": len(selected) - len(oversized_selected),
+        "standard_selected_bytes": standard_selected_bytes,
+        "oversized_selected_files": len(oversized_selected),
+        "oversized_selected_bytes": oversized_selected_bytes,
         "reindexed_files": reindexed,
         "reindexed_bytes": reindexed_bytes,
         "protected_reindexed_files": protected_reindexed,
@@ -699,8 +744,12 @@ def _reindex_legacy_stale_stage(
         "oversized_candidate_files": sum(
             1 for row in candidates if byte_budget and int(row.get("size_bytes") or 0) > byte_budget
         ),
+        "deferred_oversized_candidate_files": max(len(oversized_candidates) - len(oversized_selected), 0),
         "max_files": file_budget,
         "max_bytes": byte_budget,
+        "oversized_max_files": oversized_file_budget,
+        "oversized_max_bytes": oversized_byte_budget,
+        "oversized_min_age_days": oversized_min_age,
         "hold_hours": 24,
         "manifest_write_mode": "single_fsync_batch",
         "errors": errors,
@@ -1626,6 +1675,9 @@ def main() -> int:
     parser.add_argument("--stale-purge-max-gb", type=float, default=float(os.getenv("RETENTION_STALE_PURGE_MAX_GB", "10")))
     parser.add_argument("--stale-reindex-max-files", type=int, default=int(os.getenv("RETENTION_STALE_REINDEX_MAX_FILES", "2048")))
     parser.add_argument("--stale-reindex-max-gb", type=float, default=float(os.getenv("RETENTION_STALE_REINDEX_MAX_GB", "4")))
+    parser.add_argument("--stale-reindex-oversized-max-files", type=int, default=int(os.getenv("RETENTION_STALE_REINDEX_OVERSIZED_MAX_FILES", "1")))
+    parser.add_argument("--stale-reindex-oversized-max-gb", type=float, default=float(os.getenv("RETENTION_STALE_REINDEX_OVERSIZED_MAX_GB", "12")))
+    parser.add_argument("--stale-reindex-oversized-min-age-days", type=float, default=float(os.getenv("RETENTION_STALE_REINDEX_OVERSIZED_MIN_AGE_DAYS", "3")))
     parser.add_argument("--json", action="store_true", help="Accepted for orchestrator compatibility; JSON is always printed.")
     parser.add_argument("--apply", action="store_true")
     args = parser.parse_args()
@@ -1978,6 +2030,9 @@ def main() -> int:
                 manifest_path=stale_stage_manifest,
                 max_files=int(args.stale_reindex_max_files),
                 max_bytes=int(max(float(args.stale_reindex_max_gb), 0.0) * (1024**3)),
+                oversized_max_files=int(args.stale_reindex_oversized_max_files),
+                oversized_max_bytes=int(max(float(args.stale_reindex_oversized_max_gb), 0.0) * (1024**3)),
+                oversized_min_age_days=float(args.stale_reindex_oversized_min_age_days),
             )
             stale_stage_payload["purge"] = _purge_old_stale_stage(
                 stale_root=stale_stage_root,
