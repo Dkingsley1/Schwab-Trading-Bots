@@ -450,6 +450,83 @@ def test_fresh_managed_storage_clear_prevents_raw_false_positive(tmp_path, monke
     assert contract["fresh_backlog_pause"]["source"] == "none"
 
 
+def test_stale_storage_pressure_stays_latched_until_fresh_clear(tmp_path, monkeypatch) -> None:
+    health = tmp_path / "governance" / "health"
+    health.mkdir(parents=True, exist_ok=True)
+    now = datetime.now(timezone.utc)
+    (health / "ingestion_storage_control_latest.json").write_text(
+        json.dumps(
+            {
+                "timestamp_utc": (now - timedelta(minutes=10)).isoformat(),
+                "overall_status": "degraded",
+                "severity": "critical",
+                "backpressure": {"total_pending_lines": 50000, "core_pending_lines": 50000},
+            }
+        ),
+        encoding="utf-8",
+    )
+    (health / "ingestion_backpressure_latest.json").write_text(
+        json.dumps(
+            {
+                "timestamp_utc": now.isoformat(),
+                "pending_lines": 0,
+                "pending_lines_total": 0,
+            }
+        ),
+        encoding="utf-8",
+    )
+    empty_override = tmp_path / "empty.env"
+    empty_override.write_text("SHADOW_LOOP_FRESH_BACKLOG_PAUSE_LINES=15000\n", encoding="utf-8")
+    monkeypatch.setattr(loop, "DYNAMIC_STORAGE_OVERRIDE_PATHS", (empty_override,))
+    _reset_dynamic_override_cache()
+
+    contract = loop._runtime_training_pause_contract(str(tmp_path))
+
+    assert contract["paused"] is True
+    assert contract["backlog_paused"] is True
+    assert contract["reason"] == "stale_storage_pressure_requires_fresh_clear"
+    assert contract["fresh_backlog_pause"]["stale_pressure_latched"] is True
+    assert contract["fresh_backlog_pause"]["clear_confirmed"] is False
+
+
+def test_stale_backlog_controls_fail_closed(tmp_path, monkeypatch) -> None:
+    health = tmp_path / "governance" / "health"
+    health.mkdir(parents=True, exist_ok=True)
+    timestamp = (datetime.now(timezone.utc) - timedelta(minutes=10)).isoformat()
+    (health / "ingestion_storage_control_latest.json").write_text(
+        json.dumps(
+            {
+                "timestamp_utc": timestamp,
+                "overall_status": "ready",
+                "severity": "stable",
+                "backpressure": {"total_pending_lines": 0, "core_pending_lines": 0},
+            }
+        ),
+        encoding="utf-8",
+    )
+    (health / "ingestion_backpressure_latest.json").write_text(
+        json.dumps(
+            {
+                "timestamp_utc": timestamp,
+                "pending_lines": 0,
+                "pending_lines_total": 0,
+            }
+        ),
+        encoding="utf-8",
+    )
+    empty_override = tmp_path / "empty.env"
+    empty_override.write_text("SHADOW_LOOP_FRESH_BACKLOG_PAUSE_LINES=15000\n", encoding="utf-8")
+    monkeypatch.setattr(loop, "DYNAMIC_STORAGE_OVERRIDE_PATHS", (empty_override,))
+    _reset_dynamic_override_cache()
+
+    contract = loop._runtime_training_pause_contract(str(tmp_path))
+
+    assert contract["paused"] is True
+    assert contract["reason"] == "backlog_control_evidence_stale"
+    assert contract["fresh_backlog_pause"]["control_evidence_stale"] is True
+    assert contract["fresh_backlog_pause"]["clear_confirmed"] is False
+
+
 def test_collector_resume_stagger_is_bounded_and_stable() -> None:
     first = loop._collector_resume_stagger_seconds(
         broker="schwab",

@@ -2034,6 +2034,9 @@ def _fresh_idle_health_fast_path_allowed(
     health_file_path: Path,
     *,
     path_contains: Optional[List[str]] = None,
+    source_files: Optional[List[Path]] = None,
+    project_root: Optional[Path] = None,
+    sqlite_state: Optional[Dict[str, Any]] = None,
 ) -> Tuple[bool, Dict[str, Any]]:
     if not _env_flag("SQL_LINK_SERVICE_SKIP_FRESH_IDLE_SHARDS", False):
         return False, {"reason": "disabled"}
@@ -2078,6 +2081,62 @@ def _fresh_idle_health_fast_path_allowed(
             "pending_lines": int(pending_lines),
             "pending_json_files": int(pending_json_files),
         }
+    if source_files is not None:
+        root = project_root.resolve() if project_root is not None else None
+        state_rows = sqlite_state if isinstance(sqlite_state, dict) else {}
+        for source_path in source_files:
+            try:
+                resolved = source_path.resolve()
+                source_stat = resolved.stat()
+            except Exception:
+                return False, {
+                    "reason": "source_state_not_idle",
+                    "source": str(source_path),
+                    "source_reason": "source_stat_failed",
+                }
+            state_keys = [str(resolved)]
+            if root is not None:
+                try:
+                    state_keys.insert(0, resolved.relative_to(root).as_posix())
+                except Exception:
+                    pass
+            state_row = next(
+                (state_rows.get(key) for key in state_keys if isinstance(state_rows.get(key), dict)),
+                None,
+            )
+            if not isinstance(state_row, dict):
+                return False, {
+                    "reason": "source_state_not_idle",
+                    "source": str(resolved),
+                    "source_reason": "source_untracked",
+                }
+            last_offset = _health_counter(state_row.get("last_offset_bytes"))
+            state_inode = _health_counter(state_row.get("file_inode"))
+            if state_inode > 0 and state_inode != int(source_stat.st_ino):
+                return False, {
+                    "reason": "source_state_not_idle",
+                    "source": str(resolved),
+                    "source_reason": "source_inode_changed",
+                }
+            if int(source_stat.st_size) > last_offset:
+                return False, {
+                    "reason": "source_state_not_idle",
+                    "source": str(resolved),
+                    "source_reason": "pending_source_bytes",
+                    "pending_bytes": int(source_stat.st_size) - last_offset,
+                }
+            if last_offset > int(source_stat.st_size):
+                return False, {
+                    "reason": "source_state_not_idle",
+                    "source": str(resolved),
+                    "source_reason": "source_truncated",
+                }
+            if float(source_stat.st_mtime) > timestamp.timestamp():
+                return False, {
+                    "reason": "source_state_not_idle",
+                    "source": str(resolved),
+                    "source_reason": "source_changed_after_health",
+                }
     return True, {
         "reason": "fresh_idle_health",
         "shard": shard_name,
@@ -2274,6 +2333,7 @@ def main() -> int:
         project_root=project_root,
         sqlite_state=state.get("sqlite", {}) if isinstance(state, dict) else {},
     )
+    idle_check_files = list(files)
 
     if args.max_files > 0:
         files = _limit_prioritized_jsonl_files(
@@ -2308,6 +2368,9 @@ def main() -> int:
     fast_path_allowed, fast_path = _fresh_idle_health_fast_path_allowed(
         health_file_path,
         path_contains=path_contains,
+        source_files=idle_check_files,
+        project_root=project_root,
+        sqlite_state=state.get("sqlite", {}) if isinstance(state, dict) else {},
     )
     if fast_path_allowed:
         print(

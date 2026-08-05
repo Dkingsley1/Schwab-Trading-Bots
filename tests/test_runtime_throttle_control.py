@@ -812,6 +812,16 @@ def test_runtime_env_overrides_observe_keeps_support_jobs_niced() -> None:
     assert overrides["SHADOW_LOOP_RUNTIME_PAUSE_SLEEP_SECONDS"] == "15"
 
 
+def test_runtime_env_overrides_keep_backpressure_truth_fresh_under_pressure() -> None:
+    for profile, memory, compute in (
+        ("protect_live", "normal", "high"),
+        ("sustain", "normal", "elevated"),
+        ("soft_cap", "normal", "elevated"),
+    ):
+        overrides = src._runtime_env_overrides(profile, memory, compute)
+        assert int(overrides["INGESTION_BACKPRESSURE_REFRESH_INTERVAL_SECONDS"]) <= 120
+
+
 def test_full_force_paper_keeps_cooling_controls_under_soft_cap() -> None:
     overrides = src._runtime_env_overrides(
         "soft_cap",

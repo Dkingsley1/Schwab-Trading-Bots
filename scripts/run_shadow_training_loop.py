@@ -9303,11 +9303,11 @@ def _fresh_backlog_pause_contract(project_root: str) -> Dict[str, Any]:
 
     try:
         max_age_seconds = max(
-            float(_dynamic_storage_value("SHADOW_LOOP_FRESH_BACKLOG_MAX_AGE_SECONDS", "90") or 90),
+            float(_dynamic_storage_value("SHADOW_LOOP_FRESH_BACKLOG_MAX_AGE_SECONDS", "180") or 180),
             15.0,
         )
     except Exception:
-        max_age_seconds = 90.0
+        max_age_seconds = 180.0
     try:
         raw_threshold = _dynamic_storage_value(
             "SHADOW_LOOP_FRESH_BACKLOG_PAUSE_LINES",
@@ -9349,29 +9349,54 @@ def _fresh_backlog_pause_contract(project_root: str) -> Dict[str, Any]:
         _pending_int(raw.get("pending_lines")),
     )
     severity = str(storage.get("severity") or "").strip().lower()
-    storage_pressure_active = bool(
-        storage_fresh
-        and (
-            severity in {"high", "critical", "blocked"}
-            or storage_total >= pause_lines
-        )
+    storage_reports_pressure = bool(
+        severity in {"high", "critical", "blocked"}
+        or storage_total >= pause_lines
     )
+    storage_pressure_active = bool(storage_fresh and storage_reports_pressure)
+    raw_reports_pressure = bool(raw_total >= pause_lines)
     newer_raw_pressure_active = bool(
         raw_fresh
-        and raw_total >= pause_lines
+        and raw_reports_pressure
         and (
             not storage_fresh
             or storage_ts is None
             or raw_newer_seconds > newer_raw_grace_seconds
         )
     )
-    active = bool(storage_pressure_active or newer_raw_pressure_active)
+    stale_pressure_latched = bool(not storage_fresh and storage_ts is not None and storage_reports_pressure)
+    control_evidence_stale = bool(
+        (storage_ts is not None or raw_ts is not None)
+        and not storage_fresh
+        and not raw_fresh
+    )
+    clear_confirmed = bool(
+        (storage_fresh and not storage_reports_pressure)
+        or (
+            not storage_reports_pressure
+            and raw_fresh
+            and not raw_reports_pressure
+            and (storage_ts is None or raw_ts is None or raw_ts >= storage_ts)
+        )
+    )
+    active = bool(
+        storage_pressure_active
+        or newer_raw_pressure_active
+        or stale_pressure_latched
+        or control_evidence_stale
+    )
     if storage_pressure_active:
         reason = "fresh_ingestion_storage_pressure"
         source = "ingestion_storage_control"
     elif newer_raw_pressure_active:
         reason = "fresh_raw_backpressure_newer_than_storage_control"
         source = "ingestion_backpressure"
+    elif stale_pressure_latched:
+        reason = "stale_storage_pressure_requires_fresh_clear"
+        source = "ingestion_storage_control"
+    elif control_evidence_stale:
+        reason = "backlog_control_evidence_stale"
+        source = "control_freshness_guard"
     else:
         reason = "fresh_backlog_within_budget"
         source = "none"
@@ -9390,7 +9415,10 @@ def _fresh_backlog_pause_contract(project_root: str) -> Dict[str, Any]:
         "raw_age_seconds": round(raw_age, 3) if math.isfinite(raw_age) else None,
         "raw_total_pending_lines": raw_total,
         "raw_newer_seconds": round(raw_newer_seconds, 3),
-        "policy": "pause inside the collector before a slower control refresh can turn a new burst into backlog debt",
+        "stale_pressure_latched": stale_pressure_latched,
+        "control_evidence_stale": control_evidence_stale,
+        "clear_confirmed": clear_confirmed,
+        "policy": "pause before a burst, fail closed when both controls are stale, and require fresh evidence before releasing known storage pressure",
     }
 
 

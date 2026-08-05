@@ -1605,6 +1605,87 @@ def test_run_shard_links_does_not_skip_focused_path_against_unfiltered_health(tm
     assert calls == {"quarantine": 1, "subprocess": 1}
 
 
+def test_run_shard_links_does_not_skip_focused_source_with_pending_bytes(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("SQL_LINK_SERVICE_SKIP_FRESH_IDLE_SHARDS", "1")
+    monkeypatch.setenv("SQL_LINK_SERVICE_IDLE_SHARD_MAX_AGE_SECONDS", "120")
+    source = tmp_path / "signal_generation.jsonl"
+    source.write_text('{"row": 1}\n{"row": 2}\n', encoding="utf-8")
+    source_stat = source.stat()
+    health_file = tmp_path / "governance_health.json"
+    health_file.write_text(
+        json.dumps(
+            {
+                "timestamp_utc": shard_manager._now_utc(),
+                "overall_status": "ready",
+                "filters": {
+                    "include_streams": ["governance_events"],
+                    "path_contains": [str(source)],
+                    "path_not_contains": [],
+                },
+                "sqlite": {"pending_lines": 0, "inserted": 0},
+                "sqlite_json_files": {"pending_files": 0, "inserted": 0},
+            }
+        ),
+        encoding="utf-8",
+    )
+    state_file = tmp_path / "governance_state.json"
+    state_file.write_text(
+        json.dumps(
+            {
+                "sqlite": {
+                    str(source.resolve()): {
+                        "last_offset_bytes": len('{"row": 1}\n'),
+                        "file_size_bytes": source_stat.st_size,
+                        "file_inode": source_stat.st_ino,
+                        "mtime": source_stat.st_mtime,
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    shard = {
+        "name": "governance",
+        "sqlite_db": tmp_path / "governance.sqlite3",
+        "state_file": state_file,
+        "health_file": health_file,
+        "journal_file": tmp_path / "governance_journal.jsonl",
+        "journal_events_file": tmp_path / "governance_journal_events.jsonl",
+        "invalid_log_file": tmp_path / "governance_invalid.jsonl",
+        "include_streams": "governance_events",
+        "path_contains": str(source),
+        "skip_json_files": False,
+        "max_files": 1,
+        "max_lines_per_file": 100,
+        "state_checkpoint_lines": 10,
+    }
+    calls = {"quarantine": 0, "subprocess": 0}
+
+    def fake_quarantine(**_kwargs):
+        calls["quarantine"] += 1
+        return {"triggered": False}
+
+    def fake_run(*_args, **_kwargs):
+        calls["subprocess"] += 1
+        return subprocess.CompletedProcess(args=["link"], returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(shard_manager, "_quarantine_shard_artifacts", fake_quarantine)
+    monkeypatch.setattr(shard_manager.subprocess, "run", fake_run)
+
+    results = shard_manager._run_shard_links(
+        shards=[shard],
+        link_mode="sqlite",
+        sqlite_timeout_seconds=30,
+        sqlite_lock_retries=0,
+        sqlite_lock_retry_delay_seconds=0.1,
+        shard_link_timeout_seconds=5,
+        preprocess_workers=1,
+    )
+
+    assert results[0].get("skipped") is not True
+    assert calls == {"quarantine": 1, "subprocess": 1}
+
+
 def test_run_shard_links_does_not_skip_fresh_idle_dirty_health(tmp_path, monkeypatch) -> None:
     monkeypatch.setenv("SQL_LINK_SERVICE_SKIP_FRESH_IDLE_SHARDS", "1")
     monkeypatch.setenv("SQL_LINK_SERVICE_IDLE_SHARD_MAX_AGE_SECONDS", "120")

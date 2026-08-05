@@ -2831,7 +2831,7 @@ def _runtime_env_overrides(
             "SQL_LINK_SERVICE_HOT_BATCH_SIZE": "30000",
             "SQL_LINK_SERVICE_QUEUE_BATCH_SIZE": "20000",
             "ONE_NUMBERS_REFRESH_INTERVAL_SECONDS": "1200",
-            "INGESTION_BACKPRESSURE_REFRESH_INTERVAL_SECONDS": "420",
+            "INGESTION_BACKPRESSURE_REFRESH_INTERVAL_SECONDS": "120",
             "ASYNC_PIPELINE_WORKERS": "2",
             "COINBASE_SNAPSHOT_MAX_WORKERS": "1",
             "RUNTIME_FEATURE_CACHE_MAX_ENTRIES": "48",
@@ -2883,7 +2883,7 @@ def _runtime_env_overrides(
             "SQL_LINK_SERVICE_HOT_BATCH_SIZE": "50000",
             "SQL_LINK_SERVICE_QUEUE_BATCH_SIZE": "30000",
             "ONE_NUMBERS_REFRESH_INTERVAL_SECONDS": "900",
-            "INGESTION_BACKPRESSURE_REFRESH_INTERVAL_SECONDS": "300",
+            "INGESTION_BACKPRESSURE_REFRESH_INTERVAL_SECONDS": "120",
             "ASYNC_PIPELINE_WORKERS": "2",
             "COINBASE_SNAPSHOT_MAX_WORKERS": "2",
             "RUNTIME_FEATURE_CACHE_MAX_ENTRIES": "64",
@@ -2950,6 +2950,7 @@ def _runtime_env_overrides(
         "OPS_SUPPORT_HEAVY_COLLECTOR_MAX_CPU_PERCENT": "60" if throttle_profile == "soft_cap" else "0",
         "TRAINING_RUNTIME_PAUSED_FOR_HOST_HEADROOM": "0" if throttle_profile == "soft_cap" else "0",
         "SHADOW_LOOP_RUNTIME_PAUSE_SLEEP_SECONDS": support_pause_sleep,
+        "INGESTION_BACKPRESSURE_REFRESH_INTERVAL_SECONDS": "120",
     }
     overrides.update(_context_collector_pressure_overrides(throttle_profile))
     overrides.update(runtime_sql_overrides)
@@ -4504,7 +4505,7 @@ def _mac_fluidity_contract(
             "TRAINING_RUNTIME_PAUSED_FOR_HOST_HEADROOM": "1",
             "SHADOW_LOOP_RUNTIME_PAUSE_SLEEP_SECONDS": "75",
             "ONE_NUMBERS_REFRESH_INTERVAL_SECONDS": "1200",
-            "INGESTION_BACKPRESSURE_REFRESH_INTERVAL_SECONDS": "420",
+            "INGESTION_BACKPRESSURE_REFRESH_INTERVAL_SECONDS": "120",
         }
     elif band == "strained":
         mode_overrides = {
@@ -4520,7 +4521,7 @@ def _mac_fluidity_contract(
             "TRAINING_RUNTIME_PAUSED_FOR_HOST_HEADROOM": "1",
             "SHADOW_LOOP_RUNTIME_PAUSE_SLEEP_SECONDS": "60",
             "ONE_NUMBERS_REFRESH_INTERVAL_SECONDS": "900",
-            "INGESTION_BACKPRESSURE_REFRESH_INTERVAL_SECONDS": "300",
+            "INGESTION_BACKPRESSURE_REFRESH_INTERVAL_SECONDS": "120",
         }
         bounded_micro_canary = bool(
             runtime_micro_canary_allowed
@@ -4556,7 +4557,7 @@ def _mac_fluidity_contract(
             "TRAINING_RUNTIME_PAUSED_FOR_HOST_HEADROOM": "0",
             "SHADOW_LOOP_RUNTIME_PAUSE_SLEEP_SECONDS": "60",
             "ONE_NUMBERS_REFRESH_INTERVAL_SECONDS": "600",
-            "INGESTION_BACKPRESSURE_REFRESH_INTERVAL_SECONDS": "240",
+            "INGESTION_BACKPRESSURE_REFRESH_INTERVAL_SECONDS": "120",
         }
     elif band == "comfortable":
         mode_overrides = {

@@ -1230,6 +1230,43 @@ def _fresh_idle_shard_skip_record(
     last_status = str(snapshot.get("last_status") or "").strip().lower()
     if last_status in {"error", "failed", "blocked"}:
         return None
+    focused_paths = _parse_csv(str(shard.get("path_contains", "") or ""))
+    if focused_paths:
+        state_payload = _load_json(Path(str(shard.get("state_file") or "")))
+        sqlite_state = state_payload.get("sqlite") if isinstance(state_payload.get("sqlite"), dict) else {}
+        health_timestamp = _parse_iso_utc(snapshot.get("timestamp_utc"))
+        for raw_path in focused_paths:
+            source_path = Path(raw_path)
+            if not source_path.is_absolute():
+                source_path = PROJECT_ROOT / source_path
+            if not source_path.exists():
+                return None
+            try:
+                resolved = source_path.resolve()
+                source_stat = resolved.stat()
+            except Exception:
+                return None
+            state_keys = [str(resolved)]
+            try:
+                state_keys.insert(0, resolved.relative_to(PROJECT_ROOT).as_posix())
+            except Exception:
+                pass
+            state_row = next(
+                (sqlite_state.get(key) for key in state_keys if isinstance(sqlite_state.get(key), dict)),
+                None,
+            )
+            if not isinstance(state_row, dict):
+                return None
+            last_offset = _as_int(state_row.get("last_offset_bytes"), 0)
+            state_inode = _as_int(state_row.get("file_inode"), 0)
+            if state_inode > 0 and state_inode != int(source_stat.st_ino):
+                return None
+            if int(source_stat.st_size) > last_offset:
+                return None
+            if last_offset > int(source_stat.st_size):
+                return None
+            if health_timestamp is not None and float(source_stat.st_mtime) > health_timestamp.timestamp():
+                return None
     health_path = Path(str(shard.get("health_file") or ""))
     return {
         "shard": name,

@@ -706,6 +706,66 @@ class LinkJsonlToSqlTests(unittest.TestCase):
                 else:
                     os.environ[key] = value
 
+    def test_fresh_idle_health_fast_path_does_not_skip_pending_source_bytes(self) -> None:
+        keys = [
+            "SQL_LINK_SERVICE_SKIP_FRESH_IDLE_SHARDS",
+            "SQL_LINK_SERVICE_IDLE_SHARD_MAX_AGE_SECONDS",
+            "SQL_LINK_SERVICE_SKIP_IDLE_SENTINELS",
+        ]
+        old_env = {key: os.environ.get(key) for key in keys}
+        try:
+            os.environ["SQL_LINK_SERVICE_SKIP_FRESH_IDLE_SHARDS"] = "1"
+            os.environ["SQL_LINK_SERVICE_IDLE_SHARD_MAX_AGE_SECONDS"] = "120"
+            os.environ["SQL_LINK_SERVICE_SKIP_IDLE_SENTINELS"] = "0"
+            with tempfile.TemporaryDirectory() as td:
+                project_root = Path(td)
+                source = project_root / "governance" / "events" / "signal_generation.jsonl"
+                source.parent.mkdir(parents=True, exist_ok=True)
+                source.write_text('{"row": 1}\n{"row": 2}\n', encoding="utf-8")
+                source_stat = source.stat()
+                health_file = (
+                    project_root
+                    / "governance"
+                    / "health"
+                    / "jsonl_sql_ingestion_health_governance_latest.json"
+                )
+                health_file.parent.mkdir(parents=True, exist_ok=True)
+                health_file.write_text(
+                    json.dumps(
+                        {
+                            "timestamp_utc": MODULE._now_utc(),
+                            "overall_status": "ready",
+                            "sqlite": {"pending_lines": 0},
+                            "sqlite_json_files": {"pending_files": 0},
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+                allowed, detail = MODULE._fresh_idle_health_fast_path_allowed(
+                    health_file,
+                    source_files=[source],
+                    project_root=project_root,
+                    sqlite_state={
+                        "governance/events/signal_generation.jsonl": {
+                            "last_offset_bytes": len('{"row": 1}\n'),
+                            "file_size_bytes": source_stat.st_size,
+                            "file_inode": source_stat.st_ino,
+                            "mtime": source_stat.st_mtime,
+                        }
+                    },
+                )
+
+            self.assertFalse(allowed)
+            self.assertEqual(detail["reason"], "source_state_not_idle")
+            self.assertEqual(detail["source_reason"], "pending_source_bytes")
+            self.assertGreater(detail["pending_bytes"], 0)
+        finally:
+            for key, value in old_env.items():
+                if value is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = value
+
     def test_fresh_idle_health_fast_path_yields_to_stale_decision_catch_up(self) -> None:
         keys = [
             "SQL_LINK_SERVICE_SKIP_FRESH_IDLE_SHARDS",
