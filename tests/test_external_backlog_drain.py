@@ -80,6 +80,144 @@ def test_external_backlog_drain_drops_blank_shard_path_filters() -> None:
     assert all(value.strip() for key, value in env.items() if key.endswith("_PATH_CONTAINS"))
 
 
+def test_fresh_managed_overlay_replaces_larger_raw_backlog() -> None:
+    raw = {
+        "timestamp_utc": "2026-08-05T13:03:30+00:00",
+        "pending_lines": 553061,
+        "pending_lines_total": 625624,
+        "pending_lines_deferred": 72563,
+        "top_pending_files": [
+            {"source_rel": "decisions/stale.jsonl", "pending_lines": 553061},
+        ],
+    }
+    storage = {
+        "timestamp_utc": "2026-08-05T13:03:34+00:00",
+        "backpressure": {
+            "overlay_adjusted": True,
+            "core_pending_lines": 12838,
+            "deferred_pending_lines": 0,
+            "cold_pending_lines": 0,
+            "total_pending_lines": 12838,
+            "oldest_pending_age_seconds": 35.0,
+        },
+        "stale_pending_locator": {
+            "top_pending_sources": [
+                {
+                    "source_rel": "decisions/fresh.jsonl",
+                    "pending_lines": 12838,
+                    "pressure_lane": "core",
+                }
+            ],
+            "oldest_sources": [],
+        },
+    }
+
+    effective = src._backpressure_with_storage_overlay(raw, storage)
+
+    assert effective["pending_lines"] == 12838
+    assert effective["pending_lines_total"] == 12838
+    assert effective["pending_lines_deferred"] == 0
+    assert [row["source_rel"] for row in effective["top_pending_files"]] == ["decisions/fresh.jsonl"]
+    assert effective["_storage_overlay_authoritative"] is True
+
+
+def test_fresh_zero_overlay_retires_raw_backlog_but_stale_zero_does_not() -> None:
+    raw = {
+        "timestamp_utc": "2026-08-05T13:03:30+00:00",
+        "pending_lines": 50000,
+        "pending_lines_total": 50000,
+        "top_pending_files": [{"source_rel": "decisions/raw.jsonl", "pending_lines": 50000}],
+    }
+    fresh_zero = {
+        "timestamp_utc": "2026-08-05T13:03:35+00:00",
+        "backpressure": {
+            "overlay_adjusted": True,
+            "core_pending_lines": 0,
+            "deferred_pending_lines": 0,
+            "cold_pending_lines": 0,
+            "total_pending_lines": 0,
+        },
+        "stale_pending_locator": {"top_pending_sources": [], "oldest_sources": []},
+    }
+    stale_zero = {**fresh_zero, "timestamp_utc": "2026-08-05T12:58:00+00:00"}
+
+    effective_fresh = src._backpressure_with_storage_overlay(raw, fresh_zero)
+    effective_stale = src._backpressure_with_storage_overlay(raw, stale_zero)
+
+    assert effective_fresh["pending_lines_total"] == 0
+    assert effective_fresh["top_pending_files"] == []
+    assert effective_fresh["_storage_overlay_authoritative_zero"] is True
+    assert effective_stale["pending_lines_total"] == 50000
+    assert effective_stale["_storage_overlay_rejected_reason"] == "managed_overlay_older_than_raw_backpressure"
+
+
+def test_apply_parks_writer_when_fresh_managed_overlay_is_zero(tmp_path: Path, monkeypatch) -> None:
+    project_root = tmp_path / "project"
+    health = project_root / "governance" / "health"
+    now = datetime(2026, 8, 5, 13, 0, tzinfo=timezone.utc)
+    raw = {
+        "timestamp_utc": "2026-08-05T12:59:50+00:00",
+        "pending_lines": 50000,
+        "pending_lines_total": 50000,
+        "top_pending_files": [{"source_rel": "decisions/raw.jsonl", "pending_lines": 50000}],
+    }
+    _write_json(health / "ingestion_backpressure_latest.json", raw)
+    _write_json(
+        health / "ingestion_storage_control_latest.json",
+        {
+            "timestamp_utc": "2026-08-05T13:00:00+00:00",
+            "backpressure": {
+                "overlay_adjusted": True,
+                "core_pending_lines": 0,
+                "deferred_pending_lines": 0,
+                "cold_pending_lines": 0,
+                "total_pending_lines": 0,
+            },
+            "stale_pending_locator": {"top_pending_sources": [], "oldest_sources": []},
+        },
+    )
+    _write_json(health / "ingestion_priority_queue_latest.json", {"queue_depth": 0})
+    _write_json(health / "storage_mount_guard_latest.json", {"external_available": True, "storage_mode": "external"})
+    _write_json(health / "storage_split_brain_reconciler_latest.json", {"summary": {"unresolved_conflicts": 0}})
+    _write_json(
+        health / "sql_link_service_request_latest.json",
+        {
+            "active": True,
+            "request_kind": "external_backlog_drain",
+            "requested_at": "2026-08-05T12:58:00+00:00",
+            "expires_utc": "2026-08-05T13:15:00+00:00",
+            "env_overrides": {"SQL_LINK_SERVICE_SHARDS": "trading,governance"},
+        },
+    )
+    monkeypatch.setattr(src.governor_src, "build_payload", lambda *args, **kwargs: {"profile": "stable", "env_overrides": {}})
+    calls: list[str] = []
+
+    def _fake_run(cmd: list[str], *, cwd: Path, payload_path=None, env_overrides=None, timeout_seconds=None) -> dict:
+        joined = " ".join(cmd)
+        calls.append(joined)
+        if "ingestion_backpressure_guard.py" in joined:
+            payload = raw
+        elif "ingestion_priority_queue.py" in joined:
+            payload = {"queue_depth": 0}
+        else:
+            raise AssertionError(f"unexpected command: {joined}")
+        if payload_path is not None:
+            _write_json(payload_path, payload)
+        return {"cmd": cmd, "rc": 0, "duration_ms": 1.0, "payload": payload, "stdout_tail": "", "stderr_tail": "", "timed_out": False}
+
+    monkeypatch.setattr(src, "_run_json_command", _fake_run)
+
+    payload = src.build_payload(project_root, apply=True, now_utc=now)
+
+    assert payload["apply_executed"] is False
+    assert payload["material_drain_recommended"] is False
+    assert payload["steps"]["material_drain_gate"]["status"] == "skipped"
+    assert not any("sql_link_shard_manager.py" in call for call in calls)
+    retired = json.loads((health / "sql_link_service_request_latest.json").read_text(encoding="utf-8"))
+    assert retired["active"] is False
+    assert retired["retired_reason"] == "fresh_managed_overlay_reports_zero_backlog"
+
+
 def test_external_backlog_drain_memory_caps_override_operator_burst_width(tmp_path: Path) -> None:
     project_root = tmp_path / "project"
     _write_json(

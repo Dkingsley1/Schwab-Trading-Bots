@@ -1,5 +1,6 @@
 import inspect
 import json
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import scripts.run_shadow_training_loop as loop
@@ -368,6 +369,110 @@ def test_runtime_training_pause_contract_hard_pauses_for_backlog_override(tmp_pa
     assert contract["backlog_paused"] is True
     assert contract["training_paused_for_backlog"] is True
     assert contract["heavy_collectors_paused_for_backlog"] is True
+
+
+def test_runtime_pause_catches_new_raw_backlog_before_storage_refresh(tmp_path, monkeypatch) -> None:
+    health = tmp_path / "governance" / "health"
+    health.mkdir(parents=True, exist_ok=True)
+    now = datetime.now(timezone.utc)
+    (health / "ingestion_storage_control_latest.json").write_text(
+        json.dumps(
+            {
+                "timestamp_utc": (now - timedelta(minutes=5)).isoformat(),
+                "overall_status": "ready",
+                "severity": "stable",
+                "backpressure": {"total_pending_lines": 0, "core_pending_lines": 0},
+            }
+        ),
+        encoding="utf-8",
+    )
+    (health / "ingestion_backpressure_latest.json").write_text(
+        json.dumps(
+            {
+                "timestamp_utc": now.isoformat(),
+                "pending_lines": 50000,
+                "pending_lines_total": 625000,
+            }
+        ),
+        encoding="utf-8",
+    )
+    empty_override = tmp_path / "empty.env"
+    empty_override.write_text("SHADOW_LOOP_FRESH_BACKLOG_PAUSE_LINES=15000\n", encoding="utf-8")
+    monkeypatch.setattr(loop, "DYNAMIC_STORAGE_OVERRIDE_PATHS", (empty_override,))
+    _reset_dynamic_override_cache()
+
+    contract = loop._runtime_training_pause_contract(str(tmp_path))
+
+    assert contract["paused"] is True
+    assert contract["backlog_paused"] is True
+    assert contract["reason"] == "fresh_raw_backpressure_newer_than_storage_control"
+    assert contract["fresh_backlog_pause"]["raw_total_pending_lines"] == 625000
+
+
+def test_fresh_managed_storage_clear_prevents_raw_false_positive(tmp_path, monkeypatch) -> None:
+    health = tmp_path / "governance" / "health"
+    health.mkdir(parents=True, exist_ok=True)
+    now = datetime.now(timezone.utc)
+    (health / "ingestion_storage_control_latest.json").write_text(
+        json.dumps(
+            {
+                "timestamp_utc": now.isoformat(),
+                "overall_status": "ready",
+                "severity": "stable",
+                "backpressure": {
+                    "overlay_adjusted": True,
+                    "total_pending_lines": 0,
+                    "core_pending_lines": 0,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    (health / "ingestion_backpressure_latest.json").write_text(
+        json.dumps(
+            {
+                "timestamp_utc": (now - timedelta(seconds=5)).isoformat(),
+                "pending_lines": 50000,
+                "pending_lines_total": 625000,
+            }
+        ),
+        encoding="utf-8",
+    )
+    empty_override = tmp_path / "empty.env"
+    empty_override.write_text("SHADOW_LOOP_FRESH_BACKLOG_PAUSE_LINES=15000\n", encoding="utf-8")
+    monkeypatch.setattr(loop, "DYNAMIC_STORAGE_OVERRIDE_PATHS", (empty_override,))
+    _reset_dynamic_override_cache()
+
+    contract = loop._runtime_training_pause_contract(str(tmp_path))
+
+    assert contract["paused"] is False
+    assert contract["backlog_paused"] is False
+    assert contract["fresh_backlog_pause"]["source"] == "none"
+
+
+def test_collector_resume_stagger_is_bounded_and_stable() -> None:
+    first = loop._collector_resume_stagger_seconds(
+        broker="schwab",
+        profile="dividend",
+        instance="dividend_equities_schwab",
+        max_seconds=180,
+    )
+    second = loop._collector_resume_stagger_seconds(
+        broker="schwab",
+        profile="dividend",
+        instance="dividend_equities_schwab",
+        max_seconds=180,
+    )
+    other = loop._collector_resume_stagger_seconds(
+        broker="schwab",
+        profile="bond",
+        instance="bond_equities_schwab",
+        max_seconds=180,
+    )
+
+    assert 0 <= first <= 180
+    assert first == second
+    assert 0 <= other <= 180
 
 
 def test_runtime_training_pause_contract_ignores_stale_env_when_storage_override_is_authoritative(

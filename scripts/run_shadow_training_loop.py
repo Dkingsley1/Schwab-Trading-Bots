@@ -9279,6 +9279,148 @@ def _collection_duty_cycle_contract(*, loop_seconds: float, interval_seconds: fl
     }
 
 
+def _health_payload_timestamp(payload: Mapping[str, Any]) -> Optional[datetime]:
+    for key in ("timestamp_utc", "generated_at", "generated_at_utc"):
+        raw = str(payload.get(key) or "").strip()
+        if not raw:
+            continue
+        try:
+            parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        except Exception:
+            continue
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed.astimezone(timezone.utc)
+    return None
+
+
+def _fresh_backlog_pause_contract(project_root: str) -> Dict[str, Any]:
+    def _pending_int(raw: Any) -> int:
+        try:
+            return max(int(float(raw or 0)), 0)
+        except Exception:
+            return 0
+
+    try:
+        max_age_seconds = max(
+            float(_dynamic_storage_value("SHADOW_LOOP_FRESH_BACKLOG_MAX_AGE_SECONDS", "90") or 90),
+            15.0,
+        )
+    except Exception:
+        max_age_seconds = 90.0
+    try:
+        raw_threshold = _dynamic_storage_value(
+            "SHADOW_LOOP_FRESH_BACKLOG_PAUSE_LINES",
+            _dynamic_storage_value("RAW_LIVE_TOTAL_RESERVE_TARGET", "15000") or "15000",
+        )
+        pause_lines = max(int(float(raw_threshold or 15000)), 1)
+    except Exception:
+        pause_lines = 15000
+    try:
+        newer_raw_grace_seconds = max(
+            float(_dynamic_storage_value("SHADOW_LOOP_FRESH_BACKLOG_NEWER_GRACE_SECONDS", "15") or 15),
+            0.0,
+        )
+    except Exception:
+        newer_raw_grace_seconds = 15.0
+
+    now = datetime.now(timezone.utc)
+    storage = _load_health_payload(project_root, "ingestion_storage_control_latest.json")
+    raw = _load_health_payload(project_root, "ingestion_backpressure_latest.json")
+    storage_ts = _health_payload_timestamp(storage)
+    raw_ts = _health_payload_timestamp(raw)
+    storage_age = max((now - storage_ts).total_seconds(), 0.0) if storage_ts is not None else float("inf")
+    raw_age = max((now - raw_ts).total_seconds(), 0.0) if raw_ts is not None else float("inf")
+    storage_fresh = storage_age <= max_age_seconds
+    raw_fresh = raw_age <= max_age_seconds
+    raw_newer_seconds = (
+        max((raw_ts - storage_ts).total_seconds(), 0.0)
+        if raw_ts is not None and storage_ts is not None
+        else 0.0
+    )
+
+    storage_bp = storage.get("backpressure") if isinstance(storage.get("backpressure"), dict) else {}
+    storage_total = max(
+        _pending_int(storage_bp.get("total_pending_lines")),
+        _pending_int(storage_bp.get("core_pending_lines")),
+    )
+    raw_total = max(
+        _pending_int(raw.get("pending_lines_total")),
+        _pending_int(raw.get("pending_lines")),
+    )
+    severity = str(storage.get("severity") or "").strip().lower()
+    storage_pressure_active = bool(
+        storage_fresh
+        and (
+            severity in {"high", "critical", "blocked"}
+            or storage_total >= pause_lines
+        )
+    )
+    newer_raw_pressure_active = bool(
+        raw_fresh
+        and raw_total >= pause_lines
+        and (
+            not storage_fresh
+            or storage_ts is None
+            or raw_newer_seconds > newer_raw_grace_seconds
+        )
+    )
+    active = bool(storage_pressure_active or newer_raw_pressure_active)
+    if storage_pressure_active:
+        reason = "fresh_ingestion_storage_pressure"
+        source = "ingestion_storage_control"
+    elif newer_raw_pressure_active:
+        reason = "fresh_raw_backpressure_newer_than_storage_control"
+        source = "ingestion_backpressure"
+    else:
+        reason = "fresh_backlog_within_budget"
+        source = "none"
+    return {
+        "active": active,
+        "reason": reason,
+        "source": source,
+        "pause_lines": pause_lines,
+        "max_age_seconds": round(max_age_seconds, 3),
+        "newer_raw_grace_seconds": round(newer_raw_grace_seconds, 3),
+        "storage_fresh": storage_fresh,
+        "storage_age_seconds": round(storage_age, 3) if math.isfinite(storage_age) else None,
+        "storage_total_pending_lines": storage_total,
+        "storage_severity": severity or "unknown",
+        "raw_fresh": raw_fresh,
+        "raw_age_seconds": round(raw_age, 3) if math.isfinite(raw_age) else None,
+        "raw_total_pending_lines": raw_total,
+        "raw_newer_seconds": round(raw_newer_seconds, 3),
+        "policy": "pause inside the collector before a slower control refresh can turn a new burst into backlog debt",
+    }
+
+
+def _collector_resume_stagger_seconds(
+    *,
+    broker: str,
+    profile: str,
+    instance: str = "",
+    max_seconds: Optional[int] = None,
+) -> int:
+    if max_seconds is None:
+        try:
+            max_seconds = int(
+                float(_dynamic_storage_value("SHADOW_LOOP_BACKLOG_RESUME_STAGGER_MAX_SECONDS", "180") or 180)
+            )
+        except Exception:
+            max_seconds = 180
+    bounded_max = min(max(int(max_seconds), 0), 900)
+    if bounded_max <= 0:
+        return 0
+    seed = "|".join(
+        [
+            str(broker or "unknown").strip().lower(),
+            str(profile or "default").strip().lower(),
+            str(instance or os.getpid()).strip().lower(),
+        ]
+    )
+    return int(hashlib.sha256(seed.encode("utf-8")).hexdigest()[:8], 16) % (bounded_max + 1)
+
+
 def _runtime_training_pause_contract(project_root: str) -> Dict[str, Any]:
     runtime = _load_health_payload(project_root, "runtime_throttle_control_latest.json")
     saturation = runtime.get("runtime_saturation_governor_v2") if isinstance(runtime.get("runtime_saturation_governor_v2"), dict) else {}
@@ -9318,7 +9460,13 @@ def _runtime_training_pause_contract(project_root: str) -> Dict[str, Any]:
         governor_mode = os.getenv("TRAINING_RUNTIME_GOVERNOR_MODE", "")
         raw_sleep = os.getenv("SHADOW_LOOP_RUNTIME_PAUSE_SLEEP_SECONDS", "60")
     runtime_paused = bool(training_policy.get("training_paused", False))
-    backlog_paused = bool(backlog_pause_flag or heavy_collector_pause_flag or shadow_loop_pause_flag)
+    fresh_backlog = _fresh_backlog_pause_contract(project_root)
+    backlog_paused = bool(
+        backlog_pause_flag
+        or heavy_collector_pause_flag
+        or shadow_loop_pause_flag
+        or fresh_backlog.get("active", False)
+    )
     normalized_governor_mode = str(governor_mode or "").strip().lower()
     paused = bool(
         pause_flag
@@ -9331,16 +9479,18 @@ def _runtime_training_pause_contract(project_root: str) -> Dict[str, Any]:
     except Exception:
         sleep_seconds = 60
     sleep_seconds = min(max(sleep_seconds, 10), 300)
-    reason = str(training_policy.get("reason") or governor_mode or "").strip()
-    if not reason:
-        if backlog_pause_flag or shadow_loop_pause_flag:
+    reason = ""
+    if backlog_paused:
+        if bool(fresh_backlog.get("active", False)):
+            reason = str(fresh_backlog.get("reason") or "fresh_ingestion_backpressure")
+        elif backlog_pause_flag or shadow_loop_pause_flag:
             reason = "storage_backpressure_backlog"
         elif heavy_collector_pause_flag:
             reason = "heavy_collectors_paused_for_backlog"
-        elif report_refresh_pause_flag:
-            reason = "report_refresh_paused_for_backlog"
-        else:
-            reason = "runtime_host_headroom"
+    if not reason:
+        reason = str(training_policy.get("reason") or governor_mode or "").strip()
+    if not reason:
+        reason = "report_refresh_paused_for_backlog" if report_refresh_pause_flag else "runtime_host_headroom"
     return {
         "paused": paused,
         "sleep_seconds": sleep_seconds,
@@ -9352,6 +9502,7 @@ def _runtime_training_pause_contract(project_root: str) -> Dict[str, Any]:
         "heavy_collectors_paused_for_backlog": bool(heavy_collector_pause_flag),
         "report_refresh_paused_for_backlog": bool(report_refresh_pause_flag),
         "governor_mode": str(governor_mode or ""),
+        "fresh_backlog_pause": fresh_backlog,
     }
 
 
@@ -16373,6 +16524,7 @@ def run_loop(
 
         _append_jsonl(_event_bus_path(PROJECT_ROOT), event_row)
 
+    backlog_pause_seen = False
     _set_loop_state("starting", reason="loop_bootstrap")
 
     while True:
@@ -16411,6 +16563,8 @@ def run_loop(
         if bool(runtime_pause.get("paused", False)) and not runtime_pause_bypassed:
             pause_reason = str(runtime_pause.get("reason") or "runtime_host_headroom")
             sleep_seconds = int(runtime_pause.get("sleep_seconds") or 60)
+            if bool(runtime_pause.get("backlog_paused", False)):
+                backlog_pause_seen = True
             pause_bypass_blockers = ",".join(runtime_pause_bypass_contract.get("blockers") or ["unknown"])
             _set_loop_state("paused_runtime_training", reason=pause_reason, sleep_seconds=sleep_seconds)
             _write_heartbeat(
@@ -16428,6 +16582,37 @@ def run_loop(
             )
             time.sleep(sleep_seconds)
             continue
+        if backlog_pause_seen and not bool(runtime_pause.get("backlog_paused", False)):
+            resume_stagger_seconds = _collector_resume_stagger_seconds(
+                broker=broker,
+                profile=current_profile,
+                instance=_shadow_ingress_instance() or run_id,
+            )
+            backlog_pause_seen = False
+            if resume_stagger_seconds > 0:
+                _set_loop_state(
+                    "resume_stagger",
+                    reason="backlog_recovery_admission",
+                    sleep_seconds=resume_stagger_seconds,
+                )
+                _write_heartbeat(
+                    project_root=PROJECT_ROOT,
+                    broker=broker,
+                    iter_count=iter_count,
+                    symbols_total=len(symbols),
+                    context_total=len(context_symbols),
+                    state="resume_stagger",
+                )
+                _publish_ingress_state(
+                    pause_gate="backlog_resume_stagger",
+                    pause_reason="backlog_recovery_admission",
+                )
+                print(
+                    "[CollectorAdmission] "
+                    f"resume_stagger={resume_stagger_seconds}s broker={broker} profile={current_profile or 'default'}"
+                )
+                time.sleep(resume_stagger_seconds)
+                continue
         if runtime_pause_bypassed:
             _log_gate(
                 "*",
@@ -17410,7 +17595,14 @@ def run_loop(
                 context_market = _merge_market_snapshots(context_market, proxy_context_market)
 
         now_ts = time.time()
-        for symbol in symbols:
+        iteration_backpressure_interrupt: Dict[str, Any] = {}
+        for symbol_index, symbol in enumerate(symbols):
+            if symbol_index > 0:
+                cooperative_pause = _runtime_training_pause_contract(PROJECT_ROOT)
+                if bool(cooperative_pause.get("backlog_paused", False)):
+                    iteration_backpressure_interrupt = cooperative_pause
+                    backlog_pause_seen = True
+                    break
             u = symbol.upper()
             if u in volatile_set:
                 cadence = volatile_every_n
@@ -20132,6 +20324,37 @@ def run_loop(
                 f"opts={active_options_sub_bots} fut={active_futures_sub_bots} "
                 f"recs={len(recs)} snapshot_id={snapshot_id}"
             )
+
+        if iteration_backpressure_interrupt:
+            pause_reason = str(
+                iteration_backpressure_interrupt.get("reason")
+                or "cooperative_ingestion_backpressure"
+            )
+            sleep_seconds = int(iteration_backpressure_interrupt.get("sleep_seconds") or 60)
+            _set_loop_state(
+                "paused_runtime_backpressure",
+                reason=pause_reason,
+                sleep_seconds=sleep_seconds,
+            )
+            _write_heartbeat(
+                project_root=PROJECT_ROOT,
+                broker=broker,
+                iter_count=iter_count,
+                symbols_total=len(symbols),
+                context_total=len(context_symbols),
+                state="paused_runtime_backpressure",
+            )
+            _publish_ingress_state(
+                pause_gate="cooperative_ingestion_backpressure",
+                pause_reason=pause_reason,
+            )
+            JsonlWriteBuffer.shared().flush_all()
+            print(
+                "[CollectorAdmission] "
+                f"iteration_interrupted_at_symbol={symbol_index} reason={pause_reason} sleep={sleep_seconds}s"
+            )
+            time.sleep(sleep_seconds)
+            continue
 
         _publish_ingress_state()
 

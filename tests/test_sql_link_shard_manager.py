@@ -742,6 +742,7 @@ def test_load_active_request_sanitizes_live_drain_overrides(tmp_path) -> None:
                     "TRAINING_PCORE_ALLOWED_WHEN_BACKLOG_GREEN": "1",
                     "TRAINING_PCORE_MAX_WORKERS": "2",
                     "TRAINING_PCORE_NICE": "8",
+                    "SQL_LINK_SERVICE_IGNORE_ACTIVE_REQUEST": "1",
                     "BAD_KEY": "ignore-me",
                 },
             }
@@ -766,7 +767,82 @@ def test_load_active_request_sanitizes_live_drain_overrides(tmp_path) -> None:
     assert p_core["preprocess_worker_budget"] == 4
     assert p_core["p_core_burst_intelligence"]["mode"] == "daily_driver_5"
     assert p_core["training_pcore_gate"]["max_workers"] == 2
+    assert "SQL_LINK_SERVICE_IGNORE_ACTIVE_REQUEST" not in payload["env_overrides"]
     assert "BAD_KEY" not in payload["env_overrides"]
+
+
+def test_live_runtime_controls_choose_most_restrictive_writer_capacity(tmp_path, monkeypatch) -> None:
+    runtime_override = tmp_path / "runtime.env"
+    pressure_override = tmp_path / "pressure.env"
+    runtime_override.write_text(
+        "\n".join(
+            [
+                "SQL_LINK_SERVICE_PREPROCESS_WORKERS=2",
+                "SQL_LINK_SERVICE_SHARD_WRITER_LANES=2",
+                "SQL_LINK_SERVICE_MAX_SHARD_WRITER_LANES=2",
+                "SQL_LINK_SERVICE_INTERVAL_SECONDS=75",
+                "SQL_LINK_SERVICE_MERGE_MAX_SECONDS_PER_CYCLE=30",
+                "SQL_LINK_SERVICE_HOT_BATCH_SIZE=80000",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    pressure_override.write_text(
+        "\n".join(
+            [
+                "SQL_LINK_SERVICE_PREPROCESS_WORKERS=8",
+                "SQL_LINK_SERVICE_SHARD_WRITER_LANES=8",
+                "SQL_LINK_SERVICE_INTERVAL_SECONDS=12",
+                "SQL_LINK_SERVICE_MERGE_MAX_SECONDS_PER_CYCLE=90",
+                "SQL_LINK_SERVICE_HOT_BATCH_SIZE=240000",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(shard_manager, "RUNTIME_RESOURCE_GUARD_OVERRIDE_PATH", runtime_override)
+    monkeypatch.setattr(shard_manager, "PRESSURE_RELIEF_OVERRIDE_PATH", pressure_override)
+
+    overrides = shard_manager._live_runtime_control_overrides()
+
+    assert overrides["SQL_LINK_SERVICE_PREPROCESS_WORKERS"] == "2"
+    assert overrides["SQL_LINK_SERVICE_SHARD_WRITER_LANES"] == "2"
+    assert overrides["SQL_LINK_SERVICE_MAX_SHARD_WRITER_LANES"] == "2"
+    assert overrides["SQL_LINK_SERVICE_INTERVAL_SECONDS"] == "75"
+    assert overrides["SQL_LINK_SERVICE_MERGE_MAX_SECONDS_PER_CYCLE"] == "30"
+    assert overrides["SQL_LINK_SERVICE_HOT_BATCH_SIZE"] == "80000"
+
+
+def test_cycle_request_cannot_widen_newer_runtime_writer_cap(monkeypatch) -> None:
+    monkeypatch.setattr(
+        shard_manager,
+        "_live_runtime_control_overrides",
+        lambda: {
+            "SQL_LINK_SERVICE_PREPROCESS_WORKERS": "2",
+            "SQL_LINK_SERVICE_SHARD_WRITER_LANES": "2",
+            "SQL_LINK_SERVICE_MAX_SHARD_WRITER_LANES": "2",
+            "SQL_LINK_SERVICE_INTERVAL_SECONDS": "75",
+        },
+    )
+
+    overrides = shard_manager._cycle_runtime_overrides(
+        {
+            "env_overrides": {
+                "SQL_LINK_SERVICE_SHARDS": "crypto_trading,health_fast",
+                "SQL_LINK_SERVICE_PREPROCESS_WORKERS": "7",
+                "SQL_LINK_SERVICE_SHARD_WRITER_LANES": "7",
+                "SQL_LINK_SERVICE_MAX_SHARD_WRITER_LANES": "8",
+                "SQL_LINK_SERVICE_INTERVAL_SECONDS": "15",
+            }
+        }
+    )
+
+    assert overrides["SQL_LINK_SERVICE_SHARDS"] == "crypto_trading,health_fast"
+    assert overrides["SQL_LINK_SERVICE_PREPROCESS_WORKERS"] == "2"
+    assert overrides["SQL_LINK_SERVICE_SHARD_WRITER_LANES"] == "2"
+    assert overrides["SQL_LINK_SERVICE_MAX_SHARD_WRITER_LANES"] == "2"
+    assert overrides["SQL_LINK_SERVICE_INTERVAL_SECONDS"] == "75"
 
 
 def test_cycle_sleep_wakes_when_focused_request_changes(tmp_path: Path, monkeypatch) -> None:
@@ -965,7 +1041,7 @@ def test_cycle_runtime_overrides_reads_live_runtime_guard(tmp_path, monkeypatch)
     overrides = shard_manager._cycle_runtime_overrides({"env_overrides": {"SQL_LINK_SERVICE_PREPROCESS_WORKERS": "2"}})
 
     assert overrides["SQL_LINK_SERVICE_HOST_COOLING_ACTIVE"] == "1"
-    assert overrides["SQL_LINK_SERVICE_PREPROCESS_WORKERS"] == "2"
+    assert overrides["SQL_LINK_SERVICE_PREPROCESS_WORKERS"] == "1"
     assert overrides["SQL_LINK_SERVICE_INTERVAL_SECONDS"] == "120"
     assert overrides["SQL_LINK_SERVICE_MERGE_MAX_SECONDS_PER_CYCLE"] == "20"
     assert "BAD_KEY" not in overrides

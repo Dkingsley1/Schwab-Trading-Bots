@@ -67,6 +67,32 @@ SWAP_OVERRIDE_PATH = PROJECT_ROOT / "config" / ".env.swap_pressure_override"
 RUNTIME_RESOURCE_GUARD_OVERRIDE_PATH = PROJECT_ROOT / "config" / ".env.runtime_resource_guard_override"
 PRESSURE_RELIEF_OVERRIDE_PATH = PROJECT_ROOT / "config" / ".env.pressure_relief_override"
 
+_RUNTIME_MIN_POSITIVE_KEYS = {
+    "BACKLOG_PCORE_PREPROCESS_WORKERS",
+    "SQL_LINK_SERVICE_PREPROCESS_WORKERS",
+    "SQL_LINK_SERVICE_SHARD_WRITER_LANES",
+    "SQL_LINK_SERVICE_MAX_SHARD_WRITER_LANES",
+    "SQL_LINK_SERVICE_HOT_BATCH_SIZE",
+    "SQL_LINK_SERVICE_QUEUE_BATCH_SIZE",
+    "SQL_LINK_SERVICE_SHARD_GOVERNANCE_MAX_FILES",
+    "SQL_LINK_SERVICE_SHARD_GOVERNANCE_MAX_BYTES_PER_FILE",
+    "SQL_LINK_SERVICE_SHARD_GOVERNANCE_SQLITE_BATCH_MAX_BYTES",
+}
+_RUNTIME_MIN_NONNEGATIVE_KEYS = {
+    "SQL_LINK_SERVICE_MERGE_MAX_SECONDS_PER_CYCLE",
+    "INGEST_HOST_LOAD_SOFT_CAP",
+}
+_RUNTIME_MAX_NONNEGATIVE_KEYS = {
+    "SQL_LINK_SERVICE_INTERVAL_SECONDS",
+    "SQL_LINK_SERVICE_HOT_MIN_INTERVAL_SECONDS",
+    "SQL_LINK_SERVICE_QUEUE_MIN_INTERVAL_SECONDS",
+    "SQL_LINK_SERVICE_PROGRESS_HEARTBEAT_SECONDS",
+    "INGEST_HOST_LOAD_SLEEP_SECONDS",
+    "INGEST_FLUSH_SLEEP_SECONDS",
+    "INGEST_FILE_SLEEP_SECONDS",
+    "SQL_LINK_WRITER_NICE",
+}
+
 
 def _local_fallback_equivalent(path: Path) -> Path:
     candidate = Path(path).expanduser()
@@ -842,6 +868,8 @@ def _sanitize_request_env_overrides(raw: object) -> dict[str, str]:
         name = str(key or "").strip()
         if not name:
             continue
+        if name == "SQL_LINK_SERVICE_IGNORE_ACTIVE_REQUEST":
+            continue
         if not (name in allowed_exact or any(name.startswith(prefix) for prefix in allowed_prefixes)):
             continue
         cleaned[name] = str(value)
@@ -910,17 +938,50 @@ def _sleep_until_next_cycle(
     return "interval_elapsed"
 
 
+def _merge_runtime_control_value(merged: dict[str, str], key: str, value: object) -> None:
+    text = str(value)
+    if key not in merged:
+        merged[key] = text
+        return
+
+    def _number(raw: object) -> float | None:
+        try:
+            return float(str(raw).strip())
+        except Exception:
+            return None
+
+    current = _number(merged.get(key))
+    candidate = _number(text)
+    if key in _RUNTIME_MIN_POSITIVE_KEYS and current is not None and candidate is not None:
+        positive = [item for item in (current, candidate) if item > 0]
+        if positive:
+            selected = min(positive)
+            merged[key] = str(int(selected)) if selected.is_integer() else str(selected)
+            return
+    if key in _RUNTIME_MIN_NONNEGATIVE_KEYS and current is not None and candidate is not None:
+        selected = min(current, candidate)
+        merged[key] = str(int(selected)) if selected.is_integer() else str(selected)
+        return
+    if key in _RUNTIME_MAX_NONNEGATIVE_KEYS and current is not None and candidate is not None:
+        selected = max(current, candidate)
+        merged[key] = str(int(selected)) if selected.is_integer() else str(selected)
+        return
+    merged[key] = text
+
+
 def _live_runtime_control_overrides() -> dict[str, str]:
     merged: dict[str, str] = {}
     for path in (RUNTIME_RESOURCE_GUARD_OVERRIDE_PATH, PRESSURE_RELIEF_OVERRIDE_PATH):
-        merged.update(_sanitize_request_env_overrides(_load_env_file(path)))
+        for key, value in _sanitize_request_env_overrides(_load_env_file(path)).items():
+            _merge_runtime_control_value(merged, key, value)
     return merged
 
 
 def _cycle_runtime_overrides(active_request: dict[str, object]) -> dict[str, str]:
-    overrides = _live_runtime_control_overrides()
     request_overrides = active_request.get("env_overrides") if isinstance(active_request.get("env_overrides"), dict) else {}
-    overrides.update({str(key): str(value) for key, value in request_overrides.items()})
+    overrides = {str(key): str(value) for key, value in request_overrides.items()}
+    for key, value in _live_runtime_control_overrides().items():
+        _merge_runtime_control_value(overrides, key, value)
     return overrides
 
 

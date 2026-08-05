@@ -135,6 +135,38 @@ def _safe_float(raw: Any, default: float = 0.0) -> float:
         return float(default)
 
 
+def _payload_timestamp(payload: dict[str, Any] | None) -> datetime | None:
+    if not isinstance(payload, dict):
+        return None
+    for key in ("timestamp_utc", "generated_at", "generated_at_utc"):
+        parsed = _parse_iso_utc(payload.get(key))
+        if parsed is not None:
+            return parsed
+    return None
+
+
+def _storage_overlay_freshness(
+    backpressure: dict[str, Any] | None,
+    storage_control: dict[str, Any] | None,
+    *,
+    allowed_lag_seconds: float = 30.0,
+) -> dict[str, Any]:
+    raw_ts = _payload_timestamp(backpressure)
+    storage_ts = _payload_timestamp(storage_control)
+    comparable = raw_ts is not None and storage_ts is not None
+    lag_seconds = (raw_ts - storage_ts).total_seconds() if comparable else 0.0
+    compatible = bool(not comparable or lag_seconds <= max(float(allowed_lag_seconds), 0.0))
+    return {
+        "compatible": compatible,
+        "comparable": comparable,
+        "raw_timestamp_utc": raw_ts.isoformat() if raw_ts is not None else "",
+        "storage_timestamp_utc": storage_ts.isoformat() if storage_ts is not None else "",
+        "storage_lag_seconds": round(max(lag_seconds, 0.0), 3),
+        "allowed_lag_seconds": round(max(float(allowed_lag_seconds), 0.0), 3),
+        "policy": "newer raw backlog wins when the managed SQL overlay has fallen behind",
+    }
+
+
 def _age_bucket(age_seconds: float) -> str:
     age = max(float(age_seconds), 0.0)
     if age < 30 * 60:
@@ -750,23 +782,85 @@ def _backpressure_with_storage_overlay(
 ) -> dict[str, Any]:
     base = dict(backpressure or {})
     overlay_rows = _storage_overlay_rows(storage_control)
-    if not overlay_rows:
-        return base
-
     overlay_backpressure = {}
     if isinstance(storage_control, dict) and isinstance(storage_control.get("backpressure"), dict):
         overlay_backpressure = storage_control["backpressure"]
+    overlay_adjusted = bool(overlay_backpressure.get("overlay_adjusted", False))
+    freshness = _storage_overlay_freshness(backpressure, storage_control)
+    base["_storage_overlay_freshness"] = freshness
+    if not bool(freshness.get("compatible", False)):
+        base["_storage_overlay_rejected_reason"] = "managed_overlay_older_than_raw_backpressure"
+        return base
+
+    overlay_core = _safe_int(overlay_backpressure.get("core_pending_lines"), 0)
+    overlay_deferred = _safe_int(overlay_backpressure.get("deferred_pending_lines"), 0)
+    overlay_cold = _safe_int(overlay_backpressure.get("cold_pending_lines"), 0)
+    overlay_support = _safe_int(overlay_backpressure.get("support_pending_lines"), 0)
+    overlay_total = _safe_int(
+        overlay_backpressure.get("total_pending_lines"),
+        overlay_core + overlay_deferred + overlay_cold + overlay_support,
+    )
+    overlay_oldest_age = _safe_float(overlay_backpressure.get("oldest_pending_age_seconds"), 0.0)
+
+    if overlay_adjusted:
+        authoritative_rows = list(overlay_rows)
+        represented_pending = sum(_safe_int(row.get("pending_lines"), 0) for row in authoritative_rows)
+        residual_pending = max(overlay_total - represented_pending, 0)
+        if residual_pending > 0:
+            known_sources = {str(row.get("source_rel") or "") for row in authoritative_rows}
+            raw_rows = base.get("top_pending_files") if isinstance(base.get("top_pending_files"), list) else []
+            for raw in raw_rows:
+                if residual_pending <= 0 or not isinstance(raw, dict):
+                    break
+                source_rel = str(raw.get("source_rel") or "").strip()
+                raw_pending = max(_safe_int(raw.get("pending_lines"), 0), 0)
+                if not source_rel or source_rel in known_sources or raw_pending <= 0:
+                    continue
+                retained = dict(raw)
+                retained["pending_lines"] = min(raw_pending, residual_pending)
+                retained["overlay_residual_reconciled"] = True
+                authoritative_rows.append(retained)
+                known_sources.add(source_rel)
+                residual_pending -= int(retained["pending_lines"])
+
+        base["pending_lines"] = max(overlay_core, 0)
+        base["pending_lines_total"] = max(overlay_total, 0)
+        base["pending_lines_deferred"] = max(overlay_deferred, 0)
+        base["pending_lines_cold"] = max(overlay_cold, 0)
+        base["pending_lines_support_telemetry"] = max(overlay_support, 0)
+        base["oldest_pending_age_seconds"] = max(overlay_oldest_age, 0.0)
+        base["top_pending_files"] = authoritative_rows
+        base["top_deferred_pending_files"] = [
+            row for row in authoritative_rows if str(row.get("pressure_lane") or "").strip().lower() == "deferred"
+        ]
+        base["top_cold_pending_files"] = [
+            row for row in authoritative_rows if str(row.get("pressure_lane") or "").strip().lower() == "cold"
+        ]
+        base["top_support_telemetry_pending_files"] = [
+            row for row in authoritative_rows if str(row.get("pressure_lane") or "").strip().lower() == "support"
+        ]
+        base["line_estimation"] = (
+            dict(overlay_backpressure.get("line_estimation"))
+            if isinstance(overlay_backpressure.get("line_estimation"), dict)
+            else {
+                "sparse_large_line_pending_lines": 0,
+                "sparse_large_line_pending_bytes": 0,
+                "sparse_large_line_active": False,
+            }
+        )
+        base["_storage_overlay_sources"] = authoritative_rows
+        base["_storage_overlay_adjusted"] = True
+        base["_storage_overlay_authoritative"] = True
+        base["_storage_overlay_authoritative_zero"] = bool(overlay_total <= 0 and not overlay_rows)
+        return base
+
+    if not overlay_rows:
+        return base
 
     top_pending_files = base.get("top_pending_files") if isinstance(base.get("top_pending_files"), list) else []
     base["top_pending_files"] = _merge_pending_rows(overlay_rows, top_pending_files)
     base["_storage_overlay_sources"] = overlay_rows
-    base["_storage_overlay_adjusted"] = bool(overlay_backpressure.get("overlay_adjusted", False))
-
-    overlay_core = _safe_int(overlay_backpressure.get("core_pending_lines"), 0)
-    overlay_total = _safe_int(overlay_backpressure.get("total_pending_lines"), 0)
-    overlay_deferred = _safe_int(overlay_backpressure.get("deferred_pending_lines"), 0)
-    overlay_cold = _safe_int(overlay_backpressure.get("cold_pending_lines"), 0)
-    overlay_oldest_age = _safe_float(overlay_backpressure.get("oldest_pending_age_seconds"), 0.0)
+    base["_storage_overlay_adjusted"] = False
     if overlay_core > _safe_int(base.get("pending_lines"), 0):
         base["pending_lines"] = overlay_core
     if overlay_total > _safe_int(base.get("pending_lines_total"), 0):
@@ -778,6 +872,22 @@ def _backpressure_with_storage_overlay(
     if overlay_oldest_age > _safe_float(base.get("oldest_pending_age_seconds"), 0.0):
         base["oldest_pending_age_seconds"] = overlay_oldest_age
     return base
+
+
+def _retire_external_service_request(path: Path, *, now_utc: datetime) -> dict[str, Any]:
+    payload = _load_json(path)
+    if str(payload.get("request_kind") or "") != "external_backlog_drain":
+        return {}
+    retired = dict(payload)
+    retired.update(
+        {
+            "active": False,
+            "retired_at_utc": now_utc.isoformat(),
+            "retired_reason": "fresh_managed_overlay_reports_zero_backlog",
+        }
+    )
+    _write_json(path, retired)
+    return retired
 
 
 def _drop_empty_shard_path_filters(env: dict[str, str]) -> dict[str, str]:
@@ -1351,6 +1461,7 @@ def build_payload(
     steps: dict[str, Any] = {}
     writer_busy = False
     service_request_payload: dict[str, Any] = {}
+    retired_service_request_payload: dict[str, Any] = {}
     follow_through_summary = {
         "requested": bool(follow_through),
         "completed": False,
@@ -1382,9 +1493,13 @@ def build_payload(
                 storage_control_before = _load_json(health_root / "ingestion_storage_control_latest.json") or storage_control_before
                 refreshed_planning_backpressure = _backpressure_with_storage_overlay(backpressure_before, storage_control_before)
                 refreshed_core_focus = _core_hotspots(refreshed_planning_backpressure)
-                if refreshed_core_focus.get("hotspots") or refreshed_planning_backpressure.get("_storage_overlay_sources"):
-                    planning_backpressure_before = refreshed_planning_backpressure
-                    core_focus_before = refreshed_core_focus
+                planning_backpressure_before = refreshed_planning_backpressure
+                core_focus_before = refreshed_core_focus
+                if (
+                    refreshed_core_focus.get("hotspots")
+                    or refreshed_planning_backpressure.get("_storage_overlay_sources")
+                    or refreshed_planning_backpressure.get("_storage_overlay_authoritative_zero")
+                ):
                     drain_profile, drain_env = _drain_env(
                         governor_payload.get("env_overrides") if isinstance(governor_payload.get("env_overrides"), dict) else {},
                         critical=critical,
@@ -1406,7 +1521,22 @@ def build_payload(
             if refreshed:
                 queue_before = refreshed
 
-        if not blocked_reasons:
+        authoritative_overlay_zero = bool(planning_backpressure_before.get("_storage_overlay_authoritative_zero", False))
+        if not blocked_reasons and authoritative_overlay_zero:
+            retired_service_request_payload = _retire_external_service_request(
+                health_root / "sql_link_service_request_latest.json",
+                now_utc=now,
+            )
+            steps["material_drain_gate"] = {
+                "status": "skipped",
+                "rc": 0,
+                "duration_ms": 0.0,
+                "timed_out": False,
+                "cmd": [],
+                "stdout_tail": "fresh managed SQL overlay reports zero pending backlog",
+                "stderr_tail": "",
+            }
+        elif not blocked_reasons:
             resource_guard = _run_json_command(
                 [str(PY), str(project_root / "scripts" / "resource_guard.py"), "--profile", str(resource_profile or "optional"), "--json"],
                 cwd=project_root,
@@ -1589,6 +1719,8 @@ def build_payload(
         top_actions.append("wait for the off-hours window before raising deferred and cold drain quotas")
     if "resource_guard_blocked" in blocked_reasons:
         top_actions.append("rerun the external backlog drain after memory and disk guards return to green")
+    if bool(planning_backpressure_after.get("_storage_overlay_authoritative_zero", False)):
+        top_actions.append("keep the external drain parked while the fresh managed SQL overlay remains at zero")
     if aged_candidates:
         top_actions.append("compact or archive the oldest deferred and cold backlog files after the active drain pass")
     if stale_stage_candidates:
@@ -1687,14 +1819,21 @@ def build_payload(
         "writer_busy": bool(writer_busy),
         "service_request_path": str(health_root / "sql_link_service_request_latest.json"),
         "service_request": service_request_payload,
+        "retired_service_request": retired_service_request_payload,
         "memory_safety_caps": memory_safety_caps,
         "backpressure_before": before_snapshot,
         "backpressure_after": after_snapshot,
         "raw_backpressure_before": raw_before_snapshot,
         "raw_backpressure_after": raw_after_snapshot,
         "storage_overlay_focus": {
-            "active": bool((planning_backpressure_after if apply_executed else planning_backpressure_before).get("_storage_overlay_sources")),
+            "active": bool(
+                (planning_backpressure_after if apply_executed else planning_backpressure_before).get("_storage_overlay_sources")
+                or (planning_backpressure_after if apply_executed else planning_backpressure_before).get("_storage_overlay_authoritative")
+            ),
             "adjusted": bool((planning_backpressure_after if apply_executed else planning_backpressure_before).get("_storage_overlay_adjusted")),
+            "authoritative": bool((planning_backpressure_after if apply_executed else planning_backpressure_before).get("_storage_overlay_authoritative")),
+            "authoritative_zero": bool((planning_backpressure_after if apply_executed else planning_backpressure_before).get("_storage_overlay_authoritative_zero")),
+            "freshness": dict((planning_backpressure_after if apply_executed else planning_backpressure_before).get("_storage_overlay_freshness") or {}),
             "sources": list((planning_backpressure_after if apply_executed else planning_backpressure_before).get("_storage_overlay_sources") or [])[:8],
         },
         "drain_delta": {
