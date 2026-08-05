@@ -377,7 +377,7 @@
           "existence_only": true
         },
         {
-          "path": "config/production_readiness_replay_baseline.json",
+          "path": "governance/health/production_readiness_replay_baseline.json",
           "existence_only": true,
           "required_paths": ["fingerprint_hash"]
         }

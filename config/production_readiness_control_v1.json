@@ -40,7 +40,7 @@
       "config/library_activation_profiles_v1.json",
       "config/production_readiness_control_v1.json"
     ],
-    "baseline_path": "config/production_readiness_replay_baseline.json",
+    "baseline_path": "governance/health/production_readiness_replay_baseline.json",
     "policy": "same_inputs_same_replay_hashes_before_promotion"
   },
   "observability_redaction": {

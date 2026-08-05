@@ -344,9 +344,13 @@ def _write_auxiliary_artifacts(project_root: Path, payload: dict[str, Any], conf
     controls = {str(row.get("id") or ""): row for row in payload.get("controls") or [] if isinstance(row, dict)}
 
     replay_evidence = controls.get("deterministic_replay_baseline", {}).get("evidence") or {}
-    baseline_path = Path(str(replay_evidence.get("baseline_path") or ""))
-    if not str(baseline_path):
-        baseline_path = _project_path(project_root, artifact_paths.get("replay_baseline") or "governance/health/production_readiness_replay_baseline.json")
+    configured_baseline = artifact_paths.get("replay_baseline")
+    if configured_baseline:
+        baseline_path = _project_path(project_root, configured_baseline)
+    else:
+        baseline_path = Path(str(replay_evidence.get("baseline_path") or ""))
+        if not str(baseline_path):
+            baseline_path = project_root / "governance" / "health" / "production_readiness_replay_baseline.json"
     baseline = {
         "timestamp_utc": iso_now(),
         "schema_version": 1,

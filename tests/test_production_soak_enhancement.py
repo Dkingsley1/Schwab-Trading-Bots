@@ -107,3 +107,30 @@ def test_production_soak_enhancement_apply_writes_auxiliary_dry_run_artifacts(tm
     profile_plan = json.loads(Path(written["profile_promotion_plan"]).read_text(encoding="utf-8"))
     assert rollback["dry_run_only"] is True
     assert profile_plan["live_runtime_mutated"] is False
+
+
+def test_apply_keeps_mutable_replay_baseline_out_of_tracked_config(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    readiness_config = _seed_minimal_project(project_root)
+    config_path = _seed_soak_config(project_root)
+    unsafe_baseline = project_root / "config" / "production_readiness_replay_baseline.json"
+    unsafe_baseline.write_text('{"sentinel": true}\n', encoding="utf-8")
+
+    readiness = json.loads(readiness_config.read_text(encoding="utf-8"))
+    readiness["deterministic_replay"]["baseline_path"] = str(unsafe_baseline)
+    _write_json(readiness_config, readiness)
+
+    config = json.loads(config_path.read_text(encoding="utf-8"))
+    payload = src.build_payload(project_root, config_path=config_path, dependency_batch="production_core_safe")
+    result = src.write_outputs(
+        payload,
+        project_root=project_root,
+        config=config,
+        out_path=project_root / "governance" / "health" / "production_soak_enhancement_latest.json",
+        markdown_path=project_root / "exports" / "reports" / "operator" / "production_soak_enhancement_latest.md",
+        apply=True,
+    )
+
+    written_baseline = Path(result["auxiliary_artifacts_written"]["replay_baseline"])
+    assert written_baseline == project_root / "governance" / "health" / "production_readiness_replay_baseline.json"
+    assert json.loads(unsafe_baseline.read_text(encoding="utf-8")) == {"sentinel": True}

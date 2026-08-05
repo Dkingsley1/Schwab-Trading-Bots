@@ -1,8 +1,0 @@
-{
-  "timestamp_utc": "2026-07-30T13:54:29.445714+00:00",
-  "schema_version": 1,
-  "source": "production_soak_enhancement",
-  "fingerprint_hash": "b89d255130bb62727020d74ab55aaf49a98769aff0f17654be51fb286248ac25",
-  "fingerprint_count": 4,
-  "policy": "baseline_is_soak_evidence_not_live_promotion"
-}

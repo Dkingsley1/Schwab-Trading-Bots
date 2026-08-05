@@ -232,6 +232,8 @@ def test_creative_pause_guard_suppresses_shadow_restart_for_music(tmp_path, monk
         encoding="utf-8",
     )
     monkeypatch.setattr(shadow_watchdog, "CREATIVE_PAUSE_LATEST", pause_path)
+    monkeypatch.setattr(shadow_watchdog, "RUNTIME_RESOURCE_OVERRIDE", tmp_path / "runtime_resource_override.env")
+    monkeypatch.delenv("PAPER_CRYPTO_FEED_RUNTIME_PAUSED_FOR_PRESSURE", raising=False)
 
     target = Target(
         name="coinbase_shadow",
