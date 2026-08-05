@@ -150,6 +150,12 @@ def test_distributed_cell_architecture_markdown_has_stable_empty_needs_footer() 
     assert markdown.endswith("- None.\n")
 
 
+def test_distributed_cell_runtime_markdown_stays_out_of_tracked_docs() -> None:
+    relative_path = cells.DEFAULT_MARKDOWN_PATH.relative_to(cells.PROJECT_ROOT)
+
+    assert relative_path.as_posix() == "governance/reports/distributed_cell_architecture_latest.md"
+
+
 def test_distributed_cell_architecture_normalizes_controlled_production_states(tmp_path: Path) -> None:
     health = tmp_path / "governance" / "health"
     now = cells.iso_now()

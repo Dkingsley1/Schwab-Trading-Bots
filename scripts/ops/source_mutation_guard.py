@@ -24,6 +24,7 @@ DEFAULT_PROTECTED_PATHS = (
     "scripts/ops/install_ops_automation_launchd.sh",
     "scripts/ops/use_mode_compliance_guard.py",
     "scripts/ops/commercial_readiness_control.py",
+    "scripts/ops/distributed_cell_architecture.py",
     "scripts/ops/live_canary_readiness_contract.py",
     "scripts/ops/paper_400_ramp_control.py",
     "scripts/ops/paper_live_data_standard.py",
@@ -55,6 +56,7 @@ DEFAULT_PROTECTED_PATHS = (
     "docs/operations/PRODUCTION_FLOW_GUARDRAILS.md",
     "docs/operations/USE_MODE_COMPLIANCE_GUARDRAILS.md",
     "docs/operations/COMMERCIAL_READINESS_FRAMEWORK.md",
+    "docs/pycharm/distributed_cell_architecture_latest.md",
     "master_bot_registry.json",
 )
 

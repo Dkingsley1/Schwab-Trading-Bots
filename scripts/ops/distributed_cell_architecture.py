@@ -22,7 +22,7 @@ DEFAULT_OUT_PATH = PROJECT_ROOT / "governance" / "health" / "distributed_cell_ar
 DEFAULT_ALIAS_PATH = PROJECT_ROOT / "governance" / "health" / "system_cell_federation_latest.json"
 DEFAULT_CELL_ROOT = PROJECT_ROOT / "governance" / "cells"
 DEFAULT_OVERRIDE_PATH = PROJECT_ROOT / "config" / ".env.distributed_cell_architecture_override"
-DEFAULT_MARKDOWN_PATH = PROJECT_ROOT / "docs" / "pycharm" / "distributed_cell_architecture_latest.md"
+DEFAULT_MARKDOWN_PATH = PROJECT_ROOT / "governance" / "reports" / "distributed_cell_architecture_latest.md"
 PROTECTED_VOLUMES = ("/Volumes/VIDEO",)
 
 STATUS_WEIGHT = {
