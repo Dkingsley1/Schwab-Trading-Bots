@@ -880,6 +880,36 @@ def _load_active_request(path: Path = REQUEST_PATH) -> dict[str, object]:
     }
 
 
+def _active_request_signature(request: dict[str, object]) -> tuple[str, str, str, str]:
+    overrides = request.get("env_overrides") if isinstance(request.get("env_overrides"), dict) else {}
+    return (
+        str(request.get("requested_at") or ""),
+        str(request.get("expires_utc") or ""),
+        str(request.get("reason") or ""),
+        str(overrides.get("SQL_LINK_SERVICE_SHARDS") or ""),
+    )
+
+
+def _sleep_until_next_cycle(
+    interval_seconds: float,
+    *,
+    active_request: dict[str, object],
+    request_path: Path = REQUEST_PATH,
+    poll_seconds: float = 2.0,
+) -> str:
+    remaining = max(float(interval_seconds), 10.0)
+    poll = max(min(float(poll_seconds), 5.0), 0.25)
+    initial_signature = _active_request_signature(active_request)
+    while remaining > 0.0:
+        step = min(poll, remaining)
+        time.sleep(step)
+        remaining -= step
+        current_signature = _active_request_signature(_load_active_request(request_path))
+        if current_signature != initial_signature:
+            return "request_changed"
+    return "interval_elapsed"
+
+
 def _live_runtime_control_overrides() -> dict[str, str]:
     merged: dict[str, str] = {}
     for path in (RUNTIME_RESOURCE_GUARD_OVERRIDE_PATH, PRESSURE_RELIEF_OVERRIDE_PATH):
@@ -4030,7 +4060,10 @@ def main() -> int:
 
         if args.once:
             break
-        time.sleep(max(int(cycle_args.interval_seconds), 10))
+        _sleep_until_next_cycle(
+            cycle_args.interval_seconds,
+            active_request=active_request,
+        )
 
     return 0
 

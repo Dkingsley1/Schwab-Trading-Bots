@@ -1678,6 +1678,70 @@ def test_backpressure_drainer_fleet_ignores_stale_hot_overlay_when_raw_core_is_s
     assert governance["pending_lines"] == 0
 
 
+def test_backpressure_drainer_fleet_trusts_fresh_overlay_with_zero_stale_pending(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    health = project_root / "governance" / "health"
+    _write_json(
+        health / "ingestion_backpressure_latest.json",
+        {
+            "pending_lines": 14051,
+            "pending_lines_total": 96811,
+            "top_pending_files": [
+                {
+                    "source_rel": "decisions/shadow_dividend_equities/trade_decisions_20260805.jsonl",
+                    "pending_lines": 14051,
+                    "oldest_pending_age_seconds": 1.0,
+                }
+            ],
+        },
+    )
+    _write_json(
+        health / "ingestion_storage_control_latest.json",
+        {
+            "severity": "critical",
+            "sql_ingestion_pending_overlay": {
+                "active": True,
+                "used_for_pressure": True,
+                "source_count": 21,
+                "fresh_source_count": 17,
+                "stale_source_count": 4,
+                "fresh_path_contains": ["shadow_crypto/", "decisions/shadow_crypto/trade_decisions_20260805.jsonl"],
+                "top_pending_files": [
+                    {
+                        "source_rel": "decisions/shadow_crypto/trade_decisions_20260805.jsonl",
+                        "shard": "crypto_trading",
+                        "pending_lines": 25673,
+                        "oldest_pending_age_seconds": 179.668,
+                    }
+                ],
+            },
+            "backlog_truth": {
+                "authoritative_mode": "overlay_fresh_shard_level",
+                "overlay_decay": {
+                    "should_decay": False,
+                    "attribution_ratio": 1.0,
+                    "stale_source_count": 4,
+                    "stale_pending_lines": 0,
+                },
+            },
+        },
+    )
+
+    payload = src.build_payload(
+        project_root,
+        apply=False,
+        now_utc=datetime(2026, 8, 5, 12, 40, tzinfo=timezone.utc),
+    )
+
+    assert payload["overall_status"] == "ready"
+    assert payload["active_drainer"]["name"] == "core_decision_drainer"
+    assert payload["active_drainer"]["pending_lines"] == 25673
+    assert "crypto_trading" in payload["active_drainer"]["shards"]
+    assert payload["active_env_overrides"]["SQL_LINK_SERVICE_SHARD_CRYPTO_TRADING_PATH_CONTAINS"].endswith(
+        "trade_decisions_20260805.jsonl"
+    )
+
+
 def test_backpressure_drainer_fleet_prioritizes_signal_generation_core_backlog(tmp_path: Path) -> None:
     project_root = tmp_path / "project"
     health = project_root / "governance" / "health"

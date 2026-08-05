@@ -1184,14 +1184,22 @@ def _storage_overlay_authoritative(storage_control: dict[str, Any]) -> bool:
         return False
     if _safe_int(overlay.get("source_count"), 0) <= 0 or _safe_int(overlay.get("fresh_source_count"), 0) <= 0:
         return False
-    if _safe_int(overlay.get("stale_source_count"), 0) > 0:
-        return False
     truth = storage_control.get("backlog_truth") if isinstance(storage_control.get("backlog_truth"), dict) else {}
     mode = str(truth.get("authoritative_mode") or "").strip()
     if mode and not mode.startswith("overlay"):
         return False
     decay = truth.get("overlay_decay") if isinstance(truth.get("overlay_decay"), dict) else {}
     if bool(decay.get("should_decay", False)):
+        return False
+    stale_source_count = max(
+        _safe_int(overlay.get("stale_source_count"), 0),
+        _safe_int(decay.get("stale_source_count"), 0),
+    )
+    stale_pending_lines = max(
+        _safe_int(overlay.get("stale_pending_lines"), 0),
+        _safe_int(decay.get("stale_pending_lines"), 0),
+    )
+    if stale_source_count > 0 and stale_pending_lines > 0:
         return False
     attribution_ratio = _safe_float(decay.get("attribution_ratio"), 1.0)
     return attribution_ratio >= 0.95
@@ -1238,7 +1246,10 @@ def _preferred_source_rows(
     if tuple(keys) == ("top_pending_files",) and overlay_rows:
         raw_core_pending = max(_safe_int(backpressure.get("pending_lines"), 0), 0)
         overlay_pending = sum(max(_safe_int(row.get("pending_lines"), 0), 0) for row in overlay_rows)
-        if raw_core_pending < overlay_pending <= CORE_HARD_PENDING_LINES:
+        overlay = storage_control.get("sql_ingestion_pending_overlay") if isinstance(storage_control.get("sql_ingestion_pending_overlay"), dict) else {}
+        fresh_path_contains = overlay.get("fresh_path_contains") if isinstance(overlay.get("fresh_path_contains"), list) else []
+        has_explicit_freshness_scope = any(str(item or "").strip() for item in fresh_path_contains)
+        if raw_core_pending < overlay_pending <= CORE_HARD_PENDING_LINES and not has_explicit_freshness_scope:
             return raw_rows
     if _storage_overlay_authoritative(storage_control) and overlay_rows:
         return overlay_rows

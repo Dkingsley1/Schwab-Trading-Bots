@@ -769,6 +769,52 @@ def test_load_active_request_sanitizes_live_drain_overrides(tmp_path) -> None:
     assert "BAD_KEY" not in payload["env_overrides"]
 
 
+def test_cycle_sleep_wakes_when_focused_request_changes(tmp_path: Path, monkeypatch) -> None:
+    request_path = tmp_path / "request.json"
+    sleeps: list[float] = []
+    refreshed_request = {
+        "requested_at": "2026-08-05T12:44:30+00:00",
+        "expires_utc": "2026-08-05T12:59:30+00:00",
+        "reason": "backpressure_drainer_fleet:core_decision_drainer",
+        "env_overrides": {"SQL_LINK_SERVICE_SHARDS": "crypto_trading,health_fast"},
+    }
+    monkeypatch.setattr(shard_manager.time, "sleep", lambda seconds: sleeps.append(seconds))
+    monkeypatch.setattr(shard_manager, "_load_active_request", lambda _path: refreshed_request)
+
+    result = shard_manager._sleep_until_next_cycle(
+        900,
+        active_request={},
+        request_path=request_path,
+        poll_seconds=2,
+    )
+
+    assert result == "request_changed"
+    assert sleeps == [2.0]
+
+
+def test_cycle_sleep_preserves_interval_when_request_is_unchanged(tmp_path: Path, monkeypatch) -> None:
+    request_path = tmp_path / "request.json"
+    sleeps: list[float] = []
+    active_request = {
+        "requested_at": "2026-08-05T12:44:30+00:00",
+        "expires_utc": "2026-08-05T12:59:30+00:00",
+        "reason": "backpressure_drainer_fleet:core_decision_drainer",
+        "env_overrides": {"SQL_LINK_SERVICE_SHARDS": "crypto_trading,health_fast"},
+    }
+    monkeypatch.setattr(shard_manager.time, "sleep", lambda seconds: sleeps.append(seconds))
+    monkeypatch.setattr(shard_manager, "_load_active_request", lambda _path: active_request)
+
+    result = shard_manager._sleep_until_next_cycle(
+        10,
+        active_request=active_request,
+        request_path=request_path,
+        poll_seconds=3,
+    )
+
+    assert result == "interval_elapsed"
+    assert sleeps == [3.0, 3.0, 3.0, 1.0]
+
+
 def test_effective_cycle_args_applies_live_request_env() -> None:
     args = shard_manager.argparse.Namespace(
         interval_seconds=20,
