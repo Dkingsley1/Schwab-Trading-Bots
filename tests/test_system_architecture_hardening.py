@@ -816,6 +816,35 @@ def test_architecture_hardening_writes_section_config_and_override_artifacts(tmp
     assert "ALLOW_ORDER_EXECUTION=0" in Path(written["env_override"]).read_text(encoding="utf-8")
 
 
+def test_architecture_config_refresh_is_idempotent_when_semantics_are_unchanged(tmp_path: Path) -> None:
+    _seed_ready_project(tmp_path)
+    payload = src.build_payload(tmp_path)
+    payload["timestamp_utc"] = "2026-08-05T12:00:00+00:00"
+
+    config_path = src.write_config(tmp_path, payload)
+    first_text = config_path.read_text(encoding="utf-8")
+    payload["timestamp_utc"] = "2026-08-05T13:00:00+00:00"
+    src.write_config(tmp_path, payload)
+
+    assert config_path.read_text(encoding="utf-8") == first_text
+    assert json.loads(first_text)["updated_at_utc"] == "2026-08-05T12:00:00+00:00"
+
+
+def test_architecture_config_refresh_updates_timestamp_when_semantics_change(tmp_path: Path) -> None:
+    _seed_ready_project(tmp_path)
+    payload = src.build_payload(tmp_path)
+    payload["timestamp_utc"] = "2026-08-05T12:00:00+00:00"
+    config_path = src.write_config(tmp_path, payload)
+    payload["timestamp_utc"] = "2026-08-05T13:00:00+00:00"
+    payload["architecture_invariants"] = [*payload["architecture_invariants"], "new_invariant"]
+
+    src.write_config(tmp_path, payload)
+    refreshed = json.loads(config_path.read_text(encoding="utf-8"))
+
+    assert refreshed["updated_at_utc"] == "2026-08-05T13:00:00+00:00"
+    assert refreshed["invariants"][-1] == "new_invariant"
+
+
 def test_architecture_hardening_guards_opsctl_command_spine(tmp_path: Path) -> None:
     _seed_ready_project(tmp_path)
     _write_opsctl(tmp_path, missing=["provider-mesh"])

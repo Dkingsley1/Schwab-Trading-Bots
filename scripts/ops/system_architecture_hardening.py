@@ -1542,9 +1542,8 @@ def write_anatomy_artifacts(project_root: Path, payload: dict[str, Any]) -> dict
 
 def write_config(project_root: Path, payload: dict[str, Any]) -> Path:
     path = project_root / "config" / "system_architecture_hardening_v1.json"
-    config = {
+    config_body = {
         "schema_version": 1,
-        "updated_at_utc": payload.get("timestamp_utc"),
         "enabled": True,
         "read_only": True,
         "invariants": payload.get("architecture_invariants", []),
@@ -1558,6 +1557,16 @@ def write_config(project_root: Path, payload: dict[str, Any]) -> Path:
         },
         "required_opsctl_commands": REQUIRED_OPSCTL_COMMANDS,
         "live_enable_flags": sorted(LIVE_ENABLE_FLAGS),
+    }
+    existing = load_json(path)
+    if isinstance(existing, dict):
+        existing_body = {key: value for key, value in existing.items() if key != "updated_at_utc"}
+        if existing_body == config_body and str(existing.get("updated_at_utc") or "").strip():
+            return path
+    config = {
+        "schema_version": config_body["schema_version"],
+        "updated_at_utc": payload.get("timestamp_utc"),
+        **{key: value for key, value in config_body.items() if key != "schema_version"},
     }
     write_payload(path, config)
     return path
