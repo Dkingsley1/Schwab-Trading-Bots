@@ -151,6 +151,7 @@ def _capability(
     blocks_live_execution: bool = True,
     success_artifact: str = "",
     cadence: str = "on_degradation",
+    execution_priority: int = 100,
 ) -> dict[str, Any]:
     return {
         "id": capability_id,
@@ -166,6 +167,7 @@ def _capability(
         "blocks_live_execution": bool(blocks_live_execution),
         "success_artifact": success_artifact,
         "cadence": cadence,
+        "execution_priority": max(int(execution_priority), 0),
         "authority_boundary": "advisory_and_safe_repair_only_no_live_execution_authority",
     }
 
@@ -621,6 +623,18 @@ def _capability_registry() -> list[dict[str, Any]]:
             advisory_only=True,
             safe_under_pressure=True,
             success_artifact="governance/health/paper_execution_truth_layer_latest.json",
+        ),
+        _capability(
+            capability_id="paper_truth_dependency_recovery",
+            title="Paper Truth Dependency Recovery",
+            owns=["paper_truth_input_freshness", "account_position_awareness", "broker_truth_reconciliation"],
+            command=_opsctl("paper-truth-refresh", "--json"),
+            risk_level="medium",
+            cost_class="medium",
+            apply_safe=True,
+            safe_under_pressure=True,
+            execution_priority=0,
+            success_artifact="governance/health/paper_truth_dependency_refresh_latest.json",
         ),
         _capability(
             capability_id="paper_profitability_control",
@@ -1538,6 +1552,14 @@ def _needs_contract(project_root: Path, *, refresh_needs: bool = False) -> dict[
     paper_truth_failed = [str(item) for item in _as_list(paper_truth.get("failed_checks")) if str(item or "").strip()]
     paper_truth_warnings = [str(item) for item in _as_list(paper_truth.get("warnings")) if str(item or "").strip()]
     paper_truth_watch = bool(paper_truth and paper_truth_status == "watch" and not paper_truth_failed and paper_truth.get("ok") is not False)
+    paper_truth_dependency_recovery_needed = bool(
+        set(paper_truth_failed)
+        & {
+            "artifact_freshness_guard",
+            "account_position_awareness",
+            "paper_broker_truth_reconciliation",
+        }
+    )
     training_labeling_status = _status(training_labeling.get("overall_status"))
     missing_label_contracts = _safe_int(training_labeling.get("missing_label_contract_count"), 0)
     incomplete_label_contracts = _safe_int(training_labeling.get("incomplete_label_contract_count"), 0)
@@ -1551,6 +1573,24 @@ def _needs_contract(project_root: Path, *, refresh_needs: bool = False) -> dict[
         paper_runtime_profitability=paper_runtime_profitability,
         live_canary_readiness=live_canary_readiness,
     )
+    if paper_truth_dependency_recovery_needed:
+        needs.append(
+            _need(
+                need_id="paper_truth_dependency_stale",
+                title="Paper execution truth has stale or invalid operational dependencies",
+                category="paper_trading",
+                severity="critical",
+                evidence=[
+                    f"paper_truth_status={paper_truth_status or 'unknown'}",
+                    f"paper_truth_failed_checks={','.join(paper_truth_failed[:6]) or 'none'}",
+                    "repair_scope=stale_dependency_groups_only",
+                    "live_execution_authority=false",
+                ],
+                target_capabilities=["paper_truth_dependency_recovery", "paper_execution_truth_layer"],
+                stop_when="paper-execution-truth reports ready with artifact_freshness_guard ready and no failed checks.",
+                expected_impact="Refreshes stale paper-truth inputs in dependency order, then verifies once without opening a browser or enabling live execution.",
+            )
+        )
     if bool(raw_recovery.get("active", False)):
         top_drags = [
             str(_as_dict(row).get("profile") or "")
@@ -1903,6 +1943,7 @@ def _capability_healing_lane(capability: dict[str, Any]) -> str:
     cap_id = str(capability.get("id") or "").lower()
     if cap_id in {
         "broker_auth_supervisor",
+        "paper_truth_dependency_recovery",
         "global_halt_refresh",
         "paper_ramp_guard",
         "live_canary_readiness_contract",
@@ -1989,6 +2030,7 @@ def _route_policy(
                     "action": "standby",
                     "command": cap.get("command"),
                     "needs": [],
+                    "execution_priority": _safe_int(cap.get("execution_priority"), 100),
                     "reason": "No active need currently targets this capability.",
                     "blocked_by": [],
                     "stop_when": "",
@@ -2032,6 +2074,7 @@ def _route_policy(
                     (SEVERITY_RANK.get(str(need.get("severity") or "info"), 4) for need in matching_needs),
                     default=4,
                 ),
+                "execution_priority": _safe_int(cap.get("execution_priority"), 100),
                 "reason": reason,
                 "blocked_by": ordered_unique(blocked_by),
                 "stop_when": stop_when,
@@ -2046,7 +2089,8 @@ def _route_policy(
                 str(row.get("action") or ""),
                 5,
             ),
-            int(row.get("need_severity") or 4),
+            _safe_int(row.get("need_severity"), 4),
+            _safe_int(row.get("execution_priority"), 100),
             str(row.get("capability_id") or ""),
         ),
     )

@@ -12,9 +12,9 @@ if __package__ in {None, ""}:
     PROJECT_ROOT = Path(__file__).resolve().parents[2]
     if str(PROJECT_ROOT) not in sys.path:
         sys.path.insert(0, str(PROJECT_ROOT))
-    from scripts.ops.long_runtime_common import iso_now, load_json, ordered_unique, write_payload
+    from scripts.ops.long_runtime_common import iso_now, load_json, ordered_unique, payload_age_minutes, write_payload
 else:
-    from .long_runtime_common import PROJECT_ROOT, iso_now, load_json, ordered_unique, write_payload
+    from .long_runtime_common import PROJECT_ROOT, iso_now, load_json, ordered_unique, payload_age_minutes, write_payload
 
 
 DEFAULT_OUT_PATH = PROJECT_ROOT / "governance" / "health" / "paper_execution_truth_layer_latest.json"
@@ -43,6 +43,21 @@ NON_GRADE_BLOCKING_REPLAY_REASONS = {
 NON_GRADE_BLOCKING_OPTIONS_REASONS = {
     "covered_call_watch_critical",
     "covered_call_alerts_present",
+}
+INPUT_FRESHNESS_POLICY: dict[str, dict[str, Any]] = {
+    "paper_performance": {"max_age_minutes": 1440.0, "operational_required": True},
+    "calibration": {"max_age_minutes": 1440.0, "promotion_evidence": True},
+    "counterfactual": {"max_age_minutes": 2880.0, "promotion_evidence": True},
+    "paper_replay": {"max_age_minutes": 720.0, "promotion_evidence": True},
+    "account_study": {"max_age_minutes": 60.0, "operational_required": True},
+    "covered_call_watch": {"max_age_minutes": 60.0, "operational_required": True},
+    "execution_lab": {"max_age_minutes": 43200.0, "operational_required": True},
+    "live_readiness": {"max_age_minutes": 180.0, "operational_required": True},
+    "ingestion_storage": {"max_age_minutes": 30.0, "operational_required": True},
+    "ingestion_backpressure": {"max_age_minutes": 30.0, "operational_required": True},
+    "promotion_quality": {"max_age_minutes": 360.0, "promotion_evidence": True},
+    "broker_truth": {"max_age_minutes": 45.0, "operational_required": True},
+    "source_verification": {"max_age_minutes": 360.0, "promotion_evidence": True},
 }
 
 
@@ -114,6 +129,110 @@ def _artifact_ok(payload: dict[str, Any]) -> bool:
         return bool(payload.get("ok", False))
     status = str(payload.get("overall_status") or payload.get("status") or "").strip().lower()
     return status in {"ready", "ok", "watch", "active"}
+
+
+def assess_input_freshness(
+    source_paths: dict[str, Path],
+    source_payloads: dict[str, dict[str, Any]],
+    *,
+    policy: dict[str, dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    active_policy = policy or INPUT_FRESHNESS_POLICY
+    rows: dict[str, dict[str, Any]] = {}
+    stale_operational: list[str] = []
+    stale_promotion_evidence: list[str] = []
+    for name, contract in active_policy.items():
+        path = Path(source_paths.get(name, Path()))
+        payload = source_payloads.get(name, {})
+        age = payload_age_minutes(payload, path if str(path) not in {"", "."} else None)
+        max_age = max(_safe_float(contract.get("max_age_minutes"), 0.0), 0.0)
+        present = bool(payload)
+        stale = bool(not present or age is None or age > max_age)
+        operational_required = bool(contract.get("operational_required", False))
+        promotion_evidence = bool(contract.get("promotion_evidence", False))
+        if stale and operational_required:
+            stale_operational.append(name)
+        if stale and promotion_evidence:
+            stale_promotion_evidence.append(name)
+        rows[name] = {
+            "path": str(path),
+            "present": present,
+            "age_minutes": round(float(age), 3) if age is not None else None,
+            "max_age_minutes": round(max_age, 3),
+            "stale": stale,
+            "operational_required": operational_required,
+            "promotion_evidence": promotion_evidence,
+        }
+    return {
+        "assessment_performed": True,
+        "operational_inputs_fresh": not stale_operational,
+        "promotion_evidence_inputs_fresh": not stale_operational and not stale_promotion_evidence,
+        "stale_operational_inputs": ordered_unique(stale_operational),
+        "stale_promotion_evidence_inputs": ordered_unique(stale_promotion_evidence),
+        "inputs": rows,
+    }
+
+
+def _build_freshness_gate(input_freshness: dict[str, Any] | None) -> dict[str, Any]:
+    if not input_freshness or not bool(input_freshness.get("assessment_performed", False)):
+        return _gate(
+            "ready",
+            100.0,
+            [],
+            assessment_performed=False,
+            operational_inputs_fresh=True,
+            promotion_evidence_inputs_fresh=True,
+            promotion_evidence_eligible=True,
+            validation_scope="caller_supplied_payloads_without_filesystem_freshness",
+        )
+
+    stale_operational = [
+        str(item) for item in input_freshness.get("stale_operational_inputs", []) if str(item or "").strip()
+    ]
+    stale_promotion = [
+        str(item)
+        for item in input_freshness.get("stale_promotion_evidence_inputs", [])
+        if str(item or "").strip()
+    ]
+    reasons = [f"stale_operational_input:{name}" for name in stale_operational]
+    reasons.extend(f"stale_promotion_evidence_input:{name}" for name in stale_promotion)
+    if stale_operational:
+        status = "blocked"
+        score = max(0.0, 60.0 - 8.0 * len(stale_operational))
+    elif stale_promotion:
+        status = "warn"
+        score = 90.0
+    else:
+        status = "ready"
+        score = 100.0
+    return _gate(
+        status,
+        score,
+        reasons,
+        assessment_performed=True,
+        operational_inputs_fresh=not stale_operational,
+        promotion_evidence_inputs_fresh=not stale_operational and not stale_promotion,
+        promotion_evidence_eligible=not stale_operational and not stale_promotion,
+        stale_operational_inputs=ordered_unique(stale_operational),
+        stale_promotion_evidence_inputs=ordered_unique(stale_promotion),
+        input_contract=input_freshness.get("inputs", {}),
+        grade_blocking=bool(stale_operational),
+        advisory_only=bool(stale_promotion and not stale_operational),
+        recovery_capability="paper_truth_dependency_recovery",
+        recovery_command=["./scripts/ops/opsctl.sh", "paper-truth-refresh", "--json"],
+    )
+
+
+def _operational_gate_conformance_score(name: str, gate: dict[str, Any]) -> float:
+    status = str(gate.get("status") or "").strip().lower()
+    raw_score = _safe_float(gate.get("score"), 85.0)
+    if status == "ready" or _advisory_warning(name, gate):
+        return 100.0
+    if status == "warn":
+        return min(_clamp(raw_score), 89.9)
+    if status == "blocked":
+        return min(_clamp(raw_score), 59.9)
+    return 0.0
 
 
 def _promotion_quality_self_referential(payload: dict[str, Any]) -> bool:
@@ -905,6 +1024,7 @@ def evaluate_truth_layer(
     live_readiness: dict[str, Any] | None = None,
     broker_truth: dict[str, Any] | None = None,
     source_verification: dict[str, Any] | None = None,
+    input_freshness: dict[str, Any] | None = None,
     max_calibration_mae_bps: float = 35.0,
     max_calibration_p95_bps: float = 175.0,
     min_sleeve_score: float = 65.0,
@@ -939,6 +1059,7 @@ def evaluate_truth_layer(
         broker_truth or {},
         source_verification or {},
     )
+    freshness_gate = _build_freshness_gate(input_freshness)
 
     promotion_reasons: list[str] = []
     promotion_warnings: list[str] = []
@@ -954,6 +1075,7 @@ def evaluate_truth_layer(
         "auto_throttle_overtrading": throttle_gate,
         "data_ingestion_quality_gate": ingestion_gate,
         "paper_broker_truth_reconciliation": paper_broker_reconciliation_gate,
+        "artifact_freshness_guard": freshness_gate,
     }
     for name, gate in gate_map.items():
         if str(gate.get("status") or "") == "blocked":
@@ -998,6 +1120,7 @@ def evaluate_truth_layer(
             "haircut_ledger",
             "ingestion_quality",
             "paper_broker_truth_reconciliation",
+            "artifact_freshness",
             "promotion_quality",
         ],
         promotion_only=True,
@@ -1016,25 +1139,40 @@ def evaluate_truth_layer(
     ]
     warnings = grade_blocking_warnings
     ready_count = len(operational_gates) - len(blocked) - len(grade_blocking_warnings)
-    raw_metric_score = sum(_safe_float(gate.get("score"), 85.0) for gate in operational_gates.values()) / max(len(operational_gates), 1)
+    raw_metric_score = sum(
+        _safe_float(gate.get("score"), 85.0) for gate in operational_gates.values()
+    ) / max(len(operational_gates), 1)
+    conformance_gate_scores = {
+        name: _operational_gate_conformance_score(name, gate) for name, gate in operational_gates.items()
+    }
+    operational_conformance_score = sum(conformance_gate_scores.values()) / max(len(conformance_gate_scores), 1)
     status = "ready" if not blocked else "blocked"
     if grade_blocking_warnings and not blocked:
         status = "watch"
-    overall_score = _clamp(raw_metric_score)
-    if status == "ready":
-        overall_score = max(overall_score, 97.0)
-    elif status == "watch":
+    overall_score = _clamp(operational_conformance_score)
+    if status == "watch":
         overall_score = min(overall_score, 89.9)
+    elif status == "blocked":
+        overall_score = min(overall_score, 69.9)
     grade = _grade_from_score(overall_score, status)
     a_plus_ready = bool(status == "ready" and grade == "A+")
     promotion_ready = bool(not blocked and str(promotion_gate.get("status") or "") == "ready")
+    promotion_evidence_score = _safe_float(promotion_gate.get("score"), 0.0)
     return {
         "timestamp_utc": iso_now(),
-        "schema_version": 2,
+        "schema_version": 3,
         "ok": not blocked,
         "overall_status": status,
         "score": round(_clamp(overall_score), 6),
+        "score_dimension": "operational_control_conformance",
+        "operational_conformance_score": round(_clamp(operational_conformance_score), 6),
+        "operational_conformance_complete": bool(status == "ready" and operational_conformance_score >= 100.0),
+        "operational_conformance_gate_scores": {
+            name: round(_clamp(score), 6) for name, score in conformance_gate_scores.items()
+        },
         "raw_metric_score": round(_clamp(raw_metric_score), 6),
+        "raw_metric_grade": _grade_from_score(_clamp(raw_metric_score), "ready"),
+        "promotion_evidence_score": round(_clamp(promotion_evidence_score), 6),
         "grade": grade,
         "a_plus_ready": a_plus_ready,
         "promotion_ready": promotion_ready,
@@ -1058,6 +1196,16 @@ def evaluate_truth_layer(
             for name, gate in all_gates.items()
             if _advisory_warning(name, gate)
         ],
+        "score_contract": {
+            "primary_score_dimension": "operational_control_conformance",
+            "score_100_means": "every paper-operational control is ready or explicitly advisory-only",
+            "raw_metric_dimension": "diagnostic_realism_and_evidence_metrics",
+            "promotion_dimension": "independent_live_money_promotion_evidence",
+            "advisory_evidence_debt_reduces_operational_score": False,
+            "advisory_evidence_debt_remains_visible": True,
+            "promotion_debt_blocks_live_money_promotion": True,
+            "no_evidence_laundering": True,
+        },
         "gates": all_gates,
         "sleeve_scorecards": scorecards,
         "paper_pnl_haircut_ledger": haircut_ledger,
@@ -1075,6 +1223,7 @@ def evaluate_truth_layer(
             + live_transition_gate.get("reasons", [])
             + ingestion_gate.get("reasons", [])
             + paper_broker_reconciliation_gate.get("reasons", [])
+            + freshness_gate.get("reasons", [])
         ),
     }
 
@@ -1102,36 +1251,41 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
-    payload = evaluate_truth_layer(
-        paper_performance=load_json(Path(args.paper_performance_file)),
-        calibration=load_json(Path(args.calibration_file)),
-        counterfactual=load_json(Path(args.counterfactual_file)),
-        paper_replay=load_json(Path(args.paper_replay_file)),
-        account_study=load_json(Path(args.account_study_file)),
-        covered_call_watch=load_json(Path(args.covered_call_watch_file)),
-        execution_lab=load_json(Path(args.execution_lab_file)),
-        live_readiness=load_json(Path(args.live_readiness_file)),
-        ingestion_storage=load_json(Path(args.ingestion_storage_file)),
-        ingestion_backpressure=load_json(Path(args.ingestion_backpressure_file)),
-        promotion_quality=load_json(Path(args.promotion_quality_file)),
-        broker_truth=load_json(Path(args.broker_truth_file)),
-        source_verification=load_json(Path(args.source_verification_file)),
-    )
-    payload["source_files"] = {
-        "paper_performance": str(args.paper_performance_file),
-        "calibration": str(args.calibration_file),
-        "counterfactual": str(args.counterfactual_file),
-        "paper_replay": str(args.paper_replay_file),
-        "account_study": str(args.account_study_file),
-        "covered_call_watch": str(args.covered_call_watch_file),
-        "execution_lab": str(args.execution_lab_file),
-        "live_readiness": str(args.live_readiness_file),
-        "ingestion_storage": str(args.ingestion_storage_file),
-        "ingestion_backpressure": str(args.ingestion_backpressure_file),
-        "promotion_quality": str(args.promotion_quality_file),
-        "broker_truth": str(args.broker_truth_file),
-        "source_verification": str(args.source_verification_file),
+    source_paths = {
+        "paper_performance": Path(args.paper_performance_file),
+        "calibration": Path(args.calibration_file),
+        "counterfactual": Path(args.counterfactual_file),
+        "paper_replay": Path(args.paper_replay_file),
+        "account_study": Path(args.account_study_file),
+        "covered_call_watch": Path(args.covered_call_watch_file),
+        "execution_lab": Path(args.execution_lab_file),
+        "live_readiness": Path(args.live_readiness_file),
+        "ingestion_storage": Path(args.ingestion_storage_file),
+        "ingestion_backpressure": Path(args.ingestion_backpressure_file),
+        "promotion_quality": Path(args.promotion_quality_file),
+        "broker_truth": Path(args.broker_truth_file),
+        "source_verification": Path(args.source_verification_file),
     }
+    source_payloads = {name: load_json(path) for name, path in source_paths.items()}
+    input_freshness = assess_input_freshness(source_paths, source_payloads)
+    payload = evaluate_truth_layer(
+        paper_performance=source_payloads["paper_performance"],
+        calibration=source_payloads["calibration"],
+        counterfactual=source_payloads["counterfactual"],
+        paper_replay=source_payloads["paper_replay"],
+        account_study=source_payloads["account_study"],
+        covered_call_watch=source_payloads["covered_call_watch"],
+        execution_lab=source_payloads["execution_lab"],
+        live_readiness=source_payloads["live_readiness"],
+        ingestion_storage=source_payloads["ingestion_storage"],
+        ingestion_backpressure=source_payloads["ingestion_backpressure"],
+        promotion_quality=source_payloads["promotion_quality"],
+        broker_truth=source_payloads["broker_truth"],
+        source_verification=source_payloads["source_verification"],
+        input_freshness=input_freshness,
+    )
+    payload["source_files"] = {name: str(path) for name, path in source_paths.items()}
+    payload["input_freshness"] = input_freshness
     write_payload(Path(args.out_file), payload)
     if str(args.platform_os_out_file or "").strip():
         write_payload(Path(args.platform_os_out_file), payload)
@@ -1143,6 +1297,8 @@ def main(argv: list[str] | None = None) -> int:
             "paper_execution_truth_layer "
             f"status={payload.get('overall_status')} "
             f"score={float(payload.get('score', 0.0) or 0.0):.2f} "
+            f"raw_metric_score={float(payload.get('raw_metric_score', 0.0) or 0.0):.2f} "
+            f"promotion_status={payload.get('promotion_status')} "
             f"grade={payload.get('grade')} "
             f"failed_checks={checks}"
         )

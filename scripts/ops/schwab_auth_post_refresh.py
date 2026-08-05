@@ -194,6 +194,9 @@ def _step_summary(step: dict[str, Any]) -> dict[str, Any]:
             overall_status=str(payload.get("overall_status") or ""),
             grade=str(payload.get("grade") or ""),
             score=float(payload.get("score", 0.0) or 0.0),
+            raw_metric_score=float(payload.get("raw_metric_score", 0.0) or 0.0),
+            operational_conformance_complete=bool(payload.get("operational_conformance_complete", False)),
+            promotion_ready=bool(payload.get("promotion_ready", False)),
             failed_checks=list(payload.get("failed_checks") or []),
         )
     return summary
@@ -217,7 +220,12 @@ def build_payload(
         ("portfolio_risk_ledger", [str(opsctl), "portfolio-risk-ledger", "--json"], 120, True),
         ("portfolio_allocator", [str(opsctl), "portfolio-allocator", "--json"], 120, True),
         ("account_buildout_plan", [str(opsctl), "account-buildout-plan", "--json"], 120, True),
-        ("paper_truth", [str(opsctl), "paper-truth", "--json"], 180, False),
+        (
+            "paper_truth",
+            [sys.executable, str(project_root / "scripts" / "ops" / "paper_execution_truth_layer.py"), "--json"],
+            180,
+            False,
+        ),
     ]
 
     steps: list[dict[str, Any]] = []
@@ -302,6 +310,8 @@ def build_payload(
             "refresh_dependency_order": [name for name, _, _, _ in commands],
             "stop_before_account_access_when_auth_not_ready": True,
             "paper_truth_rebuilt_after_account_and_position_truth": True,
+            "paper_truth_evaluator_is_non_recursive": True,
+            "stale_account_and_broker_truth_have_bounded_repair_owner": True,
             "downstream_paper_watch_does_not_misclassify_auth_recovery": True,
             "safe_environment": dict(PAPER_ONLY_ENV),
         },

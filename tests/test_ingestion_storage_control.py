@@ -1953,9 +1953,9 @@ def test_storage_efficiency_accepts_expected_local_hot_sources_as_managed_debt(t
         },
         storage_quota={"quota_summary": {"hard_breaches": 0, "soft_breaches": 0}, "lanes": []},
         storage_mount={
-            "external_available": False,
-            "external_required_for_hot_path": False,
-            "external_unavailable_reason": "cold_archive_only_local_hot_storage_policy",
+            "external_available": True,
+            "external_required_for_hot_path": True,
+            "external_unavailable_reason": "ok",
             "storage_mode": "local_fallback",
         },
         route_drift=False,
@@ -1978,7 +1978,10 @@ def test_storage_efficiency_accepts_expected_local_hot_sources_as_managed_debt(t
     assert contract["metrics"]["local_fallback_reconciliation_count"] == 37
     assert contract["metrics"]["expected_local_hot_source_count"] == 37
     assert contract["metrics"]["actionable_fallback_reconciliation_count"] == 0
+    assert contract["metrics"]["verified_active_local_route"] is True
+    assert contract["metrics"]["explicit_local_hot_storage_policy"] is False
     assert contract["recommended_commands"]["storage_route_reconcile"]["active"] is False
+    assert contract["storage_mode"] == "local_primary_manifest_guarded"
     assert contract["storage_policy"]["fallback_storage"] == "local_hot_is_authoritative_external_is_cold_archive"
 
 

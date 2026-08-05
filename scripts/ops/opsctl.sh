@@ -1389,6 +1389,9 @@ case "$cmd" in
   schwab-auth-post-refresh|auth-post-refresh|schwab-post-auth-recovery)
     exec "$PY" "$PROJECT_ROOT/scripts/ops/schwab_auth_post_refresh.py" "$@"
     ;;
+  paper-truth-refresh|paper-truth-recover)
+    exec "$PY" "$PROJECT_ROOT/scripts/ops/paper_truth_dependency_refresh.py" "$@"
+    ;;
   schwab-credentials|schwab-creds|schwab-credentials-setup|schwab-auth-creds)
     exec "$PY" "$PROJECT_ROOT/scripts/ops/schwab_credentials_setup.py" "$@"
     ;;
@@ -3040,6 +3043,7 @@ opsctl commands:
   live-money-readiness|live-money-contract|faithful-live-money [--target-date YYYY-MM-DD] [--json]
   paper-400-ramp|paper-ramp-400|paper-cap-400 [--apply] [--promote-roster] [--allow-source-registry-write] [--today YYYY-MM-DD] [--json]
   paper-execution-truth|paper-truth [--json]
+  paper-truth-refresh|paper-truth-recover [--json]
   runtime-paper-regression-guard|runtime-paper-guard [--json]
   paper-live-data-standard|paper-standard [--apply] [--json]
   production-flow-smoke|production-flow-contract [--json]

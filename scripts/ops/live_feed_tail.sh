@@ -2055,6 +2055,7 @@ def emit_paper() -> None:
     if truth:
         failed = truth.get("failed_checks") if isinstance(truth.get("failed_checks"), list) else []
         warnings = truth.get("warnings") if isinstance(truth.get("warnings"), list) else []
+        advisories = truth.get("advisory_warnings") if isinstance(truth.get("advisory_warnings"), list) else []
         print(
             "[paper-truth] "
             f"level={'ok' if str(truth.get('overall_status') or '').lower() == 'ready' and not failed else ('alert' if failed else 'watch')} "
@@ -2062,8 +2063,13 @@ def emit_paper() -> None:
             f"status={truth.get('overall_status', '')} "
             f"grade={truth.get('grade', '')} "
             f"score={as_num(truth.get('score'))} "
+            f"score_dimension={truth.get('score_dimension', 'legacy')} "
+            f"raw_metric={as_num(truth.get('raw_metric_score'))} "
+            f"promotion={truth.get('promotion_status', '')} "
+            f"promotion_score={as_num(truth.get('promotion_evidence_score'))} "
             f"failed={compact(','.join(str(item) for item in failed), 90)} "
-            f"warnings={compact(','.join(str(item) for item in warnings), 90)}"
+            f"warnings={compact(','.join(str(item) for item in warnings), 90)} "
+            f"advisories={compact(','.join(str(item) for item in advisories), 120)}"
         )
 
 

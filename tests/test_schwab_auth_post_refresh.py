@@ -52,9 +52,11 @@ def _ready_payload(name: str) -> tuple[int, dict]:
 
 def test_post_refresh_runs_auth_and_paper_truth_dependencies_in_order(tmp_path: Path, monkeypatch) -> None:
     seen: list[str] = []
+    commands: dict[str, list[str]] = {}
 
     def fake_runner(name: str, cmd: list[str], **kwargs) -> dict:
         seen.append(name)
+        commands[name] = cmd
         rc, payload = _ready_payload(name)
         return {"name": name, "cmd": cmd, "rc": rc, "timed_out": False, "payload": payload}
 
@@ -80,6 +82,9 @@ def test_post_refresh_runs_auth_and_paper_truth_dependencies_in_order(tmp_path: 
     assert payload["safety_contract"]["live_execution_allowed"] is False
     assert payload["safety_contract"]["opens_browser"] is False
     assert payload["safety_contract"]["account_buildout_does_not_publish_execution_intents"] is True
+    assert commands["paper_truth"][-2].endswith("scripts/ops/paper_execution_truth_layer.py")
+    assert "opsctl.sh" not in " ".join(commands["paper_truth"])
+    assert payload["regression_contract"]["paper_truth_evaluator_is_non_recursive"] is True
 
 
 def test_post_refresh_stops_before_account_access_when_auth_is_not_ready(tmp_path: Path) -> None:

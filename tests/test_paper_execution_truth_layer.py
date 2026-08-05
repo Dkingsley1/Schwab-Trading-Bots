@@ -161,16 +161,22 @@ def _good_inputs() -> dict:
     }
 
 
-def test_paper_execution_truth_layer_builds_all_ten_upgrade_gates() -> None:
+def test_paper_execution_truth_layer_builds_hardened_operational_gates() -> None:
     payload = truth.evaluate_truth_layer(**_good_inputs())
 
     assert payload["ok"] is True
     assert payload["overall_status"] == "ready"
     assert payload["a_plus_ready"] is True
     assert payload["grade"] == "A+"
-    assert payload["score"] >= 97.0
+    assert payload["score"] == 100.0
+    assert payload["operational_conformance_score"] == 100.0
+    assert payload["operational_conformance_complete"] is True
+    assert payload["score_dimension"] == "operational_control_conformance"
+    assert payload["raw_metric_score"] < 100.0
+    assert payload["score_contract"]["no_evidence_laundering"] is True
     assert sorted(payload["gates"]) == [
         "account_position_awareness",
+        "artifact_freshness_guard",
         "auto_throttle_overtrading",
         "data_ingestion_quality_gate",
         "decision_replay_harness",
@@ -208,6 +214,8 @@ def test_paper_execution_truth_layer_watches_reset_calibration_window() -> None:
     assert payload["ok"] is True
     assert payload["overall_status"] == "ready"
     assert payload["grade"] == "A+"
+    assert payload["score"] == 100.0
+    assert payload["raw_metric_score"] < 100.0
     assert payload["a_plus_ready"] is True
     assert payload["failed_checks"] == []
     assert payload["grade_blocking_warnings"] == []
@@ -219,7 +227,53 @@ def test_paper_execution_truth_layer_watches_reset_calibration_window() -> None:
     assert payload["gates"]["live_quote_fill_calibration"]["grade_blocking"] is False
     assert payload["gates"]["live_quote_fill_calibration"]["advisory_only"] is True
     assert payload["promotion_ready"] is False
+    assert payload["promotion_evidence_score"] < 100.0
     assert payload["gates"]["promotion_gate_hardening"]["status"] == "blocked"
+
+
+def test_paper_execution_truth_layer_blocks_stale_operational_inputs() -> None:
+    inputs = _good_inputs()
+    inputs["input_freshness"] = {
+        "assessment_performed": True,
+        "operational_inputs_fresh": False,
+        "promotion_evidence_inputs_fresh": False,
+        "stale_operational_inputs": ["broker_truth"],
+        "stale_promotion_evidence_inputs": [],
+        "inputs": {"broker_truth": {"stale": True}},
+    }
+
+    payload = truth.evaluate_truth_layer(**inputs)
+
+    assert payload["ok"] is False
+    assert payload["overall_status"] == "blocked"
+    assert payload["score"] < 70.0
+    assert payload["operational_conformance_complete"] is False
+    assert payload["promotion_ready"] is False
+    assert "artifact_freshness_guard" in payload["failed_checks"]
+    gate = payload["gates"]["artifact_freshness_guard"]
+    assert gate["status"] == "blocked"
+    assert gate["recovery_capability"] == "paper_truth_dependency_recovery"
+
+
+def test_paper_execution_truth_layer_keeps_stale_promotion_evidence_visible_without_laundering() -> None:
+    inputs = _good_inputs()
+    inputs["input_freshness"] = {
+        "assessment_performed": True,
+        "operational_inputs_fresh": True,
+        "promotion_evidence_inputs_fresh": False,
+        "stale_operational_inputs": [],
+        "stale_promotion_evidence_inputs": ["counterfactual"],
+        "inputs": {"counterfactual": {"stale": True}},
+    }
+
+    payload = truth.evaluate_truth_layer(**inputs)
+
+    assert payload["ok"] is True
+    assert payload["overall_status"] == "ready"
+    assert payload["score"] == 100.0
+    assert payload["promotion_ready"] is False
+    assert "artifact_freshness_guard" in payload["advisory_warnings"]
+    assert payload["gates"]["artifact_freshness_guard"]["advisory_only"] is True
 
 
 def test_model_only_calibration_is_soak_advisory_and_promotion_ineligible() -> None:

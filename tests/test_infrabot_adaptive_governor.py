@@ -610,6 +610,35 @@ def test_infrabot_adaptive_governor_routes_paper_truth_watch_without_feedback_bl
     assert routes["paper_execution_truth_layer"]["needs"] == ["paper_truth_watch_reconciliation"]
 
 
+def test_infrabot_adaptive_governor_routes_stale_paper_truth_to_bounded_recovery(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    health = _base_ready_health(project_root)
+    _write_json(
+        health / "paper_execution_truth_layer_latest.json",
+        {
+            "ok": False,
+            "overall_status": "blocked",
+            "failed_checks": ["artifact_freshness_guard"],
+            "warnings": [],
+        },
+    )
+
+    payload = infrabot_adaptive_governor.build_payload(project_root)
+
+    needs = {need["id"] for need in payload["system_needs_contract"]["needs"]}
+    routes = {row["capability_id"]: row for row in payload["adaptive_policy_router"]["routes"]}
+    assert "paper_feedback_quality" in needs
+    assert "paper_truth_dependency_stale" in needs
+    recovery = routes["paper_truth_dependency_recovery"]
+    assert recovery["action"] == "run_now"
+    assert recovery["needs"] == ["paper_truth_dependency_stale"]
+    assert recovery["need_severity"] == 0
+    assert recovery["execution_priority"] == 0
+    assert recovery["command"] == ["./scripts/ops/opsctl.sh", "paper-truth-refresh", "--json"]
+    assert recovery["self_healing"]["lane"] == "auth_live_lock"
+    assert payload["adaptive_policy_router"]["recommended_commands"][0] == recovery["command"]
+
+
 def test_safe_repair_classifies_ok_protective_tightening_as_success() -> None:
     classification = infrabot_adaptive_governor._classify_command_outcome(
         0,

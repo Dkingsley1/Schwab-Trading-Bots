@@ -1856,12 +1856,26 @@ def _ingestion_storage_efficiency_contract(
     raw_queue_count = _safe_int(raw_summary.get("raw_jsonl_count"), 0)
     raw_eligible_count = _safe_int(raw_summary.get("eligible_training_source_count"), 0)
     fallback_reconciliation_count = _safe_int(raw_summary.get("local_fallback_reconciliation_count"), 0)
-    local_hot_storage_policy_active = bool(
+    route_mismatch_count = len(
+        route_verification.get("mismatches")
+        if isinstance(route_verification.get("mismatches"), list)
+        else []
+    )
+    explicit_local_hot_storage_policy = bool(
         storage_mount.get("external_required_for_hot_path") is False
         and str(storage_mount.get("external_unavailable_reason") or "").strip()
         == "cold_archive_only_local_hot_storage_policy"
         and str(storage_mount.get("storage_mode") or "").strip() == "local_fallback"
     )
+    verified_active_local_route = bool(
+        str(storage_mount.get("storage_mode") or "").strip() == "local_fallback"
+        and route_verified
+        and route_verification_state == "active_local_ready"
+        and not route_drift
+        and route_mismatch_count <= 0
+        and int(unresolved_split_brain_conflicts) <= 0
+    )
+    local_hot_storage_policy_active = bool(explicit_local_hot_storage_policy or verified_active_local_route)
     current_day_protected_count = _safe_int(raw_summary.get("current_day_protected_count"), 0)
     quota_hard_breaches = _safe_int(quota_summary.get("hard_breaches"), 0)
     quota_soft_breaches = _safe_int(quota_summary.get("soft_breaches"), 0)
@@ -1870,7 +1884,6 @@ def _ingestion_storage_efficiency_contract(
         for row in quota_lanes
         if isinstance(row, dict) and str(row.get("status") or "") in {"blocked", "degraded"}
     ]
-    route_mismatch_count = len(route_verification.get("mismatches") if isinstance(route_verification.get("mismatches"), list) else [])
     sparse_pending_bytes = _safe_int(line_estimation.get("sparse_large_line_pending_bytes"), 0)
     sparse_large_active = bool(line_estimation.get("sparse_large_line_active", False))
     disk_contract = _storage_plane_disk_contract(
@@ -2033,7 +2046,9 @@ def _ingestion_storage_efficiency_contract(
         or reserve_rebuild_required
     )
 
-    if route_verified and not route_drift and unresolved_split_brain_conflicts <= 0:
+    if verified_active_local_route:
+        storage_mode = "local_primary_manifest_guarded"
+    elif route_verified and not route_drift and unresolved_split_brain_conflicts <= 0:
         storage_mode = "external_primary_manifest_guarded"
     elif fallback_reconciliation_required:
         storage_mode = "fallback_reconcile_first"
@@ -2499,6 +2514,8 @@ def _ingestion_storage_efficiency_contract(
             "actionable_fallback_reconciliation_count": actionable_fallback_reconciliation_count,
             "expected_local_hot_source_count": expected_local_hot_source_count,
             "local_hot_storage_policy_active": local_hot_storage_policy_active,
+            "explicit_local_hot_storage_policy": explicit_local_hot_storage_policy,
+            "verified_active_local_route": verified_active_local_route,
             "current_day_protected_raw_count": current_day_protected_count,
             "quota_hard_breaches": quota_hard_breaches,
             "quota_soft_breaches": quota_soft_breaches,
