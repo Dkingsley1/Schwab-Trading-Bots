@@ -1,3 +1,4 @@
+import inspect
 import json
 from pathlib import Path
 
@@ -86,6 +87,14 @@ def test_collection_duty_cycle_bounds_bad_ratio_and_max_cycle(monkeypatch) -> No
     bounded = loop._collection_duty_cycle_contract(loop_seconds=1.0, interval_seconds=5.0)
     assert bounded["effective_ratio"] == 0.05
     assert bounded["target_cycle_seconds"] == 20.0
+
+
+def test_shadow_loop_connects_duty_cycle_to_sleep_and_telemetry() -> None:
+    source = inspect.getsource(loop.run_loop)
+
+    assert "_collection_duty_cycle_contract(" in source
+    assert '"collector_duty_cycle": duty_cycle' in source
+    assert 'sleep_s = float(duty_cycle["sleep_seconds"])' in source
 
 
 def test_runtime_research_self_nice_reads_runtime_override(tmp_path, monkeypatch) -> None:
