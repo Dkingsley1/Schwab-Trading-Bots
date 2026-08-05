@@ -657,6 +657,10 @@ def _raw_live_expansion_headroom_contract(
         ),
         reserve_core,
     )
+    inflight_reserve_lines = min(
+        max(_safe_int(os.getenv("RAW_LIVE_INFLIGHT_RESERVE_LINES"), min(2000, reserve_core // 2)), 0),
+        max(reserve_core - 1, 0),
+    )
     reserve_age = max(
         _safe_float(
             os.getenv("RAW_LIVE_EXPANSION_AGE_RESERVE_SECONDS")
@@ -758,6 +762,7 @@ def _raw_live_expansion_headroom_contract(
     else:
         grade = "D"
     collector_ratio = "0.16" if active else "0.24"
+    sub_bot_signal_sample_modulus = "8" if active else "2"
     return {
         "active": active,
         "grade": grade,
@@ -773,6 +778,8 @@ def _raw_live_expansion_headroom_contract(
         "targets": {
             "core_reserve_lines": int(reserve_core),
             "total_reserve_lines": int(reserve_total),
+            "inflight_reserve_lines": int(inflight_reserve_lines),
+            "sub_bot_signal_sample_modulus": int(sub_bot_signal_sample_modulus),
             "oldest_age_reserve_seconds": round(float(reserve_age), 3),
             "absolute_core_target_lines": int(target_core),
             "absolute_total_threshold_lines": int(pending_threshold),
@@ -809,9 +816,17 @@ def _raw_live_expansion_headroom_contract(
             "RAW_LIVE_CORE_RESERVE_TARGET": str(reserve_core),
             "RAW_LIVE_TOTAL_RESERVE_TARGET": str(reserve_total),
             "RAW_LIVE_AGE_RESERVE_SECONDS": str(round(float(reserve_age), 3)),
+            "SHADOW_LOOP_FRESH_BACKLOG_PAUSE_LINES": str(reserve_core),
+            "SHADOW_LOOP_FRESH_BACKLOG_INFLIGHT_RESERVE_LINES": str(inflight_reserve_lines),
+            "SHADOW_LOOP_BOOTSTRAP_BACKLOG_STAGGER_ENABLED": "1",
+            "SIGNAL_GENERATION_SUB_BOT_SAMPLE_MODULUS": sub_bot_signal_sample_modulus,
             "BOT_COLLECTION_DUTY_CYCLE_ENABLED": "1",
             "BOT_COLLECTION_DUTY_CYCLE_MAX_ACTIVE_RATIO": collector_ratio,
             "SQL_LINK_SERVICE_RAW_LIVE_PRIORITY_BOOST": "1" if active else "0",
+            "SQL_LINK_SERVICE_RAW_LIVE_AUTO_FOCUS_ENABLED": "1",
+            "SQL_LINK_SERVICE_RAW_LIVE_PRIORITY_MIN_PENDING_LINES": str(
+                max(reserve_core - inflight_reserve_lines, 1)
+            ),
             "SQL_LINK_SERVICE_RAW_LIVE_RESERVE_WAVE": "1" if active else "0",
             "SQL_LINK_SERVICE_COLD_STAGE_YIELDS_TO_RAW_LIVE": "1" if active else "0",
         },

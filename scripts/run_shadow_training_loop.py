@@ -42,7 +42,7 @@ DYNAMIC_STORAGE_OVERRIDE_PATHS = (
     STORAGE_OVERRIDE_PATH,
     RUNTIME_RESOURCE_GUARD_OVERRIDE_PATH,
     LOCAL_STORAGE_RESERVE_OVERRIDE_PATH,
-    # Keep targeted hot-lane containment authoritative over broader profiles.
+    # Hot-lane policy normally wins; active queue safety reclaims logging keys.
     HOT_LANE_RETENTION_OVERRIDE_PATH,
 )
 _DYNAMIC_STORAGE_OVERRIDE_CACHE: Dict[str, Any] = {
@@ -61,6 +61,7 @@ from core.execution_simulator import simulate_execution
 from core.risk_engine import apply_risk_limits
 from core.position_sizing import size_from_action
 from core.portfolio_optimizer import allocate_quantity
+from core.runtime_override_precedence import merge_runtime_override_layers
 from core.execution_queue import ExecutionQueue, OrderRequest
 from core.execution_lane_pipeline import publish_execution_intent
 from core.coinbase_market_data import CoinbaseMarketDataClient, MarketDataAPIError
@@ -9405,13 +9406,33 @@ def _fresh_backlog_pause_contract(project_root: str) -> Dict[str, Any]:
     except Exception:
         max_age_seconds = 180.0
     try:
-        raw_threshold = _dynamic_storage_value(
-            "SHADOW_LOOP_FRESH_BACKLOG_PAUSE_LINES",
-            _dynamic_storage_value("RAW_LIVE_TOTAL_RESERVE_TARGET", "15000") or "15000",
-        )
+        raw_threshold = _dynamic_storage_value("SHADOW_LOOP_FRESH_BACKLOG_PAUSE_LINES", "")
+        if not str(raw_threshold or "").strip():
+            raw_threshold = _dynamic_storage_value(
+                "RAW_LIVE_CORE_RESERVE_TARGET",
+                _dynamic_storage_value("RAW_LIVE_TOTAL_RESERVE_TARGET", "15000") or "15000",
+            )
         pause_lines = max(int(float(raw_threshold or 15000)), 1)
     except Exception:
         pause_lines = 15000
+    try:
+        default_inflight_reserve = min(2000, max(pause_lines // 2, 0))
+        inflight_reserve_lines = max(
+            int(
+                float(
+                    _dynamic_storage_value(
+                        "SHADOW_LOOP_FRESH_BACKLOG_INFLIGHT_RESERVE_LINES",
+                        str(default_inflight_reserve),
+                    )
+                    or default_inflight_reserve
+                )
+            ),
+            0,
+        )
+    except Exception:
+        inflight_reserve_lines = min(2000, max(pause_lines // 2, 0))
+    inflight_reserve_lines = min(inflight_reserve_lines, max(pause_lines - 1, 0))
+    admission_pause_lines = max(pause_lines - inflight_reserve_lines, 1)
     try:
         newer_raw_grace_seconds = max(
             float(_dynamic_storage_value("SHADOW_LOOP_FRESH_BACKLOG_NEWER_GRACE_SECONDS", "0") or 0),
@@ -9451,10 +9472,10 @@ def _fresh_backlog_pause_contract(project_root: str) -> Dict[str, Any]:
     severity = str(storage.get("severity") or "").strip().lower()
     storage_reports_pressure = bool(
         severity in {"high", "critical", "blocked"}
-        or storage_total >= pause_lines
+        or storage_total >= admission_pause_lines
     )
     storage_pressure_active = bool(storage_fresh and storage_reports_pressure)
-    raw_reports_pressure = bool(raw_total >= pause_lines)
+    raw_reports_pressure = bool(raw_total >= admission_pause_lines)
     newer_raw_pressure_active = bool(
         raw_fresh
         and raw_reports_pressure
@@ -9515,6 +9536,8 @@ def _fresh_backlog_pause_contract(project_root: str) -> Dict[str, Any]:
         "reason": reason,
         "source": source,
         "pause_lines": pause_lines,
+        "admission_pause_lines": admission_pause_lines,
+        "inflight_reserve_lines": inflight_reserve_lines,
         "max_age_seconds": round(max_age_seconds, 3),
         "newer_raw_grace_seconds": round(newer_raw_grace_seconds, 3),
         "storage_fresh": storage_fresh,
@@ -9530,7 +9553,7 @@ def _fresh_backlog_pause_contract(project_root: str) -> Dict[str, Any]:
         "clear_confirmed": clear_confirmed,
         "refresh_pending": refresh_pending,
         "refresh_contract": refresh_contract,
-        "policy": "pause before a burst, fail closed when both controls are stale, and require fresh evidence before releasing known storage pressure",
+        "policy": "reserve in-flight batch headroom before a burst, fail closed when both controls are stale, and require fresh evidence before releasing known storage pressure",
     }
 
 
@@ -9559,6 +9582,13 @@ def _collector_resume_stagger_seconds(
         ]
     )
     return int(hashlib.sha256(seed.encode("utf-8")).hexdigest()[:8], 16) % (bounded_max + 1)
+
+
+def _collector_bootstrap_backlog_stagger_enabled(*, max_iterations: int) -> bool:
+    return bool(
+        max_iterations <= 0
+        and _dynamic_storage_flag("SHADOW_LOOP_BOOTSTRAP_BACKLOG_STAGGER_ENABLED", True)
+    )
 
 
 def _runtime_training_pause_contract(project_root: str) -> Dict[str, Any]:
@@ -14769,9 +14799,9 @@ def _dynamic_storage_overrides() -> Dict[str, str]:
         cache["checked_at_monotonic"] = now_monotonic
         values = cache.get("values")
         return dict(values) if isinstance(values, dict) else {}
-    merged: Dict[str, str] = {}
-    for path in DYNAMIC_STORAGE_OVERRIDE_PATHS:
-        merged.update(_parse_env_override_file(path))
+    merged = merge_runtime_override_layers(
+        [_parse_env_override_file(path) for path in DYNAMIC_STORAGE_OVERRIDE_PATHS]
+    )
     cache["checked_at_monotonic"] = now_monotonic
     cache["fingerprint"] = tuple(fingerprint)
     cache["values"] = dict(merged)
@@ -16664,7 +16694,7 @@ def run_loop(
 
         _append_jsonl(_event_bus_path(PROJECT_ROOT), event_row)
 
-    backlog_pause_seen = False
+    backlog_pause_seen = _collector_bootstrap_backlog_stagger_enabled(max_iterations=max_iterations)
     _set_loop_state("starting", reason="loop_bootstrap")
 
     while True:

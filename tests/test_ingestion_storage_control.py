@@ -4742,6 +4742,12 @@ def test_raw_live_expansion_headroom_contract_marks_warm_raw_live_as_limited() -
     assert contract["expansion_ready"] is False
     assert contract["grade"] in {"A", "B"}
     assert contract["control_env"]["RAW_LIVE_EXPANSION_GUARD_ACTIVE"] == "1"
+    assert contract["control_env"]["SHADOW_LOOP_FRESH_BACKLOG_PAUSE_LINES"] == "4000"
+    assert contract["control_env"]["SHADOW_LOOP_FRESH_BACKLOG_INFLIGHT_RESERVE_LINES"] == "2000"
+    assert contract["control_env"]["SIGNAL_GENERATION_SUB_BOT_SAMPLE_MODULUS"] == "8"
+    assert contract["control_env"]["SHADOW_LOOP_BOOTSTRAP_BACKLOG_STAGGER_ENABLED"] == "1"
+    assert contract["control_env"]["SQL_LINK_SERVICE_RAW_LIVE_AUTO_FOCUS_ENABLED"] == "1"
+    assert contract["control_env"]["SQL_LINK_SERVICE_RAW_LIVE_PRIORITY_MIN_PENDING_LINES"] == "2000"
     assert contract["control_env"]["BOT_COLLECTION_DUTY_CYCLE_MAX_ACTIVE_RATIO"] == "0.16"
 
 
@@ -4758,6 +4764,7 @@ def test_raw_live_expansion_headroom_contract_allows_bigger_expansion_when_cool(
     )
 
     assert contract["active"] is False
+    assert contract["control_env"]["SIGNAL_GENERATION_SUB_BOT_SAMPLE_MODULUS"] == "2"
     assert contract["expansion_ready"] is True
     assert contract["grade"] == "A+"
     assert contract["expansion_tier"] == "ready_for_bigger_expansion"

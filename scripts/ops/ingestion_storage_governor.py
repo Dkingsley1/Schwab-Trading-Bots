@@ -408,6 +408,48 @@ def _apply_backlog_relief_env(env: dict[str, str], backlog_relief_contract: dict
     return env
 
 
+def _apply_raw_live_expansion_env(
+    env: dict[str, str],
+    raw_live_expansion_contract: dict[str, Any] | None,
+) -> dict[str, str]:
+    if not isinstance(raw_live_expansion_contract, dict):
+        return env
+    control_env = raw_live_expansion_contract.get("control_env")
+    if not isinstance(control_env, dict):
+        return env
+
+    passthrough_keys = {
+        "RAW_LIVE_EXPANSION_GUARD_ACTIVE",
+        "RAW_LIVE_EXPANSION_READY",
+        "RAW_LIVE_EXPANSION_TIER",
+        "RAW_LIVE_CORE_RESERVE_TARGET",
+        "RAW_LIVE_TOTAL_RESERVE_TARGET",
+        "RAW_LIVE_AGE_RESERVE_SECONDS",
+        "SHADOW_LOOP_FRESH_BACKLOG_PAUSE_LINES",
+        "SHADOW_LOOP_FRESH_BACKLOG_INFLIGHT_RESERVE_LINES",
+        "SHADOW_LOOP_BOOTSTRAP_BACKLOG_STAGGER_ENABLED",
+        "SIGNAL_GENERATION_SUB_BOT_SAMPLE_MODULUS",
+        "BOT_COLLECTION_DUTY_CYCLE_ENABLED",
+        "SQL_LINK_SERVICE_RAW_LIVE_PRIORITY_BOOST",
+        "SQL_LINK_SERVICE_RAW_LIVE_AUTO_FOCUS_ENABLED",
+        "SQL_LINK_SERVICE_RAW_LIVE_PRIORITY_MIN_PENDING_LINES",
+        "SQL_LINK_SERVICE_RAW_LIVE_RESERVE_WAVE",
+        "SQL_LINK_SERVICE_COLD_STAGE_YIELDS_TO_RAW_LIVE",
+    }
+    for key in passthrough_keys:
+        value = control_env.get(key)
+        if value is not None and str(value).strip():
+            env[key] = str(value)
+
+    ratio_key = "BOT_COLLECTION_DUTY_CYCLE_MAX_ACTIVE_RATIO"
+    recommended = str(control_env.get(ratio_key) or "").strip()
+    if recommended:
+        current = str(env.get(ratio_key) or "").strip()
+        if not current or _safe_float(recommended, 1.0) < _safe_float(current, 1.0):
+            env[ratio_key] = recommended
+    return env
+
+
 def _profile_env(
     profile_name: str,
     project_root: Path,
@@ -774,6 +816,15 @@ def build_payload(
     # Storage efficiency owns raw/duplicate/fallback cleanup. The backlog relief
     # contract owns drain-critical worker, p-core, and intake shaping knobs.
     env_overrides = _apply_backlog_relief_env(env_overrides, backlog_relief_contract)
+    raw_live_expansion_contract = (
+        storage_control.get("raw_live_expansion_contract")
+        if isinstance(storage_control.get("raw_live_expansion_contract"), dict)
+        else {}
+    )
+    # Admission headroom remains authoritative even when the raw/live contract
+    # is healthy. Otherwise the generic steady-state profile can widen intake
+    # past the reserve that keeps unattended soak evidence continuously ready.
+    env_overrides = _apply_raw_live_expansion_env(env_overrides, raw_live_expansion_contract)
     queue_watermarks = _queue_watermarks(
         core_pending_lines=core_pending_lines,
         deferred_pending_lines=deferred_pending_lines,

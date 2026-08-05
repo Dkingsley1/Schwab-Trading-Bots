@@ -109,6 +109,112 @@ def test_hot_lane_override_wins_shared_logging_controls(tmp_path: Path, monkeypa
     assert loop_values["LOG_DATA_INGRESS"] == "0"
 
 
+def test_active_backpressure_logging_controls_win_hot_lane_restore(tmp_path: Path, monkeypatch) -> None:
+    config = tmp_path / "config"
+    config.mkdir(parents=True)
+    pressure = config / ".env.storage_pressure_override"
+    hot_lane = config / ".env.hot_lane_retention_override"
+    pressure.write_text(
+        "RAW_LIVE_EXPANSION_GUARD_ACTIVE=1\n"
+        "LOG_SUB_BOT_DECISIONS=0\n"
+        "DECISION_LOG_FEATURE_MODE=minimal\n"
+        "SIGNAL_GENERATION_SUB_BOT_SAMPLE_MODULUS=8\n",
+        encoding="utf-8",
+    )
+    hot_lane.write_text(
+        "LOG_SUB_BOT_DECISIONS=1\n"
+        "DECISION_LOG_FEATURE_MODE=essential\n"
+        "SIGNAL_GENERATION_SUB_BOT_SAMPLE_MODULUS=1\n",
+        encoding="utf-8",
+    )
+
+    base_trader._DYNAMIC_STORAGE_OVERRIDE_CACHE.update(
+        {"checked_at_monotonic": 0.0, "fingerprint": (), "values": {}}
+    )
+    base_values = base_trader._dynamic_storage_overrides(str(tmp_path))
+    assert base_values["LOG_SUB_BOT_DECISIONS"] == "0"
+    assert base_values["DECISION_LOG_FEATURE_MODE"] == "minimal"
+    assert base_values["SIGNAL_GENERATION_SUB_BOT_SAMPLE_MODULUS"] == "8"
+
+    monkeypatch.setattr(run_shadow_training_loop, "DYNAMIC_STORAGE_OVERRIDE_PATHS", (pressure, hot_lane))
+    run_shadow_training_loop._DYNAMIC_STORAGE_OVERRIDE_CACHE.update(
+        {"checked_at_monotonic": 0.0, "fingerprint": (), "values": {}}
+    )
+    loop_values = run_shadow_training_loop._dynamic_storage_overrides()
+    assert loop_values["LOG_SUB_BOT_DECISIONS"] == "0"
+    assert loop_values["DECISION_LOG_FEATURE_MODE"] == "minimal"
+    assert loop_values["SIGNAL_GENERATION_SUB_BOT_SAMPLE_MODULUS"] == "8"
+
+    accountability._DYNAMIC_RUNTIME_CONTROL_CACHE.update(
+        {"checked_at_monotonic": 0.0, "fingerprint": (), "values": {}}
+    )
+    assert accountability._dynamic_runtime_control(
+        str(tmp_path), "LOG_SUB_BOT_DECISIONS", "1"
+    ) == "0"
+    assert accountability._dynamic_runtime_control(
+        str(tmp_path), "SIGNAL_GENERATION_SUB_BOT_SAMPLE_MODULUS", "1"
+    ) == "8"
+
+
+def test_pressure_sub_bot_signal_sampling_is_deterministic(monkeypatch) -> None:
+    controls = {
+        "SIGNAL_GENERATION_SUB_BOT_SAMPLE_MODULUS": "8",
+        "SIGNAL_GENERATION_SUB_BOT_WINDOW_SECONDS": "3600",
+    }
+    monkeypatch.setattr(
+        accountability,
+        "_dynamic_runtime_control",
+        lambda _root, name, default: controls.get(name, default),
+    )
+    monkeypatch.setattr(accountability.time, "time", lambda: 7_200.0)
+    payloads = [
+        {
+            "symbol": "SPY",
+            "action": "HOLD",
+            "status": "HOLD",
+            "strategy": f"brain_refinery_v{index}",
+            "metadata": {"layer": "sub_bot"},
+        }
+        for index in range(128)
+    ]
+
+    accountability._LOW_SIGNAL_RECENT.clear()
+    first = [
+        accountability._should_emit_signal_generation_event(
+            payload,
+            classification="bad_signal",
+            reason="hold_or_no_trade_signal",
+            project_root="/tmp/project",
+        )
+        for payload in payloads
+    ]
+    accountability._LOW_SIGNAL_RECENT.clear()
+    second = [
+        accountability._should_emit_signal_generation_event(
+            payload,
+            classification="bad_signal",
+            reason="hold_or_no_trade_signal",
+            project_root="/tmp/project",
+        )
+        for payload in payloads
+    ]
+
+    assert first == second
+    assert 4 <= sum(first) <= 32
+    assert accountability._should_emit_signal_generation_event(
+        {
+            "symbol": "SPY",
+            "action": "BUY",
+            "status": "PAPER_EXECUTED",
+            "strategy": "always_keep_execution_outcome",
+            "metadata": {"layer": "sub_bot"},
+        },
+        classification="good_signal",
+        reason="trade_intent_generated",
+        project_root="/tmp/project",
+    ) is True
+
+
 def test_hot_lane_reports_managed_state_without_hiding_raw_pressure(tmp_path: Path, monkeypatch) -> None:
     external_root = tmp_path / "external"
     external_root.mkdir()

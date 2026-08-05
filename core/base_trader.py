@@ -41,6 +41,7 @@ from core.brokers import (
 
 from core.accountability import current_correlation, now_utc_iso, safe_append_jsonl, safe_append_channel_event, safe_write_json_atomic
 from core.halt_flags import write_halt_flag_atomic
+from core.runtime_override_precedence import merge_runtime_override_layers
 
 
 _FUTURES_MONTH_CODES = {
@@ -129,8 +130,8 @@ def _dynamic_storage_override_paths(project_root: str) -> Tuple[Path, ...]:
         root / "config" / ".env.storage_override",
         root / "config" / ".env.runtime_resource_guard_override",
         root / "config" / ".env.local_storage_reserve_override",
-        # The targeted hot-lane policy is the final authority for overlapping
-        # logging controls while storage containment is active.
+        # Hot-lane policy normally wins; active queue safety reclaims its
+        # logging keys in merge_runtime_override_layers.
         root / "config" / ".env.hot_lane_retention_override",
     )
 
@@ -157,9 +158,7 @@ def _dynamic_storage_overrides(project_root: str) -> Dict[str, str]:
         values = cache.get("values")
         return dict(values) if isinstance(values, dict) else {}
 
-    merged: Dict[str, str] = {}
-    for path in paths:
-        merged.update(_parse_env_override_file(path))
+    merged = merge_runtime_override_layers([_parse_env_override_file(path) for path in paths])
 
     cache["checked_at_monotonic"] = now_monotonic
     cache["fingerprint"] = tuple(fingerprint)

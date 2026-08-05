@@ -407,6 +407,7 @@ def test_ingestion_storage_governor_applies_backlog_relief_contract_env(tmp_path
                     "RAW_LIVE_EXPANSION_TIER": "blocked_until_raw_live_cools",
                     "RAW_LIVE_CORE_RESERVE_TARGET": "4000",
                     "RAW_LIVE_TOTAL_RESERVE_TARGET": "5500",
+                    "SHADOW_LOOP_FRESH_BACKLOG_PAUSE_LINES": "4000",
                     "BOT_COLLECTION_DUTY_CYCLE_ENABLED": "1",
                     "BOT_COLLECTION_DUTY_CYCLE_MAX_ACTIVE_RATIO": "0.16",
                     "SQL_LINK_SERVICE_RAW_LIVE_PRIORITY_BOOST": "1",
@@ -464,6 +465,82 @@ def test_ingestion_storage_governor_applies_backlog_relief_contract_env(tmp_path
     assert payload["throttle_controls"]["raw_live_core_reserve_target"] == 4000
     assert payload["throttle_controls"]["p_core_backlog_allocation_active"] == "1"
     assert payload["throttle_controls"]["p_core_preprocess_workers"] == 4
+
+
+def test_ingestion_storage_governor_keeps_healthy_raw_live_duty_cap_authoritative(tmp_path: Path) -> None:
+    health = tmp_path / "governance" / "health"
+    _write_json(
+        health / "ingestion_storage_control_latest.json",
+        {
+            "overall_status": "ready",
+            "severity": "stable",
+            "pressure_index": 0.2,
+            "backpressure": {
+                "core_pending_lines": 1800,
+                "deferred_pending_lines": 0,
+                "cold_pending_lines": 0,
+                "support_pending_lines": 0,
+                "stale_stage_pending_lines": 0,
+                "effective_raw_live_source": "raw_live_backpressure",
+            },
+            "raw_live_expansion_contract": {
+                "active": False,
+                "expansion_ready": True,
+                "control_env": {
+                    "RAW_LIVE_EXPANSION_GUARD_ACTIVE": "0",
+                    "RAW_LIVE_EXPANSION_READY": "1",
+                    "RAW_LIVE_EXPANSION_TIER": "ready_for_bigger_expansion",
+                    "RAW_LIVE_CORE_RESERVE_TARGET": "4000",
+                    "RAW_LIVE_TOTAL_RESERVE_TARGET": "5500",
+                    "SHADOW_LOOP_FRESH_BACKLOG_PAUSE_LINES": "4000",
+                    "SHADOW_LOOP_FRESH_BACKLOG_INFLIGHT_RESERVE_LINES": "2000",
+                    "SIGNAL_GENERATION_SUB_BOT_SAMPLE_MODULUS": "2",
+                    "SHADOW_LOOP_BOOTSTRAP_BACKLOG_STAGGER_ENABLED": "1",
+                    "BOT_COLLECTION_DUTY_CYCLE_ENABLED": "1",
+                    "BOT_COLLECTION_DUTY_CYCLE_MAX_ACTIVE_RATIO": "0.24",
+                    "SQL_LINK_SERVICE_RAW_LIVE_PRIORITY_BOOST": "0",
+                    "SQL_LINK_SERVICE_RAW_LIVE_AUTO_FOCUS_ENABLED": "1",
+                    "SQL_LINK_SERVICE_RAW_LIVE_PRIORITY_MIN_PENDING_LINES": "2000",
+                },
+            },
+            "backlog_relief_contract": {
+                "active": False,
+                "active_issue_ids": [],
+                "control_env_recommendations": {
+                    "BOT_COLLECTION_DUTY_CYCLE_ENABLED": "1",
+                    "BOT_COLLECTION_DUTY_CYCLE_MAX_ACTIVE_RATIO": "0.35",
+                },
+            },
+            "storage_efficiency_contract": {
+                "active": False,
+                "control_env_recommendations": {
+                    "BOT_COLLECTION_DUTY_CYCLE_ENABLED": "1",
+                    "BOT_COLLECTION_DUTY_CYCLE_MAX_ACTIVE_RATIO": "0.35",
+                },
+            },
+        },
+    )
+    _write_json(health / "ingestion_backpressure_latest.json", {"pending_lines": 1800})
+    _write_json(health / "ingestion_priority_queue_latest.json", {"lane_counts": {}})
+    _write_json(health / "storage_mount_guard_latest.json", {"external_available": True, "storage_mode": "external"})
+    _write_json(health / "storage_failback_sync_latest.json", {"mode": "external", "split_brain_conflicts": 0})
+    _write_json(health / "storage_split_brain_reconciler_latest.json", {"summary": {"unresolved_conflicts": 0}})
+    _write_json(health / "sql_link_service_latest.json", {"primary_db": str(tmp_path / "data" / "jsonl_link.sqlite3")})
+    _write_json(health / "sql_link_service_progress_latest.json", {})
+    _write_json(health / "health_gates_latest.json", {"hard_gate_triggered": False, "storage_pressure": {"retention_debt_gb": 0.0}})
+
+    payload = src.build_payload(tmp_path, action="status")
+
+    assert payload["profile"] == "steady_state"
+    assert payload["env_overrides"]["BOT_COLLECTION_DUTY_CYCLE_MAX_ACTIVE_RATIO"] == "0.24"
+    assert payload["throttle_controls"]["collection_duty_cycle_max_active_ratio"] == "0.24"
+    assert payload["throttle_controls"]["raw_live_expansion_ready"] == "1"
+    assert payload["env_overrides"]["SHADOW_LOOP_FRESH_BACKLOG_PAUSE_LINES"] == "4000"
+    assert payload["env_overrides"]["SHADOW_LOOP_FRESH_BACKLOG_INFLIGHT_RESERVE_LINES"] == "2000"
+    assert payload["env_overrides"]["SIGNAL_GENERATION_SUB_BOT_SAMPLE_MODULUS"] == "2"
+    assert payload["env_overrides"]["SHADOW_LOOP_BOOTSTRAP_BACKLOG_STAGGER_ENABLED"] == "1"
+    assert payload["env_overrides"]["SQL_LINK_SERVICE_RAW_LIVE_AUTO_FOCUS_ENABLED"] == "1"
+    assert payload["env_overrides"]["SQL_LINK_SERVICE_RAW_LIVE_PRIORITY_MIN_PENDING_LINES"] == "2000"
 
 
 def test_ingestion_storage_governor_applies_storage_efficiency_contract_env(tmp_path: Path) -> None:

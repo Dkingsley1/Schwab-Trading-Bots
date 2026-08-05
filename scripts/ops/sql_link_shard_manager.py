@@ -1318,6 +1318,10 @@ def _shard_link_priority_score(shard: dict[str, object], *, original_index: int)
         score -= 120.0
     if str(shard.get("merge_priority") or "").strip().lower() == "low":
         score -= 80.0
+    raw_live_priority_focus = bool(shard.get("raw_live_priority_focus", False))
+    raw_live_priority_pending_lines = _as_int(shard.get("raw_live_priority_pending_lines"), 0)
+    if raw_live_priority_focus:
+        score += 6000.0 + min(float(raw_live_priority_pending_lines) / 2.0, 3000.0)
     score -= float(original_index) / 1000.0
     return score, {
         "shard": name,
@@ -1330,6 +1334,9 @@ def _shard_link_priority_score(shard: dict[str, object], *, original_index: int)
         "heat_promotion_candidate": bool(shard.get("heat_promotion_candidate", False)),
         "merge_to_primary": bool(shard.get("merge_to_primary", True)),
         "merge_priority": str(shard.get("merge_priority") or "normal"),
+        "raw_live_priority_focus": raw_live_priority_focus,
+        "raw_live_priority_pending_lines": raw_live_priority_pending_lines,
+        "raw_live_priority_sources": list(shard.get("raw_live_priority_sources") or []),
     }
 
 
@@ -1881,6 +1888,197 @@ def _env_float(name: str, default: float) -> float:
         return float(raw)
     except Exception:
         return float(default)
+
+
+def _raw_live_priority_shard_for_source(source_rel: str) -> str:
+    rel = str(source_rel or "").strip().lower()
+    if not rel:
+        return ""
+    is_crypto = any(
+        token in rel
+        for token in (
+            "crypto",
+            "coinbase",
+            "btc-",
+            "eth-",
+        )
+    )
+    if rel.startswith("governance/events/channel_schema_violations_"):
+        return "schema_violations"
+    if rel.startswith("governance/watchdog/"):
+        return "support_watchdog"
+    if rel.startswith("governance/channels/risk/"):
+        return "risk_support"
+    if rel.startswith(("governance/channels/api/", "governance/channels/ingress/")):
+        return "crypto_api_ingress" if is_crypto else "api_ingress"
+    if rel.startswith(("governance/channels/runtime/", "governance/channels/loop_state/")):
+        return "crypto_runtime" if is_crypto else "runtime"
+    if rel.startswith("governance/events/"):
+        return "governance"
+    if "decision_explanations/" in rel or rel.startswith("data/stale_stage/"):
+        return "crypto_explanations" if is_crypto else "explanations"
+    if "shadow_pnl_attribution_" in rel:
+        return "crypto_shadow_attribution" if is_crypto else "shadow_attribution"
+    if (
+        "paper_broker_bridge" in rel
+        or rel.startswith("paper_trades_")
+        or "top_level_trade_links" in rel
+    ):
+        return "crypto_trading_fast" if is_crypto else "trading_fast"
+    if rel.startswith("decisions/") or rel.startswith("governance/channels/decision/") or "/decision_" in rel:
+        if is_crypto:
+            return "crypto_trading"
+        if any(token in rel for token in ("aggressive", "intraday_aggressive", "swing_aggressive")):
+            return "aggressive_trading"
+        return "trading"
+    if rel.startswith(("data/external_context/", "exports/external_context/", "exports/external_feeds/")):
+        return "data"
+    return ""
+
+
+def _apply_raw_live_priority_focus(
+    shards: list[dict[str, object]],
+    *,
+    backpressure_path: Path | None = None,
+    now_utc: datetime | None = None,
+) -> tuple[list[dict[str, object]], dict[str, object]]:
+    snapshot_path = backpressure_path or (HEALTH_ROOT / "ingestion_backpressure_latest.json")
+    focused_shards = [dict(shard) for shard in shards]
+    priority_boost_requested = _env_flag("SQL_LINK_SERVICE_RAW_LIVE_PRIORITY_BOOST", False)
+    automatic_focus_enabled = _env_flag("SQL_LINK_SERVICE_RAW_LIVE_AUTO_FOCUS_ENABLED", True)
+    contract: dict[str, object] = {
+        "enabled": bool(priority_boost_requested or automatic_focus_enabled),
+        "priority_boost_requested": priority_boost_requested,
+        "automatic_focus_enabled": automatic_focus_enabled,
+        "applied": False,
+        "snapshot_path": str(snapshot_path),
+        "reason": "disabled",
+        "focused_shards": [],
+    }
+    if not bool(contract["enabled"]):
+        return focused_shards, contract
+
+    snapshot = _load_json(snapshot_path)
+    observed_at = _parse_iso_utc(snapshot.get("timestamp_utc"))
+    now = (now_utc or datetime.now(timezone.utc)).astimezone(timezone.utc)
+    if observed_at is None:
+        contract["reason"] = "snapshot_missing_timestamp"
+        return focused_shards, contract
+    snapshot_age_seconds = (now - observed_at).total_seconds()
+    max_age_seconds = max(_env_float("SQL_LINK_SERVICE_RAW_LIVE_PRIORITY_MAX_AGE_SECONDS", 180.0), 1.0)
+    contract["snapshot_timestamp_utc"] = observed_at.isoformat()
+    contract["snapshot_age_seconds"] = round(max(snapshot_age_seconds, 0.0), 3)
+    contract["max_age_seconds"] = round(max_age_seconds, 3)
+    if snapshot_age_seconds < -30.0:
+        contract["reason"] = "snapshot_timestamp_in_future"
+        return focused_shards, contract
+    if snapshot_age_seconds > max_age_seconds:
+        contract["reason"] = "snapshot_stale"
+        return focused_shards, contract
+
+    pending_lines = max(_as_int(snapshot.get("pending_lines"), 0), 0)
+    hard_pause_lines = max(
+        _env_int(
+            "SHADOW_LOOP_FRESH_BACKLOG_PAUSE_LINES",
+            _env_int("RAW_LIVE_CORE_RESERVE_TARGET", 4000),
+        ),
+        1,
+    )
+    default_inflight_reserve = min(2000, hard_pause_lines // 2)
+    inflight_reserve_lines = min(
+        max(
+            _env_int(
+                "SHADOW_LOOP_FRESH_BACKLOG_INFLIGHT_RESERVE_LINES",
+                default_inflight_reserve,
+            ),
+            0,
+        ),
+        max(hard_pause_lines - 1, 0),
+    )
+    admission_pause_lines = max(hard_pause_lines - inflight_reserve_lines, 1)
+    minimum_pending_lines = max(
+        _env_int(
+            "SQL_LINK_SERVICE_RAW_LIVE_PRIORITY_MIN_PENDING_LINES",
+            admission_pause_lines,
+        ),
+        1,
+    )
+    contract["pending_lines"] = pending_lines
+    contract["hard_pause_lines"] = hard_pause_lines
+    contract["inflight_reserve_lines"] = inflight_reserve_lines
+    contract["admission_pause_lines"] = admission_pause_lines
+    contract["minimum_pending_lines"] = minimum_pending_lines
+    if pending_lines < minimum_pending_lines:
+        contract["reason"] = "pressure_below_focus_threshold"
+        return focused_shards, contract
+
+    raw_rows = snapshot.get("top_pending_files")
+    rows = [dict(row) for row in raw_rows if isinstance(row, dict)] if isinstance(raw_rows, list) else []
+    rows.sort(key=lambda row: _as_int(row.get("pending_lines"), 0), reverse=True)
+    source_minimum = max(_env_int("SQL_LINK_SERVICE_RAW_LIVE_PRIORITY_SOURCE_MIN_LINES", 250), 1)
+    max_sources_per_shard = max(
+        min(_env_int("SQL_LINK_SERVICE_RAW_LIVE_PRIORITY_MAX_SOURCES_PER_SHARD", 8), 16),
+        1,
+    )
+    available_shards = {str(shard.get("name") or "") for shard in focused_shards}
+    sources_by_shard: dict[str, list[dict[str, object]]] = {}
+    for row in rows:
+        source_rel = str(row.get("source_rel") or "").strip()
+        row_pending = max(_as_int(row.get("pending_lines"), 0), 0)
+        shard_name = _raw_live_priority_shard_for_source(source_rel)
+        if not source_rel or not shard_name or shard_name not in available_shards:
+            continue
+        if row_pending < source_minimum and sources_by_shard:
+            continue
+        bucket = sources_by_shard.setdefault(shard_name, [])
+        if len(bucket) < max_sources_per_shard:
+            bucket.append({"source_rel": source_rel, "pending_lines": row_pending})
+
+    if not sources_by_shard:
+        contract["reason"] = "no_routable_pending_sources"
+        return focused_shards, contract
+
+    focus_rows: list[dict[str, object]] = []
+    for shard in focused_shards:
+        shard_name = str(shard.get("name") or "")
+        source_rows = sources_by_shard.get(shard_name, [])
+        if not source_rows:
+            continue
+        source_paths = [str(row["source_rel"]) for row in source_rows]
+        shard_pending_lines = sum(_as_int(row.get("pending_lines"), 0) for row in source_rows)
+        has_signal_generation = any(path.startswith("governance/events/signal_generation_") for path in source_paths)
+        shard["path_contains"] = ",".join(source_paths)
+        shard["max_files"] = max(_as_int(shard.get("max_files"), 0), len(source_paths), 1)
+        shard["max_lines_per_file"] = max(
+            _as_int(shard.get("max_lines_per_file"), 0),
+            64000 if has_signal_generation else 32000,
+        )
+        shard["max_bytes_per_file"] = max(
+            _as_int(shard.get("max_bytes_per_file"), 0),
+            1024 * 1024 * 1024 if has_signal_generation else 256 * 1024 * 1024,
+        )
+        shard["sqlite_batch_max_bytes"] = max(
+            _as_int(shard.get("sqlite_batch_max_bytes"), 0),
+            256 * 1024 * 1024 if has_signal_generation else 64 * 1024 * 1024,
+        )
+        shard["raw_live_priority_focus"] = True
+        shard["raw_live_priority_pending_lines"] = shard_pending_lines
+        shard["raw_live_priority_sources"] = source_paths
+        focus_rows.append(
+            {
+                "shard": shard_name,
+                "pending_lines": shard_pending_lines,
+                "sources": source_paths,
+                "max_files": shard["max_files"],
+                "max_lines_per_file": shard["max_lines_per_file"],
+            }
+        )
+
+    contract["applied"] = True
+    contract["reason"] = "fresh_material_raw_live_pressure"
+    contract["source_minimum_pending_lines"] = source_minimum
+    contract["focused_shards"] = focus_rows
+    return focused_shards, contract
 
 
 def _effective_cycle_args(args: argparse.Namespace, overrides: dict[str, str]) -> argparse.Namespace:
@@ -3466,7 +3664,9 @@ def main() -> int:
             cycle_shard_names = list(shard_names)
         with _temporary_env_overrides(request_overrides):
             shards = _build_shards(cycle_shard_names)
+            shards, raw_live_priority_focus = _apply_raw_live_priority_focus(shards)
             shards, shard_link_plan = _prioritize_shards_for_linking(shards)
+            shard_link_plan["raw_live_priority_focus"] = raw_live_priority_focus
             shard_writer_lane_contract = _shard_writer_lane_contract(
                 int(getattr(cycle_args, "preprocess_workers", 1)),
                 overrides=request_overrides,

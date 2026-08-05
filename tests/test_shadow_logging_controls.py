@@ -409,6 +409,112 @@ def test_runtime_pause_catches_new_raw_backlog_before_storage_refresh(tmp_path, 
     assert contract["fresh_backlog_pause"]["raw_total_pending_lines"] == 625000
 
 
+def test_runtime_pause_defaults_to_core_reserve_before_soak_target(tmp_path, monkeypatch) -> None:
+    health = tmp_path / "governance" / "health"
+    health.mkdir(parents=True, exist_ok=True)
+    now = datetime.now(timezone.utc)
+    (health / "ingestion_storage_control_latest.json").write_text(
+        json.dumps(
+            {
+                "timestamp_utc": (now - timedelta(seconds=10)).isoformat(),
+                "overall_status": "ready",
+                "severity": "stable",
+                "backpressure": {"total_pending_lines": 1800, "core_pending_lines": 1800},
+            }
+        ),
+        encoding="utf-8",
+    )
+    (health / "ingestion_backpressure_latest.json").write_text(
+        json.dumps(
+            {
+                "timestamp_utc": now.isoformat(),
+                "pending_lines": 4200,
+                "pending_lines_total": 4500,
+            }
+        ),
+        encoding="utf-8",
+    )
+    storage_override = tmp_path / "storage.env"
+    storage_override.write_text(
+        "RAW_LIVE_CORE_RESERVE_TARGET=4000\n"
+        "RAW_LIVE_TOTAL_RESERVE_TARGET=5500\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(loop, "DYNAMIC_STORAGE_OVERRIDE_PATHS", (storage_override,))
+    _reset_dynamic_override_cache()
+
+    contract = loop._runtime_training_pause_contract(str(tmp_path))
+
+    assert contract["paused"] is True
+    assert contract["reason"] == "fresh_raw_backpressure_newer_than_storage_control"
+    assert contract["fresh_backlog_pause"]["pause_lines"] == 4000
+
+
+def test_runtime_pause_reserves_capacity_for_inflight_symbol_batches(tmp_path, monkeypatch) -> None:
+    health = tmp_path / "governance" / "health"
+    health.mkdir(parents=True, exist_ok=True)
+    now = datetime.now(timezone.utc)
+    (health / "ingestion_storage_control_latest.json").write_text(
+        json.dumps(
+            {
+                "timestamp_utc": (now - timedelta(seconds=10)).isoformat(),
+                "overall_status": "ready",
+                "severity": "stable",
+                "backpressure": {"total_pending_lines": 1800, "core_pending_lines": 1800},
+            }
+        ),
+        encoding="utf-8",
+    )
+    raw_path = health / "ingestion_backpressure_latest.json"
+    raw_path.write_text(
+        json.dumps(
+            {
+                "timestamp_utc": now.isoformat(),
+                "pending_lines": 2100,
+                "pending_lines_total": 2100,
+            }
+        ),
+        encoding="utf-8",
+    )
+    storage_override = tmp_path / "storage.env"
+    storage_override.write_text(
+        "SHADOW_LOOP_FRESH_BACKLOG_PAUSE_LINES=4000\n"
+        "SHADOW_LOOP_FRESH_BACKLOG_INFLIGHT_RESERVE_LINES=2000\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(loop, "DYNAMIC_STORAGE_OVERRIDE_PATHS", (storage_override,))
+    _reset_dynamic_override_cache()
+
+    paused = loop._runtime_training_pause_contract(str(tmp_path))
+
+    assert paused["backlog_paused"] is True
+    assert paused["fresh_backlog_pause"]["pause_lines"] == 4000
+    assert paused["fresh_backlog_pause"]["admission_pause_lines"] == 2000
+    assert paused["fresh_backlog_pause"]["inflight_reserve_lines"] == 2000
+
+    raw_path.write_text(
+        json.dumps(
+            {
+                "timestamp_utc": (now + timedelta(seconds=1)).isoformat(),
+                "pending_lines": 1900,
+                "pending_lines_total": 1900,
+            }
+        ),
+        encoding="utf-8",
+    )
+    released = loop._runtime_training_pause_contract(str(tmp_path))
+
+    assert released["backlog_paused"] is False
+    assert released["fresh_backlog_pause"]["clear_confirmed"] is True
+
+
+def test_continuous_collectors_stagger_once_at_bootstrap(monkeypatch) -> None:
+    monkeypatch.setattr(loop, "_dynamic_storage_flag", lambda _name, _default: True)
+
+    assert loop._collector_bootstrap_backlog_stagger_enabled(max_iterations=0) is True
+    assert loop._collector_bootstrap_backlog_stagger_enabled(max_iterations=1) is False
+
+
 def test_fresh_managed_storage_clear_prevents_raw_false_positive(tmp_path, monkeypatch) -> None:
     health = tmp_path / "governance" / "health"
     health.mkdir(parents=True, exist_ok=True)

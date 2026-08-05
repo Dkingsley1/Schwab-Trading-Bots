@@ -9,6 +9,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Sequence
 
+from core.runtime_override_precedence import merge_runtime_override_layers
+
 
 def now_utc_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -476,7 +478,8 @@ def _dynamic_runtime_control(project_root: str, name: str, default: str) -> str:
         root / "config" / ".env.storage_override",
         root / "config" / ".env.runtime_resource_guard_override",
         root / "config" / ".env.local_storage_reserve_override",
-        # Targeted hot-lane containment must win over broader runtime profiles.
+        # Hot-lane policy normally wins; active queue safety reclaims its
+        # logging keys in merge_runtime_override_layers.
         root / "config" / ".env.hot_lane_retention_override",
     )
     fingerprint: list[tuple[str, int, int]] = []
@@ -492,11 +495,13 @@ def _dynamic_runtime_control(project_root: str, name: str, default: str) -> str:
         if isinstance(values, dict):
             return str(values.get(name, os.getenv(name, default)) or default).strip()
 
-    merged: Dict[str, str] = {}
+    layers: list[Dict[str, str]] = []
     for path in paths:
+        values: Dict[str, str] = {}
         try:
             lines = path.read_text(encoding="utf-8").splitlines()
         except OSError:
+            layers.append(values)
             continue
         for raw in lines:
             line = str(raw or "").strip()
@@ -504,7 +509,9 @@ def _dynamic_runtime_control(project_root: str, name: str, default: str) -> str:
                 continue
             key, value = line.split("=", 1)
             if key.strip():
-                merged[key.strip()] = value.strip().strip("'\"")
+                values[key.strip()] = value.strip().strip("'\"")
+        layers.append(values)
+    merged = merge_runtime_override_layers(layers)
     cache["checked_at_monotonic"] = now_monotonic
     cache["fingerprint"] = tuple(fingerprint)
     cache["values"] = dict(merged)
@@ -585,6 +592,14 @@ def _signal_generation_sub_bot_window_seconds(project_root: str = "") -> float:
         return 3600.0
 
 
+def _signal_generation_sub_bot_sample_modulus(project_root: str = "") -> int:
+    raw = _dynamic_runtime_control(project_root, "SIGNAL_GENERATION_SUB_BOT_SAMPLE_MODULUS", "1")
+    try:
+        return max(int(float(raw or 1)), 1)
+    except Exception:
+        return 1
+
+
 def _signal_generation_derived_window_seconds(project_root: str = "") -> float:
     raw = _dynamic_runtime_control(project_root, "SIGNAL_GENERATION_DERIVED_WINDOW_SECONDS", "300")
     try:
@@ -622,6 +637,13 @@ def _should_emit_signal_generation_event(
     symbol = str(payload.get("symbol") or "UNKNOWN").strip()
     action = str(payload.get("action") or "UNKNOWN").strip().upper()
     strategy = str(payload.get("strategy") or payload.get("bot_id") or "UNKNOWN").strip()
+    if is_sub_bot and not is_execution_outcome:
+        sample_modulus = _signal_generation_sub_bot_sample_modulus(project_root)
+        if sample_modulus > 1:
+            sample_bucket = int(now_ts // max(window, 1.0))
+            sample_seed = f"{strategy}:{sample_bucket}".encode("utf-8")
+            if int(hashlib.sha256(sample_seed).hexdigest()[:16], 16) % sample_modulus != 0:
+                return False
     scope_symbol = "*" if is_sub_bot else symbol
     signature = f"signal_generation:{classification}:{reason}:{scope_symbol}:{action}:{strategy}:{status}:{layer}"
     with _LOW_SIGNAL_RECENT_LOCK:

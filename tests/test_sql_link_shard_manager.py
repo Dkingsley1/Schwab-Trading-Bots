@@ -2098,6 +2098,170 @@ def test_build_shards_bounds_governance_tail_work_by_default(monkeypatch) -> Non
     assert shards["governance"]["sqlite_batch_max_bytes"] == 32 * 1024 * 1024
 
 
+def test_raw_live_priority_focus_routes_fresh_material_hotspot_and_prioritizes_shard(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    snapshot_path = tmp_path / "ingestion_backpressure_latest.json"
+    now = shard_manager.datetime(2026, 8, 5, 16, 0, tzinfo=shard_manager.timezone.utc)
+    snapshot_path.write_text(
+        json.dumps(
+            {
+                "timestamp_utc": now.isoformat(),
+                "pending_lines": 5600,
+                "top_pending_files": [
+                    {
+                        "source_rel": "governance/events/signal_generation_20260805.jsonl",
+                        "pending_lines": 5200,
+                    },
+                    {
+                        "source_rel": "governance/events/auth_events_20260805.jsonl",
+                        "pending_lines": 300,
+                    },
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("SQL_LINK_SERVICE_RAW_LIVE_PRIORITY_BOOST", "0")
+    monkeypatch.setenv("SQL_LINK_SERVICE_RAW_LIVE_AUTO_FOCUS_ENABLED", "1")
+    shards = [
+        {
+            "name": "trading",
+            "max_files": 4,
+            "max_lines_per_file": 8000,
+            "max_bytes_per_file": 128 * 1024 * 1024,
+            "sqlite_batch_max_bytes": 32 * 1024 * 1024,
+        },
+        {
+            "name": "governance",
+            "max_files": 4,
+            "max_lines_per_file": 8000,
+            "max_bytes_per_file": 128 * 1024 * 1024,
+            "sqlite_batch_max_bytes": 32 * 1024 * 1024,
+        },
+    ]
+
+    focused, contract = shard_manager._apply_raw_live_priority_focus(
+        shards,
+        backpressure_path=snapshot_path,
+        now_utc=now,
+    )
+    governance = next(row for row in focused if row["name"] == "governance")
+    ordered, plan = shard_manager._prioritize_shards_for_linking(focused)
+
+    assert contract["applied"] is True
+    assert contract["priority_boost_requested"] is False
+    assert contract["automatic_focus_enabled"] is True
+    assert contract["reason"] == "fresh_material_raw_live_pressure"
+    assert governance["path_contains"] == (
+        "governance/events/signal_generation_20260805.jsonl,"
+        "governance/events/auth_events_20260805.jsonl"
+    )
+    assert governance["raw_live_priority_pending_lines"] == 5500
+    assert governance["max_lines_per_file"] == 64000
+    assert governance["max_bytes_per_file"] == 1024 * 1024 * 1024
+    assert governance["sqlite_batch_max_bytes"] == 256 * 1024 * 1024
+    assert ordered[0]["name"] == "governance"
+    assert plan["priority_rows"][0]["raw_live_priority_focus"] is True
+
+
+def test_raw_live_priority_focus_ignores_stale_snapshot(tmp_path: Path, monkeypatch) -> None:
+    snapshot_path = tmp_path / "ingestion_backpressure_latest.json"
+    now = shard_manager.datetime(2026, 8, 5, 16, 0, tzinfo=shard_manager.timezone.utc)
+    snapshot_path.write_text(
+        json.dumps(
+            {
+                "timestamp_utc": "2026-08-05T15:55:00+00:00",
+                "pending_lines": 9000,
+                "top_pending_files": [
+                    {
+                        "source_rel": "governance/events/signal_generation_20260805.jsonl",
+                        "pending_lines": 8000,
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("SQL_LINK_SERVICE_RAW_LIVE_PRIORITY_BOOST", "1")
+    shards = [{"name": "governance", "path_contains": "", "max_files": 4}]
+
+    focused, contract = shard_manager._apply_raw_live_priority_focus(
+        shards,
+        backpressure_path=snapshot_path,
+        now_utc=now,
+    )
+
+    assert contract["applied"] is False
+    assert contract["reason"] == "snapshot_stale"
+    assert focused == shards
+
+
+def test_raw_live_priority_focus_releases_when_pressure_clears(tmp_path: Path, monkeypatch) -> None:
+    snapshot_path = tmp_path / "ingestion_backpressure_latest.json"
+    now = shard_manager.datetime(2026, 8, 5, 16, 0, tzinfo=shard_manager.timezone.utc)
+    snapshot_path.write_text(
+        json.dumps(
+            {
+                "timestamp_utc": now.isoformat(),
+                "pending_lines": 1999,
+                "top_pending_files": [
+                    {
+                        "source_rel": "governance/events/signal_generation_20260805.jsonl",
+                        "pending_lines": 1900,
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("SQL_LINK_SERVICE_RAW_LIVE_PRIORITY_BOOST", "1")
+    shards = [{"name": "governance", "path_contains": "", "max_files": 4}]
+
+    focused, contract = shard_manager._apply_raw_live_priority_focus(
+        shards,
+        backpressure_path=snapshot_path,
+        now_utc=now,
+    )
+
+    assert contract["applied"] is False
+    assert contract["reason"] == "pressure_below_focus_threshold"
+    assert contract["minimum_pending_lines"] == 2000
+    assert focused == shards
+
+
+def test_raw_live_priority_focus_can_be_explicitly_disabled(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("SQL_LINK_SERVICE_RAW_LIVE_PRIORITY_BOOST", "0")
+    monkeypatch.setenv("SQL_LINK_SERVICE_RAW_LIVE_AUTO_FOCUS_ENABLED", "0")
+    shards = [{"name": "governance", "path_contains": "", "max_files": 4}]
+
+    focused, contract = shard_manager._apply_raw_live_priority_focus(
+        shards,
+        backpressure_path=tmp_path / "missing.json",
+    )
+
+    assert contract["enabled"] is False
+    assert contract["applied"] is False
+    assert contract["reason"] == "disabled"
+    assert focused == shards
+
+
+def test_raw_live_priority_source_routing_covers_operational_lanes() -> None:
+    assert shard_manager._raw_live_priority_shard_for_source(
+        "governance/events/signal_generation_20260805.jsonl"
+    ) == "governance"
+    assert shard_manager._raw_live_priority_shard_for_source(
+        "governance/channels/runtime/default_crypto_coinbase/loop_state.jsonl"
+    ) == "crypto_runtime"
+    assert shard_manager._raw_live_priority_shard_for_source(
+        "exports/paper_broker_bridge/paper/paper_bridge_orders_20260805.jsonl"
+    ) == "trading_fast"
+    assert shard_manager._raw_live_priority_shard_for_source(
+        "governance/channels/risk/default_schwab/risk.jsonl"
+    ) == "risk_support"
+
+
 def test_build_shards_uses_heat_map_to_expand_hot_shard_capacity(monkeypatch) -> None:
     monkeypatch.setattr(
         shard_manager.ops_data_plane,
