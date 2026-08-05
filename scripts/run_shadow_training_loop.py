@@ -9294,6 +9294,102 @@ def _health_payload_timestamp(payload: Mapping[str, Any]) -> Optional[datetime]:
     return None
 
 
+def _refresh_backlog_evidence_if_due(
+    project_root: str,
+    raw_payload: Mapping[str, Any],
+    *,
+    now: datetime,
+) -> Dict[str, Any]:
+    guard_path = Path(project_root) / "scripts" / "ingestion_backpressure_guard.py"
+    try:
+        enabled = str(
+            _dynamic_storage_value("SHADOW_LOOP_SELF_REFRESH_BACKPRESSURE_ENABLED", "1") or "1"
+        ).strip().lower() in {"1", "true", "yes", "on"}
+    except Exception:
+        enabled = True
+    try:
+        max_age_seconds = min(
+            max(
+                float(_dynamic_storage_value("SHADOW_LOOP_BACKLOG_REFRESH_MAX_AGE_SECONDS", "5") or 5),
+                2.0,
+            ),
+            60.0,
+        )
+    except Exception:
+        max_age_seconds = 5.0
+
+    raw_ts = _health_payload_timestamp(raw_payload)
+    raw_age_seconds = max((now - raw_ts).total_seconds(), 0.0) if raw_ts is not None else float("inf")
+    refresh_due = bool(raw_age_seconds > max_age_seconds)
+    result: Dict[str, Any] = {
+        "enabled": enabled,
+        "available": guard_path.exists(),
+        "refresh_due": refresh_due,
+        "attempted": False,
+        "in_progress": False,
+        "evidence_fresh": not refresh_due,
+        "max_age_seconds": round(max_age_seconds, 3),
+        "raw_age_seconds_before": round(raw_age_seconds, 3) if math.isfinite(raw_age_seconds) else None,
+        "raw_age_seconds_after": round(raw_age_seconds, 3) if math.isfinite(raw_age_seconds) else None,
+        "return_code": None,
+        "error": "",
+        "policy": "one fleet member refreshes backlog truth while peers fail closed",
+    }
+    if not enabled or not guard_path.exists() or not refresh_due:
+        return result
+
+    lock_path = Path(project_root) / "governance" / "locks" / "ingestion_backpressure_refresh.lock"
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    lock_handle = lock_path.open("a+", encoding="utf-8")
+    try:
+        try:
+            fcntl.flock(lock_handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            result["in_progress"] = True
+            return result
+
+        latest = _load_health_payload(project_root, "ingestion_backpressure_latest.json")
+        latest_ts = _health_payload_timestamp(latest)
+        latest_age = max((datetime.now(timezone.utc) - latest_ts).total_seconds(), 0.0) if latest_ts is not None else float("inf")
+        if latest_age <= max_age_seconds:
+            result["evidence_fresh"] = True
+            result["raw_age_seconds_after"] = round(latest_age, 3)
+            return result
+
+        result["attempted"] = True
+        try:
+            proc = subprocess.run(
+                [sys.executable, str(guard_path), "--json"],
+                cwd=str(project_root),
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                check=False,
+                timeout=15,
+            )
+            result["return_code"] = int(proc.returncode)
+        except Exception as exc:
+            result["error"] = f"{type(exc).__name__}: {exc}"
+
+        refreshed = _load_health_payload(project_root, "ingestion_backpressure_latest.json")
+        refreshed_ts = _health_payload_timestamp(refreshed)
+        refreshed_age = (
+            max((datetime.now(timezone.utc) - refreshed_ts).total_seconds(), 0.0)
+            if refreshed_ts is not None
+            else float("inf")
+        )
+        result["raw_age_seconds_after"] = round(refreshed_age, 3) if math.isfinite(refreshed_age) else None
+        result["evidence_fresh"] = bool(
+            result.get("return_code") == 0 and refreshed_age <= max_age_seconds
+        )
+        return result
+    finally:
+        try:
+            fcntl.flock(lock_handle.fileno(), fcntl.LOCK_UN)
+        except Exception:
+            pass
+        lock_handle.close()
+
+
 def _fresh_backlog_pause_contract(project_root: str) -> Dict[str, Any]:
     def _pending_int(raw: Any) -> int:
         try:
@@ -9318,15 +9414,19 @@ def _fresh_backlog_pause_contract(project_root: str) -> Dict[str, Any]:
         pause_lines = 15000
     try:
         newer_raw_grace_seconds = max(
-            float(_dynamic_storage_value("SHADOW_LOOP_FRESH_BACKLOG_NEWER_GRACE_SECONDS", "15") or 15),
+            float(_dynamic_storage_value("SHADOW_LOOP_FRESH_BACKLOG_NEWER_GRACE_SECONDS", "0") or 0),
             0.0,
         )
     except Exception:
-        newer_raw_grace_seconds = 15.0
+        newer_raw_grace_seconds = 0.0
 
     now = datetime.now(timezone.utc)
     storage = _load_health_payload(project_root, "ingestion_storage_control_latest.json")
     raw = _load_health_payload(project_root, "ingestion_backpressure_latest.json")
+    refresh_contract = _refresh_backlog_evidence_if_due(project_root, raw, now=now)
+    if bool(refresh_contract.get("attempted", False)) or bool(refresh_contract.get("evidence_fresh", False)):
+        raw = _load_health_payload(project_root, "ingestion_backpressure_latest.json")
+        now = datetime.now(timezone.utc)
     storage_ts = _health_payload_timestamp(storage)
     raw_ts = _health_payload_timestamp(raw)
     storage_age = max((now - storage_ts).total_seconds(), 0.0) if storage_ts is not None else float("inf")
@@ -9379,11 +9479,18 @@ def _fresh_backlog_pause_contract(project_root: str) -> Dict[str, Any]:
             and (storage_ts is None or raw_ts is None or raw_ts >= storage_ts)
         )
     )
+    refresh_pending = bool(
+        refresh_contract.get("enabled", False)
+        and refresh_contract.get("available", False)
+        and refresh_contract.get("refresh_due", False)
+        and not refresh_contract.get("evidence_fresh", False)
+    )
     active = bool(
         storage_pressure_active
         or newer_raw_pressure_active
         or stale_pressure_latched
         or control_evidence_stale
+        or refresh_pending
     )
     if storage_pressure_active:
         reason = "fresh_ingestion_storage_pressure"
@@ -9394,6 +9501,9 @@ def _fresh_backlog_pause_contract(project_root: str) -> Dict[str, Any]:
     elif stale_pressure_latched:
         reason = "stale_storage_pressure_requires_fresh_clear"
         source = "ingestion_storage_control"
+    elif refresh_pending:
+        reason = "backlog_evidence_refresh_pending"
+        source = "collector_backlog_refresh"
     elif control_evidence_stale:
         reason = "backlog_control_evidence_stale"
         source = "control_freshness_guard"
@@ -9418,6 +9528,8 @@ def _fresh_backlog_pause_contract(project_root: str) -> Dict[str, Any]:
         "stale_pressure_latched": stale_pressure_latched,
         "control_evidence_stale": control_evidence_stale,
         "clear_confirmed": clear_confirmed,
+        "refresh_pending": refresh_pending,
+        "refresh_contract": refresh_contract,
         "policy": "pause before a burst, fail closed when both controls are stale, and require fresh evidence before releasing known storage pressure",
     }
 
@@ -17625,12 +17737,11 @@ def run_loop(
         now_ts = time.time()
         iteration_backpressure_interrupt: Dict[str, Any] = {}
         for symbol_index, symbol in enumerate(symbols):
-            if symbol_index > 0:
-                cooperative_pause = _runtime_training_pause_contract(PROJECT_ROOT)
-                if bool(cooperative_pause.get("backlog_paused", False)):
-                    iteration_backpressure_interrupt = cooperative_pause
-                    backlog_pause_seen = True
-                    break
+            cooperative_pause = _runtime_training_pause_contract(PROJECT_ROOT)
+            if bool(cooperative_pause.get("backlog_paused", False)):
+                iteration_backpressure_interrupt = cooperative_pause
+                backlog_pause_seen = True
+                break
             u = symbol.upper()
             if u in volatile_set:
                 cadence = volatile_every_n

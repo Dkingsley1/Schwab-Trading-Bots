@@ -4359,6 +4359,7 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, now_utc: datetime | None
     }
     sql_overlay_reconciles_broad_downward = bool(
         sql_pending_overlay.get("active", False)
+        and (raw_backpressure_artifact_stale or overlay_newer_than_raw_backpressure)
         and total_pending_lines > max(pending_threshold, 1)
         and overlay_total < total_pending_lines
         and _safe_int(sql_pending_overlay.get("fresh_source_count"), 0) > 0

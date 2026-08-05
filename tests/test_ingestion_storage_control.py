@@ -3962,6 +3962,56 @@ def test_ingestion_storage_control_uses_fresh_overlay_to_reconcile_stale_raw_pre
     assert payload["backlog_truth"]["authoritative_mode"] == "overlay_fresh_shard_level"
 
 
+def test_ingestion_storage_control_keeps_newer_stricter_raw_pressure_over_empty_overlay(tmp_path: Path) -> None:
+    now = datetime(2026, 8, 5, 14, 10, tzinfo=timezone.utc)
+    health = tmp_path / "governance" / "health"
+    _write_json(
+        health / "ingestion_backpressure_latest.json",
+        {
+            "timestamp_utc": (now - timedelta(seconds=5)).isoformat(),
+            "pending_lines": 69000,
+            "pending_lines_total": 69200,
+            "pending_lines_deferred": 100,
+            "pending_lines_cold": 0,
+            "pending_lines_support_telemetry": 100,
+            "pending_lines_stale_stage": 0,
+            "pending_lines_threshold": 15000,
+            "oldest_pending_age_seconds": 80.0,
+            "oldest_age_threshold_seconds": 240.0,
+            "overload": True,
+            "top_pending_files": [
+                {
+                    "source_rel": "governance/events/signal_generation_20260805.jsonl",
+                    "pending_lines": 45000,
+                    "oldest_pending_age_seconds": 0.0,
+                }
+            ],
+        },
+    )
+    _write_json(
+        health / "jsonl_sql_ingestion_health_governance_latest.json",
+        {
+            "timestamp_utc": (now - timedelta(seconds=10)).isoformat(),
+            "filters": {"include_streams": ["governance_events"]},
+            "sqlite": {
+                "pending_lines": 0,
+                "oldest_uningested_age_seconds": 0.0,
+                "files_with_pending": 0,
+                "top_pending_files": [],
+            },
+        },
+    )
+
+    payload = src.build_payload(tmp_path, now_utc=now)
+
+    assert payload["backpressure"]["overlay_adjusted"] is False
+    assert payload["backpressure"]["core_pending_lines"] == 69000
+    assert payload["backpressure"]["total_pending_lines"] == 69200
+    assert payload["sql_ingestion_pending_overlay"]["used_for_pressure"] is False
+    assert payload["backlog_truth"]["authoritative_mode"] == "raw_live"
+    assert payload["severity"] == "critical"
+
+
 def test_ingestion_storage_control_broad_empty_overlay_clears_stale_raw_top_rows_for_grades(tmp_path: Path) -> None:
     now = datetime(2026, 7, 29, 22, 55, tzinfo=timezone.utc)
     health = tmp_path / "governance" / "health"

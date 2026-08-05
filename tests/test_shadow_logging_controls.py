@@ -527,6 +527,112 @@ def test_stale_backlog_controls_fail_closed(tmp_path, monkeypatch) -> None:
     assert contract["fresh_backlog_pause"]["clear_confirmed"] is False
 
 
+def test_collector_refreshes_due_backlog_truth_before_admission(tmp_path, monkeypatch) -> None:
+    health = tmp_path / "governance" / "health"
+    scripts = tmp_path / "scripts"
+    health.mkdir(parents=True, exist_ok=True)
+    scripts.mkdir(parents=True, exist_ok=True)
+    (scripts / "ingestion_backpressure_guard.py").write_text("# test guard\n", encoding="utf-8")
+    stale = datetime.now(timezone.utc) - timedelta(minutes=2)
+    (health / "ingestion_storage_control_latest.json").write_text(
+        json.dumps(
+            {
+                "timestamp_utc": stale.isoformat(),
+                "overall_status": "ready",
+                "severity": "stable",
+                "backpressure": {"total_pending_lines": 0, "core_pending_lines": 0},
+            }
+        ),
+        encoding="utf-8",
+    )
+    raw_path = health / "ingestion_backpressure_latest.json"
+    raw_path.write_text(
+        json.dumps(
+            {
+                "timestamp_utc": stale.isoformat(),
+                "pending_lines": 0,
+                "pending_lines_total": 0,
+            }
+        ),
+        encoding="utf-8",
+    )
+    empty_override = tmp_path / "empty.env"
+    empty_override.write_text(
+        "SHADOW_LOOP_FRESH_BACKLOG_PAUSE_LINES=15000\n"
+        "SHADOW_LOOP_BACKLOG_REFRESH_MAX_AGE_SECONDS=5\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(loop, "DYNAMIC_STORAGE_OVERRIDE_PATHS", (empty_override,))
+    _reset_dynamic_override_cache()
+
+    def _refresh(*_args, **_kwargs):
+        raw_path.write_text(
+            json.dumps(
+                {
+                    "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+                    "pending_lines": 22000,
+                    "pending_lines_total": 22000,
+                }
+            ),
+            encoding="utf-8",
+        )
+        return loop.subprocess.CompletedProcess([], 0)
+
+    monkeypatch.setattr(loop.subprocess, "run", _refresh)
+
+    contract = loop._runtime_training_pause_contract(str(tmp_path))
+
+    assert contract["paused"] is True
+    assert contract["reason"] == "fresh_raw_backpressure_newer_than_storage_control"
+    assert contract["fresh_backlog_pause"]["refresh_contract"]["attempted"] is True
+    assert contract["fresh_backlog_pause"]["refresh_contract"]["evidence_fresh"] is True
+    assert contract["fresh_backlog_pause"]["raw_total_pending_lines"] == 22000
+
+
+def test_collector_fails_closed_while_backlog_refresh_is_in_progress(tmp_path, monkeypatch) -> None:
+    health = tmp_path / "governance" / "health"
+    health.mkdir(parents=True, exist_ok=True)
+    now = datetime.now(timezone.utc)
+    (health / "ingestion_storage_control_latest.json").write_text(
+        json.dumps(
+            {
+                "timestamp_utc": now.isoformat(),
+                "overall_status": "ready",
+                "severity": "stable",
+                "backpressure": {"total_pending_lines": 0, "core_pending_lines": 0},
+            }
+        ),
+        encoding="utf-8",
+    )
+    (health / "ingestion_backpressure_latest.json").write_text(
+        json.dumps(
+            {
+                "timestamp_utc": now.isoformat(),
+                "pending_lines": 0,
+                "pending_lines_total": 0,
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        loop,
+        "_refresh_backlog_evidence_if_due",
+        lambda *_args, **_kwargs: {
+            "enabled": True,
+            "available": True,
+            "refresh_due": True,
+            "evidence_fresh": False,
+            "in_progress": True,
+        },
+    )
+
+    contract = loop._runtime_training_pause_contract(str(tmp_path))
+
+    assert contract["paused"] is True
+    assert contract["reason"] == "backlog_evidence_refresh_pending"
+    assert contract["fresh_backlog_pause"]["refresh_pending"] is True
+
+
 def test_collector_resume_stagger_is_bounded_and_stable() -> None:
     first = loop._collector_resume_stagger_seconds(
         broker="schwab",

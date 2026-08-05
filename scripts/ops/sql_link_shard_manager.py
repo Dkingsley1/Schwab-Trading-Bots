@@ -1231,16 +1231,19 @@ def _fresh_idle_shard_skip_record(
     if last_status in {"error", "failed", "blocked"}:
         return None
     focused_paths = _parse_csv(str(shard.get("path_contains", "") or ""))
-    if focused_paths:
-        state_payload = _load_json(Path(str(shard.get("state_file") or "")))
-        sqlite_state = state_payload.get("sqlite") if isinstance(state_payload.get("sqlite"), dict) else {}
+    state_payload = _load_json(Path(str(shard.get("state_file") or "")))
+    sqlite_state = state_payload.get("sqlite") if isinstance(state_payload.get("sqlite"), dict) else {}
+    tracked_paths = focused_paths or [str(key) for key, row in sqlite_state.items() if isinstance(row, dict)]
+    if tracked_paths:
         health_timestamp = _parse_iso_utc(snapshot.get("timestamp_utc"))
-        for raw_path in focused_paths:
+        for raw_path in tracked_paths:
             source_path = Path(raw_path)
             if not source_path.is_absolute():
                 source_path = PROJECT_ROOT / source_path
             if not source_path.exists():
-                return None
+                if focused_paths:
+                    return None
+                continue
             try:
                 resolved = source_path.resolve()
                 source_stat = resolved.stat()
@@ -1256,7 +1259,9 @@ def _fresh_idle_shard_skip_record(
                 None,
             )
             if not isinstance(state_row, dict):
-                return None
+                if focused_paths:
+                    return None
+                continue
             last_offset = _as_int(state_row.get("last_offset_bytes"), 0)
             state_inode = _as_int(state_row.get("file_inode"), 0)
             if state_inode > 0 and state_inode != int(source_stat.st_ino):
