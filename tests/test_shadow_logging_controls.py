@@ -31,6 +31,63 @@ def test_dynamic_storage_flag_reads_override_files_in_order(tmp_path, monkeypatc
     assert loop._dynamic_storage_flag("LOG_API_CALLS", True) is True
 
 
+def test_collection_duty_cycle_extends_busy_loop_without_restart(monkeypatch) -> None:
+    monkeypatch.setattr(
+        loop,
+        "_dynamic_storage_overrides",
+        lambda: {
+            "BOT_COLLECTION_DUTY_CYCLE_ENABLED": "1",
+            "BOT_COLLECTION_DUTY_CYCLE_MAX_ACTIVE_RATIO": "0.20",
+            "SHADOW_LOOP_DUTY_CYCLE_MAX_INTERVAL_SECONDS": "900",
+        },
+    )
+
+    contract = loop._collection_duty_cycle_contract(loop_seconds=10.0, interval_seconds=30.0)
+
+    assert contract["active"] is True
+    assert contract["applied"] is True
+    assert contract["effective_ratio"] == 0.20
+    assert contract["target_cycle_seconds"] == 50.0
+    assert contract["sleep_seconds"] == 40.0
+
+
+def test_collection_duty_cycle_disabled_preserves_normal_interval(monkeypatch) -> None:
+    monkeypatch.setattr(
+        loop,
+        "_dynamic_storage_overrides",
+        lambda: {
+            "BOT_COLLECTION_DUTY_CYCLE_ENABLED": "0",
+            "BOT_COLLECTION_DUTY_CYCLE_MAX_ACTIVE_RATIO": "0.20",
+        },
+    )
+
+    contract = loop._collection_duty_cycle_contract(loop_seconds=10.0, interval_seconds=30.0)
+
+    assert contract["active"] is False
+    assert contract["applied"] is False
+    assert contract["sleep_seconds"] == 20.0
+
+
+def test_collection_duty_cycle_bounds_bad_ratio_and_max_cycle(monkeypatch) -> None:
+    overrides = {
+        "BOT_COLLECTION_DUTY_CYCLE_ENABLED": "1",
+        "BOT_COLLECTION_DUTY_CYCLE_MAX_ACTIVE_RATIO": "nan",
+        "SHADOW_LOOP_DUTY_CYCLE_MAX_INTERVAL_SECONDS": "60",
+    }
+    monkeypatch.setattr(loop, "_dynamic_storage_overrides", lambda: overrides)
+
+    malformed = loop._collection_duty_cycle_contract(loop_seconds=20.0, interval_seconds=30.0)
+    assert malformed["parse_error"] is True
+    assert malformed["effective_ratio"] == 0.16
+    assert malformed["target_cycle_seconds"] == 60.0
+    assert malformed["sleep_seconds"] == 40.0
+
+    overrides["BOT_COLLECTION_DUTY_CYCLE_MAX_ACTIVE_RATIO"] = "0"
+    bounded = loop._collection_duty_cycle_contract(loop_seconds=1.0, interval_seconds=5.0)
+    assert bounded["effective_ratio"] == 0.05
+    assert bounded["target_cycle_seconds"] == 20.0
+
+
 def test_runtime_research_self_nice_reads_runtime_override(tmp_path, monkeypatch) -> None:
     runtime_override = tmp_path / ".env.runtime_resource_guard_override"
     monkeypatch.setattr(loop, "DYNAMIC_STORAGE_OVERRIDE_PATHS", (runtime_override,))

@@ -9234,6 +9234,51 @@ def _external_ingestion_extra_interval_seconds(project_root: str) -> int:
     return min(extra, max_extra)
 
 
+def _collection_duty_cycle_contract(*, loop_seconds: float, interval_seconds: float) -> Dict[str, Any]:
+    enabled = _dynamic_storage_flag("BOT_COLLECTION_DUTY_CYCLE_ENABLED", False)
+    raw_ratio = _dynamic_storage_value("BOT_COLLECTION_DUTY_CYCLE_MAX_ACTIVE_RATIO", "0.16")
+    parse_error = False
+    try:
+        requested_ratio = float(raw_ratio)
+        if not math.isfinite(requested_ratio):
+            raise ValueError("non-finite collector duty-cycle ratio")
+    except Exception:
+        requested_ratio = 0.16
+        parse_error = True
+    effective_ratio = min(max(requested_ratio, 0.05), 1.0)
+    active_seconds = max(float(loop_seconds), 0.0)
+    base_interval = max(float(interval_seconds), 0.0)
+    normal_sleep_seconds = max(base_interval - active_seconds, 0.0)
+
+    try:
+        max_cycle_seconds = float(_dynamic_storage_value("SHADOW_LOOP_DUTY_CYCLE_MAX_INTERVAL_SECONDS", "900"))
+        if not math.isfinite(max_cycle_seconds):
+            raise ValueError("non-finite collector duty-cycle maximum")
+    except Exception:
+        max_cycle_seconds = 900.0
+    max_cycle_seconds = max(max_cycle_seconds, base_interval, 5.0)
+
+    active = bool(enabled and effective_ratio < 1.0)
+    target_cycle_seconds = base_interval
+    if active and active_seconds > 0.0:
+        target_cycle_seconds = min(max(base_interval, active_seconds / effective_ratio), max_cycle_seconds)
+    sleep_seconds = max(target_cycle_seconds - active_seconds, normal_sleep_seconds, 0.0)
+    return {
+        "active": active,
+        "applied": bool(active and sleep_seconds > normal_sleep_seconds + 0.001),
+        "requested_ratio": round(requested_ratio, 6),
+        "effective_ratio": round(effective_ratio, 6),
+        "parse_error": parse_error,
+        "active_seconds": round(active_seconds, 6),
+        "base_interval_seconds": round(base_interval, 6),
+        "target_cycle_seconds": round(target_cycle_seconds, 6),
+        "normal_sleep_seconds": round(normal_sleep_seconds, 6),
+        "sleep_seconds": round(sleep_seconds, 6),
+        "max_cycle_seconds": round(max_cycle_seconds, 6),
+        "policy": "dynamic collector duty cycle limits intake without restarting healthy shadow loops",
+    }
+
+
 def _runtime_training_pause_contract(project_root: str) -> Dict[str, Any]:
     runtime = _load_health_payload(project_root, "runtime_throttle_control_latest.json")
     saturation = runtime.get("runtime_saturation_governor_v2") if isinstance(runtime.get("runtime_saturation_governor_v2"), dict) else {}
@@ -20248,6 +20293,26 @@ def run_loop(
             print(f"[IngestionBackpressure] applying external interval floor={external_floor}s")
             current_interval_seconds = external_floor
 
+        duty_cycle = _collection_duty_cycle_contract(
+            loop_seconds=loop_seconds,
+            interval_seconds=current_interval_seconds,
+        )
+        if duty_cycle["applied"]:
+            try:
+                duty_cycle_log_every = max(
+                    int(float(_dynamic_storage_value("SHADOW_LOOP_DUTY_CYCLE_LOG_EVERY_ITERS", "10"))),
+                    1,
+                )
+            except Exception:
+                duty_cycle_log_every = 10
+            if iter_count % duty_cycle_log_every == 0:
+                print(
+                    "[CollectorDutyCycle] "
+                    f"ratio={duty_cycle['effective_ratio']:.2f} "
+                    f"active_s={duty_cycle['active_seconds']:.2f} "
+                    f"sleep_s={duty_cycle['sleep_seconds']:.2f}"
+                )
+
         if log_maintenance_enabled and (iter_count % log_maintenance_every_iters == 0):
             stats = _run_log_maintenance(PROJECT_ROOT, max_ops=log_maintenance_max_ops)
             if (stats.get('compressed', 0) + stats.get('deleted', 0)) > 0:
@@ -20267,6 +20332,7 @@ def run_loop(
                 "active_bots": len([b for b in bots if b.active]),
                 "cache_size": len(state_cache._store),
                 "current_interval_seconds": current_interval_seconds,
+                "collector_duty_cycle": duty_cycle,
                 "memory_throttle_active": memory_throttle_active,
                 "memory_free_pct": latest_memory_snapshot.get("free_pct"),
                 "memory_swap_used_gb": latest_memory_snapshot.get("swap_used_gb"),
@@ -20294,7 +20360,7 @@ def run_loop(
             return
 
         JsonlWriteBuffer.shared().flush_all()
-        sleep_s = max(current_interval_seconds - loop_seconds, 0.0)
+        sleep_s = float(duty_cycle["sleep_seconds"])
         time.sleep(sleep_s)
 
 
