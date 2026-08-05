@@ -155,7 +155,24 @@ def _storage_overlay_freshness(
     storage_ts = _payload_timestamp(storage_control)
     comparable = raw_ts is not None and storage_ts is not None
     lag_seconds = (raw_ts - storage_ts).total_seconds() if comparable else 0.0
-    compatible = bool(not comparable or lag_seconds <= max(float(allowed_lag_seconds), 0.0))
+    raw_core = max(_safe_int((backpressure or {}).get("pending_lines"), 0), 0)
+    raw_total = max(_safe_int((backpressure or {}).get("pending_lines_total"), raw_core), raw_core)
+    storage_backpressure = (
+        storage_control.get("backpressure")
+        if isinstance(storage_control, dict) and isinstance(storage_control.get("backpressure"), dict)
+        else {}
+    )
+    overlay_core = max(_safe_int(storage_backpressure.get("core_pending_lines"), 0), 0)
+    overlay_total = max(
+        _safe_int(storage_backpressure.get("total_pending_lines"), overlay_core),
+        overlay_core,
+    )
+    raw_is_stricter = bool(raw_core > overlay_core or raw_total > overlay_total)
+    raw_materially_newer = bool(
+        raw_ts is not None
+        and (storage_ts is None or lag_seconds > max(float(allowed_lag_seconds), 0.0))
+    )
+    compatible = not (raw_materially_newer and raw_is_stricter)
     return {
         "compatible": compatible,
         "comparable": comparable,
@@ -163,7 +180,12 @@ def _storage_overlay_freshness(
         "storage_timestamp_utc": storage_ts.isoformat() if storage_ts is not None else "",
         "storage_lag_seconds": round(max(lag_seconds, 0.0), 3),
         "allowed_lag_seconds": round(max(float(allowed_lag_seconds), 0.0), 3),
-        "policy": "newer raw backlog wins when the managed SQL overlay has fallen behind",
+        "raw_core_pending_lines": raw_core,
+        "raw_total_pending_lines": raw_total,
+        "overlay_core_pending_lines": overlay_core,
+        "overlay_total_pending_lines": overlay_total,
+        "raw_is_stricter": raw_is_stricter,
+        "policy": "newer raw backlog wins only when it is stricter; a lower raw estimate cannot erase conservative SQL shard debt",
     }
 
 

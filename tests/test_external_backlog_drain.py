@@ -151,6 +151,40 @@ def test_fresh_zero_overlay_retires_raw_backlog_but_stale_zero_does_not() -> Non
     assert effective_stale["_storage_overlay_rejected_reason"] == "managed_overlay_older_than_raw_backpressure"
 
 
+def test_newer_lower_raw_estimate_does_not_erase_conservative_overlay_debt() -> None:
+    raw = {
+        "timestamp_utc": "2026-08-05T13:36:27+00:00",
+        "pending_lines": 769,
+        "pending_lines_total": 21749,
+    }
+    storage = {
+        "timestamp_utc": "2026-08-05T13:35:48+00:00",
+        "backpressure": {
+            "overlay_adjusted": True,
+            "core_pending_lines": 91419,
+            "deferred_pending_lines": 20974,
+            "total_pending_lines": 112393,
+        },
+        "stale_pending_locator": {
+            "top_pending_sources": [
+                {
+                    "source_rel": "governance/events/signal_generation_20260805.jsonl",
+                    "pending_lines": 91419,
+                    "pressure_lane": "core",
+                }
+            ],
+            "oldest_sources": [],
+        },
+    }
+
+    effective = src._backpressure_with_storage_overlay(raw, storage)
+
+    assert effective["pending_lines"] == 91419
+    assert effective["pending_lines_total"] == 112393
+    assert effective["_storage_overlay_authoritative"] is True
+    assert effective["_storage_overlay_freshness"]["raw_is_stricter"] is False
+
+
 def test_apply_parks_writer_when_fresh_managed_overlay_is_zero(tmp_path: Path, monkeypatch) -> None:
     project_root = tmp_path / "project"
     health = project_root / "governance" / "health"
