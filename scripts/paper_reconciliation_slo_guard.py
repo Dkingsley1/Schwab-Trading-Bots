@@ -1,10 +1,16 @@
 import argparse
 import json
+import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from scripts.ops.long_runtime_common import write_payload
+
 
 
 def _parse_iso_utc(value: str) -> datetime | None:
@@ -119,9 +125,7 @@ def main() -> int:
         "failed_checks": failed,
     }
 
-    out_path = Path(args.out_file)
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    out_path.write_text(json.dumps(out, ensure_ascii=True, indent=2), encoding="utf-8")
+    write_payload(Path(args.out_file), out)
 
     if args.json:
         print(json.dumps(out, ensure_ascii=True))

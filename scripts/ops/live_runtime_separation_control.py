@@ -331,7 +331,22 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, live_fresh_minutes: floa
     )
     guarded_paper_soak = _guarded_paper_soak_ready(project_root)
     live_or_guarded_paper_ready = bool(live_ready or guarded_paper_soak.get("ready", False))
-    training_blocked = str(training_runtime.get("overall_status") or "") == "blocked"
+    training_status = str(training_runtime.get("overall_status") or "").strip().lower()
+    training_hard_blocked = training_status == "blocked"
+    training_blocked = training_status in {"blocked", "constrained", "degraded"}
+    training_launch_contract = (
+        training_runtime.get("training_launch_contract")
+        if isinstance(training_runtime.get("training_launch_contract"), dict)
+        else {}
+    )
+    training_safely_deferred = bool(
+        training_blocked
+        and not bool(training_runtime.get("launch_allowed", training_launch_contract.get("launch_allowed", False)))
+        and bool(
+            training_runtime.get("launch_blockers")
+            or training_launch_contract.get("launch_blockers")
+        )
+    )
     storage_blocked_raw = str(storage_tier.get("overall_status") or "") == "blocked"
     hot_path_over_budget_bytes = int(((storage_tier.get("pressure") or {}).get("hot_path_over_budget_bytes", 0)) or 0)
     storage_target_status = storage_control.get("steady_state", {}).get("target_status", {}) if isinstance(storage_control.get("steady_state"), dict) else {}
@@ -400,6 +415,12 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, live_fresh_minutes: floa
         and bool(live_readiness.get("session_ready", False))
         and not bool(live_readiness.get("live_lane_running", False))
     )
+    live_submit_path_disabled = not bool(live_readiness.get("submit_path_enabled", False))
+    live_lane_read_only_attested = bool(
+        live_submit_path_disabled
+        and str(live_readiness.get("mode") or "").strip().lower()
+        in {"read_only", "validate_only", "validation_only"}
+    )
 
     overall_status = "ready"
     if contention_score >= 3:
@@ -434,7 +455,7 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, live_fresh_minutes: floa
     managed_cold_lane_deferred = bool(
         live_or_guarded_paper_ready
         and coverage_shortfall_bots > 0
-        and not training_blocked
+        and not training_hard_blocked
         and not storage_blocked
         and swap_used_gb < 8.0
         and restart_storms <= 0
@@ -449,7 +470,7 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, live_fresh_minutes: floa
     managed_coverage_stage_deferred = bool(
         live_or_guarded_paper_ready
         and coverage_shortfall_bots > 0
-        and not training_blocked
+        and not training_hard_blocked
         and not storage_blocked
         and swap_used_gb < 8.0
         and restart_storms <= 0
@@ -477,16 +498,29 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, live_fresh_minutes: floa
         clearance_state = "managed_cold_lane_deferred" if managed_cold_lane_deferred else "managed_coverage_stage_deferred"
         overall_status = "ready"
 
-    guarded_live_read_only = bool(
-        clearance_state == "protect_live"
+    attested_guarded_live_read_only = bool(
+        contention_score > 0
         and live_or_guarded_paper_ready
-        and training_blocked
+        and training_safely_deferred
+        and not storage_blocked
+        and swap_used_gb < 8.0
+        and restart_storms <= 0
+        and (
+            guarded_paper_read_only_ready
+            or not bool(live_readiness.get("live_lane_running", False))
+            or live_lane_read_only_attested
+        )
+    )
+    legacy_guarded_training_defer = bool(
+        live_or_guarded_paper_ready
+        and training_hard_blocked
         and not storage_blocked
         and coverage_shortfall_bots <= 0
         and swap_used_gb < 8.0
         and restart_storms <= 0
         and str(cold_lane_contract.get("overall_status") or "") == "ready"
     )
+    guarded_live_read_only = bool(attested_guarded_live_read_only or legacy_guarded_training_defer)
     if guarded_live_read_only:
         clearance_state = "guarded_live_read_only"
         overall_status = "ready"
@@ -494,6 +528,8 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, live_fresh_minutes: floa
     isolation_grade = "shared_host"
     if contention_score <= 0 and coverage_shortfall_bots <= 0 and not training_blocked and not storage_blocked:
         isolation_grade = "clear"
+    elif attested_guarded_live_read_only:
+        isolation_grade = "frozen_serving"
     elif managed_cold_lane_deferred or managed_coverage_stage_deferred:
         isolation_grade = "managed_cold_lane"
     elif bool(cold_lane_contract.get("refresh_required", False)) and str(cold_lane_contract.get("overall_status") or "") == "ready":
@@ -521,6 +557,33 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, live_fresh_minutes: floa
         ]
     )
 
+    live_lane_should_be_read_only = bool(
+        (
+            live_ready
+            or guarded_paper_read_only_ready
+            or (
+                bool(live_readiness.get("broker_ready", False))
+                and bool(live_readiness.get("session_ready", False))
+            )
+        )
+        and contention_score > 0
+        or guarded_paper_read_only_ready
+        or guarded_live_read_only
+    )
+    promotions_should_wait = bool(training_blocked or coverage_shortfall_bots > 0)
+    heavy_research_cold_lane = bool(training_blocked or storage_blocked or contention_score > 0)
+    frozen_serving_isolation_ready = bool(
+        overall_status == "ready"
+        and attested_guarded_live_read_only
+        and live_lane_should_be_read_only
+        and promotions_should_wait
+        and heavy_research_cold_lane
+        and (
+            not bool(live_readiness.get("live_lane_running", False))
+            or live_lane_read_only_attested
+        )
+    )
+
     return {
         "timestamp_utc": iso_now(),
         "schema_version": 1,
@@ -534,6 +597,8 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, live_fresh_minutes: floa
             "broker_ready": bool(live_readiness.get("broker_ready", False)),
             "session_ready": bool(live_readiness.get("session_ready", False)),
             "live_lane_running": bool(live_readiness.get("live_lane_running", False)),
+            "live_submit_path_disabled": live_submit_path_disabled,
+            "live_lane_read_only_attested": live_lane_read_only_attested,
             "live_readiness_age_minutes": round(float(live_age_minutes), 4) if live_age_minutes is not None else None,
         },
         "training_plane": {
@@ -542,6 +607,7 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, live_fresh_minutes: floa
             "precompute_target_count": len(training_runtime.get("precompute_targets") or []),
             "coverage_shortfall_bots": coverage_shortfall_bots,
             "coverage_truth": coverage_truth,
+            "training_safely_deferred": training_safely_deferred,
         },
         "shared_host_pressure": {
             "contention_score": int(contention_score),
@@ -560,26 +626,15 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, live_fresh_minutes: floa
             "signals": contention_signals,
         },
         "release_contract": {
-            "live_lane_should_be_read_only": bool(
-                (
-                    live_ready
-                    or guarded_paper_read_only_ready
-                    or (
-                        bool(live_readiness.get("broker_ready", False))
-                        and bool(live_readiness.get("session_ready", False))
-                    )
-                )
-                and contention_score > 0
-                or guarded_paper_read_only_ready
-            ),
-            "promotions_should_wait_for_cold_lane": bool(training_blocked or coverage_shortfall_bots > 0),
+            "live_lane_should_be_read_only": live_lane_should_be_read_only,
+            "promotions_should_wait_for_cold_lane": promotions_should_wait,
             "shared_host_training_resume_allowed": bool(
                 contention_score <= 0
                 and coverage_shortfall_bots <= 0
                 and not training_blocked
                 and not storage_blocked
             ),
-            "heavy_research_must_stay_cold_lane": bool(training_blocked or storage_blocked or contention_score > 0),
+            "heavy_research_must_stay_cold_lane": heavy_research_cold_lane,
             "infra_bots": [
                 "live_runtime_separation_control",
                 "training_runtime_control",
@@ -597,6 +652,17 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, live_fresh_minutes: floa
             "coverage_launch_state": str(coverage_clearance.get("launch_state") or ""),
             "coverage_launch_window_open": bool(coverage_clearance.get("can_auto_launch_off_hours", False)),
             "coverage_auto_launch_pending": bool(coverage_clearance.get("auto_launch_pending", False)),
+        },
+        "serving_isolation_contract": {
+            "ready": frozen_serving_isolation_ready,
+            "mode": "frozen_release_bundle_read_only" if frozen_serving_isolation_ready else "shared_host_not_isolated",
+            "frozen_release_bundles_enforced": bool(frozen_serving_isolation_ready),
+            "training_mutation_allowed": False,
+            "training_safely_deferred": training_safely_deferred,
+            "live_lane_should_be_read_only": live_lane_should_be_read_only,
+            "promotions_should_wait_for_cold_lane": promotions_should_wait,
+            "heavy_research_must_stay_cold_lane": heavy_research_cold_lane,
+            "policy": "training availability may defer without degrading frozen read-only serving; promotion remains blocked until training evidence is current",
         },
         "clearance_plan": {
             "overall_status": overall_status,

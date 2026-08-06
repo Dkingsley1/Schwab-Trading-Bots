@@ -1,13 +1,20 @@
 import argparse
 import json
 import os
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from scripts.ops.long_runtime_common import write_payload
+
 OPS_THRESHOLDS_FILE = PROJECT_ROOT / "governance" / "ops_thresholds.json"
 SCOPE_EXEMPT_TOKENS = (
     "collection_floor",
+    "graduation_hold",
     "min_active_floor_override",
     "bucket_diversity",
     "manual_collection_restore",
@@ -256,9 +263,7 @@ def main() -> int:
         "immature_active_examples": immature_active[:30],
     }
 
-    out_path = Path(args.out_file)
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    out_path.write_text(json.dumps(payload, ensure_ascii=True, indent=2), encoding="utf-8")
+    write_payload(Path(args.out_file), payload)
 
     if args.json:
         print(json.dumps(payload, ensure_ascii=True))

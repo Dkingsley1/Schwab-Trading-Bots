@@ -667,6 +667,13 @@ def test_runtime_artifact_refresh_step_specs_include_training_storage_and_harden
     assert "system_architecture_autopilot_settled" in names
     assert "system_drift_guard_final" in names
     assert "master_infrastructure_supervisor_final_settled" in names
+    assert "bot_needs_intelligence" in names
+    assert "training_runtime_control" in names
+    assert "storage_disaster_recovery" in names
+    assert "chaos_drill_coordinator" in names
+    assert "live_order_ledger_control" in names
+    assert "content_addressed_artifact_store" in names
+    assert "storage_disaster_recovery_verified" in names
 
     assert names.index("storage_quota_guard") < names.index("state_snapshot_restore_drill")
     assert names.index("state_snapshot_restore_drill") < names.index("storage_resilience_control")
@@ -677,6 +684,8 @@ def test_runtime_artifact_refresh_step_specs_include_training_storage_and_harden
     assert names.index("storage_retention_unison") < names.index("storage_resilience_control_terminal")
     assert names.index("storage_resilience_control_terminal") < names.index("blackstart_recovery")
     assert names.index("storage_retention_unison") < names.index("unattended_soak_readiness")
+    assert names.index("content_addressed_artifact_store") < names.index("storage_disaster_recovery_verified")
+    assert names.index("storage_disaster_recovery_verified") < names.index("production_readiness_control")
     assert names.index("live_readiness_smoke") < names.index("blackstart_recovery")
     assert names.index("blackstart_recovery") < names.index("incident_timeline")
     assert names.index("incident_timeline") < names.index("incident_review_packet")

@@ -247,6 +247,32 @@ def test_new_bot_admission_guard_ignores_guarded_paper_soak_rows_without_explici
     assert payload["blocking_candidate_count"] == 0
 
 
+def test_new_bot_admission_guard_ignores_graduation_hold_until_explicit_promotion(tmp_path: Path) -> None:
+    payload = src.build_payload(
+        registry={
+            "sub_bots": [
+                {
+                    "bot_id": "brain_refinery_v265_deferred_candidate",
+                    "active": True,
+                    "reason": "graduation_hold:runs<24",
+                }
+            ]
+        },
+        walk_forward={"bots": {}},
+        feature_store_manifest={"ok": False, "point_in_time_contract": {"complete": False}, "contract_hashes": {}},
+        replay_hash_registry_guard={"ok": False, "details": {}},
+        ownership_payload={},
+        diagnostics_root=tmp_path / "governance" / "training_diagnostics",
+        min_training_sample_count=40,
+        min_eligible_sequences=4,
+        min_walk_forward_runs=12,
+    )
+
+    assert payload["ok"] is True
+    assert payload["candidate_bot_count"] == 0
+    assert payload["blocking_candidate_count"] == 0
+
+
 def test_new_bot_admission_guard_targeted_advisory_scope_does_not_block_coverage_repair(tmp_path: Path) -> None:
     diagnostics_root = tmp_path / "governance" / "training_diagnostics"
     _write_json(

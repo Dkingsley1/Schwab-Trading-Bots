@@ -5,6 +5,7 @@ import argparse
 import hashlib
 import json
 import shutil
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -12,6 +13,11 @@ import os
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from scripts.ops.long_runtime_common import write_payload
+
 DEFAULT_STORE_ROOT = PROJECT_ROOT / "governance" / "content_store" / "sha256"
 DEFAULT_OUT_PATH = PROJECT_ROOT / "governance" / "content_store" / "latest.json"
 DEFAULT_TRACKED_PATHS = [
@@ -324,9 +330,7 @@ def main() -> int:
         gc_grace_days=float(args.gc_grace_days),
         max_blob_bytes=max_blob_bytes,
     )
-    out_path = Path(args.out_file).expanduser()
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    out_path.write_text(json.dumps(payload, ensure_ascii=True, indent=2), encoding="utf-8")
+    write_payload(Path(args.out_file).expanduser(), payload)
     if args.json:
         print(json.dumps(payload, ensure_ascii=True))
     else:

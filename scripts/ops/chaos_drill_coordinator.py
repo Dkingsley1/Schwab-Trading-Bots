@@ -12,12 +12,15 @@ if __package__ in {None, ""}:
     if str(PROJECT_ROOT) not in sys.path:
         sys.path.insert(0, str(PROJECT_ROOT))
     from scripts.ops.long_runtime_common import PROJECT_ROOT, iso_now, load_json, ordered_unique, parse_iso_utc, utc_now, write_payload
+    from scripts.ops.production_recovery_drill_harness import build_payload as build_isolated_drill_payload
 else:
     from .long_runtime_common import PROJECT_ROOT, iso_now, load_json, ordered_unique, parse_iso_utc, utc_now, write_payload
+    from .production_recovery_drill_harness import build_payload as build_isolated_drill_payload
 
 
 DEFAULT_OUT_PATH = PROJECT_ROOT / "governance" / "health" / "chaos_drill_coordinator_latest.json"
 DEFAULT_STATE_PATH = PROJECT_ROOT / "governance" / "runtime" / "chaos_drill_state.json"
+DEFAULT_ISOLATED_HARNESS_PATH = PROJECT_ROOT / "governance" / "health" / "production_recovery_drill_harness_latest.json"
 REQUIRED_PRODUCTION_DRILLS = (
     "auth_expiry",
     "broker_network_outage",
@@ -38,8 +41,49 @@ def _load_state(path: Path) -> dict[str, Any]:
 
 
 def _save_state(path: Path, payload: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload, ensure_ascii=True, indent=2), encoding="utf-8")
+    write_payload(path, payload)
+
+
+def _record_isolated_harness(
+    project_root: Path,
+    *,
+    state_path: Path,
+    harness_path: Path,
+) -> dict[str, Any]:
+    payload = build_isolated_drill_payload(project_root)
+    write_payload(harness_path, payload)
+    if not bool(payload.get("production_recovery_evidence", False)):
+        return payload
+    state = _load_state(state_path)
+    drills = state.get("drills") if isinstance(state.get("drills"), dict) else {}
+    for row in payload.get("drills") if isinstance(payload.get("drills"), list) else []:
+        if not isinstance(row, dict):
+            continue
+        drill_name = str(row.get("drill") or "").strip()
+        if drill_name not in REQUIRED_PRODUCTION_DRILLS:
+            continue
+        drills[drill_name] = {
+            "completed_at_utc": str(payload.get("timestamp_utc") or iso_now()),
+            "result": str(row.get("result") or "fail"),
+            "recovery_seconds": max(float(row.get("recovery_seconds", 0.0) or 0.0), 0.0),
+            "containment_verified": bool(row.get("containment_verified", False)),
+            "no_duplicate_orders": bool(row.get("no_duplicate_orders", False)),
+            "evidence": f"{harness_path}#{drill_name}:{str(row.get('evidence_sha256') or '')}",
+            "evidence_sha256": str(row.get("evidence_sha256") or ""),
+            "evidence_class": str(payload.get("evidence_class") or ""),
+            "harness_run_sha256": str(payload.get("run_sha256") or ""),
+            "real_outage_evidence": bool(payload.get("real_outage_evidence", False)),
+            "note": "isolated non-destructive production recovery drill",
+        }
+    state["drills"] = drills
+    state["last_isolated_harness"] = {
+        "timestamp_utc": payload.get("timestamp_utc"),
+        "run_sha256": payload.get("run_sha256"),
+        "path": str(harness_path),
+        "ok": payload.get("ok"),
+    }
+    _save_state(state_path, state)
+    return payload
 
 
 def build_payload(
@@ -111,6 +155,10 @@ def build_payload(
             "recovery_seconds": recovery_seconds,
             "evidence": str((recorded or {}).get("evidence") or "") if isinstance(recorded, dict) else "",
             "note": str((recorded or {}).get("note") or "") if isinstance(recorded, dict) else "",
+            "evidence_sha256": str((recorded or {}).get("evidence_sha256") or "") if isinstance(recorded, dict) else "",
+            "evidence_class": str((recorded or {}).get("evidence_class") or "") if isinstance(recorded, dict) else "",
+            "harness_run_sha256": str((recorded or {}).get("harness_run_sha256") or "") if isinstance(recorded, dict) else "",
+            "real_outage_evidence": bool((recorded or {}).get("real_outage_evidence", False)) if isinstance(recorded, dict) else False,
             "verified": verified,
         }
         drills.append(row)
@@ -178,6 +226,12 @@ def build_payload(
         "schedule_contract": schedule_contract,
         "state_path": str(state_path),
         "infra_bots": ["chaos_drill_coordinator", "daily_state_snapshot_drill", "reboot_resilience_guard", "process_watchdog"],
+        "evidence_scope": {
+            "isolated_non_destructive_drills_accepted": True,
+            "real_outage_evidence_required": False,
+            "live_execution_authority": False,
+            "policy": "weekly isolated recovery proof is required; real destructive outages are never triggered by automation",
+        },
         "recommended_actions": recommended_actions,
     }
 
@@ -194,11 +248,23 @@ def main() -> int:
     parser.add_argument("--containment-verified", action="store_true")
     parser.add_argument("--no-duplicate-orders", action="store_true")
     parser.add_argument("--evidence", default="")
+    parser.add_argument("--run-isolated", action="store_true")
+    parser.add_argument("--isolated-harness-file", default=str(DEFAULT_ISOLATED_HARNESS_PATH))
     parser.add_argument("--out-file", default=str(DEFAULT_OUT_PATH))
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args()
 
+    project_root = Path(args.project_root).resolve()
     state_path = Path(args.state_path).expanduser()
+    if args.run_isolated:
+        harness_path = Path(args.isolated_harness_file).expanduser()
+        if not harness_path.is_absolute():
+            harness_path = project_root / harness_path
+        _record_isolated_harness(
+            project_root,
+            state_path=state_path,
+            harness_path=harness_path,
+        )
     if str(args.record_drill or "").strip():
         state = _load_state(state_path)
         drills = state.get("drills") if isinstance(state.get("drills"), dict) else {}
@@ -219,7 +285,7 @@ def main() -> int:
         state["drills"] = drills
         _save_state(state_path, state)
 
-    payload = build_payload(Path(args.project_root).resolve(), state_path=state_path, overdue_days=float(args.overdue_days))
+    payload = build_payload(project_root, state_path=state_path, overdue_days=float(args.overdue_days))
     out_path = Path(args.out_file).expanduser()
     write_payload(out_path, payload)
     if args.json:

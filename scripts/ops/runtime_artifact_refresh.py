@@ -197,6 +197,18 @@ def _step_specs(project_root: Path) -> list[dict[str, Any]]:
             "timeout_sec": 180,
         },
         {
+            "name": "bot_needs_intelligence",
+            "payload_path": health_root / "bot_needs_intelligence_latest.json",
+            "cmd": [str(PY), str(ops_root / "bot_needs_intelligence.py"), "--json"],
+            "timeout_sec": 180,
+        },
+        {
+            "name": "training_runtime_control",
+            "payload_path": health_root / "training_runtime_control_latest.json",
+            "cmd": [str(PY), str(ops_root / "training_runtime_control.py"), "--json"],
+            "timeout_sec": 180,
+        },
+        {
             "name": "architecture_upgrade_scoreboard",
             "payload_path": health_root / "architecture_upgrade_scoreboard_latest.json",
             "cmd": [str(PY), str(ops_root / "architecture_upgrade_scoreboard.py"), "--json"],
@@ -329,6 +341,18 @@ def _step_specs(project_root: Path) -> list[dict[str, Any]]:
             "timeout_sec": 120,
         },
         {
+            "name": "new_bot_graduation_gate",
+            "payload_path": project_root / "governance" / "walk_forward" / "new_bot_graduation_latest.json",
+            "cmd": [str(PY), str(project_root / "scripts" / "new_bot_graduation_gate.py"), "--json"],
+            "timeout_sec": 180,
+        },
+        {
+            "name": "new_bot_admission_guard",
+            "payload_path": health_root / "new_bot_admission_guard_latest.json",
+            "cmd": [str(PY), str(project_root / "scripts" / "new_bot_admission_guard.py"), "--json"],
+            "timeout_sec": 180,
+        },
+        {
             "name": "promotion_packet_builder",
             "payload_path": project_root / "governance" / "champion_challenger" / "promotion_packet_latest.json",
             "cmd": [str(PY), str(project_root / "scripts" / "promotion_packet_builder.py"), "--json"],
@@ -403,6 +427,12 @@ def _step_specs(project_root: Path) -> list[dict[str, Any]]:
             "name": "storage_resilience_control_terminal",
             "payload_path": health_root / "storage_resilience_control_latest.json",
             "cmd": [str(PY), str(ops_root / "storage_resilience_control.py"), "--fast", "--json"],
+            "timeout_sec": 180,
+        },
+        {
+            "name": "storage_disaster_recovery",
+            "payload_path": health_root / "storage_disaster_recovery_latest.json",
+            "cmd": [str(PY), str(ops_root / "storage_disaster_recovery.py"), "--json"],
             "timeout_sec": 180,
         },
         {
@@ -510,6 +540,18 @@ def _step_specs(project_root: Path) -> list[dict[str, Any]]:
             "timeout_sec": 120,
         },
         {
+            "name": "execution_budget",
+            "payload_path": project_root / "governance" / "risk" / "execution_budget_latest.json",
+            "cmd": [str(PY), str(project_root / "scripts" / "execution_budgeter.py"), "--json"],
+            "timeout_sec": 120,
+        },
+        {
+            "name": "risk_service_boundary",
+            "payload_path": project_root / "governance" / "risk" / "risk_service_boundary_latest.json",
+            "cmd": [str(PY), str(project_root / "scripts" / "risk_service_boundary.py"), "--json"],
+            "timeout_sec": 120,
+        },
+        {
             "name": "position_round_trip_watch",
             "payload_path": health_root / "position_round_trip_watch_latest.json",
             "cmd": [
@@ -546,7 +588,15 @@ def _step_specs(project_root: Path) -> list[dict[str, Any]]:
         {
             "name": "chaos_drill_coordinator",
             "payload_path": health_root / "chaos_drill_coordinator_latest.json",
-            "cmd": [str(PY), str(ops_root / "chaos_drill_coordinator.py"), "--json"],
+            "additional_payload_paths": [health_root / "production_recovery_drill_harness_latest.json"],
+            "cmd": [str(PY), str(ops_root / "chaos_drill_coordinator.py"), "--run-isolated", "--json"],
+            "timeout_sec": 180,
+        },
+        {
+            "name": "live_order_ledger_control",
+            "payload_path": health_root / "live_order_ledger_control_latest.json",
+            "cmd": [str(PY), str(ops_root / "live_order_ledger_control.py"), "--json"],
+            "timeout_sec": 60,
         },
         {
             "name": "rolling_restart_controller",
@@ -575,6 +625,18 @@ def _step_specs(project_root: Path) -> list[dict[str, Any]]:
             "name": "live_runtime_separation_control",
             "payload_path": health_root / "live_runtime_separation_control_latest.json",
             "cmd": [str(PY), str(ops_root / "live_runtime_separation_control.py"), "--json"],
+        },
+        {
+            "name": "paper_reconciliation_slo",
+            "payload_path": health_root / "paper_reconciliation_slo_latest.json",
+            "cmd": [str(PY), str(project_root / "scripts" / "paper_reconciliation_slo_guard.py"), "--json"],
+            "timeout_sec": 60,
+        },
+        {
+            "name": "live_reconciliation_slo",
+            "payload_path": health_root / "live_reconciliation_slo_latest.json",
+            "cmd": [str(PY), str(project_root / "scripts" / "live_reconciliation_slo_guard.py"), "--json"],
+            "timeout_sec": 60,
         },
         {
             "name": "live_canary_control",
@@ -1387,6 +1449,24 @@ def _step_specs(project_root: Path) -> list[dict[str, Any]]:
             "name": "profitability_evidence_firewall",
             "payload_path": health_root / "profitability_evidence_firewall_latest.json",
             "cmd": [str(PY), str(ops_root / "profitability_evidence_firewall.py"), "--json"],
+            "timeout_sec": 180,
+        },
+        {
+            "name": "content_addressed_artifact_store",
+            "payload_path": project_root / "governance" / "content_store" / "latest.json",
+            "cmd": [str(PY), str(ops_root / "content_addressed_artifact_store.py"), "--json"],
+            "timeout_sec": 300,
+        },
+        {
+            "name": "storage_disaster_recovery_verified",
+            "payload_path": health_root / "storage_disaster_recovery_latest.json",
+            "cmd": [str(PY), str(ops_root / "storage_disaster_recovery.py"), "--json"],
+            "timeout_sec": 180,
+        },
+        {
+            "name": "production_readiness_control",
+            "payload_path": health_root / "production_readiness_control_latest.json",
+            "cmd": [str(PY), str(ops_root / "production_readiness_control.py"), "--json"],
             "timeout_sec": 180,
         },
         {

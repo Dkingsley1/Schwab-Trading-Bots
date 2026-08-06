@@ -1,11 +1,17 @@
 import argparse
 import json
 import os
+import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, List
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from scripts.ops.long_runtime_common import write_payload
+
 DEFAULT_MODE_FILE = PROJECT_ROOT / "governance" / "health" / "shadow_watchdog_halt_recovery_latest.json"
 
 
@@ -199,9 +205,7 @@ def main() -> int:
         "failed_checks": failed_checks,
     }
 
-    out_path = Path(args.out_file)
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    out_path.write_text(json.dumps(out, ensure_ascii=True, indent=2), encoding="utf-8")
+    write_payload(Path(args.out_file), out)
 
     if failed_checks:
         alert = {
@@ -214,9 +218,7 @@ def main() -> int:
             "mode": mode,
         }
         _append_jsonl(Path(args.alert_file), alert)
-        latest_path = Path(args.latest_alert_file)
-        latest_path.parent.mkdir(parents=True, exist_ok=True)
-        latest_path.write_text(json.dumps(alert, ensure_ascii=True, indent=2), encoding="utf-8")
+        write_payload(Path(args.latest_alert_file), alert)
 
     if args.json:
         print(json.dumps(out, ensure_ascii=True))

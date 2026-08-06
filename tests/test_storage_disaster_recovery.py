@@ -1,4 +1,5 @@
 import json
+import sqlite3
 import sys
 from pathlib import Path
 
@@ -178,10 +179,11 @@ def test_storage_disaster_recovery_preserves_pinned_local_route(monkeypatch, tmp
         snapshot_cooldown_seconds=3600.0,
     )
 
-    assert payload["overall_status"] == "ready"
+    assert payload["overall_status"] == "degraded"
     assert payload["current_storage_mode"] == "local_fallback"
     assert payload["route_policy"]["local_route_pinned"] is True
     assert payload["restore_external"]["skipped_reason"] == "local_route_pinned"
+    assert payload["durability_contract"]["ready"] is False
 
 
 def test_current_storage_mode_prefers_physical_local_routes_over_stale_external_artifact(
@@ -329,3 +331,112 @@ def test_sync_storage_target_override_writes_single_source_of_truth(tmp_path: Pa
     assert payload["ok"] is True
     assert "BOT_LOGS_EXTERNAL_MOUNT=/Volumes/BOT_LOGS" in text
     assert "BOT_LOGS_EXTERNAL_VOLUME_UUID=uuid-123" in text
+
+
+def test_model_route_blocks_missing_promoted_model_but_not_paper_collection_gap(tmp_path: Path) -> None:
+    _write_json(
+        tmp_path / "master_bot_registry.json",
+        {
+            "sub_bots": [
+                {"bot_id": "paper-only", "active": True, "model_path": "models/paper.joblib"},
+                {"bot_id": "promoted", "active": True, "model_path": "models/promoted.joblib"},
+            ]
+        },
+    )
+    _write_json(
+        tmp_path / "governance" / "champion_challenger" / "promotion_packet_latest.json",
+        {"promotion_scope": {"trained_bot_ids": ["promoted"]}},
+    )
+    local_root = tmp_path / "local"
+    (local_root / "models").mkdir(parents=True)
+    (local_root / "models" / "paper.joblib").write_bytes(b"paper")
+
+    contract = src._model_route_contract(tmp_path, local_root)
+
+    assert contract["available_active_model_count"] == 1
+    assert contract["missing_active_model_ids"] == ["promoted"]
+    assert contract["promotion_model_coverage_ready"] is False
+    assert contract["missing_promotion_model_ids"] == ["promoted"]
+    assert contract["paper_collection_model_gaps_advisory"] is False
+
+
+def test_model_hydration_copies_available_active_models_with_bounded_route(monkeypatch, tmp_path: Path) -> None:
+    _write_json(
+        tmp_path / "master_bot_registry.json",
+        {"sub_bots": [{"bot_id": "paper", "active": True, "model_path": "models/paper.joblib"}]},
+    )
+    external_project = tmp_path / "external_project"
+    (external_project / "models").mkdir(parents=True)
+    (external_project / "models" / "paper.joblib").write_bytes(b"model-data")
+    local_root = tmp_path / "local"
+    monkeypatch.setenv("BOT_LOGS_EXTERNAL_PROJECT_ROOT", str(external_project))
+    monkeypatch.setenv("BOT_LOGS_MODEL_HYDRATION_COOLDOWN_SECONDS", "0")
+    monkeypatch.setenv("BOT_LOGS_MODEL_HYDRATION_MAX_BYTES", "1024")
+
+    payload = src._hydrate_local_models(tmp_path, local_root, apply=True, state={})
+
+    assert payload["attempted"] is True
+    assert payload["ok"] is True
+    assert payload["copied_model_count"] == 1
+    assert (local_root / "models" / "paper.joblib").read_bytes() == b"model-data"
+
+
+def test_recovery_snapshot_contract_requires_fresh_snapshot_database_and_content_store(tmp_path: Path) -> None:
+    recovery_root = tmp_path / "recovery"
+    (recovery_root / "latest" / "data").mkdir(parents=True)
+    (recovery_root / "latest" / "data" / "snapshot_context.sqlite3").write_bytes(b"db")
+    _write_json(
+        recovery_root / "recovery_manifest_latest.json",
+        {
+            "timestamp_utc": src._utc_now(),
+            "copied_paths": ["data/snapshot_context.sqlite3"],
+            "errors": [],
+        },
+    )
+    _write_json(
+        tmp_path / "governance" / "content_store" / "latest.json",
+        {"timestamp_utc": src._utc_now(), "ok": True, "manifest_hash": "a" * 64},
+    )
+
+    contract = src._recovery_snapshot_contract(tmp_path, recovery_root)
+
+    assert contract["ready"] is True
+    assert contract["blockers"] == []
+    assert contract["snapshot_context_backup_present"] is True
+    assert contract["content_store"]["ready"] is True
+
+
+def test_online_curated_snapshot_uses_sqlite_backup_without_writer_quiet(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("BOT_LOGS_RECOVERY_MIN_FREE_AFTER_SNAPSHOT_GB", "0")
+    monkeypatch.setattr(
+        src,
+        "_writer_quiet_point",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("online snapshot must not pause the writer")),
+    )
+    local_root = tmp_path / "local"
+    database = local_root / "data" / "snapshot_context.sqlite3"
+    database.parent.mkdir(parents=True)
+    with sqlite3.connect(database) as conn:
+        conn.execute("CREATE TABLE observations (id INTEGER PRIMARY KEY, value TEXT)")
+        conn.execute("INSERT INTO observations(value) VALUES ('ready')")
+    (local_root / "logs").mkdir(parents=True)
+    (local_root / "logs" / "runtime.log").write_text("ready\n", encoding="utf-8")
+
+    payload = src._take_curated_snapshot(
+        local_root,
+        tmp_path / "recovery",
+        apply=True,
+        state={},
+        cooldown_seconds=0.0,
+        project_root=tmp_path,
+        require_writer_quiet=False,
+    )
+
+    copied_database = tmp_path / "recovery" / "latest" / "data" / "snapshot_context.sqlite3"
+    with sqlite3.connect(copied_database) as conn:
+        copied_value = conn.execute("SELECT value FROM observations").fetchone()[0]
+
+    assert payload["ok"] is True
+    assert payload["snapshot_mode"] == "online_sqlite_backup"
+    assert payload["quiet_point"]["skipped_reason"] == "online_snapshot_mode"
+    assert copied_value == "ready"

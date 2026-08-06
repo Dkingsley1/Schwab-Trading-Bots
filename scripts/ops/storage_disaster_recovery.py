@@ -6,6 +6,7 @@ import fcntl
 import json
 import os
 import shutil
+import sqlite3
 import subprocess
 import sys
 import time
@@ -22,12 +23,14 @@ if __package__ in {None, ""}:
     from core.storage_mounts import find_target_external_volume, resolve_external_storage
     from core.storage_target_override import DEFAULT_STORAGE_TARGET_OVERRIDE_PATH, write_storage_target_override
     from scripts.ops import writer_cycle_coordinator as writer_src
+    from scripts.ops.long_runtime_common import payload_age_minutes, write_payload
 else:
     PROJECT_ROOT = Path(__file__).resolve().parents[2]
     from core.runtime_python import resolve_runtime_python
     from core.storage_mounts import find_target_external_volume, resolve_external_storage
     from core.storage_target_override import DEFAULT_STORAGE_TARGET_OVERRIDE_PATH, write_storage_target_override
     from scripts.ops import writer_cycle_coordinator as writer_src
+    from scripts.ops.long_runtime_common import payload_age_minutes, write_payload
 
 
 PY = resolve_runtime_python(PROJECT_ROOT)
@@ -90,8 +93,7 @@ def _project_dir_from_env() -> str:
 
 
 def _write_json(path: Path, payload: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload, ensure_ascii=True, indent=2), encoding="utf-8")
+    write_payload(path, payload)
 
 
 def _parse_json_output(text: str) -> dict[str, Any]:
@@ -686,6 +688,28 @@ def _promote_latest_snapshot(staging_root: Path, latest_root: Path) -> None:
         shutil.rmtree(backup_root)
 
 
+def _backup_sqlite_online(src: Path, dst: Path) -> tuple[bool, str]:
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    tmp = dst.parent / f".{dst.name}.storage_recovery_tmp"
+    try:
+        if tmp.exists():
+            tmp.unlink()
+        with sqlite3.connect(f"file:{src}?mode=ro", uri=True, timeout=5.0) as source:
+            with sqlite3.connect(tmp, timeout=5.0) as target:
+                source.backup(target)
+                integrity = str(target.execute("PRAGMA integrity_check").fetchone()[0]).strip().lower()
+                if integrity != "ok":
+                    raise sqlite3.DatabaseError(f"integrity_check={integrity}")
+        os.replace(tmp, dst)
+        return True, ""
+    except Exception as exc:
+        try:
+            tmp.unlink(missing_ok=True)
+        except Exception:
+            pass
+        return False, f"{src}:{type(exc).__name__}:{exc}"
+
+
 def _take_curated_snapshot(
     local_root: Path,
     recovery_root: Path,
@@ -694,6 +718,7 @@ def _take_curated_snapshot(
     state: dict[str, Any],
     cooldown_seconds: float,
     project_root: Path = PROJECT_ROOT,
+    require_writer_quiet: bool = True,
 ) -> dict[str, Any]:
     selected = _recovery_selected_paths(local_root)
     available = [row for row in selected if bool(row.get("eligible", row.get("exists", False)))]
@@ -711,6 +736,7 @@ def _take_curated_snapshot(
         "available_path_count": int(len(available)),
         "cooldown_remaining_seconds": round(float(cooldown_remaining), 3),
         "workspace_cleanup": workspace_cleanup,
+        "snapshot_mode": "writer_quiet" if require_writer_quiet else "online_sqlite_backup",
     }
     if not apply:
         payload["skipped_reason"] = "apply_disabled"
@@ -726,11 +752,14 @@ def _take_curated_snapshot(
         payload["skipped_reason"] = "snapshot_cooldown_active"
         return payload
 
-    quiet_point = _writer_quiet_point(project_root, apply=apply)
+    quiet_point = {"attempted": False, "ok": True, "skipped_reason": "online_snapshot_mode"}
+    if require_writer_quiet:
+        quiet_point = _writer_quiet_point(project_root, apply=apply)
+        if not bool(quiet_point.get("ok", False)):
+            payload["quiet_point"] = quiet_point
+            payload["skipped_reason"] = str(quiet_point.get("skipped_reason") or "writer_not_quiet")
+            return payload
     payload["quiet_point"] = quiet_point
-    if not bool(quiet_point.get("ok", False)):
-        payload["skipped_reason"] = str(quiet_point.get("skipped_reason") or "writer_not_quiet")
-        return payload
 
     estimated_bytes = _selected_size_bytes(local_root, available)
     min_free_after_gb = max(
@@ -772,7 +801,19 @@ def _take_curated_snapshot(
     if staging_root.exists():
         shutil.rmtree(staging_root)
     staging_root.mkdir(parents=True, exist_ok=True)
-    staged = _stage_selected_paths(local_root, staging_root, available, compare_existing=False)
+    stage_rows = available
+    if not require_writer_quiet:
+        stage_rows = [row for row in available if str(row.get("rel_path") or "") not in IMPORTANT_FILES]
+    staged = _stage_selected_paths(local_root, staging_root, stage_rows, compare_existing=False)
+    if not require_writer_quiet:
+        sqlite_src = local_root / "data" / "snapshot_context.sqlite3"
+        sqlite_dst = staging_root / "data" / "snapshot_context.sqlite3"
+        if sqlite_src.is_file():
+            backed_up, backup_error = _backup_sqlite_online(sqlite_src, sqlite_dst)
+            if backed_up:
+                staged["copied_paths"].append("data/snapshot_context.sqlite3")
+            else:
+                staged["errors"].append(backup_error)
 
     manifest = {
         "timestamp_utc": _utc_now(),
@@ -780,6 +821,7 @@ def _take_curated_snapshot(
         "source_root": str(local_root),
         "snapshot_root": str(latest_root),
         "staging_root": str(staging_root),
+        "snapshot_mode": "writer_quiet" if require_writer_quiet else "online_sqlite_backup",
         "copied_paths": staged["copied_paths"],
         "skipped_paths": staged["skipped_paths"],
         "transient_missing": staged["transient_missing"],
@@ -855,7 +897,244 @@ def _transactional_curated_restore(
     return payload
 
 
-def _recommended_actions(probe: dict[str, Any], current_mode: str, route_policy: dict[str, Any]) -> list[str]:
+def _active_model_rows(project_root: Path) -> list[dict[str, str]]:
+    registry = _load_json(project_root / "master_bot_registry.json")
+    rows = registry.get("sub_bots") if isinstance(registry.get("sub_bots"), list) else []
+    active: list[dict[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for row in rows:
+        if not isinstance(row, dict) or not bool(row.get("active", False)):
+            continue
+        bot_id = str(row.get("bot_id") or "").strip()
+        model_path = str(row.get("model_path") or "").strip()
+        model_name = Path(model_path).name if model_path else ""
+        key = (bot_id, model_name)
+        if not bot_id or not model_name or key in seen:
+            continue
+        seen.add(key)
+        active.append({"bot_id": bot_id, "model_name": model_name})
+    return active
+
+
+def _promotion_model_ids(project_root: Path) -> set[str]:
+    packet = _load_json(project_root / "governance" / "champion_challenger" / "promotion_packet_latest.json")
+    scope = packet.get("promotion_scope") if isinstance(packet.get("promotion_scope"), dict) else {}
+    return {
+        str(bot_id or "").strip()
+        for bot_id in (scope.get("trained_bot_ids") if isinstance(scope.get("trained_bot_ids"), list) else [])
+        if str(bot_id or "").strip()
+    }
+
+
+def _model_route_contract(project_root: Path, local_root: Path) -> dict[str, Any]:
+    rows = _active_model_rows(project_root)
+    promotion_ids = _promotion_model_ids(project_root)
+    available: list[str] = []
+    missing: list[str] = []
+    promotion_missing: list[str] = []
+    for row in rows:
+        model_path = local_root / "models" / row["model_name"]
+        present = bool(model_path.is_file() and model_path.stat().st_size > 0)
+        target = available if present else missing
+        target.append(row["bot_id"])
+        if not present and row["bot_id"] in promotion_ids:
+            promotion_missing.append(row["bot_id"])
+    return {
+        "active_model_count": len(rows),
+        "available_active_model_count": len(available),
+        "missing_active_model_count": len(missing),
+        "active_model_coverage_ratio": round(len(available) / max(len(rows), 1), 6),
+        "missing_active_model_ids": missing[:100],
+        "promotion_model_count": len(promotion_ids),
+        "missing_promotion_model_ids": promotion_missing,
+        "promotion_model_coverage_ready": not promotion_missing,
+        "paper_collection_model_gaps_advisory": bool(missing and not promotion_missing),
+        "policy": "missing active-model artifacts remain visible and block promotion only when the bot enters an explicit promotion packet",
+    }
+
+
+def _configured_external_model_root() -> Path:
+    configured = str(os.getenv("BOT_LOGS_EXTERNAL_PROJECT_ROOT", "") or "").strip()
+    if configured:
+        return Path(configured).expanduser() / "models"
+    mount_root = Path(os.getenv("BOT_LOGS_EXTERNAL_MOUNT", "/Volumes/BOT_LOGS")).expanduser()
+    return mount_root / _project_dir_from_env() / "models"
+
+
+def _hydrate_local_models(
+    project_root: Path,
+    local_root: Path,
+    *,
+    apply: bool,
+    state: dict[str, Any],
+) -> dict[str, Any]:
+    source_root = _configured_external_model_root()
+    destination_root = local_root / "models"
+    cooldown_seconds = max(_safe_float(os.getenv("BOT_LOGS_MODEL_HYDRATION_COOLDOWN_SECONDS"), 21600.0), 0.0)
+    last_epoch = _safe_float(state.get("last_model_hydration_epoch"), 0.0)
+    cooldown_remaining = max(last_epoch + cooldown_seconds - time.time(), 0.0)
+    rows = _active_model_rows(project_root)
+    missing_rows = [row for row in rows if not (destination_root / row["model_name"]).is_file()]
+    payload: dict[str, Any] = {
+        "attempted": False,
+        "ok": not missing_rows,
+        "source_root": str(source_root),
+        "destination_root": str(destination_root),
+        "requested_model_count": len(rows),
+        "missing_before_count": len(missing_rows),
+        "copied_model_count": 0,
+        "source_missing_count": 0,
+        "copy_error_count": 0,
+        "copied_bytes": 0,
+        "cooldown_remaining_seconds": round(cooldown_remaining, 3),
+    }
+    if not apply:
+        payload["skipped_reason"] = "apply_disabled"
+        return payload
+    if not missing_rows:
+        payload["skipped_reason"] = "local_models_complete"
+        return payload
+    if cooldown_remaining > 0.0:
+        payload["skipped_reason"] = "hydration_cooldown_active"
+        return payload
+    if not source_root.is_dir():
+        payload["skipped_reason"] = "external_model_source_unavailable"
+        return payload
+
+    max_total_bytes = max(int(_safe_float(os.getenv("BOT_LOGS_MODEL_HYDRATION_MAX_BYTES"), float(1024**3))), 0)
+    destination_root.mkdir(parents=True, exist_ok=True)
+    copied: list[str] = []
+    source_missing: list[str] = []
+    errors: list[str] = []
+    copied_bytes = 0
+    payload["attempted"] = True
+    state["last_model_hydration_epoch"] = time.time()
+    for row in missing_rows:
+        src = source_root / row["model_name"]
+        dst = destination_root / row["model_name"]
+        if not src.is_file():
+            source_missing.append(row["bot_id"])
+            continue
+        try:
+            size_bytes = max(int(src.stat().st_size), 0)
+        except OSError as exc:
+            errors.append(f"{row['bot_id']}:{type(exc).__name__}:{exc}")
+            continue
+        if max_total_bytes > 0 and copied_bytes + size_bytes > max_total_bytes:
+            errors.append(f"{row['bot_id']}:hydration_byte_budget_exceeded")
+            continue
+        copy_state, detail = _copy_file_transactional(src, dst, compare_existing=False)
+        if copy_state == "copied":
+            copied.append(row["bot_id"])
+            copied_bytes += size_bytes
+        else:
+            errors.append(detail or f"{row['bot_id']}:{copy_state}")
+    remaining = [row for row in rows if not (destination_root / row["model_name"]).is_file()]
+    payload.update(
+        {
+            "ok": not errors and not remaining,
+            "copied_model_count": len(copied),
+            "copied_model_ids": copied[:100],
+            "source_missing_count": len(source_missing),
+            "source_missing_model_ids": source_missing[:100],
+            "copy_error_count": len(errors),
+            "copy_errors": errors[:100],
+            "copied_bytes": copied_bytes,
+            "missing_after_count": len(remaining),
+            "missing_after_model_ids": [row["bot_id"] for row in remaining[:100]],
+        }
+    )
+    return payload
+
+
+def _recovery_snapshot_contract(project_root: Path, recovery_root: Path) -> dict[str, Any]:
+    manifest_path = recovery_root / "recovery_manifest_latest.json"
+    manifest = _load_json(manifest_path)
+    latest_root = recovery_root / "latest"
+    max_age_minutes = max(
+        _safe_float(os.getenv("BOT_LOGS_RECOVERY_MAX_SNAPSHOT_AGE_HOURS"), 36.0) * 60.0,
+        60.0,
+    )
+    age_minutes = payload_age_minutes(manifest, manifest_path)
+    copied_paths = manifest.get("copied_paths") if isinstance(manifest.get("copied_paths"), list) else []
+    snapshot_db_present = bool((latest_root / "data" / "snapshot_context.sqlite3").is_file())
+    manifest_clean = bool(manifest and not list(manifest.get("errors") or []))
+    snapshot_fresh = bool(age_minutes is not None and age_minutes <= max_age_minutes)
+
+    content_path = project_root / "governance" / "content_store" / "latest.json"
+    content = _load_json(content_path)
+    content_age = payload_age_minutes(content, content_path)
+    content_fresh = bool(content_age is not None and content_age <= 24.0 * 60.0)
+    content_ready = bool(content_fresh and content.get("ok", False) and str(content.get("manifest_hash") or ""))
+    blockers = []
+    if not latest_root.is_dir():
+        blockers.append("recovery_snapshot_missing")
+    if not manifest_clean:
+        blockers.append("recovery_manifest_missing_or_unclean")
+    if not snapshot_fresh:
+        blockers.append("recovery_snapshot_stale")
+    if not snapshot_db_present:
+        blockers.append("snapshot_context_backup_missing")
+    if not content_ready:
+        blockers.append("immutable_control_plane_evidence_not_current")
+    return {
+        "ready": not blockers,
+        "blockers": blockers,
+        "manifest_path": str(manifest_path),
+        "latest_snapshot_root": str(latest_root),
+        "age_minutes": round(float(age_minutes), 3) if age_minutes is not None else None,
+        "max_age_minutes": max_age_minutes,
+        "manifest_clean": manifest_clean,
+        "copied_path_count": len(copied_paths),
+        "snapshot_context_backup_present": snapshot_db_present,
+        "content_store": {
+            "path": str(content_path),
+            "ready": content_ready,
+            "age_minutes": round(float(content_age), 3) if content_age is not None else None,
+            "manifest_hash": str(content.get("manifest_hash") or ""),
+        },
+    }
+
+
+def _durability_contract(
+    project_root: Path,
+    recovery_root: Path,
+    probe: dict[str, Any],
+    current_mode: str,
+    route_policy: dict[str, Any],
+    local_root: Path,
+) -> dict[str, Any]:
+    snapshot = _recovery_snapshot_contract(project_root, recovery_root)
+    models = _model_route_contract(project_root, local_root)
+    hot_path_ready = bool(probe.get("hot_storage_available", False) or current_mode in LOCAL_MODES)
+    local_route_certified = bool(current_mode in LOCAL_MODES and route_policy.get("local_route_pinned", False))
+    blockers = []
+    if not hot_path_ready:
+        blockers.append("local_hot_path_unavailable")
+    if not local_route_certified:
+        blockers.append("local_hot_route_not_pinned")
+    blockers.extend(str(item) for item in snapshot.get("blockers") or [])
+    if not bool(models.get("promotion_model_coverage_ready", False)):
+        blockers.append("promotion_model_artifacts_missing_from_local_route")
+    return {
+        "ready": not blockers,
+        "status": "ready_local_durable" if not blockers else "degraded_local_durability",
+        "blockers": list(dict.fromkeys(blockers)),
+        "hot_path_ready": hot_path_ready,
+        "external_required_for_hot_path": bool(probe.get("external_required_for_hot_path", False)),
+        "local_route_certified": local_route_certified,
+        "recovery_snapshot": snapshot,
+        "model_route": models,
+        "policy": "a pinned local hot route is production-ready only when its recovery snapshot, immutable control-plane evidence, and current promotion models are independently recoverable",
+    }
+
+
+def _recommended_actions(
+    probe: dict[str, Any],
+    current_mode: str,
+    route_policy: dict[str, Any],
+    durability: dict[str, Any] | None = None,
+) -> list[str]:
     actions: list[str] = []
     if not bool(probe.get("external_available", False)):
         actions.append("keep BOT_LOGS routed to local fallback until the target APFS volume is mounted and writable again")
@@ -869,24 +1148,31 @@ def _recommended_actions(probe: dict[str, Any], current_mode: str, route_policy:
             actions.append("keep the verified local hot route pinned; use an explicit certified storage switch when an external live route is wanted")
         elif not bool(route_policy.get("automatic_external_failback_enabled", False)):
             actions.append("keep the local hot route until an operator explicitly certifies an external failback")
+    durability = durability or {}
+    for blocker in durability.get("blockers") or []:
+        if blocker == "recovery_snapshot_stale":
+            actions.append("refresh the bounded local recovery snapshot at the next writer quiet point")
+        elif blocker == "immutable_control_plane_evidence_not_current":
+            actions.append("refresh the content-addressed control-plane evidence manifest")
+        elif blocker == "promotion_model_artifacts_missing_from_local_route":
+            actions.append("hydrate every promoted model artifact onto the pinned local route before live consideration")
+    model_route = durability.get("model_route") if isinstance(durability.get("model_route"), dict) else {}
+    if bool(model_route.get("paper_collection_model_gaps_advisory", False)):
+        actions.append("retrain or restore missing paper-only model artifacts before those bots enter promotion scope")
     return actions
 
 
-def _overall_status(probe: dict[str, Any], current_mode: str, route_policy: dict[str, Any]) -> str:
+def _overall_status(
+    probe: dict[str, Any],
+    current_mode: str,
+    route_policy: dict[str, Any],
+    durability: dict[str, Any] | None = None,
+) -> str:
+    if current_mode in LOCAL_MODES:
+        return "ready" if bool((durability or {}).get("ready", False)) else "degraded"
     if bool(probe.get("external_available", False)) and current_mode in EXTERNAL_CERTIFIED_MODES:
         return "ready"
-    if (
-        bool(probe.get("external_available", False))
-        and current_mode in LOCAL_MODES
-        and (
-            bool(route_policy.get("local_route_pinned", False))
-            or not bool(route_policy.get("automatic_external_failback_enabled", False))
-        )
-    ):
-        return "ready"
     if bool(probe.get("external_available", False)) and current_mode == "external_available_unverified":
-        return "degraded"
-    if current_mode in LOCAL_MODES:
         return "degraded"
     if bool(probe.get("external_available", False)):
         return "degraded"
@@ -950,6 +1236,19 @@ def build_payload(
         switch_local = _switch_storage_mode(project_root, "local", apply=apply)
         current_mode_after_mount = _current_storage_mode(project_root, probe=probe_after_mount)
 
+    model_hydration = {
+        "attempted": False,
+        "ok": False,
+        "skipped_reason": "not_local_hot_route",
+    }
+    if current_mode_after_mount in LOCAL_MODES:
+        model_hydration = _hydrate_local_models(
+            project_root,
+            local_root,
+            apply=apply,
+            state=state,
+        )
+
     snapshot = {
         "attempted": False,
         "ok": False,
@@ -959,14 +1258,22 @@ def build_payload(
         "latest_snapshot_root": str(recovery_root / "latest"),
         "selected_paths": _recovery_selected_paths(local_root),
     }
-    if not bool(probe_after_mount.get("external_available", False)) and current_mode_after_mount in LOCAL_MODES:
+    if current_mode_after_mount in LOCAL_MODES:
+        external_standby_ready = bool(probe_after_mount.get("external_available", False))
+        effective_snapshot_cooldown = float(snapshot_cooldown_seconds)
+        if external_standby_ready:
+            effective_snapshot_cooldown = max(
+                effective_snapshot_cooldown,
+                _safe_float(os.getenv("BOT_LOGS_LOCAL_PINNED_SNAPSHOT_COOLDOWN_SECONDS"), 43200.0),
+            )
         snapshot = _take_curated_snapshot(
             local_root,
             recovery_root,
             apply=apply,
             state=state,
-            cooldown_seconds=float(snapshot_cooldown_seconds),
+            cooldown_seconds=effective_snapshot_cooldown,
             project_root=project_root,
+            require_writer_quiet=not external_standby_ready,
         )
 
     probe_after_snapshot = _probe_storage()
@@ -1023,7 +1330,15 @@ def build_payload(
     if any(bool(step.get("attempted", False)) for step in (mount_attempt, switch_local, snapshot, curated_restore, restore_external)) or bool(target_override.get("changed", False)):
         finder_sync = _sync_finder_shortcuts(project_root, apply=apply)
 
-    overall_status = _overall_status(final_probe, final_mode, route_policy)
+    durability = _durability_contract(
+        project_root,
+        recovery_root,
+        final_probe,
+        final_mode,
+        route_policy,
+        local_root,
+    )
+    overall_status = _overall_status(final_probe, final_mode, route_policy, durability)
     payload = {
         "timestamp_utc": _utc_now(),
         "schema_version": 1,
@@ -1037,10 +1352,12 @@ def build_payload(
         "recovery_root": str(recovery_root),
         "storage_probe": final_probe,
         "initial_storage_probe": initial_probe,
-        "recommended_actions": _recommended_actions(final_probe, final_mode, route_policy),
+        "recommended_actions": _recommended_actions(final_probe, final_mode, route_policy, durability),
         "mount_attempt": mount_attempt,
         "switch_local": switch_local,
         "recovery_snapshot": snapshot,
+        "durability_contract": durability,
+        "model_hydration": model_hydration,
         "curated_restore": curated_restore,
         "restore_external": restore_external,
         "target_override": target_override,
@@ -1051,6 +1368,11 @@ def build_payload(
             "interval_seconds": max(int(float(os.getenv("BOT_LOGS_RECOVERY_AUTO_INTERVAL_SECONDS", "300") or 300)), 60),
             "enabled_by_default": True,
             "automatic_external_failback_enabled_by_default": False,
+            "pinned_local_online_snapshot_cooldown_seconds": max(
+                int(_safe_float(os.getenv("BOT_LOGS_LOCAL_PINNED_SNAPSHOT_COOLDOWN_SECONDS"), 43200.0)),
+                3600,
+            ),
+            "pinned_local_online_snapshot_uses_sqlite_backup_api": True,
         },
         "upgrade_track": {
             "upgradeable": True,

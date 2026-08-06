@@ -365,6 +365,53 @@ def test_live_money_contract_grades_managed_coverage_stage_read_only_as_ready(tm
     assert sections["risk_controls"]["ready"] is True
 
 
+def test_live_money_contract_accepts_only_safe_training_deferral_under_frozen_serving(tmp_path: Path) -> None:
+    _write_ready_sources(tmp_path)
+    health = tmp_path / "governance" / "health"
+    _write_json(
+        health / "training_runtime_control_latest.json",
+        {
+            "overall_status": "blocked",
+            "snapshot_ready": False,
+            "training_launch_contract": {
+                "mode": "prep_only",
+                "launch_allowed": False,
+                "launch_blockers": ["runtime_snapshot_not_fresh", "host_memory_relief_active"],
+                "training_quality_score": 100.0,
+            },
+        },
+    )
+    _write_json(
+        health / "live_runtime_separation_control_latest.json",
+        {
+            "overall_status": "ready",
+            "clearance_plan": {"clearance_state": "guarded_live_read_only"},
+            "release_contract": {"live_lane_should_be_read_only": True},
+            "serving_isolation_contract": {
+                "ready": True,
+                "frozen_release_bundles_enforced": True,
+                "training_mutation_allowed": False,
+            },
+        },
+    )
+
+    payload = src.build_payload(tmp_path, as_of_date="2026-08-25")
+    sections = {row["section_id"]: row for row in payload["sections"]}
+
+    assert sections["training_runtime"]["ready"] is True
+    assert sections["training_runtime"]["grade"] == "A+"
+    assert sections["training_runtime"]["evidence"]["managed_training_safely_deferred"] is True
+
+    training = json.loads((health / "training_runtime_control_latest.json").read_text(encoding="utf-8"))
+    training["training_launch_contract"]["launch_blockers"] = ["training_quality_blocked"]
+    _write_json(health / "training_runtime_control_latest.json", training)
+    unsafe_payload = src.build_payload(tmp_path, as_of_date="2026-08-25")
+    unsafe_sections = {row["section_id"]: row for row in unsafe_payload["sections"]}
+
+    assert unsafe_sections["training_runtime"]["ready"] is False
+    assert unsafe_sections["training_runtime"]["grade"] == "F"
+
+
 def test_live_money_contract_grades_idle_seed_ready_promotion_packet_without_unlocking_live_money(
     tmp_path: Path,
 ) -> None:

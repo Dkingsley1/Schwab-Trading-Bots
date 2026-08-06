@@ -123,6 +123,49 @@ def test_graduation_gate_stays_green_when_no_promotion_scope_is_active(tmp_path:
     assert payload["graduation_scope_active_count"] == 0
 
 
+def test_graduation_gate_treats_graduation_hold_as_collection_scope(tmp_path: Path, monkeypatch, capsys) -> None:
+    registry_path = tmp_path / "master_bot_registry.json"
+    walk_forward_path = tmp_path / "walk_forward_latest.json"
+    out_path = tmp_path / "new_bot_graduation_latest.json"
+
+    _write_json(
+        registry_path,
+        {
+            "sub_bots": [
+                {
+                    "bot_id": "brain_refinery_v265_deferred_candidate",
+                    "active": True,
+                    "reason": "graduation_hold:runs<24",
+                }
+            ]
+        },
+    )
+    _write_json(walk_forward_path, {"bots": {}})
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "new_bot_graduation_gate.py",
+            "--registry",
+            str(registry_path),
+            "--walk-forward-file",
+            str(walk_forward_path),
+            "--out-file",
+            str(out_path),
+            "--json",
+        ],
+    )
+
+    rc = graduation_gate.main()
+    payload = json.loads(capsys.readouterr().out)
+
+    assert rc == 0
+    assert payload["promotion_scope_active"] is False
+    assert payload["graduation_scope_active_count"] == 0
+    assert payload["coverage_exempt_active_count"] == 1
+    assert payload["coverage_exempt_examples"][0]["exempt_reason"] == "coverage_exempt"
+
+
 def test_graduation_gate_exempts_plain_data_collection_rows_from_promotion_scope(tmp_path: Path, monkeypatch, capsys) -> None:
     registry_path = tmp_path / "master_bot_registry.json"
     walk_forward_path = tmp_path / "walk_forward_latest.json"

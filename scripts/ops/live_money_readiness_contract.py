@@ -26,8 +26,18 @@ MAX_RISK_CONTROL_ARTIFACT_AGE_MINUTES = 36.0 * 60.0
 MANAGED_RUNTIME_CLEARANCE_BLOCKERS = {
     "runtime_clearance=managed_cold_lane_deferred",
     "runtime_clearance=managed_coverage_stage_deferred",
+    "runtime_clearance=guarded_live_read_only",
 }
 MANAGED_TRAINING_LAUNCH_BLOCKERS = {"autonomic_training_budget_closed"}
+SAFE_DEFERRED_TRAINING_LAUNCH_BLOCKERS = {
+    "autonomic_training_budget_closed",
+    "bot_needs_training_candidates_not_runtime_ready",
+    "host_memory_relief_active",
+    "no_bot_needs_training_candidates",
+    "resource_guard_not_green",
+    "runtime_snapshot_not_fresh",
+    "training_candidate_selector_not_fresh",
+}
 MANAGED_REPLAY_COLLECTION_REASONS = {
     "counterfactual_low_sample_outcome_attribution_pending",
     "counterfactual_low_sample_win_rate_below_floor",
@@ -633,7 +643,8 @@ def build_payload(
         live_runtime
         and str(live_runtime.get("overall_status") or "").strip().lower() == "ready"
         and live_read_only
-        and live_clearance_state in {"managed_cold_lane_deferred", "managed_coverage_stage_deferred"}
+        and live_clearance_state
+        in {"managed_cold_lane_deferred", "managed_coverage_stage_deferred", "guarded_live_read_only"}
     )
     live_runtime_control_ready = bool(
         live_runtime
@@ -657,12 +668,29 @@ def build_payload(
         and set(training_launch_blockers).issubset(MANAGED_TRAINING_LAUNCH_BLOCKERS)
         and training_quality_score >= 95.0
     )
+    serving_isolation = _as_dict(live_runtime.get("serving_isolation_contract"))
+    managed_training_safely_deferred = bool(
+        training_runtime
+        and str(training_runtime.get("overall_status") or "").strip().lower()
+        in {"blocked", "constrained", "degraded"}
+        and not bool(training_contract.get("launch_allowed", False))
+        and bool(training_launch_blockers)
+        and set(training_launch_blockers).issubset(SAFE_DEFERRED_TRAINING_LAUNCH_BLOCKERS)
+        and training_quality_score >= 95.0
+        and managed_live_read_only_control
+        and bool(serving_isolation.get("ready", False))
+        and bool(serving_isolation.get("frozen_release_bundles_enforced", False))
+        and not bool(serving_isolation.get("training_mutation_allowed", True))
+    )
     training_runtime_ready = bool(
-        str(training_runtime.get("overall_status") or "").strip().lower() in {"ready", "constrained"}
-        and (
-            bool(training_contract.get("launch_allowed", False))
-            or managed_training_budget_closed
+        (
+            str(training_runtime.get("overall_status") or "").strip().lower() in {"ready", "constrained"}
+            and (
+                bool(training_contract.get("launch_allowed", False))
+                or managed_training_budget_closed
+            )
         )
+        or managed_training_safely_deferred
     )
 
     current_date = _today_utc(as_of_date)
@@ -864,6 +892,9 @@ def build_payload(
                 "prep_allowed": training_contract.get("prep_allowed"),
                 "launch_blockers": training_launch_blockers,
                 "managed_training_budget_closed": managed_training_budget_closed,
+                "managed_training_safely_deferred": managed_training_safely_deferred,
+                "serving_isolation_ready": serving_isolation.get("ready"),
+                "frozen_release_bundles_enforced": serving_isolation.get("frozen_release_bundles_enforced"),
                 "training_quality_score": training_quality_score,
                 "recommended_batch_size": training_contract.get("recommended_batch_size"),
             },
