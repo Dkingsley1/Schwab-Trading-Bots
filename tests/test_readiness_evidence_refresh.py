@@ -88,3 +88,17 @@ def test_refresh_report_cooldown_returns_without_rewriting(tmp_path: Path) -> No
     assert payload["refresh_skipped"] is True
     assert payload["write_latest"] is False
     assert payload["refresh_skip_reason"] == "cooldown_active"
+
+
+def test_unattended_soak_runs_after_all_freshness_dependencies() -> None:
+    steps = {row["name"]: row for row in refresh.default_steps()}
+
+    assert set(steps["unattended_soak_readiness"]["depends_on"]) == {
+        "storage_retention_unison",
+        "notification_escalation_ladder",
+        "livefeed_refresh_guard",
+        "storage_resilience_control",
+    }
+    for name in steps["unattended_soak_readiness"]["depends_on"]:
+        assert steps[name]["max_age_minutes"] < 180
+    assert "--apply" not in steps["storage_retention_unison"]["args"]

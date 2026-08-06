@@ -83,3 +83,24 @@ def test_distinct_evidence_roots_remain_distinct(tmp_path: Path) -> None:
         "canary_cohort_evidence",
     }
     assert payload["unique_root_cause_count"] == 3
+
+
+def test_soak_runtime_grade_maps_to_freshness_root(tmp_path: Path) -> None:
+    health = tmp_path / "governance" / "health"
+    _write(
+        health / "production_excellence_control_latest.json",
+        {
+            "pillars": [
+                {
+                    "pillar_id": "p02_clean_30_day_soak",
+                    "failed_checks": ["soak_runtime_ready"],
+                }
+            ]
+        },
+    )
+    _write(health / "paper_profitability_control_latest.json", {"raw_profitability_grade": "A"})
+
+    payload = rollup.build_payload(tmp_path)
+
+    assert payload["unique_root_cause_count"] == 1
+    assert payload["root_causes"][0]["root_id"] == "readiness_artifact_freshness"

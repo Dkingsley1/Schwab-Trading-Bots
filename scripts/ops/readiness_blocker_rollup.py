@@ -91,6 +91,8 @@ def _root_for_pillar(pillar_id: str, check_id: str, *, raw_profitability_active:
             return "candidate_soak_time"
         if check_id == "soak_artifact_fresh":
             return "readiness_artifact_freshness"
+        if check_id == "soak_runtime_ready":
+            return "readiness_artifact_freshness"
         if check_id == "soak_candidate_frozen":
             return "candidate_source_drift"
     if pillar_id == "p05_independent_fill_evidence":
