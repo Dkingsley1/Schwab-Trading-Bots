@@ -3,6 +3,7 @@ name: CI Guardrails
 on:
   push:
   pull_request:
+  workflow_dispatch:
 
 jobs:
   guardrails:
@@ -31,6 +32,9 @@ jobs:
             scripts/canary_diagnostics_loop.py \
             scripts/retire_persistent_losers.py \
             scripts/promotion_bottleneck_focus.py \
+            scripts/canary_rollout_guard.py \
+            scripts/paper_execution_calibration_report.py \
+            scripts/promotion_quality_gate.py \
             scripts/new_bot_graduation_gate.py \
             scripts/leak_overfit_guard.py \
             scripts/model_lifecycle_hygiene.py \
@@ -43,6 +47,11 @@ jobs:
             scripts/ops/paper_400_ramp_control.py \
             scripts/ops/paper_live_data_standard.py \
             scripts/ops/production_hardening_watch.py \
+            scripts/ops/independent_fill_evidence_acquisition.py \
+            scripts/ops/promotion_candidate_advancement.py \
+            scripts/ops/readiness_blocker_rollup.py \
+            scripts/ops/readiness_evidence_accrual.py \
+            scripts/ops/readiness_evidence_refresh.py \
             scripts/ops/production_flow_smoke.py \
             scripts/ops/infrabot_library_self_awareness_control.py \
             scripts/ops/production_level_upgrade_hardener_control.py \
@@ -73,6 +82,14 @@ jobs:
           python scripts/ops/paper_400_ramp_control.py --help >/dev/null
           python scripts/ops/paper_live_data_standard.py --help >/dev/null
           python scripts/ops/production_hardening_watch.py --help >/dev/null
+          python scripts/canary_rollout_guard.py --help >/dev/null
+          python scripts/paper_execution_calibration_report.py --help >/dev/null
+          python scripts/promotion_quality_gate.py --help >/dev/null
+          python scripts/ops/independent_fill_evidence_acquisition.py --help >/dev/null
+          python scripts/ops/promotion_candidate_advancement.py --help >/dev/null
+          python scripts/ops/readiness_blocker_rollup.py --help >/dev/null
+          python scripts/ops/readiness_evidence_accrual.py --help >/dev/null
+          python scripts/ops/readiness_evidence_refresh.py --help >/dev/null
           python scripts/ops/production_flow_smoke.py --help >/dev/null
           python scripts/ops/infrabot_library_self_awareness_control.py --help >/dev/null
           python scripts/ops/production_level_upgrade_hardener_control.py --help >/dev/null

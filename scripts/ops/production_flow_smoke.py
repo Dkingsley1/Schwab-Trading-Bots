@@ -269,7 +269,8 @@ def check_policy_configs(project_root: Path) -> dict[str, Any]:
 def check_ci_guardrails(project_root: Path) -> dict[str, Any]:
     text = read_text(project_root / ".github" / "workflows" / "ci_guardrails.yml")
     return {
-        "ok": "production_flow_smoke.py --json" in text
+        "ok": "workflow_dispatch:" in text
+        and "production_flow_smoke.py --json" in text
         and "command_validity_bot.py --help" in text
         and "commands_hygiene_bot.py --help" in text
         and "use_mode_compliance_guard.py --help" in text
@@ -283,7 +284,16 @@ def check_ci_guardrails(project_root: Path) -> dict[str, Any]:
         and "production_quality_control.py --help" in text
         and "production_quality_slo_guard.py --help" in text
         and "production_excellence_control.py --help" in text
-        and "live_order_ledger_control.py --help" in text,
+        and "live_order_ledger_control.py --help" in text
+        and "canary_rollout_guard.py --help" in text
+        and "paper_execution_calibration_report.py --help" in text
+        and "promotion_quality_gate.py --help" in text
+        and "independent_fill_evidence_acquisition.py --help" in text
+        and "promotion_candidate_advancement.py --help" in text
+        and "readiness_blocker_rollup.py --help" in text
+        and "readiness_evidence_accrual.py --help" in text
+        and "readiness_evidence_refresh.py --help" in text,
+        "manual_dispatch_enabled": "workflow_dispatch:" in text,
         "production_smoke_in_ci": "production_flow_smoke.py --json" in text,
         "command_validity_bot_in_ci": "command_validity_bot.py --help" in text,
         "commands_hygiene_bot_in_ci": "commands_hygiene_bot.py --help" in text,
@@ -299,6 +309,14 @@ def check_ci_guardrails(project_root: Path) -> dict[str, Any]:
         "production_quality_slo_guard_in_ci": "production_quality_slo_guard.py --help" in text,
         "production_excellence_control_in_ci": "production_excellence_control.py --help" in text,
         "live_order_ledger_control_in_ci": "live_order_ledger_control.py --help" in text,
+        "candidate_bound_canary_in_ci": "canary_rollout_guard.py --help" in text,
+        "paper_calibration_in_ci": "paper_execution_calibration_report.py --help" in text,
+        "promotion_quality_in_ci": "promotion_quality_gate.py --help" in text,
+        "independent_fill_acquisition_in_ci": "independent_fill_evidence_acquisition.py --help" in text,
+        "candidate_advancement_in_ci": "promotion_candidate_advancement.py --help" in text,
+        "readiness_blocker_rollup_in_ci": "readiness_blocker_rollup.py --help" in text,
+        "readiness_evidence_accrual_in_ci": "readiness_evidence_accrual.py --help" in text,
+        "readiness_evidence_refresh_in_ci": "readiness_evidence_refresh.py --help" in text,
     }
 
 
