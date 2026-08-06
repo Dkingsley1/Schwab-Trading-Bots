@@ -1259,9 +1259,9 @@ def build_payload(
         "selected_paths": _recovery_selected_paths(local_root),
     }
     if current_mode_after_mount in LOCAL_MODES:
-        external_standby_ready = bool(probe_after_mount.get("external_available", False))
+        pinned_local_route = bool(route_policy.get("local_route_pinned", False))
         effective_snapshot_cooldown = float(snapshot_cooldown_seconds)
-        if external_standby_ready:
+        if pinned_local_route:
             effective_snapshot_cooldown = max(
                 effective_snapshot_cooldown,
                 _safe_float(os.getenv("BOT_LOGS_LOCAL_PINNED_SNAPSHOT_COOLDOWN_SECONDS"), 43200.0),
@@ -1273,7 +1273,7 @@ def build_payload(
             state=state,
             cooldown_seconds=effective_snapshot_cooldown,
             project_root=project_root,
-            require_writer_quiet=not external_standby_ready,
+            require_writer_quiet=not pinned_local_route,
         )
 
     probe_after_snapshot = _probe_storage()

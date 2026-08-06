@@ -186,6 +186,48 @@ def test_storage_disaster_recovery_preserves_pinned_local_route(monkeypatch, tmp
     assert payload["durability_contract"]["ready"] is False
 
 
+def test_pinned_local_snapshot_stays_online_when_external_probe_is_suppressed(monkeypatch, tmp_path: Path) -> None:
+    health = tmp_path / "governance" / "health"
+    _write_json(health / "storage_failback_sync_latest.json", {"mode": "local_fallback"})
+    override = tmp_path / "config" / ".env.storage_override"
+    override.parent.mkdir(parents=True)
+    override.write_text("BOT_LOGS_PREFER_EXTERNAL=0\n", encoding="utf-8")
+    local_root = tmp_path / "local_fallback_storage"
+    local_root.mkdir()
+    monkeypatch.setenv("BOT_LOGS_LOCAL_FALLBACK_ROOT", str(local_root))
+    monkeypatch.setattr(
+        src,
+        "_probe_storage",
+        lambda: {
+            "external_available": False,
+            "external_required_for_hot_path": False,
+            "hot_storage_available": True,
+            "external_unavailable_reason": "cold_archive_only_local_hot_storage_policy",
+        },
+    )
+    observed: dict[str, object] = {}
+
+    def _fake_snapshot(*args, **kwargs) -> dict:
+        observed["require_writer_quiet"] = kwargs["require_writer_quiet"]
+        observed["cooldown_seconds"] = kwargs["cooldown_seconds"]
+        return {"attempted": False, "ok": False, "skipped_reason": "cooldown_active"}
+
+    monkeypatch.setattr(src, "_take_curated_snapshot", _fake_snapshot)
+
+    payload, _state = src.build_payload(
+        tmp_path,
+        apply=True,
+        recovery_root=tmp_path / "recovery",
+        state_path=tmp_path / "state.json",
+        mount_cooldown_seconds=120.0,
+        snapshot_cooldown_seconds=300.0,
+    )
+
+    assert payload["route_policy"]["local_route_pinned"] is True
+    assert observed["require_writer_quiet"] is False
+    assert observed["cooldown_seconds"] == 43200.0
+
+
 def test_current_storage_mode_prefers_physical_local_routes_over_stale_external_artifact(
     monkeypatch,
     tmp_path: Path,
