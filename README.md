@@ -81,6 +81,10 @@ Key operating upgrades:
 - Schwab interactive auth defaults to Chrome for the browser consent flow and records the requested/resolved browser in the auth refresh artifact.
 - Frozen release bundles keep serving read-only and isolated from retraining; constrained training can defer safely without invalidating the active model.
 - Candidate state, promotion evidence, and reconciliation artifacts use atomic or content-addressed writes so partial files cannot silently become readiness proof.
+- Canary rollout evidence now reads the schema-v2 `profile` field, binds every observation to the frozen candidate window, removes duplicates, and requires multi-day clustered confidence before promotion.
+- Independent fill calibration has a provenance-gated intake and content-addressed evidence ledger; expected-fill-model rows cannot be relabeled as external truth.
+- The production hardening watch runs a bounded readiness refresh every 15 minutes, tracks evidence accrual and stalled producers, and rolls repeated grade symptoms up to their causal blocker.
+- Staged promotion candidates flow through a runtime-governed queue: training-ready bots receive held-out walk-forward work, while sample-starved bots return to labeled collection.
 - Storage disaster recovery uses SQLite's online backup path for active databases and verifies the promoted model bundle needed for restart.
 - The production recovery harness exercises ten bounded failure classes and records containment, duplicate-order prevention, recovery time, and evidence hashes.
 
@@ -94,6 +98,11 @@ The important generated artifacts are:
 - `governance/health/schwab_auth_supervisor_latest.json`: token lease, callback-port, and broker-readiness posture.
 - `governance/health/live_money_readiness_contract_latest.json`: the 14-section live-money lock, six-pillar runway, target window, and blocking evidence.
 - `governance/health/production_excellence_control_latest.json`: frozen-candidate integrity and the stricter ten-pillar production-evidence scoreboard.
+- `governance/health/readiness_evidence_refresh_latest.json`: bounded evidence-refresh execution, timeouts, and producer failures.
+- `governance/health/readiness_evidence_accrual_latest.json`: candidate-bound progress, observed rates, honest ETAs, and stalled evidence counters.
+- `governance/health/readiness_blocker_rollup_latest.json`: unique causal blockers and their downstream grade/readiness surfaces.
+- `governance/health/independent_fill_evidence_acquisition_latest.json`: provenance checks, accepted fill ledger count, conflicts, and rejected evidence.
+- `governance/health/canary_rollout_latest.json`: candidate-bound canary/baseline cohort statistics and conservative edge confidence bound.
 - `governance/runtime/production_candidate_state.json`: accepted candidate fingerprint, generation, and per-scope evidence-window starts.
 - `governance/health/paper_execution_truth_layer_latest.json`: paper execution, account-position awareness, broker reconciliation, and profitability truth.
 - `governance/health/production_recovery_drill_harness_latest.json`: isolated recovery-drill results and tamper-evident evidence hashes.

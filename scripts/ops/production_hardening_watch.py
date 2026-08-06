@@ -11,10 +11,10 @@ if __package__ in {None, ""}:
     PROJECT_ROOT = Path(__file__).resolve().parents[2]
     if str(PROJECT_ROOT) not in sys.path:
         sys.path.insert(0, str(PROJECT_ROOT))
-    from scripts.ops.long_runtime_common import PROJECT_ROOT, iso_now, write_payload
+    from scripts.ops.long_runtime_common import PROJECT_ROOT, iso_now, load_json, write_payload
     from scripts.ops import infrabot_adaptive_governor, production_excellence_control, production_quality_control, production_quality_slo_guard
 else:
-    from .long_runtime_common import PROJECT_ROOT, iso_now, write_payload
+    from .long_runtime_common import PROJECT_ROOT, iso_now, load_json, write_payload
     from . import infrabot_adaptive_governor, production_excellence_control, production_quality_control, production_quality_slo_guard
 
 
@@ -70,6 +70,9 @@ def build_payload(
     )
     slo = production_quality_slo_guard.build_payload(project_root, refresh_quality=False, apply=apply)
     excellence = production_excellence_control.build_payload(project_root)
+    evidence_refresh = load_json(project_root / "governance" / "health" / "readiness_evidence_refresh_latest.json")
+    evidence_accrual = load_json(project_root / "governance" / "health" / "readiness_evidence_accrual_latest.json")
+    blocker_rollup = load_json(project_root / "governance" / "health" / "readiness_blocker_rollup_latest.json")
     if apply:
         write_payload(
             project_root / "governance" / "health" / "production_excellence_control_latest.json",
@@ -123,6 +126,14 @@ def build_payload(
             "live_money_consideration_ready": excellence.get("live_money_consideration_ready", False),
             "paper_runtime_impact": "none",
         },
+        "readiness_evidence": {
+            "refresh_status": evidence_refresh.get("overall_status"),
+            "refresh_operational_failures": evidence_refresh.get("operational_failures", []),
+            "accrual_status": evidence_accrual.get("overall_status"),
+            "stalled_metric_ids": evidence_accrual.get("stalled_metric_ids", []),
+            "unique_root_cause_count": blocker_rollup.get("unique_root_cause_count", 0),
+            "root_causes": blocker_rollup.get("root_causes", []),
+        },
         "governor": {
             "overall_status": governor.get("overall_status"),
             "action_counts": _as_dict(_as_dict(governor.get("adaptive_policy_router")).get("action_counts")),
@@ -152,6 +163,7 @@ def build_payload(
             "no_competing_sqlite_writer_authority": True,
             "no_source_registry_refresh": True,
             "uses_published_contracts_for_scheduled_watch": True,
+            "bounded_serialized_evidence_refresh_precedes_scheduled_watch": True,
             "repeated_failures_backed_off_by_governor_self_healing": True,
         },
         "recommended_actions": [

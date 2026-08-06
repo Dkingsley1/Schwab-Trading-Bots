@@ -4,7 +4,7 @@ Use these exact commands as the current source of truth.
 
 This file is generated from the curated operator inventory in `scripts/ops/commands_hygiene_bot.py`.
 Rebuild it with `./scripts/ops/opsctl.sh commands-hygiene --apply` after changing that inventory.
-Command contract hash: `455874c1ceda325159855f5a46fa3ff7bba19aea4284e618a5e76d005022ad91`.
+Command contract hash: `b344bfd6855f72af80eb92285e6c572e96a9b886ca1f89b7ad79709389c67352`.
 Command contract artifact: `governance/health/commands_contract_latest.json`.
 
 This file is intentionally trimmed down with Most Used pinned first and the remaining sections alphabetized by section and command title:
@@ -23,7 +23,7 @@ Fast search tokens: `start` `stop` `paper` `profitability` `soak` `halt` `auth` 
 
 Useful compound searches: `paper profitability`, `global halt`, `token refresh`, `livefeed heavy`, `storage prune`, `soak readiness`.
 
-Search coverage: `158` generated command entries from the current command contract.
+Search coverage: `163` generated command entries from the current command contract.
 
 <datalist id="command-search-index-options">
   <option value="Keep the Mac awake (Most Used)"></option>
@@ -144,7 +144,9 @@ Search coverage: `158` generated command entries from the current command contra
   <option value="Data quality refresh bundle (SQL And Reports)"></option>
   <option value="Full SQL refresh pipeline (SQL And Reports)"></option>
   <option value="Quick SQL sync (SQL And Reports)"></option>
+  <option value="Acquire independent fill evidence (Status And Health)"></option>
   <option value="Adapt infrabots to current system needs (Status And Health)"></option>
+  <option value="Advance staged promotion candidates (Status And Health)"></option>
   <option value="Apply system architecture hardening (Status And Health)"></option>
   <option value="Coinbase API health (Status And Health)"></option>
   <option value="Deeper self-awareness intelligence layers (Status And Health)"></option>
@@ -159,10 +161,12 @@ Search coverage: `158` generated command entries from the current command contra
   <option value="Publish production-quality repair lanes (Status And Health)"></option>
   <option value="PyCharm active bot blue highlights (Status And Health)"></option>
   <option value="Refresh health gates (Status And Health)"></option>
+  <option value="Refresh readiness evidence without the full dashboard (Status And Health)"></option>
   <option value="Refresh runtime dashboard contracts (Status And Health)"></option>
   <option value="Repair safe cross-system drift surfaces (Status And Health)"></option>
   <option value="Replay hash registry guard (Status And Health)"></option>
   <option value="Reporter quality infrabot (Status And Health)"></option>
+  <option value="Review causal readiness blockers (Status And Health)"></option>
   <option value="Review Codex project guardrails (Status And Health)"></option>
   <option value="Review system plumbing control (Status And Health)"></option>
   <option value="Review ten-pillar production excellence (Status And Health)"></option>
@@ -171,6 +175,7 @@ Search coverage: `158` generated command entries from the current command contra
   <option value="Runtime gate dashboard (Status And Health)"></option>
   <option value="Runtime status (Status And Health)"></option>
   <option value="Track production-quality SLO recurrence (Status And Health)"></option>
+  <option value="Track readiness evidence accrual (Status And Health)"></option>
   <option value="Verify the durable live-order ledger (Status And Health)"></option>
   <option value="Repair local stateful storage regressions (Storage)"></option>
   <option value="Review or prune eligible local standby SQLite copies after BOT_LOGS soak (Storage)"></option>
@@ -187,7 +192,7 @@ Search coverage: `158` generated command entries from the current command contra
 </datalist>
 
 <details>
-<summary>Generated command search index (158 commands; rebuilt by commands-hygiene)</summary>
+<summary>Generated command search index (163 commands; rebuilt by commands-hygiene)</summary>
 
 Each row is generated from `governance/health/commands_contract_latest.json`, so added, removed, renamed, or cleaned-up commands change this index automatically.
 
@@ -309,7 +314,9 @@ Each row is generated from `governance/health/commands_contract_latest.json`, so
 - search-entry:71f0e1b794e9adbe51a843d7a071f4e39d3ced379530686a58ea04b856eaed80 section:`SQL And Reports` section_key:`sql-and-reports` title:Data quality refresh bundle title_key:`data-quality-refresh-bundle` opsctl:`livefeed-refresh` scripts:`scripts/ops/opsctl.sh, scripts/daily_log_refresh.sh, scripts/build_one_numbers_report.py` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
 - search-entry:245edf8a3dca42087e239ac22bff55f4e2cd62db1db342b5c901e6f018a534a3 section:`SQL And Reports` section_key:`sql-and-reports` title:Full SQL refresh pipeline title_key:`full-sql-refresh-pipeline` opsctl:`none` scripts:`scripts/daily_log_refresh.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
 - search-entry:d5b760dcc7a20c968d30ed6bde1aaab3f4a22ff4924960f466ecbbfd90c2e24d section:`SQL And Reports` section_key:`sql-and-reports` title:Quick SQL sync title_key:`quick-sql-sync` opsctl:`sql-sync` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
+- search-entry:71d3ce37c28cb4cfc0104b436a90dfed970fa67f045953e705c780d999fc5ce7 section:`Status And Health` section_key:`status-and-health` title:Acquire independent fill evidence title_key:`acquire-independent-fill-evidence` opsctl:`independent-fill-acquisition` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
 - search-entry:c6a6ebb72bbfc71a788f61cc27c19614ac6d5847c283a9fedf086e0913199a45 section:`Status And Health` section_key:`status-and-health` title:Adapt infrabots to current system needs title_key:`adapt-infrabots-to-current-system-needs` opsctl:`infrabot-adaptive-governor` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
+- search-entry:c5e040e4852cd9be32ead9a962b153904c71ec238f2ff4c66b1c8474e87aafd8 section:`Status And Health` section_key:`status-and-health` title:Advance staged promotion candidates title_key:`advance-staged-promotion-candidates` opsctl:`promotion-candidate-advancement` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
 - search-entry:67d8b4f85daf3e431e681c653ab5fa72c90517cc1d635b65ccc24fd06f541f71 section:`Status And Health` section_key:`status-and-health` title:Apply system architecture hardening title_key:`apply-system-architecture-hardening` opsctl:`system-architecture-hardening` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
 - search-entry:f9437868e421148a7c1e2559aab72a0d323f1f8360c43ebeb1d35b30da449a42 section:`Status And Health` section_key:`status-and-health` title:Coinbase API health title_key:`coinbase-api-health` opsctl:`coinbase-api-health` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
 - search-entry:09cf953d33c1c2c51af8ddb9720af132cea3194741a0b6c46c87a25c79f1fab7 section:`Status And Health` section_key:`status-and-health` title:Deeper self-awareness intelligence layers title_key:`deeper-self-awareness-intelligence-layers` opsctl:`deeper-intelligence-layers` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
@@ -324,10 +331,12 @@ Each row is generated from `governance/health/commands_contract_latest.json`, so
 - search-entry:9a0b69390a23a39542748fae0108a2bcd9f9a7c935f6effb86ab12d1d7eb91c9 section:`Status And Health` section_key:`status-and-health` title:Publish production-quality repair lanes title_key:`publish-production-quality-repair-lanes` opsctl:`production-quality` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
 - search-entry:079d2a1a6cbe25881172205c3997bebea2da6f40f2d81640db1389579346a566 section:`Status And Health` section_key:`status-and-health` title:PyCharm active bot blue highlights title_key:`pycharm-active-bot-blue-highlights` opsctl:`pycharm-active-bot-highlights` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
 - search-entry:b78415c6f92b0a099a704e922e977a6c9915872706aad0c3e753e0281d8f75ba section:`Status And Health` section_key:`status-and-health` title:Refresh health gates title_key:`refresh-health-gates` opsctl:`health-gates` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
+- search-entry:439df2f7c7cda4e8fe6ea2f258af41da52f8f0703637cdf413114ce17362bac8 section:`Status And Health` section_key:`status-and-health` title:Refresh readiness evidence without the full dashboard title_key:`refresh-readiness-evidence-without-the-full-dashboard` opsctl:`readiness-evidence-refresh` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
 - search-entry:5c42cde9787324dfb1206f08bba236c4f22ec3331b467e7b3f8cc25f5445a72d section:`Status And Health` section_key:`status-and-health` title:Refresh runtime dashboard contracts title_key:`refresh-runtime-dashboard-contracts` opsctl:`dashboard-refresh` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
 - search-entry:9af5977e0643081899f53d7a99dc149d1e2953fa8400df3d62272e2ad979cb76 section:`Status And Health` section_key:`status-and-health` title:Repair safe cross-system drift surfaces title_key:`repair-safe-cross-system-drift-surfaces` opsctl:`system-drift-autopilot` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
 - search-entry:b68225df4373e5ada1af692b9823d7aef7c489c9c6549e42e80dd9eca2c15c4f section:`Status And Health` section_key:`status-and-health` title:Replay hash registry guard title_key:`replay-hash-registry-guard` opsctl:`replay-hash-registry` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
 - search-entry:bbdaeb098be7903b2af2e606229145d9c1ce937bbaef0d84edcdb06e6918f3bd section:`Status And Health` section_key:`status-and-health` title:Reporter quality infrabot title_key:`reporter-quality-infrabot` opsctl:`report-quality-guard` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
+- search-entry:262ccdcf97cdcf53b207af3aedec35642eddcf3d5431d8c0e1103dea8400836e section:`Status And Health` section_key:`status-and-health` title:Review causal readiness blockers title_key:`review-causal-readiness-blockers` opsctl:`readiness-blocker-rollup` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
 - search-entry:0941a33ecf2e9d9f31579a2d05664240e0d893fcecf01959db65122fbe2c1e4e section:`Status And Health` section_key:`status-and-health` title:Review Codex project guardrails title_key:`review-codex-project-guardrails` opsctl:`codex-project-guard` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
 - search-entry:d0744ed396c14397231a43061bd3c0f98192ec9c7038b35f4658ee641ba21bde section:`Status And Health` section_key:`status-and-health` title:Review system plumbing control title_key:`review-system-plumbing-control` opsctl:`system-plumbing-control` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
 - search-entry:75509af8d32c7f8dff82ce44dfdf3f8f7ce0061733c12acf69dd9a9ca9aead39 section:`Status And Health` section_key:`status-and-health` title:Review ten-pillar production excellence title_key:`review-ten-pillar-production-excellence` opsctl:`production-excellence` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
@@ -336,6 +345,7 @@ Each row is generated from `governance/health/commands_contract_latest.json`, so
 - search-entry:c9994d1b6c30bba687625646026da154e91899e5294beab70202f89283afe2da section:`Status And Health` section_key:`status-and-health` title:Runtime gate dashboard title_key:`runtime-gate-dashboard` opsctl:`dashboard` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
 - search-entry:4b60f2351646885db58bcc2366437e4dd736dd6cf55ce08a2fdac505a3c85bbe section:`Status And Health` section_key:`status-and-health` title:Runtime status title_key:`runtime-status` opsctl:`status` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
 - search-entry:52642cb66c25bfe102046b575959fdfd7da8862ee6b3d1d79bb05d5fb84d03f5 section:`Status And Health` section_key:`status-and-health` title:Track production-quality SLO recurrence title_key:`track-production-quality-slo-recurrence` opsctl:`production-quality-slo` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
+- search-entry:fd98f9e05f04ad9fa5756467259f08f5660d6e646feebd104a41061470d61f5e section:`Status And Health` section_key:`status-and-health` title:Track readiness evidence accrual title_key:`track-readiness-evidence-accrual` opsctl:`readiness-evidence-accrual` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
 - search-entry:fd56b63365456606b1ac88f79b682e6d632c16386f7d6b35209bb22c71d6b94e section:`Status And Health` section_key:`status-and-health` title:Verify the durable live-order ledger title_key:`verify-the-durable-live-order-ledger` opsctl:`live-order-ledger` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
 - search-entry:7162b1728aa0badca09eeab49bafe5d36d327687a0c9f6a6c059cd95e147c9c3 section:`Storage` section_key:`storage` title:Repair local stateful storage regressions title_key:`repair-local-stateful-storage-regressions` opsctl:`stateful-storage-regression-guard` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
 - search-entry:e8dce5198877685a4116a8d493aabd0e79f722defb26ff3e3ba27bf329fee8b0 section:`Storage` section_key:`storage` title:Review or prune eligible local standby SQLite copies after BOT_LOGS soak title_key:`review-or-prune-eligible-local-standby-sqlite-copies-after-bot-logs-soak` opsctl:`storage-prune-standby` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
@@ -1370,6 +1380,14 @@ cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
 
 ## Status And Health
 
+### Acquire independent fill evidence
+```bash
+cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
+./scripts/ops/opsctl.sh independent-fill-acquisition --apply --json
+```
+
+Normalizes only provenance-verified broker-paper or replay fills from `exports/independent_fill_inbox`; model-derived fills remain in simulator diagnostics.
+
 ### Adapt infrabots to current system needs
 ```bash
 cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
@@ -1378,6 +1396,15 @@ cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
 
 This publishes the shared needs contract, capability registry, adaptive policy router, safety guard, and feedback ledger used to keep infrabots aligned with current degradation.
 The apply form writes coordination contracts only; it does not launch repair fanout, retraining, live execution, or competing SQLite writers.
+
+### Advance staged promotion candidates
+```bash
+cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
+./scripts/ops/opsctl.sh promotion-candidate-advancement --json
+./scripts/ops/opsctl.sh promotion-candidate-advancement --execute --json
+```
+
+The default form publishes the five-candidate queue. The execute form still requires two consecutive runtime-governor approvals and never updates the master registry directly.
 
 ### Apply system architecture hardening
 ```bash
@@ -1489,6 +1516,14 @@ cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
 
 This refreshes the health-gates artifact directly when stale health-gate state is blocking production-quality or live-canary readiness.
 
+### Refresh readiness evidence without the full dashboard
+```bash
+cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
+./scripts/ops/opsctl.sh readiness-evidence-refresh --apply --json
+```
+
+Runs the serialized candidate-bound evidence lane with per-step timeouts and a cooldown. It has no training-launch or live-order authority.
+
 ### Refresh runtime dashboard contracts
 ```bash
 cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
@@ -1520,6 +1555,14 @@ cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
 ```
 
 This repairs the sendout PDF bundle, verifies PDF integrity, and blocks regressions where paper-performance or post-trade lose their report-ready renderers.
+
+### Review causal readiness blockers
+```bash
+cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
+./scripts/ops/opsctl.sh readiness-blocker-rollup --json
+```
+
+Collapses repeated downstream grade failures into unique engineering, elapsed-time, evidence, and outcome roots.
 
 ### Review Codex project guardrails
 ```bash
@@ -1560,7 +1603,7 @@ cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
 ./scripts/ops/opsctl.sh production-hardening-watch --apply --json
 ```
 
-This refreshes live-canary readiness, production-quality lanes, SLO state, and infrabot routing in one safe control loop. Safe repair execution remains opt-in and governor-allowlisted.
+The scheduled wrapper runs the bounded readiness-evidence refresh first, then publishes live-canary readiness, production-quality lanes, SLO state, causal blockers, and infrabot routing. Safe repair execution remains opt-in and governor-allowlisted.
 
 ### Runtime gate dashboard
 ```bash
@@ -1583,6 +1626,14 @@ cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
 ```
 
 This keeps state across checks so repeated production-quality lane failures become watch, warning, or breach evidence instead of isolated snapshots.
+
+### Track readiness evidence accrual
+```bash
+cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
+./scripts/ops/opsctl.sh readiness-evidence-accrual --apply --json
+```
+
+Tracks candidate-bound counts, breadth, effective samples, observed rates, honest ETAs, and stalled producers without treating raw rows as independent proof.
 
 ### Verify the durable live-order ledger
 ```bash

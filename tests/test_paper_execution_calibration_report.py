@@ -23,6 +23,7 @@ def test_paper_execution_calibration_report_emits_grouped_recommendations(tmp_pa
         "fill_price": 100.0,
         "expected_fill_price": 100.8,
         "expected_slippage_bps": 80.0,
+        "paper_fill_source": "broker_paper_fill",
         "metadata": {"source_profile": "default"},
     }
     (log_dir / "paper_trades_paper.jsonl").write_text(json.dumps(row) + "\n", encoding="utf-8")

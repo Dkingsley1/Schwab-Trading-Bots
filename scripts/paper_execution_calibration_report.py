@@ -2,12 +2,17 @@ import argparse
 import glob
 import json
 import os
+import sys
 from collections import Counter
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from scripts.ops.long_runtime_common import write_payload
 
 
 def _parse_ts(raw: Any) -> datetime | None:
@@ -102,7 +107,7 @@ def _fill_evidence_class(row: Dict[str, Any], *, fill: float, expected_fill: flo
     tolerance = max(abs(float(expected_fill)) * 1e-10, 1e-10)
     if abs(float(fill) - float(expected_fill)) <= tolerance:
         return "model_derived", "inferred_fill_equals_expected_model"
-    return "independent", source or "legacy_unknown_independent_difference"
+    return "unverified", source or "missing_explicit_independent_provenance"
 
 
 def _metrics(values: list[float], observed: list[float], expected: list[float]) -> dict[str, float]:
@@ -172,7 +177,11 @@ def _ordered_unique(items: list[str]) -> list[str]:
 
 def main() -> int:
     ap = argparse.ArgumentParser(description="Paper execution calibration drift report.")
-    ap.add_argument("--hours", type=int, default=24)
+    ap.add_argument(
+        "--hours",
+        type=int,
+        default=int(float(os.getenv("PAPER_EXECUTION_CALIBRATION_LOOKBACK_HOURS", "720") or 720)),
+    )
     ap.add_argument("--bucket-hours", type=int, default=1)
     ap.add_argument("--max-mae-bps", type=float, default=35.0)
     ap.add_argument(
@@ -194,6 +203,7 @@ def main() -> int:
     model_vals: list[float] = []
     model_observed_vals: list[float] = []
     model_expected_vals: list[float] = []
+    unverified_samples = 0
     evidence_sources: Counter[str] = Counter()
     files_scanned = 0
     skipped_before_cutoff = 0
@@ -237,10 +247,13 @@ def main() -> int:
                     abs_error = abs(observed_bps - expected_bps)
                     evidence_class, evidence_source = _fill_evidence_class(row, fill=fill, expected_fill=exp)
                     evidence_sources[f"{evidence_class}:{evidence_source}"] += 1
-                    if evidence_class != "independent":
+                    if evidence_class == "model_derived":
                         model_vals.append(abs_error)
                         model_observed_vals.append(observed_bps)
                         model_expected_vals.append(expected_bps)
+                        continue
+                    if evidence_class != "independent":
+                        unverified_samples += 1
                         continue
 
                     vals.append(abs_error)
@@ -328,6 +341,7 @@ def main() -> int:
         "samples": int(n),
         "independent_samples": int(n),
         "model_derived_samples": int(len(model_vals)),
+        "unverified_samples": int(unverified_samples),
         "independent_evidence_ready": bool(independent_evidence_ready),
         "minimum_independent_samples": int(min_independent_samples),
         "evidence_sources": dict(sorted(evidence_sources.items())),
@@ -367,8 +381,7 @@ def main() -> int:
     }
 
     out_path = Path(args.out_file)
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    out_path.write_text(json.dumps(out, ensure_ascii=True, indent=2), encoding="utf-8")
+    write_payload(out_path, out)
 
     if args.json:
         print(json.dumps(out, ensure_ascii=True))

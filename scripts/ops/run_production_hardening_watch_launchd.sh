@@ -68,4 +68,13 @@ if [[ "${PRODUCTION_HARDENING_WATCH_EXECUTE_ON_WATCH:-0}" == "1" ]]; then
   WATCH_ARGS+=(--execute-on-watch)
 fi
 
+if [[ "${PRODUCTION_HARDENING_WATCH_REFRESH_EVIDENCE:-1}" == "1" ]]; then
+  /usr/bin/nice -n "$WATCH_NICE" "$PROJECT_ROOT/scripts/ops/opsctl.sh" \
+    readiness-evidence-refresh \
+    --apply \
+    --cooldown-minutes "${READINESS_EVIDENCE_REFRESH_COOLDOWN_MINUTES:-15}" \
+    --timeout-seconds "${READINESS_EVIDENCE_REFRESH_STEP_TIMEOUT_SECONDS:-180}" \
+    --json
+fi
+
 /usr/bin/nice -n "$WATCH_NICE" "$PROJECT_ROOT/scripts/ops/opsctl.sh" "${WATCH_ARGS[@]}"

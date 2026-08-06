@@ -21,6 +21,7 @@
         "scripts/brokers/**/*.py",
         "scripts/*execution*.py",
         "scripts/ops/*execution*.py",
+        "scripts/ops/*fill*.py",
         "config/production_readiness_control_v1.json"
       ],
       "risk": [
@@ -48,9 +49,11 @@
         "scripts/*graduation*.py",
         "scripts/*overfit*.py",
         "scripts/*performance*.py",
+        "scripts/*canary*.py",
         "scripts/*testing_guard*.py",
         "scripts/ops/*promotion*.py",
         "scripts/ops/*canary*.py",
+        "scripts/ops/*fill*.py",
         "config/*promotion*.json",
         "config/profitability*.json",
         "config/production_excellence_v1.json"

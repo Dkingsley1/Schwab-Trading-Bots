@@ -1455,6 +1455,21 @@ case "$cmd" in
   production-hardening-watch|hardening-watch|production-watch)
     exec "$PY" "$PROJECT_ROOT/scripts/ops/production_hardening_watch.py" "$@"
     ;;
+  readiness-evidence-refresh|evidence-refresh|promotion-evidence-refresh)
+    exec "$PY" "$PROJECT_ROOT/scripts/ops/readiness_evidence_refresh.py" "$@"
+    ;;
+  independent-fill-acquisition|independent-fill-evidence|fill-evidence-acquisition)
+    exec "$PY" "$PROJECT_ROOT/scripts/ops/independent_fill_evidence_acquisition.py" "$@"
+    ;;
+  promotion-candidate-advancement|candidate-advancement|walk-forward-candidate-advancement)
+    exec "$PY" "$PROJECT_ROOT/scripts/ops/promotion_candidate_advancement.py" "$@"
+    ;;
+  readiness-evidence-accrual|evidence-accrual|readiness-accrual)
+    exec "$PY" "$PROJECT_ROOT/scripts/ops/readiness_evidence_accrual.py" "$@"
+    ;;
+  readiness-blocker-rollup|blocker-rollup|readiness-root-causes)
+    exec "$PY" "$PROJECT_ROOT/scripts/ops/readiness_blocker_rollup.py" "$@"
+    ;;
   live-money-readiness|live-money-contract|faithful-live-money)
     exec "$PY" "$PROJECT_ROOT/scripts/ops/live_money_readiness_contract.py" "$@"
     ;;
@@ -3056,6 +3071,11 @@ opsctl commands:
   continuous-soak-integrity|soak-integrity [--json]
   production-quality-slo|production-slo-guard [--apply] [--refresh-quality] [--json]
   production-hardening-watch|hardening-watch [--apply] [--execute-safe-repairs] [--execute-on-watch] [--max-actions N] [--max-execute-actions N] [--json]
+  readiness-evidence-refresh|evidence-refresh [--apply] [--force] [--cooldown-minutes N] [--timeout-seconds N] [--json]
+  independent-fill-acquisition|independent-fill-evidence [--apply] [--inbox PATH] [--json]
+  promotion-candidate-advancement|candidate-advancement [--limit N] [--execute] [--json]
+  readiness-evidence-accrual|evidence-accrual [--apply] [--stall-hours N] [--json]
+  readiness-blocker-rollup|blocker-rollup [--json]
   live-money-readiness|live-money-contract|faithful-live-money [--target-date YYYY-MM-DD] [--json]
   paper-400-ramp|paper-ramp-400|paper-cap-400 [--apply] [--promote-roster] [--allow-source-registry-write] [--today YYYY-MM-DD] [--json]
   paper-execution-truth|paper-truth [--json]

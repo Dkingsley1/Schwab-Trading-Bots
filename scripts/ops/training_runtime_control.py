@@ -447,7 +447,9 @@ def _build_precompute_targets(
     training_requalification: dict[str, Any],
     bot_needs: dict[str, Any],
     candidate_selector: dict[str, Any],
+    candidate_advancement: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
+    candidate_advancement = candidate_advancement or {}
     targets: dict[str, dict[str, Any]] = {}
     selector_authoritative = bool(candidate_selector.get("authoritative", False))
     selector_selected_ids = {
@@ -610,6 +612,16 @@ def _build_precompute_targets(
             reason="training_requalification_candidate",
             priority_cap=10.0,
             default_action="prepare_requalification_candidate_for_batch_training",
+        )
+
+    for candidate_row in candidate_advancement.get("training_queue") or []:
+        if not isinstance(candidate_row, dict):
+            continue
+        add_ranked_candidate(
+            candidate_row,
+            reason="promotion_candidate_advancement",
+            priority_cap=25.0,
+            default_action="prepare_candidate_bound_walk_forward_training",
         )
 
     bot_needs_records: dict[str, dict[str, Any]] = {}
@@ -1679,6 +1691,7 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, fresh_minutes: int = 360
     memory_intelligence = _load_json(health_root / "memory_pressure_intelligence_latest.json")
     autonomic_governor = _load_json(health_root / "autonomic_resource_governor_latest.json")
     training_requalification = _load_json(health_root / "training_requalification_latest.json")
+    candidate_advancement = _load_json(health_root / "promotion_candidate_advancement_latest.json")
     bot_needs = _load_json(health_root / "bot_needs_intelligence_latest.json")
     coverage_seed = _load_json(walk_root / "coverage_seed_latest.json")
     coverage_gap_closer = _load_json(walk_root / "coverage_gap_closer_latest.json")
@@ -1716,6 +1729,7 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, fresh_minutes: int = 360
         coverage_seed=coverage_seed,
         coverage_gap_closer=coverage_gap_closer,
         training_requalification=training_requalification,
+        candidate_advancement=candidate_advancement,
         bot_needs=bot_needs,
         candidate_selector=training_candidate_selector,
     )

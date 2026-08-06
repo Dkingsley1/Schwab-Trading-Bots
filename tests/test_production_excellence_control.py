@@ -226,9 +226,13 @@ def test_repository_candidate_scopes_cover_collectors_and_profitability_evidence
     scope_globs = config["candidate"]["scope_globs"]
 
     data_files = set(control._scope_files(project_root, scope_globs["data"]))
+    execution_files = set(control._scope_files(project_root, scope_globs["execution"]))
     promotion_files = set(control._scope_files(project_root, scope_globs["promotion"]))
 
     assert project_root / "scripts" / "collect_public_policy_context.py" in data_files
     assert project_root / "scripts" / "paper_performance_report.py" in promotion_files
+    assert project_root / "scripts" / "canary_rollout_guard.py" in promotion_files
+    assert project_root / "scripts" / "ops" / "independent_fill_evidence_acquisition.py" in execution_files
+    assert project_root / "scripts" / "ops" / "independent_fill_evidence_acquisition.py" in promotion_files
     assert project_root / "scripts" / "multiple_testing_guard.py" in promotion_files
     assert project_root / "config" / "profitability_evidence_firewall_v1.json" in promotion_files

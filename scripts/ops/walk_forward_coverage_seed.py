@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 import sys
@@ -16,6 +18,7 @@ from core.training_quality_thresholds import (
     TARGET_QUALITY_SCORE_FLOOR,
     TARGET_TEST_ACCURACY_FLOOR,
 )
+from scripts.ops.long_runtime_common import write_payload
 
 DEFAULT_OUT_PATH = PROJECT_ROOT / "governance" / "walk_forward" / "coverage_seed_latest.json"
 DEFAULT_QUEUE_PATH = PROJECT_ROOT / "governance" / "walk_forward" / "coverage_seed_queue.jsonl"
@@ -189,9 +192,17 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, limit: int = 8) -> dict[
 
 def _write_queue(path: Path, rows: list[dict[str, Any]]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("w", encoding="utf-8") as handle:
-        for row in rows:
-            handle.write(json.dumps(row, ensure_ascii=True) + "\n")
+    fd, raw_temp = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
+    temp_path = Path(raw_temp)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            for row in rows:
+                handle.write(json.dumps(row, ensure_ascii=True) + "\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temp_path, path)
+    finally:
+        temp_path.unlink(missing_ok=True)
 
 
 def main() -> int:
@@ -206,8 +217,7 @@ def main() -> int:
 
     payload = build_payload(Path(args.project_root).resolve(), limit=int(args.limit))
     out_path = Path(args.out_file).expanduser()
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    out_path.write_text(json.dumps(payload, ensure_ascii=True, indent=2), encoding="utf-8")
+    write_payload(out_path, payload)
     if args.write_queue:
         _write_queue(Path(args.queue_out).expanduser(), list(payload.get("seed_queue") or []))
     if args.json:

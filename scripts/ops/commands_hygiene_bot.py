@@ -1433,7 +1433,50 @@ def _commands_inventory(project_root: Path) -> list[dict[str, Any]]:
                 "Run production hardening watch",
                 ["./scripts/ops/opsctl.sh production-hardening-watch --apply --json"],
                 notes=[
-                    "This refreshes live-canary readiness, production-quality lanes, SLO state, and infrabot routing in one safe control loop. Safe repair execution remains opt-in and governor-allowlisted.",
+                    "The scheduled wrapper runs the bounded readiness-evidence refresh first, then publishes live-canary readiness, production-quality lanes, SLO state, causal blockers, and infrabot routing. Safe repair execution remains opt-in and governor-allowlisted.",
+                ],
+            ),
+            _command_entry(
+                project_root,
+                "Refresh readiness evidence without the full dashboard",
+                ["./scripts/ops/opsctl.sh readiness-evidence-refresh --apply --json"],
+                notes=[
+                    "Runs the serialized candidate-bound evidence lane with per-step timeouts and a cooldown. It has no training-launch or live-order authority.",
+                ],
+            ),
+            _command_entry(
+                project_root,
+                "Acquire independent fill evidence",
+                ["./scripts/ops/opsctl.sh independent-fill-acquisition --apply --json"],
+                notes=[
+                    "Normalizes only provenance-verified broker-paper or replay fills from `exports/independent_fill_inbox`; model-derived fills remain in simulator diagnostics.",
+                ],
+            ),
+            _command_entry(
+                project_root,
+                "Advance staged promotion candidates",
+                [
+                    "./scripts/ops/opsctl.sh promotion-candidate-advancement --json",
+                    "./scripts/ops/opsctl.sh promotion-candidate-advancement --execute --json",
+                ],
+                notes=[
+                    "The default form publishes the five-candidate queue. The execute form still requires two consecutive runtime-governor approvals and never updates the master registry directly.",
+                ],
+            ),
+            _command_entry(
+                project_root,
+                "Track readiness evidence accrual",
+                ["./scripts/ops/opsctl.sh readiness-evidence-accrual --apply --json"],
+                notes=[
+                    "Tracks candidate-bound counts, breadth, effective samples, observed rates, honest ETAs, and stalled producers without treating raw rows as independent proof.",
+                ],
+            ),
+            _command_entry(
+                project_root,
+                "Review causal readiness blockers",
+                ["./scripts/ops/opsctl.sh readiness-blocker-rollup --json"],
+                notes=[
+                    "Collapses repeated downstream grade failures into unique engineering, elapsed-time, evidence, and outcome roots.",
                 ],
             ),
             _command_entry(
