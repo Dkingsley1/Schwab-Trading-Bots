@@ -33,12 +33,38 @@ flowchart TD
     G --> H["JSONL + SQLite History"]
     H --> I["Behavior Dataset Builder"]
     I --> J["Targeted and Full Retraining"]
-    J --> K["Registry, Promotion Gates, Canary Rollout"]
+    J --> K["Registry, Promotion Gates, Paper Canary"]
     K --> C
     D --> F
     L["Watchdogs, Token Guard, Storage Failover, Launchd"] --> C
     L --> H
+    K --> M{"Evidence Complete + Operator Release?"}
+    M -- "No" --> C
+    M -- "Yes" --> N["Microscopic Live Canary"]
+    N --> O["Broker Reconciliation + Rollback Control"]
+    O --> C
 ```
+
+## Production Readiness
+
+As of **2026-08-06**, the system is operating as a guarded paper-trading and data-collection platform. Live market data, shadow evaluation, selective paper execution, reconciliation, monitoring, and bounded recovery are enabled; live orders remain locked. Runtime health and safety grades are not treated as proof of financial profitability.
+
+| Surface | Current evidence | Meaning |
+| --- | --- | --- |
+| Formal live-money readiness | `13/14` required sections at the required floor | `paper_profitability_control` is the remaining below-floor section, currently grade `C` |
+| Six-pillar transition runway | `5/6` pillars ready | `paper_truth` remains blocked only by profitability evidence |
+| Production-excellence proof | `4/10` pillars fully evidenced | elapsed soak, independent fills, qualified candidates, profitability breadth, paper-canary cohorts, and final operating proof still need evidence |
+| Frozen candidate | `pc-ca68fd996ddc-g12`, generation `12`, no detected drift | affected evidence windows restarted after the accepted hardening changes on `2026-08-06 16:20 UTC` |
+| Recovery | `10/10` isolated, non-destructive recovery drills pass | auth, broker network, process, reboot, disk, storage, memory, database, market-data, and order-lifecycle failures are covered |
+| Storage continuity | pinned local-durable route with online SQLite snapshots | snapshots can be taken while active database writers remain online |
+
+The target date of **2026-08-26** is a review boundary, not automatic permission to trade. Clearance still requires the unchanged-candidate time windows, independent fill calibration, qualified promotion candidates, positive post-cost expectancy across independent days and symbols, profitable-sleeve diversity, bounded concentration, successful paper-canary cohorts, and explicit operator release. Until all gates pass, `MARKET_DATA_ONLY=1` and `ALLOW_ORDER_EXECUTION=0` remain the intended posture.
+
+The transition contract is:
+
+`collect -> signal or no-trade -> paper execution and replay -> out-of-sample evidence -> broker/risk/promotion gates -> operator-approved microscopic live canary -> reconcile, expand, or roll back`
+
+Paper and live evaluation are parallel safety lanes. A live order is never authorized merely because the same opportunity produced a paper fill, and choosing no trade is a valid outcome.
 
 ## Current Advancements
 
@@ -53,6 +79,10 @@ Key operating upgrades:
 - `COMMANDS.md` is generated and alphabetized from `scripts/ops/commands_hygiene_bot.py`, with a command contract hash written to `governance/health/commands_contract_latest.json`.
 - Report opening now uses `scripts/ops/open_report_artifact.sh` as the resilient entrypoint, including incident-report PDF regeneration with HTML/markdown fallback.
 - Schwab interactive auth defaults to Chrome for the browser consent flow and records the requested/resolved browser in the auth refresh artifact.
+- Frozen release bundles keep serving read-only and isolated from retraining; constrained training can defer safely without invalidating the active model.
+- Candidate state, promotion evidence, and reconciliation artifacts use atomic or content-addressed writes so partial files cannot silently become readiness proof.
+- Storage disaster recovery uses SQLite's online backup path for active databases and verifies the promoted model bundle needed for restart.
+- The production recovery harness exercises ten bounded failure classes and records containment, duplicate-order prevention, recovery time, and evidence hashes.
 
 ## Operational Evidence
 
@@ -62,6 +92,12 @@ The important generated artifacts are:
 - `governance/events/signal_generation_*.jsonl`: good and bad signal generation audit stream.
 - `governance/health/schwab_auth_refresh_latest.json`: browser handoff, token readiness, and account-probe outcome.
 - `governance/health/schwab_auth_supervisor_latest.json`: token lease, callback-port, and broker-readiness posture.
+- `governance/health/live_money_readiness_contract_latest.json`: the 14-section live-money lock, six-pillar runway, target window, and blocking evidence.
+- `governance/health/production_excellence_control_latest.json`: frozen-candidate integrity and the stricter ten-pillar production-evidence scoreboard.
+- `governance/runtime/production_candidate_state.json`: accepted candidate fingerprint, generation, and per-scope evidence-window starts.
+- `governance/health/paper_execution_truth_layer_latest.json`: paper execution, account-position awareness, broker reconciliation, and profitability truth.
+- `governance/health/production_recovery_drill_harness_latest.json`: isolated recovery-drill results and tamper-evident evidence hashes.
+- `governance/health/storage_disaster_recovery_latest.json`: active-route durability, online snapshot mode, and restart-critical artifact verification.
 - `governance/health/codex_project_guard_latest.json`: Codex source-of-truth and scope-drift guard result.
 - `governance/health/documentation_reporting_intelligence_latest.json`: README, COMMANDS.md, report-quality, and PyCharm visibility intelligence layer.
 - `docs/pycharm/intelligence_layers_latest.md`: PyCharm-facing intelligence index with blue active-bot rows and operator-open paths.
@@ -78,15 +114,15 @@ The important generated artifacts are:
 ## Auto-Refreshed Highlights
 
 <!-- SHOWCASE_HIGHLIGHTS_START -->
-_Generated at 2026-07-23 17:06 UTC_
+_Generated at 2026-08-06 17:03 UTC_
 
-- Active registry lineup: `1732` of `1771` bots are active.
-- Live collection snapshot: `0/0` lane artifacts are reporting `running`.
-- Institutional readiness: `0.00/100` with status ``.
-- Live/runtime posture: live readiness `` at `0.00/100`, runtime separation ``.
-- Autonomy posture: `0.00/100` with status ``, playbooks `0`, open incidents `0`.
-- Architecture upgrades: `0/0` ready proof surfaces, host profile ``, portable proof ``.
-- Crypto context: `0/0` healthy sources and `0/0` healthy news feeds.
+- Active registry lineup: `1780` of `1781` bots are active.
+- Live collection snapshot: `0/31` lane artifacts are reporting `running`.
+- Institutional readiness: `99.33/100` with status `industry_leaning`.
+- Live/runtime posture: live readiness `ready` at `100.00/100`, runtime separation `ready`.
+- Autonomy posture: `91.05/100` with status `blocked`, playbooks `1`, open incidents `0`.
+- Architecture upgrades: `10/12` ready proof surfaces, host profile `max_throughput`, portable proof `ready`.
+- Crypto context: `16/18` healthy sources and `7/7` healthy news feeds.
 - Correlation overlay: mode `exact`, aligned pairs `0`.
 - PyTorch sidecar: `0` active assist candidates across `0` tracked runs.
 - Top active lineup by test accuracy: `brain_refinery_v95_rates_regime_bond_bot` (100.0%), `brain_refinery_v99_defensive_dividend_concentration` (100.0%), `brain_refinery_v265_crypto_risk_off_contagion_shock_guard` (97.7%).
@@ -191,6 +227,9 @@ cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
 ./scripts/runbook.sh
 ./scripts/runbook.sh live
 ./scripts/runbook.sh retrain
+./scripts/ops/opsctl.sh health-fast --json
+./scripts/ops/opsctl.sh production-excellence --json
+./scripts/ops/opsctl.sh live-money-readiness --json
 ./scripts/ops/open_report_artifact.sh bundle
 python3 scripts/ops/update_showcase_highlights.py
 ```
