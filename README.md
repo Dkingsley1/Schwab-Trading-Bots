@@ -117,7 +117,7 @@ The important generated artifacts are:
 _Generated at 2026-08-06 17:03 UTC_
 
 - Active registry lineup: `1780` of `1781` bots are active.
-- Live collection snapshot: `0/31` lane artifacts are reporting `running`.
+- Runtime collection snapshot: all-sleeves fanout is ready with `32` child processes and `221/221` collectors represented; lane artifacts show `2` split-running and `29` in bounded runtime-training pause.
 - Institutional readiness: `99.33/100` with status `industry_leaning`.
 - Live/runtime posture: live readiness `ready` at `100.00/100`, runtime separation `ready`.
 - Autonomy posture: `91.05/100` with status `blocked`, playbooks `1`, open incidents `0`.
