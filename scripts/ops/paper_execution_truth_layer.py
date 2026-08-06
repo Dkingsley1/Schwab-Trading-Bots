@@ -367,6 +367,11 @@ def _build_post_cost_expectancy_gate(paper_performance: dict[str, Any]) -> dict[
     minimum_samples = max(_safe_int(expectancy.get("minimum_samples"), 30), 1)
     evidence_sufficient = bool(expectancy.get("evidence_sufficient", sample_count >= minimum_samples))
     positive_lcb = bool(expectancy.get("positive_lower_confidence_bound_95", False))
+    robust_contract_present = "promotion_evidence_sufficient" in expectancy
+    promotion_evidence_sufficient = bool(expectancy.get("promotion_evidence_sufficient", evidence_sufficient))
+    promotion_positive_lcb = bool(
+        expectancy.get("positive_clustered_lower_confidence_bound_95", positive_lcb)
+    )
     mean_pnl = _safe_float(expectancy.get("mean_post_cost_pnl_delta"), 0.0)
     mean_return_bps = _safe_float(expectancy.get("mean_post_cost_return_bps"), 0.0)
     pnl_lcb = _safe_float(expectancy.get("lower_confidence_bound_95_post_cost_pnl_delta"), 0.0)
@@ -374,9 +379,16 @@ def _build_post_cost_expectancy_gate(paper_performance: dict[str, Any]) -> dict[
     reasons: list[str] = []
     if not expectancy or not bool(expectancy.get("available", False)):
         reasons.append("post_cost_expectancy_evidence_missing")
-    elif not evidence_sufficient:
-        reasons.append("post_cost_expectancy_samples_pending")
-    elif not positive_lcb:
+    elif not promotion_evidence_sufficient:
+        reasons.extend(
+            [str(item) for item in expectancy.get("promotion_blockers", []) if str(item)]
+            or [
+                "post_cost_expectancy_independent_evidence_pending"
+                if robust_contract_present
+                else "post_cost_expectancy_samples_pending"
+            ]
+        )
+    elif not promotion_positive_lcb:
         if mean_pnl <= 0.0 or mean_return_bps <= 0.0:
             reasons.append("post_cost_expectancy_nonpositive")
         else:
@@ -384,7 +396,7 @@ def _build_post_cost_expectancy_gate(paper_performance: dict[str, Any]) -> dict[
     status = "ready" if not reasons else "warn"
     if status == "ready":
         score = 100.0
-    elif evidence_sufficient and (mean_pnl <= 0.0 or mean_return_bps <= 0.0):
+    elif promotion_evidence_sufficient and (mean_pnl <= 0.0 or mean_return_bps <= 0.0):
         score = 60.0
     else:
         score = 84.0
@@ -395,7 +407,10 @@ def _build_post_cost_expectancy_gate(paper_performance: dict[str, Any]) -> dict[
         sample_count=sample_count,
         minimum_samples=minimum_samples,
         evidence_sufficient=evidence_sufficient,
-        promotion_evidence_eligible=bool(evidence_sufficient and positive_lcb),
+        promotion_evidence_sufficient=promotion_evidence_sufficient,
+        iid_positive_lower_confidence_bound_95=positive_lcb,
+        positive_clustered_lower_confidence_bound_95=promotion_positive_lcb,
+        promotion_evidence_eligible=bool(promotion_evidence_sufficient and promotion_positive_lcb),
         mean_post_cost_pnl_delta=round(mean_pnl, 6),
         mean_post_cost_return_bps=round(mean_return_bps, 6),
         lower_confidence_bound_95_post_cost_pnl_delta=round(pnl_lcb, 6),
@@ -404,7 +419,8 @@ def _build_post_cost_expectancy_gate(paper_performance: dict[str, Any]) -> dict[
         advisory_only=status == "warn",
         advisory_policy=(
             "paper collection continues while post-cost expectancy matures; live-money promotion requires enough "
-            "samples and positive 95% lower confidence bounds for both PnL delta and return"
+            "independent days, symbol breadth, effective sample size, and positive clustered plus block-bootstrap "
+            "95% lower confidence bounds for both PnL delta and return"
         ),
     )
 

@@ -992,6 +992,155 @@ def _paper_env_pause_keys(env_values: dict[str, str]) -> dict[str, str]:
     }
 
 
+def _profitability_control_posture(runtime_profitability: dict[str, Any]) -> dict[str, Any]:
+    raw_grade = str(runtime_profitability.get("raw_profitability_grade") or "").strip().upper()
+    controlled_grade = str(runtime_profitability.get("controlled_profitability_grade") or "").strip().upper()
+    raw_recovery = _as_dict(runtime_profitability.get("raw_profitability_a_recovery_contract"))
+    recovery_enforcement = _as_dict(raw_recovery.get("runtime_enforcement"))
+    raw_gap = _safe_float(_as_dict(raw_recovery.get("gap_to_raw_a")).get("net_pnl_gap"), 0.0)
+    improvement = _as_dict(runtime_profitability.get("raw_profitability_improvement_contract"))
+    improvement_enforcement = _as_dict(improvement.get("runtime_enforcement"))
+    improvement_required = bool(
+        runtime_profitability
+        and (
+            _bool(raw_recovery.get("active", False))
+            or raw_gap > 0.0
+            or (raw_grade and raw_grade not in {"A", "A+"})
+        )
+    )
+
+    required_enforcement = {
+        "block_new_entries_on_weak_profiles": _bool(
+            improvement_enforcement.get("block_new_entries_on_weak_profiles", False)
+        ),
+        "keep_sells_and_reduce_only_paths_open": _bool(
+            improvement_enforcement.get("keep_sells_and_reduce_only_paths_open", False)
+        ),
+        "raise_clean_profile_buy_gate_while_raw_below_a": _bool(
+            improvement_enforcement.get("raise_clean_profile_buy_gate_while_raw_below_a", False)
+        ),
+        "require_position_telemetry_on_paper_fills": _bool(
+            improvement_enforcement.get("require_position_telemetry_on_paper_fills", False)
+        ),
+        "feed_loss_causes_to_training": _bool(improvement_enforcement.get("feed_loss_causes_to_training", False)),
+        "require_three_profitable_refreshes_before_reentry": _bool(
+            improvement_enforcement.get("require_three_profitable_refreshes_before_reentry", False)
+        ),
+        "track_raw_gap_burn_down": _bool(improvement_enforcement.get("track_raw_gap_burn_down", False)),
+        "do_not_force_trades": _bool(improvement_enforcement.get("do_not_force_trades", False)),
+    }
+    enforcement_ready = bool(required_enforcement and all(required_enforcement.values()))
+
+    clean_gate = _as_dict(improvement.get("clean_sleeve_strict_buy_gate_contract"))
+    telemetry = _as_dict(improvement.get("position_telemetry_contract"))
+    feedback = _as_dict(improvement.get("loss_cause_training_feedback_contract"))
+    strategy_quarantine = _as_dict(improvement.get("losing_strategy_pair_quarantine_contract"))
+    weak_contract = _as_dict(improvement.get("weak_sleeve_zero_entry_contract"))
+    weak_rows = [row for row in _as_list(weak_contract.get("profiles")) if isinstance(row, dict)]
+    zero_entry_rows = [
+        row
+        for row in weak_rows
+        if _bool(row.get("block_new_entries", False))
+        or _lower(row.get("action")) == "quarantine_new_entries"
+    ]
+    weak_containment_ready = bool(
+        (not _bool(weak_contract.get("active", False)))
+        or (_bool(weak_contract.get("ready", False)) and not weak_rows)
+        or (
+            zero_entry_rows
+            and all(
+                _bool(row.get("zero_fresh_entry_ready", False))
+                and _safe_float(row.get("new_entry_cap"), 1.0) == 0.0
+                for row in zero_entry_rows
+            )
+        )
+    )
+    clean_gate_ready = bool(
+        _bool(clean_gate.get("enforced", False))
+        and _bool(clean_gate.get("block_when_source_or_fill_unknown", False))
+        and _bool(clean_gate.get("block_when_spread_regime_unknown", False))
+        and _bool(clean_gate.get("allow_buy_only_when_all_gates_pass", False))
+    )
+    telemetry_ready = bool(
+        _bool(telemetry.get("contract_ready", False))
+        and _bool(telemetry.get("required_on_every_paper_fill", False))
+    )
+    feedback_ready = bool(
+        _bool(feedback.get("active", False))
+        and _bool(feedback.get("feed_hard_negative_training_labels", False))
+        and _bool(feedback.get("feed_profitable_refresh_positive_labels", False))
+    )
+    strategy_pairs = [
+        row for row in _as_list(strategy_quarantine.get("pairs")) if isinstance(row, dict)
+    ]
+    strategy_quarantine_ready = bool(
+        not _bool(strategy_quarantine.get("active", False))
+        or (
+            _bool(strategy_quarantine.get("ready", False))
+            and all(
+                _bool(row.get("quarantine_ready", False))
+                and _safe_float(row.get("new_entry_cap"), 1.0) == 0.0
+                for row in strategy_pairs
+            )
+        )
+    )
+    modern_contract_checks = {
+        "runtime_enforcement": enforcement_ready,
+        "weak_profile_zero_entry_containment": weak_containment_ready,
+        "clean_sleeve_strict_gate": clean_gate_ready,
+        "paper_position_telemetry": telemetry_ready,
+        "loss_cause_training_feedback": feedback_ready,
+        "losing_strategy_pair_quarantine": strategy_quarantine_ready,
+        "raw_grade_remains_evidence_based": _bool(improvement.get("raw_grade_remains_evidence_based", False)),
+    }
+    modern_contract_ready = bool(improvement and all(modern_contract_checks.values()))
+    declared_contract_ready = bool(
+        _bool(improvement.get("control_ready", False))
+        and _bool(improvement.get("raw_grade_remains_evidence_based", False))
+        and enforcement_ready
+    )
+    improvement_control_ready = bool(
+        not improvement_required or declared_contract_ready or modern_contract_ready
+    )
+    recovery_containment_ready = bool(
+        controlled_grade in {"A", "A+"}
+        or (
+            _bool(raw_recovery.get("active", False))
+            and _bool(recovery_enforcement.get("block_new_entries_on_weak_profiles", False))
+            and _bool(recovery_enforcement.get("keep_sells_and_reduce_only_paths_open", False))
+        )
+    )
+    control_posture_ready = bool(
+        not runtime_profitability
+        or (recovery_containment_ready and improvement_control_ready)
+    )
+    raw_grade_cosmetic = bool(
+        raw_grade in {"A", "A+"}
+        and _bool(raw_recovery.get("active", False))
+        and raw_gap > 0.0
+    )
+    raw_promotion_evidence_ready = bool(
+        raw_grade in {"A", "A+"}
+        and raw_gap <= 0.0
+        and not raw_grade_cosmetic
+        and _bool(improvement.get("raw_grade_remains_evidence_based", False))
+    )
+    return {
+        "raw_profitability_grade": raw_grade,
+        "controlled_profitability_grade": controlled_grade,
+        "raw_profitability_gap_to_a_net_pnl": raw_gap,
+        "raw_profitability_improvement_required": improvement_required,
+        "raw_profitability_improvement_control_ready": improvement_control_ready,
+        "declared_improvement_control_ready": declared_contract_ready,
+        "modern_improvement_control_ready": modern_contract_ready,
+        "profitability_control_posture_ready": control_posture_ready,
+        "raw_promotion_evidence_ready": raw_promotion_evidence_ready,
+        "raw_profitability_grade_cosmetic": raw_grade_cosmetic,
+        "modern_contract_checks": modern_contract_checks,
+        "required_runtime_enforcement": required_enforcement,
+    }
+
+
 def _production_grade_authority_guard(
     project_root: Path,
     runtime: dict[str, Any],
@@ -1022,49 +1171,20 @@ def _production_grade_authority_guard(
     paper_auth_ready = bool(strict_auth_ready or _paper_soak_auth_ready(auth_lease, schwab_auth, broker, env_values))
     paper_broker_ready = bool(strict_broker_ready or (_bool(broker.get("ready_for_open", False)) and broker.get("network_ok", True) is not False))
     session_ready = _session_ready(session)
-    raw_grade = str(runtime_profitability.get("raw_profitability_grade") or "").strip().upper()
-    controlled_grade = str(runtime_profitability.get("controlled_profitability_grade") or "").strip().upper()
+    profitability_posture = _profitability_control_posture(runtime_profitability)
+    raw_grade = str(profitability_posture.get("raw_profitability_grade") or "")
+    controlled_grade = str(profitability_posture.get("controlled_profitability_grade") or "")
     raw_recovery = _as_dict(runtime_profitability.get("raw_profitability_a_recovery_contract"))
-    raw_gap = _safe_float(_as_dict(raw_recovery.get("gap_to_raw_a")).get("net_pnl_gap"), 0.0)
-    runtime_enforcement = _as_dict(raw_recovery.get("runtime_enforcement"))
     raw_improvement = _as_dict(runtime_profitability.get("raw_profitability_improvement_contract"))
-    raw_improvement_enforcement = _as_dict(raw_improvement.get("runtime_enforcement"))
-    raw_improvement_required = bool(
-        runtime_profitability
-        and (
-            _bool(raw_recovery.get("active", False))
-            or raw_gap > 0.0
-            or (raw_grade and raw_grade not in {"A", "A+"})
-        )
+    raw_gap = _safe_float(profitability_posture.get("raw_profitability_gap_to_a_net_pnl"), 0.0)
+    raw_improvement_required = _bool(profitability_posture.get("raw_profitability_improvement_required", False))
+    raw_improvement_ready = _bool(
+        profitability_posture.get("raw_profitability_improvement_control_ready", False)
     )
-    raw_improvement_ready = bool(
-        not raw_improvement_required
-        or (
-            _bool(raw_improvement.get("control_ready", False))
-            and _bool(raw_improvement.get("raw_grade_remains_evidence_based", False))
-            and _bool(raw_improvement_enforcement.get("block_new_entries_on_weak_profiles", False))
-            and _bool(raw_improvement_enforcement.get("keep_sells_and_reduce_only_paths_open", False))
-            and _bool(raw_improvement_enforcement.get("raise_clean_profile_buy_gate_while_raw_below_a", False))
-            and _bool(raw_improvement_enforcement.get("require_position_telemetry_on_paper_fills", False))
-            and _bool(raw_improvement_enforcement.get("feed_loss_causes_to_training", False))
-            and _bool(raw_improvement_enforcement.get("require_three_profitable_refreshes_before_reentry", False))
-            and _bool(raw_improvement_enforcement.get("track_raw_gap_burn_down", False))
-        )
+    raw_grade_cosmetic = _bool(profitability_posture.get("raw_profitability_grade_cosmetic", False))
+    controlled_profitability_enforced = _bool(
+        profitability_posture.get("profitability_control_posture_ready", False)
     )
-    raw_grade_cosmetic = bool(
-        raw_grade in {"A", "A+"}
-        and _bool(raw_recovery.get("active", False))
-        and raw_gap > 0.0
-    )
-    controlled_profitability_enforced = bool(
-        controlled_grade in {"A", "A+"}
-        or (
-            _bool(raw_recovery.get("active", False))
-            and _bool(runtime_enforcement.get("block_new_entries_on_weak_profiles", False))
-            and _bool(runtime_enforcement.get("keep_sells_and_reduce_only_paths_open", False))
-        )
-    )
-    controlled_profitability_enforced = bool(controlled_profitability_enforced and raw_improvement_ready)
     paper_open = _paper_execution_open(runtime, env_values)
     hard_blocker_fail_closed = bool(
         not fail_closed_blockers
@@ -1155,6 +1275,15 @@ def _production_grade_authority_guard(
                 "burn_down_active": _bool(_as_dict(raw_improvement.get("burn_down_contract")).get("active", False)),
             },
             "controlled_profitability_enforced": controlled_profitability_enforced,
+            "raw_promotion_evidence_ready": _bool(
+                profitability_posture.get("raw_promotion_evidence_ready", False)
+            ),
+            "promotion_only_blockers": (
+                []
+                if _bool(profitability_posture.get("raw_promotion_evidence_ready", False))
+                else ["raw_profitability_evidence_not_ready_for_live_promotion"]
+            ),
+            "profitability_control_posture": profitability_posture,
         },
         evidence=[
             "production_grade_rule=paper_only_lanes_fail_open_when_safe_live_money_fails_closed",
@@ -1195,33 +1324,12 @@ def _soak_30_day_continuity_guard(
     runtime_capacity = _as_dict(runtime.get("paper_capacity_contract"))
     all_sleeves = _all_sleeves_runtime_state(process, project_root)
     stale_artifacts = [row for row in artifact_snapshots if bool(row.get("stale", False))]
-    profitability_grade = str(runtime_profitability.get("controlled_profitability_grade") or "").strip().upper()
+    profitability_posture = _profitability_control_posture(runtime_profitability)
+    profitability_grade = str(profitability_posture.get("controlled_profitability_grade") or "")
     raw_recovery = _as_dict(runtime_profitability.get("raw_profitability_a_recovery_contract"))
-    runtime_enforcement = _as_dict(raw_recovery.get("runtime_enforcement"))
-    raw_grade = str(runtime_profitability.get("raw_profitability_grade") or "").strip().upper()
-    raw_gap = _safe_float(_as_dict(raw_recovery.get("gap_to_raw_a")).get("net_pnl_gap"), 0.0)
-    raw_improvement = _as_dict(runtime_profitability.get("raw_profitability_improvement_contract"))
-    raw_improvement_enforcement = _as_dict(raw_improvement.get("runtime_enforcement"))
-    raw_improvement_required = bool(
-        runtime_profitability
-        and (
-            _bool(raw_recovery.get("active", False))
-            or raw_gap > 0.0
-            or (raw_grade and raw_grade not in {"A", "A+"})
-        )
-    )
-    raw_improvement_ready = bool(
-        not raw_improvement_required
-        or (
-            _bool(raw_improvement.get("control_ready", False))
-            and _bool(raw_improvement_enforcement.get("block_new_entries_on_weak_profiles", False))
-            and _bool(raw_improvement_enforcement.get("keep_sells_and_reduce_only_paths_open", False))
-            and _bool(raw_improvement_enforcement.get("raise_clean_profile_buy_gate_while_raw_below_a", False))
-            and _bool(raw_improvement_enforcement.get("require_position_telemetry_on_paper_fills", False))
-            and _bool(raw_improvement_enforcement.get("feed_loss_causes_to_training", False))
-            and _bool(raw_improvement_enforcement.get("require_three_profitable_refreshes_before_reentry", False))
-            and _bool(raw_improvement_enforcement.get("track_raw_gap_burn_down", False))
-        )
+    raw_improvement_required = _bool(profitability_posture.get("raw_profitability_improvement_required", False))
+    raw_improvement_ready = _bool(
+        profitability_posture.get("raw_profitability_improvement_control_ready", False)
     )
     env_pause_keys = _paper_env_pause_keys(env_values)
     strict_auth_ready = _auth_stack_ready(auth_lease, schwab_auth)
@@ -1262,16 +1370,8 @@ def _soak_30_day_continuity_guard(
         )
         or capacity_limited_gate_safe
     )
-    controlled_profitability_ready = bool(
-        (
-            profitability_grade in {"A", "A+"}
-            or (
-                _bool(raw_recovery.get("active", False))
-                and _bool(runtime_enforcement.get("block_new_entries_on_weak_profiles", False))
-                and _bool(runtime_enforcement.get("keep_sells_and_reduce_only_paths_open", False))
-            )
-        )
-        and raw_improvement_ready
+    controlled_profitability_ready = _bool(
+        profitability_posture.get("profitability_control_posture_ready", False)
     )
     blockers: list[str] = []
     if not runtime_status_ready:
@@ -1337,6 +1437,15 @@ def _soak_30_day_continuity_guard(
             "raw_profitability_a_recovery_active": _bool(raw_recovery.get("active", False)),
             "raw_profitability_improvement_required": raw_improvement_required,
             "raw_profitability_improvement_ready": raw_improvement_ready,
+            "raw_promotion_evidence_ready": _bool(
+                profitability_posture.get("raw_promotion_evidence_ready", False)
+            ),
+            "promotion_only_blockers": (
+                []
+                if _bool(profitability_posture.get("raw_promotion_evidence_ready", False))
+                else ["raw_profitability_evidence_not_ready_for_live_promotion"]
+            ),
+            "profitability_control_posture": profitability_posture,
         },
         evidence=[
             "30_day_soak_invariant=runtime_ramp_paper_consumers_artifacts_fanout_profitability_controls_move_as_one",

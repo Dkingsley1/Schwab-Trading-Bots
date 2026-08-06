@@ -154,6 +154,24 @@ def production_order_firewall_check(
         ):
             blockers.append("production_excellence_not_ready")
 
+    transition_integrity: dict[str, Any] = {}
+    transition_path = _project_path(
+        project_root,
+        policy.get("live_transition_integrity_artifact")
+        or "governance/health/live_transition_integrity_control_latest.json",
+    )
+    if bool(policy.get("require_live_transition_integrity_for_live_submit", False)) and not risk_reducing_exit:
+        try:
+            loaded = json.loads(transition_path.read_text(encoding="utf-8"))
+            transition_integrity = loaded if isinstance(loaded, dict) else {}
+        except Exception:
+            transition_integrity = {}
+        if not bool(
+            str(transition_integrity.get("control_grade") or "").strip().upper() in {"A+", "A++"}
+            and transition_integrity.get("ready_for_live_transition", False)
+        ):
+            blockers.append("live_transition_integrity_not_ready")
+
     active_halt_flags: list[str] = []
     if _truthy(env_map.get("OPERATOR_STOP"), False):
         active_halt_flags.append("env:OPERATOR_STOP")
@@ -263,6 +281,11 @@ def production_order_firewall_check(
         "canary_allowlist": canary_allowlist,
         "production_excellence_path": str(excellence_path),
         "production_excellence_ready": bool(production_excellence.get("ten_out_of_ten_ready", False)),
+        "live_transition_integrity_path": str(transition_path),
+        "live_transition_control_ready": bool(
+            str(transition_integrity.get("control_grade") or "").strip().upper() in {"A+", "A++"}
+        ),
+        "live_transition_runtime_ready": bool(transition_integrity.get("ready_for_live_transition", False)),
         "config_path": str(config_path),
         "policy": "reject_by_default_until_production_firewall_is_armed_and_clear; verified emergency exits remain risk reducing",
     }

@@ -28,6 +28,7 @@ from scripts.ops.artifact_generation_lock import (
     PAPER_PROFITABILITY_LOCK_ENV,
     paper_profitability_generation_lock,
 )
+from core.profitability_statistics import clustered_post_cost_statistics
 
 DEFAULT_JSON_PATH = PROJECT_ROOT / "governance" / "health" / "paper_performance_latest.json"
 DEFAULT_MD_PATH = PROJECT_ROOT / "exports" / "reports" / "paper_performance_latest.md"
@@ -891,6 +892,9 @@ def _post_cost_expectancy(
             "minimum_samples": required,
             "evidence_sufficient": False,
             "positive_lower_confidence_bound_95": False,
+            "promotion_evidence_sufficient": False,
+            "positive_clustered_lower_confidence_bound_95": False,
+            "promotion_blockers": ["no_post_cost_observations"],
         }
 
     pnl_values = [item[0] for item in samples]
@@ -923,6 +927,26 @@ def _post_cost_expectancy(
     else:
         status = "nonpositive_post_cost_expectancy"
 
+    robust = clustered_post_cost_statistics(
+        [item[2] for item in samples],
+        minimum_samples=required,
+        minimum_days=max(int(os.getenv("PAPER_PROFIT_MIN_INDEPENDENT_DAYS", "7") or 7), 1),
+        minimum_symbols=max(int(os.getenv("PAPER_PROFIT_MIN_SYMBOLS", "5") or 5), 1),
+        minimum_effective_samples=max(float(os.getenv("PAPER_PROFIT_MIN_EFFECTIVE_SAMPLES", "20") or 20.0), 1.0),
+        hypothesis_count=max(len({str(item[2].get("strategy") or "") for item in samples}), 1),
+        bootstrap_iterations=max(int(os.getenv("PAPER_PROFIT_BLOCK_BOOTSTRAP_ITERATIONS", "1200") or 1200), 200),
+    )
+    promotion_sufficient = bool(robust.get("promotion_evidence_sufficient", False))
+    promotion_positive = bool(robust.get("positive_clustered_lower_confidence_bound_95", False))
+    if not promotion_sufficient:
+        promotion_status = "independent_evidence_pending"
+    elif promotion_positive:
+        promotion_status = "positive_clustered_and_bootstrapped"
+    elif mean_pnl > 0.0 and mean_return > 0.0:
+        promotion_status = "positive_mean_robust_confidence_pending"
+    else:
+        promotion_status = "nonpositive_robust_post_cost_expectancy"
+
     return {
         "available": True,
         "status": status,
@@ -931,6 +955,11 @@ def _post_cost_expectancy(
         "minimum_samples": required,
         "evidence_sufficient": bool(evidence_sufficient),
         "positive_lower_confidence_bound_95": bool(positive_lcb),
+        "promotion_evidence_sufficient": promotion_sufficient,
+        "positive_clustered_lower_confidence_bound_95": promotion_positive,
+        "promotion_status": promotion_status,
+        "promotion_blockers": list(robust.get("blockers") or []),
+        "robust_statistics": robust,
         "first_sample_timestamp_utc": min(timestamps).isoformat().replace("+00:00", "Z") if timestamps else "",
         "last_sample_timestamp_utc": max(timestamps).isoformat().replace("+00:00", "Z") if timestamps else "",
         "positive_sample_count": int(sum(1 for value in pnl_values if value > 0.0)),

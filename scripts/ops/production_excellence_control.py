@@ -231,6 +231,17 @@ def _append_candidate_event(path: Path, event: dict[str, Any]) -> None:
         os.fsync(handle.fileno())
 
 
+def _quarantine_candidate_event_log(path: Path, *, now: datetime) -> str:
+    if not path.exists():
+        return ""
+    quarantine = path.parent / "quarantine"
+    quarantine.mkdir(parents=True, exist_ok=True)
+    stamp = now.astimezone(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+    destination = quarantine / f"{path.stem}.invalid.{stamp}{path.suffix}"
+    os.replace(path, destination)
+    return str(destination)
+
+
 def _profitability_baseline(project_root: Path) -> dict[str, Any]:
     payload = load_json(project_root / "governance" / "health" / "paper_profitability_control_latest.json")
     summary = _as_dict(payload.get("paper_summary"))
@@ -276,6 +287,7 @@ def manage_candidate(
     *,
     initialize: bool = False,
     accept_change: bool = False,
+    recover_event_chain: bool = False,
     change_reason: str = "",
     now: datetime | None = None,
 ) -> dict[str, Any]:
@@ -288,9 +300,11 @@ def manage_candidate(
     changed_before = _changed_scopes(state, current) if state else []
     operation = "inspect"
     operation_error = ""
+    quarantined_event_log = ""
 
-    if initialize and accept_change:
-        operation_error = "initialize_and_accept_change_are_mutually_exclusive"
+    mutation_count = sum(bool(value) for value in (initialize, accept_change, recover_event_chain))
+    if mutation_count > 1:
+        operation_error = "candidate_mutation_flags_are_mutually_exclusive"
     elif initialize:
         operation = "initialize"
         if state:
@@ -304,15 +318,37 @@ def manage_candidate(
             operation_error = "candidate_not_initialized"
         elif not chain_before.get("ok", False):
             operation_error = "candidate_event_chain_invalid"
+        elif str(chain_before.get("chain_head") or "") != str(state.get("event_chain_head") or ""):
+            operation_error = "candidate_state_event_chain_head_mismatch"
         elif not changed_before:
             operation_error = "no_candidate_drift_to_accept"
         elif len(str(change_reason or "").strip()) < minimum_reason:
             operation_error = f"change_reason_shorter_than_{minimum_reason}_characters"
+    elif recover_event_chain:
+        operation = "recover_event_chain"
+        minimum_reason = _safe_int(_as_dict(config.get("candidate")).get("minimum_change_reason_chars"), 12)
+        head_mismatch = str(chain_before.get("chain_head") or "") != str(state.get("event_chain_head") or "")
+        if not state:
+            operation_error = "candidate_not_initialized"
+        elif bool(chain_before.get("ok", False)) and not head_mismatch:
+            operation_error = "candidate_event_chain_recovery_not_needed"
+        elif len(str(change_reason or "").strip()) < minimum_reason:
+            operation_error = f"change_reason_shorter_than_{minimum_reason}_characters"
 
-    if operation in {"initialize", "accept_change"} and not operation_error:
-        previous_head = str(chain_before.get("chain_head") or "")
+    if operation in {"initialize", "accept_change", "recover_event_chain"} and not operation_error:
+        recovering = operation == "recover_event_chain"
+        prior_log_sha256 = _file_sha256(event_path)
+        prior_log_size = event_path.stat().st_size if event_path.is_file() else 0
+        prior_state_head = str(state.get("event_chain_head") or "") if state else ""
+        if recovering:
+            quarantined_event_log = _quarantine_candidate_event_log(event_path, now=current_time)
+        previous_head = "" if recovering else str(chain_before.get("chain_head") or "")
         previous_windows = _as_dict(state.get("scope_windows_started_utc")) if state else {}
-        changed = sorted(_as_dict(current.get("scopes")).keys()) if operation == "initialize" else changed_before
+        changed = (
+            sorted(_as_dict(current.get("scopes")).keys())
+            if operation in {"initialize", "recover_event_chain"}
+            else changed_before
+        )
         windows = dict(previous_windows)
         for scope in changed:
             windows[scope] = now_text
@@ -321,7 +357,13 @@ def manage_candidate(
         event_unsigned = {
             "schema_version": 1,
             "timestamp_utc": now_text,
-            "event_type": "candidate_initialized" if operation == "initialize" else "candidate_change_accepted",
+            "event_type": (
+                "candidate_initialized"
+                if operation == "initialize"
+                else "candidate_chain_recovery_anchor"
+                if recovering
+                else "candidate_change_accepted"
+            ),
             "candidate_id": candidate_id,
             "generation": generation,
             "git_head": _git_head(project_root),
@@ -330,6 +372,15 @@ def manage_candidate(
             "change_reason": str(change_reason or "initial production-excellence candidate freeze").strip(),
             "previous_event_hash": previous_head,
         }
+        if recovering:
+            event_unsigned["recovery_evidence"] = {
+                "prior_state_event_chain_head": prior_state_head,
+                "prior_event_log_sha256": prior_log_sha256,
+                "prior_event_log_size": int(prior_log_size),
+                "prior_event_chain_errors": list(chain_before.get("errors") or []),
+                "all_evidence_windows_reset": True,
+                "quarantined_event_log": quarantined_event_log,
+            }
         event = {**event_unsigned, "event_hash": _canonical_hash(event_unsigned)}
         new_state = {
             "schema_version": 1,
@@ -365,6 +416,7 @@ def manage_candidate(
         "event_chain": chain_after,
         "operation": operation,
         "operation_error": operation_error,
+        "quarantined_event_log": quarantined_event_log,
         "state_path": str(state_path),
         "event_path": str(event_path),
     }
@@ -470,7 +522,13 @@ def _profitable_sleeves(performance: dict[str, Any]) -> tuple[list[dict[str, Any
             continue
         expectancy = _as_dict(sleeve.get("post_cost_expectancy"))
         total = _safe_float(expectancy.get("total_post_cost_pnl_delta"), 0.0)
-        if bool(expectancy.get("positive_lower_confidence_bound_95", False)) and total > 0.0:
+        positive_confident = bool(
+            expectancy.get(
+                "positive_clustered_lower_confidence_bound_95",
+                expectancy.get("positive_lower_confidence_bound_95", False),
+            )
+        )
+        if positive_confident and total > 0.0:
             rows.append({"profile": sleeve.get("profile"), "total_post_cost_pnl_delta": total})
     positive_total = sum(_safe_float(row.get("total_post_cost_pnl_delta"), 0.0) for row in rows)
     concentration = None
@@ -485,6 +543,7 @@ def build_payload(
     config_path: Path | None = None,
     initialize_candidate: bool = False,
     accept_candidate_change: bool = False,
+    recover_candidate_event_chain: bool = False,
     change_reason: str = "",
     now: datetime | None = None,
 ) -> dict[str, Any]:
@@ -499,6 +558,7 @@ def build_payload(
         config,
         initialize=initialize_candidate,
         accept_change=accept_candidate_change,
+        recover_event_chain=recover_candidate_event_chain,
         change_reason=change_reason,
         now=current_time,
     )
@@ -675,6 +735,19 @@ def build_payload(
     controlled_grade = _grade(control_payload.get("controlled_profitability_grade"))
     grade_separated = _profitability_grade_labels_honest(control_payload)
     profitability_source_current = _profitability_source_matches(performance, control_payload)
+    profitability_firewall_path = str(profit_policy.get("evidence_firewall_artifact") or "").strip()
+    profitability_firewall_required = bool(profitability_firewall_path)
+    profitability_firewall = (
+        _artifact(
+            project_root,
+            profitability_firewall_path,
+            _safe_float(profit_policy.get("max_artifact_age_hours"), 12.0),
+            current_time,
+        )
+        if profitability_firewall_required
+        else {}
+    )
+    profitability_firewall_payload = _as_dict(profitability_firewall.get("payload"))
     pillar_7 = _pillar(
         "p07_profitability_evidence",
         "Post-Cost Profitability Evidence",
@@ -683,11 +756,12 @@ def build_payload(
             _check("profit_control_matches_performance", "Profitability control is hash-bound to current performance", profitability_source_current, evidence=_as_dict(control_payload.get("paper_performance_input_contract")), action="refresh paper performance immediately before profitability control"),
             _check("profit_window_matches_candidate", "Post-cost samples belong to the frozen candidate", bool(profit_start and first_profit_sample and first_profit_sample >= profit_start), evidence={"candidate_window_start_utc": profit_start.isoformat() if profit_start else "", "first_sample_timestamp_utc": first_profit_sample.isoformat() if first_profit_sample else ""}, action="exclude pre-candidate trade deltas from the forward profitability cohort"),
             _check("post_cost_sample_floor", "Post-cost sample floor is met", _safe_int(expectancy.get("sample_count"), 0) >= _safe_int(profit_policy.get("minimum_post_cost_samples"), 100), evidence=expectancy.get("sample_count", 0), action="continue collecting schema-v2 post-cost trade deltas"),
-            _check("positive_post_cost_lcb", "The 95% lower confidence bound is positive", bool(expectancy.get("positive_lower_confidence_bound_95", False)), evidence=expectancy, action="do not promote until post-cost expectancy is positive with confidence"),
+            _check("positive_post_cost_lcb", "The clustered and block-bootstrap 95% lower confidence bound is positive", bool(expectancy.get("positive_clustered_lower_confidence_bound_95", expectancy.get("positive_lower_confidence_bound_95", False))), evidence=expectancy, action="do not promote until post-cost expectancy is positive across independent days with clustered confidence"),
             _check("positive_forward_pnl", "Forward cohort P&L is positive", post_cost_total > 0.0 and forward_raw_delta > 0.0, evidence={"post_cost_pnl_delta": post_cost_total, "forward_raw_ledger_delta": round(forward_raw_delta, 6), "historical_raw_ledger_preserved": baseline}, action="allow the frozen cohort to earn positive raw and post-cost results without rewriting history"),
             _check("profitable_sleeve_diversity", "At least three sleeves have positive confident expectancy", len(profitable_sleeves) >= _safe_int(profit_policy.get("minimum_profitable_sleeves"), 3), evidence=profitable_sleeves, action="promote only after profitability is distributed across multiple qualified sleeves"),
             _check("profit_concentration_bounded", "No sleeve dominates positive P&L", positive_concentration is not None and positive_concentration <= _safe_float(profit_policy.get("maximum_single_sleeve_positive_pnl_share"), 0.5), evidence=positive_concentration, action="reduce dependence on a single sleeve or isolated winning trade"),
             _check("drawdown_bounded", "Post-cost gain exceeds maximum cumulative drawdown", drawdown_ratio is not None and drawdown_ratio <= 1.0, evidence={"max_cumulative_drawdown": None if drawdown == float("inf") else drawdown, "drawdown_to_profit_ratio": drawdown_ratio}, action="collect drawdown evidence and keep risk-adjusted losses within the cohort's earned profit"),
+            _check("profitability_evidence_firewall", "All ten profitability controls and their current economic evidence pass", bool(not profitability_firewall_required or (profitability_firewall.get("fresh", False) and _grade(profitability_firewall_payload.get("control_grade")) == "A+" and profitability_firewall_payload.get("promotion_evidence_ready", False))), evidence={"required": profitability_firewall_required, "fresh": profitability_firewall.get("fresh", False), "control_grade": profitability_firewall_payload.get("control_grade"), "economic_evidence_grade": profitability_firewall_payload.get("economic_evidence_grade"), "blockers": profitability_firewall_payload.get("blockers", [])}, action="refresh and clear the ten-control profitability evidence firewall without relabeling weak raw outcomes"),
             _check("raw_controlled_grades_separate", "Raw results remain separate from controlled safety", grade_separated, evidence={"raw_grade": raw_grade, "controlled_grade": controlled_grade, "display": control_payload.get("profitability_display_grade")}, action="restore explicit raw-versus-controlled profitability labeling"),
         ],
     )
@@ -801,6 +875,7 @@ def build_payload(
             "changed_scopes": candidate.get("changed_scopes", []),
             "operation": candidate.get("operation"),
             "operation_error": candidate.get("operation_error"),
+            "quarantined_event_log": candidate.get("quarantined_event_log"),
             "state_path": candidate.get("state_path"),
             "event_path": candidate.get("event_path"),
             "event_chain": chain,
@@ -827,12 +902,13 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--apply", action="store_true", help="Write the latest health artifact.")
     parser.add_argument("--initialize-candidate", action="store_true", help="Freeze the first versioned production candidate.")
     parser.add_argument("--accept-candidate-change", action="store_true", help="Accept detected source drift and selectively reset affected evidence windows.")
+    parser.add_argument("--recover-candidate-event-chain", action="store_true", help="Create an audited recovery anchor and reset every evidence window after event-log loss or corruption.")
     parser.add_argument("--change-reason", default="")
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args(argv)
-    if (args.initialize_candidate or args.accept_candidate_change) and not args.apply:
+    if (args.initialize_candidate or args.accept_candidate_change or args.recover_candidate_event_chain) and not args.apply:
         parser.error("candidate mutations require --apply")
-    if args.initialize_candidate and args.accept_candidate_change:
+    if sum(bool(value) for value in (args.initialize_candidate, args.accept_candidate_change, args.recover_candidate_event_chain)) > 1:
         parser.error("candidate mutation flags are mutually exclusive")
 
     project_root = args.project_root.resolve()
@@ -847,6 +923,7 @@ def main(argv: list[str] | None = None) -> int:
             config_path=config_path,
             initialize_candidate=args.initialize_candidate,
             accept_candidate_change=args.accept_candidate_change,
+            recover_candidate_event_chain=args.recover_candidate_event_chain,
             change_reason=args.change_reason,
         )
         if args.apply:

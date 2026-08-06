@@ -5,6 +5,7 @@ import json
 import os
 import signal
 import subprocess
+import tempfile
 from collections import deque
 from datetime import date, datetime, timedelta, time, timezone
 from pathlib import Path
@@ -117,7 +118,42 @@ def standardize_grade_labels(value: Any) -> Any:
 def write_payload(path: Path, payload: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     normalized_payload = standardize_grade_labels(payload)
-    path.write_text(json.dumps(normalized_payload, ensure_ascii=True, indent=2), encoding="utf-8")
+    serialized = json.dumps(normalized_payload, ensure_ascii=True, indent=2)
+    try:
+        mode = path.stat().st_mode & 0o777
+    except OSError:
+        mode = 0o644
+    temp_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            dir=path.parent,
+            prefix=f".{path.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as handle:
+            temp_path = Path(handle.name)
+            handle.write(serialized)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.chmod(temp_path, mode)
+        os.replace(temp_path, path)
+        temp_path = None
+        try:
+            directory_fd = os.open(path.parent, os.O_RDONLY)
+            try:
+                os.fsync(directory_fd)
+            finally:
+                os.close(directory_fd)
+        except OSError:
+            pass
+    finally:
+        if temp_path is not None:
+            try:
+                temp_path.unlink()
+            except OSError:
+                pass
 
 
 def _process_tree_targets(root_pid: int) -> tuple[set[int], set[int]]:

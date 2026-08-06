@@ -114,6 +114,11 @@ WEAK_SLEEVE_RECURRENCE_REQUIRED_LABELS = [
     "session_gate_result",
     "weak_sleeve_reentry_retest_outcome",
     "repeated_loss_cause_cleared",
+    "no_trade_counterfactual_outcome",
+    "mae_bucket",
+    "mfe_bucket",
+    "exit_timing_bucket",
+    "post_entry_regime_bucket",
 ]
 
 WEAK_SLEEVE_RECURRENCE_FAMILY_REQUIREMENTS = {
@@ -741,6 +746,10 @@ SCOUT_PROFITABILITY_LABEL_OUTPUTS = [
     "source_fill_spread_quality_bucket",
     "no_trade_counterfactual_outcome",
     "false_confirmation_source",
+    "mae_bucket",
+    "mfe_bucket",
+    "exit_timing_bucket",
+    "post_entry_regime_bucket",
 ]
 
 UPPER_LAYER_TRAINING_TARGETS = [
@@ -1836,6 +1845,11 @@ def _raw_profitability_improvement_contract(
             or action == "quarantine_new_entries"
             or loser_quarantine.get("block_new_entries")
         )
+        net_pnl = _safe_float(control.get("ending_net_pnl_total"), 0.0)
+        # A net-positive sleeve may remain strictly gated while its losing
+        # strategy pairs are quarantined. It is not a zero-entry weak sleeve.
+        if net_pnl >= 0.0 and not blocked:
+            continue
         ready = bool(blocked and new_entry_cap == 0)
         weak_zero_entry_ready = weak_zero_entry_ready and ready
         weak_profile_rows.append(
@@ -4825,6 +4839,9 @@ def _profit_harvest_report_card(
         if isinstance(profit_realization_contract.get("intelligence_summary"), dict)
         else {}
     )
+    portfolio_fields_present = "portfolio_net_pnl_total" in profit_realization_contract
+    portfolio_net_pnl = _safe_float(profit_realization_contract.get("portfolio_net_pnl_total"), 0.0)
+    economic_evidence_ready = bool(not portfolio_fields_present or portfolio_net_pnl > 0.0)
     conversion_progress = _clamp(realized_share / max(target_share, 0.01))
     unrealized_control = _clamp(1.0 - max(unrealized_share - max_unrealized, 0.0) / max(1.0 - max_unrealized, 0.01))
     regret_control = _clamp(1.0 - _safe_float(summary.get("avg_harvest_regret_risk_norm"), 0.0))
@@ -4836,11 +4853,20 @@ def _profit_harvest_report_card(
         + 0.18 * regret_control
         + 0.12 * _clamp(position_count / 12.0)
     )
+    if not economic_evidence_ready:
+        base_score = 0.0
     rescue_credit = _raw_harvest_c_rescue_credit(
         base_score=base_score,
         position_count=position_count,
         profit_realization_contract=profit_realization_contract,
     )
+    if not economic_evidence_ready:
+        rescue_credit = {
+            **rescue_credit,
+            "active": False,
+            "credit_norm": 0.0,
+            "reason": "portfolio net P&L must be positive before harvest controls can receive raw outcome credit",
+        }
     score = _clamp(base_score + _safe_float(rescue_credit.get("credit_norm"), 0.0))
     if bool(rescue_credit.get("active", False)):
         score = max(score, PROFIT_HARVEST_C_MIN_SCORE)
@@ -4851,6 +4877,13 @@ def _profit_harvest_report_card(
         profit_harvest_controls=profit_harvest_controls,
         strategy_harvest_controls=strategy_harvest_controls,
     )
+    if not economic_evidence_ready:
+        b_rescue_credit = {
+            **b_rescue_credit,
+            "active": False,
+            "credit_norm": 0.0,
+            "reason": "portfolio net P&L must be positive before harvest controls can receive raw outcome credit",
+        }
     score = _clamp(score + _safe_float(b_rescue_credit.get("credit_norm"), 0.0))
     if bool(b_rescue_credit.get("active", False)):
         score = max(score, 0.70)
@@ -4869,6 +4902,8 @@ def _profit_harvest_report_card(
     )
     control_grade = str(aplus_campaign.get("control_grade") or raw_grade)
     control_can_lift_headline = bool(
+        economic_evidence_ready
+        and
         aplus_campaign.get("active", False)
         and bool(profit_realization_contract.get("active", False))
         and bool(profit_harvest_controls or strategy_harvest_controls or position_count)
@@ -4877,6 +4912,11 @@ def _profit_harvest_report_card(
     headline_grade = control_grade if control_can_lift_headline else raw_grade
     return {
         "active": bool(profit_realization_contract.get("active", False)),
+        "economic_evidence_ready": economic_evidence_ready,
+        "portfolio_net_pnl_total": round(portfolio_net_pnl, 6),
+        "raw_grade_suppressed_reason": ""
+        if economic_evidence_ready
+        else "portfolio_net_pnl_nonpositive",
         "grade": headline_grade,
         "headline_grade": headline_grade,
         "raw_outcome_grade": raw_grade,
@@ -4906,6 +4946,11 @@ def _profit_harvest_report_card(
             else {}
         ),
         "next_action": "keep harvesting partials until realized share reaches target without breaking runner protection",
+        "grading_contract": {
+            "positive_only_realized_share_cannot_hide_negative_portfolio_net_pnl": True,
+            "control_grade_never_rewrites_raw_harvest_outcome": True,
+            "headline_lift_requires_positive_portfolio_net_pnl": True,
+        },
     }
 
 

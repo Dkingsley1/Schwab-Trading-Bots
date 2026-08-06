@@ -987,6 +987,53 @@ def test_position_harvest_ledger_keeps_drag_rows_as_raw_recovery_telemetry(tmp_p
     assert telemetry["evidence_gap_active"] is False
 
 
+def test_raw_improvement_zero_entry_contract_excludes_net_positive_strictly_gated_sleeves() -> None:
+    module = _load_module()
+
+    contract = module._raw_profitability_improvement_contract(
+        financial_grade="D",
+        raw_profitability_grade="D",
+        net_sum=-100.0,
+        realized_sum=-75.0,
+        unrealized_sum=-25.0,
+        change_vs_previous_day=0.0,
+        active_profile_controls={
+            "net_positive": {
+                "action": "tighten_entry_quality_hard",
+                "new_entry_cap": 3,
+                "position_size_multiplier": 0.75,
+                "block_new_entries": False,
+                "ending_net_pnl_total": 10.0,
+            },
+            "loss_making": {
+                "action": "quarantine_new_entries",
+                "new_entry_cap": 0,
+                "position_size_multiplier": 0.0,
+                "block_new_entries": True,
+                "ending_net_pnl_total": -10.0,
+            },
+        },
+        strategy_controls=[],
+        cause_counter=Counter({"source_quality:low": 1}),
+        raw_recovery_contract={
+            "runtime_enforcement": {
+                "keep_sells_and_reduce_only_paths_open": True,
+                "raise_clean_profile_buy_gate_while_raw_below_a": True,
+                "block_when_source_or_fill_unknown": True,
+            }
+        },
+        financial_lift_contract={},
+        weak_strengthening_contract={"strategy_pair_controls": []},
+        position_ledger={"active": True, "position_count": 0},
+    )
+
+    weak = contract["weak_sleeve_zero_entry_contract"]
+    assert weak["ready"] is True
+    assert weak["weak_profile_count"] == 1
+    assert [row["profile"] for row in weak["profiles"]] == ["loss_making"]
+    assert contract["control_ready"] is True
+
+
 def test_profit_harvest_report_card_does_not_use_drag_telemetry_for_harvest_credit() -> None:
     module = _load_module()
 
@@ -1015,6 +1062,36 @@ def test_profit_harvest_report_card_does_not_use_drag_telemetry_for_harvest_cred
     assert report["base_raw_outcome_grade"] == "D"
     assert report["raw_outcome_grade"] == "D"
     assert report["raw_harvest_rescue_credit"]["active"] is False
+
+
+def test_profit_harvest_report_card_cannot_grade_positive_when_portfolio_net_is_negative() -> None:
+    module = _load_module()
+
+    report = module._profit_harvest_report_card(
+        profit_realization_contract={
+            "active": True,
+            "realized_profit_share_norm": 1.0,
+            "target_realized_profit_share_norm": 0.35,
+            "unrealized_profit_share_norm": 0.0,
+            "max_unrealized_profit_share_norm": 0.70,
+            "portfolio_net_pnl_total": -3_000.0,
+            "portfolio_realized_pnl_total": 20.0,
+            "portfolio_unrealized_pnl_total": -3_020.0,
+            "intelligence_summary": {"avg_harvest_regret_risk_norm": 0.0},
+        },
+        position_ledger={"active": True, "position_count": 300, "harvestable_position_count": 300},
+        strategy_harvest_controls={"default::strategy": {"active": True}},
+        profit_harvest_controls={"default": {"active": True}},
+    )
+
+    assert report["economic_evidence_ready"] is False
+    assert report["raw_grade_suppressed_reason"] == "portfolio_net_pnl_nonpositive"
+    assert report["base_raw_outcome_grade"] == "D"
+    assert report["raw_outcome_grade"] == "D"
+    assert report["headline_grade"] == "D"
+    assert report["control_grade"] != report["headline_grade"]
+    assert report["raw_harvest_rescue_credit"]["active"] is False
+    assert report["raw_harvest_b_rescue_credit"]["active"] is False
 
 
 def test_carry_forward_open_winner_gets_harvest_controls_and_position_proxy() -> None:

@@ -125,6 +125,61 @@ def test_candidate_event_log_tampering_blocks_candidate(tmp_path: Path) -> None:
     assert "candidate_event_chain_valid" in pillar["failed_checks"]
 
 
+def test_missing_event_log_cannot_be_accepted_as_ordinary_drift(tmp_path: Path) -> None:
+    config_path = _write_config(tmp_path)
+    _seed_sources(tmp_path)
+    initialized = control.build_payload(
+        tmp_path,
+        config_path=config_path,
+        initialize_candidate=True,
+        now=NOW,
+    )
+    Path(initialized["candidate"]["event_path"]).unlink()
+    (tmp_path / "strategy" / "model.py").write_text("VALUE = 2\n", encoding="utf-8")
+
+    refused = control.build_payload(
+        tmp_path,
+        config_path=config_path,
+        accept_candidate_change=True,
+        change_reason="Accept strategy adjustment after review",
+        now=NOW + timedelta(hours=1),
+    )
+
+    assert refused["candidate"]["candidate_ready"] is False
+    assert refused["candidate"]["operation_error"] == "candidate_state_event_chain_head_mismatch"
+
+
+def test_explicit_event_chain_recovery_resets_every_window(tmp_path: Path) -> None:
+    config_path = _write_config(tmp_path)
+    _seed_sources(tmp_path)
+    initialized = control.build_payload(
+        tmp_path,
+        config_path=config_path,
+        initialize_candidate=True,
+        now=NOW,
+    )
+    Path(initialized["candidate"]["event_path"]).unlink()
+    recovery_time = NOW + timedelta(hours=4)
+
+    recovered = control.build_payload(
+        tmp_path,
+        config_path=config_path,
+        recover_candidate_event_chain=True,
+        change_reason="Recover missing candidate chain and restart all evidence clocks",
+        now=recovery_time,
+    )
+
+    candidate = recovered["candidate"]
+    assert candidate["candidate_ready"] is True
+    assert candidate["generation"] == 2
+    assert candidate["event_chain"]["event_count"] == 1
+    assert set(candidate["scope_windows_started_utc"].values()) == {recovery_time.isoformat()}
+    event = json.loads(Path(candidate["event_path"]).read_text(encoding="utf-8").splitlines()[0])
+    assert event["event_type"] == "candidate_chain_recovery_anchor"
+    assert event["recovery_evidence"]["all_evidence_windows_reset"] is True
+    assert event["recovery_evidence"]["prior_state_event_chain_head"]
+
+
 def test_profitability_grade_integrity_allows_honest_equal_grades() -> None:
     assert control._profitability_grade_labels_honest(
         {
@@ -163,3 +218,17 @@ def test_profitability_source_match_requires_exact_hash(tmp_path: Path) -> None:
     assert control._profitability_source_matches(artifact, payload) is True
     performance.write_text('{"executions": 11}', encoding="utf-8")
     assert control._profitability_source_matches(artifact, payload) is False
+
+
+def test_repository_candidate_scopes_cover_collectors_and_profitability_evidence() -> None:
+    project_root = Path(__file__).resolve().parents[1]
+    config = json.loads((project_root / "config" / "production_excellence_v1.json").read_text(encoding="utf-8"))
+    scope_globs = config["candidate"]["scope_globs"]
+
+    data_files = set(control._scope_files(project_root, scope_globs["data"]))
+    promotion_files = set(control._scope_files(project_root, scope_globs["promotion"]))
+
+    assert project_root / "scripts" / "collect_public_policy_context.py" in data_files
+    assert project_root / "scripts" / "paper_performance_report.py" in promotion_files
+    assert project_root / "scripts" / "multiple_testing_guard.py" in promotion_files
+    assert project_root / "config" / "profitability_evidence_firewall_v1.json" in promotion_files

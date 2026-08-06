@@ -18,6 +18,8 @@
     "canary_allowlist_path": "governance/runtime/live_canary_allowlist.json",
     "production_excellence_artifact": "governance/health/production_excellence_control_latest.json",
     "require_production_excellence_for_live_submit": true,
+    "live_transition_integrity_artifact": "governance/health/live_transition_integrity_control_latest.json",
+    "require_live_transition_integrity_for_live_submit": true,
     "required_safety_flags": [
       "governance/health/PAPER_TRADE_LOCK.flag"
     ],

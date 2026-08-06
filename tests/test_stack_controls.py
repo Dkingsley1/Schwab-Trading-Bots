@@ -1376,6 +1376,8 @@ def test_live_feed_tail_has_memory_aware_heavy_defaults() -> None:
     assert "[paper-profit]" in text
     assert 'raw_state = "recovery_debt" if control_ready and raw_evidence_based else "needs_attention"' in text
     assert "raw_blocking_soak={as_bool(raw_blocking_soak)}" in text
+    assert "operational_control_grade" in text
+    assert 'f"economic={controlled_grade} "' in text
     assert "raw_gap_to_a={as_num(raw_gap_to_a)}" in text
     assert "weak_zero_entry={as_bool(runtime_enforcement.get('block_new_entries_on_weak_profiles'))}" in text
     assert "reduce_only_open={as_bool(runtime_enforcement.get('keep_sells_and_reduce_only_paths_open'))}" in text

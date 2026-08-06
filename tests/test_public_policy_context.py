@@ -88,6 +88,7 @@ def test_collect_public_policy_context_builds_official_free_source_lane(monkeypa
         raise AssertionError(f"unexpected url: {url}")
 
     monkeypatch.setattr(ppc, "_safe_http_json", fake_http_json)
+    monkeypatch.setattr(ppc, "_cached_world_bank_indicators", lambda: {})
 
     payload, status = ppc.collect_public_policy_context(
         countries=["USA", "CHN", "JPN", "DEU", "GBR"],
@@ -129,6 +130,7 @@ def test_collect_public_policy_context_keeps_required_sources_explicit(monkeypat
         raise AssertionError(f"unexpected url: {url}")
 
     monkeypatch.setattr(ppc, "_safe_http_json", fake_http_json)
+    monkeypatch.setattr(ppc, "_cached_world_bank_indicators", lambda: {})
     monkeypatch.setattr(ppc, "_cached_treasury_avg_interest", lambda: None)
 
     _, status = ppc.collect_public_policy_context(
@@ -167,6 +169,7 @@ def test_collect_public_policy_context_uses_cached_monthly_treasury_rate(monkeyp
         raise AssertionError(f"unexpected url: {url}")
 
     monkeypatch.setattr(ppc, "_safe_http_json", fake_http_json)
+    monkeypatch.setattr(ppc, "_cached_world_bank_indicators", lambda: {})
     monkeypatch.setattr(
         ppc,
         "_cached_treasury_avg_interest",
@@ -196,3 +199,74 @@ def test_collect_public_policy_context_uses_cached_monthly_treasury_rate(monkeyp
     assert cached_source["cached_fallback"] is True
     assert cached_source["live_error"] == "temporary treasury disconnect"
     assert status["features"]["treasury_avg_interest_rate_pct"] == 3.3186875
+
+
+def test_world_bank_timeout_recovers_with_smaller_country_chunks(monkeypatch) -> None:
+    def fake_http_json(url: str, *, user_agent: str, timeout: float) -> tuple[Any | None, str | None]:
+        indicator_id = url.split("/indicator/", 1)[1].split("?", 1)[0]
+        country_path = url.split("/country/", 1)[1].split("/indicator/", 1)[0]
+        countries = country_path.split(";")
+        if len(countries) > ppc.WORLD_BANK_FALLBACK_COUNTRY_CHUNK:
+            return None, "primary timeout"
+        payload = _world_bank_payload(indicator_id)
+        payload[1] = [row for row in payload[1] if row["countryiso3code"] in countries]
+        return payload, None
+
+    monkeypatch.setattr(ppc, "_safe_http_json", fake_http_json)
+    monkeypatch.setattr(ppc, "_cached_world_bank_indicators", lambda: {})
+    monkeypatch.setattr(ppc, "WORLD_BANK_FALLBACK_COUNTRY_CHUNK", 2)
+
+    result = ppc._fetch_world_bank_indicators(
+        countries=["USA", "CHN", "JPN", "DEU", "GBR"],
+        user_agent="test-agent",
+        timeout=1.0,
+    )
+
+    assert result["ok"] is True
+    assert result["indicator_success_count"] == 5
+    assert len(result["fallback_used_indicators"]) == 5
+
+
+def test_world_bank_cache_is_labeled_and_fills_transient_indicator_gap(monkeypatch) -> None:
+    def fake_http_json(url: str, *, user_agent: str, timeout: float) -> tuple[Any | None, str | None]:
+        indicator_id = url.split("/indicator/", 1)[1].split("?", 1)[0]
+        if indicator_id == "FR.INR.RINR":
+            return None, "temporary timeout"
+        return _world_bank_payload(indicator_id), None
+
+    cached = _world_bank_payload("FR.INR.RINR")
+    cached_rows = {
+        row["countryiso3code"]: {
+            "date": row["date"],
+            "value": row["value"],
+            "country_name": row["country"]["value"],
+        }
+        for row in cached[1]
+    }
+    monkeypatch.setattr(ppc, "_safe_http_json", fake_http_json)
+    monkeypatch.setattr(
+        ppc,
+        "_cached_world_bank_indicators",
+        lambda: {
+            "age_days": 1.0,
+            "timestamp_utc": "2026-08-05T12:00:00+00:00",
+            "indicators": {
+                "real_interest_rate_pct": {
+                    "lastupdated": "2026-04-08",
+                    "values": cached_rows,
+                }
+            },
+        },
+    )
+
+    result = ppc._fetch_world_bank_indicators(
+        countries=["USA", "CHN", "JPN", "DEU", "GBR"],
+        user_agent="test-agent",
+        timeout=1.0,
+    )
+
+    assert result["ok"] is True
+    assert "FR.INR.RINR" in result["cache_used_indicators"]
+    cached_value = result["indicators"]["real_interest_rate_pct"]["values"]["USA"]
+    assert cached_value["cached"] is True
+    assert cached_value["cache_timestamp_utc"] == "2026-08-05T12:00:00+00:00"

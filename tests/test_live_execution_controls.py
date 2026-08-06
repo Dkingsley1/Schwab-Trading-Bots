@@ -152,6 +152,46 @@ def test_production_firewall_requires_reference_price_for_market_entry(tmp_path:
     assert "reference_price_required_for_notional_cap" in decision.details["blockers"]
 
 
+def test_production_firewall_requires_transition_integrity_when_enabled(tmp_path: Path) -> None:
+    order_spec = _write_firewall_fixture(tmp_path, excellence_ready=True, symbols=["AAPL"])
+    config_path = tmp_path / "config" / "production_readiness_control_v1.json"
+    config = json.loads(config_path.read_text(encoding="utf-8"))
+    policy = config["live_execution_risk_firewall"]
+    policy["require_live_transition_integrity_for_live_submit"] = True
+    policy["live_transition_integrity_artifact"] = "governance/health/live_transition.json"
+    config_path.write_text(json.dumps(config), encoding="utf-8")
+    transition_path = tmp_path / "governance" / "health" / "live_transition.json"
+    transition_path.write_text(
+        json.dumps({"control_grade": "A+", "ready_for_live_transition": False}),
+        encoding="utf-8",
+    )
+
+    blocked = production_order_firewall_check(
+        project_root=tmp_path,
+        symbol="AAPL",
+        action="BUY",
+        quantity=1.0,
+        order_spec=order_spec,
+        env={"ALLOW_ORDER_EXECUTION": "1", "MARKET_DATA_ONLY": "0"},
+    )
+    transition_path.write_text(
+        json.dumps({"control_grade": "A+", "ready_for_live_transition": True}),
+        encoding="utf-8",
+    )
+    allowed = production_order_firewall_check(
+        project_root=tmp_path,
+        symbol="AAPL",
+        action="BUY",
+        quantity=1.0,
+        order_spec=order_spec,
+        env={"ALLOW_ORDER_EXECUTION": "1", "MARKET_DATA_ONLY": "0"},
+    )
+
+    assert blocked.ok is False
+    assert "live_transition_integrity_not_ready" in blocked.details["blockers"]
+    assert allowed.ok is True
+
+
 def test_position_limit_blocks_projected_qty():
     guard = LiveExecutionGuard(_cfg(max_position_qty_per_symbol=5.0))
     guard.record_fill(symbol="AAPL", action="BUY", quantity=5.0, fill_price=100.0, now_ts=1000.0)

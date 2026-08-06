@@ -10,7 +10,7 @@ import urllib.request
 import uuid
 import time
 from datetime import datetime, timezone
-from math import gcd
+from math import gcd, isfinite
 from pathlib import Path
 
 try:
@@ -24,6 +24,7 @@ from core.derivatives_features import _days_to_expiry, _extract_option_rows, _op
 from core.exotic_derivatives_plumbing import exotic_direct_execution_allowed, is_exotic_derivative_sleeve
 from core.live_execution_controls import LiveExecutionGuard, LiveRiskConfig, production_order_firewall_check
 from core.live_order_ledger import LiveOrderLedger
+from core.order_intent import build_order_intent_evidence, compact_quote_snapshot
 from core.path_registry import auth_events_path, decision_explanations_paths, execution_guard_path, live_softguard_path
 from core.brokers import (
     BrokerAdapter,
@@ -455,6 +456,8 @@ class BaseTrader:
         action: str,
         quantity: float,
         metadata: Optional[Dict[str, Any]] = None,
+        features: Optional[Dict[str, Any]] = None,
+        strategy: str = "",
     ) -> Tuple[bool, str, Dict[str, Any]]:
         exposure = self._paper_exposure_change_details(
             symbol=symbol,
@@ -498,21 +501,138 @@ class BaseTrader:
                         weak_profiles.add(profile)
 
         source_profile = self._metadata_sleeve_profile(metadata)
-        if not source_profile or source_profile not in weak_profiles:
+        strategy_key = str(strategy or (metadata or {}).get("strategy") or "").strip().lower()
+        pair_contract = raw_improvement.get("losing_strategy_pair_quarantine_contract")
+        if isinstance(pair_contract, dict) and bool(pair_contract.get("active", False)):
+            for row in pair_contract.get("pairs") if isinstance(pair_contract.get("pairs"), list) else []:
+                if not isinstance(row, dict) or not bool(row.get("protected", row.get("quarantine_ready", False))):
+                    continue
+                if (
+                    str(row.get("profile") or "").strip().lower() == source_profile
+                    and str(row.get("strategy") or "").strip().lower() == strategy_key
+                ):
+                    return True, "paper_profitability_strategy_pair_quarantine_block", {
+                        "guard_gate": "paper_profitability_strategy_pair_quarantine",
+                        "source_profile": source_profile,
+                        "strategy": strategy_key,
+                        "new_entry_cap": row.get("new_entry_cap", 0),
+                        "exposure_change": exposure,
+                        "policy": "a losing profile-strategy pair remains collect-only until its profitable requalification contract passes",
+                    }
+
+        if source_profile and source_profile in weak_profiles:
+            return True, "paper_profitability_weak_profile_new_entry_block", {
+                "guard_gate": "paper_profitability_weak_profile_new_entry",
+                "source_profile": source_profile,
+                "weak_profiles": sorted(weak_profiles),
+                "exposure_change": exposure,
+                "raw_profitability_grade": str(control.get("raw_profitability_grade") or raw_recovery.get("current_raw_profitability_grade") or ""),
+                "controlled_profitability_grade": str(control.get("controlled_profitability_grade") or ""),
+                "control_timestamp_utc": str(control.get("timestamp_utc") or ""),
+                "control_artifact_path": str(control.get("_control_artifact_path") or ""),
+                "policy": "weak profiles may only hold, sell, or reduce until raw profitability recovery clears reentry requirements",
+            }
+
+        clean_gate = raw_improvement.get("clean_sleeve_strict_buy_gate_contract")
+        if not isinstance(clean_gate, dict) or not bool(clean_gate.get("active", False) and clean_gate.get("enforced", False)):
             return False, "profile_not_quarantined", {
                 "source_profile": source_profile,
                 "weak_profiles": sorted(weak_profiles),
             }
 
-        return True, "paper_profitability_weak_profile_new_entry_block", {
+        evidence: Dict[str, Any] = {}
+        evidence.update(features if isinstance(features, dict) else {})
+        evidence.update(metadata if isinstance(metadata, dict) else {})
+
+        def evidence_float(*keys: str) -> Optional[float]:
+            for key in keys:
+                raw_value = evidence.get(key)
+                if key not in evidence or raw_value is None or raw_value == "":
+                    continue
+                try:
+                    value = float(raw_value)
+                except Exception:
+                    continue
+                if isfinite(value):
+                    return value
+            return None
+
+        quality = evidence_float("quality_gate_norm", "news_source_quality_norm", "source_quality_norm")
+        tradeability = evidence_float("market_micro_tradeability_score_norm", "tradeability_norm", "tradeability_score")
+        execution_fitness = evidence_float("execution_fitness_norm", "fill_quality_norm", "modeled_fill_quality_norm")
+        confirmation = evidence_float("core_cross_asset_confirmation_norm", "cross_asset_confirmation_norm")
+        overlap = evidence_float("overlap_pressure_norm", "portfolio_overlap_pressure_norm")
+        spread_bps = evidence_float("spread_bps", "model_spread_bps")
+        event_confirmation = evidence_float("event_catalyst_confirmation_norm", "event_confirmation_norm")
+        conflict_clearance = evidence_float("portfolio_conflict_clearance_norm", "conflict_clearance_norm")
+        session_quality = evidence_float("session_quality_norm", "session_edge_norm")
+        session = str(evidence.get("session") or evidence.get("market_session") or "unknown").strip().lower()
+        failures: list[str] = []
+
+        thresholds = {
+            "quality_gate_norm": float(clean_gate.get("min_quality_gate_norm", 0.72) or 0.72),
+            "tradeability_norm": float(clean_gate.get("min_tradeability_norm", 0.58) or 0.58),
+            "execution_fitness_norm": float(clean_gate.get("min_execution_fitness_norm", 0.58) or 0.58),
+            "cross_asset_confirmation_norm": float(clean_gate.get("min_cross_asset_confirmation_norm", 0.56) or 0.56),
+            "max_overlap_pressure_norm": float(clean_gate.get("max_overlap_pressure_norm", 0.58) or 0.58),
+        }
+        for name, value, minimum in (
+            ("source_quality", quality, thresholds["quality_gate_norm"]),
+            ("tradeability", tradeability, thresholds["tradeability_norm"]),
+            ("execution_fitness", execution_fitness, thresholds["execution_fitness_norm"]),
+            ("cross_asset_confirmation", confirmation, thresholds["cross_asset_confirmation_norm"]),
+        ):
+            if value is None:
+                failures.append(f"{name}_unknown")
+            elif value < minimum:
+                failures.append(f"{name}_below_floor")
+        if overlap is None:
+            failures.append("overlap_pressure_unknown")
+        elif overlap > thresholds["max_overlap_pressure_norm"]:
+            failures.append("overlap_pressure_above_ceiling")
+        if bool(clean_gate.get("block_when_spread_regime_unknown", True)) and spread_bps is None:
+            failures.append("spread_regime_unknown")
+        if event_confirmation is None:
+            failures.append("event_catalyst_confirmation_unknown")
+        if conflict_clearance is None:
+            failures.append("portfolio_conflict_clearance_unknown")
+        if session_quality is None:
+            failures.append("session_quality_unknown")
+        if session in {"premarket", "after_hours", "overnight"} and not bool(evidence.get("extended_session_validated", False)):
+            failures.append("extended_session_not_independently_validated")
+
+        channel_values = (quality, execution_fitness, spread_bps, confirmation, event_confirmation, conflict_clearance, session_quality)
+        channel_count = sum(value is not None for value in channel_values)
+        minimum_channels = max(int(clean_gate.get("min_independent_evidence_channels", 4) or 4), 1)
+        if channel_count < minimum_channels:
+            failures.append("independent_evidence_channel_floor_not_met")
+        if failures:
+            return True, "paper_profitability_clean_profile_evidence_block", {
+                "guard_gate": "paper_profitability_clean_profile_evidence",
+                "source_profile": source_profile,
+                "strategy": strategy_key,
+                "failures": sorted(set(failures)),
+                "independent_evidence_channel_count": channel_count,
+                "minimum_independent_evidence_channels": minimum_channels,
+                "observed": {
+                    "quality_gate_norm": quality,
+                    "tradeability_norm": tradeability,
+                    "execution_fitness_norm": execution_fitness,
+                    "cross_asset_confirmation_norm": confirmation,
+                    "overlap_pressure_norm": overlap,
+                    "spread_bps": spread_bps,
+                    "event_catalyst_confirmation_norm": event_confirmation,
+                    "portfolio_conflict_clearance_norm": conflict_clearance,
+                    "session_quality_norm": session_quality,
+                    "session": session,
+                },
+                "thresholds": thresholds,
+                "policy": "clean sleeves may open paper exposure only when every declared point-in-time evidence gate is actually present and passes",
+            }
+        return False, "clean_profile_evidence_gate_passed", {
             "source_profile": source_profile,
-            "weak_profiles": sorted(weak_profiles),
-            "exposure_change": exposure,
-            "raw_profitability_grade": str(control.get("raw_profitability_grade") or raw_recovery.get("current_raw_profitability_grade") or ""),
-            "controlled_profitability_grade": str(control.get("controlled_profitability_grade") or ""),
-            "control_timestamp_utc": str(control.get("timestamp_utc") or ""),
-            "control_artifact_path": str(control.get("_control_artifact_path") or ""),
-            "policy": "weak profiles may only hold, sell, or reduce until raw profitability recovery clears reentry requirements",
+            "strategy": strategy_key,
+            "independent_evidence_channel_count": channel_count,
         }
 
     def _resolve_shadow_domain(self) -> str:
@@ -1361,6 +1481,11 @@ class BaseTrader:
             "parent_decision_id": str(paper_order.get("parent_decision_id", "") or ""),
             "run_id": str(paper_order.get("run_id", "") or ""),
             "iter_id": str(paper_order.get("iter_id", "") or ""),
+            "order_intent_evidence": (
+                paper_order.get("order_intent_evidence", {})
+                if isinstance(paper_order.get("order_intent_evidence"), dict)
+                else {}
+            ),
         }
 
         try:
@@ -3143,6 +3268,7 @@ class BaseTrader:
         intent_id: str = "",
         reference_price: float = 0.0,
         risk_reducing_exit: bool = False,
+        intent_evidence: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         if not self._supports_broker_capability("supports_order_place"):
             return self._unsupported_broker_operation("place_order", "supports_order_place")
@@ -3230,6 +3356,7 @@ class BaseTrader:
                     "action": str(action).upper(),
                     "quantity": float(quantity),
                     "order_spec": order_spec,
+                    "mode_invariant_intent": intent_evidence or {},
                 },
                 requested_quantity=quantity,
             )
@@ -3293,6 +3420,7 @@ class BaseTrader:
                 )
         out["order_request"] = order_request.to_dict()
         out["order_result"] = self._broker_order_result_from_output(out).to_dict()
+        out["order_intent_evidence"] = intent_evidence or {}
         return out
 
     def modify_live_order(
@@ -4165,6 +4293,40 @@ class BaseTrader:
             ),
         )
 
+        intent_reference_price = self._reference_price(features=features, metadata=md)
+        intent_model_inputs: Dict[str, float] = {}
+        intent_expected_fill: Dict[str, Any] = {}
+        if self._is_trade_action(action) and intent_reference_price > 0.0:
+            intent_model_inputs = self._paper_execution_model_inputs(
+                symbol=symbol,
+                features=features,
+                metadata=md,
+            )
+            intent_expected_fill = self.live_guard.model_expected_fill(
+                action=action,
+                reference_price=intent_reference_price,
+                quantity=quantity,
+                spread_bps=float(intent_model_inputs.get("spread_bps", 8.0)),
+                volatility_1m=float(intent_model_inputs.get("volatility_1m", 0.0)),
+                latency_ms=float(intent_model_inputs.get("latency_ms", 120.0)),
+                bid_size=float(intent_model_inputs.get("bid_size", 1000.0)),
+                ask_size=float(intent_model_inputs.get("ask_size", 1000.0)),
+            )
+
+        def intent_evidence_for(risk_decision: Dict[str, Any]) -> Dict[str, Any]:
+            return build_order_intent_evidence(
+                decision_id=str(decision_entry.get("decision_id") or ""),
+                symbol=symbol,
+                action=action,
+                quantity=quantity,
+                strategy=strategy,
+                asset_type=str(md.get("asset_type") or "EQUITY"),
+                limit_price=self._as_float(md.get("limit_price"), 0.0),
+                quote_snapshot=compact_quote_snapshot(features, md),
+                expected_fill=intent_expected_fill,
+                risk_decision=risk_decision,
+            )
+
         safety: Optional[Dict[str, Any]] = None
 
         if decision_entry["decision"] == "BLOCK":
@@ -4222,7 +4384,7 @@ class BaseTrader:
             }
         elif self.mode == "paper":
             paper_metadata = dict(md)
-            ref_price = self._reference_price(features=features, metadata=paper_metadata)
+            ref_price = intent_reference_price
             limit_price = self._as_float(paper_metadata.get("limit_price"), 0.0)
             intended_price = self._intended_live_execution_price(
                 action=action,
@@ -4231,6 +4393,12 @@ class BaseTrader:
                 metadata=paper_metadata,
                 features=features,
             )
+            paper_risk_decision: Dict[str, Any] = {
+                "ok": True,
+                "gate": "not_applicable",
+                "reason": "non_trade_action",
+                "details": {},
+            }
 
             if self._is_trade_action(action):
                 blocked, reason, details = self._paper_profitability_new_entry_blocked(
@@ -4238,11 +4406,13 @@ class BaseTrader:
                     action=action,
                     quantity=quantity,
                     metadata=paper_metadata,
+                    features=features,
+                    strategy=strategy,
                 )
                 if blocked:
                     status = "PAPER_PROFITABILITY_GUARD_BLOCKED"
                     guard_payload = {
-                        "gate": "paper_profitability_weak_profile_new_entry",
+                        "gate": str(details.get("guard_gate") or "paper_profitability_weak_profile_new_entry"),
                         "reason": reason,
                         "details": details,
                     }
@@ -4262,6 +4432,9 @@ class BaseTrader:
                         "mode": self.mode,
                         "decision": decision_entry,
                         "live_guard_decision": guard_payload,
+                        "order_intent_evidence": intent_evidence_for(
+                            {"ok": False, "gate": guard_payload["gate"], "reason": reason, "details": details}
+                        ),
                         "live_guard": self.live_guard.snapshot(),
                     }
                     self._emit_decision_explanation(
@@ -4279,6 +4452,12 @@ class BaseTrader:
                     intended_price=intended_price,
                     enforce_long_only=False,
                 )
+                paper_risk_decision = {
+                    "ok": bool(paper_guard.ok),
+                    "gate": str(paper_guard.gate),
+                    "reason": str(paper_guard.reason),
+                    "details": dict(paper_guard.details),
+                }
                 if not paper_guard.ok:
                     status = "PAPER_GUARD_BLOCKED"
                     guard_payload = {
@@ -4302,6 +4481,7 @@ class BaseTrader:
                         "mode": self.mode,
                         "decision": decision_entry,
                         "live_guard_decision": guard_payload,
+                        "order_intent_evidence": intent_evidence_for(paper_risk_decision),
                         "live_guard": self.live_guard.snapshot(),
                     }
                     self._emit_decision_explanation(
@@ -4313,24 +4493,9 @@ class BaseTrader:
 
                 self.live_guard.mark_trade_submitted(symbol=symbol)
 
-            expected_fill: Dict[str, float] = {}
-            model_inputs: Dict[str, float] = {}
-            if self._is_trade_action(action) and ref_price > 0.0:
-                model_inputs = self._paper_execution_model_inputs(
-                    symbol=symbol,
-                    features=features,
-                    metadata=paper_metadata,
-                )
-                expected_fill = self.live_guard.model_expected_fill(
-                    action=action,
-                    reference_price=ref_price,
-                    quantity=quantity,
-                    spread_bps=float(model_inputs.get("spread_bps", 8.0)),
-                    volatility_1m=float(model_inputs.get("volatility_1m", 0.0)),
-                    latency_ms=float(model_inputs.get("latency_ms", 120.0)),
-                    bid_size=float(model_inputs.get("bid_size", 1000.0)),
-                    ask_size=float(model_inputs.get("ask_size", 1000.0)),
-                )
+            expected_fill = intent_expected_fill
+            model_inputs = intent_model_inputs
+            order_intent_evidence = intent_evidence_for(paper_risk_decision)
             paper_fill_metadata = self._paper_fill_metadata(metadata=paper_metadata, expected_fill=expected_fill)
             paper_pnl = self._paper_pnl_fields(
                 symbol=symbol,
@@ -4374,6 +4539,7 @@ class BaseTrader:
                     "run_id": str(decision_entry.get("run_id", "") or ""),
                     "iter_id": str(decision_entry.get("iter_id", "") or ""),
                     "metadata": paper_metadata,
+                    "order_intent_evidence": order_intent_evidence,
                     "reference_price": float(ref_price),
                     "intended_price": float(intended_price),
                     "expected_fill_price": float(expected_fill.get("expected_fill_price", 0.0) or 0.0),
@@ -4453,6 +4619,7 @@ class BaseTrader:
                 "mode": self.mode,
                 "decision": decision_entry,
                 "paper_order": paper,
+                "order_intent_evidence": order_intent_evidence,
                 "paper_fill_model": fill_state,
                 "position_reconcile": position_reconcile,
                 "order_lifecycle_reconcile": lifecycle_reconcile,
@@ -4563,7 +4730,7 @@ class BaseTrader:
                         )
                         return result
 
-                ref_price = self._reference_price(features=features, metadata=md)
+                ref_price = intent_reference_price
                 limit_price = self._as_float(md.get("limit_price"), 0.0)
                 intended_price = self._intended_live_execution_price(
                     action=action,
@@ -4631,6 +4798,13 @@ class BaseTrader:
                     intended_price=guard_intended_price,
                     notional_multiplier=notional_multiplier,
                 )
+                live_risk_decision = {
+                    "ok": bool(guard_decision.ok),
+                    "gate": str(guard_decision.gate),
+                    "reason": str(guard_decision.reason),
+                    "details": dict(guard_decision.details),
+                }
+                order_intent_evidence = intent_evidence_for(live_risk_decision)
 
                 if not guard_decision.ok:
                     status = "LIVE_GUARD_BLOCKED"
@@ -4701,6 +4875,7 @@ class BaseTrader:
                         "mode": self.mode,
                         "decision": decision_entry,
                         "live_guard_decision": guard_payload,
+                        "order_intent_evidence": order_intent_evidence,
                         "live_guard": self.live_guard.snapshot(),
                     }
                 else:
@@ -4712,6 +4887,7 @@ class BaseTrader:
                         order_spec=order_spec,
                         intent_id=str(decision_entry.get("decision_id") or ""),
                         reference_price=guard_reference_price,
+                        intent_evidence=order_intent_evidence,
                     )
 
                     if not place.get("ok"):
@@ -4721,6 +4897,7 @@ class BaseTrader:
                             "status": status,
                             "mode": self.mode,
                             "decision": decision_entry,
+                            "order_intent_evidence": order_intent_evidence,
                             "live_order": {
                                 "symbol": str(symbol).upper(),
                                 "action": str(action).upper(),
@@ -4761,6 +4938,7 @@ class BaseTrader:
                             "status": status,
                             "mode": self.mode,
                             "decision": decision_entry,
+                            "order_intent_evidence": order_intent_evidence,
                             "live_order": {
                                 "order_id": order_id,
                                 "symbol": str(symbol).upper(),

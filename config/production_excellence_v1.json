@@ -35,6 +35,7 @@
         "scripts/*ingestion*.py",
         "scripts/*provider*.py",
         "scripts/*storage*.py",
+        "scripts/collect_*.py",
         "scripts/ops/*ingestion*.py",
         "scripts/ops/*provider*.py",
         "scripts/ops/*storage*.py",
@@ -46,9 +47,12 @@
         "scripts/*walk_forward*.py",
         "scripts/*graduation*.py",
         "scripts/*overfit*.py",
+        "scripts/*performance*.py",
+        "scripts/*testing_guard*.py",
         "scripts/ops/*promotion*.py",
         "scripts/ops/*canary*.py",
         "config/*promotion*.json",
+        "config/profitability*.json",
         "config/production_excellence_v1.json"
       ],
       "operations": [
@@ -121,6 +125,7 @@
   "profitability": {
     "performance_artifact": "governance/health/paper_performance_latest.json",
     "control_artifact": "governance/health/paper_profitability_control_latest.json",
+    "evidence_firewall_artifact": "governance/health/profitability_evidence_firewall_latest.json",
     "max_artifact_age_hours": 12,
     "minimum_post_cost_samples": 100,
     "minimum_profitable_sleeves": 3,

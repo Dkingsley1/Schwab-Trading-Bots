@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import concurrent.futures
 import json
 import math
 import os
@@ -17,6 +18,8 @@ from urllib.request import Request, urlopen
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
+
+from scripts.ops.long_runtime_common import parse_iso_utc, write_payload
 
 
 USER_AGENT_DEFAULT = "Daniel Kingsley dan_kingsley@aol.com"
@@ -37,6 +40,11 @@ WORLD_BANK_INDICATORS = {
     "GC.DOD.TOTL.GD.ZS": "central_government_debt_pct_gdp",
     "FR.INR.RINR": "real_interest_rate_pct",
 }
+WORLD_BANK_CACHE_MAX_AGE_DAYS = 45.0
+WORLD_BANK_MIN_VERIFIED_INDICATORS = 4
+WORLD_BANK_PRIMARY_WORKERS = 5
+WORLD_BANK_FALLBACK_WORKERS = 4
+WORLD_BANK_FALLBACK_COUNTRY_CHUNK = 5
 SOURCE_CONTRACTS = {
     "treasury_debt_to_penny": {
         "publisher": "U.S. Treasury FiscalData",
@@ -70,8 +78,7 @@ def _utc_now_iso() -> str:
 
 
 def _write_json(path: Path, payload: Mapping[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(dict(payload), ensure_ascii=True, indent=2) + "\n", encoding="utf-8")
+    write_payload(path, dict(payload))
 
 
 def _safe_float(value: Any) -> float | None:
@@ -277,6 +284,49 @@ def _parse_world_bank_rows(payload: Any) -> tuple[dict[str, Any], list[dict[str,
     return meta, [row for row in rows if isinstance(row, dict)]
 
 
+def _world_bank_request(
+    countries: list[str],
+    indicator_id: str,
+    *,
+    user_agent: str,
+    timeout: float,
+) -> dict[str, Any]:
+    url = _world_bank_url(countries, indicator_id)
+    payload, error = _safe_http_json(url, user_agent=user_agent, timeout=timeout)
+    meta, rows = _parse_world_bank_rows(payload)
+    return {"url": url, "meta": meta, "rows": rows, "error": str(error or "")}
+
+
+def _cached_world_bank_indicators() -> dict[str, Any]:
+    path = PROJECT_ROOT / "exports" / "external_context" / "public_policy_context_latest.json"
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    if not isinstance(payload, dict):
+        return {}
+    timestamp = parse_iso_utc(payload.get("timestamp_utc"))
+    if timestamp is None:
+        return {}
+    age_days = max((datetime.now(timezone.utc) - timestamp).total_seconds() / 86400.0, 0.0)
+    if age_days > WORLD_BANK_CACHE_MAX_AGE_DAYS:
+        return {}
+    sources = payload.get("sources") if isinstance(payload.get("sources"), dict) else {}
+    world_bank = sources.get("world_bank_indicators") if isinstance(sources.get("world_bank_indicators"), dict) else {}
+    indicators = world_bank.get("indicators") if isinstance(world_bank.get("indicators"), dict) else {}
+    return {
+        "age_days": age_days,
+        "timestamp_utc": timestamp.isoformat(),
+        "lastupdated": str(world_bank.get("lastupdated") or ""),
+        "indicators": indicators,
+    }
+
+
+def _country_chunks(countries: list[str]) -> list[list[str]]:
+    size = max(int(WORLD_BANK_FALLBACK_COUNTRY_CHUNK), 1)
+    return [countries[index : index + size] for index in range(0, len(countries), size)]
+
+
 def _fetch_world_bank_indicators(*, countries: list[str], user_agent: str, timeout: float) -> dict[str, Any]:
     indicators: dict[str, Any] = {}
     urls: dict[str, str] = {}
@@ -284,14 +334,73 @@ def _fetch_world_bank_indicators(*, countries: list[str], user_agent: str, timeo
     value_count = 0
     row_count = 0
     latest_update = ""
+    cached = _cached_world_bank_indicators()
+    cached_indicators = cached.get("indicators") if isinstance(cached.get("indicators"), dict) else {}
+    primary: dict[str, dict[str, Any]] = {}
+    with concurrent.futures.ThreadPoolExecutor(max_workers=min(WORLD_BANK_PRIMARY_WORKERS, len(WORLD_BANK_INDICATORS))) as executor:
+        futures = {
+            indicator_id: executor.submit(
+                _world_bank_request,
+                countries,
+                indicator_id,
+                user_agent=user_agent,
+                timeout=timeout,
+            )
+            for indicator_id in WORLD_BANK_INDICATORS
+        }
+        for indicator_id in WORLD_BANK_INDICATORS:
+            primary[indicator_id] = futures[indicator_id].result()
+
+    failed_indicator_ids = [
+        indicator_id
+        for indicator_id, result in primary.items()
+        if result.get("error") or not result.get("rows")
+    ]
+    fallback_results: dict[str, list[dict[str, Any]]] = {indicator_id: [] for indicator_id in failed_indicator_ids}
+    fallback_tasks: dict[concurrent.futures.Future[dict[str, Any]], str] = {}
+    if len(countries) > WORLD_BANK_FALLBACK_COUNTRY_CHUNK and failed_indicator_ids:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=WORLD_BANK_FALLBACK_WORKERS) as executor:
+            for indicator_id in failed_indicator_ids:
+                for chunk in _country_chunks(countries):
+                    future = executor.submit(
+                        _world_bank_request,
+                        chunk,
+                        indicator_id,
+                        user_agent=user_agent,
+                        timeout=timeout,
+                    )
+                    fallback_tasks[future] = indicator_id
+            for future in concurrent.futures.as_completed(fallback_tasks):
+                fallback_results[fallback_tasks[future]].append(future.result())
+
+    cache_used_indicators: list[str] = []
+    fallback_used_indicators: list[str] = []
     for indicator_id, feature_name in WORLD_BANK_INDICATORS.items():
-        url = _world_bank_url(countries, indicator_id)
-        urls[indicator_id] = url
-        payload, error = _safe_http_json(url, user_agent=user_agent, timeout=timeout)
-        if error:
-            errors[indicator_id] = str(error)
-            continue
-        meta, rows = _parse_world_bank_rows(payload)
+        primary_result = primary[indicator_id]
+        urls[indicator_id] = str(primary_result.get("url") or _world_bank_url(countries, indicator_id))
+        meta = primary_result.get("meta") if isinstance(primary_result.get("meta"), dict) else {}
+        rows = list(primary_result.get("rows") or [])
+        fallback_errors: list[str] = []
+        if (primary_result.get("error") or not rows) and fallback_results.get(indicator_id):
+            combined_by_country: dict[str, dict[str, Any]] = {}
+            for fallback in fallback_results[indicator_id]:
+                fallback_meta = fallback.get("meta") if isinstance(fallback.get("meta"), dict) else {}
+                if str(fallback_meta.get("lastupdated") or "") > str(meta.get("lastupdated") or ""):
+                    meta = fallback_meta
+                fallback_errors.extend([str(fallback.get("error"))] if fallback.get("error") else [])
+                for row in fallback.get("rows") or []:
+                    if not isinstance(row, dict):
+                        continue
+                    country = str(row.get("countryiso3code") or "").strip().upper()
+                    if country:
+                        combined_by_country[country] = row
+            if combined_by_country:
+                rows = list(combined_by_country.values())
+                fallback_used_indicators.append(indicator_id)
+        if not rows and primary_result.get("error"):
+            errors[indicator_id] = str(primary_result.get("error"))
+            if fallback_errors:
+                errors[indicator_id] += f"; fallback_errors={len(fallback_errors)}"
         row_count += len(rows)
         if str(meta.get("lastupdated") or "") > latest_update:
             latest_update = str(meta.get("lastupdated") or "")
@@ -314,16 +423,34 @@ def _fetch_world_bank_indicators(*, countries: list[str], user_agent: str, timeo
             }
             if value is not None:
                 value_count += 1
+        cached_feature = cached_indicators.get(feature_name) if isinstance(cached_indicators.get(feature_name), dict) else {}
+        cached_values = cached_feature.get("values") if isinstance(cached_feature.get("values"), dict) else {}
+        for country, cached_value in cached_values.items():
+            if (
+                country in countries
+                and country not in values
+                and isinstance(cached_value, dict)
+                and _safe_float(cached_value.get("value")) is not None
+            ):
+                values[country] = {**cached_value, "cached": True, "cache_timestamp_utc": cached.get("timestamp_utc", "")}
+        if cached_values and any(bool(item.get("cached", False)) for item in values.values() if isinstance(item, dict)):
+            cache_used_indicators.append(indicator_id)
+        effective_lastupdated = max(str(meta.get("lastupdated") or ""), str(cached_feature.get("lastupdated") or ""))
         indicators[feature_name] = {
             "indicator_id": indicator_id,
             "indicator_name": indicator_name,
-            "row_count": len(rows),
+            "row_count": max(len(rows), len(values)),
             "value_count": sum(1 for item in values.values() if item.get("value") is not None),
             "values": values,
-            "lastupdated": str(meta.get("lastupdated") or ""),
+            "lastupdated": effective_lastupdated,
+            "live_row_count": len(rows),
+            "cache_used": indicator_id in cache_used_indicators,
+            "fallback_chunks_used": indicator_id in fallback_used_indicators,
         }
-    indicator_success_count = sum(1 for item in indicators.values() if int(item.get("row_count", 0) or 0) > 0)
-    ok = indicator_success_count >= 3 and value_count >= max(8, len(countries) * 3)
+    value_count = sum(int(item.get("value_count", 0) or 0) for item in indicators.values())
+    row_count = sum(int(item.get("row_count", 0) or 0) for item in indicators.values())
+    indicator_success_count = sum(1 for item in indicators.values() if int(item.get("value_count", 0) or 0) > 0)
+    ok = indicator_success_count >= WORLD_BANK_MIN_VERIFIED_INDICATORS and value_count >= max(8, len(countries) * 3)
     return _source_status(
         "world_bank_indicators",
         ok=ok,
@@ -332,11 +459,19 @@ def _fetch_world_bank_indicators(*, countries: list[str], user_agent: str, timeo
         countries=countries,
         indicator_count=len(WORLD_BANK_INDICATORS),
         indicator_success_count=indicator_success_count,
+        minimum_verified_indicators=WORLD_BANK_MIN_VERIFIED_INDICATORS,
         row_count=row_count,
         value_count=value_count,
         lastupdated=latest_update,
         urls=urls,
         indicators=indicators,
+        primary_parallel_workers=min(WORLD_BANK_PRIMARY_WORKERS, len(WORLD_BANK_INDICATORS)),
+        fallback_parallel_workers=WORLD_BANK_FALLBACK_WORKERS,
+        fallback_used_indicators=sorted(fallback_used_indicators),
+        cache_used_indicators=sorted(cache_used_indicators),
+        cache_max_age_days=WORLD_BANK_CACHE_MAX_AGE_DAYS,
+        cache_age_days=round(float(cached.get("age_days", 0.0)), 6) if cached else None,
+        cache_is_point_in_time_labeled=True,
     )
 
 

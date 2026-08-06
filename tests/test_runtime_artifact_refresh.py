@@ -806,6 +806,14 @@ def test_runtime_artifact_refresh_step_specs_include_training_storage_and_harden
     assert names.index("system_architecture_contract_graph_post_evidence_verified") < names.index("system_architecture_autopilot_post_evidence_verified")
     assert names.index("system_architecture_autopilot_post_evidence_verified") < names.index("system_drift_guard_post_architecture_verified")
     assert names.index("system_drift_guard_post_architecture_verified") < names.index("system_drift_autopilot_post_evidence_verified")
+    assert names.index("source_verification") < names.index("source_verification_autorefresh")
+    assert names.index("source_verification_autorefresh") < names.index("source_verification_verified")
+    assert names.index("multiple_testing_guard") < names.index("profitability_evidence_firewall")
+    assert names.index("profitability_evidence_firewall") < names.index("production_excellence_control")
+    assert names.index("production_excellence_control") < names.index("continuous_soak_integrity_control")
+    assert names.index("continuous_soak_integrity_control") < names.index("live_transition_integrity_control")
+    assert names.index("live_transition_integrity_control") < names.index("live_money_readiness_contract_verified")
+    assert names.index("live_money_readiness_contract_verified") < names.index("runtime_gate_dashboard_pre_master")
     assert names.index("system_drift_autopilot_post_evidence_verified") < names.index("runtime_gate_dashboard_pre_master")
     assert names.index("runtime_gate_dashboard_pre_master") < names.index("master_infrastructure_supervisor_post_evidence_probe")
     assert names.index("master_infrastructure_supervisor_post_evidence_probe") < names.index("infrastructure_autofix_post_evidence_verified")
@@ -831,6 +839,9 @@ def test_runtime_artifact_refresh_step_specs_include_training_storage_and_harden
     assert paper_profitability_spec["additional_payload_paths"]
     paper_performance_spec = next(row for row in specs if row["name"] == "paper_performance")
     assert "--json-only" in paper_performance_spec["cmd"]
+    source_refresh_spec = next(row for row in specs if row["name"] == "source_verification_autorefresh")
+    assert source_refresh_spec["optional"] is True
+    assert source_refresh_spec["cmd"][source_refresh_spec["cmd"].index("--max-commands") + 1] == "1"
     indicator_spec = next(row for row in specs if row["name"] == "schwab_indicator_intelligence_verified")
     assert "--offline" in indicator_spec["cmd"]
     runtime_throttle_spec = next(row for row in specs if row["name"] == "runtime_throttle_control")

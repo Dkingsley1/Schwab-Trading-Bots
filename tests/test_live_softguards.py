@@ -935,6 +935,115 @@ def test_paper_profitability_guard_allows_weak_profile_sell_reduction(tmp_path: 
     assert out["paper_order"]["position_qty"] == 0.0
 
 
+def test_paper_profitability_guard_enforces_declared_clean_sleeve_evidence(tmp_path: Path) -> None:
+    health = tmp_path / "governance" / "health"
+    health.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "raw_profitability_a_recovery_contract": {
+            "active": True,
+            "weak_profiles": ["weak"],
+            "runtime_enforcement": {"block_new_entries_on_weak_profiles": True},
+        },
+        "raw_profitability_improvement_contract": {
+            "active": True,
+            "runtime_enforcement": {"block_new_entries_on_weak_profiles": True},
+            "clean_sleeve_strict_buy_gate_contract": {
+                "active": True,
+                "enforced": True,
+                "min_quality_gate_norm": 0.72,
+                "min_tradeability_norm": 0.58,
+                "min_execution_fitness_norm": 0.58,
+                "min_cross_asset_confirmation_norm": 0.56,
+                "max_overlap_pressure_norm": 0.58,
+                "min_independent_evidence_channels": 4,
+                "block_when_spread_regime_unknown": True,
+            },
+        },
+    }
+    (health / "paper_runtime_profitability_controls_latest.json").write_text(json.dumps(payload), encoding="utf-8")
+    _reset_paper_profitability_guard_cache()
+    trader = _mk_trader("paper")
+    trader.project_root = str(tmp_path)
+
+    blocked, reason, details = trader._paper_profitability_new_entry_blocked(
+        symbol="AAPL",
+        action="BUY",
+        quantity=1.0,
+        metadata={"source_profile": "clean", "session": "regular"},
+        features={"last_price": 100.0},
+        strategy="alpha",
+    )
+    allowed, allowed_reason, _allowed_details = trader._paper_profitability_new_entry_blocked(
+        symbol="AAPL",
+        action="BUY",
+        quantity=1.0,
+        metadata={"source_profile": "clean", "session": "regular"},
+        features={
+            "last_price": 100.0,
+            "source_quality_norm": 0.90,
+            "tradeability_norm": 0.90,
+            "execution_fitness_norm": 0.90,
+            "cross_asset_confirmation_norm": 0.90,
+            "overlap_pressure_norm": 0.10,
+            "spread_bps": 5.0,
+            "event_catalyst_confirmation_norm": 0.90,
+            "portfolio_conflict_clearance_norm": 0.90,
+            "session_quality_norm": 0.90,
+        },
+        strategy="alpha",
+    )
+
+    assert blocked is True
+    assert reason == "paper_profitability_clean_profile_evidence_block"
+    assert "source_quality_unknown" in details["failures"]
+    assert allowed is False
+    assert allowed_reason == "clean_profile_evidence_gate_passed"
+
+
+def test_paper_profitability_guard_enforces_profile_strategy_quarantine(tmp_path: Path) -> None:
+    health = tmp_path / "governance" / "health"
+    health.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "raw_profitability_a_recovery_contract": {
+            "active": True,
+            "weak_profiles": [],
+            "runtime_enforcement": {"block_new_entries_on_weak_profiles": True},
+        },
+        "raw_profitability_improvement_contract": {
+            "active": True,
+            "runtime_enforcement": {"block_new_entries_on_weak_profiles": True},
+            "losing_strategy_pair_quarantine_contract": {
+                "active": True,
+                "pairs": [
+                    {
+                        "profile": "clean",
+                        "strategy": "alpha",
+                        "protected": True,
+                        "new_entry_cap": 0,
+                    }
+                ],
+            },
+        },
+    }
+    (health / "paper_runtime_profitability_controls_latest.json").write_text(json.dumps(payload), encoding="utf-8")
+    _reset_paper_profitability_guard_cache()
+    trader = _mk_trader("paper")
+    trader.project_root = str(tmp_path)
+
+    blocked, reason, details = trader._paper_profitability_new_entry_blocked(
+        symbol="AAPL",
+        action="BUY",
+        quantity=1.0,
+        metadata={"source_profile": "clean"},
+        features={"last_price": 100.0},
+        strategy="alpha",
+    )
+
+    assert blocked is True
+    assert reason == "paper_profitability_strategy_pair_quarantine_block"
+    assert details["strategy"] == "alpha"
+
+
 def test_paper_book_state_survives_restart_and_preserves_reduction_semantics(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("ALLOW_ORDER_EXECUTION", "1")
     monkeypatch.setenv("MARKET_DATA_ONLY", "0")

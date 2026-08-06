@@ -1,5 +1,6 @@
 import json
 import sys
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 
@@ -240,3 +241,126 @@ def test_source_verification_autorefresh_reconciles_downstream_reports_after_app
 
 def test_source_verification_autorefresh_tails_are_bounded() -> None:
     assert len(src._tail_text("x" * 5000, char_limit=123)) == 123
+
+
+def test_source_verification_autorefresh_persists_failure_backoff(tmp_path: Path, monkeypatch) -> None:
+    _seed_runtime(tmp_path, ready=True)
+    opsctl = "/repo/scripts/ops/opsctl.sh"
+    source_payload = {
+        "ok": False,
+        "overall_status": "degraded",
+        "unverified_sources": ["sec_edgar_context"],
+        "stale_artifacts": ["sec_edgar_context"],
+        "degraded_artifacts": ["sec_edgar_context"],
+        "recommended_refresh_commands": [
+            [opsctl, "sec-edgar-sync", "--json"],
+            [opsctl, "source-verification", "--json"],
+        ],
+    }
+
+    def _failed(command: list[str], *, cwd: Path, timeout_seconds: int) -> dict:
+        return {
+            "command": list(command),
+            "rc": 1,
+            "ok": False,
+            "stdout_tail": "",
+            "stderr_tail": "failed",
+            "timed_out": False,
+        }
+
+    monkeypatch.setattr(src.report_src, "build_source_verification_payload", lambda _root: source_payload)
+    monkeypatch.setattr(src, "_write_latest_source_report", lambda _root, _payload: None)
+    monkeypatch.setattr(src, "_run_command", _failed)
+    state_path = tmp_path / "governance" / "runtime" / "retry.json"
+
+    first = src.build_payload(tmp_path, apply=True, max_commands=1, state_path=state_path)
+    second = src.build_payload(tmp_path, apply=False, max_commands=1, state_path=state_path)
+
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    assert first["results"][0]["source_id"] == "sec_edgar_context"
+    assert state["sources"]["sec_edgar_context"]["consecutive_failures"] == 1
+    assert second["selected_commands"] == []
+    assert second["skipped_commands"][0]["reason"] == "retry_backoff_active"
+    assert second["overall_status"] == "deferred_by_retry_backoff"
+    assert second["ok"] is True
+
+
+def test_source_retry_quarantine_is_bounded_and_starvation_safe() -> None:
+    state = {"schema_version": 1, "sources": {}}
+    started = datetime(2026, 8, 5, 12, 0, tzinfo=timezone.utc)
+    failure = {"ok": False, "rc": 1, "timed_out": False}
+    for index in range(src.RETRY_QUARANTINE_FAILURES):
+        src._record_retry_result(
+            state,
+            source_id="market_quote_profiles",
+            result=failure,
+            now=started + timedelta(minutes=index),
+        )
+
+    quarantined = state["sources"]["market_quote_profiles"]
+    decision = src._retry_decision(
+        "market_quote_profiles",
+        state,
+        now=started + timedelta(hours=7),
+    )
+
+    assert quarantined["quarantined"] is True
+    assert decision["due"] is True
+    assert decision["starvation_override"] is True
+
+
+def test_source_refresh_backs_off_when_process_succeeds_but_evidence_remains_unverified(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    _seed_runtime(tmp_path, ready=True)
+    opsctl = "/repo/scripts/ops/opsctl.sh"
+    before = {
+        "ok": False,
+        "overall_status": "degraded",
+        "unverified_sources": ["public_policy_context"],
+        "stale_artifacts": [],
+        "degraded_artifacts": ["public_policy_context"],
+        "sources": [
+            {
+                "source_id": "public_policy_context",
+                "fresh": True,
+                "ok": False,
+                "verification_status": "single_source_unverified",
+            }
+        ],
+        "recommended_refresh_commands": [
+            [opsctl, "public-policy-sync", "--json"],
+            [opsctl, "source-verification", "--json"],
+        ],
+    }
+    after = dict(before)
+    payloads = iter([before, after])
+    monkeypatch.setattr(src.report_src, "build_source_verification_payload", lambda _root: next(payloads))
+    monkeypatch.setattr(src, "_write_latest_source_report", lambda _root, _payload: None)
+    monkeypatch.setattr(
+        src,
+        "_run_command",
+        lambda command, **_kwargs: {
+            "command": list(command),
+            "rc": 0,
+            "ok": True,
+            "stdout_tail": "",
+            "stderr_tail": "",
+            "timed_out": False,
+        },
+    )
+    state_path = tmp_path / "governance" / "runtime" / "retry.json"
+
+    payload = src.build_payload(tmp_path, apply=True, max_commands=1, state_path=state_path)
+
+    result = payload["results"][0]
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    assert payload["overall_status"] == "applied_with_failures"
+    assert result["collector_ok"] is True
+    assert result["source_evidence_ok"] is False
+    assert result["ok"] is False
+    assert result["semantic_failure"]
+    assert state["sources"]["public_policy_context"]["consecutive_failures"] == 1
+    assert state["sources"]["public_policy_context"]["last_failure_kind"] == "semantic_evidence_incomplete"
+    assert state["sources"]["public_policy_context"]["retry_delay_seconds"] >= src.SEMANTIC_RETRY_MIN_SECONDS

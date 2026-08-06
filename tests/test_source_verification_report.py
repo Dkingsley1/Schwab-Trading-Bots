@@ -834,3 +834,8 @@ def test_public_policy_context_accepts_partial_world_bank_with_treasury_policy_c
     assert row["evidence"]["world_bank_partial_verified"] is True
     assert "world_bank_indicators_partial=4/5" in row["notes"]
     assert svr._row_has_actionable_notes(row) is False
+
+
+def test_source_evidence_a_plus_label_follows_explicit_completion_contract() -> None:
+    assert svr._grade(97.829, complete=True) == "A+"
+    assert svr._grade(97.829, complete=False) == "A"

@@ -324,6 +324,7 @@ def _write_soak_lane_artifacts(project_root: Path, *, profitability_timestamp_ut
                     "feed_loss_causes_to_training": True,
                     "require_three_profitable_refreshes_before_reentry": True,
                     "track_raw_gap_burn_down": True,
+                    "do_not_force_trades": True,
                 },
             },
             "global_runtime_policy": {"apply_raw_profitability_a_recovery": True},
@@ -952,6 +953,70 @@ def test_production_authority_contract_requires_raw_improvement_contract(tmp_pat
     assert payload["overall_status"] == "blocked"
     production = next(row for row in payload["regression_guards"] if row["name"] == "production_grade_paper_live_authority_contract")
     assert "raw_profitability_improvement_contract_not_ready" in production["actual"]["blockers"]
+
+
+def test_paper_continuity_separates_enforced_controls_from_live_profit_evidence(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    health = project_root / "governance" / "health"
+    override = project_root / "config" / ".env.runtime_resource_guard_override"
+    _write_json(health / "runtime_throttle_control_latest.json", _runtime_payload(blocked_paper=False))
+    _write_json(health / "paper_400_ramp_latest.json", _paper_payload(blockers=[], armed=True))
+    _write_soak_lane_artifacts(project_root)
+    profitability_path = health / "paper_runtime_profitability_controls_latest.json"
+    profitability = json.loads(profitability_path.read_text(encoding="utf-8"))
+    profitability.update({"raw_profitability_grade": "C", "controlled_profitability_grade": "C"})
+    improvement = profitability["raw_profitability_improvement_contract"]
+    improvement["control_ready"] = False
+    improvement["weak_sleeve_zero_entry_contract"] = {
+        "active": True,
+        "profiles": [
+            {
+                "profile": "weak_lane",
+                "action": "quarantine_new_entries",
+                "block_new_entries": True,
+                "new_entry_cap": 0,
+                "zero_fresh_entry_ready": True,
+            },
+            {
+                "profile": "net_positive_lane",
+                "action": "tighten_entry_quality_hard",
+                "block_new_entries": False,
+                "new_entry_cap": 2,
+                "zero_fresh_entry_ready": False,
+            },
+        ],
+    }
+    improvement["clean_sleeve_strict_buy_gate_contract"] = {
+        "enforced": True,
+        "block_when_source_or_fill_unknown": True,
+        "block_when_spread_regime_unknown": True,
+        "allow_buy_only_when_all_gates_pass": True,
+    }
+    improvement["position_telemetry_contract"] = {
+        "contract_ready": True,
+        "required_on_every_paper_fill": True,
+    }
+    improvement["loss_cause_training_feedback_contract"] = {
+        "active": True,
+        "feed_hard_negative_training_labels": True,
+        "feed_profitable_refresh_positive_labels": True,
+    }
+    improvement["losing_strategy_pair_quarantine_contract"] = {"active": True, "ready": True}
+    _write_json(profitability_path, profitability)
+    _ready_override(override)
+
+    payload = src.build_payload(project_root)
+
+    assert payload["overall_status"] == "ready"
+    production = next(row for row in payload["regression_guards"] if row["name"] == "production_grade_paper_live_authority_contract")
+    continuity = next(row for row in payload["regression_guards"] if row["name"] == "soak_30_day_continuity_contract")
+    assert production["ok"] is True
+    assert continuity["ok"] is True
+    assert production["actual"]["controlled_profitability_enforced"] is True
+    assert production["actual"]["raw_promotion_evidence_ready"] is False
+    assert production["actual"]["promotion_only_blockers"] == [
+        "raw_profitability_evidence_not_ready_for_live_promotion"
+    ]
 
 
 def test_production_authority_contract_accepts_hard_storage_blocker_only_when_paper_fails_closed(tmp_path: Path) -> None:

@@ -532,6 +532,7 @@ def build_payload(
     source_verification_path = health_root / "source_verification_latest.json"
     health_gates_path = health_root / "health_gates_latest.json"
     storage_path = health_root / "ingestion_storage_control_latest.json"
+    soak_integrity_path = health_root / "continuous_soak_integrity_control_latest.json"
     training_runtime_path = health_root / "training_runtime_control_latest.json"
     live_runtime_path = health_root / "live_runtime_separation_control_latest.json"
     live_smoke_path = health_root / "live_readiness_smoke_latest.json"
@@ -547,6 +548,7 @@ def build_payload(
     source_verification = load_json(source_verification_path)
     health_gates = load_json(health_gates_path)
     storage = load_json(storage_path)
+    soak_integrity = load_json(soak_integrity_path)
     training_runtime = load_json(training_runtime_path)
     live_runtime = load_json(live_runtime_path)
     live_smoke = load_json(live_smoke_path)
@@ -688,6 +690,13 @@ def build_payload(
     )
     if soak_contract_soak_ready and not _grade_ok(soak_contract_grade):
         soak_contract_grade = "A"
+    soak_capacity_a_plus = bool(
+        str(soak_integrity.get("control_grade") or "").strip().upper() in {"A+", "A++"}
+        and soak_integrity.get("operational_capacity_ready", False)
+        and str(soak_integrity.get("operational_capacity_grade") or "").strip().upper() in {"A+", "A++"}
+    )
+    if soak_capacity_a_plus and soak_contract_soak_ready:
+        soak_contract_grade = "A+"
 
     sections = [
         _section(
@@ -824,9 +833,9 @@ def build_payload(
         ),
         _section(
             "continuous_soak",
-            title="28-30 Day Continuous Soak",
+            title="30-Day Continuous-Soak Capacity",
             grade=soak_contract_grade,
-            ready=soak_contract_soak_ready,
+            ready=bool(soak_contract_soak_ready and (soak_capacity_a_plus or not soak_integrity)),
             evidence={
                 "status": soak_contract.get("status"),
                 "ready": soak_contract_ready,
@@ -835,8 +844,14 @@ def build_payload(
                 "min_pressure_days": soak_contract.get("min_pressure_days"),
                 "blockers": soak_contract.get("blockers", []),
                 "forecast": soak_contract.get("forecast", {}),
+                "hardening_control_grade": soak_integrity.get("control_grade"),
+                "operational_capacity_grade": soak_integrity.get("operational_capacity_grade"),
+                "clean_window_elapsed_hours": soak_integrity.get("clean_window_elapsed_hours"),
+                "clean_720_hours_complete": soak_integrity.get("clean_720_hours_complete", False),
+                "elapsed_evidence_grade": soak_integrity.get("elapsed_evidence_grade"),
+                "capacity_is_not_elapsed_completion": True,
             },
-            source_artifact=str(storage_path),
+            source_artifact=str(soak_integrity_path if soak_integrity else storage_path),
         ),
         _bool_section(
             "training_runtime",

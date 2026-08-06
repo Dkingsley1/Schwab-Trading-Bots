@@ -2006,6 +2006,11 @@ def emit_paper() -> None:
         controlled_grade = str(
             profit.get("controlled_profitability_grade")
             or profit.get("controlled_financial_grade")
+            or ""
+        ).strip().upper()
+        operational_control_grade = str(
+            profit.get("operational_control_grade")
+            or controlled_contract.get("operational_control_grade")
             or low.get("control_posture_grade")
             or ""
         ).strip().upper()
@@ -2018,12 +2023,9 @@ def emit_paper() -> None:
             )
         )
         control_ready = bool(
-            controlled_grade in {"A", "A+", "A++"}
-            and (
-                controlled_contract.get("control_ready", True)
-                or raw_improvement.get("control_ready", False)
-                or raw_recovery.get("active", False)
-            )
+            raw_improvement.get("control_ready", False)
+            or low.get("a_plus_control_ready", False)
+            or operational_control_grade in {"A", "A+", "A++"}
         )
         raw_gap_to_a = (
             current_gap.get("net_pnl_needed")
@@ -2045,7 +2047,8 @@ def emit_paper() -> None:
             f"raw_state={raw_state} "
             f"raw_blocking_soak={as_bool(raw_blocking_soak)} "
             f"raw_gap_to_a={as_num(raw_gap_to_a)} "
-            f"control={controlled_grade or low.get('control_posture_grade', '')} "
+            f"control={operational_control_grade or controlled_grade} "
+            f"economic={controlled_grade} "
             f"weak_zero_entry={as_bool(runtime_enforcement.get('block_new_entries_on_weak_profiles'))} "
             f"reduce_only_open={as_bool(runtime_enforcement.get('keep_sells_and_reduce_only_paths_open'))} "
             f"net_pnl={as_num(current.get('portfolio_net_pnl_total') or current.get('net_pnl') or recovery_current.get('net_pnl') or burn_down_current.get('net_pnl'))} "

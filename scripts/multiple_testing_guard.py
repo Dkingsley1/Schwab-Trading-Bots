@@ -3,12 +3,18 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from core.profitability_statistics import benjamini_hochberg, probability_of_backtest_overfitting
+
+
 DEFAULT_OUT_PATH = PROJECT_ROOT / "governance" / "research" / "multiple_testing_guard_latest.json"
 
 
@@ -42,6 +48,7 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
     ablation = _load_json(health_root / "replay_feature_ablation_latest.json")
     counterfactual = _load_json(health_root / "counterfactual_replay_latest.json")
     promotion_readiness = _load_json(walk_root / "promotion_readiness_latest.json")
+    paper_performance = _load_json(health_root / "paper_performance_latest.json")
 
     ablation_block = ablation.get("ablation") if isinstance(ablation.get("ablation"), dict) else {}
     strict_checks = ablation.get("strict_checks") if isinstance(ablation.get("strict_checks"), dict) else {}
@@ -97,9 +104,54 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
     if family_size <= 0 or not contract_present:
         overall_status = "blocked"
 
+    sleeve_rows = paper_performance.get("sleeve_latest") if isinstance(paper_performance.get("sleeve_latest"), list) else []
+    sleeve_p_values: dict[str, float] = {}
+    for row in sleeve_rows:
+        if not isinstance(row, dict):
+            continue
+        profile = str(row.get("profile") or "").strip()
+        expectancy = row.get("post_cost_expectancy") if isinstance(row.get("post_cost_expectancy"), dict) else {}
+        robust = expectancy.get("robust_statistics") if isinstance(expectancy.get("robust_statistics"), dict) else {}
+        raw_p = robust.get("one_sided_positive_expectancy_p_value")
+        if raw_p is None:
+            continue
+        try:
+            sleeve_p_values[profile] = float(raw_p)
+        except Exception:
+            continue
+    actual_fdr = benjamini_hochberg(sleeve_p_values, alpha=base_alpha)
+    daily_series = paper_performance.get("sleeve_daily_series") if isinstance(paper_performance.get("sleeve_daily_series"), dict) else {}
+    strategy_period_returns: dict[str, list[float]] = {}
+    for profile, rows in daily_series.items():
+        if not isinstance(rows, list):
+            continue
+        values = [
+            _safe_float(row.get("change_vs_previous_day"), 0.0)
+            for row in rows
+            if isinstance(row, dict)
+        ]
+        if values:
+            strategy_period_returns[str(profile)] = values
+    pbo = probability_of_backtest_overfitting(strategy_period_returns)
+    statistical_evidence_ready = bool(
+        actual_fdr.get("hypothesis_count", 0) >= 2
+        and actual_fdr.get("passing_hypotheses")
+        and pbo.get("available", False)
+        and pbo.get("passes", False)
+    )
+    statistical_blockers: list[str] = []
+    if actual_fdr.get("hypothesis_count", 0) < 2:
+        statistical_blockers.append("actual_sleeve_p_values_pending")
+    elif not actual_fdr.get("passing_hypotheses"):
+        statistical_blockers.append("no_sleeve_passes_fdr")
+    if not pbo.get("available", False):
+        statistical_blockers.extend(str(item) for item in pbo.get("blockers", []) if str(item))
+    elif not pbo.get("passes", False):
+        statistical_blockers.append("probability_of_backtest_overfitting_above_ceiling")
+
     payload = {
         "timestamp_utc": now.isoformat(),
-        "schema_version": 1,
+        "schema_version": 2,
         "ok": ok,
         "overall_status": overall_status,
         "contract_present": contract_present,
@@ -116,6 +168,24 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
         "baseline_metrics": ablation_block.get("baseline") if isinstance(ablation_block.get("baseline"), dict) else {},
         "delta_metrics": ablation.get("delta") if isinstance(ablation.get("delta"), dict) else {},
         "failed_checks": failed_checks,
+        "actual_statistical_correction": actual_fdr,
+        "deflated_sharpe_available_by_sleeve": {
+            str(row.get("profile") or ""): (
+                (row.get("post_cost_expectancy") or {}).get("robust_statistics", {}).get("deflated_sharpe", {})
+                if isinstance(row.get("post_cost_expectancy"), dict)
+                else {}
+            )
+            for row in sleeve_rows
+            if isinstance(row, dict) and str(row.get("profile") or "").strip()
+        },
+        "probability_of_backtest_overfitting": pbo,
+        "statistical_evidence_ready": statistical_evidence_ready,
+        "statistical_evidence_blockers": statistical_blockers,
+        "grading_contract": {
+            "ok_measures_structural_research_control": True,
+            "statistical_evidence_ready_requires_actual_p_values_and_pbo": True,
+            "declared_correction_method_is_not_profitability_evidence": True,
+        },
         "recommendations": [
             "Keep correction families stable across feature ablation, counterfactual threshold search, and promotion review batches.",
             "Segment research verdicts by lane or regime when profiles_reviewed spans materially different sleeves.",

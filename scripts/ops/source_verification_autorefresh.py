@@ -6,6 +6,7 @@ import json
 import os
 import subprocess
 import sys
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -13,14 +14,23 @@ if __package__ in {None, ""}:
     PROJECT_ROOT = Path(__file__).resolve().parents[2]
     if str(PROJECT_ROOT) not in sys.path:
         sys.path.insert(0, str(PROJECT_ROOT))
-    from scripts.ops.long_runtime_common import iso_now, write_payload
+    from scripts.ops.long_runtime_common import iso_now
     from scripts.ops import source_verification_report as report_src
 else:
-    from .long_runtime_common import PROJECT_ROOT, iso_now, write_payload
+    from .long_runtime_common import PROJECT_ROOT, iso_now
     from . import source_verification_report as report_src
 
 
 DEFAULT_OUT_PATH = PROJECT_ROOT / "governance" / "health" / "source_verification_autorefresh_latest.json"
+DEFAULT_STATE_PATH = PROJECT_ROOT / "governance" / "runtime" / "source_verification_retry_state.json"
+RETRY_BASE_SECONDS = 300
+RETRY_MAX_SECONDS = 21600
+RETRY_QUARANTINE_FAILURES = 4
+STARVATION_OVERRIDE_SECONDS = 21600
+SEMANTIC_RETRY_MIN_SECONDS = 1800
+SLOW_SOURCE_RETRY_MIN_SECONDS = {
+    "public_policy_context": 1800,
+}
 HEAVY_REFRESH_MARKERS = {
     "schwab-symbol-news-sync",
     "ticker-news-sync",
@@ -71,6 +81,106 @@ def _load_json(path: Path) -> dict[str, Any]:
         return payload if isinstance(payload, dict) else {}
     except Exception:
         return {}
+
+
+def _as_dict(raw: Any) -> dict[str, Any]:
+    return raw if isinstance(raw, dict) else {}
+
+
+def _parse_ts(raw: Any) -> datetime | None:
+    text = str(raw or "").strip()
+    if not text:
+        return None
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except Exception:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _atomic_write_text(path: Path, text: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    tmp.write_text(text, encoding="utf-8")
+    os.replace(tmp, path)
+
+
+def _write_retry_state(path: Path, payload: dict[str, Any]) -> None:
+    _atomic_write_text(path, json.dumps(payload, ensure_ascii=True, indent=2) + "\n")
+
+
+def _retry_decision(source_id: str, state: dict[str, Any], *, now: datetime) -> dict[str, Any]:
+    sources = state.get("sources") if isinstance(state.get("sources"), dict) else {}
+    row = sources.get(source_id) if isinstance(sources.get(source_id), dict) else {}
+    next_retry = _parse_ts(row.get("next_retry_utc"))
+    last_attempt = _parse_ts(row.get("last_attempt_utc"))
+    if last_attempt and str(row.get("last_result") or "") == "failure":
+        minimum_delay = _safe_int(SLOW_SOURCE_RETRY_MIN_SECONDS.get(source_id), 0)
+        if str(row.get("last_failure_kind") or "") == "semantic_evidence_incomplete":
+            minimum_delay = max(minimum_delay, SEMANTIC_RETRY_MIN_SECONDS)
+        minimum_retry = last_attempt + timedelta(seconds=minimum_delay)
+        if next_retry is None or next_retry < minimum_retry:
+            next_retry = minimum_retry
+    starved = bool(last_attempt and (now - last_attempt).total_seconds() >= STARVATION_OVERRIDE_SECONDS)
+    due = bool(next_retry is None or now >= next_retry or starved)
+    return {
+        "due": due,
+        "starvation_override": starved,
+        "next_retry_utc": next_retry.isoformat() if next_retry else "",
+        "consecutive_failures": _safe_int(row.get("consecutive_failures"), 0),
+        "quarantined": bool(row.get("quarantined", False)),
+    }
+
+
+def _record_retry_result(
+    state: dict[str, Any],
+    *,
+    source_id: str,
+    result: dict[str, Any],
+    now: datetime,
+) -> None:
+    sources = state.setdefault("sources", {})
+    prior = sources.get(source_id) if isinstance(sources.get(source_id), dict) else {}
+    attempts = _safe_int(prior.get("attempt_count"), 0) + 1
+    successes = _safe_int(prior.get("success_count"), 0)
+    failures = _safe_int(prior.get("failure_count"), 0)
+    if bool(result.get("ok", False)):
+        consecutive = 0
+        successes += 1
+        next_retry = now
+        last_success = now.isoformat()
+        quarantined = False
+    else:
+        consecutive = _safe_int(prior.get("consecutive_failures"), 0) + 1
+        failures += 1
+        delay = min(RETRY_BASE_SECONDS * (2 ** max(consecutive - 1, 0)), RETRY_MAX_SECONDS)
+        if result.get("semantic_failure"):
+            delay = max(delay, SEMANTIC_RETRY_MIN_SECONDS)
+        delay = max(delay, _safe_int(SLOW_SOURCE_RETRY_MIN_SECONDS.get(source_id), 0))
+        next_retry = now + timedelta(seconds=delay)
+        last_success = str(prior.get("last_success_utc") or "")
+        quarantined = consecutive >= RETRY_QUARANTINE_FAILURES
+    sources[source_id] = {
+        "attempt_count": attempts,
+        "success_count": successes,
+        "failure_count": failures,
+        "consecutive_failures": consecutive,
+        "last_attempt_utc": now.isoformat(),
+        "last_success_utc": last_success,
+        "next_retry_utc": next_retry.isoformat(),
+        "quarantined": quarantined,
+        "last_result": "success" if result.get("ok", False) else "failure",
+        "last_failure_kind": ""
+        if result.get("ok", False)
+        else "semantic_evidence_incomplete"
+        if result.get("semantic_failure")
+        else "collector_failure",
+        "retry_delay_seconds": max(int((next_retry - now).total_seconds()), 0),
+        "last_rc": _safe_int(result.get("rc"), 1),
+        "last_timed_out": bool(result.get("timed_out", False)),
+    }
 
 
 def _safe_float(value: Any, default: float = 0.0) -> float:
@@ -314,8 +424,8 @@ def _write_latest_source_report(project_root: Path, payload: dict[str, Any]) -> 
     health.mkdir(parents=True, exist_ok=True)
     reports.mkdir(parents=True, exist_ok=True)
     text = json.dumps(payload, ensure_ascii=True, indent=2) + "\n"
-    (health / "source_verification_latest.json").write_text(text, encoding="utf-8")
-    (reports / "source_verification_latest.md").write_text(report_src._render_markdown(payload), encoding="utf-8")
+    _atomic_write_text(health / "source_verification_latest.json", text)
+    _atomic_write_text(reports / "source_verification_latest.md", report_src._render_markdown(payload))
 
 
 def _downstream_recheck_commands(project_root: Path) -> list[list[str]]:
@@ -332,7 +442,14 @@ def build_payload(
     max_commands: int = 2,
     timeout_seconds: int = 240,
     max_heavy_commands: int = 1,
+    state_path: Path | None = None,
 ) -> dict[str, Any]:
+    now = datetime.now(timezone.utc)
+    retry_state_path = state_path or project_root / "governance" / "runtime" / DEFAULT_STATE_PATH.name
+    retry_state = _load_json(retry_state_path)
+    if not retry_state:
+        retry_state = {"schema_version": 1, "sources": {}}
+    state_preexisting = bool(_as_dict(retry_state.get("sources")))
     before = report_src.build_source_verification_payload(project_root)
     runtime_contract = _runtime_refresh_contract(project_root)
     commands = before.get("recommended_refresh_commands") if isinstance(before.get("recommended_refresh_commands"), list) else []
@@ -372,6 +489,17 @@ def build_payload(
     heavy_count = 0
     batch_cap = min(max(int(max_commands), 0), _safe_int(runtime_contract.get("max_command_batch"), 1))
     heavy_cap = max(_safe_int(max_heavy_commands, 0), 0)
+    if state_preexisting:
+        refresh_candidates = sorted(
+            refresh_candidates,
+            key=lambda command: (
+                _parse_ts(
+                    _as_dict(_as_dict(retry_state.get("sources")).get(_source_id_for_command(command, source_by_command))).get("last_attempt_utc")
+                )
+                or datetime.min.replace(tzinfo=timezone.utc),
+                refresh_candidates.index(command),
+            ),
+        )
     for command in refresh_candidates:
         policy = _command_policy(command, default_timeout_seconds=int(timeout_seconds))
         command = _bounded_heavy_command(
@@ -380,6 +508,18 @@ def build_payload(
         )
         policy = _command_policy(command, default_timeout_seconds=int(timeout_seconds))
         source_id = _source_id_for_command(command, source_by_command)
+        retry = _retry_decision(source_id, retry_state, now=now) if source_id else {"due": True}
+        if source_id and not retry.get("due", True):
+            skipped.append(
+                {
+                    "command": command,
+                    "reason": "retry_backoff_active",
+                    "source_id": source_id,
+                    "retry": retry,
+                    "policy": policy,
+                }
+            )
+            continue
         if source_id == "macro_crossstack" and stale_sources.intersection(MACRO_CROSSCHECK_STALE_DEPENDENCIES):
             skipped.append(
                 {
@@ -420,7 +560,7 @@ def build_payload(
                 skipped.append({"command": command, "reason": "heavy_refresh_batch_cap", "policy": policy})
                 continue
             heavy_count += 1
-        selected.append({"command": command, "policy": policy})
+        selected.append({"command": command, "policy": policy, "source_id": source_id, "retry": retry})
 
     results: list[dict[str, Any]] = []
     downstream_recheck_commands = _downstream_recheck_commands(project_root)
@@ -430,14 +570,54 @@ def build_payload(
         for row in selected:
             command = row["command"]
             policy = row["policy"] if isinstance(row.get("policy"), dict) else {}
-            results.append(_run_command(command, cwd=project_root, timeout_seconds=_safe_int(policy.get("timeout_seconds"), int(timeout_seconds))))
+            result = _run_command(command, cwd=project_root, timeout_seconds=_safe_int(policy.get("timeout_seconds"), int(timeout_seconds)))
+            result["source_id"] = str(row.get("source_id") or "")
+            results.append(result)
         after = report_src.build_source_verification_payload(project_root)
+        after_source_rows = {
+            str(row.get("source_id") or ""): row
+            for row in (after.get("sources") if isinstance(after.get("sources"), list) else [])
+            if isinstance(row, dict) and str(row.get("source_id") or "").strip()
+        }
+        for result in results:
+            source_id = str(result.get("source_id") or "")
+            if not source_id:
+                continue
+            source_row = after_source_rows.get(source_id)
+            collector_ok = bool(result.get("ok", False))
+            if source_row is None:
+                source_evidence_ok = collector_ok
+                evidence_checked = False
+            else:
+                verification_status = str(source_row.get("verification_status") or "").strip().lower()
+                source_evidence_ok = bool(
+                    source_row.get("fresh", False)
+                    and source_row.get("ok", False)
+                    and "unverified" not in verification_status
+                )
+                evidence_checked = True
+            result["collector_ok"] = collector_ok
+            result["source_evidence_checked"] = evidence_checked
+            result["source_evidence_ok"] = source_evidence_ok
+            result["ok"] = bool(collector_ok and source_evidence_ok)
+            if collector_ok and not source_evidence_ok:
+                result["semantic_failure"] = "collector_completed_but_source_evidence_remains_unverified"
+            _record_retry_result(
+                retry_state,
+                source_id=source_id,
+                result=result,
+                now=datetime.now(timezone.utc),
+            )
+        retry_state["timestamp_utc"] = datetime.now(timezone.utc).isoformat()
+        _write_retry_state(retry_state_path, retry_state)
         _write_latest_source_report(project_root, after)
         for command in downstream_recheck_commands:
             downstream_recheck_results.append(
                 _run_command(command, cwd=project_root, timeout_seconds=DOWNSTREAM_RECHECK_TIMEOUT_SECONDS)
             )
     elif apply:
+        retry_state["timestamp_utc"] = datetime.now(timezone.utc).isoformat()
+        _write_retry_state(retry_state_path, retry_state)
         _write_latest_source_report(project_root, after)
         for command in downstream_recheck_commands:
             downstream_recheck_results.append(
@@ -454,14 +634,35 @@ def build_payload(
     elif apply and results:
         status = "applied" if bool(after.get("ok", False)) else "applied_still_degraded"
     elif not selected and skipped:
-        status = "deferred_by_runtime_governor"
+        runtime_skips = [row for row in skipped if str(row.get("reason") or "").startswith("runtime_")]
+        status = "deferred_by_runtime_governor" if runtime_skips else "deferred_by_retry_backoff"
     return {
         "timestamp_utc": iso_now(),
         "schema_version": 2,
-        "ok": status in {"ready", "applied", "needs_refresh", "deferred_by_runtime_governor"},
+        "ok": status in {
+            "ready",
+            "applied",
+            "needs_refresh",
+            "deferred_by_runtime_governor",
+            "deferred_by_retry_backoff",
+        },
         "overall_status": status,
         "apply": bool(apply),
         "runtime_refresh_contract": runtime_contract,
+        "retry_state_path": str(retry_state_path),
+        "retry_state": retry_state,
+        "retry_contract": {
+            "persistent": True,
+            "exponential_backoff": True,
+            "base_seconds": RETRY_BASE_SECONDS,
+            "maximum_seconds": RETRY_MAX_SECONDS,
+            "bounded_quarantine_after_failures": RETRY_QUARANTINE_FAILURES,
+            "starvation_override_seconds": STARVATION_OVERRIDE_SECONDS,
+            "semantic_evidence_retry_floor_seconds": SEMANTIC_RETRY_MIN_SECONDS,
+            "slow_source_retry_floor_seconds": dict(SLOW_SOURCE_RETRY_MIN_SECONDS),
+            "process_exit_success_does_not_override_degraded_source_evidence": True,
+            "atomic_state_replacement": True,
+        },
         "before": {
             "overall_status": str(before.get("overall_status") or ""),
             "unverified_sources": list(before.get("unverified_sources") or []),
@@ -484,6 +685,8 @@ def build_payload(
         "recommended_actions": [
             "source refresh is deferred until runtime and Mac fluidity are ready"
             if status == "deferred_by_runtime_governor"
+            else "source retries are bounded by persistent backoff; the next eligible source will be selected fairly"
+            if status == "deferred_by_retry_backoff"
             else "post-refresh downstream rechecks failed; inspect collector-contracts and health-gates artifacts"
             if downstream_failed
             else "apply source-verification-refresh to refresh degraded artifacts in bounded batches"
@@ -516,7 +719,10 @@ def main() -> int:
         timeout_seconds=int(args.timeout_seconds),
         max_heavy_commands=int(args.max_heavy_commands),
     )
-    write_payload(Path(args.out_file).expanduser(), payload)
+    _atomic_write_text(
+        Path(args.out_file).expanduser(),
+        json.dumps(payload, ensure_ascii=True, indent=2) + "\n",
+    )
     if args.json:
         print(json.dumps(payload, ensure_ascii=True))
     else:
@@ -527,7 +733,14 @@ def main() -> int:
             f"selected={len(payload.get('selected_commands') or [])} "
             f"applied={len(payload.get('applied_commands') or [])}"
         )
-    return 0 if payload.get("overall_status") in {"ready", "needs_refresh", "deferred_by_runtime_governor", "applied", "applied_still_degraded"} else 2
+    return 0 if payload.get("overall_status") in {
+        "ready",
+        "needs_refresh",
+        "deferred_by_runtime_governor",
+        "deferred_by_retry_backoff",
+        "applied",
+        "applied_still_degraded",
+    } else 2
 
 
 if __name__ == "__main__":

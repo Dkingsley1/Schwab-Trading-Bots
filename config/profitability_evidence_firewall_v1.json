@@ -1,0 +1,48 @@
+{
+  "schema_version": 1,
+  "policy_id": "profitability_evidence_firewall_v1",
+  "source_verification": {
+    "minimum_mean_confidence": 0.9,
+    "minimum_source_confidence": 0.7,
+    "require_all_verified": true
+  },
+  "independent_fill_evidence": {
+    "minimum_samples": 100,
+    "require_independent_evidence_ready": true
+  },
+  "entry_quality": {
+    "unknown_evidence_fails_closed": true,
+    "extended_sessions_require_independent_validation": true
+  },
+  "mandatory_quarantine_profiles": [
+    "futures_event_reaction",
+    "options_on_futures_aggressive"
+  ],
+  "counterfactual_labels": [
+    "no_trade_counterfactual_outcome",
+    "mae_bucket",
+    "mfe_bucket",
+    "exit_timing_bucket",
+    "post_entry_regime_bucket"
+  ],
+  "stress_cost_bps": [25.0, 50.0, 100.0],
+  "statistical_evidence": {
+    "minimum_independent_days": 7,
+    "minimum_regimes": 2,
+    "minimum_effective_samples": 20,
+    "minimum_deflated_sharpe_probability": 0.95,
+    "maximum_probability_of_backtest_overfitting": 0.2,
+    "fdr_alpha": 0.05
+  },
+  "allocation": {
+    "minimum_profitable_sleeves": 3,
+    "maximum_pairwise_correlation": 0.65,
+    "maximum_single_sleeve_weight": 0.4,
+    "minimum_daily_observations": 7
+  },
+  "grading": {
+    "control_a_plus_requires_all_ten_controls_implemented": true,
+    "economic_a_plus_requires_all_ten_evidence_checks": true,
+    "raw_profitability_grade_is_never_overridden": true
+  }
+}

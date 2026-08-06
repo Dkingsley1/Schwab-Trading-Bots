@@ -1437,6 +1437,18 @@ case "$cmd" in
   live-order-ledger|live-order-ledger-control|order-intent-ledger)
     exec "$PY" "$PROJECT_ROOT/scripts/ops/live_order_ledger_control.py" "$@"
     ;;
+  live-transition-integrity|paper-live-transition|transition-integrity)
+    exec "$PY" "$PROJECT_ROOT/scripts/ops/live_transition_integrity_control.py" "$@"
+    ;;
+  live-transition-chaos|transition-chaos)
+    exec "$PY" "$PROJECT_ROOT/scripts/ops/live_transition_chaos_harness.py" "$@"
+    ;;
+  profitability-evidence-firewall|profitability-firewall|profit-evidence)
+    exec "$PY" "$PROJECT_ROOT/scripts/ops/profitability_evidence_firewall.py" "$@"
+    ;;
+  continuous-soak-integrity|soak-integrity|soak-capacity)
+    exec "$PY" "$PROJECT_ROOT/scripts/ops/continuous_soak_integrity_control.py" "$@"
+    ;;
   production-quality-slo|production-slo-guard|production-quality-slo-guard)
     exec "$PY" "$PROJECT_ROOT/scripts/ops/production_quality_slo_guard.py" "$@"
     ;;
@@ -3036,8 +3048,12 @@ opsctl commands:
   use-mode-compliance|commercial-compliance|personal-use-readiness [--json]
   commercial-readiness|commercial-framework|commercial-release-readiness [--json]
   production-quality|production-quality-control|production-hardening-quality [--apply] [--refresh-contract] [--execute-safe-repairs] [--max-actions N] [--max-execute-actions N] [--json]
-  production-excellence|ten-pillar-readiness [--apply] [--initialize-candidate | --accept-candidate-change --change-reason TEXT] [--json]
+  production-excellence|ten-pillar-readiness [--apply] [--initialize-candidate | --accept-candidate-change | --recover-candidate-event-chain --change-reason TEXT] [--json]
   live-order-ledger|order-intent-ledger [--ledger PATH] [--resolve-intent ID --resolution STATE --evidence TEXT] [--json]
+  live-transition-integrity|paper-live-transition [--json]
+  live-transition-chaos|transition-chaos [--json]
+  profitability-evidence-firewall|profitability-firewall [--json]
+  continuous-soak-integrity|soak-integrity [--json]
   production-quality-slo|production-slo-guard [--apply] [--refresh-quality] [--json]
   production-hardening-watch|hardening-watch [--apply] [--execute-safe-repairs] [--execute-on-watch] [--max-actions N] [--max-execute-actions N] [--json]
   live-money-readiness|live-money-contract|faithful-live-money [--target-date YYYY-MM-DD] [--json]
