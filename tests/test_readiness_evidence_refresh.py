@@ -120,3 +120,11 @@ def test_profitability_firewall_runs_after_all_hardening_evidence_producers() ->
         "profitability_benchmark_hurdle",
     }.issubset(dependencies)
     assert "profitability_evidence_firewall" in steps["production_excellence"]["depends_on"]
+
+
+def test_production_quality_refreshes_health_gates_before_derived_controls() -> None:
+    steps = {row["name"]: row for row in refresh.default_steps()}
+
+    assert steps["health_gates"]["script"] == "scripts/health_gates.py"
+    assert steps["health_gates"]["max_age_minutes"] <= 60
+    assert "health_gates" in steps["production_quality_control"]["depends_on"]

@@ -7,6 +7,24 @@ import scripts.run_all_sleeves as run_all_sleeves
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 COMMANDS_PATH = PROJECT_ROOT / "COMMANDS.md"
 OPSCTL_PATH = PROJECT_ROOT / "scripts" / "ops" / "opsctl.sh"
+
+
+def test_opsctl_top_level_command_aliases_are_unique() -> None:
+    text = _read(OPSCTL_PATH)
+    main_case = text.rsplit('case "$cmd" in', 1)[1]
+    aliases: list[str] = []
+    for raw in main_case.splitlines():
+        if not raw.startswith("  ") or raw.startswith("    ") or not raw.endswith(")"):
+            continue
+        pattern = raw.strip()[:-1]
+        if not pattern or pattern == "*":
+            continue
+        aliases.extend(pattern.split("|"))
+
+    duplicates = sorted(alias for alias in set(aliases) if aliases.count(alias) > 1)
+    assert duplicates == []
+
+
 LOAD_RUNTIME_ENV_PATH = PROJECT_ROOT / "scripts" / "ops" / "load_runtime_env.sh"
 LIVE_FEED_TAIL_PATH = PROJECT_ROOT / "scripts" / "ops" / "live_feed_tail.sh"
 LIVE_FEED_LAUNCHD_PATH = PROJECT_ROOT / "scripts" / "ops" / "run_livefeed_local_launchd.sh"

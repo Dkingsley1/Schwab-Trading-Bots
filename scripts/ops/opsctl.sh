@@ -1011,7 +1011,7 @@ case "$cmd" in
   dependency-activation-smoke|dependency-smoke|library-activation-smoke)
     run_then_refresh_self_model "$PY" "$PROJECT_ROOT/scripts/ops/dependency_activation_smoke.py" "$@"
     ;;
-  production-readiness|prod-readiness|production-readiness-control|production-quality-control)
+  production-readiness|prod-readiness|production-readiness-control)
     run_then_refresh_self_model "$PY" "$PROJECT_ROOT/scripts/ops/production_readiness_control.py" "$@"
     ;;
   use-mode-compliance|commercial-compliance|personal-use-readiness|commercial-boundary)

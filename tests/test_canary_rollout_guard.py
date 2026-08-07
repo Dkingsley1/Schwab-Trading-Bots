@@ -247,3 +247,71 @@ def test_live_jsonl_is_cached_incrementally_without_duplicate_rows(tmp_path: Pat
     assert second["scan"]["primary"]["cached_rows_before"] == 2
     assert second["scan"]["primary"]["new_rows"] == 1
     assert len(evidence_path.read_text(encoding="utf-8").splitlines()) == 3
+
+
+def test_previous_host_date_partition_is_scanned_across_utc_midnight(tmp_path: Path) -> None:
+    db_path = tmp_path / "data" / "jsonl_link.sqlite3"
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(db_path)
+    try:
+        conn.execute(
+            "CREATE TABLE jsonl_records (source_rel TEXT NOT NULL, payload_sha1 TEXT NOT NULL, payload_json TEXT NOT NULL)"
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    state_path = tmp_path / "governance" / "runtime" / "production_candidate_state.json"
+    state_path.parent.mkdir(parents=True, exist_ok=True)
+    state_path.write_text(
+        json.dumps(
+            {
+                "candidate_id": "pc-midnight-g1",
+                "generation": 1,
+                "scope_windows_started_utc": {"promotion": "2026-08-07T00:10:00+00:00"},
+            }
+        ),
+        encoding="utf-8",
+    )
+    for profile, pnl in (("intraday_aggressive", 0.002), ("conservative", 0.001)):
+        path = (
+            tmp_path
+            / "governance"
+            / f"shadow_{profile}_equities"
+            / "shadow_pnl_attribution_20260806.jsonl"
+        )
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            json.dumps(
+                {
+                    "timestamp_utc": "2026-08-07T00:30:00+00:00",
+                    "profile": profile,
+                    "bot_id": profile,
+                    "snapshot_id": f"{profile}-after-midnight",
+                    "symbol": "SPY",
+                    "pnl_proxy": pnl,
+                    "action": "BUY",
+                }
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+
+    payload = guard.build_payload(
+        db_path=db_path,
+        candidate_state_path=state_path,
+        end=datetime(2026, 8, 7, 1, 0, tzinfo=timezone.utc),
+        lookback_days=1,
+        canary_profiles=["intraday_aggressive"],
+        baseline_profiles=["conservative"],
+        minimum_samples=1,
+        minimum_days=1,
+        minimum_symbols=1,
+        minimum_effective_samples=1.0,
+        minimum_edge_delta=0.0,
+    )
+
+    assert payload["canary_samples"] == 1
+    assert payload["baseline_samples"] == 1
+    assert "20260806" in payload["scan"]["primary"]["partition_day_labels"]
+    assert payload["cohort_source_coverage"]["canary"]["source_ready"] is True
+    assert payload["cohort_source_coverage"]["baseline"]["source_ready"] is True

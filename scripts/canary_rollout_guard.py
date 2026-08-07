@@ -87,9 +87,12 @@ def _candidate_binding(path: Path) -> dict[str, Any]:
     }
 
 
-def _iter_days(start: datetime, end: datetime) -> Iterable[str]:
-    current = start.date()
-    final = end.date()
+def _iter_partition_days(start: datetime, end: datetime, *, padding_days: int = 1) -> Iterable[str]:
+    # Runtime JSONL partitions use the host trading date while evidence windows
+    # are UTC. Scan the adjacent labels and trust each row timestamp for truth.
+    padding = max(int(padding_days), 0)
+    current = start.date() - timedelta(days=padding)
+    final = end.date() + timedelta(days=padding)
     while current <= final:
         yield current.strftime("%Y%m%d")
         current += timedelta(days=1)
@@ -124,11 +127,13 @@ def _load_db_rows(
     after_end = 0
     seen: set[tuple[str, ...]] = set()
     duplicates = 0
+    partition_days = list(_iter_partition_days(start, end))
+    rows_by_profile: dict[str, int] = {}
     conn = sqlite3.connect(str(db_path), timeout=15.0)
     try:
         conn.execute("PRAGMA query_only=ON")
         conn.execute("PRAGMA busy_timeout=15000")
-        for day in _iter_days(start, end):
+        for day in partition_days:
             source_glob = f"governance/*/shadow_pnl_attribution_{day}.jsonl"
             for raw in conn.execute(sql, (source_glob, *profiles)):
                 scanned += 1
@@ -161,6 +166,8 @@ def _load_db_rows(
                     continue
                 seen.add(key)
                 rows.append(row)
+                profile = str(row.get("profile") or "unknown")
+                rows_by_profile[profile] = rows_by_profile.get(profile, 0) + 1
     finally:
         conn.close()
     return rows, {
@@ -171,6 +178,8 @@ def _load_db_rows(
         "invalid_timestamp_rows": invalid_timestamp,
         "rows_before_candidate_cutoff": before_cutoff,
         "rows_after_end": after_end,
+        "partition_day_labels": partition_days,
+        "rows_retained_by_profile": rows_by_profile,
     }
 
 
@@ -253,10 +262,13 @@ def _filesystem_rows(
     invalid_timestamp_rows = 0
     rows_before_cutoff = 0
     duplicates_removed = 0
+    files_seen_by_profile: dict[str, int] = {}
+    files_advanced_by_profile: dict[str, int] = {}
     governance_root = project_root / "governance"
     profile_set = set(profiles)
+    partition_days = list(_iter_partition_days(start, end))
     for profile in profiles:
-        for day in _iter_days(start, end):
+        for day in partition_days:
             pattern = f"shadow_{profile}_*/shadow_pnl_attribution_{day}.jsonl"
             for path in sorted(governance_root.glob(pattern)):
                 try:
@@ -264,6 +276,7 @@ def _filesystem_rows(
                 except OSError:
                     continue
                 files_seen += 1
+                files_seen_by_profile[profile] = files_seen_by_profile.get(profile, 0) + 1
                 relative = str(path.relative_to(project_root))
                 previous = prior_files.get(relative) if isinstance(prior_files.get(relative), dict) else {}
                 same_file = bool(
@@ -275,6 +288,7 @@ def _filesystem_rows(
                 last_complete_offset = offset
                 if int(stat.st_size) > offset:
                     files_advanced += 1
+                    files_advanced_by_profile[profile] = files_advanced_by_profile.get(profile, 0) + 1
                 try:
                     handle = path.open("rb")
                 except OSError:
@@ -357,6 +371,9 @@ def _filesystem_rows(
         "invalid_json_rows": invalid_json_rows,
         "invalid_timestamp_rows": invalid_timestamp_rows,
         "rows_before_candidate_cutoff": rows_before_cutoff,
+        "partition_day_labels": partition_days,
+        "files_seen_by_profile": files_seen_by_profile,
+        "files_advanced_by_profile": files_advanced_by_profile,
         "state_path": str(state_path),
         "evidence_path": str(evidence_path),
     }
@@ -408,6 +425,40 @@ def _edge_statistics(canary: dict[str, Any], baseline: dict[str, Any]) -> dict[s
     }
 
 
+def _cohort_source_coverage(
+    *,
+    profiles: list[str],
+    rows: list[dict[str, Any]],
+    filesystem_scan: dict[str, Any],
+    db_scan: dict[str, Any],
+) -> dict[str, Any]:
+    files_by_profile = filesystem_scan.get("files_seen_by_profile")
+    files_by_profile = files_by_profile if isinstance(files_by_profile, dict) else {}
+    db_rows_by_profile = db_scan.get("rows_retained_by_profile")
+    db_rows_by_profile = db_rows_by_profile if isinstance(db_rows_by_profile, dict) else {}
+    candidate_rows_by_profile: dict[str, int] = {}
+    for row in rows:
+        profile = str(row.get("profile") or "").strip().lower()
+        if profile:
+            candidate_rows_by_profile[profile] = candidate_rows_by_profile.get(profile, 0) + 1
+    source_profiles = sorted(
+        profile
+        for profile in profiles
+        if _safe_int(files_by_profile.get(profile), 0) > 0 or _safe_int(db_rows_by_profile.get(profile), 0) > 0
+    )
+    row_profiles = sorted(profile for profile in profiles if candidate_rows_by_profile.get(profile, 0) > 0)
+    missing_source_profiles = sorted(set(profiles) - set(source_profiles))
+    return {
+        "required_profiles": profiles,
+        "source_profiles": source_profiles,
+        "candidate_row_profiles": row_profiles,
+        "missing_source_profiles": missing_source_profiles,
+        "source_ready": not missing_source_profiles,
+        "files_seen_by_profile": {profile: _safe_int(files_by_profile.get(profile), 0) for profile in profiles},
+        "candidate_rows_by_profile": {profile: candidate_rows_by_profile.get(profile, 0) for profile in profiles},
+    }
+
+
 def build_payload(
     *,
     db_path: Path,
@@ -452,7 +503,12 @@ def build_payload(
     if missing_profiles:
         db_rows, db_scan = _load_db_rows(db_path, start=start, end=end, profiles=missing_profiles)
     else:
-        db_rows, db_scan = [], {"source": "sqlite_link_fallback", "skipped": True, "reason": "all_profiles_present_in_incremental_jsonl_cache"}
+        db_rows, db_scan = [], {
+            "source": "sqlite_link_fallback",
+            "skipped": True,
+            "reason": "all_profiles_present_in_incremental_jsonl_cache",
+            "rows_retained_by_profile": {},
+        }
     combined: list[dict[str, Any]] = []
     combined_seen: set[tuple[str, ...]] = set()
     cross_source_duplicates = 0
@@ -476,6 +532,20 @@ def build_payload(
     }
     canary_rows = [row for row in rows if str(row.get("profile")) in set(canary_profiles)]
     baseline_rows = [row for row in rows if str(row.get("profile")) in set(baseline_profiles)]
+    source_coverage = {
+        "canary": _cohort_source_coverage(
+            profiles=canary_profiles,
+            rows=canary_rows,
+            filesystem_scan=filesystem_scan,
+            db_scan=db_scan,
+        ),
+        "baseline": _cohort_source_coverage(
+            profiles=baseline_profiles,
+            rows=baseline_rows,
+            filesystem_scan=filesystem_scan,
+            db_scan=db_scan,
+        ),
+    }
     canary_stats = _cohort_statistics(
         canary_rows,
         minimum_samples=minimum_samples,
@@ -525,6 +595,7 @@ def build_payload(
         },
         "canary_profiles": canary_profiles,
         "baseline_profiles": baseline_profiles,
+        "cohort_source_coverage": source_coverage,
         "canary_samples": len(canary_rows),
         "baseline_samples": len(baseline_rows),
         "canary_avg_pnl_proxy": round(canary_average, 10),
@@ -552,6 +623,8 @@ def build_payload(
             "duplicate_observations_excluded": True,
             "raw_row_count_is_not_independent_evidence": True,
             "positive_clustered_edge_lcb_required": True,
+            "utc_and_host_date_partition_boundaries_scanned": True,
+            "source_coverage_reported_per_cohort": True,
             "live_execution_authority": False,
         },
     }

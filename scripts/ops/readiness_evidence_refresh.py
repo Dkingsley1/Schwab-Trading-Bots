@@ -228,13 +228,26 @@ def default_steps() -> list[dict[str, Any]]:
             ),
         ),
         _step(
+            "health_gates",
+            "scripts/health_gates.py",
+            "governance/health/health_gates_latest.json",
+            "--json",
+            max_age_minutes=60,
+            depends_on=("storage_resilience_control",),
+        ),
+        _step(
             "production_quality_control",
             "scripts/ops/production_quality_control.py",
             "governance/health/production_quality_control_latest.json",
             "--apply",
             "--refresh-contract",
             "--json",
-            depends_on=("paper_profitability_control", "profitability_evidence_firewall", "unattended_soak_readiness"),
+            depends_on=(
+                "paper_profitability_control",
+                "profitability_evidence_firewall",
+                "unattended_soak_readiness",
+                "health_gates",
+            ),
         ),
         _step(
             "production_quality_slo",
