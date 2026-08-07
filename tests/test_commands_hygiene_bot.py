@@ -208,6 +208,13 @@ def test_commands_hygiene_bot_authors_commands_surface_and_runbook(tmp_path: Pat
     assert "./scripts/ops/opsctl.sh runtime-paper-regression-guard --json" in commands_text
     assert "./scripts/ops/opsctl.sh paper-live-data-standard --apply --json" in commands_text
     assert "./scripts/ops/opsctl.sh paper-profitability-control --apply --json" in commands_text
+    assert "./scripts/ops/opsctl.sh profitability-evidence-firewall --json" in commands_text
+    assert "./scripts/ops/opsctl.sh profitability-independent-validator --json" in commands_text
+    assert "./scripts/ops/opsctl.sh profitability-holdout-vault --json" in commands_text
+    assert "./scripts/ops/opsctl.sh profitability-benchmark-capture --apply --json" in commands_text
+    assert "./scripts/ops/opsctl.sh profitability-benchmark-hurdle --json" in commands_text
+    assert "./scripts/ops/opsctl.sh multiple-testing --json" in commands_text
+    assert "./scripts/ops/opsctl.sh decay-monitor --json" in commands_text
     assert "./scripts/ops/opsctl.sh system-plumbing-control --json" in commands_text
     assert "./scripts/ops/opsctl.sh system-architecture-hardening --apply --json" in commands_text
     assert "tastytrade-sync --json" not in commands_text
@@ -218,7 +225,7 @@ def test_commands_hygiene_bot_authors_commands_surface_and_runbook(tmp_path: Pat
     assert 'refresh) print -r -- "Most Used" ;;' in runbook_text
     assert 'refresh) print -r -- "Live Feed Refreshes" ;;' not in runbook_text
     assert contract_payload["schema_version"] == commands_src.COMMAND_CONTRACT_SCHEMA_VERSION
-    assert contract_payload["entry_count"] == 163
+    assert contract_payload["entry_count"] == 170
     assert "### Review ten-pillar production excellence" in commands_text
     assert "./scripts/ops/opsctl.sh production-excellence --json" in commands_text
     assert "### Freeze or accept a production candidate" in commands_text

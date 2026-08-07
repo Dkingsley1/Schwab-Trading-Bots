@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -34,12 +35,27 @@ def _safe_int(raw: Any, default: int = 0) -> int:
         return int(default)
 
 
+def _mean(values: list[float]) -> float:
+    return sum(values) / max(len(values), 1)
+
+
+def _lcb95(values: list[float]) -> float | None:
+    if len(values) < 2:
+        return None
+    mean = _mean(values)
+    variance = sum((value - mean) ** 2 for value in values) / (len(values) - 1)
+    return mean - 1.96 * math.sqrt(max(variance, 0.0) / len(values))
+
+
 def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
     now = datetime.now(timezone.utc)
     health_root = project_root / "governance" / "health"
 
     paper = _load_json(health_root / "paper_performance_latest.json")
     promotion = _load_json(project_root / "governance" / "walk_forward" / "promotion_readiness_latest.json")
+    profitability_control = _load_json(health_root / "paper_profitability_control_latest.json")
+    firewall_config = _load_json(project_root / "config" / "profitability_evidence_firewall_v1.json")
+    decay_policy = firewall_config.get("edge_decay") if isinstance(firewall_config.get("edge_decay"), dict) else {}
 
     sleeve_latest = paper.get("sleeve_latest") if isinstance(paper.get("sleeve_latest"), list) else []
     history_daily = paper.get("history_daily_series") if isinstance(paper.get("history_daily_series"), list) else []
@@ -101,6 +117,80 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
             }
         )
 
+    minimum_history = max(_safe_int(decay_policy.get("minimum_history_days"), 10), 3)
+    recent_window = max(_safe_int(decay_policy.get("recent_window_days"), 3), 2)
+    maximum_decay = max(0.0, min(_safe_float(decay_policy.get("maximum_mean_decay_fraction"), 0.5), 1.0))
+    maximum_decayed_size = max(
+        0.0,
+        min(_safe_float(decay_policy.get("maximum_decayed_position_multiplier"), 0.1), 1.0),
+    )
+    active_controls = profitability_control.get("active_profile_controls")
+    active_controls = active_controls if isinstance(active_controls, dict) else {}
+    edge_rows: list[dict[str, Any]] = []
+    insufficient_profiles: list[str] = []
+    decayed_profiles: list[str] = []
+    uncontained_profiles: list[str] = []
+    for profile, rows in sleeve_daily.items():
+        if not isinstance(rows, list):
+            continue
+        values = [
+            _safe_float(row.get("change_vs_previous_day"), 0.0)
+            for row in rows
+            if isinstance(row, dict)
+        ]
+        if len(values) < minimum_history or len(values) <= recent_window:
+            insufficient_profiles.append(str(profile))
+            continue
+        prior = values[:-recent_window]
+        recent = values[-recent_window:]
+        prior_mean = _mean(prior)
+        recent_mean = _mean(recent)
+        recent_lcb = _lcb95(recent)
+        decline_fraction = (
+            max(0.0, (prior_mean - recent_mean) / max(abs(prior_mean), 1e-9))
+            if prior_mean > 0.0
+            else 0.0
+        )
+        decayed = bool(
+            recent_mean < 0.0
+            or (prior_mean > 0.0 and recent_lcb is not None and recent_lcb <= 0.0 and decline_fraction >= maximum_decay)
+        )
+        control = active_controls.get(str(profile)) if isinstance(active_controls.get(str(profile)), dict) else {}
+        size_multiplier = _safe_float(control.get("position_size_multiplier"), 1.0)
+        contained = bool(control.get("block_new_entries", False) or size_multiplier <= maximum_decayed_size)
+        if decayed:
+            decayed_profiles.append(str(profile))
+            if not contained:
+                uncontained_profiles.append(str(profile))
+        edge_rows.append(
+            {
+                "profile": str(profile),
+                "history_days": len(values),
+                "prior_mean_daily_pnl": round(prior_mean, 8),
+                "recent_mean_daily_pnl": round(recent_mean, 8),
+                "recent_lower_confidence_bound_95": round(recent_lcb, 8) if recent_lcb is not None else None,
+                "mean_decay_fraction": round(decline_fraction, 8),
+                "decayed": decayed,
+                "contained": contained,
+                "position_size_multiplier": round(size_multiplier, 8),
+                "automatic_action": "collect_only_or_reduce_only" if decayed else "retain_current_guarded_posture",
+            }
+        )
+    edge_evidence_ready = bool(sleeve_daily and not insufficient_profiles and edge_rows)
+    automatic_demotion_ready = bool(profitability_control and not uncontained_profiles)
+    edge_decay_contract = {
+        "implementation_ready": bool(decay_policy),
+        "evidence_ready": edge_evidence_ready,
+        "automatic_demotion_ready": automatic_demotion_ready,
+        "evaluated_profile_count": len(edge_rows),
+        "insufficient_history_profiles": sorted(insufficient_profiles),
+        "decayed_profiles": sorted(decayed_profiles),
+        "uncontained_decayed_profiles": sorted(uncontained_profiles),
+        "profiles": sorted(edge_rows, key=lambda row: str(row.get("profile") or "")),
+        "thresholds": decay_policy,
+        "policy": "edge decay automatically requires collect-only or reduce-only containment before promotion can remain eligible",
+    }
+
     ok = bool(paper.get("ok", False) and len(history_daily) >= 1)
     overall_status = "ready"
     if not ok:
@@ -123,6 +213,7 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
         "trailing_periods": trailing_periods,
         "regime_segments": sleeve_regimes[:12],
         "promotion_ready": bool(promotion.get("promote_ok", False)),
+        "edge_decay_contract": edge_decay_contract,
         "recommendations": [
             "Refresh or demote sleeves that stay loss-making across consecutive periods instead of letting them quietly dilute training.",
             "Segment decay review by sleeve and regime before promoting threshold or label changes across the full registry.",
@@ -130,6 +221,7 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
         "source_files": {
             "paper_performance": str(health_root / "paper_performance_latest.json"),
             "promotion_readiness": str(project_root / "governance" / "walk_forward" / "promotion_readiness_latest.json"),
+            "paper_profitability_control": str(health_root / "paper_profitability_control_latest.json"),
         },
     }
     return payload

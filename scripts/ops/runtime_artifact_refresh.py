@@ -760,6 +760,37 @@ def _step_specs(project_root: Path) -> list[dict[str, Any]]:
             "timeout_sec": 180,
         },
         {
+            "name": "execution_queue_stress",
+            "payload_path": health_root / "execution_queue_stress_latest.json",
+            "cmd": [str(PY), str(project_root / "scripts" / "execution_queue_stress_bot.py"), "--json"],
+            "timeout_sec": 180,
+            "optional": True,
+        },
+        {
+            "name": "profitability_independent_validator",
+            "payload_path": health_root / "profitability_independent_validator_latest.json",
+            "cmd": [str(PY), str(ops_root / "profitability_independent_validator.py"), "--json"],
+            "timeout_sec": 180,
+        },
+        {
+            "name": "profitability_holdout_vault",
+            "payload_path": project_root / "governance" / "research" / "profitability_holdout_vault_latest.json",
+            "cmd": [str(PY), str(ops_root / "profitability_holdout_vault.py"), "--json"],
+            "timeout_sec": 60,
+        },
+        {
+            "name": "profitability_benchmark_capture",
+            "payload_path": project_root / "governance" / "research" / "profitability_benchmark_capture_latest.json",
+            "cmd": [str(PY), str(ops_root / "profitability_benchmark_capture.py"), "--apply", "--json"],
+            "timeout_sec": 180,
+        },
+        {
+            "name": "profitability_benchmark_hurdle",
+            "payload_path": project_root / "governance" / "research" / "profitability_benchmark_hurdle_latest.json",
+            "cmd": [str(PY), str(ops_root / "profitability_benchmark_hurdle.py"), "--json"],
+            "timeout_sec": 60,
+        },
+        {
             "name": "health_gates",
             "payload_path": health_root / "health_gates_latest.json",
             "cmd": [

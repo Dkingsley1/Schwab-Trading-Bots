@@ -102,3 +102,21 @@ def test_unattended_soak_runs_after_all_freshness_dependencies() -> None:
     for name in steps["unattended_soak_readiness"]["depends_on"]:
         assert steps[name]["max_age_minutes"] < 180
     assert "--apply" not in steps["storage_retention_unison"]["args"]
+
+
+def test_profitability_firewall_runs_after_all_hardening_evidence_producers() -> None:
+    steps = {row["name"]: row for row in refresh.default_steps()}
+    dependencies = set(steps["profitability_evidence_firewall"]["depends_on"])
+
+    assert {
+        "paper_execution_calibration",
+        "paper_profitability_control",
+        "execution_queue_stress",
+        "multiple_testing_guard",
+        "decay_monitor",
+        "profitability_independent_validator",
+        "profitability_holdout_vault",
+        "profitability_benchmark_capture",
+        "profitability_benchmark_hurdle",
+    }.issubset(dependencies)
+    assert "profitability_evidence_firewall" in steps["production_excellence"]["depends_on"]

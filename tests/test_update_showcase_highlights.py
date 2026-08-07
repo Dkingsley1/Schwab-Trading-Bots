@@ -85,6 +85,18 @@ def test_showcase_snapshot_surfaces_real_world_readiness(tmp_path, monkeypatch) 
         },
     )
     _write_json(
+        health_root / "live_money_readiness_contract_latest.json",
+        {
+            "overall_status": "blocked",
+            "faithful_live_money_ready": False,
+            "live_money_locked": True,
+            "grade_summary": {
+                "required_section_count": 14,
+                "ready_required_section_count": 13,
+            },
+        },
+    )
+    _write_json(
         health_root / "live_runtime_separation_control_latest.json",
         {
             "overall_status": "degraded",
@@ -189,7 +201,12 @@ def test_showcase_snapshot_surfaces_real_world_readiness(tmp_path, monkeypatch) 
     updated_readme = readme_path.read_text(encoding="utf-8")
 
     assert snapshot["readiness_summary"]["institutional_score"] == 81.25
-    assert snapshot["readiness_summary"]["live_status"] == "ready"
+    assert snapshot["readiness_summary"]["live_status"] == "blocked"
+    assert snapshot["readiness_summary"]["live_ready_section_count"] == 13
+    assert snapshot["readiness_summary"]["live_required_section_count"] == 14
+    assert snapshot["readiness_summary"]["live_money_locked"] is True
+    assert snapshot["readiness_summary"]["runtime_smoke_status"] == "ready"
+    assert set(snapshot["artifacts"]) == {"crypto_context", "correlation", "training"}
     assert snapshot["pytorch_summary"]["assist_candidate_count"] == 1
     assert snapshot["autonomy_summary"]["autonomy_score"] == 78.3
     assert snapshot["architecture_summary"]["ready_count"] == 8
@@ -215,5 +232,7 @@ def test_showcase_snapshot_surfaces_real_world_readiness(tmp_path, monkeypatch) 
     assert "broker-specific news, options, and calendar context now sit behind adapter seams" in special_features_html.lower()
     assert "Latest macro event status is" in special_features_html
     assert "Institutional readiness: `81.25/100` with status `advancing`." in updated_readme
+    assert "live-money gate `blocked` at `13/14` required sections with live locked `True`" in updated_readme
+    assert "runtime smoke `ready` at `94.20/100`" in updated_readme
     assert "Autonomy posture: `78.30/100` with status `degraded`" in updated_readme
     assert "Architecture upgrades: `8/12` ready proof surfaces" in updated_readme

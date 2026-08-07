@@ -21,8 +21,9 @@ DEFAULT_OUT_PATH = PROJECT_ROOT / "governance" / "health" / "live_money_readines
 DEFAULT_START_DATE = date(2026, 7, 1)
 DEFAULT_TARGET_DATE = date(2026, 8, 26)
 REQUIRED_GRADE_FLOOR = "A"
-POLICY_ID = "faithful_live_money_a_grade_20260826"
+POLICY_ID = "faithful_live_money_economic_evidence_v2_20260826"
 MAX_RISK_CONTROL_ARTIFACT_AGE_MINUTES = 36.0 * 60.0
+MAX_PROFITABILITY_FIREWALL_AGE_MINUTES = 180.0
 MANAGED_RUNTIME_CLEARANCE_BLOCKERS = {
     "runtime_clearance=managed_cold_lane_deferred",
     "runtime_clearance=managed_coverage_stage_deferred",
@@ -152,6 +153,11 @@ def _normalize_grade(raw: Any, *, score: Any = None, ok: bool | None = None) -> 
 
 def _grade_ok(grade: Any, floor: str = REQUIRED_GRADE_FLOOR) -> bool:
     return GRADE_RANK.get(str(grade or "").strip().upper(), -1) >= GRADE_RANK[floor]
+
+
+def _minimum_grade(*grades: str) -> str:
+    normalized = [_normalize_grade(grade) for grade in grades]
+    return min(normalized, key=lambda grade: GRADE_RANK.get(grade, -1), default="F")
 
 
 def _status_ready(payload: dict[str, Any], *, ok_key: str = "ok") -> bool:
@@ -539,6 +545,7 @@ def build_payload(
     promotion_quality_path = health_root / "promotion_quality_gate_latest.json"
     promotion_packet_path = project_root / "governance" / "champion_challenger" / "promotion_packet_latest.json"
     paper_profit_path = health_root / "paper_profitability_control_latest.json"
+    profitability_firewall_path = health_root / "profitability_evidence_firewall_latest.json"
     source_verification_path = health_root / "source_verification_latest.json"
     health_gates_path = health_root / "health_gates_latest.json"
     storage_path = health_root / "ingestion_storage_control_latest.json"
@@ -555,6 +562,7 @@ def build_payload(
     promotion_quality = load_json(promotion_quality_path)
     promotion_packet = load_json(promotion_packet_path)
     paper_profit = load_json(paper_profit_path)
+    profitability_firewall = load_json(profitability_firewall_path)
     source_verification = load_json(source_verification_path)
     health_gates = load_json(health_gates_path)
     storage = load_json(storage_path)
@@ -695,6 +703,38 @@ def build_payload(
 
     current_date = _today_utc(as_of_date)
     current_dt = _datetime_for_contract_day(current_date) if as_of_date else datetime.now(timezone.utc)
+    paper_profit_control_grade = _normalize_grade(
+        paper_profit.get("profitability_grade")
+        or paper_profit.get("grade")
+        or paper_profit.get("control_posture_grade")
+        or paper_profit.get("contained_grade"),
+        score=paper_profit.get("score"),
+        ok=_status_ready(paper_profit) if paper_profit else False,
+    )
+    profitability_firewall_fresh = _fresh(
+        profitability_firewall,
+        profitability_firewall_path,
+        now=current_dt,
+        max_age_minutes=MAX_PROFITABILITY_FIREWALL_AGE_MINUTES,
+    )
+    profitability_economic_grade = _normalize_grade(
+        profitability_firewall.get("economic_evidence_grade"),
+        ok=bool(profitability_firewall.get("promotion_evidence_ready", False)),
+    )
+    profitability_firewall_ready = bool(
+        profitability_firewall_fresh
+        and _grade_ok(profitability_firewall.get("control_grade"), "A+")
+        and _grade_ok(profitability_firewall.get("hardening_control_grade"), "A+")
+        and _grade_ok(profitability_economic_grade, "A+")
+        and _grade_ok(profitability_firewall.get("hardening_economic_evidence_grade"), "A+")
+        and profitability_firewall.get("promotion_evidence_ready", False)
+    )
+    paper_profit_control_ready = bool(
+        paper_profit
+        and str(paper_profit.get("overall_status") or paper_profit.get("status") or "").strip().lower()
+        in {"ready", "stable", "protective_tightening", "ok"}
+        and _grade_ok(paper_profit_control_grade)
+    )
     replay_reasons = {
         str(item or "").strip()
         for item in (replay_gate.get("reasons") if isinstance(replay_gate.get("reasons"), list) else [])
@@ -788,21 +828,32 @@ def build_payload(
         _section(
             "paper_profitability_control",
             title="Paper Profitability Control",
-            grade=_normalize_grade(
-                paper_profit.get("profitability_grade")
-                or paper_profit.get("grade")
-                or paper_profit.get("control_posture_grade")
-                or paper_profit.get("contained_grade"),
-                score=paper_profit.get("score"),
-                ok=_status_ready(paper_profit) if paper_profit else False,
-            ),
-            ready=bool(paper_profit and str(paper_profit.get("overall_status") or paper_profit.get("status") or "").strip().lower() in {"ready", "stable", "protective_tightening", "ok"}),
+            grade=_minimum_grade(paper_profit_control_grade, profitability_economic_grade),
+            ready=bool(paper_profit_control_ready and profitability_firewall_ready),
             evidence={
                 "overall_status": paper_profit.get("overall_status") or paper_profit.get("status"),
+                "control_posture_grade": paper_profit_control_grade,
+                "raw_profitability_grade": paper_profit.get("raw_profitability_grade")
+                or profitability_firewall.get("raw_profitability_grade"),
                 "low_grade_blockers": paper_profit.get("low_grade_blockers"),
                 "net_pnl": paper_profit.get("net_pnl"),
+                "profitability_firewall_freshness": _freshness_evidence(
+                    profitability_firewall,
+                    profitability_firewall_path,
+                    now=current_dt,
+                    max_age_minutes=MAX_PROFITABILITY_FIREWALL_AGE_MINUTES,
+                ),
+                "firewall_control_grade": profitability_firewall.get("control_grade"),
+                "economic_evidence_grade": profitability_firewall.get("economic_evidence_grade"),
+                "hardening_control_grade": profitability_firewall.get("hardening_control_grade"),
+                "hardening_economic_evidence_grade": profitability_firewall.get(
+                    "hardening_economic_evidence_grade"
+                ),
+                "promotion_evidence_ready": profitability_firewall.get("promotion_evidence_ready", False),
+                "firewall_blockers": profitability_firewall.get("blockers", []),
+                "paper_control_source_artifact": str(paper_profit_path),
             },
-            source_artifact=str(paper_profit_path),
+            source_artifact=str(profitability_firewall_path),
         ),
         _bool_section(
             "promotion_quality_gate",
@@ -986,7 +1037,7 @@ def build_payload(
 
     return {
         "timestamp_utc": iso_now(),
-        "schema_version": 1,
+        "schema_version": 2,
         "policy_id": POLICY_ID,
         "ok": faithful_live_money_ready,
         "overall_status": "ready" if faithful_live_money_ready else "blocked",

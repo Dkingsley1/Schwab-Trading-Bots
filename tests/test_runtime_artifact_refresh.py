@@ -583,6 +583,12 @@ def test_runtime_artifact_refresh_step_specs_include_training_storage_and_harden
     assert "market_cycle_extraction_engine" in names
     assert "chrome_headless_guard" in names
     assert "multiple_testing_guard" in names
+    assert "decay_monitor" in names
+    assert "execution_queue_stress" in names
+    assert "profitability_independent_validator" in names
+    assert "profitability_holdout_vault" in names
+    assert "profitability_benchmark_capture" in names
+    assert "profitability_benchmark_hurdle" in names
     assert "health_gates" in names
     assert "health_fast" in names
     assert "service_control_plane" in names
@@ -818,6 +824,10 @@ def test_runtime_artifact_refresh_step_specs_include_training_storage_and_harden
     assert names.index("source_verification") < names.index("source_verification_autorefresh")
     assert names.index("source_verification_autorefresh") < names.index("source_verification_verified")
     assert names.index("multiple_testing_guard") < names.index("profitability_evidence_firewall")
+    assert names.index("decay_monitor") < names.index("profitability_evidence_firewall")
+    assert names.index("profitability_independent_validator") < names.index("profitability_benchmark_hurdle")
+    assert names.index("profitability_benchmark_capture") < names.index("profitability_benchmark_hurdle")
+    assert names.index("profitability_benchmark_hurdle") < names.index("profitability_evidence_firewall")
     assert names.index("profitability_evidence_firewall") < names.index("production_excellence_control")
     assert names.index("production_excellence_control") < names.index("continuous_soak_integrity_control")
     assert names.index("continuous_soak_integrity_control") < names.index("live_transition_integrity_control")

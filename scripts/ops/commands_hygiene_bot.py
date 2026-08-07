@@ -1211,6 +1211,62 @@ def _commands_inventory(project_root: Path) -> list[dict[str, Any]]:
                     "Refreshes the profitability, weak-profile containment, and promotion-readiness controls that feed the paper evidence packet.",
                 ],
             ),
+            _command_entry(
+                project_root,
+                "Capture the candidate-bound passive benchmark close",
+                ["./scripts/ops/opsctl.sh profitability-benchmark-capture --apply --json"],
+                notes=[
+                    "After the configured market close, appends at most one immutable broker-native SPY benchmark point for a candidate that existed before the session opened.",
+                ],
+            ),
+            _command_entry(
+                project_root,
+                "Compare paper returns with cash and passive benchmarks",
+                ["./scripts/ops/opsctl.sh profitability-benchmark-hurdle --json"],
+                notes=[
+                    "Requires candidate-bound full-session observations and reports whether active paper returns clear both cash and passive SPY hurdles after costs.",
+                ],
+            ),
+            _command_entry(
+                project_root,
+                "Reconcile candidate paper PnL with the independent accountant",
+                ["./scripts/ops/opsctl.sh profitability-independent-validator --json"],
+                notes=[
+                    "Independently scans and deduplicates canonical execution evidence, then compares PnL, notional, costs, drawdown, and risk-of-ruin statistics with the primary paper report.",
+                ],
+            ),
+            _command_entry(
+                project_root,
+                "Review the complete experiment-family correction",
+                ["./scripts/ops/opsctl.sh multiple-testing --json"],
+                notes=[
+                    "Counts active, excluded, failed, and retired strategy experiments so profitability evidence cannot omit unsuccessful trials from multiple-testing correction.",
+                ],
+            ),
+            _command_entry(
+                project_root,
+                "Review the locked profitability holdout vault",
+                ["./scripts/ops/opsctl.sh profitability-holdout-vault --json"],
+                notes=[
+                    "Reports candidate binding, immutable dataset identity, access count, and tamper status. Seal only genuinely unseen data with `--seal-dataset PATH`; evaluation access requires an evidence note.",
+                ],
+            ),
+            _command_entry(
+                project_root,
+                "Review profitability decay containment",
+                ["./scripts/ops/opsctl.sh decay-monitor --json"],
+                notes=[
+                    "Checks recent edge decay and verifies that decayed profiles are automatically blocked or reduced to the configured minimal allocation.",
+                ],
+            ),
+            _command_entry(
+                project_root,
+                "Review the strict profitability evidence firewall",
+                ["./scripts/ops/opsctl.sh profitability-evidence-firewall --json"],
+                notes=[
+                    "Keeps structural control grades separate from candidate-bound economic proof and blocks promotion until every baseline and future-profitability hardener has current evidence.",
+                ],
+            ),
         ),
         _section(
             "Storage",

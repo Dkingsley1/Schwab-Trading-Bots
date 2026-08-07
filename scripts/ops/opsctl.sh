@@ -1086,6 +1086,18 @@ case "$cmd" in
   decay-monitor)
     exec "$PY" "$PROJECT_ROOT/scripts/decay_monitor.py" "$@"
     ;;
+  profitability-independent-validator|independent-profit-validator)
+    exec "$PY" "$PROJECT_ROOT/scripts/ops/profitability_independent_validator.py" "$@"
+    ;;
+  profitability-holdout-vault|holdout-vault)
+    exec "$PY" "$PROJECT_ROOT/scripts/ops/profitability_holdout_vault.py" "$@"
+    ;;
+  profitability-benchmark-capture|benchmark-capture)
+    exec "$PY" "$PROJECT_ROOT/scripts/ops/profitability_benchmark_capture.py" "$@"
+    ;;
+  profitability-benchmark-hurdle|benchmark-hurdle)
+    exec "$PY" "$PROJECT_ROOT/scripts/ops/profitability_benchmark_hurdle.py" "$@"
+    ;;
   security-audit|security-hardening-audit)
     exec "$PY" "$PROJECT_ROOT/scripts/security_hardening_audit.py" "$@"
     ;;
@@ -3068,6 +3080,10 @@ opsctl commands:
   live-transition-integrity|paper-live-transition [--json]
   live-transition-chaos|transition-chaos [--json]
   profitability-evidence-firewall|profitability-firewall [--json]
+  profitability-independent-validator|independent-profit-validator [--json]
+  profitability-holdout-vault|holdout-vault [--seal-dataset PATH] [--record-evaluation-access --evidence TEXT] [--json]
+  profitability-benchmark-capture|benchmark-capture [--apply] [--json]
+  profitability-benchmark-hurdle|benchmark-hurdle [--json]
   continuous-soak-integrity|soak-integrity [--json]
   production-quality-slo|production-slo-guard [--apply] [--refresh-quality] [--json]
   production-hardening-watch|hardening-watch [--apply] [--execute-safe-repairs] [--execute-on-watch] [--max-actions N] [--max-execute-actions N] [--json]

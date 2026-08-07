@@ -706,6 +706,99 @@ def test_paper_performance_report_ingests_mixed_and_gz_sources(tmp_path, monkeyp
     assert profiles == {"default", "aggressive", "dividend"}
 
 
+def test_paper_performance_report_counts_bridge_mirror_once(tmp_path, monkeypatch) -> None:
+    project_root = tmp_path / "project"
+    bridge_dir = project_root / "exports" / "paper_broker_bridge" / "paper"
+    trade_dir = project_root / "exports" / "trade_logs" / "paper"
+    bridge_dir.mkdir(parents=True, exist_ok=True)
+    trade_dir.mkdir(parents=True, exist_ok=True)
+    common = {
+        "symbol": "SPY",
+        "action": "BUY",
+        "strategy": "paper_mirror::alpha",
+        "decision_id": "decision-123",
+        "paper_book_id": "book-1",
+        "paper_pnl_schema_version": 2,
+        "metadata": {"source_profile": "default", "decision_id": "decision-123"},
+        "post_cost_pnl_delta": 2.5,
+        "post_cost_return_bps": 25.0,
+        "execution_notional": 1_000.0,
+        "expected_execution_cost_amount": 0.5,
+        "realized_pnl_total": 2.5,
+        "unrealized_pnl_total": 0.0,
+    }
+    canonical = {
+        **common,
+        "timestamp_utc": "2026-04-01T15:00:00.000000+00:00",
+        "message_id": "canonical-message",
+        "routing_lane": "schwab_equities",
+    }
+    bridge = {
+        **common,
+        "timestamp_utc": "2026-04-01T15:00:00.001000+00:00",
+        "message_id": "bridge-message",
+        "bridge_source": "local_paper_mirror",
+        "routing_lane": "paper_broker_bridge",
+    }
+    (trade_dir / "paper_trades_paper.jsonl").write_text(json.dumps(canonical) + "\n", encoding="utf-8")
+    (bridge_dir / "paper_bridge_orders_20260401.jsonl").write_text(json.dumps(bridge) + "\n", encoding="utf-8")
+
+    monkeypatch.setattr(report, "PROJECT_ROOT", project_root)
+    payload = report.build_paper_performance_report(project_root, day="20260401", week_days=7)
+
+    assert payload["post_cost_expectancy"]["sample_count"] == 1
+    assert payload["post_cost_expectancy"]["total_post_cost_pnl_delta"] == 2.5
+    assert payload["day"]["executions"] == 1
+    assert payload["execution_deduplication"]["mirrored_records_suppressed"] == 1
+    assert payload["execution_deduplication"]["records_emitted"] == 1
+
+
+def test_paper_performance_report_publishes_and_enforces_scan_watermark(tmp_path, monkeypatch) -> None:
+    project_root = tmp_path / "project"
+    trade_dir = project_root / "exports" / "trade_logs" / "paper"
+    trade_dir.mkdir(parents=True, exist_ok=True)
+    watermark = report.datetime(2026, 4, 1, 15, 0, tzinfo=report.timezone.utc)
+    common = {
+        "symbol": "SPY",
+        "action": "BUY",
+        "strategy": "paper_mirror::alpha",
+        "paper_pnl_schema_version": 2,
+        "metadata": {"source_profile": "default"},
+        "post_cost_return_bps": 25.0,
+        "execution_notional": 1_000.0,
+        "realized_pnl_total": 2.5,
+        "unrealized_pnl_total": 0.0,
+    }
+    rows = [
+        {
+            **common,
+            "timestamp_utc": "2026-04-01T14:59:00+00:00",
+            "decision_id": "included",
+            "post_cost_pnl_delta": 2.5,
+        },
+        {
+            **common,
+            "timestamp_utc": "2026-04-01T15:01:00+00:00",
+            "decision_id": "next-refresh",
+            "post_cost_pnl_delta": 3.0,
+        },
+    ]
+    (trade_dir / "paper_trades_paper.jsonl").write_text(
+        "\n".join(json.dumps(row) for row in rows) + "\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(report, "PROJECT_ROOT", project_root)
+    monkeypatch.setattr(report, "_utc_now", lambda: watermark)
+    payload = report.build_paper_performance_report(project_root, day="20260401", week_days=7)
+
+    assert payload["profitability_evidence_window"]["evidence_through_utc"] == watermark.isoformat()
+    assert payload["profitability_evidence_window"]["snapshot_watermark_active"] is True
+    assert payload["post_cost_expectancy"]["sample_count"] == 1
+    assert payload["post_cost_expectancy"]["total_post_cost_pnl_delta"] == 2.5
+    assert payload["execution_deduplication"]["post_snapshot_records_deferred"] == 1
+
+
 def test_paper_performance_report_surfaces_active_heartbeat_only_profiles(tmp_path, monkeypatch) -> None:
     project_root = tmp_path / "project"
     health_dir = project_root / "governance" / "health"

@@ -16,6 +16,19 @@ def test_firewall_separates_implemented_controls_from_earned_profitability(tmp_p
     base_trader = tmp_path / "core" / "base_trader.py"
     base_trader.parent.mkdir(parents=True, exist_ok=True)
     base_trader.write_text("paper_profitability_clean_profile_evidence_block = True\n", encoding="utf-8")
+    for relative in (
+        "scripts/ops/independent_fill_evidence_acquisition.py",
+        "scripts/ops/profitability_holdout_vault.py",
+        "scripts/ops/profitability_benchmark_capture.py",
+        "scripts/ops/profitability_benchmark_hurdle.py",
+        "scripts/ops/profitability_independent_validator.py",
+        "scripts/multiple_testing_guard.py",
+        "scripts/decay_monitor.py",
+        "core/profitability_statistics.py",
+    ):
+        path = tmp_path / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("# producer fixture\n", encoding="utf-8")
     health = tmp_path / "governance" / "health"
     _write_json(
         health / "source_verification_latest.json",
@@ -71,4 +84,6 @@ def test_firewall_separates_implemented_controls_from_earned_profitability(tmp_p
     assert payload["economic_evidence_grade"] != "A+"
     assert payload["raw_profitability_grade"] == "D"
     assert payload["raw_profitability_grade_overridden"] is False
-    assert "07_cluster_effective_samples" in payload["blockers"]
+    assert "baseline:07_cluster_effective_samples" in payload["blockers"]
+    assert payload["future_profitability_hardening"]["control_grade"] == "A+"
+    assert payload["future_profitability_hardening"]["economic_evidence_grade"] != "A+"

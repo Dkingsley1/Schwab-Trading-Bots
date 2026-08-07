@@ -51,9 +51,12 @@
         "scripts/*performance*.py",
         "scripts/*canary*.py",
         "scripts/*testing_guard*.py",
+        "scripts/decay_monitor.py",
         "scripts/ops/*promotion*.py",
         "scripts/ops/*canary*.py",
         "scripts/ops/*fill*.py",
+        "scripts/ops/profitability*.py",
+        "core/profitability_statistics.py",
         "config/*promotion*.json",
         "config/profitability*.json",
         "config/production_excellence_v1.json"
@@ -130,9 +133,9 @@
     "control_artifact": "governance/health/paper_profitability_control_latest.json",
     "evidence_firewall_artifact": "governance/health/profitability_evidence_firewall_latest.json",
     "max_artifact_age_hours": 12,
-    "minimum_post_cost_samples": 100,
-    "minimum_profitable_sleeves": 3,
-    "maximum_single_sleeve_positive_pnl_share": 0.5,
+    "minimum_post_cost_samples": 200,
+    "minimum_profitable_sleeves": 4,
+    "maximum_single_sleeve_positive_pnl_share": 0.35,
     "require_positive_lower_confidence_bound_95": true
   },
   "canary": {

@@ -51,14 +51,15 @@ As of **2026-08-06**, the system is operating as a guarded paper-trading and dat
 
 | Surface | Current evidence | Meaning |
 | --- | --- | --- |
-| Formal live-money readiness | `13/14` required sections at the required floor | `paper_profitability_control` is the remaining below-floor section, currently grade `C` |
+| Formal live-money readiness | `13/14` required sections at the required floor | `paper_profitability_control` is the remaining below-floor section, currently economic-evidence grade `F` |
+| Profitability evidence firewall | control grade `A+` (`20/20` implemented); current economic-evidence grade `F` | all ten future-profitability hardeners are implemented; candidate-bound evidence counts update on each refresh and cannot be relabeled |
 | Six-pillar transition runway | `5/6` pillars ready | `paper_truth` remains blocked only by profitability evidence |
 | Production-excellence proof | `4/10` pillars fully evidenced | elapsed soak, independent fills, qualified candidates, profitability breadth, paper-canary cohorts, and final operating proof still need evidence |
-| Frozen candidate | `pc-ca68fd996ddc-g12`, generation `12`, no detected drift | affected evidence windows restarted after the accepted hardening changes on `2026-08-06 16:20 UTC` |
+| Frozen candidate | `pc-a439f13eba9f-g19`, generation `19`, no detected drift | operations and promotion windows restarted after the accepted accounting-watermark hardener on `2026-08-07 00:12 UTC`; the strategy window retains its earlier start |
 | Recovery | `10/10` isolated, non-destructive recovery drills pass | auth, broker network, process, reboot, disk, storage, memory, database, market-data, and order-lifecycle failures are covered |
 | Storage continuity | pinned local-durable route with online SQLite snapshots | snapshots can be taken while active database writers remain online |
 
-The target date of **2026-08-26** is a review boundary, not automatic permission to trade. Clearance still requires the unchanged-candidate time windows, independent fill calibration, qualified promotion candidates, positive post-cost expectancy across independent days and symbols, profitable-sleeve diversity, bounded concentration, successful paper-canary cohorts, and explicit operator release. Until all gates pass, `MARKET_DATA_ONLY=1` and `ALLOW_ORDER_EXECUTION=0` remain the intended posture.
+The target date of **2026-08-26** is a review boundary, not automatic permission to trade. Clearance still requires the unchanged-candidate time windows, independent fill calibration, a sealed unseen holdout, cash and passive benchmark outperformance, acceptable risk-of-ruin stress, qualified promotion candidates, positive post-cost expectancy across independent days and symbols, profitable-sleeve diversity, bounded concentration, successful paper-canary cohorts, and explicit operator release. Until all gates pass, `MARKET_DATA_ONLY=1` and `ALLOW_ORDER_EXECUTION=0` remain the intended posture.
 
 The transition contract is:
 
@@ -87,12 +88,20 @@ Key operating upgrades:
 - Staged promotion candidates flow through a runtime-governed queue: training-ready bots receive held-out walk-forward work, while sample-starved bots return to labeled collection.
 - Storage disaster recovery uses SQLite's online backup path for active databases and verifies the promoted model bundle needed for restart.
 - The production recovery harness exercises ten bounded failure classes and records containment, duplicate-order prevention, recovery time, and evidence hashes.
+- Paper performance now suppresses mirrored execution rows by execution/fill identity or paper-book decision identity, publishes a closed scan watermark that defers later appends, and requires a separately implemented accountant to reproduce candidate-bound P&L, notional, costs, and drawdown over that exact interval.
+- The profitability firewall separates structural readiness from economic proof across twenty controls, including complete experiment-family accounting, a locked holdout vault, adversarial execution stress, passive/cash benchmarks, edge-decay containment, moving-block risk-of-ruin stress, and tail-concentration limits.
+- Live-money readiness now fails closed on a fresh A+ economic firewall instead of treating an A+ safety posture or runtime smoke test as proof of profitability; generated README highlights preserve the same distinction.
 
 ## Operational Evidence
 
 The important generated artifacts are:
 
 - `governance/health/paper_performance_latest.json`: sleeve scoreboard, PnL, Sortino/Sharpe fields, chart/PDF metadata.
+- `governance/health/profitability_evidence_firewall_latest.json`: separate structural and economic grades for the baseline and ten future-profitability hardeners.
+- `governance/health/profitability_independent_validator_latest.json`: independently recomputed candidate P&L, notional, drawdown, reconciliation, and risk-of-ruin evidence.
+- `governance/research/profitability_holdout_vault_latest.json`: sealed holdout identity, candidate binding, access count, and tamper status.
+- `governance/research/profitability_benchmark_capture_latest.json`: immutable candidate-bound passive benchmark capture state.
+- `governance/research/profitability_benchmark_hurdle_latest.json`: cash and passive benchmark comparison across complete candidate sessions.
 - `governance/events/signal_generation_*.jsonl`: good and bad signal generation audit stream.
 - `governance/health/schwab_auth_refresh_latest.json`: browser handoff, token readiness, and account-probe outcome.
 - `governance/health/schwab_auth_supervisor_latest.json`: token lease, callback-port, and broker-readiness posture.
@@ -123,12 +132,12 @@ The important generated artifacts are:
 ## Auto-Refreshed Highlights
 
 <!-- SHOWCASE_HIGHLIGHTS_START -->
-_Generated at 2026-08-06 17:03 UTC_
+_Generated at 2026-08-07 00:14 UTC_
 
 - Active registry lineup: `1780` of `1781` bots are active.
-- Runtime collection snapshot: all-sleeves fanout is ready with `32` child processes and `221/221` collectors represented; lane artifacts show `2` split-running and `29` in bounded runtime-training pause.
+- Live collection snapshot: `0/32` lane artifacts are reporting `running`.
 - Institutional readiness: `99.33/100` with status `industry_leaning`.
-- Live/runtime posture: live readiness `ready` at `100.00/100`, runtime separation `ready`.
+- Live/runtime posture: live-money gate `blocked` at `13/14` required sections with live locked `True`; runtime smoke `ready` at `100.00/100`; runtime separation `ready`.
 - Autonomy posture: `91.05/100` with status `blocked`, playbooks `1`, open incidents `0`.
 - Architecture upgrades: `10/12` ready proof surfaces, host profile `max_throughput`, portable proof `ready`.
 - Crypto context: `16/18` healthy sources and `7/7` healthy news feeds.

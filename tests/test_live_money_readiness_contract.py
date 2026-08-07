@@ -46,7 +46,25 @@ def _write_ready_sources(project_root: Path) -> None:
             },
         },
     )
-    _write_json(health / "paper_profitability_control_latest.json", {"overall_status": "ready", "profitability_grade": "A+"})
+    _write_json(
+        health / "paper_profitability_control_latest.json",
+        {"overall_status": "ready", "profitability_grade": "A+", "raw_profitability_grade": "A+"},
+    )
+    _write_json(
+        health / "profitability_evidence_firewall_latest.json",
+        {
+            "timestamp_utc": "2026-08-26T11:00:00+00:00",
+            "ok": True,
+            "overall_status": "ready",
+            "control_grade": "A+",
+            "economic_evidence_grade": "A+",
+            "hardening_control_grade": "A+",
+            "hardening_economic_evidence_grade": "A+",
+            "promotion_evidence_ready": True,
+            "raw_profitability_grade": "A+",
+            "blockers": [],
+        },
+    )
     _write_json(
         health / "source_verification_latest.json",
         {"ok": True, "overall_status": "ready", "overall": {"mean_source_confidence_score": 0.94}, "unverified_sources": []},
@@ -161,6 +179,75 @@ def test_live_money_contract_clears_after_target_only_when_all_sections_are_a_or
     assert payload["overall_status"] == "ready"
     assert payload["live_money_locked"] is False
     assert payload["blocking_reasons"] == []
+
+
+def test_live_money_contract_blocks_when_controlled_profitability_is_a_plus_but_economic_evidence_is_f(
+    tmp_path: Path,
+) -> None:
+    _write_ready_sources(tmp_path)
+    health = tmp_path / "governance" / "health"
+    _write_json(
+        health / "profitability_evidence_firewall_latest.json",
+        {
+            "timestamp_utc": "2026-08-26T11:00:00+00:00",
+            "ok": True,
+            "overall_status": "ready",
+            "control_grade": "A+",
+            "economic_evidence_grade": "F",
+            "hardening_control_grade": "A+",
+            "hardening_economic_evidence_grade": "F",
+            "promotion_evidence_ready": False,
+            "raw_profitability_grade": "C",
+            "blockers": ["baseline:02_independent_fills", "hardening:h10_independent_accounting_validator"],
+        },
+    )
+
+    payload = src.build_payload(tmp_path, as_of_date="2026-08-26")
+
+    sections = {row["section_id"]: row for row in payload["sections"]}
+    profitability = sections["paper_profitability_control"]
+    assert payload["faithful_live_money_ready"] is False
+    assert payload["live_money_locked"] is True
+    assert "paper_profitability_control_below_A" in payload["blocking_reasons"]
+    assert "paper_profitability_control_not_ready" in payload["blocking_reasons"]
+    assert profitability["grade"] == "F"
+    assert profitability["ready"] is False
+    assert profitability["evidence"]["control_posture_grade"] == "A+"
+    assert profitability["evidence"]["promotion_evidence_ready"] is False
+
+
+def test_live_money_contract_blocks_stale_profitability_firewall(tmp_path: Path) -> None:
+    _write_ready_sources(tmp_path)
+    health = tmp_path / "governance" / "health"
+    firewall = json.loads((health / "profitability_evidence_firewall_latest.json").read_text(encoding="utf-8"))
+    firewall["timestamp_utc"] = "2026-08-25T00:00:00+00:00"
+    _write_json(health / "profitability_evidence_firewall_latest.json", firewall)
+
+    payload = src.build_payload(tmp_path, as_of_date="2026-08-26")
+
+    sections = {row["section_id"]: row for row in payload["sections"]}
+    profitability = sections["paper_profitability_control"]
+    assert payload["faithful_live_money_ready"] is False
+    assert "paper_profitability_control_not_ready" in payload["blocking_reasons"]
+    assert profitability["grade"] == "A+"
+    assert profitability["evidence"]["profitability_firewall_freshness"]["fresh"] is False
+
+
+def test_live_money_contract_uses_lower_control_posture_grade(tmp_path: Path) -> None:
+    _write_ready_sources(tmp_path)
+    health = tmp_path / "governance" / "health"
+    paper_profit = json.loads((health / "paper_profitability_control_latest.json").read_text(encoding="utf-8"))
+    paper_profit["profitability_grade"] = "C"
+    _write_json(health / "paper_profitability_control_latest.json", paper_profit)
+
+    payload = src.build_payload(tmp_path, as_of_date="2026-08-26")
+
+    sections = {row["section_id"]: row for row in payload["sections"]}
+    profitability = sections["paper_profitability_control"]
+    assert payload["faithful_live_money_ready"] is False
+    assert profitability["grade"] == "C"
+    assert profitability["ready"] is False
+    assert "paper_profitability_control_below_A" in payload["blocking_reasons"]
 
 
 def test_live_money_contract_blocks_current_replay_and_soak_debt(tmp_path: Path) -> None:

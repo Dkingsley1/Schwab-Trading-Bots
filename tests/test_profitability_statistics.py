@@ -4,6 +4,7 @@ from core.profitability_statistics import (
     benjamini_hochberg,
     clustered_post_cost_statistics,
     probability_of_backtest_overfitting,
+    risk_of_ruin_statistics,
 )
 
 
@@ -66,3 +67,33 @@ def test_probability_of_backtest_overfitting_fails_closed_without_periods() -> N
     assert unavailable["available"] is False
     assert available["available"] is True
     assert 0.0 <= available["pbo"] <= 1.0
+
+
+def test_risk_of_ruin_requires_independent_daily_history() -> None:
+    result = risk_of_ruin_statistics([1.0] * 29, minimum_days=30)
+
+    assert result["available"] is False
+    assert result["passes"] is False
+    assert result["blockers"] == ["minimum_independent_days_pending"]
+
+
+def test_risk_of_ruin_distinguishes_stable_and_destructive_paths() -> None:
+    stable = risk_of_ruin_statistics(
+        [2.0] * 30,
+        initial_capital=1_000.0,
+        horizon_days=60,
+        iterations=200,
+        minimum_days=30,
+    )
+    destructive = risk_of_ruin_statistics(
+        [-100.0] * 30,
+        initial_capital=1_000.0,
+        horizon_days=20,
+        iterations=200,
+        minimum_days=30,
+    )
+
+    assert stable["passes"] is True
+    assert stable["ruin_probability"] == 0.0
+    assert destructive["passes"] is False
+    assert destructive["ruin_probability"] == 1.0

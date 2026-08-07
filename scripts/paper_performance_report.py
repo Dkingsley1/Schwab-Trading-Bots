@@ -361,7 +361,15 @@ def _paper_source_files(project_root: Path) -> tuple[list[Path], str]:
                 continue
             seen.add(key)
             files.append(candidate)
-    files.sort(key=lambda item: str(item))
+    def _source_priority(item: Path) -> tuple[int, str]:
+        text = str(item)
+        if "/exports/trade_logs/" in text:
+            return 0, text
+        if "/exports/paper_broker_bridge/" in text:
+            return 2, text
+        return 1, text
+
+    files.sort(key=_source_priority)
     return files, ",".join(kinds) if kinds else "none"
 
 
@@ -404,8 +412,43 @@ def _paper_row_signature(row: dict[str, Any]) -> str:
     return hashlib.sha1(stable.encode("utf-8")).hexdigest()
 
 
-def _iter_rows(files: Iterable[Path]) -> Iterable[dict[str, Any]]:
+def _paper_execution_identity(row: dict[str, Any]) -> str:
+    metadata = row.get("metadata") if isinstance(row.get("metadata"), dict) else {}
+    intent = row.get("order_intent_evidence") if isinstance(row.get("order_intent_evidence"), dict) else {}
+    semantic_order = intent.get("semantic_order") if isinstance(intent.get("semantic_order"), dict) else {}
+    execution_id = str(
+        row.get("execution_id")
+        or row.get("fill_id")
+        or metadata.get("execution_id")
+        or metadata.get("fill_id")
+        or ""
+    ).strip()
+    if execution_id:
+        return f"execution:{execution_id}"
+    decision_id = str(
+        row.get("decision_id")
+        or metadata.get("decision_id")
+        or semantic_order.get("decision_id")
+        or ""
+    ).strip()
+    if decision_id:
+        book_id = str(row.get("paper_book_id") or metadata.get("paper_book_id") or "unbound-book").strip()
+        return f"paper-decision:{book_id}:{decision_id}"
+    return f"content:{_paper_row_signature(row)}"
+
+
+def _iter_rows(
+    files: Iterable[Path],
+    *,
+    deduplication: dict[str, int] | None = None,
+    evidence_through: datetime | None = None,
+) -> Iterable[dict[str, Any]]:
     seen_rows: set[str] = set()
+    counters = deduplication if deduplication is not None else {}
+    counters.setdefault("records_read", 0)
+    counters.setdefault("records_emitted", 0)
+    counters.setdefault("mirrored_records_suppressed", 0)
+    counters.setdefault("post_snapshot_records_deferred", 0)
     for path in files:
         opener = gzip.open if path.suffix == ".gz" else Path.open
         try:
@@ -420,10 +463,17 @@ def _iter_rows(files: Iterable[Path]) -> Iterable[dict[str, Any]]:
                         continue
                     if not isinstance(row, dict):
                         continue
-                    signature = _paper_row_signature(row)
-                    if signature in seen_rows:
+                    counters["records_read"] += 1
+                    timestamp = _parse_ts(row.get("timestamp_utc") or row.get("timestamp"))
+                    if evidence_through is not None and timestamp is not None and timestamp > evidence_through:
+                        counters["post_snapshot_records_deferred"] += 1
                         continue
-                    seen_rows.add(signature)
+                    identity = _paper_execution_identity(row)
+                    if identity in seen_rows:
+                        counters["mirrored_records_suppressed"] += 1
+                        continue
+                    seen_rows.add(identity)
+                    counters["records_emitted"] += 1
                     yield row
         except Exception:
             continue
@@ -1460,6 +1510,7 @@ def _summarize_day(
 
 
 def build_paper_performance_report(project_root: Path, *, day: str, week_days: int = 7) -> dict[str, Any]:
+    evidence_through = _utc_now()
     files, source_kind = _paper_source_files(project_root)
     active_shadow_profiles = _active_shadow_profiles(project_root, day=day)
     latest_by_day_profile: dict[str, dict[str, dict[str, tuple[datetime, dict[str, Any]]]]] = defaultdict(lambda: defaultdict(dict))
@@ -1467,8 +1518,13 @@ def build_paper_performance_report(project_root: Path, *, day: str, week_days: i
     post_cost_rows_by_profile: dict[str, list[dict[str, Any]]] = defaultdict(list)
     all_post_cost_rows: list[dict[str, Any]] = []
     profitability_cutoff = _candidate_profitability_cutoff(project_root)
+    deduplication: dict[str, int] = {}
 
-    for row in _iter_rows(files):
+    for row in _iter_rows(
+        files,
+        deduplication=deduplication,
+        evidence_through=evidence_through,
+    ):
         ts = _parse_ts(row.get("timestamp_utc"))
         if ts is None:
             continue
@@ -1586,6 +1642,11 @@ def build_paper_performance_report(project_root: Path, *, day: str, week_days: i
         "source_kind": source_kind,
         "source_files_scanned": int(len(files)),
         "source_files": [str(path) for path in files[:10]],
+        "execution_deduplication": {
+            **deduplication,
+            "identity_policy": "execution_id_else_paper_book_and_decision_id_else_content_hash",
+            "canonical_source_priority": ["trade_logs", "root_paper_trades", "paper_broker_bridge"],
+        },
         "active_paper_profile_count_today": int(len(active_shadow_profiles)),
         "active_paper_profiles_today": [dict(active_shadow_profiles[key]) for key in sorted(active_shadow_profiles.keys())],
         "available_days": all_days[-14:],
@@ -1617,8 +1678,10 @@ def build_paper_performance_report(project_root: Path, *, day: str, week_days: i
         "post_cost_expectancy": _post_cost_expectancy(all_post_cost_rows),
         "profitability_evidence_window": {
             "candidate_cutoff_utc": profitability_cutoff.isoformat() if profitability_cutoff is not None else "",
+            "evidence_through_utc": evidence_through.isoformat(),
             "candidate_filter_active": profitability_cutoff is not None,
-            "policy": "post-cost promotion evidence excludes samples before the latest affected candidate scope window",
+            "snapshot_watermark_active": True,
+            "policy": "post-cost promotion evidence excludes samples before the latest affected candidate scope window and defers rows after the published scan watermark",
         },
     }
 

@@ -235,4 +235,10 @@ def test_repository_candidate_scopes_cover_collectors_and_profitability_evidence
     assert project_root / "scripts" / "ops" / "independent_fill_evidence_acquisition.py" in execution_files
     assert project_root / "scripts" / "ops" / "independent_fill_evidence_acquisition.py" in promotion_files
     assert project_root / "scripts" / "multiple_testing_guard.py" in promotion_files
+    assert project_root / "scripts" / "decay_monitor.py" in promotion_files
+    assert project_root / "scripts" / "ops" / "profitability_independent_validator.py" in promotion_files
+    assert project_root / "scripts" / "ops" / "profitability_holdout_vault.py" in promotion_files
+    assert project_root / "scripts" / "ops" / "profitability_benchmark_capture.py" in promotion_files
+    assert project_root / "scripts" / "ops" / "profitability_benchmark_hurdle.py" in promotion_files
+    assert project_root / "core" / "profitability_statistics.py" in promotion_files
     assert project_root / "config" / "profitability_evidence_firewall_v1.json" in promotion_files

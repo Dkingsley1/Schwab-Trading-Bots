@@ -432,3 +432,114 @@ def probability_of_backtest_overfitting(
         "passes": pbo <= 0.20,
         "policy": "CSCV-style in-sample winner ranking on held-out periods; promotion ceiling is PBO <= 0.20",
     }
+
+
+def risk_of_ruin_statistics(
+    daily_pnl: Sequence[float],
+    *,
+    initial_capital: float = 10_000.0,
+    ruin_equity_fraction: float = 0.50,
+    drawdown_budget_fraction: float = 0.10,
+    horizon_days: int = 252,
+    iterations: int = 2_000,
+    block_days: int = 5,
+    minimum_days: int = 30,
+    maximum_ruin_probability: float = 0.01,
+    maximum_drawdown_breach_probability: float = 0.05,
+    seed_material: str = "profitability-risk-of-ruin-v1",
+) -> dict[str, Any]:
+    values = [_safe_float(value, float("nan")) for value in daily_pnl]
+    values = [value for value in values if math.isfinite(value)]
+    required_days = max(int(minimum_days), 2)
+    capital = max(_safe_float(initial_capital, 0.0), 0.0)
+    if len(values) < required_days or capital <= 0.0:
+        blockers = []
+        if len(values) < required_days:
+            blockers.append("minimum_independent_days_pending")
+        if capital <= 0.0:
+            blockers.append("initial_capital_not_positive")
+        return {
+            "available": False,
+            "passes": False,
+            "day_count": len(values),
+            "ruin_probability": None,
+            "drawdown_breach_probability": None,
+            "p99_max_drawdown_fraction": None,
+            "blockers": blockers,
+            "thresholds": {
+                "minimum_days": required_days,
+                "maximum_ruin_probability": max(float(maximum_ruin_probability), 0.0),
+                "maximum_drawdown_breach_probability": max(float(maximum_drawdown_breach_probability), 0.0),
+            },
+        }
+
+    horizon = max(int(horizon_days), 1)
+    run_count = max(int(iterations), 200)
+    block = max(1, min(int(block_days), len(values)))
+    ruin_floor = capital * max(0.0, min(float(ruin_equity_fraction), 1.0))
+    drawdown_budget = max(0.0, min(float(drawdown_budget_fraction), 1.0))
+    seed_payload = json.dumps(
+        {
+            "seed_material": str(seed_material),
+            "daily_pnl": values,
+            "horizon_days": horizon,
+            "block_days": block,
+        },
+        ensure_ascii=True,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    seed = int(hashlib.sha256(seed_payload.encode("utf-8")).hexdigest()[:16], 16)
+    rng = random.Random(seed)
+    max_drawdowns: list[float] = []
+    ruin_count = 0
+    breach_count = 0
+    for _ in range(run_count):
+        sampled: list[float] = []
+        while len(sampled) < horizon:
+            start = rng.randrange(len(values))
+            sampled.extend(values[(start + offset) % len(values)] for offset in range(block))
+        equity = capital
+        peak = capital
+        path_max_drawdown = 0.0
+        ruined = False
+        for pnl in sampled[:horizon]:
+            equity += pnl
+            peak = max(peak, equity)
+            path_max_drawdown = max(path_max_drawdown, (peak - equity) / max(peak, 1e-12))
+            if equity <= ruin_floor:
+                ruined = True
+        max_drawdowns.append(path_max_drawdown)
+        ruin_count += int(ruined)
+        breach_count += int(path_max_drawdown > drawdown_budget)
+
+    ruin_probability = ruin_count / run_count
+    breach_probability = breach_count / run_count
+    p99_drawdown = _percentile(max_drawdowns, 0.99)
+    max_ruin = max(float(maximum_ruin_probability), 0.0)
+    max_breach = max(float(maximum_drawdown_breach_probability), 0.0)
+    passes = bool(ruin_probability <= max_ruin and breach_probability <= max_breach)
+    return {
+        "available": True,
+        "passes": passes,
+        "day_count": len(values),
+        "simulation_count": run_count,
+        "horizon_days": horizon,
+        "block_days": block,
+        "initial_capital": round(capital, 6),
+        "ruin_equity_fraction": round(max(0.0, min(float(ruin_equity_fraction), 1.0)), 6),
+        "drawdown_budget_fraction": round(drawdown_budget, 6),
+        "ruin_probability": round(ruin_probability, 8),
+        "drawdown_breach_probability": round(breach_probability, 8),
+        "p99_max_drawdown_fraction": round(p99_drawdown, 8) if p99_drawdown is not None else None,
+        "blockers": [] if passes else [
+            *(["ruin_probability_above_ceiling"] if ruin_probability > max_ruin else []),
+            *(["drawdown_breach_probability_above_ceiling"] if breach_probability > max_breach else []),
+        ],
+        "thresholds": {
+            "minimum_days": required_days,
+            "maximum_ruin_probability": max_ruin,
+            "maximum_drawdown_breach_probability": max_breach,
+        },
+        "policy": "deterministic moving-block bootstrap estimates capital-floor and drawdown-budget breach risk; insufficient history fails closed",
+    }
