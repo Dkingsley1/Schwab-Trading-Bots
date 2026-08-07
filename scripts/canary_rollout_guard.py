@@ -27,6 +27,7 @@ DEFAULT_CANDIDATE_STATE = PROJECT_ROOT / "governance" / "runtime" / "production_
 DEFAULT_SCAN_STATE = Path("governance/runtime/canary_rollout_scan_state.json")
 DEFAULT_EVIDENCE_CACHE = Path("governance/evidence/canary_rollout_observations.jsonl")
 SCHEMA_VERSION = 3
+PROFITABILITY_SCOPE_IDS = ("strategy", "execution", "risk", "data", "promotion", "dependencies")
 PROFILE_ROWS_SQL = """
     SELECT
       source_rel,
@@ -76,12 +77,28 @@ def _csv(raw: str) -> list[str]:
 def _candidate_binding(path: Path) -> dict[str, Any]:
     payload = load_json(path)
     windows = payload.get("scope_windows_started_utc") if isinstance(payload.get("scope_windows_started_utc"), dict) else {}
-    cutoff = parse_iso_utc(windows.get("promotion"))
+    parsed_windows = {
+        scope_id: parsed
+        for scope_id in PROFITABILITY_SCOPE_IDS
+        if (parsed := parse_iso_utc(windows.get(scope_id))) is not None
+    }
+    cutoff = max(parsed_windows.values()) if parsed_windows else None
+    cutoff_scope_ids = sorted(
+        scope_id for scope_id, started in parsed_windows.items() if cutoff is not None and started == cutoff
+    )
     return {
         "candidate_id": str(payload.get("candidate_id") or "").strip(),
         "generation": int(_safe_float(payload.get("generation"), 0.0)),
         "accepted_git_head": str(payload.get("accepted_git_head") or "").strip(),
-        "promotion_window_started_utc": cutoff.isoformat() if cutoff is not None else "",
+        "promotion_window_started_utc": (
+            parsed_windows["promotion"].isoformat() if "promotion" in parsed_windows else ""
+        ),
+        "profitability_window_started_utc": cutoff.isoformat() if cutoff is not None else "",
+        "profitability_scope_ids": list(PROFITABILITY_SCOPE_IDS),
+        "cutoff_scope_ids": cutoff_scope_ids,
+        "scope_windows_started_utc": {
+            scope_id: started.isoformat() for scope_id, started in sorted(parsed_windows.items())
+        },
         "cutoff": cutoff,
         "bound": bool(str(payload.get("candidate_id") or "").strip() and cutoff is not None),
     }
@@ -233,6 +250,7 @@ def _filesystem_rows(
     *,
     candidate_id: str,
     candidate_generation: int,
+    candidate_cutoff: datetime | None,
     start: datetime,
     end: datetime,
     profiles: list[str],
@@ -240,19 +258,34 @@ def _filesystem_rows(
     evidence_path: Path,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     prior_state = load_json(state_path)
-    binding_changed = bool(
+    normalized_profiles = sorted(ordered_unique(profiles))
+    prior_profiles = sorted(
+        ordered_unique(prior_state.get("profiles") if isinstance(prior_state.get("profiles"), list) else [])
+    )
+    candidate_cutoff_utc = candidate_cutoff.isoformat() if candidate_cutoff is not None else ""
+    candidate_metadata_changed = bool(
         str(prior_state.get("candidate_id") or "") != candidate_id
         or int(_safe_float(prior_state.get("candidate_generation"), 0.0)) != int(candidate_generation)
-        or str(prior_state.get("candidate_cutoff_utc") or "") != start.isoformat()
     )
-    cached_rows = [] if binding_changed else _load_cached_rows(evidence_path)
+    evidence_window_changed = bool(
+        str(prior_state.get("candidate_cutoff_utc") or "") != candidate_cutoff_utc
+        or prior_profiles != normalized_profiles
+    )
+    binding_changed = bool(candidate_metadata_changed or evidence_window_changed)
+    cached_rows = [] if evidence_window_changed else _load_cached_rows(evidence_path)
+    cached_rows_loaded = len(cached_rows)
     cached_rows = [
         row
         for row in cached_rows
         if (timestamp := parse_iso_utc(row.get("timestamp_utc"))) is not None and start <= timestamp <= end
     ]
+    cached_rows_pruned = cached_rows_loaded - len(cached_rows)
     seen = {_row_key(row) for row in cached_rows}
-    prior_files = prior_state.get("files") if isinstance(prior_state.get("files"), dict) and not binding_changed else {}
+    prior_files = (
+        prior_state.get("files")
+        if isinstance(prior_state.get("files"), dict) and not evidence_window_changed
+        else {}
+    )
     next_files: dict[str, Any] = {}
     new_rows: list[dict[str, Any]] = []
     files_seen = 0
@@ -344,8 +377,12 @@ def _filesystem_rows(
         cached_rows + new_rows,
         key=lambda row: (str(row.get("timestamp_utc") or ""), str(row.get("profile") or ""), str(row.get("bot_id") or ""), str(row.get("symbol") or "")),
     )
-    if binding_changed or new_rows or next_files != prior_files:
+    evidence_cache_changed = bool(
+        evidence_window_changed or cached_rows_pruned or new_rows or next_files != prior_files
+    )
+    if evidence_cache_changed:
         _atomic_write_jsonl(evidence_path, rows)
+    if binding_changed or evidence_cache_changed:
         write_payload(
             state_path,
             {
@@ -353,7 +390,9 @@ def _filesystem_rows(
                 "timestamp_utc": datetime.now(timezone.utc).isoformat(),
                 "candidate_id": candidate_id,
                 "candidate_generation": int(candidate_generation),
-                "candidate_cutoff_utc": start.isoformat(),
+                "candidate_cutoff_utc": candidate_cutoff_utc,
+                "effective_scan_started_utc": start.isoformat(),
+                "profiles": normalized_profiles,
                 "files": next_files,
                 "cached_row_count": len(rows),
             },
@@ -361,9 +400,16 @@ def _filesystem_rows(
     return rows, {
         "source": "incremental_jsonl_evidence_cache",
         "binding_changed": binding_changed,
+        "candidate_metadata_changed": candidate_metadata_changed,
+        "evidence_window_changed": evidence_window_changed,
+        "valid_cache_reused_across_candidate_metadata_change": bool(
+            candidate_metadata_changed and not evidence_window_changed
+        ),
         "files_seen": files_seen,
         "files_advanced": files_advanced,
         "bytes_read": bytes_read,
+        "cached_rows_loaded": cached_rows_loaded,
+        "cached_rows_pruned": cached_rows_pruned,
         "cached_rows_before": len(cached_rows),
         "new_rows": len(new_rows),
         "rows_retained": len(rows),
@@ -487,26 +533,29 @@ def build_payload(
         project_root,
         candidate_id=str(binding.get("candidate_id") or ""),
         candidate_generation=int(_safe_float(binding.get("generation"), 0.0)),
+        candidate_cutoff=candidate_cutoff,
         start=start,
         end=end,
         profiles=profiles,
         state_path=effective_scan_state,
         evidence_path=effective_evidence_cache,
     )
-    observed_profiles = {str(row.get("profile") or "") for row in filesystem_rows}
-    missing_profiles: list[str] = []
-    if not observed_profiles.intersection(canary_profiles):
-        missing_profiles.extend(canary_profiles)
-    if not observed_profiles.intersection(baseline_profiles):
-        missing_profiles.extend(baseline_profiles)
-    missing_profiles = ordered_unique(missing_profiles)
+    files_seen_by_profile = (
+        filesystem_scan.get("files_seen_by_profile")
+        if isinstance(filesystem_scan.get("files_seen_by_profile"), dict)
+        else {}
+    )
+    filesystem_source_profiles = {
+        profile for profile in profiles if _safe_int(files_seen_by_profile.get(profile), 0) > 0
+    }
+    missing_profiles = [profile for profile in profiles if profile not in filesystem_source_profiles]
     if missing_profiles:
         db_rows, db_scan = _load_db_rows(db_path, start=start, end=end, profiles=missing_profiles)
     else:
         db_rows, db_scan = [], {
             "source": "sqlite_link_fallback",
             "skipped": True,
-            "reason": "all_profiles_present_in_incremental_jsonl_cache",
+            "reason": "all_profiles_have_authoritative_jsonl_sources",
             "rows_retained_by_profile": {},
         }
     combined: list[dict[str, Any]] = []
@@ -528,6 +577,7 @@ def build_payload(
         + int(db_scan.get("duplicates_removed", 0))
         + cross_source_duplicates,
         "cross_source_duplicates_removed": cross_source_duplicates,
+        "filesystem_source_profiles": sorted(filesystem_source_profiles),
         "policy": "incremental source JSONL is authoritative; the linked SQLite database fills only missing profiles",
     }
     canary_rows = [row for row in rows if str(row.get("profile")) in set(canary_profiles)]
@@ -620,6 +670,9 @@ def build_payload(
             "profile_field_prefers_schema_v2_profile": True,
             "legacy_shadow_profile_fallback": True,
             "candidate_window_enforced": True,
+            "profitability_scope_windows_enforced": list(PROFITABILITY_SCOPE_IDS),
+            "newest_profitability_scope_window_wins": True,
+            "metadata_only_candidate_changes_preserve_valid_scan_state": True,
             "duplicate_observations_excluded": True,
             "raw_row_count_is_not_independent_evidence": True,
             "positive_clustered_edge_lcb_required": True,

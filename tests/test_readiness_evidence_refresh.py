@@ -128,3 +128,33 @@ def test_production_quality_refreshes_health_gates_before_derived_controls() -> 
     assert steps["health_gates"]["script"] == "scripts/health_gates.py"
     assert steps["health_gates"]["max_age_minutes"] <= 60
     assert "health_gates" in steps["production_quality_control"]["depends_on"]
+
+
+def test_runtime_self_awareness_refreshes_in_dependency_order() -> None:
+    steps = {row["name"]: row for row in refresh.default_steps()}
+
+    assert steps["memory_pressure_intelligence"]["max_age_minutes"] <= 15
+    assert steps["autonomic_resource_governor"]["depends_on"] == ["memory_pressure_intelligence"]
+    assert steps["bot_needs_intelligence"]["depends_on"] == ["training_quality_control"]
+    assert set(steps["training_runtime_control"]["depends_on"]) == {
+        "memory_pressure_intelligence",
+        "autonomic_resource_governor",
+        "training_quality_control",
+        "bot_needs_intelligence",
+    }
+    assert "training_runtime_control" in steps["promotion_candidate_advancement"]["depends_on"]
+    assert set(steps["architecture_upgrade_scoreboard"]["depends_on"]) == {
+        "production_excellence",
+        "training_runtime_control",
+        "autonomy_control_plane",
+    }
+    assert set(steps["autonomy_control_plane"]["depends_on"]) == {
+        "production_excellence",
+        "training_runtime_control",
+    }
+    assert set(steps["system_needs_intelligence"]["depends_on"]) == {
+        "readiness_blocker_rollup",
+        "architecture_upgrade_scoreboard",
+        "training_runtime_control",
+        "memory_pressure_intelligence",
+    }

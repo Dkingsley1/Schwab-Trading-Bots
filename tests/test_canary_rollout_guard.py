@@ -108,6 +108,36 @@ def test_schema_v2_profile_rows_are_counted_and_candidate_bound(tmp_path: Path) 
     assert payload["edge_statistics"]["lower_confidence_bound_95"] > 0.0
 
 
+def test_newest_profitability_scope_window_invalidates_older_rows(tmp_path: Path) -> None:
+    db_path = tmp_path / "data" / "jsonl_link.sqlite3"
+    state_path = tmp_path / "governance" / "runtime" / "production_candidate_state.json"
+    _create_db(db_path)
+    _candidate_state(state_path)
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    state["scope_windows_started_utc"]["strategy"] = "2026-08-06T17:00:00+00:00"
+    state_path.write_text(json.dumps(state), encoding="utf-8")
+
+    payload = guard.build_payload(
+        db_path=db_path,
+        candidate_state_path=state_path,
+        end=datetime(2026, 8, 6, 23, 59, tzinfo=timezone.utc),
+        lookback_days=14,
+        canary_profiles=["intraday_aggressive"],
+        baseline_profiles=["conservative"],
+        minimum_samples=1,
+        minimum_days=1,
+        minimum_symbols=1,
+        minimum_effective_samples=1.0,
+        minimum_edge_delta=0.0,
+    )
+
+    assert payload["candidate_binding"]["profitability_window_started_utc"] == "2026-08-06T17:00:00+00:00"
+    assert payload["candidate_binding"]["cutoff_scope_ids"] == ["strategy"]
+    assert payload["evidence_window"]["started_utc"] == "2026-08-06T17:00:00+00:00"
+    assert payload["canary_samples"] == 0
+    assert payload["baseline_samples"] == 0
+
+
 def test_missing_candidate_binding_fails_closed(tmp_path: Path) -> None:
     db_path = tmp_path / "data" / "jsonl_link.sqlite3"
     _create_db(db_path)
@@ -247,6 +277,38 @@ def test_live_jsonl_is_cached_incrementally_without_duplicate_rows(tmp_path: Pat
     assert second["scan"]["primary"]["cached_rows_before"] == 2
     assert second["scan"]["primary"]["new_rows"] == 1
     assert len(evidence_path.read_text(encoding="utf-8").splitlines()) == 3
+
+    candidate = json.loads(state_path.read_text(encoding="utf-8"))
+    candidate["candidate_id"] = "pc-test-g2"
+    candidate["generation"] = 2
+    state_path.write_text(json.dumps(candidate), encoding="utf-8")
+
+    metadata_only = guard.build_payload(**kwargs)
+
+    assert metadata_only["canary_samples"] == 2
+    assert metadata_only["baseline_samples"] == 1
+    assert metadata_only["scan"]["primary"]["binding_changed"] is True
+    assert metadata_only["scan"]["primary"]["candidate_metadata_changed"] is True
+    assert metadata_only["scan"]["primary"]["evidence_window_changed"] is False
+    assert metadata_only["scan"]["primary"]["valid_cache_reused_across_candidate_metadata_change"] is True
+    assert metadata_only["scan"]["primary"]["cached_rows_before"] == 3
+    assert metadata_only["scan"]["primary"]["new_rows"] == 0
+    assert metadata_only["scan"]["primary"]["bytes_read"] == 0
+
+    moving_lookback = guard.build_payload(
+        **{
+            **kwargs,
+            "end": datetime(2026, 8, 20, 23, 59, tzinfo=timezone.utc),
+        }
+    )
+
+    assert moving_lookback["scan"]["primary"]["evidence_window_changed"] is False
+    assert moving_lookback["scan"]["primary"]["cached_rows_loaded"] == 3
+    assert moving_lookback["scan"]["primary"]["cached_rows_pruned"] == 3
+    assert moving_lookback["scan"]["primary"]["bytes_read"] == 0
+    assert moving_lookback["scan"]["fallback"]["skipped"] is True
+    assert moving_lookback["scan"]["filesystem_source_profiles"] == ["conservative", "intraday_aggressive"]
+    assert evidence_path.read_text(encoding="utf-8") == ""
 
 
 def test_previous_host_date_partition_is_scanned_across_utc_midnight(tmp_path: Path) -> None:

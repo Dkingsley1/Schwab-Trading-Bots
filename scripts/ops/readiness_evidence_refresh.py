@@ -52,6 +52,52 @@ def _step(
 def default_steps() -> list[dict[str, Any]]:
     return [
         _step(
+            "memory_pressure_intelligence",
+            "scripts/ops/memory_pressure_intelligence.py",
+            "governance/health/memory_pressure_intelligence_latest.json",
+            "--apply",
+            "--json",
+            max_age_minutes=15,
+        ),
+        _step(
+            "autonomic_resource_governor",
+            "scripts/ops/autonomic_resource_governor.py",
+            "governance/health/autonomic_resource_governor_latest.json",
+            "--apply",
+            "--json",
+            max_age_minutes=15,
+            depends_on=("memory_pressure_intelligence",),
+        ),
+        _step(
+            "training_quality_control",
+            "scripts/ops/training_quality_control.py",
+            "governance/health/training_quality_control_latest.json",
+            "--json",
+            max_age_minutes=15,
+            allowed_returncodes=(0, 2),
+        ),
+        _step(
+            "bot_needs_intelligence",
+            "scripts/ops/bot_needs_intelligence.py",
+            "governance/health/bot_needs_intelligence_latest.json",
+            "--json",
+            max_age_minutes=15,
+            depends_on=("training_quality_control",),
+        ),
+        _step(
+            "training_runtime_control",
+            "scripts/ops/training_runtime_control.py",
+            "governance/health/training_runtime_control_latest.json",
+            "--json",
+            max_age_minutes=15,
+            depends_on=(
+                "memory_pressure_intelligence",
+                "autonomic_resource_governor",
+                "training_quality_control",
+                "bot_needs_intelligence",
+            ),
+        ),
+        _step(
             "independent_fill_acquisition",
             "scripts/ops/independent_fill_evidence_acquisition.py",
             "governance/health/independent_fill_evidence_acquisition_latest.json",
@@ -172,7 +218,7 @@ def default_steps() -> list[dict[str, Any]]:
             "governance/health/promotion_candidate_advancement_latest.json",
             "--json",
             max_age_minutes=60,
-            depends_on=("walk_forward_coverage_seed",),
+            depends_on=("walk_forward_coverage_seed", "training_runtime_control"),
         ),
         _step(
             "promotion_quality_gate",
@@ -283,6 +329,24 @@ def default_steps() -> list[dict[str, Any]]:
             depends_on=("live_money_readiness", "canary_rollout", "profitability_evidence_firewall"),
         ),
         _step(
+            "autonomy_control_plane",
+            "scripts/ops/autonomy_control_plane.py",
+            "governance/health/autonomy_control_plane_latest.json",
+            "--json",
+            max_age_minutes=30,
+            allowed_returncodes=(0, 2),
+            depends_on=("production_excellence", "training_runtime_control"),
+        ),
+        _step(
+            "architecture_upgrade_scoreboard",
+            "scripts/ops/architecture_upgrade_scoreboard.py",
+            "governance/health/architecture_upgrade_scoreboard_latest.json",
+            "--json",
+            max_age_minutes=30,
+            allowed_returncodes=(0, 2),
+            depends_on=("production_excellence", "training_runtime_control", "autonomy_control_plane"),
+        ),
+        _step(
             "readiness_evidence_accrual",
             "scripts/ops/readiness_evidence_accrual.py",
             "governance/health/readiness_evidence_accrual_latest.json",
@@ -296,6 +360,19 @@ def default_steps() -> list[dict[str, Any]]:
             "governance/health/readiness_blocker_rollup_latest.json",
             "--json",
             depends_on=("readiness_evidence_accrual", "production_quality_slo"),
+        ),
+        _step(
+            "system_needs_intelligence",
+            "scripts/ops/system_needs_intelligence.py",
+            "governance/health/system_needs_intelligence_latest.json",
+            "--json",
+            max_age_minutes=15,
+            depends_on=(
+                "readiness_blocker_rollup",
+                "architecture_upgrade_scoreboard",
+                "training_runtime_control",
+                "memory_pressure_intelligence",
+            ),
         ),
     ]
 

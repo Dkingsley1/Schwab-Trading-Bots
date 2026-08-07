@@ -1,5 +1,5 @@
 {
-  "generated_at_utc": "2026-08-07T00:14:25.108944+00:00",
+  "generated_at_utc": "2026-08-07T02:21:01.136845+00:00",
   "bot_summary": {
     "total_registered": 1781,
     "active_count": 1780,
@@ -52,199 +52,109 @@
     ]
   },
   "lane_summary": {
-    "lane_count": 32,
-    "running_count": 0,
+    "lane_count": 17,
+    "running_count": 2,
     "lanes": [
       {
         "lane": "aggressive_equities_schwab",
         "loop_state": "paused_runtime_training",
-        "iter": 629,
+        "iter": 725,
         "api_error": 0
       },
       {
         "lane": "bond_equities_schwab",
-        "loop_state": "paused_runtime_training",
-        "iter": 2289,
-        "api_error": 0
-      },
-      {
-        "lane": "cash_rotation_tactical_equities_schwab",
-        "loop_state": "paused_runtime_training",
-        "iter": 1489,
-        "api_error": 0
-      },
-      {
-        "lane": "commodity_inflation_equities_schwab",
-        "loop_state": "resume_stagger",
-        "iter": 1260,
+        "loop_state": "paused_session_gate",
+        "iter": 2349,
         "api_error": 0
       },
       {
         "lane": "conservative_equities_schwab",
-        "loop_state": "paused_runtime_training",
-        "iter": 3191,
-        "api_error": 0
-      },
-      {
-        "lane": "crypto_futures_basis_equities_schwab",
-        "loop_state": "paused_runtime_training",
-        "iter": 1412,
+        "loop_state": "resume_stagger",
+        "iter": 3322,
         "api_error": 0
       },
       {
         "lane": "crypto_futures_crypto_coinbase",
-        "loop_state": "paused_runtime_training",
-        "iter": 5236,
+        "loop_state": "running",
+        "iter": 5316,
         "api_error": 0
       },
       {
         "lane": "default_crypto_coinbase",
-        "loop_state": "paused_runtime_training",
-        "iter": 4101,
+        "loop_state": "running",
+        "iter": 4146,
         "api_error": 0
       },
       {
         "lane": "dividend_capture_equities_schwab",
-        "loop_state": "paused_runtime_training",
-        "iter": 395,
+        "loop_state": "paused_session_gate",
+        "iter": 466,
         "api_error": 0
       },
       {
         "lane": "dividend_equities_schwab",
-        "loop_state": "paused_runtime_training",
-        "iter": 2486,
-        "api_error": 0
-      },
-      {
-        "lane": "earnings_event_equities_schwab",
-        "loop_state": "paused_runtime_training",
-        "iter": 1273,
-        "api_error": 0
-      },
-      {
-        "lane": "futures_commodity_macro_equities_schwab",
-        "loop_state": "resume_stagger",
-        "iter": 1386,
-        "api_error": 0
-      },
-      {
-        "lane": "futures_event_reaction_equities_schwab",
-        "loop_state": "resume_stagger",
-        "iter": 1290,
-        "api_error": 0
-      },
-      {
-        "lane": "futures_index_intraday_equities_schwab",
-        "loop_state": "resume_stagger",
-        "iter": 641,
-        "api_error": 0
-      },
-      {
-        "lane": "futures_rates_curve_equities_schwab",
-        "loop_state": "paused_runtime_training",
-        "iter": 1443,
+        "loop_state": "paused_session_gate",
+        "iter": 2560,
         "api_error": 0
       },
       {
         "lane": "fx_equities_schwab",
         "loop_state": "forex_session_context_only",
-        "iter": 43,
-        "api_error": 0
-      },
-      {
-        "lane": "international_macro_equities_schwab",
-        "loop_state": "paused_runtime_training",
-        "iter": 1645,
+        "iter": 211,
         "api_error": 0
       },
       {
         "lane": "intraday_aggressive_equities_schwab",
         "loop_state": "split_running",
-        "iter": 2379,
+        "iter": 2540,
         "api_error": 0
       },
       {
         "lane": "intraday_aggressive_equities_schwab_core_volatile",
-        "loop_state": "paused_runtime_training",
-        "iter": 2379,
+        "loop_state": "resume_stagger",
+        "iter": 2540,
         "api_error": 0
       },
       {
         "lane": "intraday_aggressive_equities_schwab_defensive",
-        "loop_state": "paused_runtime_training",
-        "iter": 2379,
-        "api_error": 0
-      },
-      {
-        "lane": "market_making_liquidity_equities_schwab",
         "loop_state": "resume_stagger",
-        "iter": 1304,
-        "api_error": 0
-      },
-      {
-        "lane": "options_on_futures_aggressive_equities_schwab",
-        "loop_state": "paused_runtime_training",
-        "iter": 1385,
-        "api_error": 0
-      },
-      {
-        "lane": "pairs_correlation_equities_schwab",
-        "loop_state": "paused_runtime_training",
-        "iter": 1202,
-        "api_error": 0
-      },
-      {
-        "lane": "rates_credit_macro_equities_schwab",
-        "loop_state": "resume_stagger",
-        "iter": 500,
+        "iter": 2537,
         "api_error": 0
       },
       {
         "lane": "schwab_futures_equities_schwab",
-        "loop_state": "paused_runtime_training",
-        "iter": 1857,
+        "loop_state": "paused_session_gate",
+        "iter": 2065,
         "api_error": 0
       },
       {
         "lane": "short_bias_hedge_equities_schwab",
         "loop_state": "paused_session_gate",
-        "iter": 21,
-        "api_error": 0
-      },
-      {
-        "lane": "single_name_options_event_equities_schwab",
-        "loop_state": "paused_runtime_training",
-        "iter": 1434,
+        "iter": 57,
         "api_error": 0
       },
       {
         "lane": "stat_arb_market_neutral_equities_schwab",
-        "loop_state": "paused_runtime_training",
-        "iter": 22,
+        "loop_state": "paused_session_gate",
+        "iter": 55,
         "api_error": 0
       },
       {
         "lane": "swing_aggressive_equities_schwab",
         "loop_state": "split_running",
-        "iter": 1076,
+        "iter": 1154,
         "api_error": 0
       },
       {
         "lane": "swing_aggressive_equities_schwab_core_volatile",
-        "loop_state": "paused_runtime_training",
-        "iter": 1076,
+        "loop_state": "paused_session_gate",
+        "iter": 1154,
         "api_error": 0
       },
       {
         "lane": "swing_aggressive_equities_schwab_defensive",
-        "loop_state": "paused_runtime_training",
-        "iter": 1074,
-        "api_error": 0
-      },
-      {
-        "lane": "volatility_equities_schwab",
-        "loop_state": "resume_stagger",
-        "iter": 1315,
+        "loop_state": "paused_session_gate",
+        "iter": 1135,
         "api_error": 0
       }
     ]
@@ -406,7 +316,7 @@
       }
     },
     "correlation": {
-      "timestamp_utc": "2026-08-07T00:01:12.302865+00:00",
+      "timestamp_utc": "2026-08-07T02:16:32.272965+00:00",
       "schema_version": 2,
       "ok": true,
       "status": "skipped",
@@ -496,8 +406,8 @@
       "score": 92.0
     },
     "live_status": "blocked",
-    "live_score": 92.86,
-    "live_ready_section_count": 13,
+    "live_score": 85.71,
+    "live_ready_section_count": 12,
     "live_required_section_count": 14,
     "live_money_locked": true,
     "runtime_smoke_status": "ready",
@@ -515,7 +425,7 @@
     "failure_count": 0,
     "reason": "trained_ok_but_not_promotable:skipped_by_flag",
     "failure_reason": "trained_ok_but_not_promotable:skipped_by_flag",
-    "age_hours": 114.20682215222222,
+    "age_hours": 116.31682990638889,
     "likely_environment_mismatch": false
   },
   "pytorch_summary": {
@@ -530,7 +440,7 @@
   },
   "autonomy_summary": {
     "overall_status": "blocked",
-    "autonomy_score": 91.05,
+    "autonomy_score": 91.41,
     "playbook_count": 1,
     "open_incident_count": 0,
     "promotion_state": "repairing_readiness",
@@ -538,7 +448,7 @@
   },
   "architecture_summary": {
     "upgrade_count": 12,
-    "ready_count": 10,
+    "ready_count": 11,
     "portable_host_profile": "max_throughput",
     "portable_proof_status": "ready",
     "switchboard_active_modes": 3,
@@ -549,9 +459,9 @@
   },
   "special_features": {
     "adaptive_apple_silicon_brain": "Adaptive Apple Silicon Brain: host-aware tuning now recognizes `Apple M1 Max`, sees memory architecture `unified`, and lands on `max_throughput` before the stack starts.",
-    "three_mode_switchboard": "Three-Mode Switchboard: mission control now tracks shadow/paper/live with `3` active modes and runtime clearance `managed_cold_lane_deferred`.",
+    "three_mode_switchboard": "Three-Mode Switchboard: mission control now tracks shadow/paper/live with `3` active modes and runtime clearance `guarded_live_read_only`.",
     "event_to_trade_intelligence": "Event-to-Trade Intelligence: the macro lane now surfaces live-detection and media ingest proof as `ready` with `relevance=high transcript_quality=live_excerpt media_status=missing idle_ready=0`.",
-    "self_healing_ops_plane": "Self-Healing Ops Plane: autonomy currently sits at `91.05/100` with `1` triggered playbooks.",
+    "self_healing_ops_plane": "Self-Healing Ops Plane: autonomy currently sits at `91.41/100` with `1` triggered playbooks.",
     "portable_brain_contract": "Portable Brain Contract: the host contract now recommends `native` mode with proof-node status `ready`, backend `pytorch`, and parity focus `mlx_vs_portable_replay` while keeping the broker/runtime seam portable."
   },
   "special_feature_details": {
@@ -570,7 +480,7 @@
     },
     "three_mode_switchboard": {
       "label": "Three-Mode Switchboard",
-      "summary": "Three-Mode Switchboard: mission control now tracks shadow/paper/live with `3` active modes and runtime clearance `managed_cold_lane_deferred`.",
+      "summary": "Three-Mode Switchboard: mission control now tracks shadow/paper/live with `3` active modes and runtime clearance `guarded_live_read_only`.",
       "why_it_matters": "This is the control surface that keeps the same trading brain coherent across shadow, paper, and live instead of forcing three separate systems to drift apart over time.",
       "current_watch_item": "Runtime clearance is still `guarded_live_read_only`, which means the switchboard is operationally honest about when live should stay read-only.",
       "proof_points": [
@@ -592,11 +502,11 @@
     },
     "self_healing_ops_plane": {
       "label": "Self-Healing Ops Plane",
-      "summary": "Self-Healing Ops Plane: autonomy currently sits at `91.05/100` with `1` triggered playbooks.",
+      "summary": "Self-Healing Ops Plane: autonomy currently sits at `91.41/100` with `1` triggered playbooks.",
       "why_it_matters": "It is the difference between a platform that merely runs and one that can diagnose pressure, throttle itself, freeze bad lanes, and preserve operator trust while the rest of the stack keeps moving.",
       "current_watch_item": "Incident review is currently `ready`, so the self-healing story is strong but still not fully frictionless.",
       "proof_points": [
-        "Autonomy score is `91.05/100` with `4` autonomous repair paths.",
+        "Autonomy score is `91.41/100` with `5` autonomous repair paths.",
         "Triggered playbooks: `1`; notification ladder `ready`; incident review `ready`.",
         "Process watchdog shows `4/4` healthy targets and `0` restart storms; chaos drill score `100.00`."
       ]
@@ -617,12 +527,12 @@
   },
   "highlights": [
     "Registry currently tracks 1781 bots with 1780 active across crypto_sub_bot, futures_sub_bot, infrastructure_bot, infrastructure_sub_bot, macro_sub_bot, options_sub_bot, signal_sub_bot lanes.",
-    "Live ingestion is wired across 32 lane artifacts with 0 currently reporting `running`.",
+    "Live ingestion is wired across 17 lane artifacts with 2 currently reporting `running`.",
     "Institutional-readiness score is `99.33/100` with status `industry_leaning` across 12 governance domains.",
-    "Live-money readiness is `blocked` with `13/14` required sections and live locked=`True`; runtime smoke is `ready` at `100.00/100`, with broker/session ready=`True/True` and watchdog healthy=`True`.",
+    "Live-money readiness is `blocked` with `12/14` required sections and live locked=`True`; runtime smoke is `ready` at `100.00/100`, with broker/session ready=`True/True` and watchdog healthy=`True`.",
     "Runtime separation is `ready` with contention score `2` and live-read-only=`True`.",
-    "Autonomy control plane is `blocked` at `91.05/100`, with `1` triggered playbooks, `0` open incidents, and promotion state `repairing_readiness`.",
-    "Architecture upgrade scoreboard tracks `10` ready proof surfaces out of `12`, with host profile `max_throughput` and portable proof `ready`.",
+    "Autonomy control plane is `blocked` at `91.41/100`, with `1` triggered playbooks, `0` open incidents, and promotion state `repairing_readiness`.",
+    "Architecture upgrade scoreboard tracks `11` ready proof surfaces out of `12`, with host profile `max_throughput` and portable proof `ready`.",
     "Crypto context is aggregating 16/18 healthy sources and 7/7 healthy crypto news feeds.",
     "Latest divergence check is `ok=True` with worst relative spread 0.03%.",
     "Market/crypto correlation overlay is running in `exact` mode with 0 aligned pairs and cache hits/misses 0/0.",

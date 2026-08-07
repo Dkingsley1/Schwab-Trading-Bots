@@ -51,11 +51,11 @@ As of **2026-08-06**, the system is operating as a guarded paper-trading and dat
 
 | Surface | Current evidence | Meaning |
 | --- | --- | --- |
-| Formal live-money readiness | `13/14` required sections at the required floor | `paper_profitability_control` is the remaining below-floor section, currently economic-evidence grade `F` |
+| Formal live-money readiness | authoritative count in `governance/health/live_money_readiness_contract_latest.json` | any economic, training-quality, promotion, or runtime section below its required floor remains an explicit blocker |
 | Profitability evidence firewall | control grade `A+` (`20/20` implemented); current economic-evidence grade `F` | all ten future-profitability hardeners are implemented; candidate-bound evidence counts update on each refresh and cannot be relabeled |
-| Six-pillar transition runway | `5/6` pillars ready | `paper_truth` remains blocked only by profitability evidence |
-| Production-excellence proof | `4/10` pillars fully evidenced | elapsed soak, independent fills, qualified candidates, profitability breadth, paper-canary cohorts, and final operating proof still need evidence |
-| Frozen candidate | `pc-a439f13eba9f-g19`, generation `19`, no detected drift | operations and promotion windows restarted after the accepted accounting-watermark hardener on `2026-08-07 00:12 UTC`; the strategy window retains its earlier start |
+| Six-pillar transition runway | authoritative count in `governance/health/live_canary_readiness_contract_latest.json` | every pillar keeps its own blockers and evidence floor; no headline health grade substitutes for them |
+| Production-excellence proof | authoritative count in `governance/health/production_excellence_control_latest.json` | only candidate-bound, independently evidenced pillars count; elapsed time and missing evidence cannot be relabeled |
+| Frozen candidate | content fingerprint, generation, accepted Git head, and scope clocks in `governance/runtime/production_candidate_state.json` | reviewed scope changes restart only the affected evidence windows; unaccepted drift fails closed |
 | Recovery | `10/10` isolated, non-destructive recovery drills pass | auth, broker network, process, reboot, disk, storage, memory, database, market-data, and order-lifecycle failures are covered |
 | Storage continuity | pinned local-durable route with online SQLite snapshots | snapshots can be taken while active database writers remain online |
 
@@ -82,9 +82,9 @@ Key operating upgrades:
 - Schwab interactive auth defaults to Chrome for the browser consent flow and records the requested/resolved browser in the auth refresh artifact.
 - Frozen release bundles keep serving read-only and isolated from retraining; constrained training can defer safely without invalidating the active model.
 - Candidate state, promotion evidence, and reconciliation artifacts use atomic or content-addressed writes so partial files cannot silently become readiness proof.
-- Canary rollout evidence now reads the schema-v2 `profile` field, binds every observation to the frozen candidate window, scans adjacent host/UTC date partitions, reports source coverage for both cohorts, removes duplicates, and requires multi-day clustered confidence before promotion.
+- Canary rollout evidence now reads the schema-v2 `profile` field, binds every observation to the newest strategy/execution/risk/data/promotion/dependency scope window, preserves valid incremental scan state across metadata-only candidate generations, scans adjacent host/UTC date partitions, reports source coverage for both cohorts, removes duplicates, and requires multi-day clustered confidence before promotion.
 - Independent fill calibration has a provenance-gated intake and content-addressed evidence ledger; expected-fill-model rows cannot be relabeled as external truth.
-- The production hardening watch runs a bounded readiness refresh every 15 minutes, refreshes health gates before derived production controls, distinguishes stalled producers from missing prerequisites or inactive schedules, rebases counters when a producer changes candidate/window binding, fails closed on true same-candidate counter regression, and rolls repeated grade symptoms up to their causal blocker.
+- The production hardening watch runs a bounded readiness refresh every 15 minutes, refreshes memory, the resource governor, training quality, bot-needs selection, and training runtime before promotion work, refreshes health gates before derived production controls, regenerates autonomy, architecture, and system-needs intelligence after the evidence rollup, distinguishes stalled producers from missing prerequisites or inactive schedules, rebases counters when a producer changes candidate/window binding, fails closed on true same-candidate counter regression, and rolls repeated grade symptoms up to their causal blocker.
 - Staged promotion candidates flow through a runtime-governed queue: training-ready bots receive held-out walk-forward work, while sample-starved bots return to labeled collection.
 - Storage disaster recovery uses SQLite's online backup path for active databases and verifies the promoted model bundle needed for restart.
 - The production recovery harness exercises ten bounded failure classes and records containment, duplicate-order prevention, recovery time, and evidence hashes.
@@ -110,6 +110,14 @@ The important generated artifacts are:
 - `governance/health/readiness_evidence_refresh_latest.json`: bounded evidence-refresh execution, timeouts, and producer failures.
 - `governance/health/readiness_evidence_accrual_latest.json`: candidate-bound progress, observed rates, honest ETAs, producer prerequisites/schedules, and stalled or regressed evidence counters.
 - `governance/health/readiness_blocker_rollup_latest.json`: unique causal blockers and their downstream grade/readiness surfaces.
+- `governance/health/memory_pressure_intelligence_latest.json`: current host headroom, reconciled swap pressure, safe worker caps, and autonomous override posture.
+- `governance/health/autonomic_resource_governor_latest.json`: current host budgets and guarded workload widths derived from memory and foreground pressure.
+- `governance/health/training_quality_control_latest.json`: current diagnostic, supportability, lineage, probation, and quality-recovery posture.
+- `governance/health/bot_needs_intelligence_latest.json`: fresh per-bot repair stages and the authoritative training candidate selector.
+- `governance/health/training_runtime_control_latest.json`: fresh training eligibility, resource gates, cache posture, and bounded precompute targets.
+- `governance/health/autonomy_control_plane_latest.json`: fresh recovery-path, incident, coverage, promotion, and canary autonomy posture.
+- `governance/health/architecture_upgrade_scoreboard_latest.json`: current proof status for architecture capabilities and recovery controls.
+- `governance/health/system_needs_intelligence_latest.json`: dependency-ordered actions derived after runtime and readiness evidence are refreshed.
 - `governance/health/independent_fill_evidence_acquisition_latest.json`: provenance checks, accepted fill ledger count, conflicts, and rejected evidence.
 - `governance/health/canary_rollout_latest.json`: candidate-bound canary/baseline source coverage, cohort statistics, and conservative edge confidence bound.
 - `governance/runtime/production_candidate_state.json`: accepted candidate fingerprint, generation, and per-scope evidence-window starts.
@@ -132,14 +140,14 @@ The important generated artifacts are:
 ## Auto-Refreshed Highlights
 
 <!-- SHOWCASE_HIGHLIGHTS_START -->
-_Generated at 2026-08-07 00:14 UTC_
+_Generated at 2026-08-07 02:21 UTC_
 
 - Active registry lineup: `1780` of `1781` bots are active.
-- Live collection snapshot: `0/32` lane artifacts are reporting `running`.
+- Live collection snapshot: `2/17` lane artifacts are reporting `running`.
 - Institutional readiness: `99.33/100` with status `industry_leaning`.
-- Live/runtime posture: live-money gate `blocked` at `13/14` required sections with live locked `True`; runtime smoke `ready` at `100.00/100`; runtime separation `ready`.
-- Autonomy posture: `91.05/100` with status `blocked`, playbooks `1`, open incidents `0`.
-- Architecture upgrades: `10/12` ready proof surfaces, host profile `max_throughput`, portable proof `ready`.
+- Live/runtime posture: live-money gate `blocked` at `12/14` required sections with live locked `True`; runtime smoke `ready` at `100.00/100`; runtime separation `ready`.
+- Autonomy posture: `91.41/100` with status `blocked`, playbooks `1`, open incidents `0`.
+- Architecture upgrades: `11/12` ready proof surfaces, host profile `max_throughput`, portable proof `ready`.
 - Crypto context: `16/18` healthy sources and `7/7` healthy news feeds.
 - Correlation overlay: mode `exact`, aligned pairs `0`.
 - PyTorch sidecar: `0` active assist candidates across `0` tracked runs.
