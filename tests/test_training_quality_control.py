@@ -1430,6 +1430,41 @@ def test_build_payload_promotes_staged_supportability_and_strong_coverage_queue(
     assert payload["rollout"]["coverage_quality_ready_count"] == 4
 
 
+def test_build_payload_counts_full_contained_stale_roster_beyond_preview_cap(tmp_path: Path) -> None:
+    now = datetime.now(timezone.utc)
+    health_root = tmp_path / "governance" / "health"
+    bot_ids = [f"bot_{idx}" for idx in range(100)]
+    _write_json(
+        health_root / "training_registry_audit_latest.json",
+        {
+            "registry_active_bots": 100,
+            "registry_supportability_active_bots": 100,
+            "supportability_counts": {"isolated_quality_probation": 100},
+            "tier_counts": {"active_stale": 100},
+            "active_stale_diagnostics_bot_ids": bot_ids,
+            "active_stale_diagnostics": [{"bot_id": bot_id} for bot_id in bot_ids[:25]],
+            "active_quality_failed_bot_ids": [],
+            "active_quality_failed": [],
+            "active_quality_probation_isolated_bot_ids": bot_ids,
+            "active_quality_probation_isolated": [{"bot_id": bot_id} for bot_id in bot_ids[:25]],
+            "active_unsupported_stale_diagnostics_bot_ids": [],
+        },
+    )
+    _write_json(
+        health_root / "runtime_training_snapshot_latest.json",
+        {"timestamp_utc": now.isoformat(), "row_count": 1000, "sequence_count": 100},
+    )
+
+    payload = src.build_payload(tmp_path)
+    improvement_by_key = {row["key"]: row for row in payload["improvements"]}
+
+    assert payload["supportability"]["active_supportability_score"] == 100.0
+    assert payload["supportability"]["quality_probation_isolated_bot_count"] == 100
+    assert improvement_by_key["active_probation_isolation"]["status"] == "ready"
+    assert improvement_by_key["active_diagnostic_sla"]["status"] == "ready"
+    assert improvement_by_key["stale_active_diagnostics"]["status"] == "ready"
+
+
 def test_build_payload_uses_stronger_provisional_accuracy_floor(tmp_path: Path) -> None:
     now = datetime.now(timezone.utc)
     health_root = tmp_path / "governance" / "health"

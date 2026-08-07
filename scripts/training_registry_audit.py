@@ -176,6 +176,11 @@ def _supportability_for_row(row: dict[str, Any], *, snapshot_ready: bool = False
     training_isolated = bool(row.get("training_excluded", False) or row.get("exclude_from_training", False))
     best_quality_score = _best_score(row.get("registry_quality_score"), row.get("candidate_quality_score"))
     best_test_accuracy = _best_score(row.get("registry_test_accuracy"), row.get("candidate_test_accuracy"))
+    cause = str(row.get("inferred_cause") or "")
+    if training_isolated and cause in {"shared_runtime_input_gap", "sequence_depth_gap"}:
+        return "isolated_runtime_input_debt"
+    if training_isolated and cause == "quality_guard_failure":
+        return "isolated_quality_probation"
     if not bool(row.get("diagnostic_fresh", False)):
         if (
             bool(row.get("model_artifact_exists", False))
@@ -200,11 +205,6 @@ def _supportability_for_row(row: dict[str, Any], *, snapshot_ready: bool = False
         ):
             return "registry_seeded_active"
         return "unsupported_stale_diagnostics"
-    cause = str(row.get("inferred_cause") or "")
-    if training_isolated and cause in {"shared_runtime_input_gap", "sequence_depth_gap"}:
-        return "isolated_runtime_input_debt"
-    if training_isolated and cause == "quality_guard_failure":
-        return "isolated_quality_probation"
     if cause in {"shared_runtime_input_gap", "sequence_depth_gap"}:
         return "unsupported_runtime_inputs"
     if cause in {"sample_filter_too_strict", "confidence_gate_too_strict", "label_builder_too_strict", "label_balance_gap", "dataset_floor_gap"}:
@@ -344,6 +344,11 @@ def build_audit_payload(
     active_stale_diagnostics_rows = [
         row for row in supportability_active_rows if not bool(row.get("diagnostic_fresh", False))
     ]
+    active_unsupported_stale_diagnostics_rows = [
+        row
+        for row in active_stale_diagnostics_rows
+        if str(row.get("supportability_status") or "") == "unsupported_stale_diagnostics"
+    ]
     active_registry_seeded_rows = [
         row for row in supportability_active_rows if str(row.get("supportability_status") or "") == "registry_seeded_active"
     ]
@@ -386,6 +391,9 @@ def build_audit_payload(
         "active_stale_diagnostics_count": len(active_stale_diagnostics_rows),
         "active_stale_diagnostics_bot_ids": _ids(active_stale_diagnostics_rows),
         "active_stale_diagnostics": active_stale_diagnostics_rows[:25],
+        "active_unsupported_stale_diagnostics_count": len(active_unsupported_stale_diagnostics_rows),
+        "active_unsupported_stale_diagnostics_bot_ids": _ids(active_unsupported_stale_diagnostics_rows),
+        "active_unsupported_stale_diagnostics": active_unsupported_stale_diagnostics_rows[:25],
         "active_collection_only": collection_only_active_rows[:25],
         "active_registry_seeded_count": len(active_registry_seeded_rows),
         "active_registry_seeded_bot_ids": _ids(active_registry_seeded_rows),

@@ -349,7 +349,7 @@ def test_bot_quality_autopilot_keeps_planned_queue_advisory_when_quality_is_clea
     assert payload["quality_blockers"]["planned_queue_count"] == 1
 
 
-def test_bot_quality_autopilot_refreshes_registry_audit_before_quality_control(monkeypatch, tmp_path: Path) -> None:
+def test_bot_quality_autopilot_refreshes_dependencies_before_supportability(monkeypatch, tmp_path: Path) -> None:
     project_root = tmp_path / "project"
     health = project_root / "governance" / "health"
     _write_json(health / "training_quality_control_latest.json", {"overall_status": "blocked", "targeted_actions": {}})
@@ -371,7 +371,8 @@ def test_bot_quality_autopilot_refreshes_registry_audit_before_quality_control(m
     joined = [" ".join(cmd) for cmd in calls]
     registry_index = next(idx for idx, text in enumerate(joined) if "training_registry_audit.py" in text)
     quality_index = next(idx for idx, text in enumerate(joined) if "training_quality_control.py" in text)
-    assert registry_index < quality_index
+    supportability_index = next(idx for idx, text in enumerate(joined) if "supportability_control.py" in text)
+    assert registry_index < quality_index < supportability_index
 
 
 def test_infrastructure_autofix_bot_builds_safe_apply_plan(tmp_path: Path) -> None:

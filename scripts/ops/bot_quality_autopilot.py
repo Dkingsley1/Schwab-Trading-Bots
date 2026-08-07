@@ -374,8 +374,8 @@ def build_payload(
                 [str(PYTHON_BIN), str(project_root / "scripts" / "ops" / "training_requalification_lane.py"), "--write-queue", "--json"],
                 [str(PYTHON_BIN), str(project_root / "scripts" / "ops" / "walk_forward_coverage_seed.py"), "--write-queue", "--json"],
                 [str(PYTHON_BIN), str(project_root / "scripts" / "training_registry_audit.py"), "--json"],
-                [str(PYTHON_BIN), str(project_root / "scripts" / "ops" / "supportability_control.py"), "--json"],
                 [str(PYTHON_BIN), str(project_root / "scripts" / "ops" / "training_quality_control.py"), "--json"],
+                [str(PYTHON_BIN), str(project_root / "scripts" / "ops" / "supportability_control.py"), "--json"],
             ]
         )
         for cmd in apply_steps:

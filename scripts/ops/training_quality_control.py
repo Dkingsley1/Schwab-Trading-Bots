@@ -135,6 +135,20 @@ def ordered_unique(rows: List[str]) -> List[str]:
     return out
 
 
+def _audit_bot_ids(audit: dict[str, Any], ids_key: str, rows_key: str) -> list[str]:
+    raw_ids = audit.get(ids_key)
+    if isinstance(raw_ids, list):
+        return ordered_unique([str(value or "").strip().lower() for value in raw_ids if str(value or "").strip()])
+    rows = audit.get(rows_key) if isinstance(audit.get(rows_key), list) else []
+    return ordered_unique(
+        [
+            str((row or {}).get("bot_id") or "").strip().lower()
+            for row in rows
+            if isinstance(row, dict) and str((row or {}).get("bot_id") or "").strip()
+        ]
+    )
+
+
 def _best_metric(row: dict[str, Any], *keys: str) -> float:
     best = 0.0
     for key in keys:
@@ -378,6 +392,12 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> Dict[str, Any]:
     active_sample_starved = registry_audit.get("active_sample_starved") if isinstance(registry_audit.get("active_sample_starved"), list) else []
     active_quality_failed = registry_audit.get("active_quality_failed") if isinstance(registry_audit.get("active_quality_failed"), list) else []
     active_stale = registry_audit.get("active_stale_diagnostics") if isinstance(registry_audit.get("active_stale_diagnostics"), list) else []
+    active_quality_failed_bot_ids = _audit_bot_ids(
+        registry_audit, "active_quality_failed_bot_ids", "active_quality_failed"
+    )
+    active_stale_bot_ids = _audit_bot_ids(
+        registry_audit, "active_stale_diagnostics_bot_ids", "active_stale_diagnostics"
+    )
     supportability_counts = registry_audit.get("supportability_counts") if isinstance(registry_audit.get("supportability_counts"), dict) else {}
     tier_counts = registry_audit.get("tier_counts") if isinstance(registry_audit.get("tier_counts"), dict) else {}
     active_collection_only_bots = _safe_int(
@@ -586,7 +606,7 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> Dict[str, Any]:
         or (total_drain_time_high and not deferred_only_drain_delay)
     )
 
-    refresh_diagnostics_bot_ids = [str((row or {}).get("bot_id") or "").strip().lower() for row in active_stale if str((row or {}).get("bot_id") or "").strip()]
+    refresh_diagnostics_bot_ids = active_stale_bot_ids
     repair_runtime_input_bot_ids: list[str] = []
     runtime_input_depth_debt_bot_ids: list[str] = []
     runtime_input_depth_debt_rows: list[dict[str, Any]] = []
@@ -641,43 +661,25 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> Dict[str, Any]:
         repair_runtime_input_bot_ids.append(bot_id)
     repair_runtime_input_bot_ids = ordered_unique(repair_runtime_input_bot_ids)
     runtime_input_depth_debt_bot_ids = ordered_unique(runtime_input_depth_debt_bot_ids)
-    quality_probation_bot_ids = [str((row or {}).get("bot_id") or "").strip().lower() for row in active_quality_failed if str((row or {}).get("bot_id") or "").strip()]
-    quality_probation_isolated_bot_ids = [
-        str((row or {}).get("bot_id") or "").strip().lower()
-        for row in (
-            registry_audit.get("active_quality_probation_isolated")
-            if isinstance(registry_audit.get("active_quality_probation_isolated"), list)
-            else []
-        )
-        if str((row or {}).get("bot_id") or "").strip()
-    ]
-    runtime_input_isolated_bot_ids = [
-        str((row or {}).get("bot_id") or "").strip().lower()
-        for row in (
-            registry_audit.get("active_sample_starved_isolated")
-            if isinstance(registry_audit.get("active_sample_starved_isolated"), list)
-            else []
-        )
-        if str((row or {}).get("bot_id") or "").strip()
-    ]
-    registry_seeded_bot_ids = [
-        str((row or {}).get("bot_id") or "").strip().lower()
-        for row in (
-            registry_audit.get("active_registry_seeded")
-            if isinstance(registry_audit.get("active_registry_seeded"), list)
-            else []
-        )
-        if str((row or {}).get("bot_id") or "").strip()
-    ]
-    staged_support_recovery_bot_ids = [
-        str((row or {}).get("bot_id") or "").strip().lower()
-        for row in (
-            registry_audit.get("active_staged_support_recovery")
-            if isinstance(registry_audit.get("active_staged_support_recovery"), list)
-            else []
-        )
-        if str((row or {}).get("bot_id") or "").strip()
-    ]
+    quality_probation_bot_ids = active_quality_failed_bot_ids
+    quality_probation_isolated_bot_ids = _audit_bot_ids(
+        registry_audit,
+        "active_quality_probation_isolated_bot_ids",
+        "active_quality_probation_isolated",
+    )
+    runtime_input_isolated_bot_ids = _audit_bot_ids(
+        registry_audit,
+        "active_sample_starved_isolated_bot_ids",
+        "active_sample_starved_isolated",
+    )
+    registry_seeded_bot_ids = _audit_bot_ids(
+        registry_audit, "active_registry_seeded_bot_ids", "active_registry_seeded"
+    )
+    staged_support_recovery_bot_ids = _audit_bot_ids(
+        registry_audit,
+        "active_staged_support_recovery_bot_ids",
+        "active_staged_support_recovery",
+    )
 
     provisional_registry_backed_bot_ids = ordered_unique(
         registry_seeded_bot_ids
@@ -687,11 +689,22 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> Dict[str, Any]:
             snapshot_age_hours=snapshot_age_hours,
         )
     )
-    unsupported_stale_bot_ids = [
-        bot_id
-        for bot_id in refresh_diagnostics_bot_ids
-        if bot_id not in provisional_registry_backed_bot_ids and bot_id not in staged_support_recovery_bot_ids
-    ]
+    if isinstance(registry_audit.get("active_unsupported_stale_diagnostics_bot_ids"), list):
+        unsupported_stale_bot_ids = _audit_bot_ids(
+            registry_audit,
+            "active_unsupported_stale_diagnostics_bot_ids",
+            "active_unsupported_stale_diagnostics",
+        )
+    else:
+        contained_stale_ids = set(
+            provisional_registry_backed_bot_ids
+            + staged_support_recovery_bot_ids
+            + quality_probation_isolated_bot_ids
+            + runtime_input_isolated_bot_ids
+        )
+        unsupported_stale_bot_ids = [
+            bot_id for bot_id in refresh_diagnostics_bot_ids if bot_id not in contained_stale_ids
+        ]
 
     registry_seeded_active_count = _safe_int(supportability_counts.get("registry_seeded_active"), 0)
     staged_support_recovery_count = _safe_int(supportability_counts.get("staged_support_recovery"), 0)
@@ -973,7 +986,7 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> Dict[str, Any]:
             or ingestion_pending_training_reconciled
         )
     )
-    supported_stale_count = len(provisional_registry_backed_bot_ids) + len(staged_support_recovery_bot_ids)
+    supported_stale_count = max(len(refresh_diagnostics_bot_ids) - len(unsupported_stale_bot_ids), 0)
     covered_stale_diagnostics = bool(
         refresh_diagnostics_bot_ids
         and len(unsupported_stale_bot_ids) <= max(5, int(active_bots * 0.2))
@@ -1089,7 +1102,8 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> Dict[str, Any]:
             summary=(
                 f"Active stale diagnostics: {len(refresh_diagnostics_bot_ids)} bots "
                 f"({len(provisional_registry_backed_bot_ids)} strong registry-backed, "
-                f"{len(staged_support_recovery_bot_ids)} staged recovery)"
+                f"{len(staged_support_recovery_bot_ids)} staged recovery, "
+                f"{supported_stale_count} safely contained)"
             ),
             recommendation=(
                 "keep the staged diagnostic-refresh queue running and downgrade only the unsupported remainder"

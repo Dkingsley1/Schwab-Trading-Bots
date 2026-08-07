@@ -154,6 +154,53 @@ def test_build_audit_payload_exposes_full_quality_failed_ids_when_preview_is_cap
     assert payload["active_quality_failed_bot_ids"] == bot_ids
 
 
+def test_stale_quality_failure_remains_contained_when_training_isolated(tmp_path: Path) -> None:
+    registry_path = tmp_path / "master_bot_registry.json"
+    diagnostics_dir = tmp_path / "governance" / "training_diagnostics"
+    snapshot_path = tmp_path / "governance" / "health" / "runtime_training_snapshot_latest.json"
+    bot_id = "brain_refinery_v10_seasonal"
+    _write_json(
+        registry_path,
+        {
+            "sub_bots": [
+                {
+                    "bot_id": bot_id,
+                    "active": True,
+                    "lifecycle_state": "active",
+                    "training_excluded": True,
+                    "exclude_from_training": True,
+                }
+            ]
+        },
+    )
+    diag_path = diagnostics_dir / f"{bot_id}_latest.json"
+    _write_json(
+        diag_path,
+        {
+            "status": "failed",
+            "sample_count": 200,
+            "eligible_sequences": 12,
+            "quality_failures": ["accuracy_lift_over_majority=0.0000"],
+            "failure_categories": ["quality_guard_failure"],
+        },
+    )
+    stale_ts = datetime.now(timezone.utc).timestamp() - (8 * 24 * 3600)
+    import os
+    os.utime(diag_path, (stale_ts, stale_ts))
+    _write_json(snapshot_path, {"sequence_count": 100, "row_count": 1000})
+
+    payload = src.build_audit_payload(
+        registry_path=registry_path,
+        diagnostics_dir=diagnostics_dir,
+        snapshot_health_path=snapshot_path,
+    )
+
+    assert payload["supportability_counts"]["isolated_quality_probation"] == 1
+    assert payload["active_quality_failed_count"] == 0
+    assert payload["active_quality_probation_isolated_bot_ids"] == [bot_id]
+    assert payload["active_unsupported_stale_diagnostics_count"] == 0
+
+
 def test_build_audit_payload_counts_artifact_backed_active_when_diagnostic_is_stale(tmp_path: Path) -> None:
     registry_path = tmp_path / "master_bot_registry.json"
     diagnostics_dir = tmp_path / "governance" / "training_diagnostics"
