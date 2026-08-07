@@ -2981,7 +2981,7 @@ opsctl commands:
   codex-operator-bridge|codex-bridge|tell-codex|codex-trade-brief [--json]
   architecture-upgrade-scoreboard|architecture-scoreboard|upgrade-scoreboard [--json]
   system-architecture-hardening|architecture-hardening [--apply] [--json]
-  uniform-hardening|uniform-hardening-contract [--json]
+  uniform-hardening|uniform-hardening-contract [--structural-only] [--json]
   system-architecture-contract-graph|architecture-contract-graph [--apply] [--json]
   system-architecture-autopilot|architecture-autopilot [--apply] [--execute-safe-repairs] [--max-steps N] [--json]
   system-intense-drills|intense-drills [--apply] [--execute-safe-improvements] [--max-improvements N] [--json]

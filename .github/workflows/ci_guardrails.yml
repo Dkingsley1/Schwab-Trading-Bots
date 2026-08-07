@@ -61,7 +61,8 @@ jobs:
             scripts/ops/live_order_ledger_control.py \
             core/live_order_ledger.py \
             scripts/ops/runtime_throttle_control.py \
-            scripts/ops/source_mutation_guard.py
+            scripts/ops/source_mutation_guard.py \
+            scripts/ops/uniform_hardening_contract.py
 
       - name: CLI smoke (help)
         run: |
@@ -99,6 +100,7 @@ jobs:
           python scripts/ops/live_order_ledger_control.py --help >/dev/null
           python scripts/ops/runtime_throttle_control.py --help >/dev/null
           python scripts/ops/source_mutation_guard.py --help >/dev/null
+          python scripts/ops/uniform_hardening_contract.py --help >/dev/null
 
       - name: Gate smoke fixtures
         run: |
@@ -168,6 +170,10 @@ jobs:
       - name: Production flow smoke
         run: |
           python scripts/ops/production_flow_smoke.py --json
+
+      - name: Uniform hardening structural floor
+        run: |
+          python scripts/ops/uniform_hardening_contract.py --structural-only --json
 
       - name: Source mutation guard
         run: |

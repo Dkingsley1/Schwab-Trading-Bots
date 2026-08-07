@@ -292,7 +292,9 @@ def check_ci_guardrails(project_root: Path) -> dict[str, Any]:
         and "promotion_candidate_advancement.py --help" in text
         and "readiness_blocker_rollup.py --help" in text
         and "readiness_evidence_accrual.py --help" in text
-        and "readiness_evidence_refresh.py --help" in text,
+        and "readiness_evidence_refresh.py --help" in text
+        and "uniform_hardening_contract.py --help" in text
+        and "uniform_hardening_contract.py --structural-only --json" in text,
         "manual_dispatch_enabled": "workflow_dispatch:" in text,
         "production_smoke_in_ci": "production_flow_smoke.py --json" in text,
         "command_validity_bot_in_ci": "command_validity_bot.py --help" in text,
@@ -317,6 +319,8 @@ def check_ci_guardrails(project_root: Path) -> dict[str, Any]:
         "readiness_blocker_rollup_in_ci": "readiness_blocker_rollup.py --help" in text,
         "readiness_evidence_accrual_in_ci": "readiness_evidence_accrual.py --help" in text,
         "readiness_evidence_refresh_in_ci": "readiness_evidence_refresh.py --help" in text,
+        "uniform_hardening_contract_in_ci": "uniform_hardening_contract.py --help" in text
+        and "uniform_hardening_contract.py --structural-only --json" in text,
     }
 
 

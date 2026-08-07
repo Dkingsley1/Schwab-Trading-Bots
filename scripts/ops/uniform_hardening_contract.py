@@ -428,15 +428,26 @@ def build_payload(
     }
 
 
+def evaluation_exit_code(payload: dict[str, Any], *, structural_only: bool = False) -> int:
+    ready = bool(payload.get("uniform_floor_ready", False)) if structural_only else bool(payload.get("ok", False))
+    return 0 if ready else 2
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Enforce one structural production-hardening floor across every critical system domain.")
     parser.add_argument("--project-root", default=str(PROJECT_ROOT))
     parser.add_argument("--config", default=str(DEFAULT_CONFIG))
     parser.add_argument("--out-file", default=str(DEFAULT_OUT))
+    parser.add_argument(
+        "--structural-only",
+        action="store_true",
+        help="Use the uniform structural floor as the process exit condition while preserving runtime evidence failures in the payload.",
+    )
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args()
     project_root = Path(args.project_root).expanduser().resolve()
     payload = build_payload(project_root, config_path=Path(args.config).expanduser())
+    payload["evaluation_mode"] = "structural_only" if args.structural_only else "full_runtime"
     write_payload(Path(args.out_file).expanduser(), payload)
     if args.json:
         print(json.dumps(payload, ensure_ascii=True))
@@ -446,7 +457,7 @@ def main() -> int:
             f"status={payload['overall_status']} floor={payload['uniform_structural_grade']} "
             f"critical={payload['critical_runtime_grade']} evidence={payload['all_domain_evidence_grade']}"
         )
-    return 0 if payload["ok"] else 2
+    return evaluation_exit_code(payload, structural_only=args.structural_only)
 
 
 if __name__ == "__main__":

@@ -32,6 +32,12 @@ def test_production_flow_smoke_passes_current_contract() -> None:
     assert ci_check["production_level_upgrade_hardener_control_in_ci"] is True
     assert ci_check["production_quality_control_in_ci"] is True
     assert ci_check["production_quality_slo_guard_in_ci"] is True
+    assert ci_check["uniform_hardening_contract_in_ci"] is True
+
+
+def test_uniform_contract_sources_are_protected_from_runtime_mutation() -> None:
+    assert "scripts/ops/uniform_hardening_contract.py" in source_mutation_guard.DEFAULT_PROTECTED_PATHS
+    assert "config/production_uniform_hardening_v1.json" in source_mutation_guard.DEFAULT_PROTECTED_PATHS
 
 
 def test_ticker_contract_ignores_runtime_universe_env(monkeypatch) -> None:

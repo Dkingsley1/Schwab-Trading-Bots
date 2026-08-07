@@ -237,6 +237,7 @@
     }
   ],
   "control_contract": {
+    "ci_structural_floor_is_checked_without_claiming_runtime_evidence": true,
     "uniform_floor_does_not_override_domain_evidence": true,
     "missing_or_stale_critical_evidence_fails_closed": true,
     "evidence_domains_may_collect_without_authorizing_live_execution": true,

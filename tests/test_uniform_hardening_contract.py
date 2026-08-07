@@ -107,6 +107,19 @@ def test_stale_critical_artifact_fails_closed(tmp_path: Path) -> None:
     assert "critical_runtime:critical_runtime_stale" in payload["critical_runtime_blockers"]
 
 
+def test_structural_ci_exit_never_relabels_missing_runtime_evidence() -> None:
+    payload = {
+        "uniform_floor_ready": True,
+        "critical_runtime_ready": False,
+        "ok": False,
+        "overall_status": "blocked",
+    }
+
+    assert contract.evaluation_exit_code(payload, structural_only=True) == 0
+    assert contract.evaluation_exit_code(payload, structural_only=False) == 2
+    assert payload["overall_status"] == "blocked"
+
+
 def test_missing_regression_test_breaks_the_uniform_structural_floor(tmp_path: Path) -> None:
     config_path = _seed(tmp_path)
     config = json.loads(config_path.read_text(encoding="utf-8"))
