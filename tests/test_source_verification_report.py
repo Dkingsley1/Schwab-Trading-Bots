@@ -371,6 +371,8 @@ def test_build_source_verification_payload_classifies_sources(tmp_path: Path) ->
     assert rows["fed_2026_supervisory_stress_scenario"]["evidence"]["stress_module_count"] == 10
     assert rows["fed_2026_supervisory_stress_scenario"]["evidence"]["stress_module_map_count"] == 10
     assert payload["source_confidence_summary"]["low_confidence_source_count"] == 0
+    assert payload["source_runtime_contract"]["decision_critical_sources_ready"] is True
+    assert payload["source_runtime_contract"]["decision_critical_blockers"] == []
 
 
 def test_build_source_verification_payload_marks_stale_sources_unverified(tmp_path: Path) -> None:
@@ -434,6 +436,9 @@ def test_build_source_verification_payload_marks_stale_sources_unverified(tmp_pa
 
     assert payload["overall"]["all_verified"] is False
     assert payload["overall"]["counts"]["single_source_unverified"] == 16
+    assert payload["source_runtime_contract"]["decision_critical_sources_ready"] is False
+    assert "market_quote_profiles" in payload["source_runtime_contract"]["decision_critical_blockers"]
+    assert "schwab_education_context" in payload["source_runtime_contract"]["optional_enrichment_debt"]
 
 
 def test_build_source_verification_payload_treats_export_only_options_flow_as_unverified(tmp_path: Path) -> None:

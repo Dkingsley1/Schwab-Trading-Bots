@@ -1054,6 +1054,41 @@ def _ready_actions_from_training_runtime(training_runtime: dict[str, Any]) -> li
     ]
 
 
+def _need_from_uniform_hardening(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    if not payload:
+        return [
+            {
+                "blocker": "uniform_hardening_contract_missing",
+                "exact_file": "governance/health/uniform_hardening_contract_latest.json",
+                "exact_shard": "",
+                "command": ["./scripts/ops/opsctl.sh", "uniform-hardening", "--json"],
+                "expected_impact": "Builds the shared structural and freshness floor across every critical production domain.",
+                "risk_level": "low",
+                "when_to_stop": "uniform_floor_ready and critical_runtime_ready are both true.",
+                "source": "uniform_hardening_contract",
+            }
+        ]
+    structural = _list_of_strings(payload.get("structural_blockers"))
+    critical = _list_of_strings(payload.get("critical_runtime_blockers"))
+    if not structural and not critical:
+        return []
+    commands = _as_list(payload.get("recommended_recovery_commands"))
+    command = commands[0] if commands and isinstance(commands[0], list) else ["./scripts/ops/opsctl.sh", "uniform-hardening", "--json"]
+    blocker = "uniform_structural_floor_not_ready" if structural else "uniform_critical_runtime_not_ready"
+    return [
+        {
+            "blocker": blocker,
+            "exact_file": "governance/health/uniform_hardening_contract_latest.json",
+            "exact_shard": ",".join((structural or critical)[:8]),
+            "command": command,
+            "expected_impact": "Repairs the first failed shared control or stale critical artifact without relabeling domain evidence.",
+            "risk_level": "low",
+            "when_to_stop": "uniform_floor_ready and critical_runtime_ready are both true; evidence-only debt remains separately visible.",
+            "source": "uniform_hardening_contract",
+        }
+    ]
+
+
 def build_payload(project_root: Path = PROJECT_ROOT, *, fix_log_path: Path = DEFAULT_LOG_PATH) -> dict[str, Any]:
     health = project_root / "governance" / "health"
     governor = load_json(health / "autonomic_resource_governor_latest.json")
@@ -1074,6 +1109,8 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, fix_log_path: Path = DEF
     paper_profitability = load_json(health / "paper_profitability_control_latest.json")
     paper_runtime_profitability = load_json(health / "paper_runtime_profitability_controls_latest.json")
     live_canary_readiness = load_json(health / "live_canary_readiness_contract_latest.json")
+    uniform_hardening = load_json(health / "uniform_hardening_contract_latest.json")
+    uniform_hardening_enabled = (project_root / "config" / "production_uniform_hardening_v1.json").is_file()
     low_grade_audit = _low_grade_layer_audit(project_root)
     raw_profitability_recovery = _raw_profitability_recovery_context(
         paper_profitability=paper_profitability,
@@ -1088,6 +1125,7 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, fix_log_path: Path = DEF
         *_need_from_training_runtime(training_runtime),
         *_need_from_low_grade_audit(low_grade_audit),
         *_need_from_raw_profitability_recovery(raw_profitability_recovery),
+        *(_need_from_uniform_hardening(uniform_hardening) if uniform_hardening_enabled else []),
         *_need_from_runtime_surfaces(
             health_fast=health_fast,
             process_watchdog=process_watchdog,
@@ -1172,6 +1210,15 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, fix_log_path: Path = DEF
             },
             "low_grade_layer_audit": low_grade_audit,
             "raw_profitability_recovery": raw_profitability_recovery,
+            "uniform_hardening_contract": {
+                "overall_status": str(uniform_hardening.get("overall_status") or ""),
+                "uniform_floor_ready": bool(uniform_hardening.get("uniform_floor_ready", False)),
+                "critical_runtime_ready": bool(uniform_hardening.get("critical_runtime_ready", False)),
+                "domain_statuses": _as_dict(uniform_hardening.get("domain_statuses")),
+                "structural_blockers": _as_list(uniform_hardening.get("structural_blockers")),
+                "critical_runtime_blockers": _as_list(uniform_hardening.get("critical_runtime_blockers")),
+                "evidence_debt_domains": _as_list(uniform_hardening.get("evidence_debt_domains")),
+            },
             "soak_management_context": soak_management,
             "operator_action_packet": _as_dict(governor.get("operator_action_packet")),
             "migration_binder": _as_dict(migration.get("migration_binder")),
@@ -1184,6 +1231,7 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, fix_log_path: Path = DEF
             "include_ready_actions_when_no_blockers_exist": True,
             "include_remaining_low_grade_layers": True,
             "include_raw_profitability_recovery_need": True,
+            "include_uniform_hardening_floor_need": True,
             "split_managed_soak_controls_from_actionable_needs": True,
             "fixes_logged_to": str(fix_log_path),
             "protected_volumes": ["/Volumes/VIDEO"],

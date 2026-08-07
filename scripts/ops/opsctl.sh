@@ -1203,6 +1203,9 @@ case "$cmd" in
   system-architecture-hardening|architecture-hardening|whole-system-architecture|architecture-deep-dive)
     run_then_refresh_self_model "$PY" "$PROJECT_ROOT/scripts/ops/system_architecture_hardening.py" "$@"
     ;;
+  uniform-hardening|uniform-hardening-contract|whole-system-uniform-hardening)
+    run_then_refresh_self_model "$PY" "$PROJECT_ROOT/scripts/ops/uniform_hardening_contract.py" "$@"
+    ;;
   system-architecture-contract-graph|architecture-contract-graph|contract-graph|system-contract-graph)
     run_then_refresh_self_model "$PY" "$PROJECT_ROOT/scripts/ops/system_architecture_contract_graph.py" "$@"
     ;;
@@ -2953,7 +2956,7 @@ opsctl commands:
   training-lineage [--json]
   training-probation-isolation [--apply] [--limit N] [--include-bot-ids CSV] [--json]
   feature-store [--json]
-  multiple-testing-guard [--json]
+  multiple-testing|multiple-testing-guard [--json]
   decay-monitor [--json]
   security-audit
   secret-scan [--staged]
@@ -2978,6 +2981,7 @@ opsctl commands:
   codex-operator-bridge|codex-bridge|tell-codex|codex-trade-brief [--json]
   architecture-upgrade-scoreboard|architecture-scoreboard|upgrade-scoreboard [--json]
   system-architecture-hardening|architecture-hardening [--apply] [--json]
+  uniform-hardening|uniform-hardening-contract [--json]
   system-architecture-contract-graph|architecture-contract-graph [--apply] [--json]
   system-architecture-autopilot|architecture-autopilot [--apply] [--execute-safe-repairs] [--max-steps N] [--json]
   system-intense-drills|intense-drills [--apply] [--execute-safe-improvements] [--max-improvements N] [--json]

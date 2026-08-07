@@ -280,6 +280,15 @@
         "max_age_hours": 12,
         "truthy_keys": ["canary_weight_ok", "live_money_contract_enforced", "live_money_contract_hard_block"],
         "required": true
+      },
+      {
+        "capability_id": "uniform_hardening_contract",
+        "title": "Uniform Whole-System Hardening Contract",
+        "artifact": "governance/health/uniform_hardening_contract_latest.json",
+        "ready_statuses": ["ready", "ready_with_evidence_debt"],
+        "max_age_hours": 1,
+        "truthy_keys": ["ok", "uniform_floor_ready", "critical_runtime_ready"],
+        "required": true
       }
     ],
     "policy": "live_money_canary_consideration_requires external alerting, immutable evidence, source/security hygiene, auth continuity, storage disaster recovery, blackstart recovery, broker/paper reconciliation, SLOs, telemetry redaction, microscopic canary cap, and a read-only live firewall"

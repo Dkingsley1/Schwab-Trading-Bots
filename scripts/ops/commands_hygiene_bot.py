@@ -1453,6 +1453,14 @@ def _commands_inventory(project_root: Path) -> list[dict[str, Any]]:
             ),
             _command_entry(
                 project_root,
+                "Audit the uniform whole-system hardening floor",
+                ["./scripts/ops/opsctl.sh uniform-hardening --json"],
+                notes=[
+                    "Checks the same ten structural controls across twelve production domains while reporting critical runtime failures and evidence-only debt separately.",
+                ],
+            ),
+            _command_entry(
+                project_root,
                 "Master infrastructure supervisor",
                 ["./scripts/ops/opsctl.sh master-infra-supervisor --json"],
                 notes=[

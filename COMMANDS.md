@@ -4,7 +4,7 @@ Use these exact commands as the current source of truth.
 
 This file is generated from the curated operator inventory in `scripts/ops/commands_hygiene_bot.py`.
 Rebuild it with `./scripts/ops/opsctl.sh commands-hygiene --apply` after changing that inventory.
-Command contract hash: `101700da651a8101c66115fe1cf40727bc82b24049e0b5197915f71084eed569`.
+Command contract hash: `5a191acd2e7cddf0d729cdc98775d4d39eff1be5671f0946456c5048b9d4ea66`.
 Command contract artifact: `governance/health/commands_contract_latest.json`.
 
 This file is intentionally trimmed down with Most Used pinned first and the remaining sections alphabetized by section and command title:
@@ -23,7 +23,7 @@ Fast search tokens: `start` `stop` `paper` `profitability` `soak` `halt` `auth` 
 
 Useful compound searches: `paper profitability`, `global halt`, `token refresh`, `livefeed heavy`, `storage prune`, `soak readiness`.
 
-Search coverage: `170` generated command entries from the current command contract.
+Search coverage: `171` generated command entries from the current command contract.
 
 <datalist id="command-search-index-options">
   <option value="Keep the Mac awake (Most Used)"></option>
@@ -155,6 +155,7 @@ Search coverage: `170` generated command entries from the current command contra
   <option value="Adapt infrabots to current system needs (Status And Health)"></option>
   <option value="Advance staged promotion candidates (Status And Health)"></option>
   <option value="Apply system architecture hardening (Status And Health)"></option>
+  <option value="Audit the uniform whole-system hardening floor (Status And Health)"></option>
   <option value="Coinbase API health (Status And Health)"></option>
   <option value="Deeper self-awareness intelligence layers (Status And Health)"></option>
   <option value="Docs, commands, and reporting intelligence (Status And Health)"></option>
@@ -199,7 +200,7 @@ Search coverage: `170` generated command entries from the current command contra
 </datalist>
 
 <details>
-<summary>Generated command search index (170 commands; rebuilt by commands-hygiene)</summary>
+<summary>Generated command search index (171 commands; rebuilt by commands-hygiene)</summary>
 
 Each row is generated from `governance/health/commands_contract_latest.json`, so added, removed, renamed, or cleaned-up commands change this index automatically.
 
@@ -332,6 +333,7 @@ Each row is generated from `governance/health/commands_contract_latest.json`, so
 - search-entry:c6a6ebb72bbfc71a788f61cc27c19614ac6d5847c283a9fedf086e0913199a45 section:`Status And Health` section_key:`status-and-health` title:Adapt infrabots to current system needs title_key:`adapt-infrabots-to-current-system-needs` opsctl:`infrabot-adaptive-governor` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
 - search-entry:c5e040e4852cd9be32ead9a962b153904c71ec238f2ff4c66b1c8474e87aafd8 section:`Status And Health` section_key:`status-and-health` title:Advance staged promotion candidates title_key:`advance-staged-promotion-candidates` opsctl:`promotion-candidate-advancement` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
 - search-entry:67d8b4f85daf3e431e681c653ab5fa72c90517cc1d635b65ccc24fd06f541f71 section:`Status And Health` section_key:`status-and-health` title:Apply system architecture hardening title_key:`apply-system-architecture-hardening` opsctl:`system-architecture-hardening` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
+- search-entry:d874bd191993d030a957e4c95cd8e0398ab9bf1ebb4500921ca69af86cf4de47 section:`Status And Health` section_key:`status-and-health` title:Audit the uniform whole-system hardening floor title_key:`audit-the-uniform-whole-system-hardening-floor` opsctl:`uniform-hardening` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
 - search-entry:f9437868e421148a7c1e2559aab72a0d323f1f8360c43ebeb1d35b30da449a42 section:`Status And Health` section_key:`status-and-health` title:Coinbase API health title_key:`coinbase-api-health` opsctl:`coinbase-api-health` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
 - search-entry:09cf953d33c1c2c51af8ddb9720af132cea3194741a0b6c46c87a25c79f1fab7 section:`Status And Health` section_key:`status-and-health` title:Deeper self-awareness intelligence layers title_key:`deeper-self-awareness-intelligence-layers` opsctl:`deeper-intelligence-layers` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
 - search-entry:2f0e9268604a8480a375e0753d1e5a598d4c3d85b4074cab4800bb561be986c3 section:`Status And Health` section_key:`status-and-health` title:Docs, commands, and reporting intelligence title_key:`docs-commands-and-reporting-intelligence` opsctl:`docs-reporting-intelligence` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
@@ -1483,6 +1485,14 @@ cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
 ```
 
 Writes the cross-layer architecture hardening artifact and read-only guardrails for queue, storage, runtime, paper/live, and reporting contracts.
+
+### Audit the uniform whole-system hardening floor
+```bash
+cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
+./scripts/ops/opsctl.sh uniform-hardening --json
+```
+
+Checks the same ten structural controls across twelve production domains while reporting critical runtime failures and evidence-only debt separately.
 
 ### Coinbase API health
 ```bash

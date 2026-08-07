@@ -70,6 +70,38 @@ def test_source_verification_autorefresh_selects_bounded_batch_when_runtime_read
     assert payload["skipped_commands"][0]["reason"] == "bounded_batch_cap"
 
 
+def test_source_verification_autorefresh_prioritizes_decision_critical_sources(tmp_path: Path, monkeypatch) -> None:
+    _seed_runtime(tmp_path, ready=True)
+    opsctl = "/repo/scripts/ops/opsctl.sh"
+    source_payload = {
+        "ok": False,
+        "overall_status": "degraded",
+        "unverified_sources": ["ticker_news_context", "market_micro_context"],
+        "stale_artifacts": ["ticker_news_context", "market_micro_context"],
+        "degraded_artifacts": ["ticker_news_context", "market_micro_context"],
+        "sources": [
+            {"source_id": "ticker_news_context", "criticality": "decision_context", "fresh": False, "ok": False},
+            {"source_id": "market_micro_context", "criticality": "decision_critical", "fresh": False, "ok": False},
+        ],
+        "recommended_refresh_commands": [
+            [opsctl, "ticker-news-sync", "--json"],
+            [opsctl, "market-micro-sync", "--json"],
+            [opsctl, "source-verification", "--json"],
+        ],
+    }
+    monkeypatch.setattr(src.report_src, "build_source_verification_payload", lambda _root: source_payload)
+
+    payload = src.build_payload(tmp_path, apply=False, max_commands=1, timeout_seconds=180, max_heavy_commands=1)
+
+    assert [cmd[1] for cmd in payload["selected_commands"]] == ["market-micro-sync"]
+    assert payload["selection_contract"]["priority_order"] == [
+        "decision_critical",
+        "starvation_override_within_criticality",
+        "decision_context",
+        "optional_enrichment",
+    ]
+
+
 def test_source_verification_autorefresh_defers_heavy_sources_under_runtime_pressure(tmp_path: Path, monkeypatch) -> None:
     _seed_runtime(tmp_path, ready=False)
     heavy_only = _source_payload()

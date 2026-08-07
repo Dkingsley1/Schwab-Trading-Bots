@@ -1439,6 +1439,28 @@ def build_source_verification_payload(project_root: Path = PROJECT_ROOT) -> dict
     degraded = _ordered_unique(unverified + warnings)
     all_verified = counts[STATUS_SINGLE_UNVERIFIED] == 0
     all_cross_verified = counts[STATUS_CROSS_VERIFIED] == len(rows)
+    decision_critical_rows = [row for row in rows if row.get("criticality") == "decision_critical"]
+    decision_context_rows = [row for row in rows if row.get("criticality") == "decision_context"]
+    optional_enrichment_rows = [row for row in rows if row.get("criticality") == "optional_enrichment"]
+
+    def _runtime_source_ready(row: dict[str, Any]) -> bool:
+        return bool(
+            row.get("verification_status") != STATUS_SINGLE_UNVERIFIED
+            and row.get("fresh", False)
+            and row.get("ok", False)
+            and _safe_float(row.get("source_confidence_score"), 0.0) >= 0.70
+        )
+
+    decision_critical_blockers = [
+        str(row.get("source_id") or "") for row in decision_critical_rows if not _runtime_source_ready(row)
+    ]
+    decision_context_debt = [
+        str(row.get("source_id") or "") for row in decision_context_rows if not _runtime_source_ready(row)
+    ]
+    optional_enrichment_debt = [
+        str(row.get("source_id") or "") for row in optional_enrichment_rows if not _runtime_source_ready(row)
+    ]
+    decision_critical_sources_ready = bool(decision_critical_rows and not decision_critical_blockers)
     overall_status = "ready" if all_verified else "degraded"
     row_scores = [
         100.0
@@ -1463,6 +1485,7 @@ def build_source_verification_payload(project_root: Path = PROJECT_ROOT) -> dict
         "point_in_time_freshness_slos": True,
         "per_source_confidence_components": True,
         "decision_criticality_classification": True,
+        "decision_critical_runtime_contract": True,
         "bounded_adaptive_refresh_batches": True,
         "persistent_exponential_retry_state": True,
         "bounded_quarantine_with_starvation_override": True,
@@ -1498,6 +1521,16 @@ def build_source_verification_payload(project_root: Path = PROJECT_ROOT) -> dict
             "mean_source_confidence_score": round(sum(confidence_scores) / max(len(confidence_scores), 1), 6),
             "min_source_confidence_score": round(min(confidence_scores or [0.0]), 6),
             "low_confidence_sources": low_confidence_sources,
+        },
+        "source_runtime_contract": {
+            "decision_critical_sources_ready": decision_critical_sources_ready,
+            "decision_critical_source_count": len(decision_critical_rows),
+            "decision_critical_blocker_count": len(decision_critical_blockers),
+            "decision_critical_blockers": decision_critical_blockers,
+            "decision_context_debt": decision_context_debt,
+            "optional_enrichment_debt": optional_enrichment_debt,
+            "minimum_confidence_score": 0.70,
+            "policy": "paper_runtime_requires_fresh_healthy_verified_decision_critical_sources; context_and_optional_debt_remains_visible_without_execution_authority",
         },
         "source_confidence_summary": {
             "mean_score": round(sum(confidence_scores) / max(len(confidence_scores), 1), 6),
@@ -1544,6 +1577,7 @@ def _render_markdown(payload: dict[str, Any]) -> str:
     lines = [
         f"# Source Verification Report ({payload.get('timestamp_utc', '')})",
         f"- all_verified: {bool(overall.get('all_verified', False))}",
+        f"- decision_critical_sources_ready: {bool(((payload.get('source_runtime_contract') or {}).get('decision_critical_sources_ready', False)))}",
         f"- all_cross_verified: {bool(overall.get('all_cross_verified', False))}",
         f"- cross_verified: {int(counts.get(STATUS_CROSS_VERIFIED, 0) or 0)}",
         f"- single_source_verified: {int(counts.get(STATUS_SINGLE_VERIFIED, 0) or 0)}",

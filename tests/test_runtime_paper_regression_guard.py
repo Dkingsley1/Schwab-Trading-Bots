@@ -187,6 +187,82 @@ def test_runtime_guard_accepts_niced_support_pressure_when_paper_is_open() -> No
     assert guard["status"] == "ready"
 
 
+def test_runtime_guard_accepts_bounded_writer_with_niced_support_proof() -> None:
+    runtime = _runtime_payload(blocked_paper=False)
+    soft_cap = runtime["soft_cap_advisory_reclassification"]
+    soft_cap["reason"] = "bounded_writer_and_niced_support_is_guarded_runtime_ready"
+    soft_cap["measurements"].update(
+        {
+            "bounded_writer_with_support_guarded_ready": True,
+            "support_jobs_hot": True,
+            "support_hot_low_priority": True,
+            "storage_writer_hot": True,
+            "bot_owned_pressure_dominant": True,
+            "bot_owned_cpu_percent": 165.0,
+            "bot_owned_non_operator_cpu_percent": 165.0,
+            "throttle_candidate_support_cpu_percent": 52.0,
+            "storage_writer_cpu_percent": 98.0,
+            "host_saturation_score": 30.0,
+            "storage_ready_for_runtime_advisory": True,
+        }
+    )
+    soft_cap["thresholds"]["max_guarded_ready_bounded_bot_owned_cpu_percent"] = 220.0
+
+    guard = src._runtime_guarded_ready_lane_guard(runtime)
+
+    assert guard["ok"] is True
+    assert guard["actual"]["bounded_writer_with_support_guarded_ready"] is True
+
+
+def test_runtime_guard_rejects_bounded_writer_support_proof_above_host_limit() -> None:
+    runtime = _runtime_payload(blocked_paper=False)
+    soft_cap = runtime["soft_cap_advisory_reclassification"]
+    soft_cap["reason"] = "bounded_writer_and_niced_support_is_guarded_runtime_ready"
+    soft_cap["measurements"].update(
+        {
+            "bounded_writer_with_support_guarded_ready": True,
+            "support_jobs_hot": True,
+            "support_hot_low_priority": True,
+            "storage_writer_hot": True,
+            "bot_owned_pressure_dominant": True,
+            "bot_owned_cpu_percent": 165.0,
+            "bot_owned_non_operator_cpu_percent": 165.0,
+            "host_saturation_score": 75.0,
+            "storage_ready_for_runtime_advisory": True,
+        }
+    )
+
+    guard = src._runtime_guarded_ready_lane_guard(runtime)
+
+    assert guard["ok"] is False
+    assert guard["actual"]["host_saturation_limit"] == 72.0
+
+
+def test_runtime_guard_accepts_bounded_bot_owned_multicore_proof() -> None:
+    runtime = _runtime_payload(blocked_paper=False)
+    soft_cap = runtime["soft_cap_advisory_reclassification"]
+    soft_cap["reason"] = "bounded_bot_owned_writer_paper_research_is_guarded_runtime_ready"
+    soft_cap["measurements"].update(
+        {
+            "bounded_bot_owned_runtime_guarded_ready": True,
+            "storage_writer_hot": True,
+            "bot_owned_pressure_dominant": True,
+            "bot_owned_cpu_percent": 155.0,
+            "bot_owned_non_operator_cpu_percent": 155.0,
+            "storage_writer_cpu_percent": 98.0,
+            "paper_execution_cpu_percent": 12.0,
+            "host_saturation_score": 30.0,
+            "storage_ready_for_runtime_advisory": True,
+        }
+    )
+    soft_cap["thresholds"]["max_guarded_ready_bounded_bot_owned_cpu_percent"] = 220.0
+
+    guard = src._runtime_guarded_ready_lane_guard(runtime)
+
+    assert guard["ok"] is True
+    assert guard["actual"]["bot_owned_limit"] == 220.0
+
+
 def _ready_override(path: Path) -> None:
     _write_env(
         path,

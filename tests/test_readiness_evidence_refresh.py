@@ -157,4 +157,30 @@ def test_runtime_self_awareness_refreshes_in_dependency_order() -> None:
         "architecture_upgrade_scoreboard",
         "training_runtime_control",
         "memory_pressure_intelligence",
+        "uniform_hardening_contract",
     }
+
+
+def test_uniform_hardening_runs_after_critical_freshness_producers_and_before_readiness() -> None:
+    steps = {row["name"]: row for row in refresh.default_steps()}
+
+    assert set(steps["runtime_paper_regression_guard"]["depends_on"]) == {
+        "paper_truth_dependency_refresh",
+        "health_gates",
+    }
+    assert set(steps["source_verification_autorefresh"]["depends_on"]) == {
+        "autonomic_resource_governor",
+        "health_gates",
+    }
+    assert "--apply" in steps["source_verification_autorefresh"]["args"]
+    assert "source_verification_autorefresh" in steps["paper_truth_dependency_refresh"]["depends_on"]
+    assert "runtime_paper_regression_guard" in steps["production_quality_control"]["depends_on"]
+    assert set(steps["uniform_hardening_contract"]["depends_on"]) == {
+        "production_quality_slo",
+        "live_readiness_smoke",
+        "runtime_paper_regression_guard",
+        "source_verification_autorefresh",
+        "training_runtime_control",
+        "profitability_evidence_firewall",
+    }
+    assert "uniform_hardening_contract" in steps["production_readiness"]["depends_on"]

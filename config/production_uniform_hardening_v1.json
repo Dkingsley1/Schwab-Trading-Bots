@@ -1,0 +1,246 @@
+{
+  "schema_version": 1,
+  "policy_id": "production_uniform_hardening_v1",
+  "minimum_structural_grade": "A+",
+  "critical_runtime_domains": [
+    "execution_boundary",
+    "broker_auth",
+    "market_data_sources",
+    "paper_execution",
+    "data_ingestion",
+    "storage_recovery",
+    "runtime_resources",
+    "observability_incident",
+    "security_governance"
+  ],
+  "evidence_domains": [
+    "training_models",
+    "profitability_research",
+    "promotion_release"
+  ],
+  "required_common_controls": [
+    "artifact_contract",
+    "freshness_slo",
+    "owner_command",
+    "bounded_recovery",
+    "regression_tests",
+    "fail_closed_policy",
+    "bounded_automation",
+    "atomic_publication",
+    "live_authority_boundary",
+    "candidate_scope_and_evidence_separation"
+  ],
+  "domains": [
+    {
+      "domain_id": "execution_boundary",
+      "title": "Execution Boundary",
+      "candidate_scopes": ["execution", "risk", "operations"],
+      "failure_policy": "fail_closed",
+      "live_execution_authority": "operator_gated",
+      "bounded_automation": true,
+      "atomic_publication_required": true,
+      "evidence_grade_separate": true,
+      "owner_command": ["./scripts/live_readiness_smoke.py", "--json"],
+      "recovery_command": ["./scripts/live_readiness_smoke.py", "--json"],
+      "regression_tests": ["tests/test_live_execution_controls.py", "tests/test_live_runtime_separation_control.py"],
+      "artifacts": [
+        {"artifact_id": "live_runtime_separation", "path": "governance/health/live_runtime_separation_control_latest.json", "max_age_minutes": 30, "ready_statuses": ["ready"], "truthy_paths": ["ok"], "required": true},
+        {"artifact_id": "live_readiness_smoke", "path": "governance/health/live_readiness_smoke_latest.json", "max_age_minutes": 180, "ready_statuses": ["ready"], "truthy_paths": ["ok"], "required": true}
+      ]
+    },
+    {
+      "domain_id": "broker_auth",
+      "title": "Broker And Auth",
+      "candidate_scopes": ["operations", "dependencies"],
+      "failure_policy": "fail_closed",
+      "live_execution_authority": "none",
+      "bounded_automation": true,
+      "atomic_publication_required": true,
+      "evidence_grade_separate": true,
+      "owner_command": ["./scripts/ops/opsctl.sh", "schwab-auth-supervisor", "--apply", "--json"],
+      "recovery_command": ["./scripts/ops/opsctl.sh", "auth-lease", "--json"],
+      "regression_tests": ["tests/test_schwab_auth_supervisor.py", "tests/test_premarket_token_guard.py"],
+      "artifacts": [
+        {"artifact_id": "schwab_auth_supervisor", "path": "governance/health/schwab_auth_supervisor_latest.json", "max_age_minutes": 20, "ready_statuses": ["ready"], "truthy_paths": ["ok"], "required": true},
+        {"artifact_id": "auth_lease_manager", "path": "governance/health/auth_lease_manager_latest.json", "max_age_minutes": 20, "ready_statuses": ["ready"], "truthy_paths": ["ok"], "required": true}
+      ]
+    },
+    {
+      "domain_id": "market_data_sources",
+      "title": "Market Data And Sources",
+      "candidate_scopes": ["data", "dependencies"],
+      "failure_policy": "fail_closed",
+      "live_execution_authority": "none",
+      "bounded_automation": true,
+      "atomic_publication_required": true,
+      "evidence_grade_separate": true,
+      "owner_command": ["./scripts/ops/opsctl.sh", "provider-mesh", "--json"],
+      "recovery_command": ["./scripts/ops/opsctl.sh", "source-verification-refresh", "--apply", "--json"],
+      "regression_tests": ["tests/test_source_verification_report.py", "tests/test_provider_mesh_control.py"],
+      "artifacts": [
+        {"artifact_id": "source_verification", "path": "governance/health/source_verification_latest.json", "max_age_minutes": 30, "truthy_paths": ["source_runtime_contract.decision_critical_sources_ready"], "grade_requirements": {"source_control_grade": "A+"}, "required": true},
+        {"artifact_id": "provider_mesh", "path": "governance/health/provider_mesh_latest.json", "max_age_minutes": 360, "ready_statuses": ["ready"], "required": false}
+      ]
+    },
+    {
+      "domain_id": "paper_execution",
+      "title": "Paper Execution Truth",
+      "candidate_scopes": ["strategy", "execution", "risk", "data"],
+      "failure_policy": "fail_closed",
+      "live_execution_authority": "none",
+      "bounded_automation": true,
+      "atomic_publication_required": true,
+      "evidence_grade_separate": true,
+      "owner_command": ["./scripts/ops/opsctl.sh", "paper-truth-refresh", "--json"],
+      "recovery_command": ["./scripts/ops/opsctl.sh", "runtime-paper-regression-guard", "--json"],
+      "regression_tests": ["tests/test_paper_execution_truth_layer.py", "tests/test_runtime_paper_regression_guard.py"],
+      "artifacts": [
+        {"artifact_id": "paper_execution_truth", "path": "governance/health/paper_execution_truth_layer_latest.json", "max_age_minutes": 60, "truthy_paths": ["input_freshness.operational_inputs_fresh", "gates.sleeve_execution_scorecards.ok", "gates.account_position_awareness.ok", "gates.market_regime_stress_mode.ok", "gates.live_execution_transition_parity.ok", "gates.auto_throttle_overtrading.ok", "gates.data_ingestion_quality_gate.ok", "gates.paper_broker_truth_reconciliation.ok", "gates.artifact_freshness_guard.ok", "gates.paper_pnl_haircut_ledger.ok"], "required": true},
+        {"artifact_id": "runtime_paper_regression", "path": "governance/health/runtime_paper_regression_guard_latest.json", "max_age_minutes": 30, "ready_statuses": ["ready"], "truthy_paths": ["ok"], "zero_paths": ["failed_guard_count"], "required": true}
+      ]
+    },
+    {
+      "domain_id": "data_ingestion",
+      "title": "Data Ingestion",
+      "candidate_scopes": ["data", "operations"],
+      "failure_policy": "fail_closed",
+      "live_execution_authority": "none",
+      "bounded_automation": true,
+      "atomic_publication_required": true,
+      "evidence_grade_separate": true,
+      "owner_command": ["./scripts/ops/opsctl.sh", "ingestion-storage-control", "--json"],
+      "recovery_command": ["./scripts/ops/opsctl.sh", "health-gates", "--json"],
+      "regression_tests": ["tests/test_ingestion_storage_control.py", "tests/test_paper_truth_dependency_refresh.py"],
+      "artifacts": [
+        {"artifact_id": "ingestion_storage", "path": "governance/health/ingestion_storage_control_latest.json", "max_age_minutes": 30, "ready_statuses": ["ready"], "truthy_paths": ["ok"], "required": true},
+        {"artifact_id": "health_gates", "path": "governance/health/health_gates_latest.json", "max_age_minutes": 30, "falsey_paths": ["hard_gate_triggered"], "required": true}
+      ]
+    },
+    {
+      "domain_id": "storage_recovery",
+      "title": "Storage And Recovery",
+      "candidate_scopes": ["data", "operations"],
+      "failure_policy": "fail_closed",
+      "live_execution_authority": "none",
+      "bounded_automation": true,
+      "atomic_publication_required": true,
+      "evidence_grade_separate": true,
+      "owner_command": ["./scripts/ops/opsctl.sh", "storage-resilience", "--fast", "--json"],
+      "recovery_command": ["./scripts/ops/opsctl.sh", "storage-disaster-recovery", "--json"],
+      "regression_tests": ["tests/test_storage_disaster_recovery.py", "tests/test_storage_resilience_and_operator_cockpit.py"],
+      "artifacts": [
+        {"artifact_id": "storage_resilience", "path": "governance/health/storage_resilience_control_latest.json", "max_age_minutes": 180, "ready_statuses": ["ready"], "truthy_paths": ["ok"], "required": true},
+        {"artifact_id": "storage_disaster_recovery", "path": "governance/health/storage_disaster_recovery_latest.json", "max_age_minutes": 1440, "ready_statuses": ["ready"], "truthy_paths": ["ok"], "required": true}
+      ]
+    },
+    {
+      "domain_id": "runtime_resources",
+      "title": "Runtime And Resources",
+      "candidate_scopes": ["operations", "dependencies"],
+      "failure_policy": "fail_closed",
+      "live_execution_authority": "none",
+      "bounded_automation": true,
+      "atomic_publication_required": true,
+      "evidence_grade_separate": true,
+      "owner_command": ["./scripts/ops/opsctl.sh", "memory-pressure-intelligence", "--apply", "--json"],
+      "recovery_command": ["./scripts/ops/opsctl.sh", "runtime-throttle", "--apply", "--json"],
+      "regression_tests": ["tests/test_host_autonomic_layers.py", "tests/test_runtime_throttle_control.py"],
+      "artifacts": [
+        {"artifact_id": "memory_pressure", "path": "governance/health/memory_pressure_intelligence_latest.json", "max_age_minutes": 30, "ready_statuses": ["ready"], "truthy_paths": ["ok"], "required": true},
+        {"artifact_id": "autonomic_resource_governor", "path": "governance/health/autonomic_resource_governor_latest.json", "max_age_minutes": 30, "ready_statuses": ["ready"], "truthy_paths": ["ok"], "required": true},
+        {"artifact_id": "runtime_throttle", "path": "governance/health/runtime_throttle_control_latest.json", "max_age_minutes": 30, "ready_statuses": ["ready", "advisory"], "truthy_paths": ["ok"], "required": true}
+      ]
+    },
+    {
+      "domain_id": "training_models",
+      "title": "Training And Models",
+      "candidate_scopes": ["strategy", "data", "dependencies"],
+      "failure_policy": "fail_closed",
+      "live_execution_authority": "none",
+      "bounded_automation": true,
+      "atomic_publication_required": true,
+      "evidence_grade_separate": true,
+      "owner_command": ["./scripts/ops/opsctl.sh", "training-quality", "--json"],
+      "recovery_command": ["./scripts/ops/opsctl.sh", "training-runtime-control", "--json"],
+      "regression_tests": ["tests/test_training_quality_control.py", "tests/test_training_runtime_control.py"],
+      "artifacts": [
+        {"artifact_id": "training_quality", "path": "governance/health/training_quality_control_latest.json", "max_age_minutes": 30, "ready_statuses": ["ready"], "truthy_paths": ["ok"], "required": true},
+        {"artifact_id": "training_runtime", "path": "governance/health/training_runtime_control_latest.json", "max_age_minutes": 30, "ready_statuses": ["ready", "constrained"], "required": true}
+      ]
+    },
+    {
+      "domain_id": "profitability_research",
+      "title": "Profitability And Research",
+      "candidate_scopes": ["strategy", "execution", "risk", "data", "promotion", "dependencies"],
+      "failure_policy": "fail_closed",
+      "live_execution_authority": "none",
+      "bounded_automation": true,
+      "atomic_publication_required": true,
+      "evidence_grade_separate": true,
+      "owner_command": ["./scripts/ops/opsctl.sh", "paper-profitability-control", "--apply", "--json"],
+      "recovery_command": ["./scripts/ops/opsctl.sh", "paper-performance", "--json"],
+      "regression_tests": ["tests/test_profitability_evidence_firewall.py", "tests/test_paper_profitability_control.py"],
+      "artifacts": [
+        {"artifact_id": "profitability_firewall", "path": "governance/health/profitability_evidence_firewall_latest.json", "max_age_minutes": 60, "ready_statuses": ["ready"], "truthy_paths": ["ok"], "grade_requirements": {"control_grade": "A+", "economic_evidence_grade": "A", "hardening_control_grade": "A+", "hardening_economic_evidence_grade": "A"}, "required": true}
+      ]
+    },
+    {
+      "domain_id": "promotion_release",
+      "title": "Promotion And Release",
+      "candidate_scopes": ["promotion", "operations"],
+      "failure_policy": "fail_closed",
+      "live_execution_authority": "none",
+      "bounded_automation": true,
+      "atomic_publication_required": true,
+      "evidence_grade_separate": true,
+      "owner_command": ["./scripts/ops/opsctl.sh", "promotion-quality-gate", "--json"],
+      "recovery_command": ["./scripts/ops/opsctl.sh", "production-excellence", "--json"],
+      "regression_tests": ["tests/test_promotion_quality_gate.py", "tests/test_production_excellence_control.py"],
+      "artifacts": [
+        {"artifact_id": "promotion_quality_gate", "path": "governance/health/promotion_quality_gate_latest.json", "max_age_minutes": 60, "truthy_paths": ["ok"], "required": true},
+        {"artifact_id": "production_excellence", "path": "governance/health/production_excellence_control_latest.json", "max_age_minutes": 60, "ready_statuses": ["ready"], "truthy_paths": ["ok"], "required": true}
+      ]
+    },
+    {
+      "domain_id": "observability_incident",
+      "title": "Observability And Incidents",
+      "candidate_scopes": ["operations"],
+      "failure_policy": "fail_closed",
+      "live_execution_authority": "none",
+      "bounded_automation": true,
+      "atomic_publication_required": true,
+      "evidence_grade_separate": true,
+      "owner_command": ["./scripts/ops/opsctl.sh", "production-quality-slo", "--apply", "--json"],
+      "recovery_command": ["./scripts/ops/opsctl.sh", "notification-escalation-ladder", "--json"],
+      "regression_tests": ["tests/test_production_quality_slo_guard.py", "tests/test_notification_escalation_ladder.py"],
+      "artifacts": [
+        {"artifact_id": "production_quality_slo", "path": "governance/health/production_quality_slo_guard_latest.json", "max_age_minutes": 30, "ready_statuses": ["ready"], "truthy_paths": ["ok"], "zero_paths": ["breach_count", "critical_active_lane_count"], "required": true},
+        {"artifact_id": "notification_escalation", "path": "governance/health/notification_escalation_ladder_latest.json", "max_age_minutes": 180, "ready_statuses": ["ready"], "truthy_paths": ["ok"], "required": true}
+      ]
+    },
+    {
+      "domain_id": "security_governance",
+      "title": "Security And Governance",
+      "candidate_scopes": ["operations", "dependencies"],
+      "failure_policy": "fail_closed",
+      "live_execution_authority": "none",
+      "bounded_automation": true,
+      "atomic_publication_required": true,
+      "evidence_grade_separate": true,
+      "owner_command": ["./scripts/ops/opsctl.sh", "security-audit", "--json"],
+      "recovery_command": ["./scripts/ops/opsctl.sh", "secret-scan"],
+      "regression_tests": ["tests/test_security_hardening_audit.py", "tests/test_secret_scan.py"],
+      "artifacts": [
+        {"artifact_id": "security_audit", "path": "governance/health/security_audit_latest.json", "max_age_minutes": 2160, "ready_statuses": ["ready"], "truthy_paths": ["ok"], "required": true},
+        {"artifact_id": "secret_scan", "path": "governance/health/secret_scan_latest.json", "max_age_minutes": 1440, "zero_paths": ["findings_count"], "required": true}
+      ]
+    }
+  ],
+  "control_contract": {
+    "uniform_floor_does_not_override_domain_evidence": true,
+    "missing_or_stale_critical_evidence_fails_closed": true,
+    "evidence_domains_may_collect_without_authorizing_live_execution": true,
+    "automatic_live_execution_authority": false,
+    "historical_profitability_may_not_be_rewritten": true
+  }
+}

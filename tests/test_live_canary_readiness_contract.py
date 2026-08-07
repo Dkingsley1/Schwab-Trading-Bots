@@ -153,6 +153,38 @@ def _seed_ready_artifacts(project_root: Path) -> None:
     )
 
 
+def test_live_canary_continuity_separates_operational_truth_from_replay_evidence(tmp_path: Path, monkeypatch) -> None:
+    project_root = tmp_path / "project"
+    _seed_ready_artifacts(project_root)
+    health = project_root / "governance" / "health"
+    now = datetime.now(timezone.utc).isoformat()
+    _write_json(
+        health / "paper_execution_truth_layer_latest.json",
+        {
+            "timestamp_utc": now,
+            "overall_status": "blocked",
+            "ok": False,
+            "failed_checks": ["decision_replay_harness"],
+            "input_freshness": {"operational_inputs_fresh": True},
+            "gates": {
+                **{gate_id: {"ok": True, "status": "ready"} for gate_id in src.PAPER_OPERATIONAL_GATE_IDS},
+                "decision_replay_harness": {"ok": False, "status": "blocked"},
+            },
+        },
+    )
+    monkeypatch.setattr(src.source_mutation_guard, "build_payload", lambda _root: {"ok": True, "overall_status": "ready", "dirty_count": 0, "dirty_entries": []})
+    monkeypatch.setattr(src.production_flow_smoke, "build_payload", lambda _root: {"ok": True, "overall_status": "ready", "failed_checks": []})
+
+    payload = src.build_payload(project_root)
+
+    paper_gate = next(gate for gate in payload["gates"] if gate["gate_id"] == "sleeve_paper_trading_continuity")
+    paper_milestone = next(row for row in payload["live_money_canary_milestones"] if row["milestone_id"] == "m02_live_like_paper_execution")
+    assert paper_gate["ready"] is True
+    assert paper_gate["evidence"]["paper_truth_evidence_pending"] is True
+    assert paper_milestone["ready"] is False
+    assert "paper_execution_evidence_not_ready" in paper_milestone["blockers"]
+
+
 def test_live_canary_readiness_contract_blocks_raw_d_grade(tmp_path: Path, monkeypatch) -> None:
     project_root = tmp_path / "project"
     _seed_ready_artifacts(project_root)

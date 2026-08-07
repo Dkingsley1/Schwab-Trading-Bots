@@ -594,6 +594,27 @@ def _runtime_guarded_ready_lane_guard(runtime: dict[str, Any]) -> dict[str, Any]
         _bool(measurements.get("storage_writer_cooling_guarded_ready", False))
         or reason == "single_bounded_storage_writer_after_green_backpressure_is_guarded_runtime_ready"
     )
+    storage_writer_burst_ready = bool(
+        _bool(measurements.get("storage_writer_burst_complete_guarded_ready", False))
+        or reason == "bounded_storage_writer_burst_after_clear_backpressure_is_guarded_runtime_ready"
+    )
+    support_throttle_ready = bool(
+        _bool(measurements.get("support_throttle_pending_guarded_ready", False))
+        or reason == "support_throttle_pending_after_green_backpressure_is_guarded_runtime_ready"
+    )
+    bounded_writer_support_ready = bool(
+        _bool(measurements.get("bounded_writer_with_support_guarded_ready", False))
+        or reason
+        in {
+            "bounded_writer_and_niced_support_is_guarded_runtime_ready",
+            "bounded_writer_and_niced_support_sampling_hysteresis_is_guarded_runtime_ready",
+            "bounded_writer_and_support_throttle_pending_is_guarded_runtime_ready",
+        }
+    )
+    bounded_writer_paper_ready = bool(
+        _bool(measurements.get("bounded_writer_with_paper_shadow_guarded_ready", False))
+        or reason == "bounded_writer_and_low_priority_paper_shadow_is_guarded_runtime_ready"
+    )
     full_force_paper_ready = bool(
         _bool(measurements.get("full_force_paper_ramp_guarded_ready", False))
         or reason
@@ -601,6 +622,14 @@ def _runtime_guarded_ready_lane_guard(runtime: dict[str, Any]) -> dict[str, Any]
             "full_force_paper_ramp_writer_pressure_is_guarded_runtime_ready",
             "full_force_paper_ramp_pressure_is_guarded_runtime_ready",
         }
+    )
+    bounded_bot_owned_ready = bool(
+        _bool(measurements.get("bounded_bot_owned_runtime_guarded_ready", False))
+        or reason == "bounded_bot_owned_writer_paper_research_is_guarded_runtime_ready"
+    )
+    bounded_writer_support_protected_ready = bool(
+        _bool(measurements.get("bounded_writer_support_protected_guarded_ready", False))
+        or reason == "bounded_writer_support_and_read_only_protected_lane_is_guarded_runtime_ready"
     )
     protected_lane_ready = bool(
         _bool(measurements.get("bounded_protected_lane_guarded_ready", False))
@@ -618,8 +647,14 @@ def _runtime_guarded_ready_lane_guard(runtime: dict[str, Any]) -> dict[str, Any]
         "bot_owned_pressure_dominant",
     ]
     allowed_hot_flags: set[str] = set()
-    if storage_writer_ready:
+    if storage_writer_ready or storage_writer_burst_ready or bounded_bot_owned_ready:
         allowed_hot_flags.update({"storage_writer_hot", "bot_owned_pressure_dominant"})
+    if support_throttle_ready:
+        allowed_hot_flags.update({"support_jobs_hot", "bot_owned_pressure_dominant"})
+    if bounded_writer_support_ready or bounded_writer_support_protected_ready:
+        allowed_hot_flags.update({"support_jobs_hot", "storage_writer_hot", "bot_owned_pressure_dominant"})
+    if bounded_writer_paper_ready:
+        allowed_hot_flags.update({"paper_execution_hot", "storage_writer_hot", "bot_owned_pressure_dominant"})
     if full_force_paper_ready:
         allowed_hot_flags.update({"paper_execution_hot", "storage_writer_hot", "bot_owned_pressure_dominant"})
         if _safe_float(measurements.get("throttle_candidate_support_cpu_percent"), 0.0) <= 80.0:
@@ -645,8 +680,29 @@ def _runtime_guarded_ready_lane_guard(runtime: dict[str, Any]) -> dict[str, Any]
     bot_limit = _safe_float(thresholds.get("max_guarded_ready_bot_owned_cpu_percent"), 20.0)
     protected_limit = _safe_float(thresholds.get("max_guarded_ready_protected_cpu_percent"), 20.0)
     operator_limit = _safe_float(thresholds.get("max_guarded_ready_operator_cpu_percent"), 30.0)
+    host_limit = _safe_float(thresholds.get("max_guarded_ready_host_saturation_score"), 62.0)
     if storage_writer_ready:
         bot_limit = max(bot_limit, 150.0)
+        host_limit = max(host_limit, _safe_float(thresholds.get("max_guarded_storage_writer_host_saturation_score"), 75.0))
+    if storage_writer_burst_ready:
+        bot_limit = max(bot_limit, 180.0)
+        operator_limit = max(operator_limit, 35.0)
+        host_limit = min(host_limit, 50.0)
+    if support_throttle_ready:
+        bot_limit = max(bot_limit, 160.0)
+        operator_limit = max(operator_limit, 35.0)
+        host_limit = max(host_limit, _safe_float(thresholds.get("max_guarded_niced_support_host_saturation_score"), 68.0))
+    if bounded_writer_support_ready:
+        bot_limit = max(
+            bot_limit,
+            _safe_float(thresholds.get("max_guarded_ready_bounded_bot_owned_cpu_percent"), 220.0),
+        )
+        operator_limit = max(operator_limit, 35.0)
+        host_limit = max(host_limit, 72.0)
+    if bounded_writer_paper_ready:
+        bot_limit = max(bot_limit, 240.0)
+        operator_limit = max(operator_limit, 35.0)
+        host_limit = max(host_limit, 72.0)
     if full_force_paper_ready:
         bot_limit = max(
             bot_limit,
@@ -655,6 +711,10 @@ def _runtime_guarded_ready_lane_guard(runtime: dict[str, Any]) -> dict[str, Any]
         operator_limit = max(
             operator_limit,
             _safe_float(thresholds.get("max_guarded_ready_full_force_operator_cpu_percent"), 45.0),
+        )
+        host_limit = max(
+            host_limit,
+            _safe_float(thresholds.get("max_guarded_ready_full_force_host_saturation_score"), 75.0),
         )
     if protected_lane_ready:
         bot_limit = max(
@@ -665,6 +725,20 @@ def _runtime_guarded_ready_lane_guard(runtime: dict[str, Any]) -> dict[str, Any]
             protected_limit,
             _safe_float(thresholds.get("max_guarded_ready_protected_lane_cpu_percent"), 75.0),
         )
+    if bounded_bot_owned_ready:
+        bot_limit = max(
+            bot_limit,
+            _safe_float(thresholds.get("max_guarded_ready_bounded_bot_owned_cpu_percent"), 220.0),
+        )
+        operator_limit = max(operator_limit, 35.0)
+        host_limit = min(host_limit, 50.0)
+    if bounded_writer_support_protected_ready:
+        bot_limit = max(bot_limit, 280.0)
+        protected_limit = max(
+            protected_limit,
+            _safe_float(thresholds.get("max_guarded_ready_protected_lane_cpu_percent"), 75.0),
+        )
+        operator_limit = max(operator_limit, 35.0)
     if niced_support_ready:
         bot_limit = max(
             bot_limit,
@@ -674,10 +748,15 @@ def _runtime_guarded_ready_lane_guard(runtime: dict[str, Any]) -> dict[str, Any]
             operator_limit,
             _safe_float(thresholds.get("max_guarded_operator_observability_high_compute_cpu_percent"), 100.0),
         )
+        host_limit = max(
+            host_limit,
+            _safe_float(thresholds.get("max_guarded_niced_support_ready_host_saturation_score"), 75.0),
+        )
     bot_owned_raw = _safe_float(measurements.get("bot_owned_cpu_percent"), 0.0)
     bot_owned = _safe_float(measurements.get("bot_owned_non_operator_cpu_percent"), bot_owned_raw)
     protected = _safe_float(measurements.get("protected_live_or_macro_cpu_percent"), 0.0)
     operator = _safe_float(measurements.get("operator_observability_cpu_percent"), 0.0)
+    host_saturation = _safe_float(measurements.get("host_saturation_score"), 0.0)
     memory = _lower(measurements.get("memory_pressure_level") or runtime.get("memory_pressure_level"))
     storage_ready = _bool(measurements.get("storage_ready_for_runtime_advisory", True))
     ok = (
@@ -689,6 +768,7 @@ def _runtime_guarded_ready_lane_guard(runtime: dict[str, Any]) -> dict[str, Any]
         and bot_owned < bot_limit
         and protected < protected_limit
         and operator <= operator_limit
+        and host_saturation < host_limit
     )
     return _guard_row(
         "runtime_guarded_ready_lane_contract",
@@ -700,6 +780,12 @@ def _runtime_guarded_ready_lane_guard(runtime: dict[str, Any]) -> dict[str, Any]
             "memory_pressure_level": memory,
             "hot_lanes": hot_lanes,
             "storage_writer_cooling_guarded_ready": storage_writer_ready,
+            "storage_writer_burst_complete_guarded_ready": storage_writer_burst_ready,
+            "support_throttle_pending_guarded_ready": support_throttle_ready,
+            "bounded_writer_with_support_guarded_ready": bounded_writer_support_ready,
+            "bounded_writer_with_paper_shadow_guarded_ready": bounded_writer_paper_ready,
+            "bounded_bot_owned_runtime_guarded_ready": bounded_bot_owned_ready,
+            "bounded_writer_support_protected_guarded_ready": bounded_writer_support_protected_ready,
             "bounded_protected_lane_guarded_ready": protected_lane_ready,
             "research_hot_low_priority": _bool(measurements.get("research_hot_low_priority", False)),
             "research_training_cpu_percent": _safe_float(measurements.get("research_training_cpu_percent"), 0.0),
@@ -715,6 +801,8 @@ def _runtime_guarded_ready_lane_guard(runtime: dict[str, Any]) -> dict[str, Any]
             "protected_limit": protected_limit,
             "operator_observability_cpu_percent": operator,
             "operator_limit": operator_limit,
+            "host_saturation_score": host_saturation,
+            "host_saturation_limit": host_limit,
         },
         evidence=[f"reason={reason}"],
     )

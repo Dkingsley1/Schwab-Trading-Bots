@@ -489,17 +489,27 @@ def build_payload(
     heavy_count = 0
     batch_cap = min(max(int(max_commands), 0), _safe_int(runtime_contract.get("max_command_batch"), 1))
     heavy_cap = max(_safe_int(max_heavy_commands, 0), 0)
-    if state_preexisting:
-        refresh_candidates = sorted(
-            refresh_candidates,
-            key=lambda command: (
-                _parse_ts(
-                    _as_dict(_as_dict(retry_state.get("sources")).get(_source_id_for_command(command, source_by_command))).get("last_attempt_utc")
-                )
-                or datetime.min.replace(tzinfo=timezone.utc),
-                refresh_candidates.index(command),
-            ),
+    original_positions = {_command_key(command): index for index, command in enumerate(refresh_candidates)}
+
+    def _refresh_priority(command: list[str]) -> tuple[int, int, datetime, int]:
+        source_id = _source_id_for_command(command, source_by_command)
+        source_row = source_rows.get(source_id, {}) if source_id else {}
+        criticality = str(
+            source_row.get("criticality")
+            or report_src.SOURCE_CRITICALITY.get(source_id, "decision_context")
         )
+        retry = _retry_decision(source_id, retry_state, now=now) if source_id else {}
+        last_attempt = _parse_ts(
+            _as_dict(_as_dict(retry_state.get("sources")).get(source_id)).get("last_attempt_utc")
+        ) or datetime.min.replace(tzinfo=timezone.utc)
+        return (
+            {"decision_critical": 0, "decision_context": 1, "optional_enrichment": 2}.get(criticality, 1),
+            0 if retry.get("starvation_override", False) else 1,
+            last_attempt if state_preexisting else datetime.min.replace(tzinfo=timezone.utc),
+            original_positions.get(_command_key(command), len(original_positions)),
+        )
+
+    refresh_candidates = sorted(refresh_candidates, key=_refresh_priority)
     for command in refresh_candidates:
         policy = _command_policy(command, default_timeout_seconds=int(timeout_seconds))
         command = _bounded_heavy_command(
@@ -662,6 +672,12 @@ def build_payload(
             "slow_source_retry_floor_seconds": dict(SLOW_SOURCE_RETRY_MIN_SECONDS),
             "process_exit_success_does_not_override_degraded_source_evidence": True,
             "atomic_state_replacement": True,
+        },
+        "selection_contract": {
+            "priority_order": ["decision_critical", "starvation_override_within_criticality", "decision_context", "optional_enrichment"],
+            "bounded_by_runtime_batch": True,
+            "bounded_by_heavy_command_cap": True,
+            "persistent_backoff_preserves_provider_health": True,
         },
         "before": {
             "overall_status": str(before.get("overall_status") or ""),

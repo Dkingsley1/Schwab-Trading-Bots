@@ -24,6 +24,17 @@ DEFAULT_CONFIG_PATH = PROJECT_ROOT / "config" / "live_canary_readiness_contract.
 POLICY_ID = "production_hardening_live_canary_bar_v1"
 BAD_STATUSES = {"blocked", "critical", "degraded", "failed", "missing", "needs_work", "stale", "warning"}
 GRADE_RANK = {"F": 0, "D": 1, "C": 2, "B": 3, "A-": 4, "A": 5, "A+": 6, "A++": 6}
+PAPER_OPERATIONAL_GATE_IDS = (
+    "sleeve_execution_scorecards",
+    "account_position_awareness",
+    "market_regime_stress_mode",
+    "live_execution_transition_parity",
+    "auto_throttle_overtrading",
+    "data_ingestion_quality_gate",
+    "paper_broker_truth_reconciliation",
+    "artifact_freshness_guard",
+    "paper_pnl_haircut_ledger",
+)
 DEFAULT_CANARY_MILESTONES: tuple[dict[str, Any], ...] = (
     {
         "milestone_id": "m01_continuous_soak_no_hard_blockers",
@@ -138,6 +149,36 @@ def _grade(raw: Any) -> str:
 
 def _grade_at_least(raw: Any, floor: str) -> bool:
     return GRADE_RANK.get(_grade(raw), -1) >= GRADE_RANK.get(_grade(floor), 99)
+
+
+def _paper_truth_operational_state(paper_truth: dict[str, Any]) -> tuple[bool, list[str], dict[str, bool]]:
+    gates = _as_dict(paper_truth.get("gates"))
+    input_freshness = _as_dict(paper_truth.get("input_freshness"))
+    modern_contract = bool(
+        input_freshness or all(gate_id in gates for gate_id in PAPER_OPERATIONAL_GATE_IDS)
+    )
+    if not modern_contract:
+        failed = [str(item) for item in _as_list(paper_truth.get("failed_checks")) if str(item or "").strip()]
+        ready = bool(
+            paper_truth
+            and _status(paper_truth.get("overall_status") or paper_truth.get("status")) not in BAD_STATUSES
+            and bool(paper_truth.get("ok", not failed))
+            and not failed
+        )
+        return ready, ([] if ready else ["legacy_paper_truth_not_ready"]), {}
+
+    gate_states = {
+        gate_id: bool(_as_dict(gates.get(gate_id)).get("ok", False))
+        for gate_id in PAPER_OPERATIONAL_GATE_IDS
+    }
+    operational_inputs_fresh = bool(input_freshness.get("operational_inputs_fresh", False))
+    blockers = ordered_unique(
+        [
+            "paper_truth_operational_inputs_stale" if not operational_inputs_fresh else "",
+            *[f"paper_truth_operational_gate_not_ready:{gate_id}" for gate_id, ready in gate_states.items() if not ready],
+        ]
+    )
+    return bool(operational_inputs_fresh and all(gate_states.values())), blockers, gate_states
 
 
 def _gate(gate_id: str, title: str, ready: bool, blockers: list[str], evidence: dict[str, Any], *, owner: str) -> dict[str, Any]:
@@ -289,14 +330,22 @@ def _build_live_money_canary_milestones(
         elif milestone_id == "m02_live_like_paper_execution":
             raw_ready = bool(by_id.get("raw_profitability_posture", {}).get("ready", False))
             paper_ready = bool(by_id.get("sleeve_paper_trading_continuity", {}).get("ready", False))
-            ready = bool(raw_ready and paper_ready)
+            paper_evidence_ready = bool(
+                paper_truth.get("ok", False)
+                and _status(paper_truth.get("overall_status") or paper_truth.get("status")) not in BAD_STATUSES
+                and not _as_list(paper_truth.get("failed_checks"))
+            )
+            ready = bool(raw_ready and paper_ready and paper_evidence_ready)
             blockers = [
                 "raw_profitability_posture_not_ready" if not raw_ready else "",
                 "sleeve_paper_trading_continuity_not_ready" if not paper_ready else "",
+                "paper_execution_evidence_not_ready" if not paper_evidence_ready else "",
             ]
             evidence = {
                 "raw_profitability_posture": by_id.get("raw_profitability_posture", {}),
                 "sleeve_paper_trading_continuity": by_id.get("sleeve_paper_trading_continuity", {}),
+                "paper_execution_truth_status": paper_truth.get("overall_status") or paper_truth.get("status"),
+                "paper_execution_truth_failed_checks": _as_list(paper_truth.get("failed_checks")),
             }
         elif milestone_id == "m03_pre_trade_risk_controls":
             ready = bool(live_money_risk_ready)
@@ -350,10 +399,16 @@ def _build_live_money_canary_milestones(
         elif milestone_id == "m06_explained_loss_attribution":
             raw_ready = bool(by_id.get("raw_profitability_posture", {}).get("ready", False))
             paper_ready = bool(by_id.get("sleeve_paper_trading_continuity", {}).get("ready", False))
-            ready = bool(raw_ready and paper_ready)
+            paper_evidence_ready = bool(
+                paper_truth.get("ok", False)
+                and _status(paper_truth.get("overall_status") or paper_truth.get("status")) not in BAD_STATUSES
+                and not _as_list(paper_truth.get("failed_checks"))
+            )
+            ready = bool(raw_ready and paper_ready and paper_evidence_ready)
             blockers = [
                 "raw_profitability_not_A_ready" if not raw_ready else "",
                 "paper_truth_continuity_not_ready" if not paper_ready else "",
+                "paper_execution_evidence_not_ready" if not paper_evidence_ready else "",
             ]
             evidence = {
                 "raw_profitability_posture": by_id.get("raw_profitability_posture", {}),
@@ -595,6 +650,9 @@ def build_payload(
 
     ramp_blockers = [str(item) for item in _as_list(paper_ramp.get("blockers")) if str(item or "").strip()]
     truth_failed = [str(item) for item in _as_list(paper_truth.get("failed_checks")) if str(item or "").strip()]
+    paper_truth_operational_ready, paper_truth_operational_blockers, paper_truth_operational_gates = (
+        _paper_truth_operational_state(paper_truth)
+    )
     runtime_failed = [str(item) for item in _as_list(paper_runtime.get("failed_checks")) if str(item or "").strip()]
     dropout_terms = ("dropout", "paper_trading_inactive", "paper_not_active", "sleeve_not_paper", "missing_paper")
     unexplained_dropout_markers = [
@@ -609,11 +667,10 @@ def build_payload(
             paper_truth
             and paper_runtime
             and paper_ramp
-            and _status(paper_truth.get("overall_status") or paper_truth.get("status")) not in BAD_STATUSES
+            and paper_truth_operational_ready
             and _status(paper_runtime.get("overall_status") or paper_runtime.get("status")) not in BAD_STATUSES
             and _status(paper_ramp.get("overall_status") or paper_ramp.get("status") or paper_ramp.get("stage")) not in BAD_STATUSES
             and not ramp_blockers
-            and not truth_failed
             and not runtime_failed
             and not unexplained_dropout_markers
         ),
@@ -622,7 +679,7 @@ def build_payload(
             "runtime_paper_regression_guard_missing" if not paper_runtime else "",
             "paper_400_ramp_missing" if not paper_ramp else "",
             "paper_ramp_blockers_present" if ramp_blockers else "",
-            "paper_truth_failed_checks_present" if truth_failed else "",
+            *paper_truth_operational_blockers,
             "runtime_paper_failed_checks_present" if runtime_failed else "",
             "unexplained_paper_trading_dropout_marker_present" if unexplained_dropout_markers else "",
         ],
@@ -632,6 +689,10 @@ def build_payload(
             "paper_ramp_status": paper_ramp.get("overall_status") or paper_ramp.get("status") or paper_ramp.get("stage"),
             "paper_ramp_blockers": ramp_blockers,
             "paper_truth_failed_checks": truth_failed,
+            "paper_truth_operational_ready": paper_truth_operational_ready,
+            "paper_truth_operational_blockers": paper_truth_operational_blockers,
+            "paper_truth_operational_gates": paper_truth_operational_gates,
+            "paper_truth_evidence_pending": bool(truth_failed),
             "runtime_paper_failed_checks": runtime_failed,
             "dropout_markers": unexplained_dropout_markers,
         },
