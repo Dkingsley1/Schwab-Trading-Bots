@@ -46,7 +46,7 @@ jobs:
           fi
 
       - name: Upload generated showcase artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: showcase-generated-${{ github.run_id }}
           if-no-files-found: ignore
