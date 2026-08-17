@@ -146,7 +146,7 @@ DATA_INTAKE_ROUTES: dict[str, dict[str, Any]] = {
 
 UNIVERSES: dict[str, list[str]] = {
     "SHADOW_SYMBOLS_CORE": [
-        "SPY", "QQQ", "DIA", "IWM", "MDY", "VOO", "VTI", "IVV", "SPLG", "RSP",
+        "SPY", "QQQ", "DIA", "IWM", "MDY", "VOO", "VTI", "IVV", "SPYM", "RSP",
         *FACTOR_STYLE_SYMBOLS,
         "AAPL", "MSFT", "NVDA", "AMD", "AVGO", "TSM", "ASML", "MU", "ARM", "SMH", "SOXX", "QCOM", "TXN", "AMAT", "LRCX", "KLAC", "INTC",
         "AMZN", "GOOG", "GOOGL", "META", "NFLX", "DIS", "WBD", "ORCL", "CRM", "ADBE", "NOW", "PLTR", "SNOW", "SHOP", "UBER", "ABNB",

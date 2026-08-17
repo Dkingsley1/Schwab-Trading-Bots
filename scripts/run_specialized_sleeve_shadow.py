@@ -753,7 +753,7 @@ SLEEVE_DEFAULTS = {
         "source_profile": "dealer_gamma_proxy,vanna_charm_flow,vol_control_rebalance,gamma_flip",
     },
     "etf_flow_creation_redemption": {
-        "symbols": "SPY,QQQ,IWM,DIA,VOO,VTI,IVV,RSP,SPLG,XLK,XLF,XLE,XLV,XLY,XLP,XLU,XLI,XLRE,SMH,HYG,LQD,TLT,GLD,UUP",
+        "symbols": "SPY,QQQ,IWM,DIA,VOO,VTI,IVV,RSP,SPYM,XLK,XLF,XLE,XLV,XLY,XLP,XLU,XLI,XLRE,SMH,HYG,LQD,TLT,GLD,UUP",
         "context_symbols": "SPY,QQQ,IWM,DIA,VOO,VTI,RSP,XLK,XLF,XLE,XLV,HYG,LQD,TLT,GLD,UUP,VIXY",
         "interval": "600",
         "min_interval": "420",

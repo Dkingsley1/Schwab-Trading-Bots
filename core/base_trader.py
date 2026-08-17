@@ -263,7 +263,8 @@ class BaseTrader:
         self._paper_book_started_utc = datetime.now(timezone.utc).isoformat()
         self._paper_state_path = ""
 
-        self.live_risk_config = LiveRiskConfig.from_env()
+        live_policy_root = self.project_root if str(mode or "").strip().lower() == "live" else None
+        self.live_risk_config = LiveRiskConfig.from_env(live_policy_root)
         self.live_guard = LiveExecutionGuard(self.live_risk_config)
         account_ref_env = str(getattr(self.broker_adapter, "account_reference_env_var", "") or "").strip()
         auto_discover_env = str(getattr(self.broker_adapter, "account_reference_auto_discover_env_var", "") or "").strip()
@@ -5217,7 +5218,15 @@ class BaseTrader:
 
                     guard_event = "pre_trade_guard"
                     gate_name = str(guard_decision.gate or "")
-                    if gate_name in {"position_limit", "order_notional_limit", "open_order_limit_total", "open_order_limit_symbol", "daily_loss_cap"}:
+                    if gate_name in {
+                        "position_limit",
+                        "order_notional_limit",
+                        "open_order_limit_total",
+                        "open_order_limit_symbol",
+                        "daily_loss_cap",
+                        "cumulative_loss_cap",
+                        "persistent_risk_state",
+                    }:
                         guard_event = "risk_limit_breach"
                     elif gate_name == "slippage_limit":
                         guard_event = "slippage_guard"

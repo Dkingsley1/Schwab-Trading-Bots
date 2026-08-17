@@ -34,6 +34,12 @@ def _reset_paper_profitability_guard_cache() -> None:
 
 
 def _allow_production_order_firewall(monkeypatch) -> None:
+    unscoped_from_env = base_src.LiveRiskConfig.from_env
+    monkeypatch.setattr(
+        base_src.LiveRiskConfig,
+        "from_env",
+        classmethod(lambda _cls, *_args, **_kwargs: unscoped_from_env(None)),
+    )
     monkeypatch.setattr(
         base_src,
         "production_order_firewall_check",

@@ -10,6 +10,7 @@ from typing import Any, Dict, Optional
 
 from core.runtime_layers import CircuitBreaker
 from core.execution_simulator import simulate_execution
+from core.live_canary_allowlist import evaluate_live_canary_allowlist
 
 
 TRADE_ACTIONS = {
@@ -53,15 +54,63 @@ class LiveRiskConfig:
     max_cancel_probability: float = 0.85
     max_stale_quote_probability: float = 0.80
     allow_new_short_positions: bool = False
+    cumulative_loss_cap: float = 0.0
+    risk_state_path: str = ""
+    risk_state_candidate_id: str = ""
 
     @classmethod
-    def from_env(cls) -> "LiveRiskConfig":
+    def from_env(cls, project_root: str | Path | None = None) -> "LiveRiskConfig":
+        policy: dict[str, Any] = {}
+        plan_limits: dict[str, Any] = {}
+        if project_root is not None:
+            policy, _ = _load_production_firewall_policy(project_root)
+            canary_contract = evaluate_live_canary_allowlist(project_root)
+            raw_limits = canary_contract.get("hard_limits")
+            plan_limits = raw_limits if isinstance(raw_limits, dict) else {}
+
+        def bounded_float(env_name: str, fallback: float, *caps: Any) -> float:
+            positive_caps = [float(value) for value in caps if float(value or 0.0) > 0.0]
+            default_value = min(positive_caps) if positive_caps else float(fallback)
+            requested = max(float(os.getenv(env_name, str(default_value))), 0.0)
+            if positive_caps:
+                return min(requested if requested > 0.0 else default_value, *positive_caps)
+            return requested
+
+        def bounded_int(env_name: str, fallback: int, *caps: Any) -> int:
+            positive_caps = [int(float(value)) for value in caps if int(float(value or 0)) > 0]
+            default_value = min(positive_caps) if positive_caps else int(fallback)
+            requested = max(int(os.getenv(env_name, str(default_value))), 1)
+            return min(requested, *positive_caps) if positive_caps else requested
+
         return cls(
-            max_position_qty_per_symbol=max(float(os.getenv("LIVE_MAX_POSITION_QTY_PER_SYMBOL", "250")), 0.0),
-            max_order_notional=max(float(os.getenv("LIVE_MAX_ORDER_NOTIONAL", "25000")), 0.0),
-            max_open_orders_total=max(int(os.getenv("LIVE_MAX_OPEN_ORDERS_TOTAL", "30")), 1),
-            max_open_orders_per_symbol=max(int(os.getenv("LIVE_MAX_OPEN_ORDERS_PER_SYMBOL", "3")), 1),
-            daily_loss_cap=max(float(os.getenv("LIVE_MAX_DAILY_LOSS", "1000")), 0.0),
+            max_position_qty_per_symbol=bounded_float(
+                "LIVE_MAX_POSITION_QTY_PER_SYMBOL",
+                250.0,
+                policy.get("max_order_quantity"),
+                plan_limits.get("max_order_quantity"),
+            ),
+            max_order_notional=bounded_float(
+                "LIVE_MAX_ORDER_NOTIONAL",
+                25000.0,
+                policy.get("max_single_order_notional"),
+                plan_limits.get("max_order_notional_usd"),
+            ),
+            max_open_orders_total=bounded_int(
+                "LIVE_MAX_OPEN_ORDERS_TOTAL",
+                30,
+                plan_limits.get("max_concurrent_positions"),
+            ),
+            max_open_orders_per_symbol=bounded_int(
+                "LIVE_MAX_OPEN_ORDERS_PER_SYMBOL",
+                3,
+                plan_limits.get("max_concurrent_positions"),
+            ),
+            daily_loss_cap=bounded_float(
+                "LIVE_MAX_DAILY_LOSS",
+                1000.0,
+                policy.get("max_daily_loss"),
+                plan_limits.get("max_daily_loss_usd"),
+            ),
             api_fail_limit=max(int(os.getenv("LIVE_API_FAIL_LIMIT", "3")), 1),
             api_cooldown_seconds=max(int(os.getenv("LIVE_API_COOLDOWN_SECONDS", "120")), 1),
             trade_min_interval_seconds=max(float(os.getenv("LIVE_TRADE_MIN_INTERVAL_SECONDS", "8")), 0.0),
@@ -73,7 +122,34 @@ class LiveRiskConfig:
             max_reject_probability=max(float(os.getenv("LIVE_MAX_REJECT_PROBABILITY", "0.80")), 0.0),
             max_cancel_probability=max(float(os.getenv("LIVE_MAX_CANCEL_PROBABILITY", "0.85")), 0.0),
             max_stale_quote_probability=max(float(os.getenv("LIVE_MAX_STALE_QUOTE_PROBABILITY", "0.80")), 0.0),
-            allow_new_short_positions=_truthy(os.getenv("LIVE_ALLOW_NEW_SHORT_POSITIONS", "0"), False),
+            allow_new_short_positions=bool(
+                _truthy(os.getenv("LIVE_ALLOW_NEW_SHORT_POSITIONS", "0"), False)
+                and (
+                    policy.get("allow_new_short_positions", False)
+                    if project_root is not None
+                    else True
+                )
+            ),
+            cumulative_loss_cap=(
+                bounded_float(
+                    "LIVE_MAX_CUMULATIVE_LOSS",
+                    0.0,
+                    policy.get("max_cumulative_loss"),
+                    plan_limits.get("max_cumulative_loss_usd"),
+                )
+                if project_root is not None
+                else 0.0
+            ),
+            risk_state_path=(
+                str(Path(project_root) / "governance" / "runtime" / "live_risk_budget_state.json")
+                if project_root is not None
+                else ""
+            ),
+            risk_state_candidate_id=(
+                str(canary_contract.get("current_candidate_id") or "")
+                if project_root is not None
+                else ""
+            ),
         )
 
 
@@ -124,6 +200,7 @@ def production_order_firewall_check(
 ) -> GuardDecision:
     env_map = env if isinstance(env, dict) else dict(os.environ)
     policy, config_path = _load_production_firewall_policy(project_root)
+    canary_contract = evaluate_live_canary_allowlist(project_root)
     allow_env = str(policy.get("allow_order_execution_env") or "ALLOW_ORDER_EXECUTION")
     market_data_env = str(policy.get("market_data_only_env") or "MARKET_DATA_ONLY")
     market_data_default = bool(policy.get("market_data_only_default", True))
@@ -193,7 +270,11 @@ def production_order_firewall_check(
         blockers.append("required_safety_flag_missing")
 
     qty = max(float(quantity or 0.0), 0.0)
-    max_qty = float(policy.get("max_order_quantity") or 0.0)
+    plan_limits = canary_contract.get("hard_limits") if isinstance(canary_contract.get("hard_limits"), dict) else {}
+    policy_max_qty = float(policy.get("max_order_quantity") or 0.0)
+    plan_max_qty = float(plan_limits.get("max_order_quantity") or 0.0)
+    quantity_caps = [value for value in (policy_max_qty, plan_max_qty) if value > 0.0]
+    max_qty = min(quantity_caps) if quantity_caps else 0.0
     if not risk_reducing_exit and max_qty > 0.0 and qty > max_qty:
         blockers.append("quantity_exceeds_cap")
 
@@ -207,7 +288,10 @@ def production_order_firewall_check(
             order_price = max(float(reference_price or 0.0), 0.0)
         except Exception:
             order_price = 0.0
-    max_notional = float(policy.get("max_single_order_notional") or 0.0)
+    policy_max_notional = float(policy.get("max_single_order_notional") or 0.0)
+    plan_max_notional = float(plan_limits.get("max_order_notional_usd") or 0.0)
+    notional_caps = [value for value in (policy_max_notional, plan_max_notional) if value > 0.0]
+    max_notional = min(notional_caps) if notional_caps else 0.0
     legs = (order_spec or {}).get("orderLegCollection")
     asset_types = [
             str(((leg or {}).get("instrument") or {}).get("assetType") or "").upper()
@@ -235,16 +319,23 @@ def production_order_firewall_check(
     symbol_key = str(symbol or "").strip().upper()
     if not leg_symbols or any(item != symbol_key for item in leg_symbols):
         blockers.append("order_symbol_mismatch")
-    allowlist_path = _project_path(project_root, policy.get("canary_allowlist_path") or "")
-    canary_allowlist: list[str] = []
-    if allowlist_path.exists():
-        try:
-            loaded_allowlist = json.loads(allowlist_path.read_text(encoding="utf-8"))
-            raw_symbols = loaded_allowlist.get("symbols", []) if isinstance(loaded_allowlist, dict) else []
-            canary_allowlist = [str(item).strip().upper() for item in raw_symbols if str(item).strip()]
-        except Exception:
-            canary_allowlist = []
+    allowlist_path = Path(str(canary_contract.get("path") or ""))
+    canary_allowlist = [str(item) for item in canary_contract.get("symbols", [])]
     is_new_entry = str(action or "").strip().upper() in {"BUY", "BUY_TO_OPEN", "SELL_SHORT", "SELL_TO_OPEN"}
+    account_reference_env = str(policy.get("account_reference_env") or "SCHWAB_ACCOUNT_HASH")
+    account_auto_discover_env = str(policy.get("account_auto_discover_env") or "SCHWAB_ACCOUNT_HASH_AUTO_DISCOVER")
+    account_reference_present = bool(str(env_map.get(account_reference_env) or "").strip())
+    account_auto_discover = _truthy(env_map.get(account_auto_discover_env), True)
+    account_reference_pinned = bool(account_reference_present and not account_auto_discover)
+    if (
+        is_new_entry
+        and not risk_reducing_exit
+        and bool(policy.get("require_pinned_account_reference", True))
+        and not account_reference_pinned
+    ):
+        blockers.append("live_account_reference_not_pinned")
+    if is_new_entry and not risk_reducing_exit and not bool(canary_contract.get("ready", False)):
+        blockers.extend(str(item) for item in canary_contract.get("blockers", []) if str(item))
     if is_new_entry and not risk_reducing_exit and (not canary_allowlist or symbol_key not in set(canary_allowlist)):
         blockers.append("symbol_not_in_live_canary_allowlist")
 
@@ -279,6 +370,14 @@ def production_order_firewall_check(
         "allowed_instructions": sorted(allowed_instructions),
         "canary_allowlist_path": str(allowlist_path),
         "canary_allowlist": canary_allowlist,
+        "canary_allowlist_contract": canary_contract,
+        "account_reference_env": account_reference_env,
+        "account_auto_discover_env": account_auto_discover_env,
+        "account_reference_present": account_reference_present,
+        "account_auto_discover": account_auto_discover,
+        "account_reference_pinned": account_reference_pinned,
+        "effective_max_order_quantity": float(max_qty),
+        "effective_max_order_notional": float(max_notional),
         "production_excellence_path": str(excellence_path),
         "production_excellence_ready": bool(production_excellence.get("ten_out_of_ten_ready", False)),
         "live_transition_integrity_path": str(transition_path),
@@ -317,6 +416,10 @@ class LiveExecutionGuard:
 
         self._daily_key = self._utc_day_key(time.time())
         self._realized_pnl_today = 0.0
+        self._realized_pnl_cumulative = 0.0
+        self._risk_state_ready = True
+        self._risk_state_error = ""
+        self._load_risk_state()
 
         self._fill_count = 0
         self._fill_slippage_bps_sum = 0.0
@@ -343,11 +446,69 @@ class LiveExecutionGuard:
             return
         self._daily_key = day_key
         self._realized_pnl_today = 0.0
+        self._persist_risk_state()
 
         self._fill_count = 0
         self._fill_slippage_bps_sum = 0.0
         self._fill_deviation_bps_sum = 0.0
         self._fill_deviation_violations = 0
+
+    def _risk_state_file(self) -> Path | None:
+        raw = str(self.config.risk_state_path or "").strip()
+        return Path(raw) if raw else None
+
+    def _load_risk_state(self) -> None:
+        path = self._risk_state_file()
+        if path is None:
+            return
+        candidate_id = str(self.config.risk_state_candidate_id or "").strip()
+        if not candidate_id:
+            self._risk_state_ready = False
+            self._risk_state_error = "risk_state_candidate_missing"
+            return
+        if not path.exists():
+            return
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            if not isinstance(payload, dict) or int(payload.get("schema_version", 0) or 0) != 1:
+                raise ValueError("invalid_schema")
+            persisted_candidate = str(payload.get("candidate_id") or "").strip()
+            if persisted_candidate != candidate_id:
+                return
+            self._realized_pnl_cumulative = float(payload.get("realized_pnl_cumulative", 0.0) or 0.0)
+            if str(payload.get("daily_key") or "") == self._daily_key:
+                self._realized_pnl_today = float(payload.get("realized_pnl_today", 0.0) or 0.0)
+        except Exception as exc:
+            self._risk_state_ready = False
+            self._risk_state_error = f"risk_state_invalid:{type(exc).__name__}"
+
+    def _persist_risk_state(self) -> None:
+        path = self._risk_state_file()
+        if path is None:
+            return
+        candidate_id = str(self.config.risk_state_candidate_id or "").strip()
+        if not candidate_id:
+            self._risk_state_ready = False
+            self._risk_state_error = "risk_state_candidate_missing"
+            return
+        temp_path = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+        payload = {
+            "schema_version": 1,
+            "candidate_id": candidate_id,
+            "daily_key": self._daily_key,
+            "realized_pnl_today": float(self._realized_pnl_today),
+            "realized_pnl_cumulative": float(self._realized_pnl_cumulative),
+            "updated_at_utc": datetime.now(timezone.utc).isoformat(),
+        }
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            temp_path.write_text(json.dumps(payload, sort_keys=True) + "\n", encoding="utf-8")
+            os.replace(temp_path, path)
+            self._risk_state_ready = True
+            self._risk_state_error = ""
+        except Exception as exc:
+            self._risk_state_ready = False
+            self._risk_state_error = f"risk_state_write_failed:{type(exc).__name__}"
 
     def allow_api_call(self, key: str = "broker_api") -> bool:
         return self._api_breaker.allow(key)
@@ -394,6 +555,14 @@ class LiveExecutionGuard:
         now_value = time.time() if now_ts is None else float(now_ts)
         self._roll_day(now_value)
 
+        if not self._risk_state_ready:
+            return GuardDecision(
+                ok=False,
+                gate="persistent_risk_state",
+                reason=self._risk_state_error or "persistent_risk_state_not_ready",
+                details={"risk_state_path": str(self.config.risk_state_path or "")},
+            )
+
         symbol_key = str(symbol or "").strip().upper()
         qty = max(float(quantity or 0.0), 0.0)
         ref = max(float(reference_price or 0.0), 0.0)
@@ -418,6 +587,21 @@ class LiveExecutionGuard:
                 details={
                     "realized_pnl_today": float(self._realized_pnl_today),
                     "max_daily_loss": float(self.config.daily_loss_cap),
+                },
+            )
+
+        if (
+            self.config.cumulative_loss_cap > 0.0
+            and self._realized_pnl_cumulative <= -abs(self.config.cumulative_loss_cap)
+        ):
+            return GuardDecision(
+                ok=False,
+                gate="cumulative_loss_cap",
+                reason="cumulative_loss_cap_reached",
+                details={
+                    "realized_pnl_cumulative": float(self._realized_pnl_cumulative),
+                    "max_cumulative_loss": float(self.config.cumulative_loss_cap),
+                    "risk_state_path": str(self.config.risk_state_path or ""),
                 },
             )
 
@@ -715,7 +899,10 @@ class LiveExecutionGuard:
     def record_realized_pnl(self, pnl_delta: float, now_ts: Optional[float] = None) -> None:
         now_value = time.time() if now_ts is None else float(now_ts)
         self._roll_day(now_value)
-        self._realized_pnl_today += float(pnl_delta or 0.0)
+        delta = float(pnl_delta or 0.0)
+        self._realized_pnl_today += delta
+        self._realized_pnl_cumulative += delta
+        self._persist_risk_state()
 
     def record_fill(
         self,
@@ -771,6 +958,9 @@ class LiveExecutionGuard:
 
         self._positions[symbol_key] = {"qty": float(new_qty), "avg_price": float(new_avg)}
         self._realized_pnl_today += float(realized_delta)
+        self._realized_pnl_cumulative += float(realized_delta)
+        if realized_delta != 0.0:
+            self._persist_risk_state()
 
         ref_price = max(float(reference_price or 0.0), 0.0)
         exp_price = max(float(expected_fill_price or 0.0), 0.0)
@@ -909,6 +1099,9 @@ class LiveExecutionGuard:
         return {
             "daily_key": self._daily_key,
             "realized_pnl_today": float(self._realized_pnl_today),
+            "realized_pnl_cumulative": float(self._realized_pnl_cumulative),
+            "risk_state_ready": bool(self._risk_state_ready),
+            "risk_state_error": self._risk_state_error,
             "open_orders_total": int(len(self._open_orders)),
             "open_orders_by_symbol": dict(self._open_orders_by_symbol),
             "positions": {k: dict(v) for k, v in self._positions.items()},
@@ -919,6 +1112,9 @@ class LiveExecutionGuard:
                 "max_open_orders_total": int(self.config.max_open_orders_total),
                 "max_open_orders_per_symbol": int(self.config.max_open_orders_per_symbol),
                 "daily_loss_cap": float(self.config.daily_loss_cap),
+                "cumulative_loss_cap": float(self.config.cumulative_loss_cap),
+                "risk_state_path": str(self.config.risk_state_path or ""),
+                "risk_state_candidate_id": str(self.config.risk_state_candidate_id or ""),
                 "api_fail_limit": int(self.config.api_fail_limit),
                 "api_cooldown_seconds": int(self.config.api_cooldown_seconds),
                 "trade_min_interval_seconds": float(self.config.trade_min_interval_seconds),

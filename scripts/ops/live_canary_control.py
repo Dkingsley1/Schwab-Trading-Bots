@@ -15,6 +15,8 @@ if __package__ in {None, ""}:
 else:
     from .long_runtime_common import PROJECT_ROOT, iso_now, load_json, ordered_unique, write_payload
 
+from core.live_canary_allowlist import evaluate_live_canary_allowlist
+
 
 DEFAULT_OUT_PATH = PROJECT_ROOT / "governance" / "health" / "live_canary_control_latest.json"
 DEFAULT_MAX_CANARY_WEIGHT = 0.01
@@ -49,6 +51,7 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, max_canary_weight: float
     canary_auto_tuner = load_json(health_root / "canary_auto_tuner_latest.json")
     canary_rollout = load_json(health_root / "canary_rollout_latest.json")
     live_money_contract = load_json(health_root / "live_money_readiness_contract_latest.json")
+    canary_allowlist = evaluate_live_canary_allowlist(project_root)
 
     broker_ready = bool(broker.get("ready_for_open", False))
     session_ready = bool(session.get("ready", session.get("ok", False)))
@@ -129,6 +132,7 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, max_canary_weight: float
             ("promotion_packet_not_ready" if not packet_preclearance_ready else ("promotion_packet_preclearance_only" if not packet_ready else "")),
             "canary_rollout_not_ready" if not canary_signal_ready else "",
             "canary_weight_not_ready" if not weight_ok else "",
+            "canary_allowlist_not_ready" if not canary_allowlist.get("ready", False) else "",
         ]
     )
     supervised_canary_ready = not blocking_reasons
@@ -146,6 +150,7 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, max_canary_weight: float
                 "promotion_packet_preclearance_only",
                 "canary_rollout_not_ready",
                 "canary_weight_not_ready",
+                "canary_allowlist_not_ready",
             }
             for reason in blocking_reasons
         )
@@ -153,6 +158,7 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, max_canary_weight: float
     preapproved_supervised_ready = bool(
         staged_preclearance_ready
         and packet_preclearance_ready
+        and bool(canary_allowlist.get("ready", False))
         and (runtime_clearance_recoverable or clearance_ready)
         and all(
             reason
@@ -191,6 +197,7 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, max_canary_weight: float
             "promotion_packet_preclearance_only",
             "canary_rollout_not_ready",
             "canary_weight_not_ready",
+            "canary_allowlist_not_ready",
         }
     )
     preclearance_score = 0.0
@@ -206,6 +213,8 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, max_canary_weight: float
         preclearance_score += 10.0
     if weight_ok:
         preclearance_score += 10.0
+    if canary_allowlist.get("ready", False):
+        preclearance_score += 5.0
     if preapproved_supervised_ready:
         preclearance_score += 5.0
     if runnable_after_release_window:
@@ -240,6 +249,7 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, max_canary_weight: float
             "clear runtime separation blockers before allowing even a supervised canary write path" if not clearance_ready or live_lane_should_be_read_only else "",
             "keep live money locked until the A/A+ faithful-live contract clears" if live_money_contract_enforced and not live_money_contract_ready else "",
             "refresh the canary rollout guard so supervised canary permission is backed by recent paper evidence" if not canary_signal_ready else "",
+            "create a short-lived candidate-bound canary allowlist only after the promotion gates clear" if not canary_allowlist.get("ready", False) else "",
             "the canary package is runnable once the runtime release window opens; the remaining blockers are only the cold-lane/runtime release protections" if runnable_after_release_window else "",
             f"keep the canary weight at or under {float(max_canary_weight):.2f} before supervised live submit" if not weight_ok else "",
             "finish the cold-lane/runtime clearance steps to convert staged preclearance into supervised canary permission" if staged_preclearance_ready else "",
@@ -280,6 +290,8 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, max_canary_weight: float
         "applied_canary_weight": round(canary_weight, 6),
         "max_canary_weight": round(float(max_canary_weight), 6),
         "canary_weight_ok": weight_ok,
+        "canary_allowlist_ready": bool(canary_allowlist.get("ready", False)),
+        "canary_allowlist": canary_allowlist,
         "bounded_blocker_count": bounded_blocker_count,
         "preclearance_score": preclearance_score,
         "recommended_actions": recommended_actions,

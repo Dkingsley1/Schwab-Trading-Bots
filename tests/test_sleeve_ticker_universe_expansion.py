@@ -16,6 +16,8 @@ def test_sleeve_ticker_universe_expands_applicable_sleeves() -> None:
     assert payload["unique_symbol_count"] == 1000
     assert payload["group_slot_count"] == sum(payload["symbol_counts"].values())
     assert "NVDA" in env["SHADOW_SYMBOLS_CORE"]
+    assert "SPYM" in env["SHADOW_SYMBOLS_CORE"]
+    assert "SPLG" not in env["SHADOW_SYMBOLS_CORE"]
     assert "PANW" in env["SHADOW_SYMBOLS_CORE"]
     assert "DELL" in env["SHADOW_SYMBOLS_CORE"]
     assert "SNDK" in env["SHADOW_SYMBOLS_CORE"]
