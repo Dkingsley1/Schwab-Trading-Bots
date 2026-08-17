@@ -154,7 +154,7 @@ jobs:
         run: |
           python scripts/ops/bot_organization_control.py \
             --out-file /tmp/bot_organization_latest.json \
-            --hierarchy-out /tmp/bot_hierarchy_latest.json \
+            --hierarchy-out governance/bot_organization/bot_hierarchy_latest.json \
             --json >/dev/null
 
       - name: Bot profitability and scalability structural floor
@@ -189,7 +189,7 @@ jobs:
           PY
           python scripts/ops/master_grandmaster_evidence_control.py \
             --bot-organization-health /tmp/bot_organization_latest.json \
-            --bot-hierarchy /tmp/bot_hierarchy_latest.json \
+            --bot-hierarchy governance/bot_organization/bot_hierarchy_latest.json \
             --paper-truth /tmp/master_paper_truth.json \
             --runtime-throttle /tmp/master_runtime_throttle.json \
             --out-file /tmp/master_grandmaster_evidence_v2_latest.json \
