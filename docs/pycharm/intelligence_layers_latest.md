@@ -1,6 +1,6 @@
 # Intelligence Layers PyCharm Index
 
-- Updated UTC: `2026-08-14T09:34:32.883106+00:00`
+- Updated UTC: `2026-08-17T18:39:38.982050+00:00`
 - Whole-System Status: `degraded`
 - Top Risk: `training_quality`
 - Safe Next Command: `./scripts/ops/opsctl.sh backpressure-super-drainer --apply --max-waves 1 --target-pending-lines 5000 --json`
@@ -43,7 +43,7 @@
 
 - Layer Status: `ready`
 - Action: `observe_docs_reporting_contract`
-- Command Contract Entries: `191`
+- Command Contract Entries: `196`
 - Command Issues: `0`
 - Report Bundle Entries: `38`
 - Report Bundle Errors: `0`
@@ -59,14 +59,14 @@
 ## Intelligence Layers
 
 - `super_intelligence`: status `advisory`, mode `rethink`, action `run_outcome_verified_micro_drain`
-- `outcome_learning`: status `degraded`, verdict `ineffective_so_far`
+- `outcome_learning`: status `advisory`, verdict `ineffective_so_far`
 - `paper_lane_governor`: status `ready`, mode `full_eligible_paper_soak_active`, score `1584`
 - `symbol_universe_intelligence`: status `ready`, score `100.0`
 - `cognitive_twin_counterfactuals`: status `advisory`, score `46`, next `pressure_relief_success`
-- `recursive_policy_evolution`: status `degraded`, score `40.0`, next `cognitive_twin_counterfactual_simulator`
-- `deeper_self_awareness_layers`: status `advisory`, mode `advisory_control_plane_with_constitutional_lockout_attestation`, score `9`, next `belief_ledger_confidence`
+- `recursive_policy_evolution`: status `degraded`, score `52.0`, next `cognitive_twin_counterfactual_simulator`
+- `deeper_self_awareness_layers`: status `ready`, mode `advisory_control_plane_with_constitutional_lockout_attestation`, score `9`, next `belief_ledger_confidence`
 - `codex_handoff`: status `advisory`
-- `documentation_reporting_intelligence`: status `ready`, action `observe_docs_reporting_contract`, score `191`
+- `documentation_reporting_intelligence`: status `ready`, action `observe_docs_reporting_contract`, score `196`
 
 ## PyCharm Open Paths
 
