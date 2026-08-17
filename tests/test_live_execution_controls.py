@@ -136,6 +136,27 @@ def test_production_firewall_requires_ten_pillar_evidence(tmp_path: Path) -> Non
     assert "production_excellence_not_ready" in decision.details["blockers"]
 
 
+def test_production_firewall_fails_closed_when_required_role_contract_is_missing(tmp_path: Path) -> None:
+    order_spec = _write_firewall_fixture(tmp_path, excellence_ready=True, symbols=["AAPL"])
+    config_path = tmp_path / "config" / "production_readiness_control_v1.json"
+    config = json.loads(config_path.read_text(encoding="utf-8"))
+    config["live_execution_risk_firewall"]["require_system_role_contract_for_live_submit"] = True
+    config_path.write_text(json.dumps(config), encoding="utf-8")
+
+    decision = production_order_firewall_check(
+        project_root=tmp_path,
+        symbol="AAPL",
+        action="BUY",
+        quantity=1.0,
+        order_spec=order_spec,
+        env={"ALLOW_ORDER_EXECUTION": "1", "MARKET_DATA_ONLY": "0"},
+    )
+
+    assert decision.ok is False
+    assert "system_role_contract_live_submit_denied" in decision.details["blockers"]
+    assert decision.details["system_role_contract_decision"]["ok"] is False
+
+
 def test_production_firewall_allows_only_qualified_canary_entries(tmp_path: Path) -> None:
     order_spec = _write_firewall_fixture(tmp_path, excellence_ready=True, symbols=["AAPL"])
 

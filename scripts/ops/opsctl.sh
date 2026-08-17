@@ -1703,6 +1703,9 @@ case "$cmd" in
   control-surface-ownership|control-ownership|framework-ownership)
     exec "$PY" "$PROJECT_ROOT/scripts/ops/control_surface_ownership.py" "$@"
     ;;
+  system-role-contract|role-contract|responsibility-contract)
+    exec "$PY" "$PROJECT_ROOT/scripts/ops/system_role_contract_control.py" "$@"
+    ;;
   bot-organization|bot-hierarchy|sleeve-subsections|hierarchical-bots)
     exec "$PY" "$PROJECT_ROOT/scripts/ops/bot_organization_control.py" "$@"
     ;;
@@ -3243,6 +3246,7 @@ opsctl commands:
   sleeve-isolation [--max-quarantine-events N] [--json]
   artifact-freshness-slo [--json]
   control-surface-ownership|control-ownership [--json]
+  system-role-contract|role-contract|responsibility-contract [--component ID --action ACTION] [--state-domain ID] [--resource PATH] [--json]
   bot-organization|bot-hierarchy|sleeve-subsections [--json]
   bot-profitability-scalability|bot-profit-scale [--max-files N] [--max-rows-per-file N] [--json]
   independent-runtime-monitor|independent-monitor [--receiver-url URL] [--json]

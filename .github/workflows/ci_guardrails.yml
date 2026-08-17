@@ -29,6 +29,8 @@ jobs:
             scripts/walk_forward_validate.py \
             scripts/walk_forward_promotion_gate.py \
             scripts/run_master_bot.py \
+            scripts/run_execution_lane.py \
+            scripts/shadow_watchdog.py \
             scripts/weekly_retrain.py \
             scripts/daily_auto_verify.py \
             scripts/promotion_readiness_summary.py \
@@ -49,6 +51,10 @@ jobs:
             scripts/ops/bot_profitability_scalability_control.py \
             scripts/ops/master_grandmaster_evidence_control.py \
             scripts/ops/control_surface_ownership.py \
+            scripts/ops/system_role_contract_control.py \
+            scripts/ops/process_watchdog.py \
+            scripts/ops/runtime_gate_dashboard.py \
+            scripts/ops/system_self_model.py \
             scripts/ops/chaos_drill_coordinator.py \
             scripts/ops/artifact_freshness_slo.py \
             scripts/ops/use_mode_compliance_guard.py \
@@ -73,6 +79,8 @@ jobs:
             core/live_order_ledger.py \
             core/live_canary_allowlist.py \
             core/live_execution_controls.py \
+            core/execution_lane_pipeline.py \
+            core/system_role_contracts.py \
             core/bot_profitability_scalability.py \
             core/master_grandmaster_evidence.py \
             scripts/ops/production_recovery_drill_harness.py \
@@ -105,6 +113,7 @@ jobs:
           python scripts/ops/bot_profitability_scalability_control.py --help >/dev/null
           python scripts/ops/master_grandmaster_evidence_control.py --help >/dev/null
           python scripts/ops/control_surface_ownership.py --help >/dev/null
+          python scripts/ops/system_role_contract_control.py --help >/dev/null
           python scripts/ops/chaos_drill_coordinator.py --help >/dev/null
           python scripts/ops/artifact_freshness_slo.py --help >/dev/null
           python scripts/ops/use_mode_compliance_guard.py --help >/dev/null
@@ -143,6 +152,7 @@ jobs:
       - name: Resilience configuration validation
         run: |
           python -m json.tool config/control_surface_ownership_v1.json >/dev/null
+          python -m json.tool config/system_role_contracts_v1.json >/dev/null
           python -m json.tool config/bot_organization_v1.json >/dev/null
           python -m json.tool config/bot_profitability_scalability_v1.json >/dev/null
           python -m json.tool config/master_grandmaster_evidence_v2.json >/dev/null
@@ -161,6 +171,12 @@ jobs:
           python scripts/ops/bot_organization_control.py \
             --out-file /tmp/bot_organization_latest.json \
             --hierarchy-out governance/bot_organization/bot_hierarchy_latest.json \
+            --json >/dev/null
+
+      - name: System responsibility and authority structural floor
+        run: |
+          python scripts/ops/system_role_contract_control.py \
+            --out-file /tmp/system_role_contract_latest.json \
             --json >/dev/null
 
       - name: Bot profitability and scalability structural floor
@@ -276,6 +292,7 @@ jobs:
           python -m pytest -q \
             tests/test_live_canary_allowlist.py \
             tests/test_live_execution_controls.py \
+            tests/test_system_role_contracts.py \
             tests/test_live_canary_control.py \
             tests/test_readiness_blocker_rollup.py \
             tests/test_sleeve_ticker_universe_expansion.py \

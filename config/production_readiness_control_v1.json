@@ -28,6 +28,9 @@
     "require_production_excellence_for_live_submit": true,
     "live_transition_integrity_artifact": "governance/health/live_transition_integrity_control_latest.json",
     "require_live_transition_integrity_for_live_submit": true,
+    "system_role_contract_path": "config/system_role_contracts_v1.json",
+    "live_execution_component_id": "live_execution_gateway",
+    "require_system_role_contract_for_live_submit": true,
     "required_safety_flags": [
       "governance/health/PAPER_TRADE_LOCK.flag"
     ],
@@ -87,13 +90,15 @@
       "scripts/ops/library_utilization_router.py",
       "scripts/ops/mlx_intelligence_router.py",
       "scripts/ops/promotion_pipeline.py",
+      "scripts/ops/system_role_contract_control.py",
       "scripts/secret_scan.py"
     ],
     "required_artifacts": [
       "governance/health/library_utilization_router_latest.json",
       "governance/health/mlx_intelligence_router_latest.json",
       "governance/health/live_readiness_smoke_latest.json",
-      "governance/health/promotion_quality_gate_latest.json"
+      "governance/health/promotion_quality_gate_latest.json",
+      "governance/health/system_role_contract_latest.json"
     ],
     "policy": "release_requires_static_security_dependency_router_and_smoke_artifacts"
   },
@@ -113,6 +118,7 @@
       "config/library_candidate_routes_v1.json",
       "config/library_activation_profiles_v1.json",
       "config/production_readiness_control_v1.json",
+      "config/system_role_contracts_v1.json",
       "config/.env.library_utilization_router_override",
       "config/runtime_profiles/live.lock.txt",
       "config/runtime_profiles/ops.lock.txt",
@@ -158,6 +164,15 @@
       "slo_error_budget_policy": ["ready"]
     },
     "required_capabilities": [
+      {
+        "capability_id": "system_role_contract",
+        "title": "System Responsibility And Runtime Authority",
+        "artifact": "governance/health/system_role_contract_latest.json",
+        "ready_statuses": ["ready"],
+        "max_age_hours": 0.5,
+        "truthy_keys": ["ok"],
+        "required": true
+      },
       {
         "capability_id": "external_alert_supervision",
         "title": "External Alert Supervision",

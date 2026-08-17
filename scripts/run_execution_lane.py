@@ -44,6 +44,7 @@ _CONTROL_ENV_VALUES: dict[str, str] = {}
 from core.base_trader import BaseTrader
 from core.brokers import BrokerRuntimeConfig, available_broker_names, normalize_broker_name
 from core.channel_queue import ChannelQueue
+from core.system_role_contracts import evaluate_component_action
 from core.execution_lane_pipeline import (
     EXECUTION_INTENT_CHANNEL,
     EXECUTION_PROMOTED_CHANNEL,
@@ -501,6 +502,34 @@ def main() -> int:
             auth_error=auth_error,
         )
         return 3
+
+    role_contract_path = PROJECT_ROOT / "config" / "system_role_contracts_v1.json"
+    paper_runtime_pause_active = bool(args.mode == "paper" and _paper_execution_paused_for_runtime())
+    if role_contract_path.is_file() and not paper_runtime_pause_active:
+        component_id = "paper_execution_gateway" if args.mode == "paper" else "live_execution_gateway"
+        action = "paper_submit" if args.mode == "paper" else "live_submit"
+        state_domain = "paper_order_submission" if args.mode == "paper" else "live_order_submission"
+        authority = evaluate_component_action(
+            PROJECT_ROOT,
+            component_id=component_id,
+            action=action,
+            state_domain=state_domain,
+        )
+        if not bool(authority.get("ok", False)):
+            auth_error = "system_role_authority_denied:" + ",".join(
+                str(item) for item in authority.get("blockers", []) if str(item)
+            )
+            print(f"[ExecutionLane] {args.mode} blocked: {auth_error}")
+            update_lane_health(
+                project_root=str(PROJECT_ROOT),
+                mode=args.mode,
+                processed_count=0,
+                queue_channel=channel,
+                queue_db_override=args.queue_db,
+                auth_ok=False,
+                auth_error=auth_error,
+            )
+            return 6
 
     processed_total = 0
     skipped_stale_total = 0

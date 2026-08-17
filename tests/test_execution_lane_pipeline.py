@@ -205,6 +205,10 @@ def _write_json(path: Path, payload: dict) -> None:
 
 
 def _seed_gates(project_root: Path, *, promote_ok: bool, quality_ok: bool) -> None:
+    role_contract_source = Path(__file__).resolve().parents[1] / "config" / "system_role_contracts_v1.json"
+    role_contract_target = project_root / "config" / "system_role_contracts_v1.json"
+    role_contract_target.parent.mkdir(parents=True, exist_ok=True)
+    role_contract_target.write_text(role_contract_source.read_text(encoding="utf-8"), encoding="utf-8")
     _write_json(
         project_root / "governance" / "walk_forward" / "promotion_gate_latest.json",
         {

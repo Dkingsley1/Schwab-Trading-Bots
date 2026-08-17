@@ -4,7 +4,7 @@ Use these exact commands as the current source of truth.
 
 This file is generated from the curated operator inventory in `scripts/ops/commands_hygiene_bot.py`.
 Rebuild it with `./scripts/ops/opsctl.sh commands-hygiene --apply` after changing that inventory.
-Command contract hash: `ff7e8313139d3caf5ae302011ac7954dcd04554da9a96a9c75c5e8650a2d0049`.
+Command contract hash: `3adbe2a4b7821a9a3366d179dd651df927f4e5a40127fa18274dee6824d250a8`.
 Command contract artifact: `governance/health/commands_contract_latest.json`.
 
 This file is intentionally trimmed down with Most Used pinned first and the remaining sections alphabetized by section and command title:
@@ -23,7 +23,7 @@ Fast search tokens: `start` `stop` `paper` `profitability` `soak` `halt` `auth` 
 
 Useful compound searches: `paper profitability`, `global halt`, `token refresh`, `livefeed heavy`, `storage prune`, `soak readiness`.
 
-Search coverage: `195` generated command entries from the current command contract.
+Search coverage: `196` generated command entries from the current command contract.
 
 <datalist id="command-search-index-options">
   <option value="Keep the Mac awake (Most Used)"></option>
@@ -196,6 +196,7 @@ Search coverage: `195` generated command entries from the current command contra
   <option value="Review hierarchical bot organization (Status And Health)"></option>
   <option value="Review sleeve-master and grand-master evidence (Status And Health)"></option>
   <option value="Review system plumbing control (Status And Health)"></option>
+  <option value="Review system responsibility and runtime authority (Status And Health)"></option>
   <option value="Review ten-pillar production excellence (Status And Health)"></option>
   <option value="Review the cross-system drift mesh (Status And Health)"></option>
   <option value="Review the independent deadman monitor (Status And Health)"></option>
@@ -224,7 +225,7 @@ Search coverage: `195` generated command entries from the current command contra
 </datalist>
 
 <details>
-<summary>Generated command search index (195 commands; rebuilt by commands-hygiene)</summary>
+<summary>Generated command search index (196 commands; rebuilt by commands-hygiene)</summary>
 
 Each row is generated from `governance/health/commands_contract_latest.json`, so added, removed, renamed, or cleaned-up commands change this index automatically.
 
@@ -398,6 +399,7 @@ Each row is generated from `governance/health/commands_contract_latest.json`, so
 - search-entry:b762ecd16eae0b3463a6ac97017a73e16bec97dce543cab8d5131dcb2e9b2218 section:`Status And Health` section_key:`status-and-health` title:Review hierarchical bot organization title_key:`review-hierarchical-bot-organization` opsctl:`bot-organization` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
 - search-entry:97a6897d6cd181de6cbad577c510b8f77e661372ed9b8980642357802b34b25d section:`Status And Health` section_key:`status-and-health` title:Review sleeve-master and grand-master evidence title_key:`review-sleeve-master-and-grand-master-evidence` opsctl:`master-grandmaster-evidence` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
 - search-entry:d0744ed396c14397231a43061bd3c0f98192ec9c7038b35f4658ee641ba21bde section:`Status And Health` section_key:`status-and-health` title:Review system plumbing control title_key:`review-system-plumbing-control` opsctl:`system-plumbing-control` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
+- search-entry:cb39aac82577b177f0c890e84d0276aaf397d2f6815a5a13cb185ade054b9031 section:`Status And Health` section_key:`status-and-health` title:Review system responsibility and runtime authority title_key:`review-system-responsibility-and-runtime-authority` opsctl:`system-role-contract` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
 - search-entry:75509af8d32c7f8dff82ce44dfdf3f8f7ce0061733c12acf69dd9a9ca9aead39 section:`Status And Health` section_key:`status-and-health` title:Review ten-pillar production excellence title_key:`review-ten-pillar-production-excellence` opsctl:`production-excellence` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
 - search-entry:f048a90ce2aa3a66196801c0d0c06873fb5102bd888d7e89498b2ec0524f0891 section:`Status And Health` section_key:`status-and-health` title:Review the cross-system drift mesh title_key:`review-the-cross-system-drift-mesh` opsctl:`system-drift-guard` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
 - search-entry:4af17b312c307014d883ca0c0e00fd7b3611a5c83adb8fdf67fcbecb19945ab4 section:`Status And Health` section_key:`status-and-health` title:Review the independent deadman monitor title_key:`review-the-independent-deadman-monitor` opsctl:`independent-runtime-monitor` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
@@ -1878,6 +1880,15 @@ cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
 ```
 
 Publishes the shared queue, storage, writer, data-plane, and paper/live boundary contract used to diagnose present degradation.
+
+### Review system responsibility and runtime authority
+```bash
+cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
+./scripts/ops/opsctl.sh system-role-contract --json
+```
+
+Validates all operating planes, role contracts, concrete components, state-domain writers, control bindings, and registry-role coverage.
+Use --component, --action, and --state-domain to evaluate one runtime action; unknown or ambiguous mutations fail closed.
 
 ### Review ten-pillar production excellence
 ```bash

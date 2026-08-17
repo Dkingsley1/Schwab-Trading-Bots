@@ -16,6 +16,7 @@ from core.profitability_hardening import (
     PAPER_EXECUTION_AUTHORITY_VERSION,
     evaluate_paper_execution_authority,
 )
+from core.system_role_contracts import RoleAuthorityError, component_action_guard
 
 
 EXECUTION_INTENT_CHANNEL = "execution_intent"
@@ -1080,7 +1081,27 @@ def process_execution_intent(
             "execution_gateway": gateway,
         }
     else:
-        result = trader.execute_decision(**kwargs)
+        normalized_mode = str(mode).strip().lower()
+        component_id = "paper_execution_gateway" if normalized_mode == "paper" else "live_execution_gateway"
+        action = "paper_submit" if normalized_mode == "paper" else "live_submit"
+        state_domain = "paper_order_submission" if normalized_mode == "paper" else "live_order_submission"
+        try:
+            with component_action_guard(
+                project_root,
+                component_id=component_id,
+                action=action,
+                state_domain=state_domain,
+            ) as authority:
+                result = trader.execute_decision(**kwargs)
+                result.setdefault("system_role_authority", authority)
+        except RoleAuthorityError as exc:
+            result = {
+                "status": "ROLE_AUTHORITY_BLOCKED",
+                "reason": str(exc) or "role_authority_denied",
+                "component_id": component_id,
+                "action": action,
+                "state_domain": state_domain,
+            }
     if str(mode).strip().lower() == "paper":
         _annotate_paper_realism(intent, result)
 

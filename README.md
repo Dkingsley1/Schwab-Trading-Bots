@@ -150,6 +150,14 @@ The hierarchy evaluator remains execution-free, while its read-only sleeve, sub-
 
 Run `./scripts/ops/opsctl.sh bot-organization --json` to inspect the structural grade, classification-quality grade, regime coverage and specificity, review queue, capacity posture, and generated hierarchy. Regime compatibility is an optional shadow-evidence filter only; it has no paper or live execution authority. See [docs/architecture/BOT_ORGANIZATION.md](docs/architecture/BOT_ORGANIZATION.md) for the full contract.
 
+### System Responsibility And Authority
+
+The platform now separates complexity from ambiguity with an executable responsibility catalog. Fifteen roles span data, decision, control, execution, truth, and operations planes; 23 concrete components and 23 mutable state domains declare purpose, inputs, outputs, write authority, triggers, freshness SLOs, failure behavior, resource budgets, escalation owners, evidence, and forbidden actions. Redundant observers remain available, but every mutable domain has one logical writer.
+
+Paper and live execution have distinct exclusive gateways and single-flight leases. Risk may veto but cannot originate signals; strategy and coordinator bots may recommend but cannot submit orders; truth reconciliation is append-only; infrastructure repair cannot change trade logic; dashboards cannot manufacture canonical facts. Unknown or ambiguous actions fail closed, and the Grand Master cannot grant itself execution or promotion authority.
+
+Run `./scripts/ops/opsctl.sh system-role-contract --json` to inspect coverage and conflicts or pass `--component`, `--action`, and `--state-domain` to evaluate a specific action. The resulting artifact is required by the unattended soak, sentinel, dashboard, daily verifier, self-model, and live firewall. See [docs/architecture/SYSTEM_ROLE_CONTRACTS.md](docs/architecture/SYSTEM_ROLE_CONTRACTS.md) for the full operating contract. An `A+` is structural authority evidence, not profitability proof or a live-money unlock.
+
 ### Bot Profitability And Scalability
 
 The integrated `bot_profitability_scalability_v1` plane maps all eight profitability and all eight scalability controls onto the organized catalog. It learns preferences only from candidate-bound attributed paper outcomes; ranks post-cost expectancy, conservative lower bounds, drawdown, turnover, confidence, persistence, and marginal contribution; consumes the independent execution and statistical firewalls; and publishes lifecycle and capacity advice. It also enforces catalog/process separation, bounded top-K activation, immutable shared features, worker and queue budgets, checkpoint and order idempotency, hot/cold storage routing, and lazy model eviction under memory pressure.

@@ -85,6 +85,11 @@ def _artifact_config(project_root: Path) -> Dict[str, Dict[str, Any]]:
             "max_age_minutes": _days_to_minutes(1.0),
             "required": True,
         },
+        "system_role_contract": {
+            "paths": [project_root / "governance" / "health" / "system_role_contract_latest.json"],
+            "max_age_minutes": 30.0,
+            "required": True,
+        },
         "collector_capability_control": {
             "paths": [
                 project_root / "governance" / "health" / "collector_capability_control_latest.json"
@@ -1084,6 +1089,24 @@ def _artifact_summary(name: str, payload: Dict[str, Any]) -> Dict[str, Any]:
             "overall_status": str(payload.get("overall_status", "") or ""),
             "stale_required": int(summary.get("stale_required", 0) or 0),
             "stale_optional": int(summary.get("stale_optional", 0) or 0),
+        }
+    if name == "system_role_contract":
+        summary = payload.get("summary") if isinstance(payload.get("summary"), dict) else {}
+        return {
+            "overall_status": str(payload.get("overall_status", "") or ""),
+            "grade": str(payload.get("grade", "") or ""),
+            "operating_mode": str(payload.get("operating_mode", "") or ""),
+            "role_count": int(summary.get("role_count", 0) or 0),
+            "component_count": int(summary.get("component_count", 0) or 0),
+            "state_domain_count": int(summary.get("state_domain_count", 0) or 0),
+            "exclusive_action_count": int(summary.get("exclusive_action_count", 0) or 0),
+            "operating_plane_count": int(summary.get("operating_plane_count", 0) or 0),
+            "classified_action_count": int(summary.get("classified_action_count", 0) or 0),
+            "action_lease_count": int(summary.get("action_lease_count", 0) or 0),
+            "escalation_route_count": int(summary.get("escalation_route_count", 0) or 0),
+            "registry_role_coverage_ratio": float(summary.get("registry_role_coverage_ratio", 0.0) or 0.0),
+            "authority_conflict_count": int(summary.get("authority_conflict_count", 0) or 0),
+            "blockers": payload.get("blockers") if isinstance(payload.get("blockers"), list) else [],
         }
     if name == "bot_organization_control":
         return {
@@ -2504,6 +2527,7 @@ def build_dashboard(project_root: Path = PROJECT_ROOT) -> Dict[str, Any]:
             "sql_link_service",
             "master_grandmaster_evidence_v2",
             "bot_profitability_scalability_control",
+            "system_role_contract",
         }:
             attention.append(f"{name}_not_ok")
             severity = max(severity, 2)
@@ -2617,6 +2641,7 @@ def build_dashboard(project_root: Path = PROJECT_ROOT) -> Dict[str, Any]:
         attention.append("memory_efficiency_control_needs_work")
         severity = max(severity, 1)
     platform_summary = artifacts.get("platform_control_plane", {}).get("summary", {})
+    system_role_summary = artifacts.get("system_role_contract", {}).get("summary", {})
     platform_status = str(platform_summary.get("overall_status", "") or "")
     if platform_status in {"upgrade_required", "gap_heavy"}:
         attention.append("platform_control_plane_upgrade_required")
@@ -2828,6 +2853,23 @@ def build_dashboard(project_root: Path = PROJECT_ROOT) -> Dict[str, Any]:
             "global_kill_triggered": bool(killswitch_summary.get("halt", False)),
             "promotion_not_ready": "promotion_not_ready" in attention,
             "daily_auto_verify_not_ok": "daily_auto_verify_not_ok" in attention,
+            "system_role_contract_not_ok": "system_role_contract_not_ok" in attention,
+        },
+        "system_responsibility": {
+            **_artifact_contract(artifacts, "system_role_contract"),
+            "grade": str(system_role_summary.get("grade", "") or "unknown"),
+            "operating_mode": str(system_role_summary.get("operating_mode", "") or "unknown"),
+            "role_count": int(system_role_summary.get("role_count", 0) or 0),
+            "component_count": int(system_role_summary.get("component_count", 0) or 0),
+            "state_domain_count": int(system_role_summary.get("state_domain_count", 0) or 0),
+            "exclusive_action_count": int(system_role_summary.get("exclusive_action_count", 0) or 0),
+            "operating_plane_count": int(system_role_summary.get("operating_plane_count", 0) or 0),
+            "classified_action_count": int(system_role_summary.get("classified_action_count", 0) or 0),
+            "action_lease_count": int(system_role_summary.get("action_lease_count", 0) or 0),
+            "escalation_route_count": int(system_role_summary.get("escalation_route_count", 0) or 0),
+            "registry_role_coverage_ratio": float(system_role_summary.get("registry_role_coverage_ratio", 0.0) or 0.0),
+            "authority_conflict_count": int(system_role_summary.get("authority_conflict_count", 0) or 0),
+            "blockers": system_role_summary.get("blockers") if isinstance(system_role_summary.get("blockers"), list) else [],
         },
         "runtime": {
             **runtime_contract,

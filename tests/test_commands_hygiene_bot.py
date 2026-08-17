@@ -253,7 +253,9 @@ def test_commands_hygiene_bot_authors_commands_surface_and_runbook(tmp_path: Pat
     assert 'refresh) print -r -- "Most Used" ;;' in runbook_text
     assert 'refresh) print -r -- "Live Feed Refreshes" ;;' not in runbook_text
     assert contract_payload["schema_version"] == commands_src.COMMAND_CONTRACT_SCHEMA_VERSION
-    assert contract_payload["entry_count"] == 195
+    assert contract_payload["entry_count"] == 196
+    assert "### Review system responsibility and runtime authority" in commands_text
+    assert "./scripts/ops/opsctl.sh system-role-contract --json" in commands_text
     assert "### Review ten-pillar production excellence" in commands_text
     assert "./scripts/ops/opsctl.sh production-excellence --json" in commands_text
     assert "### Freeze or accept a production candidate" in commands_text

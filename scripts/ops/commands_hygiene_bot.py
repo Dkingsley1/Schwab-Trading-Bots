@@ -1514,6 +1514,15 @@ def _commands_inventory(project_root: Path) -> list[dict[str, Any]]:
             ),
             _command_entry(
                 project_root,
+                "Review system responsibility and runtime authority",
+                ["./scripts/ops/opsctl.sh system-role-contract --json"],
+                notes=[
+                    "Validates all operating planes, role contracts, concrete components, state-domain writers, control bindings, and registry-role coverage.",
+                    "Use --component, --action, and --state-domain to evaluate one runtime action; unknown or ambiguous mutations fail closed.",
+                ],
+            ),
+            _command_entry(
+                project_root,
                 "Review hierarchical bot organization",
                 ["./scripts/ops/opsctl.sh bot-organization --json"],
                 notes=[

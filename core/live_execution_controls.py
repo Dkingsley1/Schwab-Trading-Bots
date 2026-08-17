@@ -11,6 +11,7 @@ from typing import Any, Dict, Optional
 from core.runtime_layers import CircuitBreaker
 from core.execution_simulator import simulate_execution
 from core.live_canary_allowlist import evaluate_live_canary_allowlist
+from core.system_role_contracts import evaluate_component_action
 
 
 TRADE_ACTIONS = {
@@ -208,6 +209,17 @@ def production_order_firewall_check(
     execution_armed = _truthy(env_map.get(allow_env), False)
     market_data_only = _truthy(env_map.get(market_data_env), market_data_default)
     blockers: list[str] = []
+
+    role_contract_decision: dict[str, Any] = {}
+    if bool(policy.get("require_system_role_contract_for_live_submit", False)):
+        role_contract_decision = evaluate_component_action(
+            project_root,
+            component_id=str(policy.get("live_execution_component_id") or "live_execution_gateway"),
+            action="live_submit",
+            state_domain="live_order_submission",
+        )
+        if not bool(role_contract_decision.get("ok", False)):
+            blockers.append("system_role_contract_live_submit_denied")
     if not execution_armed:
         blockers.append("live_execution_not_armed")
     if market_data_only:
@@ -385,6 +397,7 @@ def production_order_firewall_check(
             str(transition_integrity.get("control_grade") or "").strip().upper() in {"A+", "A++"}
         ),
         "live_transition_runtime_ready": bool(transition_integrity.get("ready_for_live_transition", False)),
+        "system_role_contract_decision": role_contract_decision,
         "config_path": str(config_path),
         "policy": "reject_by_default_until_production_firewall_is_armed_and_clear; verified emergency exits remain risk reducing",
     }

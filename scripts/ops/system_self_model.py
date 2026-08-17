@@ -19,7 +19,7 @@ DEFAULT_DEPENDENCY_MEMORY_PATH = PROJECT_ROOT / "governance" / "health" / "syste
 DEFAULT_FAILURE_MEMORY_PATH = PROJECT_ROOT / "governance" / "health" / "system_failure_memory_latest.json"
 DEFAULT_REGISTRY_DIFF_PATH = PROJECT_ROOT / "governance" / "health" / "system_registry_diff_latest.json"
 DEFAULT_UPGRADE_PLAN_PATH = PROJECT_ROOT / "governance" / "health" / "system_upgrade_optimizer_latest.json"
-SELF_MODEL_VERSION = "system_self_model_v2"
+SELF_MODEL_VERSION = "system_self_model_v3"
 FALLBACK_ROOT_NAMES = {"data", "exports", "governance", "logs"}
 
 
@@ -401,6 +401,7 @@ def _surface_matrix(health_root: Path, project_root: Path, *, now: datetime | No
         "system_signal_bus": health_root / "system_signal_bus_latest.json",
         "system_brain": health_root / "system_brain_latest.json",
         "system_process_contracts": health_root / "system_process_contracts_latest.json",
+        "system_role_contract": health_root / "system_role_contract_latest.json",
         "system_self_intelligence": health_root / "system_self_intelligence_latest.json",
         "codex_handoff": health_root / "codex_handoff_latest.json",
         "codex_operator_bridge": health_root / "codex_operator_bridge_latest.json",
@@ -904,6 +905,44 @@ def _bot_awareness(identity: dict[str, Any], core_materialization: dict[str, Any
         "missing_core_module_count": missing_modules,
         "duplicate_core_version_count": duplicate_versions,
         "materialization_status": _status(core_materialization),
+    }
+
+
+def _system_role_contract_awareness(role_contract: dict[str, Any]) -> dict[str, Any]:
+    summary = role_contract.get("summary") if isinstance(role_contract.get("summary"), dict) else {}
+    hierarchy = role_contract.get("hierarchy") if isinstance(role_contract.get("hierarchy"), dict) else {}
+    safety = role_contract.get("safety_contract") if isinstance(role_contract.get("safety_contract"), dict) else {}
+    blockers = role_contract.get("blockers") if isinstance(role_contract.get("blockers"), list) else []
+    ready = bool(
+        role_contract.get("ok") is True
+        and str(role_contract.get("grade") or "").upper() == "A+"
+        and str(role_contract.get("operating_mode") or "") == "enforced_responsibility_contracts"
+        and _safe_float(summary.get("registry_role_coverage_ratio"), 0.0) >= 1.0
+        and _safe_int(summary.get("authority_conflict_count"), 0) == 0
+        and not blockers
+    )
+    return {
+        "status": "ready" if ready else ("blocked" if role_contract else "missing"),
+        "grade": str(role_contract.get("grade") or ""),
+        "operating_mode": str(role_contract.get("operating_mode") or ""),
+        "role_count": _safe_int(summary.get("role_count"), 0),
+        "component_count": _safe_int(summary.get("component_count"), 0),
+        "state_domain_count": _safe_int(summary.get("state_domain_count"), 0),
+        "control_surface_binding_count": _safe_int(summary.get("control_surface_binding_count"), 0),
+        "exclusive_action_count": _safe_int(summary.get("exclusive_action_count"), 0),
+        "operating_plane_count": _safe_int(summary.get("operating_plane_count"), 0),
+        "classified_action_count": _safe_int(summary.get("classified_action_count"), 0),
+        "action_lease_count": _safe_int(summary.get("action_lease_count"), 0),
+        "escalation_route_count": _safe_int(summary.get("escalation_route_count"), 0),
+        "registry_role_coverage_ratio": _safe_float(summary.get("registry_role_coverage_ratio"), 0.0),
+        "authority_conflict_count": _safe_int(summary.get("authority_conflict_count"), 0),
+        "planes": hierarchy.get("planes") if isinstance(hierarchy.get("planes"), dict) else {},
+        "non_bypassable_roles": hierarchy.get("non_bypassable_roles") if isinstance(hierarchy.get("non_bypassable_roles"), list) else [],
+        "single_writer_state_domains": bool(safety.get("single_writer_state_domains", False)),
+        "fail_closed_unknown_actions": bool(safety.get("fail_closed_unknown_actions", False)),
+        "sensitive_action_leases": bool(safety.get("sensitive_action_leases", False)),
+        "blockers": blockers,
+        "control_contract": "one_declared_writer_per_mutable_domain_explicit_execution_authority_and_fail_closed_unknown_actions",
     }
 
 
@@ -2192,6 +2231,7 @@ def _render_self_brief(payload: dict[str, Any]) -> str:
         f"- Self-intelligence: `{((domains.get('system_self_intelligence') or {}).get('status') or '')}` reflex `{((domains.get('system_self_intelligence') or {}).get('reflex_action') or 'none')}` uncertainty `{((domains.get('system_self_intelligence') or {}).get('uncertainty_level') or '')}` root `{((domains.get('system_self_intelligence') or {}).get('causal_root') or 'none')}` effect `{((domains.get('system_self_intelligence') or {}).get('action_effect_verdict') or 'none')}` route `{((domains.get('system_self_intelligence') or {}).get('integration_route_mode') or 'none')}`",
         f"- Codex operator bridge: `{((domains.get('codex_operator_bridge') or {}).get('status') or '')}` needs `{((domains.get('codex_operator_bridge') or {}).get('needs_codex_count') or 0)}` paper day PnL `{((domains.get('codex_operator_bridge') or {}).get('paper_day_net_pnl') or 0.0)}` training batch `{((domains.get('codex_operator_bridge') or {}).get('training_recommended_batch_size') or 0)}`",
         f"- Core materialization: `{((domains.get('bot_awareness') or {}).get('materialization_status') or '')}`",
+        f"- Responsibility contract: `{((domains.get('system_role_contract') or {}).get('status') or '')}` roles `{((domains.get('system_role_contract') or {}).get('role_count') or 0)}` domains `{((domains.get('system_role_contract') or {}).get('state_domain_count') or 0)}` conflicts `{((domains.get('system_role_contract') or {}).get('authority_conflict_count') or 0)}`",
         f"- Global halt active: `{global_halt_active}`",
         f"- Registry diff memory: `{registry_diff.get('diff_status', '')}`",
         "",
@@ -2251,6 +2291,7 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
     live_runtime = _load_json(health_root / "live_runtime_separation_control_latest.json")
     use_mode = _load_json(health_root / "use_mode_compliance_guard_latest.json")
     commercial_readiness = _load_json(health_root / "commercial_readiness_control_latest.json")
+    system_role_contract = _load_json(health_root / "system_role_contract_latest.json")
     incident = _load_json(project_root / "governance" / "alerts" / "incident_auto_halt_latest.json")
     core_materialization = _load_json(health_root / "core_bot_materialization_guard_latest.json")
     tripwire = _load_json(health_root / "shadow_watchdog_tripwire_latest.json")
@@ -2284,6 +2325,7 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
         "system_self_intelligence": _system_self_intelligence_awareness(system_self_intelligence),
         "codex_operator_bridge": _codex_operator_bridge_awareness(codex_operator_bridge),
         "bot_awareness": _bot_awareness(identity, core_materialization),
+        "system_role_contract": _system_role_contract_awareness(system_role_contract),
         "failure_memory": _failure_memory(global_halt, incident, cockpit),
         "halt_recovery_intelligence": _halt_recovery_intelligence(global_halt, process_watchdog, auth_lease, data_plane, live_runtime, storage),
         "dependency_awareness": _dependency_awareness(surface_matrix, cockpit),
@@ -2337,6 +2379,10 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
         f"commercial readiness {domains['commercial_readiness']['status']} "
         f"mode={domains['commercial_readiness']['commercial_product_mode']} "
         f"grade={domains['commercial_readiness']['grade']}, "
+        f"responsibility contract {domains['system_role_contract']['status']} "
+        f"roles={domains['system_role_contract']['role_count']} "
+        f"domains={domains['system_role_contract']['state_domain_count']} "
+        f"authority_conflicts={domains['system_role_contract']['authority_conflict_count']}, "
         f"and {len(blocked_or_degraded)} blocked/degraded watched surfaces."
     )
     advanced_backlog = _advanced_upgrade_backlog(domains, dependency_memory, failure_index, registry_diff, surface_matrix)
@@ -2378,6 +2424,7 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
                 "system_signal_bus",
                 "system_brain",
                 "system_process_contracts",
+                "system_role_contract",
                 "system_self_intelligence",
                 "system_self_intelligence_memory",
                 "codex_handoff",
@@ -2428,6 +2475,7 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
             "live_runtime_separation": str(health_root / "live_runtime_separation_control_latest.json"),
             "use_mode_compliance": str(health_root / "use_mode_compliance_guard_latest.json"),
             "commercial_readiness": str(health_root / "commercial_readiness_control_latest.json"),
+            "system_role_contract": str(health_root / "system_role_contract_latest.json"),
         },
         "_registry_diff_memory_full": registry_diff_full,
     }

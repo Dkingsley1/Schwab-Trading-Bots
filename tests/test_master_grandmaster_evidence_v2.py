@@ -366,6 +366,7 @@ def test_repository_wiring_requires_fresh_owned_evidence() -> None:
     assert freshness_step["depends_on"] == [
         "master_grandmaster_evidence_v2",
         "control_surface_ownership",
+        "system_role_contract",
     ]
     step_names = [row["name"] for row in runtime_artifact_refresh._step_specs(PROJECT_ROOT)]
     assert step_names.index("master_grandmaster_evidence_v2") < step_names.index(

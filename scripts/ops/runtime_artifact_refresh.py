@@ -586,6 +586,12 @@ def _step_specs(project_root: Path) -> list[dict[str, Any]]:
             "cmd": [str(PY), str(ops_root / "control_surface_ownership.py"), "--json"],
         },
         {
+            "name": "system_role_contract",
+            "payload_path": health_root / "system_role_contract_latest.json",
+            "cmd": [str(PY), str(ops_root / "system_role_contract_control.py"), "--json"],
+            "depends_on": ["bot_organization_control", "control_surface_ownership"],
+        },
+        {
             "name": "independent_runtime_monitor",
             "payload_path": health_root / "independent_runtime_monitor_latest.json",
             "cmd": [str(PY), str(project_root / "scripts" / "observability_exporter.py"), "--json"],
@@ -594,6 +600,7 @@ def _step_specs(project_root: Path) -> list[dict[str, Any]]:
             "name": "artifact_freshness_slo",
             "payload_path": health_root / "artifact_freshness_slo_latest.json",
             "cmd": [str(PY), str(ops_root / "artifact_freshness_slo.py"), "--json"],
+            "depends_on": ["system_role_contract"],
         },
         {
             "name": "runtime_snapshot_cache_control",
@@ -2410,6 +2417,7 @@ def _step_specs(project_root: Path) -> list[dict[str, Any]]:
             "depends_on": [
                 "master_grandmaster_evidence_v2",
                 "control_surface_ownership",
+                "system_role_contract",
             ],
         },
         {

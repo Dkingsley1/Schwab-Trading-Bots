@@ -22,6 +22,11 @@ if str(PROJECT_ROOT) not in sys.path:
 from core.runtime_python import resolve_runtime_python
 from core.runtime_maintenance import maintenance_hold_snapshot
 from core.storage_mounts import find_target_external_volume, resolve_external_storage
+from core.system_role_contracts import (
+    RoleAuthorityError,
+    component_action_guard,
+    evaluate_component_action,
+)
 
 PY = resolve_runtime_python(PROJECT_ROOT)
 DEFAULT_STATE_PATH = PROJECT_ROOT / 'governance' / 'health' / 'process_watchdog_state.json'
@@ -2888,6 +2893,19 @@ def main() -> int:
             status.append(row)
             continue
 
+        restart_authority = evaluate_component_action(
+            PROJECT_ROOT,
+            component_id='process_restart_controller',
+            action='restart_process',
+            state_domain='process_lifecycle',
+        )
+        row['system_role_authority'] = restart_authority
+        if not bool(restart_authority.get('ok', False)):
+            row['restart_skipped'] = 'system_role_authority_denied'
+            row['reason'] = ','.join(str(item) for item in restart_authority.get('blockers', []) if str(item))
+            status.append(row)
+            continue
+
         stale_process_cleanup: Dict[str, Any] = {}
         if max_running > 0 and running <= 0:
             stale_process_cleanup = _terminate_matching_processes(
@@ -2973,7 +2991,29 @@ def main() -> int:
                 if p
             )
 
-        pid = _spawn(t['cmd'], t['log'])
+        try:
+            with component_action_guard(
+                PROJECT_ROOT,
+                component_id='process_restart_controller',
+                action='restart_process',
+                state_domain='process_lifecycle',
+            ) as leased_authority:
+                row['system_role_authority'] = leased_authority
+                running_under_lease = _proc_running(
+                    str(t['pattern']),
+                    exclude_patterns=t.get('exclude_patterns', []),
+                )
+                if not process_live and running_under_lease > 0:
+                    row['restart_skipped'] = 'process_recovered_before_spawn'
+                    row['reason'] = 'peer_supervisor_recovered_target_under_shared_restart_lease'
+                    status.append(row)
+                    continue
+                pid = _spawn(t['cmd'], t['log'])
+        except RoleAuthorityError as exc:
+            row['restart_skipped'] = 'restart_authority_lease_unavailable'
+            row['reason'] = str(exc) or 'restart_authority_denied'
+            status.append(row)
+            continue
         ts = datetime.now(timezone.utc).isoformat()
         evt = {
             'name': t['name'],

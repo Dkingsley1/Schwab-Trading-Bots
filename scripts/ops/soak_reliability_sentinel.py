@@ -86,6 +86,12 @@ def _surface_contract(project_root: Path) -> dict[str, dict[str, Any]]:
             "ready_statuses": {"ready"},
             "command": [str(py), str(project_root / "scripts" / "ops" / "schwab_auth_supervisor.py"), "--json"],
         },
+        "system_role_contract": {
+            "path": health / "system_role_contract_latest.json",
+            "max_age_minutes": 30.0,
+            "ready_statuses": {"ready"},
+            "command": [str(py), str(project_root / "scripts" / "ops" / "system_role_contract_control.py"), "--json"],
+        },
     }
 
 

@@ -22,6 +22,26 @@ def _write_json(path: Path, payload: dict) -> None:
 
 def _write_ready_bot_organization(health_root: Path, now: datetime) -> None:
     _write_json(
+        health_root / "system_role_contract_latest.json",
+        {
+            "timestamp_utc": now.isoformat(),
+            "ok": True,
+            "overall_status": "ready",
+            "grade": "A+",
+            "operating_mode": "enforced_responsibility_contracts",
+            "summary": {
+                "role_count": 15,
+                "component_count": 23,
+                "state_domain_count": 23,
+                "control_surface_binding_count": 22,
+                "exclusive_action_count": 9,
+                "registry_role_coverage_ratio": 1.0,
+                "authority_conflict_count": 0,
+            },
+            "blockers": [],
+        },
+    )
+    _write_json(
         health_root.parent / "collector_capabilities" / "materialized_capabilities_latest.json",
         {
             "timestamp_utc": now.isoformat(),

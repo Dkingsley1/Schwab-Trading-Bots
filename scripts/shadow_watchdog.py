@@ -20,6 +20,7 @@ if str(PROJECT_ROOT) not in sys.path:
 from core.halt_flags import inspect_halt_flag
 from core.runtime_maintenance import maintenance_hold_snapshot
 from core.runtime_python import resolve_runtime_python
+from core.system_role_contracts import RoleAuthorityError, component_action_guard
 
 VENV_PY = resolve_runtime_python(PROJECT_ROOT)
 ALL_SLEEVES_SCRIPT = PROJECT_ROOT / "scripts" / "run_all_sleeves.py"
@@ -1231,22 +1232,36 @@ def _run_iteration(
                 entry["action"] = "throttled"
                 entry["note"] = entry["note"] + ",restart_rate_limit"
             else:
-                if proc_live:
-                    _terminate_pids(pids)
-                ok, start_detail = _start_target(target.start_cmd, dry_run=dry_run)
-                start_cmd_text = _format_start_cmd(target.start_cmd)
-                if start_cmd_text:
-                    entry["start_cmd"] = start_cmd_text
-                if ok:
-                    target.restart_times.append(now_ts)
-                    entry["action"] = "restart"
-                    entry["note"] = entry["note"] + ",restart_attempted"
-                    entry["start_detail"] = start_detail
-                else:
+                try:
+                    with component_action_guard(
+                        PROJECT_ROOT,
+                        component_id="process_restart_controller",
+                        action="restart_process",
+                        state_domain="process_lifecycle",
+                        acquire_lease=not dry_run,
+                    ) as authority:
+                        if proc_live and not dry_run:
+                            _terminate_pids(pids)
+                        ok, start_detail = _start_target(target.start_cmd, dry_run=dry_run)
+                        entry["system_role_authority"] = authority
+                except RoleAuthorityError as exc:
                     overall_rc = 1
-                    entry["action"] = "error"
-                    entry["start_error"] = start_detail
-                    entry["note"] = entry["note"] + f",restart_failed={_note_safe(start_detail)}"
+                    entry["action"] = "suppressed"
+                    entry["note"] = entry["note"] + f",restart_authority_denied={_note_safe(str(exc))}"
+                else:
+                    start_cmd_text = _format_start_cmd(target.start_cmd)
+                    if start_cmd_text:
+                        entry["start_cmd"] = start_cmd_text
+                    if ok:
+                        target.restart_times.append(now_ts)
+                        entry["action"] = "restart"
+                        entry["note"] = entry["note"] + ",restart_attempted"
+                        entry["start_detail"] = start_detail
+                    else:
+                        overall_rc = 1
+                        entry["action"] = "error"
+                        entry["start_error"] = start_detail
+                        entry["note"] = entry["note"] + f",restart_failed={_note_safe(start_detail)}"
 
         entries.append(entry)
 

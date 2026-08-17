@@ -26,7 +26,8 @@
         "scripts/ops/*fill*.py",
         "config/live_canary_micro_policy_v1.json",
         "config/symbol_lifecycle_v1.json",
-        "config/production_readiness_control_v1.json"
+        "config/production_readiness_control_v1.json",
+        "config/system_role_contracts_v1.json"
       ],
       "risk": [
         "core/risk*.py",
@@ -35,7 +36,8 @@
         "config/*risk*.json",
         "config/live_canary_micro_policy_v1.json",
         "config/symbol_lifecycle_v1.json",
-        "config/live_canary_readiness_contract.json"
+        "config/live_canary_readiness_contract.json",
+        "config/system_role_contracts_v1.json"
       ],
       "data": [
         "core/*data*.py",
@@ -75,6 +77,7 @@
         "scripts/**/*.sh",
         "scripts/ops/**/*.py",
         "config/production*.json",
+        "config/system_role_contracts_v1.json",
         "config/deployment_profiles.json"
       ],
       "dependencies": [

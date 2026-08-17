@@ -261,6 +261,31 @@ def test_system_self_model_builds_awareness_domains_and_optimizations(tmp_path: 
         },
     )
     _write_json(health / "core_bot_materialization_guard_latest.json", {"overall_status": "ready", "summary": {"missing_core_module_count": 0, "duplicate_core_version_count": 0}})
+    _write_json(
+        health / "system_role_contract_latest.json",
+        {
+            "ok": True,
+            "overall_status": "ready",
+            "grade": "A+",
+            "operating_mode": "enforced_responsibility_contracts",
+            "summary": {
+                "role_count": 15,
+                "component_count": 23,
+                "state_domain_count": 23,
+                "control_surface_binding_count": 22,
+                "exclusive_action_count": 9,
+                "registry_role_coverage_ratio": 1.0,
+                "authority_conflict_count": 0,
+            },
+            "hierarchy": {"planes": {"execution_plane": ["paper_execution_gateway", "live_execution_gateway"]}},
+            "safety_contract": {
+                "single_writer_state_domains": True,
+                "fail_closed_unknown_actions": True,
+                "sensitive_action_leases": True,
+            },
+            "blockers": [],
+        },
+    )
     _write_json(tmp_path / "governance" / "alerts" / "incident_auto_halt_latest.json", {"overall_status": "ready", "event": "none"})
     scripts_ops = tmp_path / "scripts" / "ops"
     scripts_ops.mkdir(parents=True, exist_ok=True)
@@ -337,6 +362,8 @@ def test_system_self_model_builds_awareness_domains_and_optimizations(tmp_path: 
     assert payload["awareness_domains"]["codex_operator_bridge"]["paper_day_executions"] == 120
     assert payload["awareness_domains"]["codex_operator_bridge"]["training_launch_blockers"] == ["host_training_headroom_not_clear"]
     assert payload["awareness_domains"]["bot_awareness"]["status"] == "ready"
+    assert payload["awareness_domains"]["system_role_contract"]["status"] == "ready"
+    assert payload["awareness_domains"]["system_role_contract"]["authority_conflict_count"] == 0
     assert payload["awareness_domains"]["failure_memory"]["status"] == "ready"
     assert payload["awareness_domains"]["halt_recovery_intelligence"]["status"] == "ready"
     assert payload["awareness_domains"]["halt_recovery_intelligence"]["live_lane_running"] is True

@@ -230,6 +230,19 @@
       "owner_marker": "evidence_packets_v2_latest.json",
       "mutation_mode": "atomic_snapshot",
       "coordination": "atomic_replace"
+    },
+    {
+      "control_id": "system_role_contract_health",
+      "resource_path": "governance/health/system_role_contract_latest.json",
+      "owner_source": "scripts/ops/system_role_contract_control.py",
+      "owner_command": [
+        "./scripts/ops/opsctl.sh",
+        "system-role-contract",
+        "--json"
+      ],
+      "owner_marker": "system_role_contract_latest.json",
+      "mutation_mode": "atomic_snapshot",
+      "coordination": "atomic_replace"
     }
   ],
   "control_contract": {

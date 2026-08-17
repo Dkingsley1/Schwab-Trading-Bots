@@ -528,10 +528,12 @@ def test_runtime_artifact_refresh_profitability_scope_includes_every_epoch_input
     assert "profitability_evidence_firewall" in names
     assert "paper_live_data_standard" in names
     assert "control_surface_ownership" in names
+    assert "system_role_contract" in names
     firewall = next(row for row in selected if row["name"] == "profitability_evidence_firewall")
     assert set(firewall["depends_on"]) <= names
     freshness = next(row for row in selected if row["name"] == "artifact_freshness_slo_post_master")
     assert "control_surface_ownership" in freshness["depends_on"]
+    assert "system_role_contract" in freshness["depends_on"]
 
 
 def test_runtime_artifact_refresh_requires_secondary_outputs_from_same_producer_to_be_fresh(tmp_path: Path) -> None:
