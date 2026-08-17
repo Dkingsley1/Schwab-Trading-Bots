@@ -272,7 +272,7 @@ def _render_command_search_index(contract: dict[str, Any]) -> list[str]:
         [
             "</datalist>",
             "",
-            f"<details>",
+            "<details>",
             f"<summary>Generated command search index ({len(entries)} commands; rebuilt by commands-hygiene)</summary>",
             "",
             "Each row is generated from `governance/health/commands_contract_latest.json`, so added, removed, renamed, or cleaned-up commands change this index automatically.",
@@ -427,33 +427,20 @@ def _commands_inventory(project_root: Path) -> list[dict[str, Any]]:
     bot_stack_pdf_path = project_root / "exports" / "bot_stack_status" / "latest.pdf"
     report_bundle_pdf_path = project_root / "exports" / "reports" / "report_pdf_bundle_latest.pdf"
     daily_ops_pdf_path = project_root / "exports" / "reports" / "daily_ops_report_latest.pdf"
-    paper_performance_pdf_path = project_root / "exports" / "reports" / "paper_performance_latest.pdf"
-    sentiment_pdf_path = project_root / "exports" / "reports" / "sentiment_report_latest.pdf"
     strategy_attribution_pdf_path = project_root / "exports" / "reports" / "strategy_attribution_latest.pdf"
     strategy_inventory_pdf_path = project_root / "exports" / "reports" / "strategy_inventory" / "strategy_inventory_latest.pdf"
     expansion_inventory_pdf_path = project_root / "exports" / "reports" / "expansion_inventory" / "expansion_inventory_latest.pdf"
     quant_model_control_pdf_path = project_root / "exports" / "reports" / "quant_model_control" / "quant_model_control_latest.pdf"
-    post_trade_analysis_pdf_path = project_root / "exports" / "reports" / "post_trade_analysis_latest.pdf"
-    crash_report_pdf_path = project_root / "exports" / "reports" / "crash_reports" / "crash_report_digest_latest.pdf"
-    project_timeline_pdf_path = project_root / "exports" / "reports" / "project_timeline" / "project_timeline_latest.pdf"
     system_overview_pdf_path = project_root / "exports" / "reports" / "system_overview" / "system_overview_weekly_platform_history_latest.pdf"
     incident_report_pdf_path = project_root / "exports" / "reports" / "incident_report_latest.pdf"
-    training_report_pdf_path = project_root / "exports" / "reports" / "training_reports" / "training_report_latest.pdf"
-    macro_crosscheck_pdf_path = project_root / "exports" / "reports" / "macro_crosscheck_latest.pdf"
-    market_correlation_pdf_path = project_root / "exports" / "reports" / "market_crypto_correlation_latest.pdf"
-    source_verification_pdf_path = project_root / "exports" / "reports" / "source_verification_latest.pdf"
     retrain_scorecard_pdf_path = project_root / "exports" / "sql_reports" / "retrain_scorecard_latest.pdf"
     daily_runtime_summary_pdf_path = project_root / "exports" / "sql_reports" / "daily_runtime_summary_latest.pdf"
     daily_auto_verify_pdf_path = project_root / "exports" / "sql_reports" / "daily_auto_verify_latest.pdf"
     model_card_pdf_path = project_root / "exports" / "sql_reports" / "model_card_latest.pdf"
     paper_calibration_pdf_path = project_root / "exports" / "sql_reports" / "paper_execution_calibration_latest.pdf"
-    replay_ablation_pdf_path = project_root / "exports" / "sql_reports" / "replay_feature_ablation_latest.pdf"
     one_numbers_pdf_path = project_root / "exports" / "one_numbers" / "one_numbers_latest.pdf"
     one_numbers_csv_path = project_root / "exports" / "one_numbers" / "latest.csv"
     state_snapshot_pdf_path = project_root / "exports" / "state_snapshot_drills" / "state_snapshot_drills_latest.pdf"
-    unified_lane_pdf_path = project_root / "exports" / "sql_reports" / "unified_lane_scorecard_latest.pdf"
-    bot_explainability_pdf_path = project_root / "exports" / "sql_reports" / "bot_explainability_latest.pdf"
-    special_features_pdf_path = project_root / "exports" / "reports" / "showcase" / "special_features_latest.pdf"
     report_pdf_open_entries = [
         _open_report_entry(
             project_root,
@@ -606,7 +593,15 @@ def _commands_inventory(project_root: Path) -> list[dict[str, Any]]:
                 "This regenerates source verification, renders the report PDF bundle, prefers the PDF artifact, and falls back to markdown if the PDF renderer is unavailable."
             ],
         ),
-        _open_path_entry(project_root, "Open the retrain scorecard PDF", retrain_scorecard_pdf_path),
+        _open_report_entry(
+            project_root,
+            "Open the retrain scorecard PDF",
+            "retrain",
+            notes=[
+                f"Latest PDF path: `{retrain_scorecard_pdf_path}`.",
+                "This renders the retrain scorecard on demand and falls back to HTML, markdown, or the current JSON evidence artifact.",
+            ],
+        ),
         _open_report_entry(
             project_root,
             "Open the daily runtime summary PDF",
@@ -1145,7 +1140,8 @@ def _commands_inventory(project_root: Path) -> list[dict[str, Any]]:
                 "Install the startup Yes/No bot start prompt",
                 ["./scripts/ops/opsctl.sh startup-start-prompt --install --no-kickstart --no-browser"],
                 notes=[
-                    "Arms a login-time macOS banner plus Yes/No prompt for starting `schwab_trading_bot` through the guarded `opsctl start` path.",
+                    "Arms a login-time actionable macOS notification with `Start` and `Not Now` buttons for the guarded `opsctl start` path; a corrected Yes/No dialog is the fallback.",
+                    "No response, notification dismissal, or UI failure leaves the stack off and records the decision transport in `governance/health/startup_start_prompt_latest.json`.",
                     "The startup prompt path suppresses Schwab browser auth, GUI Chrome opens, headless Chrome PDF/render helpers, and timeline auto-PDF work.",
                     "The default install waits until the next login so it does not unexpectedly prompt or restart the stack right now.",
                 ],
@@ -1155,7 +1151,7 @@ def _commands_inventory(project_root: Path) -> list[dict[str, Any]]:
                 "Dry-run the startup Yes/No bot start prompt",
                 ["./scripts/ops/opsctl.sh startup-start-prompt-test --dry-run --delay-seconds 0"],
                 notes=[
-                    "Verifies the startup prompt state artifact without showing the GUI prompt or starting the trading stack.",
+                    "Launches the signed helper in self-test mode and verifies its result contract without showing a notification or starting the trading stack.",
                 ],
             ),
             _command_entry(project_root, "Stop the notification watcher", ["./scripts/ops/opsctl.sh notify-stop"]),
@@ -1209,6 +1205,15 @@ def _commands_inventory(project_root: Path) -> list[dict[str, Any]]:
                 ["./scripts/ops/opsctl.sh paper-profitability-control --apply --json"],
                 notes=[
                     "Refreshes the profitability, weak-profile containment, and promotion-readiness controls that feed the paper evidence packet.",
+                ],
+            ),
+            _command_entry(
+                project_root,
+                "Review the eight profitability hardening controls",
+                ["./scripts/ops/opsctl.sh profitability-hardening --json"],
+                notes=[
+                    "Audits derivative valuation, consensus execution, post-cost labels, regime gates, evidence-weighted risk, execution style, overlap control, and the persistent-loser retirement court.",
+                    "An armed control is not economic proof; fresh paper rows must demonstrate adoption before the evidence grade can advance.",
                 ],
             ),
             _command_entry(
@@ -1272,6 +1277,22 @@ def _commands_inventory(project_root: Path) -> list[dict[str, Any]]:
             "Storage",
             _command_entry(project_root, "Switch collection to the Mac's internal drive", ["./scripts/ops/opsctl.sh storage-switch-local"]),
             _command_entry(project_root, "Switch collection back to the external BOT_LOGS drive", ["./scripts/ops/opsctl.sh storage-switch-external"]),
+            _command_entry(
+                project_root,
+                "Review external SSD disconnect and reconnect protection",
+                ["./scripts/ops/opsctl.sh storage-reconnect-regression-guard --json"],
+                notes=[
+                    "Semantically typechecks the Swift guard, verifies its compiled runtime binary and LaunchAgent, and reports the last atomic disconnect/failover transition.",
+                ],
+            ),
+            _command_entry(
+                project_root,
+                "Repair external SSD disconnect and reconnect protection",
+                ["./scripts/ops/opsctl.sh storage-reconnect-infrabot --apply --json"],
+                notes=[
+                    "Repairs the guard installation and storage recovery dependencies without granting live-order authority.",
+                ],
+            ),
             _command_entry(project_root, "Run the storage disaster recovery bot", ["./scripts/ops/opsctl.sh storage-disaster-recovery --apply --json"]),
             _command_entry(
                 project_root,
@@ -1291,13 +1312,28 @@ def _commands_inventory(project_root: Path) -> list[dict[str, Any]]:
             ),
             _command_entry(
                 project_root,
+                "Archive and compact legacy ops database drift evidence",
+                ["./scripts/ops/opsctl.sh ops-data-plane-compaction --apply --json"],
+                notes=[
+                    "Requires an explicit stopped stack. It writes a verified, readable gzip JSONL rollup to the configured cold archive, preserves source JSONL as detail authority, compacts the hot SQLite database, and runs an integrity check before restart.",
+                ],
+            ),
+            _command_entry(
+                project_root,
                 "Review or prune eligible local standby SQLite copies after BOT_LOGS soak",
                 ["./scripts/ops/opsctl.sh storage-prune-standby --json"],
                 notes=[
                     "This is a dry run by default. Add `--apply` after the external route has soaked long enough to prune only the verified standby copies, or add `--include-curated-standby` if you intentionally want to touch curated standby paths too.",
                 ],
             ),
-            _command_entry(project_root, "Safe-eject the external BOT_LOGS drive", ["./scripts/ops/opsctl.sh storage-safe-eject"]),
+            _command_entry(
+                project_root,
+                "Safe-eject the external BOT_LOGS drive",
+                ["./scripts/ops/opsctl.sh storage-safe-eject"],
+                notes=[
+                    "If the SSD is only standby or cold storage, eject releases its handles without restarting paper collection. If it is the active route, the guard first performs one bounded local failover.",
+                ],
+            ),
         ),
         _section(
             "Live Feed Views",
@@ -1389,7 +1425,7 @@ def _commands_inventory(project_root: Path) -> list[dict[str, Any]]:
                 "Refresh runtime dashboard contracts",
                 ["./scripts/ops/opsctl.sh dashboard-refresh"],
                 notes=[
-                    "This hydrates the runtime gate dashboard prerequisites first so missing sections become explicit health outputs instead of silent omissions.",
+                    "This rebuilds the full dependency-closed runtime contract graph. Normal dashboard reads use a smaller freshness profile so collection is not forced to compete with every verifier.",
                 ],
             ),
             _command_entry(
@@ -1397,7 +1433,7 @@ def _commands_inventory(project_root: Path) -> list[dict[str, Any]]:
                 "Runtime gate dashboard",
                 ["./scripts/ops/opsctl.sh dashboard"],
                 notes=[
-                    "By default this now runs a runtime-artifact refresh pass first. Use `./scripts/ops/opsctl.sh dashboard --skip-refresh` when you want a pure read of the current artifact set.",
+                    "By default this runs the bounded dashboard evidence profile first. Use `./scripts/ops/opsctl.sh dashboard --skip-refresh` when you want a pure read of the current artifact set, or `dashboard-refresh` for an explicit full graph rebuild.",
                 ],
             ),
             _command_entry(
@@ -1461,6 +1497,77 @@ def _commands_inventory(project_root: Path) -> list[dict[str, Any]]:
             ),
             _command_entry(
                 project_root,
+                "Review the ten-part production resilience contract",
+                ["./scripts/ops/opsctl.sh production-resilience --json"],
+                notes=[
+                    "Reports framework implementation, unattended paper-soak readiness, and live-promotion evidence separately across the ten resilience hardeners.",
+                    "This command never unlocks live execution and never treats a control grade as guaranteed profitability.",
+                ],
+            ),
+            _command_entry(
+                project_root,
+                "Review exclusive control-surface ownership",
+                ["./scripts/ops/opsctl.sh control-surface-ownership --json"],
+                notes=[
+                    "Fails closed when a critical mutable resource has duplicate ownership, a missing owner route, or no declared coordination primitive.",
+                ],
+            ),
+            _command_entry(
+                project_root,
+                "Review hierarchical bot organization",
+                ["./scripts/ops/opsctl.sh bot-organization --json"],
+                notes=[
+                    "Audits every registered bot's sleeve, sub-sleeve, cohort, role, provenance, correlation cluster, and resource posture.",
+                    "The generated ensemble contract is shadow-only and has no paper or live execution authority.",
+                ],
+            ),
+            _command_entry(
+                project_root,
+                "Refresh source-backed capability proofs",
+                ["./scripts/ops/opsctl.sh capability-materialization --json"],
+                notes=[
+                    "Materializes exchange calendars, point-in-time session state, the versioned derivative contract master, and versioned stress scenarios into four direct content-addressed proof receipts.",
+                    "Run this before collector capability routing; it cannot fetch external data, change decisions, place orders, mutate the registry, or promote a bot.",
+                ],
+            ),
+            _command_entry(
+                project_root,
+                "Review collector capabilities and bot subscriptions",
+                ["./scripts/ops/opsctl.sh collector-capability-control --json"],
+                notes=[
+                    "Validates all 25 logical data planes, maps every current physical collector, and binds every organized bot to a content-addressed shared subscription profile.",
+                    "Candidate-required gaps block promotion, optional catalog gaps remain advisory, and each field-level claim publishes proof plus primary/failover provider selection.",
+                    "This control cannot fetch data, launch processes, change decisions, place orders, mutate the registry, or promote a bot.",
+                ],
+            ),
+            _command_entry(
+                project_root,
+                "Review bot profitability and scalability",
+                ["./scripts/ops/opsctl.sh bot-profitability-scalability --json"],
+                notes=[
+                    "Publishes candidate-bound per-bot regime learning, forward post-cost ranking, marginal contribution, lifecycle advice, capacity curves, bounded top-K activation, and shared feature, checkpoint, archive, resource, and model-cache evidence.",
+                    "Control maturity and economic evidence are graded separately; the manifest cannot allocate capital or create an order.",
+                ],
+            ),
+            _command_entry(
+                project_root,
+                "Review sleeve-master and grand-master evidence",
+                ["./scripts/ops/opsctl.sh master-grandmaster-evidence --json"],
+                notes=[
+                    "Synthesizes hierarchy, multi-axis regime context, paper truth, source quality, runtime capacity, positions, execution calibration, and post-cost evidence.",
+                    "The control is advisory and shadow-only; it cannot create orders, mutate the registry, allocate capital, or promote live execution.",
+                ],
+            ),
+            _command_entry(
+                project_root,
+                "Review the independent deadman monitor",
+                ["./scripts/ops/opsctl.sh independent-runtime-monitor --json"],
+                notes=[
+                    "Reads critical health artifacts from a separate stdlib-only process and reports local versus off-host monitoring readiness without performing repairs or orders.",
+                ],
+            ),
+            _command_entry(
+                project_root,
                 "Master infrastructure supervisor",
                 ["./scripts/ops/opsctl.sh master-infra-supervisor --json"],
                 notes=[
@@ -1503,9 +1610,23 @@ def _commands_inventory(project_root: Path) -> list[dict[str, Any]]:
             _command_entry(
                 project_root,
                 "Refresh readiness evidence without the full dashboard",
-                ["./scripts/ops/opsctl.sh readiness-evidence-refresh --apply --json"],
+                [
+                    "./scripts/ops/opsctl.sh readiness-evidence-refresh --profile accrual --apply --json",
+                    "./scripts/ops/opsctl.sh readiness-evidence-refresh --profile production --apply --json",
+                    "./scripts/ops/opsctl.sh readiness-evidence-refresh --profile dashboard --apply --json",
+                ],
                 notes=[
-                    "Runs the serialized candidate-bound evidence lane with per-step timeouts and a cooldown. It has no training-launch or live-order authority.",
+                    "The fifteen-stage accrual profile maintains organic collection every 15 minutes. The hourly production profile keeps all ten pillar owners, risk inputs, recovery proof, immutable evidence, and derived readiness controls current. The dashboard profile refreshes the bounded hot-state surface. All profiles are serialized, independently cooled down, market-data/paper-only, and have no training-launch or live-order authority.",
+                ],
+            ),
+            _command_entry(
+                project_root,
+                "Capture candidate-bound delayed-quote replay fills",
+                ["./scripts/ops/opsctl.sh market-replay-fill-capture --apply --json"],
+                notes=[
+                    "Matches candidate paper executions only to later, high-quality broker-native market observations and routes immutable replay records into the independent-fill inbox.",
+                    "Previously captured rows are retained by immutable identity; recurring runs scan only date-relevant bounded tails for unmatched orders instead of rereading full decision history.",
+                    "This is conservative replay evidence, not a Schwab fill receipt, and it has no promotion or live-order authority.",
                 ],
             ),
             _command_entry(
@@ -1722,6 +1843,49 @@ def _commands_inventory(project_root: Path) -> list[dict[str, Any]]:
             "Retrain",
             _command_entry(
                 project_root,
+                "Inspect bounded strategy generations",
+                ["./scripts/ops/opsctl.sh strategy-generation --json"],
+                notes=[
+                    "Shows reproduction-grade parents, strategy generation, active-offspring caps, event-chain health, and the collection-only safety posture without creating or training anything.",
+                ],
+            ),
+            _command_entry(
+                project_root,
+                "Propose a bounded strategy generation",
+                ["./scripts/ops/opsctl.sh strategy-generation --propose --json"],
+                notes=[
+                    "Creates at most the configured number of dormant offspring manifests and fails closed when parent evidence, cooldown, disk reserve, or active-candidate capacity is insufficient.",
+                ],
+            ),
+            _command_entry(
+                project_root,
+                "Train the next strategy offspring",
+                ["./scripts/ops/opsctl.sh strategy-generation --train-next --json"],
+                notes=[
+                    "Runs one isolated offspring training job only when training-runtime and host-pressure controls explicitly release the shared host.",
+                ],
+            ),
+            _command_entry(
+                project_root,
+                "Reconcile interrupted strategy offspring training",
+                ["./scripts/ops/opsctl.sh strategy-generation --reconcile-stale --json"],
+                notes=[
+                    "Quarantines a stale training lifecycle after the signed single-flight lock is released; it never grants execution authority or restarts training automatically.",
+                ],
+            ),
+            _command_entry(
+                project_root,
+                "Evaluate or retire a strategy offspring",
+                [
+                    "./scripts/ops/opsctl.sh strategy-generation --evaluate-offspring <OFFSPRING_ID> --evaluation-file <PATH> --json",
+                    "./scripts/ops/opsctl.sh strategy-generation --retire-offspring <OFFSPRING_ID> --reason '<AT_LEAST_12_CHARACTERS>' --json",
+                ],
+                notes=[
+                    "Evaluation must be stored in the locked strategy-evaluation root and cryptographically bind the candidate model, generation manifest, dataset, holdout, replay, evaluator identity, and metrics. Qualification never grants paper or live execution authority.",
+                ],
+            ),
+            _command_entry(
+                project_root,
                 "Full retrain preflight",
                 [
                     "./scripts/daily_log_refresh.sh",
@@ -1750,6 +1914,24 @@ def _commands_inventory(project_root: Path) -> list[dict[str, Any]]:
                 ["./scripts/ops/opsctl.sh training-labeling-intelligence --apply --json"],
                 notes=[
                     "Normalizes label contracts, writes training-process intelligence, and keeps targeted retrain candidates behind schema, feature-store, coverage, runtime, and lineage gates.",
+                ],
+            ),
+            _command_entry(
+                project_root,
+                "Refresh one coherent training evidence epoch",
+                ["./scripts/ops/opsctl.sh runtime-artifact-refresh --scope training --skip-dashboard --json"],
+                notes=[
+                    "Refreshes the dependency-closed snapshot, point-in-time event, feature, label, lineage, replay, candidate-selection, schema, and training-runtime chain under one epoch ID.",
+                    "This command does not launch training, promotion, allocation, paper orders, or live orders.",
+                ],
+            ),
+            _command_entry(
+                project_root,
+                "Refresh training and profitability evidence together",
+                ["./scripts/ops/opsctl.sh runtime-artifact-refresh --scope training-profitability --skip-dashboard --json"],
+                notes=[
+                    "Refreshes both evidence graphs in one bounded cycle so cross-artifact consumers cannot combine old and new proof.",
+                    "A blocked result is evidence debt, not permission to bypass a launch or promotion gate.",
                 ],
             ),
             _command_entry(
@@ -1848,6 +2030,35 @@ def _commands_inventory(project_root: Path) -> list[dict[str, Any]]:
             _command_entry(project_root, "Stock / crypto correlation sync", ["./scripts/ops/opsctl.sh market-correlation-sync --json"]),
             _command_entry(project_root, "FX market context sync", ["./scripts/ops/opsctl.sh fx-market-sync --json"]),
             _command_entry(project_root, "Macro context sync", ["./scripts/ops/opsctl.sh macro-context-sync --json"]),
+            _command_entry(
+                project_root,
+                "Decision context macro/micro mesh sync",
+                ["./scripts/ops/opsctl.sh decision-context-sync --json"],
+                notes=[
+                    "Refreshes and grades the twelve point-in-time context planes used by paper decisions, training, replay, and research. The report includes separate macro and micro percentages and has no order or promotion authority.",
+                ],
+            ),
+            _command_entry(
+                project_root,
+                "Analyst consensus estimates sync",
+                ["./scripts/ops/opsctl.sh analyst-consensus-sync --json"],
+                notes=[
+                    "Requires all 16 governed equities and revision-history coverage. Nasdaq analyst forecasts are bounded, checkpointed, and point-in-time; Alpha Vantage remains an optional credentialed fallback.",
+                    "The public Nasdaq route is internal personal research and paper context only. Commercial or live use requires separately verified data entitlements.",
+                ],
+            ),
+            _command_entry(
+                project_root,
+                "Global central-bank policy and assets sync",
+                ["./scripts/ops/opsctl.sh global-central-bank-sync --json"],
+                notes=["Collects the governed 32-bank BIS policy-rate and total-asset context with point-in-time history."],
+            ),
+            _command_entry(
+                project_root,
+                "Central-bank cross-source synchronization",
+                ["./scripts/ops/opsctl.sh central-bank-context-sync --json"],
+                notes=["Joins fresh central-bank rows to FX, sovereign macro, official events, USD liquidity, and cross-asset evidence before bot routing."],
+            ),
             _command_entry(project_root, "Source verification", ["./scripts/ops/opsctl.sh source-verification --json"]),
         ),
         _section(

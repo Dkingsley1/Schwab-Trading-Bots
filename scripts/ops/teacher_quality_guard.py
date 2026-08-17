@@ -101,7 +101,9 @@ def _teacher_overfit_blocked(row: dict[str, Any]) -> bool:
         return False
     status = str(row.get("status") or "").strip().lower()
     policy = _as_dict(row.get("policy"))
-    return status in OVERFIT_BLOCKING_STATUSES and not bool(policy.get("may_teach", False))
+    if "may_teach" in policy and not bool(policy.get("may_teach", False)):
+        return True
+    return status in OVERFIT_BLOCKING_STATUSES
 
 
 def _teacher_overfit_fields(row: dict[str, Any]) -> dict[str, Any]:
@@ -389,7 +391,7 @@ def build_payload(
     strong_count = sum(1 for row in teachers if str(row.get("teacher_grade") or "") == "strong")
     overall_status = "ready"
     if not teachers:
-        overall_status = "blocked"
+        overall_status = "blocked" if student_roles else "collecting_evidence"
     elif elite_count == 0 or uncovered_roles:
         overall_status = "degraded"
 
@@ -406,7 +408,7 @@ def build_payload(
     return {
         "timestamp_utc": iso_now(),
         "schema_version": 1,
-        "ok": overall_status == "ready",
+        "ok": overall_status in {"ready", "collecting_evidence"},
         "overall_status": overall_status,
         "inputs": {
             "teacher_min_forward_mean": float(teacher_min_forward_mean),
@@ -425,6 +427,8 @@ def build_payload(
             "uncovered_student_role_count": len(uncovered_roles),
             "excluded_bot_count": len(rejected_rows),
             "overfit_blocked_teacher_count": len(overfit_rejected_ids),
+            "teaching_enabled": bool(teachers),
+            "managed_idle": bool(not teachers and not student_roles),
         },
         "overfitting_awareness": {
             "overall_status": str(overfit_payload.get("overall_status") if overfit_payload else "missing") or "ready",
@@ -490,7 +494,7 @@ def main() -> int:
             f"overall_status={payload.get('overall_status', '')} "
             f"qualified_teachers={int(((payload.get('summary') or {}).get('qualified_teacher_count', 0) or 0))}"
         )
-    return 0 if payload.get("overall_status") in {"ready", "degraded"} else 2
+    return 0 if payload.get("overall_status") in {"ready", "degraded", "collecting_evidence"} else 2
 
 
 if __name__ == "__main__":

@@ -16,9 +16,9 @@ if __package__ in {None, ""}:
     PROJECT_ROOT = Path(__file__).resolve().parents[2]
     if str(PROJECT_ROOT) not in sys.path:
         sys.path.insert(0, str(PROJECT_ROOT))
-    from scripts.ops.long_runtime_common import iso_now, load_json, ordered_unique, parse_iso_utc, write_payload
+    from scripts.ops.long_runtime_common import load_json, ordered_unique, parse_iso_utc, write_payload
 else:
-    from .long_runtime_common import PROJECT_ROOT, iso_now, load_json, ordered_unique, parse_iso_utc, write_payload
+    from .long_runtime_common import PROJECT_ROOT, load_json, ordered_unique, parse_iso_utc, write_payload
 
 
 DEFAULT_OUT = Path("governance/health/readiness_evidence_accrual_latest.json")
@@ -50,15 +50,38 @@ def _resolve(project_root: Path, path: Path) -> Path:
 
 def _candidate(project_root: Path) -> dict[str, Any]:
     state = load_json(project_root / "governance" / "runtime" / "production_candidate_state.json")
+    production = load_json(project_root / "governance" / "health" / "production_excellence_control_latest.json")
+    production_candidate = _as_dict(production.get("candidate"))
     windows = _as_dict(state.get("scope_windows_started_utc"))
     window_values = [parse_iso_utc(value) for value in windows.values()]
     soak_started = max((value for value in window_values if value is not None), default=None)
+    identity_bound = bool(str(state.get("candidate_id") or "").strip() and soak_started is not None)
+    production_contract_present = bool(production_candidate)
+    production_candidate_matches = bool(
+        str(production_candidate.get("candidate_id") or "").strip()
+        == str(state.get("candidate_id") or "").strip()
+    )
+    credit_eligible = bool(
+        identity_bound
+        and (
+            not production_contract_present
+            or (
+                production_candidate_matches
+                and production_candidate.get("candidate_ready", False)
+                and not production_candidate.get("candidate_drift", True)
+            )
+        )
+    )
     return {
         "candidate_id": str(state.get("candidate_id") or "").strip(),
         "generation": _safe_int(state.get("generation"), 0),
         "soak_started_utc": soak_started.isoformat() if soak_started is not None else "",
         "soak_started": soak_started,
-        "bound": bool(str(state.get("candidate_id") or "").strip() and soak_started is not None),
+        "bound": identity_bound,
+        "credit_eligible": credit_eligible,
+        "production_contract_present": production_contract_present,
+        "production_candidate_matches": production_candidate_matches,
+        "candidate_drift": bool(production_candidate.get("candidate_drift", False)),
     }
 
 
@@ -137,8 +160,92 @@ def _equity_evidence_schedule_active(now: datetime) -> bool:
     return bool(local.weekday() < 5 and 4 * 60 <= minutes <= 20 * 60 + 15)
 
 
+def _candidate_bound_artifact_state(
+    payload: dict[str, Any],
+    *,
+    candidate: dict[str, Any],
+    cutoff_utc: Any = "",
+) -> tuple[bool, str]:
+    """Return candidate coherence and a stable producer-window key."""
+    candidate_id = str(candidate.get("candidate_id") or "").strip()
+    candidate_started_utc = str(candidate.get("soak_started_utc") or "").strip()
+    binding = _as_dict(payload.get("candidate_binding"))
+    bound_candidate_id = str(binding.get("candidate_id") or "").strip()
+    bound_cutoff_utc = str(binding.get("cutoff_utc") or cutoff_utc or "").strip()
+
+    if bound_candidate_id:
+        current = bool(
+            candidate_id
+            and bound_candidate_id == candidate_id
+            and binding.get("bound", True)
+        )
+        return current, ":".join(
+            [bound_candidate_id, bound_cutoff_utc, "current" if current else "stale"]
+        )
+
+    explicit_cutoff = parse_iso_utc(bound_cutoff_utc)
+    candidate_started = candidate.get("soak_started") if isinstance(candidate.get("soak_started"), datetime) else None
+    if explicit_cutoff is not None and candidate_started is not None:
+        current = explicit_cutoff == candidate_started
+        return current, ":".join(
+            [candidate_id, bound_cutoff_utc, "current" if current else "stale"]
+        )
+
+    artifact_timestamp = parse_iso_utc(payload.get("timestamp_utc"))
+    if artifact_timestamp is not None and candidate_started is not None:
+        current = artifact_timestamp >= candidate_started
+        return current, ":".join(
+            [candidate_id, candidate_started_utc, "current" if current else "stale"]
+        )
+
+    # Older artifacts and compact unit-test fixtures may not carry an epoch yet.
+    current = bool(payload)
+    return current, ":".join(
+        [candidate_id, candidate_started_utc, "legacy" if current else "missing"]
+    )
+
+
+def _artifact_producer(
+    producer_id: str,
+    payload: dict[str, Any],
+    *,
+    candidate: dict[str, Any],
+    cutoff_utc: Any = "",
+    cadence_hours: float = 6.0,
+    schedule_active: bool = True,
+    schedule: str = "continuous",
+    monotonic_within_candidate: bool = False,
+) -> tuple[dict[str, Any], bool]:
+    current, binding_key = _candidate_bound_artifact_state(
+        payload,
+        candidate=candidate,
+        cutoff_utc=cutoff_utc,
+    )
+    status = str(payload.get("overall_status") or payload.get("status") or "ready" if payload else "missing")
+    if payload and not current:
+        status = "stale_candidate_epoch"
+    reason = "" if payload and current else (
+        f"{producer_id}_candidate_epoch_stale" if payload else f"{producer_id}_artifact_missing"
+    )
+    return (
+        _producer(
+            producer_id,
+            ready=bool(payload and current),
+            status=status,
+            reason=reason,
+            cadence_hours=cadence_hours,
+            schedule_active=schedule_active,
+            schedule=schedule,
+            monotonic_within_candidate=monotonic_within_candidate,
+            binding_key=binding_key,
+        ),
+        current,
+    )
+
+
 def _raw_metrics(project_root: Path, *, candidate: dict[str, Any], now: datetime) -> list[dict[str, Any]]:
     acquisition = load_json(project_root / "governance" / "health" / "independent_fill_evidence_acquisition_latest.json")
+    replay_capture = load_json(project_root / "governance" / "health" / "market_replay_fill_capture_latest.json")
     calibration = load_json(project_root / "governance" / "health" / "paper_execution_calibration_latest.json")
     performance = load_json(project_root / "governance" / "health" / "paper_performance_latest.json")
     post_cost = _as_dict(performance.get("post_cost_expectancy"))
@@ -152,60 +259,159 @@ def _raw_metrics(project_root: Path, *, candidate: dict[str, Any], now: datetime
     rollout_thresholds = _as_dict(rollout.get("thresholds"))
     rollout_canary = _as_dict(rollout.get("canary_statistics"))
     profitability = load_json(project_root / "governance" / "health" / "paper_profitability_control_latest.json")
+    profitability_firewall = load_json(
+        project_root / "governance" / "health" / "profitability_evidence_firewall_latest.json"
+    )
+    profitability_policy = load_json(project_root / "config" / "profitability_evidence_firewall_v1.json")
+    multiple_testing = load_json(project_root / "governance" / "research" / "multiple_testing_guard_latest.json")
+    holdout = load_json(project_root / "governance" / "research" / "profitability_holdout_vault_latest.json")
+    benchmark = load_json(project_root / "governance" / "research" / "profitability_benchmark_hurdle_latest.json")
+    decay = load_json(project_root / "governance" / "research" / "decay_monitor_latest.json")
+    validator = load_json(project_root / "governance" / "health" / "profitability_independent_validator_latest.json")
     target_contract = _as_dict(profitability.get("a_plus_target_contract"))
     target_thresholds = _as_dict(target_contract.get("thresholds"))
     target_current = _as_dict(target_contract.get("current"))
     soak_started = candidate.get("soak_started") if isinstance(candidate.get("soak_started"), datetime) else None
-    soak_hours = max((now - soak_started).total_seconds() / 3600.0, 0.0) if soak_started is not None else 0.0
+    soak_hours = (
+        max((now - soak_started).total_seconds() / 3600.0, 0.0)
+        if soak_started is not None and candidate.get("credit_eligible", False)
+        else 0.0
+    )
     minimum_cohort_samples = _safe_float(rollout_thresholds.get("minimum_samples_per_cohort"), 400.0)
     minimum_canary_days = _safe_float(rollout_thresholds.get("minimum_independent_days"), 3.0)
     minimum_canary_ess = _safe_float(rollout_thresholds.get("minimum_effective_samples"), 50.0)
     candidate_id = str(candidate.get("candidate_id") or "")
-    acquisition_binding = _as_dict(acquisition.get("candidate_binding"))
-    acquisition_binding_key = ":".join(
-        [
-            str(acquisition_binding.get("candidate_id") or candidate_id),
-            str(acquisition_binding.get("cutoff_utc") or ""),
-        ]
+    candidate_started = candidate.get("soak_started") if isinstance(candidate.get("soak_started"), datetime) else None
+
+    acquisition_current, acquisition_binding_key = _candidate_bound_artifact_state(
+        acquisition,
+        candidate=candidate,
+    )
+    calibration_window = _as_dict(calibration.get("calibration_window"))
+    calibration_current, calibration_binding_key = _candidate_bound_artifact_state(
+        calibration,
+        candidate=candidate,
+        cutoff_utc=calibration_window.get("cutoff_utc"),
     )
     performance_window = _as_dict(performance.get("profitability_evidence_window"))
-    performance_binding_key = ":".join(
-        [candidate_id, str(performance_window.get("candidate_cutoff_utc") or "")]
+    performance_producer, performance_current = _artifact_producer(
+        "paper_performance",
+        performance,
+        candidate=candidate,
+        cutoff_utc=performance_window.get("candidate_cutoff_utc"),
     )
-    rollout_binding = _as_dict(rollout.get("candidate_binding"))
-    rollout_binding_key = ":".join(
-        [
-            str(rollout_binding.get("candidate_id") or "missing"),
-            str(rollout_binding.get("promotion_window_started_utc") or ""),
-        ]
+    if not performance_current:
+        post_cost = {}
+        robust = {}
+        robust_thresholds = {}
+    daily_performance_producer = {**performance_producer, "expected_cadence_hours": 30.0}
+    cumulative_performance_producer = {
+        **daily_performance_producer,
+        "monotonic_within_candidate": True,
+    }
+
+    profitability_producer, profitability_firewall_current = _artifact_producer(
+        "profitability_evidence_firewall",
+        profitability_firewall,
+        candidate=candidate,
     )
+    multiple_testing_producer, multiple_testing_current = _artifact_producer(
+        "multiple_testing_guard",
+        multiple_testing,
+        candidate=candidate,
+    )
+    holdout_producer, holdout_current = _artifact_producer(
+        "profitability_holdout_vault",
+        holdout,
+        candidate=candidate,
+    )
+    benchmark_producer, benchmark_current = _artifact_producer(
+        "profitability_benchmark_hurdle",
+        benchmark,
+        candidate=candidate,
+        cadence_hours=30.0,
+        monotonic_within_candidate=True,
+    )
+    benchmark_gate_producer = {**benchmark_producer, "monotonic_within_candidate": False}
+    decay_producer, decay_current = _artifact_producer(
+        "decay_monitor",
+        decay,
+        candidate=candidate,
+    )
+    validator_producer, validator_current = _artifact_producer(
+        "profitability_independent_validator",
+        validator,
+        candidate=candidate,
+    )
+    cumulative_validator_producer = {
+        **validator_producer,
+        "expected_cadence_hours": 30.0,
+        "monotonic_within_candidate": True,
+    }
+
     advancement_timestamp = parse_iso_utc(advancement.get("timestamp_utc"))
-    candidate_started = candidate.get("soak_started") if isinstance(candidate.get("soak_started"), datetime) else None
-    advancement_epoch = "fresh" if advancement_timestamp is not None and candidate_started is not None and advancement_timestamp >= candidate_started else "pre_candidate"
+    promotion_timestamp = parse_iso_utc(promotion.get("timestamp_utc"))
+    advancement_current = bool(
+        advancement
+        and (
+            candidate_started is None
+            or advancement_timestamp is None
+            or advancement_timestamp >= candidate_started
+        )
+    )
+    promotion_current = bool(
+        promotion
+        and (
+            candidate_started is None
+            or promotion_timestamp is None
+            or promotion_timestamp >= candidate_started
+        )
+    )
+    advancement_epoch = "fresh" if advancement_current and promotion_current else "pre_candidate"
     acquisition_status = str(acquisition.get("overall_status") or acquisition.get("status") or "missing").strip().lower()
     acquisition_ready = bool(
         acquisition
+        and acquisition_current
         and acquisition_status not in {"waiting_for_source", "missing", "blocked", "failed", "error"}
     )
+    replay_status = str(replay_capture.get("overall_status") or replay_capture.get("status") or "missing").strip().lower()
+    replay_current, replay_binding_key = _candidate_bound_artifact_state(
+        replay_capture,
+        candidate=candidate,
+    )
+    replay_ready = bool(
+        replay_capture.get("ok", False)
+        and replay_current
+        and replay_status in {"ready", "waiting_for_observations", "waiting_for_paper_orders"}
+    )
+    calibrated_source_ready = bool(calibration and calibration_current)
     fill_producer = _producer(
-        "independent_fill_acquisition",
-        ready=acquisition_ready,
-        status=acquisition_status,
-        reason="independent_fill_source_unavailable" if not acquisition_ready else "",
+        "independent_fill_acquisition_with_market_replay",
+        ready=bool(calibrated_source_ready and (acquisition_ready or replay_ready)),
+        status=(
+            acquisition_status
+            if acquisition_ready
+            else f"market_replay_{replay_status}"
+            if replay_ready
+            else "candidate_evidence_source_pending"
+        ),
+        reason=(
+            "paper_execution_calibration_candidate_epoch_stale"
+            if calibration and not calibration_current
+            else "independent_fill_and_market_replay_sources_unavailable"
+            if not acquisition_ready and not replay_ready
+            else ""
+        ),
         cadence_hours=6.0,
-        schedule="event_driven_source",
-        binding_key=acquisition_binding_key,
+        schedule_active=_equity_evidence_schedule_active(now),
+        schedule="weekday_equity_extended_hours_event_driven",
+        binding_key=f"{calibration_binding_key}:{acquisition_binding_key}:{replay_binding_key}",
     )
-    performance_producer = _producer(
-        "paper_performance",
-        ready=bool(performance),
-        status=str(performance.get("overall_status") or performance.get("status") or "ready" if performance else "missing"),
-        reason="paper_performance_artifact_missing" if not performance else "",
-        cadence_hours=6.0,
-        binding_key=performance_binding_key,
+    promotion_scope_active = bool(
+        advancement_current
+        and promotion_current
+        and promotion_scope.get("promotion_scope_active", False)
     )
-    daily_performance_producer = {**performance_producer, "expected_cadence_hours": 30.0}
-    promotion_scope_active = bool(promotion_scope.get("promotion_scope_active", False))
     promotion_producer = _producer(
         "promotion_pipeline",
         ready=promotion_scope_active,
@@ -216,6 +422,12 @@ def _raw_metrics(project_root: Path, *, candidate: dict[str, Any], now: datetime
         monotonic_within_candidate=False,
         binding_key=f"{candidate_id}:{advancement_epoch}",
     )
+    rollout_binding = _as_dict(rollout.get("candidate_binding"))
+    rollout_current, rollout_binding_key = _candidate_bound_artifact_state(
+        rollout,
+        candidate=candidate,
+        cutoff_utc=rollout_binding.get("promotion_window_started_utc"),
+    )
     coverage = _as_dict(rollout.get("cohort_source_coverage"))
     canary_coverage = _as_dict(coverage.get("canary"))
     baseline_coverage = _as_dict(coverage.get("baseline"))
@@ -224,12 +436,21 @@ def _raw_metrics(project_root: Path, *, candidate: dict[str, Any], now: datetime
     equity_schedule_active = _equity_evidence_schedule_active(now)
 
     def cohort_producer(cohort: str, row: dict[str, Any], samples: float) -> dict[str, Any]:
-        source_ready = bool(row.get("source_ready", False) or samples > 0 or (not coverage and source_files_seen))
+        source_ready = bool(
+            rollout_current
+            and (row.get("source_ready", False) or samples > 0 or (not coverage and source_files_seen))
+        )
         return _producer(
             f"canary_rollout_{cohort}",
             ready=source_ready,
-            status="source_ready" if source_ready else "source_missing",
-            reason=f"{cohort}_cohort_source_missing" if not source_ready else "",
+            status="source_ready" if source_ready else "stale_candidate_epoch" if not rollout_current else "source_missing",
+            reason=(
+                f"canary_rollout_{cohort}_candidate_epoch_stale"
+                if not rollout_current
+                else f"{cohort}_cohort_source_missing"
+                if not source_ready
+                else ""
+            ),
             cadence_hours=6.0,
             schedule_active=equity_schedule_active,
             schedule="weekday_equity_extended_hours",
@@ -237,22 +458,75 @@ def _raw_metrics(project_root: Path, *, candidate: dict[str, Any], now: datetime
             binding_key=rollout_binding_key,
         )
 
-    canary_producer = cohort_producer("canary", canary_coverage, _safe_float(rollout.get("canary_samples")))
-    baseline_producer = cohort_producer("baseline", baseline_coverage, _safe_float(rollout.get("baseline_samples")))
+    canary_samples = _safe_float(rollout.get("canary_samples")) if rollout_current else 0.0
+    baseline_samples = _safe_float(rollout.get("baseline_samples")) if rollout_current else 0.0
+    canary_producer = cohort_producer("canary", canary_coverage, canary_samples)
+    baseline_producer = cohort_producer("baseline", baseline_coverage, baseline_samples)
     canary_daily_producer = {**canary_producer, "expected_cadence_hours": 30.0}
+    soak_credit_eligible = bool(candidate.get("credit_eligible", False))
+    soak_producer = _producer(
+        "accepted_candidate_clock",
+        ready=soak_credit_eligible,
+        status="accepted" if soak_credit_eligible else "candidate_drift_or_unbound",
+        reason="candidate_acceptance_required_before_soak_credit" if not soak_credit_eligible else "",
+        cadence_hours=1.0,
+        binding_key=f"{candidate_id}:{candidate.get('soak_started_utc', '')}:{int(soak_credit_eligible)}",
+    )
+    strict_policy = _as_dict(profitability_policy.get("strict_graduation"))
+    active_firewall = profitability_firewall if profitability_firewall_current else {}
+    active_multiple_testing = multiple_testing if multiple_testing_current else {}
+    active_holdout = holdout if holdout_current else {}
+    active_benchmark = benchmark if benchmark_current else {}
+    active_decay = decay if decay_current else {}
+    active_validator = validator if validator_current else {}
+    active_rollout_canary = rollout_canary if rollout_current else {}
+    allocation = _as_dict(active_firewall.get("allocation_proposal"))
+    epoch_contract = _as_dict(active_firewall.get("evidence_epoch_contract"))
+    risk_of_ruin = _as_dict(active_validator.get("risk_of_ruin"))
+    benchmark_thresholds = _as_dict(benchmark.get("thresholds"))
+    edge_contract = _as_dict(active_decay.get("edge_decay_contract"))
+    firewall_controls = {
+        str(row.get("control_id") or ""): bool(row.get("evidence_ready", False))
+        for row in (active_firewall.get("baseline_controls") or [])
+        if isinstance(row, dict)
+    }
+    firewall_controls.update(
+        {
+            str(row.get("control_id") or ""): bool(row.get("evidence_ready", False))
+            for row in (active_firewall.get("controls") or [])
+            if isinstance(row, dict)
+        }
+    )
     return [
-        _metric("soak_elapsed_hours", "Frozen-candidate soak time", soak_hours, 720.0, unit="hours", kind="elapsed_time"),
-        _metric("independent_fills", "Independent paper/replay fills", _safe_float(calibration.get("independent_samples")), 100.0, unit="fills", kind="evidence", producer=fill_producer),
+        _metric("soak_elapsed_hours", "Frozen-candidate soak time", soak_hours, 720.0, unit="hours", kind="elapsed_time", producer=soak_producer),
+        _metric("independent_fills", "Independent paper/replay fills", _safe_float(calibration.get("independent_samples")) if calibration_current else 0.0, 100.0, unit="fills", kind="evidence", producer=fill_producer),
         _metric("post_cost_samples", "Post-cost trade observations", _safe_float(post_cost.get("sample_count")), _safe_float(robust_thresholds.get("minimum_samples"), 30.0), unit="observations", kind="evidence", producer=performance_producer),
         _metric("post_cost_days", "Independent post-cost days", _safe_float(robust.get("unique_day_count")), _safe_float(robust_thresholds.get("minimum_days"), 7.0), unit="days", kind="evidence", producer=daily_performance_producer),
         _metric("post_cost_symbols", "Post-cost symbol breadth", _safe_float(robust.get("unique_symbol_count")), _safe_float(robust_thresholds.get("minimum_symbols"), 5.0), unit="symbols", kind="evidence", producer=performance_producer),
         _metric("post_cost_effective_samples", "Cluster-effective post-cost samples", _safe_float(robust.get("effective_sample_size")), _safe_float(robust_thresholds.get("minimum_effective_samples"), 20.0), unit="effective_samples", kind="evidence", producer=daily_performance_producer),
-        _metric("considered_bots", "Independently considered promotion bots", _safe_float(promotion_scope.get("considered_bots")), _safe_float(promotion_scope.get("min_considered_bots"), 4.0), unit="bots", kind="evidence", producer=promotion_producer),
-        _metric("promotion_candidates", "Qualified promotion candidates", float(len(promotion_details.get("promotion_candidate_ids") or [])), _safe_float(promotion_scope.get("min_considered_bots"), 4.0), unit="bots", kind="evidence", producer=promotion_producer),
-        _metric("canary_samples", "Candidate canary observations", _safe_float(rollout.get("canary_samples")), minimum_cohort_samples, unit="observations", kind="evidence", producer=canary_producer),
-        _metric("baseline_samples", "Baseline canary observations", _safe_float(rollout.get("baseline_samples")), minimum_cohort_samples, unit="observations", kind="evidence", producer=baseline_producer),
-        _metric("canary_independent_days", "Canary independent days", _safe_float(rollout_canary.get("unique_day_count")), minimum_canary_days, unit="days", kind="evidence", producer=canary_daily_producer),
-        _metric("canary_effective_samples", "Canary effective samples", _safe_float(rollout_canary.get("effective_sample_size")), minimum_canary_ess, unit="effective_samples", kind="evidence", producer=canary_daily_producer),
+        _metric("considered_bots", "Independently considered promotion bots", _safe_float(promotion_scope.get("considered_bots")) if promotion_scope_active else 0.0, _safe_float(promotion_scope.get("min_considered_bots"), 4.0), unit="bots", kind="evidence", producer=promotion_producer),
+        _metric("promotion_candidates", "Qualified promotion candidates", float(len(promotion_details.get("promotion_candidate_ids") or [])) if promotion_scope_active else 0.0, _safe_float(promotion_scope.get("min_considered_bots"), 4.0), unit="bots", kind="evidence", producer=promotion_producer),
+        _metric("canary_samples", "Candidate canary observations", canary_samples, minimum_cohort_samples, unit="observations", kind="evidence", producer=canary_producer),
+        _metric("baseline_samples", "Baseline canary observations", baseline_samples, minimum_cohort_samples, unit="observations", kind="evidence", producer=baseline_producer),
+        _metric("canary_independent_days", "Canary independent days", _safe_float(active_rollout_canary.get("unique_day_count")), minimum_canary_days, unit="days", kind="evidence", producer=canary_daily_producer),
+        _metric("canary_effective_samples", "Canary effective samples", _safe_float(active_rollout_canary.get("effective_sample_size")), minimum_canary_ess, unit="effective_samples", kind="evidence", producer=canary_daily_producer),
+        _metric("strict_post_cost_samples", "Strict post-cost observations", _safe_float(post_cost.get("sample_count")), _safe_float(strict_policy.get("minimum_post_cost_samples"), 200.0), unit="observations", kind="evidence", producer=cumulative_performance_producer),
+        _metric("strict_independent_days", "Strict independent post-cost days", _safe_float(robust.get("unique_day_count")), _safe_float(strict_policy.get("minimum_independent_days"), 30.0), unit="days", kind="evidence", producer=cumulative_performance_producer),
+        _metric("strict_symbol_breadth", "Strict post-cost symbol breadth", _safe_float(robust.get("unique_symbol_count")), _safe_float(strict_policy.get("minimum_symbols"), 10.0), unit="symbols", kind="evidence", producer=cumulative_performance_producer),
+        _metric("strict_effective_samples", "Strict cluster-effective samples", _safe_float(robust.get("effective_sample_size")), _safe_float(strict_policy.get("minimum_effective_samples"), 100.0), unit="effective_samples", kind="evidence", producer=cumulative_performance_producer),
+        _metric("strict_regime_breadth", "Strict independent regime breadth", _safe_float(robust.get("unique_regime_count")), _safe_float(strict_policy.get("minimum_regimes"), 3.0), unit="regimes", kind="evidence", producer=cumulative_performance_producer),
+        _metric("strict_profitable_sleeves", "Strict independently profitable sleeves", _safe_float(allocation.get("qualified_sleeve_count", len(allocation.get("qualified_sleeves") or []))), _safe_float(strict_policy.get("minimum_profitable_sleeves"), 4.0), unit="sleeves", kind="evidence", producer=profitability_producer),
+        _metric("positive_conservative_lcb", "Positive conservative post-cost lower bound", float(bool(robust.get("positive_clustered_lower_confidence_bound_95", False))), 1.0, unit="gate", kind="evidence", producer=performance_producer),
+        _metric("stressed_expectancy_gate", "Adversarial stressed expectancy", float(firewall_controls.get("06_stressed_post_cost_expectancy", False)), 1.0, unit="gate", kind="evidence", producer=profitability_producer),
+        _metric("multiple_testing_gate", "FDR and overfit evidence", float(bool(active_multiple_testing.get("statistical_evidence_ready", False))), 1.0, unit="gate", kind="evidence", producer=multiple_testing_producer),
+        _metric("holdout_vault_gate", "Sealed holdout evaluation evidence", float(bool(active_holdout.get("evidence_ready", False))), 1.0, unit="gate", kind="evidence", producer=holdout_producer),
+        _metric("benchmark_common_days", "Cash and passive benchmark common days", _safe_float(active_benchmark.get("common_day_count")), _safe_float(benchmark_thresholds.get("minimum_common_days"), 30.0), unit="days", kind="evidence", producer=benchmark_producer),
+        _metric("benchmark_hurdle_gate", "Cash and passive benchmark hurdle", float(bool(active_benchmark.get("evidence_ready", False))), 1.0, unit="gate", kind="evidence", producer=benchmark_gate_producer),
+        _metric("edge_decay_gate", "Edge-decay evidence and containment", float(bool(edge_contract.get("evidence_ready", False) and edge_contract.get("automatic_demotion_ready", False))), 1.0, unit="gate", kind="evidence", producer=decay_producer),
+        _metric("risk_of_ruin_days", "Risk-of-ruin independent days", _safe_float(risk_of_ruin.get("day_count")), _safe_float(_as_dict(risk_of_ruin.get("thresholds")).get("minimum_days"), 30.0), unit="days", kind="evidence", producer=cumulative_validator_producer),
+        _metric("risk_of_ruin_gate", "Risk-of-ruin and drawdown stress", float(bool(risk_of_ruin.get("available", False) and risk_of_ruin.get("passes", False))), 1.0, unit="gate", kind="evidence", producer=validator_producer),
+        _metric("tail_concentration_gate", "Tail concentration and conservative allocation", float(firewall_controls.get("h09_tail_concentration", False)), 1.0, unit="gate", kind="evidence", producer=profitability_producer),
+        _metric("profitability_epoch_coherence", "Atomic profitability evidence epoch", float(bool(epoch_contract.get("ready", False))), 1.0, unit="gate", kind="evidence", producer=profitability_producer),
         _metric("raw_net_pnl", "Raw paper net PnL", _safe_float(target_current.get("net_pnl")), _safe_float(target_thresholds.get("min_net_pnl"), 50000.0), unit="usd", kind="outcome"),
     ]
 
@@ -323,7 +597,7 @@ def _enrich_rates(
             accrual_state = "counter_regression"
         elif not collection_active and row["kind"] in {"evidence", "elapsed_time"}:
             accrual_state = "collection_paused"
-        elif not producer_ready and row["kind"] == "evidence":
+        elif not producer_ready and row["kind"] in {"evidence", "elapsed_time"}:
             accrual_state = "waiting_precondition"
         elif not schedule_active and row["kind"] == "evidence":
             accrual_state = "outside_producer_schedule"
@@ -422,7 +696,7 @@ def build_payload(
     pending_ids = [str(row["metric_id"]) for row in metrics if not row.get("complete")]
     status = (
         "blocked"
-        if not candidate.get("bound", False)
+        if not candidate.get("credit_eligible", False)
         else "regressed"
         if regressed_ids
         else "stalled"
@@ -435,7 +709,7 @@ def build_payload(
         "schema_version": SCHEMA_VERSION,
         "timestamp_utc": current.isoformat(),
         "overall_status": status,
-        "ok": bool(candidate.get("bound", False) and not stalled_ids and not regressed_ids),
+        "ok": bool(candidate.get("credit_eligible", False) and not stalled_ids and not regressed_ids),
         "candidate_binding": {key: value for key, value in candidate.items() if key != "soak_started"},
         "collection_active": collection_active,
         "collection_evidence": collection,
@@ -449,12 +723,17 @@ def build_payload(
         "control_contract": {
             "eta_requires_observed_positive_rate": True,
             "candidate_change_resets_rate_history": True,
+            "unaccepted_candidate_drift_receives_zero_soak_credit": True,
+            "all_profitability_promotion_gates_are_explicitly_tracked": True,
             "producer_candidate_or_window_rebind_resets_metric_history": True,
+            "stale_candidate_artifacts_are_quarantined_before_metric_credit": True,
+            "each_profitability_metric_tracks_its_actual_producer_epoch": True,
             "stalls_require_active_collection_and_elapsed_window": True,
             "stalls_require_ready_producer_and_active_schedule": True,
             "daily_and_event_driven_evidence_use_source_specific_cadence": True,
             "same_candidate_cumulative_counter_regressions_fail_closed": True,
             "raw_counts_are_not_relabelled_as_independent_evidence": True,
+            "market_replay_source_health_is_tracked_without_relabelling_fill_counts": True,
             "live_execution_authority": False,
         },
         "recommended_actions": ordered_unique(

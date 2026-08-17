@@ -134,6 +134,61 @@ def test_build_payload_blocks_until_route_soak_window_passes(tmp_path: Path) -> 
     assert payload["route_soak"]["ok"] is False
 
 
+def test_active_local_route_is_a_safe_idle_state(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    local_data = project_root / "local_fallback_storage" / "data"
+    local_data.mkdir(parents=True, exist_ok=True)
+    (local_data / "bot_channel_queue.sqlite3").write_text("queue", encoding="utf-8")
+    failback_payload = {
+        "mode": "local_fallback_split_brain",
+        "certified_mode": "local_fallback_split_brain",
+        "sqlite_skip_report": {
+            "summary": {"active_local_count": 1, "active_external_count": 0},
+            "route_verification": {
+                "verification_state": "active_local_ready",
+                "mismatches": [],
+            },
+            "entries": [],
+        },
+    }
+
+    payload = storage_standby_prune.build_payload(
+        project_root=project_root,
+        apply=True,
+        failback_payload=failback_payload,
+    )
+
+    assert payload["ok"] is True
+    assert payload["overall_status"] == "ready_idle_active_local_route"
+    assert payload["route_guard"]["active_local_route_idle"] is True
+
+
+def test_active_local_route_is_not_idle_with_an_external_writer(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    failback_payload = {
+        "mode": "local_fallback_split_brain",
+        "certified_mode": "local_fallback_split_brain",
+        "sqlite_skip_report": {
+            "summary": {"active_local_count": 1, "active_external_count": 1},
+            "route_verification": {
+                "verification_state": "active_local_ready",
+                "mismatches": [],
+            },
+            "entries": [],
+        },
+    }
+
+    payload = storage_standby_prune.build_payload(
+        project_root=project_root,
+        apply=True,
+        failback_payload=failback_payload,
+    )
+
+    assert payload["ok"] is False
+    assert payload["overall_status"] == "blocked_by_route_guard"
+    assert payload["route_guard"]["active_local_route_idle"] is False
+
+
 def test_build_payload_apply_prunes_verified_standby_only(tmp_path: Path) -> None:
     project_root = tmp_path / "project"
     local_data = project_root / "local_fallback_storage" / "data"

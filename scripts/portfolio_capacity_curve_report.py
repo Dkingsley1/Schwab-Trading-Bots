@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import gzip
 import json
 from datetime import datetime, timezone
 from pathlib import Path
@@ -34,10 +35,18 @@ def _normalize(text: Any, default: str) -> str:
 
 def _recent_paper_rows(project_root: Path, limit: int = 200) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
-    files = sorted((project_root / "exports" / "paper_broker_bridge" / "paper").glob("*.jsonl"))
+    paper_root = project_root / "exports" / "paper_broker_bridge" / "paper"
+    files = sorted(
+        [*paper_root.glob("*.jsonl"), *paper_root.glob("*.jsonl.gz")],
+        key=lambda path: (path.stat().st_mtime if path.exists() else 0.0, path.name),
+    )
     for path in reversed(files):
         try:
-            raw_lines = path.read_text(encoding="utf-8").splitlines()
+            if path.suffix == ".gz":
+                with gzip.open(path, "rt", encoding="utf-8") as handle:
+                    raw_lines = handle.read().splitlines()
+            else:
+                raw_lines = path.read_text(encoding="utf-8").splitlines()
         except Exception:
             continue
         for raw in reversed(raw_lines):

@@ -569,7 +569,7 @@ def _reindex_legacy_stale_stage(
     max_files: int = 2048,
     max_bytes: int = 4 * (1024**3),
     oversized_max_files: int = 1,
-    oversized_max_bytes: int = 12 * (1024**3),
+    oversized_max_bytes: int = 64 * (1024**3),
     oversized_min_age_days: float = 3.0,
 ) -> dict[str, object]:
     active = _active_stale_manifest_rows(manifest_path)
@@ -651,7 +651,8 @@ def _reindex_legacy_stale_stage(
                 continue
             if bool(row.get("protected_evidence", False)):
                 continue
-            if str(row.get("economic_value") or "") != "low":
+            economic_value = str(row.get("economic_value") or "")
+            if economic_value not in {"low", "medium"}:
                 continue
             if float(row.get("age_days") or 0.0) < oversized_min_age:
                 continue
@@ -659,7 +660,7 @@ def _reindex_legacy_stale_stage(
                 continue
             if oversized_selected and oversized_selected_bytes + size_bytes > oversized_byte_budget:
                 continue
-            row["legacy_reindex_lane"] = "oversized_low_value"
+            row["legacy_reindex_lane"] = f"oversized_{economic_value}_value"
             oversized_selected.append(row)
             oversized_selected_bytes += size_bytes
     selected.extend(oversized_selected)
@@ -768,6 +769,8 @@ def _purge_old_stale_stage(
     critical_value_days: int | None = None,
     max_files: int = 0,
     max_bytes: int = 0,
+    oversized_max_files: int = 0,
+    oversized_max_bytes: int = 0,
 ) -> dict[str, object]:
     fallback_window = max(int(older_than_days), 0)
     purge_windows = {
@@ -799,9 +802,6 @@ def _purge_old_stale_stage(
                 if not bool(manifest_row.get("integrity_verified", False)) or not expected_sha256:
                     skipped_unverified += 1
                     continue
-                if _path_sha256(path) != expected_sha256:
-                    skipped_hash_mismatch += 1
-                    continue
                 if bool(manifest_row.get("protected_evidence", False)):
                     skipped_protected += 1
                     continue
@@ -832,6 +832,9 @@ def _purge_old_stale_stage(
                 if mt >= cutoff:
                     skipped_by_tier += 1
                     continue
+                if _path_sha256(path) != expected_sha256:
+                    skipped_hash_mismatch += 1
+                    continue
                 age_days = _path_age_days(path)
                 size_bytes = _path_size_bytes(path)
                 candidates.append(
@@ -860,20 +863,40 @@ def _purge_old_stale_stage(
     selected_bytes = 0
     max_files_value = max(int(max_files), 0)
     max_bytes_value = max(int(max_bytes), 0)
-    skipped_by_budget = 0
     for row in candidates:
         size_bytes = int(row.get("size_bytes") or 0)
         if max_files_value and len(selected) >= max_files_value:
-            skipped_by_budget += 1
             continue
         if max_bytes_value and selected and selected_bytes + size_bytes > max_bytes_value:
-            skipped_by_budget += 1
             continue
         if max_bytes_value and not selected and size_bytes > max_bytes_value:
-            skipped_by_budget += 1
             continue
         selected.append(row)
         selected_bytes += size_bytes
+
+    oversized_file_budget = max(int(oversized_max_files), 0)
+    oversized_byte_budget = max(int(oversized_max_bytes), 0)
+    oversized_selected: list[dict[str, object]] = []
+    oversized_selected_bytes = 0
+    selected_paths = {str(row.get("path") or "") for row in selected}
+    if max_bytes_value and oversized_file_budget > 0 and oversized_byte_budget > 0:
+        for row in candidates:
+            size_bytes = int(row.get("size_bytes") or 0)
+            if len(oversized_selected) >= oversized_file_budget:
+                break
+            if str(row.get("path") or "") in selected_paths:
+                continue
+            if size_bytes <= max_bytes_value or size_bytes > oversized_byte_budget:
+                continue
+            if str(row.get("economic_value") or "") not in {"low", "medium"}:
+                continue
+            if oversized_selected and oversized_selected_bytes + size_bytes > oversized_byte_budget:
+                continue
+            oversized_selected.append(row)
+            oversized_selected_bytes += size_bytes
+    selected.extend(oversized_selected)
+    selected_bytes += oversized_selected_bytes
+    skipped_by_budget = max(len(candidates) - len(selected), 0)
     deleted = 0
     errors = 0
     deleted_bytes = 0
@@ -977,6 +1000,9 @@ def _purge_old_stale_stage(
             "critical_value_days": int(purge_windows["critical"]),
             "max_files": int(max_files_value),
             "max_bytes": int(max_bytes_value),
+            "oversized_max_files": int(oversized_file_budget),
+            "oversized_max_bytes": int(oversized_byte_budget),
+            "oversized_economic_values": ["low", "medium"],
             "selection_order": "lowest_economic_value_then_oldest_then_largest",
             "manifest_backed_only": True,
             "sha256_required": True,
@@ -984,6 +1010,8 @@ def _purge_old_stale_stage(
         },
         "deleted_files": int(deleted),
         "deleted_bytes": int(deleted_bytes),
+        "oversized_selected_files": int(len(oversized_selected)),
+        "oversized_selected_bytes": int(oversized_selected_bytes),
         "delete_errors": int(errors),
         "older_than_days": int(older_than_days),
         "deleted_by_label": by_label,

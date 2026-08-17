@@ -340,6 +340,54 @@ def test_architecture_hardening_manages_bounded_transient_writer_pressure(tmp_pa
     assert writer["evidence"]["bounded_writer_pressure_managed"] is True
 
 
+def test_architecture_hardening_manages_bounded_steady_state_without_active_drain(tmp_path: Path) -> None:
+    _seed_ready_project(tmp_path)
+    health = tmp_path / "governance" / "health"
+    _write_json(
+        health / "ingestion_storage_control_latest.json",
+        {
+            "overall_status": "ready",
+            "severity": "stable",
+            "pressure_index": 0.427,
+            "backpressure": {
+                "total_pending_lines": 512,
+                "pending_lines_threshold": 15000,
+                "raw_live": {
+                    "core_pending_lines": 512,
+                    "total_pending_lines": 512,
+                    "oldest_pending_age_seconds": 120.0,
+                },
+            },
+            "continuous_run_soak_contract": {"soak_ready": True, "blockers": []},
+            "bounded_recovery_contract": {
+                "route_verified": True,
+                "active_drain_progress": False,
+                "hard_gate_active": False,
+                "effective_hard_gate_active": False,
+            },
+        },
+    )
+    _write_json(
+        health / "data_plane_recovery_controller_latest.json",
+        {"overall_status": "degraded", "write_failure_count": 0, "account_snapshot_failure_count": 0},
+    )
+    _write_json(
+        health / "system_plumbing_control_latest.json",
+        {"overall_status": "ready", "plumbing_score": 100, "blockers": [], "warnings": []},
+    )
+
+    payload = src.build_payload(tmp_path)
+    writer = payload["sections"]["storage_writer_data_plane"]
+
+    assert payload["ok"] is True
+    assert writer["overall_status"] == "watch"
+    assert writer["blocks_guarded_paper"] is False
+    assert writer["evidence"]["bounded_writer_pressure_managed"] is True
+    assert writer["evidence"]["bounded_active_recovery"] is False
+    assert writer["evidence"]["bounded_steady_state_storage"] is True
+    assert "storage_pressure_index_high" not in writer["findings"]
+
+
 def test_architecture_hardening_allows_isolated_read_only_collector_watch(tmp_path: Path) -> None:
     _seed_ready_project(tmp_path)
     _write_json(

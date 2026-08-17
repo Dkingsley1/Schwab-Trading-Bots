@@ -44,6 +44,10 @@ def test_behavior_dataset_vector_matches_declared_feature_schema() -> None:
         "dividend_growth_persistence_norm": 0.54,
         "dividend_capture_ex_date_hazard_norm": 0.45,
     }
+    central_bank_features = {
+        name: round((index + 1) / (len(behavior_ds.CENTRAL_BANK_LIQUIDITY_FEATURE_KEYS) + 1), 6)
+        for index, name in enumerate(behavior_ds.CENTRAL_BANK_LIQUIDITY_FEATURE_KEYS)
+    }
     vector, _, _ = behavior_ds._decision_feature_vector(
         row={
             "features": features,
@@ -58,7 +62,7 @@ def test_behavior_dataset_vector_matches_declared_feature_schema() -> None:
         paper_snapshot={},
         lag_paper=(0.0, 0.0, 0.0),
         snapshot_context={},
-        external_context={},
+        external_context=central_bank_features,
         external_meta={},
         event_windows=[],
     )
@@ -66,6 +70,96 @@ def test_behavior_dataset_vector_matches_declared_feature_schema() -> None:
     assert len(vector) == len(behavior_ds.FEATURE_NAMES)
     for name, expected in features.items():
         assert vector[behavior_ds.FEATURE_NAMES.index(name)] == expected
+    for name, expected in central_bank_features.items():
+        assert vector[behavior_ds.FEATURE_NAMES.index(name)] == expected
+
+
+def test_path_dependent_labels_capture_excursions_and_no_trade_baseline() -> None:
+    trade = behavior_ds._path_dependent_labels(
+        action="BUY",
+        base_price=100.0,
+        future_prices=[101.0, 99.5, 102.0],
+        post_cost_forward_return=0.015,
+        hold_opportunity_threshold=0.0014,
+    )
+    hold = behavior_ds._path_dependent_labels(
+        action="HOLD",
+        base_price=100.0,
+        future_prices=[100.1, 102.0],
+        post_cost_forward_return=0.02,
+        hold_opportunity_threshold=0.0014,
+    )
+
+    assert trade["path_label_ready"] is True
+    assert trade["maximum_favorable_excursion"] == 0.02
+    assert trade["maximum_adverse_excursion"] == -0.005
+    assert trade["no_trade_counterfactual_outcome"] == "trade_outperformed_cash"
+    assert hold["no_trade_counterfactual_outcome"] == "hold_missed_large_move"
+
+
+def test_external_context_sparse_merge_preserves_central_bank_features() -> None:
+    central_features = {key: 0.5 for key in loop.CENTRAL_BANK_LIQUIDITY_FEATURE_KEYS}
+    central_features.update(
+        {
+            "fed_net_liquidity_impulse_norm": 0.73,
+            "fed_funding_stress_norm": 0.0,
+        }
+    )
+    official_macro = {
+        "status": {"sources": {"central_bank_liquidity": {"ok": True}}},
+        "derived": {
+            "global_features": central_features,
+            "central_bank_liquidity": {
+                "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+                "methodology": {"point_in_time_only": True},
+                "coverage": {
+                    "required_coverage_ratio": 1.0,
+                    "missing_required_series": [],
+                    "stale_required_series": [],
+                    "unusable_required_series": [],
+                    "future_observation_selected": False,
+                },
+                "global_features": central_features,
+            },
+        }
+    }
+    later_unrelated_source = {
+        "derived": {"global_features": {"sec_regulatory_7d_norm": 0.42}}
+    }
+
+    merged = loop._external_context_feature_set(official_macro, symbol="SPY")
+    merged.update(loop._external_context_feature_set(later_unrelated_source, symbol="SPY"))
+
+    assert merged["fed_net_liquidity_impulse_norm"] == 0.73
+    assert merged["fed_funding_stress_norm"] == 0.0
+    assert merged["sec_regulatory_7d_norm"] == 0.42
+    assert "fed_total_assets_level_norm" not in loop._external_context_feature_set(later_unrelated_source, symbol="SPY")
+
+
+def test_external_context_rejects_stale_central_bank_features() -> None:
+    central_features = {key: 0.5 for key in loop.CENTRAL_BANK_LIQUIDITY_FEATURE_KEYS}
+    stale_snapshot = {
+        "status": {"sources": {"central_bank_liquidity": {"ok": True}}},
+        "derived": {
+            "global_features": central_features,
+            "central_bank_liquidity": {
+                "timestamp_utc": (datetime.now(timezone.utc) - timedelta(hours=25)).isoformat(),
+                "methodology": {"point_in_time_only": True},
+                "coverage": {
+                    "required_coverage_ratio": 1.0,
+                    "missing_required_series": [],
+                    "stale_required_series": [],
+                    "unusable_required_series": [],
+                    "future_observation_selected": False,
+                },
+                "global_features": central_features,
+            },
+        },
+    }
+
+    extracted = loop._external_context_feature_set(stale_snapshot, symbol="SPY")
+
+    assert not any(key in extracted for key in loop.CENTRAL_BANK_LIQUIDITY_FEATURE_KEYS)
 
 
 def test_behavior_dataset_failed_build_preserves_last_valid_artifact(tmp_path: Path) -> None:

@@ -1,0 +1,158 @@
+{
+  "schema_version": 1,
+  "master_id": "derivatives_contract_master_v1",
+  "as_of_date": "2026-08-13",
+  "required_runtime_roots": ["ES", "NQ", "YM", "RTY", "ZT", "ZF", "ZN", "ZB", "CL", "GC"],
+  "source_references": {
+    "cme_equity_index": "https://www.cmegroup.com/education/modules/files/EQ240_EQ_for_AIT.pdf",
+    "cme_treasury": "https://www.cmegroup.com/markets/interest-rates/us-treasury.html",
+    "cme_wti": "https://www.cmegroup.com/markets/energy/crude-oil/light-sweet-crude.html",
+    "cme_gold": "https://www.cmegroup.com/markets/metals/precious/gold.html"
+  },
+  "contracts": [
+    {
+      "root": "ES",
+      "name": "E-mini S&P 500 Futures",
+      "exchange": "CME Globex",
+      "calendar_id": "CMES",
+      "currency": "USD",
+      "contract_multiplier": 50.0,
+      "minimum_tick": 0.25,
+      "tick_value": 12.5,
+      "listing_cycle": "March quarterly cycle",
+      "settlement_type": "cash",
+      "source_reference": "cme_equity_index"
+    },
+    {
+      "root": "NQ",
+      "name": "E-mini Nasdaq-100 Futures",
+      "exchange": "CME Globex",
+      "calendar_id": "CMES",
+      "currency": "USD",
+      "contract_multiplier": 20.0,
+      "minimum_tick": 0.25,
+      "tick_value": 5.0,
+      "listing_cycle": "March quarterly cycle",
+      "settlement_type": "cash",
+      "source_reference": "cme_equity_index"
+    },
+    {
+      "root": "YM",
+      "name": "E-mini Dow Futures",
+      "exchange": "CBOT Globex",
+      "calendar_id": "CMES",
+      "currency": "USD",
+      "contract_multiplier": 5.0,
+      "minimum_tick": 1.0,
+      "tick_value": 5.0,
+      "listing_cycle": "March quarterly cycle",
+      "settlement_type": "cash",
+      "source_reference": "cme_equity_index"
+    },
+    {
+      "root": "RTY",
+      "name": "E-mini Russell 2000 Futures",
+      "exchange": "CME Globex",
+      "calendar_id": "CMES",
+      "currency": "USD",
+      "contract_multiplier": 50.0,
+      "minimum_tick": 0.1,
+      "tick_value": 5.0,
+      "listing_cycle": "March quarterly cycle",
+      "settlement_type": "cash",
+      "source_reference": "cme_equity_index"
+    },
+    {
+      "root": "ZT",
+      "name": "2-Year U.S. Treasury Note Futures",
+      "exchange": "CBOT Globex",
+      "calendar_id": "CMES",
+      "currency": "USD",
+      "contract_multiplier": 2000.0,
+      "minimum_tick": 0.00390625,
+      "tick_value": 7.8125,
+      "listing_cycle": "March quarterly cycle",
+      "settlement_type": "physical",
+      "source_reference": "cme_treasury"
+    },
+    {
+      "root": "ZF",
+      "name": "5-Year U.S. Treasury Note Futures",
+      "exchange": "CBOT Globex",
+      "calendar_id": "CMES",
+      "currency": "USD",
+      "contract_multiplier": 1000.0,
+      "minimum_tick": 0.0078125,
+      "tick_value": 7.8125,
+      "listing_cycle": "March quarterly cycle",
+      "settlement_type": "physical",
+      "source_reference": "cme_treasury"
+    },
+    {
+      "root": "ZN",
+      "name": "10-Year U.S. Treasury Note Futures",
+      "exchange": "CBOT Globex",
+      "calendar_id": "CMES",
+      "currency": "USD",
+      "contract_multiplier": 1000.0,
+      "minimum_tick": 0.015625,
+      "tick_value": 15.625,
+      "listing_cycle": "March quarterly cycle",
+      "settlement_type": "physical",
+      "source_reference": "cme_treasury"
+    },
+    {
+      "root": "ZB",
+      "name": "U.S. Treasury Bond Futures",
+      "exchange": "CBOT Globex",
+      "calendar_id": "CMES",
+      "currency": "USD",
+      "contract_multiplier": 1000.0,
+      "minimum_tick": 0.03125,
+      "tick_value": 31.25,
+      "listing_cycle": "March quarterly cycle",
+      "settlement_type": "physical",
+      "source_reference": "cme_treasury"
+    },
+    {
+      "root": "CL",
+      "name": "WTI Crude Oil Futures",
+      "exchange": "NYMEX Globex",
+      "calendar_id": "CMES",
+      "currency": "USD",
+      "contract_multiplier": 1000.0,
+      "minimum_tick": 0.01,
+      "tick_value": 10.0,
+      "listing_cycle": "monthly",
+      "settlement_type": "physical",
+      "source_reference": "cme_wti"
+    },
+    {
+      "root": "GC",
+      "name": "COMEX Gold Futures",
+      "exchange": "COMEX Globex",
+      "calendar_id": "CMES",
+      "currency": "USD",
+      "contract_multiplier": 100.0,
+      "minimum_tick": 0.1,
+      "tick_value": 10.0,
+      "listing_cycle": "monthly with primary even-month cycle",
+      "settlement_type": "physical",
+      "source_reference": "cme_gold"
+    }
+  ],
+  "validation_contract": {
+    "required_roots_must_resolve": true,
+    "tick_value_must_equal_multiplier_times_tick": true,
+    "positive_multiplier_and_tick_required": true,
+    "calendar_mapping_required": true,
+    "source_reference_required": true,
+    "unknown_contracts_fail_valuation_closed": true
+  },
+  "authority_contract": {
+    "execution_authority": false,
+    "automatic_roll_authority": false,
+    "automatic_promotion_authority": false,
+    "profitability_guaranteed": false
+  }
+}

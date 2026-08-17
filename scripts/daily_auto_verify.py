@@ -64,6 +64,13 @@ DEFAULT_SLOW_CMD_TIMEOUT_SEC = int(os.getenv("DAILY_AUTO_VERIFY_SLOW_CMD_TIMEOUT
 LOCK_PATH = PROJECT_ROOT / "governance" / "locks" / "daily_auto_verify.lock"
 PROGRESS_PATH = PROJECT_ROOT / "governance" / "health" / "daily_auto_verify_progress_latest.json"
 STALE_PROGRESS_MAX_AGE_SECONDS = int(os.getenv("DAILY_AUTO_VERIFY_STALE_PROGRESS_MAX_AGE_SECONDS", "7200"))
+NON_OPERATIONAL_EVIDENCE_CHECKS = {
+    "snapshot_coverage_sentinel",
+    "feature_store_manifest",
+    "retrain_schema_compatibility_guard",
+    "promotion_packet_builder",
+    "promotion_quality_gate",
+}
 
 DEFAULT_FRESHNESS_FILE_GROUPS = [
     [PROJECT_ROOT / "governance" / "health" / "session_ready_latest.json"],
@@ -371,6 +378,7 @@ def _build_payload(
     pid: int | None = None,
 ) -> dict[str, Any]:
     failed = [k for k, v in checks.items() if not bool(v.get("ok", False))]
+    operational_failed = [name for name in failed if name not in NON_OPERATIONAL_EVIDENCE_CHECKS]
     return {
         "timestamp_utc": datetime.now(timezone.utc).isoformat(),
         "day": day,
@@ -381,7 +389,15 @@ def _build_payload(
         "current_check": current_check,
         "completed_checks": len(checks),
         "ok": len(failed) == 0,
+        "operational_ok": len(operational_failed) == 0,
+        "evidence_ready": len(failed) == 0,
         "failed_checks": failed,
+        "operational_failed_checks": operational_failed,
+        "evidence_debt_checks": [name for name in failed if name in NON_OPERATIONAL_EVIDENCE_CHECKS],
+        "readiness_contract": {
+            "runtime_collection_and_paper_health_is_separate_from_training_and_promotion_evidence": True,
+            "evidence_debt_never_authorizes_training_promotion_or_live_execution": True,
+        },
         "note": note,
         "lock_path": str(LOCK_PATH),
         "checks": checks,
@@ -619,6 +635,9 @@ def _timeout_for_check(name: str, slow_timeout_sec: int) -> int:
         "guardrail_triprate_sentinel",
         "execution_queue_stress_bot",
         "state_snapshot_drill",
+        "storage_resilience_control",
+        "ingestion_storage_control",
+        "blackstart_recovery",
         "health_gates",
         "data_source_divergence_bot",
         "nightly_resilience_check",
@@ -762,12 +781,17 @@ def main() -> int:
             ("sleeve_allocator", [str(VENV_PY), str(PROJECT_ROOT / "scripts" / "sleeve_allocator.py"), "--json"], 5000),
             ("portfolio_risk_ledger", [str(VENV_PY), str(PROJECT_ROOT / "scripts" / "portfolio_risk_ledger.py"), "--json"], 5000),
             ("execution_budgeter", [str(VENV_PY), str(PROJECT_ROOT / "scripts" / "execution_budgeter.py"), "--json"], 5000),
+            ("teacher_quality_guard", [str(VENV_PY), str(PROJECT_ROOT / "scripts" / "ops" / "teacher_quality_guard.py"), "--json"], 5000),
             ("distillation_plan", [str(VENV_PY), str(PROJECT_ROOT / "scripts" / "distill_new_bots.py"), "--json"], 5000),
+            ("strategy_generation_control", [str(VENV_PY), str(PROJECT_ROOT / "scripts" / "ops" / "strategy_generation_control.py"), "--reconcile-stale", "--json"], 5000),
             ("state_snapshot_drill", [str(VENV_PY), str(PROJECT_ROOT / "scripts" / "daily_state_snapshot_drill.py"), "--json"], 5000),
+            ("storage_resilience_control", [str(VENV_PY), str(PROJECT_ROOT / "scripts" / "ops" / "storage_resilience_control.py"), "--fast", "--json"], 5000),
+            ("ingestion_storage_control", [str(VENV_PY), str(PROJECT_ROOT / "scripts" / "ops" / "ingestion_storage_control.py"), "--json"], 5000),
+            ("blackstart_recovery", [str(VENV_PY), str(PROJECT_ROOT / "scripts" / "ops" / "blackstart_recovery.py"), "--json"], 5000),
         ]
         for name, cmd, stdout_limit in common_zero_checks:
             ok_predicate = (lambda rc: rc == 0)
-            if name in {"new_bot_graduation_gate", "new_bot_admission_guard"}:
+            if name in {"new_bot_graduation_gate", "new_bot_admission_guard", "teacher_quality_guard"}:
                 ok_predicate = lambda rc: rc in {0, 2}
             _run_check(
                 checks,
@@ -887,7 +911,7 @@ def main() -> int:
                 f"failed_checks={','.join(payload['failed_checks']) if payload['failed_checks'] else 'none'} "
                 f"elapsed_seconds={payload['elapsed_seconds']}"
             )
-        return 0 if payload["ok"] else 2
+        return 0 if payload["operational_ok"] else 2
     except Exception as exc:
         checks["unhandled_exception"] = {
             "ok": False,

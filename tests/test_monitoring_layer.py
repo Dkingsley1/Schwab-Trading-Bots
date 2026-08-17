@@ -20,6 +20,97 @@ def _write_json(path: Path, payload: dict) -> None:
     path.write_text(json.dumps(payload, ensure_ascii=True, indent=2), encoding="utf-8")
 
 
+def _write_ready_bot_organization(health_root: Path, now: datetime) -> None:
+    _write_json(
+        health_root.parent / "collector_capabilities" / "materialized_capabilities_latest.json",
+        {
+            "timestamp_utc": now.isoformat(),
+            "ok": True,
+            "overall_status": "ready",
+            "live_promotion_ready": True,
+            "capabilities": [
+                {
+                    "capability_id": capability_id,
+                    "usable": True,
+                    "proof_semantics": "direct",
+                    "proof_receipt_sha256": f"receipt-{capability_id}",
+                }
+                for capability_id in (
+                    "trading_calendars",
+                    "market_session_state",
+                    "derivatives_contract_master",
+                    "stress_scenarios",
+                )
+            ],
+            "calendar_materialization": {"library_version": "4.13.2"},
+            "derivative_contract_materialization": {"contract_count": 10},
+            "stress_scenario_materialization": {"scenario_count": 2},
+            "authority_contract": {
+                "paper_execution_authority": False,
+                "live_execution_authority": False,
+                "promotion_authority": False,
+            },
+        },
+    )
+    _write_json(
+        health_root / "bot_organization_latest.json",
+        {
+            "timestamp_utc": now.isoformat(),
+            "ok": True,
+            "overall_status": "ready",
+            "grade": "A+",
+            "structural_grade": "A+",
+            "registry_bot_count": 1,
+            "organized_bot_count": 1,
+            "organization_coverage_ratio": 1.0,
+            "unique_assignment_ratio": 1.0,
+            "high_confidence_ratio": 1.0,
+            "review_queue_count": 0,
+            "hard_limit_shadow_cells": [],
+        },
+    )
+    _write_json(
+        health_root / "bot_profitability_scalability_latest.json",
+        {
+            "timestamp_utc": now.isoformat(),
+            "ok": True,
+            "overall_status": "ready",
+            "control_grade": "A+",
+            "economic_and_scale_evidence_grade": "A+",
+            "implemented_control_count": 8,
+            "evidence_ready_control_count": 8,
+            "catalog_bot_count": 1,
+            "candidate_observed_bot_count": 1,
+            "live_allocation_ready": False,
+            "evidence_debt": [],
+        },
+    )
+    _write_json(
+        health_root / "master_grandmaster_evidence_v2_latest.json",
+        {
+            "timestamp_utc": now.isoformat(),
+            "ok": True,
+            "overall_status": "ready",
+            "grade": "A+",
+            "structural_grade": "A+",
+            "paper_coordination_ready": True,
+            "human_live_review_evidence_ready": False,
+            "sleeve_master_count": 1,
+            "organized_bot_count": 1,
+            "grand_master": {
+                "automatic_live_promotion_allowed": False,
+                "recommended_posture": "paper_only",
+            },
+            "sleeve_master_summary": {
+                "status_counts": {"ready": 1},
+                "grade_counts": {"A+": 1},
+            },
+            "operational_holds": [],
+            "promotion_blockers": [],
+        },
+    )
+
+
 def test_health_gates_prefers_freshest_ingestion_payload(tmp_path: Path) -> None:
     older = tmp_path / "jsonl_sql_ingestion_health_latest.json"
     newer = tmp_path / "jsonl_sql_ingestion_health_trading_latest.json"
@@ -230,6 +321,7 @@ def test_runtime_gate_dashboard_manages_paper_soak_cold_lane_degradations(tmp_pa
     now = datetime.now(timezone.utc)
     health_root = tmp_path / "governance" / "health"
     walk_root = tmp_path / "governance" / "walk_forward"
+    _write_ready_bot_organization(health_root, now)
 
     _write_json(health_root / "session_ready_latest.json", {"timestamp_utc": now.isoformat(), "ok": True, "checks": []})
     _write_json(
@@ -731,6 +823,7 @@ def test_runtime_gate_dashboard_uses_current_registry_and_trading_ingestion(tmp_
     now = datetime.now(timezone.utc)
     health_root = tmp_path / "governance" / "health"
     walk_root = tmp_path / "governance" / "walk_forward"
+    _write_ready_bot_organization(health_root, now)
 
     _write_json(
         health_root / "session_ready_latest.json",
@@ -1321,6 +1414,7 @@ def test_runtime_gate_dashboard_exposes_normalized_runtime_and_apple_fields(tmp_
 def test_runtime_gate_dashboard_keeps_advisory_controls_from_degrading_operational_status(tmp_path: Path) -> None:
     now = datetime.now(timezone.utc)
     health_root = tmp_path / "governance" / "health"
+    _write_ready_bot_organization(health_root, now)
 
     _write_json(
         health_root / "session_ready_latest.json",
@@ -1381,6 +1475,7 @@ def test_runtime_gate_dashboard_manages_soak_deferred_controls_when_paper_guard_
     now = datetime.now(timezone.utc)
     health_root = tmp_path / "governance" / "health"
     walk_root = tmp_path / "governance" / "walk_forward"
+    _write_ready_bot_organization(health_root, now)
 
     _write_json(
         health_root / "session_ready_latest.json",
@@ -1539,6 +1634,7 @@ def test_runtime_gate_dashboard_manages_soak_deferred_controls_when_paper_guard_
 def test_runtime_gate_dashboard_manages_stateful_sql_soft_quota_when_soak_storage_ready(tmp_path: Path) -> None:
     now = datetime.now(timezone.utc)
     health_root = tmp_path / "governance" / "health"
+    _write_ready_bot_organization(health_root, now)
 
     _write_json(
         health_root / "session_ready_latest.json",

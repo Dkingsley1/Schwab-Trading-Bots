@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from scripts.ops.bot_quality_autopilot import _guard_targeted_retrain_queue
+from scripts.ops.bot_quality_autopilot import _guard_targeted_retrain_queue, _process_exit_code
 
 
 def _queue(*bot_ids: str) -> dict[str, dict]:
@@ -73,3 +73,9 @@ def test_targeted_retrain_guard_preserves_current_evidence_eligible_candidate() 
 
     assert queue["eligible"]["next_step"] == "targeted_retrain"
     assert guard["rerouted_count"] == 0
+
+
+def test_process_exit_code_treats_evidence_work_as_a_successful_cycle() -> None:
+    assert _process_exit_code({"overall_status": "needs_work"}) == 0
+    assert _process_exit_code({"overall_status": "ready"}) == 0
+    assert _process_exit_code({"overall_status": "blocked"}) == 2

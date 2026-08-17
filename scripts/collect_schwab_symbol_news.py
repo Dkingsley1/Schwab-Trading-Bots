@@ -631,6 +631,131 @@ def public_schwab_fallback_by_symbol(
     return {symbol: dedupe_items(items)[:limit_per_symbol] for symbol, items in out.items() if items}
 
 
+def _public_fallback_source_contract(project_root: Path, *, now: datetime) -> dict[str, Any]:
+    for path in (
+        project_root / "exports" / "external_context" / "schwab_education_context_latest.json",
+        project_root / "data" / "external_context" / "schwab_education_context_latest.json",
+    ):
+        payload = _load_json(path)
+        if not payload:
+            continue
+        timestamps = [
+            _parse_ts(row.get("published_at") or row.get("timestamp_utc") or row.get("fetched_utc"))
+            for row in (payload.get("items") if isinstance(payload.get("items"), list) else [])
+            if isinstance(row, Mapping)
+        ]
+        timestamps = [value for value in timestamps if value is not None]
+        source_timestamp = _parse_ts(payload.get("timestamp_utc"))
+        latest_timestamp = max([value for value in [source_timestamp, *timestamps] if value is not None], default=None)
+        age_hours = max((now.timestamp() - latest_timestamp) / 3600.0, 0.0) if latest_timestamp is not None else None
+        return {
+            "path": str(path),
+            "timestamp_utc": datetime.fromtimestamp(latest_timestamp, tz=timezone.utc).isoformat()
+            if latest_timestamp is not None
+            else "",
+            "age_hours": round(age_hours, 6) if age_hours is not None else None,
+            "fresh": bool(age_hours is not None and age_hours <= 12.0),
+            "item_count": len(payload.get("items") or []),
+            "maximum_age_hours": 12.0,
+        }
+    return {"path": "", "timestamp_utc": "", "age_hours": None, "fresh": False, "item_count": 0, "maximum_age_hours": 12.0}
+
+
+def _build_public_fallback_payload(
+    *,
+    project_root: Path,
+    base_payload: dict[str, Any],
+    symbols: list[str],
+    symbol_groups: dict[str, list[str]],
+    limit_per_symbol: int,
+    now: datetime,
+) -> dict[str, Any]:
+    fallback_items = public_schwab_fallback_by_symbol(project_root, symbols, limit_per_symbol=limit_per_symbol)
+    source_contract = _public_fallback_source_contract(project_root, now=now)
+    now_ts = now.timestamp()
+    symbol_rows: dict[str, dict[str, Any]] = {}
+    symbol_features: dict[str, dict[str, float]] = {}
+    all_items: list[dict[str, Any]] = []
+    for symbol in symbols:
+        items = fallback_items.get(symbol, [])
+        features = _symbol_features(symbol, items, now_ts=now_ts, max_items=limit_per_symbol)
+        symbol_features[symbol] = features
+        all_items.extend(items)
+        symbol_rows[symbol] = {
+            "status": "public_schwab_fallback" if items else "public_fallback_no_symbol_match",
+            "ok": bool(items),
+            "groups": symbol_groups.get(symbol, []),
+            "schwab_symbol_supported_hint": is_probably_schwab_symbol(symbol),
+            "source_method": "schwab_public_context_fallback",
+            "item_count": len(items),
+            "feature_summary": features,
+            "catalyst_counts": _catalyst_counts(items),
+            "items": items,
+            "error": "broker_native_news_endpoint_unavailable_public_schwab_fallback_used",
+        }
+    all_items = dedupe_items(all_items)
+    symbols_with_news = sum(1 for row in symbol_rows.values() if int(row.get("item_count", 0) or 0) > 0)
+    coverage_ratio = symbols_with_news / max(len(symbols), 1)
+    source_counts = Counter(str(item.get("publisher") or item.get("source") or "unknown") for item in all_items)
+    global_news_features: dict[str, float] = {}
+    for features in symbol_features.values():
+        for key, value in features.items():
+            if key == "news_sentiment":
+                current = float(global_news_features.get(key, 0.0) or 0.0)
+                if abs(value) >= abs(current):
+                    global_news_features[key] = value
+            else:
+                global_news_features[key] = max(float(global_news_features.get(key, 0.0) or 0.0), value)
+    global_news_features.update(
+        {
+            "schwab_symbol_news_coverage_norm": max(0.0, min(coverage_ratio, 1.0)),
+            "schwab_symbol_news_total_items_norm": min(len(all_items) / max(len(symbols) * limit_per_symbol, 1), 1.0),
+        }
+    )
+    fallback_ready = bool(symbols and symbols_with_news > 0 and source_contract.get("fresh", False))
+    return {
+        **base_payload,
+        "ok": fallback_ready,
+        "overall_status": "ready_public_schwab_fallback" if fallback_ready else "degraded_public_schwab_fallback",
+        "auth_required": False,
+        "auth_ok": True,
+        "attempted_symbol_count": len(symbols),
+        "deferred_symbol_count": 0,
+        "symbols_with_news": symbols_with_news,
+        "total_news_items": len(all_items),
+        "coverage_ratio": round(coverage_ratio, 6),
+        "broker_native_news_endpoint_available": False,
+        "fallback_active": bool(symbols_with_news > 0),
+        "fallback_mode": "schwab_public_context",
+        "fallback_symbol_count": symbols_with_news,
+        "fallback_source_contract": source_contract,
+        "method_counts": {"schwab_public_context_fallback": len(symbols)},
+        "source_counts": dict(source_counts.most_common(20)),
+        "symbols": symbol_rows,
+        "items_by_symbol": {symbol: row.get("items", []) for symbol, row in symbol_rows.items()},
+        "derived": {
+            "news_features": global_news_features,
+            "news_symbol_features": symbol_features,
+            "symbol_features": {
+                symbol: {
+                    "external_context_source_available": 1.0 if bool(row.get("ok", False)) else 0.0,
+                    "external_context_symbol_coverage_norm": float(symbol_features.get(symbol, {}).get("schwab_symbol_news_item_count_norm", 0.0) or 0.0),
+                }
+                for symbol, row in symbol_rows.items()
+            },
+            "global_features": {
+                "external_context_schwab_symbol_news_available": 1.0 if symbols_with_news > 0 else 0.0,
+                "external_context_schwab_symbol_news_coverage_norm": max(0.0, min(coverage_ratio, 1.0)),
+            },
+        },
+        "recommended_actions": [
+            "refresh Schwab public education context before trusting this fallback"
+            if not source_contract.get("fresh", False)
+            else "public Schwab context is current; keep native-news probing disabled until the adapter exposes an endpoint"
+        ],
+    }
+
+
 def _sentiment(text: str) -> float:
     tokens = [token for token in re.split(r"[^a-z]+", str(text or "").lower()) if token]
     if not tokens:
@@ -716,7 +841,12 @@ def try_broker_candidate_payload(client: Any, candidates: Iterable[tuple[str, tu
 
 def _write_payload(path: Path, payload: Mapping[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload, ensure_ascii=True, indent=2) + "\n", encoding="utf-8")
+    tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    with tmp.open("w", encoding="utf-8") as handle:
+        handle.write(json.dumps(payload, ensure_ascii=True, indent=2) + "\n")
+        handle.flush()
+        os.fsync(handle.fileno())
+    os.replace(tmp, path)
 
 
 def _append_event(payload: Mapping[str, Any]) -> None:
@@ -746,6 +876,7 @@ def build_payload(
     sleep_seconds: float = 0.02,
     authenticate: bool = True,
     quiet_auth: bool = False,
+    public_fallback_only: bool = False,
 ) -> dict[str, Any]:
     started = time.monotonic()
     now = datetime.now(timezone.utc)
@@ -774,9 +905,19 @@ def build_payload(
             "live_execution_allowed": False,
             "writes_orders": False,
             "protected_volumes": ["/Volumes/VIDEO"],
-            "scope": "broker_native_symbol_news_context",
+            "scope": "schwab_public_symbol_context" if public_fallback_only else "broker_native_symbol_news_context",
         },
     }
+
+    if public_fallback_only:
+        return _build_public_fallback_payload(
+            project_root=project_root,
+            base_payload=base_payload,
+            symbols=symbols,
+            symbol_groups=symbol_groups,
+            limit_per_symbol=limit_per_symbol,
+            now=now,
+        )
 
     if not authenticate:
         payload = {
@@ -961,6 +1102,7 @@ def build_payload(
         "ok": bool(auth_ok and attempted > 0 and overall_status != "degraded_no_broker_news_endpoint"),
         "overall_status": overall_status,
         "auth_ok": auth_ok,
+        "auth_required": True,
         "attempted_symbol_count": attempted,
         "deferred_symbol_count": max(len(symbols) - attempted, 0),
         "symbols_with_news": symbols_with_news,
@@ -1010,6 +1152,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--max-runtime-seconds", type=float, default=float(os.getenv("SCHWAB_SYMBOL_NEWS_MAX_RUNTIME_SECONDS", "240") or 240))
     parser.add_argument("--sleep-seconds", type=float, default=float(os.getenv("SCHWAB_SYMBOL_NEWS_SLEEP_SECONDS", "0.02") or 0.02))
     parser.add_argument("--no-auth", action="store_true", help="Preview the universe without authenticating or fetching.")
+    parser.add_argument("--public-fallback-only", action="store_true", help="Refresh only the bounded public Schwab context fallback without broker authentication.")
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args(argv)
 
@@ -1022,6 +1165,7 @@ def main(argv: list[str] | None = None) -> int:
         sleep_seconds=float(args.sleep_seconds),
         authenticate=not bool(args.no_auth),
         quiet_auth=bool(args.json),
+        public_fallback_only=bool(args.public_fallback_only),
     )
     _write_payload(HEALTH_PATH, payload)
     _write_payload(EXTERNAL_CONTEXT_PATH, payload)

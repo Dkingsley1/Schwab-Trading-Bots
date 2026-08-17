@@ -573,6 +573,7 @@ append_heavy_health_files() {
     execution_lane_paper_latest.json \
     paper_runtime_profitability_controls_latest.json \
     paper_profitability_control_latest.json \
+    profitability_hardening_latest.json \
     paper_performance_latest.json \
     paper_execution_truth_layer_latest.json \
     paper_execution_calibration_latest.json \
@@ -708,7 +709,7 @@ prioritize_heavy_livefeed_files() {
   local f
   for f in "${files[@]}"; do
     case "$f" in
-      */governance/health/broker_readiness_latest.json|*/governance/health/paper_live_data_standard_latest.json|*/governance/health/execution_lane_paper_latest.json|*/governance/health/paper_runtime_profitability_controls_latest.json|*/governance/health/paper_profitability_control_latest.json|*/governance/health/paper_performance_latest.json|*/governance/health/paper_execution_truth_layer_latest.json|*/governance/health/paper_execution_calibration_latest.json|*/governance/health/runtime_paper_regression_guard_latest.json|*/governance/health/paper_400_ramp_latest.json)
+      */governance/health/broker_readiness_latest.json|*/governance/health/paper_live_data_standard_latest.json|*/governance/health/execution_lane_paper_latest.json|*/governance/health/paper_runtime_profitability_controls_latest.json|*/governance/health/paper_profitability_control_latest.json|*/governance/health/profitability_hardening_latest.json|*/governance/health/paper_performance_latest.json|*/governance/health/paper_execution_truth_layer_latest.json|*/governance/health/paper_execution_calibration_latest.json|*/governance/health/runtime_paper_regression_guard_latest.json|*/governance/health/paper_400_ramp_latest.json)
         paper_files+=("$f")
         ;;
       */governance/channels/decision/*/decision_*.jsonl|*/decision_explanations/*/decision_explanations_*.jsonl|*/local_fallback_storage/decisions/*/trade_decisions_*.jsonl)
@@ -1161,7 +1162,7 @@ truncate_live_lines() {
   function important_operator_line(line, lower) {
     lower = tolower(line)
     if (paper_mirror_selection_line(line)) return 0
-    if (line ~ /^\[(status-contract|system|collection|fx-provider|auth|schwab-auth|storage|throttle|soak|dashboard|paper|paper-data|paper-profit|paper-truth|decision-latest|decision-route)\]/) return 1
+    if (line ~ /^\[(status-contract|system|collection|fx-provider|auth|schwab-auth|storage|throttle|soak|dashboard|paper|paper-data|paper-profit|profit-hardening|paper-truth|decision-latest|decision-route)\]/) return 1
     if (line ~ /\[Decision\]|\[decision\]|ExecutionIntent|ShadowLoop|RegimeCooldown|AdaptiveInterval/) return 1
     if (line ~ /"symbol"[[:space:]]*:/ && line ~ /"action"[[:space:]]*:|"master_action"[[:space:]]*:|"master_intent_action"[[:space:]]*:|"grand_action"[[:space:]]*:/) return 1
     if (line ~ /symbol=[^[:space:]]+/ && line ~ /action=|grand_action=|futures_action=|options_action=|master_action=/) return 1
@@ -2053,6 +2054,28 @@ def emit_paper() -> None:
             f"reduce_only_open={as_bool(runtime_enforcement.get('keep_sells_and_reduce_only_paths_open'))} "
             f"net_pnl={as_num(current.get('portfolio_net_pnl_total') or current.get('net_pnl') or recovery_current.get('net_pnl') or burn_down_current.get('net_pnl'))} "
             f"low_grade_blockers={low.get('active_blocker_count', '')}"
+        )
+    hardening = load_json(health / "profitability_hardening_latest.json")
+    if hardening:
+        valuation = hardening.get("derivative_valuation") if isinstance(hardening.get("derivative_valuation"), dict) else {}
+        consensus = hardening.get("portfolio_consensus") if isinstance(hardening.get("portfolio_consensus"), dict) else {}
+        training = hardening.get("post_cost_training") if isinstance(hardening.get("post_cost_training"), dict) else {}
+        retirement = hardening.get("retirement_court") if isinstance(hardening.get("retirement_court"), dict) else {}
+        status = str(hardening.get("overall_status") or "").lower()
+        print(
+            "[profit-hardening] "
+            f"level={'ok' if status == 'ready' else ('alert' if status == 'blocked' else 'watch')} "
+            f"age={age_text(hardening.get('timestamp_utc'))} "
+            f"status={status} "
+            f"grade={hardening.get('evidence_grade', '')} "
+            f"valuation={valuation.get('status', '')} "
+            f"unknown_multipliers={valuation.get('unknown_multiplier_rows', '')} "
+            f"legacy_derivatives={valuation.get('legacy_position_rows', '')} "
+            f"consensus={consensus.get('status', '')} "
+            f"consensus_execs={consensus.get('consensus_execution_rows', '')} "
+            f"post_cost_labels={as_bool(training.get('dataset_materialized'))} "
+            f"retirement_candidates={retirement.get('candidate_count', '')} "
+            f"live_execution_changed={as_bool(hardening.get('live_execution_changed'))}"
         )
     truth = load_json(health / "paper_execution_truth_layer_latest.json")
     if truth:

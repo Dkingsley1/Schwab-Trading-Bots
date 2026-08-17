@@ -45,8 +45,10 @@ if [[ "${RETENTION_INCLUDE_EXTERNAL_STALE_ROOT:-1}" != "0" ]]; then
     --max-reindex-files "${RETENTION_STALE_REINDEX_MAX_FILES:-2048}"
     --max-reindex-gb "${RETENTION_STALE_REINDEX_MAX_GB:-4}"
     --max-oversized-reindex-files "${RETENTION_STALE_REINDEX_OVERSIZED_MAX_FILES:-1}"
-    --max-oversized-reindex-gb "${RETENTION_STALE_REINDEX_OVERSIZED_MAX_GB:-12}"
+    --max-oversized-reindex-gb "${RETENTION_STALE_REINDEX_OVERSIZED_MAX_GB:-64}"
     --oversized-reindex-min-age-days "${RETENTION_STALE_REINDEX_OVERSIZED_MIN_AGE_DAYS:-3}"
+    --max-oversized-delete-files "${RETENTION_STALE_PURGE_OVERSIZED_MAX_FILES:-1}"
+    --max-oversized-delete-gb "${RETENTION_STALE_PURGE_OVERSIZED_MAX_GB:-64}"
     --json
   )
   if [[ "$(uname -s)" == "Darwin" && "${RETENTION_STALE_PCORE_ENABLED:-1}" != "0" && "${RETENTION_STALE_PCORE_TASKPOLICY_APPLICATION:-1}" != "0" && -x /usr/sbin/taskpolicy ]]; then
@@ -68,7 +70,7 @@ if [[ "${BOT_COLD_ARCHIVE_COMPACTION_ON_RETENTION:-1}" != "0" ]]; then
     "$PYTHON_BIN" "$PROJECT_ROOT/scripts/ops/cold_archive_compactor.py" \
       --apply \
       --coordinate-writer-handoff \
-      --archive-root "${BOT_VIDEO_COLD_ARCHIVE_ROOT:-/Volumes/VIDEO/schwab_trading_bot_cold}" \
+      --archive-root "${BOT_SECOND_COLD_ROOT:-${BOT_LOGS_EXTERNAL_PROJECT_ROOT:-$PROJECT_ROOT}/cold_archive}" \
       --min-age-hours "${BOT_COLD_ARCHIVE_MIN_AGE_HOURS:-24}" \
       --max-files "${BOT_COLD_ARCHIVE_MAX_FILES:-8}" \
       --max-raw-gb "${BOT_COLD_ARCHIVE_MAX_RAW_GB:-16}" \

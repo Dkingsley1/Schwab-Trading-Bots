@@ -21,6 +21,17 @@ def test_compactor_requires_existing_archive_root_before_unattended_apply(tmp_pa
     assert archive_root_available(tmp_path) is True
 
 
+def test_compactor_rejects_protected_archive_root_before_scanning() -> None:
+    payload = build_payload(
+        archive_root=Path("/Volumes/VIDEO/schwab_trading_bot_cold"),
+        apply=True,
+    )
+
+    assert payload["ok"] is False
+    assert payload["overall_status"] == "blocked_protected_volume"
+    assert payload["blockers"] == ["protected_archive_volume_rejected"]
+
+
 def test_stable_file_work_preflight_ignores_quarantine_and_finds_pending(tmp_path: Path) -> None:
     root = tmp_path / "cold"
     pending = root / "evidence.jsonl.gz.tmp"

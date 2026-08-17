@@ -426,7 +426,7 @@ def _redact_text(text: str, patterns: list[str]) -> str:
     return redacted
 
 
-def _observability_redaction_domain(config: dict[str, Any]) -> dict[str, Any]:
+def build_observability_redaction_domain(config: dict[str, Any]) -> dict[str, Any]:
     patterns = _string_list(config.get("redaction_patterns"))
     sample_rows = config.get("redaction_samples") if isinstance(config.get("redaction_samples"), list) else []
     checked = []
@@ -705,7 +705,7 @@ def build_payload(
             project_root,
             config.get("deterministic_replay") if isinstance(config.get("deterministic_replay"), dict) else {},
         ),
-        _observability_redaction_domain(
+        build_observability_redaction_domain(
             config.get("observability_redaction") if isinstance(config.get("observability_redaction"), dict) else {},
         ),
         _artifact_gate_domain(

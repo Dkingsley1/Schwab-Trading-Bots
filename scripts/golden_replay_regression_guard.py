@@ -18,6 +18,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from scripts import replay_end_to_end_deterministic as replay_src
+from scripts.ops.long_runtime_common import write_payload
 
 
 def _load_json(path: Path) -> dict[str, Any]:
@@ -47,6 +48,8 @@ def build_payload(*, golden_pack: dict[str, Any], replay_hash_registry: dict[str
     cases = golden_pack.get("cases") if isinstance(golden_pack.get("cases"), list) else []
     rows: list[dict[str, Any]] = []
     failed_cases: list[str] = []
+    case_names: list[str] = []
+    covered_contracts: set[str] = set()
 
     for raw_case in cases:
         if not isinstance(raw_case, dict):
@@ -55,6 +58,8 @@ def build_payload(*, golden_pack: dict[str, Any], replay_hash_registry: dict[str
         payload = raw_case.get("payload") if isinstance(raw_case.get("payload"), dict) else {}
         expected_hash = str(raw_case.get("expected_hash") or "").strip().lower()
         expected_actions = raw_case.get("expected_actions") if isinstance(raw_case.get("expected_actions"), dict) else {}
+        expected_results = raw_case.get("expected_results") if isinstance(raw_case.get("expected_results"), list) else []
+        coverage = [str(item) for item in raw_case.get("coverage", []) if str(item or "").strip()]
         replay = replay_src.run_replay(payload)
         actual_actions = {
             str((row or {}).get("symbol") or "").strip(): str((row or {}).get("action_out") or "").strip()
@@ -66,10 +71,30 @@ def build_payload(*, golden_pack: dict[str, Any], replay_hash_registry: dict[str
             for symbol, expected_action in expected_actions.items()
             if actual_actions.get(str(symbol).strip()) != str(expected_action).strip()
         ]
+        actual_results = [
+            {
+                "symbol": str((row or {}).get("symbol") or "").strip(),
+                "action_out": str((row or {}).get("action_out") or "").strip(),
+            }
+            for row in (replay.get("canonical", {}).get("results") or [])
+            if isinstance(row, dict)
+        ]
+        normalized_expected_results = [
+            {
+                "symbol": str((row or {}).get("symbol") or "").strip(),
+                "action_out": str((row or {}).get("action_out") or "").strip(),
+            }
+            for row in expected_results
+            if isinstance(row, dict)
+        ]
+        result_sequence_match = bool(not normalized_expected_results or normalized_expected_results == actual_results)
         hash_match = bool(expected_hash and replay.get("replay_hash") == expected_hash)
-        case_ok = bool(hash_match and not mismatched_actions)
+        case_ok = bool(hash_match and not mismatched_actions and result_sequence_match)
         if not case_ok:
             failed_cases.append(name)
+        else:
+            covered_contracts.update(coverage)
+        case_names.append(name)
         rows.append(
             {
                 "name": name,
@@ -80,12 +105,23 @@ def build_payload(*, golden_pack: dict[str, Any], replay_hash_registry: dict[str
                 "expected_actions": expected_actions,
                 "actual_actions": actual_actions,
                 "mismatched_actions": mismatched_actions,
+                "expected_results": normalized_expected_results,
+                "actual_results": actual_results,
+                "result_sequence_match": result_sequence_match,
+                "coverage": coverage,
             }
         )
 
     registry_seed_ready = _registry_seed_ready(replay_hash_registry)
+    required_coverage = {
+        str(item) for item in golden_pack.get("required_coverage", []) if str(item or "").strip()
+    }
+    duplicate_case_names = sorted({name for name in case_names if case_names.count(name) > 1})
+    missing_coverage = sorted(required_coverage - covered_contracts)
+    pack_contract_declared = bool(required_coverage)
+    pack_contract_valid = bool(not duplicate_case_names and not missing_coverage)
     if rows:
-        ok = not failed_cases
+        ok = bool(not failed_cases and pack_contract_valid)
         overall_status = "ready" if ok else "blocked"
         summary = (
             "golden replay scenarios matched the deterministic reference pack"
@@ -105,19 +141,30 @@ def build_payload(*, golden_pack: dict[str, Any], replay_hash_registry: dict[str
         recommended_actions.append("publish a golden replay pack before treating replay proof as fully strict-ready")
     if failed_cases:
         recommended_actions.append("repair the failing replay scenarios before promoting a new candidate")
+    if duplicate_case_names:
+        recommended_actions.append("give every golden replay scenario a unique case name")
+    if missing_coverage:
+        recommended_actions.append("add passing golden replay cases for: " + ", ".join(missing_coverage))
     if not registry_seed_ready:
         recommended_actions.append("refresh the replay hash registry so seeded replay fallback evidence is available")
 
     return {
         "timestamp_utc": datetime.now(timezone.utc).isoformat(),
-        "schema_version": 1,
+        "schema_version": 2,
         "ok": ok,
         "overall_status": overall_status,
         "seed_ready": registry_seed_ready,
+        "strict_ready": bool(rows and ok and (pack_contract_valid if pack_contract_declared else True)),
         "summary": summary,
         "case_count": len(rows),
         "failed_case_count": len(failed_cases),
         "failed_cases": failed_cases,
+        "duplicate_case_names": duplicate_case_names,
+        "required_coverage": sorted(required_coverage),
+        "covered_contracts": sorted(covered_contracts),
+        "missing_coverage": missing_coverage,
+        "pack_contract_declared": pack_contract_declared,
+        "pack_contract_valid": pack_contract_valid,
         "cases": rows,
         "pack_schema_version": golden_pack.get("schema_version"),
         "recommended_actions": recommended_actions,
@@ -141,8 +188,7 @@ def main() -> int:
         replay_hash_registry=_load_json(Path(args.replay_hash_registry_file)),
     )
     out_path = Path(args.out_file)
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    out_path.write_text(json.dumps(payload, ensure_ascii=True, indent=2), encoding="utf-8")
+    write_payload(out_path, payload)
 
     if args.json:
         print(json.dumps(payload, ensure_ascii=True))

@@ -46,6 +46,7 @@ ADVISORY_RECOVERY_DEFERRED_REASONS = {
     "guarded_paper_infrastructure_recovery_debt",
     "guarded_paper_infrastructure_self_reference_debt",
     "guarded_paper_optional_report_stale",
+    "guarded_paper_calibration_evidence_accrual_debt",
 }
 
 
@@ -119,7 +120,14 @@ def _guarded_paper_strict_clear_for_spec(spec: dict[str, Any]) -> bool:
         "read_only",
         "disabled",
     }
-    return bool(health_fast.get("strict_all_clear", False) and guarded_ready and live_locked)
+    operational_health_ready = bool(
+        health_fast.get("strict_all_clear", False)
+        or (
+            bool(health_fast.get("ok", False))
+            and str(health_fast.get("overall_status") or "").strip().lower() in {"ready", "guarded_ready"}
+        )
+    )
+    return bool(operational_health_ready and guarded_ready and live_locked)
 
 
 def _recovery_deferred_reason(spec: dict[str, Any], payload: dict[str, Any], status: str) -> str:
@@ -276,6 +284,47 @@ def _recovery_deferred_reason(spec: dict[str, Any], payload: dict[str, Any], sta
             and warning_only
         ):
             return "guarded_paper_incident_closeout_advisory_debt"
+
+    if guarded_paper_strict_clear and status == "blocked" and surface_name == "paper_execution_truth_layer":
+        failed_checks = {
+            str(item or "").strip()
+            for item in _safe_list(payload.get("failed_checks"))
+            if str(item or "").strip()
+        }
+        gates = _as_dict(payload.get("gates"))
+        operational_gate_names = {
+            "account_position_awareness",
+            "paper_broker_truth_reconciliation",
+            "data_ingestion_quality_gate",
+            "decision_replay_harness",
+            "live_execution_transition_parity",
+            "paper_pnl_haircut_ledger",
+        }
+        operational_gates_ready = all(
+            bool(_as_dict(gates.get(name)).get("ok", False))
+            or (
+                str(_as_dict(gates.get(name)).get("status") or "").strip().lower()
+                in {"advisory", "warn", "warning", "watch"}
+                and bool(
+                    _as_dict(gates.get(name)).get("advisory_only", False)
+                    or _as_dict(gates.get(name)).get("operator_advisory_only", False)
+                )
+                and not bool(_as_dict(gates.get(name)).get("grade_blocking", False))
+            )
+            for name in operational_gate_names
+        )
+        freshness_gate = _as_dict(gates.get("artifact_freshness_guard"))
+        operational_inputs_fresh = bool(freshness_gate.get("operational_inputs_fresh", False))
+        calibration = _as_dict(gates.get("live_quote_fill_calibration"))
+        calibration_is_evidence_debt = bool(
+            failed_checks
+            and failed_checks <= {"live_quote_fill_calibration"}
+            and not calibration.get("independent_evidence_ready", False)
+            and _safe_int(calibration.get("independent_samples"), 0)
+            < _safe_int(calibration.get("minimum_independent_samples"), 1)
+        )
+        if operational_gates_ready and operational_inputs_fresh and calibration_is_evidence_debt:
+            return "guarded_paper_calibration_evidence_accrual_debt"
 
     if guarded_paper_strict_clear and surface_name == "master_infrastructure_supervisor":
         blocked_checks = {

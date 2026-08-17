@@ -1,3 +1,5 @@
+# ruff: noqa: E402
+
 import argparse
 import fcntl
 import json
@@ -739,6 +741,86 @@ def _db_size_gb(path: Path) -> float:
     except Exception:
         pass
     return logical_bytes / (1024.0 ** 3)
+
+
+def _filesystem_free_gb(path: Path) -> float:
+    base = path if path.is_dir() else path.parent
+    try:
+        stats = os.statvfs(base)
+        return float(stats.f_bavail * stats.f_frsize) / float(1024**3)
+    except Exception:
+        return 0.0
+
+
+def _retention_safety_contract(
+    *,
+    configured_enabled: bool,
+    db_size_gb: float,
+    max_db_gb: float,
+    free_gb: float,
+    target_free_gb: float | None = None,
+    hard_multiple: float | None = None,
+    hard_overage_gb: float | None = None,
+) -> dict[str, object]:
+    target = max(
+        float(target_free_gb)
+        if target_free_gb is not None
+        else _as_float(os.getenv("SQL_LINK_SERVICE_RETENTION_RESERVE_TARGET_GB"), 125.0),
+        0.0,
+    )
+    multiple = max(
+        float(hard_multiple)
+        if hard_multiple is not None
+        else _as_float(os.getenv("SQL_LINK_SERVICE_RETENTION_FORCE_MULTIPLE"), 2.0),
+        1.0,
+    )
+    overage = max(
+        float(hard_overage_gb)
+        if hard_overage_gb is not None
+        else _as_float(os.getenv("SQL_LINK_SERVICE_RETENTION_FORCE_OVERAGE_GB"), 16.0),
+        0.0,
+    )
+    hard_size = max(float(max_db_gb) * multiple, float(max_db_gb) + overage)
+    reasons: list[str] = []
+    if max_db_gb > 0.0 and db_size_gb >= hard_size:
+        reasons.append("database_beyond_hard_retention_envelope")
+    if max_db_gb > 0.0 and free_gb < target and db_size_gb >= max_db_gb:
+        reasons.append("storage_reserve_at_risk")
+    forced = bool(not configured_enabled and reasons)
+    return {
+        "configured_enabled": bool(configured_enabled),
+        "effective_enabled": bool(configured_enabled or forced),
+        "forced": forced,
+        "force_reasons": reasons if forced else [],
+        "db_size_gb": round(float(db_size_gb), 3),
+        "max_db_gb": round(float(max_db_gb), 3),
+        "hard_envelope_gb": round(float(hard_size), 3),
+        "free_gb": round(float(free_gb), 3),
+        "target_free_gb": round(float(target), 3),
+        "policy": "temporary throughput overrides cannot disable retention after a database crosses its hard envelope or threatens the storage reserve",
+    }
+
+
+def _vacuum_capacity_contract(db_path: Path, *, requested: bool, free_gb: float | None = None) -> dict[str, object]:
+    available = _filesystem_free_gb(db_path) if free_gb is None else max(float(free_gb), 0.0)
+    physical_gb = 0.0
+    try:
+        physical_gb = float(db_path.stat().st_size) / float(1024**3)
+    except Exception:
+        pass
+    reserve_gb = max(_as_float(os.getenv("SQL_LINK_SERVICE_VACUUM_MIN_FREE_AFTER_GB"), 32.0), 0.0)
+    overhead = max(_as_float(os.getenv("SQL_LINK_SERVICE_VACUUM_TEMP_OVERHEAD_RATIO"), 1.10), 1.0)
+    required_gb = reserve_gb + physical_gb * overhead
+    allowed = bool(requested and available >= required_gb)
+    return {
+        "requested": bool(requested),
+        "allowed": allowed,
+        "free_gb": round(available, 3),
+        "physical_db_gb": round(physical_gb, 3),
+        "required_free_gb": round(required_gb, 3),
+        "reserve_after_gb": round(reserve_gb, 3),
+        "blocked_reason": "insufficient_vacuum_headroom" if requested and not allowed else "",
+    }
 
 
 def _wal_size_gb(path: Path) -> float:
@@ -2529,13 +2611,26 @@ def _shard_env(name: str, suffix: str) -> str:
 
 
 def _approved_second_cold_sql_root(safe_name: str, *, kind: str) -> Path | None:
-    if not _env_flag("BOT_ALLOW_VIDEO_COLD_ARCHIVE", False):
+    configured = str(os.getenv("BOT_SECOND_COLD_ROOT", "") or "").strip()
+    if not configured or configured == "/Volumes/VIDEO" or configured.startswith("/Volumes/VIDEO/"):
         return None
-    root = Path(os.getenv("BOT_VIDEO_COLD_ARCHIVE_ROOT", "/Volumes/VIDEO/schwab_trading_bot_cold")).expanduser()
+    root = Path(configured).expanduser()
     clean = str(safe_name or "").strip().lower().replace("-", "_")
     if not clean:
         return None
     return root / "sql_link_shards" / kind / clean
+
+
+def _approved_primary_cold_sql_root(*, kind: str) -> Path | None:
+    configured = str(os.getenv("BOT_SECOND_COLD_ROOT", "") or "").strip()
+    if not configured:
+        configured = str(os.getenv("BOT_LOGS_EXTERNAL_PROJECT_ROOT", "") or "").strip()
+    if not configured or configured == "/Volumes/VIDEO" or configured.startswith("/Volumes/VIDEO/"):
+        return None
+    root = Path(configured).expanduser()
+    if not root.exists() or not os.access(root, os.W_OK):
+        return None
+    return root / "sql_link_primary" / kind
 
 
 def _table_exists(conn: sqlite3.Connection, db_alias: str, table: str) -> bool:
@@ -2979,10 +3074,28 @@ def _shard_pending_lines(shard_result: dict[str, object]) -> int:
     return max(_as_int(sqlite_bucket.get("pending_lines"), 0), 0)
 
 
+def _shard_link_resumable_interruption(shard_result: dict[str, object] | None) -> bool:
+    if not isinstance(shard_result, dict) or int(shard_result.get("rc", 0)) not in {-15, 143}:
+        return False
+    output = f"{shard_result.get('stdout_tail') or ''}\n{shard_result.get('stderr_tail') or ''}".lower()
+    if _sqlite_corruption_error(output) or "traceback" in output:
+        return False
+    health = shard_result.get("health") if isinstance(shard_result.get("health"), dict) else {}
+    sqlite_bucket = health.get("sqlite") if isinstance(health.get("sqlite"), dict) else {}
+    checkpoint_progress = bool(
+        _shard_inserted_rows(shard_result) > 0
+        or "sqlite inserted=" in output
+        or "sqlite json inserted=" in output
+    )
+    return bool(sqlite_bucket and checkpoint_progress)
+
+
 def _shard_link_merge_eligible(shard_result: dict[str, object] | None) -> bool:
     if not isinstance(shard_result, dict):
         return False
     if int(shard_result.get("rc", 1)) == 0:
+        return True
+    if _shard_link_resumable_interruption(shard_result):
         return True
     if not bool(shard_result.get("timed_out", False)):
         return False
@@ -3011,6 +3124,11 @@ def _merge_followup_summary(
         for row in shard_results
         if isinstance(row, dict) and bool(row.get("timed_out", False)) and _shard_link_merge_eligible(row)
     ]
+    resumable_interruption = [
+        row
+        for row in shard_results
+        if isinstance(row, dict) and _shard_link_resumable_interruption(row)
+    ]
     skipped_budget_shards = [str(row.get("shard") or "") for row in budget_exhausted if str(row.get("shard") or "").strip()]
     capped_shards = [str(row.get("shard") or "") for row in capped if str(row.get("shard") or "").strip()]
     hard_failed_shards = [str(row.get("shard") or "") for row in hard_failed if str(row.get("shard") or "").strip()]
@@ -3021,22 +3139,25 @@ def _merge_followup_summary(
         followup_reasons.append("merge_cycle_budget_exhausted")
     if partial_timeout:
         followup_reasons.append("partial_timeout_shards_merge_eligible")
+    if resumable_interruption:
+        followup_reasons.append("checkpointed_interruptions_need_resume")
     if hard_failed_shards:
         followup_reasons.append("hard_failed_shards_need_replay")
     return {
         "followup_needed": bool(followup_reasons),
-        "catch_up_recommended": bool(capped_shards or skipped_budget_shards or partial_timeout),
+        "catch_up_recommended": bool(capped_shards or skipped_budget_shards or partial_timeout or resumable_interruption),
         "followup_reasons": followup_reasons,
         "merge_capped_count": len(capped_shards),
         "merge_budget_exhausted_count": len(skipped_budget_shards),
         "partial_timeout_shard_count": len(partial_timeout),
+        "resumable_interruption_shard_count": len(resumable_interruption),
         "hard_failed_shard_count": len(hard_failed_shards),
         "capped_shards": capped_shards[:16],
         "budget_exhausted_shards": skipped_budget_shards[:16],
         "hard_failed_shards": hard_failed_shards[:16],
         "recommended_next_wave": (
             "run another focused writer-cycle coordinator wave after refreshing backpressure"
-            if bool(capped_shards or skipped_budget_shards or partial_timeout)
+            if bool(capped_shards or skipped_budget_shards or partial_timeout or resumable_interruption)
             else ""
         ),
     }
@@ -3940,15 +4061,18 @@ def main() -> int:
         for shard in shards:
             shard_name = str(shard["name"])
             result = next((row for row in shard_results if row["shard"] == shard_name), None)
-            if (
-                not bool(cycle_args.auto_hot_retention)
-                or not result
-                or int(result.get("rc", 1)) != 0
-                or not bool(shard.get("hot_retention_enabled", False))
-            ):
+            if not result or int(result.get("rc", 1)) != 0 or not bool(shard.get("hot_retention_enabled", False)):
                 continue
             db_path = Path(str(shard["sqlite_db"]))
             db_size = _db_size_gb(db_path)
+            shard_retention_safety = _retention_safety_contract(
+                configured_enabled=bool(cycle_args.auto_hot_retention),
+                db_size_gb=db_size,
+                max_db_gb=float(shard.get("hot_retention_max_db_gb", 0.0) or 0.0),
+                free_gb=_filesystem_free_gb(db_path),
+            )
+            if not bool(shard_retention_safety.get("effective_enabled", False)):
+                continue
             shard_state = _load_shard_hot_state(maintenance_state, shard_name=shard_name, db_size_gb=db_size)
             shard_state["rows_since_last_run"] = _as_int(shard_state.get("rows_since_last_run"), 0) + _shard_inserted_rows(result)
             growth_gb = max(db_size - _as_float(shard_state.get("baseline_db_size_gb"), db_size), 0.0)
@@ -3964,6 +4088,8 @@ def main() -> int:
             shard_retention = {
                 "shard": shard_name,
                 "enabled": True,
+                "configured_enabled": bool(cycle_args.auto_hot_retention),
+                "retention_safety_contract": shard_retention_safety,
                 "db_path": str(db_path),
                 "db_size_gb_before": round(db_size, 3),
                 "max_db_gb": float(shard.get("hot_retention_max_db_gb", 0.0) or 0.0),
@@ -3991,7 +4117,11 @@ def main() -> int:
                         shard_retention["skipped_reason"] = "swap_pressure_pause"
                         shard_retention["details"] = _swap_pause_details(swap_env)
                     else:
-                        do_vacuum = db_size >= float(shard.get("hot_retention_vacuum_threshold_gb", 0.0) or 0.0)
+                        vacuum_capacity = _vacuum_capacity_contract(
+                            db_path,
+                            requested=db_size >= float(shard.get("hot_retention_vacuum_threshold_gb", 0.0) or 0.0),
+                        )
+                        do_vacuum = bool(vacuum_capacity.get("allowed", False))
                         rc, out, err = _run_hot_retention(
                             db_path=db_path,
                             hot_days=int(shard.get("hot_retention_hot_days", 1) or 1),
@@ -4017,6 +4147,7 @@ def main() -> int:
                                 "stderr_tail": "\n".join(err.splitlines()[-12:]),
                                 "details": _parse_json_output(out),
                                 "vacuum": bool(do_vacuum),
+                                "vacuum_capacity_contract": vacuum_capacity,
                             }
                         )
                         if int(rc) == 0:
@@ -4057,6 +4188,11 @@ def main() -> int:
             1
             for row in shard_results
             if isinstance(row, dict) and bool(row.get("timed_out", False)) and _shard_link_merge_eligible(row)
+        )
+        resumable_interruption_shard_count = sum(
+            1
+            for row in shard_results
+            if isinstance(row, dict) and _shard_link_resumable_interruption(row)
         )
         skipped_fresh_idle_shard_count = sum(
             1
@@ -4142,8 +4278,38 @@ def main() -> int:
             wal_checkpoint["skipped_reason"] = "link_failed" if overall_rc != 0 else "below_data_trigger"
         wal_checkpoint["wal_size_gb_after"] = round(_wal_size_gb(primary_db), 3)
 
-        archive_blockers = _archive_maintenance_blockers(str(cycle_args.hot_retention_archive_root or ""))
         db_size = _db_size_gb(primary_db)
+        primary_free_gb = _filesystem_free_gb(primary_db)
+        primary_retention_safety = _retention_safety_contract(
+            configured_enabled=bool(cycle_args.auto_hot_retention),
+            db_size_gb=db_size,
+            max_db_gb=float(cycle_args.hot_retention_max_db_gb),
+            free_gb=primary_free_gb,
+        )
+        effective_archive_db = Path(str(cycle_args.hot_retention_archive_db))
+        effective_archive_root = Path(str(cycle_args.hot_retention_archive_root or ""))
+        effective_cold_export_root = Path(str(cycle_args.hot_retention_cold_export_root or ""))
+        archive_route = {
+            "rerouted_for_local_pressure": False,
+            "archive_root": str(effective_archive_root),
+            "cold_export_root": str(effective_cold_export_root),
+        }
+        local_pressure = primary_free_gb < float(primary_retention_safety.get("target_free_gb", 0.0) or 0.0)
+        if local_pressure:
+            pressure_archive_root = _approved_primary_cold_sql_root(kind="archives")
+            pressure_cold_root = _approved_primary_cold_sql_root(kind="cold_archives")
+            if pressure_archive_root is not None and pressure_cold_root is not None:
+                effective_archive_root = pressure_archive_root
+                effective_archive_db = pressure_archive_root / "latest.sqlite3"
+                effective_cold_export_root = pressure_cold_root
+                archive_route = {
+                    "rerouted_for_local_pressure": True,
+                    "archive_root": str(effective_archive_root),
+                    "archive_db": str(effective_archive_db),
+                    "cold_export_root": str(effective_cold_export_root),
+                    "protected_volume_excluded": "/Volumes/VIDEO",
+                }
+        archive_blockers = _archive_maintenance_blockers(str(effective_archive_root))
         hot_state = maintenance_state.get("hot_retention", {}) if isinstance(maintenance_state.get("hot_retention"), dict) else {}
         hot_rows_since_last = _as_int(hot_state.get("rows_since_last_run"), 0)
         hot_db_growth_gb = max(db_size - _as_float(hot_state.get("baseline_db_size_gb"), db_size), 0.0)
@@ -4157,19 +4323,22 @@ def main() -> int:
             has_successful_run=bool(str(hot_state.get("last_run_utc") or "").strip()),
         )
         hot_retention = {
-            "enabled": bool(cycle_args.auto_hot_retention),
+            "enabled": bool(primary_retention_safety.get("effective_enabled", False)),
+            "configured_enabled": bool(cycle_args.auto_hot_retention),
+            "retention_safety_contract": primary_retention_safety,
             "db_size_gb_before": round(db_size, 3),
             "max_db_gb": float(cycle_args.hot_retention_max_db_gb),
             "trigger_growth_gb": float(cycle_args.hot_retention_trigger_growth_gb),
             "trigger_rows": int(cycle_args.hot_retention_trigger_rows),
             "hot_days": int(cycle_args.hot_retention_hot_days),
             "hot_hours": int(cycle_args.hot_retention_hot_hours),
-            "archive_db": str(cycle_args.hot_retention_archive_db),
-            "archive_root": str(cycle_args.hot_retention_archive_root or ""),
+            "archive_db": str(effective_archive_db),
+            "archive_root": str(effective_archive_root),
+            "archive_route": archive_route,
             "archive_period": str(cycle_args.hot_retention_archive_period),
             "archive_retention_days": int(cycle_args.hot_retention_archive_retention_days),
             "archive_prune_vacuum": bool(cycle_args.hot_retention_archive_prune_vacuum),
-            "cold_export_root": str(cycle_args.hot_retention_cold_export_root or ""),
+            "cold_export_root": str(effective_cold_export_root),
             "cold_export_format": str(cycle_args.hot_retention_cold_export_format),
             "batch_size": int(cycle_args.hot_retention_batch_size),
             "max_rows": int(cycle_args.hot_retention_max_rows),
@@ -4186,7 +4355,7 @@ def main() -> int:
         }
         if archive_blockers:
             hot_retention["skipped_reason"] = "archive_maintenance_blocked"
-        elif cycle_args.auto_hot_retention and overall_rc == 0 and hot_trigger_reasons:
+        elif bool(primary_retention_safety.get("effective_enabled", False)) and overall_rc == 0 and hot_trigger_reasons:
             since_last = cycle_ts - float(last_hot_retention_ts)
             if since_last >= max(int(cycle_args.hot_retention_min_interval_seconds), 60):
                 swap_pause, swap_env = _retention_maintenance_paused_for_swap()
@@ -4194,19 +4363,24 @@ def main() -> int:
                     hot_retention["skipped_reason"] = "swap_pressure_pause"
                     hot_retention["details"] = _swap_pause_details(swap_env)
                 else:
-                    do_vacuum = db_size >= float(cycle_args.hot_retention_vacuum_threshold_gb)
+                    vacuum_capacity = _vacuum_capacity_contract(
+                        primary_db,
+                        requested=db_size >= float(cycle_args.hot_retention_vacuum_threshold_gb),
+                        free_gb=primary_free_gb,
+                    )
+                    do_vacuum = bool(vacuum_capacity.get("allowed", False))
                     rc, out, err = _run_hot_retention(
                         db_path=primary_db,
                         hot_days=int(cycle_args.hot_retention_hot_days),
                         hot_hours=int(cycle_args.hot_retention_hot_hours),
                         batch_size=int(cycle_args.hot_retention_batch_size),
                         max_rows=int(cycle_args.hot_retention_max_rows),
-                        archive_db=str(cycle_args.hot_retention_archive_db),
-                        archive_root=str(cycle_args.hot_retention_archive_root or ""),
+                        archive_db=str(effective_archive_db),
+                        archive_root=str(effective_archive_root),
                         archive_period=str(cycle_args.hot_retention_archive_period),
                         archive_retention_days=int(cycle_args.hot_retention_archive_retention_days),
                         archive_prune_vacuum=bool(cycle_args.hot_retention_archive_prune_vacuum),
-                        cold_export_root=str(cycle_args.hot_retention_cold_export_root or ""),
+                        cold_export_root=str(effective_cold_export_root),
                         cold_export_format=str(cycle_args.hot_retention_cold_export_format),
                         cold_export_batch_size=int(cycle_args.hot_retention_cold_export_batch_size),
                         cold_export_compression=str(cycle_args.hot_retention_cold_export_compression),
@@ -4220,6 +4394,7 @@ def main() -> int:
                             "stderr_tail": "\n".join(err.splitlines()[-12:]),
                             "details": _parse_json_output(out),
                             "vacuum": bool(do_vacuum),
+                            "vacuum_capacity_contract": vacuum_capacity,
                         }
                     )
                     last_hot_retention_ts = cycle_ts
@@ -4235,14 +4410,22 @@ def main() -> int:
                         )
             else:
                 hot_retention["skipped_reason"] = f"min_interval_not_met:{int(since_last)}s"
-        elif cycle_args.auto_hot_retention:
+        elif bool(primary_retention_safety.get("effective_enabled", False)):
             hot_retention["skipped_reason"] = "below_data_trigger" if overall_rc == 0 else "link_failed"
         hot_retention["db_size_gb_after"] = round(_db_size_gb(primary_db), 3)
 
         queue_db_path = Path(str(args.queue_retention_db))
         queue_db_size = _db_size_gb(queue_db_path)
+        queue_retention_safety = _retention_safety_contract(
+            configured_enabled=bool(cycle_args.auto_queue_retention),
+            db_size_gb=queue_db_size,
+            max_db_gb=float(args.queue_retention_max_db_gb),
+            free_gb=_filesystem_free_gb(queue_db_path),
+        )
         queue_retention = {
-            "enabled": bool(cycle_args.auto_queue_retention),
+            "enabled": bool(queue_retention_safety.get("effective_enabled", False)),
+            "configured_enabled": bool(cycle_args.auto_queue_retention),
+            "retention_safety_contract": queue_retention_safety,
             "db_path": str(queue_db_path),
             "db_size_gb_before": round(queue_db_size, 3),
             "max_db_gb": float(args.queue_retention_max_db_gb),
@@ -4260,7 +4443,7 @@ def main() -> int:
             "details": {},
             "skipped_reason": "",
         }
-        if cycle_args.auto_queue_retention and overall_rc == 0 and queue_db_path.exists() and queue_db_size >= float(args.queue_retention_max_db_gb):
+        if bool(queue_retention_safety.get("effective_enabled", False)) and overall_rc == 0 and queue_db_path.exists() and queue_db_size >= float(args.queue_retention_max_db_gb):
             since_last = cycle_ts - float(last_queue_retention_ts)
             if since_last >= max(int(args.queue_retention_min_interval_seconds), 60):
                 swap_pause, swap_env = _retention_maintenance_paused_for_swap()
@@ -4268,10 +4451,14 @@ def main() -> int:
                     queue_retention["skipped_reason"] = "swap_pressure_pause"
                     queue_retention["details"] = _swap_pause_details(swap_env)
                 else:
-                    do_vacuum = bool(
-                        _queue_retention_inline_vacuum_enabled()
-                        and queue_db_size >= float(args.queue_retention_vacuum_threshold_gb)
+                    vacuum_capacity = _vacuum_capacity_contract(
+                        queue_db_path,
+                        requested=bool(
+                            _queue_retention_inline_vacuum_enabled()
+                            and queue_db_size >= float(args.queue_retention_vacuum_threshold_gb)
+                        ),
                     )
+                    do_vacuum = bool(vacuum_capacity.get("allowed", False))
                     rc, out, err = _run_queue_retention(
                         db_path=str(queue_db_path),
                         acked_days=int(args.queue_retention_acked_days),
@@ -4290,12 +4477,13 @@ def main() -> int:
                             "stderr_tail": "\n".join(err.splitlines()[-12:]),
                             "details": _parse_json_output(out),
                             "vacuum": bool(do_vacuum),
+                            "vacuum_capacity_contract": vacuum_capacity,
                         }
                     )
                     last_queue_retention_ts = cycle_ts
             else:
                 queue_retention["skipped_reason"] = f"min_interval_not_met:{int(since_last)}s"
-        elif cycle_args.auto_queue_retention:
+        elif bool(queue_retention_safety.get("effective_enabled", False)):
             if not queue_db_path.exists():
                 queue_retention["skipped_reason"] = "db_missing"
             else:
@@ -4341,6 +4529,7 @@ def main() -> int:
             "maintenance_state_path": str(MAINTENANCE_STATE_PATH),
             "merged_rows_this_cycle": int(merged_rows),
             "partial_timeout_shard_count": int(partial_timeout_shard_count),
+            "resumable_interruption_shard_count": int(resumable_interruption_shard_count),
             "skipped_fresh_idle_shard_count": int(skipped_fresh_idle_shard_count),
             "hard_failed_shard_count": int(hard_failed_shard_count),
             "merge_followup": merge_followup,

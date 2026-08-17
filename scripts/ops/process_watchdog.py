@@ -548,7 +548,7 @@ def _spawn(cmd: List[str], log_path: Path) -> int:
     env.setdefault('PY314_RUNTIME_FLIP_APPROVED', '1')
     env.setdefault('PY314_RETIRE_312_ANCHOR', '1')
     env.setdefault('PYTHONUNBUFFERED', '1')
-    env.setdefault('PAPER_MIRROR_ALL_ACTIVE_SUB_BOTS', '1')
+    env.setdefault('PAPER_MIRROR_ALL_ACTIVE_SUB_BOTS', '0')
     p = subprocess.Popen(
         cmd,
         cwd=str(PROJECT_ROOT),

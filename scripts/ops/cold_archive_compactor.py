@@ -26,7 +26,8 @@ from core.runtime_maintenance import (  # noqa: E402
     release_maintenance_hold,
 )
 
-DEFAULT_ARCHIVE_ROOT = Path("/Volumes/VIDEO/schwab_trading_bot_cold")
+DEFAULT_ARCHIVE_ROOT = PROJECT_ROOT / "governance" / "archive" / "cold_archive"
+PROTECTED_VOLUME_PREFIXES = ("/Volumes/VIDEO",)
 DEFAULT_OUT_PATH = PROJECT_ROOT / "governance" / "health" / "cold_archive_compactor_latest.json"
 DEFAULT_LOCK_PATH = PROJECT_ROOT / "governance" / "locks" / "cold_archive_compactor.lock"
 DEFAULT_MANIFEST_NAME = "cold_archive_compaction_manifest.jsonl"
@@ -38,8 +39,22 @@ def writer_blocks_compaction(writer_state: dict[str, Any], *, allow_active_write
     return bool(writer_state.get("active")) and not bool(allow_active_writer)
 
 
+def _is_protected(path: Path) -> bool:
+    raw = str(path.expanduser())
+    return any(raw == prefix or raw.startswith(f"{prefix}/") for prefix in PROTECTED_VOLUME_PREFIXES)
+
+
+def _default_archive_root() -> Path:
+    configured = str(os.getenv("BOT_SECOND_COLD_ROOT", "") or "").strip()
+    if configured:
+        return Path(configured).expanduser()
+    external = str(os.getenv("BOT_LOGS_EXTERNAL_PROJECT_ROOT", "") or "").strip()
+    return Path(external).expanduser() / "cold_archive" if external else DEFAULT_ARCHIVE_ROOT
+
+
 def archive_root_available(path: Path) -> bool:
-    return path.expanduser().exists() and path.expanduser().is_dir()
+    candidate = path.expanduser()
+    return bool(not _is_protected(candidate) and candidate.exists() and candidate.is_dir())
 
 
 def wait_for_writer_handoff(
@@ -723,7 +738,20 @@ def build_payload(
     sqlite_inventory_limit: int = 200,
     manifest_path: Path | None = None,
 ) -> dict[str, Any]:
-    root = Path(archive_root).expanduser().resolve(strict=False)
+    raw_root = Path(archive_root).expanduser()
+    raw_manifest = Path(manifest_path).expanduser() if manifest_path is not None else None
+    if _is_protected(raw_root) or (raw_manifest is not None and _is_protected(raw_manifest)):
+        return {
+            "timestamp_utc": iso_now(),
+            "schema_version": 1,
+            "ok": False,
+            "overall_status": "blocked_protected_volume",
+            "apply": bool(apply),
+            "archive_root": str(raw_root),
+            "blockers": ["protected_archive_volume_rejected"],
+            "never_touch_protected_volumes": list(PROTECTED_VOLUME_PREFIXES),
+        }
+    root = raw_root.resolve(strict=False)
     now = datetime.now(timezone.utc)
     manifest = Path(manifest_path or (root / DEFAULT_MANIFEST_NAME)).expanduser()
     manifest_resolved = manifest.resolve(strict=False)
@@ -991,7 +1019,7 @@ def _acquire_lock(path: Path) -> tuple[Any | None, str]:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Losslessly compact and index the directly readable cold archive.")
-    parser.add_argument("--archive-root", default=os.getenv("BOT_VIDEO_COLD_ARCHIVE_ROOT", str(DEFAULT_ARCHIVE_ROOT)))
+    parser.add_argument("--archive-root", default=str(_default_archive_root()))
     parser.add_argument("--out-file", default=str(DEFAULT_OUT_PATH))
     parser.add_argument("--lock-path", default=str(DEFAULT_LOCK_PATH))
     parser.add_argument("--manifest-path", default="")
@@ -1039,6 +1067,20 @@ def main() -> int:
 
     if args.apply:
         archive_root = Path(args.archive_root).expanduser()
+        if _is_protected(archive_root):
+            payload = {
+                "timestamp_utc": iso_now(),
+                "schema_version": 1,
+                "ok": False,
+                "overall_status": "blocked_protected_volume",
+                "apply": True,
+                "archive_root": str(archive_root),
+                "blockers": ["protected_archive_volume_rejected"],
+                "never_touch_protected_volumes": list(PROTECTED_VOLUME_PREFIXES),
+            }
+            write_payload(Path(args.out_file).expanduser(), payload)
+            print(json.dumps(payload, ensure_ascii=True))
+            return 2
         if not archive_root_available(archive_root):
             payload = {
                 "timestamp_utc": iso_now(),

@@ -105,7 +105,12 @@ def _source_paths(project_root: Path) -> dict[str, Path]:
 
 def _freshness(project_root: Path) -> dict[str, Any]:
     paths = _source_paths(project_root)
-    return assess_input_freshness(paths, {name: load_json(path) for name, path in paths.items()})
+    candidate_state = load_json(project_root / "governance" / "runtime" / "production_candidate_state.json")
+    return assess_input_freshness(
+        paths,
+        {name: load_json(path) for name, path in paths.items()},
+        candidate_state=candidate_state,
+    )
 
 
 def _repair_groups(project_root: Path) -> list[dict[str, Any]]:

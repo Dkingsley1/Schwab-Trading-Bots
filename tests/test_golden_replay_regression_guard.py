@@ -56,3 +56,28 @@ def test_golden_replay_guard_is_ready_with_matching_pack_case() -> None:
     assert payload["overall_status"] == "ready"
     assert payload["case_count"] == 1
     assert payload["failed_case_count"] == 0
+    assert payload["strict_ready"] is True
+
+
+def test_golden_replay_guard_requires_declared_coverage() -> None:
+    replay = src.replay_src.run_replay(src.replay_src._default_payload())
+
+    payload = src.build_payload(
+        golden_pack={
+            "schema_version": 2,
+            "required_coverage": ["normal_buy_sell", "daily_loss_halt"],
+            "cases": [
+                {
+                    "name": "default_case",
+                    "coverage": ["normal_buy_sell"],
+                    "payload": src.replay_src._default_payload(),
+                    "expected_hash": replay["replay_hash"],
+                }
+            ],
+        },
+        replay_hash_registry={"ok": True, "details": {"paper": {"current_hash": "paper-hash"}}},
+    )
+
+    assert payload["ok"] is False
+    assert payload["strict_ready"] is False
+    assert payload["missing_coverage"] == ["daily_loss_halt"]

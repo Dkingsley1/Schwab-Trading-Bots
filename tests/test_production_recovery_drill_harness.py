@@ -20,3 +20,12 @@ def test_isolated_recovery_harness_proves_all_required_failure_modes() -> None:
     )
     assert order_lifecycle["evidence"]["event_chain"]["unresolved_count"] == 0
     assert order_lifecycle["evidence"]["replacement_filled"]["state"] == "filled"
+
+
+def test_recovery_slo_is_a_real_gate_not_a_decorative_metric() -> None:
+    payload = src.build_payload(max_recovery_seconds=0.000001)
+
+    assert payload["ok"] is False
+    assert payload["overall_status"] == "blocked"
+    assert payload["recovery_slo"]["met"] is False
+    assert payload["recovery_slo"]["breached_drills"]

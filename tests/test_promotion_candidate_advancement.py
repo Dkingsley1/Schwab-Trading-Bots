@@ -83,3 +83,39 @@ def test_runtime_gate_prevents_execution(tmp_path: Path, monkeypatch) -> None:
     assert payload["runtime_approved_bot_ids"] == []
     assert payload["execution"]["attempted"] is False
     assert payload["execution"]["status"] == "not_runtime_approved"
+
+
+def test_stale_diagnostic_is_repair_first_even_when_quality_and_samples_are_high(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    _seed_candidates(tmp_path)
+    requalification_path = tmp_path / "governance" / "health" / "training_requalification_latest.json"
+    requalification = json.loads(requalification_path.read_text(encoding="utf-8"))
+    requalification["top_reactivation_ready"][0]["diagnostic_age_hours"] = (
+        advancement.bot_needs_intelligence.MAX_TRAINING_DIAGNOSTIC_AGE_HOURS + 1
+    )
+    requalification_path.write_text(json.dumps(requalification), encoding="utf-8")
+    monkeypatch.setattr(
+        advancement.training_runtime_control,
+        "build_payload",
+        lambda *_args, **_kwargs: {
+            "overall_status": "ready",
+            "training_launch_contract": {
+                "launch_allowed": True,
+                "launch_blockers": [],
+                "recommended_batch_size": 3,
+                "recommended_retrain_profile": "coverage_small_canary",
+                "canary_batch": [{"bot_id": "bot_1"}],
+            },
+        },
+    )
+
+    payload = advancement.build_payload(tmp_path, limit=5, now=NOW)
+
+    candidate = payload["candidates"][0]
+    assert candidate["stage"] == "data_or_repair_first"
+    assert candidate["blockers"] == ["training_diagnostic_refresh_required"]
+    assert candidate["next_actions"] == ["refresh_training_diagnostics"]
+    assert payload["runtime_approved_bot_ids"] == []
+    assert payload["control_contract"]["diagnostic_freshness_matches_authoritative_bot_needs_selector"] is True

@@ -20,4 +20,4 @@ if ! guard_output="$("$PYTHON_BIN" "$PROJECT_ROOT/scripts/resource_guard.py" --p
   exit 0
 fi
 
-exec "$PYTHON_BIN" "$PROJECT_ROOT/scripts/collect_official_macro_context.py" --json
+exec "$PROJECT_ROOT/scripts/ops/opsctl.sh" macro-context-sync --json

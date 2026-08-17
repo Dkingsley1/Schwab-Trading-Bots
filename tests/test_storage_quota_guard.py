@@ -6,6 +6,39 @@ from pathlib import Path
 from scripts.ops import storage_quota_guard as src
 
 
+def test_stateful_sql_breakdown_counts_primary_queue_and_shards_once_through_symlinks(tmp_path: Path) -> None:
+    physical = tmp_path / "physical"
+    physical.mkdir()
+    shard_root = physical / "shards"
+    shard_root.mkdir()
+    (shard_root / "trading.sqlite3").write_bytes(b"s" * 11)
+    primary = physical / "jsonl_link.sqlite3"
+    primary.write_bytes(b"p" * 13)
+    queue = physical / "bot_channel_queue.sqlite3"
+    queue.write_bytes(b"q" * 17)
+
+    data = tmp_path / "data"
+    data.mkdir()
+    (data / "sql_link_shards").symlink_to(shard_root, target_is_directory=True)
+    (data / "jsonl_link.sqlite3").symlink_to(primary)
+    (data / "bot_channel_queue.sqlite3").symlink_to(queue)
+    local_data = tmp_path / "local_fallback_storage" / "data"
+    local_data.mkdir(parents=True)
+    (local_data / "jsonl_link.sqlite3").symlink_to(primary)
+    (local_data / "bot_channel_queue.sqlite3").symlink_to(queue)
+
+    payload = src._stateful_sql_shard_breakdown(tmp_path)
+
+    assert payload["shard_bytes"] == 11
+    assert payload["primary_cache_bytes"] == 13
+    assert payload["queue_bytes"] == 17
+    assert payload["total_bytes"] == 41
+    assert {row["component"] for row in payload["stateful_components"]} == {
+        "primary_compatibility_cache",
+        "queue",
+    }
+
+
 GIB = 1024**3
 
 

@@ -39,6 +39,15 @@ OVERLAY_RAW_LIVE_MAX_CORE_LINES = 10_000
 OVERLAY_RAW_LIVE_MAX_TOTAL_LINES = 15_000
 OVERLAY_RAW_LIVE_MAX_AGE_SECONDS = 15 * 60
 SOAK_READY_GRADES = {"A", "A+", "A++"}
+SAFE_READY_TRAINING_DEFER_BLOCKERS = {
+    "autonomic_training_budget_closed",
+    "bot_needs_training_candidates_not_runtime_ready",
+    "host_memory_relief_active",
+    "no_bot_needs_training_candidates",
+    "resource_guard_not_green",
+    "runtime_snapshot_not_fresh",
+    "training_candidate_selector_not_fresh",
+}
 
 
 def _safe_float(value: Any, default: float = 0.0) -> float:
@@ -339,13 +348,29 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, live_fresh_minutes: floa
         if isinstance(training_runtime.get("training_launch_contract"), dict)
         else {}
     )
-    training_safely_deferred = bool(
-        training_blocked
-        and not bool(training_runtime.get("launch_allowed", training_launch_contract.get("launch_allowed", False)))
-        and bool(
+    training_launch_allowed = bool(
+        training_runtime.get("launch_allowed", training_launch_contract.get("launch_allowed", False))
+    )
+    training_launch_blockers = [
+        str(item)
+        for item in (
             training_runtime.get("launch_blockers")
             or training_launch_contract.get("launch_blockers")
+            or []
         )
+    ]
+    ready_idle_training_defer = bool(
+        training_status == "ready"
+        and bool(training_runtime.get("snapshot_ready", False))
+        and not training_launch_allowed
+        and training_launch_blockers
+        and set(training_launch_blockers).issubset(SAFE_READY_TRAINING_DEFER_BLOCKERS)
+        and _safe_float(training_launch_contract.get("training_quality_score"), 0.0) >= 95.0
+    )
+    training_safely_deferred = bool(
+        not training_launch_allowed
+        and training_launch_blockers
+        and (training_blocked or ready_idle_training_defer)
     )
     storage_blocked_raw = str(storage_tier.get("overall_status") or "") == "blocked"
     hot_path_over_budget_bytes = int(((storage_tier.get("pressure") or {}).get("hot_path_over_budget_bytes", 0)) or 0)

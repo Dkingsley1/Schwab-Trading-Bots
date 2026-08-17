@@ -4,6 +4,7 @@ import json
 import math
 import os
 import re
+import sys
 from itertools import chain
 from collections import Counter, defaultdict
 from datetime import datetime, timedelta, timezone
@@ -23,8 +24,25 @@ except Exception:
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_BUILD_FAILURE_PATH = PROJECT_ROOT / "governance" / "health" / "trade_behavior_dataset_build_failure_latest.json"
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
 from sql_dataset_io import iter_sqlite_jsonl_rows, resolve_sqlite_path, split_paths_by_sqlite_coverage
+from core.central_bank_liquidity import (
+    CENTRAL_BANK_LIQUIDITY_FEATURE_KEYS,
+    assess_central_bank_liquidity_context,
+)
+from core.global_central_bank_context import (
+    CENTRAL_BANK_CROSS_SOURCE_FEATURE_KEYS,
+    GLOBAL_CENTRAL_BANK_FEATURE_KEYS,
+    assess_central_bank_cross_source_context,
+    assess_global_central_bank_context,
+)
+from core.decision_context_mesh import (
+    DECISION_CONTEXT_MESH_FEATURE_KEYS,
+    assess_decision_context_mesh,
+)
+from core.profitability_hardening import post_cost_adjusted_forward_return
 
 SHOCK_SYMBOLS = {"UVXY", "VIXY", "SOXL", "SOXS", "MSTR", "SMCI", "COIN", "TSLA"}
 MEAN_REVERT_SYMBOLS = {"TLT", "IEF", "SHY", "BND", "AGG", "GLD", "XLU", "XLP"}
@@ -48,6 +66,10 @@ PLUMBED_CONTEXT_FEATURE_NAMES = [
     "schwab_education_signal_norm",
     "market_breadth_signal_norm",
     "bond_reference_signal_norm",
+    *CENTRAL_BANK_LIQUIDITY_FEATURE_KEYS,
+    *GLOBAL_CENTRAL_BANK_FEATURE_KEYS,
+    *CENTRAL_BANK_CROSS_SOURCE_FEATURE_KEYS,
+    *DECISION_CONTEXT_MESH_FEATURE_KEYS,
 ]
 
 SOURCE_QUALITY_FEATURE_NAMES = [
@@ -1177,6 +1199,8 @@ def _external_feeds_context(project_root: Path, now_utc: datetime) -> Tuple[Dict
     sec_edgar = _load_latest_context_file(project_root, "sec_edgar")
     extended_quant = _load_latest_context_file(project_root, "extended_quant_context")
     official_macro = _load_latest_context_file(project_root, "official_macro_context")
+    central_bank_cross_source = _load_latest_context_file(project_root, "central_bank_cross_source")
+    decision_context_mesh = _load_latest_context_file(project_root, "decision_context_mesh")
     schwab_education = _load_latest_context_file(project_root, "schwab_education_context")
     live_macro = _load_latest_context_file(project_root, "live_macro")
     market_breadth_snapshot = _load_latest_context_file(project_root, "market_breadth")
@@ -1285,6 +1309,13 @@ def _external_feeds_context(project_root: Path, now_utc: datetime) -> Tuple[Dict
     official_macro_derived = official_macro.get("derived") if isinstance(official_macro.get("derived"), dict) else {}
     official_macro_news = official_macro_derived.get("news_features") if isinstance(official_macro_derived.get("news_features"), dict) else {}
     official_macro_calendar = official_macro_derived.get("calendar_features") if isinstance(official_macro_derived.get("calendar_features"), dict) else {}
+    official_macro_global = official_macro_derived.get("global_features") if isinstance(official_macro_derived.get("global_features"), dict) else {}
+    central_bank_cross_derived = central_bank_cross_source.get("derived") if isinstance(central_bank_cross_source.get("derived"), dict) else {}
+    central_bank_cross_global = central_bank_cross_derived.get("global_features") if isinstance(central_bank_cross_derived.get("global_features"), dict) else {}
+    central_bank_cross_symbol = central_bank_cross_derived.get("symbol_features") if isinstance(central_bank_cross_derived.get("symbol_features"), dict) else {}
+    decision_context_mesh_derived = decision_context_mesh.get("derived") if isinstance(decision_context_mesh.get("derived"), dict) else {}
+    decision_context_mesh_global = decision_context_mesh_derived.get("global_features") if isinstance(decision_context_mesh_derived.get("global_features"), dict) else {}
+    decision_context_mesh_symbol = decision_context_mesh_derived.get("symbol_features") if isinstance(decision_context_mesh_derived.get("symbol_features"), dict) else {}
     education_global = _global_feature_map(schwab_education)
     live_macro_derived = live_macro.get("derived") if isinstance(live_macro.get("derived"), dict) else {}
     live_macro_news = live_macro_derived.get("news_features") if isinstance(live_macro_derived.get("news_features"), dict) else {}
@@ -1495,6 +1526,8 @@ def _external_feeds_context(project_root: Path, now_utc: datetime) -> Tuple[Dict
         "sec_edgar_ts": sec_edgar.get("timestamp_utc"),
         "extended_quant_context_ts": extended_quant.get("timestamp_utc"),
         "official_macro_context_ts": official_macro.get("timestamp_utc"),
+        "central_bank_cross_source_ts": central_bank_cross_source.get("timestamp_utc"),
+        "decision_context_mesh_ts": decision_context_mesh.get("timestamp_utc"),
         "schwab_education_context_ts": schwab_education.get("timestamp_utc"),
         "live_macro_ts": live_macro.get("timestamp_utc"),
         "market_breadth_ts": market_breadth_snapshot.get("timestamp_utc") if isinstance(market_breadth_snapshot, dict) else None,
@@ -1512,6 +1545,18 @@ def _external_feeds_context(project_root: Path, now_utc: datetime) -> Tuple[Dict
         "official_macro_context": {
             "news_features": official_macro_news,
             "calendar_features": official_macro_calendar,
+            "global_features": official_macro_global,
+        },
+        "central_bank_cross_source": {
+            "global_features": central_bank_cross_global,
+            "symbol_features": central_bank_cross_symbol,
+            "routing": central_bank_cross_source.get("routing", {}),
+        },
+        "decision_context_mesh": {
+            "global_features": decision_context_mesh_global,
+            "symbol_features": decision_context_mesh_symbol,
+            "grade_summary": decision_context_mesh.get("grade_summary", {}),
+            "routing": decision_context_mesh.get("routing", {}),
         },
         "schwab_education_context": education_global,
         "live_macro": {
@@ -1562,6 +1607,26 @@ def _external_feeds_context(project_root: Path, now_utc: datetime) -> Tuple[Dict
             "tradingeconomics_backfill_used": te_backfill_used,
         },
     }
+    central_bank_contract = assess_central_bank_liquidity_context(official_macro)
+    if bool(central_bank_contract.get("ready", False)):
+        for key in CENTRAL_BANK_LIQUIDITY_FEATURE_KEYS:
+            context[key] = _clamp01(_to_float(official_macro_global.get(key), 0.0))
+    meta["central_bank_liquidity_contract"] = central_bank_contract
+    global_central_bank_contract = assess_global_central_bank_context(official_macro)
+    if bool(global_central_bank_contract.get("ready", False)):
+        for key in GLOBAL_CENTRAL_BANK_FEATURE_KEYS:
+            context[key] = _clamp01(_to_float(official_macro_global.get(key), 0.0))
+    meta["global_central_bank_contract"] = global_central_bank_contract
+    cross_source_contract = assess_central_bank_cross_source_context(central_bank_cross_source)
+    if bool(cross_source_contract.get("ready", False)):
+        for key in CENTRAL_BANK_CROSS_SOURCE_FEATURE_KEYS:
+            context[key] = _clamp01(_to_float(central_bank_cross_global.get(key), 0.0))
+    meta["central_bank_cross_source_contract"] = cross_source_contract
+    decision_context_mesh_contract = assess_decision_context_mesh(decision_context_mesh, now_utc=now_utc)
+    if bool(decision_context_mesh_contract.get("ready", False)):
+        for key in DECISION_CONTEXT_MESH_FEATURE_KEYS:
+            context[key] = _clamp01(_to_float(decision_context_mesh_global.get(key), 0.0))
+    meta["decision_context_mesh_contract"] = decision_context_mesh_contract
     return context, meta
 
 
@@ -1696,7 +1761,14 @@ def _load_paper_trade_context(
     rows: Iterable[Dict[str, Any]],
     since_utc: datetime,
 ) -> Tuple[Dict[str, Dict[str, float]], Dict[str, List[Tuple[float, float, float]]]]:
-    by_snapshot: Dict[str, Dict[str, float]] = defaultdict(lambda: {"count": 0.0, "slippage_sum": 0.0, "return_proxy_sum": 0.0})
+    by_snapshot: Dict[str, Dict[str, float]] = defaultdict(
+        lambda: {
+            "count": 0.0,
+            "slippage_sum": 0.0,
+            "return_proxy_sum": 0.0,
+            "entry_cost_sum": 0.0,
+        }
+    )
     by_symbol: Dict[str, List[Tuple[float, float, float]]] = defaultdict(list)
 
     for row in rows:
@@ -1710,12 +1782,19 @@ def _load_paper_trade_context(
         snapshot_id = str(metadata.get("snapshot_id") or row.get("snapshot_id") or "").strip()
         slippage_bps = _paper_trade_slippage_bps(row)
         return_proxy_bps = _paper_trade_return_proxy_bps(row)
+        modeled_cost_bps = max(
+            abs(slippage_bps),
+            max(_to_float(row.get("expected_slippage_bps"), 0.0), 0.0)
+            + max(_to_float(row.get("expected_impact_bps"), 0.0), 0.0)
+            + max(_to_float(row.get("expected_spread_jump_penalty_bps"), 0.0), 0.0),
+        )
 
         if snapshot_id:
             agg = by_snapshot[snapshot_id]
             agg["count"] += 1.0
             agg["slippage_sum"] += slippage_bps
             agg["return_proxy_sum"] += return_proxy_bps
+            agg["entry_cost_sum"] += modeled_cost_bps
 
         by_symbol[symbol].append((ts.timestamp(), slippage_bps, return_proxy_bps))
 
@@ -1727,6 +1806,7 @@ def _load_paper_trade_context(
             "count": count,
             "mean_slippage_bps": _to_float(agg.get("slippage_sum"), 0.0) / denom,
             "mean_return_proxy_bps": _to_float(agg.get("return_proxy_sum"), 0.0) / denom,
+            "mean_entry_cost_bps": _to_float(agg.get("entry_cost_sum"), 0.0) / denom,
         }
 
     for sym in by_symbol:
@@ -1826,6 +1906,94 @@ def _label_from_forward(
     return "neutral", conf
 
 
+def _excursion_bucket(value: float, *, adverse: bool = False) -> str:
+    bps = float(value) * 10000.0
+    magnitude = abs(min(bps, 0.0)) if adverse else max(bps, 0.0)
+    prefix = "adverse" if adverse else "favorable"
+    if magnitude < 3.0:
+        return f"{prefix}_flat"
+    if magnitude < 10.0:
+        return f"{prefix}_small"
+    if magnitude < 25.0:
+        return f"{prefix}_medium"
+    return f"{prefix}_large"
+
+
+def _path_dependent_labels(
+    *,
+    action: str,
+    base_price: float,
+    future_prices: List[float],
+    post_cost_forward_return: float,
+    hold_opportunity_threshold: float,
+) -> Dict[str, Any]:
+    prices = [float(price) for price in future_prices if float(price) > 0.0]
+    if base_price <= 0.0 or not prices:
+        return {
+            "path_label_ready": False,
+            "path_observation_count": 0,
+            "no_trade_counterfactual_outcome": "path_unavailable",
+        }
+    raw_returns = [(price - base_price) / base_price for price in prices]
+    direction = _direction_for_action(action)
+    directional_returns = [direction * value for value in raw_returns] if direction else raw_returns
+    mfe = max(directional_returns)
+    mae = min(directional_returns)
+    path_range = max(raw_returns) - min(raw_returns)
+    final_raw = raw_returns[-1]
+    if action in {"BUY", "SELL"}:
+        no_trade_outcome = (
+            "trade_outperformed_cash"
+            if post_cost_forward_return > 0.0
+            else "cash_outperformed_trade"
+            if post_cost_forward_return < 0.0
+            else "trade_matched_cash"
+        )
+        if post_cost_forward_return <= 0.0:
+            exit_timing = "loss_or_cost_drag"
+        else:
+            capture = post_cost_forward_return / max(mfe, 1e-12)
+            exit_timing = (
+                "near_path_best"
+                if capture >= 0.80
+                else "reasonable_capture"
+                if capture >= 0.40
+                else "premature_or_faded"
+            )
+    else:
+        best_counter_side = max(max(raw_returns), -min(raw_returns), 0.0)
+        no_trade_outcome = (
+            "hold_missed_large_move"
+            if best_counter_side >= max(hold_opportunity_threshold, 0.0)
+            else "hold_was_efficient"
+        )
+        exit_timing = "not_applicable_hold"
+
+    directional_efficiency = abs(final_raw) / max(path_range, 1e-12)
+    if path_range >= 0.005:
+        path_regime = "shock_path"
+    elif directional_efficiency >= 0.65:
+        path_regime = "persistent_path"
+    elif max(raw_returns) > 0.0 and min(raw_returns) < 0.0:
+        path_regime = "two_sided_chop_path"
+    else:
+        path_regime = "low_motion_path"
+    return {
+        "path_label_ready": True,
+        "path_observation_count": len(prices),
+        "maximum_favorable_excursion": round(mfe, 8),
+        "maximum_adverse_excursion": round(mae, 8),
+        "mae_bucket": _excursion_bucket(mae, adverse=True),
+        "mfe_bucket": _excursion_bucket(mfe),
+        "exit_timing_bucket": exit_timing,
+        "post_entry_regime_bucket": path_regime,
+        "no_trade_counterfactual_return": 0.0,
+        "trade_vs_no_trade_excess_return": round(post_cost_forward_return, 8),
+        "no_trade_counterfactual_outcome": no_trade_outcome,
+        "path_range_return": round(path_range, 8),
+    }
+
+
 def _decision_feature_vector(
     *,
     row: Dict[str, Any],
@@ -1846,9 +2014,31 @@ def _decision_feature_vector(
     role_idx = row["role_idx"]
     dividend_drip_symbol_features = external_meta.get("dividend_drip_symbol_features") if isinstance(external_meta.get("dividend_drip_symbol_features"), dict) else {}
     symbol_dividend_drip = dividend_drip_symbol_features.get(symbol) if isinstance(dividend_drip_symbol_features.get(symbol), dict) else {}
+    central_bank_meta = external_meta.get("central_bank_cross_source") if isinstance(external_meta.get("central_bank_cross_source"), dict) else {}
+    central_bank_symbol_features = central_bank_meta.get("symbol_features") if isinstance(central_bank_meta.get("symbol_features"), dict) else {}
+    symbol_central_bank = central_bank_symbol_features.get(symbol) if isinstance(central_bank_symbol_features.get(symbol), dict) else {}
+    context_mesh_meta = external_meta.get("decision_context_mesh") if isinstance(external_meta.get("decision_context_mesh"), dict) else {}
+    context_mesh_symbol_features = context_mesh_meta.get("symbol_features") if isinstance(context_mesh_meta.get("symbol_features"), dict) else {}
+    symbol_context_mesh = context_mesh_symbol_features.get(symbol) if isinstance(context_mesh_symbol_features.get(symbol), dict) else {}
 
     def _drip_value(name: str) -> float:
         return _clamp01(_to_float(features.get(name), _to_float(symbol_dividend_drip.get(name), _to_float(external_context.get(name), 0.0))))
+
+    def _central_bank_value(name: str) -> float:
+        return _clamp01(
+            _to_float(
+                features.get(name),
+                _to_float(symbol_central_bank.get(name), _to_float(external_context.get(name), 0.0)),
+            )
+        )
+
+    def _context_mesh_value(name: str) -> float:
+        return _clamp01(
+            _to_float(
+                features.get(name),
+                _to_float(symbol_context_mesh.get(name), _to_float(external_context.get(name), 0.0)),
+            )
+        )
 
     pct = _to_float(features.get("pct_from_close"), 0.0)
     mom = _to_float(features.get("mom_5m"), 0.0)
@@ -2085,6 +2275,13 @@ def _decision_feature_vector(
         _clamp01(_to_float(external_context.get("schwab_education_signal_norm"), 0.0)),
         _clamp01(_to_float(external_context.get("market_breadth_signal_norm"), 0.0)),
         _clamp01(_to_float(external_context.get("bond_reference_signal_norm"), 0.0)),
+        *[
+            _clamp01(_to_float(external_context.get(key), 0.0))
+            for key in CENTRAL_BANK_LIQUIDITY_FEATURE_KEYS
+        ],
+        *[_central_bank_value(key) for key in GLOBAL_CENTRAL_BANK_FEATURE_KEYS],
+        *[_central_bank_value(key) for key in CENTRAL_BANK_CROSS_SOURCE_FEATURE_KEYS],
+        *[_context_mesh_value(key) for key in DECISION_CONTEXT_MESH_FEATURE_KEYS],
         _clamp01(_to_float(external_context.get("source_quality_average_score_norm"), 0.0)),
         _clamp01(_to_float(external_context.get("source_quality_required_failure_ratio_norm"), 0.0)),
         _clamp01(_to_float(external_context.get("source_quality_soft_failure_ratio_norm"), 0.0)),
@@ -2186,6 +2383,27 @@ def main() -> int:
     negative_thr = max(negative_bps, 0.1) / 10000.0
     hold_pos_thr = max(hold_positive_bps, 0.1) / 10000.0
     hold_neg_thr = max(hold_negative_bps, 0.1) / 10000.0
+
+    post_cost_cfg = fw_cfg.get("post_cost_labels") if isinstance(fw_cfg.get("post_cost_labels"), dict) else {}
+    post_cost_labels_enabled = bool(post_cost_cfg.get("enabled", True))
+    minimum_entry_cost_bps = max(
+        float(post_cost_cfg.get("minimum_entry_cost_bps", os.getenv("BEHAVIOR_LABEL_MIN_ENTRY_COST_BPS", "2.0"))),
+        0.0,
+    )
+    default_exit_cost_bps = max(
+        float(post_cost_cfg.get("default_exit_cost_bps", os.getenv("BEHAVIOR_LABEL_DEFAULT_EXIT_COST_BPS", "2.0"))),
+        0.0,
+    )
+    fee_bps = max(
+        float(post_cost_cfg.get("fee_bps", os.getenv("BEHAVIOR_LABEL_FEE_BPS", "0.0"))),
+        0.0,
+    )
+    path_label_cfg = (
+        fw_cfg.get("path_dependent_labels")
+        if isinstance(fw_cfg.get("path_dependent_labels"), dict)
+        else {}
+    )
+    path_labels_enabled = bool(path_label_cfg.get("enabled", True))
 
     class_weights = outcome_cfg.get("class_weights", {"positive": 1.35, "neutral": 1.10, "negative": 0.95})
     regime_weights = outcome_cfg.get("regime_sample_weights", {"trend": 1.0, "mean_revert": 1.10, "shock": 1.25, "other": 1.0})
@@ -2406,6 +2624,17 @@ def main() -> int:
                 skipped_no_horizon += 1
                 continue
 
+            horizon_indices = []
+            if ret_primary is not None:
+                horizon_indices.append(j_primary)
+            if ret_aux is not None:
+                horizon_indices.append(j_aux)
+            path_end_index = max(horizon_indices) if horizon_indices else i
+            future_prices = [
+                _to_float(item.get("last_price"), 0.0)
+                for item in rows[i + 1 : path_end_index + 1]
+            ]
+
             if ret_primary is not None and ret_aux is not None:
                 forward_return = (blend_alpha * ret_primary) + ((1.0 - blend_alpha) * ret_aux)
                 horizon_profile = "blend"
@@ -2419,20 +2648,46 @@ def main() -> int:
                 horizon_profile = "aux_only"
                 horizon_disagree = False
 
-            label, label_conf = _label_from_forward(
-                action=base["action"],
-                forward_return=forward_return,
-                positive_thr=positive_thr,
-                negative_thr=negative_thr,
-                hold_pos_thr=hold_pos_thr,
-                hold_neg_thr=hold_neg_thr,
-            )
-
             sid = base.get("snapshot_id") or ""
             gov = gov_by_snapshot.get(sid, {})
             lag_exec = _find_last_exec_metrics(exec_history.get(symbol, []), base["ts_epoch"])
             lag_paper = _find_last_paper_metrics(paper_history.get(symbol, []), base["ts_epoch"])
             paper_snapshot = paper_by_snapshot.get(sid, {})
+            observed_entry_cost_bps = max(
+                _to_float(paper_snapshot.get("mean_entry_cost_bps"), 0.0),
+                minimum_entry_cost_bps,
+            )
+            post_cost = post_cost_adjusted_forward_return(
+                action=base["action"],
+                forward_return=forward_return,
+                entry_cost_bps=(observed_entry_cost_bps if post_cost_labels_enabled else 0.0),
+                exit_cost_bps=(default_exit_cost_bps if post_cost_labels_enabled else 0.0),
+                fee_bps=(fee_bps if post_cost_labels_enabled else 0.0),
+            )
+            post_cost_forward_return = _to_float(post_cost.get("post_cost_forward_return"), forward_return)
+            path_labels = (
+                _path_dependent_labels(
+                    action=base["action"],
+                    base_price=_to_float(base.get("last_price"), 0.0),
+                    future_prices=future_prices,
+                    post_cost_forward_return=post_cost_forward_return,
+                    hold_opportunity_threshold=hold_neg_thr,
+                )
+                if path_labels_enabled
+                else {
+                    "path_label_ready": False,
+                    "path_observation_count": 0,
+                    "no_trade_counterfactual_outcome": "disabled_by_policy",
+                }
+            )
+            label, label_conf = _label_from_forward(
+                action=base["action"],
+                forward_return=post_cost_forward_return,
+                positive_thr=positive_thr,
+                negative_thr=negative_thr,
+                hold_pos_thr=hold_pos_thr,
+                hold_neg_thr=hold_neg_thr,
+            )
 
             feats, regime, label_conf_proxy = _decision_feature_vector(
                 row=base,
@@ -2461,7 +2716,7 @@ def main() -> int:
             if horizon_disagree:
                 weight *= 0.88
 
-            abs_forward_bps = abs(forward_return) * 10000.0
+            abs_forward_bps = abs(post_cost_forward_return) * 10000.0
             session_ctx = _session_event_context(base["ts_utc"], event_windows)
             event_proximity = _to_float(session_ctx.get("event_window_proximity"), 0.0)
 
@@ -2496,6 +2751,9 @@ def main() -> int:
                     "label_confidence": round(label_conf, 6),
                     "label_confidence_proxy": round(label_conf_proxy, 6),
                     "forward_return": round(forward_return, 8),
+                    "post_cost_forward_return": round(post_cost_forward_return, 8),
+                    "round_trip_cost_bps": round(_to_float(post_cost.get("round_trip_cost_bps"), 0.0), 6),
+                    "post_cost_label": bool(post_cost_labels_enabled and base["action"] in {"BUY", "SELL"}),
                     "forward_return_primary": (round(ret_primary, 8) if ret_primary is not None else None),
                     "forward_return_aux": (round(ret_aux, 8) if ret_aux is not None else None),
                     "horizon_seconds": int(horizon_primary_s),
@@ -2503,6 +2761,7 @@ def main() -> int:
                     "horizon_blend_alpha": round(blend_alpha, 4),
                     "horizon_profile": horizon_profile,
                     "horizon_disagree": bool(horizon_disagree),
+                    **path_labels,
                     "sample_weight": round(max(weight, 0.05), 6),
                     "features": feats,
                 }
@@ -2521,8 +2780,8 @@ def main() -> int:
     payload = {
         "timestamp_utc": now_utc.isoformat(),
         "dataset_kind": "curated_decision_governance",
-        "schema": "behavior_dataset_v3_dual_horizon",
-        "feature_schema_version": "trade_behavior_features_v4",
+        "schema": "behavior_dataset_v7_post_cost_path_labels_point_in_time",
+        "feature_schema_version": "trade_behavior_features_v6",
         "lookback_hours": int(args.lookback_hours),
         "horizons": {
             "primary_seconds": int(horizon_primary_s),
@@ -2601,7 +2860,7 @@ def main() -> int:
             "raw_ingest_dependency": "bounded_sql_backing_only",
         },
         "lineage": {
-            "feature_schema_version": "trade_behavior_features_v4",
+            "feature_schema_version": "trade_behavior_features_v6",
             "builder_script": str(Path(__file__).resolve()),
         },
         "snapshot_context": {
@@ -2616,6 +2875,27 @@ def main() -> int:
         "label_space": ["negative", "neutral", "positive"],
         "label_counts": dict(label_counts),
         "regime_label_counts": {k: dict(v) for k, v in regime_counts.items()},
+        "label_contract": {
+            "post_cost_labels_enabled": post_cost_labels_enabled,
+            "minimum_entry_cost_bps": minimum_entry_cost_bps,
+            "default_exit_cost_bps": default_exit_cost_bps,
+            "fee_bps": fee_bps,
+            "cost_source": "snapshot_realized_or_modeled_execution_cost_with_conservative_floor",
+            "policy": "directional_labels_use_forward_outcomes_after_round_trip_execution_costs",
+            "path_dependent_labels_enabled": path_labels_enabled,
+            "path_dependent_outputs": [
+                "maximum_favorable_excursion",
+                "maximum_adverse_excursion",
+                "mfe_bucket",
+                "mae_bucket",
+                "exit_timing_bucket",
+                "post_entry_regime_bucket",
+                "no_trade_counterfactual_outcome",
+                "trade_vs_no_trade_excess_return",
+            ],
+            "no_trade_baseline": "cash_return_zero_before_financing_cost",
+            "endpoint_only_training_allowed": False,
+        },
         "skipped": {
             "no_horizon": int(skipped_no_horizon),
             "low_symbol_rows": int(skipped_low_symbol_rows),

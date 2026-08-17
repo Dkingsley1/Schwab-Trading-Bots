@@ -87,6 +87,92 @@ def _age_minutes(raw: Any) -> float | None:
     return max((datetime.now(timezone.utc) - ts).total_seconds() / 60.0, 0.0)
 
 
+def _build_training_evidence_gate(project_root: Path, *, max_age_minutes: int) -> dict[str, Any]:
+    health = project_root / "governance" / "health"
+    paths = {
+        "feature_store": project_root / "governance" / "feature_store" / "latest.json",
+        "schema_compatibility": health / "retrain_schema_compatibility_latest.json",
+        "golden_replay": health / "golden_replay_regression_latest.json",
+        "bot_needs": health / "bot_needs_intelligence_latest.json",
+    }
+    artifacts = {name: _load_json(path) for name, path in paths.items()}
+    production_registry_present = (project_root / "master_bot_registry.json").is_file()
+    expected = bool(
+        production_registry_present
+        or paths["feature_store"].is_file()
+        or paths["schema_compatibility"].is_file()
+        or paths["golden_replay"].is_file()
+    )
+    if not expected:
+        return {
+            "active": False,
+            "ready": True,
+            "mode": "not_configured",
+            "blockers": [],
+            "policy": "production repositories enforce strict lineage, schema, replay, and lifecycle evidence",
+        }
+
+    ages = {name: _age_minutes(payload.get("timestamp_utc")) for name, payload in artifacts.items()}
+    fresh = {
+        name: bool(age is not None and age <= max(int(max_age_minutes), 1))
+        for name, age in ages.items()
+    }
+    feature = artifacts["feature_store"]
+    schema = artifacts["schema_compatibility"]
+    replay = artifacts["golden_replay"]
+    bot_needs = artifacts["bot_needs"]
+    stage_board = bot_needs.get("training_stage_board") if isinstance(bot_needs.get("training_stage_board"), dict) else {}
+    checks = {
+        "feature_store_strict_ready": bool(feature.get("strict_ok", False) and fresh["feature_store"]),
+        "schema_compatibility_ready": bool(
+            schema.get("ok", False)
+            and not list(schema.get("failed_checks") or [])
+            and fresh["schema_compatibility"]
+        ),
+        "golden_replay_strict_ready": bool(
+            replay.get("strict_ready", replay.get("overall_status") == "ready")
+            and replay.get("ok", False)
+            and fresh["golden_replay"]
+        ),
+        "training_lifecycle_invariants_ready": bool(stage_board.get("ready", False) and fresh["bot_needs"]),
+    }
+    epoch_ids = {
+        str((payload.get("evidence_epoch") or {}).get("id") or "")
+        for payload in artifacts.values()
+        if isinstance(payload.get("evidence_epoch"), dict)
+        and str((payload.get("evidence_epoch") or {}).get("id") or "").strip()
+    }
+    epoch_declared_count = sum(
+        1 for payload in artifacts.values() if str((payload.get("evidence_epoch") or {}).get("id") or "").strip()
+    )
+    epoch_consistent = bool(
+        (not production_registry_present and epoch_declared_count == 0)
+        or (epoch_declared_count == len(artifacts) and len(epoch_ids) == 1)
+    )
+    checks["single_evidence_epoch"] = epoch_consistent
+    blocker_by_check = {
+        "feature_store_strict_ready": "feature_store_not_strict_ready",
+        "schema_compatibility_ready": "retrain_schema_compatibility_not_ready",
+        "golden_replay_strict_ready": "golden_replay_not_strict_ready",
+        "training_lifecycle_invariants_ready": "training_lifecycle_invariant_failed",
+        "single_evidence_epoch": "training_evidence_epoch_mismatch",
+    }
+    blockers = [blocker_by_check[key] for key, value in checks.items() if not value]
+    return {
+        "active": True,
+        "ready": not blockers,
+        "mode": "strict_production_training_evidence",
+        "checks": checks,
+        "blockers": blockers,
+        "artifact_ages_minutes": {name: round(age, 3) if age is not None else None for name, age in ages.items()},
+        "maximum_age_minutes": max(int(max_age_minutes), 1),
+        "evidence_epoch_ids": sorted(epoch_ids),
+        "evidence_epoch_declared_count": epoch_declared_count,
+        "source_artifacts": {name: str(path) for name, path in paths.items()},
+        "policy": "training launches fail closed unless feature lineage, schema compatibility, deterministic replay, bot lifecycle invariants, and evidence epoch agree",
+    }
+
+
 def _training_candidate_selector_contract(
     bot_needs: dict[str, Any],
     *,
@@ -125,6 +211,7 @@ def _training_candidate_selector_contract(
         "age_minutes": round(float(age_minutes), 3) if age_minutes is not None else None,
         "maximum_age_minutes": max(int(max_age_minutes), 1),
         "selected_count": len(selected_bot_ids),
+        "candidate_count": _safe_int(selector.get("candidate_count"), len(selected_bot_ids)),
         "selected_bot_ids": selected_bot_ids,
         "selected_candidates": selected_candidates,
         "mode": str(selector.get("mode") or ""),
@@ -1469,6 +1556,7 @@ def _build_training_launch_contract(
     candidate_selector: dict[str, Any],
     fresh_minutes: int,
     batch_limit: int,
+    training_evidence_gate: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     backpressure_severe = bool(backpressure_gate.get("severe", False))
     backpressure_cooling_down = bool(backpressure_gate.get("cooling_down", False))
@@ -1554,6 +1642,11 @@ def _build_training_launch_contract(
     if mlx_failure_active:
         launch_blockers.append("mlx_failure_active")
         prep_blockers.append("mlx_failure_active")
+    evidence_gate = training_evidence_gate or {"active": False, "ready": True, "blockers": []}
+    for blocker in evidence_gate.get("blockers") or []:
+        text = str(blocker or "").strip()
+        if text:
+            launch_blockers.append(text)
 
     drain_batch_cap = min(max(_safe_int(pretraining_drain_buffer.get("batch_cap"), TRAINING_BATCH_MAX), 0), TRAINING_BATCH_MAX)
     host_batch_cap = min(max(_safe_int(host_headroom_gate.get("batch_cap"), 4), 0), TRAINING_BATCH_MAX)
@@ -1653,6 +1746,7 @@ def _build_training_launch_contract(
         "eligibility_blocked_target_count": len(eligibility_blocked_targets),
         "eligibility_blocked_targets": eligibility_blocked_targets[: max(int(batch_limit), 1)],
         "training_candidate_selector": candidate_selector,
+        "training_evidence_gate": evidence_gate,
         "available_repair_first_pool_size": len(repair_first),
         "effective_launch_pool_size": len(launch_pool),
         "drain_batch_cap": int(drain_batch_cap),
@@ -1693,17 +1787,30 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, fresh_minutes: int = 360
     training_requalification = _load_json(health_root / "training_requalification_latest.json")
     candidate_advancement = _load_json(health_root / "promotion_candidate_advancement_latest.json")
     bot_needs = _load_json(health_root / "bot_needs_intelligence_latest.json")
+    training_stage_board = (
+        bot_needs.get("training_stage_board") if isinstance(bot_needs.get("training_stage_board"), dict) else {}
+    )
+    training_stage_counts = (
+        training_stage_board.get("counts") if isinstance(training_stage_board.get("counts"), dict) else {}
+    )
+    collection_rollup = _load_json(health_root / "data_collection_observation_rollup_latest.json")
     coverage_seed = _load_json(walk_root / "coverage_seed_latest.json")
     coverage_gap_closer = _load_json(walk_root / "coverage_gap_closer_latest.json")
     runtime_probe = _runtime_backend_probe(project_root)
 
     snapshot_age_minutes = _age_minutes(snapshot.get("timestamp_utc"))
+    snapshot_content_fresh = bool(
+        snapshot.get("content_fresh", True)
+        if _safe_int(snapshot.get("schema_version"), 1) >= 2
+        else True
+    )
     snapshot_fresh = bool(
         snapshot
         and _safe_int(snapshot.get("sequence_count"), 0) > 0
         and _safe_int(snapshot.get("row_count"), 0) > 0
         and snapshot_age_minutes is not None
         and snapshot_age_minutes <= max(int(fresh_minutes), 1)
+        and snapshot_content_fresh
     )
     sequence_count = _safe_int(snapshot.get("sequence_count"), 0)
     row_count = _safe_int(snapshot.get("row_count"), 0)
@@ -1722,6 +1829,10 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, fresh_minutes: int = 360
             ),
             0,
         ),
+    )
+    training_evidence_gate = _build_training_evidence_gate(
+        project_root,
+        max_age_minutes=max(int(fresh_minutes), 1),
     )
     precompute_targets = _build_precompute_targets(
         training_quality=training_quality,
@@ -1802,6 +1913,7 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, fresh_minutes: int = 360
         candidate_selector=training_candidate_selector,
         fresh_minutes=fresh_minutes,
         batch_limit=limit,
+        training_evidence_gate=training_evidence_gate,
     )
 
     training_launch_allowed = bool(training_launch_contract.get("launch_allowed", False))
@@ -1827,6 +1939,8 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, fresh_minutes: int = 360
         overall_status = "constrained"
     if bool(training_candidate_selector.get("active", False)) and not bool(training_candidate_selector.get("authoritative", False)):
         overall_status = "blocked"
+    if bool(training_evidence_gate.get("active", False)) and not bool(training_evidence_gate.get("ready", False)):
+        overall_status = "blocked"
     elif (
         bool(training_candidate_selector.get("authoritative", False))
         and _safe_int(training_candidate_selector.get("selected_count"), 0) > 0
@@ -1835,9 +1949,35 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, fresh_minutes: int = 360
     ):
         overall_status = "constrained"
 
+    controlled_idle_no_candidates = bool(
+        overall_status == "constrained"
+        and training_prep_allowed
+        and bool(training_candidate_selector.get("active", False))
+        and bool(training_candidate_selector.get("fresh", False))
+        and bool(training_candidate_selector.get("authoritative", False))
+        and _safe_int(training_candidate_selector.get("selected_count"), 0) == 0
+        and "no_bot_needs_training_candidates" in training_launch_blockers
+        and set(training_launch_blockers).issubset(
+            {"no_bot_needs_training_candidates", "autonomic_training_budget_closed"}
+        )
+        and bool(training_evidence_gate.get("ready", False))
+        and snapshot_fresh
+        and resource_guard_training_ok
+        and not backpressure_severe
+        and parity_state not in {"missing_runtime_python", "runtime_probe_failed", "native_backend_missing"}
+        and not mlx_failure_active
+    )
+    operational_status = "ready_idle" if controlled_idle_no_candidates else overall_status
+    operational_ok = bool(overall_status == "ready" or controlled_idle_no_candidates)
+
     recommended_actions: list[str] = []
     if not snapshot_fresh:
         recommended_actions.append("refresh the shared runtime training snapshot before retrying targeted retrains")
+    if training_evidence_gate.get("blockers"):
+        recommended_actions.append(
+            "refresh the ordered training evidence chain before launching a canary: "
+            + ", ".join(str(item) for item in training_evidence_gate.get("blockers") or [])
+        )
     selector_status = str(training_candidate_selector.get("status") or "")
     if selector_status == "stale":
         recommended_actions.append("refresh bot-needs intelligence before launching any training candidate")
@@ -1923,6 +2063,17 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, fresh_minutes: int = 360
         "schema_version": 1,
         "overall_status": overall_status,
         "ok": overall_status == "ready",
+        "operational_status": operational_status,
+        "operational_ok": operational_ok,
+        "operational_training": {
+            "status": operational_status,
+            "ok": operational_ok,
+            "state": "idle_no_eligible_candidates" if controlled_idle_no_candidates else "active_contract",
+            "controlled_idle_no_candidates": controlled_idle_no_candidates,
+            "raw_status": overall_status,
+            "raw_ok": overall_status == "ready",
+            "raw_state_preserved": True,
+        },
         "snapshot_ready": snapshot_fresh,
         "launch_allowed": training_launch_allowed,
         "prep_allowed": training_prep_allowed,
@@ -1933,16 +2084,45 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, fresh_minutes: int = 360
             if str(item or "").strip()
         ],
         "training_quality_score": round(_safe_float(training_quality.get("training_quality_score"), 0.0), 3),
+        "training_evidence_gate": training_evidence_gate,
+        "training_stage_reconciliation": {
+            "collection_threshold_ready_count": _safe_int(
+                collection_rollup.get("collection_threshold_ready_count"),
+                _safe_int(collection_rollup.get("training_ready_count"), 0),
+            ),
+            "collection_rollup_gate_ready_count": _safe_int(
+                collection_rollup.get("collection_threshold_ready_count"),
+                _safe_int(collection_rollup.get("training_ready_count"), 0),
+            ),
+            "registry_bot_collection_floor_ready_count": _safe_int(
+                training_stage_counts.get("collection_floor_ready"),
+                0,
+            ),
+            "selector_candidate_count": _safe_int(training_candidate_selector.get("candidate_count"), 0),
+            "selector_selected_count": _safe_int(training_candidate_selector.get("selected_count"), 0),
+            "counts_share_denominator": False,
+            "count_populations": {
+                "collection_rollup_gate_ready_count": "collector rollup units with configured collection gates",
+                "registry_bot_collection_floor_ready_count": "active registry bots with configured and satisfied observation floors",
+                "selector_candidate_count": "registry bots that also pass label, diagnostic, balance, and overfit gates",
+            },
+            "counts_are_expected_to_differ": True,
+            "explanation": "collection rollup and registry-stage counts use different populations; only label-safe, diagnostic-fresh, balanced, overfit-clear registry bots enter the retrain selector",
+        },
         "recommended_batch_size": _safe_int(training_launch_contract.get("recommended_batch_size"), 0),
         "recommended_retrain_profile": str(training_launch_contract.get("recommended_retrain_profile") or ""),
         "recommended_retrain_command": list(training_launch_contract.get("recommended_retrain_command") or []),
         "snapshot_age_minutes": round(float(snapshot_age_minutes), 3) if snapshot_age_minutes is not None else None,
+        "snapshot_content_fresh": snapshot_content_fresh,
+        "snapshot_content_age_minutes": snapshot.get("content_age_minutes"),
         "fresh_window_minutes": int(max(int(fresh_minutes), 1)),
         "snapshot": {
             "sequence_count": sequence_count,
             "row_count": row_count,
             "rows_path": str(snapshot.get("rows_path") or ""),
             "lookback_days": _safe_int(snapshot.get("lookback_days"), 0),
+            "latest_row_timestamp_utc": str(snapshot.get("latest_row_timestamp_utc") or ""),
+            "content_fresh": snapshot_content_fresh,
             "top_modes": list(snapshot_coverage.get("top_modes") or [])[:5],
             "top_sequences": list(snapshot_coverage.get("top_sequences") or [])[:5],
         },

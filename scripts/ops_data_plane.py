@@ -21,6 +21,9 @@ from core.sqlite_runtime import (
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_DB_PATH = PROJECT_ROOT / "governance" / "ops_data_plane.sqlite3"
+DEFAULT_SCHEMA_DRIFT_PAYLOAD_MAX_BYTES = 2048
+DEFAULT_SCHEMA_DRIFT_METADATA_MAX_BYTES = 2048
+DEFAULT_SCHEMA_DRIFT_SOURCE_MAX_BYTES = 1024
 
 
 def _now_utc() -> str:
@@ -37,6 +40,22 @@ def _metadata_text(metadata: Mapping[str, Any] | None) -> str:
 
 def _sha256_text(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def _bounded_utf8_text(raw: Any, max_bytes: int) -> str:
+    text = str(raw or "")
+    limit = max(int(max_bytes), 0)
+    encoded = text.encode("utf-8")
+    if len(encoded) <= limit:
+        return text
+    if limit <= 0:
+        return ""
+    return encoded[:limit].decode("utf-8", errors="ignore")
+
+
+def _bounded_env_bytes(name: str, default: int, *, ceiling: int) -> int:
+    configured = _safe_int(os.getenv(name, default), default)
+    return min(max(configured, 0), max(int(ceiling), 0))
 
 
 def _safe_float(raw: Any, default: float = 0.0) -> float:
@@ -271,6 +290,35 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
     )
     conn.execute(
         """
+        CREATE TABLE IF NOT EXISTS schema_drift_rollups (
+            lane TEXT NOT NULL,
+            source_rel TEXT NOT NULL,
+            observed_schema_version INTEGER NOT NULL DEFAULT 0,
+            expected_schema_version INTEGER NOT NULL DEFAULT 0,
+            drift_kind TEXT NOT NULL,
+            occurrence_count INTEGER NOT NULL DEFAULT 0,
+            first_line_no INTEGER NOT NULL DEFAULT 0,
+            last_line_no INTEGER NOT NULL DEFAULT 0,
+            first_recorded_utc TEXT NOT NULL,
+            last_recorded_utc TEXT NOT NULL,
+            first_payload_sha256 TEXT NOT NULL DEFAULT '',
+            last_payload_sha256 TEXT NOT NULL DEFAULT '',
+            sample_payload_json TEXT NOT NULL DEFAULT '',
+            latest_run_id TEXT NOT NULL DEFAULT '',
+            latest_iter_id TEXT NOT NULL DEFAULT '',
+            metadata_json TEXT NOT NULL DEFAULT '{}',
+            PRIMARY KEY (
+                lane,
+                source_rel,
+                observed_schema_version,
+                expected_schema_version,
+                drift_kind
+            )
+        ) WITHOUT ROWID
+        """
+    )
+    conn.execute(
+        """
         CREATE TABLE IF NOT EXISTS storage_route_events (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             project_root TEXT NOT NULL,
@@ -388,6 +436,12 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
         """
         CREATE INDEX IF NOT EXISTS idx_schema_drift_events_lookup
         ON schema_drift_events(source_rel, recorded_utc DESC)
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_schema_drift_rollups_recent
+        ON schema_drift_rollups(last_recorded_utc DESC)
         """
     )
     conn.execute(
@@ -567,27 +621,61 @@ def record_schema_drift(
     metadata: Mapping[str, Any] | None = None,
     commit: bool = True,
 ) -> None:
-    payload_sha256 = _sha256_text(str(payload_json or "")) if str(payload_json or "") else ""
+    payload_text = str(payload_json or "")
+    payload_sha256 = _sha256_text(payload_text) if payload_text else ""
+    payload_max_bytes = _bounded_env_bytes(
+        "BOT_OPS_SCHEMA_DRIFT_PAYLOAD_MAX_BYTES",
+        DEFAULT_SCHEMA_DRIFT_PAYLOAD_MAX_BYTES,
+        ceiling=16384,
+    )
+    metadata_max_bytes = _bounded_env_bytes(
+        "BOT_OPS_SCHEMA_DRIFT_METADATA_MAX_BYTES",
+        DEFAULT_SCHEMA_DRIFT_METADATA_MAX_BYTES,
+        ceiling=16384,
+    )
+    source_max_bytes = _bounded_env_bytes(
+        "BOT_OPS_SCHEMA_DRIFT_SOURCE_MAX_BYTES",
+        DEFAULT_SCHEMA_DRIFT_SOURCE_MAX_BYTES,
+        ceiling=8192,
+    )
+    recorded_utc = _now_utc()
+    source_text = _bounded_utf8_text(str(source_rel or "").strip(), source_max_bytes)
+    metadata_text = _bounded_utf8_text(_metadata_text(metadata), metadata_max_bytes)
     conn.execute(
         """
-        INSERT INTO schema_drift_events(
-            lane, source_rel, line_no, observed_schema_version, expected_schema_version,
-            drift_kind, payload_sha256, payload_json, run_id, iter_id, recorded_utc, metadata_json
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO schema_drift_rollups(
+            lane, source_rel, observed_schema_version, expected_schema_version, drift_kind,
+            occurrence_count, first_line_no, last_line_no, first_recorded_utc,
+            last_recorded_utc, first_payload_sha256, last_payload_sha256,
+            sample_payload_json, latest_run_id, latest_iter_id, metadata_json
+        ) VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(
+            lane, source_rel, observed_schema_version, expected_schema_version, drift_kind
+        ) DO UPDATE SET
+            occurrence_count = schema_drift_rollups.occurrence_count + 1,
+            last_line_no = excluded.last_line_no,
+            last_recorded_utc = excluded.last_recorded_utc,
+            last_payload_sha256 = excluded.last_payload_sha256,
+            latest_run_id = excluded.latest_run_id,
+            latest_iter_id = excluded.latest_iter_id,
+            metadata_json = excluded.metadata_json
         """,
         (
             str(lane or "").strip(),
-            str(source_rel or "").strip(),
-            int(line_no),
+            source_text,
             int(observed_schema_version),
             int(expected_schema_version),
             str(drift_kind or "").strip(),
+            int(line_no),
+            int(line_no),
+            recorded_utc,
+            recorded_utc,
             payload_sha256,
-            str(payload_json or ""),
+            payload_sha256,
+            _bounded_utf8_text(payload_text, payload_max_bytes),
             str(run_id or "").strip(),
             str(iter_id or "").strip(),
-            _now_utc(),
-            _metadata_text(metadata),
+            metadata_text,
         ),
     )
     _commit_if_needed(conn, commit=commit)
@@ -793,11 +881,19 @@ def record_canonical_reconciliation(
     _commit_if_needed(conn, commit=commit)
 
 
-def latest_collector_run(project_root: Path = PROJECT_ROOT, *, collector_key: str, db_path: Path | str | None = None) -> dict[str, Any]:
+def latest_collector_run(
+    project_root: Path = PROJECT_ROOT,
+    *,
+    collector_key: str,
+    db_path: Path | str | None = None,
+    connection: sqlite3.Connection | None = None,
+) -> dict[str, Any]:
     path = resolve_db_path(project_root, db_path=db_path)
-    if not path.exists():
+    if connection is None and not path.exists():
         return {}
-    with connect(project_root, db_path=path) as conn:
+    owns_connection = connection is None
+    conn = connection or connect(project_root, db_path=path)
+    try:
         row = conn.execute(
             """
             SELECT run_uid, cache_key, command_fingerprint, skipped, rc, started_utc, finished_utc,
@@ -809,6 +905,9 @@ def latest_collector_run(project_root: Path = PROJECT_ROOT, *, collector_key: st
             """,
             (str(collector_key or "").strip(),),
         ).fetchone()
+    finally:
+        if owns_connection:
+            conn.close()
     if row is None:
         return {}
     metadata = {}
@@ -832,9 +931,16 @@ def latest_collector_run(project_root: Path = PROJECT_ROOT, *, collector_key: st
     }
 
 
-def collector_error_budget(project_root: Path = PROJECT_ROOT, *, collector_key: str, window_hours: float = 24.0, db_path: Path | str | None = None) -> dict[str, Any]:
+def collector_error_budget(
+    project_root: Path = PROJECT_ROOT,
+    *,
+    collector_key: str,
+    window_hours: float = 24.0,
+    db_path: Path | str | None = None,
+    connection: sqlite3.Connection | None = None,
+) -> dict[str, Any]:
     path = resolve_db_path(project_root, db_path=db_path)
-    if not path.exists():
+    if connection is None and not path.exists():
         return {
             "run_count": 0,
             "failed_runs": 0,
@@ -843,7 +949,9 @@ def collector_error_budget(project_root: Path = PROJECT_ROOT, *, collector_key: 
             "error_budget_remaining": 1.0,
         }
     cutoff = (datetime.now(timezone.utc) - timedelta(hours=max(float(window_hours), 1.0))).isoformat()
-    with connect(project_root, db_path=path) as conn:
+    owns_connection = connection is None
+    conn = connection or connect(project_root, db_path=path)
+    try:
         row = conn.execute(
             """
             SELECT
@@ -867,6 +975,9 @@ def collector_error_budget(project_root: Path = PROJECT_ROOT, *, collector_key: 
                 """,
                 (str(collector_key or "").strip(),),
             ).fetchone()
+    finally:
+        if owns_connection:
+            conn.close()
     run_count = int(row[0] or 0) if row else 0
     failed_runs = int(row[1] or 0) if row else 0
     skipped_runs = int(row[2] or 0) if row else 0

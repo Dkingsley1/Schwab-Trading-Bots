@@ -6,7 +6,6 @@ import gzip
 import json
 import os
 import sys
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -28,7 +27,6 @@ DEFAULT_REGISTRY_PATH = PROJECT_ROOT / "governance" / "retention" / "retention_c
 DEFAULT_REPORT_PATH = PROJECT_ROOT / "governance" / "retention" / "retention_report_card_latest.md"
 PROTECTED_VOLUME_NAMES = {"VIDEO"}
 PROTECTED_VOLUME_PATHS = {"/Volumes/VIDEO"}
-DEFAULT_VIDEO_COLD_ARCHIVE_ROOT = "/Volumes/VIDEO/schwab_trading_bot_cold"
 
 
 def _safe_float(raw: Any, default: float = 0.0) -> float:
@@ -57,8 +55,6 @@ def _volume_name(path: Path) -> str:
 
 
 def _is_protected_volume(path: Path) -> bool:
-    if _approved_video_cold_archive(path):
-        return False
     try:
         text = str(path.expanduser().resolve())
     except Exception:
@@ -70,19 +66,6 @@ def _is_protected_volume(path: Path) -> bool:
 
 def _env_truthy(name: str) -> bool:
     return str(os.getenv(name, "")).strip().lower() in {"1", "true", "yes", "y", "on"}
-
-
-def _approved_video_cold_archive(path: Path) -> bool:
-    if not _env_truthy("BOT_ALLOW_VIDEO_COLD_ARCHIVE"):
-        return False
-    allowed_root = Path(os.getenv("BOT_VIDEO_COLD_ARCHIVE_ROOT", DEFAULT_VIDEO_COLD_ARCHIVE_ROOT)).expanduser()
-    try:
-        text = str(path.expanduser().resolve())
-        allowed = str(allowed_root.resolve())
-    except Exception:
-        text = str(path.expanduser())
-        allowed = str(allowed_root)
-    return bool(text == allowed or text.startswith(f"{allowed}/"))
 
 
 def _read_jsonl_rows(path: Path, *, limit: int = 10000) -> list[dict[str, Any]]:
@@ -467,7 +450,6 @@ def build_payload(
 ) -> dict[str, Any]:
     health_root = project_root / "governance" / "health"
     deep_cold = load_json(health_root / "deep_cold_storage_layer_latest.json")
-    storage_tier = load_json(health_root / "storage_tier_policy_latest.json")
     quota = load_json(health_root / "storage_quota_guard_latest.json")
     ingestion = load_json(health_root / "ingestion_storage_control_latest.json")
     cleanup = load_json(health_root / "bot_logs_cleanup_intelligence_latest.json")
@@ -614,15 +596,15 @@ def build_payload(
                 "current_primary_external_root": str(external_root),
                 "note": "second target is future capacity, not a blocker while BOT_LOGS deep-cold is healthy",
                 "approved_video_cold_archive": {
-                    "enabled": _env_truthy("BOT_ALLOW_VIDEO_COLD_ARCHIVE"),
-                    "root": os.getenv("BOT_VIDEO_COLD_ARCHIVE_ROOT", DEFAULT_VIDEO_COLD_ARCHIVE_ROOT),
-                    "scope": "cold_archive_subtree_only",
+                    "enabled": False,
+                    "root": "",
+                    "scope": "forbidden",
                 },
             },
             next_action=(
                 "second cold target is available for future replication"
                 if second_cold_ready
-                else "optional: set BOT_SECOND_COLD_ROOT to BOT_COLD/BOT_ARCHIVE or the approved VIDEO cold archive subtree"
+                else "optional: set BOT_SECOND_COLD_ROOT to a non-protected BOT_COLD, BOT_ARCHIVE, or BOT_RETENTION target"
             ),
             risk_level="medium" if second_cold_path is not None and _is_protected_volume(second_cold_path) else "low",
             blockers=[],
@@ -717,8 +699,8 @@ def build_payload(
             "path": str(second_cold_path) if second_cold_path is not None else "",
             "ready": second_cold_ready,
             "protected_volume_refused": bool(second_cold_path is not None and _is_protected_volume(second_cold_path)),
-            "approved_video_cold_archive_enabled": _env_truthy("BOT_ALLOW_VIDEO_COLD_ARCHIVE"),
-            "approved_video_cold_archive_root": os.getenv("BOT_VIDEO_COLD_ARCHIVE_ROOT", DEFAULT_VIDEO_COLD_ARCHIVE_ROOT),
+            "approved_video_cold_archive_enabled": False,
+            "approved_video_cold_archive_root": "",
         },
         "retention_report_card": {
             "overall_score": overall_score,
@@ -749,8 +731,7 @@ def build_payload(
             "BOT_RETENTION_REPORT_CARD": str(report_path),
             "BOT_RETENTION_DELETE_OWNER": "stale-reaper",
             "BOT_RETENTION_NEVER_TOUCH_VIDEO": "1",
-            "BOT_ALLOW_VIDEO_COLD_ARCHIVE": "1" if _env_truthy("BOT_ALLOW_VIDEO_COLD_ARCHIVE") else "0",
-            "BOT_VIDEO_COLD_ARCHIVE_ROOT": os.getenv("BOT_VIDEO_COLD_ARCHIVE_ROOT", DEFAULT_VIDEO_COLD_ARCHIVE_ROOT),
+            "BOT_ALLOW_VIDEO_COLD_ARCHIVE": "0",
             "BOT_SECOND_COLD_ROOT": second_cold_raw,
         },
         "next_action": (

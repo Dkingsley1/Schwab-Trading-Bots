@@ -105,3 +105,27 @@ def test_reused_source_record_id_with_changed_content_fails_closed(tmp_path: Pat
     assert payload["ok"] is False
     assert payload["conflict_count"] == 1
     assert payload["accepted_ledger_records"] == 1
+
+
+def test_relocated_source_and_replay_dataset_metadata_do_not_mutate_fill_identity(tmp_path: Path) -> None:
+    _candidate(tmp_path)
+    inbox = tmp_path / "exports" / "independent_fill_inbox"
+    inbox.mkdir(parents=True)
+    first_path = inbox / "current.jsonl"
+    fill = _valid_fill()
+    fill["paper_fill_source"] = "market_replay_fill"
+    fill["account_mode"] = "replay"
+    fill["replay_dataset_id"] = "dataset-before-compaction"
+    first_path.write_text(json.dumps(fill) + "\n", encoding="utf-8")
+    acquisition.build_payload(tmp_path, apply=True, now=NOW)
+
+    first_path.unlink()
+    fill["replay_dataset_id"] = "dataset-after-compaction"
+    (inbox / "cold_archive.jsonl").write_text(json.dumps(fill) + "\n", encoding="utf-8")
+    payload = acquisition.build_payload(tmp_path, apply=True, now=NOW)
+
+    assert payload["overall_status"] == "ready"
+    assert payload["conflict_count"] == 0
+    assert payload["duplicate_rows_seen"] == 1
+    assert payload["accepted_ledger_records"] == 1
+    assert payload["control_contract"]["identity_material_excludes_storage_location"] is True

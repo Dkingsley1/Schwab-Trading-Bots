@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import sys
 from pathlib import Path
@@ -20,7 +21,52 @@ DEFAULT_OUT_PATH = PROJECT_ROOT / "governance" / "health" / "artifact_freshness_
 
 
 def _artifact_contract(project_root: Path) -> dict[str, dict[str, Any]]:
-    return {
+    contract = {
+        "bot_organization_control": {
+            "path": project_root / "governance" / "health" / "bot_organization_latest.json",
+            "max_age_minutes": 24.0 * 60.0,
+            "required": True,
+            "refresh_command": "./scripts/ops/opsctl.sh bot-organization --json",
+        },
+        "bot_profitability_scalability_control": {
+            "path": project_root
+            / "governance"
+            / "health"
+            / "bot_profitability_scalability_latest.json",
+            "max_age_minutes": 120.0,
+            "required": True,
+            "refresh_command": "./scripts/ops/opsctl.sh bot-profitability-scalability --json",
+        },
+        "master_grandmaster_evidence_v2": {
+            "path": project_root / "governance" / "health" / "master_grandmaster_evidence_v2_latest.json",
+            "max_age_minutes": 120.0,
+            "required": True,
+            "refresh_command": "./scripts/ops/opsctl.sh master-grandmaster-evidence --json",
+        },
+        "control_surface_ownership": {
+            "path": project_root / "governance" / "health" / "control_surface_ownership_latest.json",
+            "max_age_minutes": 60.0,
+            "required": True,
+            "refresh_command": "./scripts/ops/opsctl.sh control-surface-ownership --json",
+        },
+        "independent_runtime_monitor": {
+            "path": project_root / "governance" / "health" / "independent_runtime_monitor_latest.json",
+            "max_age_minutes": 10.0,
+            "required": True,
+            "refresh_command": "./scripts/ops/opsctl.sh independent-runtime-monitor --json",
+        },
+        "production_resilience_control": {
+            "path": project_root / "governance" / "health" / "production_resilience_control_latest.json",
+            "max_age_minutes": 30.0,
+            "required": True,
+            "refresh_command": "./scripts/ops/opsctl.sh production-resilience --json",
+        },
+        "soak_reliability_sentinel": {
+            "path": project_root / "governance" / "health" / "soak_reliability_sentinel_latest.json",
+            "max_age_minutes": 20.0,
+            "required": True,
+            "refresh_command": "./scripts/ops/soak_reliability_sentinel.py --apply --json",
+        },
         "session_ready": {
             "path": project_root / "governance" / "health" / "session_ready_latest.json",
             "max_age_minutes": 15.0,
@@ -64,6 +110,23 @@ def _artifact_contract(project_root: Path) -> dict[str, dict[str, Any]]:
             "refresh_command": "./scripts/ops/opsctl.sh sentiment-report --json",
         },
     }
+    if (project_root / "config" / "collector_capability_catalog_v1.json").is_file():
+        contract["capability_materialization"] = {
+            "path": project_root
+            / "governance"
+            / "collector_capabilities"
+            / "materialized_capabilities_latest.json",
+            "max_age_minutes": 30.0,
+            "required": True,
+            "refresh_command": "./scripts/ops/opsctl.sh capability-materialization --json",
+        }
+        contract["collector_capability_control"] = {
+            "path": project_root / "governance" / "health" / "collector_capability_control_latest.json",
+            "max_age_minutes": 30.0,
+            "required": True,
+            "refresh_command": "./scripts/ops/opsctl.sh collector-capability-control --json",
+        }
+    return contract
 
 
 def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
@@ -92,6 +155,7 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
                 "max_age_minutes": float(cfg["max_age_minutes"]),
                 "stale": bool(stale),
                 "refresh_command": str(cfg["refresh_command"]),
+                "source_sha256": hashlib.sha256(path.read_bytes()).hexdigest() if exists else "",
             }
         )
 
@@ -103,6 +167,17 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
 
     recommended_actions = ordered_unique([row["refresh_command"] for row in breaches if bool(row.get("stale"))])[:8]
 
+    receipt_rows = {
+        row["name"]: {
+            "source_sha256": row["source_sha256"],
+            "age_minutes": row["age_minutes"],
+            "stale": row["stale"],
+        }
+        for row in breaches
+    }
+    receipt_sha = hashlib.sha256(
+        json.dumps(receipt_rows, ensure_ascii=True, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
     return {
         "timestamp_utc": iso_now(),
         "schema_version": 1,
@@ -114,6 +189,11 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
             "stale_optional": stale_optional,
         },
         "artifacts": breaches,
+        "evidence_epoch": {
+            "id": f"artifact-freshness:{receipt_sha[:16]}",
+            "receipt_sha256": receipt_sha,
+            "source_count": len(breaches),
+        },
         "infra_bots": ["artifact_freshness_slo", "retrain_artifact_freshness_guard", "runtime_gate_dashboard"],
         "recommended_actions": recommended_actions,
     }

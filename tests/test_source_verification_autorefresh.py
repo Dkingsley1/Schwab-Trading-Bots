@@ -166,6 +166,42 @@ def test_source_verification_autorefresh_allows_one_guarded_heavy_refresh_when_s
     assert payload["skipped_commands"][0]["reason"] == "bounded_batch_cap"
 
 
+def test_source_verification_autorefresh_routes_known_missing_schwab_endpoint_to_light_fallback(tmp_path: Path, monkeypatch) -> None:
+    _seed_runtime(tmp_path, ready=False)
+    opsctl = "/repo/scripts/ops/opsctl.sh"
+    source_payload = {
+        "ok": False,
+        "overall_status": "degraded",
+        "unverified_sources": ["schwab_symbol_news"],
+        "stale_artifacts": ["schwab_symbol_news"],
+        "degraded_artifacts": ["schwab_symbol_news"],
+        "sources": [
+            {
+                "source_id": "schwab_symbol_news",
+                "fresh": False,
+                "ok": False,
+                "evidence": {
+                    "broker_native_news_endpoint_available": False,
+                    "fallback_active": True,
+                },
+            }
+        ],
+        "recommended_refresh_commands": [
+            [opsctl, "schwab-symbol-news-sync", "--max-runtime-seconds", "180", "--json"],
+            [opsctl, "source-verification", "--json"],
+        ],
+    }
+    monkeypatch.setattr(src.report_src, "build_source_verification_payload", lambda _root: source_payload)
+
+    payload = src.build_payload(tmp_path, apply=False, max_commands=1, timeout_seconds=180, max_heavy_commands=0)
+
+    command = payload["selected_commands"][0]
+    assert "--public-fallback-only" in command
+    assert command[command.index("--max-runtime-seconds") + 1] == "30"
+    assert payload["selected_command_policies"][0]["public_schwab_fallback"] is True
+    assert payload["selected_command_policies"][0]["heavy"] is False
+
+
 def test_source_verification_autorefresh_refreshes_macro_dependencies_before_crosscheck(tmp_path: Path, monkeypatch) -> None:
     _seed_runtime(tmp_path, ready=True)
     opsctl = "/repo/scripts/ops/opsctl.sh"

@@ -80,6 +80,48 @@ def _artifact_config(project_root: Path) -> Dict[str, Dict[str, Any]]:
             "max_age_minutes": _days_to_minutes(2.0),
             "required": False,
         },
+        "bot_organization_control": {
+            "paths": [project_root / "governance" / "health" / "bot_organization_latest.json"],
+            "max_age_minutes": _days_to_minutes(1.0),
+            "required": True,
+        },
+        "collector_capability_control": {
+            "paths": [
+                project_root / "governance" / "health" / "collector_capability_control_latest.json"
+            ],
+            "max_age_minutes": 30.0,
+            "required": False,
+        },
+        "capability_materialization": {
+            "paths": [
+                project_root
+                / "governance"
+                / "collector_capabilities"
+                / "materialized_capabilities_latest.json"
+            ],
+            "max_age_minutes": 30.0,
+            "required": True,
+        },
+        "bot_profitability_scalability_control": {
+            "paths": [
+                project_root
+                / "governance"
+                / "health"
+                / "bot_profitability_scalability_latest.json"
+            ],
+            "max_age_minutes": 120.0,
+            "required": True,
+        },
+        "master_grandmaster_evidence_v2": {
+            "paths": [
+                project_root
+                / "governance"
+                / "health"
+                / "master_grandmaster_evidence_v2_latest.json"
+            ],
+            "max_age_minutes": 120.0,
+            "required": True,
+        },
         "training_report": {
             "paths": [project_root / "governance" / "health" / "training_report_latest.json"],
             "max_age_minutes": _days_to_minutes(3.0),
@@ -207,6 +249,11 @@ def _artifact_config(project_root: Path) -> Dict[str, Dict[str, Any]]:
         },
         "teacher_quality_guard": {
             "paths": [project_root / "governance" / "distillation" / "teacher_quality_latest.json"],
+            "max_age_minutes": _days_to_minutes(2.0),
+            "required": False,
+        },
+        "strategy_generation_control": {
+            "paths": [project_root / "governance" / "health" / "strategy_generation_control_latest.json"],
             "max_age_minutes": _days_to_minutes(2.0),
             "required": False,
         },
@@ -522,6 +569,17 @@ def _artifact_summary(name: str, payload: Dict[str, Any]) -> Dict[str, Any]:
     if name == "daily_auto_verify":
         return {
             "failed_checks": payload.get("failed_checks") if isinstance(payload.get("failed_checks"), list) else [],
+            "operational_ok": bool(payload.get("operational_ok", payload.get("ok", False))),
+            "operational_failed_checks": (
+                payload.get("operational_failed_checks")
+                if isinstance(payload.get("operational_failed_checks"), list)
+                else []
+            ),
+            "evidence_debt_checks": (
+                payload.get("evidence_debt_checks")
+                if isinstance(payload.get("evidence_debt_checks"), list)
+                else []
+            ),
             "completed_checks": int(payload.get("completed_checks", 0) or 0),
         }
     if name == "data_source_divergence":
@@ -547,6 +605,8 @@ def _artifact_summary(name: str, payload: Dict[str, Any]) -> Dict[str, Any]:
     if name == "snapshot_coverage":
         return {
             "ok": bool(payload.get("ok", False)),
+            "operational_ok": bool(payload.get("operational_ok", payload.get("ok", False))),
+            "evidence_ready": bool(payload.get("evidence_ready", payload.get("ok", False))),
             "coverage_ratio": float(payload.get("coverage_ratio", 0.0) or 0.0),
             "missing_file_count": int(payload.get("missing_file_count", 0) or 0),
         }
@@ -952,6 +1012,28 @@ def _artifact_summary(name: str, payload: Dict[str, Any]) -> Dict[str, Any]:
             "qualified_teacher_count": int(summary.get("qualified_teacher_count", 0) or 0),
             "elite_teacher_count": int(summary.get("elite_teacher_count", 0) or 0),
         }
+    if name == "strategy_generation_control":
+        summary = payload.get("summary") if isinstance(payload.get("summary"), dict) else {}
+        resource = payload.get("resource_envelope") if isinstance(payload.get("resource_envelope"), dict) else {}
+        hardening = payload.get("hardening") if isinstance(payload.get("hardening"), dict) else {}
+        return {
+            "overall_status": str(payload.get("overall_status", "") or ""),
+            "strategy_generation": int(payload.get("strategy_generation", 0) or 0),
+            "eligible_parent_count": int(summary.get("eligible_parent_count", 0) or 0),
+            "active_offspring_count": int(summary.get("active_offspring_count", 0) or 0),
+            "retained_offspring_count": int(summary.get("retained_offspring_count", 0) or 0),
+            "stale_training_count": int(summary.get("stale_training_count", 0) or 0),
+            "execution_authority_count": int(summary.get("execution_authority_count", 0) or 0),
+            "candidate_integrity_violation_count": int(summary.get("candidate_integrity_violation_count", 0) or 0),
+            "event_chain_ok": bool((payload.get("event_chain") or {}).get("ok", False)),
+            "signed_event_chain": bool(hardening.get("signed_event_chain", False)),
+            "hardening_grade": str(hardening.get("grade", "") or ""),
+            "max_active_offspring": int(resource.get("max_active_offspring", 0) or 0),
+            "max_retained_offspring": int(resource.get("max_retained_offspring", 0) or 0),
+            "max_lineage_depth": int(resource.get("max_lineage_depth", 0) or 0),
+            "max_concurrent_training_jobs": int(resource.get("max_concurrent_training_jobs", 0) or 0),
+            "candidate_artifact_bytes": int(resource.get("candidate_artifact_bytes", 0) or 0),
+        }
     if name == "bot_quality_autopilot":
         teacher_summary = payload.get("teacher_summary") if isinstance(payload.get("teacher_summary"), dict) else {}
         return {
@@ -1002,6 +1084,164 @@ def _artifact_summary(name: str, payload: Dict[str, Any]) -> Dict[str, Any]:
             "overall_status": str(payload.get("overall_status", "") or ""),
             "stale_required": int(summary.get("stale_required", 0) or 0),
             "stale_optional": int(summary.get("stale_optional", 0) or 0),
+        }
+    if name == "bot_organization_control":
+        return {
+            "overall_status": str(payload.get("overall_status", "") or ""),
+            "grade": str(payload.get("grade", "") or ""),
+            "structural_grade": str(payload.get("structural_grade", "") or ""),
+            "registry_bot_count": int(payload.get("registry_bot_count", 0) or 0),
+            "organized_bot_count": int(payload.get("organized_bot_count", 0) or 0),
+            "organization_coverage_ratio": float(payload.get("organization_coverage_ratio", 0.0) or 0.0),
+            "high_confidence_ratio": float(payload.get("high_confidence_ratio", 0.0) or 0.0),
+            "regime_quality_grade": str(payload.get("regime_quality_grade", "") or ""),
+            "regime_axis_coverage_ratio": float(
+                payload.get("regime_axis_coverage_ratio", 0.0) or 0.0
+            ),
+            "regime_axis_specificity_ratio": float(
+                payload.get("regime_axis_specificity_ratio", 0.0) or 0.0
+            ),
+            "regime_review_count": int(payload.get("regime_review_count", 0) or 0),
+            "regime_scenario_profile_count": int(
+                payload.get("regime_scenario_profile_count", 0) or 0
+            ),
+            "regime_scenario_count": int(payload.get("regime_scenario_count", 0) or 0),
+            "regime_scenario_review_count": int(
+                payload.get("regime_scenario_review_count", 0) or 0
+            ),
+            "invalid_regime_scenario_profile_count": int(
+                payload.get("invalid_regime_scenario_profile_count", 0) or 0
+            ),
+            "overbroad_regime_profile_count": int(
+                payload.get("overbroad_regime_profile_count", 0) or 0
+            ),
+            "unknown_regime_profile_count": int(
+                payload.get("unknown_regime_profile_count", 0) or 0
+            ),
+            "regime_metadata_access_grade": str(
+                payload.get("regime_metadata_access_grade", "") or ""
+            ),
+            "regime_metadata_access_ready_count": int(
+                payload.get("regime_metadata_access_ready_count", 0) or 0
+            ),
+            "regime_metadata_access_ratio": float(
+                payload.get("regime_metadata_access_ratio", 0.0) or 0.0
+            ),
+            "regime_metadata_context_required_count": int(
+                payload.get("regime_metadata_context_required_count", 0) or 0
+            ),
+            "regime_metadata_access_error_count": int(
+                payload.get("regime_metadata_access_error_count", 0) or 0
+            ),
+            "review_queue_count": int(payload.get("review_queue_count", 0) or 0),
+            "hard_limit_shadow_cell_count": len(payload.get("hard_limit_shadow_cells") or []),
+        }
+    if name == "capability_materialization":
+        capabilities = [
+            row for row in payload.get("capabilities", []) if isinstance(row, dict)
+        ]
+        calendar = payload.get("calendar_materialization") if isinstance(payload.get("calendar_materialization"), dict) else {}
+        derivatives = payload.get("derivative_contract_materialization") if isinstance(payload.get("derivative_contract_materialization"), dict) else {}
+        stress = payload.get("stress_scenario_materialization") if isinstance(payload.get("stress_scenario_materialization"), dict) else {}
+        return {
+            "overall_status": str(payload.get("overall_status", "") or ""),
+            "live_promotion_ready": bool(payload.get("live_promotion_ready", False)),
+            "ready_capability_count": sum(
+                1
+                for row in capabilities
+                if row.get("usable") is True
+                and str(row.get("proof_semantics") or "") == "direct"
+                and bool(str(row.get("proof_receipt_sha256") or ""))
+            ),
+            "capability_count": len(capabilities),
+            "contract_count": int(derivatives.get("contract_count", 0) or 0),
+            "stress_scenario_count": int(stress.get("scenario_count", 0) or 0),
+            "exchange_calendars_version": str(calendar.get("library_version", "") or ""),
+        }
+    if name == "collector_capability_control":
+        summary = payload.get("summary") if isinstance(payload.get("summary"), dict) else {}
+        return {
+            "overall_status": str(payload.get("overall_status", "") or ""),
+            "paper_soak_ready": bool(payload.get("paper_soak_ready", False)),
+            "live_promotion_ready": bool(payload.get("live_promotion_ready", False)),
+            "plane_count": int(summary.get("plane_count", 0) or 0),
+            "capability_count": int(summary.get("capability_count", 0) or 0),
+            "bot_binding_count": int(summary.get("bot_binding_count", 0) or 0),
+            "assignment_count": int(summary.get("assignment_count", 0) or 0),
+            "subscription_profile_count": int(summary.get("subscription_profile_count", 0) or 0),
+            "unmapped_current_collector_count": int(
+                summary.get("unmapped_current_collector_count", 0) or 0
+            ),
+            "coverage_gap_count": int(((payload.get("coverage_debt") or {}).get("gap_count", 0) or 0)),
+            "candidate_blocking_gap_count": int(
+                ((payload.get("coverage_debt") or {}).get("candidate_blocking_gap_count", 0) or 0)
+            ),
+            "optional_gap_count": int(
+                ((payload.get("coverage_debt") or {}).get("optional_gap_count", 0) or 0)
+            ),
+            "required_capability_usable_ratio": float(
+                summary.get("required_capability_usable_ratio", 0.0) or 0.0
+            ),
+            "required_capability_redundancy_ratio": float(
+                summary.get("required_capability_redundancy_ratio", 0.0) or 0.0
+            ),
+            "full_catalog_coverage_ready": bool(summary.get("full_catalog_coverage_ready", False)),
+        }
+    if name == "bot_profitability_scalability_control":
+        return {
+            "overall_status": str(payload.get("overall_status", "") or ""),
+            "control_grade": str(payload.get("control_grade", "") or ""),
+            "evidence_grade": str(
+                payload.get("economic_and_scale_evidence_grade", "") or ""
+            ),
+            "implemented_control_count": int(
+                payload.get("implemented_control_count", 0) or 0
+            ),
+            "evidence_ready_control_count": int(
+                payload.get("evidence_ready_control_count", 0) or 0
+            ),
+            "catalog_bot_count": int(payload.get("catalog_bot_count", 0) or 0),
+            "candidate_observed_bot_count": int(
+                payload.get("candidate_observed_bot_count", 0) or 0
+            ),
+            "learned_preference_bot_count": int(
+                payload.get("learned_preference_bot_count", 0) or 0
+            ),
+            "ranked_bot_count": int(payload.get("ranked_bot_count", 0) or 0),
+            "capacity_ready_bot_count": int(
+                payload.get("capacity_ready_bot_count", 0) or 0
+            ),
+            "planned_active_bot_count": int(
+                payload.get("planned_active_bot_count", 0) or 0
+            ),
+            "live_allocation_ready": bool(payload.get("live_allocation_ready", False)),
+            "evidence_debt_count": len(payload.get("evidence_debt") or []),
+        }
+    if name == "master_grandmaster_evidence_v2":
+        grand = payload.get("grand_master") if isinstance(payload.get("grand_master"), dict) else {}
+        summary = (
+            payload.get("sleeve_master_summary")
+            if isinstance(payload.get("sleeve_master_summary"), dict)
+            else {}
+        )
+        return {
+            "overall_status": str(payload.get("overall_status", "") or ""),
+            "evidence_grade": str(payload.get("grade", "") or ""),
+            "structural_grade": str(payload.get("structural_grade", "") or ""),
+            "paper_coordination_ready": bool(payload.get("paper_coordination_ready", False)),
+            "human_live_review_evidence_ready": bool(
+                payload.get("human_live_review_evidence_ready", False)
+            ),
+            "automatic_live_promotion_allowed": bool(
+                grand.get("automatic_live_promotion_allowed", False)
+            ),
+            "sleeve_master_count": int(payload.get("sleeve_master_count", 0) or 0),
+            "organized_bot_count": int(payload.get("organized_bot_count", 0) or 0),
+            "master_status_counts": summary.get("status_counts") or {},
+            "master_grade_counts": summary.get("grade_counts") or {},
+            "operational_holds": payload.get("operational_holds") or [],
+            "promotion_blockers": payload.get("promotion_blockers") or [],
+            "recommended_posture": str(grand.get("recommended_posture", "") or ""),
         }
     if name == "runtime_snapshot_cache_control":
         cache = payload.get("cache_health") if isinstance(payload.get("cache_health"), dict) else {}
@@ -1063,6 +1303,7 @@ def _artifact_summary(name: str, payload: Dict[str, Any]) -> Dict[str, Any]:
         bench = payload.get("bench") if isinstance(payload.get("bench"), dict) else {}
         return {
             "overall_status": str(payload.get("overall_status", "") or ""),
+            "operational_ready": bool(payload.get("operational_ready", payload.get("ok", False))),
             "bench_depth": int(bench.get("bench_depth", 0) or 0),
             "active_supportable_bots": int(bench.get("active_supportable_bots", 0) or 0),
         }
@@ -1191,9 +1432,31 @@ _DEGRADED_ATTENTION = {
     "ingestion_storage_governor_critical",
     "sql_primary_route_drift",
     "storage_split_brain_needs_review",
+    "master_grandmaster_evidence_v2_not_ok",
+    "bot_profitability_scalability_control_not_ok",
 }
 
 _ATTENTION_OWNER_ACTIONS: dict[str, dict[str, Any]] = {
+    "master_grandmaster_evidence_v2_not_ok": {
+        "owner": "master_grandmaster_evidence_v2",
+        "command": [
+            "./scripts/ops/opsctl.sh",
+            "master-grandmaster-evidence",
+            "--json",
+        ],
+        "timeout_seconds": 120,
+        "success_condition": "master_grandmaster_evidence_v2_latest.ok is true and integrity_blockers is empty",
+    },
+    "bot_profitability_scalability_control_not_ok": {
+        "owner": "bot_profitability_scalability_control",
+        "command": [
+            "./scripts/ops/opsctl.sh",
+            "bot-profitability-scalability",
+            "--json",
+        ],
+        "timeout_seconds": 180,
+        "success_condition": "all 16 controls are implemented and structural blockers are empty; economic evidence debt remains separately visible",
+    },
     "daily_auto_verify_not_ok": {
         "owner": "daily_verify_auto_remediation_bot",
         "command": ["./scripts/ops/opsctl.sh", "daily-verify-remediation", "--apply", "--json"],
@@ -1342,7 +1605,7 @@ def _dashboard_soak_context(project_root: Path) -> dict[str, Any]:
     operational = health_fast.get("operational_readiness") if isinstance(health_fast.get("operational_readiness"), dict) else {}
     guarded_paper = operational.get("guarded_paper") if isinstance(operational.get("guarded_paper"), dict) else {}
     guarded_health_ready = bool(
-        health_status == "guarded_ready"
+        health_status in {"ready", "ok", "healthy", "guarded_ready"}
         and guarded_paper.get("ok", False)
         and str(guarded_paper.get("status") or "").strip().lower() == "ready"
     )
@@ -2234,7 +2497,14 @@ def build_dashboard(project_root: Path = PROJECT_ROOT) -> Dict[str, Any]:
         elif bool(cfg["required"]) and stale:
             attention.append(f"{name}_stale")
             severity = max(severity, 2)
-        elif ok_value is False and name in {"session_ready", "health_gates", "retrain_artifact_freshness", "sql_link_service"}:
+        elif ok_value is False and name in {
+            "session_ready",
+            "health_gates",
+            "retrain_artifact_freshness",
+            "sql_link_service",
+            "master_grandmaster_evidence_v2",
+            "bot_profitability_scalability_control",
+        }:
             attention.append(f"{name}_not_ok")
             severity = max(severity, 2)
 
@@ -2282,7 +2552,9 @@ def build_dashboard(project_root: Path = PROJECT_ROOT) -> Dict[str, Any]:
     if artifacts.get("daily_auto_verify", {}).get("exists"):
         artifacts["daily_auto_verify"]["summary"]["resolved_failed_checks"] = resolved_daily_verify
         artifacts["daily_auto_verify"]["summary"]["effective_failed_checks"] = unresolved_daily_verify
-    if artifacts.get("daily_auto_verify", {}).get("ok") is False and unresolved_daily_verify:
+    daily_summary = artifacts.get("daily_auto_verify", {}).get("summary", {})
+    daily_operational_ok = bool(daily_summary.get("operational_ok", False))
+    if artifacts.get("daily_auto_verify", {}).get("ok") is False and unresolved_daily_verify and not daily_operational_ok:
         if not (
             set(unresolved_daily_verify) == {"promotion_quality_gate"}
             and artifacts.get("promotion_readiness", {}).get("summary", {}).get("promote_ok") is False
@@ -2394,6 +2666,11 @@ def build_dashboard(project_root: Path = PROJECT_ROOT) -> Dict[str, Any]:
     ):
         summary = artifacts.get(name, {}).get("summary", {})
         status = str((summary or {}).get("overall_status", "") or "")
+        if name == "roster_resilience_planner" and bool(summary.get("operational_ready", False)):
+            if status not in {"ready", "ok"}:
+                attention.append("roster_resilience_planner_needs_work")
+                severity = max(severity, 1)
+            continue
         if status == "blocked":
             attention.append(f"{name}_blocked")
             severity = max(severity, 2)
@@ -2508,6 +2785,8 @@ def build_dashboard(project_root: Path = PROJECT_ROOT) -> Dict[str, Any]:
         "blackstart_recovery": artifacts.get("blackstart_recovery", {}).get("summary", {}),
         "sleeve_isolation_guard": artifacts.get("sleeve_isolation_guard", {}).get("summary", {}),
         "artifact_freshness_slo": artifacts.get("artifact_freshness_slo", {}).get("summary", {}),
+        "bot_profitability_scalability_control": artifacts.get("bot_profitability_scalability_control", {}).get("summary", {}),
+        "master_grandmaster_evidence_v2": artifacts.get("master_grandmaster_evidence_v2", {}).get("summary", {}),
         "runtime_snapshot_cache_control": artifacts.get("runtime_snapshot_cache_control", {}).get("summary", {}),
         "remote_alert_control": artifacts.get("remote_alert_control", {}).get("summary", {}),
         "coordination_state_control": artifacts.get("coordination_state_control", {}).get("summary", {}),
@@ -2523,11 +2802,15 @@ def build_dashboard(project_root: Path = PROJECT_ROOT) -> Dict[str, Any]:
     storage_contract = _artifact_contract(artifacts, "ingestion_storage_control")
     resilience_contract = _artifact_contract(artifacts, "storage_resilience_control")
     platform_contract = _artifact_contract(artifacts, "platform_control_plane")
+    overall_status = status_map.get(severity, "unknown")
+    overall_ok = severity == 0
     payload = {
         "timestamp_utc": now.isoformat(),
+        "overall_status": overall_status,
+        "ok": overall_ok,
         "overall": {
-            "status": status_map.get(severity, "unknown"),
-            "ok": severity == 0,
+            "status": overall_status,
+            "ok": overall_ok,
             "attention": attention,
             "raw_attention": raw_attention,
             "forensic_attention": forensic_attention,

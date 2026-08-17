@@ -9,6 +9,7 @@ import math
 import os
 import re
 import sys
+import tempfile
 import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
 from pathlib import Path
@@ -20,14 +21,14 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from core.collector_transport import fetch_json, fetch_text
-from core.market_context_features import load_latest_external_context
-from core.fx_twelve_data_guard import (
+from core.collector_transport import fetch_json, fetch_text  # noqa: E402
+from core.market_context_features import load_latest_external_context  # noqa: E402
+from core.fx_twelve_data_guard import (  # noqa: E402
     classify_twelve_data_failure,
     mark_twelve_data_cooldown,
     twelve_data_cooldown_status,
 )
-from scripts import ops_data_plane
+from scripts import ops_data_plane  # noqa: E402
 
 
 ECB_FX_HIST_90D_URL = "https://www.ecb.europa.eu/stats/eurofxref/eurofxref-hist-90d.xml"
@@ -89,7 +90,16 @@ FED_H10_PAIR_MARKERS = {
 
 def _write_json(path: Path, payload: Mapping[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(dict(payload), ensure_ascii=True, indent=2) + "\n", encoding="utf-8")
+    fd, raw_temp = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
+    temp_path = Path(raw_temp)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(json.dumps(dict(payload), ensure_ascii=True, indent=2) + "\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temp_path, path)
+    finally:
+        temp_path.unlink(missing_ok=True)
 
 
 def _safe_load_json(path: Path) -> dict[str, Any]:
@@ -122,6 +132,24 @@ def _file_age_seconds(path: Path, now: datetime) -> float:
     except Exception:
         return float("inf")
     return max(0.0, (now - mtime).total_seconds())
+
+
+def _fx_payload_reusable(path: Path) -> bool:
+    payload = _safe_load_json(path)
+    derived = payload.get("derived")
+    if not str(payload.get("timestamp_utc") or "").strip() or not isinstance(derived, Mapping):
+        return False
+    pair_values = derived.get("pair_values")
+    source_contracts = (payload.get("collection_contract") or {}).get("source_contracts")
+    return bool(isinstance(pair_values, Mapping) and pair_values and isinstance(source_contracts, Mapping) and source_contracts)
+
+
+def _pressure_min_interval_active(external_path: Path, *, min_interval: int, now: datetime) -> bool:
+    return bool(
+        min_interval > 0
+        and _fx_payload_reusable(external_path)
+        and _file_age_seconds(external_path, now) < min_interval
+    )
 
 
 def _collector_pressure_contract(now: datetime) -> dict[str, Any]:
@@ -202,18 +230,97 @@ def _pressure_skip_health(
 ) -> dict[str, Any]:
     previous_health = _safe_load_json(health_path)
     previous_payload = _safe_load_json(external_path)
-    ok = bool(previous_payload or previous_health.get("ok", False))
+    previous_derived = (
+        previous_payload.get("derived")
+        if isinstance(previous_payload.get("derived"), Mapping)
+        else {}
+    )
+    previous_global_features = (
+        previous_derived.get("global_features")
+        if isinstance(previous_derived.get("global_features"), Mapping)
+        else {}
+    )
+    previous_sources = (
+        previous_health.get("sources")
+        if isinstance(previous_health.get("sources"), Mapping)
+        else previous_payload.get("sources")
+        if isinstance(previous_payload.get("sources"), Mapping)
+        else {}
+    )
+    previous_pair_values = (
+        previous_derived.get("pair_values")
+        if isinstance(previous_derived.get("pair_values"), Mapping)
+        else {}
+    )
+    previous_market = (
+        previous_derived.get("latest_market")
+        if isinstance(previous_derived.get("latest_market"), Mapping)
+        else {}
+    )
+    previous_reconciliation = (
+        previous_derived.get("canonical_reconciliation")
+        if isinstance(previous_derived.get("canonical_reconciliation"), Mapping)
+        else {}
+    )
+    previous_contract = (
+        previous_payload.get("collection_contract")
+        if isinstance(previous_payload.get("collection_contract"), Mapping)
+        else {}
+    )
+    ok = _fx_payload_reusable(external_path)
     return {
+        **previous_health,
         "timestamp_utc": now.isoformat(),
         "ok": ok,
         "skipped": True,
         "skip_reason": reason,
+        "serving_last_good_snapshot": ok,
+        "last_good_snapshot_timestamp_utc": str(previous_payload.get("timestamp_utc") or ""),
         "pressure_contract": dict(contract),
         "previous_health_age_seconds": round(_file_age_seconds(health_path, now), 3),
         "previous_payload_age_seconds": round(_file_age_seconds(external_path, now), 3),
-        "proxy_symbols_observed": previous_health.get("proxy_symbols_observed", 0),
-        "sources": previous_health.get("sources", {}),
-        "policy": "reuse_latest_fx_context_when_pressure_gate_blocks_redundant_collection",
+        "source_count": int(previous_health.get("source_count", len(previous_sources)) or len(previous_sources)),
+        "ok_source_count": int(
+            previous_health.get(
+                "ok_source_count",
+                sum(1 for row in previous_sources.values() if isinstance(row, Mapping) and bool(row.get("ok", False))),
+            )
+            or 0
+        ),
+        "official_pairs": int(previous_health.get("official_pairs", len(previous_pair_values)) or len(previous_pair_values)),
+        "proxy_symbols_observed": int(
+            previous_health.get("proxy_symbols_observed", len(previous_market)) or len(previous_market)
+        ),
+        "proxy_agreement_norm": round(
+            _to_float(
+                previous_health.get(
+                    "proxy_agreement_norm",
+                    previous_global_features.get("fx_proxy_agreement_norm"),
+                ),
+                0.0,
+            ),
+            6,
+        ),
+        "direct_forex_execution_supported": bool(
+            previous_health.get("direct_forex_execution_supported", False)
+        ),
+        "direct_forex_execution_reason": str(
+            previous_health.get("direct_forex_execution_reason")
+            or "schwab_official_api_forex_unverified"
+        ),
+        "sources": dict(previous_sources),
+        "canonical_pairs": int(
+            previous_health.get("canonical_pairs", len(previous_reconciliation))
+            or len(previous_reconciliation)
+        ),
+        "source_contracts": dict(
+            previous_health.get("source_contracts")
+            if isinstance(previous_health.get("source_contracts"), Mapping)
+            else previous_contract.get("source_contracts")
+            if isinstance(previous_contract.get("source_contracts"), Mapping)
+            else {}
+        ),
+        "policy": "serve_a_complete_valid_last_good_fx_health_contract_when_pressure_blocks_redundant_collection",
     }
 
 
@@ -800,6 +907,48 @@ def _latest_pair_history(rows: list[dict[str, Any]]) -> tuple[dict[str, float], 
     return latest, previous
 
 
+def _latest_currency_reference_history(
+    rows: list[dict[str, Any]],
+    *,
+    as_of_date: str,
+) -> tuple[dict[str, dict[str, Any]], dict[str, float], list[str]]:
+    eligible = [row for row in rows if str(row.get("date") or "") <= str(as_of_date)]
+    future_dates = sorted(
+        str(row.get("date") or "")
+        for row in rows
+        if str(row.get("date") or "") > str(as_of_date)
+    )
+    if not eligible:
+        return {}, {}, future_dates
+    latest = eligible[-1]
+    previous = eligible[-2] if len(eligible) >= 2 else {}
+    latest_rates = latest.get("rates") if isinstance(latest.get("rates"), Mapping) else {}
+    previous_rates = previous.get("rates") if isinstance(previous.get("rates"), Mapping) else {}
+    reference_rates: dict[str, dict[str, Any]] = {
+        "EUR": {
+            "date": str(latest.get("date") or ""),
+            "units_per_eur": 1.0,
+            "source": "European Central Bank reference rates",
+        }
+    }
+    changes: dict[str, float] = {"EUR": 0.0}
+    for currency, raw_value in latest_rates.items():
+        value = _to_float(raw_value, math.nan)
+        if not math.isfinite(value) or value <= 0.0:
+            continue
+        token = str(currency or "").strip().upper()
+        if not token:
+            continue
+        reference_rates[token] = {
+            "date": str(latest.get("date") or ""),
+            "units_per_eur": float(value),
+            "source": "European Central Bank reference rates",
+        }
+        prior = _to_float(previous_rates.get(token), math.nan)
+        changes[token] = _pct_change(value, prior) if math.isfinite(prior) and prior > 0.0 else 0.0
+    return reference_rates, changes, future_dates
+
+
 def _latest_market_snapshot() -> dict[str, dict[str, float]]:
     snapshot = load_latest_external_context(PROJECT_ROOT, "market_crypto_correlation")
     derived = snapshot.get("derived") if isinstance(snapshot.get("derived"), Mapping) else {}
@@ -1005,7 +1154,15 @@ def collect_fx_market_context(*, timeout: float = 20.0) -> tuple[dict[str, Any],
     except (HTTPError, URLError, RuntimeError, TimeoutError, ET.ParseError, OSError) as exc:
         source_status["ecb"]["error"] = str(exc)
 
-    latest_pairs, previous_pairs = _latest_pair_history(ecb_rows)
+    currency_reference_rates, currency_reference_changes, ecb_future_dates = _latest_currency_reference_history(
+        ecb_rows,
+        as_of_date=now.date().isoformat(),
+    )
+    ecb_rows_as_of = [row for row in ecb_rows if str(row.get("date") or "") <= now.date().isoformat()]
+    source_status["ecb"]["future_observations_excluded"] = ecb_future_dates
+    source_status["ecb"]["future_observation_selected"] = False
+    source_status["ecb"]["currency_count"] = len(currency_reference_rates)
+    latest_pairs, previous_pairs = _latest_pair_history(ecb_rows_as_of)
     ecb_latest_pairs = dict(latest_pairs)
     pair_changes = {pair: _pct_change(latest_pairs.get(pair), previous_pairs.get(pair)) for pair in PAIR_SYMBOLS}
 
@@ -1254,6 +1411,10 @@ def collect_fx_market_context(*, timeout: float = 20.0) -> tuple[dict[str, Any],
             "symbol_features": symbol_features,
             "pair_values": {key: round(_to_float(value), 6) for key, value in latest_pairs.items()},
             "pair_changes": {key: round(_to_float(value), 6) for key, value in pair_changes.items()},
+            "currency_reference_rates": currency_reference_rates,
+            "currency_reference_changes": {
+                key: round(_to_float(value), 8) for key, value in currency_reference_changes.items()
+            },
             "pair_intraday_quotes": {
                 key: {
                     "ok": bool(value.get("ok")),
@@ -1332,8 +1493,7 @@ def main() -> int:
     lock_handle = None
     if bool(pressure_contract.get("active", False)):
         min_interval = int(pressure_contract.get("min_interval_seconds") or 0)
-        latest_age = _file_age_seconds(health_path, now)
-        if min_interval > 0 and health_path.exists() and latest_age < min_interval:
+        if _pressure_min_interval_active(external_path, min_interval=min_interval, now=now):
             health = _pressure_skip_health(
                 reason="pressure_min_interval_active",
                 contract=pressure_contract,

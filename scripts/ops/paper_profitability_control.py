@@ -1213,7 +1213,12 @@ def _financial_grade_basis_contract(
             continue
         data_status = str(row.get("data_status") or "").strip().lower()
         current_day_available = row.get("current_day_available")
-        stale_latest = data_status in {"latest_available", "no_data"}
+        financial_grade_eligible = row.get("financial_grade_eligible")
+        stale_latest = bool(
+            data_status in {"latest_available", "no_data", "current_live_no_fills"}
+            or bool(row.get("carried_forward", False))
+            or financial_grade_eligible is False
+        )
         if stale_latest:
             excluded.append(row)
             continue
@@ -1222,7 +1227,7 @@ def _financial_grade_basis_contract(
             continue
         gradeable.append(row)
 
-    basis_rows = gradeable if gradeable else [row for row in sleeves if isinstance(row, dict)]
+    basis_rows = gradeable
     net_sum = sum(_safe_float(row.get("ending_net_pnl_total"), 0.0) for row in basis_rows)
     realized_sum = sum(_safe_float(row.get("ending_realized_pnl_total"), 0.0) for row in basis_rows)
     unrealized_sum = sum(_safe_float(row.get("ending_unrealized_pnl_total"), 0.0) for row in basis_rows)
@@ -1237,7 +1242,7 @@ def _financial_grade_basis_contract(
         "basis": (
             "fresh_current_exposure_excluding_stale_latest_available"
             if gradeable
-            else ("fallback_all_sleeves" if evidence_ready else "insufficient_execution_evidence")
+            else "insufficient_fresh_execution_evidence"
         ),
         "evidence_ready": evidence_ready,
         "gradeable_sleeve_count": len(basis_rows),
@@ -1272,7 +1277,7 @@ def _financial_grade_basis_contract(
             }
             for row in excluded[:12]
         ],
-        "raw_grade_rule": "raw financial grade uses fresh/current exposure rows; stale latest_available rows stay visible as stale debt",
+        "raw_grade_rule": "raw current financial grade uses only explicit fresh grade-eligible rows; carried inventory remains visible as lifetime debt and never becomes current evidence merely because a heartbeat is fresh",
     }
 
 

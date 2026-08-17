@@ -48,6 +48,7 @@ SHADOW_WATCHDOG_SCRIPT = PROJECT_ROOT / "scripts" / "shadow_watchdog.py"
 HEAVY_FEED_GUARD_SCRIPT = PROJECT_ROOT / "scripts" / "ops" / "live_feed_heavy_guarded.sh"
 REQUIRED_COLLECTOR_REFRESH_NAMES = {
     "official_macro_context",
+    "central_bank_liquidity_context",
     "market_micro_context",
     "crypto_market_context",
     "fx_market_context",
@@ -185,8 +186,8 @@ def _required_collector_failures(payload: dict[str, Any]) -> list[str]:
 
 def _required_collector_refresh_command(project_root: Path, collector_name: str) -> list[str]:
     name = str(collector_name or "").strip()
-    if name == "official_macro_context":
-        return [str(PYTHON_BIN), str(project_root / "scripts" / "collect_official_macro_context.py"), "--json"]
+    if name in {"official_macro_context", "central_bank_liquidity_context"}:
+        return [str(project_root / "scripts" / "ops" / "opsctl.sh"), "macro-context-sync", "--json"]
     if name == "market_micro_context":
         return [
             str(PYTHON_BIN),
@@ -426,12 +427,18 @@ def build_payload(
 
     failed_checks = daily_verify.get("failed_checks") if isinstance(daily_verify.get("failed_checks"), list) else []
     paper_trade_lock_active = (project_root / "governance" / "health" / "PAPER_TRADE_LOCK.flag").exists()
+    daily_verify_operational_ok = bool(daily_verify.get("operational_ok", False))
     managed_promotion_checks = [
         str(check)
         for check in failed_checks
         if str(check) in {"promotion_packet_builder", "promotion_quality_gate"} and paper_trade_lock_active
     ]
-    actionable_failed_checks = [str(check) for check in failed_checks if str(check) not in managed_promotion_checks]
+    managed_evidence_checks = (
+        [str(check) for check in failed_checks]
+        if paper_trade_lock_active and daily_verify_operational_ok
+        else list(managed_promotion_checks)
+    )
+    actionable_failed_checks = [str(check) for check in failed_checks if str(check) not in managed_evidence_checks]
     repair_plan: list[dict[str, Any]] = []
     advisory_repair_plan: list[dict[str, Any]] = []
     operator_followups: list[str] = []
@@ -451,6 +458,16 @@ def build_payload(
             "promotion_evidence_milestone",
             "promotion packet and quality gates remain intentionally deferred while the paper-trade lock is active",
             [str(PYTHON_BIN), str(project_root / "scripts" / "promotion_quality_gate.py"), "--json"],
+            advisory=True,
+        )
+    managed_non_promotion_evidence_checks = [
+        check for check in managed_evidence_checks if check not in managed_promotion_checks
+    ]
+    if managed_non_promotion_evidence_checks:
+        add_plan(
+            "daily_verify_evidence_milestone",
+            "daily verification is operationally clear; remaining failures require naturally accumulated training evidence",
+            [str(project_root / "scripts" / "ops" / "opsctl.sh"), "daily-auto-verify", "--json"],
             advisory=True,
         )
 
@@ -701,14 +718,20 @@ def build_payload(
         timeout_sec=min(int(timeout_sec), 180),
     )
     command_validity_payload = command_validity.get("payload") if isinstance(command_validity.get("payload"), dict) else {}
+    commands_hygiene_check_failed = bool(
+        _safe_int(commands_hygiene.get("rc"), 1) != 0
+        or bool(commands_hygiene.get("timed_out", False))
+        or not commands_hygiene_payload
+    )
     if (
-        str(commands_hygiene_payload.get("overall_status") or "") in {"degraded", "blocked"}
+        commands_hygiene_check_failed
+        or str(commands_hygiene_payload.get("overall_status") or "") in {"degraded", "blocked"}
         or bool(commands_hygiene_payload.get("commands_changed", False))
         or bool(commands_hygiene_payload.get("runbook_changed", False))
     ):
         add_plan(
             "commands_hygiene",
-            "commands_md_or_runbook_drift",
+            "commands_hygiene_check_failed" if commands_hygiene_check_failed else "commands_md_or_runbook_drift",
             [
                 str(PYTHON_BIN),
                 str(COMMANDS_HYGIENE_SCRIPT),
@@ -736,7 +759,7 @@ def build_payload(
         )
     drift_status = str(system_drift.get("overall_status") or "")
     core_infra_clear = (
-        not failed_checks
+        not actionable_failed_checks
         and storage_status not in {"blocked", "degraded", "needs_work"}
         and stateful_storage_status not in {"blocked", "degraded", "needs_work"}
         and runtime_paper_failed == 0
@@ -996,6 +1019,8 @@ def build_payload(
             "daily_verify_failed_checks": len(failed_checks),
             "daily_verify_actionable_failed_checks": len(actionable_failed_checks),
             "daily_verify_managed_promotion_checks": len(managed_promotion_checks),
+            "daily_verify_managed_evidence_checks": len(managed_evidence_checks),
+            "daily_verify_operational_ok": daily_verify_operational_ok,
             "paper_trade_lock_active": paper_trade_lock_active,
             "retention_debt_gb": retention_debt_gb,
             "auth_expires_in_seconds": _safe_float(((auth_lease.get("lease_budget") or {}).get("expires_in_seconds")), 0.0),

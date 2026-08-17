@@ -1,6 +1,8 @@
 import json
 import math
+import os
 from datetime import datetime, timezone
+from pathlib import Path
 
 from scripts.collect_fx_market_context import (
     _fx_carry_proxy,
@@ -10,13 +12,98 @@ from scripts.collect_fx_market_context import (
     _canonical_pair_reconciliation,
     _configured_twelve_data_pairs,
     _parse_fed_h10_current,
+    _latest_currency_reference_history,
     _latest_pair_history,
     _normalize_pair_symbol,
     _pair_levels,
     _parse_frankfurter_latest,
+    _pressure_min_interval_active,
+    _pressure_skip_health,
     _proxy_agreement,
     _twelve_data_time_series,
 )
+
+
+def _write_fx_payload(path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(
+            {
+                "timestamp_utc": "2026-08-10T00:00:00+00:00",
+                "collection_contract": {"source_contracts": {"ecb": {"freshness_norm": 1.0}}},
+                "derived": {"pair_values": {"EURUSD": 1.1}},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+
+def test_pressure_interval_requires_a_real_payload_and_ages_from_that_payload(tmp_path: Path) -> None:
+    now = datetime.now(timezone.utc)
+    payload_path = tmp_path / "fx_market_context_latest.json"
+
+    assert _pressure_min_interval_active(payload_path, min_interval=600, now=now) is False
+    payload_path.write_text("{}", encoding="utf-8")
+    assert _pressure_min_interval_active(payload_path, min_interval=600, now=now) is False
+
+    _write_fx_payload(payload_path)
+    assert _pressure_min_interval_active(payload_path, min_interval=600, now=now) is True
+    old_epoch = now.timestamp() - 601
+    os.utime(payload_path, (old_epoch, old_epoch))
+    assert _pressure_min_interval_active(payload_path, min_interval=600, now=now) is False
+
+
+def test_pressure_skip_cannot_claim_health_when_payload_is_missing(tmp_path: Path) -> None:
+    health_path = tmp_path / "health.json"
+    health_path.write_text(json.dumps({"ok": True, "sources": {"ecb": {"ok": True}}}), encoding="utf-8")
+
+    health = _pressure_skip_health(
+        reason="pressure_single_flight_lock_active",
+        contract={"active": True},
+        external_path=tmp_path / "missing.json",
+        health_path=health_path,
+        now=datetime.now(timezone.utc),
+    )
+
+    assert health["ok"] is False
+    assert health["previous_payload_age_seconds"] > 1e100
+
+
+def test_pressure_skip_preserves_complete_last_good_health_contract(tmp_path: Path) -> None:
+    external_path = tmp_path / "fx_market_context_latest.json"
+    health_path = tmp_path / "health.json"
+    _write_fx_payload(external_path)
+    payload = json.loads(external_path.read_text(encoding="utf-8"))
+    payload["sources"] = {"ecb": {"ok": True}, "market_proxy": {"ok": True}}
+    payload["derived"].update(
+        {
+            "latest_market": {"UUP": {"last_price": 28.0}},
+            "canonical_reconciliation": {"EURUSD": {"canonical_value": 1.1}},
+            "global_features": {"fx_proxy_agreement_norm": 0.75},
+        }
+    )
+    external_path.write_text(json.dumps(payload), encoding="utf-8")
+    health_path.write_text(
+        json.dumps({"ok": True, "skipped": True, "sources": payload["sources"]}),
+        encoding="utf-8",
+    )
+
+    health = _pressure_skip_health(
+        reason="pressure_min_interval_active",
+        contract={"active": True},
+        external_path=external_path,
+        health_path=health_path,
+        now=datetime.now(timezone.utc),
+    )
+
+    assert health["ok"] is True
+    assert health["serving_last_good_snapshot"] is True
+    assert health["source_count"] == 2
+    assert health["ok_source_count"] == 2
+    assert health["official_pairs"] == 1
+    assert health["proxy_symbols_observed"] == 1
+    assert health["proxy_agreement_norm"] == 0.75
+    assert health["canonical_pairs"] == 1
 
 
 def test_pair_level_derivation():
@@ -84,6 +171,23 @@ def test_pair_history_and_proxy_agreement():
     assert checks["EURUSD_FXE"] is True
     assert checks["USDJPY_FXY"] is True
     assert checks["USD_UUP"] is True
+
+
+def test_currency_reference_history_covers_full_ecb_set_and_excludes_future_rows() -> None:
+    rows = [
+        {"date": "2026-08-13", "rates": {"USD": 1.10, "BRL": 6.0, "PLN": 4.2}},
+        {"date": "2026-08-14", "rates": {"USD": 1.11, "BRL": 6.12, "PLN": 4.16}},
+        {"date": "2026-08-16", "rates": {"USD": 9.99, "BRL": 99.0, "PLN": 99.0}},
+    ]
+
+    reference, changes, future = _latest_currency_reference_history(rows, as_of_date="2026-08-15")
+
+    assert reference["EUR"]["units_per_eur"] == 1.0
+    assert reference["BRL"]["date"] == "2026-08-14"
+    assert reference["BRL"]["units_per_eur"] == 6.12
+    assert changes["BRL"] > 0.0
+    assert changes["PLN"] < 0.0
+    assert future == ["2026-08-16"]
 
 
 def test_fx_session_state_norms_and_confirmation_helpers() -> None:

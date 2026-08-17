@@ -753,6 +753,87 @@ def test_paper_performance_report_counts_bridge_mirror_once(tmp_path, monkeypatc
     assert payload["execution_deduplication"]["records_emitted"] == 1
 
 
+def test_paper_performance_report_excludes_independent_and_replay_fill_calibration(tmp_path, monkeypatch) -> None:
+    project_root = tmp_path / "project"
+    paper_dir = project_root / "exports" / "trade_logs" / "paper"
+    independent_dir = project_root / "exports" / "trade_logs" / "independent_fills"
+    replay_dir = project_root / "exports" / "trade_logs" / "session_replay"
+    paper_dir.mkdir(parents=True, exist_ok=True)
+    independent_dir.mkdir(parents=True, exist_ok=True)
+    replay_dir.mkdir(parents=True, exist_ok=True)
+    canonical = {
+        "timestamp_utc": "2026-04-01T15:00:00+00:00",
+        "decision_id": "paper-execution",
+        "symbol": "SPY",
+        "action": "BUY",
+        "strategy": "paper_mirror::alpha",
+        "metadata": {"source_profile": "default"},
+        "realized_pnl_total": 1.0,
+        "unrealized_pnl_total": 0.0,
+    }
+    calibration = {
+        "timestamp_utc": "2026-04-01T15:01:00+00:00",
+        "external_fill_id": "calibration-fill",
+        "symbol": "SPY",
+        "action": "BUY",
+        "paper_fill_source": "market_replay_fill",
+        "metadata": {
+            "source_profile": "default",
+            "account_mode": "replay",
+            "independent_fill_evidence": True,
+        },
+    }
+    (paper_dir / "paper_trades_paper.jsonl").write_text(json.dumps(canonical) + "\n", encoding="utf-8")
+    (independent_dir / "paper_trades_20260401.jsonl").write_text(
+        json.dumps(calibration) + "\n",
+        encoding="utf-8",
+    )
+    (replay_dir / "paper_trades_20260401.jsonl").write_text(
+        json.dumps({**calibration, "external_fill_id": "misrouted-calibration"}) + "\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(report, "PROJECT_ROOT", project_root)
+    payload = report.build_paper_performance_report(project_root, day="20260401", week_days=7)
+
+    assert payload["day"]["executions"] == 1
+    assert payload["day"]["top_strategies"][0]["name"] == "paper_mirror::alpha"
+    assert payload["source_files_scanned"] == 2
+    assert payload["execution_deduplication"]["calibration_source_files_excluded"] == 1
+    assert payload["execution_deduplication"]["calibration_records_excluded"] == 1
+    assert payload["execution_deduplication"]["records_emitted"] == 1
+
+
+def test_paper_performance_report_reads_external_reconciliation_snapshot(tmp_path, monkeypatch) -> None:
+    project_root = tmp_path / "project"
+    external_root = tmp_path / "external"
+    paper_dir = external_root / "exports" / "trade_logs" / "paper"
+    paper_dir.mkdir(parents=True)
+    row = {
+        "timestamp_utc": "2026-04-01T15:00:00+00:00",
+        "decision_id": "reconciled-paper-execution",
+        "paper_book_id": "book-1",
+        "symbol": "SPY",
+        "action": "BUY",
+        "strategy": "paper_mirror::alpha",
+        "metadata": {"source_profile": "default"},
+        "realized_pnl_total": 1.0,
+        "unrealized_pnl_total": 0.0,
+    }
+    (paper_dir / "paper_trades_paper.jsonl.local_fallback.1").write_text(
+        json.dumps(row) + "\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(report, "PROJECT_ROOT", project_root)
+    monkeypatch.setenv("BOT_LOGS_EXTERNAL_PROJECT_ROOT", str(external_root))
+    payload = report.build_paper_performance_report(project_root, day="20260401", week_days=7)
+
+    assert payload["day"]["executions"] == 1
+    assert "reconciled_trade_logs" in payload["source_kind"]
+    assert payload["execution_deduplication"]["reconciliation_source_files_included"] == 1
+
+
 def test_paper_performance_report_publishes_and_enforces_scan_watermark(tmp_path, monkeypatch) -> None:
     project_root = tmp_path / "project"
     trade_dir = project_root / "exports" / "trade_logs" / "paper"
@@ -843,5 +924,68 @@ def test_paper_performance_report_surfaces_active_heartbeat_only_profiles(tmp_pa
     assert [row["profile"] for row in payload["active_paper_profiles_today"]] == ["fx", "schwab_futures"]
     latest = {row["profile"]: row for row in payload["sleeve_latest"]}
     assert latest["fx"]["data_status"] == "current_live_no_fills"
-    assert latest["fx"]["current_day_available"] is True
+    assert latest["fx"]["current_day_available"] is False
+    assert latest["fx"]["financial_grade_eligible"] is False
     assert latest["fx"]["activity_note"] == "live heartbeat active; no paper fills yet today"
+
+
+def test_candidate_forward_accounting_requires_current_candidate_identity(tmp_path, monkeypatch) -> None:
+    project_root = tmp_path / "project"
+    state_path = project_root / "governance" / "runtime" / "production_candidate_state.json"
+    state_path.parent.mkdir(parents=True, exist_ok=True)
+    state_path.write_text(
+        json.dumps(
+            {
+                "candidate_id": "candidate-current",
+                "generation": 54,
+                "overall_sha256": "receipt-54",
+                "scope_windows_started_utc": {
+                    "strategy": "2026-08-16T12:00:00+00:00",
+                    "execution": "2026-08-16T12:00:00+00:00",
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    log_path = project_root / "exports" / "trade_logs" / "paper" / "paper_trades_20260816.jsonl"
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+
+    def row(timestamp: str, candidate_id: str, pnl: float) -> dict:
+        return {
+            "timestamp_utc": timestamp,
+            "symbol": "SPY",
+            "action": "BUY",
+            "strategy": "paper_portfolio_consensus::default::core",
+            "paper_pnl_schema_version": 3,
+            "post_cost_pnl_delta": pnl,
+            "post_cost_return_bps": pnl,
+            "realized_pnl_delta": pnl,
+            "realized_pnl_total": pnl,
+            "unrealized_pnl_total": 0.0,
+            "metadata": {
+                "source_profile": "default",
+                "production_candidate_id": candidate_id,
+            },
+        }
+
+    log_path.write_text(
+        "".join(
+            json.dumps(item) + "\n"
+            for item in (
+                row("2026-08-16T11:00:00+00:00", "candidate-current", -5.0),
+                row("2026-08-16T13:00:00+00:00", "candidate-old", -2.0),
+                row("2026-08-16T14:00:00+00:00", "candidate-current", 3.0),
+            )
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(report, "PROJECT_ROOT", project_root)
+
+    payload = report.build_paper_performance_report(project_root, day="20260816", week_days=7)
+    views = payload["accounting_views"]
+
+    assert views["lifetime_flow"]["sample_count"] == 3
+    assert views["candidate_forward_flow"]["sample_count"] == 1
+    assert views["candidate_forward_flow"]["candidate_ids"] == ["candidate-current"]
+    assert views["candidate_forward_flow"]["candidate_binding_mismatch_rows_excluded"] == 1
+    assert payload["post_cost_expectancy"]["sample_count"] == 1

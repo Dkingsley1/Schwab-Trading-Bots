@@ -7,7 +7,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from scripts.ops import unattended_soak_readiness as src
+from scripts.ops import unattended_soak_readiness as src  # noqa: E402
 
 
 def _write_json(path: Path, payload: dict) -> None:
@@ -89,6 +89,20 @@ def _ready_artifacts(project_root: Path, external_root: Path) -> None:
             "warnings": [],
         },
     )
+    _write_json(
+        health / "soak_reliability_sentinel_latest.json",
+        {
+            "timestamp_utc": now,
+            "ok": True,
+            "overall_status": "ready",
+            "blockers": [],
+            "safety_contract": {
+                "always_on_observation": True,
+                "heavy_maintenance_separated": True,
+                "automatic_live_orders": False,
+            },
+        },
+    )
 
 
 def test_unattended_soak_readiness_ready_when_storage_power_runtime_and_alerts_clear(tmp_path: Path, monkeypatch) -> None:
@@ -112,6 +126,128 @@ def test_unattended_soak_readiness_ready_when_storage_power_runtime_and_alerts_c
     assert payload["safe_to_leave_unattended"] is True
     assert payload["blockers"] == []
     assert payload["control_env"]["BOT_UNATTENDED_SOAK_READY"] == "1"
+
+
+def test_unattended_soak_requires_fresh_safe_capability_routing_when_configured(
+    tmp_path: Path, monkeypatch
+) -> None:
+    project_root = tmp_path / "project"
+    external_root = tmp_path / "BOT_LOGS" / "schwab_trading_bot"
+    external_root.mkdir(parents=True)
+    _ready_artifacts(project_root, external_root)
+    _write_json(project_root / "config" / "collector_capability_catalog_v1.json", {"schema_version": 1})
+    _write_json(
+        project_root / "governance" / "health" / "collector_capability_control_latest.json",
+        {
+            "timestamp_utc": src.iso_now(),
+            "ok": True,
+            "paper_soak_ready": True,
+            "live_promotion_ready": False,
+            "summary": {
+                "plane_count": 25,
+                "capability_count": 257,
+                "assignment_count": 10,
+                "bot_binding_count": 10,
+                "bot_binding_coverage_ratio": 1.0,
+                "subscription_profile_count": 3,
+                "estimated_fetch_avoidance_ratio": 0.9,
+            },
+            "current_collector_mapping": {"complete": True},
+            "coverage_debt": {"gap_count": 20, "blocks_guarded_paper_soak": False},
+            "authority_contract": {"paper_execution_authority": False, "live_execution_authority": False},
+        },
+    )
+    monkeypatch.setattr(src.platform, "system", lambda: "Darwin")
+
+    payload = src.build_payload(
+        project_root,
+        pmset_custom_text="AC Power:\n sleep 0\n disksleep 0\n standby 0\n autopoweroff 0\n",
+        pmset_batt_text="Now drawing from 'AC Power'\n -InternalBattery-0; AC attached; not charging present: true",
+        process_text="",
+        disk_snapshot_fn=lambda path: {"path": str(path), "exists": True, "free_gb": 160.0, "used_pct": 60.0},
+    )
+
+    assert payload["overall_status"] == "ready"
+    assert payload["overall_score"] == 100.0
+    assert payload["sections"]["collector_capabilities"]["grade"] == "A+"
+    assert "capability_optional_catalog_debt_advisory" in payload["managed_warnings"]
+
+    capability_path = (
+        project_root / "governance" / "health" / "collector_capability_control_latest.json"
+    )
+    capability = json.loads(capability_path.read_text(encoding="utf-8"))
+    capability["paper_soak_ready"] = False
+    _write_json(capability_path, capability)
+    blocked = src.build_payload(
+        project_root,
+        pmset_custom_text="AC Power:\n sleep 0\n disksleep 0\n standby 0\n autopoweroff 0\n",
+        pmset_batt_text="Now drawing from 'AC Power'\n -InternalBattery-0; AC attached; not charging present: true",
+        process_text="",
+        disk_snapshot_fn=lambda path: {"path": str(path), "exists": True, "free_gb": 160.0, "used_pct": 60.0},
+    )
+    assert blocked["safe_to_leave_unattended"] is False
+    assert "collector_capability_paper_soak_not_ready" in blocked["blockers"]
+
+
+def test_unattended_soak_requires_fresh_direct_capability_proofs_when_configured(
+    tmp_path: Path, monkeypatch
+) -> None:
+    project_root = tmp_path / "project"
+    external_root = tmp_path / "BOT_LOGS" / "schwab_trading_bot"
+    external_root.mkdir(parents=True)
+    _ready_artifacts(project_root, external_root)
+    _write_json(project_root / "config" / "capability_materialization_v1.json", {"schema_version": 1})
+    capability_ids = [
+        "trading_calendars",
+        "market_session_state",
+        "derivatives_contract_master",
+        "stress_scenarios",
+    ]
+    materialized_path = (
+        project_root
+        / "governance"
+        / "collector_capabilities"
+        / "materialized_capabilities_latest.json"
+    )
+    payload = {
+        "timestamp_utc": src.iso_now(),
+        "overall_status": "ready",
+        "live_promotion_ready": True,
+        "capabilities": [
+            {
+                "capability_id": capability_id,
+                "usable": True,
+                "proof_semantics": "direct",
+                "proof_receipt_sha256": f"proof-{capability_id}",
+            }
+            for capability_id in capability_ids
+        ],
+        "authority_contract": {"live_execution_authority": False},
+    }
+    _write_json(materialized_path, payload)
+    monkeypatch.setattr(src.platform, "system", lambda: "Darwin")
+
+    ready = src.build_payload(
+        project_root,
+        pmset_custom_text="AC Power:\n sleep 0\n disksleep 0\n standby 0\n autopoweroff 0\n",
+        pmset_batt_text="Now drawing from 'AC Power'\n -InternalBattery-0; AC attached; not charging present: true",
+        process_text="",
+        disk_snapshot_fn=lambda path: {"path": str(path), "exists": True, "free_gb": 160.0, "used_pct": 60.0},
+    )
+    assert ready["sections"]["capability_materialization"]["grade"] == "A+"
+    assert ready["safe_to_leave_unattended"] is True
+
+    payload["capabilities"][0]["proof_receipt_sha256"] = ""
+    _write_json(materialized_path, payload)
+    blocked = src.build_payload(
+        project_root,
+        pmset_custom_text="AC Power:\n sleep 0\n disksleep 0\n standby 0\n autopoweroff 0\n",
+        pmset_batt_text="Now drawing from 'AC Power'\n -InternalBattery-0; AC attached; not charging present: true",
+        process_text="",
+        disk_snapshot_fn=lambda path: {"path": str(path), "exists": True, "free_gb": 160.0, "used_pct": 60.0},
+    )
+    assert "capability_materialization_required_capability_missing" in blocked["blockers"]
+    assert blocked["safe_to_leave_unattended"] is False
 
 
 def test_unattended_soak_readiness_blocks_storage_margin_and_host_sleep(tmp_path: Path, monkeypatch) -> None:

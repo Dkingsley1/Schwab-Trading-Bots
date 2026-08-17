@@ -134,10 +134,10 @@ def test_manifest_backed_offload_release_source_after_restore_proof(tmp_path: Pa
     assert proof["source_retained"] is False
 
 
-def test_video_cold_archive_override_is_subtree_scoped(monkeypatch) -> None:
+def test_video_cold_archive_override_cannot_bypass_protection(monkeypatch) -> None:
     monkeypatch.setenv("BOT_ALLOW_VIDEO_COLD_ARCHIVE", "1")
     monkeypatch.setenv("BOT_VIDEO_COLD_ARCHIVE_ROOT", "/Volumes/VIDEO/schwab_trading_bot_cold")
 
     assert src._is_protected(Path("/Volumes/VIDEO")) is True
-    assert src._is_protected(Path("/Volumes/VIDEO/schwab_trading_bot_cold")) is False
-    assert src._is_protected(Path("/Volumes/VIDEO/schwab_trading_bot_cold/data/file.gz")) is False
+    assert src._is_protected(Path("/Volumes/VIDEO/schwab_trading_bot_cold")) is True
+    assert src._is_protected(Path("/Volumes/VIDEO/schwab_trading_bot_cold/data/file.gz")) is True

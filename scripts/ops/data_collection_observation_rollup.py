@@ -387,16 +387,18 @@ def _threshold_progress(row: dict[str, Any], observations: int) -> dict[str, Any
         _safe_int(paper_standard.get("minimum_collection_days"), 0),
         0,
     )
-    observations_ready = bool(min_observations <= 0 or observations >= min_observations)
+    floor_configured = min_observations > 0
+    observations_ready = bool(floor_configured and observations >= min_observations)
     days_ready = bool(min_days <= 0 or (age_days is not None and age_days >= float(min_days)))
     return {
         "observations": int(observations),
         "minimum_training_observations": min_observations,
+        "observation_floor_configured": floor_configured,
         "observations_ready": observations_ready,
         "collection_age_days": round(float(age_days), 3) if age_days is not None else None,
         "minimum_data_collection_days": min_days,
         "days_ready": days_ready,
-        "training_ready": bool(observations_ready and days_ready),
+        "training_ready": bool(floor_configured and observations_ready and days_ready),
     }
 
 
@@ -428,6 +430,34 @@ def _is_managed_zero_observation_debt(row: dict[str, Any]) -> bool:
         and training_excluded
         and execution_blocked
         and is_training_labeling_observer
+    )
+
+
+def _is_fail_closed_zero_observation_evidence_debt(row: dict[str, Any]) -> bool:
+    """Identify sample-starved research bots that cannot reach any execution lane."""
+    reason = " ".join(
+        str(row.get(key) or "").strip().lower()
+        for key in (
+            "data_collection_reason",
+            "training_exclusion_reason",
+            "promotion_block_reason",
+        )
+    )
+    execution_enabled = any(
+        bool(row.get(key, False))
+        for key in (
+            "trading_enabled",
+            "paper_trading_enabled",
+            "live_trading_enabled",
+            "execution_enabled",
+        )
+    )
+    return bool(
+        str(row.get("lifecycle_state") or "").strip().lower() == "data_collection_only"
+        and bool(row.get("data_collection_active", False))
+        and bool(row.get("training_excluded", False) or row.get("exclude_from_training", False))
+        and not execution_enabled
+        and "sample_starved_requalification" in reason
     )
 
 
@@ -542,6 +572,12 @@ def build_payload(
                 diagnostic_counts.get(bot_id, 0),
             )
 
+    fail_closed_zero_candidate_ids = {
+        _bot_id(row)
+        for row in collectors
+        if int(merged_counts.get(_bot_id(row), 0)) <= 0
+        and _is_fail_closed_zero_observation_evidence_debt(row)
+    }
     bot_updates: list[dict[str, Any]] = []
     training_ready_bot_ids: list[str] = []
     now = iso_now()
@@ -603,6 +639,22 @@ def build_payload(
                     "promotion_block_reason": "awaiting_training_labeling_observation_floor",
                 }
             )
+        elif lifecycle_state == "data_collection_only" and total <= 0 and bot_id in fail_closed_zero_candidate_ids:
+            desired.update(
+                {
+                    "training_excluded": True,
+                    "exclude_from_training": True,
+                    "training_exclusion_reason": str(
+                        row.get("training_exclusion_reason") or "sample_starved_requalification_collect_only"
+                    ),
+                    "training_exclusion_until": str(
+                        row.get("training_exclusion_until") or "minimum_data_collection_threshold_met"
+                    ),
+                    "promotion_block_reason": str(
+                        row.get("promotion_block_reason") or "sample_starved_requalification_no_promotion"
+                    ),
+                }
+            )
         elif lifecycle_state == "data_collection_only" and total <= 0:
             desired.update(
                 {
@@ -610,6 +662,16 @@ def build_payload(
                     "exclude_from_training": True,
                     "training_exclusion_reason": "data_collection_requires_observations",
                     "training_exclusion_until": "minimum_data_collection_threshold_met",
+                    "promotion_block_reason": "awaiting_data_collection_quality_gate",
+                }
+            )
+        elif lifecycle_state == "data_collection_only" and not has_explicit_floor:
+            desired.update(
+                {
+                    "training_excluded": True,
+                    "exclude_from_training": True,
+                    "training_exclusion_reason": "data_collection_requires_minimum_training_observations",
+                    "training_exclusion_until": "minimum_data_collection_threshold_configured_and_met",
                     "promotion_block_reason": "awaiting_data_collection_quality_gate",
                 }
             )
@@ -629,7 +691,7 @@ def build_payload(
 
     if apply:
         _refresh_summary(registry)
-        registry_path.write_text(json.dumps(registry, ensure_ascii=True, indent=2), encoding="utf-8")
+        write_payload(registry_path, registry)
         state_payload = {
             "timestamp_utc": now,
             "initialized": True,
@@ -650,6 +712,11 @@ def build_payload(
     unmanaged_zero_observation_bot_ids = sorted(
         bot_id for bot_id in raw_zero_observation_bot_ids if bot_id not in set(managed_zero_observation_bot_ids)
     )
+    fail_closed_zero_observation_bot_ids = sorted(
+        bot_id
+        for bot_id in unmanaged_zero_observation_bot_ids
+        if bot_id in fail_closed_zero_candidate_ids
+    )
     training_ready = sorted(training_ready_bot_ids)
     collector_count = len(bot_ids)
     effective_bots_with_observations = min(bots_with_observations + len(managed_zero_observation_bot_ids), collector_count)
@@ -660,6 +727,21 @@ def build_payload(
     data_quality_score = round(max(0.0, min(collection_coverage_score - zero_observation_penalty, 100.0)), 3)
     raw_data_quality_score = round(max(0.0, min(raw_collection_coverage_score - raw_zero_observation_penalty, 100.0)), 3)
     training_readiness_score = round((len(training_ready) / max(collector_count, 1)) * 100.0, 3)
+    raw_observation_coverage_ratio = bots_with_observations / max(collector_count, 1)
+    all_unmanaged_zero_fail_closed = bool(
+        unmanaged_zero_observation_bot_ids
+        and len(fail_closed_zero_observation_bot_ids) == len(unmanaged_zero_observation_bot_ids)
+    )
+    operational_collection_ok = bool(
+        collector_count > 0
+        and bots_with_observations > 0
+        and int(sum(merged_counts.get(bot_id, 0) for bot_id in bot_ids)) > 0
+        and raw_observation_coverage_ratio >= 0.75
+        and (
+            not unmanaged_zero_observation_bot_ids
+            or all_unmanaged_zero_fail_closed
+        )
+    )
     zero_repair_commands = [
         ["./scripts/ops/opsctl.sh", "training-label-audit", "--json"],
         ["./scripts/ops/opsctl.sh", "data-collection-observation-rollup", "--bootstrap-tail-lines", "5000", "--json"],
@@ -681,6 +763,21 @@ def build_payload(
         "schema_version": 1,
         "ok": ok,
         "overall_status": "ready" if ok else "degraded",
+        "operational_ok": operational_collection_ok,
+        "operational_status": "ready" if operational_collection_ok else "degraded",
+        "operational_collection": {
+            "ok": operational_collection_ok,
+            "status": "ready" if operational_collection_ok else "degraded",
+            "active_observation_count": int(sum(merged_counts.get(bot_id, 0) for bot_id in bot_ids)),
+            "observed_bot_count": bots_with_observations,
+            "collector_count": collector_count,
+            "raw_observation_coverage_ratio": round(raw_observation_coverage_ratio, 6),
+            "minimum_observation_coverage_ratio": 0.75,
+            "fail_closed_evidence_debt_count": len(fail_closed_zero_observation_bot_ids),
+            "all_unmanaged_zero_fail_closed": all_unmanaged_zero_fail_closed,
+            "raw_status_preserved": True,
+            "policy": "paper collection remains operational when the active fleet is producing broad evidence and every zero-observation exception is training-excluded and execution-disabled; raw coverage debt remains degraded until repaired",
+        },
         "mode": "bootstrap_tail" if bootstrap else "incremental",
         "apply": bool(apply),
         "collector_count": collector_count,
@@ -690,6 +787,8 @@ def build_payload(
         "zero_observation_bot_ids": unmanaged_zero_observation_bot_ids[:50],
         "unmanaged_zero_observation_count": len(unmanaged_zero_observation_bot_ids),
         "unmanaged_zero_observation_bot_ids": unmanaged_zero_observation_bot_ids[:50],
+        "fail_closed_zero_observation_count": len(fail_closed_zero_observation_bot_ids),
+        "fail_closed_zero_observation_bot_ids": fail_closed_zero_observation_bot_ids[:50],
         "managed_zero_observation_count": len(managed_zero_observation_bot_ids),
         "managed_zero_observation_bot_ids": managed_zero_observation_bot_ids[:50],
         "raw_zero_observation_count": len(raw_zero_observation_bot_ids),
@@ -700,7 +799,7 @@ def build_payload(
         "raw_collection_coverage_score": raw_collection_coverage_score,
         "training_readiness_score": training_readiness_score,
         "quality_contract": {
-            "data_quality_definition": "observation coverage for active collection bots; training readiness is reported separately",
+            "data_quality_definition": "observation coverage for active collection bots; collection-threshold readiness is reported separately and never implies retrain launch eligibility",
             "managed_zero_definition": "collect-only training-labeling observers with execution blocked and explicit training exclusion are managed observer debt, not paper-trading collection failures",
             "target_data_quality_score": 100.0,
             "target_training_readiness_score": 100.0,
@@ -711,6 +810,8 @@ def build_payload(
             "training_readiness_score": training_readiness_score,
             "training_ready_count": len(training_ready),
             "training_ready_gap": max(collector_count - len(training_ready), 0),
+            "training_readiness_definition": "collection_gate_only_not_retrain_launch",
+            "authoritative_retrain_selector": "governance/health/bot_needs_intelligence_latest.json:training_candidate_selector",
             "managed_zero_observation_count": len(managed_zero_observation_bot_ids),
             "unmanaged_zero_observation_count": len(unmanaged_zero_observation_bot_ids),
         },
@@ -751,7 +852,24 @@ def build_payload(
         "new_rows_counted": int(sum(observed_counts.values())),
         "total_observations": int(sum(merged_counts.get(bot_id, 0) for bot_id in bot_ids)),
         "training_ready_count": len(training_ready),
-        "training_ready_bot_ids": training_ready[:25],
+        "training_ready_bot_ids": training_ready,
+        "training_ready_bot_ids_truncated": False,
+        "training_readiness_definition": "collection_gate_only_not_retrain_launch",
+        "collection_threshold_ready_count": len(training_ready),
+        "collection_threshold_ready_bot_ids": training_ready,
+        "training_exclusion_releasable_count": len(training_ready),
+        "training_stage_contract": {
+            "current_stage": "collection_threshold",
+            "authorizes_training_launch": False,
+            "next_required_stages": [
+                "point_in_time_label_contract",
+                "fresh_training_diagnostic",
+                "overfit_and_balance_clearance",
+                "bot_needs_candidate_selection",
+                "training_runtime_resource_canary",
+            ],
+            "policy": "meeting observation and minimum-day floors releases collection debt only; the training runtime remains fail-closed",
+        },
         "top_collectors": [
             {"bot_id": bot_id, "observations": int(count)}
             for bot_id, count in sorted(((bot_id, merged_counts.get(bot_id, 0)) for bot_id in bot_ids), key=lambda item: int(item[1]), reverse=True)[:20]
@@ -761,6 +879,26 @@ def build_payload(
         "bot_updates": bot_updates[:50],
         "state_path": str(state_path),
         "registry_path": str(registry_path),
+        "registry_write_contract": {
+            "atomic": True,
+            "runtime_owned_fields_only": sorted(
+                {
+                    "data_collection_observations",
+                    "collected_observation_count",
+                    "data_collection_last_counted_utc",
+                    "data_collection_observation_rollup_source",
+                    "data_collection_threshold_progress",
+                    "data_collection_training_ready",
+                    "training_excluded",
+                    "exclude_from_training",
+                    "training_exclusion_reason",
+                    "training_exclusion_until",
+                    "promotion_blocked_until",
+                    "promotion_block_reason",
+                }
+            ),
+            "candidate_fingerprint_normalized": True,
+        },
         "recommended_actions": [
             "run this rollup on a short cadence so training thresholds use registry counters instead of ad hoc log scans",
             "keep data-only bots excluded from training until both observation and minimum-day gates clear",

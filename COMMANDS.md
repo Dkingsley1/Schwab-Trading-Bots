@@ -4,7 +4,7 @@ Use these exact commands as the current source of truth.
 
 This file is generated from the curated operator inventory in `scripts/ops/commands_hygiene_bot.py`.
 Rebuild it with `./scripts/ops/opsctl.sh commands-hygiene --apply` after changing that inventory.
-Command contract hash: `5a191acd2e7cddf0d729cdc98775d4d39eff1be5671f0946456c5048b9d4ea66`.
+Command contract hash: `ff7e8313139d3caf5ae302011ac7954dcd04554da9a96a9c75c5e8650a2d0049`.
 Command contract artifact: `governance/health/commands_contract_latest.json`.
 
 This file is intentionally trimmed down with Most Used pinned first and the remaining sections alphabetized by section and command title:
@@ -23,7 +23,7 @@ Fast search tokens: `start` `stop` `paper` `profitability` `soak` `halt` `auth` 
 
 Useful compound searches: `paper profitability`, `global halt`, `token refresh`, `livefeed heavy`, `storage prune`, `soak readiness`.
 
-Search coverage: `171` generated command entries from the current command contract.
+Search coverage: `195` generated command entries from the current command contract.
 
 <datalist id="command-search-index-options">
   <option value="Keep the Mac awake (Most Used)"></option>
@@ -74,8 +74,12 @@ Search coverage: `171` generated command entries from the current command contra
   <option value="Review account policy context (Accounts And Positions)"></option>
   <option value="Study all visible account positions (Accounts And Positions)"></option>
   <option value="Watch covered-call roll windows (Accounts And Positions)"></option>
+  <option value="Analyst consensus estimates sync (Data Context Syncs)"></option>
+  <option value="Central-bank cross-source synchronization (Data Context Syncs)"></option>
   <option value="Crypto market context sync (Data Context Syncs)"></option>
+  <option value="Decision context macro/micro mesh sync (Data Context Syncs)"></option>
   <option value="FX market context sync (Data Context Syncs)"></option>
+  <option value="Global central-bank policy and assets sync (Data Context Syncs)"></option>
   <option value="Macro context sync (Data Context Syncs)"></option>
   <option value="Options flow context sync (Data Context Syncs)"></option>
   <option value="Source verification (Data Context Syncs)"></option>
@@ -101,6 +105,7 @@ Search coverage: `171` generated command entries from the current command contra
   <option value="Review guarded 400 bot paper ramp (Paper Trading)"></option>
   <option value="Review profitability decay containment (Paper Trading)"></option>
   <option value="Review the complete experiment-family correction (Paper Trading)"></option>
+  <option value="Review the eight profitability hardening controls (Paper Trading)"></option>
   <option value="Review the locked profitability holdout vault (Paper Trading)"></option>
   <option value="Review the strict profitability evidence firewall (Paper Trading)"></option>
   <option value="Active bot stack PDF (Reports And PDFs)"></option>
@@ -139,9 +144,16 @@ Search coverage: `171` generated command entries from the current command contra
   <option value="Refresh showcase, framework map, and PDFs now (Reports And PDFs)"></option>
   <option value="Repair and validate report PDFs (Reports And PDFs)"></option>
   <option value="Report catalog bundle (Reports And PDFs)"></option>
+  <option value="Evaluate or retire a strategy offspring (Retrain)"></option>
   <option value="Force full retrain (bypass prechecks) (Retrain)"></option>
   <option value="Full retrain preflight (Retrain)"></option>
   <option value="Guarded retrain orchestrator (Retrain)"></option>
+  <option value="Inspect bounded strategy generations (Retrain)"></option>
+  <option value="Propose a bounded strategy generation (Retrain)"></option>
+  <option value="Reconcile interrupted strategy offspring training (Retrain)"></option>
+  <option value="Refresh one coherent training evidence epoch (Retrain)"></option>
+  <option value="Refresh training and profitability evidence together (Retrain)"></option>
+  <option value="Train the next strategy offspring (Retrain)"></option>
   <option value="Training and labeling intelligence (Retrain)"></option>
   <option value="Interactive Schwab authorization re-consent (Schwab Auth)"></option>
   <option value="Local Schwab credential setup (Schwab Auth)"></option>
@@ -156,6 +168,7 @@ Search coverage: `171` generated command entries from the current command contra
   <option value="Advance staged promotion candidates (Status And Health)"></option>
   <option value="Apply system architecture hardening (Status And Health)"></option>
   <option value="Audit the uniform whole-system hardening floor (Status And Health)"></option>
+  <option value="Capture candidate-bound delayed-quote replay fills (Status And Health)"></option>
   <option value="Coinbase API health (Status And Health)"></option>
   <option value="Deeper self-awareness intelligence layers (Status And Health)"></option>
   <option value="Docs, commands, and reporting intelligence (Status And Health)"></option>
@@ -171,21 +184,32 @@ Search coverage: `171` generated command entries from the current command contra
   <option value="Refresh health gates (Status And Health)"></option>
   <option value="Refresh readiness evidence without the full dashboard (Status And Health)"></option>
   <option value="Refresh runtime dashboard contracts (Status And Health)"></option>
+  <option value="Refresh source-backed capability proofs (Status And Health)"></option>
   <option value="Repair safe cross-system drift surfaces (Status And Health)"></option>
   <option value="Replay hash registry guard (Status And Health)"></option>
   <option value="Reporter quality infrabot (Status And Health)"></option>
+  <option value="Review bot profitability and scalability (Status And Health)"></option>
   <option value="Review causal readiness blockers (Status And Health)"></option>
   <option value="Review Codex project guardrails (Status And Health)"></option>
+  <option value="Review collector capabilities and bot subscriptions (Status And Health)"></option>
+  <option value="Review exclusive control-surface ownership (Status And Health)"></option>
+  <option value="Review hierarchical bot organization (Status And Health)"></option>
+  <option value="Review sleeve-master and grand-master evidence (Status And Health)"></option>
   <option value="Review system plumbing control (Status And Health)"></option>
   <option value="Review ten-pillar production excellence (Status And Health)"></option>
   <option value="Review the cross-system drift mesh (Status And Health)"></option>
+  <option value="Review the independent deadman monitor (Status And Health)"></option>
+  <option value="Review the ten-part production resilience contract (Status And Health)"></option>
   <option value="Run production hardening watch (Status And Health)"></option>
   <option value="Runtime gate dashboard (Status And Health)"></option>
   <option value="Runtime status (Status And Health)"></option>
   <option value="Track production-quality SLO recurrence (Status And Health)"></option>
   <option value="Track readiness evidence accrual (Status And Health)"></option>
   <option value="Verify the durable live-order ledger (Status And Health)"></option>
+  <option value="Archive and compact legacy ops database drift evidence (Storage)"></option>
+  <option value="Repair external SSD disconnect and reconnect protection (Storage)"></option>
   <option value="Repair local stateful storage regressions (Storage)"></option>
+  <option value="Review external SSD disconnect and reconnect protection (Storage)"></option>
   <option value="Review or prune eligible local standby SQLite copies after BOT_LOGS soak (Storage)"></option>
   <option value="Run the storage disaster recovery bot (Storage)"></option>
   <option value="Safe force-clear storage pressure supervisor (Storage)"></option>
@@ -200,7 +224,7 @@ Search coverage: `171` generated command entries from the current command contra
 </datalist>
 
 <details>
-<summary>Generated command search index (171 commands; rebuilt by commands-hygiene)</summary>
+<summary>Generated command search index (195 commands; rebuilt by commands-hygiene)</summary>
 
 Each row is generated from `governance/health/commands_contract_latest.json`, so added, removed, renamed, or cleaned-up commands change this index automatically.
 
@@ -252,8 +276,12 @@ Each row is generated from `governance/health/commands_contract_latest.json`, so
 - search-entry:3329a9f27ebab407f10027cd5e2319b45f8e164f7514bbeb04c957dfc8adda25 section:`Accounts And Positions` section_key:`accounts-and-positions` title:Review account policy context title_key:`review-account-policy-context` opsctl:`account-policy-context` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
 - search-entry:3e92a3af2f20b8e73696039341da09d688222b861e541c2e6c8742742cefc99f section:`Accounts And Positions` section_key:`accounts-and-positions` title:Study all visible account positions title_key:`study-all-visible-account-positions` opsctl:`account-position-study` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
 - search-entry:40aa1ccb959b6d48c874093fa56fb9083c5e74f454af950d9954b42e02ad70e3 section:`Accounts And Positions` section_key:`accounts-and-positions` title:Watch covered-call roll windows title_key:`watch-covered-call-roll-windows` opsctl:`covered-call-roll-watch` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
+- search-entry:c04e002a0fbd1c713afea52d5b57aec8c29363a941fa596ef1879831d933e03b section:`Data Context Syncs` section_key:`data-context-syncs` title:Analyst consensus estimates sync title_key:`analyst-consensus-estimates-sync` opsctl:`analyst-consensus-sync` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
+- search-entry:9bd50317c5a90a1c535582de53bbeb305b6dd8f167720fb196c46f71bff315b3 section:`Data Context Syncs` section_key:`data-context-syncs` title:Central-bank cross-source synchronization title_key:`central-bank-cross-source-synchronization` opsctl:`central-bank-context-sync` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
 - search-entry:6905edc90e3669f5ba0e5f7cff89ed38d8a11fd7627c7ea1917fdfa9dc0d73cb section:`Data Context Syncs` section_key:`data-context-syncs` title:Crypto market context sync title_key:`crypto-market-context-sync` opsctl:`crypto-market-sync` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
+- search-entry:a002a4013b86ab95f43c50cac6d45b99e0b3c59b5b5b390884c8a9fe95fb7dc2 section:`Data Context Syncs` section_key:`data-context-syncs` title:Decision context macro/micro mesh sync title_key:`decision-context-macro-micro-mesh-sync` opsctl:`decision-context-sync` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
 - search-entry:28c8adf1bfbdc184f8a3246d69b035dadc8369dfe2e2719e349b5176b4b4bbe2 section:`Data Context Syncs` section_key:`data-context-syncs` title:FX market context sync title_key:`fx-market-context-sync` opsctl:`fx-market-sync` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
+- search-entry:508dc78794d6d7933ffc333505b4a8a31d17717e6af19ead88b54115515edb6a section:`Data Context Syncs` section_key:`data-context-syncs` title:Global central-bank policy and assets sync title_key:`global-central-bank-policy-and-assets-sync` opsctl:`global-central-bank-sync` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
 - search-entry:6d9912b0ea8130ddc98949a5b244a8b8e0be487b47c2e883ab942619eb2370ce section:`Data Context Syncs` section_key:`data-context-syncs` title:Macro context sync title_key:`macro-context-sync` opsctl:`macro-context-sync` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
 - search-entry:6a1e634c03d65dc842403cab6a10ed7f390b177974b51bde06fa2baa41dd2806 section:`Data Context Syncs` section_key:`data-context-syncs` title:Options flow context sync title_key:`options-flow-context-sync` opsctl:`options-flow-sync` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
 - search-entry:e09ffc26df0422653438ce9314334305bc0ce171383e70cebd71948b54ca3ecc section:`Data Context Syncs` section_key:`data-context-syncs` title:Source verification title_key:`source-verification` opsctl:`source-verification` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
@@ -279,6 +307,7 @@ Each row is generated from `governance/health/commands_contract_latest.json`, so
 - search-entry:227f99d286741989a6dfd2d8961bb05917451c76c731cfae15bb8de007f58291 section:`Paper Trading` section_key:`paper-trading` title:Review guarded 400 bot paper ramp title_key:`review-guarded-400-bot-paper-ramp` opsctl:`paper-400-ramp` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
 - search-entry:c5bb4a0d0e095d9059a68480f8eed21f83b61e9190ab4b04ec85ecb85ec24b40 section:`Paper Trading` section_key:`paper-trading` title:Review profitability decay containment title_key:`review-profitability-decay-containment` opsctl:`decay-monitor` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
 - search-entry:2f645f321f37f05c393f302641994eaaeb39bc248f11eaaf71fd14e398a5e865 section:`Paper Trading` section_key:`paper-trading` title:Review the complete experiment-family correction title_key:`review-the-complete-experiment-family-correction` opsctl:`multiple-testing` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
+- search-entry:ee559c21f69068d5854f7b320f2c8cd89b075cfa46cf308809c2b9d2da6b0322 section:`Paper Trading` section_key:`paper-trading` title:Review the eight profitability hardening controls title_key:`review-the-eight-profitability-hardening-controls` opsctl:`profitability-hardening` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
 - search-entry:75a649865cad971ee8aea162ff2406bc8b51429362260074c94c2a7361cc62c6 section:`Paper Trading` section_key:`paper-trading` title:Review the locked profitability holdout vault title_key:`review-the-locked-profitability-holdout-vault` opsctl:`profitability-holdout-vault` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
 - search-entry:8bb5e5024f934aff91e23ae490dbf6890cda9ef5f456080b4900cecfcc3a6655 section:`Paper Trading` section_key:`paper-trading` title:Review the strict profitability evidence firewall title_key:`review-the-strict-profitability-evidence-firewall` opsctl:`profitability-evidence-firewall` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
 - search-entry:2b10c3089dd25a74e4e533fd26fec2ddb81e4ce00103187eee31f8cfb4a9ddc2 section:`Reports And PDFs` section_key:`reports-and-pdfs` title:Active bot stack PDF title_key:`active-bot-stack-pdf` opsctl:`none` scripts:`scripts/ops/open_report_artifact.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
@@ -304,7 +333,7 @@ Each row is generated from `governance/health/commands_contract_latest.json`, so
 - search-entry:749e096e69b80fa097e7d21499d2284995edd06ded5bb2551d61a2c3d549b4b5 section:`Reports And PDFs` section_key:`reports-and-pdfs` title:Open the quant model control PDF title_key:`open-the-quant-model-control-pdf` opsctl:`none` scripts:`scripts/ops/open_report_artifact.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
 - search-entry:d6c39cd830af5f2f5bf3401bb6673cfd41860bd9912b30ae8fabcda61944b595 section:`Reports And PDFs` section_key:`reports-and-pdfs` title:Open the replay feature ablation PDF title_key:`open-the-replay-feature-ablation-pdf` opsctl:`none` scripts:`scripts/ops/open_report_artifact.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
 - search-entry:7d8c9ece3d2a0883862d72228d8aa8914f17e86bd206396da226d766f8cc8662 section:`Reports And PDFs` section_key:`reports-and-pdfs` title:Open the report catalog PDF title_key:`open-the-report-catalog-pdf` opsctl:`none` scripts:`scripts/ops/open_report_artifact.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
-- search-entry:1643971063061950c3756c75a4747b1defa1e7e49a6eae169bad51f883747715 section:`Reports And PDFs` section_key:`reports-and-pdfs` title:Open the retrain scorecard PDF title_key:`open-the-retrain-scorecard-pdf` opsctl:`none` scripts:`none` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
+- search-entry:69469eafe390cd9c9a0755bcaba14a2dbc036f303a547d8139405e9efbb66b92 section:`Reports And PDFs` section_key:`reports-and-pdfs` title:Open the retrain scorecard PDF title_key:`open-the-retrain-scorecard-pdf` opsctl:`none` scripts:`scripts/ops/open_report_artifact.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
 - search-entry:ad5619a561b0eb045e34fdd9001f8dc2ca9f28d81abbec9b062637aff2c506d0 section:`Reports And PDFs` section_key:`reports-and-pdfs` title:Open the sentiment PDF title_key:`open-the-sentiment-pdf` opsctl:`none` scripts:`scripts/ops/open_report_artifact.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
 - search-entry:79e940ef7f38af3293c562fe8d80e8c9884d14b4b3e28df4c2343e20d342475e section:`Reports And PDFs` section_key:`reports-and-pdfs` title:Open the source verification PDF title_key:`open-the-source-verification-pdf` opsctl:`none` scripts:`scripts/ops/open_report_artifact.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
 - search-entry:4871f1e5a36c1e84b566213c2383275a174b2e4521c851d9d7a74926a29f4186 section:`Reports And PDFs` section_key:`reports-and-pdfs` title:Open the state snapshot drills PDF title_key:`open-the-state-snapshot-drills-pdf` opsctl:`none` scripts:`scripts/ops/open_report_artifact.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
@@ -317,9 +346,16 @@ Each row is generated from `governance/health/commands_contract_latest.json`, so
 - search-entry:6433af154ecc239ea86caac2f3279f5101cad91c7b3452df39b3434dde7fb187 section:`Reports And PDFs` section_key:`reports-and-pdfs` title:Refresh showcase, framework map, and PDFs now title_key:`refresh-showcase-framework-map-and-pdfs-now` opsctl:`showcase-refresh, system-explainers, report-pdfs` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
 - search-entry:a95c554ad97c901d7f842e3f9648669d0d572508a55c3a8cfdb00436f3ed46bc section:`Reports And PDFs` section_key:`reports-and-pdfs` title:Repair and validate report PDFs title_key:`repair-and-validate-report-pdfs` opsctl:`report-quality-guard` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
 - search-entry:715cb68e02c22a26e0575910c63871955d85364807606fa4fc12972f7caa938d section:`Reports And PDFs` section_key:`reports-and-pdfs` title:Report catalog bundle title_key:`report-catalog-bundle` opsctl:`report-pdfs` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
+- search-entry:71092f22733803ba0ad4e14fceca48b512b2fd859cd03b6343e72b4d355e7f6f section:`Retrain` section_key:`retrain` title:Evaluate or retire a strategy offspring title_key:`evaluate-or-retire-a-strategy-offspring` opsctl:`strategy-generation` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
 - search-entry:2d6f3e088d1289a8bdbdec63e7da16b1064b7a1ecfc4b7fb7675e93cf472c021 section:`Retrain` section_key:`retrain` title:Force full retrain (bypass prechecks) title_key:`force-full-retrain-bypass-prechecks` opsctl:`retrain-force-full` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
 - search-entry:66f36e9e3bd84732995efe81a154264a21640c64b27037da97e878814c693ae2 section:`Retrain` section_key:`retrain` title:Full retrain preflight title_key:`full-retrain-preflight` opsctl:`runtime-training-snapshot, coverage-seed, coverage-gap-closer` scripts:`scripts/daily_log_refresh.sh, scripts/ops/opsctl.sh, scripts/retrain_schema_compatibility_guard.py, scripts/promotion_quality_gate.py` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
 - search-entry:924904d5a4869f0f6b635462ae55c10a8a46d96069d9ad3ce35b3ac2b3a51c39 section:`Retrain` section_key:`retrain` title:Guarded retrain orchestrator title_key:`guarded-retrain-orchestrator` opsctl:`retrain-orchestrate` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
+- search-entry:510d2ecaa1987134c112fc697456bdcccb41fe3e788431ebc4fb2b00b308bed0 section:`Retrain` section_key:`retrain` title:Inspect bounded strategy generations title_key:`inspect-bounded-strategy-generations` opsctl:`strategy-generation` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
+- search-entry:5836a0275f390d7c0defeb820ac000c12278fb0a9469b1a7ddc19df1e94b78ca section:`Retrain` section_key:`retrain` title:Propose a bounded strategy generation title_key:`propose-a-bounded-strategy-generation` opsctl:`strategy-generation` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
+- search-entry:9da142418eab1279fe4182ef43988765bfda4d54a544b547a10579e4457e90b1 section:`Retrain` section_key:`retrain` title:Reconcile interrupted strategy offspring training title_key:`reconcile-interrupted-strategy-offspring-training` opsctl:`strategy-generation` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
+- search-entry:eebc54054ba836bf22563806ea055c70037bdb75e0caf02ba27dcddeca085ff8 section:`Retrain` section_key:`retrain` title:Refresh one coherent training evidence epoch title_key:`refresh-one-coherent-training-evidence-epoch` opsctl:`runtime-artifact-refresh` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
+- search-entry:650d2c9fcd7211f68cea0bb70924c3282fd31aa0c422fde091ddaa88114e17b9 section:`Retrain` section_key:`retrain` title:Refresh training and profitability evidence together title_key:`refresh-training-and-profitability-evidence-together` opsctl:`runtime-artifact-refresh` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
+- search-entry:a89299b36aba75fe6fa8d15ba30566c3daf78ec97c6f7dcf55c854e52f96d4b6 section:`Retrain` section_key:`retrain` title:Train the next strategy offspring title_key:`train-the-next-strategy-offspring` opsctl:`strategy-generation` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
 - search-entry:5823b776d532c4dfce081019db8a1139e845594715a1e658fa528cd44344f63e section:`Retrain` section_key:`retrain` title:Training and labeling intelligence title_key:`training-and-labeling-intelligence` opsctl:`training-labeling-intelligence` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
 - search-entry:9ab5fdd6ad5064cfef401d806513ff95f45fd4b7069af991a89747c8ef41508f section:`Schwab Auth` section_key:`schwab-auth` title:Interactive Schwab authorization re-consent title_key:`interactive-schwab-authorization-re-consent` opsctl:`token-refresh-interactive` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
 - search-entry:23929daa96c42f8741b1e768b7af0231359f3cbea301068c42803824f339c114 section:`Schwab Auth` section_key:`schwab-auth` title:Local Schwab credential setup title_key:`local-schwab-credential-setup` opsctl:`schwab-credentials` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
@@ -334,6 +370,7 @@ Each row is generated from `governance/health/commands_contract_latest.json`, so
 - search-entry:c5e040e4852cd9be32ead9a962b153904c71ec238f2ff4c66b1c8474e87aafd8 section:`Status And Health` section_key:`status-and-health` title:Advance staged promotion candidates title_key:`advance-staged-promotion-candidates` opsctl:`promotion-candidate-advancement` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
 - search-entry:67d8b4f85daf3e431e681c653ab5fa72c90517cc1d635b65ccc24fd06f541f71 section:`Status And Health` section_key:`status-and-health` title:Apply system architecture hardening title_key:`apply-system-architecture-hardening` opsctl:`system-architecture-hardening` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
 - search-entry:d874bd191993d030a957e4c95cd8e0398ab9bf1ebb4500921ca69af86cf4de47 section:`Status And Health` section_key:`status-and-health` title:Audit the uniform whole-system hardening floor title_key:`audit-the-uniform-whole-system-hardening-floor` opsctl:`uniform-hardening` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
+- search-entry:575a9fcddee9ccf1f11a91781f91c9bd517f2bdf9aa83ed2f35afbd9202b6a9a section:`Status And Health` section_key:`status-and-health` title:Capture candidate-bound delayed-quote replay fills title_key:`capture-candidate-bound-delayed-quote-replay-fills` opsctl:`market-replay-fill-capture` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
 - search-entry:f9437868e421148a7c1e2559aab72a0d323f1f8360c43ebeb1d35b30da449a42 section:`Status And Health` section_key:`status-and-health` title:Coinbase API health title_key:`coinbase-api-health` opsctl:`coinbase-api-health` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
 - search-entry:09cf953d33c1c2c51af8ddb9720af132cea3194741a0b6c46c87a25c79f1fab7 section:`Status And Health` section_key:`status-and-health` title:Deeper self-awareness intelligence layers title_key:`deeper-self-awareness-intelligence-layers` opsctl:`deeper-intelligence-layers` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
 - search-entry:2f0e9268604a8480a375e0753d1e5a598d4c3d85b4074cab4800bb561be986c3 section:`Status And Health` section_key:`status-and-health` title:Docs, commands, and reporting intelligence title_key:`docs-commands-and-reporting-intelligence` opsctl:`docs-reporting-intelligence` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
@@ -347,23 +384,34 @@ Each row is generated from `governance/health/commands_contract_latest.json`, so
 - search-entry:9a0b69390a23a39542748fae0108a2bcd9f9a7c935f6effb86ab12d1d7eb91c9 section:`Status And Health` section_key:`status-and-health` title:Publish production-quality repair lanes title_key:`publish-production-quality-repair-lanes` opsctl:`production-quality` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
 - search-entry:079d2a1a6cbe25881172205c3997bebea2da6f40f2d81640db1389579346a566 section:`Status And Health` section_key:`status-and-health` title:PyCharm active bot blue highlights title_key:`pycharm-active-bot-blue-highlights` opsctl:`pycharm-active-bot-highlights` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
 - search-entry:b78415c6f92b0a099a704e922e977a6c9915872706aad0c3e753e0281d8f75ba section:`Status And Health` section_key:`status-and-health` title:Refresh health gates title_key:`refresh-health-gates` opsctl:`health-gates` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
-- search-entry:439df2f7c7cda4e8fe6ea2f258af41da52f8f0703637cdf413114ce17362bac8 section:`Status And Health` section_key:`status-and-health` title:Refresh readiness evidence without the full dashboard title_key:`refresh-readiness-evidence-without-the-full-dashboard` opsctl:`readiness-evidence-refresh` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
+- search-entry:537290298c6b1eb60a77be007c54847030efc21151fc09d6f64bd82dbaa9a516 section:`Status And Health` section_key:`status-and-health` title:Refresh readiness evidence without the full dashboard title_key:`refresh-readiness-evidence-without-the-full-dashboard` opsctl:`readiness-evidence-refresh` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
 - search-entry:5c42cde9787324dfb1206f08bba236c4f22ec3331b467e7b3f8cc25f5445a72d section:`Status And Health` section_key:`status-and-health` title:Refresh runtime dashboard contracts title_key:`refresh-runtime-dashboard-contracts` opsctl:`dashboard-refresh` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
+- search-entry:36e9560d6a52bc737d00023af33cecb8c45a473a03d29cec30e040e6c08d3b3e section:`Status And Health` section_key:`status-and-health` title:Refresh source-backed capability proofs title_key:`refresh-source-backed-capability-proofs` opsctl:`capability-materialization` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
 - search-entry:9af5977e0643081899f53d7a99dc149d1e2953fa8400df3d62272e2ad979cb76 section:`Status And Health` section_key:`status-and-health` title:Repair safe cross-system drift surfaces title_key:`repair-safe-cross-system-drift-surfaces` opsctl:`system-drift-autopilot` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
 - search-entry:b68225df4373e5ada1af692b9823d7aef7c489c9c6549e42e80dd9eca2c15c4f section:`Status And Health` section_key:`status-and-health` title:Replay hash registry guard title_key:`replay-hash-registry-guard` opsctl:`replay-hash-registry` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
 - search-entry:bbdaeb098be7903b2af2e606229145d9c1ce937bbaef0d84edcdb06e6918f3bd section:`Status And Health` section_key:`status-and-health` title:Reporter quality infrabot title_key:`reporter-quality-infrabot` opsctl:`report-quality-guard` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
+- search-entry:203bd048b9ab980a2f4ea86d10d87d8a9f50ff61eb2d85fd0cf56bf6c94f068a section:`Status And Health` section_key:`status-and-health` title:Review bot profitability and scalability title_key:`review-bot-profitability-and-scalability` opsctl:`bot-profitability-scalability` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
 - search-entry:262ccdcf97cdcf53b207af3aedec35642eddcf3d5431d8c0e1103dea8400836e section:`Status And Health` section_key:`status-and-health` title:Review causal readiness blockers title_key:`review-causal-readiness-blockers` opsctl:`readiness-blocker-rollup` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
 - search-entry:0941a33ecf2e9d9f31579a2d05664240e0d893fcecf01959db65122fbe2c1e4e section:`Status And Health` section_key:`status-and-health` title:Review Codex project guardrails title_key:`review-codex-project-guardrails` opsctl:`codex-project-guard` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
+- search-entry:feb5d48694989ffc763026ab62f28aebe0c1a28c38b6fcec33f59d3f396d58c1 section:`Status And Health` section_key:`status-and-health` title:Review collector capabilities and bot subscriptions title_key:`review-collector-capabilities-and-bot-subscriptions` opsctl:`collector-capability-control` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
+- search-entry:f84f97b214f040a75dac35e683623bf3a9671c95fdeaef5a41b4f5e0e7a07b62 section:`Status And Health` section_key:`status-and-health` title:Review exclusive control-surface ownership title_key:`review-exclusive-control-surface-ownership` opsctl:`control-surface-ownership` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
+- search-entry:b762ecd16eae0b3463a6ac97017a73e16bec97dce543cab8d5131dcb2e9b2218 section:`Status And Health` section_key:`status-and-health` title:Review hierarchical bot organization title_key:`review-hierarchical-bot-organization` opsctl:`bot-organization` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
+- search-entry:97a6897d6cd181de6cbad577c510b8f77e661372ed9b8980642357802b34b25d section:`Status And Health` section_key:`status-and-health` title:Review sleeve-master and grand-master evidence title_key:`review-sleeve-master-and-grand-master-evidence` opsctl:`master-grandmaster-evidence` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
 - search-entry:d0744ed396c14397231a43061bd3c0f98192ec9c7038b35f4658ee641ba21bde section:`Status And Health` section_key:`status-and-health` title:Review system plumbing control title_key:`review-system-plumbing-control` opsctl:`system-plumbing-control` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
 - search-entry:75509af8d32c7f8dff82ce44dfdf3f8f7ce0061733c12acf69dd9a9ca9aead39 section:`Status And Health` section_key:`status-and-health` title:Review ten-pillar production excellence title_key:`review-ten-pillar-production-excellence` opsctl:`production-excellence` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
 - search-entry:f048a90ce2aa3a66196801c0d0c06873fb5102bd888d7e89498b2ec0524f0891 section:`Status And Health` section_key:`status-and-health` title:Review the cross-system drift mesh title_key:`review-the-cross-system-drift-mesh` opsctl:`system-drift-guard` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
+- search-entry:4af17b312c307014d883ca0c0e00fd7b3611a5c83adb8fdf67fcbecb19945ab4 section:`Status And Health` section_key:`status-and-health` title:Review the independent deadman monitor title_key:`review-the-independent-deadman-monitor` opsctl:`independent-runtime-monitor` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
+- search-entry:d8bfab81d952995db3e725770031a1e54d2bb0bb55348fb924dd9c86abf223a2 section:`Status And Health` section_key:`status-and-health` title:Review the ten-part production resilience contract title_key:`review-the-ten-part-production-resilience-contract` opsctl:`production-resilience` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
 - search-entry:d67c3b8bfd796b7ba5fa9ed44fcb628b61eb71f3dfa841091a1309c3e6e0bf1b section:`Status And Health` section_key:`status-and-health` title:Run production hardening watch title_key:`run-production-hardening-watch` opsctl:`production-hardening-watch` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
 - search-entry:c9994d1b6c30bba687625646026da154e91899e5294beab70202f89283afe2da section:`Status And Health` section_key:`status-and-health` title:Runtime gate dashboard title_key:`runtime-gate-dashboard` opsctl:`dashboard` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
 - search-entry:4b60f2351646885db58bcc2366437e4dd736dd6cf55ce08a2fdac505a3c85bbe section:`Status And Health` section_key:`status-and-health` title:Runtime status title_key:`runtime-status` opsctl:`status` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
 - search-entry:52642cb66c25bfe102046b575959fdfd7da8862ee6b3d1d79bb05d5fb84d03f5 section:`Status And Health` section_key:`status-and-health` title:Track production-quality SLO recurrence title_key:`track-production-quality-slo-recurrence` opsctl:`production-quality-slo` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
 - search-entry:fd98f9e05f04ad9fa5756467259f08f5660d6e646feebd104a41061470d61f5e section:`Status And Health` section_key:`status-and-health` title:Track readiness evidence accrual title_key:`track-readiness-evidence-accrual` opsctl:`readiness-evidence-accrual` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
 - search-entry:fd56b63365456606b1ac88f79b682e6d632c16386f7d6b35209bb22c71d6b94e section:`Status And Health` section_key:`status-and-health` title:Verify the durable live-order ledger title_key:`verify-the-durable-live-order-ledger` opsctl:`live-order-ledger` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
+- search-entry:55f380c0b0501fd8a3a2a7fb587b0c19d56370a1cde5e13cd9fcb4e8a0faab94 section:`Storage` section_key:`storage` title:Archive and compact legacy ops database drift evidence title_key:`archive-and-compact-legacy-ops-database-drift-evidence` opsctl:`ops-data-plane-compaction` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
+- search-entry:61cddf2d4d223c807bee6f12073ff67618a4baed263cc079219aa7112746691a section:`Storage` section_key:`storage` title:Repair external SSD disconnect and reconnect protection title_key:`repair-external-ssd-disconnect-and-reconnect-protection` opsctl:`storage-reconnect-infrabot` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
 - search-entry:7162b1728aa0badca09eeab49bafe5d36d327687a0c9f6a6c059cd95e147c9c3 section:`Storage` section_key:`storage` title:Repair local stateful storage regressions title_key:`repair-local-stateful-storage-regressions` opsctl:`stateful-storage-regression-guard` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
+- search-entry:bba5d29fe51d33f0fa94b5fec7520164361e1aa9ab5990d00b553bd4cbbe29c6 section:`Storage` section_key:`storage` title:Review external SSD disconnect and reconnect protection title_key:`review-external-ssd-disconnect-and-reconnect-protection` opsctl:`storage-reconnect-regression-guard` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
 - search-entry:e8dce5198877685a4116a8d493aabd0e79f722defb26ff3e3ba27bf329fee8b0 section:`Storage` section_key:`storage` title:Review or prune eligible local standby SQLite copies after BOT_LOGS soak title_key:`review-or-prune-eligible-local-standby-sqlite-copies-after-bot-logs-soak` opsctl:`storage-prune-standby` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
 - search-entry:8abb179beed85141e8937968e8cf4c59f087200b63c0574248d16b70591e8e8d section:`Storage` section_key:`storage` title:Run the storage disaster recovery bot title_key:`run-the-storage-disaster-recovery-bot` opsctl:`storage-disaster-recovery` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
 - search-entry:e56085c5fc172d09c7961f2369158a78fb4dd363adad9cc85bea1574485fd5a6 section:`Storage` section_key:`storage` title:Safe force-clear storage pressure supervisor title_key:`safe-force-clear-storage-pressure-supervisor` opsctl:`storage-pressure-clearance` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
@@ -793,17 +841,50 @@ Evaluates held covered calls against account aliases, DTE windows, ITM depth, ha
 
 ## Data Context Syncs
 
+### Analyst consensus estimates sync
+```bash
+cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
+./scripts/ops/opsctl.sh analyst-consensus-sync --json
+```
+
+Requires all 16 governed equities and revision-history coverage. Nasdaq analyst forecasts are bounded, checkpointed, and point-in-time; Alpha Vantage remains an optional credentialed fallback.
+The public Nasdaq route is internal personal research and paper context only. Commercial or live use requires separately verified data entitlements.
+
+### Central-bank cross-source synchronization
+```bash
+cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
+./scripts/ops/opsctl.sh central-bank-context-sync --json
+```
+
+Joins fresh central-bank rows to FX, sovereign macro, official events, USD liquidity, and cross-asset evidence before bot routing.
+
 ### Crypto market context sync
 ```bash
 cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
 ./scripts/ops/opsctl.sh crypto-market-sync --json
 ```
 
+### Decision context macro/micro mesh sync
+```bash
+cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
+./scripts/ops/opsctl.sh decision-context-sync --json
+```
+
+Refreshes and grades the twelve point-in-time context planes used by paper decisions, training, replay, and research. The report includes separate macro and micro percentages and has no order or promotion authority.
+
 ### FX market context sync
 ```bash
 cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
 ./scripts/ops/opsctl.sh fx-market-sync --json
 ```
+
+### Global central-bank policy and assets sync
+```bash
+cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
+./scripts/ops/opsctl.sh global-central-bank-sync --json
+```
+
+Collects the governed 32-bank BIS policy-rate and total-asset context with point-in-time history.
 
 ### Macro context sync
 ```bash
@@ -887,7 +968,7 @@ cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
 ./scripts/ops/opsctl.sh startup-start-prompt-test --dry-run --delay-seconds 0
 ```
 
-Verifies the startup prompt state artifact without showing the GUI prompt or starting the trading stack.
+Launches the signed helper in self-test mode and verifies its result contract without showing a notification or starting the trading stack.
 
 ### Install the startup Yes/No bot start prompt
 ```bash
@@ -895,7 +976,8 @@ cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
 ./scripts/ops/opsctl.sh startup-start-prompt --install --no-kickstart --no-browser
 ```
 
-Arms a login-time macOS banner plus Yes/No prompt for starting `schwab_trading_bot` through the guarded `opsctl start` path.
+Arms a login-time actionable macOS notification with `Start` and `Not Now` buttons for the guarded `opsctl start` path; a corrected Yes/No dialog is the fallback.
+No response, notification dismissal, or UI failure leaves the stack off and records the decision transport in `governance/health/startup_start_prompt_latest.json`.
 The startup prompt path suppresses Schwab browser auth, GUI Chrome opens, headless Chrome PDF/render helpers, and timeline auto-PDF work.
 The default install waits until the next login so it does not unexpectedly prompt or restart the stack right now.
 
@@ -1011,6 +1093,15 @@ cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
 ```
 
 Counts active, excluded, failed, and retired strategy experiments so profitability evidence cannot omit unsuccessful trials from multiple-testing correction.
+
+### Review the eight profitability hardening controls
+```bash
+cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
+./scripts/ops/opsctl.sh profitability-hardening --json
+```
+
+Audits derivative valuation, consensus execution, post-cost labels, regime gates, evidence-weighted risk, execution style, overlap control, and the persistent-loser retirement court.
+An armed control is not economic proof; fresh paper rows must demonstrate adoption before the evidence grade can advance.
 
 ### Review the locked profitability holdout vault
 ```bash
@@ -1229,8 +1320,11 @@ This rebuilds the documented report catalog first, then opens the report-ready b
 ### Open the retrain scorecard PDF
 ```bash
 cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
-open /Users/dankingsley/PycharmProjects/schwab_trading_bot/exports/sql_reports/retrain_scorecard_latest.pdf
+./scripts/ops/open_report_artifact.sh retrain
 ```
+
+Latest PDF path: `/Users/dankingsley/PycharmProjects/schwab_trading_bot/exports/sql_reports/retrain_scorecard_latest.pdf`.
+This renders the retrain scorecard on demand and falls back to HTML, markdown, or the current JSON evidence artifact.
 
 ### Open the sentiment PDF
 ```bash
@@ -1336,6 +1430,15 @@ cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
 
 Use these commands when you are preparing or launching a manual retrain cycle.
 
+### Evaluate or retire a strategy offspring
+```bash
+cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
+./scripts/ops/opsctl.sh strategy-generation --evaluate-offspring <OFFSPRING_ID> --evaluation-file <PATH> --json
+./scripts/ops/opsctl.sh strategy-generation --retire-offspring <OFFSPRING_ID> --reason '<AT_LEAST_12_CHARACTERS>' --json
+```
+
+Evaluation must be stored in the locked strategy-evaluation root and cryptographically bind the candidate model, generation manifest, dataset, holdout, replay, evaluator identity, and metrics. Qualification never grants paper or live execution authority.
+
 ### Force full retrain (bypass prechecks)
 ```bash
 cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
@@ -1365,6 +1468,56 @@ cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
 ```
 
 This is the safer manual retrain entrypoint because it refreshes stale artifacts and honors freshness checks before launching weekly retrain.
+
+### Inspect bounded strategy generations
+```bash
+cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
+./scripts/ops/opsctl.sh strategy-generation --json
+```
+
+Shows reproduction-grade parents, strategy generation, active-offspring caps, event-chain health, and the collection-only safety posture without creating or training anything.
+
+### Propose a bounded strategy generation
+```bash
+cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
+./scripts/ops/opsctl.sh strategy-generation --propose --json
+```
+
+Creates at most the configured number of dormant offspring manifests and fails closed when parent evidence, cooldown, disk reserve, or active-candidate capacity is insufficient.
+
+### Reconcile interrupted strategy offspring training
+```bash
+cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
+./scripts/ops/opsctl.sh strategy-generation --reconcile-stale --json
+```
+
+Quarantines a stale training lifecycle after the signed single-flight lock is released; it never grants execution authority or restarts training automatically.
+
+### Refresh one coherent training evidence epoch
+```bash
+cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
+./scripts/ops/opsctl.sh runtime-artifact-refresh --scope training --skip-dashboard --json
+```
+
+Refreshes the dependency-closed snapshot, point-in-time event, feature, label, lineage, replay, candidate-selection, schema, and training-runtime chain under one epoch ID.
+This command does not launch training, promotion, allocation, paper orders, or live orders.
+
+### Refresh training and profitability evidence together
+```bash
+cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
+./scripts/ops/opsctl.sh runtime-artifact-refresh --scope training-profitability --skip-dashboard --json
+```
+
+Refreshes both evidence graphs in one bounded cycle so cross-artifact consumers cannot combine old and new proof.
+A blocked result is evidence debt, not permission to bypass a launch or promotion gate.
+
+### Train the next strategy offspring
+```bash
+cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
+./scripts/ops/opsctl.sh strategy-generation --train-next --json
+```
+
+Runs one isolated offspring training job only when training-runtime and host-pressure controls explicitly release the shared host.
 
 ### Training and labeling intelligence
 ```bash
@@ -1494,6 +1647,16 @@ cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
 
 Checks the same ten structural controls across twelve production domains while reporting critical runtime failures and evidence-only debt separately.
 
+### Capture candidate-bound delayed-quote replay fills
+```bash
+cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
+./scripts/ops/opsctl.sh market-replay-fill-capture --apply --json
+```
+
+Matches candidate paper executions only to later, high-quality broker-native market observations and routes immutable replay records into the independent-fill inbox.
+Previously captured rows are retained by immutable identity; recurring runs scan only date-relevant bounded tails for unmatched orders instead of rereading full decision history.
+This is conservative replay evidence, not a Schwab fill receipt, and it has no promotion or live-order authority.
+
 ### Coinbase API health
 ```bash
 cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
@@ -1599,10 +1762,12 @@ This refreshes the health-gates artifact directly when stale health-gate state i
 ### Refresh readiness evidence without the full dashboard
 ```bash
 cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
-./scripts/ops/opsctl.sh readiness-evidence-refresh --apply --json
+./scripts/ops/opsctl.sh readiness-evidence-refresh --profile accrual --apply --json
+./scripts/ops/opsctl.sh readiness-evidence-refresh --profile production --apply --json
+./scripts/ops/opsctl.sh readiness-evidence-refresh --profile dashboard --apply --json
 ```
 
-Runs the serialized candidate-bound evidence lane with per-step timeouts and a cooldown. It has no training-launch or live-order authority.
+The fifteen-stage accrual profile maintains organic collection every 15 minutes. The hourly production profile keeps all ten pillar owners, risk inputs, recovery proof, immutable evidence, and derived readiness controls current. The dashboard profile refreshes the bounded hot-state surface. All profiles are serialized, independently cooled down, market-data/paper-only, and have no training-launch or live-order authority.
 
 ### Refresh runtime dashboard contracts
 ```bash
@@ -1610,7 +1775,16 @@ cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
 ./scripts/ops/opsctl.sh dashboard-refresh
 ```
 
-This hydrates the runtime gate dashboard prerequisites first so missing sections become explicit health outputs instead of silent omissions.
+This rebuilds the full dependency-closed runtime contract graph. Normal dashboard reads use a smaller freshness profile so collection is not forced to compete with every verifier.
+
+### Refresh source-backed capability proofs
+```bash
+cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
+./scripts/ops/opsctl.sh capability-materialization --json
+```
+
+Materializes exchange calendars, point-in-time session state, the versioned derivative contract master, and versioned stress scenarios into four direct content-addressed proof receipts.
+Run this before collector capability routing; it cannot fetch external data, change decisions, place orders, mutate the registry, or promote a bot.
 
 ### Repair safe cross-system drift surfaces
 ```bash
@@ -1636,6 +1810,15 @@ cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
 
 This repairs the sendout PDF bundle, verifies PDF integrity, and blocks regressions where paper-performance or post-trade lose their report-ready renderers.
 
+### Review bot profitability and scalability
+```bash
+cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
+./scripts/ops/opsctl.sh bot-profitability-scalability --json
+```
+
+Publishes candidate-bound per-bot regime learning, forward post-cost ranking, marginal contribution, lifecycle advice, capacity curves, bounded top-K activation, and shared feature, checkpoint, archive, resource, and model-cache evidence.
+Control maturity and economic evidence are graded separately; the manifest cannot allocate capital or create an order.
+
 ### Review causal readiness blockers
 ```bash
 cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
@@ -1651,6 +1834,42 @@ cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
 ```
 
 Run this before Codex-authored commits or GitHub updates to catch source-of-truth drift, mixed-domain staging, and separate-domain README/docs leakage.
+
+### Review collector capabilities and bot subscriptions
+```bash
+cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
+./scripts/ops/opsctl.sh collector-capability-control --json
+```
+
+Validates all 25 logical data planes, maps every current physical collector, and binds every organized bot to a content-addressed shared subscription profile.
+Candidate-required gaps block promotion, optional catalog gaps remain advisory, and each field-level claim publishes proof plus primary/failover provider selection.
+This control cannot fetch data, launch processes, change decisions, place orders, mutate the registry, or promote a bot.
+
+### Review exclusive control-surface ownership
+```bash
+cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
+./scripts/ops/opsctl.sh control-surface-ownership --json
+```
+
+Fails closed when a critical mutable resource has duplicate ownership, a missing owner route, or no declared coordination primitive.
+
+### Review hierarchical bot organization
+```bash
+cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
+./scripts/ops/opsctl.sh bot-organization --json
+```
+
+Audits every registered bot's sleeve, sub-sleeve, cohort, role, provenance, correlation cluster, and resource posture.
+The generated ensemble contract is shadow-only and has no paper or live execution authority.
+
+### Review sleeve-master and grand-master evidence
+```bash
+cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
+./scripts/ops/opsctl.sh master-grandmaster-evidence --json
+```
+
+Synthesizes hierarchy, multi-axis regime context, paper truth, source quality, runtime capacity, positions, execution calibration, and post-cost evidence.
+The control is advisory and shadow-only; it cannot create orders, mutate the registry, allocate capital, or promote live execution.
 
 ### Review system plumbing control
 ```bash
@@ -1677,6 +1896,23 @@ cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
 
 This rolls command drift, summary/report drift, governance drift, workstation drift, and stack-runtime drift into one registry-backed health view.
 
+### Review the independent deadman monitor
+```bash
+cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
+./scripts/ops/opsctl.sh independent-runtime-monitor --json
+```
+
+Reads critical health artifacts from a separate stdlib-only process and reports local versus off-host monitoring readiness without performing repairs or orders.
+
+### Review the ten-part production resilience contract
+```bash
+cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
+./scripts/ops/opsctl.sh production-resilience --json
+```
+
+Reports framework implementation, unattended paper-soak readiness, and live-promotion evidence separately across the ten resilience hardeners.
+This command never unlocks live execution and never treats a control grade as guaranteed profitability.
+
 ### Run production hardening watch
 ```bash
 cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
@@ -1691,7 +1927,7 @@ cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
 ./scripts/ops/opsctl.sh dashboard
 ```
 
-By default this now runs a runtime-artifact refresh pass first. Use `./scripts/ops/opsctl.sh dashboard --skip-refresh` when you want a pure read of the current artifact set.
+By default this runs the bounded dashboard evidence profile first. Use `./scripts/ops/opsctl.sh dashboard --skip-refresh` when you want a pure read of the current artifact set, or `dashboard-refresh` for an explicit full graph rebuild.
 
 ### Runtime status
 ```bash
@@ -1726,6 +1962,22 @@ After independently verifying broker truth, use `--resolve-intent ID --resolutio
 
 ## Storage
 
+### Archive and compact legacy ops database drift evidence
+```bash
+cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
+./scripts/ops/opsctl.sh ops-data-plane-compaction --apply --json
+```
+
+Requires an explicit stopped stack. It writes a verified, readable gzip JSONL rollup to the configured cold archive, preserves source JSONL as detail authority, compacts the hot SQLite database, and runs an integrity check before restart.
+
+### Repair external SSD disconnect and reconnect protection
+```bash
+cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
+./scripts/ops/opsctl.sh storage-reconnect-infrabot --apply --json
+```
+
+Repairs the guard installation and storage recovery dependencies without granting live-order authority.
+
 ### Repair local stateful storage regressions
 ```bash
 cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
@@ -1733,6 +1985,14 @@ cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
 ```
 
 This guard keeps SQL shards, execution-lane telemetry, and SQL writer launchd logs routed away from the internal disk.
+
+### Review external SSD disconnect and reconnect protection
+```bash
+cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
+./scripts/ops/opsctl.sh storage-reconnect-regression-guard --json
+```
+
+Semantically typechecks the Swift guard, verifies its compiled runtime binary and LaunchAgent, and reports the last atomic disconnect/failover transition.
 
 ### Review or prune eligible local standby SQLite copies after BOT_LOGS soak
 ```bash
@@ -1761,6 +2021,8 @@ This is the parent storage pressure bot. It forces safe refresh/checkpoint/drain
 cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
 ./scripts/ops/opsctl.sh storage-safe-eject
 ```
+
+If the SSD is only standby or cold storage, eject releases its handles without restarting paper collection. If it is the active route, the guard first performs one bounded local failover.
 
 ### Switch collection back to the external BOT_LOGS drive
 ```bash

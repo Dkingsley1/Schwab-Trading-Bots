@@ -72,8 +72,19 @@ if [[ "${PRODUCTION_HARDENING_WATCH_REFRESH_EVIDENCE:-1}" == "1" ]]; then
   /usr/bin/nice -n "$WATCH_NICE" "$PROJECT_ROOT/scripts/ops/opsctl.sh" \
     readiness-evidence-refresh \
     --apply \
+    --profile "${READINESS_EVIDENCE_REFRESH_PROFILE:-accrual}" \
     --cooldown-minutes "${READINESS_EVIDENCE_REFRESH_COOLDOWN_MINUTES:-15}" \
     --timeout-seconds "${READINESS_EVIDENCE_REFRESH_STEP_TIMEOUT_SECONDS:-180}" \
+    --json
+fi
+
+if [[ "${PRODUCTION_PILLAR_REFRESH_ENABLED:-1}" == "1" ]]; then
+  /usr/bin/nice -n "$WATCH_NICE" "$PROJECT_ROOT/scripts/ops/opsctl.sh" \
+    readiness-evidence-refresh \
+    --apply \
+    --profile production \
+    --cooldown-minutes "${PRODUCTION_PILLAR_REFRESH_COOLDOWN_MINUTES:-45}" \
+    --timeout-seconds "${PRODUCTION_PILLAR_REFRESH_STEP_TIMEOUT_SECONDS:-300}" \
     --json
 fi
 

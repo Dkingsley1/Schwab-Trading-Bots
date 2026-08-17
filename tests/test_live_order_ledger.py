@@ -151,3 +151,43 @@ def test_event_chain_tampering_is_detected(tmp_path: Path) -> None:
     integrity = ledger.verify_event_chain()
     assert integrity["ok"] is False
     assert any("event_hash_mismatch" in error for error in integrity["errors"])
+
+
+def test_materialized_intent_state_tampering_is_detected(tmp_path: Path) -> None:
+    ledger = LiveOrderLedger(tmp_path / "orders.sqlite3")
+    _reserve(ledger)
+    ledger.mark_submitting("decision-1")
+
+    with sqlite3.connect(str(ledger.path)) as conn:
+        conn.execute("UPDATE order_intents SET state = 'filled' WHERE intent_id = 'decision-1'")
+
+    integrity = ledger.verify_integrity()
+    assert integrity["ok"] is False
+    assert integrity["state_mismatch_count"] == 1
+    assert "intent_materialized_state_mismatch:decision-1" in integrity["errors"]
+
+
+def test_payload_hash_tampering_is_detected_by_full_integrity_probe(tmp_path: Path) -> None:
+    ledger = LiveOrderLedger(tmp_path / "orders.sqlite3")
+    _reserve(ledger)
+
+    with sqlite3.connect(str(ledger.path)) as conn:
+        conn.execute("UPDATE order_intents SET payload_json = '{\"tampered\":true}' WHERE intent_id = 'decision-1'")
+
+    integrity = ledger.verify_integrity()
+    payload = control.build_payload(tmp_path, ledger_path=ledger.path)
+    assert integrity["ok"] is False
+    assert integrity["payload_hash_mismatch_count"] == 1
+    assert payload["ok"] is False
+    assert "order_ledger_integrity_invalid" in payload["blockers"]
+
+
+def test_ledger_enforces_wal_full_sync_and_foreign_keys(tmp_path: Path) -> None:
+    ledger = LiveOrderLedger(tmp_path / "orders.sqlite3")
+
+    integrity = ledger.verify_integrity()
+
+    assert integrity["ok"] is True
+    assert integrity["sqlite"]["journal_mode"] == "wal"
+    assert integrity["sqlite"]["synchronous"] >= 2
+    assert integrity["sqlite"]["foreign_key_error_count"] == 0

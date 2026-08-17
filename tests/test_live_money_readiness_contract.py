@@ -181,6 +181,24 @@ def test_live_money_contract_clears_after_target_only_when_all_sections_are_a_or
     assert payload["blocking_reasons"] == []
 
 
+def test_live_money_contract_reports_separate_all_a_plus_target(tmp_path: Path) -> None:
+    _write_ready_sources(tmp_path)
+
+    payload = src.build_payload(tmp_path, as_of_date="2026-08-26")
+
+    summary = payload["grade_summary"]
+    assert payload["target_grade"] == "A+"
+    assert summary["target_grade"] == "A+"
+    assert summary["a_plus_required_section_count"] < summary["required_section_count"]
+    assert summary["all_required_sections_a_plus"] is False
+    assert 0.0 < summary["a_plus_readiness_percent"] < 100.0
+    assert all(
+        section["a_plus_remediation"]
+        for section in payload["sections"]
+        if not section["a_plus_ready"]
+    )
+
+
 def test_live_money_contract_blocks_when_controlled_profitability_is_a_plus_but_economic_evidence_is_f(
     tmp_path: Path,
 ) -> None:
@@ -272,6 +290,32 @@ def test_live_money_contract_blocks_current_replay_and_soak_debt(tmp_path: Path)
     assert payload["faithful_live_money_ready"] is False
     assert "paper_execution_truth_below_A" in payload["blocking_reasons"]
     assert "decision_replay_harness_below_A" in payload["blocking_reasons"]
+    assert "continuous_soak_below_A" in payload["blocking_reasons"]
+
+
+def test_live_money_contract_never_treats_capacity_as_completed_soak_evidence(tmp_path: Path) -> None:
+    _write_ready_sources(tmp_path)
+    health = tmp_path / "governance" / "health"
+    _write_json(
+        health / "continuous_soak_integrity_control_latest.json",
+        {
+            "ok": True,
+            "control_grade": "A+",
+            "operational_capacity_ready": True,
+            "operational_capacity_grade": "A+",
+            "clean_window_elapsed_hours": 12.0,
+            "clean_720_hours_complete": False,
+            "elapsed_evidence_grade": "F",
+        },
+    )
+
+    payload = src.build_payload(tmp_path, as_of_date="2026-08-26")
+
+    soak = next(section for section in payload["sections"] if section["section_id"] == "continuous_soak")
+    assert soak["ready"] is False
+    assert soak["grade"] == "F"
+    assert soak["evidence"]["operational_capacity_grade"] == "A+"
+    assert soak["evidence"]["clean_720_hours_complete"] is False
     assert "continuous_soak_below_A" in payload["blocking_reasons"]
 
 

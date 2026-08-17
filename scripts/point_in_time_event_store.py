@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
+import os
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable
@@ -38,6 +40,34 @@ def _parse_ts(raw: Any) -> str:
         return datetime.fromisoformat(text.replace("Z", "+00:00")).astimezone(timezone.utc).isoformat()
     except Exception:
         return text
+
+
+def _parse_datetime(raw: Any) -> datetime | None:
+    text = str(raw or "").strip()
+    if not text:
+        return None
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except Exception:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _sha256_json(payload: Any) -> str:
+    blob = json.dumps(payload, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(blob.encode("utf-8")).hexdigest()
+
+
+def _write_payload(path: Path, payload: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    with tmp.open("w", encoding="utf-8") as handle:
+        handle.write(json.dumps(payload, ensure_ascii=True, indent=2) + "\n")
+        handle.flush()
+        os.fsync(handle.fileno())
+    os.replace(tmp, path)
 
 
 def _read_jsonl(path: Path) -> list[dict[str, Any]]:
@@ -241,7 +271,14 @@ def _dedupe_events(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return list(deduped.values())
 
 
-def build_event_store(project_root: Path, *, limit: int) -> dict[str, Any]:
+def build_event_store(
+    project_root: Path,
+    *,
+    limit: int,
+    now: datetime | None = None,
+    future_tolerance_seconds: float = 300.0,
+) -> dict[str, Any]:
+    now = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
     patterns = (
         "governance/events/live_macro_events_*.jsonl",
         "governance/events/live_macro_media_events_*.jsonl",
@@ -268,7 +305,45 @@ def build_event_store(project_root: Path, *, limit: int) -> dict[str, Any]:
                     }
                 )
     events.extend(_iter_health_artifact_events(project_root))
-    events = _dedupe_events(events)
+    input_event_count = len(events)
+    source_manifest_sha256 = _sha256_json(
+        sorted(
+            (
+                {
+                    "timestamp_utc": str(row.get("timestamp_utc") or ""),
+                    "event_type": str(row.get("event_type") or ""),
+                    "category": str(row.get("category") or ""),
+                    "join_key": str(row.get("join_key") or ""),
+                    "source": str(row.get("source") or ""),
+                }
+                for row in events
+            ),
+            key=lambda row: (
+                row["timestamp_utc"],
+                row["category"],
+                row["join_key"],
+                row["event_type"],
+                row["source"],
+            ),
+        )
+    )
+    future_cutoff = now.timestamp() + max(float(future_tolerance_seconds), 0.0)
+    accepted_events: list[dict[str, Any]] = []
+    quarantined_events: list[dict[str, Any]] = []
+    future_event_count = 0
+    invalid_timestamp_count = 0
+    for row in events:
+        parsed = _parse_datetime(row.get("timestamp_utc"))
+        if parsed is None:
+            invalid_timestamp_count += 1
+            quarantined_events.append({**row, "quarantine_reason": "invalid_effective_timestamp"})
+            continue
+        if parsed.timestamp() > future_cutoff:
+            future_event_count += 1
+            quarantined_events.append({**row, "quarantine_reason": "future_effective_timestamp"})
+            continue
+        accepted_events.append(row)
+    events = _dedupe_events(accepted_events)
     events.sort(key=lambda row: row.get("timestamp_utc", ""), reverse=True)
     category_counts: dict[str, int] = {}
     latest_by_category: dict[str, dict[str, Any]] = {}
@@ -283,14 +358,31 @@ def build_event_store(project_root: Path, *, limit: int) -> dict[str, Any]:
                 "join_key": str(row.get("join_key") or ""),
             },
         )
+    point_in_time_only = future_event_count == 0 and invalid_timestamp_count == 0
+    event_manifest_sha256 = _sha256_json(events)
     return {
-        "timestamp_utc": datetime.now(timezone.utc).isoformat(),
-        "schema_version": 1,
-        "ok": True,
+        "timestamp_utc": now.isoformat(),
+        "schema_version": 2,
+        "ok": point_in_time_only,
+        "overall_status": "ready" if point_in_time_only else "blocked_quarantined_events",
+        "input_event_count": input_event_count,
         "event_count": int(len(events)),
         "category_counts": category_counts,
         "latest_by_category": latest_by_category,
         "events": events[: max(int(limit), 1)],
+        "quarantined_event_count": len(quarantined_events),
+        "quarantined_events": quarantined_events[:20],
+        "point_in_time_contract": {
+            "point_in_time_only": point_in_time_only,
+            "future_event_count": future_event_count,
+            "invalid_timestamp_count": invalid_timestamp_count,
+            "quarantined_count": len(quarantined_events),
+            "future_tolerance_seconds": max(float(future_tolerance_seconds), 0.0),
+            "effective_cutoff_utc": datetime.fromtimestamp(future_cutoff, tz=timezone.utc).isoformat(),
+            "source_manifest_sha256": source_manifest_sha256,
+            "event_manifest_sha256": event_manifest_sha256,
+            "join_policy": "event effective time must be less than or equal to the decision snapshot time",
+        },
     }
 
 
@@ -304,8 +396,7 @@ def main() -> int:
 
     payload = build_event_store(Path(args.project_root).resolve(), limit=int(args.limit))
     out_path = Path(args.out_file)
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    out_path.write_text(json.dumps(payload, ensure_ascii=True, indent=2), encoding="utf-8")
+    _write_payload(out_path, payload)
     if args.json:
         print(json.dumps(payload, ensure_ascii=True))
     else:

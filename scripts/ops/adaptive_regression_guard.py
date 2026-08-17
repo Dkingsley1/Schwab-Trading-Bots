@@ -695,6 +695,20 @@ def _source_verification_contract_surface(project_root: Path, loader: ArtifactLo
         and verified_source_count >= 6
         and total_sources >= verified_source_count
     )
+    verified_redundancy_advisory = bool(
+        payload
+        and status == "ready"
+        and payload.get("ok") is not False
+        and all_verified
+        and degraded
+        and not unverified
+        and not unverified_degraded
+        and not stale_artifacts
+        and not low_confidence
+        and min_confidence >= 0.70
+        and total_sources > 0
+        and verified_source_count == total_sources
+    )
 
     blockers = ordered_unique(
         [
@@ -719,12 +733,16 @@ def _source_verification_contract_surface(project_root: Path, loader: ArtifactLo
     if optional_context_source_debt:
         hard_blockers = [item for item in blockers if item in {"source_verification_missing", "source_verification_no_sources"}]
         warnings = ordered_unique(warnings + [item for item in blockers if item not in set(hard_blockers)])
+    elif verified_redundancy_advisory:
+        hard_blockers = [item for item in blockers if item != "source_verification_degraded_artifacts"]
+        warnings = ordered_unique(warnings + ["source_verification_verified_redundancy_warning"])
     optional_context_advisory_only = bool(
         optional_context_source_debt
         and not hard_blockers
         and set(warnings).issubset(OPTIONAL_SOURCE_DEBT_WARNING_TOKENS)
     )
-    state = "blocked" if hard_blockers else "ready" if optional_context_advisory_only else "degraded" if warnings else "ready"
+    source_warning_advisory_only = bool(optional_context_advisory_only or verified_redundancy_advisory)
+    state = "blocked" if hard_blockers else "ready" if source_warning_advisory_only else "degraded" if warnings else "ready"
     return _contract_row(
         surface_id="guard:source_verification_contract",
         surface="source_verification_contract",
@@ -743,6 +761,8 @@ def _source_verification_contract_surface(project_root: Path, loader: ArtifactLo
             "min_source_confidence_score": min_confidence,
             "optional_context_source_debt": optional_context_source_debt,
             "optional_context_advisory_only": optional_context_advisory_only,
+            "verified_redundancy_advisory": verified_redundancy_advisory,
+            "source_warning_advisory_only": source_warning_advisory_only,
             "read_only_source_advisory_context": _read_only_source_advisory_context(project_root, loader),
             "blockers": hard_blockers,
             "warnings": warnings,
@@ -1074,6 +1094,53 @@ def _bounded_transient_storage_drain_managed(
     )
 
 
+def _bounded_steady_state_storage_managed(
+    storage: dict[str, Any],
+    *,
+    storage_state: str,
+    severity: str,
+    pressure_index: float,
+    total_pending: int,
+    core_pending: int,
+    support_pending: int,
+    oldest: float,
+    backpressure_quality: float,
+) -> bool:
+    continuous_soak = _as_dict(storage.get("continuous_run_soak_contract"))
+    route = _as_dict(storage.get("external_route_verification"))
+    integrity = _as_dict(storage.get("data_integrity"))
+    writer = _as_dict(storage.get("writer_shedding"))
+    disk = _as_dict(_as_dict(storage.get("storage_plane_contract")).get("disk_contract"))
+    return bool(
+        storage_state == "ready"
+        and _bool(storage.get("ok", False))
+        and severity in {"", "stable", "ready", "low", "normal", "calm"}
+        and 0.35 <= pressure_index <= 0.85
+        and total_pending <= 5_000
+        and core_pending <= 2_500
+        and support_pending <= 2_500
+        and oldest <= BOUNDED_TRANSIENT_STORAGE_AGE_MAX_SECONDS
+        and bool(continuous_soak)
+        and _bool(continuous_soak.get("soak_ready", False))
+        and not _as_list(continuous_soak.get("blockers"))
+        and _lower(route.get("verification_state")) in STORAGE_ROUTE_READY_STATES
+        and bool(integrity)
+        and all(
+            _safe_int(integrity.get(key), 0) == 0
+            for key in (
+                "sql_invalid_lines",
+                "sql_overlay_invalid_lines",
+                "sql_overlay_oversize_payloads",
+                "sql_overlay_ops_write_failures",
+            )
+        )
+        and not _as_list(writer.get("hard_breaches"))
+        and not _as_list(writer.get("elevated_breaches"))
+        and not bool(disk.get("emergency_disk_guard", False))
+        and backpressure_quality >= 95.0
+    )
+
+
 def _runtime_storage_contract_surface(project_root: Path, loader: ArtifactLoader, max_artifact_age_minutes: int) -> dict[str, Any]:
     max_age = min(int(max_artifact_age_minutes), 30)
     runtime_path, runtime, runtime_age, runtime_stale = _artifact_payload(project_root, "runtime_throttle_control_latest.json", loader=loader, max_age_minutes=max_age)
@@ -1157,6 +1224,17 @@ def _runtime_storage_contract_surface(project_root: Path, loader: ArtifactLoader
         oldest_threshold=oldest_threshold,
         backpressure_quality=backpressure_quality,
     )
+    bounded_steady_state_storage_managed = _bounded_steady_state_storage_managed(
+        storage,
+        storage_state=storage_state,
+        severity=storage_severity,
+        pressure_index=pressure_index,
+        total_pending=raw_total_pending,
+        core_pending=raw_core_pending,
+        support_pending=raw_support_pending,
+        oldest=raw_oldest,
+        backpressure_quality=backpressure_quality,
+    )
     compute_level = _lower(runtime.get("compute_pressure_level"))
     memory_level = _lower(runtime.get("memory_pressure_level"))
     host_saturation = _safe_float(runtime.get("host_saturation_score"), 0.0)
@@ -1202,7 +1280,12 @@ def _runtime_storage_contract_surface(project_root: Path, loader: ArtifactLoader
     overlay_active = bool(_as_dict(storage_overlay).get("active", False) or managed_pressure_view)
     storage_clear = bool(
         storage_state == "ready"
-        and (pressure_index < 0.5 or small_residual_drain_managed or bounded_transient_drain_managed)
+        and (
+            pressure_index < 0.5
+            or small_residual_drain_managed
+            or bounded_transient_drain_managed
+            or bounded_steady_state_storage_managed
+        )
         and total_pending <= pending_threshold
         and oldest <= oldest_threshold
     )
@@ -1323,7 +1406,12 @@ def _runtime_storage_contract_surface(project_root: Path, loader: ArtifactLoader
             "runtime_throttle_degraded" if runtime and runtime_state == "degraded" and not runtime_advisory_ready else "",
             "ingestion_storage_degraded" if storage and storage_state == "degraded" else "",
             "storage_pressure_index_elevated"
-            if pressure_index > 0.50 and not (small_residual_drain_managed or bounded_transient_drain_managed)
+            if pressure_index > 0.50
+            and not (
+                small_residual_drain_managed
+                or bounded_transient_drain_managed
+                or bounded_steady_state_storage_managed
+            )
             else "",
             "host_saturation_elevated"
             if host_saturation > 60.0
@@ -1377,6 +1465,7 @@ def _runtime_storage_contract_surface(project_root: Path, loader: ArtifactLoader
             "managed_pressure_view": managed_pressure_view,
             "small_residual_drain_managed": small_residual_drain_managed,
             "bounded_transient_drain_managed": bounded_transient_drain_managed,
+            "bounded_steady_state_storage_managed": bounded_steady_state_storage_managed,
             "external_available_gb": _safe_float(disk_contract.get("external_available_gb"), 0.0),
             "external_used_percent": _safe_float(disk_contract.get("external_used_percent"), 0.0),
             "blockers": blockers,
@@ -1512,6 +1601,17 @@ def _ingestion_storage_degradation_floor_surface(project_root: Path, loader: Art
         oldest_threshold=oldest_threshold,
         backpressure_quality=backpressure_quality,
     )
+    bounded_steady_state_storage_managed = _bounded_steady_state_storage_managed(
+        storage,
+        storage_state=storage_state,
+        severity=severity,
+        pressure_index=pressure_index,
+        total_pending=total_pending,
+        core_pending=core_pending,
+        support_pending=support_pending,
+        oldest=oldest,
+        backpressure_quality=backpressure_quality,
+    )
     raw_live = _as_dict(backpressure.get("raw_live"))
     overlay_adjusted = _bool(backpressure.get("overlay_adjusted", False))
     overlay_pressure_clear = _bool(backpressure.get("overlay_pressure_clear", False))
@@ -1519,7 +1619,12 @@ def _ingestion_storage_degradation_floor_surface(project_root: Path, loader: Art
     storage_operationally_clear = bool(
         storage_state == "ready"
         and severity not in {"critical", "high", "blocked"}
-        and (pressure_index < 0.5 or small_residual_drain_managed or bounded_transient_drain_managed)
+        and (
+            pressure_index < 0.5
+            or small_residual_drain_managed
+            or bounded_transient_drain_managed
+            or bounded_steady_state_storage_managed
+        )
         and total_pending <= pending_threshold
         and core_pending <= pending_threshold
         and oldest <= oldest_threshold
@@ -1541,7 +1646,14 @@ def _ingestion_storage_degradation_floor_surface(project_root: Path, loader: Art
     )
     pressure_present = bool(
         hard_pressure_breach
-        or (pressure_index >= 0.5 and not (small_residual_drain_managed or bounded_transient_drain_managed))
+        or (
+            pressure_index >= 0.5
+            and not (
+                small_residual_drain_managed
+                or bounded_transient_drain_managed
+                or bounded_steady_state_storage_managed
+            )
+        )
         or quality_pressure_present
     )
     collector_intake_optional_safe = bool(
@@ -1584,7 +1696,12 @@ def _ingestion_storage_degradation_floor_surface(project_root: Path, loader: Art
         [
             "ingestion_storage_degraded" if storage and storage_state == "degraded" else "",
             "storage_pressure_index_elevated"
-            if 0.5 <= pressure_index < 1.5 and not (small_residual_drain_managed or bounded_transient_drain_managed)
+            if 0.5 <= pressure_index < 1.5
+            and not (
+                small_residual_drain_managed
+                or bounded_transient_drain_managed
+                or bounded_steady_state_storage_managed
+            )
             else "",
             "storage_recovery_quality_below_floor_advisory" if recovery_quality < 75.0 and not hard_pressure_breach else "",
             "storage_recovery_quality_below_target" if 75.0 <= recovery_quality < 95.0 else "",
@@ -1673,6 +1790,7 @@ def _ingestion_storage_degradation_floor_surface(project_root: Path, loader: Art
             "managed_pressure_view": managed_pressure_view,
             "small_residual_drain_managed": small_residual_drain_managed,
             "bounded_transient_drain_managed": bounded_transient_drain_managed,
+            "bounded_steady_state_storage_managed": bounded_steady_state_storage_managed,
             "storage_operationally_clear": storage_operationally_clear,
             "storage_quality_advisory_only": storage_quality_advisory_only,
             "external_available_gb": _safe_float(disk_contract.get("external_available_gb"), 0.0),
@@ -1719,8 +1837,17 @@ def _backlog_pcore_contract_surface(project_root: Path, loader: ArtifactLoader, 
     active_catchup_target_required = bool(accelerator and not backlog_green)
     host_lane = _as_dict(accelerator.get("host_lane_contract"))
     memory_worker_cap = _safe_int(host_lane.get("memory_worker_cap"), 0)
-    idle_worker_floor = min(4, memory_worker_cap) if backlog_green and memory_worker_cap > 0 else 4
+    # The accelerator's maintenance posture intentionally parks at three P-core
+    # workers once lines, age, and overlays are green.  Reserve the wider floor
+    # for active catch-up so an idle maintenance contract cannot fail itself.
+    idle_worker_floor = min(3, memory_worker_cap) if backlog_green and memory_worker_cap > 0 else 3 if backlog_green else 4
     operational_worker_floor = 6 if active_catchup_target_required else idle_worker_floor
+    safe_idle_worker_floor_relief = bool(
+        backlog_green
+        and not active_catchup_target_required
+        and selected >= operational_worker_floor
+        and operational_worker_floor < 4
+    )
 
     blockers = ordered_unique(
         [
@@ -1778,6 +1905,7 @@ def _backlog_pcore_contract_surface(project_root: Path, loader: ArtifactLoader, 
             "backlog_green": backlog_green,
             "active_catchup_target_required": active_catchup_target_required,
             "operational_worker_floor": operational_worker_floor,
+            "safe_idle_worker_floor_relief": safe_idle_worker_floor_relief,
             "memory_worker_cap": memory_worker_cap,
             "shard_link_writer_lanes": shard_lanes,
             "max_shard_link_writer_lanes": max_shard_lanes,

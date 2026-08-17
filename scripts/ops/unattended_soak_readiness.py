@@ -35,6 +35,7 @@ MANAGED_WARNING_NAMES = {
     "host_not_on_ac_power_operator_approved_battery_override",
     "storage_margin_managed_by_approved_cold_archive_spillover",
     "zero_touch_remote_pager_missing_mobile_operator_coverage_active",
+    "capability_optional_catalog_debt_advisory",
 }
 
 
@@ -794,6 +795,170 @@ def _freshness_contract(project_root: Path) -> dict[str, Any]:
     }
 
 
+def _self_healing_sentinel_contract(project_root: Path) -> dict[str, Any]:
+    path = project_root / "governance" / "health" / "soak_reliability_sentinel_latest.json"
+    payload = load_json(path)
+    age = payload_age_minutes(payload, path) if payload else None
+    fresh = bool(age is not None and float(age) <= 20.0)
+    ready = bool(payload.get("ok", False) and str(payload.get("overall_status") or "") in {"ready", "watch"})
+    blockers: list[str] = []
+    if not payload:
+        blockers.append("soak_reliability_sentinel_missing")
+    elif not fresh:
+        blockers.append("soak_reliability_sentinel_stale")
+    elif not ready:
+        blockers.append("soak_reliability_sentinel_not_ready")
+    return {
+        "status": "ready" if not blockers else "blocked",
+        "ready": not blockers,
+        "score": 100.0 if not blockers else 0.0,
+        "grade": "A+" if not blockers else "F",
+        "path": str(path),
+        "age_minutes": round(float(age), 3) if age is not None else None,
+        "max_age_minutes": 20.0,
+        "blockers": blockers,
+        "warnings": [],
+        "sentinel_blockers": list(payload.get("blockers") or []),
+        "evidence_epoch": payload.get("evidence_epoch") if isinstance(payload.get("evidence_epoch"), dict) else {},
+    }
+
+
+def _collector_capability_contract(project_root: Path) -> dict[str, Any]:
+    config_path = project_root / "config" / "collector_capability_catalog_v1.json"
+    path = project_root / "governance" / "health" / "collector_capability_control_latest.json"
+    if not config_path.is_file() and not path.is_file():
+        return {
+            "status": "legacy_not_configured",
+            "ready": True,
+            "score": 100.0,
+            "grade": "A+",
+            "configured": False,
+            "blockers": [],
+            "warnings": [],
+            "managed_controls": [],
+        }
+
+    payload = load_json(path)
+    age = payload_age_minutes(payload, path) if payload else None
+    summary = _dict(payload.get("summary"))
+    mapping = _dict(payload.get("current_collector_mapping"))
+    authority = _dict(payload.get("authority_contract"))
+    coverage_debt = _dict(payload.get("coverage_debt"))
+    blockers: list[str] = []
+    warnings: list[str] = []
+    managed_controls: list[str] = []
+    if not payload:
+        blockers.append("collector_capability_control_missing")
+    elif age is None or float(age) > 30.0:
+        blockers.append("collector_capability_control_stale")
+    if payload and payload.get("ok") is not True:
+        blockers.append("collector_capability_control_structurally_blocked")
+    if payload and mapping.get("complete") is not True:
+        blockers.append("collector_capability_current_collectors_unmapped")
+    if payload and _safe_float(summary.get("bot_binding_coverage_ratio"), 0.0) < 1.0:
+        blockers.append("collector_capability_bot_binding_incomplete")
+    if payload and any(bool(value) for value in authority.values()):
+        blockers.append("collector_capability_authority_contract_unsafe")
+    if payload and payload.get("paper_soak_ready") is not True:
+        blockers.append("collector_capability_paper_soak_not_ready")
+    if payload and _safe_int(coverage_debt.get("gap_count"), 0) > 0:
+        warnings.append("capability_optional_catalog_debt_advisory")
+        managed_controls.append("optional_capability_gaps_explicit_and_isolated_from_candidate_readiness")
+    ready = not blockers
+    return {
+        "status": "ready" if ready else "blocked",
+        "ready": ready,
+        "score": 100.0 if ready else 0.0,
+        "grade": "A+" if ready else "F",
+        "configured": True,
+        "path": str(path),
+        "age_minutes": round(float(age), 3) if age is not None else None,
+        "max_age_minutes": 30.0,
+        "paper_soak_ready": bool(payload.get("paper_soak_ready", False)),
+        "live_promotion_ready": bool(payload.get("live_promotion_ready", False)),
+        "plane_count": _safe_int(summary.get("plane_count"), 0),
+        "capability_count": _safe_int(summary.get("capability_count"), 0),
+        "bot_binding_count": _safe_int(summary.get("bot_binding_count"), 0),
+        "assignment_count": _safe_int(summary.get("assignment_count"), 0),
+        "subscription_profile_count": _safe_int(summary.get("subscription_profile_count"), 0),
+        "estimated_fetch_avoidance_ratio": _safe_float(summary.get("estimated_fetch_avoidance_ratio"), 0.0),
+        "coverage_gap_count": _safe_int(coverage_debt.get("gap_count"), 0),
+        "coverage_debt_blocks_paper_soak": bool(coverage_debt.get("blocks_guarded_paper_soak", False)),
+        "blockers": ordered_unique(blockers),
+        "warnings": ordered_unique(warnings),
+        "managed_controls": ordered_unique(managed_controls),
+        "authority_contract": authority,
+    }
+
+
+def _capability_materialization_contract(project_root: Path) -> dict[str, Any]:
+    config_path = project_root / "config" / "capability_materialization_v1.json"
+    path = (
+        project_root
+        / "governance"
+        / "collector_capabilities"
+        / "materialized_capabilities_latest.json"
+    )
+    if not config_path.is_file() and not path.is_file():
+        return {
+            "status": "legacy_not_configured",
+            "ready": True,
+            "score": 100.0,
+            "grade": "A+",
+            "configured": False,
+            "blockers": [],
+            "warnings": [],
+        }
+
+    payload = load_json(path)
+    age = payload_age_minutes(payload, path) if payload else None
+    rows = [row for row in payload.get("capabilities", []) if isinstance(row, dict)]
+    expected = {
+        "trading_calendars",
+        "market_session_state",
+        "derivatives_contract_master",
+        "stress_scenarios",
+    }
+    ready_ids = {
+        str(row.get("capability_id") or "")
+        for row in rows
+        if row.get("usable") is True
+        and str(row.get("proof_semantics") or "") == "direct"
+        and bool(str(row.get("proof_receipt_sha256") or ""))
+    }
+    authority = _dict(payload.get("authority_contract"))
+    blockers: list[str] = []
+    if not payload:
+        blockers.append("capability_materialization_missing")
+    elif age is None or float(age) > 30.0:
+        blockers.append("capability_materialization_stale")
+    if payload and str(payload.get("overall_status") or "") != "ready":
+        blockers.append("capability_materialization_not_ready")
+    if payload and payload.get("live_promotion_ready") is not True:
+        blockers.append("capability_materialization_proof_incomplete")
+    if payload and not expected.issubset(ready_ids):
+        blockers.append("capability_materialization_required_capability_missing")
+    if payload and any(bool(value) for value in authority.values()):
+        blockers.append("capability_materialization_authority_contract_unsafe")
+    ready = not blockers
+    return {
+        "status": "ready" if ready else "blocked",
+        "ready": ready,
+        "score": 100.0 if ready else 0.0,
+        "grade": "A+" if ready else "F",
+        "configured": True,
+        "path": str(path),
+        "age_minutes": round(float(age), 3) if age is not None else None,
+        "max_age_minutes": 30.0,
+        "required_capability_count": len(expected),
+        "ready_required_capability_count": len(expected & ready_ids),
+        "direct_proof_coverage_ratio": round(len(expected & ready_ids) / len(expected), 6),
+        "blockers": ordered_unique(blockers),
+        "warnings": [],
+        "authority_contract": authority,
+    }
+
+
 def build_payload(
     project_root: Path = PROJECT_ROOT,
     *,
@@ -814,18 +979,27 @@ def build_payload(
     runtime = _runtime_contract(project_root)
     alerting = _alerting_contract(project_root)
     freshness = _freshness_contract(project_root)
+    self_healing = _self_healing_sentinel_contract(project_root)
+    capability_materialization = _capability_materialization_contract(project_root)
+    collector_capabilities = _collector_capability_contract(project_root)
     sections = {
         "storage": storage,
         "host_power": host,
         "runtime_loops": runtime,
         "alerting": alerting,
         "artifact_freshness": freshness,
+        "self_healing_sentinel": self_healing,
+        "capability_materialization": capability_materialization,
+        "collector_capabilities": collector_capabilities,
     }
     blockers = ordered_unique(
         list(storage.get("blockers") or [])
         + list(host.get("blockers") or [])
         + list(runtime.get("blockers") or [])
         + list(alerting.get("blockers") or [])
+        + list(self_healing.get("blockers") or [])
+        + list(capability_materialization.get("blockers") or [])
+        + list(collector_capabilities.get("blockers") or [])
     )
     warnings = ordered_unique(
         list(storage.get("warnings") or [])
@@ -833,6 +1007,9 @@ def build_payload(
         + list(runtime.get("warnings") or [])
         + list(alerting.get("warnings") or [])
         + list(freshness.get("warnings") or [])
+        + list(self_healing.get("warnings") or [])
+        + list(capability_materialization.get("warnings") or [])
+        + list(collector_capabilities.get("warnings") or [])
     )
     scored_warnings = [item for item in warnings if not _warning_is_managed_for_soak(item)]
     managed_warnings = [item for item in warnings if _warning_is_managed_for_soak(item)]
@@ -841,6 +1018,7 @@ def build_payload(
         + list(host.get("managed_controls") or [])
         + list(runtime.get("managed_controls") or [])
         + list(alerting.get("managed_controls") or [])
+        + list(collector_capabilities.get("managed_controls") or [])
     )
     section_scores = [_safe_float(row.get("score"), 92.0) for row in sections.values() if isinstance(row, dict)]
     base_score = sum(section_scores) / max(len(section_scores), 1)
@@ -875,6 +1053,8 @@ def build_payload(
             ["./scripts/ops/opsctl.sh", "notification-escalation-ladder", "--json"],
             ["./scripts/ops/opsctl.sh", "storage-resilience-control", "--fast", "--json"],
             ["./scripts/ops/opsctl.sh", "local-storage-reserve-guard", "--apply", "--json"],
+            ["./scripts/ops/opsctl.sh", "capability-materialization", "--json"],
+            ["./scripts/ops/opsctl.sh", "collector-capability-control", "--json"],
         ],
         "next_action": (
             "all unattended soak gates are ready; leave live money locked and let the soak run"

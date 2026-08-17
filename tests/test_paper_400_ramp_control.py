@@ -125,7 +125,7 @@ def test_paper_400_ramp_plans_before_activation_without_high_caps(tmp_path: Path
     assert payload["armed"] is False
     assert payload["blockers"] == ["calendar_wait_until_2026-05-11"]
     assert "PAPER_400_RAMP_ARMED=0" in override_text
-    assert "PAPER_MIRROR_ALL_ACTIVE_SUB_BOTS=1" in override_text
+    assert "PAPER_MIRROR_ALL_ACTIVE_SUB_BOTS=0" in override_text
     assert "SCHWAB_TOP_BOT_PAPER_TRADING_TOP_N" not in override_text
     assert "COINBASE_FUTURES_TOP_BOT_PAPER_TRADING_TOP_N" not in override_text
 
@@ -151,7 +151,7 @@ def test_paper_400_ramp_arms_after_activation_when_gates_are_clean(tmp_path: Pat
     assert payload["armed"] is True
     assert allocation_total == 400
     assert "PAPER_400_RAMP_ARMED=1" in override_text
-    assert "PAPER_MIRROR_ALL_ACTIVE_SUB_BOTS=1" in override_text
+    assert "PAPER_MIRROR_ALL_ACTIVE_SUB_BOTS=0" in override_text
     assert "PAPER_400_RAMP_AGGREGATE_TOP_N=700" in override_text
     assert "PAPER_400_RAMP_SELECTION_POLICY=all_eligible_paper_live_data_when_mirror_all_active_enabled" in override_text
     assert "PAPER_FULL_FORCE_STABILITY_MODE=all_eligible_paper_buffered" in override_text

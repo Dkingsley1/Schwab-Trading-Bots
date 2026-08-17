@@ -37,6 +37,7 @@ LANE_DEFINITIONS: tuple[dict[str, Any], ...] = (
         "title": "Raw profitability recovery",
         "gate_id": "raw_profitability_posture",
         "severity": "critical",
+        "scope": "economic_evidence",
         "owner_capabilities": ["paper_performance_refresh", "paper_profitability_control"],
         "commands": [
             _cmd("paper-performance", "--json"),
@@ -50,6 +51,7 @@ LANE_DEFINITIONS: tuple[dict[str, Any], ...] = (
         "title": "Sleeve paper-trading continuity",
         "gate_id": "sleeve_paper_trading_continuity",
         "severity": "critical",
+        "scope": "runtime_operation",
         "owner_capabilities": [
             "paper_execution_truth_layer",
             "runtime_paper_regression_guard",
@@ -70,6 +72,7 @@ LANE_DEFINITIONS: tuple[dict[str, Any], ...] = (
         "title": "Auth and token continuity",
         "gate_id": "auth_token_continuity",
         "severity": "critical",
+        "scope": "runtime_operation",
         "owner_capabilities": ["broker_auth_supervisor", "global_halt_refresh", "paper_ramp_guard"],
         "commands": [
             _cmd("schwab-auth-supervisor", "--apply", "--json"),
@@ -85,6 +88,7 @@ LANE_DEFINITIONS: tuple[dict[str, Any], ...] = (
         "title": "Storage pressure clearance",
         "gate_id": "storage_pressure_clean",
         "severity": "critical",
+        "scope": "runtime_operation",
         "owner_capabilities": [
             "writer_cycle_coordinator",
             "storage_backpressure_autopilot",
@@ -104,6 +108,7 @@ LANE_DEFINITIONS: tuple[dict[str, Any], ...] = (
         "title": "Promotion and paper gate freshness",
         "gate_id": "promotion_paper_gate_freshness",
         "severity": "high",
+        "scope": "promotion_evidence",
         "owner_capabilities": [
             "daily_verify_auto_remediation",
             "promotion_quality_gate",
@@ -126,6 +131,7 @@ LANE_DEFINITIONS: tuple[dict[str, Any], ...] = (
         "title": "Source and CI integrity",
         "gate_ids": ["runtime_source_mutation_guard", "ci_production_guardrails"],
         "severity": "critical",
+        "scope": "release_integrity",
         "owner_capabilities": ["source_mutation_guard", "production_flow_smoke"],
         "commands": [
             _cmd("source-mutation-guard", "--check-clean", "--json"),
@@ -236,6 +242,7 @@ def _active_lanes(readiness: dict[str, Any]) -> list[dict[str, Any]]:
                 ]
             ),
             "severity": definition["severity"],
+            "scope": str(definition.get("scope") or "runtime_operation"),
             "blocking_reasons": reasons,
             "owner_capabilities": list(definition["owner_capabilities"]),
             "commands": list(definition["commands"]),

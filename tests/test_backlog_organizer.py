@@ -116,7 +116,9 @@ def test_backlog_organizer_keeps_green_paper_soak_lanes_advisory(tmp_path: Path)
     _write_json(
         health / "health_fast_latest.json",
         {
-            "strict_all_clear": True,
+            "overall_status": "guarded_ready",
+            "ok": True,
+            "strict_all_clear": False,
             "operational_readiness": {
                 "guarded_paper": {"ok": True, "status": "ready", "blockers": []},
                 "live_execution": {"ok": False, "status": "blocked_read_only"},
@@ -128,6 +130,19 @@ def test_backlog_organizer_keeps_green_paper_soak_lanes_advisory(tmp_path: Path)
     _write_json(health / "runtime_throttle_control_latest.json", {"overall_status": "ready"})
     _write_json(health / "expansion_capacity_planner_latest.json", {"capacity_contract": {"rollout_mode": "collection_only_wave_allowed"}})
     _write_json(health / "new_bot_admission_guard_latest.json", {"candidate_bot_count": 0, "blocking_candidate_count": 0})
+    _write_json(
+        health / "data_collection_observation_rollup_latest.json",
+        {
+            "overall_status": "degraded",
+            "operational_status": "ready",
+            "operational_ok": True,
+            "operational_collection": {"status": "ready", "ok": True},
+            "collector_count": 221,
+            "bots_with_observations": 184,
+            "total_observations": 388000,
+            "training_ready_count": 4,
+        },
+    )
     _write_json(health / "runtime_gate_dashboard_latest.json", {"overall": {"status": "ok", "ok": True, "attention": []}})
     _write_json(health / "auth_lease_manager_latest.json", {"overall_status": "ready"})
     _write_json(health / "training_quality_control_latest.json", {"overall_status": "blocked"})
@@ -162,6 +177,7 @@ def test_backlog_organizer_keeps_green_paper_soak_lanes_advisory(tmp_path: Path)
     assert lanes["storage_backlog"]["status"] == "advisory"
     assert lanes["drainer_self_accommodation"]["status"] == "advisory"
     assert lanes["auth_runtime_separation"]["status"] == "advisory"
+    assert lanes["collection_maturity"]["status"] == "advisory"
 
 
 def test_backlog_organizer_allocates_drainer_self_accommodation_lane(tmp_path: Path) -> None:

@@ -40,7 +40,7 @@ load_runtime_profile() {
   export ALLOW_ORDER_EXECUTION="${ALLOW_ORDER_EXECUTION:-0}"
   export TOP_BOT_PAPER_TRADING_ENABLED="${TOP_BOT_PAPER_TRADING_ENABLED:-1}"
   export TOP_BOT_PAPER_TRADING_OPTIONS_ENABLED="${TOP_BOT_PAPER_TRADING_OPTIONS_ENABLED:-1}"
-  export PAPER_MIRROR_ALL_ACTIVE_SUB_BOTS="${PAPER_MIRROR_ALL_ACTIVE_SUB_BOTS:-1}"
+  export PAPER_MIRROR_ALL_ACTIVE_SUB_BOTS="${PAPER_MIRROR_ALL_ACTIVE_SUB_BOTS:-0}"
   export PAPER_BROKER_BRIDGE_ENABLED="${PAPER_BROKER_BRIDGE_ENABLED:-1}"
   export PAPER_BROKER_BRIDGE_MODE="${PAPER_BROKER_BRIDGE_MODE:-jsonl}"
   export LOG_SUB_BOT_DECISIONS="${LOG_SUB_BOT_DECISIONS:-1}"
@@ -343,7 +343,7 @@ start_schwab_live_loops() {
     TOP_BOT_PAPER_TRADING_OPTIONS_PROFILES="$options_paper_profiles" \
     PAPER_BROKER_BRIDGE_ENABLED="${PAPER_BROKER_BRIDGE_ENABLED:-1}" \
     PAPER_BROKER_BRIDGE_MODE="${PAPER_BROKER_BRIDGE_MODE:-jsonl}" \
-    PAPER_MIRROR_ALL_ACTIVE_SUB_BOTS="${PAPER_MIRROR_ALL_ACTIVE_SUB_BOTS:-1}" \
+    PAPER_MIRROR_ALL_ACTIVE_SUB_BOTS="${PAPER_MIRROR_ALL_ACTIVE_SUB_BOTS:-0}" \
     RUN_ALL_SLEEVES_WITH_SPECIALIZED_SLEEVES="${RUN_ALL_SLEEVES_WITH_SPECIALIZED_SLEEVES:-1}" \
     SPECIALIZED_SLEEVE_INTERVAL="$specialized_interval" \
     SLEEVE_WORKERS_SPECIALIZED="$specialized_workers" \
@@ -358,7 +358,7 @@ start_schwab_live_loops() {
     PYTORCH_REPLAY_CANARY_ENABLED="${PYTORCH_REPLAY_CANARY_ENABLED:-0}" \
     PYTHONUNBUFFERED=1 nohup "${cmd[@]}" > "$log_file" 2>&1 & disown
   else
-    PAPER_MIRROR_ALL_ACTIVE_SUB_BOTS="${PAPER_MIRROR_ALL_ACTIVE_SUB_BOTS:-1}" \
+    PAPER_MIRROR_ALL_ACTIVE_SUB_BOTS="${PAPER_MIRROR_ALL_ACTIVE_SUB_BOTS:-0}" \
     RUN_ALL_SLEEVES_WITH_SPECIALIZED_SLEEVES="${RUN_ALL_SLEEVES_WITH_SPECIALIZED_SLEEVES:-1}" \
     SPECIALIZED_SLEEVE_INTERVAL="$specialized_interval" \
     SLEEVE_WORKERS_SPECIALIZED="$specialized_workers" \
@@ -788,14 +788,43 @@ case "$cmd" in
     ;;
   macro-context-sync)
     bls_args=()
+    global_args=(--json)
+    sync_args=(--json)
+    macro_test_only=0
     for arg in "$@"; do
       case "$arg" in
         --json) ;;
+        --test-only)
+          macro_test_only=1
+          bls_args+=("$arg")
+          global_args+=("$arg")
+          sync_args+=("$arg")
+          ;;
         *) bls_args+=("$arg") ;;
       esac
     done
     "$PY" "$PROJECT_ROOT/scripts/collect_bls_census_data.py" "${bls_args[@]}" || true
-    exec "$PY" "$PROJECT_ROOT/scripts/collect_official_macro_context.py" "$@"
+    macro_rc=0
+    "$PY" "$PROJECT_ROOT/scripts/collect_global_central_bank_context.py" "${global_args[@]}" || macro_rc=$?
+    if [[ "$macro_test_only" != "1" ]]; then
+      "$PY" "$PROJECT_ROOT/scripts/collect_fx_market_context.py" --json || true
+      "$PY" "$PROJECT_ROOT/scripts/collect_public_policy_context.py" --json || true
+    fi
+    "$PY" "$PROJECT_ROOT/scripts/collect_official_macro_context.py" "$@" || macro_rc=$?
+    "$PY" "$PROJECT_ROOT/scripts/synchronize_global_central_bank_context.py" "${sync_args[@]}" || macro_rc=$?
+    exit "$macro_rc"
+    ;;
+  global-central-bank-sync|central-bank-global-sync)
+    exec "$PY" "$PROJECT_ROOT/scripts/collect_global_central_bank_context.py" "$@"
+    ;;
+  central-bank-context-sync|central-bank-cross-source-sync)
+    exec "$PY" "$PROJECT_ROOT/scripts/synchronize_global_central_bank_context.py" "$@"
+    ;;
+  decision-context-sync|macro-micro-context-sync|context-mesh-sync)
+    exec "$PY" "$PROJECT_ROOT/scripts/collect_decision_context_mesh.py" "$@"
+    ;;
+  analyst-consensus-sync|earnings-estimates-sync)
+    exec "$PY" "$PROJECT_ROOT/scripts/collect_analyst_consensus_context.py" "$@"
     ;;
   schwab-education-sync)
     exec "$PY" "$PROJECT_ROOT/scripts/collect_schwab_education_context.py" "$@"
@@ -956,6 +985,12 @@ case "$cmd" in
     ;;
   collector-contracts|collector-contract)
     exec "$PY" "$PROJECT_ROOT/scripts/collector_contracts.py" "$@"
+    ;;
+  capability-materialization|materialize-capabilities|capability-proof-refresh)
+    exec "$PY" "$PROJECT_ROOT/scripts/ops/capability_materialization_control.py" "$@"
+    ;;
+  collector-capability-control|collector-capability-router|bot-data-subscriptions)
+    exec "$PY" "$PROJECT_ROOT/scripts/ops/collector_capability_control.py" "$@"
     ;;
   sleeve-strategy-coverage|sleeve-coverage|strategy-coverage)
     exec "$PY" "$PROJECT_ROOT/scripts/ops/sleeve_strategy_coverage_guard.py" "$@"
@@ -1170,6 +1205,12 @@ case "$cmd" in
   stateful-storage-regression-guard|stateful-storage-guard|local-stateful-guard)
     exec "$PY" "$PROJECT_ROOT/scripts/ops/stateful_storage_regression_guard.py" "$@"
     ;;
+  ops-data-plane-compaction|ops-data-plane-compact|schema-drift-compaction)
+    exec "$PY" "$PROJECT_ROOT/scripts/ops/ops_data_plane_compactor.py" "$@"
+    ;;
+  market-replay-fill-capture|replay-fill-capture|independent-fill-replay)
+    exec "$PY" "$PROJECT_ROOT/scripts/ops/market_replay_fill_capture.py" "$@"
+    ;;
   data-retention|retention-policy|data-retention-policy)
     exec "$PY" "$PROJECT_ROOT/scripts/data_retention_policy.py" "$@"
     ;;
@@ -1278,6 +1319,9 @@ case "$cmd" in
   soak-self-heal|soak-self-healing|self-healing-soak|self-heal-soak)
     exec "$PY" "$PROJECT_ROOT/scripts/ops/soak_self_healing_control.py" "$@"
     ;;
+  soak-reliability-sentinel|soak-sentinel|reliability-sentinel)
+    exec "$PY" "$PROJECT_ROOT/scripts/ops/soak_reliability_sentinel.py" "$@"
+    ;;
   storage-tier-policy|storage-tier)
     exec "$PY" "$PROJECT_ROOT/scripts/storage_tier_policy.py" "$@"
     ;;
@@ -1325,6 +1369,9 @@ case "$cmd" in
     ;;
   distillation-plan|teacher-student-plan|distill-new-bots)
     exec "$PY" "$PROJECT_ROOT/scripts/distill_new_bots.py" "$@"
+    ;;
+  strategy-generation|strategy-offspring|bot-reproduction)
+    exec "$PY" "$PROJECT_ROOT/scripts/ops/strategy_generation_control.py" "$@"
     ;;
   training-requalification|requalification-lane)
     exec "$PY" "$PROJECT_ROOT/scripts/ops/training_requalification_lane.py" "$@"
@@ -1449,6 +1496,9 @@ case "$cmd" in
   production-excellence|production-excellence-control|ten-pillar-readiness)
     exec "$PY" "$PROJECT_ROOT/scripts/ops/production_excellence_control.py" "$@"
     ;;
+  production-resilience|production-resilience-control|resilience-1-10)
+    exec "$PY" "$PROJECT_ROOT/scripts/ops/production_resilience_control.py" "$@"
+    ;;
   live-order-ledger|live-order-ledger-control|order-intent-ledger)
     exec "$PY" "$PROJECT_ROOT/scripts/ops/live_order_ledger_control.py" "$@"
     ;;
@@ -1572,6 +1622,9 @@ case "$cmd" in
   paper-profitability-control|profitability-control|paper-profitability)
     exec "$PY" "$PROJECT_ROOT/scripts/ops/paper_profitability_control.py" "$@"
     ;;
+  profitability-hardening|profitability-hardening-control|profitability-eight)
+    exec "$PY" "$PROJECT_ROOT/scripts/ops/profitability_hardening_control.py" "$@"
+    ;;
   sleeve-profitability-dashboard|sleeve-profitability|paper-sleeves-profitability|sleeve-pnl)
     exec "$PY" "$PROJECT_ROOT/scripts/ops/sleeve_profitability_dashboard.py" "$@"
     ;;
@@ -1646,6 +1699,21 @@ case "$cmd" in
     ;;
   artifact-freshness-slo|freshness-slo|artifact-slo)
     exec "$PY" "$PROJECT_ROOT/scripts/ops/artifact_freshness_slo.py" "$@"
+    ;;
+  control-surface-ownership|control-ownership|framework-ownership)
+    exec "$PY" "$PROJECT_ROOT/scripts/ops/control_surface_ownership.py" "$@"
+    ;;
+  bot-organization|bot-hierarchy|sleeve-subsections|hierarchical-bots)
+    exec "$PY" "$PROJECT_ROOT/scripts/ops/bot_organization_control.py" "$@"
+    ;;
+  bot-profitability-scalability|bot-profit-scale|fleet-profitability-scale)
+    exec "$PY" "$PROJECT_ROOT/scripts/ops/bot_profitability_scalability_control.py" "$@"
+    ;;
+  master-grandmaster-evidence|master-grandmaster-v2|grandmaster-evidence)
+    exec "$PY" "$PROJECT_ROOT/scripts/ops/master_grandmaster_evidence_control.py" "$@"
+    ;;
+  independent-runtime-monitor|independent-monitor|deadman-monitor)
+    exec "$PY" "$PROJECT_ROOT/scripts/observability_exporter.py" "$@"
     ;;
   runtime-snapshot-cache|snapshot-cache-control|runtime-cache)
     exec "$PY" "$PROJECT_ROOT/scripts/ops/runtime_snapshot_cache_control.py" "$@"
@@ -1951,7 +2019,12 @@ case "$cmd" in
       esac
     done
     if [[ "$dashboard_refresh" == "1" ]]; then
-      "$PY" "$PROJECT_ROOT/scripts/ops/runtime_artifact_refresh.py" --json >/dev/null 2>&1 || true
+      "$PY" "$PROJECT_ROOT/scripts/ops/readiness_evidence_refresh.py" \
+        --apply \
+        --profile dashboard \
+        --cooldown-minutes "${DASHBOARD_REFRESH_COOLDOWN_MINUTES:-5}" \
+        --timeout-seconds "${DASHBOARD_REFRESH_STEP_TIMEOUT_SECONDS:-120}" \
+        --json >/dev/null 2>&1 || true
     fi
     exec "$PY" "$PROJECT_ROOT/scripts/ops/runtime_gate_dashboard.py" --json "${dashboard_args[@]}"
     ;;
@@ -2101,9 +2174,9 @@ case "$cmd" in
     if [[ "$PAPER_MODE" == "1" ]]; then
       paper_trade_lock_env
       echo "coinbase_paper=enabled top_n=$PAPER_TOP_N min_acc=$PAPER_MIN_ACC profiles=$PAPER_PROFILES"
-      TOP_BOT_PAPER_TRADING_ENABLED=1       TOP_BOT_PAPER_TRADING_TOP_N="$PAPER_TOP_N"       TOP_BOT_PAPER_TRADING_MIN_ACC="$PAPER_MIN_ACC"       TOP_BOT_PAPER_TRADING_PROFILES="$PAPER_PROFILES"       PAPER_BROKER_BRIDGE_ENABLED="${PAPER_BROKER_BRIDGE_ENABLED:-1}"       PAPER_BROKER_BRIDGE_MODE="${PAPER_BROKER_BRIDGE_MODE:-jsonl}"       PAPER_MIRROR_ALL_ACTIVE_SUB_BOTS="${PAPER_MIRROR_ALL_ACTIVE_SUB_BOTS:-1}"       ADAPTIVE_INTERVAL_ENABLED="${COINBASE_ADAPTIVE_INTERVAL_ENABLED:-1}"       PYTHONUNBUFFERED=1       nohup "${COINBASE_CMD[@]}" > "$LOG" 2>&1 & disown
+      TOP_BOT_PAPER_TRADING_ENABLED=1       TOP_BOT_PAPER_TRADING_TOP_N="$PAPER_TOP_N"       TOP_BOT_PAPER_TRADING_MIN_ACC="$PAPER_MIN_ACC"       TOP_BOT_PAPER_TRADING_PROFILES="$PAPER_PROFILES"       PAPER_BROKER_BRIDGE_ENABLED="${PAPER_BROKER_BRIDGE_ENABLED:-1}"       PAPER_BROKER_BRIDGE_MODE="${PAPER_BROKER_BRIDGE_MODE:-jsonl}"       PAPER_MIRROR_ALL_ACTIVE_SUB_BOTS="${PAPER_MIRROR_ALL_ACTIVE_SUB_BOTS:-0}"       ADAPTIVE_INTERVAL_ENABLED="${COINBASE_ADAPTIVE_INTERVAL_ENABLED:-1}"       PYTHONUNBUFFERED=1       nohup "${COINBASE_CMD[@]}" > "$LOG" 2>&1 & disown
     else
-      PAPER_MIRROR_ALL_ACTIVE_SUB_BOTS="${PAPER_MIRROR_ALL_ACTIVE_SUB_BOTS:-1}"       ADAPTIVE_INTERVAL_ENABLED="${COINBASE_ADAPTIVE_INTERVAL_ENABLED:-1}"       PYTHONUNBUFFERED=1       nohup "${COINBASE_CMD[@]}" > "$LOG" 2>&1 & disown
+      PAPER_MIRROR_ALL_ACTIVE_SUB_BOTS="${PAPER_MIRROR_ALL_ACTIVE_SUB_BOTS:-0}"       ADAPTIVE_INTERVAL_ENABLED="${COINBASE_ADAPTIVE_INTERVAL_ENABLED:-1}"       PYTHONUNBUFFERED=1       nohup "${COINBASE_CMD[@]}" > "$LOG" 2>&1 & disown
     fi
 
     sleep 2
@@ -2179,9 +2252,9 @@ case "$cmd" in
     if [[ "$PAPER_MODE" == "1" ]]; then
       paper_trade_lock_env
       echo "coinbase_futures_paper=enabled profile=$FUTURES_PROFILE top_n=$PAPER_TOP_N min_acc=$PAPER_MIN_ACC profiles=$PAPER_PROFILES"
-      SHADOW_PROFILE="$FUTURES_PROFILE"       SHADOW_DOMAIN=crypto       SHADOW_THRESHOLD_SHIFT="${COINBASE_FUTURES_THRESHOLD_SHIFT:-0.02}"       SIZING_MAX_NOTIONAL_PCT="${COINBASE_FUTURES_MAX_NOTIONAL_PCT:-0.03}"       PORTFOLIO_BASE_BUDGET="${COINBASE_FUTURES_BASE_BUDGET:-0.50}"       CROSS_SYMBOL_MAX_LONG="${COINBASE_FUTURES_MAX_LONG:-4}"       CROSS_SYMBOL_MAX_SHORT="${COINBASE_FUTURES_MAX_SHORT:-4}"       RISK_MAX_DAILY_LOSS_PROXY="${COINBASE_FUTURES_MAX_DAILY_LOSS_PROXY:-0.03}"       LOG_SUB_BOT_DECISIONS="${LOG_SUB_BOT_DECISIONS:-1}"       LOG_MASTER_VARIANT_DECISIONS="${LOG_MASTER_VARIANT_DECISIONS:-1}"       LOG_GRAND_MASTER_DECISIONS="${LOG_GRAND_MASTER_DECISIONS:-1}"       LOG_OPTIONS_MASTER_DECISIONS="${LOG_OPTIONS_MASTER_DECISIONS:-1}"       TOP_BOT_PAPER_TRADING_ENABLED=1       TOP_BOT_PAPER_TRADING_TOP_N="$PAPER_TOP_N"       TOP_BOT_PAPER_TRADING_MIN_ACC="$PAPER_MIN_ACC"       TOP_BOT_PAPER_TRADING_PROFILES="$PAPER_PROFILES"       PAPER_BROKER_BRIDGE_ENABLED="${PAPER_BROKER_BRIDGE_ENABLED:-1}"       PAPER_BROKER_BRIDGE_MODE="${PAPER_BROKER_BRIDGE_MODE:-jsonl}"       PAPER_MIRROR_ALL_ACTIVE_SUB_BOTS="${PAPER_MIRROR_ALL_ACTIVE_SUB_BOTS:-1}"       ADAPTIVE_INTERVAL_ENABLED="${COINBASE_FUTURES_ADAPTIVE_INTERVAL_ENABLED:-${COINBASE_ADAPTIVE_INTERVAL_ENABLED:-1}}"       PYTHONUNBUFFERED=1       nohup "${COINBASE_CMD[@]}" > "$LOG" 2>&1 & disown
+      SHADOW_PROFILE="$FUTURES_PROFILE"       SHADOW_DOMAIN=crypto       SHADOW_THRESHOLD_SHIFT="${COINBASE_FUTURES_THRESHOLD_SHIFT:-0.02}"       SIZING_MAX_NOTIONAL_PCT="${COINBASE_FUTURES_MAX_NOTIONAL_PCT:-0.03}"       PORTFOLIO_BASE_BUDGET="${COINBASE_FUTURES_BASE_BUDGET:-0.50}"       CROSS_SYMBOL_MAX_LONG="${COINBASE_FUTURES_MAX_LONG:-4}"       CROSS_SYMBOL_MAX_SHORT="${COINBASE_FUTURES_MAX_SHORT:-4}"       RISK_MAX_DAILY_LOSS_PROXY="${COINBASE_FUTURES_MAX_DAILY_LOSS_PROXY:-0.03}"       LOG_SUB_BOT_DECISIONS="${LOG_SUB_BOT_DECISIONS:-1}"       LOG_MASTER_VARIANT_DECISIONS="${LOG_MASTER_VARIANT_DECISIONS:-1}"       LOG_GRAND_MASTER_DECISIONS="${LOG_GRAND_MASTER_DECISIONS:-1}"       LOG_OPTIONS_MASTER_DECISIONS="${LOG_OPTIONS_MASTER_DECISIONS:-1}"       TOP_BOT_PAPER_TRADING_ENABLED=1       TOP_BOT_PAPER_TRADING_TOP_N="$PAPER_TOP_N"       TOP_BOT_PAPER_TRADING_MIN_ACC="$PAPER_MIN_ACC"       TOP_BOT_PAPER_TRADING_PROFILES="$PAPER_PROFILES"       PAPER_BROKER_BRIDGE_ENABLED="${PAPER_BROKER_BRIDGE_ENABLED:-1}"       PAPER_BROKER_BRIDGE_MODE="${PAPER_BROKER_BRIDGE_MODE:-jsonl}"       PAPER_MIRROR_ALL_ACTIVE_SUB_BOTS="${PAPER_MIRROR_ALL_ACTIVE_SUB_BOTS:-0}"       ADAPTIVE_INTERVAL_ENABLED="${COINBASE_FUTURES_ADAPTIVE_INTERVAL_ENABLED:-${COINBASE_ADAPTIVE_INTERVAL_ENABLED:-1}}"       PYTHONUNBUFFERED=1       nohup "${COINBASE_CMD[@]}" > "$LOG" 2>&1 & disown
     else
-      SHADOW_PROFILE="$FUTURES_PROFILE"       SHADOW_DOMAIN=crypto       SHADOW_THRESHOLD_SHIFT="${COINBASE_FUTURES_THRESHOLD_SHIFT:-0.02}"       SIZING_MAX_NOTIONAL_PCT="${COINBASE_FUTURES_MAX_NOTIONAL_PCT:-0.03}"       PORTFOLIO_BASE_BUDGET="${COINBASE_FUTURES_BASE_BUDGET:-0.50}"       CROSS_SYMBOL_MAX_LONG="${COINBASE_FUTURES_MAX_LONG:-4}"       CROSS_SYMBOL_MAX_SHORT="${COINBASE_FUTURES_MAX_SHORT:-4}"       RISK_MAX_DAILY_LOSS_PROXY="${COINBASE_FUTURES_MAX_DAILY_LOSS_PROXY:-0.03}"       LOG_SUB_BOT_DECISIONS="${LOG_SUB_BOT_DECISIONS:-1}"       LOG_MASTER_VARIANT_DECISIONS="${LOG_MASTER_VARIANT_DECISIONS:-1}"       LOG_GRAND_MASTER_DECISIONS="${LOG_GRAND_MASTER_DECISIONS:-1}"       LOG_OPTIONS_MASTER_DECISIONS="${LOG_OPTIONS_MASTER_DECISIONS:-1}"       PAPER_MIRROR_ALL_ACTIVE_SUB_BOTS="${PAPER_MIRROR_ALL_ACTIVE_SUB_BOTS:-1}"       ADAPTIVE_INTERVAL_ENABLED="${COINBASE_FUTURES_ADAPTIVE_INTERVAL_ENABLED:-${COINBASE_ADAPTIVE_INTERVAL_ENABLED:-1}}"       PYTHONUNBUFFERED=1       nohup "${COINBASE_CMD[@]}" > "$LOG" 2>&1 & disown
+      SHADOW_PROFILE="$FUTURES_PROFILE"       SHADOW_DOMAIN=crypto       SHADOW_THRESHOLD_SHIFT="${COINBASE_FUTURES_THRESHOLD_SHIFT:-0.02}"       SIZING_MAX_NOTIONAL_PCT="${COINBASE_FUTURES_MAX_NOTIONAL_PCT:-0.03}"       PORTFOLIO_BASE_BUDGET="${COINBASE_FUTURES_BASE_BUDGET:-0.50}"       CROSS_SYMBOL_MAX_LONG="${COINBASE_FUTURES_MAX_LONG:-4}"       CROSS_SYMBOL_MAX_SHORT="${COINBASE_FUTURES_MAX_SHORT:-4}"       RISK_MAX_DAILY_LOSS_PROXY="${COINBASE_FUTURES_MAX_DAILY_LOSS_PROXY:-0.03}"       LOG_SUB_BOT_DECISIONS="${LOG_SUB_BOT_DECISIONS:-1}"       LOG_MASTER_VARIANT_DECISIONS="${LOG_MASTER_VARIANT_DECISIONS:-1}"       LOG_GRAND_MASTER_DECISIONS="${LOG_GRAND_MASTER_DECISIONS:-1}"       LOG_OPTIONS_MASTER_DECISIONS="${LOG_OPTIONS_MASTER_DECISIONS:-1}"       PAPER_MIRROR_ALL_ACTIVE_SUB_BOTS="${PAPER_MIRROR_ALL_ACTIVE_SUB_BOTS:-0}"       ADAPTIVE_INTERVAL_ENABLED="${COINBASE_FUTURES_ADAPTIVE_INTERVAL_ENABLED:-${COINBASE_ADAPTIVE_INTERVAL_ENABLED:-1}}"       PYTHONUNBUFFERED=1       nohup "${COINBASE_CMD[@]}" > "$LOG" 2>&1 & disown
     fi
 
     sleep 2
@@ -2903,6 +2976,10 @@ opsctl commands:
   sql-sync
   tradingeconomics-sync [--countries CSV] [--market-symbols CSV] [--lookahead-days N] [--news-limit N] [--json]
   macro-context-sync [--json]
+  global-central-bank-sync [--as-of-date YYYY-MM-DD] [--json]
+  central-bank-context-sync [--json]
+  decision-context-sync|macro-micro-context-sync|context-mesh-sync [--timeout N] [--no-network] [--json]
+  analyst-consensus-sync|earnings-estimates-sync [--symbols CSV] [--max-symbols N] [--timeout N] [--max-runtime-seconds N] [--no-network] [--json]
   schwab-education-sync [--json]
   schwab-symbol-news-sync|schwab-news-sync|symbol-news-catalyst [--symbols CSV] [--max-symbols N] [--limit-per-symbol N] [--max-runtime-seconds N] [--json]
   ticker-news-sync|news-mesh-sync|symbol-news-mesh [--symbols CSV] [--max-symbols N] [--limit-per-symbol N] [--max-runtime-seconds N] [--include-optional-global-feeds] [--json]
@@ -2927,6 +3004,8 @@ opsctl commands:
   source-verification-refresh|source-verification-autorefresh [--apply] [--json]
   data-intelligence-layer|data-intelligence [--apply] [--profile auto|expanded|conservative|deferred] [--lookback-hours N] [--json]
   collector-contracts [--json]
+  capability-materialization|materialize-capabilities|capability-proof-refresh [--json]
+  collector-capability-control|collector-capability-router|bot-data-subscriptions [--json]
   sleeve-strategy-coverage [--json]
   sleeve-mechanics|sleeve-how-it-works|sleeve-map [--json]
   mlx-audit [--json]
@@ -2965,6 +3044,7 @@ opsctl commands:
   data-plane-recovery|write-path-recovery [--json]
   ingestion-storage-governor [status|apply] [--json]
   local-storage-reserve-guard [--apply] [--json]
+  ops-data-plane-compaction [--apply] [--archive-root PATH] [--skip-vacuum] [--json]
   external-backlog-drain [--apply] [--follow-through] [--poll-seconds N] [--wait-timeout-seconds N] [--force-live-window] [--json]
   raw-backlog-refiner [--apply] [--skip-drain] [--skip-intake] [--skip-cleanup] [--allow-stale-reaper] [--json]
   raw-training-compaction|raw-training-queue|raw-training-clear [--apply] [--max-files N] [--max-gb N] [--jumbo-gb N] [--min-age-hours N] [--json]
@@ -2994,6 +3074,7 @@ opsctl commands:
   bot-fleet-production-posture [--apply] [--json]
   overfitting-awareness|overfit-awareness [--json]
   distillation-plan|teacher-student-plan [--teacher-max N] [--student-max-runs N] [--teachers-per-student N] [--json]
+  strategy-generation|strategy-offspring [--propose | --train-next | --reconcile-stale | --evaluate-offspring ID --evaluation-file PATH | --retire-offspring ID --reason TEXT] [--json]
   pycharm-active-bot-highlights [--apply] [--json]
   retention-debt-sheriff [--apply] [--force] [--poll-seconds N] [--wait-timeout-seconds N] [--command-timeout-seconds N] [--json]
   backpressure-slo-bot [--apply] [--command-timeout-seconds N] [--json]
@@ -3033,7 +3114,7 @@ opsctl commands:
   system-drift-registry|drift-registry [--json]
   system-drift-guard|drift-guard|drift-mesh [--json]
   system-drift-autopilot|drift-autopilot|drift-mesh-autopilot [--apply] [--max-steps N] [--json]
-  dashboard-refresh|runtime-artifact-refresh|runtime-contract-refresh [--json]
+  dashboard-refresh|runtime-artifact-refresh|runtime-contract-refresh [--scope all|training|profitability|training-profitability] [--skip-dashboard] [--json]
   service-control-plane|service-plane [--json]
   dashboard [--skip-refresh] [--max-rows N] [--json]
   options-flow-export-hygiene [--apply] [--json]
@@ -3080,6 +3161,7 @@ opsctl commands:
   commercial-readiness|commercial-framework|commercial-release-readiness [--json]
   production-quality|production-quality-control|production-hardening-quality [--apply] [--refresh-contract] [--execute-safe-repairs] [--max-actions N] [--max-execute-actions N] [--json]
   production-excellence|ten-pillar-readiness [--apply] [--initialize-candidate | --accept-candidate-change | --recover-candidate-event-chain --change-reason TEXT] [--json]
+  production-resilience|resilience-1-10 [--json]
   live-order-ledger|order-intent-ledger [--ledger PATH] [--resolve-intent ID --resolution STATE --evidence TEXT] [--json]
   live-transition-integrity|paper-live-transition [--json]
   live-transition-chaos|transition-chaos [--json]
@@ -3091,11 +3173,13 @@ opsctl commands:
   continuous-soak-integrity|soak-integrity [--json]
   production-quality-slo|production-slo-guard [--apply] [--refresh-quality] [--json]
   production-hardening-watch|hardening-watch [--apply] [--execute-safe-repairs] [--execute-on-watch] [--max-actions N] [--max-execute-actions N] [--json]
-  readiness-evidence-refresh|evidence-refresh [--apply] [--force] [--cooldown-minutes N] [--timeout-seconds N] [--json]
+  readiness-evidence-refresh|evidence-refresh [--profile all|accrual|dashboard] [--apply] [--force] [--cooldown-minutes N] [--timeout-seconds N] [--json]
+  market-replay-fill-capture|replay-fill-capture [--apply] [--min-latency-seconds N] [--max-latency-seconds N] [--json]
   independent-fill-acquisition|independent-fill-evidence [--apply] [--inbox PATH] [--json]
   promotion-candidate-advancement|candidate-advancement [--limit N] [--execute] [--json]
   readiness-evidence-accrual|evidence-accrual [--apply] [--stall-hours N] [--json]
   readiness-blocker-rollup|blocker-rollup [--json]
+  master-grandmaster-evidence|master-grandmaster-v2|grandmaster-evidence [--json]
   live-money-readiness|live-money-contract|faithful-live-money [--target-date YYYY-MM-DD] [--json]
   paper-400-ramp|paper-ramp-400|paper-cap-400 [--apply] [--promote-roster] [--allow-source-registry-write] [--today YYYY-MM-DD] [--json]
   paper-execution-truth|paper-truth [--json]
@@ -3112,6 +3196,7 @@ opsctl commands:
   reboot-resilience|reboot-resilience-guard [--json]
   unattended-soak-readiness|soak-readiness|30-day-soak [--target-days N] [--json]
   soak-self-heal|soak-self-healing [--apply] [--target-days N] [--daily-max-age-minutes N] [--json]
+  soak-reliability-sentinel|soak-sentinel [--apply] [--max-actions N] [--json]
   process-fanout-guard|process-fanout|fanout-guard [--apply] [--json]
   guard-intelligence|guard-brain [--apply] [--json]
   pressure-relief|pressure-governor [--apply] [--json]
@@ -3134,6 +3219,7 @@ opsctl commands:
   decision-intelligence|market-move-explainer [--symbol BTC] [--json]
   evidence-packet|proof-packet [--json] [--no-md] [--no-history]
   paper-profitability-control|profitability-control [--apply] [--json]
+  profitability-hardening|profitability-eight [--lookback-days N] [--json]
   sleeve-profitability-dashboard|sleeve-pnl [--max-rows N] [--json]
   market-posture-control|posture-control [--apply] [--sample-limit N] [--json]
   market-cycle-engine|cycle-engine [--sample-limit N] [--min-rows N] [--no-history] [--json]
@@ -3156,6 +3242,10 @@ opsctl commands:
   blackstart-recovery [--max-session-age-minutes N] [--json]
   sleeve-isolation [--max-quarantine-events N] [--json]
   artifact-freshness-slo [--json]
+  control-surface-ownership|control-ownership [--json]
+  bot-organization|bot-hierarchy|sleeve-subsections [--json]
+  bot-profitability-scalability|bot-profit-scale [--max-files N] [--max-rows-per-file N] [--json]
+  independent-runtime-monitor|independent-monitor [--receiver-url URL] [--json]
   runtime-snapshot-cache [--fresh-minutes N] [--stale-minutes N] [--json]
   remote-alert-control [--hours N] [--ack-event NAME] [--ack-all-critical] [--json]
   storage-quota-guard [--json]

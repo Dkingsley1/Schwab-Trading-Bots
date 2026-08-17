@@ -39,6 +39,20 @@ from market_context_features import (
     summarize_breadth_context,
     summarize_credit_context,
 )
+from central_bank_liquidity import (
+    CENTRAL_BANK_LIQUIDITY_FEATURE_KEYS,
+    central_bank_liquidity_context_ready,
+)
+from global_central_bank_context import (
+    CENTRAL_BANK_CROSS_SOURCE_FEATURE_KEYS,
+    GLOBAL_CENTRAL_BANK_FEATURE_KEYS,
+    central_bank_cross_source_context_ready,
+    global_central_bank_context_ready,
+)
+from decision_context_mesh import (
+    DECISION_CONTEXT_MESH_FEATURE_KEYS,
+    decision_context_mesh_ready,
+)
 
 try:
     from derivatives_features import summarize_calendar_payload
@@ -217,6 +231,11 @@ _RUNTIME_EXTENDED_QUANT_KEYS = {
     "calendar_index_rebalance_window_norm",
 }
 
+_RUNTIME_CENTRAL_BANK_LIQUIDITY_KEYS = set(CENTRAL_BANK_LIQUIDITY_FEATURE_KEYS)
+_RUNTIME_GLOBAL_CENTRAL_BANK_KEYS = set(GLOBAL_CENTRAL_BANK_FEATURE_KEYS)
+_RUNTIME_CENTRAL_BANK_CROSS_SOURCE_KEYS = set(CENTRAL_BANK_CROSS_SOURCE_FEATURE_KEYS)
+_RUNTIME_DECISION_CONTEXT_MESH_KEYS = set(DECISION_CONTEXT_MESH_FEATURE_KEYS)
+
 _RUNTIME_TASTYTRADE_KEYS = {
     "tasty_iv_rank_norm",
     "tasty_implied_volatility_index_norm",
@@ -350,7 +369,7 @@ _RUNTIME_SCHWAB_EDUCATION_KEYS = {
     "schwab_education_symbol_stream_share_norm",
 }
 
-_RUNTIME_GAP_FILL_KEYS = set(BREADTH_FEATURE_KEYS) | set(BOND_REFERENCE_FEATURE_KEYS) | set(CREDIT_CONTEXT_FEATURE_KEYS) | set(NEWS_STRUCTURED_FEATURE_KEYS) | _RUNTIME_NEWS_EVENT_KEYS | _RUNTIME_CALENDAR_EVENT_KEYS | _RUNTIME_MARKET_MICRO_KEYS | _RUNTIME_SEC_EDGAR_KEYS | _RUNTIME_EXTENDED_QUANT_KEYS | _RUNTIME_TASTYTRADE_KEYS | _RUNTIME_CRYPTO_MARKET_KEYS | _RUNTIME_MARKET_CRYPTO_CORRELATION_KEYS | _RUNTIME_FX_MARKET_KEYS | _RUNTIME_DIVIDEND_DRIP_KEYS | _RUNTIME_SCHWAB_EDUCATION_KEYS | _RUNTIME_QUANT_MODEL_KEYS
+_RUNTIME_GAP_FILL_KEYS = set(BREADTH_FEATURE_KEYS) | set(BOND_REFERENCE_FEATURE_KEYS) | set(CREDIT_CONTEXT_FEATURE_KEYS) | set(NEWS_STRUCTURED_FEATURE_KEYS) | _RUNTIME_NEWS_EVENT_KEYS | _RUNTIME_CALENDAR_EVENT_KEYS | _RUNTIME_MARKET_MICRO_KEYS | _RUNTIME_SEC_EDGAR_KEYS | _RUNTIME_EXTENDED_QUANT_KEYS | _RUNTIME_CENTRAL_BANK_LIQUIDITY_KEYS | _RUNTIME_GLOBAL_CENTRAL_BANK_KEYS | _RUNTIME_CENTRAL_BANK_CROSS_SOURCE_KEYS | _RUNTIME_DECISION_CONTEXT_MESH_KEYS | _RUNTIME_TASTYTRADE_KEYS | _RUNTIME_CRYPTO_MARKET_KEYS | _RUNTIME_MARKET_CRYPTO_CORRELATION_KEYS | _RUNTIME_FX_MARKET_KEYS | _RUNTIME_DIVIDEND_DRIP_KEYS | _RUNTIME_SCHWAB_EDUCATION_KEYS | _RUNTIME_QUANT_MODEL_KEYS
 
 
 def _safe_float(value: Any, default: float = 0.0) -> float:
@@ -793,6 +812,8 @@ def _load_runtime_gap_fill_context(project_root: Path) -> Dict[str, Any]:
     bond_reference = load_latest_external_context(project_root, "bond_reference")
     live_macro = load_latest_external_context(project_root, "live_macro")
     official_macro = load_latest_external_context(project_root, "official_macro_context")
+    central_bank_cross_source = load_latest_external_context(project_root, "central_bank_cross_source")
+    decision_context_mesh = load_latest_external_context(project_root, "decision_context_mesh")
     schwab_education = load_latest_external_context(project_root, "schwab_education_context")
     market_micro = load_latest_external_context(project_root, "market_micro")
     sec_edgar = load_latest_external_context(project_root, "sec_edgar")
@@ -806,6 +827,8 @@ def _load_runtime_gap_fill_context(project_root: Path) -> Dict[str, Any]:
 
     te_derived = tradingeconomics.get("derived") if isinstance(tradingeconomics.get("derived"), Mapping) else {}
     official_derived = official_macro.get("derived") if isinstance(official_macro.get("derived"), Mapping) else {}
+    central_bank_cross_derived = central_bank_cross_source.get("derived") if isinstance(central_bank_cross_source.get("derived"), Mapping) else {}
+    decision_context_mesh_derived = decision_context_mesh.get("derived") if isinstance(decision_context_mesh.get("derived"), Mapping) else {}
     schwab_derived = schwab_education.get("derived") if isinstance(schwab_education.get("derived"), Mapping) else {}
     sec_derived = sec_edgar.get("derived") if isinstance(sec_edgar.get("derived"), Mapping) else {}
     extended_derived = extended_quant.get("derived") if isinstance(extended_quant.get("derived"), Mapping) else {}
@@ -820,6 +843,11 @@ def _load_runtime_gap_fill_context(project_root: Path) -> Dict[str, Any]:
     te_calendar_rows = te_derived.get("calendar_rows") if isinstance(te_derived.get("calendar_rows"), list) else []
     official_calendar = official_derived.get("calendar_features") if isinstance(official_derived.get("calendar_features"), Mapping) else {}
     official_news = official_derived.get("news_features") if isinstance(official_derived.get("news_features"), Mapping) else {}
+    official_global = official_derived.get("global_features") if isinstance(official_derived.get("global_features"), Mapping) else {}
+    central_bank_cross_global = central_bank_cross_derived.get("global_features") if isinstance(central_bank_cross_derived.get("global_features"), Mapping) else {}
+    central_bank_cross_symbol = central_bank_cross_derived.get("symbol_features") if isinstance(central_bank_cross_derived.get("symbol_features"), Mapping) else {}
+    decision_context_mesh_global = decision_context_mesh_derived.get("global_features") if isinstance(decision_context_mesh_derived.get("global_features"), Mapping) else {}
+    decision_context_mesh_symbol = decision_context_mesh_derived.get("symbol_features") if isinstance(decision_context_mesh_derived.get("symbol_features"), Mapping) else {}
     schwab_news = schwab_derived.get("news_features") if isinstance(schwab_derived.get("news_features"), Mapping) else {}
     schwab_global = schwab_derived.get("global_features") if isinstance(schwab_derived.get("global_features"), Mapping) else {}
     schwab_symbol = schwab_derived.get("symbol_features") if isinstance(schwab_derived.get("symbol_features"), Mapping) else {}
@@ -920,6 +948,18 @@ def _load_runtime_gap_fill_context(project_root: Path) -> Dict[str, Any]:
     for key, value in _feature_subset(market_micro_global, _RUNTIME_MARKET_MICRO_KEYS).items():
         market_micro_features[key] = value
     external_global_features = {}
+    if central_bank_liquidity_context_ready(official_macro):
+        external_global_features.update(_feature_subset(official_global, _RUNTIME_CENTRAL_BANK_LIQUIDITY_KEYS))
+    if global_central_bank_context_ready(official_macro):
+        external_global_features.update(_feature_subset(official_global, _RUNTIME_GLOBAL_CENTRAL_BANK_KEYS))
+    if central_bank_cross_source_context_ready(central_bank_cross_source):
+        external_global_features.update(
+            _feature_subset(central_bank_cross_global, _RUNTIME_CENTRAL_BANK_CROSS_SOURCE_KEYS)
+        )
+    if decision_context_mesh_ready(decision_context_mesh):
+        external_global_features.update(
+            _feature_subset(decision_context_mesh_global, _RUNTIME_DECISION_CONTEXT_MESH_KEYS)
+        )
     external_global_features.update(_feature_subset(schwab_global, _RUNTIME_SCHWAB_EDUCATION_KEYS))
     external_global_features.update(_feature_subset(sec_global, _RUNTIME_SEC_EDGAR_KEYS))
     external_global_features.update(_feature_subset(extended_global, _RUNTIME_EXTENDED_QUANT_KEYS))
@@ -930,6 +970,20 @@ def _load_runtime_gap_fill_context(project_root: Path) -> Dict[str, Any]:
     external_global_features.update(_feature_subset(dividend_drip_global, _RUNTIME_DIVIDEND_DRIP_KEYS))
     external_global_features.update(_feature_subset(quant_model_global, _RUNTIME_QUANT_MODEL_KEYS))
     external_symbol_features = _symbol_feature_subset(sec_symbol, _RUNTIME_SEC_EDGAR_KEYS)
+    if central_bank_cross_source_context_ready(central_bank_cross_source):
+        for symbol, subset in _symbol_feature_subset(
+            central_bank_cross_symbol,
+            _RUNTIME_CENTRAL_BANK_CROSS_SOURCE_KEYS,
+        ).items():
+            current = external_symbol_features.setdefault(symbol, {})
+            current.update(subset)
+    if decision_context_mesh_ready(decision_context_mesh):
+        for symbol, subset in _symbol_feature_subset(
+            decision_context_mesh_symbol,
+            _RUNTIME_DECISION_CONTEXT_MESH_KEYS,
+        ).items():
+            current = external_symbol_features.setdefault(symbol, {})
+            current.update(subset)
     for symbol, subset in _symbol_feature_subset(
         schwab_symbol,
         set(NEWS_STRUCTURED_FEATURE_KEYS) | _RUNTIME_NEWS_EVENT_KEYS | _RUNTIME_SCHWAB_EDUCATION_KEYS,

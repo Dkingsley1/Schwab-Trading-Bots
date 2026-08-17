@@ -20,6 +20,82 @@ def _write_json(path: Path, payload: dict) -> None:
     path.write_text(json.dumps(payload), encoding="utf-8")
 
 
+def test_collector_mesh_adds_ten_observation_only_streams_with_fail_closed_central_bank_context() -> None:
+    specs = collector_contracts.ORGANIC_EVIDENCE_COLLECTOR_SPECS
+    names = [str(spec["name"]) for spec in specs]
+
+    assert len(specs) == 10
+    assert len(set(names)) == 10
+    assert {str(spec["collector_class"]) for spec in specs} == {
+        "source_context",
+        "decision_critical_source_context",
+        "evidence_accrual",
+    }
+    central_bank = next(spec for spec in specs if spec["name"] == "central_bank_liquidity_context")
+    optional_specs = [spec for spec in specs if spec is not central_bank]
+    assert central_bank["required"] is True
+    assert central_bank["safe_to_degrade"] is False
+    assert central_bank["data_plane_key"] == "official_macro_context"
+    assert all(spec["required"] is False for spec in optional_specs)
+    assert all(spec["safe_to_degrade"] is True for spec in optional_specs)
+    assert all(spec.get("evidence_domains") for spec in specs)
+    assert all(spec.get("owner_command") for spec in specs)
+    assert not any("start-live" in " ".join(spec["owner_command"]) for spec in specs)
+
+
+def test_organic_collector_progress_requires_real_evidence_counts() -> None:
+    spec = {"collector_class": "evidence_accrual", "organic_minimums": {"capture_count": 100}}
+
+    accumulating = collector_contracts._organic_readiness(
+        spec,
+        fresh=True,
+        health_ok=True,
+        payload_present=True,
+        payload_nonempty=True,
+        health_payload={"capture_count": 25},
+        payload_body={},
+    )
+    ready = collector_contracts._organic_readiness(
+        spec,
+        fresh=True,
+        health_ok=True,
+        payload_present=True,
+        payload_nonempty=True,
+        health_payload={"capture_count": 100},
+        payload_body={},
+    )
+
+    assert accumulating["ready"] is False
+    assert accumulating["progress"] == 0.25
+    assert accumulating["blockers"] == ["minimum_not_met:capture_count:25/100"]
+    assert ready["ready"] is True
+    assert ready["progress"] == 1.0
+
+
+def test_organic_collector_reports_partial_lineage_progress_without_clearing_gate() -> None:
+    spec = {
+        "collector_class": "evidence_accrual",
+        "organic_truthy_paths": ["strict_ok"],
+        "organic_ratio_targets": {"point_in_time.snapshot_coverage_ratio": 0.75},
+    }
+
+    payload = collector_contracts._organic_readiness(
+        spec,
+        fresh=True,
+        health_ok=False,
+        payload_present=True,
+        payload_nonempty=True,
+        health_payload={"strict_ok": False, "point_in_time": {"snapshot_coverage_ratio": 0.375}},
+        payload_body={},
+    )
+
+    assert payload["ready"] is False
+    assert payload["progress"] == 0.5
+    assert "collector_health_not_ok" in payload["blockers"]
+    assert "truthy_requirement_not_met:strict_ok" in payload["blockers"]
+    assert "ratio_target_not_met:point_in_time.snapshot_coverage_ratio:0.375/0.75" in payload["blockers"]
+
+
 def test_run_cached_collector_skips_when_expected_artifact_is_fresh(tmp_path, monkeypatch, capsys) -> None:
     expected = tmp_path / "governance" / "health" / "collector.json"
     _write_json(expected, {"timestamp_utc": datetime.now(timezone.utc).isoformat(), "ok": True})

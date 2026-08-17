@@ -431,7 +431,7 @@ def _env_values(payload: dict[str, Any]) -> dict[str, str]:
         "BOT_FLEET_QUALITY_READINESS_SCORE": f"{_safe_float(mesh.get('quality_readiness_score'), 0.0):g}",
         "BOT_FLEET_OVERFIT_RISK_BLOCK_TEACHING": "1",
         "BOT_FLEET_LIVE_MONEY_BLOCKED": "1",
-        "PAPER_MIRROR_ALL_ACTIVE_SUB_BOTS": "1",
+        "PAPER_MIRROR_ALL_ACTIVE_SUB_BOTS": "0",
         "PAPER_BROKER_BRIDGE_ENABLED": "1",
         "MARKET_DATA_ONLY": "1",
         "ALLOW_ORDER_EXECUTION": "0",

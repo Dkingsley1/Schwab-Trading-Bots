@@ -48,6 +48,8 @@ CREATIVE_COTENANT_GUARD_RUN_SCRIPT="$PROJECT_ROOT/scripts/ops/run_creative_coten
 SWAP_PRESSURE_GOVERNOR_RUN_SCRIPT="$PROJECT_ROOT/scripts/ops/run_swap_pressure_governor_launchd.sh"
 RUNTIME_SMOOTH_MODE_RUN_SCRIPT="$PROJECT_ROOT/scripts/ops/run_runtime_smooth_mode_launchd.sh"
 SOAK_SELF_HEAL_RUN_SCRIPT="$PROJECT_ROOT/scripts/ops/run_soak_self_healing_launchd.sh"
+SOAK_RELIABILITY_SENTINEL_SCRIPT="$PROJECT_ROOT/scripts/ops/soak_reliability_sentinel.py"
+PRODUCTION_RESILIENCE_CONTROL_SCRIPT="$PROJECT_ROOT/scripts/ops/production_resilience_control.py"
 PRODUCTION_HARDENING_WATCH_RUN_SCRIPT="$PROJECT_ROOT/scripts/ops/run_production_hardening_watch_launchd.sh"
 AGENTS_DIR="$HOME/Library/LaunchAgents"
 LOG_DIR="${BOT_OPS_LAUNCHD_LOG_DIR:-/tmp/schwab_trading_bot/launchd_ops}"
@@ -161,6 +163,10 @@ RUNTIME_SMOOTH_MODE_PLIST="$AGENTS_DIR/com.dankingsley.ops.runtime_smooth_mode.p
 RUNTIME_SMOOTH_MODE_INTERVAL="${RUNTIME_SMOOTH_MODE_INTERVAL_SECONDS:-60}"
 SOAK_SELF_HEAL_PLIST="$AGENTS_DIR/com.dankingsley.ops.soak_self_healing.plist"
 SOAK_SELF_HEAL_INTERVAL="${SOAK_SELF_HEAL_INTERVAL_SECONDS:-900}"
+SOAK_RELIABILITY_SENTINEL_PLIST="$AGENTS_DIR/com.dankingsley.ops.soak_reliability_sentinel.plist"
+SOAK_RELIABILITY_SENTINEL_INTERVAL="${SOAK_RELIABILITY_SENTINEL_INTERVAL_SECONDS:-300}"
+PRODUCTION_RESILIENCE_CONTROL_PLIST="$AGENTS_DIR/com.dankingsley.ops.production_resilience_control.plist"
+PRODUCTION_RESILIENCE_CONTROL_INTERVAL="${PRODUCTION_RESILIENCE_CONTROL_INTERVAL_SECONDS:-300}"
 PRODUCTION_HARDENING_WATCH_PLIST="$AGENTS_DIR/com.dankingsley.ops.production_hardening_watch.plist"
 PRODUCTION_HARDENING_WATCH_INTERVAL="${PRODUCTION_HARDENING_WATCH_INTERVAL_SECONDS:-300}"
 
@@ -705,12 +711,68 @@ cat > "$SOAK_SELF_HEAL_PLIST" <<PLIST
     <key>ALLOW_ORDER_EXECUTION</key><string>0</string>
     <key>BOT_LIVE_MONEY_LOCKED_DURING_SOAK</key><string>1</string>
     <key>BOT_UNATTENDED_SOAK_ACTIVE</key><string>1</string>
+    <key>READINESS_EVIDENCE_REFRESH_PROFILE</key><string>accrual</string>
   </dict>
   <key>WorkingDirectory</key><string>$PROJECT_ROOT</string>
   <key>RunAtLoad</key><true/>
   <key>StartInterval</key><integer>$SOAK_SELF_HEAL_INTERVAL</integer>
+  <key>WatchPaths</key><array>
+    <string>$PROJECT_ROOT/governance/runtime/soak_self_healing.trigger</string>
+  </array>
+  <key>ProcessType</key><string>Background</string>
+  <key>ThrottleInterval</key><integer>30</integer>
   <key>StandardOutPath</key><string>$LOG_DIR/ops_soak_self_healing.out.log</string>
   <key>StandardErrorPath</key><string>$LOG_DIR/ops_soak_self_healing.err.log</string>
+</dict></plist>
+PLIST
+
+cat > "$SOAK_RELIABILITY_SENTINEL_PLIST" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>Label</key><string>com.dankingsley.ops.soak_reliability_sentinel</string>
+  <key>ProgramArguments</key><array>
+    <string>$PY</string><string>$SOAK_RELIABILITY_SENTINEL_SCRIPT</string><string>--apply</string><string>--json</string>
+  </array>
+  <key>EnvironmentVariables</key><dict>
+    <key>BOT_RUNTIME_PROFILE</key><string>$RUNTIME_PROFILE</string>
+    <key>MARKET_DATA_ONLY</key><string>1</string>
+    <key>ALLOW_ORDER_EXECUTION</key><string>0</string>
+    <key>BOT_LIVE_MONEY_LOCKED_DURING_SOAK</key><string>1</string>
+    <key>BOT_UNATTENDED_SOAK_ACTIVE</key><string>1</string>
+  </dict>
+  <key>WorkingDirectory</key><string>$PROJECT_ROOT</string>
+  <key>RunAtLoad</key><true/>
+  <key>StartInterval</key><integer>$SOAK_RELIABILITY_SENTINEL_INTERVAL</integer>
+  <key>ProcessType</key><string>Background</string>
+  <key>ThrottleInterval</key><integer>30</integer>
+  <key>StandardOutPath</key><string>$LOG_DIR/ops_soak_reliability_sentinel.out.log</string>
+  <key>StandardErrorPath</key><string>$LOG_DIR/ops_soak_reliability_sentinel.err.log</string>
+</dict></plist>
+PLIST
+
+cat > "$PRODUCTION_RESILIENCE_CONTROL_PLIST" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>Label</key><string>com.dankingsley.ops.production_resilience_control</string>
+  <key>ProgramArguments</key><array>
+    <string>$PY</string><string>$PRODUCTION_RESILIENCE_CONTROL_SCRIPT</string><string>--json</string>
+  </array>
+  <key>EnvironmentVariables</key><dict>
+    <key>BOT_RUNTIME_PROFILE</key><string>$RUNTIME_PROFILE</string>
+    <key>MARKET_DATA_ONLY</key><string>1</string>
+    <key>ALLOW_ORDER_EXECUTION</key><string>0</string>
+    <key>BOT_LIVE_MONEY_LOCKED_DURING_SOAK</key><string>1</string>
+    <key>BOT_UNATTENDED_SOAK_ACTIVE</key><string>1</string>
+  </dict>
+  <key>WorkingDirectory</key><string>$PROJECT_ROOT</string>
+  <key>RunAtLoad</key><true/>
+  <key>StartInterval</key><integer>$PRODUCTION_RESILIENCE_CONTROL_INTERVAL</integer>
+  <key>ProcessType</key><string>Background</string>
+  <key>ThrottleInterval</key><integer>30</integer>
+  <key>StandardOutPath</key><string>$LOG_DIR/ops_production_resilience_control.out.log</string>
+  <key>StandardErrorPath</key><string>$LOG_DIR/ops_production_resilience_control.err.log</string>
 </dict></plist>
 PLIST
 
@@ -726,12 +788,18 @@ cat > "$PRODUCTION_HARDENING_WATCH_PLIST" <<PLIST
     <key>ALLOW_ORDER_EXECUTION</key><string>0</string>
     <key>BOT_LIVE_MONEY_LOCKED_DURING_SOAK</key><string>1</string>
     <key>BOT_UNATTENDED_SOAK_ACTIVE</key><string>1</string>
+    <key>READINESS_EVIDENCE_REFRESH_PROFILE</key><string>accrual</string>
+    <key>PRODUCTION_PILLAR_REFRESH_ENABLED</key><string>${PRODUCTION_PILLAR_REFRESH_ENABLED:-1}</string>
+    <key>PRODUCTION_PILLAR_REFRESH_COOLDOWN_MINUTES</key><string>${PRODUCTION_PILLAR_REFRESH_COOLDOWN_MINUTES:-45}</string>
+    <key>PRODUCTION_PILLAR_REFRESH_STEP_TIMEOUT_SECONDS</key><string>${PRODUCTION_PILLAR_REFRESH_STEP_TIMEOUT_SECONDS:-300}</string>
     <key>PRODUCTION_HARDENING_WATCH_EXECUTE_SAFE_REPAIRS</key><string>${PRODUCTION_HARDENING_WATCH_EXECUTE_SAFE_REPAIRS:-0}</string>
     <key>PRODUCTION_HARDENING_WATCH_EXECUTE_ON_WATCH</key><string>${PRODUCTION_HARDENING_WATCH_EXECUTE_ON_WATCH:-0}</string>
   </dict>
   <key>WorkingDirectory</key><string>$PROJECT_ROOT</string>
   <key>RunAtLoad</key><true/>
   <key>StartInterval</key><integer>$PRODUCTION_HARDENING_WATCH_INTERVAL</integer>
+  <key>ProcessType</key><string>Background</string>
+  <key>LowPriorityIO</key><true/>
   <key>StandardOutPath</key><string>$LOG_DIR/ops_production_hardening_watch.out.log</string>
   <key>StandardErrorPath</key><string>$LOG_DIR/ops_production_hardening_watch.err.log</string>
 </dict></plist>
@@ -810,6 +878,8 @@ install_job "com.dankingsley.ops.system_summary_autopilot" "$SYSTEM_SUMMARY_AUTO
 install_job "com.dankingsley.ops.swap_pressure_governor" "$SWAP_PRESSURE_GOVERNOR_PLIST"
 install_job "com.dankingsley.ops.runtime_smooth_mode" "$RUNTIME_SMOOTH_MODE_PLIST"
 install_job "com.dankingsley.ops.soak_self_healing" "$SOAK_SELF_HEAL_PLIST"
+install_job "com.dankingsley.ops.soak_reliability_sentinel" "$SOAK_RELIABILITY_SENTINEL_PLIST"
+install_job "com.dankingsley.ops.production_resilience_control" "$PRODUCTION_RESILIENCE_CONTROL_PLIST"
 install_job "com.dankingsley.ops.production_hardening_watch" "$PRODUCTION_HARDENING_WATCH_PLIST"
 install_job "com.dankingsley.ops.creative_cotenant_guard" "$CREATIVE_COTENANT_GUARD_PLIST"
 

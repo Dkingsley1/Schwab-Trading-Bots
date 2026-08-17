@@ -3,6 +3,10 @@ set -euo pipefail
 
 PROJECT_ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
 RUN_SCRIPT="$PROJECT_ROOT/scripts/ops/run_startup_start_prompt_launchd.sh"
+NOTIFIER_SOURCE="$PROJECT_ROOT/scripts/ops/startup_prompt_notifier.swift"
+NOTIFIER_APP="$HOME/Library/Application Support/schwab_trading_bot/Schwab Startup Prompt.app"
+NOTIFIER_CONTENTS="$NOTIFIER_APP/Contents"
+NOTIFIER_BINARY="$NOTIFIER_CONTENTS/MacOS/SchwabStartupPrompt"
 LABEL="com.dankingsley.startup_start_prompt"
 PLIST_PATH="$HOME/Library/LaunchAgents/${LABEL}.plist"
 UID_NUM="$(id -u)"
@@ -80,6 +84,40 @@ fi
 mkdir -p "$HOME/Library/LaunchAgents" "$LOG_DIR"
 chmod +x "$RUN_SCRIPT"
 
+if [[ ! -f "$NOTIFIER_SOURCE" ]]; then
+  echo "startup prompt notifier source missing: $NOTIFIER_SOURCE" >&2
+  exit 1
+fi
+mkdir -p "$NOTIFIER_CONTENTS/MacOS"
+SWIFT_CACHE_DIR="${TMPDIR:-/tmp}/schwab_trading_bot_swift_module_cache"
+mkdir -p "$SWIFT_CACHE_DIR"
+CLANG_MODULE_CACHE_PATH="$SWIFT_CACHE_DIR" SWIFT_MODULE_CACHE_PATH="$SWIFT_CACHE_DIR" \
+  /usr/bin/swiftc -O "$NOTIFIER_SOURCE" -o "$NOTIFIER_BINARY"
+chmod +x "$NOTIFIER_BINARY"
+cat > "$NOTIFIER_CONTENTS/Info.plist" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleExecutable</key><string>SchwabStartupPrompt</string>
+  <key>CFBundleIdentifier</key><string>com.dankingsley.SchwabStartupPrompt</string>
+  <key>CFBundleName</key><string>Schwab Startup Prompt</string>
+  <key>CFBundleDisplayName</key><string>Schwab Trading Bot</string>
+  <key>CFBundlePackageType</key><string>APPL</string>
+  <key>CFBundleShortVersionString</key><string>2.0</string>
+  <key>CFBundleVersion</key><string>2</string>
+  <key>LSUIElement</key><true/>
+  <key>NSUserNotificationAlertStyle</key><string>alert</string>
+</dict>
+</plist>
+PLIST
+plutil -lint "$NOTIFIER_CONTENTS/Info.plist" >/dev/null
+/usr/bin/codesign --force --deep --sign - "$NOTIFIER_APP" >/dev/null 2>&1
+LSREGISTER="/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"
+if [[ -x "$LSREGISTER" ]]; then
+  "$LSREGISTER" -f "$NOTIFIER_APP" >/dev/null 2>&1 || true
+fi
+
 launchctl bootout "$GUI_DOMAIN" "$PLIST_PATH" >/dev/null 2>&1 || true
 
 BROWSER_OPEN_ALLOWED=1
@@ -121,6 +159,8 @@ cat > "$PLIST_PATH" <<PLIST
     <string>$APPLY_PAPER_LOCK</string>
     <key>STARTUP_START_PROMPT_NO_BROWSER</key>
     <string>$NO_BROWSER</string>
+    <key>STARTUP_START_PROMPT_APP</key>
+    <string>$NOTIFIER_APP</string>
     <key>SCHWAB_AUTH_BROWSER_DISABLED</key>
     <string>$NO_BROWSER</string>
     <key>SCHWAB_AUTH_ALLOW_BROWSER_OPEN</key>
@@ -161,4 +201,5 @@ else
   echo "startup_start_prompt_installed_next_login label=$LABEL plist=$PLIST_PATH"
 fi
 echo "delay_seconds=$DELAY_SECONDS timeout_seconds=$TIMEOUT_SECONDS force_restart=$FORCE_RESTART paper_lock=$APPLY_PAPER_LOCK no_browser=$NO_BROWSER"
+echo "actionable_notification_app=$NOTIFIER_APP"
 echo "logs=$OUT_LOG $ERR_LOG"

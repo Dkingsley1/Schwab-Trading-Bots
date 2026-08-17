@@ -14,9 +14,11 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from core.risk_engine import RiskEngine
+from scripts.ops.long_runtime_common import payload_age_minutes
 
 
 DEFAULT_OUT_PATH = PROJECT_ROOT / "governance" / "risk" / "risk_service_boundary_latest.json"
+DEFAULT_MAX_INPUT_AGE_MINUTES = 120.0
 
 
 def _load_json(path: Path) -> dict[str, Any]:
@@ -47,12 +49,58 @@ def _sha_json_file(path: Path) -> str:
     return hashlib.sha256(blob.encode("utf-8")).hexdigest()
 
 
+def _input_health(
+    name: str,
+    path: Path,
+    payload: dict[str, Any],
+    *,
+    now: datetime,
+    max_age_minutes: float,
+) -> dict[str, Any]:
+    age_minutes = payload_age_minutes(payload, path, now=now)
+    status = str(payload.get("overall_status") or payload.get("status") or "").strip().lower()
+    input_freshness = payload.get("input_freshness") if isinstance(payload.get("input_freshness"), dict) else {}
+    blockers: list[str] = []
+    if not payload:
+        blockers.append("payload_missing_or_invalid")
+    if age_minutes is None or age_minutes > max(float(max_age_minutes), 0.0):
+        blockers.append("artifact_stale")
+    if "ok" in payload and not bool(payload.get("ok", False)):
+        blockers.append("upstream_not_ok")
+    if status and status not in {"ready", "ok", "active"}:
+        blockers.append(f"upstream_status_{status}")
+    if "sources_ready" in input_freshness and not bool(input_freshness.get("sources_ready", False)):
+        blockers.append("upstream_sources_not_ready")
+
+    if name == "allocator" and not isinstance(payload.get("approved_intents"), list):
+        blockers.append("approved_intents_contract_missing")
+    elif name == "portfolio_risk" and not isinstance(payload.get("limits"), dict):
+        blockers.append("risk_limits_contract_missing")
+    elif name == "execution_budget" and not isinstance(payload.get("global"), dict):
+        blockers.append("global_budget_contract_missing")
+    elif name in {"live_reconciliation", "paper_reconciliation"} and not bool(payload.get("ok", False)):
+        blockers.append("reconciliation_not_ready")
+
+    blockers = list(dict.fromkeys(blockers))
+    return {
+        "path": str(path),
+        "exists": path.exists(),
+        "age_minutes": round(age_minutes, 3) if age_minutes is not None else None,
+        "max_age_minutes": float(max_age_minutes),
+        "reported_status": status,
+        "reported_ok": payload.get("ok"),
+        "ready": not blockers,
+        "blockers": blockers,
+    }
+
+
 def build_payload(
     project_root: Path = PROJECT_ROOT,
     *,
     allocator_file: Path | None = None,
     portfolio_risk_file: Path | None = None,
     execution_budget_file: Path | None = None,
+    max_input_age_minutes: float = DEFAULT_MAX_INPUT_AGE_MINUTES,
 ) -> dict[str, Any]:
     allocator_path = allocator_file or (project_root / "governance" / "allocator" / "portfolio_allocator_service_latest.json")
     portfolio_risk_path = portfolio_risk_file or (project_root / "governance" / "risk" / "portfolio_risk_latest.json")
@@ -64,6 +112,32 @@ def build_payload(
     live_reconciliation_path = project_root / "governance" / "health" / "live_reconciliation_slo_latest.json"
     paper_reconciliation_path = project_root / "governance" / "health" / "paper_reconciliation_slo_latest.json"
     kill_switch_path = project_root / "scripts" / "global_risk_killswitch.py"
+    now = datetime.now(timezone.utc)
+    live_reconciliation = _load_json(live_reconciliation_path)
+    paper_reconciliation = _load_json(paper_reconciliation_path)
+    input_health = {
+        "allocator": _input_health(
+            "allocator", allocator_path, allocator, now=now, max_age_minutes=max_input_age_minutes
+        ),
+        "portfolio_risk": _input_health(
+            "portfolio_risk", portfolio_risk_path, portfolio_risk, now=now, max_age_minutes=max_input_age_minutes
+        ),
+        "execution_budget": _input_health(
+            "execution_budget", execution_budget_path, execution_budget, now=now, max_age_minutes=max_input_age_minutes
+        ),
+        "live_reconciliation": _input_health(
+            "live_reconciliation", live_reconciliation_path, live_reconciliation, now=now, max_age_minutes=max_input_age_minutes
+        ),
+        "paper_reconciliation": _input_health(
+            "paper_reconciliation", paper_reconciliation_path, paper_reconciliation, now=now, max_age_minutes=max_input_age_minutes
+        ),
+    }
+    upstream_blockers = [
+        f"{name}:{blocker}"
+        for name, row in input_health.items()
+        for blocker in row.get("blockers", [])
+    ]
+    upstream_ready = all(bool(row.get("ready", False)) for row in input_health.values())
 
     exposure_state: dict[str, int] = {}
     pre_trade: list[dict[str, Any]] = []
@@ -143,23 +217,31 @@ def build_payload(
             and live_reconciliation_path.exists()
             and paper_reconciliation_path.exists()
         ),
+        "operational_inputs_ready": upstream_ready,
     }
     overall_status = (
         "ready"
         if bool(independent_boundary.get("service_isolation_ready", False))
+        and upstream_ready
         and int(independent_boundary.get("service_count", 0) or 0) >= 5
         and int(independent_boundary.get("policy_hash_count", 0) or 0) >= 3
         else "degraded"
     )
     payload = {
-        "timestamp_utc": datetime.now(timezone.utc).isoformat(),
-        "schema_version": 1,
-        "ok": True,
+        "timestamp_utc": now.isoformat(),
+        "schema_version": 2,
+        "ok": overall_status == "ready",
         "overall_status": overall_status,
         "services": service_contracts,
         "service_contracts": service_contracts,
         "policy_hashes": policy_hashes,
         "independent_service_boundary": independent_boundary,
+        "input_health": {
+            "sources_ready": upstream_ready,
+            "sources": input_health,
+            "blockers": upstream_blockers,
+            "fresh_wrapper_timestamp_does_not_override_stale_inputs": True,
+        },
         "pre_trade_decisions": pre_trade,
         "execution_budget": execution_budget,
         "portfolio_risk": portfolio_risk,
@@ -177,6 +259,7 @@ def main() -> int:
     parser.add_argument("--allocator-file", default=str(PROJECT_ROOT / "governance" / "allocator" / "portfolio_allocator_service_latest.json"))
     parser.add_argument("--portfolio-risk-file", default=str(PROJECT_ROOT / "governance" / "risk" / "portfolio_risk_latest.json"))
     parser.add_argument("--execution-budget-file", default=str(PROJECT_ROOT / "governance" / "risk" / "execution_budget_latest.json"))
+    parser.add_argument("--max-input-age-minutes", type=float, default=DEFAULT_MAX_INPUT_AGE_MINUTES)
     parser.add_argument("--out-file", default=str(DEFAULT_OUT_PATH))
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args()
@@ -186,6 +269,7 @@ def main() -> int:
         allocator_file=Path(args.allocator_file).expanduser(),
         portfolio_risk_file=Path(args.portfolio_risk_file).expanduser(),
         execution_budget_file=Path(args.execution_budget_file).expanduser(),
+        max_input_age_minutes=max(float(args.max_input_age_minutes), 0.0),
     )
     out_path = Path(args.out_file).expanduser()
     out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -198,7 +282,7 @@ def main() -> int:
             f"pre_trade_orders={len(payload.get('pre_trade_decisions') or [])} "
             f"rejections={int(payload.get('services', {}).get('pre_trade_service', {}).get('rejections', 0) or 0)}"
         )
-    return 0
+    return 0 if bool(payload.get("ok", False)) else 2
 
 
 if __name__ == "__main__":

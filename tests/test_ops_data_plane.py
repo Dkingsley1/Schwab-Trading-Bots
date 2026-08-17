@@ -90,6 +90,36 @@ def test_ops_data_plane_records_and_reads_core_control_tables(tmp_path: Path) ->
     assert heat_map["primary_sqlite"]["promotion_candidate"] is True
 
 
+def test_collector_runtime_reads_can_share_one_connection(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    with src.connect(project_root) as conn:
+        src.record_collector_run(
+            conn,
+            collector_key="shared_reader",
+            cache_key="shared_reader",
+            command=["python", "collector.py"],
+            command_fingerprint="fp",
+            skipped=False,
+            rc=0,
+            started_utc="2026-04-16T12:00:00+00:00",
+            finished_utc="2026-04-16T12:00:05+00:00",
+        )
+        latest = src.latest_collector_run(
+            project_root,
+            collector_key="shared_reader",
+            connection=conn,
+        )
+        budget = src.collector_error_budget(
+            project_root,
+            collector_key="shared_reader",
+            connection=conn,
+        )
+        assert conn.execute("SELECT 1").fetchone()[0] == 1
+
+    assert latest["rc"] == 0
+    assert budget["run_count"] == 1
+
+
 def test_record_query_access_accumulates_atomically_with_batched_commits(tmp_path: Path) -> None:
     project_root = tmp_path / "project"
     with src.connect(project_root) as conn:
@@ -121,6 +151,44 @@ def test_record_query_access_accumulates_atomically_with_batched_commits(tmp_pat
     assert heat_map["primary_sqlite"]["query_count"] == 2
     assert heat_map["primary_sqlite"]["rows_scanned_total"] == 35
     assert heat_map["primary_sqlite"]["rows_returned_total"] == 3
+
+
+def test_schema_drift_is_bounded_and_aggregated(tmp_path: Path, monkeypatch) -> None:
+    project_root = tmp_path / "project"
+    monkeypatch.setenv("BOT_OPS_SCHEMA_DRIFT_PAYLOAD_MAX_BYTES", "16")
+    payload = '{"symbol":"SPY","detail":"payload-is-intentionally-long"}'
+
+    with src.connect(project_root) as conn:
+        for line_no in (10, 11):
+            src.record_schema_drift(
+                conn,
+                lane="sqlite",
+                source_rel="decisions/demo.jsonl",
+                line_no=line_no,
+                observed_schema_version=1,
+                expected_schema_version=2,
+                drift_kind="schema_version_mismatch",
+                payload_json=payload,
+                run_id="run-1",
+                iter_id=f"iter-{line_no}",
+            )
+        row = conn.execute(
+            """
+            SELECT occurrence_count, first_line_no, last_line_no, sample_payload_json,
+                   first_payload_sha256, last_payload_sha256, latest_iter_id
+            FROM schema_drift_rollups
+            """
+        ).fetchone()
+        legacy_count = int(conn.execute("SELECT COUNT(*) FROM schema_drift_events").fetchone()[0] or 0)
+
+    assert row is not None
+    assert int(row[0]) == 2
+    assert int(row[1]) == 10
+    assert int(row[2]) == 11
+    assert len(str(row[3]).encode("utf-8")) <= 16
+    assert row[4] == row[5]
+    assert row[6] == "iter-11"
+    assert legacy_count == 0
 
 
 def test_load_shard_heat_map_fails_open_for_corrupt_ops_plane(tmp_path: Path) -> None:

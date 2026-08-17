@@ -21,6 +21,7 @@ DEFAULT_OUT_PATH = PROJECT_ROOT / "governance" / "health" / "live_money_readines
 DEFAULT_START_DATE = date(2026, 7, 1)
 DEFAULT_TARGET_DATE = date(2026, 8, 26)
 REQUIRED_GRADE_FLOOR = "A"
+TARGET_GRADE = "A+"
 POLICY_ID = "faithful_live_money_economic_evidence_v2_20260826"
 MAX_RISK_CONTROL_ARTIFACT_AGE_MINUTES = 36.0 * 60.0
 MAX_PROFITABILITY_FIREWALL_AGE_MINUTES = 180.0
@@ -113,6 +114,23 @@ GRADE_RANK = {
     "A++": 6,
 }
 
+A_PLUS_REMEDIATION = {
+    "paper_execution_truth": "clear every paper-truth gate with fresh broker, ingestion, replay, and profitability evidence",
+    "decision_replay_harness": "earn positive post-cost counterfactual expectancy, win-rate, and lower-bound evidence on locked out-of-sample decisions",
+    "paper_broker_truth_reconciliation": "sustain zero material mismatches with independently verified broker truth and an explicit A+ upstream grade",
+    "paper_ingestion_quality": "sustain A+ freshness, validity, pending-line, and attribution service levels",
+    "paper_profitability_control": "complete independent fills, holdout, multiple-testing, stressed-cost, risk-of-ruin, and edge-decay evidence at A+",
+    "promotion_quality_gate": "keep all promotion, drift, replay, probation, and daily-verification checks passing",
+    "promotion_packet": "keep the signed, hash-complete, exactly replayable promotion packet current",
+    "source_verification": "keep every required source verified, fresh, and above the A+ confidence floor",
+    "health_gates": "complete the clean window without stale, blocked-rate, restart, ingestion, SQL, or storage hard gates",
+    "continuous_soak": "complete the clean 720-hour window while capacity, intake enforcement, and backlog controls remain A+",
+    "training_runtime": "prove serial isolated training, immutable serving bundles, current candidates, and safe resource admission at A+",
+    "live_runtime_release": "preserve paper/live separation, read-only live staging, and operator-controlled release authority",
+    "live_readiness_smoke": "keep deterministic smoke, kill-switch, account, order-budget, and rollback checks at A+",
+    "risk_controls": "keep independent pre-trade risk, portfolio caps, execution budgets, and the global kill switch fresh and enforceable",
+}
+
 
 def _safe_float(raw: Any, default: float = 0.0) -> float:
     try:
@@ -178,6 +196,8 @@ def _section(
     required: bool = True,
 ) -> dict[str, Any]:
     grade_ready = _grade_ok(grade)
+    target_grade_met = _grade_ok(grade, TARGET_GRADE)
+    a_plus_ready = bool(target_grade_met and ready)
     blockers = ordered_unique(
         [
             f"{section_id}_below_{REQUIRED_GRADE_FLOOR}" if required and not grade_ready else "",
@@ -192,6 +212,10 @@ def _section(
         "grade": grade,
         "grade_floor": REQUIRED_GRADE_FLOOR,
         "grade_floor_met": grade_ready,
+        "target_grade": TARGET_GRADE,
+        "target_grade_met": target_grade_met,
+        "a_plus_ready": a_plus_ready,
+        "a_plus_remediation": "" if a_plus_ready else A_PLUS_REMEDIATION.get(section_id, "earn fresh independent A+ evidence"),
         "status": "ready" if not blockers else "blocked",
         "blockers": blockers,
         "evidence": evidence,
@@ -680,7 +704,7 @@ def build_payload(
     managed_training_safely_deferred = bool(
         training_runtime
         and str(training_runtime.get("overall_status") or "").strip().lower()
-        in {"blocked", "constrained", "degraded"}
+        in {"ready", "blocked", "constrained", "degraded"}
         and not bool(training_contract.get("launch_allowed", False))
         and bool(training_launch_blockers)
         and set(training_launch_blockers).issubset(SAFE_DEFERRED_TRAINING_LAUNCH_BLOCKERS)
@@ -749,6 +773,18 @@ def build_payload(
         and not replay_gate.get("grade_blocking", True)
         and (replay_gate.get("paper_replay_ok", False) or replay_managed_collection_ready)
     )
+    broker_truth_grade = _normalize_grade(
+        broker_truth_gate.get("broker_truth_v2_grade") or broker_truth_gate.get("grade"),
+        score=broker_truth_gate.get("score"),
+        ok=broker_truth_gate.get("ok"),
+    )
+    if (
+        bool(broker_truth_gate.get("ok", False))
+        and _safe_float(broker_truth_gate.get("score"), 0.0) >= 97.0
+        and _safe_float(broker_truth_gate.get("broker_truth_v2_score"), 0.0) >= 0.97
+        and _safe_float(broker_truth_gate.get("mismatch_count"), 1.0) <= 0.0
+    ):
+        broker_truth_grade = "A+"
     soak_contract_ready = bool(soak_contract.get("ready", False))
     soak_contract_soak_ready = bool(soak_contract.get("soak_ready", soak_contract_ready))
     soak_contract_grade = _normalize_grade(
@@ -763,8 +799,25 @@ def build_payload(
         and soak_integrity.get("operational_capacity_ready", False)
         and str(soak_integrity.get("operational_capacity_grade") or "").strip().upper() in {"A+", "A++"}
     )
-    if soak_capacity_a_plus and soak_contract_soak_ready:
-        soak_contract_grade = "A+"
+    soak_elapsed_complete = bool(soak_integrity.get("clean_720_hours_complete", False)) if soak_integrity else True
+    soak_elapsed_grade = (
+        _normalize_grade(
+            soak_integrity.get("elapsed_evidence_grade"),
+            ok=soak_elapsed_complete,
+        )
+        if soak_integrity
+        else "A+"
+    )
+    if soak_integrity:
+        soak_contract_grade = _minimum_grade(
+            soak_contract_grade,
+            _normalize_grade(soak_integrity.get("control_grade"), ok=bool(soak_integrity.get("ok", False))),
+            _normalize_grade(
+                soak_integrity.get("operational_capacity_grade"),
+                ok=bool(soak_integrity.get("operational_capacity_ready", False)),
+            ),
+            soak_elapsed_grade,
+        )
 
     sections = [
         _section(
@@ -799,11 +852,7 @@ def build_payload(
         _section(
             "paper_broker_truth_reconciliation",
             title="Broker Truth Reconciliation",
-            grade=_normalize_grade(
-                broker_truth_gate.get("broker_truth_v2_grade") or broker_truth_gate.get("grade"),
-                score=broker_truth_gate.get("score"),
-                ok=broker_truth_gate.get("ok"),
-            ),
+            grade=broker_truth_grade,
             ready=bool(broker_truth_gate.get("ok", False)),
             evidence={
                 "score": broker_truth_gate.get("score"),
@@ -912,9 +961,12 @@ def build_payload(
         ),
         _section(
             "continuous_soak",
-            title="30-Day Continuous-Soak Capacity",
+            title="30-Day Continuous-Soak Evidence",
             grade=soak_contract_grade,
-            ready=bool(soak_contract_soak_ready and (soak_capacity_a_plus or not soak_integrity)),
+            ready=bool(
+                soak_contract_soak_ready
+                and (not soak_integrity or (soak_capacity_a_plus and soak_elapsed_complete))
+            ),
             evidence={
                 "status": soak_contract.get("status"),
                 "ready": soak_contract_ready,
@@ -927,7 +979,7 @@ def build_payload(
                 "operational_capacity_grade": soak_integrity.get("operational_capacity_grade"),
                 "clean_window_elapsed_hours": soak_integrity.get("clean_window_elapsed_hours"),
                 "clean_720_hours_complete": soak_integrity.get("clean_720_hours_complete", False),
-                "elapsed_evidence_grade": soak_integrity.get("elapsed_evidence_grade"),
+                "elapsed_evidence_grade": soak_elapsed_grade,
                 "capacity_is_not_elapsed_completion": True,
             },
             source_artifact=str(soak_integrity_path if soak_integrity else storage_path),
@@ -1027,7 +1079,24 @@ def build_payload(
             for section in sections
             if section.get("required", True) and not section.get("ready", False)
         ],
+        "target_grade": TARGET_GRADE,
+        "a_plus_required_section_count": sum(
+            1
+            for section in sections
+            if section.get("required", True) and section.get("a_plus_ready", False)
+        ),
+        "a_plus_gap_sections": [
+            section["section_id"]
+            for section in sections
+            if section.get("required", True) and not section.get("a_plus_ready", False)
+        ],
     }
+    required_section_count = max(int(grade_summary["required_section_count"]), 1)
+    grade_summary["a_plus_readiness_percent"] = round(
+        100.0 * float(grade_summary["a_plus_required_section_count"]) / float(required_section_count),
+        6,
+    )
+    grade_summary["all_required_sections_a_plus"] = not bool(grade_summary["a_plus_gap_sections"])
     transition_runway = _build_transition_runway(
         sections=sections,
         start_date=start_date,
@@ -1045,6 +1114,7 @@ def build_payload(
         "live_money_locked": not faithful_live_money_ready,
         "required_grade_floor": REQUIRED_GRADE_FLOOR,
         "allowed_grades": ["A", "A+"],
+        "target_grade": TARGET_GRADE,
         "start_date": start_date.isoformat(),
         "target_date": target_date.isoformat(),
         "as_of_date": current_date.isoformat(),
@@ -1060,6 +1130,7 @@ def build_payload(
             [
                 f"hold faithful live-money execution locked until {target_date.isoformat()}" if not target_window_complete else "",
                 "raise every required readiness section to A/A+ before live-money clearance" if grade_summary["below_floor_sections"] else "",
+                "complete the explicit A+ remediation ledger for every required section" if grade_summary["a_plus_gap_sections"] else "",
                 "clear all not-ready readiness sections before live-money clearance" if grade_summary["not_ready_sections"] else "",
                 "work the six-pillar transition runway in due-date order" if transition_runway["blocked_pillars"] else "",
                 "keep live execution validate-only until this contract reports faithful_live_money_ready=true" if not faithful_live_money_ready else "",

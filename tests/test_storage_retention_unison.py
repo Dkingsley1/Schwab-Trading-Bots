@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -38,13 +39,101 @@ def test_storage_growth_forecast_excludes_pre_containment_incident_slope() -> No
     assert payload["consumed_gb_per_day"] < 200.0
 
 
-def test_video_cold_archive_override_keeps_video_root_protected(monkeypatch) -> None:
+def test_verified_cross_tier_move_resets_growth_baseline_and_persists_event(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    project_root = tmp_path / "project"
+    external_root = tmp_path / "external" / "schwab_trading_bot"
+    cold_root = external_root / "cold_archive"
+    health_root = project_root / "governance" / "health"
+    source = project_root / "data" / "stale_stage" / "archive.sqlite3"
+    target = cold_root / "deep_cold" / "archive.sqlite3"
+    manifest = external_root / "data" / "deep_cold" / "deep_cold_manifest.jsonl"
+    target.parent.mkdir(parents=True)
+    source.parent.mkdir(parents=True)
+    manifest.parent.mkdir(parents=True)
+    health_root.mkdir(parents=True)
+    target.write_bytes(b"x" * (2 * 1024 * 1024))
+    source.symlink_to(target)
+    moved_at = datetime.now(timezone.utc) - timedelta(minutes=2)
+    manifest.write_text(
+        json.dumps(
+            {
+                "path": str(source),
+                "source_device_id": 1,
+                "source_replaced_with_symlink": True,
+                "second_cold_target": str(target),
+                "second_cold_move": {
+                    "source": str(source),
+                    "target": str(target),
+                    "source_replaced_with_symlink": True,
+                    "verified_size_match": True,
+                    "verified_sha256_match": True,
+                    "source_stable": True,
+                    "source_sha256": "same",
+                    "target_sha256": "same",
+                    "bytes": target.stat().st_size,
+                },
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    _write = health_root / "deep_cold_storage_layer_latest.json"
+    _write.write_text(json.dumps({"manifest_path": str(manifest)}), encoding="utf-8")
+    monkeypatch.setenv("BOT_SECOND_COLD_ROOT", str(cold_root))
+    monkeypatch.setattr(
+        src,
+        "_device_id",
+        lambda path: 2 if src._path_within(Path(path), external_root) else 1,
+    )
+    os.utime(source, (moved_at.timestamp(), moved_at.timestamp()), follow_symlinks=False)
+
+    event_path = project_root / "governance" / "runtime" / "capacity_epoch.json"
+    control = src._storage_growth_baseline_control(
+        project_root,
+        external_root,
+        apply=True,
+        event_path=event_path,
+    )
+
+    assert control["baseline_scope"] == "post_verified_cross_tier_capacity_event"
+    assert control["capacity_control_event"]["moved_files"] == 1
+    assert control["capacity_control_event"]["moved_gb"] > 0.0
+    assert json.loads(event_path.read_text(encoding="utf-8"))["verified"] is True
+
+
+def test_storage_growth_forecast_names_verified_capacity_control_scope() -> None:
+    now = datetime.now(timezone.utc)
+    epoch = now - timedelta(minutes=4)
+
+    payload = src._storage_growth_forecast(
+        current_external={"free_gb": 200.0},
+        current_internal={"free_gb": 150.0},
+        history_rows=[
+            {
+                "timestamp_utc": (now - timedelta(hours=1)).isoformat(),
+                "disk": {"external": {"free_gb": 250.0}},
+            }
+        ],
+        target_free_gb=125.0,
+        pressure_free_gb=64.0,
+        baseline_not_before_utc=epoch,
+        baseline_scope="post_verified_cross_tier_capacity_event",
+    )
+
+    assert payload["baseline_scope"] == "post_verified_cross_tier_capacity_event"
+    assert payload["confidence"] == "new_baseline"
+
+
+def test_video_cold_archive_override_cannot_bypass_protected_volume(monkeypatch) -> None:
     monkeypatch.setenv("BOT_ALLOW_VIDEO_COLD_ARCHIVE", "1")
     monkeypatch.setenv("BOT_VIDEO_COLD_ARCHIVE_ROOT", "/Volumes/VIDEO/schwab_trading_bot_cold")
 
     assert src._is_protected_volume(Path("/Volumes/VIDEO")) is True
-    assert src._is_protected_volume(Path("/Volumes/VIDEO/schwab_trading_bot_cold")) is False
-    assert src._is_protected_volume(Path("/Volumes/VIDEO/schwab_trading_bot_cold/data/proof.jsonl")) is False
+    assert src._is_protected_volume(Path("/Volumes/VIDEO/schwab_trading_bot_cold")) is True
+    assert src._is_protected_volume(Path("/Volumes/VIDEO/schwab_trading_bot_cold/data/proof.jsonl")) is True
 
 
 def test_unconfigured_protected_candidate_does_not_claim_target_points_there(monkeypatch, tmp_path: Path) -> None:
@@ -561,12 +650,12 @@ def test_storage_retention_unison_runs_hot_plane_compactors(monkeypatch, tmp_pat
     external_root = tmp_path / "external" / "schwab_trading_bot"
     external_root.mkdir(parents=True)
     (tmp_path / "governance" / "health").mkdir(parents=True)
-    second_cold = tmp_path / "VIDEO" / "schwab_trading_bot_cold"
-    monkeypatch.setenv("BOT_ALLOW_VIDEO_COLD_ARCHIVE", "1")
-    monkeypatch.setenv("BOT_VIDEO_COLD_ARCHIVE_ROOT", str(second_cold))
+    second_cold = tmp_path / "BOT_COLD" / "schwab_trading_bot_cold"
+    monkeypatch.setenv("BOT_SECOND_COLD_ROOT", str(second_cold))
     forecast_path = tmp_path / "forecast.json"
 
     commands: list[list[str]] = []
+    timeouts: dict[str, int] = {}
 
     def fake_resolve_external_storage() -> SimpleNamespace:
         return SimpleNamespace(external_root=external_root)
@@ -577,6 +666,7 @@ def test_storage_retention_unison_runs_hot_plane_compactors(monkeypatch, tmp_pat
     def fake_run_json(command: list[str], *, cwd: Path, timeout_sec: int) -> dict[str, Any]:
         commands.append(list(command))
         name = command[1]
+        timeouts[name] = timeout_sec
         payload: dict[str, Any]
         if name == "deep-cold-storage-layer":
             published_forecast = json.loads(forecast_path.read_text(encoding="utf-8"))
@@ -719,7 +809,9 @@ def test_storage_retention_unison_runs_hot_plane_compactors(monkeypatch, tmp_pat
     assert "decision-log-compactor" in command_names
     assert "--move-to-second-cold" in deep_cold_command
     assert "--adaptive" in deep_cold_command
+    assert timeouts["deep-cold-storage-layer"] == 1800
     assert deep_cold_command[deep_cold_command.index("--planning-horizon-days") + 1] == "30.0"
+    assert deep_cold_command[deep_cold_command.index("--source-free-target-gb") + 1] == "125.0"
     assert str(second_cold) in deep_cold_command
     assert "--apply" in cold_archive_command
     assert cold_archive_command[cold_archive_command.index("--archive-root") + 1] == str(second_cold)

@@ -43,6 +43,25 @@
     "unknown_evidence_fails_closed": true,
     "extended_sessions_require_independent_validation": true
   },
+  "paper_execution_authority": {
+    "required_version": "paper_execution_authority_v2",
+    "require_explicit_market_signal_authority": true,
+    "require_all_active_mirror_disabled": true,
+    "require_bounded_cohort": true,
+    "require_hierarchy_identity": true,
+    "require_zero_unauthorized_bots": true
+  },
+  "accounting_scope": {
+    "required_views": [
+      "lifetime_flow",
+      "current_day_flow",
+      "candidate_forward_flow",
+      "active_book_snapshot"
+    ],
+    "candidate_binding_required": true,
+    "carried_inventory_may_grade_current_candidate": false,
+    "heartbeat_only_profile_may_grade_current_financials": false
+  },
   "mandatory_quarantine_profiles": [
     "futures_event_reaction",
     "options_on_futures_aggressive"

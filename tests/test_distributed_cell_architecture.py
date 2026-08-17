@@ -270,6 +270,9 @@ def test_distributed_cell_architecture_normalizes_controlled_production_states(t
     assert surfaces["data_collection_observation_rollup"]["controlled_state_reason"] == "zero_observation_targets_are_routed_to_targeted_repair_lane"
     assert surfaces["master_infrastructure_supervisor"]["controlled_state_reason"] == "master_infrastructure_degraded_only_by_advisory_refreshable_checks"
     assert cells._controlled_surface_state("writer_cycle_coordinator", "handoff_released", {"ok": True})["status"] == "complete"
+    completed = cells._controlled_surface_state("writer_cycle_coordinator", "complete", {"ok": False})
+    assert completed["status"] == "complete"
+    assert completed["stale_exempt"] is True
 
 
 def test_guarded_soak_accepts_architecture_self_reference_drift_debt(tmp_path: Path) -> None:
@@ -313,3 +316,167 @@ def test_guarded_soak_accepts_architecture_self_reference_drift_debt(tmp_path: P
     assert guarded["ready"] is True
     assert guarded["system_drift_ready"] is True
     assert guarded["system_drift_context"]["managed"] is True
+
+
+def test_guarded_soak_accepts_guarded_ready_health_projection(tmp_path: Path) -> None:
+    health = tmp_path / "governance" / "health"
+    now = cells.iso_now()
+    _write_json(
+        health / "unattended_soak_readiness_latest.json",
+        {
+            "timestamp_utc": now,
+            "overall_status": "ready",
+            "overall_grade": "A+",
+            "safe_to_leave_unattended": True,
+            "blockers": [],
+        },
+    )
+    _write_json(
+        health / "runtime_paper_regression_guard_latest.json",
+        {
+            "timestamp_utc": now,
+            "overall_status": "ready",
+            "paper_armed": True,
+            "paper_blocked": False,
+            "failed_guard_count": 0,
+        },
+    )
+    _write_json(
+        health / "health_fast_latest.json",
+        {
+            "timestamp_utc": now,
+            "overall_status": "guarded_ready",
+            "ok": True,
+            "strict_all_clear": False,
+            "operational_readiness": {"guarded_paper": {"ok": True, "status": "ready"}},
+        },
+    )
+    _write_json(health / "runtime_gate_dashboard_latest.json", {"overall": {"status": "ok", "ok": True, "attention": []}})
+    _write_json(
+        health / "system_drift_guard_latest.json",
+        {"overall_status": "ready", "ok": True, "metrics": {"blocked_surface_count": 0, "degraded_surface_count": 0, "stale_surface_count": 0}},
+    )
+
+    guarded = cells._guarded_paper_soak_health(tmp_path)
+
+    assert guarded["ready"] is True
+    assert guarded["health_fast_ready"] is True
+
+
+def test_guarded_soak_accepts_drift_ready_with_only_managed_stale_report(tmp_path: Path) -> None:
+    drift = {
+        "overall_status": "ready",
+        "ok": True,
+        "metrics": {"blocked_surface_count": 0, "degraded_surface_count": 0, "stale_surface_count": 1},
+        "surfaces": [
+            {
+                "name": "report_pdf_bundle",
+                "status": "ready",
+                "stale": True,
+                "managed_stale": True,
+            }
+        ],
+    }
+
+    ready, context = cells._drift_ready_for_guarded_soak(drift)
+
+    assert ready is True
+    assert context["stale_surface_count"] == 1
+    assert context["unmanaged_stale_surface_count"] == 0
+
+
+def test_training_cell_treats_no_candidate_fail_closed_state_as_operationally_idle() -> None:
+    state = cells._controlled_surface_state(
+        "training_runtime",
+        "blocked",
+        {
+            "prep_allowed": True,
+            "launch_allowed": False,
+            "launch_blockers": [
+                "no_bot_needs_training_candidates",
+                "training_evidence_epoch_mismatch",
+            ],
+            "resource_guard": {"training_ok": True},
+            "storage_quota_training_gate": {"hard_breaches": 0},
+        },
+    )
+
+    assert state == {
+        "status": "advisory",
+        "weight": 0,
+        "reason": "training_is_fail_closed_and_idle_because_no_bot_is_currently_eligible",
+    }
+
+
+def test_cell_grading_keeps_healthy_advisory_surfaces_out_of_runtime_failure_score() -> None:
+    system_needs = cells._controlled_surface_state(
+        "system_needs_intelligence",
+        "needs_action",
+        {"ok": True},
+    )
+    provider_mesh = cells._controlled_surface_state(
+        "provider_mesh",
+        "degraded",
+        {
+            "required_failures": [],
+            "summary": {
+                "required_collectors": 4,
+                "required_contract_ok": 4,
+                "required_snapshot_ready": 4,
+            },
+        },
+    )
+    infrastructure_autofix = cells._controlled_surface_state(
+        "infrastructure_autofix",
+        "degraded",
+        {
+            "metrics": {
+                "paper_trade_lock_active": True,
+                "artifact_freshness_stale_required": 0,
+                "process_watchdog_active_issue_count": 0,
+                "runtime_paper_failed_guard_count": 0,
+                "unsent_critical_alerts": 0,
+                "timeout_budget_exhausted": False,
+            }
+        },
+    )
+
+    assert system_needs["weight"] == 0
+    assert provider_mesh["reason"] == "required_provider_mesh_is_ready_with_optional_source_failures_only"
+    assert infrastructure_autofix["reason"] == "infrastructure_autofix_has_only_bounded_advisory_or_evidence_followups"
+
+
+def test_training_cell_keeps_evidence_failure_blocking_when_candidate_exists() -> None:
+    state = cells._controlled_surface_state(
+        "training_runtime",
+        "blocked",
+        {
+            "prep_allowed": True,
+            "launch_allowed": False,
+            "launch_blockers": ["training_evidence_epoch_mismatch"],
+            "resource_guard": {"training_ok": True},
+            "storage_quota_training_gate": {"hard_breaches": 0},
+        },
+    )
+
+    assert state == {}
+
+
+def test_training_quality_idle_stale_diagnostics_are_advisory_but_preserved() -> None:
+    state = cells._controlled_surface_state(
+        "training_quality",
+        "needs_attention",
+        {
+            "training_quality_score": 100.0,
+            "failure_taxonomy": {
+                "failure_buckets": ["stale_diagnostics", "coverage_shortfall", "training_not_confirmed"],
+                "training_failure_count": 0,
+                "skipped_by_memory_count": 0,
+            },
+            "rollout": {"considered_bots": 0, "exact_replay_ready": True},
+        },
+    )
+
+    assert state["status"] == "advisory"
+    assert state["weight"] == 0
+    assert "idle" in state["reason"]

@@ -268,6 +268,79 @@ def _trained_bot_ids(scorecard: dict[str, Any]) -> list[str]:
     return [bot_id for bot_id in rows if bot_id]
 
 
+def _promotion_scope_contract(
+    *,
+    retrain_scorecard: dict[str, Any],
+    promotion_gate: dict[str, Any] | None,
+    graduation_gate: dict[str, Any] | None,
+) -> dict[str, Any]:
+    retrain_trained_bot_ids = _trained_bot_ids(retrain_scorecard)
+    promotion_gate = promotion_gate or {}
+    graduation_gate = graduation_gate or {}
+    scope_known = bool(
+        "considered_bots" in promotion_gate
+        or "promote_ok" in promotion_gate
+        or "graduation_scope_active_count" in graduation_gate
+        or "promotion_scope_active" in graduation_gate
+    )
+    if not scope_known:
+        active = bool(
+            retrain_trained_bot_ids
+            or int(retrain_scorecard.get("target_count", 0) or 0) > 0
+            or int(retrain_scorecard.get("failure_count", 0) or 0) > 0
+        )
+        return {
+            "active": active,
+            "candidate_ids": retrain_trained_bot_ids,
+            "retrain_trained_bot_ids": retrain_trained_bot_ids,
+            "excluded_non_candidate_training_ids": [],
+            "source": "retrain_scorecard_fallback",
+            "scope_known": False,
+        }
+
+    active = bool(
+        promotion_gate.get("promote_ok", False)
+        or int(promotion_gate.get("considered_bots", 0) or 0) > 0
+        or int(graduation_gate.get("graduation_scope_active_count", 0) or 0) > 0
+        or graduation_gate.get("promotion_scope_active", False)
+    )
+    candidate_ids: set[str] = {
+        str(bot_id or "").strip()
+        for bot_id in (promotion_gate.get("considered_bot_ids") or [])
+        if str(bot_id or "").strip()
+    }
+    for key in ("pass_examples", "near_pass_examples", "fail_examples"):
+        rows = promotion_gate.get(key) if isinstance(promotion_gate.get(key), list) else []
+        candidate_ids.update(
+            str((row or {}).get("bot_id") or "").strip()
+            for row in rows
+            if isinstance(row, dict) and str((row or {}).get("bot_id") or "").strip()
+        )
+    graduation_rows = (
+        graduation_gate.get("immature_active_examples")
+        if isinstance(graduation_gate.get("immature_active_examples"), list)
+        else []
+    )
+    candidate_ids.update(
+        str((row or {}).get("bot_id") or "").strip()
+        for row in graduation_rows
+        if isinstance(row, dict) and str((row or {}).get("bot_id") or "").strip()
+    )
+    if active and not candidate_ids:
+        candidate_ids.update(retrain_trained_bot_ids)
+    ordered_candidate_ids = sorted(candidate_ids)
+    candidate_set = {bot_id.lower() for bot_id in ordered_candidate_ids}
+    excluded = [bot_id for bot_id in retrain_trained_bot_ids if bot_id.lower() not in candidate_set]
+    return {
+        "active": active,
+        "candidate_ids": ordered_candidate_ids,
+        "retrain_trained_bot_ids": retrain_trained_bot_ids,
+        "excluded_non_candidate_training_ids": excluded,
+        "source": "promotion_and_graduation_gates",
+        "scope_known": True,
+    }
+
+
 def _registry_model_rows(registry: dict[str, Any], target_ids: list[str]) -> list[dict[str, Any]]:
     wanted = {str(bot_id).strip().lower() for bot_id in target_ids if str(bot_id).strip()}
     if not wanted:
@@ -375,6 +448,8 @@ def build_payload(
     master_registry: dict[str, Any],
     signing_key: str,
     signing_source: str,
+    promotion_gate: dict[str, Any] | None = None,
+    graduation_gate: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     lineage = retrain_scorecard.get("lineage") if isinstance(retrain_scorecard.get("lineage"), dict) else {}
     dataset_contract = feature_store_manifest.get("dataset_contract") if isinstance(feature_store_manifest.get("dataset_contract"), dict) else {}
@@ -388,12 +463,13 @@ def build_payload(
     contract_hashes = feature_store_manifest.get("contract_hashes") if isinstance(feature_store_manifest.get("contract_hashes"), dict) else {}
     replay_details = replay_hash_registry_guard.get("details") if isinstance(replay_hash_registry_guard.get("details"), dict) else {}
 
-    trained_bot_ids = _trained_bot_ids(retrain_scorecard)
-    promotion_scope_active = bool(
-        trained_bot_ids
-        or int(retrain_scorecard.get("target_count", 0) or 0) > 0
-        or int(retrain_scorecard.get("failure_count", 0) or 0) > 0
+    scope_contract = _promotion_scope_contract(
+        retrain_scorecard=retrain_scorecard,
+        promotion_gate=promotion_gate,
+        graduation_gate=graduation_gate,
     )
+    trained_bot_ids = list(scope_contract["candidate_ids"])
+    promotion_scope_active = bool(scope_contract["active"])
     model_artifacts = _registry_model_rows(master_registry, trained_bot_ids)
     rollback_candidate = str(((champion_registry.get("champion") or {}).get("rollback_candidate") or "")).strip()
     rollback_entrypoint = PROJECT_ROOT / "scripts" / "release_ops.sh"
@@ -484,6 +560,12 @@ def build_payload(
         "promotion_scope": {
             "target_count": int(retrain_scorecard.get("target_count", 0) or 0),
             "trained_bot_ids": trained_bot_ids,
+            "promotion_candidate_ids": trained_bot_ids,
+            "retrain_trained_bot_ids": list(scope_contract["retrain_trained_bot_ids"]),
+            "excluded_non_candidate_training_ids": list(scope_contract["excluded_non_candidate_training_ids"]),
+            "promotion_scope_active": promotion_scope_active,
+            "scope_known": bool(scope_contract["scope_known"]),
+            "scope_source": str(scope_contract["source"]),
             "failure_count": int(retrain_scorecard.get("failure_count", 0) or 0),
             "master_update_status": str(retrain_scorecard.get("master_update_status") or ""),
         },
@@ -631,6 +713,8 @@ def main() -> int:
     parser.add_argument("--champion-registry", default=str(PROJECT_ROOT / "governance" / "champion_challenger" / "registry.json"))
     parser.add_argument("--content-store-file", default=str(PROJECT_ROOT / "governance" / "content_store" / "latest.json"))
     parser.add_argument("--master-registry", default=str(PROJECT_ROOT / "master_bot_registry.json"))
+    parser.add_argument("--promotion-gate-file", default=str(PROJECT_ROOT / "governance" / "walk_forward" / "promotion_gate_latest.json"))
+    parser.add_argument("--graduation-gate-file", default=str(PROJECT_ROOT / "governance" / "walk_forward" / "new_bot_graduation_latest.json"))
     parser.add_argument("--signing-key-file", default=str(DEFAULT_SIGNING_KEY_PATH))
     parser.add_argument("--bootstrap-local-signing-key", action="store_true")
     parser.add_argument("--history-dir", default=str(DEFAULT_HISTORY_DIR))
@@ -658,6 +742,8 @@ def main() -> int:
         master_registry=_load_json(Path(args.master_registry)),
         signing_key=signing_key,
         signing_source=signing_source,
+        promotion_gate=_load_json(Path(args.promotion_gate_file)),
+        graduation_gate=_load_json(Path(args.graduation_gate_file)),
     )
 
     history_dir = Path(args.history_dir)

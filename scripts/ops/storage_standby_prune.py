@@ -275,6 +275,7 @@ def build_payload(
     verification_state = str(route_verification.get("verification_state") or "").strip()
     verification_mismatches = list(route_verification.get("mismatches") or [])
     active_local_count = int(summary.get("active_local_count") or 0)
+    active_external_count = int(summary.get("active_external_count") or 0)
 
     route_guard_ok = (
         int(failback_result.get("rc", 1)) == 0
@@ -282,6 +283,14 @@ def build_payload(
         and verification_state in {"ready", "curated_ready"}
         and not verification_mismatches
         and active_local_count == 0
+    )
+    active_local_route_idle = bool(
+        int(failback_result.get("rc", 1)) == 0
+        and certified_mode in {"local_fallback", "local_fallback_split_brain"}
+        and verification_state == "active_local_ready"
+        and not verification_mismatches
+        and active_local_count > 0
+        and active_external_count == 0
     )
     route_guard_reason = "External route is certified for standby pruning."
     if int(failback_result.get("rc", 1)) != 0:
@@ -294,6 +303,8 @@ def build_payload(
         route_guard_reason = "The external route still has SQLite verification mismatches."
     elif active_local_count > 0:
         route_guard_reason = "A tracked SQLite path is still actively pinned to the local fallback root."
+    if active_local_route_idle:
+        route_guard_reason = "Standby pruning is safely not applicable while the verified local fallback route is active."
 
     route_soak = _route_soak_summary(project_root, min_route_soak_hours=min_route_soak_hours)
     candidate_rows, reclaimable_bytes_total = _build_candidate_rows(
@@ -317,7 +328,9 @@ def build_payload(
             failback_result = _run_failback_sync(project_root)
             payload = failback_result.get("payload") if isinstance(failback_result.get("payload"), dict) else payload
 
-    if not route_guard_ok:
+    if active_local_route_idle:
+        overall_status = "ready_idle_active_local_route"
+    elif not route_guard_ok:
         overall_status = "blocked_by_route_guard"
     elif not bool(route_soak.get("ok", False)):
         overall_status = "deferred_route_soak"
@@ -333,7 +346,8 @@ def build_payload(
     return {
         "timestamp_utc": _utc_now(),
         "schema_version": 1,
-        "ok": overall_status in {"dry_run", "pruned", "no_eligible_standby"} or (overall_status == "deferred_route_soak" and route_guard_ok),
+        "ok": overall_status in {"dry_run", "pruned", "no_eligible_standby", "ready_idle_active_local_route"}
+        or (overall_status == "deferred_route_soak" and route_guard_ok),
         "overall_status": overall_status,
         "apply": bool(apply),
         "include_curated_standby": bool(include_curated_standby),
@@ -345,6 +359,8 @@ def build_payload(
             "verification_state": verification_state,
             "verification_mismatches": verification_mismatches,
             "active_local_count": active_local_count,
+            "active_external_count": active_external_count,
+            "active_local_route_idle": active_local_route_idle,
         },
         "route_soak": route_soak,
         "filters": {

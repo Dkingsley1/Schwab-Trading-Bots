@@ -109,6 +109,10 @@ def _step_contract(name: str, payload: dict[str, Any], rc: int, timed_out: bool)
     if name == "portfolio_risk_ledger":
         ok = bool(payload.get("limits")) and int(rc) == 0
         return ok, "portfolio_risk_refreshed" if ok else "portfolio_risk_refresh_failed"
+    if name == "portfolio_capacity_curves":
+        status = str(payload.get("overall_status") or "").strip().lower()
+        ok = bool(payload) and int(rc) == 0 and status in {"ready", "degraded"}
+        return ok, "portfolio_capacity_curves_refreshed" if ok else "portfolio_capacity_curves_refresh_failed"
     if name == "portfolio_allocator":
         ok = bool(payload.get("ok", False)) and int(rc) == 0
         return ok, "portfolio_allocator_refreshed" if ok else "portfolio_allocator_refresh_failed"
@@ -173,6 +177,13 @@ def _step_summary(step: dict[str, Any]) -> dict[str, Any]:
             gross_exposure_cap=float(limits.get("gross_exposure_cap", 0.0) or 0.0),
             max_single_symbol_share=float(limits.get("max_single_symbol_share", 0.0) or 0.0),
         )
+    elif name == "portfolio_capacity_curves":
+        curve_summary = _dict(payload.get("summary"))
+        summary.update(
+            overall_status=str(payload.get("overall_status") or ""),
+            curve_count=int(curve_summary.get("curve_count", 0) or 0),
+            allocator_ready=bool(curve_summary.get("allocator_ready", False)),
+        )
     elif name == "portfolio_allocator":
         allocator_summary = _dict(payload.get("summary"))
         summary.update(
@@ -218,6 +229,7 @@ def build_payload(
         ("position_opportunity_watch", [str(opsctl), "position-opportunity-watch", "--json"], 120, True),
         ("sleeve_allocator", [str(opsctl), "sleeve-allocator", "--json"], 120, True),
         ("portfolio_risk_ledger", [str(opsctl), "portfolio-risk-ledger", "--json"], 120, True),
+        ("portfolio_capacity_curves", [str(opsctl), "portfolio-capacity-curves", "--json"], 120, True),
         ("portfolio_allocator", [str(opsctl), "portfolio-allocator", "--json"], 120, True),
         ("account_buildout_plan", [str(opsctl), "account-buildout-plan", "--json"], 120, True),
         (

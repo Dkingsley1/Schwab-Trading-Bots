@@ -36,6 +36,10 @@ cat > "$PLIST_PATH" <<PLIST
     <key>ALLOW_ORDER_EXECUTION</key><string>0</string>
     <key>BOT_LIVE_MONEY_LOCKED_DURING_SOAK</key><string>1</string>
     <key>BOT_UNATTENDED_SOAK_ACTIVE</key><string>1</string>
+    <key>READINESS_EVIDENCE_REFRESH_PROFILE</key><string>accrual</string>
+    <key>PRODUCTION_PILLAR_REFRESH_ENABLED</key><string>${PRODUCTION_PILLAR_REFRESH_ENABLED:-1}</string>
+    <key>PRODUCTION_PILLAR_REFRESH_COOLDOWN_MINUTES</key><string>${PRODUCTION_PILLAR_REFRESH_COOLDOWN_MINUTES:-45}</string>
+    <key>PRODUCTION_PILLAR_REFRESH_STEP_TIMEOUT_SECONDS</key><string>${PRODUCTION_PILLAR_REFRESH_STEP_TIMEOUT_SECONDS:-300}</string>
     <key>PRODUCTION_HARDENING_WATCH_EXECUTE_SAFE_REPAIRS</key><string>${PRODUCTION_HARDENING_WATCH_EXECUTE_SAFE_REPAIRS:-0}</string>
     <key>PRODUCTION_HARDENING_WATCH_EXECUTE_ON_WATCH</key><string>${PRODUCTION_HARDENING_WATCH_EXECUTE_ON_WATCH:-0}</string>
     <key>PRODUCTION_HARDENING_WATCH_MAX_EXECUTE_ACTIONS</key><string>${PRODUCTION_HARDENING_WATCH_MAX_EXECUTE_ACTIONS:-2}</string>
@@ -47,6 +51,8 @@ cat > "$PLIST_PATH" <<PLIST
   <true/>
   <key>StartInterval</key>
   <integer>$INTERVAL_SECONDS</integer>
+  <key>ProcessType</key><string>Background</string>
+  <key>LowPriorityIO</key><true/>
   <key>StandardOutPath</key><string>$OUT_LOG</string>
   <key>StandardErrorPath</key><string>$ERR_LOG</string>
 </dict>

@@ -76,7 +76,7 @@ def test_deep_cold_move_restarts_when_partial_prefix_does_not_match(tmp_path: Pa
     assert target.read_bytes() == payload
 
 
-def test_video_cold_archive_subtree_is_allowed_only_when_explicitly_enabled(monkeypatch) -> None:
+def test_video_cold_archive_subtree_remains_protected_when_legacy_override_is_enabled(monkeypatch) -> None:
     root = Path("/Volumes/VIDEO/schwab_trading_bot_cold")
 
     monkeypatch.delenv("BOT_ALLOW_VIDEO_COLD_ARCHIVE", raising=False)
@@ -86,7 +86,7 @@ def test_video_cold_archive_subtree_is_allowed_only_when_explicitly_enabled(monk
     monkeypatch.setenv("BOT_ALLOW_VIDEO_COLD_ARCHIVE", "1")
     monkeypatch.setenv("BOT_VIDEO_COLD_ARCHIVE_ROOT", str(root))
     assert src._is_protected_volume(Path("/Volumes/VIDEO")) is True
-    assert src._is_protected_volume(root / "deep_cold" / "file.gz") is False
+    assert src._is_protected_volume(root / "deep_cold" / "file.gz") is True
 
 
 def test_active_capacity_source_prioritizes_external_hard_reserve_breach(monkeypatch, tmp_path: Path) -> None:

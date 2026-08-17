@@ -14,6 +14,7 @@ if str(_PROJECT_ROOT_FOR_IMPORTS) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT_FOR_IMPORTS))
 
 from core.ml_backend_contract import detect_installed_backends, resolve_backend_contract
+from core.bot_profitability_scalability import LazyModelCache
 
 _MLX_IMPORT_ERROR: Optional[Exception] = None
 _MLX_AVAILABLE = False
@@ -40,6 +41,43 @@ from runtime_training_common import (
 
 
 ArrayMap = Dict[str, np.ndarray]
+
+_RUNTIME_TEACHER_MODEL_CACHE: Optional[LazyModelCache] = None
+_RUNTIME_TEACHER_MODEL_CACHE_SETTINGS: Tuple[int, int, float] = (0, 0, 0.0)
+
+
+def _runtime_teacher_model_cache() -> LazyModelCache:
+    global _RUNTIME_TEACHER_MODEL_CACHE, _RUNTIME_TEACHER_MODEL_CACHE_SETTINGS
+    try:
+        maximum_models = max(int(os.getenv("BOT_MODEL_CACHE_MAX_MODELS", "8") or 8), 1)
+    except ValueError:
+        maximum_models = 8
+    try:
+        maximum_mb = max(
+            int(
+                os.getenv(
+                    "BOT_MODEL_CACHE_MAX_MB",
+                    os.getenv("MLX_INTELLIGENCE_MODEL_CACHE_BUDGET_MB", "512"),
+                )
+                or 512
+            ),
+            1,
+        )
+    except ValueError:
+        maximum_mb = 512
+    try:
+        inactive_ttl = max(float(os.getenv("BOT_MODEL_CACHE_TTL_SECONDS", "900") or 900.0), 1.0)
+    except ValueError:
+        inactive_ttl = 900.0
+    settings = (maximum_models, maximum_mb * 1024 * 1024, inactive_ttl)
+    if _RUNTIME_TEACHER_MODEL_CACHE is None or settings != _RUNTIME_TEACHER_MODEL_CACHE_SETTINGS:
+        _RUNTIME_TEACHER_MODEL_CACHE = LazyModelCache(
+            maximum_models=settings[0],
+            maximum_bytes=settings[1],
+            inactive_ttl_seconds=settings[2],
+        )
+        _RUNTIME_TEACHER_MODEL_CACHE_SETTINGS = settings
+    return _RUNTIME_TEACHER_MODEL_CACHE
 
 
 def _ml_runtime_optional_mode() -> bool:
@@ -466,6 +504,35 @@ def load_model(model, npz_path):
     return model
 
 
+def _cached_teacher_model(model_path: Path, input_dim: int):
+    try:
+        modified_ns = model_path.stat().st_mtime_ns
+        estimated_bytes = model_path.stat().st_size
+    except OSError:
+        modified_ns = 0
+        estimated_bytes = 0
+    cache_key = f"{model_path.resolve()}:{modified_ns}:{int(input_dim)}"
+    pressure = str(
+        os.getenv(
+            "BOT_MODEL_CACHE_MEMORY_PRESSURE",
+            os.getenv("RUNTIME_MEMORY_PRESSURE_LEVEL", "normal"),
+        )
+        or "normal"
+    )
+
+    def loader():
+        model = TradingBrain(int(input_dim))
+        load_model(model, str(model_path))
+        return model
+
+    return _runtime_teacher_model_cache().get(
+        cache_key,
+        loader,
+        estimated_bytes=estimated_bytes,
+        memory_pressure=pressure,
+    )
+
+
 def _teacher_registry_row(project_root: Path, bot_id: str) -> Dict[str, object]:
     registry_path = project_root / "master_bot_registry.json"
     if not registry_path.exists():
@@ -480,6 +547,24 @@ def _teacher_registry_row(project_root: Path, bot_id: str) -> Dict[str, object]:
     return {}
 
 
+def _strategy_generation_teacher_row(project_root: Path, bot_id: str) -> Dict[str, object]:
+    if not str(bot_id or "").startswith("strategy_g"):
+        return {}
+    state = _safe_json_load(
+        project_root / "governance" / "strategy_generations" / "strategy_generation_state.json"
+    )
+    rows = state.get("offspring") if isinstance(state.get("offspring"), list) else []
+    for row in rows:
+        if not isinstance(row, dict) or str(row.get("offspring_id") or "") != bot_id:
+            continue
+        if str(row.get("lifecycle_state") or "") != "paper_challenger_qualified":
+            return {}
+        if bool(row.get("execution_authority", False)) or bool(row.get("serving_eligible", False)):
+            return {}
+        return dict(row)
+    return {}
+
+
 def _latest_matching_file(base_dir: Path, pattern: str) -> Optional[Path]:
     matches = sorted(base_dir.glob(pattern), key=lambda p: p.stat().st_mtime if p.exists() else 0.0, reverse=True)
     return matches[0] if matches else None
@@ -487,6 +572,8 @@ def _latest_matching_file(base_dir: Path, pattern: str) -> Optional[Path]:
 
 def _resolve_teacher_artifacts(project_root: Path, bot_id: str) -> Tuple[Optional[Path], Optional[Path]]:
     row = _teacher_registry_row(project_root, bot_id)
+    if not row:
+        row = _strategy_generation_teacher_row(project_root, bot_id)
     model_path = Path(str(row.get("model_path") or "")).expanduser() if row.get("model_path") else None
     log_path = Path(str(row.get("log_file") or "")).expanduser() if row.get("log_file") else None
     latest_model = _latest_matching_file(project_root / "models", f"{bot_id}_*.npz")
@@ -511,11 +598,13 @@ def _load_teacher_spec(project_root: Path, bot_id: str) -> Optional[Dict[str, ob
     core_dir = project_root / "core"
     if str(core_dir) not in sys.path:
         sys.path.insert(0, str(core_dir))
+    strategy_teacher = _strategy_generation_teacher_row(project_root, bot_id)
+    module_bot_id = str(strategy_teacher.get("source_module_bot_id") or bot_id).strip()
     try:
-        module = importlib.import_module(f"core.{bot_id}")
+        module = importlib.import_module(f"core.{module_bot_id}")
     except Exception:
         try:
-            module = importlib.import_module(bot_id)
+            module = importlib.import_module(module_bot_id)
         except Exception:
             return None
     feature_builder = getattr(module, "build_features", None)
@@ -524,6 +613,7 @@ def _load_teacher_spec(project_root: Path, bot_id: str) -> Optional[Dict[str, ob
         return None
     return {
         "bot_id": bot_id,
+        "source_module_bot_id": module_bot_id,
         "model_path": model_path,
         "log_path": log_path,
         "config": config,
@@ -619,8 +709,7 @@ def _teacher_soft_targets(
                     return_anchor_index=True,
                 )
             input_dim = int(config.get("input_dim") or int(x_teacher.shape[1]))
-            model = TradingBrain(input_dim)
-            load_model(model, str(spec["model_path"]))
+            model = _cached_teacher_model(Path(spec["model_path"]), input_dim)
             probs = mx.sigmoid(model(x_teacher))
             mx.eval(probs)
             teacher_probs = np.asarray(probs).reshape(-1)
@@ -663,6 +752,53 @@ def _distillation_config(project_root: Path) -> Tuple[bool, List[str], float]:
         teacher_weight = 0.30
     teacher_weight = min(max(teacher_weight, 0.0), 0.90)
     return enabled and is_student and bool(teacher_ids), teacher_ids, teacher_weight
+
+
+def _runtime_teacher_soft_targets(
+    project_root: Path,
+    teacher_ids: List[str],
+    features: np.ndarray,
+) -> Tuple[Optional[np.ndarray], List[str]]:
+    if features.ndim != 2 or int(features.shape[0]) <= 0:
+        return None, []
+    aggregates: List[np.ndarray] = []
+    used_ids: List[str] = []
+    for bot_id in teacher_ids:
+        model_path, log_path = _resolve_teacher_artifacts(project_root, bot_id)
+        if model_path is None or log_path is None or not model_path.exists() or not log_path.exists():
+            continue
+        payload = _safe_json_load(log_path)
+        config = payload.get("config") if isinstance(payload.get("config"), dict) else {}
+        input_dim = int(config.get("input_dim") or 0)
+        if input_dim != int(features.shape[1]):
+            continue
+        try:
+            model = _cached_teacher_model(model_path, input_dim)
+            probs = mx.sigmoid(model(mx.array(features, dtype=mx.float32)))
+            mx.eval(probs)
+            aggregates.append(np.asarray(probs).reshape(-1).astype(np.float32))
+            used_ids.append(bot_id)
+        except Exception:
+            continue
+    if not aggregates:
+        return None, []
+    return np.mean(np.vstack(aggregates), axis=0).astype(np.float32), used_ids
+
+
+def _warm_start_from_teacher(project_root: Path, model: TradingBrain, teacher_ids: List[str]) -> str:
+    if not _env_bool("STRATEGY_GENERATION_WARM_START", False):
+        return ""
+    for bot_id in teacher_ids:
+        model_path, _ = _resolve_teacher_artifacts(project_root, bot_id)
+        if model_path is None or not model_path.exists():
+            continue
+        try:
+            load_model(model, str(model_path))
+            mx.eval(model.parameters())
+            return bot_id
+        except Exception:
+            continue
+    return ""
 
 
 _TRAINING_GUARD_PRESETS: Dict[str, Dict[str, float]] = {
@@ -1521,26 +1657,91 @@ def _paper_loss_hard_negative_context(project_root: Path, run_tag: str) -> Dict[
 
 
 def _write_runtime_training_diagnostics(project_root: Path, run_tag: str, payload: Dict[str, Any]) -> str:
+    generation_context = _strategy_generation_context(project_root, run_tag)
+    effective_run_tag = str(generation_context.get("offspring_id") or run_tag)
+    payload = dict(payload)
+    if generation_context:
+        payload["strategy_generation"] = generation_context
     out_dir = project_root / "governance" / "training_diagnostics"
     out_dir.mkdir(parents=True, exist_ok=True)
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-    timestamped = out_dir / f"{run_tag}_{ts}.json"
-    latest = out_dir / f"{run_tag}_latest.json"
+    timestamped = out_dir / f"{effective_run_tag}_{ts}.json"
+    latest = out_dir / f"{effective_run_tag}_latest.json"
     text = json.dumps(payload, ensure_ascii=True, indent=2)
     timestamped.write_text(text, encoding="utf-8")
     latest.write_text(text, encoding="utf-8")
     return str(latest)
 
 
+def _strategy_generation_context(project_root: Path, source_run_tag: str) -> Dict[str, Any]:
+    candidate_id = str(os.getenv("STRATEGY_GENERATION_CANDIDATE_ID", "")).strip()
+    if not candidate_id:
+        return {}
+    if not candidate_id.startswith("strategy_g") or any(
+        not (char.isalnum() or char == "_") for char in candidate_id
+    ):
+        raise RuntimeError("invalid_strategy_generation_candidate_id")
+    manifest_text = str(os.getenv("STRATEGY_GENERATION_MANIFEST", "")).strip()
+    if not manifest_text:
+        raise RuntimeError("strategy_generation_manifest_required")
+    manifest_path = Path(manifest_text).expanduser().resolve()
+    try:
+        manifest_path.relative_to(project_root.resolve())
+    except ValueError as exc:
+        raise RuntimeError("strategy_generation_manifest_outside_project") from exc
+    manifest = _safe_json_load(manifest_path)
+    rows = manifest.get("offspring") if isinstance(manifest.get("offspring"), list) else []
+    candidate = next(
+        (
+            row
+            for row in rows
+            if isinstance(row, dict) and str(row.get("offspring_id") or "") == candidate_id
+        ),
+        None,
+    )
+    if candidate is None:
+        raise RuntimeError("strategy_generation_candidate_missing_from_manifest")
+    source_module = str(candidate.get("source_module_bot_id") or "").strip()
+    if source_module != str(source_run_tag or "").strip():
+        raise RuntimeError("strategy_generation_source_module_mismatch")
+    if any(
+        bool(candidate.get(key, False))
+        for key in ("execution_authority", "paper_execution_authority", "serving_eligible")
+    ):
+        raise RuntimeError("strategy_generation_candidate_has_forbidden_authority")
+    return {
+        "offspring_id": candidate_id,
+        "strategy_generation": int(candidate.get("strategy_generation", 0) or 0),
+        "lineage_depth": int(candidate.get("lineage_depth", 0) or 0),
+        "parent_bot_ids": list(candidate.get("parent_bot_ids") or []),
+        "source_module_bot_id": source_module,
+        "genome": dict(candidate.get("genome") or {}),
+        "manifest_path": str(manifest_path),
+        "execution_authority": False,
+        "paper_execution_authority": False,
+        "serving_eligible": False,
+        "inherits_parent_grade": False,
+    }
+
+
 def save_artifacts(model, config, metrics, run_tag):
     base_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+    project_root = Path(base_dir)
+    generation_context = _strategy_generation_context(project_root, run_tag)
+    effective_run_tag = str(generation_context.get("offspring_id") or run_tag)
+    config = dict(config)
+    metrics = dict(metrics)
+    if generation_context:
+        config["strategy_generation"] = generation_context
+        metrics["strategy_generation_candidate"] = True
+        metrics["execution_authority"] = False
     models_dir = os.path.join(base_dir, "models")
     logs_dir = os.path.join(base_dir, "logs")
     os.makedirs(models_dir, exist_ok=True)
     os.makedirs(logs_dir, exist_ok=True)
 
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-    base_name = f"{run_tag}_{ts}"
+    base_name = f"{effective_run_tag}_{ts}"
 
     params = model.parameters()
     state = _flatten_param_tree(params)
@@ -2508,6 +2709,17 @@ def train_runtime_indicator_bot(
     feat_std = X_np[train_idx].std(axis=0, keepdims=True) + 1e-8
     X_np = (X_np - feat_mean) / feat_std
 
+    distillation_enabled, teacher_ids, teacher_weight = _distillation_config(project_root)
+    teacher_soft_all: Optional[np.ndarray] = None
+    used_teacher_ids: List[str] = []
+    if distillation_enabled:
+        teacher_soft_all, used_teacher_ids = _runtime_teacher_soft_targets(
+            project_root,
+            teacher_ids,
+            X_np,
+        )
+        distillation_enabled = bool(teacher_soft_all is not None and used_teacher_ids)
+
     X = mx.array(X_np, dtype=mx.float32)
     y = mx.array(y_np, dtype=mx.float32)
 
@@ -2519,6 +2731,13 @@ def train_runtime_indicator_bot(
     X_train, y_train = _take_rows(X, train_idx), _take_rows(y, train_idx)
     X_val, y_val = _take_rows(X, val_idx), _take_rows(y, val_idx)
     X_test, y_test = _take_rows(X, test_idx), _take_rows(y, test_idx)
+    y_train_effective = y_train
+    if distillation_enabled and teacher_soft_all is not None:
+        hard_train = np.asarray(y_np).reshape(-1)[train_idx]
+        soft_train = teacher_soft_all[train_idx]
+        soft_train = np.where(np.isfinite(soft_train), soft_train, hard_train)
+        blended_train = ((1.0 - teacher_weight) * hard_train) + (teacher_weight * soft_train)
+        y_train_effective = mx.array(blended_train.reshape(-1, 1), dtype=mx.float32)
     sample_confidence_train = sample_confidence[train_idx]
     sample_confidence_val = sample_confidence[val_idx]
     sample_confidence_test = sample_confidence[test_idx]
@@ -2531,6 +2750,11 @@ def train_runtime_indicator_bot(
 
     brain = TradingBrain(int(X.shape[1]))
     mx.eval(brain.parameters())
+    warm_start_teacher_id = _warm_start_from_teacher(
+        project_root,
+        brain,
+        used_teacher_ids if used_teacher_ids else teacher_ids,
+    )
 
     optimizer = optim.Adam(learning_rate=learning_rate)
     train_positive_rate = float(np.mean(np.asarray(y_train).reshape(-1))) if X_train.shape[0] else positive_rate
@@ -2577,7 +2801,7 @@ def train_runtime_indicator_bot(
         for start in range(0, X_train.shape[0], batch_size):
             bidx = mx.array(idx[start : start + batch_size])
             xb = mx.take(X_train, bidx, axis=0)
-            yb = mx.take(y_train, bidx, axis=0)
+            yb = mx.take(y_train_effective, bidx, axis=0)
             wb = mx.array(train_sample_weights[idx[start : start + batch_size]].reshape(-1, 1), dtype=mx.float32)
 
             loss, grads = loss_and_grad_fn(brain, xb, yb, wb)
@@ -2716,15 +2940,20 @@ def train_runtime_indicator_bot(
             **runtime_meta,
         },
         "distillation": {
-            "enabled": False,
-            "teacher_ids": [],
-            "teacher_weight": 0.0,
+            "enabled": bool(distillation_enabled),
+            "teacher_ids": used_teacher_ids,
+            "teacher_weight": float(teacher_weight if distillation_enabled else 0.0),
+            "warm_start_teacher_id": warm_start_teacher_id,
+            "validation_uses_hard_market_outcomes": True,
         },
     }
     metrics = {
         "best_val_loss": float(best_val),
         "final_val_loss": float(val_loss),
         "walk_forward_multi_split": walk_forward_summary,
+        "distillation_active": bool(distillation_enabled),
+        "distillation_teacher_count": len(used_teacher_ids),
+        "warm_start_active": bool(warm_start_teacher_id),
         **quality_metrics,
     }
     threshold_rows = {

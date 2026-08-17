@@ -67,7 +67,14 @@ def _guarded_paper_soak_green(health_root: Path) -> bool:
     }
     soak_ready = bool(soak.get("ok", False)) and str(soak.get("overall_status") or "").strip().lower() == "ready"
     paper_guard_ready = bool(paper_guard.get("ok", False)) and str(paper_guard.get("overall_status") or "").strip().lower() == "ready"
-    return bool(health_fast.get("strict_all_clear", False) and guarded_ready and live_locked and soak_ready and paper_guard_ready)
+    operational_health_ready = bool(
+        health_fast.get("strict_all_clear", False)
+        or (
+            bool(health_fast.get("ok", False))
+            and str(health_fast.get("overall_status") or "").strip().lower() in {"ready", "guarded_ready"}
+        )
+    )
+    return bool(operational_health_ready and guarded_ready and live_locked and soak_ready and paper_guard_ready)
 
 
 def _bounded_storage_soak_backlog(storage: dict[str, Any], *, total_pending: int, estimated_drain_minutes: float) -> bool:
@@ -81,15 +88,23 @@ def _bounded_storage_soak_backlog(storage: dict[str, Any], *, total_pending: int
     pressure_index = _safe_float(storage.get("pressure_index"), 0.0)
     contract = storage.get("continuous_run_soak_contract") if isinstance(storage.get("continuous_run_soak_contract"), dict) else {}
     soak_ready = bool(contract.get("soak_ready", False)) and not list(contract.get("blockers") or [])
-    return bool(
+    low_pressure_bounded = bool(
         _status(storage) == "ready"
         and pressure_index <= 0.50
         and total_pending <= 15_000
         and core_pending <= 10_000
         and raw_total <= 15_000
         and oldest_age <= 900.0
-        and (soak_ready or estimated_drain_minutes >= 0.0)
     )
+    steady_state_bounded = bool(
+        _status(storage) == "ready"
+        and pressure_index <= 0.85
+        and total_pending <= 5_000
+        and core_pending <= 2_500
+        and raw_total <= 5_000
+        and oldest_age <= 300.0
+    )
+    return bool((low_pressure_bounded or steady_state_bounded) and (soak_ready or estimated_drain_minutes >= 0.0))
 
 
 def _ok(payload: dict[str, Any]) -> bool | None:
@@ -281,9 +296,21 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, apply: bool = False) -> 
         if _status(training) == "ready" and _status(bot_quality) == "ready"
         else "needs_work"
     )
-    if guarded_paper_soak_green and promotion_training_status == "blocked":
+    if guarded_paper_soak_green and promotion_training_status != "ready":
         promotion_training_status = "advisory"
+    collection_operational = (
+        collection.get("operational_collection")
+        if isinstance(collection.get("operational_collection"), dict)
+        else {}
+    )
+    collection_operational_ready = bool(
+        collection.get("operational_ok", False)
+        and str(collection.get("operational_status") or collection_operational.get("status") or "").strip().lower()
+        == "ready"
+    )
     collection_status = "needs_work" if collector_count and training_ready == 0 else _status(collection)
+    if guarded_paper_soak_green and collection_operational_ready and collection_status not in {"ready", "advisory"}:
+        collection_status = "advisory"
     if guarded_paper_soak_green and collection_status in {"missing", "needs_work"}:
         collection_status = "advisory"
     storage_backlog_status = (

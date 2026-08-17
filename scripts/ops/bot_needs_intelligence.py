@@ -18,6 +18,7 @@ else:
 
 
 DEFAULT_OUT_PATH = PROJECT_ROOT / "governance" / "health" / "bot_needs_intelligence_latest.json"
+MAX_TRAINING_DIAGNOSTIC_AGE_HOURS = 48.0
 OVERFIT_BLOCKING_STATUSES = {"leak_like", "severe_overfit", "overfit_watch", "high_accuracy_guarded"}
 PRECISION_REPAIR_NEEDS = {
     "repair_long_precision",
@@ -732,7 +733,7 @@ def _classify_bot(
         needs.append(_need_record("create_collect_only_diagnostics", "Collection-only bot needs a diagnostic snapshot before training eligibility can be judged.", 100))
     elif active and not diagnostic_present:
         needs.append(_need_record("refresh_training_diagnostics", "No fresh diagnostic artifact; create or refresh diagnostics before judging it.", 100))
-    elif active and diagnostic_age is not None and diagnostic_age > 48:
+    elif active and diagnostic_age is not None and diagnostic_age > MAX_TRAINING_DIAGNOSTIC_AGE_HOURS:
         needs.append(_need_record("refresh_training_diagnostics", f"Diagnostic is stale at {diagnostic_age:.1f}h; refresh before retraining.", 90))
     if bot_id in memberships.get("repair_runtime_input_bot_ids", set()):
         repair_priority = 80.0 if training_excluded and min_observations > 0 and observation_count < min_observations else 102.0
@@ -879,6 +880,7 @@ def _classify_bot(
         "sample_count": sample_count,
         "observation_count": observation_count,
         "minimum_observations": min_observations,
+        "collection_threshold_ready": bool(min_observations > 0 and observation_count >= min_observations),
         "eligible_sequences": eligible_sequences,
         "positive_rate": round(positive_rate, 6),
         "acted_coverage": round(acted_coverage, 6),
@@ -898,7 +900,24 @@ def _classify_bot(
         "diagnostic_payload_age_hours": diagnostic_payload_age,
         "diagnostic_label_age_hours": diagnostic_label_age,
         "diagnostic_file_age_hours": diagnostic_file_age,
+        "diagnostic_fresh": bool(
+            diagnostic_present
+            and diagnostic_age is not None
+            and diagnostic_age <= MAX_TRAINING_DIAGNOSTIC_AGE_HOURS
+        ),
         "label_recommendation": str(label_row.get("recommendation") or ""),
+        "label_contract_complete": bool(label_row.get("label_contract_complete", False)),
+        "point_in_time_label_safe": bool(
+            _as_dict(label_row.get("label_audit")).get("point_in_time_only", False)
+            or str(_as_dict(label_row.get("observed_label_contract")).get("required_join_mode") or "")
+            == "point_in_time_only"
+        ),
+        "training_family": str(
+            label_row.get("label_family")
+            or _as_dict(label_row.get("label_contract")).get("label_family")
+            or role
+            or "unclassified"
+        ),
         "label_depth_status": label_depth_status or None,
         "estimated_usable_sample_capacity": _safe_int(label_depth_contract.get("estimated_usable_sample_capacity"), 0),
         "usable_sample_gap": _safe_int(label_depth_contract.get("usable_sample_gap"), 0),
@@ -1020,6 +1039,7 @@ def _training_candidate_selector(records: list[dict[str, Any]]) -> dict[str, Any
         "overfit_first": {"reduce_overfitting"},
     }
     blocked_counts = {key: 0 for key in blocked_reasons}
+    blocked_counts.update({"label_first": 0, "diagnostics_first": 0})
     for row in records:
         prescription = _as_dict(row.get("effectiveness_prescription"))
         evidence = _as_dict(row.get("evidence"))
@@ -1032,6 +1052,14 @@ def _training_candidate_selector(records: list[dict[str, Any]]) -> dict[str, Any
         eligible_sequences = _safe_int(evidence.get("eligible_sequences"), 0)
         eligible_sequences_known = bool(evidence.get("eligible_sequences_known", False))
         positive_rate = _safe_float(evidence.get("positive_rate"), 0.5)
+        collection_threshold_ready = bool(
+            evidence.get("collection_threshold_ready")
+            if "collection_threshold_ready" in evidence
+            else min_observations > 0 and observation_count >= min_observations
+        )
+        label_contract_complete = bool(evidence.get("label_contract_complete", False))
+        point_in_time_label_safe = bool(evidence.get("point_in_time_label_safe", False))
+        diagnostic_fresh = bool(evidence.get("diagnostic_fresh", False))
         runs_remaining = _safe_int(evidence.get("walk_forward_runs_remaining"), 0)
         quality_score = _safe_float(evidence.get("quality_score"), 0.0)
         test_accuracy = _safe_float(evidence.get("test_accuracy"), 0.0)
@@ -1054,7 +1082,13 @@ def _training_candidate_selector(records: list[dict[str, Any]]) -> dict[str, Any
         if overfit_status in OVERFIT_BLOCKING_STATUSES:
             blocked_counts["overfit_first"] += 1
             continue
-        observation_floor_ready = min_observations <= 0 or observation_count >= min_observations
+        if not label_contract_complete or not point_in_time_label_safe:
+            blocked_counts["label_first"] += 1
+            continue
+        if not diagnostic_fresh:
+            blocked_counts["diagnostics_first"] += 1
+            continue
+        observation_floor_ready = collection_threshold_ready
         sequence_ready = (not eligible_sequences_known) or eligible_sequences > 0
         if sample_count < 200 or not observation_floor_ready or not sequence_ready:
             blocked_counts["data_first"] += 1
@@ -1075,6 +1109,11 @@ def _training_candidate_selector(records: list[dict[str, Any]]) -> dict[str, Any
                 "minimum_observations": min_observations,
                 "eligible_sequences": eligible_sequences,
                 "positive_rate": round(positive_rate, 6),
+                "collection_threshold_ready": collection_threshold_ready,
+                "label_contract_complete": label_contract_complete,
+                "point_in_time_label_safe": point_in_time_label_safe,
+                "diagnostic_fresh": diagnostic_fresh,
+                "training_family": str(evidence.get("training_family") or row.get("bot_role") or "unclassified"),
                 "recommended_command": [
                     "./scripts/ops/opsctl.sh",
                     "retrain-force-targeted",
@@ -1093,13 +1132,34 @@ def _training_candidate_selector(records: list[dict[str, Any]]) -> dict[str, Any
         ),
         reverse=True,
     )
-    selected = candidates[:20]
+    family_queues: dict[str, list[dict[str, Any]]] = {}
+    for candidate in candidates:
+        family = str(candidate.get("training_family") or "unclassified")
+        family_queues.setdefault(family, []).append(candidate)
+    selected: list[dict[str, Any]] = []
+    maximum_per_family = 5
+    for family_depth in range(maximum_per_family):
+        for family in family_queues:
+            rows = family_queues[family]
+            if family_depth < len(rows):
+                selected.append(rows[family_depth])
+            if len(selected) >= 20:
+                break
+        if len(selected) >= 20:
+            break
     selected_ids = [str(row.get("bot_id") or "") for row in selected if str(row.get("bot_id") or "")]
+    selected_family_counts: dict[str, int] = {}
+    for candidate in selected:
+        family = str(candidate.get("training_family") or "unclassified")
+        selected_family_counts[family] = selected_family_counts.get(family, 0) + 1
     return {
         "active": True,
         "mode": "training_candidate_selector_v2",
+        "contract_version": 3,
         "candidate_count": len(candidates),
         "selected_count": len(selected),
+        "selection_deferred_count": max(len(candidates) - len(selected), 0),
+        "selected_family_counts": selected_family_counts,
         "near_ready_promotion_review_count": len(near_ready),
         "selected_candidates": selected,
         "near_ready_promotion_review": near_ready[:20],
@@ -1110,7 +1170,12 @@ def _training_candidate_selector(records: list[dict[str, Any]]) -> dict[str, Any
             "require_training_runtime_clear": True,
             "require_writer_idle": True,
             "require_fresh_diagnostics": True,
+            "require_complete_label_contract": True,
+            "require_point_in_time_labels": True,
+            "require_collection_threshold": True,
             "require_overfit_clear": True,
+            "maximum_selected_per_training_family": maximum_per_family,
+            "family_diversification_required": True,
         },
         "recommended_batch_command": [
             "./scripts/ops/opsctl.sh",
@@ -1121,7 +1186,107 @@ def _training_candidate_selector(records: list[dict[str, Any]]) -> dict[str, Any
         ]
         if selected_ids
         else [],
-        "policy": "train only fresh, balanced, overfit-clear candidates; route passing bots to promotion review instead of blind retrain",
+        "policy": "train only collection-ready, point-in-time labeled, diagnostic-fresh, balanced, overfit-clear candidates; route passing bots to promotion review instead of blind retrain",
+    }
+
+
+def _training_stage_board(records: list[dict[str, Any]], selector: dict[str, Any]) -> dict[str, Any]:
+    selected_ids = {
+        str(item or "")
+        for item in selector.get("selected_bot_ids", [])
+        if str(item or "").strip()
+    }
+    record_ids = {
+        str(row.get("bot_id") or "")
+        for row in records
+        if str(row.get("bot_id") or "").strip()
+    }
+    if not selected_ids:
+        selected_ids = {
+            str(row.get("bot_id") or "")
+            for row in selector.get("selected_candidates", [])
+            if isinstance(row, dict) and str(row.get("bot_id") or "").strip()
+        }
+    promotion_ids = {
+        str(row.get("bot_id") or "")
+        for row in selector.get("near_ready_promotion_review", [])
+        if isinstance(row, dict) and str(row.get("bot_id") or "").strip()
+    }
+    counts = {
+        "collecting": 0,
+        "collection_floor_ready": 0,
+        "labels_ready": 0,
+        "diagnostics_ready": 0,
+        "train_needed": 0,
+        "candidate_selected": 0,
+        "promotion_review": 0,
+    }
+    bot_states: list[dict[str, Any]] = []
+    for row in records:
+        bot_id = str(row.get("bot_id") or "")
+        evidence = _as_dict(row.get("evidence"))
+        prescription = _as_dict(row.get("effectiveness_prescription"))
+        collecting = bool(row.get("data_collection_active", False))
+        min_observations = _safe_int(evidence.get("minimum_observations"), 0)
+        observations = _safe_int(evidence.get("observation_count"), 0)
+        floor_ready = bool(
+            evidence.get("collection_threshold_ready")
+            if "collection_threshold_ready" in evidence
+            else min_observations > 0 and observations >= min_observations
+        )
+        labels_ready = bool(
+            floor_ready
+            and evidence.get("label_contract_complete", False)
+            and evidence.get("point_in_time_label_safe", False)
+        )
+        diagnostics_ready = bool(labels_ready and evidence.get("diagnostic_fresh", False))
+        train_needed = bool(diagnostics_ready and prescription.get("can_train_now", False))
+        selected = bot_id in selected_ids
+        promotion_review = bot_id in promotion_ids
+        flags = {
+            "collecting": collecting,
+            "collection_floor_ready": floor_ready,
+            "labels_ready": labels_ready,
+            "diagnostics_ready": diagnostics_ready,
+            "train_needed": train_needed,
+            "candidate_selected": selected,
+            "promotion_review": promotion_review,
+        }
+        for key, value in flags.items():
+            counts[key] += int(value)
+        if promotion_review:
+            state = "promotion_review"
+        elif selected:
+            state = "candidate_selected"
+        elif train_needed and labels_ready and diagnostics_ready and floor_ready:
+            state = "eligible_but_not_selected"
+        elif diagnostics_ready:
+            state = "diagnostics_ready"
+        elif labels_ready:
+            state = "labels_ready"
+        elif floor_ready:
+            state = "collection_floor_ready"
+        elif collecting:
+            state = "collecting"
+        else:
+            state = "inactive"
+        bot_states.append({"bot_id": bot_id, "state": state, **flags})
+    selected_rows = [row for row in bot_states if row["candidate_selected"]]
+    invariants = {
+        "selected_ids_resolve_to_known_bots": selected_ids.issubset(record_ids),
+        "selected_subset_of_collection_floor": all(row["collection_floor_ready"] for row in selected_rows),
+        "selected_subset_of_label_safe": all(row["labels_ready"] for row in selected_rows),
+        "selected_subset_of_fresh_diagnostics": all(row["diagnostics_ready"] for row in selected_rows),
+        "selected_subset_of_train_needed": all(row["train_needed"] for row in selected_rows),
+    }
+    return {
+        "schema_version": 1,
+        "ready": all(invariants.values()),
+        "counts": counts,
+        "invariants": invariants,
+        "bot_states": bot_states,
+        "unresolved_selected_bot_ids": sorted(selected_ids - record_ids),
+        "policy": "stages are explicit and cumulative; collection readiness alone never authorizes retraining",
     }
 
 
@@ -1240,6 +1405,7 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, include_bot_ids: set[str
     records.sort(key=lambda item: _safe_float(item.get("priority"), 0.0), reverse=True)
     limited_records = records[:limit] if limit and limit > 0 else records
     counts = _summary_counts(records)
+    candidate_selector = _training_candidate_selector(records)
     return {
         "timestamp_utc": iso_now(),
         "schema_version": 1,
@@ -1253,7 +1419,8 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, include_bot_ids: set[str
         "prescription_counts": _prescription_counts(records),
         "training_readiness_counts": _training_readiness_counts(records),
         "next_batches": _next_batches(records),
-        "training_candidate_selector": _training_candidate_selector(records),
+        "training_candidate_selector": candidate_selector,
+        "training_stage_board": _training_stage_board(records, candidate_selector),
         "zero_observation_repair_contract": _zero_observation_repair_contract(records),
         "bot_needs": limited_records,
         "artifacts": {
@@ -1272,6 +1439,8 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, include_bot_ids: set[str
             "safe_by_default": "training commands use skip-master-update; collection and calibration commands are advisory/control-plane first",
             "overfit_aware": True,
             "training_candidate_selector_v2": True,
+            "training_candidate_selector_contract_version": 3,
+            "explicit_training_stage_board": True,
             "zero_observation_collector_repair_v2": True,
             "protected_volumes": ["/Volumes/VIDEO"],
         },

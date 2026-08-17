@@ -185,6 +185,53 @@ def test_live_canary_continuity_separates_operational_truth_from_replay_evidence
     assert "paper_execution_evidence_not_ready" in paper_milestone["blockers"]
 
 
+def test_paper_truth_operational_state_accepts_explicit_non_blocking_freshness_advisory() -> None:
+    gates = {
+        gate_id: {"ok": True, "status": "ready"}
+        for gate_id in src.PAPER_OPERATIONAL_GATE_IDS
+    }
+    gates["artifact_freshness_guard"] = {
+        "ok": False,
+        "status": "warn",
+        "grade_blocking": False,
+        "advisory_only": True,
+    }
+
+    ready, blockers, gate_states = src._paper_truth_operational_state(
+        {
+            "input_freshness": {"operational_inputs_fresh": True},
+            "gates": gates,
+        }
+    )
+
+    assert ready is True
+    assert blockers == []
+    assert gate_states["artifact_freshness_guard"] is True
+
+
+def test_paper_truth_operational_state_fails_closed_on_blocking_freshness_warning() -> None:
+    gates = {
+        gate_id: {"ok": True, "status": "ready"}
+        for gate_id in src.PAPER_OPERATIONAL_GATE_IDS
+    }
+    gates["artifact_freshness_guard"] = {
+        "ok": False,
+        "status": "warn",
+        "grade_blocking": True,
+    }
+
+    ready, blockers, gate_states = src._paper_truth_operational_state(
+        {
+            "input_freshness": {"operational_inputs_fresh": True},
+            "gates": gates,
+        }
+    )
+
+    assert ready is False
+    assert blockers == ["paper_truth_operational_gate_not_ready:artifact_freshness_guard"]
+    assert gate_states["artifact_freshness_guard"] is False
+
+
 def test_live_canary_readiness_contract_blocks_raw_d_grade(tmp_path: Path, monkeypatch) -> None:
     project_root = tmp_path / "project"
     _seed_ready_artifacts(project_root)

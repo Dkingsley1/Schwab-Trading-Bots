@@ -12,6 +12,10 @@ from typing import Any, Dict, Optional
 
 from core.accountability import safe_append_jsonl, safe_write_json_atomic
 from core.channel_queue import ChannelMessage, ChannelQueue, default_queue_db_path
+from core.profitability_hardening import (
+    PAPER_EXECUTION_AUTHORITY_VERSION,
+    evaluate_paper_execution_authority,
+)
 
 
 EXECUTION_INTENT_CHANNEL = "execution_intent"
@@ -476,6 +480,94 @@ def _registry_rows(project_root: str) -> dict[str, Dict[str, Any]]:
     return out
 
 
+def _sha256_file(path: Path) -> str:
+    try:
+        return hashlib.sha256(path.read_bytes()).hexdigest()
+    except OSError:
+        return ""
+
+
+def _paper_standard_registry_rows(
+    project_root: str,
+) -> tuple[dict[str, Dict[str, Any]], Dict[str, Any]]:
+    """Load the generated paper cohort only when its source and candidate hashes match."""
+
+    root = Path(project_root)
+    source_path = root / "master_bot_registry.json"
+    source = _read_json(source_path)
+    source_rows = _registry_rows(project_root)
+    candidate_path = root / "governance" / "health" / "paper_live_data_standard_registry_candidate_latest.json"
+    guard_path = root / "governance" / "health" / "paper_live_data_standard_source_write_guard_latest.json"
+    health_path = root / "governance" / "health" / "paper_live_data_standard_latest.json"
+    candidate = _read_json(candidate_path)
+    guard = _read_json(guard_path)
+    health = _read_json(health_path)
+    reasons: list[str] = []
+
+    if not candidate:
+        reasons.append("candidate_registry_missing")
+    if not guard:
+        reasons.append("source_write_guard_missing")
+    if not health:
+        reasons.append("paper_standard_health_missing")
+    elif not bool(health.get("ok", False)):
+        reasons.append("paper_standard_health_not_ok")
+    if guard and not bool(guard.get("source_write_blocked", False)):
+        reasons.append("source_write_guard_not_active")
+    guarded_source_path = str(guard.get("source_path") or "").strip()
+    if guarded_source_path and Path(guarded_source_path).resolve() != source_path.resolve():
+        reasons.append("source_registry_path_mismatch")
+    guarded_candidate_path = str(guard.get("candidate_path") or "").strip()
+    if not guarded_candidate_path or Path(guarded_candidate_path).resolve() != candidate_path.resolve():
+        reasons.append("candidate_registry_path_mismatch")
+    source_sha256 = _sha256_file(source_path)
+    candidate_sha256 = _sha256_file(candidate_path)
+    if source_sha256 != str(guard.get("source_sha256") or ""):
+        reasons.append("source_registry_hash_mismatch")
+    if candidate_sha256 != str(guard.get("candidate_sha256") or ""):
+        reasons.append("candidate_registry_hash_mismatch")
+
+    summary = candidate.get("summary") if isinstance(candidate.get("summary"), dict) else {}
+    if summary.get("paper_live_data_standard_version") != "paper_live_data_standard_v2":
+        reasons.append("candidate_registry_version_mismatch")
+    candidate_list = candidate.get("sub_bots") if isinstance(candidate.get("sub_bots"), list) else []
+    source_list = source.get("sub_bots") if isinstance(source.get("sub_bots"), list) else []
+    source_ids = {
+        str(row.get("bot_id") or "").strip()
+        for row in source_list
+        if isinstance(row, dict) and str(row.get("bot_id") or "").strip()
+    }
+    candidate_ids = {
+        str(row.get("bot_id") or "").strip()
+        for row in candidate_list
+        if isinstance(row, dict) and str(row.get("bot_id") or "").strip()
+    }
+    if len(source_list) != len(candidate_list) or source_ids != candidate_ids:
+        reasons.append("candidate_registry_membership_mismatch")
+
+    if reasons:
+        return source_rows, {
+            "source": "canonical_registry",
+            "candidate_overlay_valid": False,
+            "reasons": reasons,
+        }
+
+    rows: dict[str, Dict[str, Any]] = {}
+    for row in candidate_list:
+        if not isinstance(row, dict):
+            continue
+        bot_id = str(row.get("bot_id") or "").strip()
+        if bot_id:
+            rows[bot_id] = row
+    return rows, {
+        "source": "hash_bound_candidate_overlay",
+        "candidate_overlay_valid": True,
+        "source_sha256": source_sha256,
+        "candidate_sha256": candidate_sha256,
+        "reasons": [],
+    }
+
+
 def _execution_gateway_paths(project_root: str) -> tuple[Path, Path]:
     root = Path(project_root)
     return (
@@ -595,34 +687,66 @@ def _extract_bot_id(intent: Dict[str, Any]) -> str:
     return ""
 
 
-def _paper_standard_virtual_allowed(bot_id: str, intent: Dict[str, Any]) -> bool:
+def _paper_standard_segment(intent: Dict[str, Any], row: Dict[str, Any]) -> str:
     metadata = intent.get("metadata") if isinstance(intent.get("metadata"), dict) else {}
-    lowered = str(bot_id or "").strip().lower()
-    if lowered.startswith(("futures_specialist_", "options_specialist_")):
-        return True
-    reason = str(metadata.get("reason") or intent.get("reason") or "").strip().lower()
-    if reason.startswith("virtual_"):
-        return True
-    return str(metadata.get("bot_role") or intent.get("bot_role") or "").strip().lower() in {
-        "futures_sub_bot",
-        "options_sub_bot",
-    } and lowered.endswith("_specialist")
+    declared = str(metadata.get("signal_segment") or "").strip().lower()
+    if declared in {"core", "options", "futures"}:
+        return declared
+    role = str(row.get("bot_role") or metadata.get("bot_role") or intent.get("bot_role") or "").strip().lower()
+    if role == "options_sub_bot":
+        return "options"
+    if role == "futures_sub_bot":
+        return "futures"
+    return "core"
 
 
-def _paper_registry_row_allowed(row: Dict[str, Any]) -> bool:
-    if not row or bool(row.get("deleted_from_rotation", False)):
-        return False
-    if bool(row.get("direct_execution_allowed", False)) or bool(row.get("live_trading_enabled", False)):
-        return False
-    return any(
-        bool(row.get(key, False))
-        for key in (
-            "paper_live_data_enabled",
-            "paper_trading_enabled",
-            "paper_trade_enabled",
-            "paper_execution_allowed",
-        )
+def _paper_registry_authority(row: Dict[str, Any], intent: Dict[str, Any]) -> Dict[str, Any]:
+    normalized = dict(row or {})
+    materialization = (
+        normalized.get("training_label_materialization_contract")
+        if isinstance(normalized.get("training_label_materialization_contract"), dict)
+        else {}
     )
+    label_contract = normalized.get("label_contract") if isinstance(normalized.get("label_contract"), dict) else {}
+    normalized.setdefault("training_objective_class", materialization.get("objective_class"))
+    normalized.setdefault(
+        "label_family",
+        materialization.get("label_family") or label_contract.get("label_family"),
+    )
+    verdict = evaluate_paper_execution_authority(
+        normalized,
+        segment=_paper_standard_segment(intent, normalized),
+        minimum_accuracy=max(_safe_float(os.getenv("PAPER_EXECUTION_AUTHORITY_MIN_ACC", "0.56"), 0.56), 0.0),
+        minimum_quality_score=max(
+            _safe_float(os.getenv("PAPER_EXECUTION_AUTHORITY_MIN_QUALITY", "0.50"), 0.50),
+            0.0,
+        ),
+    )
+    reasons = list(verdict.get("reasons") or [])
+    authority_version = str(normalized.get("paper_execution_authority_version") or "").strip()
+    if authority_version != PAPER_EXECUTION_AUTHORITY_VERSION:
+        reasons.append("paper_execution_authority_version_mismatch")
+    if bool(normalized.get("direct_execution_allowed", False)):
+        reasons.append("direct_execution_authority_present")
+    if bool(normalized.get("live_trading_enabled", False)):
+        reasons.append("live_execution_authority_present")
+    verdict["allowed"] = not reasons
+    verdict["reasons"] = reasons
+    verdict["declared_authority_version"] = authority_version
+    return verdict
+
+
+def _candidate_identity_reasons(project_root: str, metadata: Dict[str, Any]) -> list[str]:
+    candidate_state = _read_json(Path(project_root) / "governance" / "runtime" / "production_candidate_state.json")
+    expected_candidate_id = str(candidate_state.get("candidate_id") or "").strip()
+    if not expected_candidate_id:
+        return []
+    actual_candidate_id = str(metadata.get("production_candidate_id") or "").strip()
+    if not actual_candidate_id:
+        return ["paper_standard_production_candidate_id_missing"]
+    if actual_candidate_id != expected_candidate_id:
+        return ["paper_standard_production_candidate_id_mismatch"]
+    return []
 
 
 def evaluate_paper_standard_gateway(*, project_root: str, intent: Dict[str, Any]) -> Dict[str, Any]:
@@ -636,27 +760,116 @@ def evaluate_paper_standard_gateway(*, project_root: str, intent: Dict[str, Any]
             "reasons": [],
         }
 
-    reasons: list[str] = []
+    metadata = intent.get("metadata") if isinstance(intent.get("metadata"), dict) else {}
+    constituent_ids = sorted(
+        {
+            str(item or "").strip()
+            for item in metadata.get("constituent_bot_ids", [])
+            if str(item or "").strip()
+        }
+    )
+    is_portfolio_consensus = str(metadata.get("layer") or "").strip().lower() == "paper_portfolio_consensus"
+    if is_portfolio_consensus:
+        reasons: list[str] = []
+        invalid_ids: list[str] = []
+        authority_failures: dict[str, list[str]] = {}
+        registry_rows, registry_provenance = _paper_standard_registry_rows(project_root)
+        if not constituent_ids:
+            reasons.append("paper_standard_consensus_missing_constituents")
+        if len(constituent_ids) < 2:
+            reasons.append("paper_standard_consensus_constituent_count_below_diversity_floor")
+        if _safe_int(metadata.get("constituent_count"), len(constituent_ids)) != len(constituent_ids):
+            reasons.append("paper_standard_consensus_constituent_count_mismatch")
+        if bool(metadata.get("constituent_bot_ids_truncated", False)):
+            reasons.append("paper_standard_consensus_constituents_truncated")
+        if str(metadata.get("paper_execution_authority_version") or "") != PAPER_EXECUTION_AUTHORITY_VERSION:
+            reasons.append("paper_standard_consensus_authority_version_mismatch")
+        if not bool(metadata.get("paper_execution_diversity_ready", False)):
+            reasons.append("paper_standard_consensus_diversity_not_ready")
+        distinct_clusters = _safe_int(metadata.get("paper_execution_distinct_correlation_clusters"), 0)
+        if distinct_clusters < 2:
+            reasons.append("paper_standard_consensus_correlation_diversity_below_floor")
+        if distinct_clusters > len(constituent_ids):
+            reasons.append("paper_standard_consensus_correlation_diversity_invalid")
+
+        expected_ids_sha256 = hashlib.sha256(
+            json.dumps(constituent_ids, separators=(",", ":")).encode("utf-8")
+        ).hexdigest()
+        if str(metadata.get("constituent_bot_ids_sha256") or "") != expected_ids_sha256:
+            reasons.append("paper_standard_consensus_constituent_hash_mismatch")
+        manifest = (
+            metadata.get("paper_execution_cohort_manifest")
+            if isinstance(metadata.get("paper_execution_cohort_manifest"), dict)
+            else {}
+        )
+        manifest_sha256 = hashlib.sha256(
+            json.dumps(manifest, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        ).hexdigest()
+        if not manifest or str(metadata.get("paper_execution_cohort_manifest_sha256") or "") != manifest_sha256:
+            reasons.append("paper_standard_consensus_manifest_hash_mismatch")
+        if str(manifest.get("policy") or "") != PAPER_EXECUTION_AUTHORITY_VERSION:
+            reasons.append("paper_standard_consensus_manifest_policy_mismatch")
+        manifest_ids = sorted(
+            str(item or "").strip()
+            for item in manifest.get("constituent_bot_ids", [])
+            if str(item or "").strip()
+        )
+        if manifest_ids != constituent_ids:
+            reasons.append("paper_standard_consensus_manifest_membership_mismatch")
+        if str(manifest.get("segment") or "").strip().lower() != str(
+            metadata.get("signal_segment") or ""
+        ).strip().lower():
+            reasons.append("paper_standard_consensus_manifest_segment_mismatch")
+        if str(manifest.get("profile") or "").strip().lower() != str(
+            metadata.get("source_profile") or ""
+        ).strip().lower():
+            reasons.append("paper_standard_consensus_manifest_profile_mismatch")
+        reasons.extend(_candidate_identity_reasons(project_root, metadata))
+        for constituent_id in constituent_ids:
+            registry_row = registry_rows.get(constituent_id, {})
+            authority = _paper_registry_authority(registry_row, intent)
+            if not bool(authority.get("allowed", False)):
+                invalid_ids.append(constituent_id)
+                authority_failures[constituent_id] = list(authority.get("reasons") or [])
+        if invalid_ids:
+            reasons.append("paper_standard_consensus_contains_ineligible_bot")
+        return {
+            "enabled": True,
+            "allow_execute": len(reasons) == 0,
+            "bot_id": "paper_portfolio_consensus",
+            "consensus_constituent_count": len(constituent_ids),
+            "consensus_invalid_bot_ids": invalid_ids[:64],
+            "consensus_invalid_bot_ids_truncated": len(invalid_ids) > 64,
+            "consensus_authority_failures": authority_failures,
+            "registry_provenance": registry_provenance,
+            "reasons": reasons,
+        }
+
+    reasons = []
     registry_row: Dict[str, Any] = {}
-    virtual_allowed = _paper_standard_virtual_allowed(bot_id, intent)
+    authority: Dict[str, Any] = {}
+    registry_rows, registry_provenance = _paper_standard_registry_rows(project_root)
     if not bot_id:
         reasons.append("paper_standard_missing_bot_id")
-    elif virtual_allowed:
-        pass
     else:
-        registry_row = _registry_rows(project_root).get(bot_id, {})
+        registry_row = registry_rows.get(bot_id, {})
         if not registry_row:
             reasons.append("paper_standard_bot_missing_from_registry")
-        elif not _paper_registry_row_allowed(registry_row):
-            reasons.append("paper_standard_bot_not_in_explicit_paper_cohort")
+        else:
+            authority = _paper_registry_authority(registry_row, intent)
+            if not bool(authority.get("allowed", False)):
+                reasons.append("paper_standard_bot_not_in_explicit_paper_cohort")
+        reasons.extend(_candidate_identity_reasons(project_root, metadata))
 
     return {
         "enabled": True,
         "allow_execute": len(reasons) == 0,
         "bot_id": bot_id,
-        "virtual_allowed": bool(virtual_allowed),
+        "virtual_allowed": False,
         "paper_standard_cohort": str(registry_row.get("paper_standard_cohort") or "") if registry_row else "",
         "paper_live_data_enabled": bool(registry_row.get("paper_live_data_enabled", False)) if registry_row else None,
+        "paper_execution_authority": authority,
+        "registry_provenance": registry_provenance,
         "reasons": reasons,
     }
 

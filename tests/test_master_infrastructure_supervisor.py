@@ -507,6 +507,24 @@ def test_master_supervisor_accepts_intentional_local_hot_storage_route(tmp_path:
     assert route["evidence"]["intentional_local_hot_route"] is True
 
 
+def test_master_supervisor_accepts_guarded_ready_health_without_strict_platform_clear(tmp_path: Path) -> None:
+    health = tmp_path / "governance" / "health"
+    _write_json(
+        health / "health_fast_latest.json",
+        {
+            "overall_status": "guarded_ready",
+            "ok": True,
+            "strict_all_clear": False,
+            "operational_readiness": {
+                "guarded_paper": {"ok": True, "status": "ready"},
+                "live_execution": {"status": "blocked_read_only"},
+            },
+        },
+    )
+
+    assert supervisor._guarded_paper_strict_clear(tmp_path) is True
+
+
 def test_master_supervisor_ignores_managed_stale_governance_surface(tmp_path: Path, monkeypatch) -> None:
     project_root = tmp_path / "project"
     health = project_root / "governance" / "health"
@@ -802,9 +820,10 @@ def test_master_supervisor_degrades_bounded_drift_safe_repairs_in_self_audit(tmp
     self_check = next(row for row in payload["checks"] if row["name"] == "self_auditing_infra_bots")
     drift_row = next(row for row in self_check["evidence"]["bots"] if row["name"] == "system_drift_autopilot")
 
-    assert payload["overall_status"] == "degraded"
-    assert self_check["status"] == "degraded"
-    assert drift_row["status"] == "degraded"
+    assert payload["overall_status"] == "ready"
+    assert self_check["status"] == "ready"
+    assert drift_row["status"] == "advisory"
+    assert drift_row["paper_soak_advisory_only"] is True
     assert drift_row["failed_attempt_count"] == 0
 
 

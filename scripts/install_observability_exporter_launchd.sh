@@ -8,7 +8,7 @@ RUN_SCRIPT="$PROJECT_ROOT/scripts/observability_exporter.py"
 PLIST_PATH="$HOME/Library/LaunchAgents/com.dankingsley.observability_exporter.plist"
 LABEL="com.dankingsley.observability_exporter"
 UID_NUM="$(id -u)"
-LOG_DIR="$PROJECT_ROOT/logs"
+LOG_DIR="${BOT_OPS_LAUNCHD_LOG_DIR:-/tmp/schwab_trading_bot/launchd_ops}"
 
 mkdir -p "$HOME/Library/LaunchAgents" "$LOG_DIR"
 
@@ -23,9 +23,16 @@ cat > "$PLIST_PATH" <<PLIST
     <string>$PYTHON_BIN</string>
     <string>$RUN_SCRIPT</string>
   </array>
+  <key>EnvironmentVariables</key><dict>
+    <key>MARKET_DATA_ONLY</key><string>1</string>
+    <key>ALLOW_ORDER_EXECUTION</key><string>0</string>
+    <key>BOT_LIVE_MONEY_LOCKED_DURING_SOAK</key><string>1</string>
+  </dict>
   <key>WorkingDirectory</key><string>$PROJECT_ROOT</string>
   <key>RunAtLoad</key><true/>
   <key>StartInterval</key><integer>60</integer>
+  <key>ProcessType</key><string>Background</string>
+  <key>ThrottleInterval</key><integer>15</integer>
   <key>StandardOutPath</key><string>$LOG_DIR/observability_exporter.out.log</string>
   <key>StandardErrorPath</key><string>$LOG_DIR/observability_exporter.err.log</string>
 </dict>

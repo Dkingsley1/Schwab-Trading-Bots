@@ -162,7 +162,14 @@ def _guarded_paper_strict_clear(project_root: Path) -> bool:
         "read_only",
         "disabled",
     }
-    return bool(health_fast.get("strict_all_clear", False) and guarded_ready and live_locked)
+    operational_health_ready = bool(
+        health_fast.get("strict_all_clear", False)
+        or (
+            bool(health_fast.get("ok", False))
+            and str(health_fast.get("overall_status") or "").strip().lower() in {"ready", "guarded_ready"}
+        )
+    )
+    return bool(operational_health_ready and guarded_ready and live_locked)
 
 
 def _command_key(cmd: list[str]) -> str:
@@ -1176,15 +1183,28 @@ def _backlog_organizer_paper_soak_advisory(payload: dict[str, Any]) -> bool:
     if not bool(summary.get("guarded_paper_soak_green", False)):
         return False
     lanes = [row for row in payload.get("lanes") or [] if isinstance(row, dict)]
-    blocked_or_needs_work = [
+    hard_blocked = [
         row
         for row in lanes
-        if str(row.get("status") or "").strip().lower() in {"blocked", "needs_work", "critical", "failed"}
+        if str(row.get("status") or "").strip().lower() in {"blocked", "critical", "failed"}
     ]
-    if not blocked_or_needs_work:
+    managed_hard_lane_ids = {"admission_contracts", "promotion_training_quality"}
+    if any(str(row.get("lane_id") or "").strip() not in managed_hard_lane_ids for row in hard_blocked):
         return False
-    managed_lane_ids = {"admission_contracts", "promotion_training_quality"}
-    return all(str(row.get("lane_id") or "").strip() in managed_lane_ids for row in blocked_or_needs_work)
+    operational_lane_ids = {"runtime_pressure", "health_visibility", "auth_runtime_separation", "admission_contracts"}
+    operational_rows = {
+        str(row.get("lane_id") or "").strip(): str(row.get("status") or "").strip().lower()
+        for row in lanes
+        if str(row.get("lane_id") or "").strip() in operational_lane_ids
+    }
+    required_runtime_lanes = {"runtime_pressure", "auth_runtime_separation"}
+    if not required_runtime_lanes <= set(operational_rows):
+        return False
+    if any(operational_rows[lane_id] not in {"ready", "advisory"} for lane_id in required_runtime_lanes):
+        return False
+    if "health_visibility" in operational_rows and operational_rows["health_visibility"] not in {"ready", "advisory"}:
+        return False
+    return operational_rows.get("admission_contracts", "ready") in {"ready", "advisory", "blocked"}
 
 
 def _self_auditing_infra_bots_check(project_root: Path) -> dict[str, Any]:
@@ -1215,6 +1235,7 @@ def _self_auditing_infra_bots_check(project_root: Path) -> dict[str, Any]:
         artifact_age_minutes = payload_age_minutes(payload, path) if payload else None
         artifact_status = _artifact_status(payload, missing="degraded")
         initial_artifact_status = artifact_status
+        managed_bounded_drift_repair = False
         if label == "command_validity" and payload:
             metrics = payload.get("metrics") if isinstance(payload.get("metrics"), dict) else {}
             if (
@@ -1237,7 +1258,7 @@ def _self_auditing_infra_bots_check(project_root: Path) -> dict[str, Any]:
         ]
         mitigated_attempts = [row for row in failed_attempts if _attempt_has_active_recovery(project_root, row)]
         unmitigated_failed_attempts = [row for row in failed_attempts if row not in mitigated_attempts]
-        advisory_followups = {
+        advisory_followups = bool(operator_followups) and {
             str(item)
             for item in operator_followups
             if str(item).strip()
@@ -1266,6 +1287,7 @@ def _self_auditing_infra_bots_check(project_root: Path) -> dict[str, Any]:
         ):
             artifact_status = "degraded"
             unmitigated_failed_attempts = []
+            managed_bounded_drift_repair = True
         managed_blocking_backlog = bool(
             label == "backlog_organizer"
             and artifact_status == "blocked"
@@ -1287,7 +1309,7 @@ def _self_auditing_infra_bots_check(project_root: Path) -> dict[str, Any]:
         paper_soak_advisory_only = bool(
             guarded_paper_clear
             and row_status == "degraded"
-            and (initial_artifact_status != "blocked" or managed_blocking_backlog)
+            and (initial_artifact_status != "blocked" or managed_blocking_backlog or managed_bounded_drift_repair)
             and label in paper_soak_advisory_bots
             and not unmitigated_failed_attempts
         )

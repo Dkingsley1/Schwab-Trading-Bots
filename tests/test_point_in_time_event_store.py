@@ -1,4 +1,5 @@
 import json
+from datetime import datetime, timezone
 from pathlib import Path
 import sys
 
@@ -283,3 +284,53 @@ def test_point_in_time_event_store_tracks_latest_by_category(tmp_path) -> None:
     payload = event_store.build_event_store(project_root, limit=20)
 
     assert payload["latest_by_category"]["control_plane"]["event_type"] == "service_control_plane_latest"
+
+
+def test_point_in_time_event_store_quarantines_future_and_invalid_events(tmp_path) -> None:
+    project_root = tmp_path / "project"
+    event_dir = project_root / "governance" / "events"
+    event_dir.mkdir(parents=True, exist_ok=True)
+    (event_dir / "live_macro_events_20260810.jsonl").write_text(
+        "\n".join(
+            [
+                json.dumps(
+                    {
+                        "timestamp_utc": "2026-08-10T12:00:00+00:00",
+                        "event_type": "valid_macro",
+                        "source": "official",
+                    }
+                ),
+                json.dumps(
+                    {
+                        "timestamp_utc": "2026-08-10T13:30:00+00:00",
+                        "event_type": "future_macro",
+                        "source": "bad_clock",
+                    }
+                ),
+                json.dumps(
+                    {
+                        "timestamp_utc": "not-a-timestamp",
+                        "event_type": "invalid_macro",
+                        "source": "malformed",
+                    }
+                ),
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    payload = event_store.build_event_store(
+        project_root,
+        limit=20,
+        now=datetime(2026, 8, 10, 12, 30, tzinfo=timezone.utc),
+    )
+
+    contract = payload["point_in_time_contract"]
+    assert payload["ok"] is False
+    assert payload["event_count"] == 1
+    assert payload["quarantined_event_count"] == 2
+    assert contract["future_event_count"] == 1
+    assert contract["invalid_timestamp_count"] == 1
+    assert contract["point_in_time_only"] is False
+    assert len(contract["source_manifest_sha256"]) == 64

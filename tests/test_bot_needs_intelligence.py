@@ -1,3 +1,4 @@
+import json
 import os
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -46,6 +47,34 @@ def test_bot_needs_uses_registry_data_collection_observation_count(tmp_path: Pat
         and need["summary"] == "Collect 470 more observations to reach the 1000 training floor."
         for need in record["all_needs"]
     )
+
+
+def test_bot_needs_does_not_treat_an_unconfigured_collection_floor_as_ready(tmp_path: Path) -> None:
+    diagnostic_path = tmp_path / "diagnostic.json"
+    diagnostic_path.write_text("{}", encoding="utf-8")
+
+    record = src._classify_bot(
+        {
+            "bot_id": "brain_refinery_v2",
+            "bot_role": "signal_sub_bot",
+            "active": True,
+            "data_collection_active": True,
+            "lifecycle_state": "active",
+            "data_collection_observations": 5000,
+        },
+        label_row={},
+        quality_row={},
+        memberships={},
+        walk_forward={},
+        diagnostic={"sample_count": 1000, "observation_count": 5000},
+        diagnostic_path=diagnostic_path,
+        calibration_override={},
+        min_runs=12,
+        now=datetime.now(timezone.utc),
+    )
+
+    assert record["evidence"]["minimum_observations"] == 0
+    assert record["evidence"]["collection_threshold_ready"] is False
 
 
 def test_bot_needs_materializes_label_depth_when_raw_observations_exist(tmp_path: Path) -> None:
@@ -401,11 +430,17 @@ def test_bot_needs_training_selector_and_zero_observation_repair_contract() -> N
         "evidence": {
             "sample_count": 420,
             "observation_count": 1200,
+            "minimum_observations": 1000,
             "positive_rate": 0.48,
             "quality_score": 0.92,
             "test_accuracy": 0.57,
             "walk_forward_runs_remaining": 1,
             "overfit_status": "generalization_clean",
+            "collection_threshold_ready": True,
+            "label_contract_complete": True,
+            "point_in_time_label_safe": True,
+            "diagnostic_fresh": True,
+            "training_family": "risk",
         },
     }
     zero_record = {
@@ -434,9 +469,118 @@ def test_bot_needs_training_selector_and_zero_observation_repair_contract() -> N
 
     assert selector["mode"] == "training_candidate_selector_v2"
     assert selector["selected_candidates"][0]["bot_id"] == ready_record["bot_id"]
+    assert selector["selected_family_counts"] == {"risk": 1}
     assert selector["recommended_batch_command"][3] == ready_record["bot_id"]
     assert repair["mode"] == "zero_observation_collector_repair_v2"
     assert repair["zero_observation_count"] == 1
     assert repair["zero_observation_bots"][0]["bot_id"] == zero_record["bot_id"]
     assert repair["excluded_expected_observer_count"] == 1
     assert repair["excluded_expected_observer_bots"][0]["bot_id"] == expected_training_labeling_observer["bot_id"]
+
+
+def test_training_selector_fails_closed_on_missing_evidence_and_caps_one_family() -> None:
+    malformed = {
+        "bot_id": "malformed",
+        "primary_need": "targeted_quality_retrain",
+        "priority": 100.0,
+        "effectiveness_prescription": {"can_train_now": True},
+        "evidence": {
+            "sample_count": 1000,
+            "observation_count": 1000,
+            "minimum_observations": 500,
+            "positive_rate": 0.5,
+            "overfit_status": "generalization_clean",
+        },
+    }
+    family_rows = []
+    for index in range(8):
+        family_rows.append(
+            {
+                "bot_id": f"family_bot_{index}",
+                "primary_need": "targeted_quality_retrain",
+                "priority": float(80 - index),
+                "effectiveness_prescription": {"can_train_now": True},
+                "evidence": {
+                    "sample_count": 1000,
+                    "observation_count": 1000,
+                    "minimum_observations": 500,
+                    "positive_rate": 0.5,
+                    "quality_score": 0.8,
+                    "test_accuracy": 0.6,
+                    "overfit_status": "generalization_clean",
+                    "collection_threshold_ready": True,
+                    "label_contract_complete": True,
+                    "point_in_time_label_safe": True,
+                    "diagnostic_fresh": True,
+                    "training_family": "same_family",
+                },
+            }
+        )
+
+    selector = src._training_candidate_selector([malformed, *family_rows])
+
+    assert "malformed" not in [row["bot_id"] for row in selector["selected_candidates"]]
+    assert selector["candidate_count"] == 8
+    assert selector["selected_count"] == 5
+    assert selector["selection_deferred_count"] == 3
+    assert selector["selected_family_counts"] == {"same_family": 5}
+    assert selector["blocked_counts"]["label_first"] == 1
+
+
+def test_training_stage_board_rejects_unresolved_and_non_cumulative_selection() -> None:
+    records = [
+        {
+            "bot_id": "known",
+            "data_collection_active": True,
+            "effectiveness_prescription": {"can_train_now": True},
+            "evidence": {
+                "observation_count": 1000,
+                "minimum_observations": 500,
+                "collection_threshold_ready": True,
+                "label_contract_complete": False,
+                "point_in_time_label_safe": False,
+                "diagnostic_fresh": True,
+            },
+        }
+    ]
+    selector = {
+        "selected_candidates": [
+            {"bot_id": "known"},
+            {"bot_id": "unknown"},
+        ]
+    }
+
+    board = src._training_stage_board(records, selector)
+
+    assert board["ready"] is False
+    assert board["invariants"]["selected_ids_resolve_to_known_bots"] is False
+    assert board["invariants"]["selected_subset_of_label_safe"] is False
+    assert board["invariants"]["selected_subset_of_fresh_diagnostics"] is False
+    assert board["unresolved_selected_bot_ids"] == ["unknown"]
+
+
+def test_build_payload_assembles_selector_and_stage_board(tmp_path: Path) -> None:
+    (tmp_path / "master_bot_registry.json").write_text(
+        json.dumps(
+            {
+                "sub_bots": [
+                    {
+                        "bot_id": "brain_refinery_v1",
+                        "bot_role": "signal_sub_bot",
+                        "active": True,
+                        "data_collection_active": True,
+                        "lifecycle_state": "active",
+                        "minimum_training_observations": 1000,
+                        "data_collection_observations": 1200,
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    payload = src.build_payload(tmp_path)
+
+    assert payload["training_candidate_selector"]["contract_version"] == 3
+    assert payload["training_stage_board"]["ready"] is True
+    assert payload["training_stage_board"]["counts"]["collection_floor_ready"] == 1

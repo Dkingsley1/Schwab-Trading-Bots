@@ -101,6 +101,8 @@ def build_payload(
     live = guard.get("live_recovery") if isinstance(guard.get("live_recovery"), dict) else {}
     automation = guard.get("automation") if isinstance(guard.get("automation"), dict) else {}
     launchd = automation.get("launchd") if isinstance(automation.get("launchd"), dict) else {}
+    runtime_binary = automation.get("runtime_binary") if isinstance(automation.get("runtime_binary"), dict) else {}
+    transition_state = automation.get("transition_state") if isinstance(automation.get("transition_state"), dict) else {}
     storage_backpressure = storage_control.get("backpressure") if isinstance(storage_control.get("backpressure"), dict) else {}
     halt_clear_blockers = halt_status.get("clear_blockers") if isinstance(halt_status.get("clear_blockers"), list) else []
     data_plane_status = str(data_plane.get("overall_status") or "")
@@ -126,10 +128,15 @@ def build_payload(
             bounded_timeout_sec,
         )
 
-    if not bool(launchd.get("running", False)) or not bool(launchd.get("plist_exists", False)):
+    if (
+        not bool(launchd.get("running", False))
+        or not bool(launchd.get("plist_exists", False))
+        or not bool(runtime_binary.get("ready", True))
+        or str(transition_state.get("status") or "") in {"blocked", "critical", "failed"}
+    ):
         add_plan(
             "install_storage_eject_guard_launchd",
-            "automatic_storage_eject_guard_not_running",
+            "automatic_storage_eject_guard_not_running_or_runtime_not_current",
             [str(project_root / "scripts" / "install_storage_eject_guard_launchd.sh")],
             bounded_timeout_sec,
         )
@@ -242,6 +249,9 @@ def build_payload(
             "max_repair_step_timeout_sec": max([int(row.get("timeout_sec") or 0) for row in repair_plan] or [0]),
             "missing_contract_count": len(guard.get("missing_contracts") or []),
             "automation_running": bool(launchd.get("running", False)),
+            "runtime_binary_ready": bool(runtime_binary.get("ready", True)),
+            "last_transition_status": str(transition_state.get("status") or "missing"),
+            "last_transition_event": str(transition_state.get("event") or ""),
             "total_pending_lines": total_pending,
             "halt_clear_blocker_count": len(halt_clear_blockers),
             "data_plane_queue_depth": _safe_int(data_plane.get("queue_depth"), 0),

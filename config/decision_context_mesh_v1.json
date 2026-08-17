@@ -1,0 +1,151 @@
+{
+  "schema_version": 1,
+  "mesh_id": "decision_context_mesh_v1",
+  "purpose": "Point-in-time macro and micro context for paper decisions, training, replay, and research.",
+  "contract": {
+    "required_plane_count": 12,
+    "minimum_plane_score_pct": 70.0,
+    "minimum_macro_score_pct": 80.0,
+    "minimum_micro_score_pct": 80.0,
+    "maximum_artifact_age_hours": 24.0,
+    "point_in_time_only": true,
+    "future_observations_rejected": true,
+    "missing_values_are_not_zero_filled": true,
+    "paper_decision_context_authority": true,
+    "training_context_authority": true,
+    "paper_execution_authority": false,
+    "live_execution_authority": false,
+    "automatic_promotion_authority": false,
+    "profitability_guaranteed": false
+  },
+  "scoring": {
+    "source_health_weight": 0.30,
+    "feature_completeness_weight": 0.25,
+    "freshness_weight": 0.15,
+    "point_in_time_lineage_weight": 0.15,
+    "routing_weight": 0.10,
+    "cross_verification_weight": 0.05
+  },
+  "planes": [
+    {
+      "plane_id": "fiscal_liquidity",
+      "title": "Fiscal Liquidity Flows",
+      "plane_class": "macro",
+      "signal_key": "context_fiscal_liquidity_signal_norm",
+      "required_feature_count": 3,
+      "source_ids": ["official_macro_context", "public_policy_context", "market_micro_context"],
+      "target_domains": ["global_macro", "rates", "credit", "equity", "fx"],
+      "target_symbols": ["SPY", "QQQ", "IWM", "DIA", "TLT", "IEF", "LQD", "HYG", "UUP"]
+    },
+    {
+      "plane_id": "funding_stress",
+      "title": "Funding Market Stress",
+      "plane_class": "macro",
+      "signal_key": "context_funding_stress_signal_norm",
+      "required_feature_count": 3,
+      "source_ids": ["official_macro_context", "extended_quant_context", "bond_reference_context"],
+      "target_domains": ["global_macro", "rates", "credit", "market_making", "risk"],
+      "target_symbols": ["SPY", "TLT", "IEF", "LQD", "HYG", "UUP"]
+    },
+    {
+      "plane_id": "cross_border_capital",
+      "title": "Cross-Border Capital Flows",
+      "plane_class": "macro",
+      "signal_key": "context_cross_border_capital_signal_norm",
+      "required_feature_count": 3,
+      "source_ids": ["treasury_tic", "fx_market_context", "public_policy_context", "central_bank_cross_source_context"],
+      "target_domains": ["global_macro", "fx", "rates", "equity", "commodities"],
+      "target_symbols": ["SPY", "TLT", "UUP", "FXE", "FXY", "GLD", "EFA", "EEM"]
+    },
+    {
+      "plane_id": "positioning_crowding",
+      "title": "Positioning And Crowding",
+      "plane_class": "micro",
+      "signal_key": "context_positioning_crowding_signal_norm",
+      "required_feature_count": 3,
+      "source_ids": ["extended_quant_context", "market_micro_context", "options_flow_context"],
+      "target_domains": ["equity", "rates", "fx", "commodities", "volatility", "crypto"],
+      "target_symbols": ["SPY", "QQQ", "IWM", "TLT", "UUP", "GLD", "VIXY", "BTC-USD", "ETH-USD"]
+    },
+    {
+      "plane_id": "securities_lending",
+      "title": "Securities Lending And Short Pressure",
+      "plane_class": "micro",
+      "signal_key": "context_securities_lending_signal_norm",
+      "required_feature_count": 3,
+      "source_ids": ["options_flow_context", "extended_quant_context", "market_micro_context"],
+      "target_domains": ["equity", "market_making", "short_bias", "event", "risk"],
+      "target_symbols": ["*"]
+    },
+    {
+      "plane_id": "credit_curve",
+      "title": "Credit And Yield-Curve State",
+      "plane_class": "macro",
+      "signal_key": "context_credit_curve_signal_norm",
+      "required_feature_count": 3,
+      "source_ids": ["bond_reference_context", "official_macro_context", "market_micro_context"],
+      "target_domains": ["rates", "credit", "global_macro", "equity", "risk"],
+      "target_symbols": ["TLT", "IEF", "SHY", "LQD", "HYG", "JNK", "SPY"]
+    },
+    {
+      "plane_id": "volatility_surface",
+      "title": "Volatility Surface State",
+      "plane_class": "micro",
+      "signal_key": "context_volatility_surface_signal_norm",
+      "required_feature_count": 3,
+      "source_ids": ["options_flow_context", "extended_quant_context", "market_micro_context"],
+      "target_domains": ["options", "volatility", "equity", "market_making", "risk"],
+      "target_symbols": ["SPY", "QQQ", "IWM", "DIA", "VIXY"]
+    },
+    {
+      "plane_id": "passive_mechanical_flows",
+      "title": "Passive And Mechanical Flows",
+      "plane_class": "micro",
+      "signal_key": "context_passive_mechanical_flow_signal_norm",
+      "required_feature_count": 3,
+      "source_ids": ["market_micro_context", "extended_quant_context"],
+      "target_domains": ["equity", "index", "market_making", "intraday", "event"],
+      "target_symbols": ["SPY", "QQQ", "IWM", "DIA", "VTI", "VOO", "RSP", "MDY"]
+    },
+    {
+      "plane_id": "market_calendar",
+      "title": "Market Calendar Structure",
+      "plane_class": "macro",
+      "signal_key": "context_market_calendar_signal_norm",
+      "required_feature_count": 3,
+      "source_ids": ["official_macro_context", "extended_quant_context", "market_micro_context"],
+      "target_domains": ["global_macro", "equity", "rates", "options", "futures", "event"],
+      "target_symbols": ["*"]
+    },
+    {
+      "plane_id": "supply_chain_inventory",
+      "title": "Supply Chain And Inventory State",
+      "plane_class": "macro",
+      "signal_key": "context_supply_chain_inventory_signal_norm",
+      "required_feature_count": 3,
+      "source_ids": ["eia_weekly_petroleum", "bts_freight_tsi", "market_micro_context"],
+      "target_domains": ["commodities", "inflation", "global_macro", "equity", "transportation"],
+      "target_symbols": ["XLE", "XOM", "CVX", "USO", "DBC", "IYT", "SPY"]
+    },
+    {
+      "plane_id": "estimates_dispersion",
+      "title": "Estimate Revisions And Dispersion",
+      "plane_class": "micro",
+      "signal_key": "context_estimates_dispersion_signal_norm",
+      "required_feature_count": 3,
+      "source_ids": ["sec_edgar_context", "schwab_symbol_news"],
+      "target_domains": ["equity", "earnings", "event", "fundamental", "risk"],
+      "target_symbols": ["*"]
+    },
+    {
+      "plane_id": "capacity_market_impact",
+      "title": "Capacity And Market Impact",
+      "plane_class": "micro",
+      "signal_key": "context_capacity_market_impact_signal_norm",
+      "required_feature_count": 3,
+      "source_ids": ["portfolio_capacity_curves", "paper_execution_calibration", "market_micro_context"],
+      "target_domains": ["execution", "portfolio", "market_making", "risk", "all_sleeves"],
+      "target_symbols": ["*"]
+    }
+  ]
+}

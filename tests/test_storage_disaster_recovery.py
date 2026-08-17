@@ -423,6 +423,59 @@ def test_model_hydration_copies_available_active_models_with_bounded_route(monke
     assert (local_root / "models" / "paper.joblib").read_bytes() == b"model-data"
 
 
+def test_model_hydration_retries_incomplete_attempt_before_success_cooldown(monkeypatch, tmp_path: Path) -> None:
+    _write_json(
+        tmp_path / "master_bot_registry.json",
+        {"sub_bots": [{"bot_id": "paper", "active": True, "model_path": "models/paper.joblib"}]},
+    )
+    external_project = tmp_path / "external_project"
+    (external_project / "models").mkdir(parents=True)
+    (external_project / "models" / "paper.joblib").write_bytes(b"model-data")
+    local_root = tmp_path / "local"
+    monkeypatch.setenv("BOT_LOGS_EXTERNAL_PROJECT_ROOT", str(external_project))
+    monkeypatch.setenv("BOT_LOGS_MODEL_HYDRATION_COOLDOWN_SECONDS", "21600")
+    monkeypatch.setenv("BOT_LOGS_MODEL_HYDRATION_RETRY_SECONDS", "300")
+    monkeypatch.setattr(src.time, "time", lambda: 1000.0)
+    state = {
+        "last_model_hydration_epoch": 600.0,
+        "last_model_hydration_ok": False,
+        "last_model_hydration_missing_after_count": 1,
+    }
+
+    payload = src._hydrate_local_models(tmp_path, local_root, apply=True, state=state)
+
+    assert payload["attempted"] is True
+    assert payload["ok"] is True
+    assert payload["cooldown_basis"] == "incomplete_hydration_retry"
+    assert state["last_model_hydration_ok"] is True
+    assert state["last_model_hydration_missing_after_count"] == 0
+
+
+def test_model_hydration_keeps_long_cooldown_after_success(monkeypatch, tmp_path: Path) -> None:
+    _write_json(
+        tmp_path / "master_bot_registry.json",
+        {"sub_bots": [{"bot_id": "paper", "active": True, "model_path": "models/paper.joblib"}]},
+    )
+    external_project = tmp_path / "external_project"
+    (external_project / "models").mkdir(parents=True)
+    (external_project / "models" / "paper.joblib").write_bytes(b"model-data")
+    monkeypatch.setenv("BOT_LOGS_EXTERNAL_PROJECT_ROOT", str(external_project))
+    monkeypatch.setenv("BOT_LOGS_MODEL_HYDRATION_COOLDOWN_SECONDS", "21600")
+    monkeypatch.setenv("BOT_LOGS_MODEL_HYDRATION_RETRY_SECONDS", "300")
+    monkeypatch.setattr(src.time, "time", lambda: 1000.0)
+
+    payload = src._hydrate_local_models(
+        tmp_path,
+        tmp_path / "local",
+        apply=True,
+        state={"last_model_hydration_epoch": 600.0, "last_model_hydration_ok": True},
+    )
+
+    assert payload["attempted"] is False
+    assert payload["skipped_reason"] == "hydration_cooldown_active"
+    assert payload["cooldown_basis"] == "successful_hydration"
+
+
 def test_recovery_snapshot_contract_requires_fresh_snapshot_database_and_content_store(tmp_path: Path) -> None:
     recovery_root = tmp_path / "recovery"
     (recovery_root / "latest" / "data").mkdir(parents=True)
@@ -446,6 +499,38 @@ def test_recovery_snapshot_contract_requires_fresh_snapshot_database_and_content
     assert contract["blockers"] == []
     assert contract["snapshot_context_backup_present"] is True
     assert contract["content_store"]["ready"] is True
+    assert contract["snapshot_manifest_verification"]["ready"] is True
+    assert len(contract["snapshot_manifest_verification"]["verification_receipt_sha256"]) == 64
+
+
+def test_recovery_snapshot_contract_rejects_missing_and_unsafe_manifest_paths(tmp_path: Path) -> None:
+    recovery_root = tmp_path / "recovery"
+    (recovery_root / "latest" / "data").mkdir(parents=True)
+    (recovery_root / "latest" / "data" / "snapshot_context.sqlite3").write_bytes(b"db")
+    _write_json(
+        recovery_root / "recovery_manifest_latest.json",
+        {
+            "timestamp_utc": src._utc_now(),
+            "copied_paths": [
+                "data/snapshot_context.sqlite3",
+                "governance/missing.json",
+                "../outside.txt",
+            ],
+            "errors": [],
+        },
+    )
+    _write_json(
+        tmp_path / "governance" / "content_store" / "latest.json",
+        {"timestamp_utc": src._utc_now(), "ok": True, "manifest_hash": "a" * 64},
+    )
+
+    contract = src._recovery_snapshot_contract(tmp_path, recovery_root)
+
+    verification = contract["snapshot_manifest_verification"]
+    assert contract["ready"] is False
+    assert "recovery_snapshot_manifest_verification_failed" in contract["blockers"]
+    assert verification["missing_paths"] == ["governance/missing.json"]
+    assert verification["unsafe_paths"] == ["../outside.txt"]
 
 
 def test_online_curated_snapshot_uses_sqlite_backup_without_writer_quiet(monkeypatch, tmp_path: Path) -> None:
@@ -482,3 +567,59 @@ def test_online_curated_snapshot_uses_sqlite_backup_without_writer_quiet(monkeyp
     assert payload["snapshot_mode"] == "online_sqlite_backup"
     assert payload["quiet_point"]["skipped_reason"] == "online_snapshot_mode"
     assert copied_value == "ready"
+
+
+def test_recovery_objectives_require_verified_rpo_and_measured_rto(tmp_path: Path) -> None:
+    _write_json(
+        tmp_path / "governance" / "health" / "production_recovery_drill_harness_latest.json",
+        {
+            "timestamp_utc": src._utc_now(),
+            "ok": True,
+            "run_sha256": "a" * 64,
+            "recovery_slo": {
+                "met": True,
+                "max_observed_recovery_seconds": 8.0,
+            },
+        },
+    )
+    durability = {
+        "recovery_snapshot": {
+            "age_minutes": 30.0,
+            "manifest_path": "recovery/recovery_manifest_latest.json",
+            "snapshot_manifest_verification": {"ready": True, "verification_receipt_sha256": "b" * 64},
+        }
+    }
+
+    objectives = src._recovery_objectives(
+        tmp_path,
+        durability,
+        rpo_target_minutes=60.0,
+        rto_target_seconds=10.0,
+    )
+
+    assert objectives["ready"] is True
+    assert objectives["rpo"]["met"] is True
+    assert objectives["rto"]["met"] is True
+    assert len(objectives["evidence_receipt_sha256"]) == 64
+
+
+def test_recovery_objective_debt_blocks_live_promotion_not_paper_collection(tmp_path: Path) -> None:
+    durability = {
+        "recovery_snapshot": {
+            "age_minutes": 180.0,
+            "snapshot_manifest_verification": {"ready": False},
+        }
+    }
+
+    objectives = src._recovery_objectives(
+        tmp_path,
+        durability,
+        rpo_target_minutes=60.0,
+        rto_target_seconds=10.0,
+    )
+
+    assert objectives["ready"] is False
+    assert objectives["paper_collection_blocked"] is False
+    assert objectives["live_promotion_blocked"] is True
+    assert "recovery_point_objective_not_met" in objectives["blockers"]
+    assert "recovery_time_objective_not_met" in objectives["blockers"]

@@ -21,6 +21,7 @@ COINBASE_SIMULATE="${COINBASE_START_SIMULATE:-0}"
 PROFILE="${BOT_RUNTIME_PROFILE:-}"
 ORCHESTRATOR_MODE="${STACK_ORCHESTRATOR_MODE:-watchdog}"
 DRY_RUN=0
+SHADOW_WATCHDOG_PAUSED_FOR_RESTART=0
 
 load_stack_runtime_env() {
   if [[ -f "$PROJECT_ROOT/scripts/ops/load_runtime_env.sh" ]]; then
@@ -198,6 +199,60 @@ restore_unattended_support_services() {
   return "$failed"
 }
 
+pause_shadow_watchdog_for_restart() {
+  local label="com.dankingsley.shadow_watchdog"
+  local plist="$HOME/Library/LaunchAgents/${label}.plist"
+  local domain="gui/$(id -u)"
+
+  if [[ -f "$plist" ]]; then
+    launchctl bootout "$domain" "$plist" >/dev/null 2>&1 || true
+  fi
+  pkill -f "scripts/shadow_watchdog.py" >/dev/null 2>&1 || true
+  if wait_for_process_absent "scripts/shadow_watchdog.py" "${SHADOW_WATCHDOG_STOP_TIMEOUT_SECONDS:-20}"; then
+    echo "shadow_watchdog=paused_for_restart"
+    return 0
+  fi
+  echo "shadow_watchdog=failed_to_pause_before_restart"
+  return 1
+}
+
+resume_shadow_watchdog_after_restart() {
+  if [[ "$SHADOW_WATCHDOG_PAUSED_FOR_RESTART" != "1" ]]; then
+    return 0
+  fi
+
+  local label="com.dankingsley.shadow_watchdog"
+  local plist="$HOME/Library/LaunchAgents/${label}.plist"
+  local domain="gui/$(id -u)"
+  if [[ -x "$PROJECT_ROOT/scripts/install_shadow_watchdog_launchd.sh" ]]; then
+    "$PROJECT_ROOT/scripts/install_shadow_watchdog_launchd.sh" >/dev/null 2>&1 || true
+  elif [[ -f "$plist" ]]; then
+    launchctl bootstrap "$domain" "$plist" >/dev/null 2>&1 || true
+    launchctl kickstart -k "$domain/$label" >/dev/null 2>&1 || true
+  elif [[ -x "$PROJECT_ROOT/scripts/ops/run_shadow_watchdog_launchd.sh" ]]; then
+    PYTHONUNBUFFERED=1 nohup "$PROJECT_ROOT/scripts/ops/run_shadow_watchdog_launchd.sh" \
+      > "logs/shadow_watchdog_restart_$(date -u +%Y%m%d_%H%M%S).log" 2>&1 & disown
+  fi
+
+  if wait_for_process_match "scripts/shadow_watchdog.py" "${SHADOW_WATCHDOG_START_TIMEOUT_SECONDS:-45}"; then
+    SHADOW_WATCHDOG_PAUSED_FOR_RESTART=0
+    echo "shadow_watchdog=resumed_after_restart"
+    return 0
+  fi
+  echo "shadow_watchdog=failed_to_resume_after_restart"
+  return 1
+}
+
+restart_exit_cleanup() {
+  local rc=$?
+  if [[ "$SHADOW_WATCHDOG_PAUSED_FOR_RESTART" == "1" ]]; then
+    resume_shadow_watchdog_after_restart || true
+  fi
+  return "$rc"
+}
+
+trap restart_exit_cleanup EXIT
+
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --force-restart) FORCE_RESTART=1 ;;
@@ -243,6 +298,10 @@ if [[ "$DRY_RUN" == "1" ]]; then
   exit 0
 fi
 
+if [[ -f "$STACK_STOPPED_FLAG" && "${BOT_OPS_DATA_PLANE_STARTUP_COMPACTION:-1}" != "0" ]]; then
+  "$PY" "$PROJECT_ROOT/scripts/ops/ops_data_plane_compactor.py" --apply --json >/dev/null
+fi
+
 rm -f "$STACK_STOPPED_FLAG"
 
 "$PY" "$PROJECT_ROOT/scripts/ops/apple_silicon_profile.py" apply >/dev/null 2>&1 || true
@@ -285,6 +344,10 @@ echo "runtime_profile=$PROFILE"
 echo "orchestrator_mode=$ORCHESTRATOR_MODE"
 
 if [[ "$FORCE_RESTART" == "1" ]]; then
+  if ! pause_shadow_watchdog_for_restart; then
+    exit 1
+  fi
+  SHADOW_WATCHDOG_PAUSED_FOR_RESTART=1
   # Clean sweep so stale wrappers/children do not keep locks and destabilize the supervisor.
   pkill -f "scripts/run_all_sleeves.py" || true
   pkill -f "scripts/run_parallel_shadows.py" || true
@@ -324,7 +387,7 @@ export MARKET_DATA_ONLY="${MARKET_DATA_ONLY:-1}"
 export ALLOW_ORDER_EXECUTION="${ALLOW_ORDER_EXECUTION:-0}"
 export TOP_BOT_PAPER_TRADING_ENABLED="${TOP_BOT_PAPER_TRADING_ENABLED:-1}"
 export TOP_BOT_PAPER_TRADING_OPTIONS_ENABLED="${TOP_BOT_PAPER_TRADING_OPTIONS_ENABLED:-1}"
-export PAPER_MIRROR_ALL_ACTIVE_SUB_BOTS="${PAPER_MIRROR_ALL_ACTIVE_SUB_BOTS:-1}"
+export PAPER_MIRROR_ALL_ACTIVE_SUB_BOTS="${PAPER_MIRROR_ALL_ACTIVE_SUB_BOTS:-0}"
 export PAPER_BROKER_BRIDGE_ENABLED="${PAPER_BROKER_BRIDGE_ENABLED:-1}"
 export PAPER_BROKER_BRIDGE_MODE="${PAPER_BROKER_BRIDGE_MODE:-jsonl}"
 export LOG_SUB_BOT_DECISIONS="${LOG_SUB_BOT_DECISIONS:-1}"
@@ -341,19 +404,7 @@ if [[ "$ORCHESTRATOR_MODE" == "watchdog" ]]; then
   WD_MATCH="scripts/shadow_watchdog.py"
   WD_PLIST="$HOME/Library/LaunchAgents/com.dankingsley.shadow_watchdog.plist"
   if [[ "$FORCE_RESTART" == "1" ]]; then
-    pkill -f "$WD_MATCH" >/dev/null 2>&1 || true
-    sleep 1
-    if [[ -x "$PROJECT_ROOT/scripts/install_shadow_watchdog_launchd.sh" ]]; then
-      "$PROJECT_ROOT/scripts/install_shadow_watchdog_launchd.sh" >/dev/null 2>&1 || true
-    elif [[ -f "$WD_PLIST" ]]; then
-      launchctl unload "$WD_PLIST" >/dev/null 2>&1 || true
-      launchctl load "$WD_PLIST" >/dev/null 2>&1 || true
-    elif [[ -x "$PROJECT_ROOT/scripts/ops/run_shadow_watchdog_launchd.sh" ]]; then
-      WD_LOG="logs/shadow_watchdog_manual_$(date -u +%Y%m%d_%H%M%S).log"
-      PYTHONUNBUFFERED=1 nohup "$PROJECT_ROOT/scripts/ops/run_shadow_watchdog_launchd.sh" > "$WD_LOG" 2>&1 & disown
-      echo "shadow_watchdog_log=$WD_LOG"
-    fi
-    if wait_for_process_match "$WD_MATCH" "${SHADOW_WATCHDOG_START_TIMEOUT_SECONDS:-45}"; then
+    if resume_shadow_watchdog_after_restart; then
       WD_PID="$(ps -axo pid,command | grep -F "$WD_MATCH" | grep -v grep | awk 'NR==1{print $1}')"
       echo "shadow_watchdog=reloaded pid=$WD_PID"
     else
@@ -477,6 +528,11 @@ if [[ "$WITH_COINBASE" == "1" ]]; then
   COINBASE_FUTURES_RUNNING_PID="$(ps -axo pid,command | grep -F "scripts/run_shadow_training_loop.py --broker coinbase --profile crypto_futures" | grep -v grep | awk 'NR==1{print $1}')"
   echo "coinbase_futures_loop=started pid=$COINBASE_FUTURES_RUNNING_PID"
   echo "coinbase_futures_log=logs/watchdog_coinbase_futures_loop.log"
+fi
+
+if ! resume_shadow_watchdog_after_restart; then
+  echo "stack_start_status=failed_to_restore_shadow_watchdog"
+  exit 1
 fi
 
 if ! restore_unattended_support_services; then

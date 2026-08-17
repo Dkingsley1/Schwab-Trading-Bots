@@ -41,6 +41,12 @@ def test_lifecycle_hygiene_mutations_require_committed_master_update() -> None:
     )
 
 
+def test_trade_behavior_holdout_is_not_a_trainer_failure() -> None:
+    assert retrain._trade_behavior_trainer_outcome(0) == ("promoted", True, False)
+    assert retrain._trade_behavior_trainer_outcome(4) == ("held_out", False, False)
+    assert retrain._trade_behavior_trainer_outcome(2) == ("failed", False, True)
+
+
 def test_weekly_retrain_child_env_pins_project_root_on_pythonpath(monkeypatch) -> None:
     monkeypatch.setenv("PYTHONPATH", "/tmp/existing_path")
 

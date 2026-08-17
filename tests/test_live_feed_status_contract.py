@@ -168,6 +168,88 @@ def test_ready_contract_reports_fresh_consistent_runtime(tmp_path: Path) -> None
     assert payload["rows"]["soak"]["warning_count"] == 0
 
 
+def test_livefeed_surfaces_configured_collector_capability_contract(tmp_path: Path) -> None:
+    health = _ready_fixture(tmp_path)
+    _write(tmp_path / "config" / "collector_capability_catalog_v1.json", {"schema_version": 1})
+    _write(
+        health / "collector_capability_control_latest.json",
+        {
+            "timestamp_utc": STAMP,
+            "ok": True,
+            "overall_status": "ready_with_coverage_debt",
+            "paper_soak_ready": True,
+            "live_promotion_ready": False,
+            "summary": {
+                "plane_count": 25,
+                "capability_count": 257,
+                "bot_binding_count": 1781,
+                "assignment_count": 1781,
+                "subscription_profile_count": 681,
+            },
+            "current_collector_mapping": {"complete": True},
+            "coverage_debt": {"gap_count": 118},
+            "structural_blockers": [],
+            "paper_soak_blockers": [],
+        },
+    )
+
+    payload = contract.build_status_snapshot(tmp_path, now=NOW)
+    row = payload["rows"]["collector_capabilities"]
+
+    assert payload["headline_status"] == "ready"
+    assert payload["source_count"] == 10
+    assert row["status"] == "ready"
+    assert row["bots"] == row["assignments"] == 1781
+    assert row["coverage_debt_scope"] == "candidate_required_blocking_optional_advisory"
+    assert row["paper_soak_ready"] is True
+    assert "[collector-capabilities]" in "\n".join(contract.format_status_lines(payload))
+
+
+def test_livefeed_surfaces_direct_capability_materialization_proofs(tmp_path: Path) -> None:
+    _ready_fixture(tmp_path)
+    _write(tmp_path / "config" / "capability_materialization_v1.json", {"schema_version": 1})
+    _write(
+        tmp_path
+        / "governance"
+        / "collector_capabilities"
+        / "materialized_capabilities_latest.json",
+        {
+            "timestamp_utc": STAMP,
+            "ok": True,
+            "overall_status": "ready",
+            "live_promotion_ready": True,
+            "calendar_materialization": {"library_version": "4.13.2"},
+            "derivative_contract_materialization": {"contract_count": 10},
+            "stress_scenario_materialization": {"scenario_count": 2},
+            "capabilities": [
+                {
+                    "capability_id": capability_id,
+                    "usable": True,
+                    "proof_semantics": "direct",
+                    "proof_receipt_sha256": f"proof-{capability_id}",
+                }
+                for capability_id in (
+                    "trading_calendars",
+                    "market_session_state",
+                    "derivatives_contract_master",
+                    "stress_scenarios",
+                )
+            ],
+            "authority_contract": {"live_execution_authority": False},
+        },
+    )
+
+    payload = contract.build_status_snapshot(tmp_path, now=NOW)
+    row = payload["rows"]["capability_materialization"]
+
+    assert payload["headline_status"] == "ready"
+    assert row["status"] == "ready"
+    assert row["grade"] == "A+"
+    assert row["direct_proofs"] == row["required_proofs"] == 4
+    assert row["contracts"] == 10
+    assert "[capability-materialization]" in "\n".join(contract.format_status_lines(payload))
+
+
 def test_managed_throttle_advisory_is_visible_without_false_remediation(tmp_path: Path) -> None:
     health = _ready_fixture(tmp_path)
     throttle = json.loads((health / "runtime_throttle_control_latest.json").read_text(encoding="utf-8"))

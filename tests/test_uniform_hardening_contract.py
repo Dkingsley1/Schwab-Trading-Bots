@@ -91,6 +91,34 @@ def test_uniform_floor_can_be_ready_while_economic_evidence_remains_pending(tmp_
     assert payload["live_execution_authority"] is False
 
 
+def test_uniform_contract_can_grade_operational_projection_of_mixed_slo_artifact(tmp_path: Path) -> None:
+    config_path = _seed(tmp_path)
+    config = json.loads(config_path.read_text(encoding="utf-8"))
+    artifact = config["domains"][0]["artifacts"][0]
+    artifact["status_path"] = "operational_status"
+    artifact["truthy_paths"] = ["operational_ok"]
+    artifact["zero_paths"] = ["operational_breach_count"]
+    _write(config_path, config)
+    _write(
+        tmp_path / "governance" / "health" / "critical_runtime_latest.json",
+        {
+            "timestamp_utc": NOW.isoformat(),
+            "overall_status": "blocked",
+            "ok": False,
+            "operational_status": "ready",
+            "operational_ok": True,
+            "operational_breach_count": 0,
+        },
+    )
+
+    payload = contract.build_payload(tmp_path, config_path=config_path, now=NOW)
+    critical = next(row for row in payload["domains"] if row["domain_id"] == "critical_runtime")
+
+    assert payload["critical_runtime_ready"] is True
+    assert critical["artifacts"][0]["status"] == "ready"
+    assert critical["artifacts"][0]["status_path"] == "operational_status"
+
+
 def test_stale_critical_artifact_fails_closed(tmp_path: Path) -> None:
     config_path = _seed(tmp_path)
     _write(
@@ -169,10 +197,23 @@ def test_repository_manifest_separates_runtime_truth_from_economic_and_context_e
     assert source_spec["grade_requirements"] == {"source_control_grade": "A+"}
     assert "ready_statuses" not in source_spec
     assert "ok" not in paper_spec["truthy_paths"]
+    assert paper_spec["ready_statuses"] == ["ready"]
+    assert paper_spec["grade_requirements"] == {"grade": "A+"}
+    assert "operational_conformance_complete" in paper_spec["truthy_paths"]
     assert "gates.paper_broker_truth_reconciliation.ok" in paper_spec["truthy_paths"]
     assert "gates.decision_replay_harness.ok" not in paper_spec["truthy_paths"]
+    assert "gates.artifact_freshness_guard.ok" not in paper_spec["truthy_paths"]
     assert runtime_specs["runtime_throttle"]["ready_statuses"] == ["ready", "advisory"]
     assert runtime_specs["runtime_throttle"]["truthy_paths"] == ["ok"]
+    observability_spec = {
+        row["artifact_id"]: row for row in domains["observability_incident"]["artifacts"]
+    }["production_quality_slo"]
+    assert observability_spec["status_path"] == "operational_status"
+    assert observability_spec["truthy_paths"] == ["operational_ok"]
+    assert observability_spec["zero_paths"] == [
+        "operational_breach_count",
+        "operational_critical_active_lane_count",
+    ]
 
 
 def test_system_needs_surfaces_critical_uniform_failure_but_not_evidence_only_debt() -> None:

@@ -151,6 +151,13 @@ def _grade_at_least(raw: Any, floor: str) -> bool:
     return GRADE_RANK.get(_grade(raw), -1) >= GRADE_RANK.get(_grade(floor), 99)
 
 
+def _paper_gate_operationally_ready(gate: dict[str, Any]) -> bool:
+    status = _status(gate.get("status"))
+    if status == "warn":
+        return gate.get("grade_blocking") is False
+    return bool(gate.get("ok", False) and status not in BAD_STATUSES)
+
+
 def _paper_truth_operational_state(paper_truth: dict[str, Any]) -> tuple[bool, list[str], dict[str, bool]]:
     gates = _as_dict(paper_truth.get("gates"))
     input_freshness = _as_dict(paper_truth.get("input_freshness"))
@@ -168,7 +175,7 @@ def _paper_truth_operational_state(paper_truth: dict[str, Any]) -> tuple[bool, l
         return ready, ([] if ready else ["legacy_paper_truth_not_ready"]), {}
 
     gate_states = {
-        gate_id: bool(_as_dict(gates.get(gate_id)).get("ok", False))
+        gate_id: _paper_gate_operationally_ready(_as_dict(gates.get(gate_id)))
         for gate_id in PAPER_OPERATIONAL_GATE_IDS
     }
     operational_inputs_fresh = bool(input_freshness.get("operational_inputs_fresh", False))

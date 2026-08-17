@@ -2,8 +2,10 @@ import json
 from datetime import datetime, timezone
 
 from scripts.collect_bls_census_data import (
+    DEFAULT_FRED_SERIES_IDS,
     _bea_rss_payload,
     _cached_static_census_payload,
+    _derive_central_bank_liquidity_context,
     _derive_fred_macro_context,
     _fred_csv_to_payload,
     _usable_api_key,
@@ -50,6 +52,84 @@ def test_derive_fred_macro_context_uses_pm_gold_alias():
     }
     out = _derive_fred_macro_context(payload)
     assert out["cross_asset"]["gold_fix"] == 3017.4
+
+
+def test_central_bank_liquidity_context_covers_balance_sheet_funding_and_stress():
+    def observations(*values: float):
+        return {
+            "observations": [
+                {"date": f"2026-08-{14 - index:02d}", "value": str(value)}
+                for index, value in enumerate(values)
+            ]
+        }
+
+    payload = {
+        "timestamp_utc": "2026-08-15T00:18:02+00:00",
+        "responses": {
+            "WALCL": observations(7_000_000, 6_800_000),
+            "WRESBAL": observations(3_000_000, 2_950_000),
+            "RRPONTSYD": observations(100, 90, 80, 70, 60, 50),
+            "RPONTSYD": observations(2, 1),
+            "WTREGEN": observations(700_000, 650_000),
+            "SWPT": observations(1_000, 900),
+            "SOFR": observations(5.4, 5.35),
+            "EFFR": observations(5.3, 5.3),
+            "OBFR": observations(5.31, 5.31),
+            "IORB": observations(5.4, 5.4),
+            "DFEDTARL": observations(5.25, 5.25),
+            "DFEDTARU": observations(5.5, 5.5),
+            "NFCI": observations(0.2, 0.1),
+            "ANFCI": observations(0.1, 0.0),
+            "STLFSI4": observations(0.5, 0.4),
+        },
+    }
+
+    out = _derive_central_bank_liquidity_context(payload)
+
+    assert out["coverage"]["required_coverage_ratio"] == 1.0
+    assert out["balance_sheet"]["net_liquidity_proxy_millions"] == 6_200_000
+    assert out["balance_sheet"]["net_liquidity_proxy_change_millions"] == 100_000
+    assert round(out["funding_rates"]["sofr_minus_effr_bps"], 6) == 10.0
+    assert out["global_features"]["fed_net_liquidity_impulse_norm"] > 0.5
+    assert out["global_features"]["fed_funding_stress_norm"] > 0.5
+    assert out["methodology"]["classification"] == "heuristic_market_liquidity_proxy_not_official_accounting_identity"
+    assert all(series_id in DEFAULT_FRED_SERIES_IDS for series_id in ("WALCL", "WRESBAL", "RRPONTSYD", "WTREGEN", "SOFR", "EFFR"))
+
+
+def test_central_bank_liquidity_excludes_future_effective_dates() -> None:
+    payload = {
+        "timestamp_utc": "2026-08-15T12:00:00+00:00",
+        "responses": {
+            "IORB": {
+                "observations": [
+                    {"date": "2026-08-17", "value": "9.99"},
+                    {"date": "2026-08-14", "value": "3.65"},
+                ]
+            }
+        },
+    }
+
+    out = _derive_central_bank_liquidity_context(payload)
+
+    assert out["funding_rates"]["iorb_percent"] == 3.65
+    assert out["coverage"]["latest_observation_dates"]["IORB"] == "2026-08-14"
+    assert out["coverage"]["future_observations_excluded"] == {"IORB": ["2026-08-17"]}
+    assert out["coverage"]["future_observation_selected"] is False
+
+
+def test_central_bank_liquidity_marks_stale_required_series_unusable() -> None:
+    payload = {
+        "timestamp_utc": "2026-08-15T12:00:00+00:00",
+        "responses": {
+            "WALCL": {"observations": [{"date": "2026-07-01", "value": "6800000"}]},
+        },
+    }
+
+    out = _derive_central_bank_liquidity_context(payload)
+
+    assert "WALCL" in out["coverage"]["stale_required_series"]
+    assert "WALCL" in out["coverage"]["unusable_required_series"]
+    assert out["coverage"]["required_coverage_ratio"] < out["coverage"]["required_availability_ratio"]
 
 
 def test_fred_public_csv_fallback_builds_observations():

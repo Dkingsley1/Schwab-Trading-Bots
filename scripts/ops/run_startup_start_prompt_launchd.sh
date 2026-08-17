@@ -6,6 +6,7 @@ OPSCTL="$PROJECT_ROOT/scripts/ops/opsctl.sh"
 HEALTH_DIR="$PROJECT_ROOT/governance/health"
 STATE_FILE="$HEALTH_DIR/startup_start_prompt_latest.json"
 LOG_DIR="$HOME/Library/Logs/schwab_trading_bot"
+NOTIFIER_APP="${STARTUP_START_PROMPT_APP:-$HOME/Library/Application Support/schwab_trading_bot/Schwab Startup Prompt.app}"
 
 DELAY_SECONDS="${STARTUP_START_PROMPT_DELAY_SECONDS:-20}"
 TIMEOUT_SECONDS="${STARTUP_START_PROMPT_TIMEOUT_SECONDS:-600}"
@@ -75,7 +76,9 @@ write_state() {
   local decision="$2"
   local detail="${3:-}"
   local rc="${4:-0}"
-  /usr/bin/python3 - "$STATE_FILE" "$state_status" "$decision" "$detail" "$rc" "$DRY_RUN" "$DELAY_SECONDS" "$TIMEOUT_SECONDS" "$FORCE_RESTART" "$APPLY_PAPER_LOCK" "$NO_BROWSER" <<'PY'
+  local transport="${5:-unknown}"
+  local notifier_ready="${6:-0}"
+  /usr/bin/python3 - "$STATE_FILE" "$state_status" "$decision" "$detail" "$rc" "$DRY_RUN" "$DELAY_SECONDS" "$TIMEOUT_SECONDS" "$FORCE_RESTART" "$APPLY_PAPER_LOCK" "$NO_BROWSER" "$transport" "$notifier_ready" <<'PY'
 import json
 import sys
 from datetime import datetime, timezone
@@ -85,6 +88,7 @@ state_path = Path(sys.argv[1])
 payload = {
     "timestamp_utc": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
     "status": sys.argv[2],
+    "ok": sys.argv[2] in {"ready", "starting", "started", "skipped"},
     "decision": sys.argv[3],
     "detail": sys.argv[4],
     "return_code": int(sys.argv[5] or 0),
@@ -94,6 +98,10 @@ payload = {
     "force_restart": sys.argv[9] == "1",
     "paper_lock_applied_before_start": sys.argv[10] == "1",
     "no_browser_mode": sys.argv[11] == "1",
+    "prompt_transport": sys.argv[12],
+    "actionable_notification": sys.argv[12] == "actionable_notification",
+    "actionable_notification_ready": sys.argv[13] == "1",
+    "fail_closed_no_response": True,
     "managed_by": "run_startup_start_prompt_launchd.sh",
 }
 state_path.parent.mkdir(parents=True, exist_ok=True)
@@ -101,23 +109,47 @@ state_path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", enco
 PY
 }
 
+validate_actionable_notifier() {
+  local notifier_binary="$NOTIFIER_APP/Contents/MacOS/SchwabStartupPrompt"
+  [[ -d "$NOTIFIER_APP" && -x "$notifier_binary" ]] || return 1
+  /usr/bin/codesign --verify --deep --strict "$NOTIFIER_APP" >/dev/null 2>&1 || return 1
+  plutil -lint "$NOTIFIER_APP/Contents/Info.plist" >/dev/null 2>&1 || return 1
+
+  local result_file="${TMPDIR:-/tmp}/schwab_startup_prompt_self_test.$$.txt"
+  rm -f "$result_file"
+  set +e
+  /usr/bin/open -W -n -a "$NOTIFIER_APP" --args --self-test --result-file "$result_file" >/dev/null 2>&1
+  local rc=$?
+  set -e
+  local result=""
+  if [[ -f "$result_file" ]]; then
+    result="$(<"$result_file")"
+  fi
+  rm -f "$result_file"
+  [[ "$rc" == "0" && "$result" == "self_test_ready" ]]
+}
+
 show_banner() {
   /usr/bin/osascript -e 'display notification "Choose Yes to start the guarded paper-trading stack, or No to leave it off." with title "Schwab Trading Bot" subtitle "Start at login?"' >/dev/null 2>&1 || true
 }
 
-ask_to_start() {
+ask_dialog_fallback() {
   set +e
   local result
   result="$(/usr/bin/osascript <<APPLESCRIPT
 try
-  set dialogResult to display dialog "Start schwab_trading_bot now?" buttons {"No", "Yes"} default button "Yes" cancel button "No" with title "Schwab Trading Bot" giving up after $TIMEOUT_SECONDS
+  tell application "System Events"
+    activate
+    set dialogResult to display dialog "Start schwab_trading_bot now?" buttons {"No", "Yes"} default button "Yes" cancel button "No" with title "Schwab Trading Bot" giving up after $TIMEOUT_SECONDS
+  end tell
   if gave up of dialogResult then
     return "timeout"
   end if
   return button returned of dialogResult
-on error number -128
-  return "No"
 on error errText number errNum
+  if errNum is -128 then
+    return "No"
+  end if
   return "error:" & errNum & ":" & errText
 end try
 APPLESCRIPT
@@ -129,6 +161,43 @@ APPLESCRIPT
     return 0
   fi
   print -r -- "$result"
+}
+
+ask_to_start() {
+  local notifier_binary="$NOTIFIER_APP/Contents/MacOS/SchwabStartupPrompt"
+  if [[ -d "$NOTIFIER_APP" && -x "$notifier_binary" ]]; then
+    local result_file="${TMPDIR:-/tmp}/schwab_startup_prompt_decision.$$.txt"
+    local result=""
+    local rc=0
+    rm -f "$result_file"
+    set +e
+    /usr/bin/open -W -n -a "$NOTIFIER_APP" --args \
+      --timeout-seconds "$TIMEOUT_SECONDS" \
+      --result-file "$result_file" >/dev/null 2>&1
+    rc=$?
+    set -e
+    if [[ -f "$result_file" ]]; then
+      result="$(<"$result_file")"
+    fi
+    rm -f "$result_file"
+    case "$result" in
+      Yes|No|timeout)
+        print -r -- "actionable_notification|$result"
+        return 0
+        ;;
+      fallback|unavailable:*)
+        ;;
+      *)
+        if [[ "$rc" == "0" ]]; then
+          print -r -- "actionable_notification|error:empty_notification_response"
+          return 0
+        fi
+        ;;
+    esac
+  fi
+
+  show_banner
+  print -r -- "dialog_fallback|$(ask_dialog_fallback)"
 }
 
 start_stack() {
@@ -165,9 +234,14 @@ apply_no_browser_startup_env() {
 
 if [[ "$DRY_RUN" == "1" ]]; then
   apply_no_browser_startup_env
-  write_state "dry_run" "not_prompted" "startup prompt dry-run completed without showing the dialog or starting the stack" 0
-  echo "startup_start_prompt_status=dry_run state_file=$STATE_FILE"
-  exit 0
+  if validate_actionable_notifier; then
+    write_state "ready" "not_prompted" "startup prompt self-test passed without showing UI or starting the stack" 0 "dry_run" 1
+    echo "startup_start_prompt_status=ready state_file=$STATE_FILE"
+    exit 0
+  fi
+  write_state "blocked" "not_prompted" "actionable startup notification self-test failed without starting the stack" 2 "dry_run" 0
+  echo "startup_start_prompt_status=blocked state_file=$STATE_FILE" >&2
+  exit 2
 fi
 
 apply_no_browser_startup_env
@@ -176,37 +250,42 @@ if [[ "$DELAY_SECONDS" != "0" ]]; then
   sleep "$DELAY_SECONDS"
 fi
 
-show_banner
-decision="$(ask_to_start)"
+prompt_result="$(ask_to_start)"
+transport="${prompt_result%%|*}"
+decision="${prompt_result#*|}"
+notifier_ready=0
+if [[ -x "$NOTIFIER_APP/Contents/MacOS/SchwabStartupPrompt" ]]; then
+  notifier_ready=1
+fi
 
 case "$decision" in
   Yes)
-    write_state "starting" "yes" "operator accepted startup prompt" 0
+    write_state "starting" "yes" "operator accepted startup prompt" 0 "$transport" "$notifier_ready"
     set +e
     start_stack
     rc=$?
     set -e
     if [[ "$rc" == "0" ]]; then
-      write_state "started" "yes" "opsctl start completed" 0
+      write_state "started" "yes" "opsctl start completed" 0 "$transport" "$notifier_ready"
     else
-      write_state "failed" "yes" "opsctl start failed" "$rc"
+      write_state "failed" "yes" "opsctl start failed" "$rc" "$transport" "$notifier_ready"
     fi
     exit "$rc"
     ;;
   timeout)
-    write_state "skipped" "timeout" "startup prompt timed out without starting the stack" 0
+    write_state "skipped" "timeout" "startup prompt timed out without starting the stack" 0 "$transport" "$notifier_ready"
     echo "startup_start_prompt_status=skipped reason=timeout state_file=$STATE_FILE"
     ;;
   No)
-    write_state "skipped" "no" "operator declined startup prompt" 0
+    write_state "skipped" "no" "operator declined startup prompt" 0 "$transport" "$notifier_ready"
     echo "startup_start_prompt_status=skipped reason=no state_file=$STATE_FILE"
     ;;
   error:*)
-    write_state "prompt_unavailable" "error" "$decision" 0
+    write_state "prompt_unavailable" "error" "$decision" 0 "$transport" "$notifier_ready"
     echo "startup_start_prompt_status=prompt_unavailable detail=$decision state_file=$STATE_FILE"
     ;;
   *)
-    write_state "skipped" "unknown" "unexpected prompt response: $decision" 0
+    write_state "skipped" "unknown" "unexpected prompt response: $decision" 0 "$transport" "$notifier_ready"
     echo "startup_start_prompt_status=skipped reason=unknown decision=$decision state_file=$STATE_FILE"
     ;;
 esac

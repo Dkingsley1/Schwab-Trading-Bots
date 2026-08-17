@@ -261,6 +261,52 @@ def test_promotion_packet_builder_allows_signed_idle_packets_with_replayability_
     assert payload["committee"]["seed_ready"] is True
 
 
+def test_promotion_packet_builder_excludes_support_training_from_known_idle_promotion_scope() -> None:
+    support_bot_id = "brain_refinery_v1000_apex_daily_system_brief_composer_bot"
+    payload = src.build_payload(
+        retrain_scorecard={
+            "target_count": 1,
+            "failure_count": 0,
+            "master_update_status": "precheck_failed",
+            "target_outcomes": [{"bot_id": support_bot_id, "status": "trained"}],
+            "lineage": {"git_commit": "abc123", "weekly_retrain_script_sha256": "f" * 64},
+        },
+        training_success={"confirmed_training_success": True},
+        feature_store_manifest={
+            "strict_ok": True,
+            "dataset_contract": {"rows_path": "/tmp/runtime.jsonl", "rows_sha256": "rows-hash"},
+            "point_in_time_contract": {"dataset_join_keys": ["snapshot_id"], "event_join_keys": ["join_key"]},
+            "feature_contract": {"env_hash": "env-hash"},
+            "label_contract": {"feature_schema_version": "trade_behavior_features_v4", "horizons": {"primary_seconds": 300}},
+            "contract_hashes": {"dataset_manifest_sha256": "a" * 64, "point_in_time_contract_sha256": "b" * 64},
+        },
+        replay_hash_registry_guard={"ok": True, "details": {"paper": {"current_hash": "paper-hash"}, "e2e": {"current_hash": "e2e-hash"}}},
+        bot_support_owner_guard={"ok": True},
+        new_bot_admission_guard={"ok": True},
+        schema_compatibility_guard={"ok": True},
+        golden_replay_regression_guard={"ok": True},
+        cohort_drift_baseline_guard={"ok": True},
+        probation_guard={"ok": True},
+        champion_registry={"champion": {"name": "alpha"}},
+        content_store={"manifest_hash": "c" * 64},
+        master_registry={"sub_bots": [{"bot_id": support_bot_id, "active": True, "model_path": ""}]},
+        signing_key="test-signing-key",
+        signing_source="unit-test",
+        promotion_gate={"considered_bots": 0, "promote_ok": False, "considered_bot_ids": []},
+        graduation_gate={"promotion_scope_active": False, "graduation_scope_active_count": 0},
+    )
+
+    scope = payload["promotion_scope"]
+    assert scope["promotion_scope_active"] is False
+    assert scope["trained_bot_ids"] == []
+    assert scope["retrain_trained_bot_ids"] == [support_bot_id]
+    assert scope["excluded_non_candidate_training_ids"] == [support_bot_id]
+    assert payload["model_artifacts"] == []
+    assert payload["replayability_contract"]["idle_scope"] is True
+    assert payload["replayability_contract"]["exact_replay_ready"] is True
+    assert payload["packet_complete"] is True
+
+
 def test_promotion_packet_builder_surfaces_committee_seed_for_blocked_packet() -> None:
     payload = src.build_payload(
         retrain_scorecard={

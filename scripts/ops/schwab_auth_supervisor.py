@@ -380,6 +380,17 @@ def build_payload(
         and not callback_port_in_use
         and not bool(provider_access.get("active", False))
     )
+    auth_refresh_historical_status = str(auth_refresh.get("overall_status") or "").strip().lower()
+    auth_refresh_effective_status = auth_refresh_historical_status
+    auth_refresh_recovered_by_current_contract = bool(
+        active_contract_ok
+        and auth_refresh.get("ok") is True
+        and auth_refresh_reason in {"auth_success", "token_already_ready"}
+    )
+    if auth_refresh_recovered_by_current_contract:
+        auth_refresh_effective_status = "ready"
+        if auth_refresh_historical_status not in {"", "ready"}:
+            recovered_findings.append("historical_auth_refresh_degradation_after_current_recovery")
     if signals["auth_error_markers"]:
         if not token_ready or not broker_ready:
             status = "blocked"
@@ -500,7 +511,9 @@ def build_payload(
             "lease_budget": auth_lease.get("lease_budget") if isinstance(auth_lease.get("lease_budget"), dict) else {},
         },
         "auth_refresh": {
-            "overall_status": auth_refresh.get("overall_status"),
+            "overall_status": auth_refresh_effective_status,
+            "historical_overall_status": auth_refresh_historical_status,
+            "current_contract_recovered": auth_refresh_recovered_by_current_contract,
             "ok": auth_refresh.get("ok"),
             "reason": auth_refresh_reason,
             "skipped": auth_refresh.get("skipped"),
@@ -544,6 +557,7 @@ def build_payload(
             "apply_reloads_fresh_artifacts_before_reporting": True,
             "successful_auth_refresh_rebuilds_account_position_and_paper_truth": True,
             "historical_oauth_errors_clear_after_current_contract_proof": True,
+            "historical_refresh_degradation_clears_after_current_contract_proof": True,
         },
         "paper_soak_auth_operable": bool(paper_soak_auth_operable),
     }

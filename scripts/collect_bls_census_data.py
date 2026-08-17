@@ -5,7 +5,7 @@ import json
 import math
 import os
 import xml.etree.ElementTree as ET
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 from urllib.error import HTTPError, URLError
@@ -16,6 +16,55 @@ from urllib.request import Request, urlopen
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 FRED_SERIES_ALIASES = {
     "GOLDAMGBD228NLBM": ["GOLDPMGBD228NLBM"],
+}
+CENTRAL_BANK_LIQUIDITY_SERIES = {
+    "WALCL": "fed_total_assets",
+    "WRESBAL": "fed_reserve_balances",
+    "RRPONTSYD": "fed_overnight_reverse_repo",
+    "RPONTSYD": "fed_overnight_repo",
+    "WTREGEN": "treasury_general_account",
+    "SWPT": "central_bank_liquidity_swaps",
+    "SOFR": "secured_overnight_financing_rate",
+    "EFFR": "effective_federal_funds_rate",
+    "OBFR": "overnight_bank_funding_rate",
+    "IORB": "interest_on_reserve_balances",
+    "DFEDTARL": "federal_funds_target_lower",
+    "DFEDTARU": "federal_funds_target_upper",
+    "NFCI": "national_financial_conditions_index",
+    "ANFCI": "adjusted_national_financial_conditions_index",
+    "STLFSI4": "st_louis_financial_stress_index",
+    "TREAST": "fed_treasury_securities_held",
+    "WSHOMCB": "fed_mortgage_backed_securities_held",
+    "BOGMBASE": "monetary_base",
+    "M2SL": "m2_money_stock",
+}
+DEFAULT_FRED_SERIES_IDS = (
+    "GDP,UNRATE,CPIAUCSL,DGS2,DGS5,DGS10,DGS30,DFII10,VIXCLS,DCOILWTICO,"
+    "DTWEXBGS,BAMLH0A0HYM2," + ",".join(CENTRAL_BANK_LIQUIDITY_SERIES)
+)
+DEFAULT_CENTRAL_BANK_REQUIRED_SERIES = (
+    "WALCL,WRESBAL,RRPONTSYD,RPONTSYD,WTREGEN,SWPT,SOFR,EFFR,IORB,NFCI,ANFCI,STLFSI4"
+)
+CENTRAL_BANK_SERIES_MAX_AGE_DAYS = {
+    "WALCL": 10,
+    "WRESBAL": 10,
+    "RRPONTSYD": 7,
+    "RPONTSYD": 7,
+    "WTREGEN": 10,
+    "SWPT": 10,
+    "SOFR": 7,
+    "EFFR": 7,
+    "OBFR": 7,
+    "IORB": 7,
+    "DFEDTARL": 7,
+    "DFEDTARU": 7,
+    "NFCI": 12,
+    "ANFCI": 12,
+    "STLFSI4": 12,
+    "TREAST": 10,
+    "WSHOMCB": 10,
+    "BOGMBASE": 75,
+    "M2SL": 75,
 }
 PLACEHOLDER_API_KEYS = {
     "your_real_key",
@@ -119,6 +168,275 @@ def _latest_numeric(rows: Any) -> Optional[float]:
         if value is not None:
             return value
     return None
+
+
+def _parse_observation_date(value: Any) -> Optional[date]:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        return date.fromisoformat(text[:10])
+    except ValueError:
+        return None
+
+
+def _payload_as_of_date(payload: dict[str, Any]) -> date:
+    raw = str(payload.get("timestamp_utc") or "").strip()
+    if raw:
+        try:
+            parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+            return parsed.astimezone(timezone.utc).date()
+        except ValueError:
+            pass
+    return datetime.now(timezone.utc).date()
+
+
+def _numeric_observations(payload: Any, *, as_of_date: Optional[date] = None) -> list[tuple[str, float]]:
+    rows = payload.get("observations") if isinstance(payload, dict) else []
+    out: list[tuple[str, float]] = []
+    for row in rows if isinstance(rows, list) else []:
+        if not isinstance(row, dict):
+            continue
+        observation_date = _parse_observation_date(row.get("date"))
+        if as_of_date is not None and (observation_date is None or observation_date > as_of_date):
+            continue
+        value = _to_float(row.get("value"))
+        if value is not None:
+            out.append((observation_date.isoformat() if observation_date is not None else "", value))
+    return sorted(out, key=lambda item: item[0], reverse=True)
+
+
+def _future_observation_dates(payload: Any, *, as_of_date: date) -> list[str]:
+    rows = payload.get("observations") if isinstance(payload, dict) else []
+    return sorted(
+        {
+            observation_date.isoformat()
+            for row in rows if isinstance(rows, list) and isinstance(row, dict)
+            if (observation_date := _parse_observation_date(row.get("date"))) is not None
+            and observation_date > as_of_date
+        }
+    )
+
+
+def _signed_norm(value: Any, scale: float) -> float:
+    numeric = _to_float(value)
+    if numeric is None:
+        return 0.5
+    return max(0.0, min(1.0, 0.5 + 0.5 * math.tanh(numeric / max(abs(float(scale)), 1e-9))))
+
+
+def _level_norm(value: Any, scale: float) -> float:
+    numeric = _to_float(value)
+    if numeric is None:
+        return 0.0
+    return max(0.0, min(1.0, numeric / max(abs(float(scale)), 1e-9)))
+
+
+def _derive_central_bank_liquidity_context(fred_payload: dict[str, Any]) -> dict[str, Any]:
+    responses = fred_payload.get("responses") if isinstance(fred_payload.get("responses"), dict) else {}
+    as_of_date = _payload_as_of_date(fred_payload)
+    points = {
+        series_id: _numeric_observations(responses.get(series_id), as_of_date=as_of_date)
+        for series_id in CENTRAL_BANK_LIQUIDITY_SERIES
+    }
+    future_observations_excluded = {
+        series_id: dates
+        for series_id in CENTRAL_BANK_LIQUIDITY_SERIES
+        if (dates := _future_observation_dates(responses.get(series_id), as_of_date=as_of_date))
+    }
+
+    def value(series_id: str, index: int = 0) -> Optional[float]:
+        rows = points.get(series_id) or []
+        return rows[index][1] if len(rows) > index else None
+
+    def delta(series_id: str, index: int = 1) -> Optional[float]:
+        current = value(series_id, 0)
+        prior = value(series_id, index)
+        return current - prior if current is not None and prior is not None else None
+
+    total_assets = value("WALCL")
+    reserves = value("WRESBAL")
+    rrp_billions = value("RRPONTSYD")
+    repo_billions = value("RPONTSYD")
+    tga = value("WTREGEN")
+    swaps = value("SWPT")
+    rrp_millions = rrp_billions * 1000.0 if rrp_billions is not None else None
+    repo_millions = repo_billions * 1000.0 if repo_billions is not None else None
+    net_liquidity = (
+        total_assets - tga - rrp_millions
+        if total_assets is not None and tga is not None and rrp_millions is not None
+        else None
+    )
+    prior_assets = value("WALCL", 1)
+    prior_tga = value("WTREGEN", 1)
+    prior_rrp = value("RRPONTSYD", 5)
+    prior_net_liquidity = (
+        prior_assets - prior_tga - (prior_rrp * 1000.0)
+        if prior_assets is not None and prior_tga is not None and prior_rrp is not None
+        else None
+    )
+    net_liquidity_change = (
+        net_liquidity - prior_net_liquidity
+        if net_liquidity is not None and prior_net_liquidity is not None
+        else None
+    )
+
+    sofr = value("SOFR")
+    effr = value("EFFR")
+    obfr = value("OBFR")
+    iorb = value("IORB")
+    target_lower = value("DFEDTARL")
+    target_upper = value("DFEDTARU")
+    sofr_effr_bps = (sofr - effr) * 100.0 if sofr is not None and effr is not None else None
+    effr_iorb_bps = (effr - iorb) * 100.0 if effr is not None and iorb is not None else None
+    corridor_width_bps = (
+        (target_upper - target_lower) * 100.0
+        if target_upper is not None and target_lower is not None
+        else None
+    )
+
+    nfci = value("NFCI")
+    anfci = value("ANFCI")
+    stlfsi = value("STLFSI4")
+    funding_stress_inputs = [
+        numeric
+        for numeric in (
+            (sofr_effr_bps / 10.0) if sofr_effr_bps is not None else None,
+            nfci,
+            anfci,
+            (stlfsi / 2.0) if stlfsi is not None else None,
+        )
+        if numeric is not None
+    ]
+    funding_stress_raw = sum(funding_stress_inputs) / len(funding_stress_inputs) if funding_stress_inputs else None
+    liquidity_impulse_norm = _signed_norm(net_liquidity_change, 100000.0)
+    funding_stress_norm = _signed_norm(funding_stress_raw, 1.0)
+    available = sorted(series_id for series_id, rows in points.items() if rows)
+    required = [
+        token.strip().upper()
+        for token in os.getenv(
+            "FRED_CENTRAL_BANK_REQUIRED_SERIES_IDS",
+            DEFAULT_CENTRAL_BANK_REQUIRED_SERIES,
+        ).split(",")
+        if token.strip()
+    ]
+    latest_dates = {series_id: rows[0][0] for series_id, rows in points.items() if rows and rows[0][0]}
+    latest_age_days = {
+        series_id: (as_of_date - observation_date).days
+        for series_id, raw_date in latest_dates.items()
+        if (observation_date := _parse_observation_date(raw_date)) is not None
+    }
+    missing_required = sorted(series_id for series_id in required if series_id not in available)
+    stale_required = sorted(
+        series_id
+        for series_id in required
+        if series_id in latest_age_days
+        and latest_age_days[series_id] > CENTRAL_BANK_SERIES_MAX_AGE_DAYS.get(series_id, 14)
+    )
+    unusable_required = sorted(set(missing_required).union(stale_required))
+    coverage_ratio = float(len(required) - len(unusable_required)) / float(max(len(required), 1))
+    availability_ratio = float(len(required) - len(missing_required)) / float(max(len(required), 1))
+    fresh_series = sorted(
+        series_id
+        for series_id in available
+        if latest_age_days.get(series_id, CENTRAL_BANK_SERIES_MAX_AGE_DAYS.get(series_id, 14) + 1)
+        <= CENTRAL_BANK_SERIES_MAX_AGE_DAYS.get(series_id, 14)
+    )
+    global_features = {
+        "central_bank_liquidity_available_norm": coverage_ratio,
+        "central_bank_liquidity_source_coverage_norm": coverage_ratio,
+        "fed_total_assets_level_norm": _level_norm(total_assets, 10000000.0),
+        "fed_total_assets_impulse_norm": _signed_norm(delta("WALCL"), 100000.0),
+        "fed_reserve_balances_level_norm": _level_norm(reserves, 5000000.0),
+        "fed_reserve_balances_impulse_norm": _signed_norm(delta("WRESBAL"), 100000.0),
+        "fed_rrp_drain_level_norm": _level_norm(rrp_billions, 2500.0),
+        "fed_rrp_drain_impulse_norm": _signed_norm(delta("RRPONTSYD", 5), 100.0),
+        "fed_repo_injection_level_norm": _level_norm(repo_billions, 500.0),
+        "fed_tga_drain_level_norm": _level_norm(tga, 2000000.0),
+        "fed_tga_drain_impulse_norm": _signed_norm(delta("WTREGEN"), 100000.0),
+        "fed_net_liquidity_impulse_norm": liquidity_impulse_norm,
+        "fed_liquidity_expansion_norm": liquidity_impulse_norm,
+        "fed_liquidity_tightening_norm": 1.0 - liquidity_impulse_norm,
+        "fed_central_bank_swap_usage_norm": _level_norm(swaps, 500000.0),
+        "fed_sofr_level_norm": _level_norm(sofr, 10.0),
+        "fed_effr_level_norm": _level_norm(effr, 10.0),
+        "fed_iorb_level_norm": _level_norm(iorb, 10.0),
+        "fed_sofr_effr_spread_norm": _signed_norm(sofr_effr_bps, 10.0),
+        "fed_effr_iorb_spread_norm": _signed_norm(effr_iorb_bps, 10.0),
+        "fed_policy_corridor_width_norm": _level_norm(corridor_width_bps, 100.0),
+        "fed_funding_stress_norm": funding_stress_norm,
+        "fed_financial_conditions_tightness_norm": _signed_norm(nfci, 1.0),
+        "fed_adjusted_financial_conditions_tightness_norm": _signed_norm(anfci, 1.0),
+        "fed_financial_stress_norm": _signed_norm(stlfsi, 2.0),
+    }
+    if net_liquidity_change is None:
+        global_features["fed_net_liquidity_impulse_norm"] = 0.5
+        global_features["fed_liquidity_expansion_norm"] = 0.5
+        global_features["fed_liquidity_tightening_norm"] = 0.5
+    return {
+        "schema_version": 1,
+        "timestamp_utc": fred_payload.get("timestamp_utc"),
+        "provider": "fred_official_sources",
+        "methodology": {
+            "net_liquidity_proxy": "Fed total assets minus Treasury General Account minus overnight reverse repo usage",
+            "classification": "heuristic_market_liquidity_proxy_not_official_accounting_identity",
+            "unit_normalization": "H41 million-dollar series; New York Fed repo/reverse-repo billion-dollar series converted to millions",
+            "point_in_time_only": True,
+        },
+        "coverage": {
+            "as_of_date": as_of_date.isoformat(),
+            "required_series": required,
+            "available_series": available,
+            "fresh_series": fresh_series,
+            "missing_required_series": missing_required,
+            "stale_required_series": stale_required,
+            "unusable_required_series": unusable_required,
+            "required_availability_ratio": availability_ratio,
+            "required_coverage_ratio": coverage_ratio,
+            "latest_observation_dates": latest_dates,
+            "latest_observation_age_days": latest_age_days,
+            "max_age_days_by_series": CENTRAL_BANK_SERIES_MAX_AGE_DAYS,
+            "future_observations_excluded": future_observations_excluded,
+            "future_observation_selected": False,
+        },
+        "balance_sheet": {
+            "fed_total_assets_millions": total_assets,
+            "fed_reserve_balances_millions": reserves,
+            "treasury_general_account_millions": tga,
+            "overnight_reverse_repo_millions": rrp_millions,
+            "overnight_repo_millions": repo_millions,
+            "central_bank_liquidity_swaps_millions": swaps,
+            "fed_treasury_securities_held_millions": value("TREAST"),
+            "fed_mbs_held_millions": value("WSHOMCB"),
+            "net_liquidity_proxy_millions": net_liquidity,
+            "net_liquidity_proxy_change_millions": net_liquidity_change,
+        },
+        "funding_rates": {
+            "sofr_percent": sofr,
+            "effr_percent": effr,
+            "obfr_percent": obfr,
+            "iorb_percent": iorb,
+            "target_lower_percent": target_lower,
+            "target_upper_percent": target_upper,
+            "sofr_minus_effr_bps": sofr_effr_bps,
+            "effr_minus_iorb_bps": effr_iorb_bps,
+            "policy_corridor_width_bps": corridor_width_bps,
+        },
+        "financial_conditions": {
+            "nfci": nfci,
+            "adjusted_nfci": anfci,
+            "st_louis_financial_stress": stlfsi,
+        },
+        "money_stock": {
+            "monetary_base_millions": value("BOGMBASE"),
+            "m2_billions": value("M2SL"),
+        },
+        "regime": {
+            "liquidity": "expanding" if liquidity_impulse_norm >= 0.6 else ("tightening" if liquidity_impulse_norm <= 0.4 else "neutral"),
+            "funding": "stressed" if funding_stress_norm >= 0.65 else ("easy" if funding_stress_norm <= 0.35 else "normal"),
+        },
+        "global_features": global_features,
+    }
 
 
 def _fred_csv_to_payload(text: str, *, series_id: str, limit: int) -> dict[str, Any]:
@@ -252,12 +570,16 @@ def _derive_fred_macro_context(fred_payload: dict[str, Any]) -> dict[str, Any]:
     if "high_yield_oas_bps" in cross_asset:
         bond_reference_overlay["credit_spread_bps"] = float(cross_asset["high_yield_oas_bps"])
 
+    central_bank_liquidity = _derive_central_bank_liquidity_context(fred_payload)
+
     return {
         "timestamp_utc": fred_payload.get("timestamp_utc"),
         "provider": "fred",
         "treasury_yields": treasury_yields,
         "cross_asset": cross_asset,
         "bond_reference_overlay": bond_reference_overlay,
+        "central_bank_liquidity": central_bank_liquidity,
+        "global_features": central_bank_liquidity.get("global_features", {}),
     }
 
 
@@ -284,7 +606,7 @@ def collect(args: argparse.Namespace) -> int:
         for s in (
             os.getenv(
                 "FRED_SERIES_IDS",
-                "GDP,UNRATE,CPIAUCSL,DGS2,DGS5,DGS10,DGS30,DFII10,VIXCLS,DCOILWTICO,DTWEXBGS,BAMLH0A0HYM2",
+                DEFAULT_FRED_SERIES_IDS,
             )
         ).split(",")
         if s.strip()
@@ -294,7 +616,7 @@ def collect(args: argparse.Namespace) -> int:
         for s in (os.getenv("FRED_REQUIRED_SERIES_IDS", "GDP,UNRATE,CPIAUCSL")).split(",")
         if s.strip()
     }
-    fred_limit = max(int(os.getenv("FRED_LIMIT", "5")), 1)
+    fred_limit = max(int(os.getenv("FRED_LIMIT", "64")), 1)
 
     bea_key = _usable_api_key(os.getenv("BEA_API_KEY", ""))
 
@@ -455,7 +777,64 @@ def collect(args: argparse.Namespace) -> int:
             else:
                 fred_warnings.append(message)
 
-    fred_ok = all(series_id in fred_collected for series_id in fred_required)
+    fred_payload = {
+        "timestamp_utc": now.isoformat(),
+        "request": {"series_ids": fred_series, "limit": fred_limit},
+        "responses": fred_collected,
+    }
+    macro_context = _derive_fred_macro_context(fred_payload)
+    central_context = (
+        macro_context.get("central_bank_liquidity")
+        if isinstance(macro_context.get("central_bank_liquidity"), dict)
+        else {}
+    )
+    central_context_coverage = (
+        central_context.get("coverage")
+        if isinstance(central_context.get("coverage"), dict)
+        else {}
+    )
+    central_required = {
+        token.strip().upper()
+        for token in os.getenv(
+            "FRED_CENTRAL_BANK_REQUIRED_SERIES_IDS",
+            DEFAULT_CENTRAL_BANK_REQUIRED_SERIES,
+        ).split(",")
+        if token.strip()
+    }
+    central_available = central_required.intersection(
+        str(item).upper() for item in central_context_coverage.get("available_series", [])
+    )
+    central_missing = sorted(str(item) for item in central_context_coverage.get("missing_required_series", []))
+    central_stale = sorted(str(item) for item in central_context_coverage.get("stale_required_series", []))
+    central_unusable = sorted(str(item) for item in central_context_coverage.get("unusable_required_series", []))
+    central_coverage = float(central_context_coverage.get("required_coverage_ratio", 0.0) or 0.0)
+    central_min_coverage = max(
+        0.0,
+        min(1.0, float(os.getenv("FRED_CENTRAL_BANK_MIN_REQUIRED_COVERAGE", "1.0"))),
+    )
+    central_ok = bool(central_coverage >= central_min_coverage)
+    status["fred"]["central_bank_liquidity"] = {
+        "ok": central_ok,
+        "required_series": sorted(central_required),
+        "available_series": sorted(central_available),
+        "missing_required_series": central_missing,
+        "stale_required_series": central_stale,
+        "unusable_required_series": central_unusable,
+        "required_coverage_ratio": round(central_coverage, 6),
+        "minimum_required_coverage_ratio": central_min_coverage,
+        "as_of_date": central_context_coverage.get("as_of_date"),
+        "latest_observation_dates": central_context_coverage.get("latest_observation_dates", {}),
+        "latest_observation_age_days": central_context_coverage.get("latest_observation_age_days", {}),
+        "future_observations_excluded": central_context_coverage.get("future_observations_excluded", {}),
+        "future_observation_selected": bool(central_context_coverage.get("future_observation_selected", False)),
+        "fail_visible": True,
+    }
+    if not central_ok:
+        fred_errors.append(
+            "central_bank_liquidity_coverage_below_contract:"
+            f"coverage={central_coverage:.6f}:unusable={','.join(central_unusable)}"
+        )
+    fred_ok = bool(all(series_id in fred_collected for series_id in fred_required) and central_ok)
     status["fred"]["ok"] = fred_ok
     if fred_aliases_used:
         status["fred"]["aliases_used"] = fred_aliases_used
@@ -467,18 +846,14 @@ def collect(args: argparse.Namespace) -> int:
         status["fred"]["warnings"] = fred_warnings
 
     if not args.test_only:
-        fred_payload = {
-            "timestamp_utc": now.isoformat(),
-            "request": {"series_ids": fred_series, "limit": fred_limit},
-            "responses": fred_collected,
-        }
         _write_json(fred_root / f"fred_{stamp}.json", fred_payload)
         _write_json(fred_root / "latest.json", fred_payload)
 
         external_context_root = PROJECT_ROOT / "exports" / "external_context"
-        macro_context = _derive_fred_macro_context(fred_payload)
         if macro_context:
             _write_json(external_context_root / "macro_cross_asset_latest.json", macro_context)
+            if isinstance(central_context, dict):
+                _write_json(external_context_root / "central_bank_liquidity_latest.json", central_context)
             existing_bond_reference_path = external_context_root / "bond_reference_latest.json"
             existing_bond_reference: dict[str, Any] = {}
             if existing_bond_reference_path.exists():

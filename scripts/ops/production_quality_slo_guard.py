@@ -27,6 +27,14 @@ CRITICAL_WARN_MINUTES = 30.0
 CRITICAL_BREACH_MINUTES = 120.0
 HIGH_WARN_MINUTES = 120.0
 HIGH_BREACH_MINUTES = 360.0
+LANE_SCOPE_BY_ID = {
+    "raw_profitability_recovery": "economic_evidence",
+    "paper_trading_continuity": "runtime_operation",
+    "auth_token_continuity": "runtime_operation",
+    "storage_pressure_clean": "runtime_operation",
+    "promotion_paper_freshness": "promotion_evidence",
+    "source_and_ci_integrity": "release_integrity",
+}
 
 
 def _as_dict(raw: Any) -> dict[str, Any]:
@@ -94,6 +102,7 @@ def _active_lane_rows(quality: dict[str, Any], previous_state: dict[str, Any], n
                 "lane_id": lane_id,
                 "title": lane.get("title"),
                 "severity": severity,
+                "scope": str(lane.get("scope") or LANE_SCOPE_BY_ID.get(lane_id) or "runtime_operation"),
                 "status": status,
                 "first_seen_utc": first_seen,
                 "last_seen_utc": _iso(now),
@@ -152,6 +161,9 @@ def _append_history(history_path: Path, payload: dict[str, Any]) -> None:
         "active_lane_count": payload.get("active_lane_count"),
         "breach_count": payload.get("breach_count"),
         "warning_count": payload.get("warning_count"),
+        "operational_status": payload.get("operational_status"),
+        "operational_active_lane_count": payload.get("operational_active_lane_count"),
+        "operational_breach_count": payload.get("operational_breach_count"),
         "breached_lane_ids": [row.get("lane_id") for row in _as_list(payload.get("breached_lanes"))],
         "warning_lane_ids": [row.get("lane_id") for row in _as_list(payload.get("warning_lanes"))],
         "live_execution_authority": False,
@@ -179,6 +191,11 @@ def build_payload(
     warning_lanes = [row for row in active_lanes if row.get("status") == "warning"]
     breached_lanes = [row for row in active_lanes if row.get("status") == "breach"]
     critical_active = [row for row in active_lanes if row.get("severity") == "critical"]
+    operational_lanes = [row for row in active_lanes if row.get("scope") == "runtime_operation"]
+    operational_warning_lanes = [row for row in operational_lanes if row.get("status") == "warning"]
+    operational_breached_lanes = [row for row in operational_lanes if row.get("status") == "breach"]
+    operational_critical_active = [row for row in operational_lanes if row.get("severity") == "critical"]
+    non_operational_lanes = [row for row in active_lanes if row.get("scope") != "runtime_operation"]
     next_state = _next_state(active_lanes, previous_state, now)
     quality_status = str(quality.get("overall_status") or "").strip().lower()
     if breached_lanes:
@@ -191,6 +208,15 @@ def build_payload(
         overall_status = "ready"
     else:
         overall_status = "waiting_for_quality_signal"
+
+    if operational_breached_lanes:
+        operational_status = "blocked"
+    elif operational_warning_lanes:
+        operational_status = "degraded"
+    elif operational_lanes:
+        operational_status = "watch"
+    else:
+        operational_status = "ready"
 
     if active_lanes:
         recommended_actions = [
@@ -212,6 +238,8 @@ def build_payload(
         "timestamp_utc": iso_now(),
         "overall_status": overall_status,
         "ok": overall_status == "ready",
+        "operational_ok": operational_status == "ready",
+        "operational_status": operational_status,
         "source": "production_quality_slo_guard",
         "live_execution_authority": False,
         "safe_apply_only": True,
@@ -221,6 +249,15 @@ def build_payload(
         "critical_active_lane_count": len(critical_active),
         "warning_count": len(warning_lanes),
         "breach_count": len(breached_lanes),
+        "operational_active_lane_count": len(operational_lanes),
+        "operational_critical_active_lane_count": len(operational_critical_active),
+        "operational_warning_count": len(operational_warning_lanes),
+        "operational_breach_count": len(operational_breached_lanes),
+        "operational_lanes": operational_lanes,
+        "operational_warning_lanes": operational_warning_lanes,
+        "operational_breached_lanes": operational_breached_lanes,
+        "non_operational_lane_count": len(non_operational_lanes),
+        "non_operational_lanes": non_operational_lanes,
         "active_lanes": active_lanes,
         "warning_lanes": warning_lanes,
         "breached_lanes": breached_lanes,
@@ -236,6 +273,8 @@ def build_payload(
             "high_lane_breach_minutes": HIGH_BREACH_MINUTES,
             "live_orders_remain_disabled_while_active_or_breached": bool(active_lanes or breached_lanes),
             "runtime_source_mutation_allowed": False,
+            "operational_health_uses_runtime_operation_lanes_only": True,
+            "economic_release_and_promotion_debt_remain_visible_and_live_blocking": True,
         },
         "next_state": next_state,
         "recommended_actions": ordered_unique(recommended_actions),

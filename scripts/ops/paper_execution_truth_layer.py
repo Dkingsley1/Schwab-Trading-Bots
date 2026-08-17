@@ -33,12 +33,14 @@ BROKER_RECONCILIATION_CORE_SOURCE_IDS = {
 }
 MIN_BLOCKING_COUNTERFACTUAL_KEPT_COUNT = 50
 NON_GRADE_BLOCKING_REPLAY_REASONS = {
+    "counterfactual_refresh_pending",
     "counterfactual_candidates_pending_collecting",
     "counterfactual_outcome_attribution_pending",
     "paper_replay_rows_low_collecting",
     "counterfactual_low_sample_win_rate_below_floor",
     "counterfactual_low_sample_aggregate_nonpositive",
     "counterfactual_low_sample_outcome_attribution_pending",
+    "counterfactual_low_sample_negative_profiles",
 }
 NON_GRADE_BLOCKING_OPTIONS_REASONS = {
     "covered_call_watch_critical",
@@ -47,7 +49,7 @@ NON_GRADE_BLOCKING_OPTIONS_REASONS = {
 INPUT_FRESHNESS_POLICY: dict[str, dict[str, Any]] = {
     "paper_performance": {"max_age_minutes": 1440.0, "operational_required": True},
     "calibration": {"max_age_minutes": 1440.0, "promotion_evidence": True},
-    "counterfactual": {"max_age_minutes": 2880.0, "promotion_evidence": True},
+    "counterfactual": {"max_age_minutes": 30.0, "promotion_evidence": True},
     "paper_replay": {"max_age_minutes": 720.0, "promotion_evidence": True},
     "account_study": {"max_age_minutes": 60.0, "operational_required": True},
     "covered_call_watch": {"max_age_minutes": 60.0, "operational_required": True},
@@ -70,9 +72,64 @@ def _safe_float(raw: Any, default: float = 0.0) -> float:
 
 def _safe_int(raw: Any, default: int = 0) -> int:
     try:
+        if isinstance(raw, int) and not isinstance(raw, bool):
+            return raw
+        if isinstance(raw, str) and raw.strip():
+            return int(raw.strip())
         return int(float(raw))
     except Exception:
         return int(default)
+
+
+def _parse_utc(raw: Any) -> datetime | None:
+    text = str(raw or "").strip()
+    if not text:
+        return None
+    try:
+        value = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except Exception:
+        return None
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
+
+def _candidate_epoch_state(
+    name: str,
+    payload: dict[str, Any],
+    candidate_state: dict[str, Any],
+) -> dict[str, Any]:
+    if name not in {"paper_performance", "calibration"} or not candidate_state:
+        return {}
+    windows = candidate_state.get("scope_windows_started_utc")
+    windows = windows if isinstance(windows, dict) else {}
+    scopes = (
+        ("strategy", "execution", "risk", "data", "promotion", "dependencies")
+        if name == "paper_performance"
+        else ("execution", "data", "dependencies")
+    )
+    expected = max(
+        (value for value in (_parse_utc(windows.get(scope)) for scope in scopes) if value is not None),
+        default=None,
+    )
+    if name == "paper_performance":
+        evidence_window = payload.get("profitability_evidence_window")
+        evidence_window = evidence_window if isinstance(evidence_window, dict) else {}
+        artifact = _parse_utc(evidence_window.get("candidate_cutoff_utc"))
+    else:
+        calibration_window = payload.get("calibration_window")
+        calibration_window = calibration_window if isinstance(calibration_window, dict) else {}
+        artifact = _parse_utc(calibration_window.get("cutoff_utc"))
+    if expected is None:
+        return {}
+    return {
+        "assessed": True,
+        "changed": artifact != expected,
+        "candidate_id": str(candidate_state.get("candidate_id") or ""),
+        "generation": _safe_int(candidate_state.get("generation"), 0),
+        "expected_cutoff_utc": expected.isoformat(),
+        "artifact_cutoff_utc": artifact.isoformat() if artifact is not None else "",
+    }
 
 
 def _clamp(value: float, low: float = 0.0, high: float = 100.0) -> float:
@@ -131,11 +188,64 @@ def _artifact_ok(payload: dict[str, Any]) -> bool:
     return status in {"ready", "ok", "watch", "active"}
 
 
+def _counterfactual_source_generation(payload: dict[str, Any]) -> dict[str, Any]:
+    processing = payload.get("processing") if isinstance(payload.get("processing"), dict) else {}
+    snapshots = processing.get("source_snapshots") if isinstance(processing.get("source_snapshots"), list) else []
+    rows: list[dict[str, Any]] = []
+    changed_paths: list[str] = []
+    for snapshot in snapshots:
+        if not isinstance(snapshot, dict):
+            continue
+        path = Path(str(snapshot.get("path") or "")).expanduser()
+        expected_inode = _safe_int(snapshot.get("inode"), 0)
+        expected_size = _safe_int(snapshot.get("size_bytes"), -1)
+        expected_mtime_ns = _safe_int(snapshot.get("mtime_ns"), 0)
+        try:
+            stat = path.stat()
+            exists = True
+            current_inode = int(stat.st_ino)
+            current_size = int(stat.st_size)
+            current_mtime_ns = int(stat.st_mtime_ns)
+        except Exception:
+            exists = False
+            current_inode = 0
+            current_size = -1
+            current_mtime_ns = 0
+        changed = bool(
+            not exists
+            or (expected_inode > 0 and current_inode != expected_inode)
+            or (expected_size >= 0 and current_size != expected_size)
+            or (expected_mtime_ns > 0 and current_mtime_ns != expected_mtime_ns)
+        )
+        if changed:
+            changed_paths.append(str(path))
+        rows.append(
+            {
+                "path": str(path),
+                "exists": exists,
+                "changed": changed,
+                "expected_inode": expected_inode,
+                "current_inode": current_inode,
+                "expected_size_bytes": expected_size,
+                "current_size_bytes": current_size,
+                "expected_mtime_ns": expected_mtime_ns,
+                "current_mtime_ns": current_mtime_ns,
+            }
+        )
+    return {
+        "assessed": bool(rows),
+        "changed": bool(changed_paths),
+        "changed_paths": changed_paths,
+        "sources": rows,
+    }
+
+
 def assess_input_freshness(
     source_paths: dict[str, Path],
     source_payloads: dict[str, dict[str, Any]],
     *,
     policy: dict[str, dict[str, Any]] | None = None,
+    candidate_state: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     active_policy = policy or INPUT_FRESHNESS_POLICY
     rows: dict[str, dict[str, Any]] = {}
@@ -147,7 +257,14 @@ def assess_input_freshness(
         age = payload_age_minutes(payload, path if str(path) not in {"", "."} else None)
         max_age = max(_safe_float(contract.get("max_age_minutes"), 0.0), 0.0)
         present = bool(payload)
-        stale = bool(not present or age is None or age > max_age)
+        stale_due_to_age = bool(not present or age is None or age > max_age)
+        source_generation = (
+            _counterfactual_source_generation(payload) if name == "counterfactual" and present else {}
+        )
+        candidate_epoch = _candidate_epoch_state(name, payload, candidate_state or {}) if present else {}
+        candidate_epoch_changed = bool(candidate_epoch.get("changed", False))
+        source_generation_changed = bool(source_generation.get("changed", False) or candidate_epoch_changed)
+        stale = bool(stale_due_to_age or source_generation_changed)
         operational_required = bool(contract.get("operational_required", False))
         promotion_evidence = bool(contract.get("promotion_evidence", False))
         if stale and operational_required:
@@ -160,6 +277,11 @@ def assess_input_freshness(
             "age_minutes": round(float(age), 3) if age is not None else None,
             "max_age_minutes": round(max_age, 3),
             "stale": stale,
+            "stale_due_to_age": stale_due_to_age,
+            "source_generation_changed": source_generation_changed,
+            "source_generation": source_generation,
+            "candidate_epoch_changed": candidate_epoch_changed,
+            "candidate_epoch": candidate_epoch,
             "operational_required": operational_required,
             "promotion_evidence": promotion_evidence,
         }
@@ -477,7 +599,7 @@ def _sleeve_rows(paper_performance: dict[str, Any], calibration: dict[str, Any],
         if stale_latest_for_current_truth:
             status = "watch"
             reasons.append("stale_latest_available_for_current_truth")
-        if execs <= 0 and status == "blocked" and data_status in {"current_live_no_fills", "latest_available", "no_data"}:
+        if execs <= 0 and data_status == "current_live_no_fills":
             status = "watch"
             reasons.append("no_current_fills_for_blocking_execution_truth")
         out.append(
@@ -535,7 +657,13 @@ def _build_sleeve_gate(scorecards: list[dict[str, Any]], *, min_sleeve_score: fl
         and row["profile"] not in advisory_profiles
     ]
     blocked = [row["profile"] for row in scorecards if str(row.get("status") or "") == "blocked" and row["profile"] not in advisory_profiles]
-    mean_score = sum(_safe_float(row.get("execution_realism_score"), 0.0) for row in scorecards) / max(len(scorecards), 1)
+    scored_rows = [row for row in scorecards if row["profile"] not in advisory_profiles]
+    mean_score = (
+        sum(_safe_float(row.get("execution_realism_score"), 0.0) for row in scored_rows)
+        / max(len(scored_rows), 1)
+        if scored_rows
+        else 100.0
+    )
     reasons: list[str] = []
     if failing:
         reasons.append("sleeve_score_below_floor")
@@ -550,13 +678,23 @@ def _build_sleeve_gate(scorecards: list[dict[str, Any]], *, min_sleeve_score: fl
         failing_profiles=failing,
         advisory_no_fill_profiles=sorted(advisory_no_fill),
         advisory_stale_latest_profiles=sorted(advisory_stale_latest),
+        grade_scored_profiles=sorted(row["profile"] for row in scored_rows),
+        historical_advisory_rows_preserved=bool(advisory_profiles),
         blocked_profiles=blocked,
         scorecards=scorecards,
     )
 
 
-def _build_replay_gate(counterfactual: dict[str, Any], paper_replay: dict[str, Any], *, min_win_rate: float) -> dict[str, Any]:
+def _build_replay_gate(
+    counterfactual: dict[str, Any],
+    paper_replay: dict[str, Any],
+    *,
+    min_win_rate: float,
+    counterfactual_evidence_fresh: bool = True,
+) -> dict[str, Any]:
     top = counterfactual.get("top_candidates") if isinstance(counterfactual.get("top_candidates"), list) else []
+    if not counterfactual_evidence_fresh:
+        top = []
     best = top[0] if top and isinstance(top[0], dict) else {}
     win_rate_raw = best.get("win_rate")
     has_win_rate = win_rate_raw is not None and str(win_rate_raw).strip() != ""
@@ -564,6 +702,26 @@ def _build_replay_gate(counterfactual: dict[str, Any], paper_replay: dict[str, A
     aggregate = _safe_float(best.get("aggregate_net_pnl_total"), 0.0)
     kept_count = _safe_int(best.get("kept_count"), 0)
     low_sample = bool(top and 0 < kept_count < MIN_BLOCKING_COUNTERFACTUAL_KEPT_COUNT)
+    mature_negative_profiles = sorted(
+        str(row.get("profile") or "default")
+        for row in top
+        if _safe_int(row.get("kept_count"), 0) >= MIN_BLOCKING_COUNTERFACTUAL_KEPT_COUNT
+        and _safe_float(row.get("aggregate_net_pnl_total"), 0.0) < 0.0
+    )
+    low_sample_negative_profiles = sorted(
+        str(row.get("profile") or "default")
+        for row in top
+        if 0 < _safe_int(row.get("kept_count"), 0) < MIN_BLOCKING_COUNTERFACTUAL_KEPT_COUNT
+        and _safe_float(row.get("aggregate_net_pnl_total"), 0.0) < 0.0
+    )
+    mature_low_win_negative_profiles = sorted(
+        str(row.get("profile") or "default")
+        for row in top
+        if _safe_int(row.get("kept_count"), 0) >= MIN_BLOCKING_COUNTERFACTUAL_KEPT_COUNT
+        and row.get("win_rate") is not None
+        and _safe_float(row.get("win_rate"), 0.0) < min_win_rate
+        and _safe_float(row.get("aggregate_net_pnl_total"), 0.0) < 0.0
+    )
     reasons: list[str] = []
     warnings: list[str] = []
     advisory_reasons: list[str] = []
@@ -578,21 +736,29 @@ def _build_replay_gate(counterfactual: dict[str, Any], paper_replay: dict[str, A
         and paper_replay_failed
         and paper_replay_failed.issubset({"paper_rows_low"})
     )
-    if not _artifact_ok(counterfactual):
+    if not counterfactual_evidence_fresh:
+        warnings.append("counterfactual_refresh_pending")
+    elif not _artifact_ok(counterfactual):
         reasons.append("counterfactual_replay_not_ok")
     if not top:
-        if _artifact_ok(counterfactual) and (_artifact_ok(paper_replay) or paper_replay_collecting_only):
+        if not counterfactual_evidence_fresh:
+            pass
+        elif _artifact_ok(counterfactual) and (_artifact_ok(paper_replay) or paper_replay_collecting_only):
             warnings.append("counterfactual_candidates_pending_collecting")
         else:
             reasons.append("no_counterfactual_candidates")
-    if has_win_rate and win_rate < min_win_rate:
+    if mature_low_win_negative_profiles:
+        reasons.append("counterfactual_win_rate_below_floor")
+    elif has_win_rate and win_rate < min_win_rate:
         if aggregate < 0.0 and not low_sample:
             reasons.append("counterfactual_win_rate_below_floor")
         elif aggregate < 0.0:
             warnings.append("counterfactual_low_sample_win_rate_below_floor")
         else:
             advisory_reasons.append("counterfactual_win_rate_below_floor_attributed_nonnegative")
-    if top and aggregate < 0.0 and not low_sample:
+    if mature_negative_profiles:
+        reasons.append("counterfactual_aggregate_nonpositive")
+    elif top and aggregate < 0.0 and not low_sample:
         reasons.append("counterfactual_aggregate_nonpositive")
     elif top and aggregate < 0.0:
         warnings.append("counterfactual_low_sample_aggregate_nonpositive")
@@ -600,6 +766,8 @@ def _build_replay_gate(counterfactual: dict[str, Any], paper_replay: dict[str, A
         warnings.append("counterfactual_low_sample_outcome_attribution_pending")
     elif top and aggregate == 0.0 and not has_win_rate:
         warnings.append("counterfactual_outcome_attribution_pending")
+    if low_sample_negative_profiles and aggregate >= 0.0 and not mature_negative_profiles:
+        warnings.append("counterfactual_low_sample_negative_profiles")
     if paper_replay and not _artifact_ok(paper_replay):
         if "stale_execution_skips_only" in paper_replay_failed:
             reasons.append("paper_replay_stale_skips_only")
@@ -626,7 +794,12 @@ def _build_replay_gate(counterfactual: dict[str, Any], paper_replay: dict[str, A
         grade_blocking=grade_blocking,
         advisory_only=not grade_blocking,
         advisory_reasons=advisory_reasons,
+        profile_candidates=top,
+        mature_negative_profiles=mature_negative_profiles,
+        mature_low_win_negative_profiles=mature_low_win_negative_profiles,
+        low_sample_negative_profiles=low_sample_negative_profiles,
         paper_replay_ok=(_artifact_ok(paper_replay) if paper_replay else None),
+        counterfactual_evidence_fresh=bool(counterfactual_evidence_fresh),
     )
 
 
@@ -1058,7 +1231,18 @@ def evaluate_truth_layer(
     post_cost_expectancy_gate = _build_post_cost_expectancy_gate(paper_performance)
     scorecards = _sleeve_rows(paper_performance, calibration, max_slippage_gap_bps=max_slippage_gap_bps)
     sleeve_gate = _build_sleeve_gate(scorecards, min_sleeve_score=min_sleeve_score)
-    replay_gate = _build_replay_gate(counterfactual, paper_replay, min_win_rate=min_replay_win_rate)
+    counterfactual_freshness = (
+        input_freshness.get("inputs", {}).get("counterfactual", {})
+        if isinstance(input_freshness, dict) and isinstance(input_freshness.get("inputs"), dict)
+        else {}
+    )
+    counterfactual_evidence_fresh = not bool(counterfactual_freshness.get("stale", False))
+    replay_gate = _build_replay_gate(
+        counterfactual,
+        paper_replay,
+        min_win_rate=min_replay_win_rate,
+        counterfactual_evidence_fresh=counterfactual_evidence_fresh,
+    )
     account_gate, options_gate = _build_options_account_gate(account_study, covered_call_watch)
     stress_gate = _build_stress_gate(execution_lab, max_worst_slippage_bps=max_stress_slippage_bps)
     live_transition_gate = _build_live_transition_gate(live_readiness or {}, execution_lab)
@@ -1283,7 +1467,12 @@ def main(argv: list[str] | None = None) -> int:
         "source_verification": Path(args.source_verification_file),
     }
     source_payloads = {name: load_json(path) for name, path in source_paths.items()}
-    input_freshness = assess_input_freshness(source_paths, source_payloads)
+    candidate_state = load_json(PROJECT_ROOT / "governance" / "runtime" / "production_candidate_state.json")
+    input_freshness = assess_input_freshness(
+        source_paths,
+        source_payloads,
+        candidate_state=candidate_state,
+    )
     payload = evaluate_truth_layer(
         paper_performance=source_payloads["paper_performance"],
         calibration=source_payloads["calibration"],

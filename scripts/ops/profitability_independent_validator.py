@@ -6,6 +6,7 @@ import gzip
 import hashlib
 import json
 import math
+import os
 import sys
 from collections import defaultdict
 from pathlib import Path
@@ -48,7 +49,7 @@ def _resolve(project_root: Path, raw: Any) -> Path:
 
 
 def _open_text(path: Path):
-    if path.suffix == ".gz":
+    if ".jsonl.gz" in path.name:
         return gzip.open(path, "rt", encoding="utf-8", errors="replace")
     return path.open("r", encoding="utf-8", errors="replace")
 
@@ -75,10 +76,44 @@ def _record_key(row: dict[str, Any], raw: str) -> str:
     if decision_id:
         book_id = str(row.get("paper_book_id") or metadata.get("paper_book_id") or "unbound-book").strip()
         return f"paper-decision:{book_id}:{decision_id}"
-    message_id = str(row.get("message_id") or "").strip()
-    if message_id:
-        return f"message:{message_id}:{str(row.get('timestamp_utc') or '')}"
-    return hashlib.sha256(raw.encode("utf-8", errors="replace")).hexdigest()
+    stable = json.dumps(row, ensure_ascii=True, separators=(",", ":"), sort_keys=True)
+    return f"content:{hashlib.sha1(stable.encode('utf-8')).hexdigest()}"
+
+
+def _calibration_only_reason(row: dict[str, Any]) -> str:
+    metadata = _as_dict(row.get("metadata"))
+    provenance = _as_dict(row.get("provenance"))
+    if bool(row.get("independent_fill_evidence", False)) or bool(
+        metadata.get("independent_fill_evidence", False)
+    ):
+        return "independent_fill_evidence"
+    fill_source = str(row.get("paper_fill_source") or metadata.get("paper_fill_source") or "").strip().lower()
+    if fill_source in {"market_replay_fill", "independent_fill_evidence"}:
+        return fill_source
+    account_mode = str(
+        row.get("account_mode")
+        or metadata.get("account_mode")
+        or provenance.get("account_mode")
+        or ""
+    ).strip().lower()
+    return "replay_account_mode" if account_mode == "replay" else ""
+
+
+def _trade_log_roots(project_root: Path) -> list[Path]:
+    roots = [
+        project_root / "exports" / "trade_logs",
+        project_root / "local_fallback_storage" / "exports" / "trade_logs",
+    ]
+    configured_external = str(os.getenv("BOT_LOGS_EXTERNAL_PROJECT_ROOT", "") or "").strip()
+    if configured_external:
+        roots.append(Path(configured_external).expanduser() / "exports" / "trade_logs")
+    elif project_root.resolve(strict=False) == PROJECT_ROOT.resolve(strict=False):
+        external_mount = Path(os.getenv("BOT_LOGS_EXTERNAL_MOUNT", "/Volumes/BOT_LOGS")).expanduser()
+        external_project = str(
+            os.getenv("BOT_LOGS_EXTERNAL_PROJECT_DIR", "schwab_trading_bot") or "schwab_trading_bot"
+        ).strip()
+        roots.append(external_mount / external_project / "exports" / "trade_logs")
+    return roots
 
 
 def _source_files(project_root: Path, policy: dict[str, Any]) -> list[Path]:
@@ -87,6 +122,16 @@ def _source_files(project_root: Path, policy: dict[str, Any]) -> list[Path]:
         pattern = str(raw_pattern or "").strip()
         if pattern:
             candidates.extend(project_root.glob(pattern))
+    seen_roots: set[str] = set()
+    for root in _trade_log_roots(project_root):
+        root_key = str(root.resolve(strict=False))
+        if root_key in seen_roots or not root.exists():
+            continue
+        seen_roots.add(root_key)
+        candidates.extend(root.rglob("paper_trades_*.jsonl"))
+        candidates.extend(root.rglob("paper_trades_*.jsonl.gz"))
+        candidates.extend(root.rglob("paper_trades_*.jsonl.local_fallback*"))
+        candidates.extend(root.rglob("paper_trades_*.jsonl.gz.local_fallback*"))
     files: list[Path] = []
     seen: set[str] = set()
     for path in candidates:
@@ -94,7 +139,7 @@ def _source_files(project_root: Path, policy: dict[str, Any]) -> list[Path]:
             identity = str(path.resolve())
         except OSError:
             identity = str(path)
-        if identity in seen or not path.is_file():
+        if identity in seen or not path.is_file() or "independent_fills" in path.parts:
             continue
         seen.add(identity)
         files.append(path)
@@ -123,6 +168,8 @@ def _iter_rows(
     duplicate_rows = 0
     pre_candidate_rows = 0
     post_snapshot_rows = 0
+    calibration_rows_excluded = 0
+    legacy_schema_rows_excluded = 0
     for path in paths:
         if not path.is_file():
             continue
@@ -143,6 +190,12 @@ def _iter_rows(
                     continue
                 if not isinstance(row, dict):
                     malformed_rows += 1
+                    continue
+                if _calibration_only_reason(row):
+                    calibration_rows_excluded += 1
+                    continue
+                if int(_safe_float(row.get("paper_pnl_schema_version"), 0.0)) < 2:
+                    legacy_schema_rows_excluded += 1
                     continue
                 timestamp = parse_iso_utc(row.get("timestamp_utc") or row.get("timestamp"))
                 if cutoff is not None and (timestamp is None or timestamp < cutoff):
@@ -170,6 +223,8 @@ def _iter_rows(
         "duplicate_rows": duplicate_rows,
         "pre_candidate_rows": pre_candidate_rows,
         "post_snapshot_rows": post_snapshot_rows,
+        "calibration_rows_excluded": calibration_rows_excluded,
+        "legacy_schema_rows_excluded": legacy_schema_rows_excluded,
     }
 
 
@@ -244,23 +299,33 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, config_path: Path | None
     }
     absolute_tolerance = _safe_float(validator_policy.get("absolute_tolerance"), 1e-6)
     relative_tolerance = _safe_float(validator_policy.get("relative_tolerance"), 1e-6)
+    reported_sample_count = int(_safe_float(expectancy.get("sample_count"), -1))
+    empty_report = bool(
+        reported_sample_count == 0
+        and str(expectancy.get("status") or "").strip().lower() == "no_schema_v2_trade_deltas"
+    )
+
+    def reported_total(key: str) -> Any:
+        value = expectancy.get(key)
+        return 0.0 if value is None and empty_report else value
+
     comparisons = {
-        "sample_count": len(rows) == int(_safe_float(expectancy.get("sample_count"), -1)),
+        "sample_count": len(rows) == reported_sample_count,
         "total_post_cost_pnl_delta": _close(
             recomputed["total_post_cost_pnl_delta"],
-            expectancy.get("total_post_cost_pnl_delta"),
+            reported_total("total_post_cost_pnl_delta"),
             absolute=absolute_tolerance,
             relative=relative_tolerance,
         ),
         "execution_notional_total": _close(
             recomputed["execution_notional_total"],
-            expectancy.get("execution_notional_total"),
+            reported_total("execution_notional_total"),
             absolute=absolute_tolerance,
             relative=relative_tolerance,
         ),
         "max_cumulative_drawdown_post_cost_pnl": _close(
             recomputed["max_cumulative_drawdown_post_cost_pnl"],
-            expectancy.get("max_cumulative_drawdown_post_cost_pnl"),
+            reported_total("max_cumulative_drawdown_post_cost_pnl"),
             absolute=absolute_tolerance,
             relative=relative_tolerance,
         ),
@@ -314,7 +379,7 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, config_path: Path | None
         "scan": scan,
         "recomputed": recomputed,
         "reported": {
-            key: expectancy.get(key)
+            key: expectancy.get(key) if key == "sample_count" else reported_total(key)
             for key in (
                 "sample_count",
                 "total_post_cost_pnl_delta",
@@ -322,6 +387,7 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, config_path: Path | None
                 "max_cumulative_drawdown_post_cost_pnl",
             )
         },
+        "reported_empty_window_normalized": empty_report,
         "comparisons": comparisons,
         "risk_of_ruin": risk,
         "blockers": sorted(set(blockers)),
@@ -333,6 +399,10 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, config_path: Path | None
             "rows_after_snapshot_are_deferred_not_mismatched": True,
             "duplicate_rows_do_not_count_twice": True,
             "bridge_and_canonical_trade_mirrors_share_one_decision_identity": True,
+            "active_local_fallback_and_external_trade_roots_reconciled": True,
+            "calibration_only_rows_excluded_from_realized_pnl": True,
+            "schema_v2_metric_scope_enforced": True,
+            "empty_candidate_window_uses_explicit_zero_accounting": True,
             "missing_or_mismatched_evidence_fails_closed": True,
             "live_execution_authority": False,
         },

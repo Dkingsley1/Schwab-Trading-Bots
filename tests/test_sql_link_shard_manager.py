@@ -704,10 +704,9 @@ def test_build_shards_separates_fast_trading_streams() -> None:
     assert shards["data"]["merge_to_primary"] is False
 
 
-def test_build_shards_routes_hot_retention_archives_to_approved_second_cold(monkeypatch, tmp_path: Path) -> None:
-    second_cold = tmp_path / "VIDEO" / "schwab_trading_bot_cold"
-    monkeypatch.setenv("BOT_ALLOW_VIDEO_COLD_ARCHIVE", "1")
-    monkeypatch.setenv("BOT_VIDEO_COLD_ARCHIVE_ROOT", str(second_cold))
+def test_build_shards_routes_hot_retention_archives_to_non_protected_second_cold(monkeypatch, tmp_path: Path) -> None:
+    second_cold = tmp_path / "BOT_COLD" / "schwab_trading_bot_cold"
+    monkeypatch.setenv("BOT_SECOND_COLD_ROOT", str(second_cold))
 
     shards = {row["name"]: row for row in shard_manager._build_shards(["risk_support", "crypto_trading"])}
 
@@ -2024,6 +2023,33 @@ def test_timed_out_shard_without_health_progress_is_hard_failed() -> None:
     assert shard_manager._shard_link_hard_failed(result) is True
 
 
+def test_checkpointed_sigterm_is_resumable_not_hard_failed() -> None:
+    result = {
+        "rc": -15,
+        "timed_out": False,
+        "stdout_tail": "Syncing: decisions/day.jsonl\n  sqlite inserted=54 invalid=0 pending_lines=0",
+        "stderr_tail": "",
+        "health": {"sqlite": {"inserted": 0, "pending_lines": 0}},
+    }
+
+    assert shard_manager._shard_link_resumable_interruption(result) is True
+    assert shard_manager._shard_link_merge_eligible(result) is True
+    assert shard_manager._shard_link_hard_failed(result) is False
+
+
+def test_sigterm_without_checkpoint_progress_remains_hard_failed() -> None:
+    result = {
+        "rc": -15,
+        "timed_out": False,
+        "stdout_tail": "Discovered JSONL files: 10",
+        "stderr_tail": "",
+        "health": {"sqlite": {"inserted": 0, "pending_lines": 12}},
+    }
+
+    assert shard_manager._shard_link_resumable_interruption(result) is False
+    assert shard_manager._shard_link_hard_failed(result) is True
+
+
 def test_missing_shard_db_probe_is_noop_merge_skip(tmp_path: Path) -> None:
     result = shard_manager._probe_shard_merge_state(
         shard_name="crypto_trading",
@@ -2069,6 +2095,7 @@ def test_merge_followup_summary_recommends_catch_up_for_capped_or_budgeted_merge
     assert summary["merge_capped_count"] == 1
     assert summary["merge_budget_exhausted_count"] == 1
     assert summary["partial_timeout_shard_count"] == 1
+    assert summary["resumable_interruption_shard_count"] == 0
     assert "merge_row_cap_remaining" in summary["followup_reasons"]
 
 
@@ -2539,6 +2566,52 @@ def test_hot_retention_bootstraps_on_large_db_without_prior_run() -> None:
     )
 
     assert reasons == ["bootstrap_db_size_gb>=25"]
+
+
+def test_retention_safety_forces_disabled_retention_at_hard_envelope() -> None:
+    contract = shard_manager._retention_safety_contract(
+        configured_enabled=False,
+        db_size_gb=248.0,
+        max_db_gb=12.0,
+        free_gb=67.0,
+        target_free_gb=125.0,
+        hard_multiple=2.0,
+        hard_overage_gb=16.0,
+    )
+
+    assert contract["effective_enabled"] is True
+    assert contract["forced"] is True
+    assert contract["force_reasons"] == [
+        "database_beyond_hard_retention_envelope",
+        "storage_reserve_at_risk",
+    ]
+
+
+def test_retention_safety_respects_disabled_retention_inside_envelope() -> None:
+    contract = shard_manager._retention_safety_contract(
+        configured_enabled=False,
+        db_size_gb=5.0,
+        max_db_gb=12.0,
+        free_gb=200.0,
+        target_free_gb=125.0,
+    )
+
+    assert contract["effective_enabled"] is False
+    assert contract["forced"] is False
+    assert contract["force_reasons"] == []
+
+
+def test_vacuum_capacity_guard_preserves_free_space_reserve(tmp_path: Path, monkeypatch) -> None:
+    db_path = tmp_path / "cache.sqlite3"
+    db_path.write_bytes(b"db")
+    monkeypatch.setenv("SQL_LINK_SERVICE_VACUUM_MIN_FREE_AFTER_GB", "32")
+
+    blocked = shard_manager._vacuum_capacity_contract(db_path, requested=True, free_gb=10.0)
+    allowed = shard_manager._vacuum_capacity_contract(db_path, requested=True, free_gb=64.0)
+
+    assert blocked["allowed"] is False
+    assert blocked["blocked_reason"] == "insufficient_vacuum_headroom"
+    assert allowed["allowed"] is True
 
 
 def test_wal_checkpoint_triggers_on_growth_or_rows() -> None:

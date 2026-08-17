@@ -168,7 +168,12 @@ def _artifact_row(project_root: Path, spec: dict[str, Any], *, now: datetime) ->
     path = _project_path(project_root, spec.get("path"))
     payload = load_json(path)
     exists = path.is_file() and bool(payload)
-    status = _status(payload)
+    status_path = str(spec.get("status_path") or "").strip()
+    status = (
+        str(_value_at(payload, status_path) or "").strip().lower()
+        if status_path
+        else _status(payload)
+    )
     max_age_minutes = _safe_float(spec.get("max_age_minutes"), 0.0)
     age_minutes = payload_age_minutes(payload, path, now=now) if payload else None
     fresh = bool(age_minutes is not None and age_minutes <= max_age_minutes) if max_age_minutes > 0.0 else exists
@@ -209,6 +214,7 @@ def _artifact_row(project_root: Path, spec: dict[str, Any], *, now: datetime) ->
         "required": bool(spec.get("required", True)),
         "exists": exists,
         "status": status,
+        "status_path": status_path,
         "ready": ready,
         "blockers": blockers,
         "age_minutes": round(float(age_minutes), 4) if age_minutes is not None else None,

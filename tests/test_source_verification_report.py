@@ -18,6 +18,68 @@ def _write_json(path: Path, payload: dict) -> None:
     path.write_text(json.dumps(payload) + "\n", encoding="utf-8")
 
 
+def _write_decision_context_mesh(root: Path, timestamp_utc: str) -> None:
+    planes = [
+        {
+            "plane_id": f"macro_{index}",
+            "plane_class": "macro",
+            "score_pct": 95.0,
+        }
+        for index in range(6)
+    ] + [
+        {
+            "plane_id": f"micro_{index}",
+            "plane_class": "micro",
+            "score_pct": 94.0,
+        }
+        for index in range(6)
+    ]
+    _write_json(
+        root / "exports" / "external_context" / "decision_context_mesh_latest.json",
+        {
+            "timestamp_utc": timestamp_utc,
+            "ok": True,
+            "contract": {
+                "required_plane_count": 12,
+                "minimum_plane_score_pct": 70.0,
+                "minimum_macro_score_pct": 80.0,
+                "minimum_micro_score_pct": 80.0,
+                "paper_execution_authority": False,
+                "live_execution_authority": False,
+                "automatic_promotion_authority": False,
+            },
+            "methodology": {
+                "point_in_time_only": True,
+                "future_observations_rejected": True,
+                "missing_values_are_not_zero_filled": True,
+            },
+            "coverage": {
+                "observed_plane_count": 12,
+                "ready_plane_count": 12,
+                "signal_coverage_ratio": 1.0,
+                "future_observation_selected": False,
+            },
+            "grade_summary": {
+                "macro_percentage": 95.0,
+                "macro_grade": "A",
+                "micro_percentage": 94.0,
+                "micro_grade": "A",
+                "combined_percentage": 94.5,
+            },
+            "planes": planes,
+            "sources": {
+                "official_a": {"ok": True, "source_family": "official_a"},
+                "official_b": {"ok": True, "source_family": "official_b"},
+            },
+            "derived": {
+                "global_features": {
+                    key: 0.5 for key in svr.DECISION_CONTEXT_MESH_FEATURE_KEYS
+                }
+            },
+        },
+    )
+
+
 def test_free_equity_reference_refresh_command_is_bounded(tmp_path: Path) -> None:
     command = svr._refresh_command_for_source(tmp_path, "free_equity_reference_context")
 
@@ -200,7 +262,113 @@ def test_build_source_verification_payload_classifies_sources(tmp_path: Path) ->
             "sources": {
                 "federal_reserve": {"ok": True},
                 "treasury": {"ok": True, "fallback": "html_page_parse"},
+                "central_bank_liquidity": {"ok": True, "required_coverage_ratio": 1.0},
             },
+        },
+    )
+    _write_json(
+        tmp_path / "exports" / "external_context" / "central_bank_liquidity_latest.json",
+        {
+            "timestamp_utc": fresh_ts,
+            "coverage": {
+                "required_coverage_ratio": 1.0,
+                "required_series": [
+                    "WALCL",
+                    "WRESBAL",
+                    "RRPONTSYD",
+                    "WTREGEN",
+                    "SOFR",
+                    "EFFR",
+                    "IORB",
+                    "NFCI",
+                    "ANFCI",
+                    "STLFSI4",
+                    "RPONTSYD",
+                    "SWPT",
+                ],
+                "available_series": [
+                    "WALCL",
+                    "WRESBAL",
+                    "RRPONTSYD",
+                    "WTREGEN",
+                    "SOFR",
+                    "EFFR",
+                    "IORB",
+                    "NFCI",
+                    "ANFCI",
+                    "STLFSI4",
+                    "RPONTSYD",
+                    "SWPT",
+                ],
+                "missing_required_series": [],
+            },
+            "global_features": {
+                key: 0.5 for key in svr.CENTRAL_BANK_LIQUIDITY_FEATURE_KEYS
+            },
+            "methodology": {
+                "classification": "heuristic_market_liquidity_proxy_not_official_accounting_identity",
+                "point_in_time_only": True,
+            },
+        },
+    )
+    _write_json(
+        tmp_path / "exports" / "external_context" / "global_central_bank_context_latest.json",
+        {
+            "timestamp_utc": fresh_ts,
+            "contract": {
+                "tier_1_minimum_ratio": 0.8,
+                "important_bank_minimum_ratio": 0.85,
+                "live_execution_authority": False,
+                "automatic_promotion_authority": False,
+            },
+            "methodology": {
+                "point_in_time_only": True,
+                "missing_values_are_not_zero_filled": True,
+            },
+            "coverage": {
+                "registry_bank_count": 32,
+                "ready_bank_count": 32,
+                "tier_1_coverage_ratio": 1.0,
+                "important_bank_coverage_ratio": 1.0,
+                "policy_rate_coverage_ratio": 1.0,
+                "balance_sheet_coverage_ratio": 1.0,
+                "raw_policy_area_count": 39,
+                "raw_balance_sheet_area_count": 52,
+                "future_observation_selected": False,
+                "source_failures": [],
+            },
+            "global_features": {key: 0.5 for key in svr.GLOBAL_CENTRAL_BANK_FEATURE_KEYS},
+        },
+    )
+    _write_json(
+        tmp_path / "exports" / "external_context" / "central_bank_cross_source_latest.json",
+        {
+            "timestamp_utc": fresh_ts,
+            "contract": {
+                "minimum_sync_coverage_ratio": 0.6,
+                "minimum_distinct_cross_source_count": 1,
+                "live_execution_authority": False,
+                "automatic_promotion_authority": False,
+            },
+            "methodology": {
+                "point_in_time_join": True,
+                "distinct_cross_source_required": True,
+                "missing_values_are_neutralized": False,
+            },
+            "coverage": {
+                "synchronized_ready_bank_count": 32,
+                "synchronized_bank_coverage_ratio": 1.0,
+                "distinct_cross_source_link_count": 96,
+                "fx_join_coverage_ratio": 0.95,
+                "macro_join_coverage_ratio": 1.0,
+                "liquidity_join_coverage_ratio": 1.0,
+                "lineage_coverage_ratio": 1.0,
+                "hard_conflict_count": 0,
+                "soft_conflict_count": 0,
+                "future_observation_selected": False,
+            },
+            "global_features": {key: 0.5 for key in svr.CENTRAL_BANK_CROSS_SOURCE_FEATURE_KEYS},
+            "routing": {"symbol_to_bank_ids": {"FXE": ["european_central_bank"]}},
         },
     )
     _write_json(
@@ -343,12 +511,13 @@ def test_build_source_verification_payload_classifies_sources(tmp_path: Path) ->
         },
     )
     _write_fed_2026_stress_scenario_files(tmp_path)
+    _write_decision_context_mesh(tmp_path, fresh_ts)
 
     payload = svr.build_source_verification_payload(tmp_path)
 
     counts = payload["overall"]["counts"]
-    assert counts["cross_verified"] == 5
-    assert counts["single_source_verified"] == 11
+    assert counts["cross_verified"] == 6
+    assert counts["single_source_verified"] == 14
     assert counts["single_source_unverified"] == 0
     assert payload["overall"]["all_verified"] is True
 
@@ -362,6 +531,15 @@ def test_build_source_verification_payload_classifies_sources(tmp_path: Path) ->
     assert rows["crypto_market_context"]["verification_status"] == "cross_verified"
     assert rows["free_equity_reference_context"]["verification_status"] == "single_source_verified"
     assert rows["public_macro_feeds"]["verification_status"] == "single_source_verified"
+    assert rows["official_macro_context"]["verification_status"] == "single_source_verified"
+    assert rows["central_bank_liquidity_context"]["verification_status"] == "single_source_verified"
+    assert rows["central_bank_liquidity_context"]["evidence"]["required_coverage_ratio"] == 1.0
+    assert rows["global_central_bank_context"]["verification_status"] == "single_source_verified"
+    assert rows["global_central_bank_context"]["evidence"]["registry_bank_count"] == 32
+    assert rows["central_bank_cross_source_context"]["verification_status"] == "single_source_verified"
+    assert rows["central_bank_cross_source_context"]["evidence"]["synchronized_ready_bank_count"] == 32
+    assert rows["decision_context_mesh"]["verification_status"] == "cross_verified"
+    assert rows["decision_context_mesh"]["evidence"]["plane_count"] == 12
     assert rows["schwab_symbol_news"]["verification_status"] == "single_source_verified"
     assert rows["ticker_news_context"]["verification_status"] == "single_source_verified"
     assert rows["public_policy_context"]["verification_status"] == "single_source_verified"
@@ -435,7 +613,7 @@ def test_build_source_verification_payload_marks_stale_sources_unverified(tmp_pa
     payload = svr.build_source_verification_payload(tmp_path)
 
     assert payload["overall"]["all_verified"] is False
-    assert payload["overall"]["counts"]["single_source_unverified"] == 16
+    assert payload["overall"]["counts"]["single_source_unverified"] == 20
     assert payload["source_runtime_contract"]["decision_critical_sources_ready"] is False
     assert "market_quote_profiles" in payload["source_runtime_contract"]["decision_critical_blockers"]
     assert "schwab_education_context" in payload["source_runtime_contract"]["optional_enrichment_debt"]
@@ -596,6 +774,7 @@ def test_build_source_verification_payload_tolerates_one_partial_source_for_macr
                 "treasury": {"ok": True},
                 "bls": {"ok": True},
                 "bea": {"ok": True},
+                "central_bank_liquidity": {"ok": True, "required_coverage_ratio": 1.0},
             },
         },
     )
@@ -617,7 +796,7 @@ def test_build_source_verification_payload_tolerates_one_partial_source_for_macr
     micro_row = svr._market_micro_row(tmp_path / "governance" / "health", datetime.now(timezone.utc))
 
     assert macro_row["verification_status"] == "single_source_verified"
-    assert "partial_sources=5/6" in macro_row["notes"]
+    assert "partial_sources=6/7" in macro_row["notes"]
     assert micro_row["verification_status"] == "single_source_verified"
     assert "partial_sources=3/4" in micro_row["notes"]
 

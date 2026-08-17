@@ -6,7 +6,6 @@ import hashlib
 import json
 import os
 import shutil
-import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -16,12 +15,10 @@ DEFAULT_MANIFEST_PATH = PROJECT_ROOT / "governance" / "health" / "storage_tier_o
 DEFAULT_OUT_PATH = PROJECT_ROOT / "governance" / "health" / "manifest_backed_offload_worker_latest.json"
 DEFAULT_PROOF_PATH = PROJECT_ROOT / "governance" / "health" / "manifest_backed_offload_restore_proofs_latest.jsonl"
 PROTECTED_VOLUME_PREFIXES = ("/Volumes/VIDEO",)
-DEFAULT_VIDEO_COLD_ARCHIVE_ROOT = "/Volumes/VIDEO/schwab_trading_bot_cold"
 DEFAULT_COLD_TARGETS = (
     "/Volumes/BOT_COLD/schwab_trading_bot",
     "/Volumes/BOT_ARCHIVE/schwab_trading_bot",
     "/Volumes/BOT_RETENTION/schwab_trading_bot",
-    DEFAULT_VIDEO_COLD_ARCHIVE_ROOT,
 )
 
 
@@ -42,22 +39,11 @@ def _gb(raw_bytes: int | float) -> float:
 
 def _is_protected(path: Path) -> bool:
     raw = str(path.expanduser())
-    if _approved_video_cold_archive(path):
-        return False
     return any(raw == prefix or raw.startswith(f"{prefix}/") for prefix in PROTECTED_VOLUME_PREFIXES)
 
 
 def _env_truthy(name: str) -> bool:
     return str(os.getenv(name, "")).strip().lower() in {"1", "true", "yes", "y", "on"}
-
-
-def _approved_video_cold_archive(path: Path) -> bool:
-    if not _env_truthy("BOT_ALLOW_VIDEO_COLD_ARCHIVE"):
-        return False
-    allowed_root = Path(os.getenv("BOT_VIDEO_COLD_ARCHIVE_ROOT", DEFAULT_VIDEO_COLD_ARCHIVE_ROOT)).expanduser()
-    raw = str(path.expanduser())
-    allowed = str(allowed_root)
-    return bool(raw == allowed or raw.startswith(f"{allowed}/"))
 
 
 def _resolve_target(raw_target: str) -> tuple[Path | None, list[dict[str, Any]]]:
@@ -323,9 +309,9 @@ def build_payload(
             ),
             "never_touch_protected_volumes": list(PROTECTED_VOLUME_PREFIXES),
             "approved_video_cold_archive": {
-                "enabled": _env_truthy("BOT_ALLOW_VIDEO_COLD_ARCHIVE"),
-                "root": os.getenv("BOT_VIDEO_COLD_ARCHIVE_ROOT", DEFAULT_VIDEO_COLD_ARCHIVE_ROOT),
-                "scope": "cold_archive_subtree_only",
+                "enabled": False,
+                "root": "",
+                "scope": "forbidden",
             },
             "required_entry_classification": "eligible_manifest_backed_offload",
         },

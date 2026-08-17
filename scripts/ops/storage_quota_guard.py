@@ -121,28 +121,77 @@ def _stateful_sql_shard_breakdown(project_root: Path) -> dict[str, Any]:
         scan_root = shard_root
     support_bytes = 0
     core_bytes = 0
+    shard_bytes = 0
+    primary_cache_bytes = 0
+    queue_bytes = 0
     support_rows: list[dict[str, Any]] = []
     core_rows: list[dict[str, Any]] = []
+    component_rows: list[dict[str, Any]] = []
+    seen_files: set[tuple[int, int]] = set()
+
+    def measure(path: Path) -> tuple[Path, int] | None:
+        try:
+            resolved = path.resolve(strict=True)
+            stat = resolved.stat()
+            if not resolved.is_file():
+                return None
+            identity = (int(stat.st_dev), int(stat.st_ino))
+            if identity in seen_files:
+                return None
+            seen_files.add(identity)
+            return resolved, max(int(stat.st_size), 0)
+        except Exception:
+            return None
+
     if scan_root.exists():
         try:
             iterator = scan_root.glob("*.sqlite3")
         except Exception:
             iterator = []
         for path in iterator:
-            try:
-                if not path.is_file() or path.is_symlink():
-                    continue
-                size = max(int(path.stat().st_size), 0)
-            except Exception:
+            measured = measure(path)
+            if measured is None:
                 continue
+            resolved, size = measured
+            shard_bytes += size
             name = path.name.lower()
-            row = {"path": str(path), "name": path.name, "size_gb": _round_gb(float(size) / float(1024**3))}
+            row = {
+                "path": str(resolved),
+                "name": path.name,
+                "component": "shard",
+                "size_gb": _round_gb(float(size) / float(1024**3)),
+            }
             if any(marker in name for marker in SUPPORT_SQL_SHARD_MARKERS):
                 support_bytes += size
                 support_rows.append(row)
             else:
                 core_bytes += size
                 core_rows.append(row)
+
+    component_candidates = (
+        ("primary_compatibility_cache", project_root / "data" / "jsonl_link.sqlite3"),
+        ("queue", project_root / "data" / "bot_channel_queue.sqlite3"),
+        ("primary_compatibility_cache", project_root / "local_fallback_storage" / "data" / "jsonl_link.sqlite3"),
+        ("queue", project_root / "local_fallback_storage" / "data" / "bot_channel_queue.sqlite3"),
+    )
+    for component, path in component_candidates:
+        measured = measure(path)
+        if measured is None:
+            continue
+        resolved, size = measured
+        row = {
+            "path": str(resolved),
+            "name": resolved.name,
+            "component": component,
+            "size_gb": _round_gb(float(size) / float(1024**3)),
+        }
+        component_rows.append(row)
+        core_rows.append(row)
+        core_bytes += size
+        if component == "primary_compatibility_cache":
+            primary_cache_bytes += size
+        else:
+            queue_bytes += size
     support_rows = sorted(support_rows, key=lambda row: _safe_float(row.get("size_gb"), 0.0), reverse=True)
     core_rows = sorted(core_rows, key=lambda row: _safe_float(row.get("size_gb"), 0.0), reverse=True)
     return {
@@ -152,8 +201,15 @@ def _stateful_sql_shard_breakdown(project_root: Path) -> dict[str, Any]:
         "support_bytes": int(support_bytes),
         "core_bytes": int(core_bytes),
         "total_bytes": int(support_bytes + core_bytes),
+        "shard_bytes": int(shard_bytes),
+        "primary_cache_bytes": int(primary_cache_bytes),
+        "queue_bytes": int(queue_bytes),
         "support_gb": _round_gb(float(support_bytes) / float(1024**3)),
         "core_gb": _round_gb(float(core_bytes) / float(1024**3)),
+        "shard_gb": _round_gb(float(shard_bytes) / float(1024**3)),
+        "primary_cache_gb": _round_gb(float(primary_cache_bytes) / float(1024**3)),
+        "queue_gb": _round_gb(float(queue_bytes) / float(1024**3)),
+        "stateful_components": sorted(component_rows, key=lambda row: _safe_float(row.get("size_gb"), 0.0), reverse=True),
         "top_support_shards": support_rows[:5],
         "top_core_shards": core_rows[:5],
         "support_markers": list(SUPPORT_SQL_SHARD_MARKERS),

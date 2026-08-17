@@ -18,6 +18,8 @@ def _write_json(path: Path, payload: dict) -> None:
 def test_runtime_gate_dashboard_marks_missing_sections_with_explicit_contract_state(tmp_path):
     payload = runtime_gate_dashboard.build_dashboard(tmp_path)
 
+    assert payload["overall_status"] == payload["overall"]["status"]
+    assert payload["ok"] == payload["overall"]["ok"]
     assert payload["runtime"]["artifact_status"] == "missing"
     assert payload["runtime"]["artifact_reason"] == "artifact_missing"
     assert payload["runtime"]["mode"] == "unknown"
@@ -73,6 +75,7 @@ def test_runtime_gate_dashboard_manages_paper_soak_auth_warning_attention(tmp_pa
     )
 
     assert context["enabled"] is True
+    assert context["guarded_health_ready"] is True
     assert reason == "schwab_auth_warning_managed_while_token_above_paper_readiness_floor"
 
 

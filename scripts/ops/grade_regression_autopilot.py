@@ -142,8 +142,6 @@ def _repair_plan(project_root: Path, guard_payload: dict[str, Any], *, storage_m
         elif surface == "promotion_autopilot":
             add(surface, state, [str(PYTHON_BIN), str(ops_root / "promotion_autopilot_packet.py"), "--json"], 180)
 
-    if str(os.getenv("RUNTIME_ARTIFACT_REFRESH_ACTIVE", "")).strip().lower() not in {"1", "true", "yes", "on"}:
-        add("artifact_refresh", "prevent_stale_contracts", [str(PYTHON_BIN), str(ops_root / "runtime_artifact_refresh.py"), "--json"], 300)
     return plan
 
 
@@ -241,10 +239,13 @@ def build_payload(
         "repair_plan": repair_plan,
         "attempts": attempts,
         "regression_autopilot_contract": {
-            "generation": "coordinated_regression_prevention_v3",
+            "generation": "coordinated_regression_prevention_v4",
             "uses_per_surface_retry_budgets": True,
             "quiet_hours_deferral_available": True,
             "tenant_notification_contract_passthrough": True,
+            "healthy_cycle_is_noop": True,
+            "full_graph_refresh_forbidden": True,
+            "evidence_accrual_owner": "readiness_evidence_refresh:accrual",
             "heavy_surfaces": [
                 str(step.get("surface") or "")
                 for step in repair_plan
@@ -254,11 +255,11 @@ def build_payload(
         "upgrade_track": {
             "family": "infrabots",
             "upgradeable": True,
-            "current_generation": "coordinated_regression_prevention_v3",
+            "current_generation": "coordinated_regression_prevention_v4",
             "co_managed_with": [
                 "grade_regression_guard",
                 "grade_lift_hardening",
-                "runtime_artifact_refresh",
+                "readiness_evidence_refresh:accrual",
             ],
             "future_upgrade_paths": [
                 "adaptive retry budgets learned from repair success by surface",

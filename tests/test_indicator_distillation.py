@@ -95,6 +95,45 @@ def test_teacher_soft_targets_align_to_student_anchors(monkeypatch) -> None:
     assert np.isnan(soft[1])
 
 
+def test_strategy_generation_context_requires_manifest_and_keeps_authority_off(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    candidate_id = "strategy_g0001_abcdef123456"
+    manifest = tmp_path / "governance" / "strategy_generations" / "generations" / "strategy_generation_0001.json"
+    manifest.parent.mkdir(parents=True, exist_ok=True)
+    manifest.write_text(
+        json.dumps(
+            {
+                "offspring": [
+                    {
+                        "offspring_id": candidate_id,
+                        "strategy_generation": 1,
+                        "lineage_depth": 1,
+                        "parent_bot_ids": ["brain_refinery_v10_seasonal"],
+                        "source_module_bot_id": "brain_refinery_v10_seasonal",
+                        "genome": {"teacher_weight": 0.25},
+                        "execution_authority": False,
+                        "paper_execution_authority": False,
+                        "serving_eligible": False,
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("STRATEGY_GENERATION_CANDIDATE_ID", candidate_id)
+    monkeypatch.setenv("STRATEGY_GENERATION_MANIFEST", str(manifest))
+
+    context = common._strategy_generation_context(tmp_path, "brain_refinery_v10_seasonal")
+
+    assert context["offspring_id"] == candidate_id
+    assert context["execution_authority"] is False
+    assert context["paper_execution_authority"] is False
+    assert context["serving_eligible"] is False
+    assert context["inherits_parent_grade"] is False
+
+
 def test_resolve_training_guard_profile_applies_intraday_defaults() -> None:
     profile = common._resolve_training_guard_profile(
         "brain_refinery_v43_intraday_ultrafast_proxy",

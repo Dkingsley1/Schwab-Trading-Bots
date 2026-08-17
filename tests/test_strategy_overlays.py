@@ -715,6 +715,83 @@ def test_paper_mirror_profitability_quarantines_losing_strategy(monkeypatch) -> 
     assert features["paper_profitability_strategy_size_multiplier_norm"] == 0.08
 
 
+def test_paper_consensus_recomputes_execution_realism_before_entry_policy(monkeypatch) -> None:
+    captured = {}
+
+    def evaluate(*, profile, features):
+        captured.update(features)
+        return {
+            "allowed": True,
+            "regime_fit_norm": 0.8,
+            "evidence_quality_norm": 0.8,
+            "execution_plan": {"style": "passive_limit"},
+        }
+
+    class PaperTrader:
+        def execute_decision(self, **kwargs):
+            captured["executed_features"] = kwargs["features"]
+            return {"status": "PAPER_EXECUTED"}
+
+    monkeypatch.setattr(loop, "evaluate_profitability_entry", evaluate)
+    result = loop._execute_paper_mirror_consensus(
+        broker="schwab",
+        symbol="AAPL",
+        profile="default",
+        segment="core",
+        snapshot_id="snapshot-1",
+        candidates=[
+            {
+                "bot_id": "alpha",
+                "action": "BUY",
+                "score": 0.7,
+                "threshold": 0.55,
+                "weight": 1.0,
+                "test_accuracy": 0.8,
+                "quality_score": 0.8,
+                "paper_execution_authority": True,
+                "bot_role": "signal_sub_bot",
+                "sleeve_id": "equity_core",
+                "sub_sleeve_id": "trend",
+                "correlation_cluster_id": "cluster_a",
+                "features": {"execution_fitness_norm": 1.0},
+                "eligible": True,
+            },
+            {
+                "bot_id": "beta",
+                "action": "BUY",
+                "score": 0.69,
+                "threshold": 0.55,
+                "weight": 0.8,
+                "test_accuracy": 0.78,
+                "quality_score": 0.79,
+                "paper_execution_authority": True,
+                "bot_role": "signal_sub_bot",
+                "sleeve_id": "equity_core",
+                "sub_sleeve_id": "breadth",
+                "correlation_cluster_id": "cluster_b",
+                "features": {"execution_fitness_norm": 1.0},
+                "eligible": True,
+            },
+        ],
+        shared_features={
+            "last_price": 100.0,
+            "market_micro_tradeability_score_norm": 0.8,
+            "execution_fitness_norm": 0.0,
+            "data_quality_quote_agreement_norm": 1.0,
+            "spread_bps": 4.0,
+        },
+        gates={"market_data_ok": True},
+        execution_lane_enabled=False,
+        paper_trader=PaperTrader(),
+        selection_reason="unit_test",
+    )
+
+    assert result["action"] == "BUY"
+    assert captured["execution_fitness_norm"] > 0.2
+    assert captured["paper_entry_execution_realism_recomputed_norm"] == 1.0
+    assert captured["executed_features"]["execution_fitness_norm"] > 0.2
+
+
 def test_paper_mirror_strategy_harvest_blocks_adds(monkeypatch) -> None:
     monkeypatch.setattr(loop, "_profitability_global_policy", lambda: {"apply_strategy_profit_harvest": True})
     monkeypatch.setattr(loop, "_strategy_profitability_control", lambda profile, strategy: {})

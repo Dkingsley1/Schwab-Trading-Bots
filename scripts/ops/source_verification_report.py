@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -14,6 +15,24 @@ except Exception:  # pragma: no cover - zoneinfo is available on normal Python 3
     ZoneInfo = None
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from core.central_bank_liquidity import (
+    CENTRAL_BANK_LIQUIDITY_FEATURE_KEYS,
+    assess_central_bank_liquidity_context,
+)
+from core.global_central_bank_context import (
+    CENTRAL_BANK_CROSS_SOURCE_FEATURE_KEYS,
+    GLOBAL_CENTRAL_BANK_FEATURE_KEYS,
+    assess_central_bank_cross_source_context,
+    assess_global_central_bank_context,
+)
+from core.decision_context_mesh import (
+    DECISION_CONTEXT_MESH_FEATURE_KEYS,
+    assess_decision_context_mesh,
+)
+
 REPORTS_DIR = PROJECT_ROOT / "exports" / "reports"
 HEALTH_DIR = PROJECT_ROOT / "governance" / "health"
 
@@ -30,6 +49,10 @@ SOURCE_CRITICALITY = {
     "fx_market_context": "decision_critical",
     "public_macro_feeds": "decision_critical",
     "official_macro_context": "decision_critical",
+    "central_bank_liquidity_context": "decision_critical",
+    "global_central_bank_context": "decision_context",
+    "central_bank_cross_source_context": "decision_context",
+    "decision_context_mesh": "decision_context",
     "market_micro_context": "decision_critical",
     "sec_edgar_context": "decision_context",
     OPTIONS_CONTEXT_SOURCE_ID: "decision_context",
@@ -290,6 +313,10 @@ def _refresh_command_for_source(project_root: Path, source_id: str) -> list[str]
         "fx_market_context": [opsctl, "fx-market-sync", "--json"],
         "public_macro_feeds": [opsctl, "macro-context-sync", "--json"],
         "official_macro_context": [opsctl, "macro-context-sync", "--json"],
+        "central_bank_liquidity_context": [opsctl, "macro-context-sync", "--json"],
+        "global_central_bank_context": [opsctl, "global-central-bank-sync", "--json"],
+        "central_bank_cross_source_context": [opsctl, "central-bank-context-sync", "--json"],
+        "decision_context_mesh": [opsctl, "decision-context-sync", "--json"],
         "schwab_education_context": [opsctl, "schwab-education-sync", "--json"],
         "schwab_symbol_news": [opsctl, "schwab-symbol-news-sync", "--max-runtime-seconds", "180", "--json"],
         "ticker_news_context": [opsctl, "ticker-news-sync", "--max-runtime-seconds", "240", "--json"],
@@ -830,6 +857,8 @@ def _official_macro_row(health_dir: Path, now: datetime) -> dict[str, Any]:
         and not bool(value.get("contract_participates", True))
         and not bool(value.get("ok", False))
     )
+    central_source = sources.get("central_bank_liquidity") if isinstance(sources.get("central_bank_liquidity"), dict) else {}
+    central_liquidity_ok = bool(central_source.get("ok", False))
     if not fresh:
         notes.append("stale_artifact")
     min_ok_sources = _minimum_ok_sources(total_count, floor=4, tolerate_failures=1, min_ratio=0.80)
@@ -837,9 +866,11 @@ def _official_macro_row(health_dir: Path, now: datetime) -> dict[str, Any]:
         notes.append(f"partial_sources={ok_count}/{total_count}")
     if auxiliary_degraded:
         notes.append(f"auxiliary_source_degraded={','.join(auxiliary_degraded)}")
+    if not central_liquidity_ok:
+        notes.append("central_bank_liquidity_contract_not_ready")
     status = (
         STATUS_SINGLE_VERIFIED
-        if bool(payload.get("ok", False)) and ok_count >= min_ok_sources and total_count > 0 and fresh
+        if bool(payload.get("ok", False)) and central_liquidity_ok and ok_count >= min_ok_sources and total_count > 0 and fresh
         else STATUS_SINGLE_UNVERIFIED
     )
     return _row(
@@ -858,7 +889,217 @@ def _official_macro_row(health_dir: Path, now: datetime) -> dict[str, Any]:
             "ok_sources": ok_count,
             "total_sources": total_count,
             "min_ok_sources_required": min_ok_sources,
+            "central_bank_liquidity_ok": central_liquidity_ok,
             "sources": {key: bool(value.get("ok", False)) for key, value in sources.items() if isinstance(value, dict)},
+        },
+    )
+
+
+def _central_bank_liquidity_row(project_root: Path, now: datetime) -> dict[str, Any]:
+    path = project_root / "exports" / "external_context" / "central_bank_liquidity_latest.json"
+    payload = _read_json(path)
+    ts = _parse_ts(payload.get("timestamp_utc"))
+    fresh = _is_fresh(ts, now, 24.0)
+    coverage = payload.get("coverage") if isinstance(payload.get("coverage"), dict) else {}
+    missing = coverage.get("missing_required_series") if isinstance(coverage.get("missing_required_series"), list) else []
+    stale = coverage.get("stale_required_series") if isinstance(coverage.get("stale_required_series"), list) else []
+    unusable = coverage.get("unusable_required_series") if isinstance(coverage.get("unusable_required_series"), list) else []
+    future_selected = bool(coverage.get("future_observation_selected", False))
+    coverage_ratio = float(coverage.get("required_coverage_ratio", 0.0) or 0.0)
+    features = payload.get("global_features") if isinstance(payload.get("global_features"), dict) else {}
+    assessment = assess_central_bank_liquidity_context(payload, now_utc=now)
+    verified = bool(fresh and assessment.get("ready", False))
+    notes: list[str] = []
+    if not fresh:
+        notes.append("stale_artifact")
+    if missing:
+        notes.append(f"missing_required_series={','.join(str(item) for item in missing)}")
+    if stale:
+        notes.append(f"stale_required_series={','.join(str(item) for item in stale)}")
+    if future_selected:
+        notes.append("future_observation_selected")
+    if coverage_ratio < 1.0:
+        notes.append(f"coverage_ratio={coverage_ratio:.6f}")
+    for reason in assessment.get("reasons", []):
+        if str(reason) not in notes:
+            notes.append(str(reason))
+    return _row(
+        source_id="central_bank_liquidity_context",
+        title="Central Bank And Fed Liquidity Context",
+        category="macro_data",
+        verification_status=STATUS_SINGLE_VERIFIED if verified else STATUS_SINGLE_UNVERIFIED,
+        verification_mode="official_series_coverage_and_freshness",
+        artifact_path=path,
+        artifact_timestamp=ts,
+        age_hours=_age_hours(ts, now),
+        fresh=fresh,
+        ok=verified,
+        notes=notes,
+        evidence={
+            "required_coverage_ratio": coverage_ratio,
+            "required_series": coverage.get("required_series", []),
+            "available_series": coverage.get("available_series", []),
+            "missing_required_series": missing,
+            "stale_required_series": stale,
+            "unusable_required_series": unusable,
+            "as_of_date": coverage.get("as_of_date"),
+            "latest_observation_dates": coverage.get("latest_observation_dates", {}),
+            "latest_observation_age_days": coverage.get("latest_observation_age_days", {}),
+            "future_observations_excluded": coverage.get("future_observations_excluded", {}),
+            "future_observation_selected": future_selected,
+            "feature_count": len(features),
+            "required_feature_count": len(CENTRAL_BANK_LIQUIDITY_FEATURE_KEYS),
+            "consumer_contract": assessment,
+            "methodology": payload.get("methodology", {}),
+        },
+    )
+
+
+def _global_central_bank_row(project_root: Path, now: datetime) -> dict[str, Any]:
+    path = project_root / "exports" / "external_context" / "global_central_bank_context_latest.json"
+    payload = _read_json(path)
+    ts = _parse_ts(payload.get("timestamp_utc"))
+    fresh = _is_fresh(ts, now, 48.0)
+    coverage = payload.get("coverage") if isinstance(payload.get("coverage"), dict) else {}
+    features = payload.get("global_features") if isinstance(payload.get("global_features"), dict) else {}
+    assessment = assess_global_central_bank_context(payload, now_utc=now)
+    verified = bool(fresh and assessment.get("ready", False))
+    notes = [str(reason) for reason in assessment.get("reasons", [])]
+    if not fresh and "stale_artifact" not in notes:
+        notes.append("stale_artifact")
+    return _row(
+        source_id="global_central_bank_context",
+        title="Global Central Bank Policy And Balance Sheet Context",
+        category="macro_data",
+        verification_status=STATUS_SINGLE_VERIFIED if verified else STATUS_SINGLE_UNVERIFIED,
+        verification_mode="bis_member_reported_point_in_time_coverage",
+        artifact_path=path,
+        artifact_timestamp=ts,
+        age_hours=_age_hours(ts, now),
+        fresh=fresh,
+        ok=verified,
+        notes=notes,
+        evidence={
+            "registry_bank_count": coverage.get("registry_bank_count", 0),
+            "ready_bank_count": coverage.get("ready_bank_count", 0),
+            "tier_1_coverage_ratio": coverage.get("tier_1_coverage_ratio", 0.0),
+            "important_bank_coverage_ratio": coverage.get("important_bank_coverage_ratio", 0.0),
+            "policy_rate_coverage_ratio": coverage.get("policy_rate_coverage_ratio", 0.0),
+            "balance_sheet_coverage_ratio": coverage.get("balance_sheet_coverage_ratio", 0.0),
+            "raw_policy_area_count": coverage.get("raw_policy_area_count", 0),
+            "raw_balance_sheet_area_count": coverage.get("raw_balance_sheet_area_count", 0),
+            "future_observations_excluded": coverage.get("future_observations_excluded", {}),
+            "future_observation_selected": coverage.get("future_observation_selected", False),
+            "feature_count": len(features),
+            "required_feature_count": len(GLOBAL_CENTRAL_BANK_FEATURE_KEYS),
+            "consumer_contract": assessment,
+            "methodology": payload.get("methodology", {}),
+        },
+    )
+
+
+def _central_bank_cross_source_row(project_root: Path, now: datetime) -> dict[str, Any]:
+    path = project_root / "exports" / "external_context" / "central_bank_cross_source_latest.json"
+    payload = _read_json(path)
+    ts = _parse_ts(payload.get("timestamp_utc"))
+    fresh = _is_fresh(ts, now, 24.0)
+    coverage = payload.get("coverage") if isinstance(payload.get("coverage"), dict) else {}
+    features = payload.get("global_features") if isinstance(payload.get("global_features"), dict) else {}
+    assessment = assess_central_bank_cross_source_context(payload, now_utc=now)
+    verified = bool(fresh and assessment.get("ready", False))
+    notes = [str(reason) for reason in assessment.get("reasons", [])]
+    if not fresh and "stale_artifact" not in notes:
+        notes.append("stale_artifact")
+    if int(coverage.get("soft_conflict_count", 0) or 0) > 0:
+        notes.append(f"soft_source_conflicts={int(coverage.get('soft_conflict_count', 0) or 0)}")
+    return _row(
+        source_id="central_bank_cross_source_context",
+        title="Central Bank Point-In-Time Cross-Source Router",
+        category="macro_data",
+        verification_status=STATUS_SINGLE_VERIFIED if verified else STATUS_SINGLE_UNVERIFIED,
+        verification_mode="point_in_time_lineage_and_conflict_contract",
+        artifact_path=path,
+        artifact_timestamp=ts,
+        age_hours=_age_hours(ts, now),
+        fresh=fresh,
+        ok=verified,
+        notes=notes,
+        evidence={
+            "synchronized_ready_bank_count": coverage.get("synchronized_ready_bank_count", 0),
+            "distinct_cross_source_link_count": coverage.get("distinct_cross_source_link_count", 0),
+            "banks_without_distinct_cross_source": coverage.get("banks_without_distinct_cross_source", []),
+            "synchronized_bank_coverage_ratio": coverage.get("synchronized_bank_coverage_ratio", 0.0),
+            "fx_join_coverage_ratio": coverage.get("fx_join_coverage_ratio", 0.0),
+            "macro_join_coverage_ratio": coverage.get("macro_join_coverage_ratio", 0.0),
+            "liquidity_join_coverage_ratio": coverage.get("liquidity_join_coverage_ratio", 0.0),
+            "lineage_coverage_ratio": coverage.get("lineage_coverage_ratio", 0.0),
+            "hard_conflict_count": coverage.get("hard_conflict_count", 0),
+            "soft_conflict_count": coverage.get("soft_conflict_count", 0),
+            "future_observations_excluded": coverage.get("future_observations_excluded", {}),
+            "feature_count": len(features),
+            "required_feature_count": len(CENTRAL_BANK_CROSS_SOURCE_FEATURE_KEYS),
+            "consumer_contract": assessment,
+            "routing": payload.get("routing", {}),
+            "methodology": payload.get("methodology", {}),
+        },
+    )
+
+
+def _decision_context_mesh_row(project_root: Path, now: datetime) -> dict[str, Any]:
+    path = project_root / "exports" / "external_context" / "decision_context_mesh_latest.json"
+    payload = _read_json(path)
+    ts = _parse_ts(payload.get("timestamp_utc"))
+    fresh = _is_fresh(ts, now, 24.0)
+    assessment = assess_decision_context_mesh(payload, now_utc=now)
+    coverage = payload.get("coverage") if isinstance(payload.get("coverage"), dict) else {}
+    grade_summary = payload.get("grade_summary") if isinstance(payload.get("grade_summary"), dict) else {}
+    features = ((payload.get("derived") or {}).get("global_features") or {}) if isinstance(payload.get("derived"), dict) else {}
+    sources = payload.get("sources") if isinstance(payload.get("sources"), dict) else {}
+    healthy_sources = sum(1 for row in sources.values() if isinstance(row, dict) and row.get("ok") is True)
+    source_count = len(sources)
+    distinct_families = {
+        str(row.get("source_family") or "")
+        for row in sources.values()
+        if isinstance(row, dict) and row.get("ok") is True and str(row.get("source_family") or "")
+    }
+    verified = bool(fresh and assessment.get("ready", False) and healthy_sources >= max(source_count - 1, 1))
+    notes = [str(reason) for reason in assessment.get("reasons", [])]
+    if not fresh and "stale_artifact" not in notes:
+        notes.append("stale_artifact")
+    return _row(
+        source_id="decision_context_mesh",
+        title="Twelve-Plane Macro And Micro Decision Context Mesh",
+        category="cross_source_decision_context",
+        verification_status=(
+            STATUS_CROSS_VERIFIED if verified and len(distinct_families) >= 2 else STATUS_SINGLE_UNVERIFIED
+        ),
+        verification_mode="point_in_time_multi_source_lineage_and_routing_contract",
+        artifact_path=path,
+        artifact_timestamp=ts,
+        age_hours=_age_hours(ts, now),
+        fresh=fresh,
+        ok=verified,
+        notes=notes,
+        evidence={
+            "macro_percentage": grade_summary.get("macro_percentage", 0.0),
+            "macro_grade": grade_summary.get("macro_grade", "F"),
+            "micro_percentage": grade_summary.get("micro_percentage", 0.0),
+            "micro_grade": grade_summary.get("micro_grade", "F"),
+            "combined_percentage": grade_summary.get("combined_percentage", 0.0),
+            "plane_count": coverage.get("observed_plane_count", 0),
+            "ready_plane_count": coverage.get("ready_plane_count", 0),
+            "signal_coverage_ratio": coverage.get("signal_coverage_ratio", 0.0),
+            "healthy_source_count": healthy_sources,
+            "ok_sources": healthy_sources,
+            "total_sources": source_count,
+            "distinct_source_family_count": len(distinct_families),
+            "cross_profile_ok": bool(verified and len(distinct_families) >= 2),
+            "feature_count": len(features),
+            "required_feature_count": len(DECISION_CONTEXT_MESH_FEATURE_KEYS),
+            "future_observations_excluded": coverage.get("future_observations_excluded", {}),
+            "consumer_contract": assessment,
+            "authority_contract": payload.get("contract", {}),
+            "methodology": payload.get("methodology", {}),
         },
     )
 
@@ -910,7 +1151,9 @@ def _schwab_symbol_news_row(health_dir: Path, now: datetime) -> dict[str, Any]:
     ts = _parse_ts(payload.get("timestamp_utc"))
     fresh = _is_fresh(ts, now, 12.0)
     overall_status = str(payload.get("overall_status") or "").strip()
+    auth_required = bool(payload.get("auth_required", True))
     auth_ok = bool(payload.get("auth_ok", False))
+    auth_ready = bool(auth_ok or not auth_required)
     requested = int(payload.get("requested_symbol_count", 0) or 0)
     attempted = int(payload.get("attempted_symbol_count", 0) or 0)
     with_news = int(payload.get("symbols_with_news", 0) or 0)
@@ -918,13 +1161,19 @@ def _schwab_symbol_news_row(health_dir: Path, now: datetime) -> dict[str, Any]:
     coverage_ratio = float(payload.get("coverage_ratio", 0.0) or 0.0)
     method_counts = payload.get("method_counts") if isinstance(payload.get("method_counts"), dict) else {}
     fallback_active = bool(payload.get("fallback_active", False))
+    fallback_source_contract = (
+        payload.get("fallback_source_contract")
+        if isinstance(payload.get("fallback_source_contract"), dict)
+        else {}
+    )
+    fallback_source_fresh = bool(not fallback_active or fallback_source_contract.get("fresh", False))
     no_endpoint = str(overall_status) == "degraded_no_broker_news_endpoint" or (
         attempted > 0 and int(method_counts.get("none", 0) or 0) >= attempted
     )
     notes: list[str] = []
     if not fresh:
         notes.append("stale_artifact")
-    if not auth_ok:
+    if not auth_ready:
         notes.append("schwab_auth_blocked")
     if no_endpoint and not fallback_active:
         notes.append("no_callable_broker_news_endpoint")
@@ -932,8 +1181,17 @@ def _schwab_symbol_news_row(health_dir: Path, now: datetime) -> dict[str, Any]:
         notes.append(f"partial_symbol_attempts={attempted}/{requested}")
     if total_items <= 0 and auth_ok and not no_endpoint:
         notes.append("no_symbol_news_items")
+    if fallback_active and not fallback_source_fresh:
+        notes.append("stale_public_schwab_fallback_source")
 
-    ok = bool(payload.get("ok", False)) and fresh and auth_ok and attempted > 0 and (not no_endpoint or fallback_active)
+    ok = bool(
+        payload.get("ok", False)
+        and fresh
+        and auth_ready
+        and attempted > 0
+        and (not no_endpoint or fallback_active)
+        and fallback_source_fresh
+    )
     status = STATUS_SINGLE_VERIFIED if ok else STATUS_SINGLE_UNVERIFIED
     return _row(
         source_id="schwab_symbol_news",
@@ -950,6 +1208,8 @@ def _schwab_symbol_news_row(health_dir: Path, now: datetime) -> dict[str, Any]:
         evidence={
             "overall_status": overall_status,
             "auth_ok": auth_ok,
+            "auth_required": auth_required,
+            "auth_ready": auth_ready,
             "requested_symbols": requested,
             "attempted_symbols": attempted,
             "symbols_with_news": with_news,
@@ -961,6 +1221,7 @@ def _schwab_symbol_news_row(health_dir: Path, now: datetime) -> dict[str, Any]:
             "fallback_active": fallback_active,
             "fallback_mode": str(payload.get("fallback_mode") or ""),
             "fallback_symbol_count": int(payload.get("fallback_symbol_count", 0) or 0),
+            "fallback_source_contract": fallback_source_contract,
         },
     )
 
@@ -1412,6 +1673,10 @@ def build_source_verification_payload(project_root: Path = PROJECT_ROOT) -> dict
         _fx_market_row(health_dir, now),
         _external_feeds_row(project_root, now),
         _official_macro_row(health_dir, now),
+        _central_bank_liquidity_row(project_root, now),
+        _global_central_bank_row(project_root, now),
+        _central_bank_cross_source_row(project_root, now),
+        _decision_context_mesh_row(project_root, now),
         _schwab_education_row(health_dir, now),
         _schwab_symbol_news_row(health_dir, now),
         _ticker_news_context_row(health_dir, now),

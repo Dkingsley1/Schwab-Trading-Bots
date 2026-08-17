@@ -52,6 +52,52 @@ def test_schwab_auth_supervisor_ready_for_fresh_token(tmp_path: Path, monkeypatc
     assert payload["regression_contract"]["do_not_open_browser_when_token_ready"] is True
 
 
+def test_schwab_auth_supervisor_marks_historical_refresh_degradation_recovered(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    project_root = tmp_path / "project"
+    health = project_root / "governance" / "health"
+    token_path = project_root / "token.json"
+    project_root.mkdir(parents=True)
+    _token(token_path)
+    _write_json(health / "premarket_token_guard_latest.json", {"ok": True})
+    _write_json(
+        health / "broker_readiness_latest.json",
+        {"ready_for_open": True, "auth_ok": True, "network_ok": True},
+    )
+    _write_json(
+        health / "auth_lease_manager_latest.json",
+        {"overall_status": "ready", "lease_state": "healthy"},
+    )
+    _write_json(
+        health / "schwab_auth_refresh_latest.json",
+        {"overall_status": "degraded", "ok": True, "reason": "auth_success", "skipped": False},
+    )
+
+    monkeypatch.setattr(supervisor, "_list_auth_processes", lambda: [])
+    monkeypatch.setattr(supervisor, "_callback_port_open", lambda *args, **kwargs: False)
+    monkeypatch.setattr(
+        supervisor,
+        "_recent_auth_signals",
+        lambda root: {
+            "auth_error_markers": [],
+            "callback_error_markers": [],
+            "auth_error_count": 0,
+            "callback_error_count": 0,
+            "circuit_breaker_with_auth_error": False,
+        },
+    )
+
+    payload = supervisor.build_payload(project_root, token_path=token_path)
+
+    assert payload["overall_status"] == "ready"
+    assert payload["auth_refresh"]["overall_status"] == "ready"
+    assert payload["auth_refresh"]["historical_overall_status"] == "degraded"
+    assert payload["auth_refresh"]["current_contract_recovered"] is True
+    assert "historical_auth_refresh_degradation_after_current_recovery" in payload["recovered_findings"]
+
+
 def test_schwab_auth_supervisor_keeps_recovered_oauth_history_out_of_active_findings(
     tmp_path: Path,
     monkeypatch,

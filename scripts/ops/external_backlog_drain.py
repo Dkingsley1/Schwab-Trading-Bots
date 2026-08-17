@@ -1075,8 +1075,6 @@ def _drain_env(
             "SQL_LINK_SERVICE_SHARD_LINK_TIMEOUT_SECONDS": "420" if critical else "240",
             "SQL_LINK_SERVICE_SHARDS": ",".join(prioritized_shards),
             "SQL_LINK_SERVICE_MERGE_MAX_SECONDS_PER_CYCLE": "90" if critical else "60",
-            "SQL_LINK_SERVICE_AUTO_HOT_RETENTION": "0",
-            "SQL_LINK_SERVICE_AUTO_QUEUE_RETENTION": "0",
             "SQL_LINK_SERVICE_HOT_MIN_INTERVAL_SECONDS": "30",
             "SQL_LINK_SERVICE_HOT_BATCH_SIZE": "240000" if critical else "200000",
             "SQL_LINK_SERVICE_HOT_MAX_ROWS": "2400000" if critical else "1800000",

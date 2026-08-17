@@ -5,6 +5,7 @@ import argparse
 import json
 import subprocess
 import sys
+import time
 from pathlib import Path
 from typing import Any
 
@@ -21,6 +22,7 @@ else:
 DEFAULT_OUT_PATH = PROJECT_ROOT / "governance" / "health" / "storage_reconnect_regression_guard_latest.json"
 DEFAULT_LABEL = "com.dankingsley.storage_eject_guard"
 DEFAULT_PLIST = Path.home() / "Library" / "LaunchAgents" / f"{DEFAULT_LABEL}.plist"
+DEFAULT_RUNTIME_BINARY = Path.home() / "Library" / "Application Support" / "schwab_trading_bot" / "bin" / "storage_eject_guard"
 
 REQUIRED_GUARD_SNIPPETS = {
     "disk_appearance_handler": "handleObservedDiskAppeared",
@@ -39,6 +41,10 @@ REQUIRED_GUARD_SNIPPETS = {
     "halt_refresh": "global-halt-refresh --json",
     "halt_auto_clear": "global-halt-auto-clear --json",
     "operator_cockpit": "operator-cockpit --json",
+    "transition_state": "storage_eject_guard_latest.json",
+    "standby_disconnect_no_restart": "external_disconnected_standby",
+    "external_write_certification": "externalWriteProbeReady",
+    "atomic_transition_state": "writeTransitionState",
 }
 
 REQUIRED_OPSCTL_SNIPPETS = {
@@ -128,12 +134,26 @@ def _swift_parse(project_root: Path, guard_path: Path, *, check_swift_parse: boo
         return {"checked": False, "ok": True, "status": "skipped"}
     if not guard_path.exists():
         return {"checked": True, "ok": False, "status": "missing", "rc": 127}
-    result = _run(["/usr/bin/swiftc", "-parse", str(guard_path)], cwd=project_root, timeout_sec=30)
+    cache_dir = Path("/tmp") / "schwab_trading_bot_swift_module_cache"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    result = _run(
+        [
+            "/usr/bin/env",
+            f"CLANG_MODULE_CACHE_PATH={cache_dir}",
+            f"SWIFT_MODULE_CACHE_PATH={cache_dir}",
+            "/usr/bin/swiftc",
+            "-typecheck",
+            str(guard_path),
+        ],
+        cwd=project_root,
+        timeout_sec=60,
+    )
     ok = int(result.get("rc", 1)) == 0
     return {
         "checked": True,
         "ok": ok,
         "status": "ready" if ok else "blocked",
+        "validation_mode": "semantic_typecheck",
         "rc": int(result.get("rc", 1)),
         "stderr_tail": result.get("stderr_tail", ""),
     }
@@ -172,6 +192,26 @@ def build_payload(
     missing = [row["name"] for row in contract_rows if not bool(row.get("present", False))]
     launchd = _launchd_state(project_root, check_launchd=check_launchd)
     swift_parse = _swift_parse(project_root, guard_path, check_swift_parse=check_swift_parse)
+    runtime_binary = DEFAULT_RUNTIME_BINARY
+    runtime_binary_present = runtime_binary.is_file()
+    runtime_binary_executable = runtime_binary_present and bool(runtime_binary.stat().st_mode & 0o111)
+    runtime_binary_current = False
+    if runtime_binary_present and guard_path.exists():
+        try:
+            runtime_binary_current = runtime_binary.stat().st_mtime_ns >= guard_path.stat().st_mtime_ns
+        except OSError:
+            runtime_binary_current = False
+    runtime_binary_ready = bool(runtime_binary_present and runtime_binary_executable and runtime_binary_current)
+    if not check_launchd:
+        runtime_binary_ready = True
+    transition_path = project_root / "governance" / "health" / "storage_eject_guard_latest.json"
+    transition_state = load_json(transition_path)
+    transition_age_seconds = None
+    if transition_path.exists():
+        try:
+            transition_age_seconds = max(time.time() - transition_path.stat().st_mtime, 0.0)
+        except OSError:
+            transition_age_seconds = None
 
     storage_mount = load_json(project_root / "governance" / "health" / "storage_mount_guard_latest.json")
     storage_control = load_json(project_root / "governance" / "health" / "ingestion_storage_control_latest.json")
@@ -199,8 +239,18 @@ def build_payload(
         if isinstance(row, dict) and str(row.get("classification") or "") == "active_external_route"
     ]
     external_required_for_hot_path = bool(storage_mount.get("external_required_for_hot_path", True))
-    external_available = bool(storage_mount.get("external_available", storage_mount.get("mount_present", True)))
+    storage_mount_external_available = bool(storage_mount.get("external_available", storage_mount.get("mount_present", True)))
+    transition_status = str(transition_state.get("overall_status") or transition_state.get("status") or "").lower()
+    transition_event = str(transition_state.get("event") or "")
+    transition_external_available = bool(
+        transition_state
+        and transition_status == "ready"
+        and transition_state.get("external_available", False)
+    )
+    external_available = bool(storage_mount_external_available or transition_external_available)
     local_mode_external_sqlite = bool(storage_mode.startswith("local_fallback") and external_sqlite_routes)
+    transition_failed = transition_status in {"blocked", "critical", "failed"}
+    transition_state_missing = bool(check_launchd and launchd.get("running", False) and not transition_state)
     live_recovery_blockers = ordered_unique(
         [
             "external_mount_unavailable"
@@ -210,10 +260,19 @@ def build_payload(
             "storage_pressure_active" if storage_status in {"blocked", "critical"} else "",
             "global_halt_clear_blocked" if halt_clear_blockers else "",
             "local_mode_external_sqlite_route" if local_mode_external_sqlite else "",
+            "storage_eject_guard_transition_failed" if transition_failed else "",
+            "storage_eject_guard_transition_state_missing" if transition_state_missing else "",
         ]
     )
 
-    contract_ok = not missing and guard_path.exists() and install_path.exists() and runner_path.exists() and bool(swift_parse.get("ok", True))
+    contract_ok = bool(
+        not missing
+        and guard_path.exists()
+        and install_path.exists()
+        and runner_path.exists()
+        and bool(swift_parse.get("ok", True))
+        and runtime_binary_ready
+    )
     automation_installed = bool(launchd.get("plist_exists", False))
     automation_running = bool(launchd.get("running", False)) if check_launchd else True
 
@@ -231,12 +290,18 @@ def build_payload(
             if not automation_installed or not automation_running
             else "",
             "repair the reconnect aftercare snippets before trusting automatic failback" if missing else "",
+            "reinstall the storage eject guard so the compiled runtime binary matches its semantically checked source"
+            if check_launchd and not runtime_binary_ready
+            else "",
             "let storage-pressure-clearance and external-backlog-drain finish before safe halt auto-clear"
             if "storage_pressure_active" in live_recovery_blockers
             else "",
             "run split-brain reconciliation before deleting local fallback artifacts" if unresolved_conflicts > 0 else "",
             "keep the stack quiesced and run storage-sqlite-local-failover --apply before restarting local mode"
             if local_mode_external_sqlite
+            else "",
+            "repair the last SSD transition and restart the eject guard so its state returns to monitoring"
+            if transition_failed or transition_state_missing
             else "",
         ]
     )
@@ -259,13 +324,39 @@ def build_payload(
             "sqlite_failover_script_exists": sqlite_failover_path.exists(),
             "launchd": launchd,
             "swift_parse": swift_parse,
+            "swift_typecheck": swift_parse,
+            "transition_state": {
+                "path": str(transition_path),
+                "present": bool(transition_state),
+                "status": transition_status or "missing",
+                "event": transition_event,
+                "age_seconds": round(float(transition_age_seconds), 3) if transition_age_seconds is not None else None,
+                "stack_restart_required": bool(transition_state.get("stack_restart_required", False)),
+                "transition_rc": _safe_int(transition_state.get("transition_rc"), 0),
+            },
+            "runtime_binary": {
+                "path": str(runtime_binary),
+                "present": runtime_binary_present,
+                "executable": runtime_binary_executable,
+                "current_with_source": runtime_binary_current,
+                "ready": runtime_binary_ready,
+            },
         },
         "live_recovery": {
             "blockers": live_recovery_blockers,
             "storage_mode": storage_mode,
-            "external_available": external_available if storage_mount else False,
+            "external_available": external_available,
+            "external_availability_source": (
+                "storage_mount_guard"
+                if storage_mount_external_available
+                else "storage_eject_guard_transition_state"
+                if transition_external_available
+                else "unavailable"
+            ),
             "external_required_for_hot_path": external_required_for_hot_path,
             "external_probe_skipped": bool(storage_mount.get("probe_skipped_external_io", False)),
+            "transition_status": transition_status or "missing",
+            "transition_event": transition_event,
             "external_sqlite_routes": external_sqlite_routes,
             "split_brain_unresolved_conflicts": unresolved_conflicts,
             "storage_control_status": storage_status,
@@ -291,6 +382,11 @@ def build_payload(
             "requires_local_override_mount_suppression": True,
             "requires_explicit_external_certification": True,
             "requires_transactional_sqlite_local_failover": True,
+            "requires_swift_semantic_typecheck": True,
+            "requires_atomic_transition_state": True,
+            "requires_standby_disconnect_restart_suppression": True,
+            "requires_external_write_certification": True,
+            "requires_compiled_runtime_binary": True,
         },
         "recommended_actions": recommended_actions,
     }

@@ -2,6 +2,7 @@ import argparse
 import hmac
 import hashlib
 import json
+import os
 import secrets
 from collections import Counter
 from datetime import datetime, timezone
@@ -84,10 +85,12 @@ def _load_jsonl_rows(path: Path) -> list[dict[str, Any]]:
 
 def _ensure_signing_key(path: Path) -> str:
     if path.exists():
+        os.chmod(path, 0o600)
         return str(path.read_text(encoding="utf-8").strip())
     path.parent.mkdir(parents=True, exist_ok=True)
     secret = secrets.token_hex(32)
     path.write_text(secret, encoding="utf-8")
+    os.chmod(path, 0o600)
     return secret
 
 

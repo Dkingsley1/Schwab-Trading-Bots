@@ -73,3 +73,36 @@ def test_grade_regression_autopilot_omits_recursive_refresh_inside_refresh_conte
     assert not any("runtime_artifact_refresh.py" in " ".join(step.get("cmd") or []) for step in plan)
     assert any("ingestion_storage_control.py" in " ".join(step.get("cmd") or []) for step in plan)
     assert not any("storage_backpressure_autopilot.py" in " ".join(step.get("cmd") or []) for step in plan)
+
+
+def test_grade_regression_autopilot_is_noop_when_every_surface_is_ready(tmp_path: Path) -> None:
+    plan = src._repair_plan(
+        tmp_path,
+        {
+            "overall_status": "ready",
+            "surfaces": [
+                {"surface": "training_quality", "state": "ready"},
+                {"surface": "storage_control", "state": "ready"},
+            ],
+        },
+        storage_max_cycles=1,
+    )
+
+    assert plan == []
+
+
+def test_grade_regression_autopilot_never_embeds_full_artifact_refresh(tmp_path: Path) -> None:
+    plan = src._repair_plan(
+        tmp_path,
+        {
+            "overall_status": "blocked",
+            "surfaces": [
+                {"surface": "training_quality", "state": "blocked"},
+                {"surface": "storage_control", "state": "degraded"},
+            ],
+        },
+        storage_max_cycles=1,
+    )
+
+    assert plan
+    assert not any("runtime_artifact_refresh.py" in " ".join(step.get("cmd") or []) for step in plan)

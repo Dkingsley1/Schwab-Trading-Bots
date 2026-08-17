@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import math
 import sys
@@ -73,6 +74,48 @@ def _artifact_fresh(payload: dict[str, Any], path: Path, *, max_age_hours: float
     if timestamp is None:
         return False
     return (datetime.now(timezone.utc) - timestamp).total_seconds() <= max(float(max_age_hours), 0.0) * 3600.0
+
+
+def _profitability_evidence_epoch_contract(
+    project_root: Path,
+    artifacts: dict[str, tuple[dict[str, Any], Path]],
+) -> dict[str, Any]:
+    enforced = (project_root / "master_bot_registry.json").is_file()
+    rows: list[dict[str, Any]] = []
+    missing_epoch: list[str] = []
+    epoch_ids: set[str] = set()
+    for name, (payload, path) in artifacts.items():
+        evidence_epoch = payload.get("evidence_epoch") if isinstance(payload.get("evidence_epoch"), dict) else {}
+        epoch_id = str(evidence_epoch.get("id") or "").strip()
+        if epoch_id:
+            epoch_ids.add(epoch_id)
+        elif enforced:
+            missing_epoch.append(name)
+        rows.append(
+            {
+                "name": name,
+                "path": str(path),
+                "present": bool(payload),
+                "timestamp_utc": str(payload.get("timestamp_utc") or ""),
+                "epoch_id": epoch_id,
+            }
+        )
+    ready = bool(not enforced or (not missing_epoch and len(epoch_ids) == 1))
+    receipt = {
+        "enforced": enforced,
+        "artifact_count": len(rows),
+        "missing_epoch": sorted(missing_epoch),
+        "epoch_ids": sorted(epoch_ids),
+        "artifacts": rows,
+    }
+    return {
+        **receipt,
+        "ready": ready,
+        "receipt_sha256": hashlib.sha256(
+            json.dumps(receipt, ensure_ascii=True, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        ).hexdigest(),
+        "policy": "profitability promotion evidence must be rebuilt from one atomic refresh epoch; runtime observations may continue while this proof gate is closed",
+    }
 
 
 def _pearson(left: list[float], right: list[float]) -> float | None:
@@ -230,6 +273,38 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, config_path: Path | None
     holdout = load_json(project_root / "governance" / "research" / "profitability_holdout_vault_latest.json")
     benchmark = load_json(project_root / "governance" / "research" / "profitability_benchmark_hurdle_latest.json")
     decay = load_json(project_root / "governance" / "research" / "decay_monitor_latest.json")
+    paper_standard = load_json(health / "paper_live_data_standard_latest.json")
+    artifact_paths = {
+        "source_verification": health / "source_verification_latest.json",
+        "paper_execution_calibration": health / "paper_execution_calibration_latest.json",
+        "paper_performance": health / "paper_performance_latest.json",
+        "paper_profitability_control": health / "paper_runtime_profitability_controls_latest.json",
+        "counterfactual_replay": health / "counterfactual_replay_latest.json",
+        "multiple_testing": project_root / "governance" / "research" / "multiple_testing_guard_latest.json",
+        "independent_fill_acquisition": health / "independent_fill_evidence_acquisition_latest.json",
+        "independent_validator": health / "profitability_independent_validator_latest.json",
+        "holdout_vault": project_root / "governance" / "research" / "profitability_holdout_vault_latest.json",
+        "benchmark_hurdle": project_root / "governance" / "research" / "profitability_benchmark_hurdle_latest.json",
+        "decay_monitor": project_root / "governance" / "research" / "decay_monitor_latest.json",
+        "execution_queue_stress": health / "execution_queue_stress_latest.json",
+    }
+    evidence_epoch_contract = _profitability_evidence_epoch_contract(
+        project_root,
+        {
+            "source_verification": (source, artifact_paths["source_verification"]),
+            "paper_execution_calibration": (fill, artifact_paths["paper_execution_calibration"]),
+            "paper_performance": (performance, artifact_paths["paper_performance"]),
+            "paper_profitability_control": (paper_control, artifact_paths["paper_profitability_control"]),
+            "counterfactual_replay": (counterfactual, artifact_paths["counterfactual_replay"]),
+            "multiple_testing": (multiple_testing, artifact_paths["multiple_testing"]),
+            "independent_fill_acquisition": (fill_acquisition, artifact_paths["independent_fill_acquisition"]),
+            "independent_validator": (validator, artifact_paths["independent_validator"]),
+            "holdout_vault": (holdout, artifact_paths["holdout_vault"]),
+            "benchmark_hurdle": (benchmark, artifact_paths["benchmark_hurdle"]),
+            "decay_monitor": (decay, artifact_paths["decay_monitor"]),
+            "execution_queue_stress": (load_json(artifact_paths["execution_queue_stress"]), artifact_paths["execution_queue_stress"]),
+        },
+    )
     expectancy = _as_dict(performance.get("post_cost_expectancy"))
     robust = _as_dict(expectancy.get("robust_statistics"))
     source_policy = _as_dict(config.get("source_verification"))
@@ -381,6 +456,49 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, config_path: Path | None
         )
     )
     source_code = (project_root / "core" / "base_trader.py").read_text(encoding="utf-8") if (project_root / "core" / "base_trader.py").is_file() else ""
+    shadow_source = (
+        (project_root / "scripts" / "run_shadow_training_loop.py").read_text(encoding="utf-8")
+        if (project_root / "scripts" / "run_shadow_training_loop.py").is_file()
+        else ""
+    )
+    performance_source = (
+        (project_root / "scripts" / "paper_performance_report.py").read_text(encoding="utf-8")
+        if (project_root / "scripts" / "paper_performance_report.py").is_file()
+        else ""
+    )
+    authority_policy = _as_dict(config.get("paper_execution_authority"))
+    authority_safety = _as_dict(paper_standard.get("safety_contract"))
+    authority_implemented = bool(
+        authority_policy
+        and "evaluate_paper_execution_authority" in shadow_source
+        and "require_hierarchy_identity=True" in shadow_source
+        and "PAPER_EXECUTION_COHORT_MAX_PER_SEGMENT" in shadow_source
+    )
+    authority_evidence_ready = bool(
+        paper_standard.get("ok", False)
+        and authority_safety.get("paper_execution_authority_version")
+        == str(authority_policy.get("required_version") or "paper_execution_authority_v2")
+        and str(authority_safety.get("paper_mirror_all_active_sub_bots") or "") == "0"
+        and not _as_list(authority_safety.get("unauthorized_execution_bot_ids"))
+        and int(authority_safety.get("execution_authority_count", 0) or 0)
+        <= int(authority_safety.get("execution_authority_hard_cap", 0) or 0)
+    )
+    accounting_policy = _as_dict(config.get("accounting_scope"))
+    accounting_views = _as_dict(performance.get("accounting_views"))
+    required_accounting_views = [str(item) for item in _as_list(accounting_policy.get("required_views"))]
+    candidate_view = _as_dict(accounting_views.get("candidate_forward_flow"))
+    accounting_implemented = bool(
+        accounting_policy
+        and all(name in performance_source for name in required_accounting_views)
+        and "financial_grade_eligible" in performance_source
+        and "carried_forward" in performance_source
+    )
+    accounting_evidence_ready = bool(
+        required_accounting_views
+        and all(name in accounting_views for name in required_accounting_views)
+        and str(candidate_view.get("candidate_id") or "").strip()
+        and int(candidate_view.get("row_count", 0) or 0) > 0
+    )
     baseline_controls = [
         _control("01_source_verification", "Verified and confidence-scored point-in-time sources", bool(config and source_policy), source_ready, source_overall),
         _control("02_independent_fills", "Independent fills and explicit cost calibration", bool(config and fill_policy), fill_ready, fill),
@@ -392,6 +510,20 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, config_path: Path | None
         _control("08_multiple_testing_firewall", "Actual FDR, deflated Sharpe, and PBO control selection bias", bool(fdr_self_test.get("hypothesis_count") == 2), statistical_ready, multiple_testing),
         _control("09_oos_regime_lcb", "Positive lower bound persists across independent days and regimes", oos_control_implemented, oos_ready, {"robust_statistics": robust, "thresholds": stat_policy}),
         _control("10_conservative_allocation", "Only low-correlation independently profitable sleeves receive proposed weight", True, bool(allocation.get("ready", False)), allocation),
+        _control(
+            "11_explicit_paper_execution_authority",
+            "Only bounded, hierarchy-mapped market-signal cohorts may create candidate-scoped paper fills",
+            authority_implemented,
+            authority_evidence_ready,
+            {"policy": authority_policy, "runtime": authority_safety},
+        ),
+        _control(
+            "12_candidate_accounting_scope",
+            "Lifetime, current-day, candidate-forward, and active-book accounting remain distinct",
+            accounting_implemented,
+            accounting_evidence_ready,
+            {"policy": accounting_policy, "views": accounting_views},
+        ),
     ]
     holdout_policy = _as_dict(config.get("holdout_vault"))
     benchmark_policy = _as_dict(config.get("benchmark_hurdle"))
@@ -499,21 +631,43 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, config_path: Path | None
     control_ready = implemented_count == len(all_controls)
     baseline_economic_ready = baseline_evidence_count == len(baseline_controls)
     hardening_economic_ready = hardening_evidence_count == len(hardening_controls)
-    economic_ready = bool(baseline_economic_ready and hardening_economic_ready)
+    economic_ready = bool(
+        baseline_economic_ready
+        and hardening_economic_ready
+        and evidence_epoch_contract.get("ready", False)
+    )
     control_score = 100.0 * implemented_count / max(len(all_controls), 1)
     economic_score = 100.0 * evidence_count / max(len(all_controls), 1)
+    if not evidence_epoch_contract.get("ready", False):
+        economic_score = min(economic_score, 95.0)
     hardening_control_score = 100.0 * hardening_implemented_count / max(len(hardening_controls), 1)
     hardening_economic_score = 100.0 * hardening_evidence_count / max(len(hardening_controls), 1)
     blockers = ordered_unique(
         [f"baseline:{row['control_id']}" for row in baseline_controls if not row["implemented"] or not row["evidence_ready"]]
         + [f"hardening:{row['control_id']}" for row in hardening_controls if not row["implemented"] or not row["evidence_ready"]]
+        + (["evidence_epoch:cross_artifact_epoch_mismatch"] if not evidence_epoch_contract.get("ready", False) else [])
+    )
+    implementation_blockers = ordered_unique(
+        [f"baseline:{row['control_id']}" for row in baseline_controls if not row["implemented"]]
+        + [f"hardening:{row['control_id']}" for row in hardening_controls if not row["implemented"]]
+    )
+    economic_evidence_blockers = ordered_unique(
+        [f"baseline:{row['control_id']}" for row in baseline_controls if not row["evidence_ready"]]
+        + [f"hardening:{row['control_id']}" for row in hardening_controls if not row["evidence_ready"]]
+        + (["evidence_epoch:cross_artifact_epoch_mismatch"] if not evidence_epoch_contract.get("ready", False) else [])
     )
     raw_grade = str(paper_control.get("raw_profitability_grade") or "unknown")
+    overall_status = "ready" if control_ready and economic_ready else "ready_with_evidence_debt" if control_ready else "blocked"
     return {
         "timestamp_utc": iso_now(),
         "schema_version": 2,
         "ok": control_ready,
-        "overall_status": "ready" if control_ready else "blocked",
+        "overall_status": overall_status,
+        "semantic_ok_scope": "control_implementation",
+        "control_implementation_ready": control_ready,
+        "economic_evidence_ready": economic_ready,
+        "paper_collection_ready": control_ready,
+        "live_promotion_ready": economic_ready,
         "control_grade": _grade(control_score, complete=control_ready),
         "control_score": round(control_score, 3),
         "economic_evidence_grade": _grade(economic_score, complete=economic_ready),
@@ -526,6 +680,7 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, config_path: Path | None
         ),
         "hardening_economic_evidence_score": round(hardening_economic_score, 3),
         "promotion_evidence_ready": economic_ready,
+        "evidence_epoch_contract": evidence_epoch_contract,
         "raw_profitability_grade": raw_grade,
         "raw_profitability_grade_overridden": False,
         "implemented_control_count": implemented_count,
@@ -550,6 +705,8 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, config_path: Path | None
             "promotion_ready": hardening_economic_ready,
         },
         "blockers": blockers,
+        "implementation_blockers": implementation_blockers,
+        "economic_evidence_blockers": economic_evidence_blockers,
         "allocation_proposal": allocation,
         "grading_contract": {
             "control_A_plus_means_all_baseline_and_future_profitability_controls_are_implemented": True,
@@ -558,6 +715,8 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, config_path: Path | None
             "negative_or_insufficient_raw_results_can_never_be_relabelled": True,
             "paper_controls_do_not_authorize_live_money": True,
             "future_profitability_is_not_guaranteed": True,
+            "generic_control_ok_must_not_be_interpreted_as_economic_readiness": True,
+            "live_promotion_requires_live_promotion_ready": True,
         },
     }
 
@@ -565,13 +724,15 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, config_path: Path | None
 def main() -> int:
     parser = argparse.ArgumentParser(description="Evaluate the ten-control profitability evidence firewall.")
     parser.add_argument("--project-root", type=Path, default=PROJECT_ROOT)
-    parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG_PATH)
-    parser.add_argument("--out-file", type=Path, default=DEFAULT_OUT_PATH)
+    parser.add_argument("--config", type=Path)
+    parser.add_argument("--out-file", type=Path)
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args()
     project_root = args.project_root.resolve()
-    config_path = args.config if args.config.is_absolute() else project_root / args.config
-    out_path = args.out_file if args.out_file.is_absolute() else project_root / args.out_file
+    config_path = args.config or Path("config/profitability_evidence_firewall_v1.json")
+    out_path = args.out_file or Path("governance/health/profitability_evidence_firewall_latest.json")
+    config_path = config_path if config_path.is_absolute() else project_root / config_path
+    out_path = out_path if out_path.is_absolute() else project_root / out_path
     payload = build_payload(project_root, config_path=config_path)
     write_payload(out_path, payload)
     if args.json:

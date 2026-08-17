@@ -1,3 +1,4 @@
+import hashlib
 import json
 import sys
 from datetime import datetime, timezone
@@ -12,6 +13,16 @@ import scripts.feature_store_manifest as src
 
 
 def _write_json(path: Path, payload: dict) -> None:
+    if path.name == "runtime_training_snapshot_latest.json" and payload.get("rows_path"):
+        payload = dict(payload)
+        rows_path = Path(str(payload["rows_path"]))
+        rows_path.parent.mkdir(parents=True, exist_ok=True)
+        rows_blob = "".join(
+            json.dumps({"snapshot_id": f"snapshot-{index}", "timestamp_utc": payload["timestamp_utc"]}) + "\n"
+            for index in range(int(payload.get("row_count", 0) or 0))
+        )
+        rows_path.write_text(rows_blob, encoding="utf-8")
+        payload["rows_sha256"] = hashlib.sha256(rows_blob.encode("utf-8")).hexdigest()
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, ensure_ascii=True, indent=2), encoding="utf-8")
 

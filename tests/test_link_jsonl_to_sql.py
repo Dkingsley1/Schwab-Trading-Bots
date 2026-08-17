@@ -232,7 +232,10 @@ class LinkJsonlToSqlTests(unittest.TestCase):
                 conn.close()
             with sqlite3.connect(str(root / "governance" / "ops_data_plane.sqlite3")) as ops_conn:
                 dead_letter_count = int(ops_conn.execute("SELECT COUNT(*) FROM ingest_dead_letters").fetchone()[0] or 0)
-                schema_drift_count = int(ops_conn.execute("SELECT COUNT(*) FROM schema_drift_events").fetchone()[0] or 0)
+                schema_drift_count = int(
+                    ops_conn.execute("SELECT COALESCE(SUM(occurrence_count), 0) FROM schema_drift_rollups").fetchone()[0]
+                    or 0
+                )
                 watermark = ops_conn.execute(
                     "SELECT watermark_value FROM source_watermarks WHERE collector_key='jsonl_sql' AND entity_key=?",
                     ("decisions/test.jsonl",),

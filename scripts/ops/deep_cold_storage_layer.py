@@ -27,7 +27,6 @@ else:
 
 DEFAULT_OUT_PATH = PROJECT_ROOT / "governance" / "health" / "deep_cold_storage_layer_latest.json"
 DEFAULT_MANIFEST_NAME = "deep_cold_manifest.jsonl"
-DEFAULT_VIDEO_COLD_ARCHIVE_ROOT = "/Volumes/VIDEO/schwab_trading_bot_cold"
 PROTECTED_VOLUME_NAMES = {"VIDEO"}
 DEFAULT_ADAPTIVE_FREE_FLOOR_GB = 96.0
 DEFAULT_ADAPTIVE_FREE_RATIO = 0.12
@@ -385,22 +384,7 @@ def _volume_name(path: Path) -> str:
 
 def _is_protected_volume(path: Path) -> bool:
     volume = _volume_name(path)
-    if volume == "VIDEO" and _approved_video_cold_archive(path):
-        return False
     return volume in PROTECTED_VOLUME_NAMES
-
-
-def _approved_video_cold_archive(path: Path) -> bool:
-    if not _env_truthy("BOT_ALLOW_VIDEO_COLD_ARCHIVE"):
-        return False
-    allowed_root = Path(os.getenv("BOT_VIDEO_COLD_ARCHIVE_ROOT", DEFAULT_VIDEO_COLD_ARCHIVE_ROOT)).expanduser()
-    try:
-        raw = path.expanduser().resolve(strict=False)
-        allowed = allowed_root.resolve(strict=False)
-    except Exception:
-        raw = path.expanduser()
-        allowed = allowed_root
-    return bool(raw == allowed or allowed in raw.parents)
 
 
 def _relative_to_any(path: Path, roots: list[tuple[str, Path]]) -> str:
@@ -947,10 +931,7 @@ def build_payload(
 
     target_root = (
         second_cold_root
-        or Path(
-            os.getenv("BOT_SECOND_COLD_ROOT", "")
-            or os.getenv("BOT_VIDEO_COLD_ARCHIVE_ROOT", DEFAULT_VIDEO_COLD_ARCHIVE_ROOT)
-        )
+        or Path(os.getenv("BOT_SECOND_COLD_ROOT", "") or project_root / "governance" / "archive" / "cold_archive")
     ).expanduser()
     source_reason = "explicit_source_path"
     if source_free_path is not None:

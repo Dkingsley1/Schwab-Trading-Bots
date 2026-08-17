@@ -12,6 +12,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from core.training_guard import check_confirmed_training_success, check_registry_row_state_before_deletion
 from core.accountability import write_registry_mutation_journal
+from core.profitability_hardening import evaluate_retirement_evidence
 
 
 def _parse_ts(value: str) -> datetime | None:
@@ -38,6 +39,14 @@ def _read_history(path: Path) -> list[dict]:
     except Exception:
         return []
     return rows
+
+
+def _read_json(path: Path) -> dict:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    return payload if isinstance(payload, dict) else {}
 
 
 def _safe_write_json(path: Path, payload: dict) -> str:
@@ -197,6 +206,19 @@ def main() -> int:
         "--training-scorecard-file",
         default=str(PROJECT_ROOT / "governance" / "health" / "retrain_scorecard_latest.json"),
     )
+    parser.add_argument(
+        "--profitability-hardening-file",
+        default=str(PROJECT_ROOT / "governance" / "health" / "profitability_hardening_latest.json"),
+    )
+    parser.add_argument(
+        "--require-post-cost-evidence",
+        action=argparse.BooleanOptionalAction,
+        default=os.getenv("RETIRE_REQUIRE_POST_COST_EVIDENCE", "1").strip() == "1",
+        help="Require repeated negative post-cost evidence before a bot can leave rotation.",
+    )
+    parser.add_argument("--minimum-post-cost-samples", type=int, default=100)
+    parser.add_argument("--minimum-post-cost-days", type=int, default=10)
+    parser.add_argument("--minimum-failed-retests", type=int, default=3)
     args = parser.parse_args()
 
     lane_min_fail_days = _parse_lane_int_map(str(args.lane_min_fail_days))
@@ -272,6 +294,42 @@ def main() -> int:
                 "required_no_improvement_streak": lane_streak_req,
             })
             candidate_lane_counts[lane] += 1
+
+    pre_post_cost_candidate_count = len(candidates)
+    post_cost_blocked: list[dict] = []
+    hardening = _read_json(Path(args.profitability_hardening_file))
+    retirement_court = hardening.get("retirement_court") if isinstance(hardening.get("retirement_court"), dict) else {}
+    evidence_rows = retirement_court.get("bot_evidence") if isinstance(retirement_court.get("bot_evidence"), list) else []
+    evidence_by_bot = {
+        str(row.get("bot_id") or "").strip().lower(): row
+        for row in evidence_rows
+        if isinstance(row, dict) and str(row.get("bot_id") or "").strip()
+    }
+    if args.require_post_cost_evidence:
+        qualified_candidates: list[dict] = []
+        for candidate in candidates:
+            bot_id = str(candidate.get("bot_id") or "").strip().lower()
+            evidence = evidence_by_bot.get(bot_id, {})
+            verdict = evaluate_retirement_evidence(
+                evidence,
+                minimum_samples=max(int(args.minimum_post_cost_samples), 1),
+                minimum_observed_days=max(int(args.minimum_post_cost_days), 1),
+                minimum_failed_retests=max(int(args.minimum_failed_retests), 1),
+            )
+            candidate["post_cost_retirement_evidence"] = verdict
+            if bool(verdict.get("retire", False)):
+                qualified_candidates.append(candidate)
+            else:
+                post_cost_blocked.append(
+                    {
+                        "bot_id": bot_id,
+                        "lane": str(candidate.get("lane") or "equities"),
+                        "reason": "post_cost_retirement_evidence_incomplete",
+                        "verdict": verdict,
+                    }
+                )
+        candidates = qualified_candidates
+        candidate_lane_counts = Counter(str(row.get("lane") or "equities") for row in candidates)
 
     candidates.sort(
         key=lambda x: (
@@ -420,6 +478,18 @@ def main() -> int:
         "canary_thresholds": {
             "min_fail_days": int(args.canary_min_fail_days),
             "min_no_improvement_streak": int(args.canary_min_no_improvement_streak),
+        },
+        "post_cost_retirement_guard": {
+            "required": bool(args.require_post_cost_evidence),
+            "source_file": str(args.profitability_hardening_file),
+            "source_present": bool(hardening),
+            "minimum_samples": int(args.minimum_post_cost_samples),
+            "minimum_observed_days": int(args.minimum_post_cost_days),
+            "minimum_failed_retests": int(args.minimum_failed_retests),
+            "pre_guard_candidate_count": pre_post_cost_candidate_count,
+            "blocked_count": len(post_cost_blocked),
+            "blocked": post_cost_blocked,
+            "policy": "retirement_requires_repeated_negative_post_cost_lower_bound_evidence",
         },
         "candidate_count": len(candidates),
         "candidate_lane_counts": _counter_to_int_dict(candidate_lane_counts),

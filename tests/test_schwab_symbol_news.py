@@ -140,3 +140,37 @@ def test_symbol_news_features_include_catalyst_and_sentiment() -> None:
     assert features["schwab_symbol_news_available"] == 1.0
     assert features["news_sentiment"] > 0.0
     assert features["schwab_news_catalyst_earnings_norm"] > 0.0
+
+
+def test_public_fallback_only_refreshes_without_broker_auth(tmp_path) -> None:
+    context_path = tmp_path / "exports" / "external_context" / "schwab_education_context_latest.json"
+    context_path.parent.mkdir(parents=True, exist_ok=True)
+    now = datetime.now(timezone.utc).isoformat()
+    context_path.write_text(
+        json.dumps(
+            {
+                "timestamp_utc": now,
+                "items": [
+                    {
+                        "headline": "NVDA earnings update",
+                        "source": "Schwab Network",
+                        "published_at": now,
+                        "symbols": ["NVDA"],
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    payload = build_payload(
+        project_root=tmp_path,
+        symbols_arg="NVDA,SPY",
+        public_fallback_only=True,
+    )
+
+    assert payload["ok"] is True
+    assert payload["auth_required"] is False
+    assert payload["auth_ok"] is True
+    assert payload["fallback_source_contract"]["fresh"] is True
+    assert payload["symbols"]["NVDA"]["source_method"] == "schwab_public_context_fallback"

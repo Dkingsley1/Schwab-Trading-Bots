@@ -1,0 +1,172 @@
+{
+  "schema_version": 1,
+  "policy_id": "bot_profitability_scalability_v1",
+  "operating_mode": "evidence_bound_shadow_planning",
+  "inputs": {
+    "bot_hierarchy": "governance/bot_organization/bot_hierarchy_latest.json",
+    "bot_organization_policy": "config/bot_organization_v1.json",
+    "bot_organization_health": "governance/health/bot_organization_latest.json",
+    "regime_context": "governance/health/regime_control_plane_latest.json",
+    "production_excellence": "governance/health/production_excellence_control_latest.json",
+    "profitability_firewall": "governance/health/profitability_evidence_firewall_latest.json",
+    "paper_execution_calibration": "governance/health/paper_execution_calibration_latest.json",
+    "training_quality": "governance/health/training_quality_control_latest.json",
+    "feature_store": "governance/feature_store/latest.json",
+    "runtime_throttle": "governance/health/runtime_throttle_control_latest.json",
+    "resource_governor": "governance/health/autonomic_resource_governor_latest.json",
+    "cold_archive": "governance/health/cold_archive_compactor_latest.json",
+    "sleeve_ingestion": "governance/health/sleeve_ingestion_production_control_latest.json",
+    "paper_trade_globs": [
+      "exports/trade_logs/**/paper_trades_*.jsonl",
+      "exports/trade_logs/**/paper_trades_*.jsonl.gz",
+      "exports/paper_broker_bridge/**/paper_bridge_orders_*.jsonl",
+      "exports/paper_broker_bridge/**/paper_bridge_orders_*.jsonl.gz"
+    ],
+    "maximum_source_files": 24,
+    "maximum_rows_per_file": 75000,
+    "maximum_bytes_per_plain_file": 67108864
+  },
+  "profitability": {
+    "regime_learning": {
+      "minimum_bot_samples": 30,
+      "minimum_regime_samples": 10,
+      "minimum_independent_days": 3,
+      "maximum_preferred_regimes": 4,
+      "require_positive_post_cost_lcb": true,
+      "candidate_bound_only_for_activation": true
+    },
+    "forward_ranking": {
+      "minimum_bot_samples": 30,
+      "minimum_independent_days": 3,
+      "weights": {
+        "post_cost_expectancy": 0.25,
+        "conservative_lcb": 0.25,
+        "drawdown_control": 0.15,
+        "turnover_efficiency": 0.1,
+        "confidence": 0.1,
+        "persistence": 0.15
+      }
+    },
+    "marginal_contribution": {
+      "minimum_common_days": 5,
+      "maximum_peer_correlation": 0.85,
+      "maximum_duplicate_weight": 0.02,
+      "unknown_correlation_fails_closed": true
+    },
+    "execution_realism": {
+      "require_independent_fill_evidence": true,
+      "minimum_independent_fills": 30,
+      "required_dimensions": [
+        "spread",
+        "slippage",
+        "latency",
+        "partial_fill"
+      ]
+    },
+    "statistical_validation": {
+      "require_locked_holdout": true,
+      "require_walk_forward": true,
+      "require_multiple_testing_control": true,
+      "require_positive_conservative_lcb": true
+    },
+    "lifecycle": {
+      "probation_minimum_samples": 30,
+      "demotion_minimum_days": 5,
+      "retirement_minimum_days": 10,
+      "retirement_maximum_positive_day_ratio": 0.35,
+      "automatic_registry_mutation": false,
+      "automatic_source_mutation": false
+    },
+    "persistence": {
+      "minimum_positive_days": 3,
+      "minimum_positive_day_ratio": 0.6,
+      "minimum_profitable_regimes": 2,
+      "require_positive_post_cost_lcb": true
+    },
+    "capacity": {
+      "notional_multipliers": [0.25, 0.5, 1.0, 2.0, 4.0, 8.0],
+      "maximum_stressed_slippage_bps": 100.0,
+      "maximum_observed_notional_multiplier": 4.0,
+      "minimum_capacity_samples": 30,
+      "require_independent_execution_calibration": true
+    }
+  },
+  "scalability": {
+    "catalog_process_separation": {
+      "runtime_process_markers": [
+        "run_shadow_training_loop.py",
+        "run_specialized_sleeve_shadow.py",
+        "run_master_bot.py"
+      ],
+      "maximum_runtime_loop_processes": 96,
+      "require_catalog_larger_than_process_fleet": true
+    },
+    "activation": {
+      "maximum_active_bots_total": 400,
+      "maximum_active_bots_per_sleeve": 48,
+      "maximum_active_bots_per_cell": 8,
+      "require_current_regime_compatibility": true,
+      "require_candidate_bound_profitability_evidence": true,
+      "selection_mode": "ranked_top_k_then_park"
+    },
+    "shared_features": {
+      "require_content_hash": true,
+      "require_point_in_time_contract": true,
+      "require_immutable_snapshot": true,
+      "compute_once_per_snapshot": true
+    },
+    "resource_budgets": {
+      "maximum_parallel_training_jobs": 1,
+      "maximum_parallel_training_jobs_per_sub_sleeve": 1,
+      "maximum_queue_depth": 4000,
+      "maximum_model_cache_mb": 512,
+      "maximum_loaded_models": 8,
+      "maximum_active_bots_per_sleeve": 48,
+      "memory_pressure_action": "evict_models_then_park_low_ranked_bots"
+    },
+    "idempotency": {
+      "require_runtime_checkpoint": true,
+      "require_order_idempotency": true,
+      "require_decision_identity": true,
+      "require_atomic_checkpoint_write": true,
+      "duplicate_action": "drop_and_report"
+    },
+    "storage_tiering": {
+      "require_hot_warm_cold_routes": true,
+      "require_cold_compression": true,
+      "require_cold_readability_probe": true,
+      "require_verified_source_before_retention": true
+    },
+    "model_cache": {
+      "lazy_loading_required": true,
+      "maximum_loaded_models": 8,
+      "maximum_cache_mb": 512,
+      "inactive_ttl_seconds": 900,
+      "evict_all_under_critical_memory_pressure": true
+    },
+    "capacity_aware_allocation": {
+      "require_liquidity_capacity_curve": true,
+      "require_positive_marginal_contribution": true,
+      "account_size_alone_may_increase_weight": false,
+      "unknown_capacity_weight": 0.0,
+      "automatic_allocation": false
+    }
+  },
+  "grading": {
+    "control_a_plus_requires_all_16_controls": true,
+    "economic_evidence_is_graded_separately": true,
+    "missing_evidence_never_receives_credit": true,
+    "paper_collection_may_continue_with_evidence_debt": true,
+    "live_promotion_requires_all_evidence": true
+  },
+  "safety_contract": {
+    "changes_runtime_decisions": false,
+    "automatic_registry_mutation": false,
+    "automatic_source_code_changes": false,
+    "paper_execution_authority": false,
+    "live_execution_authority": false,
+    "automatic_live_promotion": false,
+    "automatic_allocation": false,
+    "profitability_guaranteed": false
+  }
+}

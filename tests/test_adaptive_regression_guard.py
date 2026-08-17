@@ -933,6 +933,51 @@ def test_adaptive_regression_guard_does_not_mix_verified_warning_with_optional_u
     assert source["metrics"]["blockers"] == []
 
 
+def test_adaptive_regression_guard_keeps_fully_verified_redundancy_warning_ready(tmp_path: Path) -> None:
+    _seed_ready_artifacts(tmp_path)
+    _write_guarded_paper_health_fast(tmp_path)
+    now = datetime.now(timezone.utc).isoformat()
+    health = tmp_path / "governance" / "health"
+    _write_json(
+        health / "source_verification_latest.json",
+        {
+            "timestamp_utc": now,
+            "ok": True,
+            "overall_status": "ready",
+            "degraded_artifacts": ["fx_market_context"],
+            "stale_artifacts": [],
+            "unverified_sources": [],
+            "sources": [
+                {"source_id": "fx_market_context", "verification_status": "cross_verified"},
+                *[
+                    {"source_id": f"source_{index}", "verification_status": "single_source_verified"}
+                    for index in range(1, 16)
+                ],
+            ],
+            "overall": {
+                "all_verified": True,
+                "total_sources": 16,
+                "counts": {"cross_verified": 1, "single_source_verified": 15, "single_source_unverified": 0},
+                "unverified_sources": [],
+                "low_confidence_sources": [],
+                "min_source_confidence_score": 0.84,
+            },
+        },
+    )
+
+    payload = src.build_payload(
+        tmp_path,
+        grade_guard_builder=lambda _: {"overall_status": "ready", "blocked_surface_count": 0, "degraded_surface_count": 0, "surfaces": []},
+        state_path=tmp_path / "governance" / "health" / "adaptive_regression_guard_state.json",
+    )
+    source = next(row for row in payload["surfaces"] if row["surface_id"] == "guard:source_verification_contract")
+
+    assert source["state"] == "ready"
+    assert source["metrics"]["verified_redundancy_advisory"] is True
+    assert source["metrics"]["source_warning_advisory_only"] is True
+    assert source["metrics"]["blockers"] == []
+
+
 def test_adaptive_regression_guard_softens_optional_source_debt_when_live_is_read_only(tmp_path: Path) -> None:
     _seed_ready_artifacts(tmp_path)
     now = datetime.now(timezone.utc).isoformat()
@@ -1989,8 +2034,57 @@ def test_adaptive_regression_guard_accepts_five_pcore_workers_when_backlog_is_gr
     assert pcore["state"] == "ready"
     assert pcore["metrics"]["backlog_green"] is True
     assert pcore["metrics"]["active_catchup_target_required"] is False
-    assert pcore["metrics"]["operational_worker_floor"] == 4
+    assert pcore["metrics"]["operational_worker_floor"] == 3
     assert pcore["metrics"]["pcore_contract_operationally_clear"] is True
+    assert pcore["metrics"]["safe_idle_worker_floor_relief"] is True
+
+
+def test_adaptive_regression_guard_accepts_three_maintenance_workers_with_green_backlog(tmp_path: Path) -> None:
+    _seed_ready_artifacts(tmp_path)
+    health = tmp_path / "governance" / "health"
+    now = datetime.now(timezone.utc).isoformat()
+    contract = {
+        "active": True,
+        "single_writer_only": True,
+        "performance_core_primary": True,
+        "preprocess_worker_budget": 3,
+        "shard_link_writer_lanes": 3,
+        "max_shard_link_writer_lanes": 8,
+        "p_core_burst_intelligence": {"selected_workers": 3},
+        "control_env": {"BACKLOG_PCORE_ALLOCATION_ACTIVE": "1", "SQL_LINK_WRITER_BACKGROUND_POLICY": "0"},
+    }
+    _write_json(
+        health / "backpressure_drainer_fleet_latest.json",
+        {
+            "timestamp_utc": now,
+            "ok": True,
+            "overall_status": "ready",
+            "service_request": {"active": True, "p_core_backlog_allocation_contract": contract},
+        },
+    )
+    _write_json(
+        health / "backlog_pcore_accelerator_latest.json",
+        {
+            "timestamp_utc": now,
+            "ok": True,
+            "overall_status": "ready",
+            "host_lane_contract": {"memory_worker_cap": 7},
+            "storage_contract": {"green": True, "line_green": True, "age_green": True, "overlay_green": True},
+        },
+    )
+
+    payload = src.build_payload(
+        tmp_path,
+        grade_guard_builder=lambda _: {"overall_status": "ready", "blocked_surface_count": 0, "degraded_surface_count": 0, "surfaces": []},
+        state_path=tmp_path / "governance" / "health" / "adaptive_regression_guard_state.json",
+    )
+    pcore = next(row for row in payload["surfaces"] if row["surface_id"] == "guard:backlog_pcore_contract")
+
+    assert pcore["state"] == "ready"
+    assert pcore["metrics"]["active_catchup_target_required"] is False
+    assert pcore["metrics"]["operational_worker_floor"] == 3
+    assert pcore["metrics"]["safe_idle_worker_floor_relief"] is True
+    assert pcore["metrics"]["blockers"] == []
 
 
 def test_adaptive_regression_guard_honors_green_backlog_memory_worker_cap(tmp_path: Path) -> None:
@@ -2404,6 +2498,75 @@ def test_adaptive_regression_guard_manages_verified_bounded_transient_drain(tmp_
         "storage_recovery_quality_below_target",
         "collector_intake_enforcement_partial",
     }
+
+
+def test_adaptive_regression_guard_manages_verified_bounded_steady_state_storage(tmp_path: Path) -> None:
+    _seed_ready_artifacts(tmp_path)
+    now = datetime.now(timezone.utc).isoformat()
+    health = tmp_path / "governance" / "health"
+    _write_json(
+        health / "ingestion_storage_control_latest.json",
+        {
+            "timestamp_utc": now,
+            "ok": True,
+            "overall_status": "ready",
+            "severity": "stable",
+            "pressure_index": 0.576,
+            "recovery_quality_score": 82.0,
+            "backpressure_quality_score": 99.0,
+            "backpressure": {
+                "total_pending_lines": 630,
+                "core_pending_lines": 616,
+                "deferred_pending_lines": 7,
+                "support_pending_lines": 7,
+                "pending_lines_threshold": 15000,
+                "oldest_pending_age_seconds": 138.3,
+                "oldest_age_threshold_seconds": 240.0,
+            },
+            "collector_intake_enforcement_audit": {
+                "status": "not_required",
+                "required": False,
+                "mismatch_count": 0,
+            },
+            "continuous_run_soak_contract": {"soak_ready": True, "blockers": []},
+            "external_route_verification": {"verification_state": "active_local_ready"},
+            "data_integrity": {
+                "sql_invalid_lines": 0,
+                "sql_overlay_invalid_lines": 0,
+                "sql_overlay_oversize_payloads": 0,
+                "sql_overlay_ops_write_failures": 0,
+            },
+            "writer_shedding": {"hard_breaches": [], "elevated_breaches": []},
+            "storage_plane_contract": {"disk_contract": {"emergency_disk_guard": False}},
+        },
+    )
+
+    payload = src.build_payload(
+        tmp_path,
+        grade_guard_builder=lambda _: {
+            "overall_status": "ready",
+            "blocked_surface_count": 0,
+            "degraded_surface_count": 0,
+            "surfaces": [],
+        },
+        state_path=tmp_path / "governance" / "health" / "adaptive_regression_guard_state.json",
+    )
+    runtime_storage = next(
+        row for row in payload["surfaces"] if row["surface_id"] == "guard:runtime_storage_contract"
+    )
+    floor = next(
+        row for row in payload["surfaces"] if row["surface_id"] == "guard:ingestion_storage_degradation_floor"
+    )
+
+    assert payload["overall_status"] == "ready"
+    assert runtime_storage["state"] == "ready"
+    assert runtime_storage["metrics"]["bounded_steady_state_storage_managed"] is True
+    assert runtime_storage["metrics"]["storage_clear"] is True
+    assert "storage_pressure_index_elevated" not in runtime_storage["metrics"]["warnings"]
+    assert floor["state"] == "ready"
+    assert floor["metrics"]["bounded_steady_state_storage_managed"] is True
+    assert floor["metrics"]["storage_operationally_clear"] is True
+    assert "storage_pressure_index_elevated" not in floor["metrics"]["warnings"]
 
 
 def test_adaptive_regression_guard_manages_tiny_deferred_drain_without_intake_throttle(tmp_path: Path) -> None:

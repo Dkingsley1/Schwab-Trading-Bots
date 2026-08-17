@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -26,13 +27,13 @@ DEFAULT_BACKUP_DIR = PROJECT_ROOT / "governance" / "lifecycle"
 SOURCE_REGISTRY_PATH = PROJECT_ROOT / "master_bot_registry.json"
 DEFAULT_CANDIDATE_REGISTRY_PATH = PROJECT_ROOT / "governance" / "health" / "paper_live_data_standard_registry_candidate_latest.json"
 DEFAULT_SOURCE_WRITE_GUARD_PATH = PROJECT_ROOT / "governance" / "health" / "paper_live_data_standard_source_write_guard_latest.json"
-STANDARD_VERSION = "paper_live_data_standard_v1"
+STANDARD_VERSION = "paper_live_data_standard_v2"
 
 PAPER_LOCK_POLICY = "market_data_and_paper_only_until_explicit_graduation"
 COLLECTION_ONLY_BLOCK = "paper_live_data_standard_met"
-TARGET_PAPER_BOTS = 40
-MIN_PAPER_BOTS = 30
-MAX_PAPER_BOTS = 50
+TARGET_PAPER_BOTS = 12
+MIN_PAPER_BOTS = 0
+MAX_PAPER_BOTS = 24
 LEGACY_COHORT = "legacy_established"
 BOOTSTRAP_COHORT = "legacy_bootstrap"
 PROMOTED_COHORT = "standard_promoted"
@@ -41,8 +42,46 @@ DELETED_COHORT = "deleted_preserved"
 PAPER_PROFILE_DISABLED_SENTINEL = "__paper_profile_disabled_by_profitability_quarantine__"
 COINBASE_PROBATIONARY_SPOT_PROFILES = ("default",)
 COINBASE_PROBATIONARY_FUTURES_PROFILES = ("crypto_futures",)
-COINBASE_PROBATIONARY_SPOT_TOP_N = 50
-COINBASE_PROBATIONARY_FUTURES_TOP_N = 30
+COINBASE_PROBATIONARY_SPOT_TOP_N = 8
+COINBASE_PROBATIONARY_FUTURES_TOP_N = 6
+PAPER_BOOTSTRAP_ROLE_TARGETS = {
+    "core": 7,
+    "options": 3,
+    "futures": 2,
+}
+
+MARKET_SIGNAL_ROLES = {
+    "signal_sub_bot",
+    "options_sub_bot",
+    "futures_sub_bot",
+    "crypto_sub_bot",
+    "macro_sub_bot",
+}
+CONTROL_IDENTITY_TOKENS = {
+    "allocator",
+    "calibrator",
+    "cockpit",
+    "controller",
+    "coordinator",
+    "dashboard",
+    "governance",
+    "guard",
+    "infrastructure",
+    "lifecycle",
+    "monitor",
+    "operator",
+    "orchestrat",
+    "platform_organ",
+    "pruner",
+    "registry",
+    "report",
+    "router",
+    "sentinel",
+    "storage",
+    "supervisor",
+    "telemetry",
+    "watchdog",
+}
 CLEAN_SCHWAB_RUNTIME_PROFILES = (
     "volatility",
     "pairs_correlation",
@@ -103,6 +142,48 @@ def _is_explicit_paper(row: dict[str, Any]) -> bool:
             "paper_execution_allowed",
         )
     )
+
+
+def _paper_execution_authorized(row: dict[str, Any]) -> bool:
+    return bool(row.get("paper_execution_authority", False))
+
+
+def _market_signal_candidate(
+    row: dict[str, Any],
+    *,
+    allow_probation_requalification: bool = False,
+) -> bool:
+    bot_id = str(row.get("bot_id") or "").strip().lower()
+    role = str(row.get("bot_role") or "").strip().lower()
+    lane = str(row.get("training_lane") or "").strip().lower()
+    materialization = (
+        row.get("training_label_materialization_contract")
+        if isinstance(row.get("training_label_materialization_contract"), dict)
+        else {}
+    )
+    label_contract = row.get("label_contract") if isinstance(row.get("label_contract"), dict) else {}
+    objective = str(materialization.get("objective_class") or "").strip().lower()
+    label_family = str(
+        materialization.get("label_family")
+        or label_contract.get("label_family")
+        or ""
+    ).strip().lower()
+    if role not in MARKET_SIGNAL_ROLES:
+        return False
+    if lane in {"governance_effect", "operational_effect"}:
+        return False
+    if objective in {"governance_effect", "operational_effect", "control_outcome"}:
+        return False
+    if label_family.startswith(("governance_", "operational_", "control_")):
+        return False
+    if any(token in bot_id for token in CONTROL_IDENTITY_TOKENS):
+        return False
+    if (
+        bool(row.get("training_excluded", False) or row.get("exclude_from_training", False))
+        and not allow_probation_requalification
+    ):
+        return False
+    return True
 
 
 def _is_legacy_established(row: dict[str, Any]) -> bool:
@@ -209,10 +290,16 @@ def _paper_score(row: dict[str, Any]) -> tuple[float, float, int, str]:
 
 
 def _is_legacy_bootstrap_candidate(row: dict[str, Any]) -> bool:
-    if _is_deleted(row) or row.get("test_accuracy") is None:
+    if (
+        _is_deleted(row)
+        or not bool(row.get("active", False))
+        or row.get("test_accuracy") is None
+        or not _market_signal_candidate(row, allow_probation_requalification=True)
+    ):
         return False
-    version = _bot_version(row)
-    if version is None or version > 99:
+    if _safe_float(row.get("test_accuracy"), 0.0) < 0.56:
+        return False
+    if _safe_float(row.get("quality_score"), 0.0) < 0.50:
         return False
     if str(row.get("paper_standard_cohort") or "").strip().lower() == DELETED_COHORT:
         return False
@@ -222,15 +309,27 @@ def _is_legacy_bootstrap_candidate(row: dict[str, Any]) -> bool:
 def _select_paper_bootstrap_ids(rows: list[dict[str, Any]]) -> set[str]:
     candidates = [row for row in rows if _is_legacy_bootstrap_candidate(row)]
     candidates = sorted(candidates, key=_paper_score, reverse=True)
-    if len(candidates) <= MAX_PAPER_BOTS:
-        selected = candidates
-    else:
-        selected = candidates[:TARGET_PAPER_BOTS]
+    buckets: dict[str, list[dict[str, Any]]] = {"core": [], "options": [], "futures": []}
+    for row in candidates:
+        role = str(row.get("bot_role") or "").strip().lower()
+        bucket = "options" if role == "options_sub_bot" else "futures" if role == "futures_sub_bot" else "core"
+        buckets[bucket].append(row)
+    selected: list[dict[str, Any]] = []
+    for bucket, target in PAPER_BOOTSTRAP_ROLE_TARGETS.items():
+        selected.extend(buckets[bucket][:target])
+    selected_ids = {str(row.get("bot_id") or "") for row in selected}
+    for row in candidates:
+        if len(selected) >= TARGET_PAPER_BOTS:
+            break
+        if str(row.get("bot_id") or "") in selected_ids:
+            continue
+        selected.append(row)
+        selected_ids.add(str(row.get("bot_id") or ""))
     return {str(row.get("bot_id") or "") for row in selected if str(row.get("bot_id") or "").strip()}
 
 
 def _meets_paper_promotion_standard(row: dict[str, Any]) -> bool:
-    if _is_deleted(row) or _is_legacy_established(row):
+    if _is_deleted(row) or not _market_signal_candidate(row):
         return False
     progress = row.get("data_collection_threshold_progress")
     progress = progress if isinstance(progress, dict) else {}
@@ -251,9 +350,32 @@ def _meets_paper_promotion_standard(row: dict[str, Any]) -> bool:
     label_ready = bool(row.get("label_contract") or row.get("universal_label_contract"))
     quality_score = _safe_float(row.get("quality_score"), 0.0)
     test_accuracy = _safe_float(row.get("test_accuracy"), 0.0)
-    quality_ready = quality_score >= 0.50 or test_accuracy >= 0.56
+    quality_ready = quality_score >= 0.50 and test_accuracy >= 0.56
+    execution_evidence = (
+        row.get("paper_execution_evidence")
+        if isinstance(row.get("paper_execution_evidence"), dict)
+        else {}
+    )
+    evidence_ready = bool(
+        _safe_int(execution_evidence.get("post_cost_samples"), 0) >= 30
+        and _safe_int(execution_evidence.get("observed_days"), 0) >= 7
+        and _safe_float(execution_evidence.get("post_cost_lower_confidence_bound"), 0.0) > 0.0
+        and bool(execution_evidence.get("locked_holdout_passed", False))
+        and bool(execution_evidence.get("multiple_testing_adjustment_passed", False))
+        and bool(execution_evidence.get("execution_calibration_ready", False))
+    )
+    human_admission = bool(row.get("paper_execution_human_admission", False))
     blocked = bool(row.get("paper_promotion_blocked", False))
-    return bool(training_ready and observations_ready and days_ready and label_ready and quality_ready and not blocked)
+    return bool(
+        training_ready
+        and observations_ready
+        and days_ready
+        and label_ready
+        and quality_ready
+        and evidence_ready
+        and human_admission
+        and not blocked
+    )
 
 
 def _ensure_list(value: Any) -> list[str]:
@@ -291,14 +413,18 @@ def _set_collection_floor(row: dict[str, Any], *, now: str) -> None:
 def _mark_legacy_paper(row: dict[str, Any], *, now: str) -> None:
     _set_collection_floor(row, now=now)
     row["paper_standard_cohort"] = LEGACY_COHORT
-    row["paper_standard_status"] = "paper_live_data_enabled"
+    row["paper_standard_status"] = "observation_only_pending_v2_authority"
     row["paper_live_data_enabled"] = True
-    row["paper_trading_enabled"] = True
-    row["paper_trade_enabled"] = True
-    row["paper_execution_allowed"] = True
+    row["paper_trading_enabled"] = False
+    row["paper_trade_enabled"] = False
+    row["paper_execution_allowed"] = False
+    row["paper_execution_authority"] = False
+    row["paper_probation_authority"] = False
+    row["paper_probation_requalification_allowed"] = False
+    row["paper_execution_authority_version"] = "paper_execution_authority_v2"
     row["paper_runtime_stability_mode"] = str(row.get("paper_runtime_stability_mode") or "full_force_guarded")
     row["paper_execution_queue_policy"] = str(row.get("paper_execution_queue_policy") or "buffered_jsonl_batching")
-    row["paper_live_data_source"] = "legacy_established_standard"
+    row["paper_live_data_source"] = "legacy_observation_preserved_execution_requalification_required"
     row["training_excluded"] = bool(row.get("training_excluded", False))
     row["exclude_from_training"] = bool(row.get("exclude_from_training", False))
     row["rotation_blocked"] = bool(row.get("rotation_blocked", False))
@@ -314,6 +440,10 @@ def _mark_standard_promoted(row: dict[str, Any], *, now: str) -> None:
     row["paper_trading_enabled"] = True
     row["paper_trade_enabled"] = True
     row["paper_execution_allowed"] = True
+    row["paper_execution_authority"] = True
+    row["paper_probation_authority"] = False
+    row["paper_probation_requalification_allowed"] = False
+    row["paper_execution_authority_version"] = "paper_execution_authority_v2"
     row["paper_runtime_stability_mode"] = str(row.get("paper_runtime_stability_mode") or "standard_promoted_guarded")
     row["paper_execution_queue_policy"] = str(row.get("paper_execution_queue_policy") or "buffered_jsonl_batching")
     row["paper_live_data_source"] = "data_collection_promotion_standard"
@@ -337,10 +467,14 @@ def _mark_legacy_bootstrap_paper(row: dict[str, Any], *, now: str) -> None:
     row["paper_trading_enabled"] = True
     row["paper_trade_enabled"] = True
     row["paper_execution_allowed"] = True
+    row["paper_execution_authority"] = False
+    row["paper_probation_authority"] = True
+    row["paper_probation_requalification_allowed"] = True
+    row["paper_execution_authority_version"] = "paper_execution_authority_v2"
     row["paper_runtime_stability_mode"] = str(row.get("paper_runtime_stability_mode") or "legacy_bootstrap_guarded")
     row["paper_execution_queue_policy"] = str(row.get("paper_execution_queue_policy") or "buffered_jsonl_batching")
     row["paper_live_data_source"] = "legacy_bootstrap_30_50_standard"
-    row["paper_bootstrap_reason"] = "legacy_row_with_real_test_history_selected_for_30_to_50_bot_paper_lane"
+    row["paper_bootstrap_reason"] = "bounded_market_signal_probation_selected_for_candidate_scoped_paper_evidence"
     row["live_rotation_blocked"] = True
     row["training_candidate_after_threshold"] = True
     row["promotion_blocked_until"] = ""
@@ -360,6 +494,10 @@ def _mark_collection_only(row: dict[str, Any], *, now: str) -> None:
     row["paper_trading_enabled"] = False
     row["paper_trade_enabled"] = False
     row["paper_execution_allowed"] = False
+    row["paper_execution_authority"] = False
+    row["paper_probation_authority"] = False
+    row["paper_probation_requalification_allowed"] = False
+    row["paper_execution_authority_version"] = "paper_execution_authority_v2"
     row["trading_enabled"] = False
     row["live_trading_enabled"] = False
     row["execution_enabled"] = False
@@ -392,6 +530,10 @@ def _mark_deleted(row: dict[str, Any], *, now: str) -> None:
     row["paper_trading_enabled"] = False
     row["paper_trade_enabled"] = False
     row["paper_execution_allowed"] = False
+    row["paper_execution_authority"] = False
+    row["paper_probation_authority"] = False
+    row["paper_probation_requalification_allowed"] = False
+    row["paper_execution_authority_version"] = "paper_execution_authority_v2"
     row["direct_execution_allowed"] = False
     row["live_trading_enabled"] = False
     row["execution_enabled"] = False
@@ -426,6 +568,10 @@ def _summary_counts(rows: list[dict[str, Any]]) -> dict[str, int]:
         if str(row.get("paper_standard_cohort") or "").strip().lower() == PROMOTED_COHORT
         and _is_explicit_paper(row)
     ]
+    execution_authority = [row for row in non_deleted if _paper_execution_authorized(row)]
+    probation_authority = [
+        row for row in non_deleted if bool(row.get("paper_probation_authority", False))
+    ]
     return {
         "total_bots": len(rows),
         "non_deleted_bots": len(non_deleted),
@@ -436,6 +582,17 @@ def _summary_counts(rows: list[dict[str, Any]]) -> dict[str, int]:
         "paper_live_data_enabled_bots": len(legacy_paper),
         "legacy_bootstrap_paper_bots": len(legacy_bootstrap),
         "standard_promoted_paper_bots": len(standard_promoted),
+        "paper_execution_authority_bots": len(execution_authority),
+        "paper_probation_authority_bots": len(probation_authority),
+        "paper_observation_only_bots": len(
+            [
+                row
+                for row in non_deleted
+                if bool(row.get("paper_live_data_enabled", False))
+                and not _paper_execution_authorized(row)
+                and not bool(row.get("paper_probation_authority", False))
+            ]
+        ),
         "collection_until_standard_bots": len(collection_only),
         "direct_execution_allowed_bots": len([row for row in rows if bool(row.get("direct_execution_allowed", False))]),
         "live_trading_enabled_bots": len([row for row in rows if bool(row.get("live_trading_enabled", False))]),
@@ -446,7 +603,12 @@ def _override_lines(payload: dict[str, Any]) -> list[str]:
     counts = payload.get("counts_after") if isinstance(payload.get("counts_after"), dict) else {}
     target = payload.get("paper_lane_target") if isinstance(payload.get("paper_lane_target"), dict) else {}
     paper_count = max(_safe_int(counts.get("paper_live_data_enabled_bots"), 0), 0)
-    core_top_n = max(paper_count, TARGET_PAPER_BOTS if paper_count >= MIN_PAPER_BOTS else MIN_PAPER_BOTS)
+    authority_count = max(
+        _safe_int(counts.get("paper_execution_authority_bots"), 0)
+        + _safe_int(counts.get("paper_probation_authority_bots"), 0),
+        0,
+    )
+    core_top_n = min(max(authority_count, TARGET_PAPER_BOTS), MAX_PAPER_BOTS)
     registry_path = Path(str(payload.get("registry_path") or DEFAULT_REGISTRY_PATH))
     project_root = registry_path.parent if registry_path.name == "master_bot_registry.json" else PROJECT_ROOT
     weak_profiles = _weak_profiles_from_profitability_controls(project_root)
@@ -473,30 +635,34 @@ def _override_lines(payload: dict[str, Any]) -> list[str]:
         "PAPER_LIVE_DATA_STANDARD_TARGET_MAX": str(target.get("maximum") or MAX_PAPER_BOTS),
         "PAPER_LIVE_DATA_STANDARD_ACTUAL_BOTS": str(paper_count),
         "PAPER_LIVE_DATA_STANDARD_WITHIN_BAND": "1" if bool(target.get("within_target_band", False)) else "0",
-        "PAPER_LIVE_DATA_STANDARD_SELECTION_POLICY": "explicit_registry_paper_flags_only",
+        "PAPER_LIVE_DATA_STANDARD_SELECTION_POLICY": "explicit_candidate_scoped_execution_authority_v2",
         "PAPER_NEW_BOTS_REQUIRE_STANDARD": "1",
+        "PAPER_EXECUTION_AUTHORITY_VERSION": "paper_execution_authority_v2",
+        "PAPER_EXECUTION_AUTHORITY_MIN_ACC": "0.56",
+        "PAPER_EXECUTION_AUTHORITY_MIN_QUALITY": "0.50",
+        "PAPER_EXECUTION_COHORT_MAX_PER_SEGMENT": "12",
         "TOP_BOT_PAPER_TRADING_ENABLED": "1",
         "TOP_BOT_PAPER_TRADING_TOP_N": str(core_top_n),
-        "TOP_BOT_PAPER_TRADING_MIN_ACC": "0.0",
+        "TOP_BOT_PAPER_TRADING_MIN_ACC": "0.56",
         "TOP_BOT_PAPER_TRADING_PROFILES": schwab_profiles,
         "TOP_BOT_PAPER_TRADING_OPTIONS_ENABLED": "1",
         "TOP_BOT_PAPER_TRADING_OPTIONS_TOP_N": str(core_top_n),
-        "TOP_BOT_PAPER_TRADING_OPTIONS_MIN_ACC": "0.0",
+        "TOP_BOT_PAPER_TRADING_OPTIONS_MIN_ACC": "0.56",
         "TOP_BOT_PAPER_TRADING_OPTIONS_PROFILES": schwab_options_profiles,
         "SCHWAB_TOP_BOT_PAPER_TRADING_TOP_N": str(core_top_n),
-        "SCHWAB_TOP_BOT_PAPER_TRADING_MIN_ACC": "0.0",
+        "SCHWAB_TOP_BOT_PAPER_TRADING_MIN_ACC": "0.56",
         "SCHWAB_TOP_BOT_PAPER_TRADING_PROFILES": schwab_profiles,
         "SCHWAB_OPTIONS_TOP_BOT_PAPER_TRADING_TOP_N": str(core_top_n),
-        "SCHWAB_OPTIONS_TOP_BOT_PAPER_TRADING_MIN_ACC": "0.0",
+        "SCHWAB_OPTIONS_TOP_BOT_PAPER_TRADING_MIN_ACC": "0.56",
         "SCHWAB_OPTIONS_TOP_BOT_PAPER_TRADING_PROFILES": schwab_options_profiles,
         "SCHWAB_FUTURES_TOP_BOT_PAPER_TRADING_TOP_N": str(core_top_n),
-        "SCHWAB_FUTURES_TOP_BOT_PAPER_TRADING_MIN_ACC": "0.0",
+        "SCHWAB_FUTURES_TOP_BOT_PAPER_TRADING_MIN_ACC": "0.56",
         "SCHWAB_FUTURES_TOP_BOT_PAPER_TRADING_PROFILES": schwab_futures_profiles,
         "COINBASE_TOP_BOT_PAPER_TRADING_TOP_N": str(coinbase_top_n),
-        "COINBASE_TOP_BOT_PAPER_TRADING_MIN_ACC": "0.0",
+        "COINBASE_TOP_BOT_PAPER_TRADING_MIN_ACC": "0.56",
         "COINBASE_TOP_BOT_PAPER_TRADING_PROFILES": coinbase_profiles,
         "COINBASE_FUTURES_TOP_BOT_PAPER_TRADING_TOP_N": str(coinbase_futures_top_n),
-        "COINBASE_FUTURES_TOP_BOT_PAPER_TRADING_MIN_ACC": "0.0",
+        "COINBASE_FUTURES_TOP_BOT_PAPER_TRADING_MIN_ACC": "0.56",
         "COINBASE_FUTURES_TOP_BOT_PAPER_TRADING_PROFILES": coinbase_futures_profiles,
         "COINBASE_PAPER_PROBATION_ENABLED": "1",
         "COINBASE_PAPER_PROBATION_REASON": "weak_profiles_allowed_for_guarded_paper_only_retest",
@@ -507,10 +673,10 @@ def _override_lines(payload: dict[str, Any]) -> list[str]:
         "COINBASE_PAPER_PROBATION_FUTURES_TOP_N": str(COINBASE_PROBATIONARY_FUTURES_TOP_N),
         "PAPER_PROFILE_DISABLED_SENTINEL": PAPER_PROFILE_DISABLED_SENTINEL,
         "PAPER_PROFITABILITY_WEAK_PROFILES": ",".join(sorted(weak_profiles)),
-        "PAPER_MIRROR_ALL_ACTIVE_SUB_BOTS": "1",
+        "PAPER_MIRROR_ALL_ACTIVE_SUB_BOTS": "0",
         "PAPER_BROKER_BRIDGE_ENABLED": "1",
         "PAPER_BROKER_BRIDGE_MODE": "jsonl",
-        "PAPER_SOAK_SPECIALIZED_ALLOWLIST_BYPASS_FANOUT": "1",
+        "PAPER_SOAK_SPECIALIZED_ALLOWLIST_BYPASS_FANOUT": "0",
         "RUN_ALL_SLEEVES_WITH_SPECIALIZED_SLEEVES": "1",
         "RUN_ALL_SLEEVES_SPECIALIZED_PROFILE_ALLOWLIST": schwab_profiles,
         "PAPER_TRADE_LOCK": "1",
@@ -549,12 +715,12 @@ def build_payload(
     for row in projected_rows:
         if _is_deleted(row):
             _mark_deleted(row, now=now)
-        elif _is_legacy_established(row):
-            _mark_legacy_paper(row, now=now)
-        elif str(row.get("bot_id") or "") in bootstrap_ids:
-            _mark_legacy_bootstrap_paper(row, now=now)
         elif _meets_paper_promotion_standard(row):
             _mark_standard_promoted(row, now=now)
+        elif str(row.get("bot_id") or "") in bootstrap_ids:
+            _mark_legacy_bootstrap_paper(row, now=now)
+        elif _is_legacy_established(row):
+            _mark_legacy_paper(row, now=now)
         else:
             _mark_collection_only(row, now=now)
 
@@ -566,6 +732,28 @@ def build_payload(
         blockers.append("live_trading_enabled_remaining")
     if counts_after["data_collection_active_bots"] < counts_after["non_deleted_bots"]:
         blockers.append("non_deleted_data_collection_not_fully_active")
+    authority_count = int(counts_after.get("paper_execution_authority_bots", 0) or 0) + int(
+        counts_after.get("paper_probation_authority_bots", 0) or 0
+    )
+    if authority_count > MAX_PAPER_BOTS:
+        blockers.append("paper_execution_authority_cohort_above_hard_cap")
+    unauthorized_rows = [
+        str(row.get("bot_id") or "")
+        for row in projected_rows
+        if (
+            bool(row.get("paper_execution_authority", False))
+            or bool(row.get("paper_probation_authority", False))
+        )
+        and not _market_signal_candidate(
+            row,
+            allow_probation_requalification=bool(
+                row.get("paper_probation_authority", False)
+                and row.get("paper_probation_requalification_allowed", False)
+            ),
+        )
+    ]
+    if unauthorized_rows:
+        blockers.append("non_market_bot_has_paper_execution_authority")
 
     return {
         "timestamp_utc": now,
@@ -589,9 +777,11 @@ def build_payload(
             "target": TARGET_PAPER_BOTS,
             "minimum": MIN_PAPER_BOTS,
             "maximum": MAX_PAPER_BOTS,
-            "actual": counts_after["paper_live_data_enabled_bots"],
-            "within_target_band": MIN_PAPER_BOTS <= counts_after["paper_live_data_enabled_bots"] <= MAX_PAPER_BOTS,
-            "selection_policy": "legacy_v1_to_v99_with_real_test_history_then_standard_promotions",
+            "actual": authority_count,
+            "within_target_band": MIN_PAPER_BOTS <= authority_count <= MAX_PAPER_BOTS,
+            "selection_policy": "explicit_market_signal_authority_or_bounded_probation_after_evidence_checks",
+            "observation_only_count": int(counts_after.get("paper_observation_only_bots", 0) or 0),
+            "evidence_pending_is_not_operational_failure": True,
         },
         "legacy_paper_cohort_sample": [str(row.get("bot_id") or "") for row in legacy_candidates[:20]],
         "legacy_bootstrap_cohort_sample": [
@@ -607,17 +797,21 @@ def build_payload(
             "allow_order_execution": "0",
             "market_data_only": "1",
             "paper_trade_lock": "1",
-            "paper_mirror_all_active_sub_bots": "1",
+            "paper_mirror_all_active_sub_bots": "0",
+            "paper_execution_authority_version": "paper_execution_authority_v2",
+            "execution_authority_count": authority_count,
+            "execution_authority_hard_cap": MAX_PAPER_BOTS,
+            "unauthorized_execution_bot_ids": unauthorized_rows[:20],
             "live_execution_allowed": False,
             "deleted_bots_reactivated": False,
-            "policy": "every non-deleted bot collects live data; every eligible paper-live-data bot may paper trade on live data; live/direct execution remains disabled",
+            "policy": "every non-deleted bot may collect; only explicit candidate-scoped market-signal authority may create paper fills; live/direct execution remains disabled",
         },
         "standard_rules": [
             "non-deleted registry rows are active live-data collectors",
-            "legacy active rows stay in the paper-live-data cohort",
-            "legacy v1-v99 rows with real test history bootstrap the initial paper-live-data lane",
+            "legacy active rows retain observation but lose inferred execution authority",
+            "bounded probation requires a market-signal role and cannot bypass quality isolation",
             "new and restored rows collect only until the paper standard is met",
-            "collection-only rows promote into paper-live-data when observation, age, label, and quality gates are ready",
+            "paper execution requires observations, age, labels, quality, positive post-cost lower-bound evidence, locked holdout, multiple-testing clearance, calibrated fills, and human admission",
             "deleted_from_rotation rows stay inactive and cannot paper trade",
             "direct/live execution remains disabled for every row",
         ],
@@ -672,6 +866,7 @@ def apply_payload(
         candidate_out.parent.mkdir(parents=True, exist_ok=True)
         guard_out.parent.mkdir(parents=True, exist_ok=True)
         candidate_out.write_text(json.dumps(projected, ensure_ascii=True, indent=2), encoding="utf-8")
+        candidate_sha256 = hashlib.sha256(candidate_out.read_bytes()).hexdigest()
         guard_out.write_text(
             json.dumps(
                 {
@@ -681,6 +876,12 @@ def apply_payload(
                     "source_write_blocked": True,
                     "source_path": str(registry_out),
                     "candidate_path": str(candidate_out),
+                    "candidate_sha256": candidate_sha256,
+                    "source_sha256": (
+                        hashlib.sha256(registry_out.read_bytes()).hexdigest()
+                        if registry_out.is_file()
+                        else ""
+                    ),
                     "reason": "canonical_registry_requires_explicit_source_write",
                     "allow_env": "PAPER_LIVE_DATA_ALLOW_SOURCE_REGISTRY_WRITE=1",
                     "allow_cli": "scripts/ops/paper_live_data_standard.py --apply --allow-source-registry-write",
@@ -702,6 +903,7 @@ def apply_payload(
         "registry_source_write_blocked": source_write_blocked,
         "registry_path": str(registry_out),
         "candidate_registry_path": str(candidate_out) if source_write_blocked else "",
+        "candidate_registry_sha256": candidate_sha256 if source_write_blocked else "",
         "backup_path": "" if source_write_blocked else str(backup_path),
         "health_path": str(health_out),
         "override_path": str(override_out),

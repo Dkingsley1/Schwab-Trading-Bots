@@ -327,7 +327,40 @@ def _day_key(dt: datetime) -> str:
     return dt.astimezone(timezone.utc).strftime("%Y%m%d")
 
 
-def _paper_source_files(project_root: Path) -> tuple[list[Path], str]:
+def _paper_source_files(project_root: Path) -> tuple[list[Path], str, int]:
+    trade_logs_roots = [
+        project_root / "exports" / "trade_logs",
+        project_root / "local_fallback_storage" / "exports" / "trade_logs",
+    ]
+    configured_external = str(os.getenv("BOT_LOGS_EXTERNAL_PROJECT_ROOT", "") or "").strip()
+    if configured_external:
+        trade_logs_roots.append(Path(configured_external).expanduser() / "exports" / "trade_logs")
+    elif project_root.resolve(strict=False) == SOURCE_PROJECT_ROOT.resolve(strict=False):
+        external_mount = Path(os.getenv("BOT_LOGS_EXTERNAL_MOUNT", "/Volumes/BOT_LOGS")).expanduser()
+        external_project = str(
+            os.getenv("BOT_LOGS_EXTERNAL_PROJECT_DIR", "schwab_trading_bot") or "schwab_trading_bot"
+        ).strip()
+        trade_logs_roots.append(external_mount / external_project / "exports" / "trade_logs")
+
+    all_trade_log_paths: list[Path] = []
+    reconciliation_paths: list[Path] = []
+    seen_trade_roots: set[str] = set()
+    for trade_logs_root in trade_logs_roots:
+        root_key = str(trade_logs_root.resolve(strict=False))
+        if root_key in seen_trade_roots or not trade_logs_root.exists():
+            continue
+        seen_trade_roots.add(root_key)
+        all_trade_log_paths.extend(trade_logs_root.rglob("paper_trades_*.jsonl"))
+        all_trade_log_paths.extend(trade_logs_root.rglob("paper_trades_*.jsonl.gz"))
+        reconciliation_paths.extend(trade_logs_root.rglob("paper_trades_*.jsonl.local_fallback*"))
+        reconciliation_paths.extend(trade_logs_root.rglob("paper_trades_*.jsonl.gz.local_fallback*"))
+    all_trade_log_paths = sorted(set(all_trade_log_paths))
+    reconciliation_paths = sorted(set(reconciliation_paths))
+    trade_log_paths = [
+        path
+        for path in all_trade_log_paths
+        if "independent_fills" not in path.parts
+    ]
     source_groups = [
         (
             "paper_broker_bridge",
@@ -338,10 +371,11 @@ def _paper_source_files(project_root: Path) -> tuple[list[Path], str]:
         ),
         (
             "trade_logs",
-            sorted(
-                list((project_root / "exports" / "trade_logs").rglob("paper_trades_*.jsonl"))
-                + list((project_root / "exports" / "trade_logs").rglob("paper_trades_*.jsonl.gz"))
-            ),
+            trade_log_paths,
+        ),
+        (
+            "reconciled_trade_logs",
+            reconciliation_paths,
         ),
         (
             "root_paper_trades",
@@ -370,7 +404,7 @@ def _paper_source_files(project_root: Path) -> tuple[list[Path], str]:
         return 1, text
 
     files.sort(key=_source_priority)
-    return files, ",".join(kinds) if kinds else "none"
+    return files, ",".join(kinds) if kinds else "none", len(all_trade_log_paths) - len(trade_log_paths)
 
 
 def _active_shadow_profiles(project_root: Path, *, day: str) -> dict[str, dict[str, Any]]:
@@ -437,6 +471,25 @@ def _paper_execution_identity(row: dict[str, Any]) -> str:
     return f"content:{_paper_row_signature(row)}"
 
 
+def _calibration_only_paper_row_reason(row: dict[str, Any]) -> str:
+    metadata = row.get("metadata") if isinstance(row.get("metadata"), dict) else {}
+    provenance = row.get("provenance") if isinstance(row.get("provenance"), dict) else {}
+    if bool(row.get("independent_fill_evidence", False)) or bool(metadata.get("independent_fill_evidence", False)):
+        return "independent_fill_evidence"
+    fill_source = str(row.get("paper_fill_source") or metadata.get("paper_fill_source") or "").strip().lower()
+    if fill_source in {"market_replay_fill", "independent_fill_evidence"}:
+        return fill_source
+    account_mode = str(
+        row.get("account_mode")
+        or metadata.get("account_mode")
+        or provenance.get("account_mode")
+        or ""
+    ).strip().lower()
+    if account_mode == "replay":
+        return "replay_account_mode"
+    return ""
+
+
 def _iter_rows(
     files: Iterable[Path],
     *,
@@ -448,9 +501,10 @@ def _iter_rows(
     counters.setdefault("records_read", 0)
     counters.setdefault("records_emitted", 0)
     counters.setdefault("mirrored_records_suppressed", 0)
+    counters.setdefault("calibration_records_excluded", 0)
     counters.setdefault("post_snapshot_records_deferred", 0)
     for path in files:
-        opener = gzip.open if path.suffix == ".gz" else Path.open
+        opener = gzip.open if ".jsonl.gz" in path.name else Path.open
         try:
             with opener(path, "rt", encoding="utf-8", errors="ignore") as handle:
                 for raw in handle:
@@ -464,6 +518,9 @@ def _iter_rows(
                     if not isinstance(row, dict):
                         continue
                     counters["records_read"] += 1
+                    if _calibration_only_paper_row_reason(row):
+                        counters["calibration_records_excluded"] += 1
+                        continue
                     timestamp = _parse_ts(row.get("timestamp_utc") or row.get("timestamp"))
                     if evidence_through is not None and timestamp is not None and timestamp > evidence_through:
                         counters["post_snapshot_records_deferred"] += 1
@@ -894,7 +951,7 @@ def _sample_stddev(values: list[float]) -> float:
     return math.sqrt(max(variance, 0.0))
 
 
-def _candidate_profitability_cutoff(project_root: Path) -> datetime | None:
+def _candidate_profitability_context(project_root: Path) -> dict[str, Any]:
     try:
         state = json.loads(
             (project_root / "governance" / "runtime" / "production_candidate_state.json").read_text(
@@ -902,13 +959,76 @@ def _candidate_profitability_cutoff(project_root: Path) -> datetime | None:
             )
         )
     except Exception:
-        return None
+        return {
+            "candidate_id": "",
+            "generation": 0,
+            "cutoff_utc": None,
+            "state_receipt_sha256": "",
+        }
     windows = state.get("scope_windows_started_utc", {}) if isinstance(state, dict) else {}
     candidates = [
         _parse_ts(windows.get(scope))
         for scope in ("strategy", "execution", "risk", "data", "promotion", "dependencies")
     ]
-    return max((value for value in candidates if value is not None), default=None)
+    return {
+        "candidate_id": str(state.get("candidate_id") or ""),
+        "generation": int(state.get("generation", 0) or 0),
+        "cutoff_utc": max((value for value in candidates if value is not None), default=None),
+        "state_receipt_sha256": str(state.get("overall_sha256") or ""),
+    }
+
+
+def _candidate_profitability_cutoff(project_root: Path) -> datetime | None:
+    return _candidate_profitability_context(project_root).get("cutoff_utc")
+
+
+def _post_cost_flow_view(rows: Iterable[dict[str, Any]], *, scope: str) -> dict[str, Any]:
+    values: list[dict[str, Any]] = []
+    for row in rows:
+        if not isinstance(row, dict) or _pnl_schema_version(row) < 2:
+            continue
+        if "post_cost_pnl_delta" not in row:
+            continue
+        values.append(row)
+    realized = sum(_safe_float(row.get("realized_pnl_delta"), 0.0) for row in values)
+    post_cost = sum(_safe_float(row.get("post_cost_pnl_delta"), 0.0) for row in values)
+    costs = sum(
+        max(
+            _safe_float(row.get("execution_cost_total"), 0.0),
+            _safe_float(row.get("modeled_execution_cost_total"), 0.0),
+        )
+        for row in values
+    )
+    timestamps = [_parse_ts(row.get("timestamp_utc")) for row in values]
+    observed = [value for value in timestamps if value is not None]
+    candidate_ids = sorted(
+        {
+            str(
+                (row.get("metadata") or {}).get("production_candidate_id")
+                if isinstance(row.get("metadata"), dict)
+                else ""
+            ).strip()
+            for row in values
+            if str(
+                (row.get("metadata") or {}).get("production_candidate_id")
+                if isinstance(row.get("metadata"), dict)
+                else ""
+            ).strip()
+        }
+    )
+    return {
+        "scope": scope,
+        "schema_version": 2,
+        "sample_count": len(values),
+        "observed_days": len({value.date().isoformat() for value in observed}),
+        "first_observation_utc": min(observed).isoformat() if observed else "",
+        "last_observation_utc": max(observed).isoformat() if observed else "",
+        "post_cost_pnl_delta_total": round(post_cost, 6),
+        "realized_pnl_delta_total": round(realized, 6),
+        "execution_cost_total": round(costs, 6),
+        "candidate_ids": candidate_ids,
+        "accounting_policy": "flow deltas are additive within this scope; ending book totals are not mixed across candidate vintages",
+    }
 
 
 def _post_cost_expectancy(
@@ -1366,6 +1486,7 @@ def _build_sleeve_latest_summary(
     for profile in ordered_profiles:
         current = profile_rows.get(profile)
         source_day = day
+        source_timestamp: datetime | None = None
         profile_current: dict[str, tuple[datetime, dict[str, Any]]] | None = None
         current_day_available = False
         live_heartbeat = live_profiles.get(profile) or {}
@@ -1373,12 +1494,13 @@ def _build_sleeve_latest_summary(
         if current is not None:
             profile_current = current
             current_day_available = True
+            source_timestamp = max((item[0] for item in current.values()), default=None)
         else:
             latest = latest_rows.get(profile)
             if latest is not None:
-                source_day, _ts, profile_current = latest
+                source_day, source_timestamp, profile_current = latest
             if live_heartbeat:
-                current_day_available = True
+                current_day_available = False
                 live_no_fills_yet = True
         source_stats = stats_by_day.get(source_day, _empty_stats())
         source_execs = (source_stats.get("profiles") or Counter())
@@ -1386,9 +1508,12 @@ def _build_sleeve_latest_summary(
             rows.append(
                 {
                     "profile": profile,
-                    "day_utc": day if live_no_fills_yet else "",
-                    "current_day_available": bool(live_no_fills_yet),
+                    "day_utc": "",
+                    "current_day_available": False,
                     "data_status": "current_live_no_fills" if live_no_fills_yet else "no_data",
+                    "financial_grade_eligible": False,
+                    "carried_forward": False,
+                    "snapshot_age_seconds": None,
                     "executions": 0,
                     "ending_realized_pnl_total": 0.0,
                     "ending_unrealized_pnl_total": 0.0,
@@ -1421,12 +1546,26 @@ def _build_sleeve_latest_summary(
         ending_realized = float(totals.get("ending_realized_pnl_total", 0.0) or 0.0)
         ending_unrealized = float(totals.get("ending_unrealized_pnl_total", 0.0) or 0.0)
         ending_net = float(totals.get("ending_net_pnl_total", 0.0) or 0.0)
+        snapshot_age_seconds = (
+            max((_utc_now() - source_timestamp).total_seconds(), 0.0)
+            if source_timestamp is not None
+            else None
+        )
         rows.append(
             {
                 "profile": profile,
                 "day_utc": source_day,
                 "current_day_available": current_day_available,
                 "data_status": "current_live_no_fills" if live_no_fills_yet else ("current" if current_day_available else "latest_available"),
+                "financial_grade_eligible": bool(current_day_available and not live_no_fills_yet),
+                "carried_forward": bool(live_no_fills_yet or not current_day_available),
+                "snapshot_timestamp_utc": source_timestamp.isoformat() if source_timestamp is not None else "",
+                "snapshot_age_seconds": round(snapshot_age_seconds, 3) if snapshot_age_seconds is not None else None,
+                "carried_forward_accounting_scope": (
+                    "legacy_or_prior_candidate_inventory_visible_for_exit_management_only"
+                    if live_no_fills_yet or not current_day_available
+                    else ""
+                ),
                 "executions": int(source_stats.get("profiles", Counter()).get(profile, 0) if current_day_available and not live_no_fills_yet else 0 if live_no_fills_yet else source_execs.get(profile, 0)),
                 "ending_realized_pnl_total": round(float(ending_realized), 6),
                 "ending_unrealized_pnl_total": round(float(ending_unrealized), 6),
@@ -1511,14 +1650,24 @@ def _summarize_day(
 
 def build_paper_performance_report(project_root: Path, *, day: str, week_days: int = 7) -> dict[str, Any]:
     evidence_through = _utc_now()
-    files, source_kind = _paper_source_files(project_root)
+    files, source_kind, calibration_source_files_excluded = _paper_source_files(project_root)
     active_shadow_profiles = _active_shadow_profiles(project_root, day=day)
     latest_by_day_profile: dict[str, dict[str, dict[str, tuple[datetime, dict[str, Any]]]]] = defaultdict(lambda: defaultdict(dict))
     stats_by_day: dict[str, dict[str, Any]] = defaultdict(_empty_stats)
     post_cost_rows_by_profile: dict[str, list[dict[str, Any]]] = defaultdict(list)
     all_post_cost_rows: list[dict[str, Any]] = []
-    profitability_cutoff = _candidate_profitability_cutoff(project_root)
-    deduplication: dict[str, int] = {}
+    lifetime_post_cost_rows: list[dict[str, Any]] = []
+    current_day_post_cost_rows: list[dict[str, Any]] = []
+    candidate_context = _candidate_profitability_context(project_root)
+    profitability_cutoff = candidate_context.get("cutoff_utc")
+    current_candidate_id = str(candidate_context.get("candidate_id") or "").strip()
+    candidate_binding_mismatch_rows = 0
+    deduplication: dict[str, int] = {
+        "calibration_source_files_excluded": int(calibration_source_files_excluded),
+        "reconciliation_source_files_included": sum(
+            1 for path in files if ".local_fallback" in path.name
+        ),
+    }
 
     for row in _iter_rows(
         files,
@@ -1536,10 +1685,23 @@ def build_paper_performance_report(project_root: Path, *, day: str, week_days: i
             _pnl_schema_version(row) >= 2
             and "post_cost_pnl_delta" in row
             and "post_cost_return_bps" in row
-            and (profitability_cutoff is None or ts >= profitability_cutoff)
         ):
-            post_cost_rows_by_profile[profile].append(row)
-            all_post_cost_rows.append(row)
+            lifetime_post_cost_rows.append(row)
+            if dkey == day:
+                current_day_post_cost_rows.append(row)
+            metadata = row.get("metadata") if isinstance(row.get("metadata"), dict) else {}
+            row_candidate_id = str(metadata.get("production_candidate_id") or "").strip()
+            timestamp_eligible = profitability_cutoff is None or ts >= profitability_cutoff
+            candidate_id_eligible = (
+                row_candidate_id == current_candidate_id
+                if current_candidate_id
+                else True
+            )
+            if timestamp_eligible and candidate_id_eligible:
+                post_cost_rows_by_profile[profile].append(row)
+                all_post_cost_rows.append(row)
+            elif timestamp_eligible and current_candidate_id:
+                candidate_binding_mismatch_rows += 1
         current = latest_by_day_profile[dkey][profile].get(strategy)
         if current is None or ts > current[0]:
             latest_by_day_profile[dkey][profile][strategy] = (ts, row)
@@ -1634,6 +1796,30 @@ def build_paper_performance_report(project_root: Path, *, day: str, week_days: i
         "top_strategies": _rank_counter(week_strategies),
         "daily_series": rolling_series,
     }
+    sleeve_latest_summary = _decorate_sleeve_latest_rows(
+        _build_sleeve_latest_summary(
+            day=day,
+            latest_by_day_profile=latest_by_day_profile,
+            stats_by_day=stats_by_day,
+            active_shadow_profiles=active_shadow_profiles,
+            post_cost_rows_by_profile=post_cost_rows_by_profile,
+        ),
+        sleeve_daily_series=sleeve_daily_series,
+    )
+    active_book_rows = [
+        row
+        for row in sleeve_latest_summary
+        if isinstance(row, dict) and str(row.get("data_status") or "") != "no_data"
+    ]
+    active_book_realized = sum(
+        _safe_float(row.get("ending_realized_pnl_total"), 0.0) for row in active_book_rows
+    )
+    active_book_unrealized = sum(
+        _safe_float(row.get("ending_unrealized_pnl_total"), 0.0) for row in active_book_rows
+    )
+    active_book_net = sum(
+        _safe_float(row.get("ending_net_pnl_total"), 0.0) for row in active_book_rows
+    )
 
     return {
         "timestamp_utc": _utc_now().isoformat(),
@@ -1646,6 +1832,7 @@ def build_paper_performance_report(project_root: Path, *, day: str, week_days: i
             **deduplication,
             "identity_policy": "execution_id_else_paper_book_and_decision_id_else_content_hash",
             "canonical_source_priority": ["trade_logs", "root_paper_trades", "paper_broker_bridge"],
+            "calibration_evidence_policy": "independent/replay fill evidence is reserved for execution calibration and excluded from the realized paper P&L ledger",
         },
         "active_paper_profile_count_today": int(len(active_shadow_profiles)),
         "active_paper_profiles_today": [dict(active_shadow_profiles[key]) for key in sorted(active_shadow_profiles.keys())],
@@ -1656,16 +1843,7 @@ def build_paper_performance_report(project_root: Path, *, day: str, week_days: i
         "quarterly_history_series": quarterly_history_series[-16:],
         "sleeve_daily_series": {profile: rows[-60:] for profile, rows in sorted(sleeve_daily_series.items())},
         "sleeve_weekly_history_series": {profile: rows[-16:] for profile, rows in sorted(sleeve_weekly_history_series.items())},
-        "sleeve_latest": _decorate_sleeve_latest_rows(
-            _build_sleeve_latest_summary(
-                day=day,
-                latest_by_day_profile=latest_by_day_profile,
-                stats_by_day=stats_by_day,
-                active_shadow_profiles=active_shadow_profiles,
-                post_cost_rows_by_profile=post_cost_rows_by_profile,
-            ),
-            sleeve_daily_series=sleeve_daily_series,
-        ),
+        "sleeve_latest": sleeve_latest_summary,
         "period_change_series": _build_period_change_series(
             selected_day=day,
             selected_net=float(selected_net),
@@ -1676,10 +1854,48 @@ def build_paper_performance_report(project_root: Path, *, day: str, week_days: i
         "day": day_summary,
         "week": week_summary,
         "post_cost_expectancy": _post_cost_expectancy(all_post_cost_rows),
+        "accounting_views": {
+            "lifetime_flow": _post_cost_flow_view(
+                lifetime_post_cost_rows,
+                scope="lifetime_schema_v2_flow",
+            ),
+            "current_day_flow": _post_cost_flow_view(
+                current_day_post_cost_rows,
+                scope=f"current_day:{day}",
+            ),
+            "candidate_forward_flow": {
+                **_post_cost_flow_view(
+                    all_post_cost_rows,
+                    scope=f"candidate_forward:{candidate_context.get('candidate_id') or 'unknown'}",
+                ),
+                "candidate_id": str(candidate_context.get("candidate_id") or ""),
+                "candidate_generation": int(candidate_context.get("generation", 0) or 0),
+                "candidate_cutoff_utc": (
+                    profitability_cutoff.isoformat() if isinstance(profitability_cutoff, datetime) else ""
+                ),
+                "candidate_state_receipt_sha256": str(
+                    candidate_context.get("state_receipt_sha256") or ""
+                ),
+                "candidate_binding_required": bool(current_candidate_id),
+                "candidate_binding_mismatch_rows_excluded": int(candidate_binding_mismatch_rows),
+            },
+            "active_book_snapshot": {
+                "scope": "lifetime_active_paper_inventory",
+                "ending_realized_pnl_total": round(float(active_book_realized), 6),
+                "ending_unrealized_pnl_total": round(float(active_book_unrealized), 6),
+                "ending_net_pnl_total": round(float(active_book_net), 6),
+                "candidate_grade_eligible": False,
+                "policy": "active inventory remains operationally visible and exit-manageable but is not candidate-forward flow evidence",
+            },
+        },
         "profitability_evidence_window": {
+            "candidate_id": str(candidate_context.get("candidate_id") or ""),
+            "candidate_generation": int(candidate_context.get("generation", 0) or 0),
             "candidate_cutoff_utc": profitability_cutoff.isoformat() if profitability_cutoff is not None else "",
             "evidence_through_utc": evidence_through.isoformat(),
             "candidate_filter_active": profitability_cutoff is not None,
+            "candidate_binding_required": bool(current_candidate_id),
+            "candidate_binding_mismatch_rows_excluded": int(candidate_binding_mismatch_rows),
             "snapshot_watermark_active": True,
             "policy": "post-cost promotion evidence excludes samples before the latest affected candidate scope window and defers rows after the published scan watermark",
         },

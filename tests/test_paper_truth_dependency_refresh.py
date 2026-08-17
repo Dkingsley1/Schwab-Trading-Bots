@@ -89,6 +89,39 @@ def test_dependency_refresh_repairs_only_stale_groups_then_regrades(tmp_path: Pa
     assert payload["safety_contract"]["live_execution_allowed"] is False
 
 
+def test_dependency_refresh_rebuilds_replay_when_counterfactual_source_advances(tmp_path: Path, monkeypatch) -> None:
+    seen: list[str] = []
+    snapshots = iter([_fresh(stale_promotion=["counterfactual"]), _fresh()])
+    monkeypatch.setattr(refresh, "_freshness", lambda project_root: next(snapshots))
+
+    payload = refresh.build_payload(tmp_path, runner=_runner(seen))
+
+    assert payload["selected_repair_groups"] == ["replay_truth"]
+    assert seen == ["counterfactual_replay", "paper_replay", "paper_truth_verify"]
+    assert payload["stale_promotion_evidence_inputs_after"] == []
+    assert payload["overall_status"] == "ready"
+
+
+def test_dependency_refresh_rebuilds_performance_when_candidate_epoch_advances(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    seen: list[str] = []
+    snapshots = iter(
+        [
+            _fresh(stale_operational=["paper_performance"], stale_promotion=["calibration"]),
+            _fresh(),
+        ]
+    )
+    monkeypatch.setattr(refresh, "_freshness", lambda project_root: next(snapshots))
+
+    payload = refresh.build_payload(tmp_path, runner=_runner(seen))
+
+    assert payload["selected_repair_groups"] == ["paper_performance_truth"]
+    assert seen == ["paper_calibration", "paper_performance", "paper_truth_verify"]
+    assert payload["overall_status"] == "ready"
+
+
 def test_dependency_refresh_fails_closed_when_operational_input_remains_stale(tmp_path: Path, monkeypatch) -> None:
     seen: list[str] = []
     snapshots = iter(

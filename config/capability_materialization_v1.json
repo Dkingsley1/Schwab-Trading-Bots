@@ -1,0 +1,100 @@
+{
+  "schema_version": 1,
+  "policy_id": "capability_materialization_v1",
+  "operating_mode": "source_backed_shadow_only",
+  "calendar_contract": {
+    "library": "exchange-calendars",
+    "minimum_version": "4.13.2",
+    "lookback_days": 7,
+    "lookahead_days": 120,
+    "preview_session_count": 8,
+    "calendars": [
+      {
+        "calendar_id": "XNYS",
+        "market_id": "us_equities_nyse",
+        "asset_classes": ["EQUITY", "ETF", "OPTION"],
+        "required": true
+      },
+      {
+        "calendar_id": "XNAS",
+        "market_id": "us_equities_nasdaq",
+        "asset_classes": ["EQUITY", "ETF", "OPTION"],
+        "required": true
+      },
+      {
+        "calendar_id": "CMES",
+        "market_id": "cme_globex_futures",
+        "asset_classes": ["FUTURE", "FUTURE_OPTION"],
+        "required": true
+      },
+      {
+        "calendar_id": "24/7",
+        "market_id": "continuous_crypto",
+        "asset_classes": ["CRYPTO"],
+        "required": true
+      }
+    ],
+    "packaged_schedule_data_is_source_evidence": true,
+    "require_library_for_live_promotion": true,
+    "stdlib_fallback_may_support_paper_only": true
+  },
+  "derivative_contract_master_path": "config/derivatives_contract_master_v1.json",
+  "stress_scenario_paths": [
+    "config/stress_scenarios/covid_2020_pandemic_crash.json",
+    "config/stress_scenarios/fed_2026_supervisory_severely_adverse.json",
+    "config/stress_scenarios/fed_2026_source_plumbing.json",
+    "config/stress_scenarios/fed_2026_stress_modules.json"
+  ],
+  "materialized_capabilities": [
+    {
+      "capability_id": "trading_calendars",
+      "proof_family": "exchange_calendar_schedule",
+      "minimum_evidence_count": 4,
+      "required_for_live_promotion": true
+    },
+    {
+      "capability_id": "market_session_state",
+      "proof_family": "point_in_time_session_state",
+      "minimum_evidence_count": 4,
+      "required_for_live_promotion": true
+    },
+    {
+      "capability_id": "derivatives_contract_master",
+      "proof_family": "curated_contract_specification",
+      "minimum_evidence_count": 10,
+      "required_for_live_promotion": true
+    },
+    {
+      "capability_id": "stress_scenarios",
+      "proof_family": "versioned_replay_scenario",
+      "minimum_evidence_count": 2,
+      "required_for_live_promotion": true
+    }
+  ],
+  "proof_contract": {
+    "require_source_receipts": true,
+    "require_content_hashes": true,
+    "require_point_in_time_timestamp": true,
+    "require_nonempty_scope": true,
+    "require_direct_or_declared_proxy_semantics": true,
+    "partial_materialization_fails_capability_closed": true
+  },
+  "resource_contract": {
+    "single_process": true,
+    "external_network_fetches": false,
+    "maximum_calendar_preview_sessions": 16,
+    "maximum_output_megabytes": 4,
+    "shared_snapshot_only": true
+  },
+  "authority_contract": {
+    "changes_runtime_decisions": false,
+    "launches_collectors": false,
+    "fetches_external_data": false,
+    "mutates_bot_registry": false,
+    "rewrites_historical_outcomes": false,
+    "paper_execution_authority": false,
+    "live_execution_authority": false,
+    "automatic_promotion_authority": false,
+    "profitability_guaranteed": false
+  }
+}

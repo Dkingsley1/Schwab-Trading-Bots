@@ -45,6 +45,14 @@ cat > "$PLIST_PATH" <<PLIST
   <true/>
   <key>StartInterval</key>
   <integer>$INTERVAL_SECONDS</integer>
+  <key>WatchPaths</key>
+  <array>
+    <string>$PROJECT_ROOT/governance/runtime/soak_self_healing.trigger</string>
+  </array>
+  <key>ProcessType</key>
+  <string>Background</string>
+  <key>ThrottleInterval</key>
+  <integer>30</integer>
 
   <key>StandardOutPath</key>
   <string>$LOG_DIR/ops_soak_self_healing.out.log</string>

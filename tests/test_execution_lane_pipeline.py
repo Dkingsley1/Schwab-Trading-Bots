@@ -1,3 +1,4 @@
+import hashlib
 import json
 import sqlite3
 from datetime import datetime, timedelta, timezone
@@ -5,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+from scripts import run_execution_lane as execution_lane_runner
 from core.base_trader import BaseTrader
 from core.channel_queue import ChannelMessage, ChannelQueue, default_queue_db_path
 from core.execution_lane_pipeline import (
@@ -36,6 +38,12 @@ def test_default_queue_db_path_prefers_local_fallback(tmp_path: Path, monkeypatc
     assert default_queue_db_path(tmp_path) == str(
         tmp_path / "local_fallback_storage" / "data" / "bot_channel_queue.sqlite3"
     )
+
+
+def test_execution_lane_health_update_cadence_is_bounded() -> None:
+    assert execution_lane_runner._lane_health_update_due(0.0, 60.0, now_monotonic=100.0) is True
+    assert execution_lane_runner._lane_health_update_due(100.0, 60.0, now_monotonic=159.9) is False
+    assert execution_lane_runner._lane_health_update_due(100.0, 60.0, now_monotonic=160.0) is True
 
 
 def test_default_queue_db_path_prefers_routed_storage_when_external_is_preferred(tmp_path: Path, monkeypatch) -> None:
@@ -225,6 +233,34 @@ def _seed_gates(project_root: Path, *, promote_ok: bool, quality_ok: bool) -> No
             "failed_checks": ([] if quality_ok else ["promotion_gate_blocked"]),
         },
     )
+
+
+def _paper_consensus_metadata(bot_ids: list[str], *, segment: str = "core") -> dict:
+    ids = sorted(bot_ids)
+    manifest = {
+        "policy": "paper_execution_authority_v2",
+        "profile": "baseline",
+        "segment": segment,
+        "constituent_bot_ids": ids,
+    }
+    return {
+        "layer": "paper_portfolio_consensus",
+        "source_profile": "baseline",
+        "signal_segment": segment,
+        "paper_execution_authority_version": "paper_execution_authority_v2",
+        "paper_execution_diversity_ready": True,
+        "paper_execution_distinct_correlation_clusters": 2,
+        "constituent_count": len(ids),
+        "constituent_bot_ids": ids,
+        "constituent_bot_ids_truncated": False,
+        "constituent_bot_ids_sha256": hashlib.sha256(
+            json.dumps(ids, separators=(",", ":")).encode("utf-8")
+        ).hexdigest(),
+        "paper_execution_cohort_manifest": manifest,
+        "paper_execution_cohort_manifest_sha256": hashlib.sha256(
+            json.dumps(manifest, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        ).hexdigest(),
+    }
 
 
 def test_publish_execution_intent_enqueues_channel_message(tmp_path: Path) -> None:
@@ -452,12 +488,12 @@ def test_process_execution_intent_blocks_promotion_on_stale_realism_fill(tmp_pat
     queue = ChannelQueue(default_queue_db_path(tmp_path))
     promoted_rows = queue.read_from_cursor(consumer="pytest_live_stale", channel=EXECUTION_PROMOTED_CHANNEL, limit=10)
 
-    paper_order = out["result"]["result"]["paper_order"]
-    assert out["result"]["result_status"] == "PAPER_EXECUTED"
-    assert paper_order["paper_realism_status"] == "stale_quote_rejected"
-    assert paper_order["filled_quantity"] == 0.0
-    assert "paper_realism_not_filled:stale_quote_rejected" in out["promotion"]["promotion"]["reasons"]
-    assert "paper_realism_quality_below_threshold" in out["promotion"]["promotion"]["reasons"]
+    result = out["result"]["result"]
+    assert out["result"]["result_status"] == "PAPER_PROFITABILITY_GUARD_BLOCKED"
+    assert "paper_order" not in result
+    assert result["live_guard_decision"]["gate"] == "paper_profitability_entry_policy"
+    assert result["live_guard_decision"]["reason"] == "paper_profitability_entry_policy_block"
+    assert out["promotion"]["promotion"]["promote_ok"] is False
     assert len(promoted_rows) == 0
 
 
@@ -538,9 +574,17 @@ def test_paper_standard_gateway_allows_explicit_paper_bot(tmp_path: Path, monkey
                 {
                     "bot_id": "brain_refinery_v26_restored_probation",
                     "active": True,
+                    "bot_role": "signal_sub_bot",
+                    "lifecycle_state": "paper_live_data",
+                    "test_accuracy": 0.61,
+                    "quality_score": 0.72,
                     "paper_standard_cohort": "legacy_bootstrap",
                     "paper_live_data_enabled": True,
                     "paper_execution_allowed": True,
+                    "paper_execution_authority": False,
+                    "paper_probation_authority": True,
+                    "paper_probation_requalification_allowed": True,
+                    "paper_execution_authority_version": "paper_execution_authority_v2",
                     "direct_execution_allowed": False,
                     "live_trading_enabled": False,
                 }
@@ -555,6 +599,215 @@ def test_paper_standard_gateway_allows_explicit_paper_bot(tmp_path: Path, monkey
 
     assert gateway["allow_execute"] is True
     assert gateway["paper_standard_cohort"] == "legacy_bootstrap"
+
+
+def test_paper_standard_gateway_uses_only_hash_bound_candidate_overlay(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("PAPER_LIVE_DATA_STANDARD_ENABLED", "1")
+    source_path = tmp_path / "master_bot_registry.json"
+    candidate_path = tmp_path / "governance" / "health" / "paper_live_data_standard_registry_candidate_latest.json"
+    guard_path = tmp_path / "governance" / "health" / "paper_live_data_standard_source_write_guard_latest.json"
+    health_path = tmp_path / "governance" / "health" / "paper_live_data_standard_latest.json"
+    source = {
+        "summary": {},
+        "sub_bots": [
+            {
+                "bot_id": "signal_a",
+                "active": True,
+                "bot_role": "signal_sub_bot",
+                "lifecycle_state": "paper_live_data",
+                "test_accuracy": 0.64,
+                "quality_score": 0.75,
+                "paper_execution_authority": False,
+                "paper_execution_authority_version": "paper_execution_authority_v2",
+            }
+        ],
+    }
+    candidate = {
+        "summary": {"paper_live_data_standard_version": "paper_live_data_standard_v2"},
+        "sub_bots": [
+            {
+                **source["sub_bots"][0],
+                "paper_execution_authority": True,
+                "direct_execution_allowed": False,
+                "live_trading_enabled": False,
+            }
+        ],
+    }
+    _write_json(source_path, source)
+    _write_json(candidate_path, candidate)
+    _write_json(
+        guard_path,
+        {
+            "source_write_blocked": True,
+            "source_path": str(source_path),
+            "candidate_path": str(candidate_path),
+            "source_sha256": hashlib.sha256(source_path.read_bytes()).hexdigest(),
+            "candidate_sha256": hashlib.sha256(candidate_path.read_bytes()).hexdigest(),
+        },
+    )
+    _write_json(health_path, {"ok": True})
+    intent = {"strategy": "paper_mirror::signal_a"}
+
+    allowed = evaluate_paper_standard_gateway(project_root=str(tmp_path), intent=intent)
+    assert allowed["allow_execute"] is True
+    assert allowed["registry_provenance"]["source"] == "hash_bound_candidate_overlay"
+
+    candidate_path.write_text(candidate_path.read_text(encoding="utf-8") + "\n", encoding="utf-8")
+    blocked = evaluate_paper_standard_gateway(project_root=str(tmp_path), intent=intent)
+    assert blocked["allow_execute"] is False
+    assert blocked["registry_provenance"]["candidate_overlay_valid"] is False
+    assert "candidate_registry_hash_mismatch" in blocked["registry_provenance"]["reasons"]
+
+
+def test_paper_standard_gateway_does_not_authorize_virtual_name_patterns(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("PAPER_LIVE_DATA_STANDARD_ENABLED", "1")
+    _write_json(tmp_path / "master_bot_registry.json", {"sub_bots": []})
+
+    gateway = evaluate_paper_standard_gateway(
+        project_root=str(tmp_path),
+        intent={"strategy": "paper_mirror::options_specialist_unregistered"},
+    )
+
+    assert gateway["allow_execute"] is False
+    assert gateway["virtual_allowed"] is False
+    assert gateway["reasons"] == ["paper_standard_bot_missing_from_registry"]
+
+
+def test_paper_standard_gateway_validates_consensus_constituents(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("PAPER_LIVE_DATA_STANDARD_ENABLED", "1")
+    _write_json(
+        tmp_path / "master_bot_registry.json",
+        {
+            "sub_bots": [
+                {
+                    "bot_id": "eligible_bot",
+                    "active": True,
+                    "bot_role": "signal_sub_bot",
+                    "lifecycle_state": "paper_live_data",
+                    "test_accuracy": 0.64,
+                    "quality_score": 0.75,
+                    "paper_live_data_enabled": True,
+                    "paper_execution_allowed": True,
+                    "paper_execution_authority": True,
+                    "paper_execution_authority_version": "paper_execution_authority_v2",
+                    "direct_execution_allowed": False,
+                    "live_trading_enabled": False,
+                },
+                {
+                    "bot_id": "collection_only_bot",
+                    "active": True,
+                    "bot_role": "signal_sub_bot",
+                    "lifecycle_state": "data_collection_only",
+                    "test_accuracy": 0.90,
+                    "quality_score": 0.90,
+                    "paper_live_data_enabled": False,
+                    "paper_execution_allowed": False,
+                    "paper_execution_authority": False,
+                    "paper_execution_authority_version": "paper_execution_authority_v2",
+                    "direct_execution_allowed": False,
+                    "live_trading_enabled": False,
+                },
+                {
+                    "bot_id": "eligible_bot_b",
+                    "active": True,
+                    "bot_role": "signal_sub_bot",
+                    "lifecycle_state": "paper_live_data",
+                    "test_accuracy": 0.62,
+                    "quality_score": 0.73,
+                    "paper_live_data_enabled": True,
+                    "paper_execution_allowed": True,
+                    "paper_execution_authority": True,
+                    "paper_execution_authority_version": "paper_execution_authority_v2",
+                    "direct_execution_allowed": False,
+                    "live_trading_enabled": False,
+                },
+            ]
+        },
+    )
+    base_intent = {
+        "strategy": "paper_portfolio_consensus::baseline::core",
+        "metadata": _paper_consensus_metadata(["eligible_bot", "eligible_bot_b"]),
+    }
+
+    allowed = evaluate_paper_standard_gateway(project_root=str(tmp_path), intent=base_intent)
+    blocked = evaluate_paper_standard_gateway(
+        project_root=str(tmp_path),
+        intent={
+            **base_intent,
+            "metadata": _paper_consensus_metadata(["eligible_bot", "collection_only_bot"]),
+        },
+    )
+
+    assert allowed["allow_execute"] is True
+    assert allowed["consensus_constituent_count"] == 2
+    assert blocked["allow_execute"] is False
+    assert blocked["consensus_invalid_bot_ids"] == ["collection_only_bot"]
+    assert blocked["reasons"] == ["paper_standard_consensus_contains_ineligible_bot"]
+
+
+def test_paper_standard_gateway_fails_closed_on_incomplete_consensus_identity(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setenv("PAPER_LIVE_DATA_STANDARD_ENABLED", "1")
+
+    gateway = evaluate_paper_standard_gateway(
+        project_root=str(tmp_path),
+        intent={
+            "strategy": "paper_portfolio_consensus::baseline::core",
+            "metadata": {
+                "layer": "paper_portfolio_consensus",
+                "constituent_bot_ids": [],
+                "constituent_bot_ids_truncated": True,
+            },
+        },
+    )
+
+    assert gateway["allow_execute"] is False
+    assert "paper_standard_consensus_missing_constituents" in gateway["reasons"]
+    assert "paper_standard_consensus_constituents_truncated" in gateway["reasons"]
+    assert "paper_standard_consensus_authority_version_mismatch" in gateway["reasons"]
+
+
+def test_paper_standard_gateway_binds_consensus_to_current_candidate(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("PAPER_LIVE_DATA_STANDARD_ENABLED", "1")
+    rows = []
+    for bot_id in ("eligible_a", "eligible_b"):
+        rows.append(
+            {
+                "bot_id": bot_id,
+                "active": True,
+                "bot_role": "signal_sub_bot",
+                "lifecycle_state": "paper_live_data",
+                "test_accuracy": 0.64,
+                "quality_score": 0.75,
+                "paper_execution_authority": True,
+                "paper_execution_authority_version": "paper_execution_authority_v2",
+                "direct_execution_allowed": False,
+                "live_trading_enabled": False,
+            }
+        )
+    _write_json(tmp_path / "master_bot_registry.json", {"sub_bots": rows})
+    _write_json(
+        tmp_path / "governance" / "runtime" / "production_candidate_state.json",
+        {"candidate_id": "candidate-current"},
+    )
+    metadata = _paper_consensus_metadata(["eligible_a", "eligible_b"])
+
+    missing = evaluate_paper_standard_gateway(
+        project_root=str(tmp_path),
+        intent={"strategy": "paper_portfolio_consensus::baseline::core", "metadata": metadata},
+    )
+    matched = evaluate_paper_standard_gateway(
+        project_root=str(tmp_path),
+        intent={
+            "strategy": "paper_portfolio_consensus::baseline::core",
+            "metadata": {**metadata, "production_candidate_id": "candidate-current"},
+        },
+    )
+
+    assert "paper_standard_production_candidate_id_missing" in missing["reasons"]
+    assert missing["allow_execute"] is False
+    assert matched["allow_execute"] is True
 
 
 def test_update_lane_health_marks_stale_consumer_with_backlog(tmp_path: Path, monkeypatch) -> None:

@@ -69,6 +69,33 @@ def _record_digest(record: dict[str, Any]) -> str:
     return hashlib.sha256(encoded).hexdigest()
 
 
+def _identity_material_digest(record: dict[str, Any]) -> str:
+    metadata = record.get("metadata") if isinstance(record.get("metadata"), dict) else {}
+    provenance = record.get("provenance") if isinstance(record.get("provenance"), dict) else {}
+    material = {
+        "timestamp_utc": record.get("timestamp_utc"),
+        "symbol": record.get("symbol"),
+        "action": record.get("action"),
+        "quantity": record.get("quantity"),
+        "reference_price": record.get("reference_price"),
+        "intended_price": record.get("intended_price"),
+        "fill_price": record.get("fill_price"),
+        "expected_fill_price": record.get("expected_fill_price"),
+        "expected_slippage_bps": record.get("expected_slippage_bps"),
+        "paper_fill_source": record.get("paper_fill_source"),
+        "source_broker": record.get("source_broker"),
+        "source_provider": record.get("source_provider"),
+        "source_venue": record.get("source_venue"),
+        "external_fill_id": record.get("external_fill_id"),
+        "source_profile": metadata.get("source_profile"),
+        "account_mode": metadata.get("account_mode"),
+        "source_system": provenance.get("source_system"),
+        "source_record_id": provenance.get("source_record_id"),
+        "captured_at_utc": provenance.get("captured_at_utc"),
+    }
+    return _record_digest(material)
+
+
 def _first_text(*values: Any) -> str:
     for value in values:
         text = str(value or "").strip()
@@ -273,17 +300,30 @@ def build_payload(
     existing_ledger_rows = _load_ledger_rows(ledger_path)
     prior_identities = prior_state.get("identity_hashes") if isinstance(prior_state.get("identity_hashes"), dict) else {}
     identities = {str(key): str(value) for key, value in prior_identities.items() if str(key).strip() and str(value).strip()}
+    prior_material_hashes = (
+        prior_state.get("identity_material_hashes")
+        if isinstance(prior_state.get("identity_material_hashes"), dict)
+        else {}
+    )
+    identity_material_hashes = {
+        str(key): str(value)
+        for key, value in prior_material_hashes.items()
+        if str(key).strip() and str(value).strip()
+    }
     for row in existing_ledger_rows:
         identity = str(row.get("evidence_identity") or "").strip()
         digest = str(row.get("evidence_sha256") or "").strip()
         if identity and digest:
             identities.setdefault(identity, digest)
+            identity_material_hashes.setdefault(identity, _identity_material_digest(row))
     cutoff, candidate = _candidate_cutoff(project_root)
     accepted: list[dict[str, Any]] = []
     rejected: list[dict[str, Any]] = []
     conflicts: list[dict[str, Any]] = []
     source_counts: Counter[str] = Counter()
     scanned = 0
+    valid_rows_seen = 0
+    duplicate_rows_seen = 0
     for path, line_number, raw, parse_error in _iter_inbox_rows(inbox_path):
         scanned += 1
         if parse_error:
@@ -311,8 +351,16 @@ def build_payload(
             )
             continue
         digest = str(normalized["evidence_sha256"])
+        material_digest = _identity_material_digest(normalized)
         previous_digest = identities.get(identity)
-        if previous_digest and previous_digest != digest:
+        previous_material_digest = identity_material_hashes.get(identity)
+        material_conflict = bool(previous_material_digest and previous_material_digest != material_digest)
+        legacy_digest_conflict = bool(
+            previous_digest
+            and not previous_material_digest
+            and previous_digest != digest
+        )
+        if material_conflict or legacy_digest_conflict:
             conflicts.append(
                 {
                     "file": str(path),
@@ -320,12 +368,19 @@ def build_payload(
                     "identity": identity,
                     "accepted_sha256": previous_digest,
                     "conflicting_sha256": digest,
+                    "accepted_identity_material_sha256": previous_material_digest,
+                    "conflicting_identity_material_sha256": material_digest,
                     "reason": "immutable_source_record_id_reused_with_different_content",
                 }
             )
             continue
-        identities[identity] = digest
+        valid_rows_seen += 1
         source_counts[str(normalized.get("paper_fill_source") or "unknown")] += 1
+        if previous_digest or previous_material_digest:
+            duplicate_rows_seen += 1
+            continue
+        identities[identity] = digest
+        identity_material_hashes[identity] = material_digest
         accepted.append(normalized)
 
     unique_new: dict[str, dict[str, Any]] = {str(row["evidence_sha256"]): row for row in accepted}
@@ -351,6 +406,7 @@ def build_payload(
             "schema_version": SCHEMA_VERSION,
             "timestamp_utc": iso_now(),
             "identity_hashes": dict(sorted(identities.items())),
+            "identity_material_hashes": dict(sorted(identity_material_hashes.items())),
             "ledger_record_count": len(ledger_rows),
             "candidate_eligible_ledger_record_count": len(eligible_ledger_rows),
             "candidate_binding": candidate,
@@ -380,7 +436,8 @@ def build_payload(
         "ledger_dir": str(ledger_path),
         "trade_log_dir": str(trade_log_path),
         "rows_scanned": scanned,
-        "valid_rows_seen": len(accepted),
+        "valid_rows_seen": valid_rows_seen,
+        "duplicate_rows_seen": duplicate_rows_seen,
         "new_ledger_records": new_record_count,
         "accepted_ledger_records": total_accepted,
         "candidate_eligible_ledger_records": candidate_eligible,
@@ -396,6 +453,8 @@ def build_payload(
             "candidate_cutoff_enforced": cutoff is not None,
             "content_addressed_evidence_ledger": True,
             "source_record_id_conflicts_fail_closed": True,
+            "identity_material_excludes_storage_location": True,
+            "provenance_relocation_preserves_immutable_identity": True,
             "idempotent_trade_log_materialization": True,
             "live_execution_authority": False,
         },

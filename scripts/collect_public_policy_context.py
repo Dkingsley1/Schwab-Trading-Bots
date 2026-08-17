@@ -32,7 +32,40 @@ TREASURY_AVG_INTEREST_URL = (
     "avg_interest_rates?sort=-record_date&page%5Bsize%5D=30"
 )
 WORLD_BANK_API_ROOT = "https://api.worldbank.org/v2"
-DEFAULT_COUNTRIES = ["USA", "CHN", "JPN", "DEU", "GBR", "IND", "BRA", "CAN", "MEX", "KOR"]
+DEFAULT_COUNTRIES = [
+    "USA",
+    "EMU",
+    "CHN",
+    "JPN",
+    "GBR",
+    "CAN",
+    "CHE",
+    "AUS",
+    "NZL",
+    "IND",
+    "BRA",
+    "MEX",
+    "KOR",
+    "NOR",
+    "SWE",
+    "SGP",
+    "HKG",
+    "IDN",
+    "ZAF",
+    "TUR",
+    "SAU",
+    "RUS",
+    "ISR",
+    "MYS",
+    "THA",
+    "PHL",
+    "POL",
+    "DNK",
+    "CZE",
+    "CHL",
+    "ARE",
+    "ARG",
+]
 WORLD_BANK_INDICATORS = {
     "NY.GDP.MKTP.CD": "gdp_current_usd",
     "FP.CPI.TOTL.ZG": "inflation_cpi_annual_pct",

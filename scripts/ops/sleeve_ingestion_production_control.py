@@ -265,7 +265,7 @@ def _env_values(payload: dict[str, Any]) -> dict[str, str]:
         "BOT_COLLECTION_DUTY_CYCLE_MAX_ACTIVE_RATIO": active_ratio_text,
         "HEAVY_COLLECTORS_PAUSED_FOR_BACKLOG": "1" if bool(mode.get("pressure_limited", False)) else "0",
         "REPORT_REFRESH_PAUSED_FOR_BACKLOG": "1" if bool(mode.get("pressure_limited", False)) else "0",
-        "PAPER_MIRROR_ALL_ACTIVE_SUB_BOTS": "1",
+        "PAPER_MIRROR_ALL_ACTIVE_SUB_BOTS": "0",
         "PAPER_BROKER_BRIDGE_ENABLED": "1",
         "PAPER_BROKER_BRIDGE_MODE": "jsonl",
         "MARKET_DATA_ONLY": "1",

@@ -245,10 +245,32 @@ def _storage_ready(storage: dict[str, Any], plumbing: dict[str, Any] | None = No
         and efficiency_status in {"", "ready", "ok"}
         and efficiency_grade in {"", "A", "A+"}
     )
+    bounded_steady_state_relief = bool(
+        severity in {"stable", "low", "normal", "ready", "watch", "elevated"}
+        and pressure_index <= 0.85
+        and raw_core <= 2500
+        and raw_total <= 5000
+        and raw_oldest <= 300.0
+        and total_pending < pending_threshold
+        and not bool(bounded_recovery.get("hard_gate_active"))
+        and not bool(bounded_recovery.get("effective_hard_gate_active"))
+        and route_ready
+        and resilience_ready
+        and integrity_clean
+        and no_queue_breaches
+        and efficiency_status in {"", "ready", "ok"}
+        and efficiency_grade in {"", "A", "A+"}
+    )
+    storage_relief_active = bool(
+        overlay_relief
+        or bounded_drain_relief
+        or bounded_steady_state_relief
+        or deferred_relief.get("active", False)
+    )
     blockers: list[str] = []
-    if severity in {"blocked", "critical", "high"} and not overlay_relief and not bounded_drain_relief and not bool(deferred_relief.get("active", False)):
+    if severity in {"blocked", "critical", "high"} and not storage_relief_active:
         blockers.append(f"storage_severity={severity}")
-    if pressure_index >= 0.50 and not overlay_relief and not bounded_drain_relief and not bool(deferred_relief.get("active", False)):
+    if pressure_index >= 0.50 and not storage_relief_active:
         blockers.append("storage_pressure_index_high")
     if total_pending >= pending_threshold and not bool(deferred_relief.get("active", False)):
         blockers.append("storage_pending_above_threshold")
@@ -256,12 +278,20 @@ def _storage_ready(storage: dict[str, Any], plumbing: dict[str, Any] | None = No
 
 
 def _collection_rollup_advisory_ready(rollup: dict[str, Any], rollup_status: str) -> bool:
+    operational = _dict(rollup.get("operational_collection"))
+    if bool(rollup.get("operational_ok", operational.get("ok", False))) and _status(
+        rollup.get("operational_status") or operational.get("status")
+    ) in {"ready", "ok"}:
+        return True
+    repair_lane = _dict(rollup.get("zero_observation_repair_lane"))
     return bool(
         rollup_status == "degraded"
         and _safe_int(rollup.get("collector_count"), 0) > 0
         and _safe_int(rollup.get("bots_with_observations"), 0) > 0
         and _safe_int(rollup.get("total_observations"), 0) > 0
-        and _safe_int(rollup.get("training_ready_count"), 0) == 0
+        and bool(repair_lane.get("active", False))
+        and _safe_int(rollup.get("fail_closed_zero_observation_count"), 0)
+        == _safe_int(rollup.get("unmanaged_zero_observation_count"), -1)
     )
 
 

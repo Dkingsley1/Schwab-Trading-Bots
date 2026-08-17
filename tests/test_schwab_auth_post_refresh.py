@@ -35,6 +35,12 @@ def _ready_payload(name: str) -> tuple[int, dict]:
             "risk_score": 35.0,
             "limits": {"gross_exposure_cap": 0.17, "max_single_symbol_share": 0.15},
         }
+    if name == "portfolio_capacity_curves":
+        return 0, {
+            "ok": False,
+            "overall_status": "degraded",
+            "summary": {"curve_count": 0, "allocator_ready": False},
+        }
     if name == "portfolio_allocator":
         return 0, {"ok": True, "overall_status": "ready", "summary": {"approved_intent_count": 0, "gross_budget": 0.0}}
     if name == "account_buildout_plan":
@@ -72,6 +78,7 @@ def test_post_refresh_runs_auth_and_paper_truth_dependencies_in_order(tmp_path: 
         "position_opportunity_watch",
         "sleeve_allocator",
         "portfolio_risk_ledger",
+        "portfolio_capacity_curves",
         "portfolio_allocator",
         "account_buildout_plan",
         "paper_truth",
@@ -85,6 +92,26 @@ def test_post_refresh_runs_auth_and_paper_truth_dependencies_in_order(tmp_path: 
     assert commands["paper_truth"][-2].endswith("scripts/ops/paper_execution_truth_layer.py")
     assert "opsctl.sh" not in " ".join(commands["paper_truth"])
     assert payload["regression_contract"]["paper_truth_evaluator_is_non_recursive"] is True
+    assert seen.index("portfolio_capacity_curves") < seen.index("portfolio_allocator")
+
+
+def test_post_refresh_stops_before_allocator_when_capacity_refresh_fails(tmp_path: Path, monkeypatch) -> None:
+    seen: list[str] = []
+
+    def fake_runner(name: str, cmd: list[str], **kwargs) -> dict:
+        seen.append(name)
+        rc, payload = _ready_payload(name)
+        if name == "portfolio_capacity_curves":
+            rc, payload = 2, {}
+        return {"name": name, "cmd": cmd, "rc": rc, "timed_out": False, "payload": payload}
+
+    monkeypatch.setattr(src, "mark_provider_recovered", lambda *args, **kwargs: {})
+    payload = src.build_payload(tmp_path, runner=fake_runner)
+
+    assert seen[-1] == "portfolio_capacity_curves"
+    assert "portfolio_allocator" not in seen
+    assert payload["hard_failure"] == "portfolio_capacity_curves:portfolio_capacity_curves_refresh_failed"
+    assert payload["overall_status"] == "blocked"
 
 
 def test_post_refresh_stops_before_account_access_when_auth_is_not_ready(tmp_path: Path) -> None:

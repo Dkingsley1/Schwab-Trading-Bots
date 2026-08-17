@@ -108,6 +108,19 @@ def _env_float(name: str, default: float, *, minimum: float = 0.2) -> float:
         return max(float(default), minimum)
 
 
+def _lane_health_update_due(
+    last_update_monotonic: float,
+    interval_seconds: float,
+    *,
+    now_monotonic: float | None = None,
+) -> bool:
+    now = time.monotonic() if now_monotonic is None else float(now_monotonic)
+    return bool(
+        last_update_monotonic <= 0.0
+        or now - last_update_monotonic >= max(interval_seconds, 0.0)
+    )
+
+
 def _parse_ts(raw: object) -> datetime | None:
     text = str(raw or "").strip()
     if not text:
@@ -493,6 +506,8 @@ def main() -> int:
     skipped_stale_total = 0
     last_paper_reconcile_heartbeat = 0.0
     heartbeat_interval = max(float(_control_env_value("PAPER_RECONCILIATION_HEARTBEAT_SECONDS", "180") or 180.0), 30.0)
+    last_lane_health_update = 0.0
+    lane_health_interval = max(float(_control_env_value("EXECUTION_LANE_HEALTH_UPDATE_SECONDS", "60") or 60.0), 10.0)
     trader: BaseTrader | None = None
     auth_ok = True
     auth_error = ""
@@ -510,15 +525,17 @@ def main() -> int:
                     min_interval_seconds=heartbeat_interval,
                     reason="execution_lane_paused",
                 )
-            update_lane_health(
-                project_root=str(PROJECT_ROOT),
-                mode=args.mode,
-                processed_count=processed_total,
-                queue_channel=channel,
-                queue_db_override=args.queue_db,
-                auth_ok=bool(auth_ok),
-                auth_error=pause_reason if auth_ok else (auth_error or pause_reason),
-            )
+            if _lane_health_update_due(last_lane_health_update, lane_health_interval):
+                update_lane_health(
+                    project_root=str(PROJECT_ROOT),
+                    mode=args.mode,
+                    processed_count=processed_total,
+                    queue_channel=channel,
+                    queue_db_override=args.queue_db,
+                    auth_ok=bool(auth_ok),
+                    auth_error=pause_reason if auth_ok else (auth_error or pause_reason),
+                )
+                last_lane_health_update = time.monotonic()
             if args.once:
                 return 5
             time.sleep(max(float(args.poll_seconds), 5.0))
@@ -538,8 +555,6 @@ def main() -> int:
         )
         return 2
 
-    last_lane_health_update = 0.0
-    lane_health_interval = max(float(_control_env_value("EXECUTION_LANE_HEALTH_UPDATE_SECONDS", "60") or 60.0), 10.0)
     update_lane_health(
         project_root=str(PROJECT_ROOT),
         mode=args.mode,
@@ -553,15 +568,17 @@ def main() -> int:
     while True:
         _load_control_env()
         if args.mode == "paper" and _paper_execution_paused_for_runtime():
-            update_lane_health(
-                project_root=str(PROJECT_ROOT),
-                mode=args.mode,
-                processed_count=processed_total,
-                queue_channel=channel,
-                queue_db_override=args.queue_db,
-                auth_ok=False,
-                auth_error="paper_execution_paused_for_runtime_pressure",
-            )
+            if _lane_health_update_due(last_lane_health_update, lane_health_interval):
+                update_lane_health(
+                    project_root=str(PROJECT_ROOT),
+                    mode=args.mode,
+                    processed_count=processed_total,
+                    queue_channel=channel,
+                    queue_db_override=args.queue_db,
+                    auth_ok=False,
+                    auth_error="paper_execution_paused_for_runtime_pressure",
+                )
+                last_lane_health_update = time.monotonic()
             if args.once:
                 return 5
             time.sleep(max(_env_float("EXECUTION_LANE_POLL_SECONDS", args.poll_seconds), 5.0))
@@ -581,16 +598,17 @@ def main() -> int:
         )
         if fast_drained > 0:
             skipped_stale_total += int(fast_drained)
-            update_lane_health(
-                project_root=str(PROJECT_ROOT),
-                mode=args.mode,
-                processed_count=processed_total + skipped_stale_total,
-                queue_channel=channel,
-                queue_db_override=args.queue_db,
-                auth_ok=auth_ok,
-                auth_error=auth_error,
-            )
-            last_lane_health_update = time.monotonic()
+            if args.once or _lane_health_update_due(last_lane_health_update, lane_health_interval):
+                update_lane_health(
+                    project_root=str(PROJECT_ROOT),
+                    mode=args.mode,
+                    processed_count=processed_total + skipped_stale_total,
+                    queue_channel=channel,
+                    queue_db_override=args.queue_db,
+                    auth_ok=auth_ok,
+                    auth_error=auth_error,
+                )
+                last_lane_health_update = time.monotonic()
             if args.once:
                 return 0
 
@@ -604,16 +622,17 @@ def main() -> int:
                     min_interval_seconds=heartbeat_interval,
                     reason="execution_lane_idle",
                 )
-            update_lane_health(
-                project_root=str(PROJECT_ROOT),
-                mode=args.mode,
-                processed_count=processed_total,
-                queue_channel=channel,
-                queue_db_override=args.queue_db,
-                auth_ok=auth_ok,
-                auth_error=auth_error,
-            )
-            last_lane_health_update = time.monotonic()
+            if args.once or _lane_health_update_due(last_lane_health_update, lane_health_interval):
+                update_lane_health(
+                    project_root=str(PROJECT_ROOT),
+                    mode=args.mode,
+                    processed_count=processed_total + skipped_stale_total,
+                    queue_channel=channel,
+                    queue_db_override=args.queue_db,
+                    auth_ok=auth_ok,
+                    auth_error=auth_error,
+                )
+                last_lane_health_update = time.monotonic()
             if args.once:
                 return 0
             time.sleep(poll_seconds)
@@ -628,7 +647,7 @@ def main() -> int:
                 stale_max_age_seconds = max_age_seconds
                 continue
             now_mono = time.monotonic()
-            if (now_mono - last_lane_health_update) >= lane_health_interval:
+            if _lane_health_update_due(last_lane_health_update, lane_health_interval, now_monotonic=now_mono):
                 update_lane_health(
                     project_root=str(PROJECT_ROOT),
                     mode=args.mode,
@@ -650,7 +669,7 @@ def main() -> int:
             if message_sleep_seconds > 0.0:
                 time.sleep(message_sleep_seconds)
             now_mono = time.monotonic()
-            if (now_mono - last_lane_health_update) >= lane_health_interval:
+            if _lane_health_update_due(last_lane_health_update, lane_health_interval, now_monotonic=now_mono):
                 update_lane_health(
                     project_root=str(PROJECT_ROOT),
                     mode=args.mode,
@@ -680,16 +699,17 @@ def main() -> int:
                 min_interval_seconds=heartbeat_interval,
                 reason="execution_lane_batch",
             )
-        update_lane_health(
-            project_root=str(PROJECT_ROOT),
-            mode=args.mode,
-            processed_count=processed_total + skipped_stale_total,
-            queue_channel=channel,
-            queue_db_override=args.queue_db,
-            auth_ok=auth_ok,
-            auth_error=auth_error,
-        )
-        last_lane_health_update = time.monotonic()
+        if args.once or _lane_health_update_due(last_lane_health_update, lane_health_interval):
+            update_lane_health(
+                project_root=str(PROJECT_ROOT),
+                mode=args.mode,
+                processed_count=processed_total + skipped_stale_total,
+                queue_channel=channel,
+                queue_db_override=args.queue_db,
+                auth_ok=auth_ok,
+                auth_error=auth_error,
+            )
+            last_lane_health_update = time.monotonic()
 
         if args.once:
             return 0

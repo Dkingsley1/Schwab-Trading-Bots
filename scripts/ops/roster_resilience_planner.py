@@ -185,11 +185,16 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
         "coverage_shortfall_bots": coverage_shortfall_bots,
         "a_plus_ready": bool(active_supportable_bots >= 3 and bench_depth >= 5 and coverage_shortfall_bots <= 0),
     }
+    operational_ready = bool(
+        active_supportable_bots >= a_plus_contract["active_supportable_target"]
+        and bench_depth >= a_plus_contract["bench_depth_target"]
+        and not critical_slots_missing
+    )
     overall_status = "ready"
-    if bench_depth < 2 or teacher_count == 0:
+    if not operational_ready:
         overall_status = "blocked"
     elif coverage_shortfall_bots > 0 or students_without_teachers > 0 or elite_teacher_count == 0 or missing_slot_count > 0:
-        overall_status = "degraded"
+        overall_status = "advisory"
 
     recommended_actions = ordered_unique(
         [
@@ -209,7 +214,9 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
     return {
         "timestamp_utc": iso_now(),
         "schema_version": 1,
-        "ok": overall_status == "ready",
+        "ok": operational_ready,
+        "operational_ready": operational_ready,
+        "promotion_ready": bool(a_plus_contract["a_plus_ready"] and elite_teacher_count > 0),
         "overall_status": overall_status,
         "bench": {
             "active_bots": active_bots,

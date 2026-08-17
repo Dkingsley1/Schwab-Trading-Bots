@@ -49,3 +49,11 @@ def test_scan_ignores_code_style_secret_references(tmp_path, monkeypatch) -> Non
     findings = secret_scan._scan([path], max_bytes=1024)
 
     assert findings == []
+
+
+def test_telemetry_redaction_fixture_is_repo_secret_scan_clean() -> None:
+    fixture = PROJECT_ROOT / "tests" / "test_telemetry_redaction_canary.py"
+
+    findings = secret_scan._scan([fixture], max_bytes=1_000_000)
+
+    assert findings == []

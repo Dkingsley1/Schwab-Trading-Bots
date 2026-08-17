@@ -375,9 +375,14 @@ def _auto_sync_local_to_external(
                         _atomic_copy2(src_file, conflict)
                         copied += 1
                         copied_bytes += src_stat.st_size
+                        # A conflict copy is preservation evidence, not a reconciliation.
+                        # Keep the active local source until a dedicated reconciler has
+                        # selected or merged the canonical history.
                         if prune_local:
-                            src_file.unlink()
-                            pruned += 1
+                            _record_autosync_skip(
+                                skipped,
+                                f"{rel_file}:divergent_source_retained_pending_reconciliation",
+                            )
                     except FileNotFoundError:
                         # The local fallback file may disappear between os.walk() and copy/stat.
                         # Treat that as already reconciled rather than a hard autosync error.

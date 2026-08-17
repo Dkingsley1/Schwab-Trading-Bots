@@ -15,7 +15,7 @@ jobs:
       - name: Setup Python
         uses: actions/setup-python@v7
         with:
-          python-version: '3.12'
+          python-version: '3.14'
 
       - name: Python compile checks
         run: |
@@ -39,8 +39,15 @@ jobs:
             scripts/leak_overfit_guard.py \
             scripts/model_lifecycle_hygiene.py \
             scripts/weekly_gate_blocker_report.py \
+            scripts/observability_exporter.py \
             scripts/ops/command_validity_bot.py \
             scripts/ops/commands_hygiene_bot.py \
+            scripts/ops/bot_organization_control.py \
+            scripts/ops/bot_profitability_scalability_control.py \
+            scripts/ops/master_grandmaster_evidence_control.py \
+            scripts/ops/control_surface_ownership.py \
+            scripts/ops/chaos_drill_coordinator.py \
+            scripts/ops/artifact_freshness_slo.py \
             scripts/ops/use_mode_compliance_guard.py \
             scripts/ops/commercial_readiness_control.py \
             scripts/ops/live_canary_readiness_contract.py \
@@ -60,8 +67,18 @@ jobs:
             scripts/ops/production_excellence_control.py \
             scripts/ops/live_order_ledger_control.py \
             core/live_order_ledger.py \
+            core/bot_profitability_scalability.py \
+            core/master_grandmaster_evidence.py \
+            scripts/ops/production_recovery_drill_harness.py \
+            scripts/ops/production_resilience_control.py \
+            scripts/ops/profitability_evidence_firewall.py \
+            scripts/ops/runtime_artifact_refresh.py \
             scripts/ops/runtime_throttle_control.py \
+            scripts/ops/soak_reliability_sentinel.py \
+            scripts/ops/soak_self_healing_control.py \
+            scripts/ops/storage_disaster_recovery.py \
             scripts/ops/source_mutation_guard.py \
+            scripts/ops/unattended_soak_readiness.py \
             scripts/ops/uniform_hardening_contract.py
 
       - name: CLI smoke (help)
@@ -75,8 +92,15 @@ jobs:
           python scripts/leak_overfit_guard.py --help >/dev/null
           python scripts/model_lifecycle_hygiene.py --help >/dev/null
           python scripts/weekly_gate_blocker_report.py --help >/dev/null
+          python scripts/observability_exporter.py --help >/dev/null
           python scripts/ops/command_validity_bot.py --help >/dev/null
           python scripts/ops/commands_hygiene_bot.py --help >/dev/null
+          python scripts/ops/bot_organization_control.py --help >/dev/null
+          python scripts/ops/bot_profitability_scalability_control.py --help >/dev/null
+          python scripts/ops/master_grandmaster_evidence_control.py --help >/dev/null
+          python scripts/ops/control_surface_ownership.py --help >/dev/null
+          python scripts/ops/chaos_drill_coordinator.py --help >/dev/null
+          python scripts/ops/artifact_freshness_slo.py --help >/dev/null
           python scripts/ops/use_mode_compliance_guard.py --help >/dev/null
           python scripts/ops/commercial_readiness_control.py --help >/dev/null
           python scripts/ops/live_canary_readiness_contract.py --help >/dev/null
@@ -98,9 +122,76 @@ jobs:
           python scripts/ops/production_quality_slo_guard.py --help >/dev/null
           python scripts/ops/production_excellence_control.py --help >/dev/null
           python scripts/ops/live_order_ledger_control.py --help >/dev/null
+          python scripts/ops/production_recovery_drill_harness.py --help >/dev/null
+          python scripts/ops/production_resilience_control.py --help >/dev/null
+          python scripts/ops/profitability_evidence_firewall.py --help >/dev/null
+          python scripts/ops/runtime_artifact_refresh.py --help >/dev/null
           python scripts/ops/runtime_throttle_control.py --help >/dev/null
+          python scripts/ops/soak_reliability_sentinel.py --help >/dev/null
+          python scripts/ops/soak_self_healing_control.py --help >/dev/null
+          python scripts/ops/storage_disaster_recovery.py --help >/dev/null
           python scripts/ops/source_mutation_guard.py --help >/dev/null
+          python scripts/ops/unattended_soak_readiness.py --help >/dev/null
           python scripts/ops/uniform_hardening_contract.py --help >/dev/null
+
+      - name: Resilience configuration validation
+        run: |
+          python -m json.tool config/control_surface_ownership_v1.json >/dev/null
+          python -m json.tool config/bot_organization_v1.json >/dev/null
+          python -m json.tool config/bot_profitability_scalability_v1.json >/dev/null
+          python -m json.tool config/master_grandmaster_evidence_v2.json >/dev/null
+          python -m py_compile core/regime_taxonomy.py
+          python -m py_compile core/bot_organization.py
+          python -m py_compile core/bot_profitability_scalability.py
+          python -m py_compile core/hierarchical_ensemble.py
+          python -m py_compile core/master_grandmaster_evidence.py
+          python -m json.tool config/production_resilience_v1.json >/dev/null
+
+      - name: Hierarchical bot organization structural floor
+        run: |
+          python scripts/ops/bot_organization_control.py \
+            --out-file /tmp/bot_organization_latest.json \
+            --hierarchy-out /tmp/bot_hierarchy_latest.json \
+            --json >/dev/null
+
+      - name: Bot profitability and scalability structural floor
+        run: |
+          python scripts/ops/bot_profitability_scalability_control.py \
+            --out-file /tmp/bot_profitability_scalability_latest.json \
+            --manifest-out /tmp/bot_profitability_scalability_manifest_latest.json \
+            --max-files 1 \
+            --max-rows-per-file 100 \
+            --json >/dev/null
+
+      - name: Master and grand-master evidence structural floor
+        run: |
+          python - <<'PY'
+          import json
+          from datetime import datetime, timezone
+          from pathlib import Path
+
+          timestamp = datetime.now(timezone.utc).isoformat()
+          Path("/tmp/master_paper_truth.json").write_text(json.dumps({
+              "timestamp_utc": timestamp,
+              "ok": True,
+              "overall_status": "ready",
+              "score": 100.0,
+              "sleeve_scorecards": [],
+          }))
+          Path("/tmp/master_runtime_throttle.json").write_text(json.dumps({
+              "timestamp_utc": timestamp,
+              "ok": True,
+              "overall_status": "advisory",
+          }))
+          PY
+          python scripts/ops/master_grandmaster_evidence_control.py \
+            --bot-organization-health /tmp/bot_organization_latest.json \
+            --bot-hierarchy /tmp/bot_hierarchy_latest.json \
+            --paper-truth /tmp/master_paper_truth.json \
+            --runtime-throttle /tmp/master_runtime_throttle.json \
+            --out-file /tmp/master_grandmaster_evidence_v2_latest.json \
+            --packet-out /tmp/master_grandmaster_evidence_packets_v2_latest.json \
+            --json >/dev/null
 
       - name: Gate smoke fixtures
         run: |

@@ -149,9 +149,9 @@ def test_architecture_contract_graph_reconciles_drift_guard_self_reference(tmp_p
         tmp_path / "governance" / "health" / "health_fast_latest.json",
         {
             "timestamp_utc": src.iso_now(),
-            "overall_status": "ready",
+            "overall_status": "guarded_ready",
             "ok": True,
-            "strict_all_clear": True,
+            "strict_all_clear": False,
             "operational_readiness": {
                 "guarded_paper": {"ok": True, "status": "ready", "blockers": []},
                 "live_execution": {"ok": False, "status": "blocked_read_only"},

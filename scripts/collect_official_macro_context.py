@@ -24,6 +24,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from core.collector_transport import attach_collection_confidence, fetch_text
 from core.derivatives_features import summarize_calendar_payload
+from core.global_central_bank_context import assess_global_central_bank_context
 from core.market_context_features import load_latest_external_context, summarize_structured_news_items
 
 USER_AGENT = "schwab-trading-bot/1.0"
@@ -742,6 +743,73 @@ def collect(args: argparse.Namespace) -> int:
                     fed_speaker_7d += 1
 
     fred_context = _load_existing_json(external_context_root / "macro_cross_asset_latest.json")
+    central_bank_liquidity = (
+        fred_context.get("central_bank_liquidity")
+        if isinstance(fred_context.get("central_bank_liquidity"), dict)
+        else {}
+    )
+    central_coverage = (
+        central_bank_liquidity.get("coverage")
+        if isinstance(central_bank_liquidity.get("coverage"), dict)
+        else {}
+    )
+    central_missing = central_coverage.get("missing_required_series")
+    if not isinstance(central_missing, list):
+        central_missing = []
+    central_stale = central_coverage.get("stale_required_series")
+    if not isinstance(central_stale, list):
+        central_stale = []
+    central_unusable = central_coverage.get("unusable_required_series")
+    if not isinstance(central_unusable, list):
+        central_unusable = []
+    central_timestamp = str(central_bank_liquidity.get("timestamp_utc") or "")
+    central_timestamp_parsed = _parse_ts(central_timestamp)
+    central_age_hours = None
+    if central_timestamp_parsed:
+        central_dt = datetime.fromisoformat(central_timestamp_parsed)
+        central_age_hours = max(0.0, (now - central_dt).total_seconds() / 3600.0)
+    central_fresh = bool(central_age_hours is not None and central_age_hours <= 24.0)
+    future_observation_selected = bool(central_coverage.get("future_observation_selected", False))
+    central_coverage_ratio = float(central_coverage.get("required_coverage_ratio", 0.0) or 0.0)
+    central_liquidity_ok = bool(
+        central_bank_liquidity
+        and central_fresh
+        and central_coverage_ratio >= 1.0
+        and not central_missing
+        and not central_stale
+        and not central_unusable
+        and not future_observation_selected
+    )
+    status["sources"]["central_bank_liquidity"] = {
+        "ok": central_liquidity_ok,
+        "provider": "FRED / Federal Reserve Board / Federal Reserve Bank of New York",
+        "timestamp_utc": central_timestamp,
+        "age_hours": round(central_age_hours, 6) if central_age_hours is not None else None,
+        "fresh": central_fresh,
+        "required_coverage_ratio": central_coverage_ratio,
+        "missing_required_series": central_missing,
+        "stale_required_series": central_stale,
+        "unusable_required_series": central_unusable,
+        "future_observations_excluded": central_coverage.get("future_observations_excluded", {}),
+        "future_observation_selected": future_observation_selected,
+        "required": True,
+        "contract_participates": True,
+        "fail_visible": True,
+    }
+    global_central_banks = _load_existing_json(external_context_root / "global_central_bank_context_latest.json")
+    global_central_bank_assessment = assess_global_central_bank_context(global_central_banks, now_utc=now)
+    status["sources"]["global_central_bank_context"] = {
+        "ok": bool(global_central_bank_assessment.get("ready", False)),
+        "provider": "BIS member-central-bank policy rates and balance sheets",
+        "timestamp_utc": global_central_bank_assessment.get("timestamp_utc"),
+        "age_hours": global_central_bank_assessment.get("age_hours"),
+        "tier_1_coverage_ratio": global_central_bank_assessment.get("tier_1_coverage_ratio"),
+        "important_bank_coverage_ratio": global_central_bank_assessment.get("important_bank_coverage_ratio"),
+        "reasons": global_central_bank_assessment.get("reasons", []),
+        "required": False,
+        "contract_participates": False,
+        "fail_visible": True,
+    }
     existing_bond_reference = load_latest_external_context(PROJECT_ROOT, "bond_reference")
     bond_overlay = fred_context.get("bond_reference_overlay") if isinstance(fred_context.get("bond_reference_overlay"), dict) else {}
     bond_reference = dict(existing_bond_reference) if isinstance(existing_bond_reference, dict) else {}
@@ -758,6 +826,14 @@ def collect(args: argparse.Namespace) -> int:
         float(bond_reference.get("calendar_treasury_auction_norm", 0.0) or 0.0),
     )
 
+    combined_global_features = dict(central_bank_liquidity.get("global_features", {}))
+    if bool(global_central_bank_assessment.get("ready", False)):
+        combined_global_features.update(
+            global_central_banks.get("global_features")
+            if isinstance(global_central_banks.get("global_features"), dict)
+            else {}
+        )
+
     payload = {
         "timestamp_utc": now_iso,
         "provider": "official_macro_context",
@@ -771,10 +847,13 @@ def collect(args: argparse.Namespace) -> int:
             "high_impact_event_count_7d": high_impact_7d,
             "fed_speaker_event_count_7d": fed_speaker_7d,
             "bond_reference_overlay": bond_overlay,
+            "central_bank_liquidity": central_bank_liquidity,
+            "global_central_banks": global_central_banks,
+            "global_features": combined_global_features,
         },
     }
 
-    status["ok"] = bool(calendar_rows or news_rows)
+    status["ok"] = bool((calendar_rows or news_rows) and central_liquidity_ok)
 
     if not args.test_only:
         _write_json(external_context_root / "official_macro_context_latest.json", payload)

@@ -59,8 +59,29 @@ def test_production_quality_slo_guard_marks_old_critical_lane_breached(tmp_path:
     assert payload["breach_count"] == 1
     assert payload["breached_lanes"][0]["lane_id"] == "raw_profitability_recovery"
     assert payload["breached_lanes"][0]["active_minutes"] >= 120
+    assert payload["operational_status"] == "ready"
+    assert payload["operational_ok"] is True
+    assert payload["operational_breach_count"] == 0
+    assert payload["non_operational_lanes"][0]["scope"] == "economic_evidence"
     assert payload["control_contract"]["live_orders_remain_disabled_while_active_or_breached"] is True
     assert payload["live_execution_authority"] is False
+
+
+def test_production_quality_slo_guard_keeps_runtime_lane_breaches_operational(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    first_seen = (datetime.now(timezone.utc) - timedelta(minutes=130)).isoformat()
+    _write_quality(project_root, [_lane("paper_trading_continuity")])
+    _write_json(
+        project_root / "governance" / "health" / "production_quality_slo_guard_state.json",
+        {"lanes": {"paper_trading_continuity": {"first_seen_utc": first_seen, "hit_count": 3}}},
+    )
+
+    payload = src.build_payload(project_root)
+
+    assert payload["overall_status"] == "blocked"
+    assert payload["operational_status"] == "blocked"
+    assert payload["operational_ok"] is False
+    assert payload["operational_breach_count"] == 1
 
 
 def test_production_quality_slo_guard_warns_before_high_lane_breach(tmp_path: Path) -> None:

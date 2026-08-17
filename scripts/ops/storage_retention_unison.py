@@ -28,13 +28,14 @@ else:
 DEFAULT_OUT_PATH = PROJECT_ROOT / "governance" / "health" / "storage_retention_unison_latest.json"
 DEFAULT_HISTORY_PATH = PROJECT_ROOT / "governance" / "health" / "storage_retention_unison_history.jsonl"
 DEFAULT_FORECAST_PATH = PROJECT_ROOT / "governance" / "health" / "storage_growth_forecast_latest.json"
+DEFAULT_CAPACITY_CONTROL_EPOCH_PATH = (
+    PROJECT_ROOT / "governance" / "runtime" / "storage_capacity_control_epoch_latest.json"
+)
 PROTECTED_VOLUME_PREFIXES = ("/Volumes/VIDEO",)
-DEFAULT_VIDEO_COLD_ARCHIVE_ROOT = "/Volumes/VIDEO/schwab_trading_bot_cold"
 DEFAULT_SECOND_COLD_CANDIDATES = (
     "/Volumes/BOT_COLD/schwab_trading_bot",
     "/Volumes/BOT_ARCHIVE/schwab_trading_bot",
     "/Volumes/BOT_RETENTION/schwab_trading_bot",
-    DEFAULT_VIDEO_COLD_ARCHIVE_ROOT,
 )
 DEFAULT_CONTINUOUS_RUN_DAYS = 30.0
 DEFAULT_CONTINUOUS_RUN_BUFFER_GB = 32.0
@@ -80,22 +81,11 @@ def _grade_rank(raw: Any) -> int:
 
 def _is_protected_volume(path: Path) -> bool:
     raw = str(path.expanduser())
-    if _approved_video_cold_archive(path):
-        return False
     return any(raw == prefix or raw.startswith(f"{prefix}/") for prefix in PROTECTED_VOLUME_PREFIXES)
 
 
 def _env_truthy(name: str) -> bool:
     return str(os.getenv(name, "")).strip().lower() in {"1", "true", "yes", "y", "on"}
-
-
-def _approved_video_cold_archive(path: Path) -> bool:
-    if not _env_truthy("BOT_ALLOW_VIDEO_COLD_ARCHIVE"):
-        return False
-    allowed_root = Path(os.getenv("BOT_VIDEO_COLD_ARCHIVE_ROOT", DEFAULT_VIDEO_COLD_ARCHIVE_ROOT)).expanduser()
-    raw = str(path.expanduser())
-    allowed = str(allowed_root)
-    return bool(raw == allowed or raw.startswith(f"{allowed}/"))
 
 
 def _nearest_existing_parent(path: Path) -> Path:
@@ -264,6 +254,170 @@ def _hot_lane_control_epoch(project_root: Path) -> datetime | None:
         return None
 
 
+def _load_json_file(path: Path) -> dict[str, Any]:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _device_id(path: Path) -> int | None:
+    try:
+        return int(_nearest_existing_parent(path).stat().st_dev)
+    except OSError:
+        return None
+
+
+def _path_within(path: Path, root: Path) -> bool:
+    try:
+        return os.path.commonpath((os.path.abspath(path), os.path.abspath(root))) == os.path.abspath(root)
+    except (OSError, ValueError):
+        return False
+
+
+def _verified_cross_tier_capacity_event(
+    project_root: Path,
+    external_root: Path,
+) -> dict[str, Any]:
+    deep_cold = _load_json_file(
+        project_root / "governance" / "health" / "deep_cold_storage_layer_latest.json"
+    )
+    manifest_path = Path(str(deep_cold.get("manifest_path") or "")).expanduser()
+    if not str(manifest_path) or _is_protected_volume(manifest_path) or not manifest_path.is_file():
+        return {}
+
+    source_device_id = _device_id(project_root)
+    destination_device_id = _device_id(external_root)
+    if (
+        source_device_id is None
+        or destination_device_id is None
+        or source_device_id == destination_device_id
+    ):
+        return {}
+
+    configured_cold_root = str(os.getenv("BOT_SECOND_COLD_ROOT", "") or "").strip()
+    cold_root = Path(configured_cold_root).expanduser() if configured_cold_root else external_root
+    if _is_protected_volume(cold_root):
+        return {}
+
+    latest_epoch: datetime | None = None
+    moved_bytes = 0
+    moved_files = 0
+    try:
+        handle = manifest_path.open("r", encoding="utf-8")
+    except OSError:
+        return {}
+    with handle:
+        for line in handle:
+            try:
+                row = json.loads(line)
+            except Exception:
+                continue
+            if not isinstance(row, dict) or not bool(row.get("source_replaced_with_symlink", False)):
+                continue
+            move = row.get("second_cold_move") if isinstance(row.get("second_cold_move"), dict) else {}
+            if not (
+                bool(move.get("source_replaced_with_symlink", False))
+                and bool(move.get("verified_size_match", False))
+                and bool(move.get("verified_sha256_match", False))
+                and bool(move.get("source_stable", False))
+                and str(move.get("source_sha256") or "")
+                == str(move.get("target_sha256") or "")
+            ):
+                continue
+            source = Path(str(move.get("source") or row.get("path") or "")).expanduser()
+            target = Path(str(move.get("target") or row.get("second_cold_target") or "")).expanduser()
+            if (
+                not _path_within(source, project_root)
+                or not _path_within(target, cold_root)
+                or _is_protected_volume(source)
+                or _is_protected_volume(target)
+                or _safe_int(row.get("source_device_id"), -1) != source_device_id
+                or _device_id(target) != destination_device_id
+                or not source.is_symlink()
+                or not target.is_file()
+            ):
+                continue
+            try:
+                link_target = Path(os.readlink(source))
+                if not link_target.is_absolute():
+                    link_target = source.parent / link_target
+                if os.path.abspath(link_target) != os.path.abspath(target):
+                    continue
+                source_epoch = datetime.fromtimestamp(source.lstat().st_mtime, tz=timezone.utc)
+                target_bytes = int(target.stat().st_size)
+            except OSError:
+                continue
+            expected_bytes = _safe_int(move.get("bytes"), target_bytes)
+            if expected_bytes <= 0 or target_bytes != expected_bytes:
+                continue
+            latest_epoch = source_epoch if latest_epoch is None else max(latest_epoch, source_epoch)
+            moved_bytes += expected_bytes
+            moved_files += 1
+
+    if latest_epoch is None or moved_files <= 0:
+        return {}
+    return {
+        "timestamp_utc": latest_epoch.isoformat(),
+        "baseline_not_before_utc": latest_epoch.isoformat(),
+        "event_type": "verified_cross_filesystem_deep_cold_move",
+        "verified": True,
+        "manifest_path": str(manifest_path),
+        "source_device_id": source_device_id,
+        "destination_device_id": destination_device_id,
+        "moved_files": moved_files,
+        "moved_gb": round(moved_bytes / float(1024**3), 3),
+        "forecast_effect": "reset_external_growth_baseline_without_erasing_capacity_consumption",
+    }
+
+
+def _storage_growth_baseline_control(
+    project_root: Path,
+    external_root: Path,
+    *,
+    apply: bool,
+    event_path: Path,
+) -> dict[str, Any]:
+    hot_lane_epoch = _hot_lane_control_epoch(project_root)
+    persisted = _load_json_file(event_path)
+    persisted_epoch = (
+        _parse_ts(persisted.get("baseline_not_before_utc"))
+        if bool(persisted.get("verified", False))
+        else None
+    )
+    discovered = _verified_cross_tier_capacity_event(project_root, external_root)
+    discovered_epoch = _parse_ts(discovered.get("baseline_not_before_utc"))
+    capacity_epoch = max(
+        [epoch for epoch in (persisted_epoch, discovered_epoch) if epoch is not None],
+        default=None,
+    )
+    if apply and discovered_epoch is not None and (
+        persisted_epoch is None or discovered_epoch > persisted_epoch
+    ):
+        write_payload(event_path, discovered)
+        persisted = discovered
+
+    candidates = [epoch for epoch in (hot_lane_epoch, capacity_epoch) if epoch is not None]
+    selected_epoch = max(candidates, default=None)
+    if selected_epoch is None:
+        scope = "unbounded_history"
+        reason = ""
+    elif capacity_epoch is not None and selected_epoch == capacity_epoch:
+        scope = "post_verified_cross_tier_capacity_event"
+        reason = "verified archive movement is capacity redistribution, not live ingestion growth"
+    else:
+        scope = "post_hot_lane_control_epoch"
+        reason = "hot-lane retention policy changed the measurable storage slope"
+    return {
+        "baseline_not_before_utc": selected_epoch.isoformat() if selected_epoch else "",
+        "baseline_scope": scope,
+        "reason": reason,
+        "hot_lane_control_epoch_utc": hot_lane_epoch.isoformat() if hot_lane_epoch else "",
+        "capacity_control_epoch_utc": capacity_epoch.isoformat() if capacity_epoch else "",
+        "capacity_control_event": persisted if persisted_epoch is not None else discovered,
+        "event_path": str(event_path),
+    }
 def _storage_growth_forecast(
     *,
     current_external: dict[str, Any],
@@ -272,6 +426,7 @@ def _storage_growth_forecast(
     target_free_gb: float,
     pressure_free_gb: float,
     baseline_not_before_utc: datetime | None = None,
+    baseline_scope: str = "post_hot_lane_control_epoch",
 ) -> dict[str, Any]:
     current_ts = datetime.now(timezone.utc)
     current_free = _safe_float(current_external.get("free_gb"), 0.0)
@@ -360,7 +515,7 @@ def _storage_growth_forecast(
         "grade": _grade(score),
         "source": "storage_retention_unison_history" if baseline else "new_baseline",
         "confidence": confidence,
-        "baseline_scope": "post_hot_lane_control_epoch" if baseline_not_before_utc else "unbounded_history",
+        "baseline_scope": str(baseline_scope) if baseline_not_before_utc else "unbounded_history",
         "baseline_not_before_utc": baseline_not_before_utc.isoformat() if baseline_not_before_utc else "",
         "discarded_pre_control_samples": discarded_pre_control_samples,
         "baseline": baseline,
@@ -622,9 +777,9 @@ def _second_cold_preflight() -> dict[str, Any]:
         "recommended_format": "APFS",
         "never_touch_protected_volumes": list(PROTECTED_VOLUME_PREFIXES),
         "approved_video_cold_archive": {
-            "enabled": _env_truthy("BOT_ALLOW_VIDEO_COLD_ARCHIVE"),
-            "root": os.getenv("BOT_VIDEO_COLD_ARCHIVE_ROOT", DEFAULT_VIDEO_COLD_ARCHIVE_ROOT),
-            "scope": "cold_archive_subtree_only",
+            "enabled": False,
+            "root": "",
+            "scope": "forbidden",
         },
         "next_action": (
             "second cold target is ready"
@@ -1101,6 +1256,7 @@ def build_payload(
     out_path: Path = DEFAULT_OUT_PATH,
     history_path: Path = DEFAULT_HISTORY_PATH,
     forecast_path: Path = DEFAULT_FORECAST_PATH,
+    capacity_event_path: Path | None = None,
 ) -> dict[str, Any]:
     external = resolve_external_storage()
     external_root = external.external_root
@@ -1110,15 +1266,28 @@ def build_payload(
     }
     local_reserve = local_storage_reserve_contract(project_root)
     history_rows = _read_history(history_path)
-    hot_lane_control_epoch = _hot_lane_control_epoch(project_root)
+    effective_capacity_event_path = (
+        capacity_event_path
+        if capacity_event_path is not None
+        else project_root / "governance" / "runtime" / "storage_capacity_control_epoch_latest.json"
+    )
+    baseline_control = _storage_growth_baseline_control(
+        project_root,
+        external_root,
+        apply=apply,
+        event_path=effective_capacity_event_path,
+    )
+    baseline_epoch = _parse_ts(baseline_control.get("baseline_not_before_utc"))
     forecast = _storage_growth_forecast(
         current_external=disk["external"],
         current_internal=disk["internal_project"],
         history_rows=history_rows,
         target_free_gb=float(target_free_gb),
         pressure_free_gb=float(pressure_free_gb),
-        baseline_not_before_utc=hot_lane_control_epoch,
+        baseline_not_before_utc=baseline_epoch,
+        baseline_scope=str(baseline_control.get("baseline_scope") or "post_control_epoch"),
     )
+    forecast["baseline_control"] = baseline_control
     # Deep-cold runs as a child process and must see this pass's disk slope,
     # not the previous retention pass's forecast.
     write_payload(forecast_path, forecast)
@@ -1139,19 +1308,29 @@ def build_payload(
 
     opsctl = str(project_root / "scripts" / "ops" / "opsctl.sh")
     steps: dict[str, dict[str, Any]] = {}
+    cold_archive_root = str(os.getenv("BOT_SECOND_COLD_ROOT", "") or "").strip()
+    if not cold_archive_root:
+        external_archive_root = str(os.getenv("BOT_LOGS_EXTERNAL_PROJECT_ROOT", "") or "").strip()
+        cold_archive_root = str(Path(external_archive_root) / "cold_archive") if external_archive_root else str(project_root / "governance" / "archive" / "cold_archive")
+    cold_archive_path = Path(cold_archive_root).expanduser()
+    if apply and not _is_protected_volume(cold_archive_path) and cold_archive_path.parent.exists():
+        cold_archive_path.mkdir(parents=True, exist_ok=True)
 
     deep_cmd = [opsctl, "deep-cold-storage-layer", "--json"]
     if apply:
         deep_cmd.insert(2, "--apply")
-        if _env_truthy("BOT_ALLOW_VIDEO_COLD_ARCHIVE"):
+        second_cold_root = str(os.getenv("BOT_SECOND_COLD_ROOT", "") or "").strip()
+        if second_cold_root and not _is_protected_volume(Path(second_cold_root)):
             deep_cmd.extend(
                 [
                     "--move-to-second-cold",
                     "--adaptive",
                     "--second-cold-root",
-                    os.getenv("BOT_VIDEO_COLD_ARCHIVE_ROOT", DEFAULT_VIDEO_COLD_ARCHIVE_ROOT),
+                    second_cold_root,
                     "--planning-horizon-days",
                     str(max(float(soak_days), 1.0)),
+                    "--source-free-target-gb",
+                    str(max(float(target_free_gb), 0.0)),
                     "--max-move-gb",
                     os.getenv("BOT_DEEP_COLD_MAX_MOVE_GB", "96.0"),
                     "--max-move-files",
@@ -1160,9 +1339,13 @@ def build_payload(
             )
             if _env_truthy("BOT_DEEP_COLD_INCLUDE_CRITICAL"):
                 deep_cmd.append("--include-critical")
-    steps["retention_freshness_deep_cold"] = _run_json(deep_cmd, cwd=project_root, timeout_sec=timeout_sec)
+    deep_cold_timeout = max(int(timeout_sec), 1800) if apply and "--move-to-second-cold" in deep_cmd else int(timeout_sec)
+    steps["retention_freshness_deep_cold"] = _run_json(
+        deep_cmd,
+        cwd=project_root,
+        timeout_sec=deep_cold_timeout,
+    )
 
-    cold_archive_root = os.getenv("BOT_VIDEO_COLD_ARCHIVE_ROOT", DEFAULT_VIDEO_COLD_ARCHIVE_ROOT)
     cold_archive_cmd = [
         opsctl,
         "cold-archive-compactor",
@@ -1768,6 +1951,7 @@ def build_payload(
         "disk": disk,
         "disk_after_work": disk_after_work,
         "local_hot_storage_reserve": local_reserve,
+        "storage_growth_baseline_control": baseline_control,
         "storage_growth_forecast": forecast,
         "continuous_run_contract": continuous_run,
         "sections": sections,
@@ -1800,6 +1984,8 @@ def build_payload(
             ),
             "sql_soft_quota_managed_by_cold_spillover": quota_managed_by_cold_spillover,
             "writes_storage_growth_forecast": True,
+            "excludes_verified_cross_tier_moves_from_ingestion_growth": True,
+            "persists_capacity_control_epoch": True,
             "publishes_growth_forecast_before_deep_cold": True,
             "publishes_continuous_run_contract": True,
             "keeps_training_batches_efficient": True,

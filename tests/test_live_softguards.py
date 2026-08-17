@@ -847,7 +847,12 @@ def test_paper_execute_uses_guard_and_fill_modeling(tmp_path: Path, monkeypatch)
         quantity=1.0,
         model_score=0.62,
         threshold=0.55,
-        features={"last_price": 100.0, "volatility_1m": 0.01},
+        features={
+            "last_price": 100.0,
+            "volatility_1m": 0.01,
+            "day_regime_trend_norm": 0.82,
+            "day_regime_mean_revert_norm": 0.10,
+        },
         gates={"model_gate": True},
         reasons=["unit_test"],
         strategy="paper_guard_test",
@@ -862,6 +867,8 @@ def test_paper_execute_uses_guard_and_fill_modeling(tmp_path: Path, monkeypatch)
     assert paper["paper_fill_source"] == "expected_fill_model"
     assert paper["fill_price"] == paper["expected_fill_price"]
     assert abs(paper["realized_slippage_bps"] - paper["expected_slippage_bps"]) < 1e-6
+    assert paper["regime"] == "trend"
+    assert paper["regime_source"] == "derived_feature_axes"
 
 
 def test_paper_profitability_guard_blocks_weak_profile_new_buy_entries(tmp_path: Path, monkeypatch) -> None:
@@ -881,7 +888,7 @@ def test_paper_profitability_guard_blocks_weak_profile_new_buy_entries(tmp_path:
         quantity=100.0,
         model_score=0.62,
         threshold=0.55,
-        features={"last_price": 0.00001, "tradeability_score": 0.0},
+        features={"last_price": 0.00001, "tradeability_score": 1.0},
         gates={"model_gate": True, "market_data_ok": True},
         reasons=["unit_test"],
         strategy="paper_profitability_guard_test",
@@ -933,6 +940,74 @@ def test_paper_profitability_guard_allows_weak_profile_sell_reduction(tmp_path: 
     assert out.get("status") == "PAPER_EXECUTED"
     assert Path(trader.paper_log_path).exists()
     assert out["paper_order"]["position_qty"] == 0.0
+
+
+def test_paper_profitability_guard_blocks_declared_policy_failure_without_recovery_control(
+    tmp_path: Path,
+) -> None:
+    _reset_paper_profitability_guard_cache()
+    trader = _mk_trader("paper")
+    trader.project_root = str(tmp_path)
+
+    blocked, reason, details = trader._paper_profitability_new_entry_blocked(
+        symbol="AAPL",
+        action="BUY",
+        quantity=1.0,
+        metadata={
+            "source_profile": "default",
+            "entry_policy": {"allowed": False, "blockers": ["execution_fitness=0.000<0.200"]},
+        },
+        features={"last_price": 100.0, "execution_fitness_norm": 0.0},
+        strategy="alpha",
+    )
+
+    assert blocked is True
+    assert reason == "paper_profitability_entry_policy_block"
+    assert details["guard_gate"] == "paper_profitability_entry_policy"
+    assert details["declared_entry_policy_valid"] is True
+
+
+def test_paper_profitability_guard_allows_reduction_despite_declared_policy_failure(tmp_path: Path) -> None:
+    _reset_paper_profitability_guard_cache()
+    trader = _mk_trader("paper")
+    trader.project_root = str(tmp_path)
+    trader._paper_profile_positions.setdefault("default", {})["AAPL"] = {
+        "qty": 2.0,
+        "avg_price": 100.0,
+        "mark_price": 100.0,
+    }
+
+    blocked, reason, details = trader._paper_profitability_new_entry_blocked(
+        symbol="AAPL",
+        action="SELL",
+        quantity=1.0,
+        metadata={"source_profile": "default", "entry_policy": {"allowed": False}},
+        features={"last_price": 100.0, "execution_fitness_norm": 0.0},
+        strategy="alpha",
+    )
+
+    assert blocked is False
+    assert reason == "reduce_close_or_hold"
+    assert details["reduces_or_closes"] is True
+
+
+def test_paper_profitability_guard_blocks_new_short_on_declared_policy_failure(tmp_path: Path) -> None:
+    _reset_paper_profitability_guard_cache()
+    trader = _mk_trader("paper")
+    trader.project_root = str(tmp_path)
+
+    blocked, reason, details = trader._paper_profitability_new_entry_blocked(
+        symbol="AAPL",
+        action="SELL",
+        quantity=1.0,
+        metadata={"source_profile": "default", "entry_policy": {"allowed": False}},
+        features={"last_price": 100.0, "execution_fitness_norm": 0.0},
+        strategy="alpha",
+    )
+
+    assert blocked is True
+    assert reason == "paper_profitability_entry_policy_block"
+    assert details["exposure_change"]["projected_qty"] == -1.0
 
 
 def test_paper_profitability_guard_enforces_declared_clean_sleeve_evidence(tmp_path: Path) -> None:

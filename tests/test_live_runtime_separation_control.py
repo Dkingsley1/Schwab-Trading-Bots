@@ -160,3 +160,60 @@ def test_blocked_training_with_coverage_debt_keeps_frozen_serving_ready(tmp_path
     assert payload['live_plane']['live_lane_read_only_attested'] is True
     assert payload['serving_isolation_contract']['ready'] is True
     assert payload['serving_isolation_contract']['mode'] == 'frozen_release_bundle_read_only'
+
+
+def test_ready_idle_training_with_no_candidates_keeps_frozen_serving_ready(tmp_path):
+    health = tmp_path / 'governance' / 'health'
+    walk = tmp_path / 'governance' / 'walk_forward'
+    _write_json(
+        health / 'live_readiness_smoke_latest.json',
+        {
+            'ok': True,
+            'broker_ready': True,
+            'session_ready': True,
+            'live_lane_running': True,
+            'mode': 'validate_only',
+            'submit_path_enabled': False,
+        },
+    )
+    _write_json(
+        health / 'training_runtime_control_latest.json',
+        {
+            'overall_status': 'ready',
+            'snapshot_ready': True,
+            'training_launch_contract': {
+                'launch_allowed': False,
+                'prep_allowed': True,
+                'launch_blockers': ['no_bot_needs_training_candidates'],
+                'training_quality_score': 100.0,
+            },
+        },
+    )
+    _write_json(health / 'storage_tier_policy_latest.json', {'overall_status': 'ready', 'pressure': {'hot_path_over_budget_bytes': 0}})
+    _write_json(
+        health / 'ingestion_storage_control_latest.json',
+        {
+            'overall_status': 'ready',
+            'severity': 'stable',
+            'pressure_index': 0.01,
+            'backpressure_quality_score': 100.0,
+            'recovery_quality_score': 100.0,
+            'external_route_verification': {'verification_state': 'ready'},
+            'steady_state': {'target_status': {'steady_state_ready': True}},
+            'backpressure': {'raw_live': {'core_pending_lines': 0, 'total_pending_lines': 0, 'oldest_pending_age_seconds': 0.0}},
+        },
+    )
+    _write_json(health / 'runtime_throttle_control_latest.json', {'overall_status': 'ready'})
+    _write_json(health / 'resource_guard_latest.json', {'swap_used_gb': 0.0})
+    _write_json(health / 'process_watchdog_latest.json', {'restart_storms': []})
+    _write_json(health / 'unattended_soak_readiness_latest.json', {'overall_status': 'ready', 'safe_to_leave_unattended': True, 'overall_grade': 'A+'})
+    _write_json(health / 'runtime_paper_regression_guard_latest.json', {'overall_status': 'ready', 'paper_armed': True, 'paper_blocked': False})
+    _write_json(health / 'paper_400_ramp_latest.json', {'stage': 'armed', 'armed': True, 'blockers': []})
+    _write_json(health / 'health_fast_latest.json', {'overall_status': 'guarded_ready', 'ok': True, 'strict_all_clear': False})
+    _write_json(walk / 'coverage_seed_latest.json', {'coverage_shortfall_bots': 4})
+
+    payload = live_runtime_separation_control.build_payload(tmp_path)
+
+    assert payload['training_plane']['training_safely_deferred'] is True
+    assert payload['serving_isolation_contract']['ready'] is True
+    assert payload['serving_isolation_contract']['frozen_release_bundles_enforced'] is True

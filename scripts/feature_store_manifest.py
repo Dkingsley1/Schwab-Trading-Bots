@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import gzip
 import hashlib
 import json
 from datetime import datetime, timezone
@@ -103,6 +104,21 @@ def _sha256_file(path_text: Any) -> str:
     return digest.hexdigest()
 
 
+def _line_count(path_text: Any) -> int | None:
+    text = str(path_text or "").strip()
+    if not text:
+        return None
+    path = Path(text).expanduser()
+    if not path.is_file():
+        return None
+    opener = gzip.open if path.suffix == ".gz" else open
+    try:
+        with opener(path, "rb") as handle:
+            return sum(1 for line in handle if line.strip())
+    except Exception:
+        return None
+
+
 def _ordered_unique(items: list[str]) -> list[str]:
     out: list[str] = []
     seen: set[str] = set()
@@ -189,6 +205,14 @@ def build_manifest(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
     sequence_count = _safe_int(snapshot.get("sequence_count"), 0)
     rows_path = str(snapshot.get("rows_path") or "")
     rows_sha256 = str(snapshot.get("rows_sha256") or "")
+    resolved_rows_path = Path(rows_path).expanduser() if rows_path else Path()
+    if rows_path and not resolved_rows_path.is_absolute():
+        resolved_rows_path = project_root / resolved_rows_path
+    actual_rows_sha256 = _sha256_file(resolved_rows_path) if rows_path else ""
+    actual_row_count = _line_count(resolved_rows_path) if rows_path else None
+    rows_file_exists = bool(rows_path and resolved_rows_path.is_file())
+    rows_hash_verified = bool(rows_file_exists and rows_sha256 and actual_rows_sha256 == rows_sha256)
+    rows_count_verified = bool(actual_row_count is not None and actual_row_count == row_count)
     coverage_ratio = _safe_float(coverage.get("coverage_ratio"), 0.0)
     min_coverage_ratio = _safe_float(coverage.get("min_coverage_ratio"), 0.0)
     event_count = _safe_int(event_store.get("event_count"), 0)
@@ -205,6 +229,11 @@ def build_manifest(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
     event_categories = sorted(str(key) for key in category_counts.keys())
     non_operational_event_categories = [key for key in event_categories if key not in {"broker_readiness"}]
     snapshot_freshness = _artifact_freshness(snapshot.get("timestamp_utc"), now=now, max_age_hours=12.0)
+    snapshot_content_fresh = bool(
+        snapshot.get("content_fresh", snapshot_freshness["fresh"])
+        if _safe_int(snapshot.get("schema_version"), 1) >= 2
+        else snapshot_freshness["fresh"]
+    )
     event_store_freshness = _artifact_freshness(event_store.get("timestamp_utc"), now=now, max_age_hours=6.0)
     file_hashes = feature_versions.get("file_hashes") if isinstance(feature_versions.get("file_hashes"), dict) else {}
     if not file_hashes:
@@ -284,7 +313,7 @@ def build_manifest(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
             "name": "event_store",
             "path": str(health_root / "point_in_time_event_store_latest.json"),
             "row_count": event_count,
-            "sha256": "",
+            "sha256": _sha256_file(health_root / "point_in_time_event_store_latest.json"),
             "point_in_time_key": "timestamp_utc",
             "join_keys": ["join_key", "category"],
             "availability_contract": "recent_event_window",
@@ -317,6 +346,18 @@ def build_manifest(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
         "non_operational_event_categories": non_operational_event_categories,
         "event_store_fresh": bool(event_store_freshness["fresh"]),
         "event_store_age_hours": event_store_freshness["age_hours"],
+        "event_store_ok": bool(event_store.get("ok", False)),
+        "event_store_point_in_time_only": bool(
+            (event_store.get("point_in_time_contract") or {}).get("point_in_time_only", event_store.get("ok", False))
+        )
+        if isinstance(event_store.get("point_in_time_contract"), dict)
+        else bool(event_store.get("ok", False)),
+        "future_event_count": _safe_int(
+            (event_store.get("point_in_time_contract") or {}).get("future_event_count"),
+            0,
+        )
+        if isinstance(event_store.get("point_in_time_contract"), dict)
+        else 0,
     }
     point_in_time_seed_ready = bool(
         row_count > 0
@@ -325,13 +366,19 @@ def build_manifest(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
         and bool(point_in_time_contract["event_join_keys"])
         and coverage_ratio >= min_coverage_ratio
         and bool(snapshot_freshness["fresh"])
+        and snapshot_content_fresh
         and bool(tracked_file_hashes)
+        and rows_hash_verified
+        and rows_count_verified
     )
     event_contract_ready = bool(
         event_count > 0
         and bool(event_categories)
         and (len(event_categories) >= 2 or bool(non_operational_event_categories))
         and bool(non_operational_event_categories)
+        and bool(point_in_time_contract["event_store_ok"])
+        and bool(point_in_time_contract["event_store_point_in_time_only"])
+        and int(point_in_time_contract["future_event_count"]) == 0
     )
     point_in_time_complete = bool(
         row_count > 0
@@ -339,9 +386,12 @@ def build_manifest(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
         and bool(point_in_time_contract["dataset_join_keys"])
         and bool(point_in_time_contract["event_join_keys"])
         and coverage_ratio >= min_coverage_ratio
+        and snapshot_content_fresh
         and event_contract_ready
         and bool(event_store_freshness["fresh"])
         and bool(tracked_file_hashes)
+        and rows_hash_verified
+        and rows_count_verified
     )
     point_in_time_contract["complete"] = point_in_time_complete
     point_in_time_contract["seed_ready"] = point_in_time_seed_ready
@@ -418,6 +468,8 @@ def build_manifest(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
             and rows_sha256
             and bool(tracked_file_hashes)
             and str(rows_path).strip()
+            and rows_hash_verified
+            and rows_count_verified
         )
     )
     label_contract["seed_ready"] = label_seed_ready
@@ -456,15 +508,24 @@ def build_manifest(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
 
     dataset_contract = {
         "rows_path": rows_path,
+        "resolved_rows_path": str(resolved_rows_path) if rows_path else "",
         "row_count": row_count,
+        "actual_row_count": actual_row_count,
         "sequence_count": sequence_count,
         "rows_sha256": rows_sha256,
+        "actual_rows_sha256": actual_rows_sha256,
+        "rows_file_exists": rows_file_exists,
+        "rows_hash_verified": rows_hash_verified,
+        "rows_count_verified": rows_count_verified,
         "lookback_days": _safe_int(snapshot.get("lookback_days"), 0),
         "prefer_sqlite": bool(snapshot.get("prefer_sqlite", False)),
         "mode_allowlist": snapshot.get("mode_allowlist") if isinstance(snapshot.get("mode_allowlist"), list) else [],
         "symbol_allowlist": snapshot.get("symbol_allowlist") if isinstance(snapshot.get("symbol_allowlist"), list) else [],
         "snapshot_fresh": bool(snapshot_freshness["fresh"]),
         "snapshot_age_hours": snapshot_freshness["age_hours"],
+        "snapshot_content_fresh": snapshot_content_fresh,
+        "snapshot_content_age_minutes": snapshot.get("content_age_minutes"),
+        "latest_row_timestamp_utc": str(snapshot.get("latest_row_timestamp_utc") or ""),
     }
 
     contract_hashes = {
@@ -490,6 +551,9 @@ def build_manifest(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
         and bool(tracked_file_hashes)
         and coverage_ratio >= min_coverage_ratio
         and bool(snapshot_freshness["fresh"])
+        and snapshot_content_fresh
+        and rows_hash_verified
+        and rows_count_verified
     )
     strict_seed_ready = bool(ok and point_in_time_seed_ready and label_seed_ready)
     strict_ok = bool(ok and point_in_time_complete and bool(label_contract.get("complete", False)))
@@ -512,6 +576,15 @@ def build_manifest(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
             "refresh the runtime snapshot and tracked file hashes before using the feature store for promotion review"
             if not ok
             else "",
+            "rebuild the runtime training snapshot because its data rows are stale even though the manifest is fresh"
+            if bool(snapshot_freshness["fresh"]) and not snapshot_content_fresh
+            else "",
+            "rebuild the runtime training snapshot because its declared row count or SHA-256 does not match the rows file"
+            if rows_file_exists and (not rows_hash_verified or not rows_count_verified)
+            else "",
+            "restore the runtime training rows file before allowing training or promotion review"
+            if rows_path and not rows_file_exists
+            else "",
             "do not treat the feature store as strict-ready until both the point-in-time contract and label contract are fully complete"
             if strict_status == "needs_work"
             else "",
@@ -524,11 +597,12 @@ def build_manifest(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
         "label_contract_complete": bool(label_contract.get("complete", False)),
         "label_contract_seed_ready": label_seed_ready,
         "strict_seed_ready": strict_seed_ready,
+        "runtime_rows_verified": bool(rows_hash_verified and rows_count_verified),
     }
 
     payload = {
         "timestamp_utc": now.isoformat(),
-        "schema_version": 1,
+        "schema_version": 2,
         "ok": ok,
         "overall_status": overall_status,
         "strict_status": strict_status,

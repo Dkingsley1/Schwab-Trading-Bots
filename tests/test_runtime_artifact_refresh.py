@@ -1,5 +1,6 @@
 import json
 import os
+from contextlib import contextmanager
 from pathlib import Path
 
 from scripts.ops import runtime_artifact_refresh
@@ -18,6 +19,22 @@ def test_runtime_artifact_refresh_caps_single_line_diagnostic_tails() -> None:
     assert tail.startswith("...[truncated ")
     assert tail.endswith("x" * 200)
     assert len(tail) < 260
+
+
+def test_runtime_artifact_refresh_parses_pretty_printed_json_output() -> None:
+    payload = {"overall_status": "ready", "nested": {"value": 3}}
+
+    assert runtime_artifact_refresh._parse_json_output(json.dumps(payload, indent=2)) == payload
+
+
+def test_runtime_artifact_refresh_understands_nested_dashboard_status() -> None:
+    payload = {"overall": {"status": "degraded", "ok": False}}
+
+    status = runtime_artifact_refresh._step_status({"rc": 2, "payload": payload})
+    summary = runtime_artifact_refresh._payload_summary(payload)
+
+    assert status == "degraded"
+    assert summary == {"overall_status": "degraded", "ok": False}
 
 
 def test_runtime_artifact_refresh_marks_child_maintenance_context(monkeypatch, tmp_path: Path) -> None:
@@ -61,6 +78,42 @@ def test_runtime_artifact_refresh_skips_nested_entry_without_overwriting_outer_a
 
     assert runtime_artifact_refresh.main() == 0
     assert not out_path.exists()
+
+
+def test_profitability_scope_holds_generation_lock_for_the_whole_epoch(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    events: list[str] = []
+
+    @contextmanager
+    def fake_lock(project_root: Path, *, timeout_seconds: float):
+        assert project_root == tmp_path
+        assert timeout_seconds == 120.0
+        events.append("acquired")
+        yield object()
+        events.append("released")
+
+    def fake_build(project_root: Path, *, scope: str):
+        assert project_root == tmp_path
+        assert scope == "training-profitability"
+        assert os.environ[runtime_artifact_refresh.PAPER_PROFITABILITY_LOCK_ENV] == "1"
+        events.append("built")
+        return {"ok": True, "overall_status": "ready"}
+
+    monkeypatch.delenv(runtime_artifact_refresh.PAPER_PROFITABILITY_LOCK_ENV, raising=False)
+    monkeypatch.setattr(runtime_artifact_refresh, "paper_profitability_generation_lock", fake_lock)
+    monkeypatch.setattr(runtime_artifact_refresh, "build_payload", fake_build)
+
+    payload = runtime_artifact_refresh.build_payload_serialized(
+        tmp_path,
+        scope="training-profitability",
+    )
+
+    assert events == ["acquired", "built", "released"]
+    assert runtime_artifact_refresh.PAPER_PROFITABILITY_LOCK_ENV not in os.environ
+    assert payload["single_writer_epoch_lock"]["held"] is True
+    assert payload["single_writer_epoch_lock"]["prevents_interleaved_mutable_latest_publication"] is True
 
 
 def test_runtime_artifact_refresh_reports_recovered_and_blocked_outputs(tmp_path: Path) -> None:
@@ -240,6 +293,247 @@ def test_runtime_artifact_refresh_publishes_current_stdout_when_producer_does_no
     assert json.loads(artifact_path.read_text(encoding="utf-8"))["generation"] == "current"
 
 
+def test_runtime_artifact_refresh_blocks_consumers_when_current_epoch_dependency_did_not_publish(
+    tmp_path: Path,
+) -> None:
+    upstream_path = tmp_path / "governance" / "health" / "upstream_latest.json"
+    downstream_path = tmp_path / "governance" / "health" / "downstream_latest.json"
+    specs = [
+        {"name": "upstream", "payload_path": upstream_path, "cmd": ["upstream"]},
+        {
+            "name": "downstream",
+            "payload_path": downstream_path,
+            "cmd": ["downstream"],
+            "depends_on": ["upstream"],
+        },
+    ]
+    calls: list[str] = []
+
+    def runner(spec: dict, project_root: Path) -> dict:
+        calls.append(str(spec["name"]))
+        return {
+            "cmd": list(spec["cmd"]),
+            "rc": 1,
+            "payload": {},
+            "stdout_tail": "",
+            "stderr_tail": "producer failed",
+            "duration_ms": 1.0,
+        }
+
+    payload = runtime_artifact_refresh.build_payload(tmp_path, specs=specs, runner=runner)
+
+    assert calls == ["upstream", "upstream"]
+    assert payload["overall_status"] == "blocked"
+    downstream = json.loads(downstream_path.read_text(encoding="utf-8"))
+    assert downstream["dependency_epoch_rejected"] is True
+    assert downstream["missing_current_epoch_dependencies"] == ["upstream"]
+    assert downstream["evidence_epoch"]["id"] == payload["evidence_epoch_id"]
+
+
+def test_runtime_artifact_refresh_training_scope_is_dependency_closed(tmp_path: Path) -> None:
+    selected = runtime_artifact_refresh._select_scope_specs(
+        runtime_artifact_refresh._step_specs(tmp_path),
+        "training",
+    )
+    names = [str(row["name"]) for row in selected]
+
+    assert names == [
+        "replay_hash_registry_final",
+        "golden_replay_regression_final",
+        "runtime_training_snapshot_verified",
+        "point_in_time_event_store_verified",
+        "feature_store_manifest_verified",
+        "training_label_audit_verified",
+        "training_lineage_manifest_verified",
+        "training_quality_control_verified",
+        "bot_needs_intelligence_verified",
+        "retrain_schema_compatibility_verified",
+        "training_runtime_control_verified",
+    ]
+    selected_names = set(names)
+    assert all(
+        set(str(item) for item in row.get("depends_on", [])) <= selected_names
+        for row in selected
+    )
+
+
+def test_runtime_artifact_refresh_cell_health_scope_refreshes_every_cell_input(tmp_path: Path) -> None:
+    selected = runtime_artifact_refresh._select_scope_specs(
+        runtime_artifact_refresh._step_specs(tmp_path),
+        "cell-health",
+    )
+    names = {str(row["name"]) for row in selected}
+
+    assert {
+        "cell_sleeve_ticker_universe_pre_intelligence",
+        "cell_core_materialization_pre_intelligence",
+        "cell_backpressure_super_drainer_pre_intelligence",
+        "cell_data_plane_recovery_pre_intelligence",
+        "cell_federation_intelligence_pre",
+        "cell_whole_system_intelligence",
+        "cell_whole_system_governor",
+        "cell_sleeve_profitability_dashboard",
+        "cell_sleeve_ticker_universe",
+        "cell_writer_process_intelligence",
+        "cell_backlog_pump_infrabots",
+        "cell_training_data_intake",
+        "cell_training_labeling",
+        "cell_training_probation_isolation",
+        "cell_provider_mesh",
+        "cell_macro_event_intelligence",
+        "cell_watchdog_intelligence",
+        "data_collection_observation_rollup_terminal",
+        "runtime_gate_dashboard_cell_convergence",
+        "cell_infrabot_library_self_awareness_convergence",
+        "distributed_cell_architecture_convergence_1",
+        "cell_federation_intelligence_convergence",
+        "one_numbers_regression_guard_cell_pre",
+        "stateful_storage_regression_guard_cell_pre",
+        "backlog_organizer_cell_convergence",
+        "livefeed_refresh_guard_cell_pre",
+        "backlog_pcore_accelerator_cell_pre",
+        "backpressure_drainer_fleet_cell_pre",
+        "adaptive_regression_guard_cell_convergence",
+        "system_architecture_hardening_cell_convergence",
+        "health_fast_cell_reconciled",
+        "backlog_organizer_cell_verified",
+        "incident_closeout_cell_convergence",
+        "system_architecture_contract_graph_cell_convergence",
+        "system_drift_guard_cell_probe",
+        "system_architecture_contract_graph_cell_reconciled",
+        "system_architecture_autopilot_cell_convergence",
+        "system_architecture_contract_graph_cell_verified",
+        "system_drift_guard_cell_convergence",
+        "master_infrastructure_supervisor_cell_convergence",
+        "system_drift_guard_cell_final",
+        "system_architecture_contract_graph_cell_final",
+        "cell_platform_brain_v6_convergence",
+        "cell_whole_system_intelligence_convergence",
+        "cell_whole_system_governor_convergence",
+        "distributed_cell_architecture_convergence_2",
+        "cell_federation_intelligence_terminal",
+        "cell_data_plane_recovery_terminal",
+        "cell_whole_system_intelligence_terminal",
+        "grade_regression_guard_terminal",
+        "section_grade_guard_terminal",
+        "low_grade_finalizer_verified",
+    } <= names
+    assert all(set(str(item) for item in row.get("depends_on", [])) <= names for row in selected)
+    steps_by_name = {str(row["name"]): row for row in selected}
+    for terminal_name in (
+        "cell_platform_brain_v6_convergence",
+        "distributed_cell_architecture_convergence_2",
+        "grade_regression_guard_terminal",
+        "section_grade_guard_terminal",
+    ):
+        assert "health_fast_cell_reconciled" in steps_by_name[terminal_name]["depends_on"]
+        assert "health_fast_terminal" not in steps_by_name[terminal_name]["depends_on"]
+    ordered = [str(row["name"]) for row in selected]
+    assert ordered.index("cell_sleeve_ticker_universe_pre_intelligence") < ordered.index("cell_whole_system_intelligence")
+    assert ordered.index("cell_core_materialization_pre_intelligence") < ordered.index("cell_federation_intelligence_pre")
+    assert ordered.index("cell_backpressure_super_drainer_pre_intelligence") < ordered.index("cell_federation_intelligence_pre")
+    assert ordered.index("cell_backpressure_super_drainer_pre_intelligence") < ordered.index("cell_data_plane_recovery_pre_intelligence")
+    assert ordered.index("cell_data_plane_recovery_pre_intelligence") < ordered.index("cell_federation_intelligence_pre")
+    assert ordered.index("cell_federation_intelligence_pre") < ordered.index("cell_whole_system_intelligence")
+    assert ordered.index("data_collection_observation_rollup_terminal") < ordered.index("health_fast_terminal")
+    assert ordered.index("health_fast_terminal") < ordered.index("runtime_gate_dashboard_cell_convergence")
+    assert ordered.index("runtime_gate_dashboard_cell_convergence") < ordered.index("cell_infrabot_library_self_awareness_convergence")
+    assert ordered.index("cell_infrabot_library_self_awareness_convergence") < ordered.index("distributed_cell_architecture_convergence_1")
+    assert ordered.index("distributed_cell_architecture_convergence_1") < ordered.index("cell_federation_intelligence_convergence")
+    assert ordered.index("cell_federation_intelligence_convergence") < ordered.index("adaptive_regression_guard_cell_convergence")
+    assert ordered.index("stateful_storage_regression_guard_cell_pre") < ordered.index("adaptive_regression_guard_cell_convergence")
+    assert ordered.index("livefeed_refresh_guard_cell_pre") < ordered.index("adaptive_regression_guard_cell_convergence")
+    assert ordered.index("backlog_pcore_accelerator_cell_pre") < ordered.index("backpressure_drainer_fleet_cell_pre")
+    assert ordered.index("backpressure_drainer_fleet_cell_pre") < ordered.index("adaptive_regression_guard_cell_convergence")
+    assert ordered.index("adaptive_regression_guard_cell_convergence") < ordered.index("system_architecture_hardening_cell_convergence")
+    assert ordered.index("system_architecture_hardening_cell_convergence") < ordered.index("health_fast_cell_reconciled")
+    assert ordered.index("health_fast_cell_reconciled") < ordered.index("backlog_organizer_cell_verified")
+    assert ordered.index("backlog_organizer_cell_verified") < ordered.index("system_architecture_contract_graph_cell_convergence")
+    assert ordered.index("system_architecture_contract_graph_cell_convergence") < ordered.index("system_drift_guard_cell_probe")
+    assert ordered.index("system_drift_guard_cell_probe") < ordered.index("system_architecture_contract_graph_cell_reconciled")
+    assert ordered.index("system_architecture_contract_graph_cell_reconciled") < ordered.index("system_architecture_autopilot_cell_convergence")
+    assert ordered.index("system_architecture_autopilot_cell_convergence") < ordered.index("system_drift_guard_cell_convergence")
+    assert ordered.index("system_drift_guard_cell_convergence") < ordered.index("system_architecture_contract_graph_cell_verified")
+    assert ordered.index("system_drift_guard_cell_convergence") < ordered.index("master_infrastructure_supervisor_cell_convergence")
+    assert ordered.index("master_infrastructure_supervisor_cell_convergence") < ordered.index("system_drift_guard_cell_final")
+    assert ordered.index("system_drift_guard_cell_final") < ordered.index("system_architecture_contract_graph_cell_final")
+    assert ordered.index("master_infrastructure_supervisor_cell_convergence") < ordered.index("cell_whole_system_intelligence_convergence")
+    assert ordered.index("cell_whole_system_intelligence_convergence") < ordered.index("distributed_cell_architecture_convergence_2")
+    assert ordered.index("distributed_cell_architecture_convergence_2") < ordered.index("cell_federation_intelligence_terminal")
+    assert ordered.index("cell_federation_intelligence_terminal") < ordered.index("cell_data_plane_recovery_terminal")
+    assert ordered.index("cell_data_plane_recovery_terminal") < ordered.index("cell_whole_system_intelligence_terminal")
+    assert ordered.index("cell_whole_system_intelligence_terminal") < ordered.index("grade_regression_guard_terminal")
+    assert ordered.index("distributed_cell_architecture_convergence_2") < ordered.index("low_grade_finalizer_verified")
+
+
+def test_runtime_artifact_refresh_uses_collection_operational_projection() -> None:
+    status = runtime_artifact_refresh._step_status(
+        {
+            "rc": 2,
+            "payload": {
+                "overall_status": "degraded",
+                "operational_status": "ready",
+                "operational_ok": True,
+                "operational_collection": {"status": "ready", "ok": True},
+            },
+        },
+        name="data_collection_observation_rollup_terminal",
+    )
+
+    assert status == "ready_operational"
+
+
+def test_runtime_artifact_refresh_uses_generic_operational_projection() -> None:
+    status = runtime_artifact_refresh._step_status(
+        {
+            "rc": 0,
+            "payload": {
+                "overall_status": "constrained",
+                "ok": False,
+                "operational_status": "ready_idle",
+                "operational_ok": True,
+                "operational_training": {
+                    "status": "ready_idle",
+                    "ok": True,
+                    "controlled_idle_no_candidates": True,
+                },
+            },
+        },
+        name="training_runtime_control_verified",
+    )
+
+    assert status == "ready_operational"
+
+
+def test_runtime_artifact_refresh_manages_live_production_readiness_during_green_paper_soak() -> None:
+    status = runtime_artifact_refresh._step_status(
+        {"rc": 2, "payload": {"overall_status": "blocked", "ok": False}},
+        name="production_readiness_control",
+        paper_soak_ready=True,
+    )
+
+    assert status == "managed_paper_soak"
+
+
+def test_runtime_artifact_refresh_profitability_scope_includes_every_epoch_input(tmp_path: Path) -> None:
+    selected = runtime_artifact_refresh._select_scope_specs(
+        runtime_artifact_refresh._step_specs(tmp_path),
+        "profitability",
+    )
+    names = {str(row["name"]) for row in selected}
+
+    assert "execution_queue_stress" in names
+    assert "source_verification_verified" in names
+    assert "profitability_hardening_control" in names
+    assert "profitability_evidence_firewall" in names
+    assert "paper_live_data_standard" in names
+    assert "control_surface_ownership" in names
+    firewall = next(row for row in selected if row["name"] == "profitability_evidence_firewall")
+    assert set(firewall["depends_on"]) <= names
+    freshness = next(row for row in selected if row["name"] == "artifact_freshness_slo_post_master")
+    assert "control_surface_ownership" in freshness["depends_on"]
+
+
 def test_runtime_artifact_refresh_requires_secondary_outputs_from_same_producer_to_be_fresh(tmp_path: Path) -> None:
     primary_path = tmp_path / "governance" / "health" / "primary_latest.json"
     secondary_path = tmp_path / "governance" / "health" / "secondary_latest.json"
@@ -390,6 +684,67 @@ def test_runtime_artifact_refresh_tracks_paper_soak_proof_debt_as_managed(tmp_pa
     ]
 
 
+def test_runtime_artifact_refresh_manages_verified_suffix_for_paper_evidence_debt(tmp_path: Path) -> None:
+    health = tmp_path / "governance" / "health"
+    _write_json(
+        health / "unattended_soak_readiness_latest.json",
+        {"ok": True, "overall_status": "ready", "safe_to_leave_unattended": True},
+    )
+    _write_json(health / "runtime_paper_regression_guard_latest.json", {"ok": True, "overall_status": "ready"})
+    artifact = health / "training_quality_control_latest.json"
+    specs = [{"name": "training_quality_control_verified", "payload_path": artifact, "cmd": ["training"]}]
+
+    def runner(spec: dict, project_root: Path) -> dict:
+        payload = {"ok": False, "overall_status": "needs_attention"}
+        _write_json(Path(spec["payload_path"]), payload)
+        return {"cmd": list(spec["cmd"]), "rc": 0, "payload": payload, "stdout_tail": "", "stderr_tail": "", "duration_ms": 1.0}
+
+    payload = runtime_artifact_refresh.build_payload(tmp_path, specs=specs, runner=runner)
+
+    assert payload["overall_status"] == "ready"
+    assert payload["steps"][0]["status"] == "managed_paper_soak"
+
+
+def test_runtime_artifact_refresh_manages_failed_suffix_step_without_payload() -> None:
+    status = runtime_artifact_refresh._step_status(
+        {"rc": 124, "payload": {}},
+        name="training_quality_control_verified",
+        paper_soak_ready=True,
+    )
+
+    assert status == "managed_paper_soak"
+
+
+def test_runtime_artifact_refresh_uses_required_provider_mesh_projection() -> None:
+    status = runtime_artifact_refresh._step_status(
+        {
+            "rc": 0,
+            "payload": {
+                "ok": False,
+                "overall_status": "degraded",
+                "required_failures": [],
+                "summary": {
+                    "required_collectors": 4,
+                    "required_contract_ok": 4,
+                    "required_snapshot_ready": 4,
+                },
+            },
+        },
+        name="cell_provider_mesh",
+    )
+
+    assert status == "ready_operational"
+
+
+def test_runtime_artifact_refresh_treats_ok_true_needs_work_as_advisory_ready() -> None:
+    status = runtime_artifact_refresh._step_status(
+        {"rc": 0, "payload": {"ok": True, "overall_status": "needs_work"}},
+        name="cell_platform_brain_v6_convergence",
+    )
+
+    assert status == "ready_advisory"
+
+
 def test_runtime_artifact_refresh_manages_intentional_live_lock_halt_during_paper_soak(tmp_path: Path) -> None:
     health = tmp_path / "governance" / "health"
     _write_json(
@@ -418,6 +773,12 @@ def test_runtime_artifact_refresh_manages_intentional_live_lock_halt_during_pape
                 "issues": [
                     {"name": "paper_trade_lock_active"},
                     {"name": "runtime_clearance_not_thaw_safe"},
+                    {
+                        "name": "advisory_artifact_stale:incident_auto_halt",
+                        "blocks_live_execution": False,
+                        "blocks_halt_clear": False,
+                        "blocks_heavy_viewer": False,
+                    },
                 ],
             }
         else:
@@ -553,7 +914,11 @@ def test_runtime_artifact_refresh_step_specs_include_training_storage_and_harden
     assert "storage_failback_sync" in names
     assert "promotion_autopilot_packet" in names
     assert "source_verification" in names
+    assert "capability_materialization" in names
+    assert names.index("source_verification_verified") < names.index("capability_materialization")
+    assert names.index("capability_materialization") < names.index("collector_capability_control")
     assert "paper_performance" in names
+    assert "paper_live_data_standard" in names
     assert "paper_profitability_control" in names
     assert names.index("paper_performance") < names.index("paper_profitability_control")
     assert "paper_replay_drill" in names
@@ -606,6 +971,7 @@ def test_runtime_artifact_refresh_step_specs_include_training_storage_and_harden
     assert "one_numbers_regression_guard_verified" in names
     assert "grade_regression_guard_verified" in names
     assert "section_grade_guard_verified" in names
+    assert "low_grade_finalizer_verified" in names
     assert "system_drift_registry_verified" in names
     assert "codex_project_guard_verified" in names
     assert "coinbase_api_health_verified" in names
@@ -621,6 +987,11 @@ def test_runtime_artifact_refresh_step_specs_include_training_storage_and_harden
     assert "health_fast_final" in names
     assert "adaptive_regression_guard_final" in names
     assert "system_drift_guard_pre_architecture" in names
+    assert "cell_whole_system_intelligence" in names
+    assert "cell_sleeve_ticker_universe" in names
+    assert "cell_training_labeling" in names
+    assert "cell_provider_mesh" in names
+    assert "cell_watchdog_intelligence" in names
     assert "schwab_indicator_intelligence_verified" in names
     assert "system_expansion_execution_verified" in names
     assert "distributed_cell_architecture_verified" in names
@@ -680,6 +1051,11 @@ def test_runtime_artifact_refresh_step_specs_include_training_storage_and_harden
     assert "live_order_ledger_control" in names
     assert "content_addressed_artifact_store" in names
     assert "storage_disaster_recovery_verified" in names
+    assert "security_evidence_autofix_verified" in names
+    assert "security_audit_verified" in names
+    assert "remote_alert_control_verified" in names
+    assert "blackstart_recovery_verified" in names
+    assert "telemetry_redaction_canary_verified" in names
 
     assert names.index("storage_quota_guard") < names.index("state_snapshot_restore_drill")
     assert names.index("state_snapshot_restore_drill") < names.index("storage_resilience_control")
@@ -691,6 +1067,12 @@ def test_runtime_artifact_refresh_step_specs_include_training_storage_and_harden
     assert names.index("storage_resilience_control_terminal") < names.index("blackstart_recovery")
     assert names.index("storage_retention_unison") < names.index("unattended_soak_readiness")
     assert names.index("content_addressed_artifact_store") < names.index("storage_disaster_recovery_verified")
+    assert names.index("security_evidence_autofix_verified") < names.index("security_audit_verified")
+    assert names.index("storage_disaster_recovery_verified") < names.index("blackstart_recovery_verified")
+    assert names.index("security_audit_verified") < names.index("production_readiness_control")
+    assert names.index("remote_alert_control_verified") < names.index("production_readiness_control")
+    assert names.index("blackstart_recovery_verified") < names.index("production_readiness_control")
+    assert names.index("telemetry_redaction_canary_verified") < names.index("production_readiness_control")
     assert names.index("storage_disaster_recovery_verified") < names.index("production_readiness_control")
     assert names.index("live_readiness_smoke") < names.index("blackstart_recovery")
     assert names.index("blackstart_recovery") < names.index("incident_timeline")
@@ -771,7 +1153,8 @@ def test_runtime_artifact_refresh_step_specs_include_training_storage_and_harden
     assert names.index("unattended_soak_readiness_terminal") < names.index("one_numbers_regression_guard_terminal")
     assert names.index("one_numbers_regression_guard_terminal") < names.index("grade_regression_guard_terminal")
     assert names.index("grade_regression_guard_terminal") < names.index("section_grade_guard_terminal")
-    assert names.index("section_grade_guard_terminal") < names.index("livefeed_refresh_guard_terminal")
+    assert names.index("section_grade_guard_terminal") < names.index("low_grade_finalizer_verified")
+    assert names.index("low_grade_finalizer_verified") < names.index("livefeed_refresh_guard_terminal")
     assert names.index("livefeed_refresh_guard_terminal") < names.index("adaptive_regression_guard_terminal")
     assert names.index("adaptive_regression_guard_terminal") < names.index("system_self_model_convergence")
     assert names.index("system_self_model_convergence") < names.index("system_architecture_contract_graph_convergence")
@@ -861,6 +1244,17 @@ def test_runtime_artifact_refresh_step_specs_include_training_storage_and_harden
     source_refresh_spec = next(row for row in specs if row["name"] == "source_verification_autorefresh")
     assert source_refresh_spec["optional"] is True
     assert source_refresh_spec["cmd"][source_refresh_spec["cmd"].index("--max-commands") + 1] == "1"
+    security_refresh_spec = next(row for row in specs if row["name"] == "security_evidence_autofix_verified")
+    assert "--force-secret-scan" in security_refresh_spec["cmd"]
+    assert security_refresh_spec["additional_payload_paths"]
+    readiness_spec = next(row for row in specs if row["name"] == "production_readiness_control")
+    assert set(readiness_spec["depends_on"]) == {
+        "storage_disaster_recovery_verified",
+        "security_audit_verified",
+        "remote_alert_control_verified",
+        "blackstart_recovery_verified",
+        "telemetry_redaction_canary_verified",
+    }
     indicator_spec = next(row for row in specs if row["name"] == "schwab_indicator_intelligence_verified")
     assert "--offline" in indicator_spec["cmd"]
     runtime_throttle_spec = next(row for row in specs if row["name"] == "runtime_throttle_control")

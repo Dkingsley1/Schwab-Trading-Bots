@@ -94,6 +94,9 @@ def _curated_teacher_candidates(path: Path) -> list[dict[str, Any]]:
     for row in rows:
         if not isinstance(row, dict):
             continue
+        overfit_policy = row.get("overfit_policy") if isinstance(row.get("overfit_policy"), dict) else {}
+        if overfit_policy and not bool(overfit_policy.get("may_teach", False)):
+            continue
         bot_id = str(row.get("bot_id") or "").strip()
         role = str(row.get("bot_role") or row.get("role") or "unknown").strip() or "unknown"
         if not bot_id:
@@ -112,6 +115,23 @@ def _curated_teacher_candidates(path: Path) -> list[dict[str, Any]]:
             }
         )
     return out
+
+
+def _authoritative_teacher_ids(path: Path) -> tuple[bool, set[str]]:
+    payload = _load_json(path, default={})
+    if not isinstance(payload, dict) or not isinstance(payload.get("qualified_teachers"), list):
+        return False, set()
+    teacher_ids: set[str] = set()
+    for row in payload.get("qualified_teachers") or []:
+        if not isinstance(row, dict):
+            continue
+        overfit_policy = row.get("overfit_policy") if isinstance(row.get("overfit_policy"), dict) else {}
+        if overfit_policy and not bool(overfit_policy.get("may_teach", False)):
+            continue
+        bot_id = str(row.get("bot_id") or "").strip().lower()
+        if bot_id:
+            teacher_ids.add(bot_id)
+    return True, teacher_ids
 
 
 def _blocked_teacher_ids(training_quality: dict[str, Any]) -> set[str]:
@@ -160,7 +180,9 @@ def main() -> int:
     training_quality = _load_json(training_quality_path, default={})
     blocked_teacher_ids = _blocked_teacher_ids(training_quality)
     role_by_bot = _role_map(registry)
-    curated_teachers = _curated_teacher_candidates(Path(args.teacher_quality))
+    teacher_quality_path = Path(args.teacher_quality)
+    curated_teachers = _curated_teacher_candidates(teacher_quality_path)
+    teacher_quality_authoritative, authoritative_teacher_ids = _authoritative_teacher_ids(teacher_quality_path)
 
     teacher_candidates: list[dict[str, Any]] = []
     students: list[dict[str, Any]] = []
@@ -211,6 +233,9 @@ def main() -> int:
     for candidate in curated_teachers + teacher_candidates:
         bot_id = str(candidate.get("bot_id", "")).strip()
         if not bot_id:
+            continue
+        if teacher_quality_authoritative and bot_id.lower() not in authoritative_teacher_ids:
+            excluded_teacher_ids.append(bot_id)
             continue
         if bot_id.lower() in blocked_teacher_ids:
             excluded_teacher_ids.append(bot_id)
@@ -266,7 +291,7 @@ def main() -> int:
             "walk_forward": str(Path(args.walk_forward)),
             "registry": str(Path(args.registry)),
             "teacher_quality": str(Path(args.teacher_quality)),
-            "training_quality": str(Path(args.training_quality)),
+            "training_quality": str(training_quality_path),
             "teacher_min_forward_mean": args.teacher_min_forward_mean,
             "teacher_min_runs": args.teacher_min_runs,
             "teacher_max": args.teacher_max,
@@ -276,6 +301,7 @@ def main() -> int:
             "teacher_min_registry_accuracy": args.teacher_min_registry_accuracy,
             "teacher_min_registry_quality": args.teacher_min_registry_quality,
             "blocked_teacher_count": len(set(excluded_teacher_ids)),
+            "teacher_quality_authoritative": teacher_quality_authoritative,
         },
         "summary": {
             "teacher_count": len(teachers),
@@ -283,6 +309,7 @@ def main() -> int:
             "assignment_count": len(assignments),
             "curated_teacher_count": len(curated_teachers),
             "excluded_teacher_count": len(set(excluded_teacher_ids)),
+            "teacher_quality_authoritative": teacher_quality_authoritative,
         },
         "teachers": teachers,
         "excluded_teachers": sorted(set(excluded_teacher_ids)),
@@ -290,7 +317,8 @@ def main() -> int:
         "quality_contract": {
             "probation_or_repair_bots_may_teach": False,
             "runtime_input_depth_debt_bots_may_teach": False,
-            "teacher_block_source": str(Path(args.training_quality)),
+            "teacher_quality_guard_is_authoritative": teacher_quality_authoritative,
+            "teacher_block_source": str(training_quality_path),
             "student_count_target": "increase coverage by raising --student-max-runs and --teachers-per-student without allowing blocked teachers",
         },
     }
@@ -299,12 +327,12 @@ def main() -> int:
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(json.dumps(payload, ensure_ascii=True, indent=2), encoding="utf-8")
 
-    events = PROJECT_ROOT / "governance" / "distillation" / f"teacher_student_events_{_event_day()}.jsonl"
+    events = out_path.parent / f"teacher_student_events_{_event_day()}.jsonl"
     events.parent.mkdir(parents=True, exist_ok=True)
     with events.open("a", encoding="utf-8") as f:
         f.write(json.dumps(payload, ensure_ascii=True) + "\n")
 
-    env_hint = PROJECT_ROOT / "governance" / "distillation" / "teacher_student_env.sh"
+    env_hint = out_path.parent / "teacher_student_env.sh"
     env_hint.write_text(
         "\n".join(
             [

@@ -132,15 +132,18 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, now: datetime | None = N
     starts = [parse_iso_utc(value) for value in windows.values()]
     parsed_starts = [value for value in starts if value is not None]
     clean_start = max(parsed_starts) if parsed_starts else None
-    elapsed_hours = max((current_time - clean_start).total_seconds() / 3600.0, 0.0) if clean_start else 0.0
-    elapsed_complete = bool(candidate_ready and elapsed_hours >= 720.0)
+    observed_window_elapsed_hours = (
+        max((current_time - clean_start).total_seconds() / 3600.0, 0.0) if clean_start else 0.0
+    )
+    credited_clean_window_elapsed_hours = observed_window_elapsed_hours if candidate_ready else 0.0
+    elapsed_complete = bool(candidate_ready and credited_clean_window_elapsed_hours >= 720.0)
     implemented_count = sum(1 for row in control_rows if row["implemented"])
     runtime_ready_count = sum(1 for value in runtime_checks.values() if value)
     control_ready = implemented_count == len(control_rows)
     capacity_ready = bool(control_ready and all(runtime_checks.values()))
     control_score = 100.0 * implemented_count / max(len(control_rows), 1)
     runtime_score = 100.0 * runtime_ready_count / max(len(runtime_checks), 1)
-    elapsed_score = min(100.0 * elapsed_hours / 720.0, 100.0) if candidate_ready else 0.0
+    elapsed_score = min(100.0 * credited_clean_window_elapsed_hours / 720.0, 100.0)
     return {
         "timestamp_utc": iso_now(),
         "schema_version": 1,
@@ -155,7 +158,9 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, now: datetime | None = N
         "elapsed_evidence_grade": _grade(elapsed_score, complete=elapsed_complete),
         "elapsed_evidence_score": round(elapsed_score, 3),
         "clean_window_started_utc": clean_start.isoformat() if clean_start else "",
-        "clean_window_elapsed_hours": round(elapsed_hours, 6),
+        "clean_window_elapsed_hours": round(credited_clean_window_elapsed_hours, 6),
+        "observed_window_elapsed_hours": round(observed_window_elapsed_hours, 6),
+        "candidate_drift_invalidates_elapsed_credit": bool(clean_start and not candidate_ready),
         "clean_720_hours_complete": elapsed_complete,
         "controls": control_rows,
         "runtime_checks": runtime_checks,
@@ -165,6 +170,7 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, now: datetime | None = N
             "operational_A_plus_means_capacity_to_run_unattended": True,
             "elapsed_A_plus_requires_720_clean_hours": True,
             "restart_or_accepted_change_resets_credit": True,
+            "unaccepted_candidate_drift_receives_zero_elapsed_credit": True,
             "no_grade_authorizes_live_money": True,
         },
     }

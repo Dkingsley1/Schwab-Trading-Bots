@@ -19,6 +19,7 @@ from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Set, Tuple
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote, urlencode
@@ -51,6 +52,11 @@ _DYNAMIC_STORAGE_OVERRIDE_CACHE: Dict[str, Any] = {
     "values": {},
 }
 _DYNAMIC_STORAGE_OVERRIDE_POLL_SECONDS = 5.0
+_PRODUCTION_CANDIDATE_CACHE: Dict[str, Any] = {
+    "checked_at_monotonic": 0.0,
+    "fingerprint": None,
+    "payload": {},
+}
 HALT_FLAG_PATH = PROJECT_ROOT_PATH / "governance" / "health" / "GLOBAL_TRADING_HALT.flag"
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
@@ -61,6 +67,12 @@ from core.execution_simulator import simulate_execution
 from core.risk_engine import apply_risk_limits
 from core.position_sizing import size_from_action
 from core.portfolio_optimizer import allocate_quantity
+from core.profitability_hardening import (
+    coalesce_paper_intents,
+    evaluate_paper_execution_authority,
+    evaluate_profitability_entry,
+    resolve_contract_valuation,
+)
 from core.runtime_override_precedence import merge_runtime_override_layers
 from core.execution_queue import ExecutionQueue, OrderRequest
 from core.execution_lane_pipeline import publish_execution_intent
@@ -87,6 +99,20 @@ from core.advanced_quant_models import (
     QUANT_MODEL_FEATURE_KEYS,
     default_quant_model_features,
     summarize_quant_model_features,
+)
+from core.central_bank_liquidity import (
+    CENTRAL_BANK_LIQUIDITY_FEATURE_KEYS,
+    central_bank_liquidity_context_ready,
+)
+from core.global_central_bank_context import (
+    CENTRAL_BANK_CROSS_SOURCE_FEATURE_KEYS,
+    GLOBAL_CENTRAL_BANK_FEATURE_KEYS,
+    central_bank_cross_source_context_ready,
+    global_central_bank_context_ready,
+)
+from core.decision_context_mesh import (
+    DECISION_CONTEXT_MESH_FEATURE_KEYS,
+    decision_context_mesh_ready,
 )
 from core.market_context_features import (
     BOND_REFERENCE_FEATURE_KEYS,
@@ -392,7 +418,16 @@ _EXTERNAL_CONTEXT_FEATURE_KEYS = [
     "live_macro_oil_shock_norm",
     "live_macro_event_alignment_norm",
 ]
-_EXTERNAL_CONTEXT_FEATURE_KEYS = list(dict.fromkeys(_EXTERNAL_CONTEXT_FEATURE_KEYS + list(QUANT_MODEL_FEATURE_KEYS)))
+_EXTERNAL_CONTEXT_FEATURE_KEYS = list(
+    dict.fromkeys(
+        _EXTERNAL_CONTEXT_FEATURE_KEYS
+        + list(QUANT_MODEL_FEATURE_KEYS)
+        + list(CENTRAL_BANK_LIQUIDITY_FEATURE_KEYS)
+        + list(GLOBAL_CENTRAL_BANK_FEATURE_KEYS)
+        + list(CENTRAL_BANK_CROSS_SOURCE_FEATURE_KEYS)
+        + list(DECISION_CONTEXT_MESH_FEATURE_KEYS)
+    )
+)
 
 
 @dataclass
@@ -412,6 +447,18 @@ class SubBot:
     paper_trading_enabled: bool = False
     paper_trade_enabled: bool = False
     paper_execution_allowed: bool = False
+    paper_execution_authority: bool = False
+    paper_probation_authority: bool = False
+    paper_probation_requalification_allowed: bool = False
+    paper_execution_authority_expires_utc: str = ""
+    quality_score: Optional[float] = None
+    training_lane: str = ""
+    training_objective_class: str = ""
+    label_family: str = ""
+    paper_sleeve_id: str = ""
+    paper_sub_sleeve_id: str = ""
+    paper_correlation_cluster_id: str = ""
+    paper_execution_evidence: Optional[Dict[str, Any]] = None
 
 
 def _bot_master_vote_eligible(bot: SubBot) -> bool:
@@ -430,16 +477,19 @@ def _paper_live_data_standard_enabled() -> bool:
 
 
 def _bot_paper_live_data_allowed(bot: SubBot) -> bool:
-    if not _paper_live_data_standard_enabled():
-        return True
-    if str(bot.reason or "").startswith("virtual_"):
-        return True
-    return bool(
-        bot.paper_live_data_enabled
-        or bot.paper_trading_enabled
-        or bot.paper_trade_enabled
-        or bot.paper_execution_allowed
+    verdict = evaluate_paper_execution_authority(
+        bot,
+        segment=(
+            "options"
+            if _is_options_sub_bot(bot)
+            else "futures"
+            if _is_futures_sub_bot(bot)
+            else "core"
+        ),
+        minimum_accuracy=float(os.getenv("PAPER_EXECUTION_AUTHORITY_MIN_ACC", "0.56")),
+        minimum_quality_score=float(os.getenv("PAPER_EXECUTION_AUTHORITY_MIN_QUALITY", "0.50")),
     )
+    return bool(verdict.get("allowed", False))
 
 
 def _row_master_vote_eligible(row: Dict[str, Any]) -> bool:
@@ -490,6 +540,9 @@ def _publish_execution_lane_intent(
         return
 
     md = dict(metadata or {})
+    candidate_context = _production_candidate_context(PROJECT_ROOT)
+    for key, value in candidate_context.items():
+        md.setdefault(key, value)
     snapshot_id = str(md.get("snapshot_id") or "")
     bot_id = str(md.get("bot_id") or "")
     message_id = str(md.get("decision_id") or "") or _intent_message_id(
@@ -527,6 +580,177 @@ def _publish_execution_lane_intent(
         f"[ExecutionIntent] kind={intent_kind} target={target_mode} broker={broker} "
         f"symbol={symbol} action={action} qty={qty:.4f} strategy={strategy}"
     )
+
+
+def _execute_paper_mirror_consensus(
+    *,
+    broker: str,
+    symbol: str,
+    profile: str,
+    segment: str,
+    snapshot_id: str,
+    candidates: List[Dict[str, Any]],
+    shared_features: Dict[str, Any],
+    gates: Dict[str, Any],
+    execution_lane_enabled: bool,
+    paper_trader: Optional[BaseTrader],
+    selection_reason: str,
+) -> Dict[str, Any]:
+    consensus = coalesce_paper_intents(candidates, require_hierarchy_identity=True)
+    action = str(consensus.get("action") or "HOLD").upper()
+    if action not in {"BUY", "SELL"}:
+        return consensus
+
+    quantity_multiplier = _clamp01(float(consensus.get("quantity_multiplier", 0.0) or 0.0))
+    if quantity_multiplier <= 0.0:
+        consensus["action"] = "HOLD"
+        consensus["reason"] = "portfolio_consensus_zero_risk_budget"
+        return consensus
+
+    segment_key = str(segment or "core").strip().lower() or "core"
+    profile_key = str(profile or "default").strip().lower() or "default"
+    strategy = f"paper_portfolio_consensus::{profile_key}::{segment_key}"
+    features = dict(shared_features or {})
+    features.update(_derive_execution_realism_features(features))
+    features.update(_derive_consensus_entry_economics(consensus, features))
+    features.update(_runtime_market_session_features(broker))
+    features["paper_entry_execution_realism_recomputed_norm"] = 1.0
+    features["paper_execution_authority_v2"] = True
+    features["profitability_strict_evidence_required"] = True
+    features.update(
+        {
+            "paper_portfolio_consensus_active_norm": 1.0,
+            "paper_portfolio_consensus_ratio_norm": _clamp01(consensus.get("consensus_ratio", 0.0)),
+            "paper_portfolio_net_vote_ratio_norm": _clamp01(consensus.get("net_vote_ratio", 0.0)),
+            "paper_portfolio_risk_multiplier_norm": quantity_multiplier,
+            "paper_portfolio_constituent_count_norm": _clamp01(
+                float(consensus.get("constituent_count", 0) or 0) / 64.0
+            ),
+        }
+    )
+    entry_policy = evaluate_profitability_entry(profile=profile_key, features=features)
+    features["profitability_regime_fit_norm"] = _clamp01(entry_policy.get("regime_fit_norm", 0.0))
+    features["profitability_evidence_quality_norm"] = _clamp01(
+        entry_policy.get("evidence_quality_norm", 0.0)
+    )
+    features["profitability_entry_policy_ready_norm"] = 1.0 if bool(entry_policy.get("allowed", False)) else 0.0
+    if not bool(entry_policy.get("allowed", False)):
+        consensus["action"] = "HOLD"
+        consensus["quantity_multiplier"] = 0.0
+        consensus["reason"] = "profitability_entry_policy_block"
+        consensus["entry_policy"] = entry_policy
+        return consensus
+
+    cohort_manifest = {
+        "policy": "paper_execution_authority_v2",
+        "profile": profile_key,
+        "segment": segment_key,
+        "constituent_bot_ids": sorted(
+            str(bot_id) for bot_id in consensus.get("constituent_bot_ids", []) if str(bot_id)
+        ),
+    }
+    cohort_manifest_sha256 = hashlib.sha256(
+        json.dumps(cohort_manifest, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+
+    metadata: Dict[str, Any] = {
+        "layer": "paper_portfolio_consensus",
+        "signal_segment": segment_key,
+        "snapshot_id": snapshot_id,
+        "source_profile": profile_key,
+        "shadow_domain": _shadow_domain_name(broker=broker),
+        "allow_live_promotion": False,
+        "paper_only": True,
+        "constituent_count": int(consensus.get("constituent_count", 0) or 0),
+        "constituent_bot_ids": list(consensus.get("constituent_bot_ids") or []),
+        "constituent_bot_ids_truncated": bool(consensus.get("constituent_bot_ids_truncated", False)),
+        "constituent_bot_ids_sha256": str(consensus.get("constituent_bot_ids_sha256") or ""),
+        "constituent_attribution": list(consensus.get("constituent_attribution") or []),
+        "constituent_attribution_truncated": bool(
+            consensus.get("constituent_attribution_truncated", False)
+        ),
+        "paper_execution_authority_version": "paper_execution_authority_v2",
+        "paper_execution_cohort_manifest": cohort_manifest,
+        "paper_execution_cohort_manifest_sha256": cohort_manifest_sha256,
+        "paper_execution_diversity_ready": bool(consensus.get("diversity_ready", False)),
+        "paper_execution_distinct_correlation_clusters": int(
+            consensus.get("distinct_correlation_clusters", 0) or 0
+        ),
+        "paper_execution_weight_cap_events": list(consensus.get("weight_cap_events") or []),
+        "buy_vote_count": int(consensus.get("buy_count", 0) or 0),
+        "sell_vote_count": int(consensus.get("sell_count", 0) or 0),
+        "consensus_ratio": float(consensus.get("consensus_ratio", 0.0) or 0.0),
+        "net_vote_ratio": float(consensus.get("net_vote_ratio", 0.0) or 0.0),
+        "risk_multiplier_norm": quantity_multiplier,
+        "entry_policy": entry_policy,
+        "execution_style": str((entry_policy.get("execution_plan") or {}).get("style") or "marketable_limit"),
+        "market_orders_allowed": False,
+    }
+    valuation = resolve_contract_valuation(symbol, metadata)
+    resolved_asset_type = str(valuation.get("asset_type") or "SPOT").upper()
+    if resolved_asset_type == "SPOT":
+        resolved_asset_type = "CRYPTO" if str(broker or "").strip().lower() == "coinbase" else "EQUITY"
+    metadata.update(
+        {
+            "asset_type": resolved_asset_type,
+            "contract_multiplier": float(valuation.get("contract_multiplier", 1.0) or 1.0),
+            "contract_valuation_ready": bool(valuation.get("valuation_ready", False)),
+            "contract_valuation_source": str(valuation.get("multiplier_source") or ""),
+        }
+    )
+    derivative_contract = str(valuation.get("asset_type") or "").upper() in {"OPTION", "FUTURE"}
+    if derivative_contract and quantity_multiplier < 0.50:
+        consensus["action"] = "HOLD"
+        consensus["reason"] = "derivative_risk_budget_below_one_contract"
+        return consensus
+    quantity = 1.0 if derivative_contract else round(max(quantity_multiplier, 0.10), 6)
+    reasons = [
+        "paper_portfolio_consensus_execution",
+        selection_reason,
+        f"segment={segment_key}",
+        f"constituents={int(consensus.get('constituent_count', 0) or 0)}",
+        f"consensus={float(consensus.get('consensus_ratio', 0.0) or 0.0):.3f}",
+        f"net_vote={float(consensus.get('net_vote_ratio', 0.0) or 0.0):.3f}",
+        f"risk_multiplier={quantity_multiplier:.3f}",
+    ]
+    try:
+        if execution_lane_enabled:
+            _publish_execution_lane_intent(
+                broker=broker,
+                symbol=symbol,
+                action=action,
+                quantity=quantity,
+                model_score=float(consensus.get("score", 0.5) or 0.5),
+                threshold=float(consensus.get("threshold", 0.55) or 0.55),
+                features=features,
+                gates=gates,
+                reasons=reasons,
+                strategy=strategy,
+                metadata=metadata,
+                intent_kind=f"paper_portfolio_consensus_{segment_key}",
+                target_mode="paper",
+            )
+        elif paper_trader is not None:
+            paper_trader.execute_decision(
+                symbol=symbol,
+                action=action,
+                quantity=quantity,
+                model_score=float(consensus.get("score", 0.5) or 0.5),
+                threshold=float(consensus.get("threshold", 0.55) or 0.55),
+                features=features,
+                gates=gates,
+                reasons=reasons,
+                strategy=strategy,
+                metadata=metadata,
+            )
+        consensus["executed"] = True
+        consensus["execution_quantity"] = quantity
+        consensus["strategy"] = strategy
+    except Exception as exc:
+        consensus["executed"] = False
+        consensus["execution_error"] = f"{type(exc).__name__}:{exc}"
+        print(f"[PaperPortfolioConsensus] order_failed symbol={symbol} segment={segment_key} err={exc}")
+    return consensus
 
 
 def _publish_master_plan_intent(
@@ -751,14 +975,72 @@ def _load_registry(path: str) -> Dict[str, Any]:
     if not os.path.exists(path):
         raise FileNotFoundError(f"Master registry not found: {path}")
     with open(path, "r", encoding="utf-8") as f:
-        return json.load(f)
+        registry = json.load(f)
+    if os.getenv("PAPER_LIVE_DATA_STANDARD_ENABLED", "0").strip() != "1":
+        return registry
+    try:
+        if Path(path).resolve() != (PROJECT_ROOT_PATH / "master_bot_registry.json").resolve():
+            return registry
+        candidate_path = PROJECT_ROOT_PATH / "governance" / "health" / "paper_live_data_standard_registry_candidate_latest.json"
+        guard_path = PROJECT_ROOT_PATH / "governance" / "health" / "paper_live_data_standard_source_write_guard_latest.json"
+        health_path = PROJECT_ROOT_PATH / "governance" / "health" / "paper_live_data_standard_latest.json"
+        guard = json.loads(guard_path.read_text(encoding="utf-8"))
+        health = json.loads(health_path.read_text(encoding="utf-8"))
+        if not bool(guard.get("source_write_blocked", False)) or not bool(health.get("ok", False)):
+            return registry
+        if Path(str(guard.get("candidate_path") or "")).resolve() != candidate_path.resolve():
+            return registry
+        source_sha256 = hashlib.sha256(Path(path).read_bytes()).hexdigest()
+        candidate_sha256 = hashlib.sha256(candidate_path.read_bytes()).hexdigest()
+        if source_sha256 != str(guard.get("source_sha256") or ""):
+            return registry
+        if candidate_sha256 != str(guard.get("candidate_sha256") or ""):
+            return registry
+        candidate = json.loads(candidate_path.read_text(encoding="utf-8"))
+        candidate_summary = candidate.get("summary") if isinstance(candidate.get("summary"), dict) else {}
+        if candidate_summary.get("paper_live_data_standard_version") != "paper_live_data_standard_v2":
+            return registry
+        source_rows = registry.get("sub_bots") if isinstance(registry.get("sub_bots"), list) else []
+        candidate_rows = candidate.get("sub_bots") if isinstance(candidate.get("sub_bots"), list) else []
+        source_ids = {str(row.get("bot_id") or "") for row in source_rows if isinstance(row, dict)}
+        candidate_ids = {str(row.get("bot_id") or "") for row in candidate_rows if isinstance(row, dict)}
+        if len(source_rows) != len(candidate_rows) or source_ids != candidate_ids:
+            return registry
+        return candidate
+    except Exception:
+        return registry
 
 
 def _parse_sub_bots(registry: Dict[str, Any]) -> List[SubBot]:
     bots: List[SubBot] = []
-    for row in registry.get("sub_bots", []):
+    hierarchy_by_bot: Dict[str, Dict[str, Any]] = {}
+    hierarchy_path = Path(PROJECT_ROOT) / "governance" / "bot_organization" / "bot_hierarchy_latest.json"
+    try:
+        hierarchy_payload = json.loads(hierarchy_path.read_text(encoding="utf-8"))
+    except Exception:
+        hierarchy_payload = {}
+    hierarchy_rows = (
+        hierarchy_payload.get("assignments")
+        if isinstance(hierarchy_payload, dict) and isinstance(hierarchy_payload.get("assignments"), list)
+        else []
+    )
+    registry_rows = registry.get("sub_bots", []) if isinstance(registry.get("sub_bots"), list) else []
+    if hierarchy_rows and len(hierarchy_rows) == len(registry_rows):
+        hierarchy_by_bot = {
+            str(item.get("bot_id") or ""): item
+            for item in hierarchy_rows
+            if isinstance(item, dict) and str(item.get("bot_id") or "").strip()
+        }
+    for row in registry_rows:
         bot_id = str(row.get("bot_id"))
+        hierarchy = hierarchy_by_bot.get(bot_id, {})
         base_weight = float(row.get("weight", 0.0) or 0.0)
+        materialization = (
+            row.get("training_label_materialization_contract")
+            if isinstance(row.get("training_label_materialization_contract"), dict)
+            else {}
+        )
+        label_contract = row.get("label_contract") if isinstance(row.get("label_contract"), dict) else {}
         bots.append(
             SubBot(
                 bot_id=bot_id,
@@ -776,6 +1058,47 @@ def _parse_sub_bots(registry: Dict[str, Any]) -> List[SubBot]:
                 paper_trading_enabled=bool(row.get("paper_trading_enabled", False)),
                 paper_trade_enabled=bool(row.get("paper_trade_enabled", False)),
                 paper_execution_allowed=bool(row.get("paper_execution_allowed", False)),
+                paper_execution_authority=bool(row.get("paper_execution_authority", False)),
+                paper_probation_authority=bool(row.get("paper_probation_authority", False)),
+                paper_probation_requalification_allowed=bool(
+                    row.get("paper_probation_requalification_allowed", False)
+                ),
+                paper_execution_authority_expires_utc=str(
+                    row.get("paper_execution_authority_expires_utc", "") or ""
+                ),
+                quality_score=(
+                    float(row["quality_score"])
+                    if row.get("quality_score") is not None
+                    else None
+                ),
+                training_lane=str(row.get("training_lane", "") or ""),
+                training_objective_class=str(materialization.get("objective_class") or ""),
+                label_family=str(
+                    materialization.get("label_family")
+                    or label_contract.get("label_family")
+                    or ""
+                ),
+                paper_sleeve_id=str(
+                    row.get("paper_sleeve_id")
+                    or hierarchy.get("sleeve_id")
+                    or row.get("sleeve_profile")
+                    or ""
+                ),
+                paper_sub_sleeve_id=str(
+                    row.get("paper_sub_sleeve_id")
+                    or hierarchy.get("sub_sleeve_id")
+                    or ""
+                ),
+                paper_correlation_cluster_id=str(
+                    row.get("paper_correlation_cluster_id")
+                    or hierarchy.get("correlation_cluster_id")
+                    or ""
+                ),
+                paper_execution_evidence=(
+                    dict(row.get("paper_execution_evidence"))
+                    if isinstance(row.get("paper_execution_evidence"), dict)
+                    else {}
+                ),
             )
         )
     if not bots:
@@ -1639,7 +1962,7 @@ def _allocation_confidence_overlay(
     return out
 
 
-def _derive_execution_realism_features(features: Dict[str, float]) -> Dict[str, float]:
+def _derive_execution_realism_features(features: Dict[str, float]) -> Dict[str, Any]:
     tradeability = _clamp01(float(features.get("market_micro_tradeability_score_norm", 0.5) or 0.5))
     quote_agreement = _clamp01(float(features.get("data_quality_quote_agreement_norm", 1.0) or 1.0))
     spread_norm = _clamp01(abs(float(features.get("spread_bps", 0.0) or 0.0)) / 30.0)
@@ -1680,9 +2003,101 @@ def _derive_execution_realism_features(features: Dict[str, float]) -> Dict[str, 
         + 0.10 * (1.0 - quote_fade)
         + 0.08 * (1.0 - reversal_risk)
     )
-    return {
+    out = {
         "execution_fitness_norm": execution_fitness,
         "stop_target_realism_norm": stop_target_realism,
+        "liquidity_quality_norm": _clamp01(
+            0.55 * tradeability
+            + 0.20 * quote_agreement
+            + 0.15 * (1.0 - spread_norm)
+            + 0.10 * (1.0 - depth_decay)
+        ),
+        "expected_slippage_bps": max(
+            abs(float(features.get("lag_slippage_bps", 0.0) or 0.0)),
+            abs(float(features.get("lag_impact_bps", 0.0) or 0.0)),
+        ),
+    }
+    quote_age_keys = ("quote_age_ms", "market_data_latency_ms", "lag_latency_ms")
+    if any(key in features and features.get(key) not in {None, ""} for key in quote_age_keys):
+        out["quote_age_ms"] = max(
+            abs(float(features.get("quote_age_ms", 0.0) or 0.0)),
+            abs(float(features.get("market_data_latency_ms", 0.0) or 0.0)),
+            abs(float(features.get("lag_latency_ms", 0.0) or 0.0)),
+        )
+    return out
+
+
+def _derive_consensus_entry_economics(
+    consensus: Dict[str, Any],
+    features: Dict[str, Any],
+) -> Dict[str, Any]:
+    """Produce a conservative paper-only edge prior; realized fills remain authoritative."""
+
+    score_margin = _clamp01(abs(float(consensus.get("score", 0.5) or 0.5) - 0.5) * 2.0)
+    consensus_ratio = _clamp01(float(consensus.get("consensus_ratio", 0.0) or 0.0))
+    net_vote_ratio = _clamp01(float(consensus.get("net_vote_ratio", 0.0) or 0.0))
+    execution = _clamp01(float(features.get("execution_fitness_norm", 0.0) or 0.0))
+    distinct_clusters = max(int(consensus.get("distinct_correlation_clusters", 0) or 0), 0)
+    diversity = _clamp01(float(distinct_clusters) / 3.0)
+    spread_known = features.get("spread_bps") not in {None, ""}
+    spread_bps = max(float(features.get("spread_bps", 0.0) or 0.0), 0.0)
+    slippage_bps = max(float(features.get("expected_slippage_bps", 0.0) or 0.0), 0.0)
+    gross_edge_bps = 60.0 * score_margin
+    confidence_scale = _clamp01(
+        0.30 * consensus_ratio
+        + 0.30 * net_vote_ratio
+        + 0.25 * execution
+        + 0.15 * diversity
+    )
+    uncertainty_discount_bps = (
+        gross_edge_bps * 0.35 * (1.0 - min(consensus_ratio, net_vote_ratio))
+        + (spread_bps if spread_known else gross_edge_bps * 0.35)
+    )
+    edge_lcb_bps = max(gross_edge_bps * confidence_scale - uncertainty_discount_bps, 0.0)
+    result: Dict[str, Any] = {
+        "predicted_edge_lower_confidence_bound_bps": round(edge_lcb_bps, 6),
+        "predicted_edge_source": "paper_consensus_conservative_prior_v1",
+        "predicted_edge_is_promotion_evidence": False,
+        "minimum_edge_cost_multiple": 2.0,
+        "consensus_edge_gross_bps": round(gross_edge_bps, 6),
+        "consensus_edge_confidence_scale_norm": round(confidence_scale, 6),
+        "consensus_edge_uncertainty_discount_bps": round(uncertainty_discount_bps, 6),
+    }
+    if spread_known:
+        result["expected_round_trip_cost_bps"] = round(
+            2.0 * spread_bps + 2.0 * slippage_bps,
+            6,
+        )
+    return result
+
+
+def _runtime_market_session_features(broker: str, *, now_utc: datetime | None = None) -> Dict[str, Any]:
+    broker_key = str(broker or "").strip().lower()
+    if broker_key == "coinbase":
+        return {
+            "market_session": "continuous_24x7",
+            "session_quality_norm": 0.80,
+            "extended_session_validated": True,
+        }
+    now = (now_utc or datetime.now(timezone.utc)).astimezone(ZoneInfo("America/New_York"))
+    minute = now.hour * 60 + now.minute
+    weekday = now.weekday() < 5
+    if weekday and 570 <= minute < 960:
+        session = "regular"
+        quality = 1.0
+    elif weekday and 240 <= minute < 570:
+        session = "premarket"
+        quality = 0.45
+    elif weekday and 960 <= minute < 1200:
+        session = "after_hours"
+        quality = 0.45
+    else:
+        session = "overnight"
+        quality = 0.30
+    return {
+        "market_session": session,
+        "session_quality_norm": quality,
+        "extended_session_validated": False,
     }
 
 
@@ -2421,6 +2836,24 @@ def _apply_paper_mirror_profitability_control(
     new_score = float(score)
     new_reasons = list(reasons)
     out_features = dict(features)
+    entry_policy = evaluate_profitability_entry(profile=profile, features=out_features)
+    out_features["profitability_regime_fit_norm"] = _clamp01(entry_policy.get("regime_fit_norm", 0.0))
+    out_features["profitability_evidence_quality_norm"] = _clamp01(
+        entry_policy.get("evidence_quality_norm", 0.0)
+    )
+    out_features["profitability_entry_risk_multiplier_norm"] = _clamp01(
+        entry_policy.get("risk_multiplier_norm", 0.0)
+    )
+    out_features["profitability_entry_policy_ready_norm"] = (
+        1.0 if bool(entry_policy.get("allowed", False)) else 0.0
+    )
+    execution_plan = entry_policy.get("execution_plan") if isinstance(entry_policy.get("execution_plan"), dict) else {}
+    out_features["profitability_passive_execution_norm"] = (
+        1.0 if str(execution_plan.get("style") or "") in {"passive_limit", "refresh_quote_then_limit"} else 0.0
+    )
+    out_features["profitability_quote_refresh_required_norm"] = (
+        1.0 if bool(execution_plan.get("refresh_quote_required", False)) else 0.0
+    )
     global_policy = _profitability_global_policy()
     harvest_control = _strategy_profit_harvest_control(profile, strategy)
     if (
@@ -3435,7 +3868,7 @@ def _merge_external_context_calendar_features(base: Dict[str, float], snapshot: 
 
 
 def _external_context_feature_set(snapshot: Dict[str, Any], *, symbol: str) -> Dict[str, float]:
-    out = {key: 0.0 for key in _EXTERNAL_CONTEXT_FEATURE_KEYS}
+    out: Dict[str, float] = {}
     if not isinstance(snapshot, dict):
         return out
     derived = snapshot.get("derived") if isinstance(snapshot.get("derived"), dict) else {}
@@ -3444,8 +3877,23 @@ def _external_context_feature_set(snapshot: Dict[str, Any], *, symbol: str) -> D
     symbol_row = symbol_features.get(str(symbol or "").strip().upper())
     if not isinstance(symbol_row, dict):
         symbol_row = {}
+    central_bank_ready = central_bank_liquidity_context_ready(snapshot)
+    global_central_bank_ready = global_central_bank_context_ready(snapshot)
+    cross_source_ready = central_bank_cross_source_context_ready(snapshot)
+    context_mesh_ready = decision_context_mesh_ready(snapshot)
     for key in _EXTERNAL_CONTEXT_FEATURE_KEYS:
-        out[key] = _hint_float(symbol_row.get(key, global_features.get(key, 0.0)), 0.0)
+        if key in CENTRAL_BANK_LIQUIDITY_FEATURE_KEYS and not central_bank_ready:
+            continue
+        if key in GLOBAL_CENTRAL_BANK_FEATURE_KEYS and not global_central_bank_ready:
+            continue
+        if key in CENTRAL_BANK_CROSS_SOURCE_FEATURE_KEYS and not cross_source_ready:
+            continue
+        if key in DECISION_CONTEXT_MESH_FEATURE_KEYS and not context_mesh_ready:
+            continue
+        if key in symbol_row:
+            out[key] = _hint_float(symbol_row.get(key), 0.0)
+        elif key in global_features:
+            out[key] = _hint_float(global_features.get(key), 0.0)
     return out
 
 
@@ -9111,7 +9559,7 @@ def _top_paper_mirror_bots(
     segment: str = "core",
     mirror_all_active: bool = False,
 ) -> List[SubBot]:
-    if top_n <= 0 and (not mirror_all_active):
+    if top_n <= 0:
         return []
     segment_name = str(segment or "core").strip().lower()
     if segment_name == "options":
@@ -9127,7 +9575,11 @@ def _top_paper_mirror_bots(
     elif segment_name == "all_active":
         eligible = [
             b for b in active_bots
-            if b.active and b.bot_role != "infrastructure_sub_bot" and _bot_paper_live_data_allowed(b)
+            if b.active
+            and b.bot_role != "infrastructure_sub_bot"
+            and (not _is_options_sub_bot(b))
+            and (not _is_futures_sub_bot(b))
+            and _bot_paper_live_data_allowed(b)
         ]
     else:
         eligible = [
@@ -9140,15 +9592,22 @@ def _top_paper_mirror_bots(
         ]
     ranked = sorted(
         eligible,
-        key=lambda b: (float(b.test_accuracy or 0.0), float(b.weight or 0.0), b.bot_id),
+        key=lambda b: (
+            float(b.test_accuracy or 0.0),
+            float(b.quality_score or 0.0),
+            float(b.weight or 0.0),
+            b.bot_id,
+        ),
         reverse=True,
     )
+    hard_cap = max(int(os.getenv("PAPER_EXECUTION_COHORT_MAX_PER_SEGMENT", "12") or 12), 1)
+    selection_cap = min(max(int(top_n), 0), hard_cap)
     out: List[SubBot] = []
     for b in ranked:
-        if (not mirror_all_active) and float(b.test_accuracy or 0.0) < min_accuracy:
+        if float(b.test_accuracy or 0.0) < min_accuracy:
             continue
         out.append(b)
-        if (not mirror_all_active) and len(out) >= top_n:
+        if len(out) >= selection_cap:
             break
     return out
 
@@ -9176,6 +9635,50 @@ def _load_health_payload(project_root: str, name: str) -> Dict[str, Any]:
     except Exception:
         return {}
     return payload if isinstance(payload, dict) else {}
+
+
+def _production_candidate_context(project_root: str) -> Dict[str, Any]:
+    now_monotonic = time.monotonic()
+    cache = _PRODUCTION_CANDIDATE_CACHE
+    if now_monotonic - float(cache.get("checked_at_monotonic", 0.0) or 0.0) < 30.0:
+        payload = cache.get("payload")
+        return dict(payload) if isinstance(payload, dict) else {}
+
+    path = Path(project_root) / "governance" / "runtime" / "production_candidate_state.json"
+    try:
+        stat = path.stat()
+        fingerprint = (int(stat.st_mtime_ns), int(stat.st_size))
+    except OSError:
+        fingerprint = None
+    if fingerprint == cache.get("fingerprint"):
+        cache["checked_at_monotonic"] = now_monotonic
+        payload = cache.get("payload")
+        return dict(payload) if isinstance(payload, dict) else {}
+
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        raw = {}
+    windows = raw.get("scope_windows_started_utc") if isinstance(raw.get("scope_windows_started_utc"), dict) else {}
+    relevant_windows = [
+        str(windows.get(scope) or "")
+        for scope in ("strategy", "execution", "risk", "data", "promotion", "dependencies")
+        if str(windows.get(scope) or "").strip()
+    ]
+    payload = {
+        "production_candidate_id": str(raw.get("candidate_id") or ""),
+        "production_candidate_generation": int(raw.get("generation", 0) or 0),
+        "production_candidate_scope_started_utc": max(relevant_windows, default=""),
+        "production_candidate_receipt_sha256": str(raw.get("overall_sha256") or ""),
+    }
+    cache.update(
+        {
+            "checked_at_monotonic": now_monotonic,
+            "fingerprint": fingerprint,
+            "payload": payload,
+        }
+    )
+    return dict(payload)
 
 
 def _external_ingestion_extra_interval_seconds(project_root: str) -> int:
@@ -9461,21 +9964,26 @@ def _fresh_backlog_pause_contract(project_root: str) -> Dict[str, Any]:
     )
 
     storage_bp = storage.get("backpressure") if isinstance(storage.get("backpressure"), dict) else {}
+    storage_core = _pending_int(storage_bp.get("core_pending_lines"))
     storage_total = max(
         _pending_int(storage_bp.get("total_pending_lines")),
-        _pending_int(storage_bp.get("core_pending_lines")),
+        storage_core,
     )
+    raw_core = _pending_int(raw.get("pending_lines"))
     raw_total = max(
         _pending_int(raw.get("pending_lines_total")),
-        _pending_int(raw.get("pending_lines")),
+        raw_core,
     )
     severity = str(storage.get("severity") or "").strip().lower()
     storage_reports_pressure = bool(
         severity in {"high", "critical", "blocked"}
-        or storage_total >= admission_pause_lines
+        or storage_core >= admission_pause_lines
     )
     storage_pressure_active = bool(storage_fresh and storage_reports_pressure)
-    raw_reports_pressure = bool(raw_total >= admission_pause_lines)
+    # The admission reserve protects the hot/core writer lane. Deferred,
+    # support, and cold queues have independent watermarks and must not pause
+    # fresh market observations merely because their combined total is high.
+    raw_reports_pressure = bool(raw_core >= admission_pause_lines)
     newer_raw_pressure_active = bool(
         raw_fresh
         and raw_reports_pressure
@@ -9542,11 +10050,14 @@ def _fresh_backlog_pause_contract(project_root: str) -> Dict[str, Any]:
         "newer_raw_grace_seconds": round(newer_raw_grace_seconds, 3),
         "storage_fresh": storage_fresh,
         "storage_age_seconds": round(storage_age, 3) if math.isfinite(storage_age) else None,
+        "storage_core_pending_lines": storage_core,
         "storage_total_pending_lines": storage_total,
         "storage_severity": severity or "unknown",
         "raw_fresh": raw_fresh,
         "raw_age_seconds": round(raw_age, 3) if math.isfinite(raw_age) else None,
+        "raw_core_pending_lines": raw_core,
         "raw_total_pending_lines": raw_total,
+        "admission_pressure_lane": "core",
         "raw_newer_seconds": round(raw_newer_seconds, 3),
         "stale_pressure_latched": stale_pressure_latched,
         "control_evidence_stale": control_evidence_stale,
@@ -16135,9 +16646,9 @@ def run_loop(
         0,
     )
     paper_mirror_min_accuracy = float(
-        _paper_mirror_env_value_for_broker(broker, current_profile, "MIN_ACC", "0.0")
+        _paper_mirror_env_value_for_broker(broker, current_profile, "MIN_ACC", "0.56")
     )
-    paper_mirror_all_active = os.getenv("PAPER_MIRROR_ALL_ACTIVE_SUB_BOTS", "1").strip() == "1"
+    paper_mirror_all_active = os.getenv("PAPER_MIRROR_ALL_ACTIVE_SUB_BOTS", "0").strip() == "1"
     paper_mirror_profiles_raw = _paper_mirror_env_value_for_broker(
         broker,
         current_profile,
@@ -16155,7 +16666,7 @@ def run_loop(
     paper_mirror_options_min_accuracy = float(
         os.getenv(
             "TOP_BOT_PAPER_TRADING_OPTIONS_MIN_ACC",
-            os.getenv("TOP_BOT_PAPER_TRADING_MIN_ACC", "0.0"),
+            os.getenv("TOP_BOT_PAPER_TRADING_MIN_ACC", "0.56"),
         )
     )
     paper_mirror_options_profiles_raw = os.getenv(
@@ -17094,7 +17605,12 @@ def run_loop(
                 )
 
         if paper_core_requested or paper_options_requested or paper_futures_requested:
-            paper_registry_segment = "all_active" if paper_mirror_all_active else "core"
+            paper_registry_segment = "core"
+            if paper_mirror_all_active:
+                print(
+                    "[PaperAuthority] legacy_all_active_request_ignored=1 "
+                    "policy=paper_execution_authority_v2"
+                )
             if paper_core_requested:
                 top_paper_bots = _top_paper_mirror_bots(
                     active_bots,
@@ -17734,6 +18250,8 @@ def run_loop(
 
         live_macro_snapshot = _load_external_context_category("live_macro")
         official_macro_snapshot = _load_external_context_category("official_macro_context")
+        central_bank_cross_source_snapshot = _load_external_context_category("central_bank_cross_source")
+        decision_context_mesh_snapshot = _load_external_context_category("decision_context_mesh")
         tradingeconomics_snapshot = _load_external_context_category("tradingeconomics")
         sec_edgar_snapshot = _load_external_context_category("sec_edgar")
         extended_quant_snapshot = _load_external_context_category("extended_quant_context")
@@ -18104,6 +18622,12 @@ def run_loop(
             execution_lag_features.update(execution_lag_by_symbol.get(symbol, {}))
             external_context_features = {}
             external_context_features.update(_external_context_feature_set(official_macro_snapshot, symbol=symbol))
+            external_context_features.update(
+                _external_context_feature_set(central_bank_cross_source_snapshot, symbol=symbol)
+            )
+            external_context_features.update(
+                _external_context_feature_set(decision_context_mesh_snapshot, symbol=symbol)
+            )
             external_context_features.update(_external_context_feature_set(tradingeconomics_snapshot, symbol=symbol))
             external_context_features.update(_external_context_feature_set(sec_edgar_snapshot, symbol=symbol))
             external_context_features.update(_external_context_feature_set(extended_quant_snapshot, symbol=symbol))
@@ -18126,6 +18650,7 @@ def run_loop(
                     },
                     external_snapshots={
                         "official_macro": official_macro_snapshot,
+                        "decision_context_mesh": decision_context_mesh_snapshot,
                         "extended_quant": extended_quant_snapshot,
                         "options_flow": tastytrade_snapshot,
                         "market_crypto_correlation": market_crypto_correlation_snapshot,
@@ -18454,7 +18979,18 @@ def run_loop(
                     "training_excluded": bool(b.training_excluded),
                     "reasons": row_reasons,
                     "test_accuracy": b.test_accuracy,
+                    "quality_score": b.quality_score,
                     "promoted": bool(b.promoted),
+                    "paper_execution_authority": bool(b.paper_execution_authority),
+                    "paper_probation_authority": bool(b.paper_probation_authority),
+                    "paper_execution_tier": (
+                        "qualified" if b.paper_execution_authority else "probation"
+                        if b.paper_probation_authority else "observation_only"
+                    ),
+                    "sleeve_id": b.paper_sleeve_id or (_shadow_profile_name() or "default"),
+                    "sub_sleeve_id": b.paper_sub_sleeve_id or b.bot_id,
+                    "correlation_cluster_id": b.paper_correlation_cluster_id or b.bot_id,
+                    "paper_execution_evidence": dict(b.paper_execution_evidence or {}),
                 }
                 sub_rows.append(row)
                 cached_rows = dict(slow_bot_rows_cache.get(symbol, {}))
@@ -18480,10 +19016,11 @@ def run_loop(
                         sub_rows.append(reused)
 
             if paper_selected_ids:
+                paper_candidates: List[Dict[str, Any]] = []
                 for row in sub_rows:
                     bot_id = str(row.get("bot_id", ""))
                     action = str(row.get("action", "HOLD")).upper()
-                    if bot_id not in paper_selected_ids:
+                    if bot_id not in paper_selected_ids or not _row_master_vote_eligible(row):
                         continue
                     mirror_strategy = f"paper_mirror::{bot_id}"
                     paper_action, paper_score, paper_reasons, paper_features = _apply_paper_mirror_profitability_control(
@@ -18497,67 +19034,55 @@ def run_loop(
                     )
                     if paper_action not in {"BUY", "SELL"}:
                         continue
-                    metadata = {
-                        "layer": "sub_bot_paper_mirror",
-                        "snapshot_id": snapshot_id,
-                        "source_profile": _shadow_profile_name() or "default",
-                        "shadow_domain": _shadow_domain_name(broker=broker),
-                        "bot_weight": row.get("weight", 0.0),
-                        "test_accuracy": row.get("test_accuracy"),
-                        "bot_id": bot_id,
-                        "bot_promoted": bool(row.get("promoted", False)),
-                        "allow_live_promotion": False,
-                    }
-                    if execution_lane_enabled:
-                        _publish_execution_lane_intent(
-                            broker=broker,
-                            symbol=symbol,
-                            action=paper_action,
-                            quantity=1.0,
-                            model_score=paper_score,
-                            threshold=float(row.get("threshold", 0.55)),
-                            features=paper_features,
-                            gates=gates,
-                            reasons=paper_reasons + [
-                                (
-                                    "paper_mirror_all_active=1"
-                                    if paper_mirror_all_active
-                                    else f"paper_mirror_top_n={paper_mirror_top_n}"
-                                ),
-                                f"bot_id={bot_id}",
-                            ],
-                            strategy=mirror_strategy,
-                            metadata=metadata,
-                            intent_kind="paper_mirror",
-                            target_mode="paper",
-                        )
-                    elif paper_trader is not None:
-                        try:
-                            paper_trader.execute_decision(
-                                symbol=symbol,
-                                action=paper_action,
-                                quantity=1,
-                                model_score=paper_score,
-                                threshold=float(row.get("threshold", 0.55)),
-                                features=paper_features,
-                                gates=gates,
-                                reasons=paper_reasons + [
-                                    (
-                                        "paper_mirror_all_active=1"
-                                        if paper_mirror_all_active
-                                        else f"paper_mirror_top_n={paper_mirror_top_n}"
-                                    ),
-                                    f"bot_id={bot_id}",
-                                ],
-                                strategy=mirror_strategy,
-                                metadata=metadata,
-                            )
-                        except Exception as exc:
-                            print(f"[PaperMirror] order_failed symbol={symbol} bot_id={bot_id} err={exc}")
+                    paper_candidates.append(
+                        {
+                            "bot_id": bot_id,
+                            "action": paper_action,
+                            "score": paper_score,
+                            "threshold": float(row.get("threshold", 0.55)),
+                            "weight": float(row.get("weight", 0.0) or 0.0),
+                            "test_accuracy": row.get("test_accuracy"),
+                            "quality_score": row.get("quality_score"),
+                            "paper_execution_tier": row.get("paper_execution_tier"),
+                            "sleeve_id": row.get("sleeve_id"),
+                            "sub_sleeve_id": row.get("sub_sleeve_id"),
+                            "correlation_cluster_id": row.get("correlation_cluster_id"),
+                            "post_cost_samples": int(
+                                (row.get("paper_execution_evidence") or {}).get("post_cost_samples", 0)
+                                if isinstance(row.get("paper_execution_evidence"), dict)
+                                else 0
+                            ),
+                            "post_cost_lower_confidence_bound": (
+                                (row.get("paper_execution_evidence") or {}).get(
+                                    "post_cost_lower_confidence_bound"
+                                )
+                                if isinstance(row.get("paper_execution_evidence"), dict)
+                                else None
+                            ),
+                            "features": paper_features,
+                            "reasons": paper_reasons,
+                            "eligible": True,
+                        }
+                    )
+                _execute_paper_mirror_consensus(
+                    broker=broker,
+                    symbol=symbol,
+                    profile=_shadow_profile_name() or "default",
+                    segment="core",
+                    snapshot_id=snapshot_id,
+                    candidates=paper_candidates,
+                    shared_features=shared_features,
+                    gates=gates,
+                    execution_lane_enabled=execution_lane_enabled,
+                    paper_trader=paper_trader,
+                    selection_reason=f"paper_execution_authority_v2_top_n={paper_mirror_top_n}",
+                )
 
             options_specialist_rows: List[Dict[str, Any]] = []
             futures_specialist_rows: List[Dict[str, Any]] = []
             infra_observer_rows: List[Dict[str, Any]] = []
+            option_paper_candidates: List[Dict[str, Any]] = []
+            futures_paper_candidates: List[Dict[str, Any]] = []
 
             if options_specialist_bots:
                 for b, action, score, threshold, reasons in _specialist_signal_batch(
@@ -18588,10 +19113,23 @@ def run_loop(
                         "training_excluded": bool(b.training_excluded),
                         "reasons": row_reasons,
                         "test_accuracy": b.test_accuracy,
+                        "quality_score": b.quality_score,
                         "promoted": bool(b.promoted),
+                        "paper_execution_tier": (
+                            "qualified" if b.paper_execution_authority else "probation"
+                            if b.paper_probation_authority else "observation_only"
+                        ),
+                        "sleeve_id": b.paper_sleeve_id or (_shadow_profile_name() or "default"),
+                        "sub_sleeve_id": b.paper_sub_sleeve_id or b.bot_id,
+                        "correlation_cluster_id": b.paper_correlation_cluster_id or b.bot_id,
+                        "paper_execution_evidence": dict(b.paper_execution_evidence or {}),
                     }
                     options_specialist_rows.append(row)
-                    if paper_selected_option_ids and str(b.bot_id) in paper_selected_option_ids:
+                    if (
+                        paper_selected_option_ids
+                        and str(b.bot_id) in paper_selected_option_ids
+                        and eligible_for_master_vote
+                    ):
                         mirror_strategy = f"paper_mirror_options::{b.bot_id}"
                         paper_action, paper_score, paper_reasons, paper_features = _apply_paper_mirror_profitability_control(
                             profile=_shadow_profile_name() or "default",
@@ -18603,66 +19141,34 @@ def run_loop(
                             features=shared_features,
                         )
                         if paper_action in {"BUY", "SELL"}:
-                            option_metadata = {
-                                "layer": "options_sub_bot_paper_mirror",
-                                "snapshot_id": snapshot_id,
-                                "source_profile": _shadow_profile_name() or "default",
-                                "shadow_domain": _shadow_domain_name(broker=broker),
-                                "bot_weight": row["weight"],
-                                "test_accuracy": b.test_accuracy,
-                                "bot_role": "options_sub_bot",
-                                "bot_id": b.bot_id,
-                                "bot_promoted": bool(b.promoted),
-                                "allow_live_promotion": False,
-                            }
-                            if execution_lane_enabled:
-                                _publish_execution_lane_intent(
-                                    broker=broker,
-                                    symbol=symbol,
-                                    action=paper_action,
-                                    quantity=1.0,
-                                    model_score=paper_score,
-                                    threshold=threshold,
-                                    features=paper_features,
-                                    gates=gates,
-                                    reasons=paper_reasons + [
-                                        (
-                                            "paper_mirror_all_active=1"
-                                            if paper_mirror_all_active
-                                            else f"paper_mirror_options_top_n={paper_mirror_options_top_n}"
-                                        ),
-                                        f"bot_id={b.bot_id}",
-                                        "bot_role=options_sub_bot",
-                                    ],
-                                    strategy=mirror_strategy,
-                                    metadata=option_metadata,
-                                    intent_kind="paper_mirror_options",
-                                    target_mode="paper",
-                                )
-                            elif paper_trader is not None:
-                                try:
-                                    paper_trader.execute_decision(
-                                        symbol=symbol,
-                                        action=paper_action,
-                                        quantity=1,
-                                        model_score=paper_score,
-                                        threshold=threshold,
-                                        features=paper_features,
-                                        gates=gates,
-                                        reasons=paper_reasons + [
-                                            (
-                                                "paper_mirror_all_active=1"
-                                                if paper_mirror_all_active
-                                                else f"paper_mirror_options_top_n={paper_mirror_options_top_n}"
-                                            ),
-                                            f"bot_id={b.bot_id}",
-                                            "bot_role=options_sub_bot",
-                                        ],
-                                        strategy=mirror_strategy,
-                                        metadata=option_metadata,
-                                    )
-                                except Exception as exc:
-                                    print(f"[PaperMirrorOptions] order_failed symbol={symbol} bot_id={b.bot_id} err={exc}")
+                            option_paper_candidates.append(
+                                {
+                                    "bot_id": b.bot_id,
+                                    "action": paper_action,
+                                    "score": paper_score,
+                                    "threshold": threshold,
+                                    "weight": row["weight"],
+                                    "test_accuracy": b.test_accuracy,
+                                    "quality_score": b.quality_score,
+                                    "paper_execution_tier": row.get("paper_execution_tier"),
+                                    "sleeve_id": row.get("sleeve_id"),
+                                    "sub_sleeve_id": row.get("sub_sleeve_id"),
+                                    "correlation_cluster_id": row.get("correlation_cluster_id"),
+                                    "post_cost_samples": int(
+                                        (row.get("paper_execution_evidence") or {}).get(
+                                            "post_cost_samples", 0
+                                        )
+                                    ),
+                                    "post_cost_lower_confidence_bound": (
+                                        (row.get("paper_execution_evidence") or {}).get(
+                                            "post_cost_lower_confidence_bound"
+                                        )
+                                    ),
+                                    "features": paper_features,
+                                    "reasons": paper_reasons,
+                                    "eligible": True,
+                                }
+                            )
                     if _dynamic_storage_flag("LOG_SUB_BOT_DECISIONS", log_sub_bot_decisions):
                         trader.execute_decision(
                             symbol=symbol,
@@ -18682,6 +19188,22 @@ def run_loop(
                                 "bot_role": "options_sub_bot",
                             },
                         )
+
+                _execute_paper_mirror_consensus(
+                    broker=broker,
+                    symbol=symbol,
+                    profile=_shadow_profile_name() or "default",
+                    segment="options",
+                    snapshot_id=snapshot_id,
+                    candidates=option_paper_candidates,
+                    shared_features=shared_features,
+                    gates=gates,
+                    execution_lane_enabled=execution_lane_enabled,
+                    paper_trader=paper_trader,
+                    selection_reason=(
+                        f"paper_execution_authority_v2_options_top_n={paper_mirror_options_top_n}"
+                    ),
+                )
 
             if futures_specialist_bots:
                 for b, action, score, threshold, reasons in _specialist_signal_batch(
@@ -18712,9 +19234,22 @@ def run_loop(
                         "training_excluded": bool(b.training_excluded),
                         "reasons": row_reasons,
                         "test_accuracy": b.test_accuracy,
+                        "quality_score": b.quality_score,
+                        "paper_execution_tier": (
+                            "qualified" if b.paper_execution_authority else "probation"
+                            if b.paper_probation_authority else "observation_only"
+                        ),
+                        "sleeve_id": b.paper_sleeve_id or (_shadow_profile_name() or "default"),
+                        "sub_sleeve_id": b.paper_sub_sleeve_id or b.bot_id,
+                        "correlation_cluster_id": b.paper_correlation_cluster_id or b.bot_id,
+                        "paper_execution_evidence": dict(b.paper_execution_evidence or {}),
                     }
                     futures_specialist_rows.append(row)
-                    if paper_selected_futures_ids and str(b.bot_id) in paper_selected_futures_ids:
+                    if (
+                        paper_selected_futures_ids
+                        and str(b.bot_id) in paper_selected_futures_ids
+                        and eligible_for_master_vote
+                    ):
                         mirror_strategy = f"paper_mirror_futures::{b.bot_id}"
                         paper_action, paper_score, paper_reasons, paper_features = _apply_paper_mirror_profitability_control(
                             profile=_shadow_profile_name() or "default",
@@ -18726,66 +19261,34 @@ def run_loop(
                             features=shared_features,
                         )
                         if paper_action in {"BUY", "SELL"}:
-                            futures_metadata = {
-                                "layer": "futures_sub_bot_paper_mirror",
-                                "snapshot_id": snapshot_id,
-                                "source_profile": _shadow_profile_name() or "default",
-                                "shadow_domain": _shadow_domain_name(broker=broker),
-                                "bot_weight": row["weight"],
-                                "test_accuracy": b.test_accuracy,
-                                "bot_role": "futures_sub_bot",
-                                "bot_id": b.bot_id,
-                                "bot_promoted": bool(b.promoted),
-                                "allow_live_promotion": False,
-                            }
-                            if execution_lane_enabled:
-                                _publish_execution_lane_intent(
-                                    broker=broker,
-                                    symbol=symbol,
-                                    action=paper_action,
-                                    quantity=1.0,
-                                    model_score=paper_score,
-                                    threshold=threshold,
-                                    features=paper_features,
-                                    gates=gates,
-                                    reasons=paper_reasons + [
-                                        (
-                                            "paper_mirror_all_active=1"
-                                            if paper_mirror_all_active
-                                            else f"paper_mirror_futures_top_n={paper_mirror_top_n}"
-                                        ),
-                                        f"bot_id={b.bot_id}",
-                                        "bot_role=futures_sub_bot",
-                                    ],
-                                    strategy=mirror_strategy,
-                                    metadata=futures_metadata,
-                                    intent_kind="paper_mirror_futures",
-                                    target_mode="paper",
-                                )
-                            elif paper_trader is not None:
-                                try:
-                                    paper_trader.execute_decision(
-                                        symbol=symbol,
-                                        action=paper_action,
-                                        quantity=1,
-                                        model_score=paper_score,
-                                        threshold=threshold,
-                                        features=paper_features,
-                                        gates=gates,
-                                        reasons=paper_reasons + [
-                                            (
-                                                "paper_mirror_all_active=1"
-                                                if paper_mirror_all_active
-                                                else f"paper_mirror_futures_top_n={paper_mirror_top_n}"
-                                            ),
-                                            f"bot_id={b.bot_id}",
-                                            "bot_role=futures_sub_bot",
-                                        ],
-                                        strategy=mirror_strategy,
-                                        metadata=futures_metadata,
-                                    )
-                                except Exception as exc:
-                                    print(f"[PaperMirrorFutures] order_failed symbol={symbol} bot_id={b.bot_id} err={exc}")
+                            futures_paper_candidates.append(
+                                {
+                                    "bot_id": b.bot_id,
+                                    "action": paper_action,
+                                    "score": paper_score,
+                                    "threshold": threshold,
+                                    "weight": row["weight"],
+                                    "test_accuracy": b.test_accuracy,
+                                    "quality_score": b.quality_score,
+                                    "paper_execution_tier": row.get("paper_execution_tier"),
+                                    "sleeve_id": row.get("sleeve_id"),
+                                    "sub_sleeve_id": row.get("sub_sleeve_id"),
+                                    "correlation_cluster_id": row.get("correlation_cluster_id"),
+                                    "post_cost_samples": int(
+                                        (row.get("paper_execution_evidence") or {}).get(
+                                            "post_cost_samples", 0
+                                        )
+                                    ),
+                                    "post_cost_lower_confidence_bound": (
+                                        (row.get("paper_execution_evidence") or {}).get(
+                                            "post_cost_lower_confidence_bound"
+                                        )
+                                    ),
+                                    "features": paper_features,
+                                    "reasons": paper_reasons,
+                                    "eligible": True,
+                                }
+                            )
                     if _dynamic_storage_flag("LOG_SUB_BOT_DECISIONS", log_sub_bot_decisions):
                         trader.execute_decision(
                             symbol=symbol,
@@ -18805,6 +19308,20 @@ def run_loop(
                                 "bot_role": "futures_sub_bot",
                             },
                         )
+
+                _execute_paper_mirror_consensus(
+                    broker=broker,
+                    symbol=symbol,
+                    profile=_shadow_profile_name() or "default",
+                    segment="futures",
+                    snapshot_id=snapshot_id,
+                    candidates=futures_paper_candidates,
+                    shared_features=shared_features,
+                    gates=gates,
+                    execution_lane_enabled=execution_lane_enabled,
+                    paper_trader=paper_trader,
+                    selection_reason=f"paper_execution_authority_v2_futures_top_n={paper_mirror_top_n}",
+                )
 
             # Broadcast flash-crash + derivatives specialist context to all higher-level decisions.
             flash_aux = _derive_flash_aux_features(sub_rows)
@@ -19593,6 +20110,30 @@ def run_loop(
                 gm_score = 0.5 + 0.5 * (gm_score - 0.5)
                 gm_reasons = gm_reasons + ["portfolio_risk_engine_qty_capped_to_zero"]
 
+            grand_master_entry_features = {
+                **shared_features,
+                "profitability_strict_evidence_required": bool(
+                    os.getenv("PAPER_MASTER_STRICT_ENTRY_EVIDENCE", "0").strip() == "1"
+                ),
+            }
+            grand_master_entry_policy = evaluate_profitability_entry(
+                profile=_shadow_profile_name() or "default",
+                features=grand_master_entry_features,
+            )
+            if gm_action in {"BUY", "SELL"} and not bool(
+                grand_master_entry_policy.get("allowed", False)
+            ):
+                gm_action = "HOLD"
+                alloc_qty = 0.0
+                gm_score = 0.5 + 0.5 * (gm_score - 0.5)
+                gm_reasons = gm_reasons + [
+                    "grand_master_profitability_entry_policy_block",
+                    *[
+                        f"profitability_blocker={reason}"
+                        for reason in list(grand_master_entry_policy.get("blockers") or [])[:6]
+                    ],
+                ]
+
             idempotency_key = ""
             idempotency_meta: Dict[str, Any] = {
                 "active": bool(order_idempotency_enabled),
@@ -19782,6 +20323,8 @@ def run_loop(
                 "shadow_domain": _shadow_domain_name(broker=broker),
                 "allow_live_promotion": True,
                 "grand_master_meta": dict(gm_vote),
+                "entry_policy": grand_master_entry_policy,
+                "paper_execution_authority_version": "grand_master_paper_authority_v2",
             }
 
             if _dynamic_storage_flag("LOG_GRAND_MASTER_DECISIONS", log_grand_master_decisions):

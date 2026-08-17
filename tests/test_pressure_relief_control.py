@@ -165,6 +165,9 @@ def test_health_fast_allows_flowing_collection_maturity_debt_for_guarded_paper(t
             "total_observations": 3887,
             "training_ready_count": 0,
             "zero_observation_count": 145,
+            "fail_closed_zero_observation_count": 145,
+            "unmanaged_zero_observation_count": 145,
+            "zero_observation_repair_lane": {"active": True},
         },
     )
     _write_json(health_root / "global_halt_auto_clear_latest.json", {"halt": False, "halt_state": "clear_ready", "clear_blockers": []})

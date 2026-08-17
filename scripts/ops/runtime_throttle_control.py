@@ -6,6 +6,7 @@ import json
 import os
 import signal
 import shlex
+import statistics
 import subprocess
 import sys
 import time
@@ -88,6 +89,7 @@ PROCESS_RULES: tuple[tuple[str, str, str, bool], ...] = (
     ("yt-dlp", "macro_capture", "protected_if_live", False),
     ("ffmpeg", "macro_capture", "protected_if_live", False),
     ("scripts/ops/schwab_auth_supervisor.py", "live_execution", "protected_if_live", False),
+    ("scripts/canary_rollout_guard.py", "support_maintenance", "throttle_first", True),
     ("report-bundle-pdf-open", "support_maintenance", "throttle_first", True),
     ("scripts/build_one_numbers_report.py", "support_maintenance", "throttle_first", True),
     ("scripts/paper_performance_report.py", "support_maintenance", "throttle_first", True),
@@ -184,6 +186,7 @@ PROCESS_RULES: tuple[tuple[str, str, str, bool], ...] = (
     ("suggestd", "system_cotenant", "external_system", False),
     ("knowledgeconstructiond", "system_cotenant", "external_system", False),
     ("photoanalysisd", "system_cotenant", "external_system", False),
+    ("mediaanalysisd", "system_cotenant", "external_system", False),
     ("backupd", "system_cotenant", "external_system", False),
     ("fileproviderd", "system_cotenant", "external_system", False),
     ("sysmond", "system_cotenant", "external_system", False),
@@ -193,6 +196,8 @@ PROCESS_RULES: tuple[tuple[str, str, str, bool], ...] = (
     ("diagnosticd", "system_cotenant", "external_system", False),
     ("corespotlightd", "system_cotenant", "external_system", False),
     ("CoreSpotlight.framework", "system_cotenant", "external_system", False),
+    ("coreaudiod", "system_cotenant", "external_system", False),
+    ("usbaudiod", "system_cotenant", "external_system", False),
     ("runningboardd", "system_cotenant", "external_system", False),
     ("cfprefsd", "system_cotenant", "external_system", False),
     ("syspolicyd", "system_cotenant", "external_system", False),
@@ -442,29 +447,64 @@ def _apply_current_process_cpu_sample(
     after_text: str,
     sample_seconds: float,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-    before = _parse_process_cpu_times(before_text)
-    after = _parse_process_cpu_times(after_text)
-    interval = max(float(sample_seconds), 0.001)
+    return _apply_process_cpu_sample_windows(
+        rows,
+        samples=[(before_text, after_text, sample_seconds)],
+    )
+
+
+def _apply_process_cpu_sample_windows(
+    rows: list[dict[str, Any]],
+    *,
+    samples: list[tuple[str, str, float]],
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    parsed_samples = [
+        (
+            _parse_process_cpu_times(before_text),
+            _parse_process_cpu_times(after_text),
+            max(float(sample_seconds), 0.001),
+        )
+        for before_text, after_text, sample_seconds in samples
+    ]
     sampled_count = 0
+    transient_burst_count = 0
     updated: list[dict[str, Any]] = []
     for source_row in rows:
         row = dict(source_row)
         pid = _safe_int(row.get("pid"), 0)
-        if pid in before and pid in after and after[pid] >= before[pid]:
+        cpu_windows = [
+            max((after[pid] - before[pid]) / interval * 100.0, 0.0)
+            for before, after, interval in parsed_samples
+            if pid in before and pid in after and after[pid] >= before[pid]
+        ]
+        if cpu_windows:
+            sampled_cpu = float(statistics.median(cpu_windows))
+            peak_cpu = max(cpu_windows)
             row["ps_cpu_percent"] = round(_safe_float(row.get("cpu_percent"), 0.0), 3)
-            row["cpu_percent"] = round(max((after[pid] - before[pid]) / interval * 100.0, 0.0), 3)
-            row["cpu_sample_source"] = "cpu_time_delta"
+            row["cpu_percent"] = round(sampled_cpu, 3)
+            row["cpu_sample_source"] = (
+                "cpu_time_delta" if len(cpu_windows) == 1 else "cpu_time_delta_window_median"
+            )
+            row["cpu_sample_window_count"] = len(cpu_windows)
+            row["cpu_sample_peak_percent"] = round(peak_cpu, 3)
+            row["cpu_sample_window_percentages"] = [round(value, 3) for value in cpu_windows]
+            if len(cpu_windows) > 1 and peak_cpu >= 35.0 and sampled_cpu < 35.0:
+                transient_burst_count += 1
             sampled_count += 1
         else:
             row["cpu_sample_source"] = "ps_pcpu_fallback"
         updated.append(row)
     updated.sort(key=lambda row: float(row.get("cpu_percent", 0.0) or 0.0), reverse=True)
+    total_sample_seconds = sum(interval for _before, _after, interval in parsed_samples)
     return updated, {
         "active": sampled_count > 0,
-        "sample_seconds": round(interval, 3),
+        "sample_seconds": round(total_sample_seconds, 3),
+        "sample_window_count": len(parsed_samples),
+        "sample_window_seconds": [round(interval, 3) for _before, _after, interval in parsed_samples],
         "sampled_process_count": sampled_count,
         "fallback_process_count": max(len(updated) - sampled_count, 0),
-        "policy": "use bounded process CPU-time deltas so sleeping long-lived lanes are not charged a stale ps average",
+        "transient_burst_process_count": transient_burst_count,
+        "policy": "use the median of bounded process CPU-time windows so sleeping lanes and isolated bursts are not treated as sustained pressure",
     }
 
 
@@ -484,25 +524,34 @@ def collect_runtime_snapshot(*, max_processes: int = TOP_PROCESS_COUNT) -> dict[
         max(_safe_float(os.getenv("RUNTIME_PROCESS_CPU_SAMPLE_SECONDS"), 0.25), 0.1),
         1.0,
     )
+    process_cpu_sample_windows = min(
+        max(_safe_int(os.getenv("RUNTIME_PROCESS_CPU_SAMPLE_WINDOWS"), 3), 1),
+        5,
+    )
     cpu_before_text = _run_capture(["ps", "-axo", "pid=,time="])
     cpu_before = _parse_process_cpu_times(cpu_before_text)
     process_cpu_sampling = {
         "active": False,
-        "sample_seconds": round(process_cpu_sample_seconds, 3),
+        "sample_seconds": round(process_cpu_sample_seconds * process_cpu_sample_windows, 3),
+        "sample_window_count": process_cpu_sample_windows,
+        "sample_window_seconds": [round(process_cpu_sample_seconds, 3)] * process_cpu_sample_windows,
         "sampled_process_count": 0,
         "fallback_process_count": len(parsed_process_rows),
-        "policy": "use bounded process CPU-time deltas so sleeping long-lived lanes are not charged a stale ps average",
+        "transient_burst_process_count": 0,
+        "policy": "use the median of bounded process CPU-time windows so sleeping lanes and isolated bursts are not treated as sustained pressure",
     }
     if cpu_before:
-        sample_started = time.monotonic()
-        time.sleep(process_cpu_sample_seconds)
-        cpu_after_text = _run_capture(["ps", "-axo", "pid=,time="])
-        actual_sample_seconds = max(time.monotonic() - sample_started, process_cpu_sample_seconds)
-        parsed_process_rows, process_cpu_sampling = _apply_current_process_cpu_sample(
+        cpu_samples: list[tuple[str, str, float]] = []
+        for _ in range(process_cpu_sample_windows):
+            sample_started = time.monotonic()
+            time.sleep(process_cpu_sample_seconds)
+            cpu_after_text = _run_capture(["ps", "-axo", "pid=,time="])
+            actual_sample_seconds = max(time.monotonic() - sample_started, process_cpu_sample_seconds)
+            cpu_samples.append((cpu_before_text, cpu_after_text, actual_sample_seconds))
+            cpu_before_text = cpu_after_text
+        parsed_process_rows, process_cpu_sampling = _apply_process_cpu_sample_windows(
             parsed_process_rows,
-            before_text=cpu_before_text,
-            after_text=cpu_after_text,
-            sample_seconds=actual_sample_seconds,
+            samples=cpu_samples,
         )
     sampled_process_rows = parsed_process_rows[: max(int(max_processes) + 4, 1)]
     self_process_rows = [row for row in sampled_process_rows if _safe_int(row.get("pid"), 0) == self_pid]
@@ -5357,6 +5406,11 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, runtime_snapshot: dict[s
             },
             "vm_pages_throttled": _safe_int(((snapshot.get("vm_stat") or {}).get("pages_throttled")), 0),
             "thermal": thermal,
+            "process_cpu_sampling": (
+                snapshot.get("process_cpu_sampling")
+                if isinstance(snapshot.get("process_cpu_sampling"), dict)
+                else {}
+            ),
             "storage_pressure": {
                 "severity": storage_severity,
                 "pressure_index": round(storage_pressure_index, 3),

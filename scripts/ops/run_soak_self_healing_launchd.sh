@@ -20,6 +20,17 @@ export ALLOW_ORDER_EXECUTION=0
 export BOT_LIVE_MONEY_LOCKED_DURING_SOAK=1
 export BOT_UNATTENDED_SOAK_ACTIVE=1
 
+# The always-on sentinel is intentionally outside the maintenance-slot gate.
+# It performs only bounded allowlisted refreshes and publishes whether heavy
+# repair is actually required.
+"$PYTHON_BIN" "$PROJECT_ROOT/scripts/ops/soak_reliability_sentinel.py" --apply --json
+
+if [[ -f "$PROJECT_ROOT/governance/runtime/soak_self_healing_request.json" ]] && \
+  command -v jq >/dev/null 2>&1 && \
+  jq -e '.active == true and .heavy_repair_required == true and (.severity == "critical" or .severity == "proactive")' "$PROJECT_ROOT/governance/runtime/soak_self_healing_request.json" >/dev/null 2>&1; then
+  export MAINTENANCE_SLOT_DEFER_OUTSIDE_QUIET_WINDOW=0
+fi
+
 "$PROJECT_ROOT/scripts/ops/run_guarded_maintenance.sh" soak_self_healing \
   "$PYTHON_BIN" "$PROJECT_ROOT/scripts/ops/soak_self_healing_control.py" \
   --apply \
@@ -28,7 +39,7 @@ export BOT_UNATTENDED_SOAK_ACTIVE=1
   --step-timeout-sec "${SOAK_SELF_HEAL_STEP_TIMEOUT_SECONDS:-120}" \
   --storage-cooldown-minutes "${SOAK_SELF_HEAL_STORAGE_COOLDOWN_MINUTES:-60}" \
   --storage-cleanup-max-delete-gb "${SOAK_SELF_HEAL_STORAGE_CLEANUP_MAX_DELETE_GB:-16}" \
-  --storage-target-free-gb "${SOAK_SELF_HEAL_STORAGE_TARGET_FREE_GB:-125}" \
+  --storage-target-free-gb "${SOAK_SELF_HEAL_STORAGE_TARGET_FREE_GB:-135}" \
   --ingestion-repair-cooldown-minutes "${SOAK_SELF_HEAL_INGESTION_REPAIR_COOLDOWN_MINUTES:-20}" \
   --include-adaptive-governor \
   --max-adaptive-repairs "${SOAK_SELF_HEAL_MAX_ADAPTIVE_REPAIRS:-3}" \

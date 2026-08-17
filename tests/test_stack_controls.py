@@ -34,7 +34,9 @@ INFRA_INSTALL_PATH = PROJECT_ROOT / "scripts" / "install_infra_stack_launchd.sh"
 OPS_AUTOMATION_INSTALL_PATH = PROJECT_ROOT / "scripts" / "ops" / "install_ops_automation_launchd.sh"
 STARTUP_PROMPT_INSTALL_PATH = PROJECT_ROOT / "scripts" / "install_startup_start_prompt_launchd.sh"
 STARTUP_PROMPT_RUN_PATH = PROJECT_ROOT / "scripts" / "ops" / "run_startup_start_prompt_launchd.sh"
+STARTUP_PROMPT_NOTIFIER_PATH = PROJECT_ROOT / "scripts" / "ops" / "startup_prompt_notifier.swift"
 PRODUCTION_HARDENING_WATCH_INSTALL_PATH = PROJECT_ROOT / "scripts" / "install_production_hardening_watch_launchd.sh"
+SOAK_SELF_HEAL_INSTALL_PATH = PROJECT_ROOT / "scripts" / "install_soak_self_healing_launchd.sh"
 STORAGE_BACKPRESSURE_AUTOPILOT_RUN_PATH = PROJECT_ROOT / "scripts" / "ops" / "run_storage_backpressure_autopilot_launchd.sh"
 RUNTIME_SMOOTH_MODE_RUN_PATH = PROJECT_ROOT / "scripts" / "ops" / "run_runtime_smooth_mode_launchd.sh"
 PRODUCTION_HARDENING_WATCH_RUN_PATH = PROJECT_ROOT / "scripts" / "ops" / "run_production_hardening_watch_launchd.sh"
@@ -58,6 +60,8 @@ def test_infra_stack_installer_includes_ops_and_daily_verify() -> None:
 
     assert "install_daily_auto_verify_launchd.sh" in text
     assert "scripts/ops/install_ops_automation_launchd.sh" in text
+    assert "install_observability_exporter_launchd.sh" in text
+    assert "install_production_resilience_control_launchd.sh" in text
 
 
 def test_daily_auto_verify_runs_annual_tax_policy_rollover_check() -> None:
@@ -88,13 +92,28 @@ def test_ops_automation_installer_includes_context_jobs() -> None:
     assert "run_creative_cotenant_guard_launchd.sh" in text
     assert "run_runtime_smooth_mode_launchd.sh" in text
     assert "run_production_hardening_watch_launchd.sh" in text
+    assert "production_resilience_control.py" in text
     assert "com.dankingsley.ops.runtime_smooth_mode" in text
+    assert "com.dankingsley.ops.production_resilience_control" in text
     assert "com.dankingsley.ops.production_hardening_watch" in text
     assert "RUNTIME_SMOOTH_MODE_INTERVAL_SECONDS" in text
+    assert "PRODUCTION_RESILIENCE_CONTROL_INTERVAL_SECONDS" in text
     assert "PRODUCTION_HARDENING_WATCH_INTERVAL_SECONDS" in text
     assert "ops_runtime_smooth_mode.out.log" in text
     assert "ops_production_hardening_watch.out.log" in text
     assert "com.dankingsley.ops.master_infrastructure_supervisor" in text
+
+
+def test_production_resilience_control_launchd_is_periodic_and_live_locked() -> None:
+    text = _read(PROJECT_ROOT / "scripts" / "install_production_resilience_control_launchd.sh")
+
+    assert "resolve_runtime_python" in text
+    assert "production_resilience_control.py" in text
+    assert "PRODUCTION_RESILIENCE_CONTROL_INTERVAL_SECONDS:-300" in text
+    assert "MARKET_DATA_ONLY</key><string>1" in text
+    assert "ALLOW_ORDER_EXECUTION</key><string>0" in text
+    assert "BOT_LIVE_MONEY_LOCKED_DURING_SOAK</key><string>1" in text
+    assert "ProcessType</key><string>Background" in text
 
 
 def test_production_hardening_watch_launchd_keeps_live_locked_and_bounded() -> None:
@@ -108,6 +127,9 @@ def test_production_hardening_watch_launchd_keeps_live_locked_and_bounded() -> N
     assert "PRODUCTION_HARDENING_WATCH_EXECUTE_ON_WATCH" in text
     assert "production-hardening-watch" in text
     assert "--max-execute-actions" in text
+    assert "PRODUCTION_PILLAR_REFRESH_ENABLED" in text
+    assert "--profile production" in text
+    assert "PRODUCTION_PILLAR_REFRESH_COOLDOWN_MINUTES:-45" in text
     assert "/usr/bin/nice" in text
 
 
@@ -757,6 +779,7 @@ def test_commands_start_stop_section_uses_stack_entrypoint() -> None:
 def test_startup_start_prompt_launchd_is_guarded_and_discoverable() -> None:
     runner = _read(STARTUP_PROMPT_RUN_PATH)
     installer = _read(STARTUP_PROMPT_INSTALL_PATH)
+    notifier = _read(STARTUP_PROMPT_NOTIFIER_PATH)
     opsctl = _read(OPSCTL_PATH)
 
     assert "display notification" in runner
@@ -775,7 +798,21 @@ def test_startup_start_prompt_launchd_is_guarded_and_discoverable() -> None:
     assert "PROJECT_TIMELINE_AUTO_RENDER_PDF=0" in runner
     assert "BROWSER=/usr/bin/false" in runner
     assert "--dry-run" in runner
-    assert "without showing the dialog or starting the stack" in runner
+    assert "without showing UI or starting the stack" in runner
+    assert 'print -r -- "actionable_notification|$result"' in runner
+    assert "/usr/bin/open -W -n -a" in runner
+    assert 'prompt_transport' in runner
+    assert 'fail_closed_no_response' in runner
+
+    assert 'UNNotificationAction' in notifier
+    assert 'title: "Start"' in notifier
+    assert 'title: "Not Now"' in notifier
+    assert 'UNNotificationDismissActionIdentifier' in notifier
+    assert 'finish("timeout")' in notifier
+    assert 'CommandLine.arguments.contains("--self-test")' in notifier
+    assert 'self_test_ready' in notifier
+    assert 'validate_actionable_notifier' in runner
+    assert 'actionable_notification_ready' in runner
 
     assert "com.dankingsley.startup_start_prompt" in installer
     assert "run_startup_start_prompt_launchd.sh" in installer
@@ -791,6 +828,9 @@ def test_startup_start_prompt_launchd_is_guarded_and_discoverable() -> None:
     assert "REPORT_HEADLESS_BROWSER_RENDER_ENABLED" in installer
     assert "PROJECT_TIMELINE_AUTO_RENDER_PDF" in installer
     assert "--no-kickstart|--next-login-only" in installer
+    assert '/usr/bin/swiftc -O "$NOTIFIER_SOURCE"' in installer
+    assert "com.dankingsley.SchwabStartupPrompt" in installer
+    assert "STARTUP_START_PROMPT_APP" in installer
 
     assert "startup-start-prompt|startup-prompt|login-start-prompt" in opsctl
     assert "startup-start-prompt-test|startup-prompt-test|login-start-prompt-test" in opsctl
@@ -845,6 +885,61 @@ def test_stop_start_lifecycle_restores_unattended_supervisors() -> None:
     assert 'rm -f "$STACK_STOPPED_FLAG"' in start_stack
 
 
+def test_start_stack_compacts_legacy_ops_evidence_before_releasing_stop_flag() -> None:
+    start_stack = _read(PROJECT_ROOT / "scripts" / "ops" / "start_stack.sh")
+    compactor_call = 'ops_data_plane_compactor.py" --apply --json'
+    release_stop_flag = 'rm -f "$STACK_STOPPED_FLAG"'
+
+    assert "BOT_OPS_DATA_PLANE_STARTUP_COMPACTION" in start_stack
+    assert compactor_call in start_stack
+    assert start_stack.index(compactor_call) < start_stack.index(release_stop_flag)
+
+
+def test_soak_self_healing_launchd_has_event_trigger_and_polling_fallback() -> None:
+    standalone = _read(SOAK_SELF_HEAL_INSTALL_PATH)
+    aggregate = _read(OPS_AUTOMATION_INSTALL_PATH)
+
+    for installer in (standalone, aggregate):
+        assert "<key>WatchPaths</key>" in installer
+        assert "governance/runtime/soak_self_healing.trigger" in installer
+        assert "<key>StartInterval</key>" in installer
+        assert "<key>ThrottleInterval</key>" in installer
+
+
+def test_production_hardening_watch_uses_bounded_background_evidence_refresh() -> None:
+    standalone = _read(PRODUCTION_HARDENING_WATCH_INSTALL_PATH)
+    aggregate = _read(OPS_AUTOMATION_INSTALL_PATH)
+    runner = _read(PRODUCTION_HARDENING_WATCH_RUN_PATH)
+
+    for installer in (standalone, aggregate):
+        assert "READINESS_EVIDENCE_REFRESH_PROFILE" in installer
+        assert "<string>accrual</string>" in installer
+        assert "PRODUCTION_PILLAR_REFRESH_ENABLED" in installer
+        assert "PRODUCTION_PILLAR_REFRESH_COOLDOWN_MINUTES" in installer
+        assert "PRODUCTION_PILLAR_REFRESH_STEP_TIMEOUT_SECONDS" in installer
+        assert "<key>ProcessType</key><string>Background</string>" in installer
+        assert "<key>LowPriorityIO</key><true/>" in installer
+    assert '--profile "${READINESS_EVIDENCE_REFRESH_PROFILE:-accrual}"' in runner
+    assert "--profile production" in runner
+    assert '${PRODUCTION_PILLAR_REFRESH_COOLDOWN_MINUTES:-45}' in runner
+
+
+def test_archive_automation_has_no_protected_volume_escape_hatch_or_default() -> None:
+    archive_owners = (
+        PROJECT_ROOT / "scripts" / "ops" / "cold_archive_compactor.py",
+        PROJECT_ROOT / "scripts" / "ops" / "deep_cold_storage_layer.py",
+        PROJECT_ROOT / "scripts" / "ops" / "manifest_backed_offload_worker.py",
+        PROJECT_ROOT / "scripts" / "ops" / "retention_intelligence_v2.py",
+        PROJECT_ROOT / "scripts" / "ops" / "storage_retention_unison.py",
+        PROJECT_ROOT / "scripts" / "ops" / "run_data_retention_launchd.sh",
+    )
+
+    for path in archive_owners:
+        text = _read(path)
+        assert "BOT_VIDEO_COLD_ARCHIVE_ROOT" not in text
+    assert "BOT_ALLOW_VIDEO_COLD_ARCHIVE=0" in _read(PROJECT_ROOT / "config" / ".env.example")
+
+
 def test_start_stack_certifies_all_sleeves_restart_handoff() -> None:
     text = _read(PROJECT_ROOT / "scripts" / "ops" / "start_stack.sh")
 
@@ -856,6 +951,32 @@ def test_start_stack_certifies_all_sleeves_restart_handoff() -> None:
     assert "all_sleeves=failed_to_stop_before_restart" in text
     assert "all_sleeves=failed_to_start" in text
     assert "all_sleeves=started pid=" in text
+
+
+def test_start_stack_pauses_watchdog_before_force_restart_drain() -> None:
+    text = _read(PROJECT_ROOT / "scripts" / "ops" / "start_stack.sh")
+
+    pause_call = "if ! pause_shadow_watchdog_for_restart; then"
+    sleeve_kill = 'pkill -f "scripts/run_all_sleeves.py"'
+    assert 'launchctl bootout "$domain" "$plist"' in text
+    assert "shadow_watchdog=paused_for_restart" in text
+    assert pause_call in text
+    assert text.index(pause_call) < text.index(sleeve_kill)
+    force_restart = 'if [[ "$FORCE_RESTART" == "1" ]]; then'
+    orchestrator_branch = 'if [[ "$ORCHESTRATOR_MODE" == "watchdog" ]]; then'
+    assert text.index(force_restart) < text.index(pause_call) < text.index(orchestrator_branch)
+    assert "SHADOW_WATCHDOG_PAUSED_FOR_RESTART=1" in text
+    assert "resume_shadow_watchdog_after_restart" in text
+    assert "restart_exit_cleanup" in text
+
+
+def test_start_stack_resumes_shadow_watchdog_after_all_sleeves_are_stable() -> None:
+    text = _read(PROJECT_ROOT / "scripts" / "ops" / "start_stack.sh")
+
+    stable_marker = 'coinbase_futures_log=logs/watchdog_coinbase_futures_loop.log'
+    resume_call = "if ! resume_shadow_watchdog_after_restart; then"
+    support_restore = "if ! restore_unattended_support_services; then"
+    assert text.index(stable_marker) < text.rindex(resume_call) < text.rindex(support_restore)
 
 
 def test_start_stack_uses_process_watchdog_as_single_worker_owner() -> None:
@@ -1074,6 +1195,12 @@ def test_macro_context_sync_does_not_pass_json_to_bls_helper() -> None:
 
     assert "bls_args=()" in text
     assert "collect_bls_census_data.py\" \"${bls_args[@]}\"" in text
+    assert "collect_global_central_bank_context.py\" \"${global_args[@]}\"" in text
+    assert "collect_fx_market_context.py\" --json" in text
+    assert "collect_public_policy_context.py\" --json" in text
+    assert "collect_official_macro_context.py\" \"$@\"" in text
+    assert "synchronize_global_central_bank_context.py\" \"${sync_args[@]}\"" in text
+    assert 'exit "$macro_rc"' in text
     assert "throttle-control" in text
     assert "scripts/ops/runtime_throttle_control.py" in text
     assert "creative-cotenant-guard" in text
@@ -1095,6 +1222,16 @@ def test_macro_context_sync_does_not_pass_json_to_bls_helper() -> None:
     assert "section_grade_guard.py" in text
     assert "section-grade-autopilot" in text
     assert "section_grade_autopilot.py" in text
+
+
+def test_official_macro_launchd_refreshes_underlying_fred_context() -> None:
+    text = _read(PROJECT_ROOT / "scripts" / "ops" / "run_official_macro_context_launchd.sh")
+    installer = _read(PROJECT_ROOT / "scripts" / "ops" / "install_ops_automation_launchd.sh")
+
+    assert 'opsctl.sh" macro-context-sync --json' in text
+    assert "OFFICIAL_MACRO_CONTEXT_REFRESH_INTERVAL_SECONDS:-21600" in installer
+    assert "MARKET_DATA_ONLY" in installer
+    assert "ALLOW_ORDER_EXECUTION" in installer
 
 
 def test_refresh_finder_logs_publishes_bot_logs_shortcut() -> None:
@@ -1126,6 +1263,8 @@ def test_storage_failback_sync_republishes_finder_shortcuts() -> None:
 def test_runtime_env_and_storage_guard_support_mount_candidates() -> None:
     env_text = _read(PROJECT_ROOT / "scripts" / "ops" / "load_runtime_env.sh")
     guard_text = _read(PROJECT_ROOT / "scripts" / "ops" / "storage_eject_guard.swift")
+    guard_runner = _read(PROJECT_ROOT / "scripts" / "ops" / "run_storage_eject_guard_launchd.sh")
+    guard_installer = _read(PROJECT_ROOT / "scripts" / "install_storage_eject_guard_launchd.sh")
 
     assert '"$PROJECT_ROOT/config/.env.browser_quiet_override"' in env_text
     assert '"$PROJECT_ROOT/config/.env.storage_target_override"' in env_text
@@ -1150,6 +1289,18 @@ def test_runtime_env_and_storage_guard_support_mount_candidates() -> None:
     assert 'global-halt-auto-clear --json' in guard_text
     assert 'storage-reconnect-regression-guard --json' in guard_text
     assert 'currentStorageMode()' in guard_text
+    assert 'storage_eject_guard_latest.json' in guard_text
+    assert 'external_disconnected_standby' in guard_text
+    assert 'externalWriteProbeReady' in guard_text
+    assert 'writeTransitionState' in guard_text
+    assert 'if mode.hasPrefix("external")' in guard_text
+    assert 'stack restart suppressed' in guard_text
+    assert 'STORAGE_EJECT_GUARD_BINARY' in guard_runner
+    assert 'SWIFT_MODULE_CACHE_PATH="$SWIFT_CACHE_DIR"' in guard_runner
+    assert '/usr/bin/swiftc -typecheck "$GUARD_SOURCE"' in guard_runner
+    assert 'SWIFT_MODULE_CACHE_PATH="$SWIFT_CACHE_DIR"' in guard_installer
+    assert '/usr/bin/swiftc -O "$GUARD_SOURCE"' in guard_installer
+    assert 'ThrottleInterval' in guard_installer
 
 
 def test_storage_reconnect_guard_commands_are_wired() -> None:
@@ -1208,7 +1359,7 @@ def test_options_paper_profile_defaults_are_narrowed() -> None:
     assert expected in opsctl
 
 
-def test_paper_mirror_all_active_defaults_to_all_eligible_paper() -> None:
+def test_paper_mirror_all_active_defaults_to_bounded_authority_cohorts() -> None:
     opsctl = _read(OPSCTL_PATH)
     runtime_env = _read(PROJECT_ROOT / "scripts" / "ops" / "load_runtime_env.sh")
     start_stack = _read(PROJECT_ROOT / "scripts" / "ops" / "start_stack.sh")
@@ -1216,10 +1367,10 @@ def test_paper_mirror_all_active_defaults_to_all_eligible_paper() -> None:
     process_watchdog = _read(PROJECT_ROOT / "scripts" / "ops" / "process_watchdog.py")
 
     for text in (opsctl, runtime_env, start_stack):
-        assert 'PAPER_MIRROR_ALL_ACTIVE_SUB_BOTS:-1' in text
-        assert 'PAPER_MIRROR_ALL_ACTIVE_SUB_BOTS:-0' not in text
-    assert 'os.getenv("PAPER_MIRROR_ALL_ACTIVE_SUB_BOTS", "1")' in shadow_loop
-    assert "env.setdefault('PAPER_MIRROR_ALL_ACTIVE_SUB_BOTS', '1')" in process_watchdog
+        assert 'PAPER_MIRROR_ALL_ACTIVE_SUB_BOTS:-0' in text
+        assert 'PAPER_MIRROR_ALL_ACTIVE_SUB_BOTS:-1' not in text
+    assert 'os.getenv("PAPER_MIRROR_ALL_ACTIVE_SUB_BOTS", "0")' in shadow_loop
+    assert "env.setdefault('PAPER_MIRROR_ALL_ACTIVE_SUB_BOTS', '0')" in process_watchdog
     assert "--require-coinbase-futures" in process_watchdog
     assert "OPS_WATCHDOG_REQUIRE_COINBASE_FUTURES', '1'" in process_watchdog
     assert "shadow_loop_default_crypto_coinbase_*.json" in process_watchdog
@@ -1408,7 +1559,7 @@ def test_live_feed_tail_has_memory_aware_heavy_defaults() -> None:
     assert "keepalive_count=0" in text
     assert "important_only" in text
     assert "important_operator_line" in text
-    assert "(status-contract|system|collection|fx-provider|auth|schwab-auth|storage|throttle|soak|dashboard|paper|paper-data|paper-profit|paper-truth|decision-latest|decision-route)" in text
+    assert "(status-contract|system|collection|fx-provider|auth|schwab-auth|storage|throttle|soak|dashboard|paper|paper-data|paper-profit|profit-hardening|paper-truth|decision-latest|decision-route)" in text
     assert "important_pat" in text
     assert "live_feed_files_hidden" in text
     assert "emit_livefeed_status_snapshot" in text

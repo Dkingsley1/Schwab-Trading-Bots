@@ -18,10 +18,13 @@ from typing import Any, Iterable
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 CORE_DIR = PROJECT_ROOT / "core"
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 if str(CORE_DIR) not in sys.path:
     sys.path.insert(0, str(CORE_DIR))
 
 import runtime_training_common as rtc
+from scripts.ops.long_runtime_common import eastern_off_hours_window
 
 
 DEFAULT_ROWS_PATH = PROJECT_ROOT / "exports" / "training" / "runtime_training_snapshot_latest.jsonl"
@@ -137,6 +140,41 @@ def _parse_ts(raw: str) -> datetime | None:
         return None
 
 
+def _summary_latest_row_timestamp(summary: dict[str, Any]) -> datetime | None:
+    candidates = [
+        summary.get("latest_row_timestamp_utc"),
+        summary.get("source_max_timestamp_utc"),
+    ]
+    coverage = summary.get("coverage") if isinstance(summary.get("coverage"), dict) else {}
+    candidates.append(coverage.get("latest_row_timestamp_utc"))
+    for row in coverage.get("top_sequences") if isinstance(coverage.get("top_sequences"), list) else []:
+        if isinstance(row, dict):
+            candidates.append(row.get("last_timestamp_utc"))
+    parsed = [ts for raw in candidates if (ts := _parse_ts(raw)) is not None]
+    return max(parsed) if parsed else None
+
+
+def _snapshot_content_freshness(
+    summary: dict[str, Any],
+    *,
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    current = now or datetime.now(timezone.utc)
+    latest = _summary_latest_row_timestamp(summary)
+    market_window = eastern_off_hours_window(now=current)
+    max_age_minutes = (
+        _env_int("RUNTIME_TRAIN_SNAPSHOT_OFF_HOURS_CONTENT_MAX_AGE_MINUTES", 4320)
+        if bool(market_window.get("active", False))
+        else _env_int("RUNTIME_TRAIN_SNAPSHOT_MARKET_HOURS_CONTENT_MAX_AGE_MINUTES", 180)
+    )
+    age_minutes = max((current - latest).total_seconds(), 0.0) / 60.0 if latest is not None else None
+    return {
+        "content_fresh": bool(age_minutes is not None and age_minutes <= max(max_age_minutes, 1)),
+        "latest_row_timestamp_utc": latest.isoformat() if latest is not None else "",
+        "content_age_minutes": round(float(age_minutes), 4) if age_minutes is not None else None,
+        "content_max_age_minutes": max(max_age_minutes, 1),
+        "market_window": market_window,
+    }
 def _reusable_snapshot_payload(
     summary: dict[str, Any],
     *,
@@ -172,7 +210,11 @@ def _reusable_snapshot_payload(
     age_minutes = max((datetime.now(timezone.utc) - ts).total_seconds(), 0.0) / 60.0
     if age_minutes > float(max(int(max_age_minutes), 0)):
         return {}
+    content_freshness = _snapshot_content_freshness(summary)
+    if not bool(content_freshness.get("content_fresh", False)):
+        return {}
     payload = dict(summary)
+    payload.update(content_freshness)
     payload["reused"] = True
     payload["reuse_reason"] = "fresh_compatible_snapshot"
     payload["age_minutes"] = round(float(age_minutes), 4)
@@ -203,7 +245,11 @@ def _light_refresh_existing_snapshot_payload(
     rows_path = Path(str(summary.get("rows_path") or "")).expanduser()
     if not rows_path.exists():
         return {}
+    content_freshness = _snapshot_content_freshness(summary)
+    if not bool(content_freshness.get("content_fresh", False)):
+        return {}
     payload = dict(summary)
+    payload.update(content_freshness)
     payload["timestamp_utc"] = datetime.now(timezone.utc).isoformat()
     payload["health_path"] = str(health_path)
     payload["reused"] = True
@@ -402,6 +448,88 @@ def _iter_json_rows(
             continue
 
 
+def _iter_recent_json_rows_newest_first(
+    paths: Iterable[Path],
+    *,
+    since_utc: datetime,
+    max_rows: int = 0,
+    deadline_monotonic: float | None = None,
+    stats: dict[str, Any] | None = None,
+    block_bytes: int = 256 * 1024,
+) -> Iterable[dict[str, Any]]:
+    parsed_rows = 0
+    for path in paths:
+        if deadline_monotonic is not None and time.monotonic() >= deadline_monotonic:
+            if stats is not None:
+                stats["timed_out"] = True
+            return
+        if path.suffix == ".gz":
+            for row in _iter_json_rows(
+                [path],
+                max_rows=max(max_rows - parsed_rows, 0) if max_rows else 0,
+                deadline_monotonic=deadline_monotonic,
+                stats=stats,
+            ):
+                timestamp = _parse_ts(row.get("timestamp_utc"))
+                if timestamp is not None and timestamp >= since_utc:
+                    parsed_rows += 1
+                    yield row
+            continue
+        try:
+            with path.open("rb") as handle:
+                handle.seek(0, 2)
+                position = handle.tell()
+                pending = b""
+                seen_recent = False
+                while position > 0:
+                    if deadline_monotonic is not None and time.monotonic() >= deadline_monotonic:
+                        if stats is not None:
+                            stats["timed_out"] = True
+                        return
+                    size = min(max(int(block_bytes), 1024), position)
+                    position -= size
+                    handle.seek(position)
+                    pending = handle.read(size) + pending
+                    lines = pending.splitlines()
+                    if position > 0:
+                        pending = lines[0] if lines else pending
+                        complete_lines = lines[1:]
+                    else:
+                        pending = b""
+                        complete_lines = lines
+                    for raw_line in reversed(complete_lines):
+                        if max_rows > 0 and parsed_rows >= max_rows:
+                            if stats is not None:
+                                stats["row_limit_hit"] = True
+                            return
+                        if stats is not None:
+                            stats["candidate_line_count"] = int(stats.get("candidate_line_count", 0) or 0) + 1
+                        try:
+                            row = json.loads(raw_line)
+                        except Exception:
+                            continue
+                        if not isinstance(row, dict):
+                            continue
+                        timestamp = _parse_ts(row.get("timestamp_utc"))
+                        if timestamp is None:
+                            continue
+                        if timestamp < since_utc:
+                            if seen_recent:
+                                break
+                            continue
+                        seen_recent = True
+                        parsed_rows += 1
+                        if stats is not None:
+                            stats["candidate_json_row_count"] = int(stats.get("candidate_json_row_count", 0) or 0) + 1
+                        yield row
+                    else:
+                        continue
+                    break
+        except Exception:
+            if stats is not None:
+                stats["candidate_file_error_count"] = int(stats.get("candidate_file_error_count", 0) or 0) + 1
+
+
 def _normalize_runtime_observation(
     row: dict[str, Any],
     *,
@@ -515,27 +643,62 @@ def _merge_candidate_rows_into_sequences(
         )
 
     best_by_snapshot: dict[tuple[str, str, str], dict[str, Any]] = {}
-    row_iter_stats: dict[str, Any] = {}
-    for row in _iter_json_rows(
-        candidate_paths,
-        max_rows=max(int(max_candidate_rows), 0),
-        deadline_monotonic=deadline,
-        stats=row_iter_stats,
-    ):
-        normalized = _normalize_runtime_observation(
-            row,
+    row_iter_stats: dict[str, Any] = {
+        "candidate_line_count": 0,
+        "candidate_json_row_count": 0,
+        "candidate_file_error_count": 0,
+        "source_quota_hit_count": 0,
+        "timed_out": False,
+        "row_limit_hit": False,
+    }
+    global_row_budget = max(int(max_candidate_rows), 0)
+    per_source_row_budget = (
+        max((global_row_budget + len(candidate_paths) - 1) // max(len(candidate_paths), 1), 1)
+        if global_row_budget > 0
+        else 0
+    )
+    for path in candidate_paths:
+        consumed_rows = int(row_iter_stats["candidate_json_row_count"])
+        if global_row_budget > 0 and consumed_rows >= global_row_budget:
+            row_iter_stats["row_limit_hit"] = True
+            break
+        if deadline is not None and time.monotonic() >= deadline:
+            row_iter_stats["timed_out"] = True
+            break
+        remaining_budget = max(global_row_budget - consumed_rows, 0) if global_row_budget > 0 else 0
+        path_budget = min(per_source_row_budget, remaining_budget) if global_row_budget > 0 else 0
+        path_stats: dict[str, Any] = {}
+        for row in _iter_recent_json_rows_newest_first(
+            [path],
             since_utc=since_utc,
-            mode_allowlist=mode_allowlist,
-            symbol_allowlist=symbol_allowlist,
-            price_sidecar=price_sidecar,
-        )
-        if normalized is None:
-            continue
-        (mode, symbol), obs = normalized
-        key = (mode, symbol, str(obs.get("snapshot_id") or ""))
-        prev = best_by_snapshot.get(key)
-        if prev is None or int(obs.get("strategy_priority", 99)) < int(prev.get("strategy_priority", 99)):
-            best_by_snapshot[key] = obs
+            max_rows=path_budget,
+            deadline_monotonic=deadline,
+            stats=path_stats,
+        ):
+            normalized = _normalize_runtime_observation(
+                row,
+                since_utc=since_utc,
+                mode_allowlist=mode_allowlist,
+                symbol_allowlist=symbol_allowlist,
+                price_sidecar=price_sidecar,
+            )
+            if normalized is None:
+                continue
+            (mode, symbol), obs = normalized
+            key = (mode, symbol, str(obs.get("snapshot_id") or ""))
+            prev = best_by_snapshot.get(key)
+            if prev is None or int(obs.get("strategy_priority", 99)) < int(prev.get("strategy_priority", 99)):
+                best_by_snapshot[key] = obs
+        row_iter_stats["candidate_line_count"] += int(path_stats.get("candidate_line_count", 0) or 0)
+        row_iter_stats["candidate_json_row_count"] += int(path_stats.get("candidate_json_row_count", 0) or 0)
+        row_iter_stats["candidate_file_error_count"] += int(path_stats.get("candidate_file_error_count", 0) or 0)
+        if bool(path_stats.get("row_limit_hit", False)):
+            row_iter_stats["source_quota_hit_count"] += 1
+        if bool(path_stats.get("timed_out", False)):
+            row_iter_stats["timed_out"] = True
+            break
+    if global_row_budget > 0 and int(row_iter_stats["candidate_json_row_count"]) >= global_row_budget:
+        row_iter_stats["row_limit_hit"] = True
     scan_stats.update(
         {
             "candidate_scan_timed_out": bool(row_iter_stats.get("timed_out", False)),
@@ -543,6 +706,9 @@ def _merge_candidate_rows_into_sequences(
             "candidate_line_count": int(row_iter_stats.get("candidate_line_count", 0) or 0),
             "candidate_json_row_count": int(row_iter_stats.get("candidate_json_row_count", 0) or 0),
             "candidate_file_error_count": int(row_iter_stats.get("candidate_file_error_count", 0) or 0),
+            "candidate_per_source_row_budget": int(per_source_row_budget),
+            "candidate_source_quota_hit_count": int(row_iter_stats.get("source_quota_hit_count", 0) or 0),
+            "candidate_scan_fair_share": True,
         }
     )
 
@@ -612,7 +778,7 @@ def _incremental_snapshot_sequences(
         prefer_sqlite=prefer_sqlite,
     ):
         return None
-    since_summary_utc = _parse_ts(summary.get("timestamp_utc"))
+    since_summary_utc = _summary_latest_row_timestamp(summary) or _parse_ts(summary.get("timestamp_utc"))
     if since_summary_utc is None:
         return None
 
@@ -791,11 +957,22 @@ def _seeded_snapshot_sequences(
     }
 
 
-def _coverage_summary(sequences: dict[tuple[str, str], list[dict[str, Any]]]) -> dict[str, Any]:
+def _coverage_summary(
+    sequences: dict[tuple[str, str], list[dict[str, Any]]],
+    *,
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    current = now or datetime.now(timezone.utc)
+    recent_window_hours = (1, 2, 6, 24)
+    recent: dict[int, dict[str, Any]] = {
+        hours: {"row_count": 0, "snapshot_ids": set(), "symbols": set()}
+        for hours in recent_window_hours
+    }
     mode_row_counts: dict[str, int] = {}
     mode_sequence_counts: dict[str, int] = {}
     symbol_row_counts: dict[str, int] = {}
     sequence_rows: list[dict[str, Any]] = []
+    parsed_timestamps: list[datetime] = []
     for (mode, symbol), rows in sorted(sequences.items()):
         row_count = int(len(rows))
         if row_count <= 0:
@@ -803,8 +980,25 @@ def _coverage_summary(sequences: dict[tuple[str, str], list[dict[str, Any]]]) ->
         mode_row_counts[mode] = int(mode_row_counts.get(mode, 0) + row_count)
         mode_sequence_counts[mode] = int(mode_sequence_counts.get(mode, 0) + 1)
         symbol_row_counts[symbol] = int(symbol_row_counts.get(symbol, 0) + row_count)
+        for row in rows:
+            timestamp = _parse_ts(row.get("timestamp_utc"))
+            if timestamp is None:
+                continue
+            age_hours = max((current - timestamp).total_seconds(), 0.0) / 3600.0
+            for hours, bucket in recent.items():
+                if age_hours > float(hours):
+                    continue
+                bucket["row_count"] = int(bucket["row_count"]) + 1
+                bucket["symbols"].add(str(row.get("symbol") or symbol).strip().upper())
+                snapshot_id = str(row.get("snapshot_id") or "").strip()
+                if snapshot_id:
+                    bucket["snapshot_ids"].add(snapshot_id)
         first_ts = str(rows[0].get("timestamp_utc") or "") if rows else ""
         last_ts = str(rows[-1].get("timestamp_utc") or "") if rows else ""
+        for raw in (first_ts, last_ts):
+            parsed = _parse_ts(raw)
+            if parsed is not None:
+                parsed_timestamps.append(parsed)
         sequence_rows.append(
             {
                 "mode": mode,
@@ -836,6 +1030,19 @@ def _coverage_summary(sequences: dict[tuple[str, str], list[dict[str, Any]]]) ->
         "top_modes": top_modes,
         "top_symbols": top_symbols,
         "top_sequences": sequence_rows[:25],
+        "earliest_row_timestamp_utc": min(parsed_timestamps).isoformat() if parsed_timestamps else "",
+        "latest_row_timestamp_utc": max(parsed_timestamps).isoformat() if parsed_timestamps else "",
+        "recent_windows": {
+            str(hours): {
+                "window_hours": hours,
+                "window_ended_utc": current.isoformat(),
+                "row_count": int(bucket["row_count"]),
+                "rows_with_snapshot_id": len(bucket["snapshot_ids"]),
+                "unique_snapshot_ids": len(bucket["snapshot_ids"]),
+                "unique_symbols": len(bucket["symbols"]),
+            }
+            for hours, bucket in recent.items()
+        },
     }
 
 
@@ -1027,6 +1234,7 @@ def main() -> int:
     gc.collect()
 
     payload: dict[str, Any] = {
+        "schema_version": 2,
         "timestamp_utc": datetime.now(timezone.utc).isoformat(),
         "project_root": str(project_root),
         "lookback_days": int(args.lookback_days),
@@ -1050,6 +1258,7 @@ def main() -> int:
             "lock_path": str(lock_path),
         },
     }
+    payload.update(_snapshot_content_freshness(payload))
     payload.update(incremental_meta)
     health_path.parent.mkdir(parents=True, exist_ok=True)
     health_path.write_text(json.dumps(payload, ensure_ascii=True, indent=2), encoding="utf-8")

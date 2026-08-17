@@ -30,6 +30,9 @@ STARVATION_OVERRIDE_SECONDS = 21600
 SEMANTIC_RETRY_MIN_SECONDS = 1800
 SLOW_SOURCE_RETRY_MIN_SECONDS = {
     "public_policy_context": 1800,
+    "global_central_bank_context": 1800,
+    "central_bank_cross_source_context": 900,
+    "decision_context_mesh": 900,
 }
 HEAVY_REFRESH_MARKERS = {
     "schwab-symbol-news-sync",
@@ -56,6 +59,11 @@ COMMAND_MARKER_SOURCE_IDS = {
     "sec-edgar-sync": "sec_edgar_context",
     "extended-quant-sync": "extended_quant_context",
     "public-policy-sync": "public_policy_context",
+    "global-central-bank-sync": "global_central_bank_context",
+    "central-bank-context-sync": "central_bank_cross_source_context",
+    "decision-context-sync": "decision_context_mesh",
+    "macro-micro-context-sync": "decision_context_mesh",
+    "context-mesh-sync": "decision_context_mesh",
 }
 DOWNSTREAM_RECHECK_TIMEOUT_SECONDS = 120
 
@@ -200,13 +208,17 @@ def _safe_int(value: Any, default: int = 0) -> int:
 def _command_policy(command: list[str], *, default_timeout_seconds: int) -> dict[str, Any]:
     joined = " ".join(str(part) for part in command)
     command_name = next((marker for marker in COMMAND_TIMEOUT_CAPS if marker in joined), "")
-    heavy = any(marker in joined for marker in HEAVY_REFRESH_MARKERS)
+    public_schwab_fallback = "schwab-symbol-news-sync" in joined and "--public-fallback-only" in command
+    heavy = any(marker in joined for marker in HEAVY_REFRESH_MARKERS) and not public_schwab_fallback
     timeout_cap = COMMAND_TIMEOUT_CAPS.get(command_name, int(default_timeout_seconds))
+    if public_schwab_fallback:
+        timeout_cap = min(int(timeout_cap), 30)
     return {
         "command_name": command_name or (Path(str(command[0])).name if command else ""),
         "heavy": heavy,
-        "tier": "optional_heavy_source_refresh" if heavy else "core_verification_refresh",
+        "tier": "bounded_public_fallback_refresh" if public_schwab_fallback else ("optional_heavy_source_refresh" if heavy else "core_verification_refresh"),
         "timeout_seconds": max(1, min(int(default_timeout_seconds), int(timeout_cap))),
+        "public_schwab_fallback": public_schwab_fallback,
     }
 
 
@@ -230,6 +242,18 @@ def _append_option_if_missing(command: list[str], option: str, value: str) -> li
     except ValueError:
         json_index = len(out)
     out[json_index:json_index] = [option, value]
+    return out
+
+
+def _append_flag_if_missing(command: list[str], flag: str) -> list[str]:
+    if flag in command:
+        return command
+    out = list(command)
+    try:
+        json_index = out.index("--json")
+    except ValueError:
+        json_index = len(out)
+    out.insert(json_index, flag)
     return out
 
 
@@ -319,6 +343,18 @@ def _bounded_heavy_command(
     )
     out = _set_option(out, "--max-runtime-seconds", str(child_runtime_seconds))
     return out
+
+
+def _route_known_source_fallback(command: list[str], *, source_id: str, source_row: dict[str, Any]) -> list[str]:
+    if source_id != "schwab_symbol_news" or "schwab-symbol-news-sync" not in command:
+        return command
+    evidence = source_row.get("evidence") if isinstance(source_row.get("evidence"), dict) else {}
+    native_available = bool(evidence.get("broker_native_news_endpoint_available", True))
+    fallback_active = bool(evidence.get("fallback_active", False))
+    if native_available or not fallback_active:
+        return command
+    routed = _append_flag_if_missing(command, "--public-fallback-only")
+    return _set_option(routed, "--max-runtime-seconds", "30")
 
 
 def _runtime_refresh_contract(project_root: Path) -> dict[str, Any]:
@@ -511,6 +547,12 @@ def build_payload(
 
     refresh_candidates = sorted(refresh_candidates, key=_refresh_priority)
     for command in refresh_candidates:
+        routed_source_id = _source_id_for_command(command, source_by_command)
+        command = _route_known_source_fallback(
+            command,
+            source_id=routed_source_id,
+            source_row=source_rows.get(routed_source_id, {}) if routed_source_id else {},
+        )
         policy = _command_policy(command, default_timeout_seconds=int(timeout_seconds))
         command = _bounded_heavy_command(
             command,
@@ -693,6 +735,7 @@ def build_payload(
         },
         "planned_commands": unique_commands,
         "selected_commands": [row["command"] for row in selected],
+        "selected_command_policies": [dict(row.get("policy") or {}) for row in selected],
         "skipped_commands": skipped,
         "applied_commands": [row["command"] for row in selected] if apply else [],
         "results": results,

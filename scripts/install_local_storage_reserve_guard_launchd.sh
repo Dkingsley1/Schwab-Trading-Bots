@@ -9,6 +9,10 @@ PLIST="$AGENTS_DIR/com.dankingsley.ops.local_storage_reserve_guard.plist"
 LABEL="com.dankingsley.ops.local_storage_reserve_guard"
 PYTHON_BIN="$PROJECT_ROOT/.venv314/bin/python"
 INTERVAL="${BOT_LOCAL_STORAGE_GUARD_INTERVAL_SECONDS:-60}"
+TARGET_FREE="${BOT_LOCAL_STORAGE_TARGET_FREE_GB:-125}"
+PRESSURE_FREE="${BOT_LOCAL_STORAGE_PRESSURE_FREE_GB:-64}"
+HARD_FREE="${BOT_LOCAL_STORAGE_HARD_FREE_GB:-32}"
+EMERGENCY_FREE="${BOT_LOCAL_STORAGE_EMERGENCY_FREE_GB:-16}"
 
 mkdir -p "$AGENTS_DIR" "$LOG_DIR"
 
@@ -27,10 +31,17 @@ cat > "$PLIST" <<PLIST
     <key>MARKET_DATA_ONLY</key><string>1</string>
     <key>ALLOW_ORDER_EXECUTION</key><string>0</string>
     <key>BOT_LIVE_MONEY_LOCKED_DURING_SOAK</key><string>1</string>
+    <key>BOT_ADDITIONAL_LAUNCHD_LOG_ROOTS</key><string>$HOME/Library/Logs/schwab_trading_bot</string>
+    <key>BOT_LOCAL_STORAGE_TARGET_FREE_GB</key><string>$TARGET_FREE</string>
+    <key>BOT_LOCAL_STORAGE_PRESSURE_FREE_GB</key><string>$PRESSURE_FREE</string>
+    <key>BOT_LOCAL_STORAGE_HARD_FREE_GB</key><string>$HARD_FREE</string>
+    <key>BOT_LOCAL_STORAGE_EMERGENCY_FREE_GB</key><string>$EMERGENCY_FREE</string>
   </dict>
   <key>WorkingDirectory</key><string>$PROJECT_ROOT</string>
   <key>RunAtLoad</key><true/>
   <key>StartInterval</key><integer>$INTERVAL</integer>
+  <key>ProcessType</key><string>Background</string>
+  <key>ThrottleInterval</key><integer>30</integer>
   <key>StandardOutPath</key><string>$LOG_DIR/ops_local_storage_reserve_guard.out.log</string>
   <key>StandardErrorPath</key><string>$LOG_DIR/ops_local_storage_reserve_guard.err.log</string>
 </dict></plist>

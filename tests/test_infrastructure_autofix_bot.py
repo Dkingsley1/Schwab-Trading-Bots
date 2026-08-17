@@ -240,3 +240,42 @@ def test_infrastructure_autofix_keeps_promotion_failure_advisory_during_paper_so
     assert payload["metrics"]["daily_verify_actionable_failed_checks"] == 0
     assert payload["metrics"]["daily_verify_managed_promotion_checks"] == 2
     assert payload["advisory_repair_plan"][0]["name"] == "promotion_evidence_milestone"
+
+
+def test_infrastructure_autofix_keeps_operationally_clear_daily_evidence_debt_advisory(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    project_root = tmp_path / "project"
+    lock = project_root / "governance" / "health" / "PAPER_TRADE_LOCK.flag"
+    lock.parent.mkdir(parents=True, exist_ok=True)
+    lock.write_text("paper only\n", encoding="utf-8")
+    failed_checks = [
+        "snapshot_coverage_sentinel",
+        "feature_store_manifest",
+        "retrain_schema_compatibility_guard",
+        "promotion_packet_builder",
+        "promotion_quality_gate",
+    ]
+    payloads = {
+        "governance/health/daily_auto_verify_latest.json": {
+            "timestamp_utc": READY_STAMP,
+            "ok": False,
+            "operational_ok": True,
+            "failed_checks": failed_checks,
+            "operational_failed_checks": [],
+        },
+    }
+    _install_isolated_loaders(monkeypatch, payloads)
+
+    payload = src.build_payload(project_root, apply=False, timeout_sec=120)
+
+    assert payload["overall_status"] == "ready"
+    assert payload["repair_plan"] == []
+    assert payload["metrics"]["daily_verify_actionable_failed_checks"] == 0
+    assert payload["metrics"]["daily_verify_managed_evidence_checks"] == len(failed_checks)
+    assert payload["metrics"]["daily_verify_operational_ok"] is True
+    assert {row["name"] for row in payload["advisory_repair_plan"]} == {
+        "daily_verify_evidence_milestone",
+        "promotion_evidence_milestone",
+    }

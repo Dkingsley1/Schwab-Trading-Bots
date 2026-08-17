@@ -7,8 +7,8 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from scripts.ops import commands_hygiene_bot as commands_src
-from scripts.ops import infrastructure_autofix_bot as infra_src
+from scripts.ops import commands_hygiene_bot as commands_src  # noqa: E402
+from scripts.ops import infrastructure_autofix_bot as infra_src  # noqa: E402
 
 
 def _write_text(path: Path, text: str) -> None:
@@ -90,15 +90,27 @@ def test_commands_hygiene_bot_authors_commands_surface_and_runbook(tmp_path: Pat
     assert "./scripts/ops/opsctl.sh dashboard --skip-refresh" in commands_text
     assert "### Review Codex project guardrails" in commands_text
     assert "./scripts/ops/opsctl.sh codex-project-guard --staged --json" in commands_text
+    assert "### Review sleeve-master and grand-master evidence" in commands_text
+    assert "./scripts/ops/opsctl.sh master-grandmaster-evidence --json" in commands_text
+    assert "### Review collector capabilities and bot subscriptions" in commands_text
+    assert "./scripts/ops/opsctl.sh collector-capability-control --json" in commands_text
+    assert "### Refresh source-backed capability proofs" in commands_text
+    assert "./scripts/ops/opsctl.sh capability-materialization --json" in commands_text
     assert "### Review or prune eligible local standby SQLite copies after BOT_LOGS soak" in commands_text
     assert "./scripts/ops/opsctl.sh storage-prune-standby --json" in commands_text
     assert "### Safe force-clear storage pressure supervisor" in commands_text
     assert "./scripts/ops/opsctl.sh storage-pressure-clearance --apply --force-clear-stale-gate --json" in commands_text
+    assert "### Archive and compact legacy ops database drift evidence" in commands_text
+    assert "./scripts/ops/opsctl.sh ops-data-plane-compaction --apply --json" in commands_text
     assert "## Live Feed Refreshes" not in commands_text
     assert "### Active bot stack PDF" in commands_text
     assert "./scripts/ops/open_report_artifact.sh botstack" in commands_text
     assert "### Options flow context sync" in commands_text
     assert "./scripts/ops/opsctl.sh options-flow-sync --json" in commands_text
+    assert "### Global central-bank policy and assets sync" in commands_text
+    assert "./scripts/ops/opsctl.sh global-central-bank-sync --json" in commands_text
+    assert "### Central-bank cross-source synchronization" in commands_text
+    assert "./scripts/ops/opsctl.sh central-bank-context-sync --json" in commands_text
     assert "## Retrain" in commands_text
     assert "### Full SQL refresh pipeline" in commands_text
     assert "./scripts/daily_log_refresh.sh" in commands_text
@@ -114,6 +126,21 @@ def test_commands_hygiene_bot_authors_commands_surface_and_runbook(tmp_path: Pat
     assert "./scripts/ops/opsctl.sh retrain-orchestrate --json" in commands_text
     assert "### Training and labeling intelligence" in commands_text
     assert "./scripts/ops/opsctl.sh training-labeling-intelligence --apply --json" in commands_text
+    assert "### Refresh one coherent training evidence epoch" in commands_text
+    assert "./scripts/ops/opsctl.sh runtime-artifact-refresh --scope training --skip-dashboard --json" in commands_text
+    assert "### Refresh training and profitability evidence together" in commands_text
+    assert "./scripts/ops/opsctl.sh runtime-artifact-refresh --scope training-profitability --skip-dashboard --json" in commands_text
+    assert "### Inspect bounded strategy generations" in commands_text
+    assert "./scripts/ops/opsctl.sh strategy-generation --json" in commands_text
+    assert "### Propose a bounded strategy generation" in commands_text
+    assert "./scripts/ops/opsctl.sh strategy-generation --propose --json" in commands_text
+    assert "### Train the next strategy offspring" in commands_text
+    assert "./scripts/ops/opsctl.sh strategy-generation --train-next --json" in commands_text
+    assert "### Reconcile interrupted strategy offspring training" in commands_text
+    assert "./scripts/ops/opsctl.sh strategy-generation --reconcile-stale --json" in commands_text
+    assert "### Evaluate or retire a strategy offspring" in commands_text
+    assert "--evaluate-offspring <OFFSPRING_ID>" in commands_text
+    assert "--retire-offspring <OFFSPRING_ID>" in commands_text
     assert "### Force full retrain (bypass prechecks)" in commands_text
     assert "./scripts/ops/opsctl.sh retrain-force-full" in commands_text
     assert "### Open the post-trade analysis PDF" in commands_text
@@ -208,6 +235,7 @@ def test_commands_hygiene_bot_authors_commands_surface_and_runbook(tmp_path: Pat
     assert "./scripts/ops/opsctl.sh runtime-paper-regression-guard --json" in commands_text
     assert "./scripts/ops/opsctl.sh paper-live-data-standard --apply --json" in commands_text
     assert "./scripts/ops/opsctl.sh paper-profitability-control --apply --json" in commands_text
+    assert "./scripts/ops/opsctl.sh profitability-hardening --json" in commands_text
     assert "./scripts/ops/opsctl.sh profitability-evidence-firewall --json" in commands_text
     assert "./scripts/ops/opsctl.sh profitability-independent-validator --json" in commands_text
     assert "./scripts/ops/opsctl.sh profitability-holdout-vault --json" in commands_text
@@ -225,7 +253,7 @@ def test_commands_hygiene_bot_authors_commands_surface_and_runbook(tmp_path: Pat
     assert 'refresh) print -r -- "Most Used" ;;' in runbook_text
     assert 'refresh) print -r -- "Live Feed Refreshes" ;;' not in runbook_text
     assert contract_payload["schema_version"] == commands_src.COMMAND_CONTRACT_SCHEMA_VERSION
-    assert contract_payload["entry_count"] == 171
+    assert contract_payload["entry_count"] == 195
     assert "### Review ten-pillar production excellence" in commands_text
     assert "./scripts/ops/opsctl.sh production-excellence --json" in commands_text
     assert "### Freeze or accept a production candidate" in commands_text

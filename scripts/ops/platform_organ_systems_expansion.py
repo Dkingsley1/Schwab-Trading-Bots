@@ -203,6 +203,53 @@ def _bot_specs() -> list[dict[str, Any]]:
 BOTS = _bot_specs()
 
 
+def _operational_regime_scenarios() -> list[dict[str, Any]]:
+    return [
+        {
+            "scenario_id": "normal_collection",
+            "description": "Steady internal telemetry collection with no runtime pressure alert.",
+            "preferred_regimes": ["normal_collection"],
+            "regime_axes": {"operational_state": ["normal_operations"]},
+        },
+        {
+            "scenario_id": "market_hours_pressure",
+            "description": "Market-hours resource pressure requiring thin-digest collection.",
+            "preferred_regimes": ["market_hours_pressure"],
+            "regime_axes": {"operational_state": ["resource_pressure"]},
+        },
+        {
+            "scenario_id": "overnight_drain",
+            "description": "Backlog drain and writer pacing during the overnight window.",
+            "preferred_regimes": ["overnight_drain"],
+            "regime_axes": {"operational_state": ["backlog_pressure"]},
+        },
+        {
+            "scenario_id": "creative_cotenant_mode",
+            "description": "Resource-constrained collection while interactive workloads share the host.",
+            "preferred_regimes": ["creative_cotenant_mode"],
+            "regime_axes": {"operational_state": ["resource_pressure"]},
+        },
+        {
+            "scenario_id": "global_halt_review",
+            "description": "Evidence-only review while the global halt remains authoritative.",
+            "preferred_regimes": ["global_halt_review"],
+            "regime_axes": {"operational_state": ["halted"]},
+        },
+        {
+            "scenario_id": "post_expansion_settlement",
+            "description": "Backlog and artifact settlement after a reviewed expansion.",
+            "preferred_regimes": ["post_expansion_settlement"],
+            "regime_axes": {"operational_state": ["backlog_pressure"]},
+        },
+        {
+            "scenario_id": "stress_replay_window",
+            "description": "Collection-only replay and model research under bounded resources.",
+            "preferred_regimes": ["stress_replay_window"],
+            "regime_axes": {"operational_state": ["training_research"]},
+        },
+    ]
+
+
 def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -397,6 +444,8 @@ def _row_for_bot(bot: dict[str, Any], bot_id: str, assigned_ids: dict[str, str],
             "post_expansion_settlement",
             "stress_replay_window",
         ],
+        "regime_scope": "operational_control",
+        "regime_scenarios": _operational_regime_scenarios(),
         "bootstrap_teacher_bot_ids": [
             "brain_refinery_v1",
             "brain_refinery_v1006_apex_grandmaster_collective_intelligence_governance_guard_bot",

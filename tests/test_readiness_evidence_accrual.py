@@ -169,3 +169,143 @@ def test_producer_window_rebind_resets_metric_history(tmp_path: Path) -> None:
     assert sample_metric["delta_since_previous"] is None
     assert sample_metric["regressed"] is False
     assert "post_cost_samples" not in payload["regressed_metric_ids"]
+
+
+def test_unaccepted_candidate_drift_receives_zero_soak_credit(tmp_path: Path) -> None:
+    _seed(tmp_path)
+    _write(
+        tmp_path / "governance" / "health" / "production_excellence_control_latest.json",
+        {
+            "candidate": {
+                "candidate_id": "pc-test-g1",
+                "candidate_ready": False,
+                "candidate_drift": True,
+            }
+        },
+    )
+
+    payload = accrual.build_payload(tmp_path, now=START + timedelta(hours=48))
+
+    assert payload["overall_status"] == "blocked"
+    assert payload["ok"] is False
+    assert payload["candidate_binding"]["credit_eligible"] is False
+    soak_metric = _by_id(payload)["soak_elapsed_hours"]
+    assert soak_metric["current"] == 0.0
+    assert soak_metric["accrual_state"] == "waiting_precondition"
+    assert soak_metric["producer"]["reason"] == "candidate_acceptance_required_before_soak_credit"
+
+
+def test_profitability_accrual_tracks_strict_promotion_evidence_targets(tmp_path: Path) -> None:
+    _seed(tmp_path, post_cost_samples=357)
+    health = tmp_path / "governance" / "health"
+    research = tmp_path / "governance" / "research"
+    config = tmp_path / "config"
+    _write(
+        health / "paper_performance_latest.json",
+        {
+            "post_cost_expectancy": {
+                "sample_count": 357,
+                "robust_statistics": {
+                    "unique_day_count": 3,
+                    "unique_symbol_count": 41,
+                    "unique_regime_count": 0,
+                    "effective_sample_size": 255.0,
+                    "positive_clustered_lower_confidence_bound_95": False,
+                },
+            }
+        },
+    )
+    _write(
+        config / "profitability_evidence_firewall_v1.json",
+        {
+            "strict_graduation": {
+                "minimum_post_cost_samples": 200,
+                "minimum_independent_days": 30,
+                "minimum_symbols": 10,
+                "minimum_effective_samples": 100,
+                "minimum_regimes": 3,
+                "minimum_profitable_sleeves": 4,
+            }
+        },
+    )
+    _write(
+        health / "profitability_evidence_firewall_latest.json",
+        {
+            "overall_status": "ready_with_evidence_debt",
+            "allocation_proposal": {"qualified_sleeve_count": 0},
+            "evidence_epoch_contract": {"ready": True},
+            "baseline_controls": [{"control_id": "06_stressed_post_cost_expectancy", "evidence_ready": False}],
+            "controls": [{"control_id": "h09_tail_concentration", "evidence_ready": False}],
+        },
+    )
+    _write(health / "profitability_independent_validator_latest.json", {"risk_of_ruin": {"day_count": 3, "thresholds": {"minimum_days": 30}}})
+    _write(research / "profitability_benchmark_hurdle_latest.json", {"common_day_count": 0, "thresholds": {"minimum_common_days": 30}})
+
+    metrics = _by_id(accrual.build_payload(tmp_path, now=START + timedelta(hours=1)))
+
+    assert metrics["strict_post_cost_samples"]["complete"] is True
+    assert metrics["strict_independent_days"]["current"] == 3.0
+    assert metrics["strict_independent_days"]["target"] == 30.0
+    assert metrics["strict_regime_breadth"]["target"] == 3.0
+    assert metrics["strict_profitable_sleeves"]["target"] == 4.0
+    assert metrics["benchmark_common_days"]["target"] == 30.0
+    assert metrics["risk_of_ruin_days"]["target"] == 30.0
+    assert metrics["profitability_epoch_coherence"]["complete"] is True
+
+
+def test_stale_candidate_artifacts_are_quarantined_without_false_counter_regression(tmp_path: Path) -> None:
+    _seed(tmp_path)
+    health = tmp_path / "governance" / "health"
+    _write(
+        health / "profitability_independent_validator_latest.json",
+        {
+            "candidate_binding": {
+                "candidate_id": "pc-test-g0",
+                "generation": 0,
+                "cutoff_utc": (START - timedelta(days=1)).isoformat(),
+                "bound": True,
+            },
+            "risk_of_ruin": {"day_count": 3, "thresholds": {"minimum_days": 30}},
+        },
+    )
+    _write(
+        health / "canary_rollout_latest.json",
+        {
+            "candidate_binding": {
+                "candidate_id": "pc-test-g0",
+                "generation": 0,
+                "cutoff_utc": (START - timedelta(days=1)).isoformat(),
+                "bound": True,
+            },
+            "canary_samples": 5000,
+            "baseline_samples": 5000,
+            "thresholds": {"minimum_samples_per_cohort": 400},
+        },
+    )
+
+    first = accrual.build_payload(tmp_path, apply=True, now=START + timedelta(hours=1))
+    first_metrics = _by_id(first)
+    assert first_metrics["risk_of_ruin_days"]["current"] == 0.0
+    assert first_metrics["risk_of_ruin_days"]["accrual_state"] == "waiting_precondition"
+    assert first_metrics["canary_samples"]["current"] == 0.0
+    assert first_metrics["canary_samples"]["producer"]["reason"] == "canary_rollout_canary_candidate_epoch_stale"
+
+    _write(
+        health / "profitability_independent_validator_latest.json",
+        {
+            "candidate_binding": {
+                "candidate_id": "pc-test-g1",
+                "generation": 1,
+                "cutoff_utc": START.isoformat(),
+                "bound": True,
+            },
+            "risk_of_ruin": {"day_count": 0, "thresholds": {"minimum_days": 30}},
+        },
+    )
+    second = accrual.build_payload(tmp_path, apply=True, now=START + timedelta(hours=2))
+    risk_metric = _by_id(second)["risk_of_ruin_days"]
+
+    assert risk_metric["producer_binding_changed"] is True
+    assert risk_metric["delta_since_previous"] is None
+    assert risk_metric["regressed"] is False
+    assert "risk_of_ruin_days" not in second["regressed_metric_ids"]

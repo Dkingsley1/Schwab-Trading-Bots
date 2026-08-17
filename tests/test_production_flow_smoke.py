@@ -38,6 +38,13 @@ def test_production_flow_smoke_passes_current_contract() -> None:
 def test_uniform_contract_sources_are_protected_from_runtime_mutation() -> None:
     assert "scripts/ops/uniform_hardening_contract.py" in source_mutation_guard.DEFAULT_PROTECTED_PATHS
     assert "config/production_uniform_hardening_v1.json" in source_mutation_guard.DEFAULT_PROTECTED_PATHS
+    assert "scripts/ops/production_resilience_control.py" in source_mutation_guard.DEFAULT_PROTECTED_PATHS
+    assert "config/production_resilience_v1.json" in source_mutation_guard.DEFAULT_PROTECTED_PATHS
+    assert "scripts/observability_exporter.py" in source_mutation_guard.DEFAULT_PROTECTED_PATHS
+    assert "scripts/ops/soak_reliability_sentinel.py" in source_mutation_guard.DEFAULT_PROTECTED_PATHS
+    assert "scripts/ops/readiness_evidence_refresh.py" in source_mutation_guard.DEFAULT_PROTECTED_PATHS
+    assert "scripts/risk_service_boundary.py" in source_mutation_guard.DEFAULT_PROTECTED_PATHS
+    assert "scripts/ops/market_replay_fill_capture.py" in source_mutation_guard.DEFAULT_PROTECTED_PATHS
 
 
 def test_ticker_contract_ignores_runtime_universe_env(monkeypatch) -> None:

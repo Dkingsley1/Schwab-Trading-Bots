@@ -9,6 +9,18 @@ if str(PROJECT_ROOT) not in sys.path:
 import scripts.experiment_tracker as tracker
 
 
+def test_signing_key_is_created_and_repaired_with_owner_only_permissions(tmp_path: Path) -> None:
+    key_path = tmp_path / "immutable_ledger_signing_key.txt"
+    secret = tracker._ensure_signing_key(key_path)
+
+    assert len(secret) == 64
+    assert key_path.stat().st_mode & 0o077 == 0
+
+    key_path.chmod(0o644)
+    assert tracker._ensure_signing_key(key_path) == secret
+    assert key_path.stat().st_mode & 0o077 == 0
+
+
 def test_build_experiment_row_tracks_replayability_bundle(tmp_path: Path) -> None:
     project_root = tmp_path / "project"
     (project_root / "governance" / "feature_versions").mkdir(parents=True, exist_ok=True)

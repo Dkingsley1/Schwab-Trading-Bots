@@ -19,7 +19,7 @@ else:
 
 DEFAULT_OUT_PATH = PROJECT_ROOT / "governance" / "health" / "system_needs_intelligence_latest.json"
 DEFAULT_LOG_PATH = PROJECT_ROOT / "governance" / "health" / "system_needs_fix_log.jsonl"
-LOW_GRADE_VALUES = {"D", "F"}
+LOW_GRADE_VALUES = {"C", "D", "F"}
 LOW_GRADE_AUDIT_EXCLUDED_FILES = {
     "low_grade_finalizer_latest.json",
     "system_needs_intelligence_latest.json",
@@ -108,26 +108,26 @@ def _low_grade_expected_impact(category: str) -> tuple[str, str]:
     if category == "base_evidence_grade":
         return (
             "Keeps the base/raw grade visible and routes the subsystem toward real outcome improvement instead of only control-credit improvement.",
-            "base/raw grade is C or better and the headline/control grade no longer depends on rescue credit.",
+            "base/raw grade is B or better and the headline/control grade no longer depends on rescue credit.",
         )
     if category in {"contained_profit_grade", "probationary_profit_grade", "profile_profit_grade"}:
         return (
             "Repairs or deweights weak paper profiles using hard-negative labels, tighter entries/exits, and fresh paper evidence.",
-            "profile profit grade is C or better, or the profile is explicitly quarantined/probationary with no active new-entry path.",
+            "profile profit grade is B or better, or the profile is explicitly quarantined/probationary with no active new-entry path.",
         )
     if category == "self_awareness_grade":
         return (
             "Refreshes stale self-awareness surfaces so the handoff stops reasoning from old artifacts.",
-            "system_self_intelligence.awareness_state_vector.grade is C or better with stale/blind-spot count reduced.",
+            "system_self_intelligence.awareness_state_vector.grade is B or better with stale/blind-spot count reduced.",
         )
     if category == "backlog_accommodation_snapshot":
         return (
             "Refreshes the stale quant/backlog accommodation snapshot against current storage truth.",
-            "backlog accommodation snapshot is current and backlog_letter_grade is C or better.",
+            "backlog accommodation snapshot is current and backlog_letter_grade is B or better.",
         )
     return (
         "Refreshes the owning health surface and keeps the low grade visible for targeted repair.",
-        "the same JSON path no longer reports D/F.",
+        "the same JSON path no longer reports C/D/F.",
     )
 
 
@@ -150,7 +150,16 @@ def _is_embedded_snapshot_path(json_path: str) -> bool:
     snapshot_roots = {"steps", "refresh_steps", "repair_steps", "command_results", "results"}
     if parts and parts[0] in snapshot_roots and "payload" in parts:
         return True
-    return bool(parts and parts[0] in {"production_excellence", "system_signal_bus"})
+    return bool(
+        parts
+        and parts[0]
+        in {
+            "production_excellence",
+            "system_signal_bus",
+            "root_causes",
+            "readiness_evidence",
+        }
+    )
 
 
 def _is_propagated_grade_path(source_file: str, json_path: str) -> bool:
@@ -169,13 +178,30 @@ def _is_historical_grade_path(json_path: str) -> bool:
 
 def _low_grade_scope(row: dict[str, Any]) -> str:
     source = str(row.get("exact_file") or "").lower()
+    json_path = str(row.get("exact_json_path") or "").lower()
     if bool(row.get("stale_artifact", False)) or bool(row.get("embedded_snapshot", False)) or bool(row.get("historical_snapshot", False)):
         return "historical_or_superseded"
     if bool(row.get("propagated_snapshot", False)):
         return "propagated_runtime_signal"
-    if any(token in source for token in ("production_excellence", "live_money_readiness", "promotion", "canary")):
+    if any(
+        token in source
+        for token in (
+            "production_excellence",
+            "live_money_readiness",
+            "live_transition",
+            "promotion",
+            "canary",
+            "profitability_evidence_firewall",
+        )
+    ):
         return "live_promotion_evidence"
-    if "paper_profitability" in source or "paper_runtime_profitability" in source:
+    if "evidence_grade" in json_path:
+        return "evidence_debt"
+    if (
+        "paper_profitability" in source
+        or "paper_runtime_profitability" in source
+        or "sleeve_profitability_dashboard" in source
+    ):
         return "paper_outcome_evidence"
     return "runtime_operational"
 
@@ -208,6 +234,7 @@ def _low_grade_control_context(health: Path) -> dict[str, Any]:
         if isinstance(row, dict) and str(row.get("profile") or "") and not bool(row.get("active_blocker", False))
     }
     return {
+        "paper_control_ok": bool(paper.get("ok", False)),
         "paper_control_posture_grade": str(
             _as_dict(_as_dict(paper).get("low_grade_control_report_card")).get("control_posture_grade")
             or _as_dict(_as_dict(paper).get("low_grade_layer_summary")).get("control_posture_grade")
@@ -267,6 +294,10 @@ def _low_grade_control_state(row: dict[str, Any], context: dict[str, Any]) -> tu
         return ("raw_harvest_evidence_under_a_plus_control", False)
     if category == "self_awareness_grade" and str(context.get("self_awareness_control_posture_grade") or "") in {"A+", "A+"}:
         return ("self_awareness_under_a_plus_control", False)
+    if str(row.get("scope") or "") == "paper_outcome_evidence" and bool(context.get("paper_control_ok", False)):
+        return ("raw_paper_outcome_under_operational_control", False)
+    if str(row.get("scope") or "") == "evidence_debt":
+        return ("elapsed_or_qualification_evidence_debt", False)
     return ("actionable_low_grade_blocker", True)
 
 
@@ -305,7 +336,7 @@ def _low_grade_layer_audit(project_root: Path) -> dict[str, Any]:
         if path.name in LOW_GRADE_AUDIT_EXCLUDED_FILES:
             continue
         canonical_alias = LOW_GRADE_ARTIFACT_ALIASES.get(path.name)
-        if canonical_alias and load_json(path) == load_json(health / canonical_alias):
+        if canonical_alias and (health / canonical_alias).exists():
             duplicate_alias_file_count += 1
             continue
         try:
@@ -412,7 +443,7 @@ def _low_grade_layer_audit(project_root: Path) -> dict[str, Any]:
         "layers": layers,
         "actionable_layers": [row for row in layers if bool(row.get("active_blocker", False))],
         "next_commands": next_commands,
-        "reporting_rule": "D/F evidence is never relabeled. Current blockers, controlled outcomes, stale artifacts, propagated signals, and superseded embedded snapshots are classified separately.",
+        "reporting_rule": "C/D/F evidence is never relabeled. Current blockers, controlled outcomes, stale artifacts, propagated signals, and superseded embedded snapshots are classified separately.",
     }
 
 
@@ -431,7 +462,7 @@ def _need_from_low_grade_audit(audit: dict[str, Any]) -> list[dict[str, Any]]:
             "command": _command(top.get("command")),
             "expected_impact": (
                 f"Surfaces and starts the first repair path for {audit.get('unique_low_grade_layer_count', 0)} "
-                "remaining D/F grade layers instead of hiding them behind headline grades."
+                "remaining C/D/F grade layers instead of hiding them behind headline grades."
             ),
             "risk_level": "low",
             "when_to_stop": "low_grade_layer_audit.unique_low_grade_layer_count is 0, or every remaining low grade is marked contained/probationary with an explicit repair path.",
@@ -895,6 +926,9 @@ def _need_from_runtime_surfaces(
     process_watchdog: dict[str, Any],
     health_gates: dict[str, Any],
     collector_contracts: dict[str, Any],
+    capability_materialization: dict[str, Any],
+    capability_materialization_configured: bool,
+    collector_capabilities: dict[str, Any],
     global_halt: dict[str, Any],
     paper_ramp: dict[str, Any],
     plumbing: dict[str, Any],
@@ -940,6 +974,68 @@ def _need_from_runtime_surfaces(
                 "risk_level": "low",
                 "when_to_stop": "collector_contracts.required_failures is empty and health_gates.hard_gates.collector_contracts is false.",
                 "source": "collector_contracts",
+            }
+        )
+
+    materialized_rows = [
+        row
+        for row in _as_list(capability_materialization.get("capabilities"))
+        if isinstance(row, dict)
+    ]
+    direct_ready_count = sum(
+        1
+        for row in materialized_rows
+        if row.get("usable") is True
+        and str(row.get("proof_semantics") or "") == "direct"
+        and bool(str(row.get("proof_receipt_sha256") or ""))
+    )
+    if capability_materialization_configured and (
+        str(capability_materialization.get("overall_status") or "") != "ready"
+        or capability_materialization.get("live_promotion_ready") is not True
+        or direct_ready_count < 4
+    ):
+        needs.append(
+            {
+                "blocker": "capability_materialization_not_ready",
+                "exact_file": "governance/collector_capabilities/materialized_capabilities_latest.json",
+                "exact_shard": ",".join(
+                    _list_of_strings(capability_materialization.get("errors"))
+                )
+                or f"direct_proofs={direct_ready_count}/4",
+                "command": [
+                    "./scripts/ops/opsctl.sh",
+                    "capability-materialization",
+                    "--json",
+                ],
+                "expected_impact": "Rebuilds exchange-session, derivative-contract, and stress-scenario capability receipts from versioned sources before capability routing runs.",
+                "risk_level": "low",
+                "when_to_stop": "materialized_capabilities_latest is fresh, ready, has 4/4 direct proof receipts, and retains zero execution or promotion authority.",
+                "source": "capability_materialization",
+            }
+        )
+
+    capability_blockers = _list_of_strings(
+        collector_capabilities.get("structural_blockers")
+        or collector_capabilities.get("paper_soak_blockers")
+    )
+    if collector_capabilities and (
+        collector_capabilities.get("ok") is not True
+        or collector_capabilities.get("paper_soak_ready") is not True
+    ):
+        needs.append(
+            {
+                "blocker": "collector_capability_routing_not_ready",
+                "exact_file": "governance/health/collector_capability_control_latest.json",
+                "exact_shard": ",".join(capability_blockers) or "capability_router",
+                "command": [
+                    "./scripts/ops/opsctl.sh",
+                    "collector-capability-control",
+                    "--json",
+                ],
+                "expected_impact": "Revalidates the logical capability catalog, current collector mappings, shared bot subscriptions, input freshness, and zero-authority contract.",
+                "risk_level": "low",
+                "when_to_stop": "collector_capability_control.ok and paper_soak_ready are true with complete collector mapping and bot binding coverage.",
+                "source": "collector_capability_control",
             }
         )
 
@@ -1103,6 +1199,16 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, fix_log_path: Path = DEF
     process_watchdog = load_json(health / "process_watchdog_latest.json")
     health_gates = load_json(health / "health_gates_latest.json")
     collector_contracts = load_json(health / "collector_contracts_latest.json")
+    capability_materialization = load_json(
+        project_root
+        / "governance"
+        / "collector_capabilities"
+        / "materialized_capabilities_latest.json"
+    )
+    capability_materialization_configured = (
+        project_root / "config" / "capability_materialization_v1.json"
+    ).is_file()
+    collector_capabilities = load_json(health / "collector_capability_control_latest.json")
     global_halt = load_json(health / "global_halt_auto_clear_latest.json") or load_json(health / "global_killswitch_latest.json")
     paper_ramp = load_json(health / "paper_400_ramp_latest.json")
     plumbing = load_json(health / "system_plumbing_control_latest.json")
@@ -1131,6 +1237,9 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, fix_log_path: Path = DEF
             process_watchdog=process_watchdog,
             health_gates=health_gates,
             collector_contracts=collector_contracts,
+            capability_materialization=capability_materialization,
+            capability_materialization_configured=capability_materialization_configured,
+            collector_capabilities=collector_capabilities,
             global_halt=global_halt,
             paper_ramp=paper_ramp,
             plumbing=plumbing,
@@ -1191,6 +1300,30 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, fix_log_path: Path = DEF
             "collector_contracts": {
                 "required_failures": _as_list(collector_contracts.get("required_failures")),
                 "soft_failures": _as_list(collector_contracts.get("soft_failures")),
+            },
+            "capability_materialization": {
+                "overall_status": str(capability_materialization.get("overall_status") or ""),
+                "live_promotion_ready": bool(
+                    capability_materialization.get("live_promotion_ready", False)
+                ),
+                "direct_proof_count": sum(
+                    1
+                    for row in _as_list(capability_materialization.get("capabilities"))
+                    if isinstance(row, dict)
+                    and row.get("usable") is True
+                    and str(row.get("proof_semantics") or "") == "direct"
+                    and bool(str(row.get("proof_receipt_sha256") or ""))
+                ),
+                "errors": _as_list(capability_materialization.get("errors")),
+            },
+            "collector_capabilities": {
+                "overall_status": str(collector_capabilities.get("overall_status") or ""),
+                "paper_soak_ready": bool(collector_capabilities.get("paper_soak_ready", False)),
+                "live_promotion_ready": bool(collector_capabilities.get("live_promotion_ready", False)),
+                "summary": _as_dict(collector_capabilities.get("summary")),
+                "coverage_debt": _as_dict(collector_capabilities.get("coverage_debt")),
+                "structural_blockers": _as_list(collector_capabilities.get("structural_blockers")),
+                "paper_soak_blockers": _as_list(collector_capabilities.get("paper_soak_blockers")),
             },
             "global_halt": {
                 "halt": bool(global_halt.get("halt", False) or global_halt.get("global_halt", False)),

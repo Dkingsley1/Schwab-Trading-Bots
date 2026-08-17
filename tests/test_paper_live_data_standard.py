@@ -1,3 +1,4 @@
+import hashlib
 import json
 from pathlib import Path
 
@@ -49,6 +50,7 @@ def test_paper_live_data_standard_keeps_legacy_paper_and_new_collecting(tmp_path
         [
             {
                 "bot_id": "legacy_active",
+                "bot_role": "signal_sub_bot",
                 "active": True,
                 "lifecycle_state": "active",
                 "test_accuracy": 0.61,
@@ -56,6 +58,7 @@ def test_paper_live_data_standard_keeps_legacy_paper_and_new_collecting(tmp_path
             },
             {
                 "bot_id": "new_collector",
+                "bot_role": "signal_sub_bot",
                 "active": True,
                 "lifecycle_state": "data_collection_only",
                 "data_collection_active": True,
@@ -63,13 +66,16 @@ def test_paper_live_data_standard_keeps_legacy_paper_and_new_collecting(tmp_path
             },
             {
                 "bot_id": "brain_refinery_v26_restored_probation",
-                "active": False,
+                "bot_role": "signal_sub_bot",
+                "active": True,
                 "lifecycle_state": "probation",
                 "reason": "stale_training_diagnostic",
                 "test_accuracy": 0.58,
+                "quality_score": 0.58,
             },
             {
                 "bot_id": "ready_new_paper",
+                "bot_role": "signal_sub_bot",
                 "active": True,
                 "lifecycle_state": "data_collection_only",
                 "data_collection_training_ready": True,
@@ -83,6 +89,16 @@ def test_paper_live_data_standard_keeps_legacy_paper_and_new_collecting(tmp_path
                 },
                 "label_contract": {"version": "universal_training_label_contract_v1"},
                 "quality_score": 0.57,
+                "test_accuracy": 0.62,
+                "paper_execution_human_admission": True,
+                "paper_execution_evidence": {
+                    "post_cost_samples": 45,
+                    "observed_days": 9,
+                    "post_cost_lower_confidence_bound": 0.001,
+                    "locked_holdout_passed": True,
+                    "multiple_testing_adjustment_passed": True,
+                    "execution_calibration_ready": True,
+                },
             },
             {
                 "bot_id": "deleted_bot",
@@ -105,14 +121,17 @@ def test_paper_live_data_standard_keeps_legacy_paper_and_new_collecting(tmp_path
     assert payload["counts_after"]["standard_promoted_paper_bots"] == 1
     assert payload["counts_after"]["collection_until_standard_bots"] == 1
     assert by_id["legacy_active"]["paper_live_data_enabled"] is True
-    assert by_id["legacy_active"]["paper_execution_allowed"] is True
+    assert by_id["legacy_active"]["paper_execution_allowed"] is False
+    assert by_id["legacy_active"]["paper_execution_authority"] is False
     assert by_id["ready_new_paper"]["paper_live_data_enabled"] is True
     assert by_id["ready_new_paper"]["paper_standard_cohort"] == "standard_promoted"
+    assert by_id["ready_new_paper"]["paper_execution_authority"] is True
     assert by_id["new_collector"]["paper_live_data_enabled"] is False
     assert by_id["new_collector"]["promotion_blocked_until"] == "paper_live_data_standard_met"
     assert by_id["brain_refinery_v26_restored_probation"]["active"] is True
     assert by_id["brain_refinery_v26_restored_probation"]["lifecycle_state"] == "paper_live_data"
     assert by_id["brain_refinery_v26_restored_probation"]["paper_standard_cohort"] == "legacy_bootstrap"
+    assert by_id["brain_refinery_v26_restored_probation"]["paper_probation_authority"] is True
     assert by_id["deleted_bot"]["active"] is False
     assert by_id["deleted_bot"]["paper_standard_status"] == "deleted_preserved"
     assert all(row.get("direct_execution_allowed") is False for row in projected)
@@ -153,7 +172,8 @@ def test_paper_live_data_standard_apply_updates_registry_summary_and_backup(tmp_
     assert override_path.exists()
     override_text = override_path.read_text(encoding="utf-8")
     assert "PAPER_LIVE_DATA_STANDARD_ENABLED=1" in override_text
-    assert "PAPER_MIRROR_ALL_ACTIVE_SUB_BOTS=1" in override_text
+    assert "PAPER_MIRROR_ALL_ACTIVE_SUB_BOTS=0" in override_text
+    assert "PAPER_EXECUTION_AUTHORITY_VERSION=paper_execution_authority_v2" in override_text
     assert "ALLOW_ORDER_EXECUTION=0" in override_text
     assert health["counts_after"]["paper_live_data_enabled_bots"] == 1
 
@@ -192,6 +212,8 @@ def test_paper_live_data_standard_canonical_apply_writes_candidate_by_default(tm
     assert registry_path.read_text(encoding="utf-8") == original
     assert candidate["summary"]["paper_live_data_standard_version"] == src.STANDARD_VERSION
     assert guard["source_write_blocked"] is True
+    assert guard["candidate_sha256"] == hashlib.sha256(candidate_path.read_bytes()).hexdigest()
+    assert guard["source_sha256"] == hashlib.sha256(registry_path.read_bytes()).hexdigest()
     assert applied["apply_result"]["registry_source_write_blocked"] is True
     assert applied["apply_result"]["candidate_registry_path"] == str(candidate_path)
     assert override_path.exists()
@@ -229,14 +251,14 @@ def test_paper_live_data_standard_keeps_coinbase_paper_probation_when_profiles_a
     assert "default" not in schwab_line
     assert "bond" not in schwab_line
     assert "fx" not in schwab_line
-    assert "COINBASE_TOP_BOT_PAPER_TRADING_TOP_N=50" in override_text
+    assert "COINBASE_TOP_BOT_PAPER_TRADING_TOP_N=8" in override_text
     assert "COINBASE_TOP_BOT_PAPER_TRADING_PROFILES=default" in override_text
-    assert "COINBASE_FUTURES_TOP_BOT_PAPER_TRADING_TOP_N=30" in override_text
+    assert "COINBASE_FUTURES_TOP_BOT_PAPER_TRADING_TOP_N=6" in override_text
     assert "COINBASE_FUTURES_TOP_BOT_PAPER_TRADING_PROFILES=crypto_futures" in override_text
     assert "COINBASE_PAPER_PROBATION_ENABLED=1" in override_text
     assert "COINBASE_PAPER_PROBATIONARY_PROFILES=default,crypto_futures" in override_text
     assert "PAPER_PROFITABILITY_WEAK_PROFILES=bond,crypto_futures,default,fx,options_on_futures" in override_text
-    assert "PAPER_SOAK_SPECIALIZED_ALLOWLIST_BYPASS_FANOUT=1" in override_text
+    assert "PAPER_SOAK_SPECIALIZED_ALLOWLIST_BYPASS_FANOUT=0" in override_text
     assert "RUN_ALL_SLEEVES_WITH_SPECIALIZED_SLEEVES=1" in override_text
     assert "RUN_ALL_SLEEVES_SPECIALIZED_PROFILE_ALLOWLIST=volatility" in override_text
 

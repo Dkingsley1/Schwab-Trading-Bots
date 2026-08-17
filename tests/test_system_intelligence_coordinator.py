@@ -928,6 +928,61 @@ def test_signal_bus_keeps_optional_support_staleness_managed_under_guarded_paper
     }
     assert not any(name.startswith("stale_signal:") for name in blind_spot_names)
 
+    _write_json(
+        health / "backpressure_super_drainer_latest.json",
+        {"timestamp_utc": old_timestamp, "overall_status": "applied"},
+    )
+    applied_bus = src.build_signal_bus(tmp_path)
+    applied_signal = next(row for row in applied_bus["signals"] if row["name"] == "backpressure_super_drainer")
+    assert applied_signal["stale"] is False
+    assert applied_signal["raw_stale"] is True
+    assert applied_signal["managed_stale"] is True
+
+
+def test_signal_bus_normalizes_authoritative_no_candidate_training_idle(tmp_path: Path) -> None:
+    _seed_pressure_project(tmp_path)
+    health = tmp_path / "governance" / "health"
+    _write_json(
+        health / "training_runtime_control_latest.json",
+        {
+            "overall_status": "constrained",
+            "ok": False,
+            "operational_status": "ready_idle",
+            "operational_ok": True,
+            "operational_training": {
+                "status": "ready_idle",
+                "ok": True,
+                "state": "idle_no_eligible_candidates",
+                "controlled_idle_no_candidates": True,
+                "raw_status": "constrained",
+                "raw_ok": False,
+                "raw_state_preserved": True,
+            },
+            "training_launch_contract": {
+                "mode": "prep_only",
+                "launch_allowed": False,
+                "prep_allowed": True,
+                "launch_blockers": ["no_bot_needs_training_candidates", "autonomic_training_budget_closed"],
+                "training_candidate_selector": {
+                    "active": True,
+                    "fresh": True,
+                    "authoritative": True,
+                    "selected_count": 0,
+                },
+            },
+        },
+    )
+
+    signal_bus = src.build_signal_bus(tmp_path)
+    signal = next(row for row in signal_bus["signals"] if row["name"] == "training_runtime")
+
+    assert signal["status"] == "ready"
+    assert signal["source_status"] == "constrained"
+    assert signal["severity_score"] == 0
+    assert signal["metrics"]["normalization_reason"] == "fresh_authoritative_selector_has_no_eligible_training_candidates"
+    assert src.SIGNAL_REFRESH_COMMANDS["core_materialization"][1] == "core-bot-materialization-guard"
+    assert src.SIGNAL_REFRESH_COMMANDS["backpressure_super_drainer"][1] == "backpressure-super-drainer"
+
 
 def test_signal_bus_normalizes_managed_soak_advisories_when_runtime_is_green(tmp_path: Path) -> None:
     _seed_pressure_project(tmp_path)
@@ -2452,3 +2507,50 @@ def test_self_intelligence_uses_verified_drain_progress_before_escalating_repeat
     assert "super_drainer_pending_total_drift_from_storage" not in self_layer["uncertainty"]["conflicting_signals"]
     assert "add_drain_outcome_verifier" not in [row["gap"] for row in self_layer["capability_gaps"]]
     assert "persist_storage_causal_replay_memory" not in [row["gap"] for row in self_layer["capability_gaps"]]
+
+
+def test_training_quality_treats_idle_coverage_evidence_as_controlled_paper_debt() -> None:
+    metrics = src._training_quality_metrics(
+        {
+            "overall_status": "needs_attention",
+            "training_quality_score": 100.0,
+            "control_contract": {
+                "raw_evidence_preserved": True,
+                "training_process_ready": True,
+            },
+            "failure_taxonomy": {
+                "failure_buckets": ["coverage_shortfall", "training_not_confirmed"],
+                "training_failure_count": 0,
+                "skipped_by_memory_count": 0,
+            },
+            "rollout": {"considered_bots": 0, "exact_replay_ready": True},
+        }
+    )
+
+    assert src._training_quality_controlled_paper_debt(metrics) is True
+
+
+def test_bot_quality_collection_queue_is_advisory_when_execution_debt_is_clear(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(src, "_guarded_paper_soak_green", lambda _project_root: True)
+    metrics = {
+        "training_quality_status": "needs_attention",
+        "training_quality_score": 100.0,
+        "training_controlled_paper_debt": True,
+        "hard_failed_attempt_count": 0,
+        "timed_out_attempt_count": 0,
+        "quality_probation_bot_count": 0,
+        "targeted_retrain_bot_count": 0,
+        "repair_runtime_input_bot_count": 0,
+        "students_without_teachers": 0,
+        "coverage_shortfall_bots": 4,
+        "infrastructure_helper_count": 0,
+        "qualified_teacher_count": 0,
+        "elite_teacher_count": 0,
+        "teacher_quality_status": "collecting_evidence",
+        "quality_queue_count": 12,
+    }
+
+    assert src._guarded_paper_bot_quality_queue_advisory(tmp_path, "needs_work", metrics) is True

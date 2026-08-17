@@ -94,6 +94,7 @@ class LiveOrderLedger:
         conn = sqlite3.connect(str(self.path), timeout=10.0)
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA busy_timeout=10000")
+        conn.execute("PRAGMA foreign_keys=ON")
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA synchronous=FULL")
         return conn
@@ -457,7 +458,11 @@ class LiveOrderLedger:
         with self._connect() as conn:
             rows = conn.execute("SELECT * FROM order_events ORDER BY event_id").fetchall()
         for row in rows:
-            details = json.loads(str(row["details_json"] or "{}"))
+            try:
+                details = json.loads(str(row["details_json"] or "{}"))
+            except json.JSONDecodeError:
+                errors.append(f"invalid_details_json_event={row['event_id']}")
+                details = {}
             event = {
                 "intent_id": str(row["intent_id"]),
                 "timestamp_utc": str(row["timestamp_utc"]),
@@ -478,4 +483,86 @@ class LiveOrderLedger:
             "chain_head": previous,
             "errors": errors,
             "unresolved_count": len(self.unresolved()),
+        }
+
+    def verify_integrity(self) -> dict[str, Any]:
+        """Verify durable storage, hashes, and the intent/event materialized view."""
+        errors: list[str] = []
+        chain = self.verify_event_chain()
+        errors.extend(str(item) for item in chain.get("errors", []))
+        quick_check: list[str] = []
+        foreign_key_errors: list[dict[str, Any]] = []
+        journal_mode = ""
+        synchronous = -1
+        intent_count = 0
+        state_mismatch_count = 0
+        payload_hash_mismatch_count = 0
+        transition_mismatch_count = 0
+        try:
+            with self._connect() as conn:
+                quick_check = [str(row[0]) for row in conn.execute("PRAGMA quick_check").fetchall()]
+                foreign_key_errors = [dict(row) for row in conn.execute("PRAGMA foreign_key_check").fetchall()]
+                journal_mode = str(conn.execute("PRAGMA journal_mode").fetchone()[0]).lower()
+                synchronous = int(conn.execute("PRAGMA synchronous").fetchone()[0])
+                intents = conn.execute("SELECT * FROM order_intents ORDER BY intent_id").fetchall()
+                events = conn.execute("SELECT * FROM order_events ORDER BY intent_id, event_id").fetchall()
+        except (sqlite3.DatabaseError, OSError) as exc:
+            errors.append(f"database_integrity_probe_failed:{type(exc).__name__}:{exc}")
+            intents = []
+            events = []
+
+        if quick_check != ["ok"]:
+            errors.append("sqlite_quick_check_failed")
+        if foreign_key_errors:
+            errors.append("sqlite_foreign_key_check_failed")
+        if journal_mode != "wal":
+            errors.append(f"sqlite_journal_mode_not_wal:{journal_mode or 'unknown'}")
+        if synchronous < 2:
+            errors.append(f"sqlite_synchronous_below_full:{synchronous}")
+
+        by_intent: dict[str, list[sqlite3.Row]] = {}
+        for event in events:
+            by_intent.setdefault(str(event["intent_id"]), []).append(event)
+        intent_count = len(intents)
+        for intent in intents:
+            intent_id = str(intent["intent_id"])
+            payload_json = str(intent["payload_json"] or "")
+            if _sha256_text(payload_json) != str(intent["payload_hash"] or ""):
+                payload_hash_mismatch_count += 1
+                errors.append(f"intent_payload_hash_mismatch:{intent_id}")
+            requested = float(intent["requested_quantity"] or 0.0)
+            filled = float(intent["filled_quantity"] or 0.0)
+            if requested < 0.0 or filled < 0.0 or (requested > 0.0 and filled > requested + 1e-9):
+                errors.append(f"intent_quantity_invariant_failed:{intent_id}")
+            intent_events = by_intent.get(intent_id, [])
+            if not intent_events:
+                state_mismatch_count += 1
+                errors.append(f"intent_event_history_missing:{intent_id}")
+                continue
+            previous_state = ""
+            for event in intent_events:
+                if str(event["from_state"] or "") != previous_state:
+                    transition_mismatch_count += 1
+                    errors.append(f"intent_event_transition_mismatch:{intent_id}:event={event['event_id']}")
+                previous_state = str(event["to_state"] or "")
+            if previous_state != str(intent["state"] or ""):
+                state_mismatch_count += 1
+                errors.append(f"intent_materialized_state_mismatch:{intent_id}")
+
+        return {
+            "ok": not errors,
+            "errors": errors,
+            "sqlite": {
+                "quick_check": quick_check,
+                "foreign_key_error_count": len(foreign_key_errors),
+                "journal_mode": journal_mode,
+                "synchronous": synchronous,
+                "wal_and_full_sync_ready": journal_mode == "wal" and synchronous >= 2,
+            },
+            "event_chain": chain,
+            "intent_count": intent_count,
+            "state_mismatch_count": state_mismatch_count,
+            "payload_hash_mismatch_count": payload_hash_mismatch_count,
+            "transition_mismatch_count": transition_mismatch_count,
+            "unresolved_count": int(chain.get("unresolved_count", 0) or 0),
         }

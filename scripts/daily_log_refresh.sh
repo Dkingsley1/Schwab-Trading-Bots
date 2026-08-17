@@ -56,12 +56,21 @@ run_cached_collector "tradingeconomics_guest" "${DAILY_CACHE_TRADINGECONOMICS_MI
 run_cached_collector "bls_census" "${DAILY_CACHE_BLS_CENSUS_MINUTES:-360}" \
   "$PROJECT_ROOT/exports/external_feeds/latest_status.json" \
   "$PROJECT_ROOT/exports/external_feeds/fred/latest.json" \
+  "$PROJECT_ROOT/exports/external_context/macro_cross_asset_latest.json" \
+  "$PROJECT_ROOT/exports/external_context/central_bank_liquidity_latest.json" \
   -- \
   "$PYTHON_BIN" "$PROJECT_ROOT/scripts/collect_bls_census_data.py" \
   || echo "[WARN] collect_bls_census_data failed; continuing daily refresh"
+run_cached_collector "global_central_bank_context" "${DAILY_CACHE_GLOBAL_CENTRAL_BANK_MINUTES:-360}" \
+  "$PROJECT_ROOT/governance/health/global_central_bank_context_sync_latest.json" \
+  "$PROJECT_ROOT/exports/external_context/global_central_bank_context_latest.json" \
+  -- \
+  "$PYTHON_BIN" "$PROJECT_ROOT/scripts/collect_global_central_bank_context.py" --json \
+  || echo "[WARN] collect_global_central_bank_context failed; continuing daily refresh"
 run_cached_collector "official_macro_context" "${DAILY_CACHE_OFFICIAL_MACRO_MINUTES:-180}" \
   "$PROJECT_ROOT/governance/health/official_macro_context_sync_latest.json" \
   "$PROJECT_ROOT/exports/external_context/official_macro_context_latest.json" \
+  "$PROJECT_ROOT/exports/external_context/bond_reference_latest.json" \
   -- \
   "$PYTHON_BIN" "$PROJECT_ROOT/scripts/collect_official_macro_context.py" --json \
   || echo "[WARN] collect_official_macro_context failed; continuing daily refresh"
@@ -117,7 +126,56 @@ run_cached_collector "fx_market_context" "${DAILY_CACHE_FX_MARKET_MINUTES:-90}" 
   -- \
   "$PYTHON_BIN" "$PROJECT_ROOT/scripts/collect_fx_market_context.py" --json \
   || echo "[WARN] collect_fx_market_context failed; continuing daily refresh"
-"$PYTHON_BIN" "$PROJECT_ROOT/scripts/collector_contracts.py" --json || true
+run_cached_collector "dividend_drip_context" "${DAILY_CACHE_DIVIDEND_DRIP_MINUTES:-180}" \
+  "$PROJECT_ROOT/governance/health/dividend_drip_state_sync_latest.json" \
+  "$PROJECT_ROOT/exports/external_context/dividend_drip_state_latest.json" \
+  -- \
+  "$PROJECT_ROOT/scripts/ops/opsctl.sh" dividend-drip-sync --json \
+  || echo "[WARN] collect_dividend_drip_state failed; continuing daily refresh"
+run_cached_collector "public_policy_context" "${DAILY_CACHE_PUBLIC_POLICY_MINUTES:-360}" \
+  "$PROJECT_ROOT/governance/health/public_policy_context_sync_latest.json" \
+  "$PROJECT_ROOT/exports/external_context/public_policy_context_latest.json" \
+  -- \
+  "$PROJECT_ROOT/scripts/ops/opsctl.sh" public-policy-sync --json \
+  || echo "[WARN] collect_public_policy_context failed; continuing daily refresh"
+run_cached_collector "central_bank_cross_source_context" "${DAILY_CACHE_CENTRAL_BANK_SYNC_MINUTES:-180}" \
+  "$PROJECT_ROOT/governance/health/central_bank_cross_source_sync_latest.json" \
+  "$PROJECT_ROOT/exports/external_context/central_bank_cross_source_latest.json" \
+  -- \
+  "$PYTHON_BIN" "$PROJECT_ROOT/scripts/synchronize_global_central_bank_context.py" --json \
+  || echo "[WARN] synchronize_global_central_bank_context failed; continuing daily refresh"
+run_cached_collector "schwab_symbol_news" "${DAILY_CACHE_SCHWAB_SYMBOL_NEWS_MINUTES:-180}" \
+  "$PROJECT_ROOT/governance/health/schwab_symbol_news_latest.json" \
+  "$PROJECT_ROOT/exports/external_context/schwab_symbol_news_latest.json" \
+  -- \
+  "$PROJECT_ROOT/scripts/ops/opsctl.sh" schwab-symbol-news-sync --json \
+  || echo "[WARN] collect_schwab_symbol_news failed; continuing daily refresh"
+run_cached_collector "ticker_news_context" "${DAILY_CACHE_TICKER_NEWS_MINUTES:-180}" \
+  "$PROJECT_ROOT/governance/health/ticker_news_context_latest.json" \
+  "$PROJECT_ROOT/exports/external_context/ticker_news_context_latest.json" \
+  -- \
+  "$PROJECT_ROOT/scripts/ops/opsctl.sh" ticker-news-sync --json \
+  || echo "[WARN] collect_ticker_news_context failed; continuing daily refresh"
+if [[ "${ANALYST_CONSENSUS_NASDAQ_ENABLED:-1}" == "1" || "${ANALYST_CONSENSUS_ALPHA_VANTAGE_ENABLED:-0}" == "1" ]]; then
+  run_cached_collector "analyst_consensus_context" "${DAILY_CACHE_ANALYST_CONSENSUS_MINUTES:-1440}" \
+    "$PROJECT_ROOT/governance/health/analyst_consensus_latest.json" \
+    "$PROJECT_ROOT/exports/external_context/analyst_consensus_latest.json" \
+    -- \
+    "$PYTHON_BIN" "$PROJECT_ROOT/scripts/collect_analyst_consensus_context.py" \
+    --max-symbols "${ANALYST_CONSENSUS_MAX_SYMBOLS_PER_RUN:-20}" \
+    --json \
+    || echo "[WARN] collect_analyst_consensus_context failed; continuing daily refresh"
+fi
+run_cached_collector "decision_context_mesh" "${DAILY_CACHE_DECISION_CONTEXT_MESH_MINUTES:-180}" \
+  "$PROJECT_ROOT/governance/health/decision_context_mesh_latest.json" \
+  "$PROJECT_ROOT/exports/external_context/decision_context_mesh_latest.json" \
+  -- \
+  "$PYTHON_BIN" "$PROJECT_ROOT/scripts/collect_decision_context_mesh.py" --json \
+  || echo "[WARN] collect_decision_context_mesh failed; continuing daily refresh"
+"$PYTHON_BIN" "$PROJECT_ROOT/scripts/collector_contracts.py" --include-data-plane --json || true
+"$PYTHON_BIN" "$PROJECT_ROOT/scripts/ops/capability_materialization_control.py" --json || true
+"$PYTHON_BIN" "$PROJECT_ROOT/scripts/ops/collector_capability_control.py" --json || true
+"$PYTHON_BIN" "$PROJECT_ROOT/scripts/provider_mesh_control.py" --json || true
 
 wait_for_sqlite_maintenance
 # Keep all ingestion on the shard-managed path so refresh jobs do not compete
@@ -180,6 +238,7 @@ cp "$DAILY_RUNTIME_SUMMARY_JSON" "$PROJECT_ROOT/governance/health/daily_runtime_
 "$PYTHON_BIN" "$PROJECT_ROOT/scripts/ops/coverage_gap_closer.py" --apply-stage --auto-launch-off-hours --json || true
 "$PYTHON_BIN" "$PROJECT_ROOT/scripts/ops/teacher_quality_guard.py" --json || true
 "$PYTHON_BIN" "$PROJECT_ROOT/scripts/distill_new_bots.py" --json || true
+"$PYTHON_BIN" "$PROJECT_ROOT/scripts/ops/strategy_generation_control.py" --reconcile-stale --json || true
 "$PYTHON_BIN" "$PROJECT_ROOT/scripts/session_ready_check.py" --json || true
 "$PYTHON_BIN" "$PROJECT_ROOT/scripts/daily_state_snapshot_drill.py" || true
 "$PYTHON_BIN" "$PROJECT_ROOT/scripts/build_executive_dashboard.py" --day "$TODAY_UTC"

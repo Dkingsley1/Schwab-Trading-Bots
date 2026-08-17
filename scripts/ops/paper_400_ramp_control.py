@@ -1116,7 +1116,7 @@ def _override_lines(payload: dict[str, Any]) -> list[str]:
         "PAPER_400_RAMP_OVERRIDE_SOURCE": "scripts/ops/paper_400_ramp_control.py",
         "ALLOW_ORDER_EXECUTION": "0",
         "MARKET_DATA_ONLY": "1",
-        "PAPER_MIRROR_ALL_ACTIVE_SUB_BOTS": "1",
+        "PAPER_MIRROR_ALL_ACTIVE_SUB_BOTS": "0",
         "PAPER_BROKER_BRIDGE_ENABLED": "1",
         "PAPER_BROKER_BRIDGE_MODE": "jsonl",
         "PAPER_SOAK_SPECIALIZED_ALLOWLIST_BYPASS_FANOUT": "1",

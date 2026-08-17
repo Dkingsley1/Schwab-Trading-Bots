@@ -27,6 +27,7 @@ final class StorageEjectGuard {
     let disappearanceGraceSeconds: TimeInterval
     let logPath: URL
     let overridePath: URL
+    let statePath: URL
     let serial = DispatchQueue(label: "com.dankingsley.storage_eject_guard")
     var mountRoot: String
     var targetVolumeBSDName: String?
@@ -53,12 +54,14 @@ final class StorageEjectGuard {
         try? FileManager.default.createDirectory(at: logDir, withIntermediateDirectories: true)
         self.logPath = logDir.appendingPathComponent("storage_eject_guard.log")
         self.overridePath = projectRoot.appendingPathComponent("config/.env.storage_override")
+        self.statePath = projectRoot.appendingPathComponent("governance/health/storage_eject_guard_latest.json")
     }
 
     func run() {
         log("starting configuredMountRoot=\(configuredMountRoot) targetVolumeName=\(targetVolumeName) candidateMountRoots=\(candidateMountRoots.joined(separator: ",")) projectRoot=\(projectRoot.path)")
         guard let session = DASessionCreate(kCFAllocatorDefault) else {
             log("failed to create DiskArbitration session")
+            writeTransitionState(status: "blocked", event: "startup_failed", detail: "disk_arbitration_session_unavailable")
             return
         }
         refreshTargetIdentity(session: session)
@@ -69,6 +72,12 @@ final class StorageEjectGuard {
         DASessionSetDispatchQueue(session, DispatchQueue.main)
         startMountPollTimer()
         serial.async {
+            self.writeTransitionState(
+                status: "ready",
+                event: "monitoring",
+                detail: "disk arbitration callbacks and mount polling active",
+                externalAvailable: self.externalMountAvailableNow()
+            )
             self.maybeMountTargetVolume(reason: "startup")
         }
         dispatchMain()
@@ -110,6 +119,12 @@ final class StorageEjectGuard {
             log("disk appeared mountRoot=\(mountRoot) volumeBSD=\(targetVolumeBSDName ?? "none") wholeBSD=\(targetWholeBSDName ?? "none") mode=\(currentStorageMode())")
 
             guard shouldRestoreExternalOnAppear() else {
+                writeTransitionState(
+                    status: "ready",
+                    event: "external_available_standby",
+                    detail: "external storage is available; active hot routing remains unchanged pending explicit certification",
+                    externalAvailable: true
+                )
                 return
             }
 
@@ -143,8 +158,23 @@ final class StorageEjectGuard {
             self.targetWholeBSDName = nil
 
             guard self.shouldRestartLocalOnDisappear(mode: mode) else {
+                self.writeTransitionState(
+                    status: "ready",
+                    event: "external_disconnected_standby",
+                    detail: "external storage disconnected while local hot storage was already active; stack restart suppressed",
+                    externalAvailable: false,
+                    stackRestartRequired: false
+                )
                 return
             }
+
+            self.writeTransitionState(
+                status: "degraded",
+                event: "external_disconnect_failover_pending",
+                detail: "active external route disappeared; waiting through bounded grace before local failover",
+                externalAvailable: false,
+                stackRestartRequired: true
+            )
 
             self.pendingDisappearWorkItem?.cancel()
             let workItem = DispatchWorkItem { [weak self] in
@@ -170,52 +200,68 @@ final class StorageEjectGuard {
             lastEjectHandledAt = now
 
             let diskName = StorageEjectGuard.bsdName(for: disk) ?? "unknown"
-            log("handling \(action) for disk=\(diskName) mountRoot=\(mountRoot)")
+            let mode = currentStorageMode()
+            log("handling \(action) for disk=\(diskName) mountRoot=\(mountRoot) mode=\(mode)")
 
-            let switchRC = prepareLocalFallbackForEject()
-            log("prepare-local-for-eject rc=\(switchRC)")
+            var switchRC: Int32 = 0
+            if shouldRestartLocalOnDisappear(mode: mode) {
+                switchRC = prepareLocalFallbackForEject()
+                log("prepare-local-for-eject rc=\(switchRC)")
+            } else {
+                log("approved \(action) is standby-only; stack restart suppressed")
+                writeTransitionState(
+                    status: "ready",
+                    event: "standby_eject_approved",
+                    detail: "external storage was not the active hot route",
+                    externalAvailable: true,
+                    stackRestartRequired: false
+                )
+            }
 
             let released = releaseExternalMountBlockers(timeout: 12.0)
             log("external_mount_release ok=\(released)")
+            if !released || switchRC != 0 {
+                writeTransitionState(
+                    status: "blocked",
+                    event: "eject_preflight_failed",
+                    detail: "local failover or external handle release did not complete",
+                    externalAvailable: true,
+                    stackRestartRequired: switchRC != 0,
+                    transitionRC: switchRC
+                )
+            }
             return nil
         }
     }
 
     func prepareLocalFallbackForEject() -> Int32 {
-        let opsctl = projectRoot.appendingPathComponent("scripts/ops/opsctl.sh").path
-        let stopRC = run(
-            launchPath: "/bin/zsh",
-            arguments: [
-                "-lc",
-                "\(shellQuote(opsctl)) stop",
-            ],
-            timeout: 45
-        )
-        log("opsctl stop before eject rc=\(stopRC)")
-        let switchRC = run(
-            launchPath: "/bin/zsh",
-            arguments: [
-                "-lc",
-                "\(shellQuote(opsctl)) storage-switch-local --no-refresh",
-            ],
-            timeout: 60
-        )
-        log("opsctl storage-switch-local --no-refresh rc=\(switchRC)")
-        return switchRC != 0 ? switchRC : stopRC
+        return restartLocalCollectionAfterEject(reason: "approved-eject")
     }
 
-    func restartLocalCollectionAfterEject() {
+    @discardableResult
+    func restartLocalCollectionAfterEject(reason: String = "surprise-disconnect") -> Int32 {
         let opsctl = projectRoot.appendingPathComponent("scripts/ops/opsctl.sh").path
-        log("restarting local collection after eject for mountRoot=\(mountRoot)")
+        log("activating local collection reason=\(reason) mountRoot=\(mountRoot)")
         let switchRC = run(
             launchPath: "/bin/zsh",
             arguments: [
                 "-lc",
                 "\(shellQuote(opsctl)) storage-switch-local --no-refresh",
             ],
-            timeout: 120
+            timeout: 150
         )
         log("opsctl storage-switch-local --no-refresh local-after-eject rc=\(switchRC)")
+        guard switchRC == 0 else {
+            writeTransitionState(
+                status: "blocked",
+                event: "local_failover_failed",
+                detail: "storage switch to local did not complete",
+                externalAvailable: false,
+                stackRestartRequired: true,
+                transitionRC: switchRC
+            )
+            return switchRC
+        }
         let refreshRC = run(
             launchPath: "/bin/zsh",
             arguments: [
@@ -235,10 +281,31 @@ final class StorageEjectGuard {
         )
         log("opsctl storage-transition-coordinator local-after-eject rc=\(coordinatorRC)")
         runPostTransitionRecovery(opsctl: opsctl, mode: "local-after-eject")
+        let transitionRC = refreshRC != 0 ? refreshRC : coordinatorRC
+        writeTransitionState(
+            status: transitionRC == 0 ? "ready" : "degraded",
+            event: "local_failover_complete",
+            detail: "external route was replaced by verified local storage and collection was refreshed",
+            externalAvailable: false,
+            stackRestartRequired: false,
+            transitionRC: transitionRC
+        )
+        return transitionRC
     }
 
     func restoreExternalCollection() {
         log("restoring external collection for mountRoot=\(mountRoot)")
+        guard externalMountAvailableNow(), externalWriteProbeReady() else {
+            log("external restore certification failed mountRoot=\(mountRoot)")
+            writeTransitionState(
+                status: "blocked",
+                event: "external_failback_certification_failed",
+                detail: "mount identity, project root, or write probe was not ready",
+                externalAvailable: externalMountAvailableNow(),
+                stackRestartRequired: false
+            )
+            return
+        }
         let opsctl = projectRoot.appendingPathComponent("scripts/ops/opsctl.sh").path
         let switchRC = run(
             launchPath: "/bin/zsh",
@@ -268,6 +335,15 @@ final class StorageEjectGuard {
         )
         log("opsctl storage-transition-coordinator external-restore rc=\(coordinatorRC)")
         runPostTransitionRecovery(opsctl: opsctl, mode: "external-restore")
+        let transitionRC = switchRC != 0 ? switchRC : (refreshRC != 0 ? refreshRC : coordinatorRC)
+        writeTransitionState(
+            status: transitionRC == 0 ? "ready" : "degraded",
+            event: "external_failback_complete",
+            detail: "external route passed certification, reconciliation, and collection refresh",
+            externalAvailable: true,
+            stackRestartRequired: false,
+            transitionRC: transitionRC
+        )
     }
 
     func runPostTransitionRecovery(opsctl: String, mode: String) {
@@ -418,6 +494,9 @@ final class StorageEjectGuard {
     }
 
     func currentStorageMode() -> String {
+        if localOverrideActive() {
+            return "local_fallback"
+        }
         let healthPaths = [
             projectRoot.appendingPathComponent("governance/health/storage_failback_sync_latest.json"),
             projectRoot.appendingPathComponent("governance/health/storage_mount_guard_latest.json"),
@@ -450,10 +529,13 @@ final class StorageEjectGuard {
     }
 
     func shouldRestartLocalOnDisappear(mode: String) -> Bool {
-        if mode == "external" {
+        if mode.hasPrefix("external") {
             return true
         }
-        return localOverrideActive()
+        if mode == "unknown" && !localOverrideActive() {
+            return true
+        }
+        return false
     }
 
     func confirmDisappearAndRestartLocal(originalMode: String, disappearedBSD: String) {
@@ -470,7 +552,59 @@ final class StorageEjectGuard {
             return
         }
         log("confirmed external unavailable after disappearance grace disk=\(disappearedBSD) originalMode=\(originalMode) currentMode=\(mode)")
-        restartLocalCollectionAfterEject()
+        restartLocalCollectionAfterEject(reason: "surprise-disconnect")
+    }
+
+    func externalWriteProbeReady() -> Bool {
+        let root = URL(fileURLWithPath: mountRoot).appendingPathComponent(expectedProjectDir, isDirectory: true)
+        var isDirectory = ObjCBool(false)
+        guard FileManager.default.fileExists(atPath: root.path, isDirectory: &isDirectory), isDirectory.boolValue else {
+            return false
+        }
+        let probe = root.appendingPathComponent(".storage_eject_guard_write_probe.\(ProcessInfo.processInfo.processIdentifier)")
+        do {
+            try "probe\n".write(to: probe, atomically: true, encoding: .utf8)
+            try FileManager.default.removeItem(at: probe)
+            return true
+        } catch {
+            log("external write probe failed root=\(root.path) error=\(error)")
+            try? FileManager.default.removeItem(at: probe)
+            return false
+        }
+    }
+
+    func writeTransitionState(
+        status: String,
+        event: String,
+        detail: String,
+        externalAvailable: Bool? = nil,
+        stackRestartRequired: Bool = false,
+        transitionRC: Int32 = 0
+    ) {
+        let payload: [String: Any] = [
+            "timestamp_utc": StorageEjectGuard.iso8601Now(),
+            "schema_version": 1,
+            "ok": status == "ready",
+            "overall_status": status,
+            "event": event,
+            "detail": detail,
+            "storage_mode": currentStorageMode(),
+            "mount_root": mountRoot,
+            "external_available": externalAvailable ?? externalMountAvailableNow(),
+            "local_override_active": localOverrideActive(),
+            "stack_restart_required": stackRestartRequired,
+            "transition_rc": Int(transitionRC),
+            "guard_pid": ProcessInfo.processInfo.processIdentifier,
+            "live_execution_authority": "none",
+            "policy": "standby disconnects never restart the stack; active-route loss fails over once to local and external failback requires identity plus write certification",
+        ]
+        do {
+            let data = try JSONSerialization.data(withJSONObject: payload, options: [.prettyPrinted, .sortedKeys])
+            try FileManager.default.createDirectory(at: statePath.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try data.write(to: statePath, options: .atomic)
+        } catch {
+            log("failed to write transition state: \(error)")
+        }
     }
 
     func externalMountAvailableNow() -> Bool {

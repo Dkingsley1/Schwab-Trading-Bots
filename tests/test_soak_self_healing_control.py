@@ -201,6 +201,81 @@ def test_storage_soak_blocker_runs_compaction_retention_and_cold_offload(tmp_pat
     assert "add_or_free_external_storage_capacity_for_30_day_soak" in payload["self_healing"]["operator_followups"]
 
 
+def test_oversized_local_compatibility_cache_triggers_transactional_rebuild(tmp_path: Path, monkeypatch) -> None:
+    _write_daily(tmp_path, ok=True, failed_checks=[])
+    cache = tmp_path / "local_fallback_storage" / "data" / "jsonl_link.sqlite3"
+    cache.parent.mkdir(parents=True)
+    with cache.open("wb") as handle:
+        handle.seek((2 * 1024**3) - 1)
+        handle.write(b"\0")
+    cold_root = tmp_path / "BOT_COLD"
+    monkeypatch.setenv("BOT_SECOND_COLD_ROOT", str(cold_root))
+    monkeypatch.setenv("BOT_LOGS_SQLITE_LOCAL_CACHE_REBUILD_THRESHOLD_GB", "1")
+    monkeypatch.setenv("BOT_LOGS_SQLITE_LOCAL_CACHE_HARD_ENVELOPE_GB", "1.5")
+    monkeypatch.setenv("BOT_LOGS_SQLITE_LOCAL_CACHE_TARGET_FREE_GB", "99999")
+    calls: list[str] = []
+    base_runner = _base_fake_runner(calls)
+
+    def _runner(cmd: list[str], *, project_root: Path, timeout_sec: int, env: dict[str, str]) -> dict:
+        command_text = " ".join(str(item) for item in cmd)
+        if "storage_sqlite_hot_route.py" in command_text:
+            calls.append(command_text)
+            cache.write_bytes(b"bounded-cache")
+            return _result(cmd, {"ok": True, "overall_status": "rebuilt_pruned", "reclaimed_bytes": 2 * 1024**3})
+        return base_runner(cmd, project_root=project_root, timeout_sec=timeout_sec, env=env)
+
+    monkeypatch.setattr(src, "_run_command", _runner)
+
+    payload = src.build_payload(tmp_path, apply=True, respect_cooldowns=False)
+
+    cache_rebuild = payload["application_memory_protection"]["compatibility_cache_rebuild"]
+    assert cache_rebuild["initial"]["active"] is True
+    assert cache_rebuild["attempted"] is True
+    assert cache_rebuild["final"]["active"] is False
+    assert cache_rebuild["transactional"] is True
+    assert cache_rebuild["resumable"] is True
+    assert any("storage_sqlite_hot_route.py" in call and "--rebuild-local-cache" in call for call in calls)
+
+
+def test_local_storage_target_warning_triggers_bounded_storage_recovery(tmp_path: Path, monkeypatch) -> None:
+    _write_daily(tmp_path, ok=True, failed_checks=[])
+    calls: list[str] = []
+    monkeypatch.setattr(
+        src,
+        "_run_command",
+        _base_fake_runner(
+            calls,
+            soak_payload={
+                "ok": True,
+                "overall_status": "watch",
+                "overall_grade": "A",
+                "safe_to_leave_unattended": False,
+                "blockers": [],
+                "warnings": ["local_hot_storage_below_unattended_target"],
+                "sections": {
+                    "storage": {
+                        "current_external_free_gb": 150.0,
+                        "required_external_free_gb": 111.0,
+                        "available_margin_gb": 39.0,
+                    }
+                },
+            },
+        ),
+    )
+
+    payload = src.build_payload(
+        tmp_path,
+        apply=True,
+        storage_target_free_gb=125.0,
+        respect_cooldowns=False,
+    )
+
+    retention_calls = [call for call in calls if "storage-retention-unison" in call]
+    assert retention_calls
+    assert "--target-free-gb 125.0" in retention_calls[0]
+    assert payload["storage"]["retention_attempted"] is True
+
+
 def test_ingestion_soak_blocker_runs_bounded_repair_and_rechecks(tmp_path: Path, monkeypatch) -> None:
     _write_daily(tmp_path, ok=True, failed_checks=[])
     calls: list[str] = []
@@ -349,6 +424,33 @@ def test_critical_local_disk_headroom_runs_bounded_application_memory_recovery(t
     assert any("deep-cold-storage-layer --apply --adaptive --move-to-second-cold" in call for call in calls)
     assert any("storage-pressure-clearance --apply" in call for call in calls)
     assert memory_calls == 2
+
+
+def test_cold_archive_configuration_rejects_protected_volume_and_uses_safe_fallback(tmp_path: Path) -> None:
+    external = tmp_path / "BOT_LOGS" / "schwab_trading_bot"
+    external.mkdir(parents=True)
+    env = {
+        "BOT_SECOND_COLD_ROOT": "/Volumes/VIDEO/schwab_trading_bot_cold",
+        "BOT_LOGS_EXTERNAL_PROJECT_ROOT": str(external),
+    }
+
+    payload = src._configure_cold_archive_env(env, apply=False)
+
+    assert payload["configured"] is True
+    assert payload["auto_selected"] is True
+    assert payload["path"] == str(external / "cold_archive")
+    assert env["BOT_SECOND_COLD_ROOT"] == str(external / "cold_archive")
+    assert env["BOT_NEVER_TOUCH_VIDEO"] == "1"
+
+
+def test_cold_archive_configuration_fails_closed_without_safe_fallback() -> None:
+    env = {"BOT_SECOND_COLD_ROOT": "/Volumes/VIDEO/schwab_trading_bot_cold"}
+
+    payload = src._configure_cold_archive_env(env, apply=False)
+
+    assert payload["configured"] is False
+    assert payload["reason"] == "non_protected_second_cold_root_not_configured"
+    assert "BOT_SECOND_COLD_ROOT" not in env
 
 
 def test_stale_profitability_runtime_controls_are_refreshed_and_rechecked(tmp_path: Path, monkeypatch) -> None:
@@ -659,6 +761,56 @@ def test_production_authority_guard_triggers_runtime_continuity_refresh() -> Non
     }
 
     assert src._runtime_continuity_refresh_needed(payload) is True
+
+
+def test_repeated_repair_failures_open_bounded_circuit() -> None:
+    state = {"steps": {}}
+    failed = {"ok": False, "rc": 2, "parsed": {"overall_status": "blocked"}}
+
+    for _ in range(3):
+        src._update_step_state(
+            state,
+            "repair",
+            failed,
+            max_failures_before_circuit=3,
+            circuit_open_seconds=60,
+        )
+
+    circuit = src._repair_circuit_active(state, "repair")
+    assert circuit["active"] is True
+    assert circuit["failure_count"] == 3
+
+
+def test_open_repair_circuit_cannot_be_bypassed_with_no_cooldowns(tmp_path: Path, monkeypatch) -> None:
+    state = {
+        "steps": {
+            "repair": {
+                "failure_count": 3,
+                "circuit_until_utc": "2099-01-01T00:00:00+00:00",
+                "circuit_reason": "bounded_repair_failure_budget_exhausted",
+            }
+        }
+    }
+
+    def unexpected(*args, **kwargs):
+        raise AssertionError("repair command must not execute while its circuit is open")
+
+    monkeypatch.setattr(src, "_run_command", unexpected)
+    steps: list[dict] = []
+    row = src._run_step(
+        steps,
+        name="repair",
+        cmd=["false"],
+        project_root=tmp_path,
+        timeout_sec=1,
+        env={},
+        state=state,
+        respect_cooldowns=False,
+    )
+
+    assert row["executed"] is False
+    assert row["skipped_reason"] == "bounded_repair_circuit_open"
+    assert row["ok"] is False
 
 
 def test_raw_profitability_contract_failure_triggers_profitability_refresh() -> None:

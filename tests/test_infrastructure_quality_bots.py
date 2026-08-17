@@ -149,6 +149,39 @@ def test_teacher_quality_guard_excludes_overfit_risk_teachers(tmp_path: Path) ->
     assert any(row["reason"] == "overfit_risk_blocked" for row in payload["excluded_bots"])
 
 
+def test_teacher_quality_guard_excludes_any_explicit_may_teach_false_policy(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    bot_id = "brain_refinery_v10_seasonal"
+    _write_json(
+        project_root / "governance" / "walk_forward" / "walk_forward_latest.json",
+        {"bots": {bot_id: {"runs": 14, "forward_mean": 0.59, "delta": 0.02, "trading_quality_score": 0.84, "status": "pass"}}},
+    )
+    _write_json(
+        project_root / "master_bot_registry.json",
+        {"sub_bots": [{"bot_id": bot_id, "bot_role": "signal_sub_bot", "active": True, "test_accuracy": 0.62, "quality_score": 0.86}]},
+    )
+    _write_json(project_root / "governance" / "health" / "training_quality_control_latest.json", {"targeted_actions": {}})
+    _write_json(project_root / "governance" / "health" / "paper_performance_latest.json", {"sleeve_latest": []})
+    _write_json(
+        project_root / "governance" / "health" / "overfitting_awareness_latest.json",
+        {
+            "bot_risk": [
+                {
+                    "bot_id": bot_id,
+                    "status": "insufficient_evidence",
+                    "policy": {"may_teach": False, "may_promote": False},
+                }
+            ]
+        },
+    )
+
+    payload = teacher_src.build_payload(project_root)
+
+    assert payload["qualified_teachers"] == []
+    assert payload["summary"]["overfit_blocked_teacher_count"] == 1
+    assert any(row["reason"] == "overfit_risk_blocked" for row in payload["excluded_bots"])
+
+
 def test_distill_new_bots_prefers_curated_teacher_pool(tmp_path: Path) -> None:
     project_root = tmp_path / "project"
     walk_forward_path = project_root / "governance" / "walk_forward" / "walk_forward_latest.json"
@@ -213,6 +246,53 @@ def test_distill_new_bots_prefers_curated_teacher_pool(tmp_path: Path) -> None:
     assert payload["summary"]["curated_teacher_count"] == 1
     assert payload["assignments"][0]["teachers"][0]["bot_id"] == "brain_refinery_v10_seasonal"
     assert payload["assignments"][0]["teachers"][0]["teacher_grade"] == "elite"
+
+
+def test_distill_new_bots_does_not_bypass_empty_authoritative_teacher_pool(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    walk_forward_path = project_root / "governance" / "walk_forward" / "walk_forward_latest.json"
+    registry_path = project_root / "master_bot_registry.json"
+    teacher_quality_path = project_root / "governance" / "distillation" / "teacher_quality_latest.json"
+    out_path = project_root / "governance" / "distillation" / "teacher_student_plan_latest.json"
+    _write_json(walk_forward_path, {"bots": {}})
+    _write_json(
+        registry_path,
+        {
+            "sub_bots": [
+                {
+                    "bot_id": "brain_refinery_v10_seasonal",
+                    "bot_role": "signal_sub_bot",
+                    "active": True,
+                    "test_accuracy": 0.90,
+                    "quality_score": 0.90,
+                }
+            ]
+        },
+    )
+    _write_json(teacher_quality_path, {"qualified_teachers": []})
+
+    old_argv = sys.argv
+    try:
+        sys.argv = [
+            "distill_new_bots.py",
+            "--walk-forward",
+            str(walk_forward_path),
+            "--registry",
+            str(registry_path),
+            "--teacher-quality",
+            str(teacher_quality_path),
+            "--out",
+            str(out_path),
+        ]
+        rc = distill_src.main()
+    finally:
+        sys.argv = old_argv
+
+    payload = json.loads(out_path.read_text(encoding="utf-8"))
+    assert rc == 0
+    assert payload["summary"]["teacher_quality_authoritative"] is True
+    assert payload["teachers"] == []
+    assert payload["quality_contract"]["teacher_quality_guard_is_authoritative"] is True
 
 
 def test_bot_quality_autopilot_builds_queue_and_teacher_preview(tmp_path: Path) -> None:

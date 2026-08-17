@@ -152,6 +152,7 @@ def build_payload(
     secret_scan_max_bytes: int = 1_000_000,
     secret_scan_max_age_hours: float = 36.0,
     mutation_max_age_hours: float = 168.0,
+    force_secret_scan: bool = False,
     runner: Runner | None = None,
 ) -> dict[str, Any]:
     run_json = runner or _run_json
@@ -165,15 +166,16 @@ def build_payload(
     secret_scan_stale = not secret_scan or secret_scan_age_hours is None or secret_scan_age_hours > float(secret_scan_max_age_hours)
     secret_scan_findings = int(secret_scan.get("findings_count", 0) or 0)
 
+    secret_scan_refresh_needed = bool(secret_scan_stale or force_secret_scan)
     secret_scan_refresh = {
-        "requested": bool(apply_repairs and secret_scan_stale),
+        "requested": bool(apply_repairs and secret_scan_refresh_needed),
         "applied": False,
         "cmd": [],
         "rc": None,
         "stdout_tail": "",
         "stderr_tail": "",
     }
-    if apply_repairs and secret_scan_stale:
+    if apply_repairs and secret_scan_refresh_needed:
         result = run_json(
             [
                 str(PY),
@@ -265,6 +267,7 @@ def build_payload(
         "ok": overall_status == "ready",
         "overall_status": overall_status,
         "apply_repairs": bool(apply_repairs),
+        "force_secret_scan": bool(force_secret_scan),
         "secret_scan": {
             "path": str(secret_scan_path),
             "present": bool(secret_scan),
@@ -301,6 +304,7 @@ def main() -> int:
     parser.add_argument("--secret-scan-max-bytes", type=int, default=1_000_000)
     parser.add_argument("--secret-scan-max-age-hours", type=float, default=36.0)
     parser.add_argument("--mutation-max-age-hours", type=float, default=168.0)
+    parser.add_argument("--force-secret-scan", action="store_true")
     parser.add_argument("--no-apply-repairs", action="store_true")
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args()
@@ -311,6 +315,7 @@ def main() -> int:
         secret_scan_max_bytes=int(args.secret_scan_max_bytes),
         secret_scan_max_age_hours=float(args.secret_scan_max_age_hours),
         mutation_max_age_hours=float(args.mutation_max_age_hours),
+        force_secret_scan=bool(args.force_secret_scan),
     )
     out_path = Path(args.out_file).expanduser()
     write_payload(out_path, payload)

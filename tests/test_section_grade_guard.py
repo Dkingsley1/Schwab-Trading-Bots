@@ -280,6 +280,40 @@ def test_section_grade_guard_makes_bounded_storage_floor_debt_advisory_for_paper
     assert payload["advisory_below_floor_sections"] == ["data_ingestion_and_storage"]
 
 
+def test_storage_section_accepts_clean_elevated_steady_state_without_active_drain(tmp_path: Path) -> None:
+    _write_json(
+        tmp_path / "governance" / "health" / "ingestion_storage_control_latest.json",
+        {
+            "overall_status": "ready",
+            "severity": "elevated",
+            "pressure_index": 0.763,
+            "continuous_run_soak_contract": {
+                "status": "blocked",
+                "soak_ready": False,
+                "blockers": ["steady_state_targets_not_clear"],
+            },
+            "backpressure": {
+                "raw_live": {
+                    "core_pending_lines": 771,
+                    "total_pending_lines": 771,
+                    "oldest_pending_age_seconds": 183.0,
+                }
+            },
+            "bounded_recovery_contract": {
+                "route_verified": True,
+                "active_drain_progress": False,
+                "hard_gate_active": False,
+                "effective_hard_gate_active": False,
+            },
+            "data_integrity": {},
+            "writer_shedding": {"hard_breaches": [], "elevated_breaches": []},
+            "storage_efficiency_contract": {"overall_status": "ready", "grade": "A"},
+        },
+    )
+
+    assert src._storage_section_advisory_for_paper_soak(tmp_path) is True
+
+
 def test_section_grade_guard_accepts_safe_transient_storage_drain_during_paper_soak(
     tmp_path: Path,
     monkeypatch,

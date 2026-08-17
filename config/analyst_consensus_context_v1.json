@@ -1,0 +1,59 @@
+{
+  "schema_version": 1,
+  "context_id": "analyst_consensus_context_v1",
+  "provider": "nasdaq_with_alpha_vantage_fallback",
+  "provider_documentation_url": "https://www.nasdaq.com/market-activity/stocks/aapl/earnings",
+  "endpoint": "https://www.alphavantage.co/query",
+  "function": "EARNINGS_ESTIMATES",
+  "nasdaq_provider": {
+    "enabled_by_default": true,
+    "endpoint_template": "https://api.nasdaq.com/api/analyst/{symbol}/earnings-forecast",
+    "documentation_url_template": "https://www.nasdaq.com/market-activity/stocks/{symbol}/earnings",
+    "maximum_requests_per_day": 40,
+    "maximum_symbols_per_run": 16,
+    "request_interval_seconds": 1.5,
+    "usage_scope": "internal_personal_research_and_paper_context_only",
+    "commercial_or_live_entitlement_required": true
+  },
+  "maximum_requests_per_day": 25,
+  "maximum_symbols_per_run": 20,
+  "request_interval_seconds": 12,
+  "cache_max_age_days": 3,
+  "expected_universe_symbol_count": 16,
+  "minimum_covered_symbols": 16,
+  "minimum_universe_coverage_ratio": 1.0,
+  "minimum_revision_history_ratio": 1.0,
+  "universe_group": "SEC_EDGAR_SYMBOLS",
+  "required_symbols": [
+    "AAPL",
+    "ABBV",
+    "ABT",
+    "ADP",
+    "BLK",
+    "COST",
+    "HD",
+    "IBM",
+    "JNJ",
+    "JPM",
+    "LOW",
+    "MCD",
+    "MRK",
+    "MSFT",
+    "PFE",
+    "WMT"
+  ],
+  "excluded_fund_symbols": [
+    "DIA",
+    "IWM",
+    "QQQ",
+    "SPY"
+  ],
+  "authority_contract": {
+    "paper_decision_context_authority": true,
+    "training_context_authority": true,
+    "paper_execution_authority": false,
+    "live_execution_authority": false,
+    "automatic_promotion_authority": false,
+    "profitability_guaranteed": false
+  }
+}

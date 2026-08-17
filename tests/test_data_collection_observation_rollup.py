@@ -78,6 +78,12 @@ def test_observation_rollup_bootstraps_and_updates_registry(tmp_path: Path) -> N
     assert row["data_collection_training_ready"] is True
     assert row["training_excluded"] is False
     assert registry["summary"]["data_collection_training_ready_bots"] == 1
+    assert payload["training_readiness_definition"] == "collection_gate_only_not_retrain_launch"
+    assert payload["training_ready_bot_ids_truncated"] is False
+    assert payload["training_stage_contract"]["authorizes_training_launch"] is False
+    assert "bot_needs_candidate_selection" in payload["training_stage_contract"]["next_required_stages"]
+    assert payload["registry_write_contract"]["atomic"] is True
+    assert payload["registry_write_contract"]["candidate_fingerprint_normalized"] is True
 
 
 def test_observation_rollup_counts_only_new_lines_after_bootstrap(tmp_path: Path) -> None:
@@ -402,7 +408,8 @@ def test_observation_rollup_keeps_paper_live_data_blocked_without_observation_fl
     assert payload["collector_count"] == 1
     assert payload["bots_with_observations"] == 1
     assert row["data_collection_observations"] == 2
-    assert row["data_collection_threshold_progress"]["training_ready"] is True
+    assert row["data_collection_threshold_progress"]["observation_floor_configured"] is False
+    assert row["data_collection_threshold_progress"]["training_ready"] is False
     assert row["data_collection_training_ready"] is False
     assert row["training_excluded"] is True
     assert row["exclude_from_training"] is True
@@ -411,6 +418,47 @@ def test_observation_rollup_keeps_paper_live_data_blocked_without_observation_fl
     assert payload["training_ready_count"] == 0
     assert payload["training_ready_bot_ids"] == []
     assert registry["summary"]["data_collection_training_ready_bots"] == 0
+
+
+def test_observation_rollup_keeps_collect_only_bot_blocked_without_observation_floor(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    bot_id = "brain_refinery_v98_crypto_execution_throttle_reentry"
+    registry_path = project_root / "master_bot_registry.json"
+    state_path = project_root / "governance" / "health" / "state.json"
+    registry = _registry(bot_id)
+    registry["sub_bots"][0].pop("minimum_training_observations", None)
+    _write_json(registry_path, registry)
+    stamp = src._day_stamps(1)[0]
+    decision_file = project_root / "decision_explanations" / "shadow_crypto" / f"decision_explanations_{stamp}.jsonl"
+    decision_file.parent.mkdir(parents=True, exist_ok=True)
+    decision_file.write_text(
+        "\n".join(
+            [
+                json.dumps({"status": "DATA_ONLY_BLOCKED", "metadata": {"bot_id": bot_id}}),
+                json.dumps({"status": "SHADOW_ONLY", "metadata": {"bot_id": bot_id}}),
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    payload = src.build_payload(
+        project_root=project_root,
+        registry_path=registry_path,
+        state_path=state_path,
+        days=1,
+        bootstrap_tail_lines=20,
+        apply=True,
+    )
+    row = json.loads(registry_path.read_text(encoding="utf-8"))["sub_bots"][0]
+
+    assert row["data_collection_observations"] == 2
+    assert row["data_collection_threshold_progress"]["observation_floor_configured"] is False
+    assert row["data_collection_threshold_progress"]["training_ready"] is False
+    assert row["data_collection_training_ready"] is False
+    assert row["training_excluded"] is True
+    assert row["training_exclusion_reason"] == "data_collection_requires_minimum_training_observations"
+    assert payload["training_ready_count"] == 0
 
 
 def test_observation_rollup_uses_nested_paper_promotion_observation_floor(tmp_path: Path) -> None:
@@ -525,3 +573,51 @@ def test_observation_rollup_blocks_zero_observation_collection_bot_without_floor
     assert payload["zero_observation_bot_ids"] == [bot_id]
     assert payload["zero_observation_repair_lane"]["active"] is True
     assert payload["zero_observation_repair_lane"]["target_bot_ids"] == [bot_id]
+
+
+def test_observation_rollup_projects_broad_collection_ready_with_fail_closed_sample_debt(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    registry_path = project_root / "master_bot_registry.json"
+    state_path = project_root / "governance" / "health" / "state.json"
+    registry = _registry("brain_refinery_v101_observed")
+    for index in range(102, 105):
+        row = dict(registry["sub_bots"][0])
+        row["bot_id"] = f"brain_refinery_v{index}_observed"
+        registry["sub_bots"].append(row)
+    debt = registry["sub_bots"][-1]
+    debt["bot_id"] = "brain_refinery_v11_stoch_vol"
+    debt["training_exclusion_reason"] = "sample_starved_requalification_collect_only"
+    debt["promotion_block_reason"] = "sample_starved_requalification_no_promotion"
+    debt["trading_enabled"] = False
+    debt["paper_trading_enabled"] = False
+    debt["live_trading_enabled"] = False
+    debt["execution_enabled"] = False
+    _write_json(registry_path, registry)
+
+    stamp = src._day_stamps(1)[0]
+    decision_file = project_root / "decision_explanations" / "shadow" / f"decision_explanations_{stamp}.jsonl"
+    decision_file.parent.mkdir(parents=True, exist_ok=True)
+    decision_file.write_text(
+        "\n".join(
+            json.dumps({"status": "HOLD", "bot_id": row["bot_id"]})
+            for row in registry["sub_bots"][:3]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    payload = src.build_payload(
+        project_root=project_root,
+        registry_path=registry_path,
+        state_path=state_path,
+        days=1,
+        bootstrap_tail_lines=20,
+        apply=True,
+    )
+
+    assert payload["overall_status"] == "degraded"
+    assert payload["unmanaged_zero_observation_count"] == 1
+    assert payload["fail_closed_zero_observation_count"] == 1
+    assert payload["operational_status"] == "ready"
+    assert payload["operational_ok"] is True
+    assert payload["operational_collection"]["raw_status_preserved"] is True

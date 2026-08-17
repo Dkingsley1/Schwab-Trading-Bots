@@ -1202,8 +1202,8 @@ def test_external_backlog_drain_apply_executes_and_refreshes_backlog(tmp_path: P
             assert env_overrides["SQL_LINK_SERVICE_IGNORE_ACTIVE_REQUEST"] == "1"
             assert env_overrides["SQL_LINK_SERVICE_WAL_CHECKPOINT_THRESHOLD_GB"] == "0.25"
             assert env_overrides["SQL_LINK_SERVICE_MERGE_MAX_SECONDS_PER_CYCLE"] == "90"
-            assert env_overrides["SQL_LINK_SERVICE_AUTO_HOT_RETENTION"] == "0"
-            assert env_overrides["SQL_LINK_SERVICE_AUTO_QUEUE_RETENTION"] == "0"
+            assert "SQL_LINK_SERVICE_AUTO_HOT_RETENTION" not in env_overrides
+            assert "SQL_LINK_SERVICE_AUTO_QUEUE_RETENTION" not in env_overrides
             assert env_overrides["SQL_LINK_SERVICE_SHARD_RUNTIME_STATE_CHECKPOINT_LINES"] == "1500"
             assert env_overrides["SQL_LINK_SERVICE_SHARDS"].startswith("governance,")
             assert env_overrides["SQL_LINK_SERVICE_SHARD_GOVERNANCE_MAX_FILES"] == "14"

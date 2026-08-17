@@ -95,7 +95,7 @@
       "recovery_command": ["./scripts/ops/opsctl.sh", "runtime-paper-regression-guard", "--json"],
       "regression_tests": ["tests/test_paper_execution_truth_layer.py", "tests/test_runtime_paper_regression_guard.py"],
       "artifacts": [
-        {"artifact_id": "paper_execution_truth", "path": "governance/health/paper_execution_truth_layer_latest.json", "max_age_minutes": 60, "truthy_paths": ["input_freshness.operational_inputs_fresh", "gates.sleeve_execution_scorecards.ok", "gates.account_position_awareness.ok", "gates.market_regime_stress_mode.ok", "gates.live_execution_transition_parity.ok", "gates.auto_throttle_overtrading.ok", "gates.data_ingestion_quality_gate.ok", "gates.paper_broker_truth_reconciliation.ok", "gates.artifact_freshness_guard.ok", "gates.paper_pnl_haircut_ledger.ok"], "required": true},
+        {"artifact_id": "paper_execution_truth", "path": "governance/health/paper_execution_truth_layer_latest.json", "max_age_minutes": 60, "ready_statuses": ["ready"], "truthy_paths": ["operational_conformance_complete", "input_freshness.operational_inputs_fresh", "gates.sleeve_execution_scorecards.ok", "gates.account_position_awareness.ok", "gates.market_regime_stress_mode.ok", "gates.live_execution_transition_parity.ok", "gates.auto_throttle_overtrading.ok", "gates.data_ingestion_quality_gate.ok", "gates.paper_broker_truth_reconciliation.ok", "gates.paper_pnl_haircut_ledger.ok"], "grade_requirements": {"grade": "A+"}, "required": true},
         {"artifact_id": "runtime_paper_regression", "path": "governance/health/runtime_paper_regression_guard_latest.json", "max_age_minutes": 30, "ready_statuses": ["ready"], "truthy_paths": ["ok"], "zero_paths": ["failed_guard_count"], "required": true}
       ]
     },
@@ -214,7 +214,7 @@
       "recovery_command": ["./scripts/ops/opsctl.sh", "notification-escalation-ladder", "--json"],
       "regression_tests": ["tests/test_production_quality_slo_guard.py", "tests/test_notification_escalation_ladder.py"],
       "artifacts": [
-        {"artifact_id": "production_quality_slo", "path": "governance/health/production_quality_slo_guard_latest.json", "max_age_minutes": 30, "ready_statuses": ["ready"], "truthy_paths": ["ok"], "zero_paths": ["breach_count", "critical_active_lane_count"], "required": true},
+        {"artifact_id": "production_quality_slo", "path": "governance/health/production_quality_slo_guard_latest.json", "max_age_minutes": 30, "status_path": "operational_status", "ready_statuses": ["ready"], "truthy_paths": ["operational_ok"], "zero_paths": ["operational_breach_count", "operational_critical_active_lane_count"], "required": true},
         {"artifact_id": "notification_escalation", "path": "governance/health/notification_escalation_ladder_latest.json", "max_age_minutes": 180, "ready_statuses": ["ready"], "truthy_paths": ["ok"], "required": true}
       ]
     },

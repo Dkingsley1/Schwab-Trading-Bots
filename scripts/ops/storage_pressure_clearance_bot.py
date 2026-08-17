@@ -322,7 +322,15 @@ def _storage_metrics(artifacts: dict[str, dict[str, Any]]) -> dict[str, Any]:
         and (
             bool(bounded.get("active_drain_progress", False))
             or str(storage.get("backlog_drain_status") or "").strip().lower()
-            in {"drain_active", "handoff_requested", "idle", "steady_state"}
+            in {
+                "drain_active",
+                "handoff_requested",
+                "idle",
+                "not_needed",
+                "steady_state",
+                "waiting_for_off_hours",
+                "waiting_for_window",
+            }
         )
     )
     soft_pressure_advisory_reasons = ["pressure_index_above_target"] if bounded_soft_target_pressure else []

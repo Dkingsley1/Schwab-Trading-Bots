@@ -29,6 +29,11 @@ def test_storage_reconnect_regression_guard_contract_is_ready() -> None:
     assert payload["regression_guard_contract"]["requires_auto_failback_opt_in"] is True
     assert payload["regression_guard_contract"]["requires_local_override_mount_suppression"] is True
     assert payload["regression_guard_contract"]["requires_transactional_sqlite_local_failover"] is True
+    assert payload["regression_guard_contract"]["requires_swift_semantic_typecheck"] is True
+    assert payload["regression_guard_contract"]["requires_atomic_transition_state"] is True
+    assert payload["regression_guard_contract"]["requires_standby_disconnect_restart_suppression"] is True
+    assert payload["regression_guard_contract"]["requires_external_write_certification"] is True
+    assert payload["regression_guard_contract"]["requires_compiled_runtime_binary"] is True
 
 
 def test_storage_reconnect_guard_flags_external_sqlite_dependency_in_local_mode(tmp_path: Path) -> None:
@@ -87,6 +92,41 @@ def test_storage_reconnect_guard_allows_intentional_local_hot_storage(tmp_path: 
     assert "external_mount_unavailable" not in payload["live_recovery"]["blockers"]
     assert payload["live_recovery"]["external_required_for_hot_path"] is False
     assert payload["live_recovery"]["external_probe_skipped"] is True
+
+
+def test_storage_reconnect_guard_uses_ready_transition_for_external_availability(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    scripts_ops = project_root / "scripts" / "ops"
+    scripts_ops.mkdir(parents=True)
+    (scripts_ops / "storage_eject_guard.swift").write_text(
+        "\n".join(guard_src.REQUIRED_GUARD_SNIPPETS.values()), encoding="utf-8"
+    )
+    (scripts_ops / "opsctl.sh").write_text(
+        "\n".join(guard_src.REQUIRED_OPSCTL_SNIPPETS.values()), encoding="utf-8"
+    )
+    (scripts_ops / "storage_sqlite_local_failover.py").write_text("# contract\n", encoding="utf-8")
+    (scripts_ops / "run_storage_eject_guard_launchd.sh").write_text("#!/bin/zsh\n", encoding="utf-8")
+    (project_root / "scripts" / "install_storage_eject_guard_launchd.sh").write_text(
+        "#!/bin/zsh\n", encoding="utf-8"
+    )
+    health = project_root / "governance" / "health"
+    _write_json(health / "storage_failback_sync_latest.json", '{"certified_mode":"local_fallback"}\n')
+    _write_json(
+        health / "storage_mount_guard_latest.json",
+        '{"external_available":false,"external_required_for_hot_path":true,"probe_skipped_external_io":true}\n',
+    )
+    _write_json(health / "ingestion_storage_control_latest.json", '{"overall_status":"ready"}\n')
+    _write_json(
+        health / "storage_eject_guard_latest.json",
+        '{"overall_status":"ready","event":"external_available_standby","external_available":true}\n',
+    )
+
+    payload = guard_src.build_payload(project_root, check_launchd=False, check_swift_parse=False)
+
+    assert payload["overall_status"] == "ready"
+    assert payload["live_recovery"]["external_available"] is True
+    assert payload["live_recovery"]["transition_event"] == "external_available_standby"
+    assert "external_mount_unavailable" not in payload["live_recovery"]["blockers"]
 
 
 def test_storage_reconnect_infrabot_plans_safe_repairs(tmp_path: Path, monkeypatch) -> None:

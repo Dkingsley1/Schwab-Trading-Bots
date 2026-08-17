@@ -26,7 +26,7 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, ledger_path: Path | None
     path = ledger_path or project_root / "governance" / "runtime" / DEFAULT_LEDGER_PATH.name
     ledger_preexisting = path.exists()
     ledger = LiveOrderLedger(path)
-    integrity = ledger.verify_event_chain()
+    integrity = ledger.verify_integrity()
     unresolved = ledger.unresolved()
     submit_unknown = [row for row in unresolved if str(row.get("state") or "") == "submit_unknown"]
     cancel_unknown = [row for row in unresolved if str(row.get("state") or "") == "cancel_unknown"]
@@ -34,7 +34,9 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, ledger_path: Path | None
     stale_submitting = [row for row in unresolved if str(row.get("state") or "") == "submitting"]
     blockers = []
     if not integrity.get("ok", False):
-        blockers.append("order_event_chain_invalid")
+        blockers.append("order_ledger_integrity_invalid")
+        if not (integrity.get("event_chain") or {}).get("ok", False):
+            blockers.append("order_event_chain_invalid")
     if submit_unknown:
         blockers.append("broker_submit_outcome_unknown")
     if stale_submitting:
@@ -51,7 +53,8 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, ledger_path: Path | None
         "overall_status": status,
         "ledger_path": str(path),
         "ledger_preexisting": ledger_preexisting,
-        "event_chain": integrity,
+        "integrity": integrity,
+        "event_chain": integrity.get("event_chain", {}),
         "unresolved_intent_count": len(unresolved),
         "submit_unknown_count": len(submit_unknown),
         "submitting_count": len(stale_submitting),
@@ -66,6 +69,11 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, ledger_path: Path | None
             "ambiguous_submit_never_auto_retried": True,
             "broker_reconciliation_required_for_unknown_submit_or_cancel": True,
             "hash_chained_order_events": True,
+            "sqlite_quick_check_required": True,
+            "foreign_key_integrity_required": True,
+            "wal_full_sync_required": True,
+            "event_state_materialization_must_match": True,
+            "payload_hash_integrity_required": True,
         },
         "recommended_actions": [
             "reconcile every unknown or interrupted broker operation against broker truth before any new live order"
@@ -77,7 +85,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Verify the durable live-order intent and state ledger.")
     parser.add_argument("--project-root", type=Path, default=PROJECT_ROOT)
     parser.add_argument("--ledger", type=Path)
-    parser.add_argument("--out", type=Path, default=DEFAULT_OUT_PATH)
+    parser.add_argument("--out", type=Path)
     parser.add_argument("--resolve-intent", default="")
     parser.add_argument(
         "--resolution",
@@ -91,7 +99,8 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     project_root = args.project_root.resolve()
     ledger_path = args.ledger if args.ledger and args.ledger.is_absolute() else (project_root / args.ledger if args.ledger else None)
-    out_path = args.out if args.out.is_absolute() else project_root / args.out
+    out_path = args.out or Path("governance/health/live_order_ledger_control_latest.json")
+    out_path = out_path if out_path.is_absolute() else project_root / out_path
     if str(args.resolve_intent or "").strip():
         if not args.resolution:
             parser.error("--resolve-intent requires --resolution")

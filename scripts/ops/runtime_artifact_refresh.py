@@ -5,6 +5,7 @@ import argparse
 import json
 import os
 import sys
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
@@ -14,16 +15,56 @@ if __package__ in {None, ""}:
     if str(PROJECT_ROOT) not in sys.path:
         sys.path.insert(0, str(PROJECT_ROOT))
     from core.runtime_python import resolve_runtime_python
+    from scripts.ops.artifact_generation_lock import (
+        PAPER_PROFITABILITY_LOCK_ENV,
+        paper_profitability_generation_lock,
+    )
     from scripts.ops.long_runtime_common import iso_now, ordered_unique, run_bounded_process_group, write_payload
 else:
     PROJECT_ROOT = Path(__file__).resolve().parents[2]
     from core.runtime_python import resolve_runtime_python
+    from .artifact_generation_lock import (
+        PAPER_PROFITABILITY_LOCK_ENV,
+        paper_profitability_generation_lock,
+    )
     from .long_runtime_common import iso_now, ordered_unique, run_bounded_process_group, write_payload
 
 
 PY = resolve_runtime_python(PROJECT_ROOT)
 DEFAULT_OUT_PATH = PROJECT_ROOT / "governance" / "health" / "runtime_artifact_refresh_latest.json"
 REFRESH_ACTIVE_ENV = "RUNTIME_ARTIFACT_REFRESH_ACTIVE"
+EVIDENCE_EPOCH_ID_ENV = "BOT_EVIDENCE_EPOCH_ID"
+EVIDENCE_EPOCH_STARTED_ENV = "BOT_EVIDENCE_EPOCH_STARTED_UTC"
+EVIDENCE_EPOCH_STEP_ENV = "BOT_EVIDENCE_EPOCH_STEP"
+SERIALIZED_PROFITABILITY_SCOPES = {"profitability", "training-profitability"}
+REFRESH_SCOPE_ROOTS: dict[str, tuple[str, ...]] = {
+    "grade-health": ("low_grade_finalizer_verified",),
+    "cell-health": ("low_grade_finalizer_verified",),
+    "training": ("training_runtime_control_verified",),
+    "profitability": (
+        "source_verification",
+        "source_verification_autorefresh",
+        "source_verification_verified",
+        "execution_queue_stress",
+        "profitability_hardening_control",
+        "market_replay_fill_capture_verified",
+        "profitability_evidence_firewall",
+        "bot_profitability_scalability_control",
+        "artifact_freshness_slo_post_master",
+    ),
+    "training-profitability": (
+        "training_runtime_control_verified",
+        "source_verification",
+        "source_verification_autorefresh",
+        "source_verification_verified",
+        "execution_queue_stress",
+        "profitability_hardening_control",
+        "market_replay_fill_capture_verified",
+        "profitability_evidence_firewall",
+        "bot_profitability_scalability_control",
+        "artifact_freshness_slo_post_master",
+    ),
+}
 PAPER_SOAK_MANAGED_STEPS = {
     "training_lineage_manifest",
     "training_quality_control",
@@ -55,6 +96,9 @@ PAPER_SOAK_MANAGED_STEPS = {
     "coordination_state_control",
     "multiple_testing_guard",
     "profitability_evidence_firewall",
+    "profitability_hardening_control",
+    "bot_profitability_scalability_control",
+    "production_readiness_control",
     "production_excellence_control",
     "continuous_soak_integrity_control",
     "live_transition_integrity_control",
@@ -118,7 +162,15 @@ def _string_set(value: Any) -> set[str]:
 
 
 def _parse_json_output(text: str) -> dict[str, Any]:
-    for raw in reversed([line.strip() for line in str(text or "").splitlines() if line.strip()]):
+    raw_text = str(text or "").strip()
+    if raw_text:
+        try:
+            payload = json.loads(raw_text)
+        except Exception:
+            payload = None
+        if isinstance(payload, dict):
+            return payload
+    for raw in reversed([line.strip() for line in raw_text.splitlines() if line.strip()]):
         try:
             payload = json.loads(raw)
         except Exception:
@@ -272,7 +324,7 @@ def _step_specs(project_root: Path) -> list[dict[str, Any]]:
             "name": "canary_rollout_guard",
             "payload_path": health_root / "canary_rollout_latest.json",
             "cmd": [str(PY), str(project_root / "scripts" / "canary_rollout_guard.py")],
-            "timeout_sec": 45,
+            "timeout_sec": 120,
             "optional": True,
         },
         {
@@ -310,6 +362,21 @@ def _step_specs(project_root: Path) -> list[dict[str, Any]]:
             "timeout_sec": 120,
         },
         {
+            "name": "paper_live_data_standard",
+            "payload_path": health_root / "paper_live_data_standard_latest.json",
+            "additional_payload_paths": [
+                health_root / "paper_live_data_standard_registry_candidate_latest.json",
+                health_root / "paper_live_data_standard_source_write_guard_latest.json",
+            ],
+            "cmd": [
+                str(PY),
+                str(ops_root / "paper_live_data_standard.py"),
+                "--apply",
+                "--json",
+            ],
+            "timeout_sec": 180,
+        },
+        {
             "name": "paper_performance",
             "payload_path": health_root / "paper_performance_latest.json",
             "cmd": [str(PY), str(project_root / "scripts" / "paper_performance_report.py"), "--week-days", "7", "--json-only", "--json"],
@@ -320,6 +387,20 @@ def _step_specs(project_root: Path) -> list[dict[str, Any]]:
             "payload_path": health_root / "paper_profitability_control_latest.json",
             "additional_payload_paths": [health_root / "paper_runtime_profitability_controls_latest.json"],
             "cmd": [str(PY), str(ops_root / "paper_profitability_control.py"), "--apply", "--json"],
+            "timeout_sec": 180,
+        },
+        {
+            "name": "profitability_hardening_control",
+            "payload_path": health_root / "profitability_hardening_latest.json",
+            "cmd": [
+                str(PY),
+                str(ops_root / "profitability_hardening_control.py"),
+                "--max-files",
+                "24",
+                "--max-rows-per-file",
+                "15000",
+                "--json",
+            ],
             "timeout_sec": 180,
         },
         {
@@ -455,6 +536,59 @@ def _step_specs(project_root: Path) -> list[dict[str, Any]]:
             "name": "sleeve_isolation_guard",
             "payload_path": health_root / "sleeve_isolation_guard_latest.json",
             "cmd": [str(PY), str(ops_root / "sleeve_isolation_guard.py"), "--json"],
+        },
+        {
+            "name": "soak_reliability_sentinel",
+            "payload_path": health_root / "soak_reliability_sentinel_latest.json",
+            "cmd": [str(PY), str(ops_root / "soak_reliability_sentinel.py"), "--json"],
+        },
+        {
+            "name": "bot_organization_control",
+            "payload_path": health_root / "bot_organization_latest.json",
+            "cmd": [str(PY), str(ops_root / "bot_organization_control.py"), "--json"],
+            "timeout_sec": 120,
+        },
+        {
+            "name": "collector_contracts",
+            "payload_path": health_root / "collector_contracts_latest.json",
+            "cmd": [
+                str(PY),
+                str(project_root / "scripts" / "collector_contracts.py"),
+                "--include-data-plane",
+                "--json",
+            ],
+            "timeout_sec": 120,
+        },
+        {
+            "name": "capability_materialization",
+            "payload_path": project_root
+            / "governance"
+            / "collector_capabilities"
+            / "materialized_capabilities_latest.json",
+            "cmd": [str(PY), str(ops_root / "capability_materialization_control.py"), "--json"],
+            "timeout_sec": 120,
+            "depends_on": ["source_verification_verified"],
+        },
+        {
+            "name": "collector_capability_control",
+            "payload_path": health_root / "collector_capability_control_latest.json",
+            "cmd": [str(PY), str(ops_root / "collector_capability_control.py"), "--json"],
+            "timeout_sec": 120,
+            "depends_on": [
+                "bot_organization_control",
+                "collector_contracts",
+                "capability_materialization",
+            ],
+        },
+        {
+            "name": "control_surface_ownership",
+            "payload_path": health_root / "control_surface_ownership_latest.json",
+            "cmd": [str(PY), str(ops_root / "control_surface_ownership.py"), "--json"],
+        },
+        {
+            "name": "independent_runtime_monitor",
+            "payload_path": health_root / "independent_runtime_monitor_latest.json",
+            "cmd": [str(PY), str(project_root / "scripts" / "observability_exporter.py"), "--json"],
         },
         {
             "name": "artifact_freshness_slo",
@@ -625,6 +759,12 @@ def _step_specs(project_root: Path) -> list[dict[str, Any]]:
             "name": "live_runtime_separation_control",
             "payload_path": health_root / "live_runtime_separation_control_latest.json",
             "cmd": [str(PY), str(ops_root / "live_runtime_separation_control.py"), "--json"],
+        },
+        {
+            "name": "strategy_generation_control",
+            "payload_path": health_root / "strategy_generation_control_latest.json",
+            "cmd": [str(PY), str(ops_root / "strategy_generation_control.py"), "--reconcile-stale", "--json"],
+            "timeout_sec": 60,
         },
         {
             "name": "paper_reconciliation_slo",
@@ -861,6 +1001,81 @@ def _step_specs(project_root: Path) -> list[dict[str, Any]]:
             "payload_path": health_root / "golden_replay_regression_latest.json",
             "cmd": [str(PY), str(project_root / "scripts" / "golden_replay_regression_guard.py"), "--json"],
             "timeout_sec": 180,
+            "depends_on": ["replay_hash_registry_final"],
+        },
+        {
+            "name": "runtime_training_snapshot_verified",
+            "payload_path": health_root / "runtime_training_snapshot_latest.json",
+            "cmd": [
+                str(PY),
+                str(project_root / "scripts" / "build_runtime_training_snapshot.py"),
+                "--reuse-if-fresh-minutes",
+                "10",
+                "--light-refresh-existing",
+                "--json",
+            ],
+            "timeout_sec": 300,
+        },
+        {
+            "name": "point_in_time_event_store_verified",
+            "payload_path": health_root / "point_in_time_event_store_latest.json",
+            "cmd": [str(PY), str(project_root / "scripts" / "point_in_time_event_store.py"), "--json"],
+            "timeout_sec": 180,
+            "depends_on": ["runtime_training_snapshot_verified"],
+        },
+        {
+            "name": "feature_store_manifest_verified",
+            "payload_path": project_root / "governance" / "feature_store" / "latest.json",
+            "cmd": [str(PY), str(project_root / "scripts" / "feature_store_manifest.py"), "--json"],
+            "timeout_sec": 180,
+            "depends_on": ["runtime_training_snapshot_verified", "point_in_time_event_store_verified"],
+        },
+        {
+            "name": "training_label_audit_verified",
+            "payload_path": health_root / "training_label_audit_latest.json",
+            "cmd": [str(PY), str(project_root / "scripts" / "training_label_audit.py"), "--json"],
+            "timeout_sec": 180,
+            "depends_on": ["feature_store_manifest_verified"],
+        },
+        {
+            "name": "training_lineage_manifest_verified",
+            "payload_path": health_root / "training_lineage_manifest_latest.json",
+            "cmd": [str(PY), str(ops_root / "training_lineage_manifest.py"), "--json"],
+            "timeout_sec": 180,
+            "depends_on": ["feature_store_manifest_verified", "training_label_audit_verified"],
+        },
+        {
+            "name": "training_quality_control_verified",
+            "payload_path": health_root / "training_quality_control_latest.json",
+            "cmd": [str(PY), str(ops_root / "training_quality_control.py"), "--json"],
+            "timeout_sec": 180,
+            "depends_on": ["training_lineage_manifest_verified", "training_label_audit_verified"],
+        },
+        {
+            "name": "bot_needs_intelligence_verified",
+            "payload_path": health_root / "bot_needs_intelligence_latest.json",
+            "cmd": [str(PY), str(ops_root / "bot_needs_intelligence.py"), "--json"],
+            "timeout_sec": 180,
+            "depends_on": ["training_quality_control_verified", "training_label_audit_verified"],
+        },
+        {
+            "name": "retrain_schema_compatibility_verified",
+            "payload_path": health_root / "retrain_schema_compatibility_latest.json",
+            "cmd": [str(PY), str(project_root / "scripts" / "retrain_schema_compatibility_guard.py"), "--json"],
+            "timeout_sec": 180,
+            "depends_on": ["feature_store_manifest_verified"],
+        },
+        {
+            "name": "training_runtime_control_verified",
+            "payload_path": health_root / "training_runtime_control_latest.json",
+            "cmd": [str(PY), str(ops_root / "training_runtime_control.py"), "--json"],
+            "timeout_sec": 180,
+            "depends_on": [
+                "bot_needs_intelligence_verified",
+                "training_quality_control_verified",
+                "retrain_schema_compatibility_verified",
+                "golden_replay_regression_final",
+            ],
         },
         {
             "name": "paper_execution_truth_verified",
@@ -993,6 +1208,135 @@ def _step_specs(project_root: Path) -> list[dict[str, Any]]:
             "timeout_sec": 180,
         },
         {
+            "name": "cell_sleeve_ticker_universe_pre_intelligence",
+            "payload_path": health_root / "sleeve_ticker_universe_latest.json",
+            "cmd": [str(PY), str(ops_root / "sleeve_ticker_universe_expansion.py"), "--json"],
+            "timeout_sec": 180,
+        },
+        {
+            "name": "cell_core_materialization_pre_intelligence",
+            "payload_path": health_root / "core_bot_materialization_guard_latest.json",
+            "cmd": [str(PY), str(ops_root / "core_bot_materialization_guard.py"), "--json"],
+            "timeout_sec": 180,
+            "depends_on": ["health_fast_final"],
+        },
+        {
+            "name": "cell_backpressure_super_drainer_pre_intelligence",
+            "payload_path": health_root / "backpressure_super_drainer_latest.json",
+            "cmd": [str(PY), str(ops_root / "backpressure_super_drainer.py"), "--json"],
+            "timeout_sec": 180,
+            "depends_on": ["health_fast_final"],
+        },
+        {
+            "name": "cell_data_plane_recovery_pre_intelligence",
+            "payload_path": health_root / "data_plane_recovery_controller_latest.json",
+            "cmd": [str(PY), str(ops_root / "data_plane_recovery_controller.py"), "--json"],
+            "timeout_sec": 180,
+            "depends_on": [
+                "health_fast_final",
+                "cell_backpressure_super_drainer_pre_intelligence",
+            ],
+        },
+        {
+            "name": "cell_federation_intelligence_pre",
+            "payload_path": health_root / "cell_federation_intelligence_latest.json",
+            "cmd": [str(ops_root / "opsctl.sh"), "cell-federation-intelligence", "--apply", "--json"],
+            "timeout_sec": 180,
+            "depends_on": [
+                "system_drift_guard_pre_architecture",
+                "cell_sleeve_ticker_universe_pre_intelligence",
+                "cell_core_materialization_pre_intelligence",
+                "cell_backpressure_super_drainer_pre_intelligence",
+                "cell_data_plane_recovery_pre_intelligence",
+            ],
+        },
+        {
+            "name": "cell_whole_system_intelligence",
+            "payload_path": health_root / "whole_system_intelligence_latest.json",
+            "cmd": [str(PY), str(ops_root / "system_intelligence_coordinator.py"), "--json"],
+            "timeout_sec": 180,
+            "depends_on": ["cell_federation_intelligence_pre"],
+        },
+        {
+            "name": "cell_whole_system_governor",
+            "payload_path": health_root / "whole_system_governor_latest.json",
+            "cmd": [str(PY), str(ops_root / "whole_system_governor.py"), "--json"],
+            "timeout_sec": 180,
+            "depends_on": ["cell_whole_system_intelligence"],
+        },
+        {
+            "name": "cell_sleeve_profitability_dashboard",
+            "payload_path": health_root / "sleeve_profitability_dashboard_latest.json",
+            "cmd": [str(PY), str(ops_root / "sleeve_profitability_dashboard.py"), "--json"],
+            "timeout_sec": 180,
+        },
+        {
+            "name": "cell_sleeve_ticker_universe",
+            "payload_path": health_root / "sleeve_ticker_universe_latest.json",
+            "cmd": [str(PY), str(ops_root / "sleeve_ticker_universe_expansion.py"), "--json"],
+            "timeout_sec": 180,
+        },
+        {
+            "name": "cell_writer_process_intelligence",
+            "payload_path": health_root / "writer_process_intelligence_latest.json",
+            "cmd": [str(PY), str(ops_root / "writer_process_intelligence.py"), "--json"],
+            "timeout_sec": 180,
+        },
+        {
+            "name": "cell_backlog_pump_infrabots",
+            "payload_path": health_root / "backlog_pump_infrabots_latest.json",
+            "cmd": [str(PY), str(ops_root / "backlog_pump_infrabots.py"), "--json"],
+            "timeout_sec": 180,
+            "depends_on": ["cell_writer_process_intelligence"],
+        },
+        {
+            "name": "cell_training_data_intake",
+            "payload_path": health_root / "training_data_intake_expansion_latest.json",
+            "cmd": [str(PY), str(ops_root / "training_data_intake_expansion.py"), "--json"],
+            "timeout_sec": 180,
+            "depends_on": ["training_quality_control_verified", "bot_needs_intelligence_verified"],
+        },
+        {
+            "name": "cell_training_labeling",
+            "payload_path": health_root / "training_labeling_intelligence_latest.json",
+            "cmd": [str(PY), str(ops_root / "training_labeling_intelligence.py"), "--refresh-artifacts", "--json"],
+            "timeout_sec": 180,
+            "depends_on": ["training_quality_control_verified"],
+        },
+        {
+            "name": "cell_training_probation_isolation",
+            "payload_path": health_root / "training_probation_isolation_latest.json",
+            "cmd": [str(PY), str(ops_root / "training_probation_isolation.py"), "--json"],
+            "timeout_sec": 180,
+            "depends_on": ["bot_needs_intelligence_verified"],
+        },
+        {
+            "name": "cell_provider_mesh",
+            "payload_path": health_root / "provider_mesh_latest.json",
+            "cmd": [str(PY), str(project_root / "scripts" / "provider_mesh_control.py"), "--json"],
+            "timeout_sec": 180,
+            "depends_on": ["collector_capability_control"],
+        },
+        {
+            "name": "cell_macro_event_intelligence",
+            "payload_path": health_root / "macro_event_intelligence_latest.json",
+            "cmd": [str(PY), str(ops_root / "macro_event_intelligence.py"), "--json"],
+            "timeout_sec": 180,
+        },
+        {
+            "name": "cell_watchdog_intelligence",
+            "payload_path": health_root / "watchdog_intelligence_latest.json",
+            "cmd": [str(PY), str(ops_root / "watchdog_intelligence.py"), "--json"],
+            "timeout_sec": 180,
+            "depends_on": ["process_watchdog_verified"],
+        },
+        {
+            "name": "cell_infrabot_library_self_awareness",
+            "payload_path": health_root / "infrabot_library_self_awareness_control_latest.json",
+            "cmd": [str(PY), str(ops_root / "infrabot_library_self_awareness_control.py"), "--json"],
+            "timeout_sec": 180,
+        },
+        {
             "name": "schwab_indicator_intelligence_verified",
             "payload_path": health_root / "schwab_indicator_intelligence_latest.json",
             "cmd": [str(ops_root / "opsctl.sh"), "schwab-indicator-intelligence", "--offline", "--json"],
@@ -1009,6 +1353,22 @@ def _step_specs(project_root: Path) -> list[dict[str, Any]]:
             "payload_path": health_root / "distributed_cell_architecture_latest.json",
             "cmd": [str(ops_root / "opsctl.sh"), "distributed-cell-architecture", "--apply", "--json"],
             "timeout_sec": 180,
+            "depends_on": [
+                "cell_whole_system_intelligence",
+                "cell_whole_system_governor",
+                "cell_sleeve_profitability_dashboard",
+                "cell_sleeve_ticker_universe",
+                "cell_writer_process_intelligence",
+                "cell_backlog_pump_infrabots",
+                "cell_training_data_intake",
+                "cell_training_labeling",
+                "cell_training_probation_isolation",
+                "cell_provider_mesh",
+                "cell_macro_event_intelligence",
+                "cell_watchdog_intelligence",
+                "cell_infrabot_library_self_awareness",
+                "training_runtime_control_verified",
+            ],
         },
         {
             "name": "system_architecture_hardening_verified",
@@ -1142,16 +1502,402 @@ def _step_specs(project_root: Path) -> list[dict[str, Any]]:
             "timeout_sec": 60,
         },
         {
+            "name": "data_collection_observation_rollup_terminal",
+            "payload_path": health_root / "data_collection_observation_rollup_latest.json",
+            "cmd": [
+                str(ops_root / "opsctl.sh"),
+                "data-collection-observation-rollup",
+                "--apply",
+                "--bootstrap-tail-lines",
+                "5000",
+                "--json",
+            ],
+            "timeout_sec": 180,
+        },
+        {
             "name": "health_fast_terminal",
             "payload_path": health_root / "health_fast_latest.json",
             "cmd": [str(PY), str(ops_root / "health_fast.py"), "--project-root", str(project_root), "--json"],
             "timeout_sec": 180,
+            "depends_on": [
+                "data_collection_observation_rollup_terminal",
+                "ingestion_storage_control_terminal",
+                "runtime_paper_regression_guard_terminal",
+            ],
         },
         {
             "name": "unattended_soak_readiness_terminal",
             "payload_path": health_root / "unattended_soak_readiness_latest.json",
             "cmd": [str(PY), str(ops_root / "unattended_soak_readiness.py"), "--json"],
             "timeout_sec": 60,
+            "depends_on": ["health_fast_terminal"],
+        },
+        {
+            "name": "grade_regression_guard_cell_pre",
+            "payload_path": health_root / "grade_regression_guard_latest.json",
+            "cmd": [str(PY), str(ops_root / "grade_regression_guard.py"), "--json"],
+            "timeout_sec": 180,
+            "depends_on": ["health_fast_terminal"],
+        },
+        {
+            "name": "section_grade_guard_cell_pre",
+            "payload_path": health_root / "section_grade_guard_latest.json",
+            "cmd": [str(PY), str(ops_root / "section_grade_guard.py"), "--json"],
+            "timeout_sec": 180,
+            "depends_on": ["health_fast_terminal"],
+        },
+        {
+            "name": "runtime_gate_dashboard_cell_convergence",
+            "payload_path": health_root / "runtime_gate_dashboard_latest.json",
+            "cmd": [str(PY), str(ops_root / "runtime_gate_dashboard.py"), "--json"],
+            "timeout_sec": 180,
+            "depends_on": [
+                "health_fast_terminal",
+                "unattended_soak_readiness_terminal",
+                "grade_regression_guard_cell_pre",
+                "section_grade_guard_cell_pre",
+            ],
+        },
+        {
+            "name": "cell_infrabot_library_self_awareness_convergence",
+            "payload_path": health_root / "infrabot_library_self_awareness_control_latest.json",
+            "cmd": [str(PY), str(ops_root / "infrabot_library_self_awareness_control.py"), "--json"],
+            "timeout_sec": 180,
+            "depends_on": ["runtime_gate_dashboard_cell_convergence"],
+        },
+        {
+            "name": "distributed_cell_architecture_convergence_1",
+            "payload_path": health_root / "distributed_cell_architecture_latest.json",
+            "cmd": [str(ops_root / "opsctl.sh"), "distributed-cell-architecture", "--apply", "--json"],
+            "timeout_sec": 180,
+            "depends_on": [
+                "cell_whole_system_intelligence",
+                "cell_whole_system_governor",
+                "cell_sleeve_profitability_dashboard",
+                "cell_sleeve_ticker_universe",
+                "cell_writer_process_intelligence",
+                "cell_backlog_pump_infrabots",
+                "cell_training_data_intake",
+                "cell_training_labeling",
+                "cell_training_probation_isolation",
+                "cell_provider_mesh",
+                "cell_macro_event_intelligence",
+                "cell_watchdog_intelligence",
+                "cell_infrabot_library_self_awareness_convergence",
+                "training_runtime_control_verified",
+                "health_fast_terminal",
+            ],
+        },
+        {
+            "name": "cell_federation_intelligence_convergence",
+            "payload_path": health_root / "cell_federation_intelligence_latest.json",
+            "cmd": [str(ops_root / "opsctl.sh"), "cell-federation-intelligence", "--apply", "--json"],
+            "timeout_sec": 180,
+            "depends_on": ["distributed_cell_architecture_convergence_1"],
+        },
+        {
+            "name": "one_numbers_regression_guard_cell_pre",
+            "payload_path": health_root / "one_numbers_regression_guard_latest.json",
+            "cmd": [
+                str(ops_root / "opsctl.sh"),
+                "one-numbers-regression-guard",
+                "--apply",
+                "--json",
+            ],
+            "timeout_sec": 180,
+            "depends_on": ["health_fast_terminal"],
+        },
+        {
+            "name": "stateful_storage_regression_guard_cell_pre",
+            "payload_path": health_root / "stateful_storage_regression_guard_latest.json",
+            "cmd": [
+                str(ops_root / "opsctl.sh"),
+                "stateful-storage-regression-guard",
+                "--apply",
+                "--json",
+            ],
+            "timeout_sec": 180,
+            "depends_on": ["health_fast_terminal"],
+        },
+        {
+            "name": "backlog_organizer_cell_convergence",
+            "payload_path": health_root / "backlog_organizer_latest.json",
+            "cmd": [str(ops_root / "opsctl.sh"), "backlog-organizer", "--json"],
+            "timeout_sec": 180,
+            "depends_on": ["health_fast_terminal"],
+        },
+        {
+            "name": "livefeed_refresh_guard_cell_pre",
+            "payload_path": health_root / "livefeed_refresh_guard_latest.json",
+            "cmd": [str(PY), str(ops_root / "livefeed_refresh_guard.py"), "--apply", "--json"],
+            "timeout_sec": 90,
+            "depends_on": ["health_fast_terminal"],
+        },
+        {
+            "name": "backlog_pcore_accelerator_cell_pre",
+            "payload_path": health_root / "backlog_pcore_accelerator_latest.json",
+            "cmd": [
+                str(ops_root / "opsctl.sh"),
+                "backlog-pcore-accelerator",
+                "--apply",
+                "--json",
+            ],
+            "timeout_sec": 180,
+            "depends_on": ["health_fast_terminal"],
+        },
+        {
+            "name": "backpressure_drainer_fleet_cell_pre",
+            "payload_path": health_root / "backpressure_drainer_fleet_latest.json",
+            "cmd": [str(PY), str(ops_root / "backpressure_drainer_fleet.py"), "--json"],
+            "timeout_sec": 180,
+            "depends_on": ["backlog_pcore_accelerator_cell_pre"],
+        },
+        {
+            "name": "adaptive_regression_guard_cell_convergence",
+            "payload_path": health_root / "adaptive_regression_guard_latest.json",
+            "cmd": [str(PY), str(ops_root / "adaptive_regression_guard.py"), "--apply", "--json"],
+            "timeout_sec": 180,
+            "depends_on": [
+                "grade_regression_guard_cell_pre",
+                "section_grade_guard_cell_pre",
+                "stateful_storage_regression_guard_cell_pre",
+                "distributed_cell_architecture_convergence_1",
+                "cell_federation_intelligence_convergence",
+                "livefeed_refresh_guard_cell_pre",
+                "backpressure_drainer_fleet_cell_pre",
+            ],
+        },
+        {
+            "name": "system_architecture_hardening_cell_convergence",
+            "payload_path": health_root / "system_architecture_hardening_latest.json",
+            "cmd": [str(PY), str(ops_root / "system_architecture_hardening.py"), "--apply", "--json"],
+            "timeout_sec": 180,
+            "depends_on": [
+                "adaptive_regression_guard_cell_convergence",
+                "backlog_organizer_cell_convergence",
+            ],
+        },
+        {
+            "name": "health_fast_cell_reconciled",
+            "payload_path": health_root / "health_fast_latest.json",
+            "cmd": [str(PY), str(ops_root / "health_fast.py"), "--project-root", str(project_root), "--json"],
+            "timeout_sec": 180,
+            "depends_on": ["system_architecture_hardening_cell_convergence"],
+        },
+        {
+            "name": "backlog_organizer_cell_verified",
+            "payload_path": health_root / "backlog_organizer_latest.json",
+            "cmd": [str(ops_root / "opsctl.sh"), "backlog-organizer", "--json"],
+            "timeout_sec": 180,
+            "depends_on": ["health_fast_cell_reconciled"],
+        },
+        {
+            "name": "incident_closeout_cell_convergence",
+            "payload_path": health_root / "incident_closeout_autopilot_latest.json",
+            "cmd": [str(PY), str(ops_root / "incident_closeout_autopilot.py"), "--json"],
+            "timeout_sec": 180,
+            "depends_on": ["health_fast_cell_reconciled"],
+        },
+        {
+            "name": "system_architecture_contract_graph_cell_convergence",
+            "payload_path": health_root / "system_architecture_contract_graph_latest.json",
+            "cmd": [str(PY), str(ops_root / "system_architecture_contract_graph.py"), "--apply", "--json"],
+            "timeout_sec": 180,
+            "depends_on": [
+                "distributed_cell_architecture_convergence_1",
+                "adaptive_regression_guard_cell_convergence",
+                "system_architecture_hardening_cell_convergence",
+                "health_fast_cell_reconciled",
+                "backlog_organizer_cell_verified",
+            ],
+        },
+        {
+            "name": "system_drift_guard_cell_probe",
+            "payload_path": health_root / "system_drift_guard_latest.json",
+            "cmd": [str(PY), str(ops_root / "system_drift_guard.py"), "--json"],
+            "timeout_sec": 180,
+            "depends_on": [
+                "adaptive_regression_guard_cell_convergence",
+                "system_architecture_contract_graph_cell_convergence",
+                "incident_closeout_cell_convergence",
+                "one_numbers_regression_guard_cell_pre",
+                "backlog_organizer_cell_verified",
+                "architecture_upgrade_scoreboard",
+                "codex_project_guard_verified",
+                "coinbase_api_health_verified",
+                "infrastructure_autofix_verified",
+            ],
+        },
+        {
+            "name": "system_architecture_contract_graph_cell_reconciled",
+            "payload_path": health_root / "system_architecture_contract_graph_latest.json",
+            "cmd": [str(PY), str(ops_root / "system_architecture_contract_graph.py"), "--apply", "--json"],
+            "timeout_sec": 180,
+            "depends_on": [
+                "adaptive_regression_guard_cell_convergence",
+                "system_drift_guard_cell_probe",
+            ],
+        },
+        {
+            "name": "system_architecture_autopilot_cell_convergence",
+            "payload_path": health_root / "system_architecture_autopilot_latest.json",
+            "cmd": [str(PY), str(ops_root / "system_architecture_autopilot.py"), "--apply", "--json"],
+            "timeout_sec": 180,
+            "depends_on": ["system_architecture_contract_graph_cell_reconciled"],
+        },
+        {
+            "name": "system_drift_guard_cell_convergence",
+            "payload_path": health_root / "system_drift_guard_latest.json",
+            "cmd": [str(PY), str(ops_root / "system_drift_guard.py"), "--json"],
+            "timeout_sec": 180,
+            "depends_on": [
+                "adaptive_regression_guard_cell_convergence",
+                "system_architecture_contract_graph_cell_reconciled",
+                "system_architecture_autopilot_cell_convergence",
+                "one_numbers_regression_guard_cell_pre",
+                "backlog_organizer_cell_verified",
+                "architecture_upgrade_scoreboard",
+                "codex_project_guard_verified",
+                "coinbase_api_health_verified",
+                "infrastructure_autofix_verified",
+            ],
+        },
+        {
+            "name": "system_architecture_contract_graph_cell_verified",
+            "payload_path": health_root / "system_architecture_contract_graph_latest.json",
+            "cmd": [str(PY), str(ops_root / "system_architecture_contract_graph.py"), "--apply", "--json"],
+            "timeout_sec": 180,
+            "depends_on": [
+                "adaptive_regression_guard_cell_convergence",
+                "system_drift_guard_cell_convergence",
+            ],
+        },
+        {
+            "name": "master_infrastructure_supervisor_cell_convergence",
+            "payload_path": health_root / "master_infrastructure_supervisor_latest.json",
+            "cmd": [str(PY), str(ops_root / "master_infrastructure_supervisor.py"), "--json"],
+            "timeout_sec": 180,
+            "depends_on": [
+                "runtime_gate_dashboard_cell_convergence",
+                "cell_infrabot_library_self_awareness_convergence",
+                "system_drift_guard_cell_convergence",
+                "system_architecture_contract_graph_cell_verified",
+            ],
+        },
+        {
+            "name": "system_drift_guard_cell_final",
+            "payload_path": health_root / "system_drift_guard_latest.json",
+            "cmd": [str(PY), str(ops_root / "system_drift_guard.py"), "--json"],
+            "timeout_sec": 180,
+            "depends_on": [
+                "master_infrastructure_supervisor_cell_convergence",
+                "system_architecture_contract_graph_cell_verified",
+            ],
+        },
+        {
+            "name": "system_architecture_contract_graph_cell_final",
+            "payload_path": health_root / "system_architecture_contract_graph_latest.json",
+            "cmd": [str(PY), str(ops_root / "system_architecture_contract_graph.py"), "--apply", "--json"],
+            "timeout_sec": 180,
+            "depends_on": ["system_drift_guard_cell_final"],
+        },
+        {
+            "name": "cell_platform_brain_v6_convergence",
+            "payload_path": health_root / "platform_brain_v6_latest.json",
+            "cmd": [str(PY), str(ops_root / "platform_brain_v6.py"), "--json"],
+            "timeout_sec": 180,
+            "depends_on": ["health_fast_cell_reconciled"],
+        },
+        {
+            "name": "cell_whole_system_intelligence_convergence",
+            "payload_path": health_root / "whole_system_intelligence_latest.json",
+            "additional_payload_paths": [
+                health_root / "system_signal_bus_latest.json",
+                health_root / "system_self_intelligence_latest.json",
+                health_root / "codex_handoff_latest.json",
+            ],
+            "cmd": [str(PY), str(ops_root / "system_intelligence_coordinator.py"), "--json"],
+            "timeout_sec": 180,
+            "depends_on": [
+                "distributed_cell_architecture_convergence_1",
+                "cell_federation_intelligence_convergence",
+                "cell_platform_brain_v6_convergence",
+                "cell_sleeve_ticker_universe",
+                "runtime_gate_dashboard_cell_convergence",
+                "master_infrastructure_supervisor_cell_convergence",
+                "system_drift_guard_cell_final",
+                "system_architecture_contract_graph_cell_final",
+            ],
+        },
+        {
+            "name": "cell_whole_system_governor_convergence",
+            "payload_path": health_root / "whole_system_governor_latest.json",
+            "cmd": [str(PY), str(ops_root / "whole_system_governor.py"), "--json"],
+            "timeout_sec": 180,
+            "depends_on": ["cell_whole_system_intelligence_convergence"],
+        },
+        {
+            "name": "distributed_cell_architecture_convergence_2",
+            "payload_path": health_root / "distributed_cell_architecture_latest.json",
+            "cmd": [str(ops_root / "opsctl.sh"), "distributed-cell-architecture", "--apply", "--json"],
+            "timeout_sec": 180,
+            "depends_on": [
+                "cell_whole_system_intelligence_convergence",
+                "cell_whole_system_governor_convergence",
+                "master_infrastructure_supervisor_cell_convergence",
+                "cell_sleeve_profitability_dashboard",
+                "cell_sleeve_ticker_universe",
+                "cell_writer_process_intelligence",
+                "cell_backlog_pump_infrabots",
+                "cell_training_data_intake",
+                "cell_training_labeling",
+                "cell_training_probation_isolation",
+                "cell_provider_mesh",
+                "cell_macro_event_intelligence",
+                "cell_watchdog_intelligence",
+                "cell_infrabot_library_self_awareness_convergence",
+                "training_runtime_control_verified",
+                "health_fast_cell_reconciled",
+                "system_drift_guard_cell_final",
+                "system_architecture_contract_graph_cell_final",
+            ],
+        },
+        {
+            "name": "cell_federation_intelligence_terminal",
+            "payload_path": health_root / "cell_federation_intelligence_latest.json",
+            "cmd": [str(ops_root / "opsctl.sh"), "cell-federation-intelligence", "--apply", "--json"],
+            "timeout_sec": 180,
+            "depends_on": [
+                "distributed_cell_architecture_convergence_2",
+                "system_drift_guard_cell_final",
+                "system_architecture_contract_graph_cell_final",
+            ],
+        },
+        {
+            "name": "cell_data_plane_recovery_terminal",
+            "payload_path": health_root / "data_plane_recovery_controller_latest.json",
+            "cmd": [str(PY), str(ops_root / "data_plane_recovery_controller.py"), "--json"],
+            "timeout_sec": 180,
+            "depends_on": [
+                "health_fast_cell_reconciled",
+                "cell_federation_intelligence_terminal",
+            ],
+        },
+        {
+            "name": "cell_whole_system_intelligence_terminal",
+            "payload_path": health_root / "whole_system_intelligence_latest.json",
+            "additional_payload_paths": [
+                health_root / "system_signal_bus_latest.json",
+                health_root / "system_self_intelligence_latest.json",
+                health_root / "codex_handoff_latest.json",
+            ],
+            "cmd": [str(PY), str(ops_root / "system_intelligence_coordinator.py"), "--json"],
+            "timeout_sec": 180,
+            "depends_on": [
+                "cell_federation_intelligence_terminal",
+                "cell_data_plane_recovery_terminal",
+                "distributed_cell_architecture_convergence_2",
+            ],
         },
         {
             "name": "one_numbers_regression_guard_terminal",
@@ -1169,12 +1915,37 @@ def _step_specs(project_root: Path) -> list[dict[str, Any]]:
             "payload_path": health_root / "grade_regression_guard_latest.json",
             "cmd": [str(PY), str(ops_root / "grade_regression_guard.py"), "--json"],
             "timeout_sec": 180,
+            "depends_on": [
+                "distributed_cell_architecture_convergence_2",
+                "cell_federation_intelligence_terminal",
+                "cell_whole_system_intelligence_terminal",
+                "health_fast_cell_reconciled",
+            ],
         },
         {
             "name": "section_grade_guard_terminal",
             "payload_path": health_root / "section_grade_guard_latest.json",
             "cmd": [str(PY), str(ops_root / "section_grade_guard.py"), "--json"],
             "timeout_sec": 180,
+            "depends_on": [
+                "distributed_cell_architecture_convergence_2",
+                "cell_federation_intelligence_terminal",
+                "cell_whole_system_intelligence_terminal",
+                "health_fast_cell_reconciled",
+            ],
+        },
+        {
+            "name": "low_grade_finalizer_verified",
+            "payload_path": health_root / "low_grade_finalizer_latest.json",
+            "cmd": [str(ops_root / "opsctl.sh"), "low-grade-finalizer", "--apply", "--json"],
+            "timeout_sec": 180,
+            "depends_on": [
+                "distributed_cell_architecture_convergence_2",
+                "cell_federation_intelligence_terminal",
+                "cell_whole_system_intelligence_terminal",
+                "grade_regression_guard_terminal",
+                "section_grade_guard_terminal",
+            ],
         },
         {
             "name": "livefeed_refresh_guard_terminal",
@@ -1477,28 +2248,239 @@ def _step_specs(project_root: Path) -> list[dict[str, Any]]:
             "timeout_sec": 300,
         },
         {
+            "name": "market_replay_fill_capture_verified",
+            "payload_path": health_root / "market_replay_fill_capture_latest.json",
+            "cmd": [str(PY), str(ops_root / "market_replay_fill_capture.py"), "--apply", "--json"],
+            "timeout_sec": 180,
+        },
+        {
+            "name": "independent_fill_evidence_acquisition_verified",
+            "payload_path": health_root / "independent_fill_evidence_acquisition_latest.json",
+            "cmd": [str(PY), str(ops_root / "independent_fill_evidence_acquisition.py"), "--apply", "--json"],
+            "timeout_sec": 180,
+            "depends_on": ["market_replay_fill_capture_verified"],
+        },
+        {
+            "name": "paper_execution_calibration_verified",
+            "payload_path": health_root / "paper_execution_calibration_latest.json",
+            "cmd": [str(PY), str(project_root / "scripts" / "paper_execution_calibration_report.py"), "--json"],
+            "timeout_sec": 180,
+            "depends_on": ["independent_fill_evidence_acquisition_verified"],
+        },
+        {
+            "name": "paper_performance_verified",
+            "payload_path": health_root / "paper_performance_latest.json",
+            "cmd": [str(PY), str(project_root / "scripts" / "paper_performance_report.py"), "--week-days", "7", "--json-only", "--json"],
+            "timeout_sec": 180,
+            "depends_on": ["paper_execution_calibration_verified"],
+        },
+        {
+            "name": "paper_profitability_control_verified",
+            "payload_path": health_root / "paper_profitability_control_latest.json",
+            "additional_payload_paths": [health_root / "paper_runtime_profitability_controls_latest.json"],
+            "cmd": [str(PY), str(ops_root / "paper_profitability_control.py"), "--apply", "--json"],
+            "timeout_sec": 180,
+            "depends_on": ["paper_performance_verified"],
+        },
+        {
+            "name": "counterfactual_replay_verified",
+            "payload_path": health_root / "counterfactual_replay_latest.json",
+            "cmd": [str(PY), str(project_root / "scripts" / "counterfactual_replay_harness.py"), "--json"],
+            "timeout_sec": 180,
+            "depends_on": ["paper_performance_verified"],
+        },
+        {
+            "name": "multiple_testing_guard_verified",
+            "payload_path": project_root / "governance" / "research" / "multiple_testing_guard_latest.json",
+            "cmd": [str(PY), str(project_root / "scripts" / "multiple_testing_guard.py"), "--json"],
+            "timeout_sec": 180,
+            "depends_on": ["counterfactual_replay_verified"],
+        },
+        {
+            "name": "decay_monitor_verified",
+            "payload_path": project_root / "governance" / "research" / "decay_monitor_latest.json",
+            "cmd": [str(PY), str(project_root / "scripts" / "decay_monitor.py"), "--json"],
+            "timeout_sec": 180,
+            "depends_on": ["paper_performance_verified"],
+        },
+        {
+            "name": "profitability_independent_validator_verified",
+            "payload_path": health_root / "profitability_independent_validator_latest.json",
+            "cmd": [str(PY), str(ops_root / "profitability_independent_validator.py"), "--json"],
+            "timeout_sec": 180,
+            "depends_on": ["paper_performance_verified"],
+        },
+        {
+            "name": "profitability_holdout_vault_verified",
+            "payload_path": project_root / "governance" / "research" / "profitability_holdout_vault_latest.json",
+            "cmd": [str(PY), str(ops_root / "profitability_holdout_vault.py"), "--json"],
+            "timeout_sec": 60,
+            "depends_on": ["counterfactual_replay_verified"],
+        },
+        {
+            "name": "profitability_benchmark_capture_verified",
+            "payload_path": project_root / "governance" / "research" / "profitability_benchmark_capture_latest.json",
+            "cmd": [str(PY), str(ops_root / "profitability_benchmark_capture.py"), "--apply", "--json"],
+            "timeout_sec": 180,
+            "depends_on": ["paper_performance_verified"],
+        },
+        {
+            "name": "profitability_benchmark_hurdle_verified",
+            "payload_path": project_root / "governance" / "research" / "profitability_benchmark_hurdle_latest.json",
+            "cmd": [str(PY), str(ops_root / "profitability_benchmark_hurdle.py"), "--json"],
+            "timeout_sec": 60,
+            "depends_on": ["profitability_benchmark_capture_verified", "paper_performance_verified"],
+        },
+        {
             "name": "profitability_evidence_firewall",
             "payload_path": health_root / "profitability_evidence_firewall_latest.json",
             "cmd": [str(PY), str(ops_root / "profitability_evidence_firewall.py"), "--json"],
             "timeout_sec": 180,
+            "depends_on": [
+                "source_verification_verified",
+                "independent_fill_evidence_acquisition_verified",
+                "paper_execution_calibration_verified",
+                "paper_live_data_standard",
+                "paper_performance_verified",
+                "paper_profitability_control_verified",
+                "counterfactual_replay_verified",
+                "multiple_testing_guard_verified",
+                "decay_monitor_verified",
+                "profitability_independent_validator_verified",
+                "profitability_holdout_vault_verified",
+                "profitability_benchmark_hurdle_verified",
+            ],
+        },
+        {
+            "name": "bot_profitability_scalability_control",
+            "payload_path": health_root / "bot_profitability_scalability_latest.json",
+            "additional_payload_paths": [
+                project_root
+                / "governance"
+                / "bot_organization"
+                / "bot_profitability_scalability_latest.json"
+            ],
+            "cmd": [
+                str(PY),
+                str(ops_root / "bot_profitability_scalability_control.py"),
+                "--json",
+            ],
+            "timeout_sec": 180,
+            "depends_on": [
+                "bot_organization_control",
+                "training_quality_control_verified",
+                "feature_store_manifest_verified",
+                "runtime_throttle_control_post_settlement_verified",
+                "profitability_evidence_firewall",
+            ],
+        },
+        {
+            "name": "master_grandmaster_evidence_v2",
+            "payload_path": health_root / "master_grandmaster_evidence_v2_latest.json",
+            "additional_payload_paths": [
+                project_root
+                / "governance"
+                / "master_grandmaster"
+                / "evidence_packets_v2_latest.json"
+            ],
+            "cmd": [
+                str(PY),
+                str(ops_root / "master_grandmaster_evidence_control.py"),
+                "--json",
+            ],
+            "timeout_sec": 120,
+            "depends_on": [
+                "bot_organization_control",
+                "regime_control_plane",
+                "paper_execution_truth_verified",
+                "profitability_evidence_firewall",
+                "bot_profitability_scalability_control",
+                "source_verification_verified",
+                "runtime_throttle_control_post_settlement_verified",
+                "account_position_study",
+                "paper_execution_calibration_verified",
+                "cell_sleeve_profitability_dashboard",
+            ],
+        },
+        {
+            "name": "artifact_freshness_slo_post_master",
+            "payload_path": health_root / "artifact_freshness_slo_latest.json",
+            "cmd": [str(PY), str(ops_root / "artifact_freshness_slo.py"), "--json"],
+            "timeout_sec": 60,
+            "depends_on": [
+                "master_grandmaster_evidence_v2",
+                "control_surface_ownership",
+            ],
         },
         {
             "name": "content_addressed_artifact_store",
             "payload_path": project_root / "governance" / "content_store" / "latest.json",
             "cmd": [str(PY), str(ops_root / "content_addressed_artifact_store.py"), "--json"],
             "timeout_sec": 300,
+            "depends_on": [
+                "profitability_evidence_firewall",
+                "bot_profitability_scalability_control",
+                "master_grandmaster_evidence_v2",
+                "artifact_freshness_slo_post_master",
+            ],
         },
         {
             "name": "storage_disaster_recovery_verified",
             "payload_path": health_root / "storage_disaster_recovery_latest.json",
             "cmd": [str(PY), str(ops_root / "storage_disaster_recovery.py"), "--json"],
             "timeout_sec": 180,
+            "depends_on": ["content_addressed_artifact_store"],
+        },
+        {
+            "name": "security_evidence_autofix_verified",
+            "payload_path": health_root / "security_evidence_autofix_latest.json",
+            "additional_payload_paths": [health_root / "secret_scan_latest.json"],
+            "cmd": [
+                str(PY),
+                str(ops_root / "security_evidence_autofix.py"),
+                "--force-secret-scan",
+                "--json",
+            ],
+            "timeout_sec": 900,
+        },
+        {
+            "name": "security_audit_verified",
+            "payload_path": health_root / "security_audit_latest.json",
+            "cmd": [str(PY), str(project_root / "scripts" / "security_hardening_audit.py")],
+            "timeout_sec": 180,
+            "depends_on": ["security_evidence_autofix_verified"],
+        },
+        {
+            "name": "remote_alert_control_verified",
+            "payload_path": health_root / "remote_alert_control_latest.json",
+            "cmd": [str(PY), str(ops_root / "remote_alert_control.py"), "--json"],
+            "timeout_sec": 180,
+        },
+        {
+            "name": "blackstart_recovery_verified",
+            "payload_path": health_root / "blackstart_recovery_latest.json",
+            "cmd": [str(PY), str(ops_root / "blackstart_recovery.py"), "--json"],
+            "timeout_sec": 180,
+            "depends_on": ["storage_disaster_recovery_verified"],
+        },
+        {
+            "name": "telemetry_redaction_canary_verified",
+            "payload_path": health_root / "telemetry_redaction_canary_latest.json",
+            "cmd": [str(PY), str(ops_root / "telemetry_redaction_canary.py"), "--json"],
+            "timeout_sec": 60,
         },
         {
             "name": "production_readiness_control",
             "payload_path": health_root / "production_readiness_control_latest.json",
             "cmd": [str(PY), str(ops_root / "production_readiness_control.py"), "--json"],
             "timeout_sec": 180,
+            "depends_on": [
+                "storage_disaster_recovery_verified",
+                "security_audit_verified",
+                "remote_alert_control_verified",
+                "blackstart_recovery_verified",
+                "telemetry_redaction_canary_verified",
+            ],
         },
         {
             "name": "production_excellence_control",
@@ -1523,6 +2505,17 @@ def _step_specs(project_root: Path) -> list[dict[str, Any]]:
             "payload_path": health_root / "live_money_readiness_contract_latest.json",
             "cmd": [str(PY), str(ops_root / "live_money_readiness_contract.py"), "--json"],
             "timeout_sec": 180,
+        },
+        {
+            "name": "production_resilience_control",
+            "payload_path": health_root / "production_resilience_control_latest.json",
+            "cmd": [str(PY), str(ops_root / "production_resilience_control.py"), "--json"],
+            "timeout_sec": 60,
+            "depends_on": [
+                "profitability_evidence_firewall",
+                "storage_disaster_recovery_verified",
+                "live_money_readiness_contract_verified",
+            ],
         },
         {
             "name": "runtime_gate_dashboard_pre_master",
@@ -1569,11 +2562,44 @@ def _step_specs(project_root: Path) -> list[dict[str, Any]]:
     ]
 
 
+def _select_scope_specs(specs: list[dict[str, Any]], scope: str) -> list[dict[str, Any]]:
+    scope_key = str(scope or "all").strip().lower()
+    if scope_key == "all":
+        return list(specs)
+    roots = REFRESH_SCOPE_ROOTS.get(scope_key)
+    if roots is None:
+        raise ValueError(f"unsupported refresh scope: {scope_key}")
+    by_name = {str(spec.get("name") or ""): spec for spec in specs}
+    missing_roots = [name for name in roots if name not in by_name]
+    if missing_roots:
+        raise ValueError(f"refresh scope {scope_key} is missing root steps: {','.join(missing_roots)}")
+
+    selected = set(roots)
+    pending = list(roots)
+    while pending:
+        name = pending.pop()
+        for dependency in by_name[name].get("depends_on", []):
+            dependency_name = str(dependency or "").strip()
+            if not dependency_name:
+                continue
+            if dependency_name not in by_name:
+                raise ValueError(
+                    f"refresh scope {scope_key} dependency is not defined: {name}->{dependency_name}"
+                )
+            if dependency_name not in selected:
+                selected.add(dependency_name)
+                pending.append(dependency_name)
+    return [spec for spec in specs if str(spec.get("name") or "") in selected]
+
+
 def _run_spec(spec: dict[str, Any], project_root: Path) -> dict[str, Any]:
     started = datetime.now(timezone.utc)
     payload_path = Path(spec["payload_path"]).expanduser()
     child_env = os.environ.copy()
     child_env[REFRESH_ACTIVE_ENV] = "1"
+    child_env[EVIDENCE_EPOCH_ID_ENV] = str(spec.get("_evidence_epoch_id") or "")
+    child_env[EVIDENCE_EPOCH_STARTED_ENV] = str(spec.get("_evidence_epoch_started_utc") or "")
+    child_env[EVIDENCE_EPOCH_STEP_ENV] = str(spec.get("name") or "")
     result = run_bounded_process_group(
         list(spec["cmd"]),
         cwd=project_root,
@@ -1600,6 +2626,78 @@ def _run_spec(spec: dict[str, Any], project_root: Path) -> dict[str, Any]:
         "duration_ms": duration_ms,
         "timed_out": bool(result.get("timed_out", False)),
         "timeout_cleanup": result.get("timeout_cleanup") if isinstance(result.get("timeout_cleanup"), dict) else {},
+    }
+
+
+def _evidence_epoch_payload(spec: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "id": str(spec.get("_evidence_epoch_id") or ""),
+        "started_utc": str(spec.get("_evidence_epoch_started_utc") or ""),
+        "step": str(spec.get("name") or ""),
+        "depends_on": [str(item) for item in spec.get("depends_on", []) if str(item or "").strip()],
+        "dependencies": [
+            dict(row)
+            for row in spec.get("_evidence_dependency_rows", [])
+            if isinstance(row, dict)
+        ],
+        "atomic_publish": True,
+    }
+
+
+def _annotate_epoch(path: Path, spec: dict[str, Any]) -> dict[str, Any]:
+    payload = _load_json(path)
+    if not payload:
+        return {}
+    payload["evidence_epoch"] = _evidence_epoch_payload(spec)
+    write_payload(path, payload)
+    return payload
+
+
+def _dependency_failure_result(spec: dict[str, Any], missing_dependencies: list[str]) -> dict[str, Any]:
+    payload_path = Path(spec["payload_path"]).expanduser()
+    paths = [
+        payload_path,
+        *[
+            Path(path).expanduser()
+            for path in spec.get("additional_payload_paths", [])
+            if str(path or "").strip()
+        ],
+    ]
+    envelope = {
+        "timestamp_utc": iso_now(),
+        "schema_version": 1,
+        "ok": False,
+        "overall_status": "degraded" if bool(spec.get("optional", False)) else "blocked",
+        "artifact_refresh_failed": True,
+        "dependency_epoch_rejected": True,
+        "producer": str(spec.get("name") or ""),
+        "missing_current_epoch_dependencies": missing_dependencies,
+        "recommended_actions": [
+            "repair the failed upstream evidence producer and rerun the ordered refresh epoch"
+        ],
+        "evidence_epoch": _evidence_epoch_payload(spec),
+    }
+    for path in paths:
+        write_payload(path, {**envelope, "artifact_path": str(path)})
+    return {
+        "cmd": list(spec.get("cmd") or []),
+        "rc": 2,
+        "payload": {**envelope, "artifact_path": str(payload_path)},
+        "payload_source": "dependency_failure_envelope",
+        "stdout_tail": "",
+        "stderr_tail": "current evidence epoch dependency failure: " + ",".join(missing_dependencies),
+        "duration_ms": 0.0,
+        "timed_out": False,
+        "timeout_cleanup": {},
+        "refresh_attempt_count": 0,
+        "refresh_attempts": [],
+        "artifact_refreshed_this_cycle": True,
+        "artifact_path_freshness": {str(path): True for path in paths},
+        "published_from_stdout": False,
+        "failure_envelope_published": True,
+        "failure_envelope_paths": [str(path) for path in paths],
+        "dependency_blocked": True,
+        "missing_current_epoch_dependencies": missing_dependencies,
     }
 
 
@@ -1679,6 +2777,7 @@ def _run_spec_with_freshness(
                 "recommended_actions": [
                     "inspect the producer stderr and restore current-cycle publication before trusting this artifact"
                 ],
+                "evidence_epoch": _evidence_epoch_payload(spec),
             }
             write_payload(stale_path, failure_envelope)
             if _artifact_present(stale_path):
@@ -1689,6 +2788,13 @@ def _run_spec_with_freshness(
         failure_envelope_published = len(failure_envelope_paths) == sum(
             1 for fresh in path_freshness.values() if not fresh
         )
+    else:
+        annotated_payload = _annotate_epoch(payload_path, spec)
+        for additional_path in additional_payload_paths:
+            _annotate_epoch(additional_path, spec)
+        if annotated_payload:
+            result["payload"] = annotated_payload
+            result["payload_source"] = "epoch_annotated_artifact"
     result["refresh_attempt_count"] = len(attempt_rows)
     result["refresh_attempts"] = attempt_rows
     result["artifact_refreshed_this_cycle"] = refreshed_this_cycle
@@ -1790,6 +2896,17 @@ def _stateful_sql_soft_quota_managed_for_paper_soak(project_root: Path, payload:
     return bool(continuous_ready and quota_ready and compaction_only)
 
 
+def _paper_soak_managed_name(name: str) -> str:
+    return next(
+        (
+            candidate
+            for candidate in sorted(PAPER_SOAK_MANAGED_STEPS, key=len, reverse=True)
+            if name == candidate or name.startswith(f"{candidate}_")
+        ),
+        "",
+    )
+
+
 def _paper_soak_managed_step(name: str, payload: dict[str, Any], *, project_root: Path, paper_soak_ready: bool) -> bool:
     if not paper_soak_ready:
         return False
@@ -1816,10 +2933,16 @@ def _paper_soak_managed_step(name: str, payload: dict[str, Any], *, project_root
         manual_flags = _as_dict(payload.get("manual_flags"))
         operator_stop = _as_dict(manual_flags.get("operator_stop"))
         global_halt = _as_dict(manual_flags.get("global_halt"))
-        issue_names = {
+        issue_rows = [row for row in payload.get("issues", []) if isinstance(row, dict)]
+        blocking_keys = ("blocks_live_execution", "blocks_halt_clear", "blocks_heavy_viewer")
+        blocking_issue_names = {
             str(row.get("name") or "").strip()
-            for row in payload.get("issues", [])
-            if isinstance(row, dict) and str(row.get("name") or "").strip()
+            for row in issue_rows
+            if str(row.get("name") or "").strip()
+            and (
+                not any(key in row for key in blocking_keys)
+                or any(bool(row.get(key, False)) for key in blocking_keys)
+            )
         }
         expected_lock_issues = {
             "paper_trade_lock_active",
@@ -1835,12 +2958,12 @@ def _paper_soak_managed_step(name: str, payload: dict[str, Any], *, project_root
             and not bool(execution_policy.get("effective_live_order_execution_allowed", False))
             and not bool(operator_stop.get("active", False))
             and not bool(global_halt.get("active", False))
-            and issue_names
-            and issue_names.issubset(expected_lock_issues)
+            and blocking_issue_names
+            and blocking_issue_names.issubset(expected_lock_issues)
         )
     if name.startswith("coordination_state_control") and status in PAPER_SOAK_MANAGED_STATUSES:
         return True
-    if name not in PAPER_SOAK_MANAGED_STEPS:
+    if not _paper_soak_managed_name(name):
         return False
     if status in PAPER_SOAK_MANAGED_STATUSES:
         return True
@@ -1849,7 +2972,7 @@ def _paper_soak_managed_step(name: str, payload: dict[str, Any], *, project_root
 
 def _step_status(result: dict[str, Any], *, name: str = "", project_root: Path = PROJECT_ROOT, paper_soak_ready: bool = False) -> str:
     payload = result.get("payload") if isinstance(result.get("payload"), dict) else {}
-    if paper_soak_ready and name in PAPER_SOAK_MANAGED_STEPS and int(result.get("rc", 1)) != 0 and not payload:
+    if paper_soak_ready and _paper_soak_managed_name(name) and int(result.get("rc", 1)) != 0 and not payload:
         return "managed_paper_soak"
     if int(result.get("rc", 1)) != 0 and not payload:
         return "error"
@@ -1865,7 +2988,40 @@ def _step_status(result: dict[str, Any], *, name: str = "", project_root: Path =
         return "ready_seeded"
     if _paper_soak_managed_step(name, payload, project_root=project_root, paper_soak_ready=paper_soak_ready):
         return "managed_paper_soak"
-    status = str(payload.get("overall_status") or "").strip().lower()
+    if name.startswith("data_collection_observation_rollup"):
+        operational = _as_dict(payload.get("operational_collection"))
+        operational_status = str(payload.get("operational_status") or operational.get("status") or "").strip().lower()
+        operational_ok = bool(payload.get("operational_ok", operational.get("ok", False)))
+        if operational_ok and operational_status in {"ready", "ok"}:
+            return "ready_operational"
+    operational = _as_dict(payload.get("operational_training"))
+    operational_status = str(payload.get("operational_status") or operational.get("status") or "").strip().lower()
+    operational_ok = bool(payload.get("operational_ok", operational.get("ok", False)))
+    if operational_ok and operational_status in {"ready", "ok", "ready_idle", "guarded_ready"}:
+        return "ready_operational"
+    nested_overall = payload.get("overall") if isinstance(payload.get("overall"), dict) else {}
+    status = str(payload.get("overall_status") or nested_overall.get("status") or "").strip().lower()
+    if name.endswith("provider_mesh") or "provider_mesh" in name:
+        summary = _as_dict(payload.get("summary"))
+        required_collectors = _safe_int(summary.get("required_collectors"), 0)
+        if (
+            required_collectors > 0
+            and _safe_int(summary.get("required_contract_ok"), 0) >= required_collectors
+            and _safe_int(summary.get("required_snapshot_ready"), 0) >= required_collectors
+            and not list(payload.get("required_failures") or [])
+        ):
+            return "ready_operational"
+    if bool(payload.get("ok", False)) and status in {
+        "advisory",
+        "guarded_ready",
+        "needs_action",
+        "needs_attention",
+        "needs_work",
+        "operational_hold",
+        "ready_with_evidence_debt",
+        "watch",
+    }:
+        return "ready_advisory"
     if (
         name == "paper_profitability_control"
         and status == "protective_tightening"
@@ -1963,6 +3119,11 @@ def _payload_summary(payload: dict[str, Any]) -> dict[str, Any]:
         for key in ("execution_result_rows", "execution_result_stale_skip_rows", "execution_intent_rows", "source_mode"):
             if key in source:
                 summary[key] = source.get(key)
+    nested_overall = payload.get("overall") if isinstance(payload.get("overall"), dict) else {}
+    if "overall_status" not in summary and nested_overall.get("status"):
+        summary["overall_status"] = nested_overall.get("status")
+    if "ok" not in summary and "ok" in nested_overall:
+        summary["ok"] = bool(nested_overall.get("ok"))
     return summary
 
 
@@ -1971,9 +3132,14 @@ def build_payload(
     *,
     specs: list[dict[str, Any]] | None = None,
     runner: RefreshRunner | None = None,
+    scope: str = "all",
 ) -> dict[str, Any]:
     cycle_started = datetime.now(timezone.utc)
-    refresh_specs = list(specs or _step_specs(project_root))
+    evidence_epoch_id = uuid.uuid4().hex
+    evidence_epoch_started_utc = cycle_started.isoformat()
+    all_specs = list(specs or _step_specs(project_root))
+    refresh_scope = "custom" if specs is not None and scope == "all" else str(scope or "all").strip().lower()
+    refresh_specs = _select_scope_specs(all_specs, scope) if specs is None or scope != "all" else all_specs
     run_step = runner or _run_spec
     missing_before = [str(spec["name"]) for spec in refresh_specs if not _artifact_present(Path(spec["payload_path"]))]
 
@@ -1981,10 +3147,34 @@ def build_payload(
     statuses: list[str] = []
     missing_after: list[str] = []
     recovered = 0
+    completed_steps: dict[str, dict[str, Any]] = {}
     paper_soak_ready_before_refresh = _paper_soak_contract_ready(project_root)
-    for spec in refresh_specs:
+    for raw_spec in refresh_specs:
+        spec = dict(raw_spec)
+        spec["_evidence_epoch_id"] = evidence_epoch_id
+        spec["_evidence_epoch_started_utc"] = evidence_epoch_started_utc
+        dependencies = [str(item) for item in spec.get("depends_on", []) if str(item or "").strip()]
+        dependency_rows = []
+        missing_dependencies = []
+        for dependency in dependencies:
+            prior = completed_steps.get(dependency)
+            if not prior or not bool(prior.get("producer_artifact_present", False)) or not bool(prior.get("refreshed_this_cycle", False)):
+                missing_dependencies.append(dependency)
+                continue
+            dependency_rows.append(
+                {
+                    "step": dependency,
+                    "artifact_path": str(prior.get("payload_path") or ""),
+                    "epoch_id": evidence_epoch_id,
+                }
+            )
+        spec["_evidence_dependency_rows"] = dependency_rows
         payload_path = Path(spec["payload_path"])
-        result = _run_spec_with_freshness(spec, project_root, run_step)
+        result = (
+            _dependency_failure_result(spec, missing_dependencies)
+            if missing_dependencies
+            else _run_spec_with_freshness(spec, project_root, run_step)
+        )
         payload = result.get("payload") if isinstance(result.get("payload"), dict) else {}
         present_after = _artifact_present(payload_path)
         refreshed_this_cycle = bool(result.get("artifact_refreshed_this_cycle", False))
@@ -2004,8 +3194,10 @@ def build_payload(
                 "producer_artifact_present": producer_artifact_present,
                 "refreshed_this_cycle": refreshed_this_cycle,
                 "optional": bool(spec.get("optional", False)),
+                "depends_on": dependencies,
             }
         )
+        completed_steps[str(spec["name"])] = steps[-1]
 
     paper_soak_ready_after_refresh = _paper_soak_contract_ready(project_root)
     paper_soak_ready = bool(paper_soak_ready_before_refresh or paper_soak_ready_after_refresh)
@@ -2045,6 +3237,8 @@ def build_payload(
                 "refresh_attempt_count": int(result.get("refresh_attempt_count", 1) or 1),
                 "published_from_stdout": bool(result.get("published_from_stdout", False)),
                 "failure_envelope_published": bool(result.get("failure_envelope_published", False)),
+                "dependency_blocked": bool(result.get("dependency_blocked", False)),
+                "depends_on": list(row.get("depends_on") or []),
                 "payload_summary": _payload_summary(payload),
                 "cmd": list(result.get("cmd") or []),
                 "stdout_tail": str(result.get("stdout_tail") or ""),
@@ -2073,7 +3267,17 @@ def build_payload(
     required_missing_after = [name for name in missing_after if name not in optional_names]
     required_stale_after = [name for name in stale_after_refresh if name not in optional_names]
     error_statuses = {"error", "stale"}
-    degraded_statuses = {"warn", "thin", "degraded", "needs_work", "needs_review", "blocked", "busy", "skipped"}
+    degraded_statuses = {
+        "warn",
+        "thin",
+        "degraded",
+        "needs_work",
+        "needs_review",
+        "blocked",
+        "blocked_integrity",
+        "busy",
+        "skipped",
+    }
     error_step_count = sum(1 for status in statuses if status in error_statuses)
     degraded_step_count = sum(1 for status in statuses if status in degraded_statuses)
     blocked_step_count = sum(1 for status in statuses if status == "blocked")
@@ -2089,7 +3293,11 @@ def build_payload(
         "timestamp_utc": iso_now(),
         "schema_version": 1,
         "refresh_cycle_started_utc": cycle_started.isoformat(),
+        "evidence_epoch_id": evidence_epoch_id,
+        "evidence_epoch_started_utc": evidence_epoch_started_utc,
+        "evidence_epoch_atomic_publish": True,
         "project_root": str(project_root),
+        "refresh_scope": refresh_scope,
         "ok": overall_status != "blocked",
         "overall_status": overall_status,
         "target_refresh_step_count": len(refresh_specs),
@@ -2124,13 +3332,44 @@ def build_payload(
     }
 
 
-def _publish_dashboard(project_root: Path) -> dict[str, Any]:
+def build_payload_serialized(project_root: Path, *, scope: str) -> dict[str, Any]:
+    scope_key = str(scope or "all").strip().lower()
+    if scope_key not in SERIALIZED_PROFITABILITY_SCOPES:
+        return build_payload(project_root, scope=scope_key)
+
+    previous_lock_env = os.environ.get(PAPER_PROFITABILITY_LOCK_ENV)
+    with paper_profitability_generation_lock(project_root, timeout_seconds=120.0):
+        os.environ[PAPER_PROFITABILITY_LOCK_ENV] = "1"
+        try:
+            payload = build_payload(project_root, scope=scope_key)
+        finally:
+            if previous_lock_env is None:
+                os.environ.pop(PAPER_PROFITABILITY_LOCK_ENV, None)
+            else:
+                os.environ[PAPER_PROFITABILITY_LOCK_ENV] = previous_lock_env
+    payload["single_writer_epoch_lock"] = {
+        "held": True,
+        "lock_family": "paper_profitability_generation",
+        "scope": scope_key,
+        "prevents_interleaved_mutable_latest_publication": True,
+    }
+    return payload
+
+
+def _publish_dashboard(
+    project_root: Path,
+    *,
+    evidence_epoch_id: str,
+    evidence_epoch_started_utc: str,
+) -> dict[str, Any]:
     dashboard_path = project_root / "governance" / "health" / "runtime_gate_dashboard_latest.json"
     spec = {
         "name": "runtime_gate_dashboard",
         "payload_path": dashboard_path,
         "cmd": [str(PY), str(project_root / "scripts" / "ops" / "runtime_gate_dashboard.py"), "--json"],
         "timeout_sec": 180,
+        "_evidence_epoch_id": evidence_epoch_id,
+        "_evidence_epoch_started_utc": evidence_epoch_started_utc,
     }
     result = _run_spec_with_freshness(spec, project_root, _run_spec)
     dashboard_payload = result.get("payload") if isinstance(result.get("payload"), dict) else {}
@@ -2152,6 +3391,13 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Refresh the runtime dashboard's prerequisite artifacts before grading the live system.")
     parser.add_argument("--project-root", default=str(PROJECT_ROOT))
     parser.add_argument("--out-file", default=str(DEFAULT_OUT_PATH))
+    parser.add_argument(
+        "--scope",
+        choices=["all", *sorted(REFRESH_SCOPE_ROOTS)],
+        default="all",
+        help="Refresh all artifacts or one dependency-closed evidence graph.",
+    )
+    parser.add_argument("--skip-dashboard", action="store_true")
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args()
 
@@ -2170,10 +3416,31 @@ def main() -> int:
             print("runtime_artifact_refresh overall_status=nested_refresh_skipped")
         return 0
 
-    payload = build_payload(Path(args.project_root).resolve())
+    payload = build_payload_serialized(Path(args.project_root).resolve(), scope=str(args.scope))
     out_path = Path(args.out_file).expanduser()
     write_payload(out_path, payload)
-    dashboard_publish = _publish_dashboard(Path(args.project_root).resolve())
+    if bool(args.skip_dashboard) or str(args.scope) != "all":
+        payload["dashboard_publish"] = {
+            "skipped": True,
+            "reason": "explicit_skip" if bool(args.skip_dashboard) else "scoped_refresh_preserves_full_dashboard_cadence",
+        }
+        write_payload(out_path, payload)
+        if args.json:
+            print(json.dumps(payload, ensure_ascii=True))
+        else:
+            print(
+                "runtime_artifact_refresh "
+                f"scope={payload.get('refresh_scope', '')} "
+                f"overall_status={payload.get('overall_status', '')} "
+                f"recovered={int(payload.get('artifacts_recovered_count', 0) or 0)} "
+                f"missing_after={len(payload.get('missing_after') or [])}"
+            )
+        return 0 if payload.get("overall_status") in {"ready", "degraded"} else 2
+    dashboard_publish = _publish_dashboard(
+        Path(args.project_root).resolve(),
+        evidence_epoch_id=str(payload.get("evidence_epoch_id") or ""),
+        evidence_epoch_started_utc=str(payload.get("evidence_epoch_started_utc") or ""),
+    )
     payload["dashboard_publish"] = dashboard_publish
     payload["all_required_artifacts_fresh"] = bool(
         payload.get("all_required_artifacts_fresh", False)

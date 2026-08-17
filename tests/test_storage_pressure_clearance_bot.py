@@ -193,6 +193,47 @@ def test_storage_pressure_clearance_keeps_bounded_draining_soft_target_paper_saf
     assert after["soft_pressure_advisory_reasons"] == ["pressure_index_above_target"]
 
 
+def test_storage_pressure_clearance_accepts_small_verified_queue_waiting_for_off_hours(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    health = project_root / "governance" / "health"
+    _write_json(
+        health / "ingestion_storage_control_latest.json",
+        {
+            "overall_status": "ready",
+            "severity": "elevated",
+            "pressure_index": 0.797,
+            "backpressure": {"core_pending_lines": 233, "total_pending_lines": 235},
+            "storage": {"sqlite_wal_size_gb": 0.0, "backlog_drain_status": "waiting_for_off_hours"},
+            "data_integrity": {
+                "sql_overlay_invalid_lines": 0,
+                "sql_overlay_oversize_payloads": 0,
+                "sql_overlay_ops_write_failures": 0,
+            },
+            "bounded_recovery_contract": {"route_verified": True},
+            "steady_state": {
+                "targets": {"pressure_index": 0.25, "core_pending_lines": 5000},
+                "target_status": {"steady_state_ready": False},
+            },
+        },
+    )
+    _write_json(
+        health / "health_gates_latest.json",
+        {
+            "hard_gates": {},
+            "thresholds": {"sql_wal_size_gb_limit": 24.0, "ingestion_pending_lines_limit": 20000},
+            "inputs": {},
+        },
+    )
+
+    payload = clearance_src.build_payload(project_root)
+
+    assert payload["overall_status"] == "ready"
+    after = payload["storage_pressure"]["after"]
+    assert after["active_storage_pressure"] is False
+    assert after["bounded_soft_target_pressure"] is True
+    assert after["backlog_drain_status"] == "waiting_for_off_hours"
+
+
 def test_storage_pressure_clearance_accepts_verified_intentional_local_hot_route(tmp_path: Path) -> None:
     project_root = tmp_path / "project"
     health = project_root / "governance" / "health"

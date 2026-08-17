@@ -380,7 +380,7 @@ DRILL_FUNCTIONS: dict[str, Callable[[Path], tuple[bool, bool, dict[str, Any]]]] 
 }
 
 
-def _run_drill(name: str, root: Path) -> dict[str, Any]:
+def _run_drill(name: str, root: Path, *, max_recovery_seconds: float) -> dict[str, Any]:
     started = time.monotonic()
     try:
         passed, no_duplicates, evidence = DRILL_FUNCTIONS[name](root)
@@ -391,6 +391,7 @@ def _run_drill(name: str, root: Path) -> dict[str, Any]:
         evidence = {}
         error = f"{type(exc).__name__}:{exc}"
     recovery_seconds = max(time.monotonic() - started, 0.0)
+    recovery_slo_met = bool(recovery_seconds <= max(float(max_recovery_seconds), 0.001))
     evidence_sha256 = _sha256_payload(evidence)
     return {
         "drill": name,
@@ -399,19 +400,22 @@ def _run_drill(name: str, root: Path) -> dict[str, Any]:
         "containment_verified": bool(passed),
         "no_duplicate_orders": bool(no_duplicates),
         "recovery_seconds": round(recovery_seconds, 6),
+        "max_recovery_seconds": max(float(max_recovery_seconds), 0.001),
+        "recovery_slo_met": recovery_slo_met,
         "evidence_sha256": evidence_sha256,
         "evidence": evidence,
         "error": error,
     }
 
 
-def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
+def build_payload(project_root: Path = PROJECT_ROOT, *, max_recovery_seconds: float = 30.0) -> dict[str, Any]:
     del project_root
     with tempfile.TemporaryDirectory(prefix="production-recovery-drills-") as raw_dir:
         root = Path(raw_dir)
-        drills = [_run_drill(name, root) for name in REQUIRED_DRILLS]
+        drills = [_run_drill(name, root, max_recovery_seconds=max_recovery_seconds) for name in REQUIRED_DRILLS]
     passed_count = sum(1 for row in drills if row.get("passed", False))
-    all_passed = passed_count == len(drills)
+    recovery_slo_breaches = [row["drill"] for row in drills if not row.get("recovery_slo_met", False)]
+    all_passed = passed_count == len(drills) and not recovery_slo_breaches
     run_identity = {
         "timestamp_utc": iso_now(),
         "drill_hashes": {row["drill"]: row["evidence_sha256"] for row in drills},
@@ -427,6 +431,12 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
         "required_drill_count": len(REQUIRED_DRILLS),
         "required_drills": list(REQUIRED_DRILLS),
         "drills": drills,
+        "recovery_slo": {
+            "max_recovery_seconds": max(float(max_recovery_seconds), 0.001),
+            "met": not recovery_slo_breaches,
+            "breached_drills": recovery_slo_breaches,
+            "max_observed_recovery_seconds": max((float(row["recovery_seconds"]) for row in drills), default=0.0),
+        },
         "run_sha256": run_sha256,
         "evidence_class": "deterministic_isolated_recovery_drill",
         "simulation_only": True,
@@ -441,12 +451,14 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
 def main() -> int:
     parser = argparse.ArgumentParser(description="Run the ten required production recovery drills in an isolated non-destructive sandbox.")
     parser.add_argument("--project-root", type=Path, default=PROJECT_ROOT)
-    parser.add_argument("--out-file", type=Path, default=DEFAULT_OUT_PATH)
+    parser.add_argument("--out-file", type=Path)
+    parser.add_argument("--max-recovery-seconds", type=float, default=30.0)
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args()
     project_root = args.project_root.resolve()
-    out_path = args.out_file if args.out_file.is_absolute() else project_root / args.out_file
-    payload = build_payload(project_root)
+    out_path = args.out_file or Path("governance/health/production_recovery_drill_harness_latest.json")
+    out_path = out_path if out_path.is_absolute() else project_root / out_path
+    payload = build_payload(project_root, max_recovery_seconds=float(args.max_recovery_seconds))
     write_payload(out_path, payload)
     if args.json:
         print(json.dumps(payload, ensure_ascii=True))

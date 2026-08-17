@@ -112,12 +112,7 @@ def _hash_scope(project_root: Path, paths: list[Path]) -> str:
         if path.is_symlink():
             digest.update(f"symlink:{os.readlink(path)}".encode("utf-8"))
         else:
-            with path.open("rb") as handle:
-                while True:
-                    chunk = handle.read(1024 * 1024)
-                    if not chunk:
-                        break
-                    digest.update(chunk)
+            digest.update(_candidate_file_content(project_root, path))
         digest.update(b"\0")
     return digest.hexdigest()
 
@@ -133,6 +128,53 @@ def _file_sha256(path: Path) -> str:
     except OSError:
         return ""
     return digest.hexdigest()
+
+
+REGISTRY_RUNTIME_OBSERVATION_KEYS = frozenset(
+    {
+        "data_collection_observations",
+        "collected_observation_count",
+        "data_collection_last_counted_utc",
+        "data_collection_observation_rollup_source",
+        "data_collection_threshold_progress",
+        "data_collection_training_ready",
+        "training_excluded",
+        "exclude_from_training",
+        "training_exclusion_reason",
+        "training_exclusion_until",
+        "promotion_blocked_until",
+        "promotion_block_reason",
+    }
+)
+
+
+def _candidate_file_content(project_root: Path, path: Path) -> bytes:
+    relative = str(path.relative_to(project_root)).replace(os.sep, "/")
+    if relative != "master_bot_registry.json":
+        return path.read_bytes()
+
+    try:
+        registry = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return path.read_bytes()
+    if not isinstance(registry, dict):
+        return path.read_bytes()
+
+    normalized = dict(registry)
+    normalized.pop("updated_at_utc", None)
+    normalized.pop("summary", None)
+    rows = normalized.get("sub_bots") if isinstance(normalized.get("sub_bots"), list) else []
+    normalized["sub_bots"] = [
+        {
+            key: value
+            for key, value in row.items()
+            if key not in REGISTRY_RUNTIME_OBSERVATION_KEYS
+        }
+        if isinstance(row, dict)
+        else row
+        for row in rows
+    ]
+    return json.dumps(normalized, ensure_ascii=True, sort_keys=True, separators=(",", ":")).encode("utf-8")
 
 
 def _profitability_grade_labels_honest(control_payload: dict[str, Any]) -> bool:
@@ -173,6 +215,11 @@ def candidate_fingerprints(project_root: Path, config: dict[str, Any]) -> dict[s
         "scopes": rows,
         "scope_count": len(rows),
         "file_count": sum(_safe_int(row.get("file_count"), 0) for row in rows.values()),
+        "normalization_contract": {
+            "master_bot_registry_runtime_observations_excluded": True,
+            "excluded_runtime_keys": sorted(REGISTRY_RUNTIME_OBSERVATION_KEYS),
+            "strategy_definitions_and_thresholds_remain_hashed": True,
+        },
     }
 
 

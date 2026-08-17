@@ -58,6 +58,7 @@ duckdb==1.5.3
 duckdb_engine==0.17.0
 empyrical-reloaded==0.5.12
 esig==1.0.0
+exchange_calendars==4.13.2
 fastapi==0.136.3
 filelock==3.29.3
 flatbuffers==25.12.19
@@ -81,6 +82,7 @@ joblib==1.5.3
 joserfc==1.7.1
 jsonpath-ng==1.8.0
 kiwisolver==1.5.0
+korean_lunar_calendar==0.4.0
 lazy-loader==0.5
 lets_be_rational==1.1.2
 librosa==0.11.0
@@ -139,7 +141,6 @@ patsy==1.0.2
 peewee==3.17.3
 piecewise-rational==1.0.0
 pillow==12.2.0
-pip==26.1.2
 platformdirs==4.10.0
 plotly==6.8.0
 pluggy==1.6.0
@@ -163,6 +164,7 @@ pydantic-settings==2.14.1
 pydantic==2.13.4
 pydantic_core==2.46.4
 pyinstrument==5.1.2
+pyluach==2.3.0
 pyparsing==3.3.2
 pypdf==6.14.2
 pyrate-limiter==4.4.0
@@ -206,6 +208,7 @@ tenacity==9.1.4
 threadpoolctl==3.6.0
 tiktoken==0.13.0
 tokenizers==0.22.2
+toolz==1.1.0
 torch==2.12.0
 tqdm==4.68.2
 transformers==5.11.0
@@ -214,6 +217,7 @@ typer-slim==0.24.0
 typer==0.25.1
 typing-inspection==0.4.2
 typing_extensions==4.15.0
+tzdata==2026.3
 tzlocal==5.3.1
 ujson==5.12.1
 url-normalize==3.0.0

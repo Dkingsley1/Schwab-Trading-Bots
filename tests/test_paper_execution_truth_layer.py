@@ -7,8 +7,8 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from scripts.ops import paper_execution_truth_layer as truth
-import scripts.promotion_quality_gate as promotion_quality_gate
+from scripts.ops import paper_execution_truth_layer as truth  # noqa: E402
+import scripts.promotion_quality_gate as promotion_quality_gate  # noqa: E402
 
 
 def _good_inputs() -> dict:
@@ -257,6 +257,14 @@ def test_paper_execution_truth_layer_blocks_stale_operational_inputs() -> None:
 
 def test_paper_execution_truth_layer_keeps_stale_promotion_evidence_visible_without_laundering() -> None:
     inputs = _good_inputs()
+    inputs["counterfactual"]["top_candidates"] = [
+        {
+            "profile": "default",
+            "win_rate": 0.10,
+            "aggregate_net_pnl_total": -100.0,
+            "kept_count": 100,
+        }
+    ]
     inputs["input_freshness"] = {
         "assessment_performed": True,
         "operational_inputs_fresh": True,
@@ -273,7 +281,110 @@ def test_paper_execution_truth_layer_keeps_stale_promotion_evidence_visible_with
     assert payload["score"] == 100.0
     assert payload["promotion_ready"] is False
     assert "artifact_freshness_guard" in payload["advisory_warnings"]
+    assert "decision_replay_harness" in payload["advisory_warnings"]
     assert payload["gates"]["artifact_freshness_guard"]["advisory_only"] is True
+    replay = payload["gates"]["decision_replay_harness"]
+    assert replay["status"] == "warn"
+    assert replay["reasons"] == ["counterfactual_refresh_pending"]
+    assert replay["counterfactual_evidence_fresh"] is False
+
+
+def test_counterfactual_source_generation_advance_is_detected_before_age_limit(tmp_path: Path) -> None:
+    source = tmp_path / "paper_bridge_orders_20260807.jsonl"
+    source.write_text('{"decision_id":"a"}\n', encoding="utf-8")
+    stat = source.stat()
+    artifact = tmp_path / "counterfactual_replay_latest.json"
+    payload = {
+        "timestamp_utc": truth.iso_now(),
+        "ok": True,
+        "processing": {
+            "source_snapshots": [
+                {
+                    "path": str(source),
+                    "inode": int(stat.st_ino),
+                    "size_bytes": int(stat.st_size),
+                    "mtime_ns": int(stat.st_mtime_ns),
+                }
+            ]
+        },
+    }
+    artifact.write_text(json.dumps(payload), encoding="utf-8")
+    unchanged = truth.assess_input_freshness(
+        {"counterfactual": artifact},
+        {"counterfactual": payload},
+        policy={"counterfactual": {"max_age_minutes": 30.0, "promotion_evidence": True}},
+    )
+    assert unchanged["inputs"]["counterfactual"]["stale"] is False
+
+    source.write_text(source.read_text(encoding="utf-8") + '{"decision_id":"b"}\n', encoding="utf-8")
+
+    freshness = truth.assess_input_freshness(
+        {"counterfactual": artifact},
+        {"counterfactual": payload},
+        policy={"counterfactual": {"max_age_minutes": 30.0, "promotion_evidence": True}},
+    )
+
+    row = freshness["inputs"]["counterfactual"]
+    assert row["stale"] is True
+    assert row["stale_due_to_age"] is False
+    assert row["source_generation_changed"] is True
+    assert freshness["stale_promotion_evidence_inputs"] == ["counterfactual"]
+
+
+def test_candidate_cutoff_change_invalidates_fresh_performance_and_calibration_artifacts(
+    tmp_path: Path,
+) -> None:
+    performance_path = tmp_path / "paper_performance_latest.json"
+    calibration_path = tmp_path / "paper_execution_calibration_latest.json"
+    performance = {
+        "timestamp_utc": truth.iso_now(),
+        "profitability_evidence_window": {
+            "candidate_cutoff_utc": "2026-08-15T12:00:00+00:00",
+        },
+    }
+    calibration = {
+        "timestamp_utc": truth.iso_now(),
+        "calibration_window": {
+            "cutoff_utc": "2026-08-15T12:00:00+00:00",
+        },
+    }
+    performance_path.write_text(json.dumps(performance), encoding="utf-8")
+    calibration_path.write_text(json.dumps(calibration), encoding="utf-8")
+    candidate_state = {
+        "candidate_id": "pc-test-g2",
+        "generation": 2,
+        "scope_windows_started_utc": {
+            "strategy": "2026-08-16T12:00:00+00:00",
+            "execution": "2026-08-16T12:00:00+00:00",
+            "data": "2026-08-16T11:00:00+00:00",
+            "dependencies": "2026-08-14T12:00:00+00:00",
+        },
+    }
+
+    freshness = truth.assess_input_freshness(
+        {
+            "paper_performance": performance_path,
+            "calibration": calibration_path,
+        },
+        {
+            "paper_performance": performance,
+            "calibration": calibration,
+        },
+        policy={
+            "paper_performance": {"max_age_minutes": 1440.0, "operational_required": True},
+            "calibration": {"max_age_minutes": 1440.0, "promotion_evidence": True},
+        },
+        candidate_state=candidate_state,
+    )
+
+    performance_row = freshness["inputs"]["paper_performance"]
+    calibration_row = freshness["inputs"]["calibration"]
+    assert performance_row["stale_due_to_age"] is False
+    assert performance_row["candidate_epoch_changed"] is True
+    assert performance_row["candidate_epoch"]["expected_cutoff_utc"] == "2026-08-16T12:00:00+00:00"
+    assert calibration_row["candidate_epoch_changed"] is True
+    assert freshness["stale_operational_inputs"] == ["paper_performance"]
+    assert freshness["stale_promotion_evidence_inputs"] == ["calibration"]
 
 
 def test_model_only_calibration_is_soak_advisory_and_promotion_ineligible() -> None:
@@ -521,6 +632,61 @@ def test_paper_execution_truth_layer_keeps_low_sample_negative_replay_advisory_w
     assert "counterfactual_low_sample_aggregate_nonpositive" in gate["reasons"]
 
 
+def test_paper_execution_truth_layer_surfaces_hidden_low_sample_negative_profile() -> None:
+    inputs = _good_inputs()
+    inputs["counterfactual"]["top_candidates"] = [
+        {
+            "profile": "crypto_futures",
+            "win_rate": 0.80,
+            "aggregate_net_pnl_total": 9.5,
+            "kept_count": 6,
+        },
+        {
+            "profile": "short_bias_hedge",
+            "win_rate": 0.07,
+            "aggregate_net_pnl_total": -8.4,
+            "kept_count": 43,
+        },
+    ]
+
+    payload = truth.evaluate_truth_layer(**inputs)
+
+    assert payload["overall_status"] == "ready"
+    assert payload["grade"] == "A+"
+    gate = payload["gates"]["decision_replay_harness"]
+    assert gate["status"] == "warn"
+    assert gate["grade_blocking"] is False
+    assert gate["low_sample_negative_profiles"] == ["short_bias_hedge"]
+    assert "counterfactual_low_sample_negative_profiles" in gate["reasons"]
+
+
+def test_paper_execution_truth_layer_blocks_mature_negative_profile_even_when_best_is_positive() -> None:
+    inputs = _good_inputs()
+    inputs["counterfactual"]["top_candidates"] = [
+        {
+            "profile": "crypto_futures",
+            "win_rate": 0.80,
+            "aggregate_net_pnl_total": 20.0,
+            "kept_count": 60,
+        },
+        {
+            "profile": "short_bias_hedge",
+            "win_rate": 0.20,
+            "aggregate_net_pnl_total": -10.0,
+            "kept_count": 55,
+        },
+    ]
+
+    payload = truth.evaluate_truth_layer(**inputs)
+
+    assert payload["overall_status"] == "blocked"
+    assert "decision_replay_harness" in payload["failed_checks"]
+    gate = payload["gates"]["decision_replay_harness"]
+    assert gate["mature_negative_profiles"] == ["short_bias_hedge"]
+    assert "counterfactual_aggregate_nonpositive" in gate["reasons"]
+    assert "counterfactual_win_rate_below_floor" in gate["reasons"]
+
+
 def test_paper_execution_truth_layer_keeps_covered_call_roll_watch_operator_advisory_visible_without_downgrading_soak_grade() -> None:
     inputs = _good_inputs()
     inputs["covered_call_watch"] = {
@@ -579,6 +745,9 @@ def test_paper_execution_truth_layer_warns_on_no_current_fill_scorecard_debt() -
     assert payload["gates"]["sleeve_execution_scorecards"]["advisory_no_fill_profiles"] == [
         "options_on_futures"
     ]
+    assert payload["gates"]["sleeve_execution_scorecards"]["grade_scored_profiles"] == []
+    assert payload["gates"]["sleeve_execution_scorecards"]["historical_advisory_rows_preserved"] is True
+    assert payload["gates"]["sleeve_execution_scorecards"]["score"] == 100.0
     scorecard = payload["sleeve_scorecards"][0]
     assert scorecard["status"] == "watch"
     assert "no_current_fills_for_blocking_execution_truth" in scorecard["reasons"]

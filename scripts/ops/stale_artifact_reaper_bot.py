@@ -201,6 +201,8 @@ def _merge_additional_root(payload: dict[str, Any], additional: dict[str, Any]) 
         "legacy_reindex_oversized_selected_bytes",
         "legacy_reindex_deferred_oversized_files",
         "legacy_reindex_errors",
+        "purge_oversized_selected_files",
+        "purge_oversized_selected_bytes",
     }
     for key in additive_keys:
         summary[key] = int(summary.get(key, 0) or 0) + int(additional_summary.get(key, 0) or 0)
@@ -244,10 +246,12 @@ def build_payload(
     stale_purge_critical_value_days: int | None = None,
     max_delete_files: int = 5000,
     max_delete_gb: float = 10.0,
+    max_oversized_delete_files: int = 1,
+    max_oversized_delete_gb: float = 64.0,
     max_reindex_files: int = 2048,
     max_reindex_gb: float = 4.0,
     max_oversized_reindex_files: int = 1,
-    max_oversized_reindex_gb: float = 12.0,
+    max_oversized_reindex_gb: float = 64.0,
     oversized_reindex_min_age_days: float = 3.0,
 ) -> dict[str, Any]:
     manifest_path = retention._stale_manifest_path(stale_stage_root, stale_stage_manifest)
@@ -270,6 +274,8 @@ def build_payload(
         critical_value_days=stale_purge_critical_value_days,
         max_files=max_delete_files,
         max_bytes=int(max(float(max_delete_gb), 0.0) * (1024**3)),
+        oversized_max_files=max_oversized_delete_files,
+        oversized_max_bytes=int(max(float(max_oversized_delete_gb), 0.0) * (1024**3)),
     )
     reindex_errors = list(legacy_reindex.get("errors", []) or [])
     ok = int(purge.get("delete_errors", 0) or 0) == 0 and not reindex_errors
@@ -287,6 +293,8 @@ def build_payload(
             "deleted_files": int(purge.get("deleted_files", 0) or 0),
             "deleted_bytes": int(purge.get("deleted_bytes", 0) or 0),
             "delete_errors": int(purge.get("delete_errors", 0) or 0),
+            "purge_oversized_selected_files": int(purge.get("oversized_selected_files", 0) or 0),
+            "purge_oversized_selected_bytes": int(purge.get("oversized_selected_bytes", 0) or 0),
             "older_than_days": int(purge.get("older_than_days", stale_purge_days) or stale_purge_days),
             "budget_limited": bool(purge.get("budget_limited", False)),
             "skipped_by_budget_files": int(purge.get("skipped_by_budget_files", 0) or 0),
@@ -333,10 +341,12 @@ def main() -> int:
     parser.add_argument("--stale-purge-critical-value-days", type=int, default=int(os.getenv("RETENTION_STALE_PURGE_CRITICAL_VALUE_DAYS", "90")))
     parser.add_argument("--max-delete-files", type=int, default=int(os.getenv("RETENTION_STALE_PURGE_MAX_FILES", "5000")))
     parser.add_argument("--max-delete-gb", type=float, default=float(os.getenv("RETENTION_STALE_PURGE_MAX_GB", "10")))
+    parser.add_argument("--max-oversized-delete-files", type=int, default=int(os.getenv("RETENTION_STALE_PURGE_OVERSIZED_MAX_FILES", "1")))
+    parser.add_argument("--max-oversized-delete-gb", type=float, default=float(os.getenv("RETENTION_STALE_PURGE_OVERSIZED_MAX_GB", "64")))
     parser.add_argument("--max-reindex-files", type=int, default=int(os.getenv("RETENTION_STALE_REINDEX_MAX_FILES", "2048")))
     parser.add_argument("--max-reindex-gb", type=float, default=float(os.getenv("RETENTION_STALE_REINDEX_MAX_GB", "4")))
     parser.add_argument("--max-oversized-reindex-files", type=int, default=int(os.getenv("RETENTION_STALE_REINDEX_OVERSIZED_MAX_FILES", "1")))
-    parser.add_argument("--max-oversized-reindex-gb", type=float, default=float(os.getenv("RETENTION_STALE_REINDEX_OVERSIZED_MAX_GB", "12")))
+    parser.add_argument("--max-oversized-reindex-gb", type=float, default=float(os.getenv("RETENTION_STALE_REINDEX_OVERSIZED_MAX_GB", "64")))
     parser.add_argument("--oversized-reindex-min-age-days", type=float, default=float(os.getenv("RETENTION_STALE_REINDEX_OVERSIZED_MIN_AGE_DAYS", "3")))
     parser.add_argument(
         "--include-external-stale-root",
@@ -392,6 +402,8 @@ def main() -> int:
             stale_purge_critical_value_days=args.stale_purge_critical_value_days if args.stale_purge_critical_value_days is None else int(args.stale_purge_critical_value_days),
             max_delete_files=int(args.max_delete_files),
             max_delete_gb=float(args.max_delete_gb),
+            max_oversized_delete_files=int(args.max_oversized_delete_files),
+            max_oversized_delete_gb=float(args.max_oversized_delete_gb),
             max_reindex_files=int(args.max_reindex_files),
             max_reindex_gb=float(args.max_reindex_gb),
             max_oversized_reindex_files=int(args.max_oversized_reindex_files),
@@ -412,6 +424,8 @@ def main() -> int:
                     stale_purge_critical_value_days=int(args.stale_purge_critical_value_days),
                     max_delete_files=int(args.max_delete_files),
                     max_delete_gb=float(args.max_delete_gb),
+                    max_oversized_delete_files=int(args.max_oversized_delete_files),
+                    max_oversized_delete_gb=float(args.max_oversized_delete_gb),
                     max_reindex_files=int(args.max_reindex_files),
                     max_reindex_gb=float(args.max_reindex_gb),
                     max_oversized_reindex_files=int(args.max_oversized_reindex_files),

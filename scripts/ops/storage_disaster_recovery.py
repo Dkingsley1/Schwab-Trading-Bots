@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import fcntl
+import hashlib
 import json
 import os
 import shutil
@@ -80,6 +81,13 @@ def _safe_float(value: Any, default: float = 0.0) -> float:
         return float(default)
 
 
+def _safe_int(value: Any, default: int = 0) -> int:
+    try:
+        return int(float(value))
+    except Exception:
+        return int(default)
+
+
 def _load_json(path: Path) -> dict[str, Any]:
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
@@ -94,6 +102,104 @@ def _project_dir_from_env() -> str:
 
 def _write_json(path: Path, payload: dict[str, Any]) -> None:
     write_payload(path, payload)
+
+
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _snapshot_file_manifest(root: Path, copied_paths: list[str]) -> list[dict[str, Any]]:
+    hash_max_bytes = max(_safe_int(os.getenv("BOT_LOGS_RECOVERY_HASH_MAX_BYTES"), 64 * 1024 * 1024), 0)
+    rows: list[dict[str, Any]] = []
+    for raw in sorted(set(str(item or "").strip() for item in copied_paths if str(item or "").strip())):
+        relative = Path(raw)
+        if relative.is_absolute() or ".." in relative.parts:
+            continue
+        path = root / relative
+        if not path.is_file():
+            continue
+        size = int(path.stat().st_size)
+        digest = _sha256_file(path) if size <= hash_max_bytes else ""
+        rows.append(
+            {
+                "path": raw,
+                "size_bytes": size,
+                "sha256": digest,
+                "verification_mode": "sha256_and_size" if digest else "size_only_large_file",
+            }
+        )
+    return rows
+
+
+def _verify_snapshot_manifest(latest_root: Path, manifest: dict[str, Any]) -> dict[str, Any]:
+    copied_paths = [str(item or "").strip() for item in manifest.get("copied_paths", []) if str(item or "").strip()]
+    file_rows = {
+        str(row.get("path") or "").strip(): row
+        for row in manifest.get("files", [])
+        if isinstance(row, dict) and str(row.get("path") or "").strip()
+    }
+    checked: list[dict[str, Any]] = []
+    unsafe_paths: list[str] = []
+    missing_paths: list[str] = []
+    mismatched_paths: list[str] = []
+    resolved_root = latest_root.resolve()
+    for raw in copied_paths:
+        relative = Path(raw)
+        if relative.is_absolute() or ".." in relative.parts:
+            unsafe_paths.append(raw)
+            continue
+        candidate = latest_root / relative
+        try:
+            resolved = candidate.resolve(strict=True)
+        except (FileNotFoundError, OSError, RuntimeError):
+            missing_paths.append(raw)
+            continue
+        if not _path_is_within(resolved, resolved_root) or not resolved.is_file():
+            unsafe_paths.append(raw)
+            continue
+        expected = file_rows.get(raw, {})
+        expected_size = expected.get("size_bytes")
+        expected_hash = str(expected.get("sha256") or "")
+        actual_size = int(resolved.stat().st_size)
+        size_match = expected_size is None or actual_size == _safe_int(expected_size, -1)
+        hash_match = True
+        actual_hash = ""
+        if expected_hash:
+            actual_hash = _sha256_file(resolved)
+            hash_match = actual_hash == expected_hash
+        if not size_match or not hash_match:
+            mismatched_paths.append(raw)
+        checked.append(
+            {
+                "path": raw,
+                "size_match": size_match,
+                "hash_verified": bool(expected_hash),
+                "hash_match": hash_match,
+                "actual_size_bytes": actual_size,
+                "actual_sha256": actual_hash,
+            }
+        )
+    ready = bool(copied_paths and not unsafe_paths and not missing_paths and not mismatched_paths)
+    receipt = {
+        "copied_path_count": len(copied_paths),
+        "checked_path_count": len(checked),
+        "unsafe_paths": sorted(unsafe_paths),
+        "missing_paths": sorted(missing_paths),
+        "mismatched_paths": sorted(mismatched_paths),
+    }
+    return {
+        "ready": ready,
+        **receipt,
+        "verification_receipt_sha256": hashlib.sha256(
+            json.dumps(receipt, ensure_ascii=True, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        ).hexdigest(),
+        "checked": checked,
+        "policy": "every manifest path must resolve inside the promoted snapshot and match recorded size and SHA-256 when present",
+    }
 
 
 def _parse_json_output(text: str) -> dict[str, Any]:
@@ -817,7 +923,7 @@ def _take_curated_snapshot(
 
     manifest = {
         "timestamp_utc": _utc_now(),
-        "schema_version": 1,
+        "schema_version": 2,
         "source_root": str(local_root),
         "snapshot_root": str(latest_root),
         "staging_root": str(staging_root),
@@ -826,6 +932,7 @@ def _take_curated_snapshot(
         "skipped_paths": staged["skipped_paths"],
         "transient_missing": staged["transient_missing"],
         "errors": staged["errors"],
+        "files": _snapshot_file_manifest(staging_root, staged["copied_paths"]),
     }
     manifest_path = recovery_root / "recovery_manifest_latest.json"
     if not staged["errors"]:
@@ -971,8 +1078,11 @@ def _hydrate_local_models(
     source_root = _configured_external_model_root()
     destination_root = local_root / "models"
     cooldown_seconds = max(_safe_float(os.getenv("BOT_LOGS_MODEL_HYDRATION_COOLDOWN_SECONDS"), 21600.0), 0.0)
+    retry_seconds = max(_safe_float(os.getenv("BOT_LOGS_MODEL_HYDRATION_RETRY_SECONDS"), 300.0), 0.0)
     last_epoch = _safe_float(state.get("last_model_hydration_epoch"), 0.0)
-    cooldown_remaining = max(last_epoch + cooldown_seconds - time.time(), 0.0)
+    last_ok = bool(state.get("last_model_hydration_ok", False))
+    effective_cooldown_seconds = cooldown_seconds if last_ok else min(cooldown_seconds, retry_seconds)
+    cooldown_remaining = max(last_epoch + effective_cooldown_seconds - time.time(), 0.0)
     rows = _active_model_rows(project_root)
     missing_rows = [row for row in rows if not (destination_root / row["model_name"]).is_file()]
     payload: dict[str, Any] = {
@@ -987,6 +1097,8 @@ def _hydrate_local_models(
         "copy_error_count": 0,
         "copied_bytes": 0,
         "cooldown_remaining_seconds": round(cooldown_remaining, 3),
+        "cooldown_basis": "successful_hydration" if last_ok else "incomplete_hydration_retry",
+        "retry_seconds": round(retry_seconds, 3),
     }
     if not apply:
         payload["skipped_reason"] = "apply_disabled"
@@ -1030,9 +1142,12 @@ def _hydrate_local_models(
         else:
             errors.append(detail or f"{row['bot_id']}:{copy_state}")
     remaining = [row for row in rows if not (destination_root / row["model_name"]).is_file()]
+    hydration_ok = not errors and not remaining
+    state["last_model_hydration_ok"] = bool(hydration_ok)
+    state["last_model_hydration_missing_after_count"] = len(remaining)
     payload.update(
         {
-            "ok": not errors and not remaining,
+            "ok": hydration_ok,
             "copied_model_count": len(copied),
             "copied_model_ids": copied[:100],
             "source_missing_count": len(source_missing),
@@ -1060,6 +1175,7 @@ def _recovery_snapshot_contract(project_root: Path, recovery_root: Path) -> dict
     snapshot_db_present = bool((latest_root / "data" / "snapshot_context.sqlite3").is_file())
     manifest_clean = bool(manifest and not list(manifest.get("errors") or []))
     snapshot_fresh = bool(age_minutes is not None and age_minutes <= max_age_minutes)
+    manifest_verification = _verify_snapshot_manifest(latest_root, manifest)
 
     content_path = project_root / "governance" / "content_store" / "latest.json"
     content = _load_json(content_path)
@@ -1075,6 +1191,8 @@ def _recovery_snapshot_contract(project_root: Path, recovery_root: Path) -> dict
         blockers.append("recovery_snapshot_stale")
     if not snapshot_db_present:
         blockers.append("snapshot_context_backup_missing")
+    if not manifest_verification.get("ready", False):
+        blockers.append("recovery_snapshot_manifest_verification_failed")
     if not content_ready:
         blockers.append("immutable_control_plane_evidence_not_current")
     return {
@@ -1087,6 +1205,7 @@ def _recovery_snapshot_contract(project_root: Path, recovery_root: Path) -> dict
         "manifest_clean": manifest_clean,
         "copied_path_count": len(copied_paths),
         "snapshot_context_backup_present": snapshot_db_present,
+        "snapshot_manifest_verification": manifest_verification,
         "content_store": {
             "path": str(content_path),
             "ready": content_ready,
@@ -1126,6 +1245,92 @@ def _durability_contract(
         "recovery_snapshot": snapshot,
         "model_route": models,
         "policy": "a pinned local hot route is production-ready only when its recovery snapshot, immutable control-plane evidence, and current promotion models are independently recoverable",
+    }
+
+
+def _recovery_objectives(
+    project_root: Path,
+    durability: dict[str, Any],
+    *,
+    rpo_target_minutes: float | None = None,
+    rto_target_seconds: float | None = None,
+) -> dict[str, Any]:
+    rpo_target = max(
+        float(rpo_target_minutes)
+        if rpo_target_minutes is not None
+        else _safe_float(os.getenv("BOT_RECOVERY_RPO_TARGET_MINUTES"), 720.0),
+        1.0,
+    )
+    rto_target = max(
+        float(rto_target_seconds)
+        if rto_target_seconds is not None
+        else _safe_float(os.getenv("BOT_RECOVERY_RTO_TARGET_SECONDS"), 30.0),
+        0.1,
+    )
+    snapshot = durability.get("recovery_snapshot") if isinstance(durability.get("recovery_snapshot"), dict) else {}
+    snapshot_age = snapshot.get("age_minutes")
+    snapshot_age_value = _safe_float(snapshot_age, -1.0) if snapshot_age is not None else None
+    manifest_verification = (
+        snapshot.get("snapshot_manifest_verification")
+        if isinstance(snapshot.get("snapshot_manifest_verification"), dict)
+        else {}
+    )
+    manifest_verified = bool(manifest_verification.get("ready", False))
+    rpo_met = bool(snapshot_age_value is not None and snapshot_age_value <= rpo_target and manifest_verified)
+
+    harness_path = project_root / "governance" / "health" / "production_recovery_drill_harness_latest.json"
+    harness = _load_json(harness_path)
+    harness_age = payload_age_minutes(harness, harness_path) if harness else None
+    harness_fresh = bool(harness_age is not None and harness_age <= 7.0 * 24.0 * 60.0)
+    recovery_slo = harness.get("recovery_slo") if isinstance(harness.get("recovery_slo"), dict) else {}
+    observed_rto = _safe_float(recovery_slo.get("max_observed_recovery_seconds"), -1.0)
+    rto_met = bool(
+        harness_fresh
+        and harness.get("ok", False)
+        and recovery_slo.get("met", False)
+        and observed_rto >= 0.0
+        and observed_rto <= rto_target
+    )
+    blockers = []
+    if not manifest_verified:
+        blockers.append("recovery_manifest_not_verified")
+    if not rpo_met:
+        blockers.append("recovery_point_objective_not_met")
+    if not harness_fresh:
+        blockers.append("recovery_drill_evidence_stale_or_missing")
+    if not rto_met:
+        blockers.append("recovery_time_objective_not_met")
+    receipt_input = {
+        "snapshot_manifest": str(snapshot.get("manifest_path") or ""),
+        "snapshot_age_minutes": snapshot_age_value,
+        "snapshot_verification": manifest_verification,
+        "harness_run_sha256": str(harness.get("run_sha256") or ""),
+        "targets": {"rpo_minutes": rpo_target, "rto_seconds": rto_target},
+    }
+    receipt = hashlib.sha256(
+        json.dumps(receipt_input, ensure_ascii=True, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+    return {
+        "ready": not blockers,
+        "status": "ready" if not blockers else "blocked",
+        "rpo": {
+            "target_minutes": rpo_target,
+            "observed_snapshot_age_minutes": snapshot_age_value,
+            "met": rpo_met,
+        },
+        "rto": {
+            "target_seconds": rto_target,
+            "observed_max_recovery_seconds": observed_rto if observed_rto >= 0.0 else None,
+            "drill_age_minutes": round(float(harness_age), 3) if harness_age is not None else None,
+            "drill_fresh": harness_fresh,
+            "met": rto_met,
+        },
+        "manifest_verified": manifest_verified,
+        "blockers": blockers,
+        "evidence_receipt_sha256": receipt,
+        "paper_collection_blocked": False,
+        "live_promotion_blocked": bool(blockers),
+        "policy": "paper collection may continue on a healthy hot route, but live promotion requires verified RPO and RTO evidence",
     }
 
 
@@ -1338,6 +1543,7 @@ def build_payload(
         route_policy,
         local_root,
     )
+    recovery_objectives = _recovery_objectives(project_root, durability)
     overall_status = _overall_status(final_probe, final_mode, route_policy, durability)
     payload = {
         "timestamp_utc": _utc_now(),
@@ -1357,6 +1563,7 @@ def build_payload(
         "switch_local": switch_local,
         "recovery_snapshot": snapshot,
         "durability_contract": durability,
+        "recovery_objectives": recovery_objectives,
         "model_hydration": model_hydration,
         "curated_restore": curated_restore,
         "restore_external": restore_external,

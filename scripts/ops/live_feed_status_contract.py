@@ -57,7 +57,10 @@ def _parse_timestamp(value: Any) -> datetime | None:
 
 
 def _artifact(root: Path, filename: str, max_age_seconds: float, now: datetime) -> dict[str, Any]:
-    path = root / "governance" / "health" / filename
+    relative = Path(filename)
+    path = relative if relative.is_absolute() else (
+        root / relative if len(relative.parts) > 1 else root / "governance" / "health" / relative
+    )
     payload = _load_json(path)
     present = bool(payload)
     timestamp = _parse_timestamp(payload.get("timestamp_utc"))
@@ -734,6 +737,108 @@ def _production_excellence_row(sources: dict[str, dict[str, Any]]) -> dict[str, 
     }
 
 
+def _capability_materialization_row(sources: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    source = sources["capability_materialization"]
+    payload = source["payload"]
+    capabilities = [row for row in payload.get("capabilities", []) if isinstance(row, dict)]
+    ready_rows = [
+        row
+        for row in capabilities
+        if row.get("usable") is True
+        and str(row.get("proof_semantics") or "") == "direct"
+        and bool(str(row.get("proof_receipt_sha256") or ""))
+    ]
+    ready_ids = {str(row.get("capability_id") or "") for row in ready_rows}
+    required_ids = {
+        "trading_calendars",
+        "market_session_state",
+        "derivatives_contract_master",
+        "stress_scenarios",
+    }
+    authority = payload.get("authority_contract") if isinstance(payload.get("authority_contract"), dict) else {}
+    calendar = payload.get("calendar_materialization") if isinstance(payload.get("calendar_materialization"), dict) else {}
+    derivatives = payload.get("derivative_contract_materialization") if isinstance(payload.get("derivative_contract_materialization"), dict) else {}
+    stress = payload.get("stress_scenario_materialization") if isinstance(payload.get("stress_scenario_materialization"), dict) else {}
+    if not source["present"]:
+        status = "missing"
+        cause = "capability_materialization_missing"
+    elif not source["fresh"]:
+        status = "stale"
+        cause = "capability_materialization_stale"
+    elif payload.get("live_promotion_ready") is not True or not required_ids.issubset(ready_ids):
+        status = "blocked"
+        cause = "capability_materialization_proof_incomplete"
+    elif any(bool(value) for value in authority.values()):
+        status = "blocked"
+        cause = "capability_materialization_authority_contract_unsafe"
+    else:
+        status = "ready"
+        cause = "none"
+    return {
+        "status": status,
+        "grade": "A+" if status == "ready" else "F",
+        "direct_proofs": len(required_ids & ready_ids),
+        "required_proofs": len(required_ids),
+        "contracts": _as_int(derivatives.get("contract_count")),
+        "stress_scenarios": _as_int(stress.get("scenario_count")),
+        "calendar_library": str(calendar.get("library_version") or "unknown"),
+        "live_promotion_ready": bool(payload.get("live_promotion_ready", False)),
+        "cause": cause,
+        "impact": "none" if status == "ready" else "paper_soak_blocked",
+        "artifact_age_seconds": source.get("age_seconds"),
+        "action": "none" if status == "ready" else "capability-materialization",
+    }
+
+
+def _collector_capability_row(sources: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    source = sources["collector_capabilities"]
+    payload = source["payload"]
+    summary = payload.get("summary") if isinstance(payload.get("summary"), dict) else {}
+    coverage = payload.get("coverage_debt") if isinstance(payload.get("coverage_debt"), dict) else {}
+    blockers = list(payload.get("structural_blockers") or []) + list(payload.get("paper_soak_blockers") or [])
+    if not source["present"]:
+        status = "missing"
+        cause = "collector_capability_control_missing"
+    elif not source["fresh"]:
+        status = "stale"
+        cause = "collector_capability_control_stale"
+    elif payload.get("ok") is not True:
+        status = "blocked"
+        cause = _first(blockers, "collector_capability_control_structurally_blocked")
+    elif payload.get("paper_soak_ready") is not True:
+        status = "blocked"
+        cause = _first(blockers, "collector_capability_paper_soak_not_ready")
+    else:
+        status = "ready"
+        cause = "none"
+    return {
+        "status": status,
+        "planes": _as_int(summary.get("plane_count")),
+        "capabilities": _as_int(summary.get("capability_count")),
+        "bots": _as_int(summary.get("bot_binding_count")),
+        "assignments": _as_int(summary.get("assignment_count")),
+        "profiles": _as_int(summary.get("subscription_profile_count")),
+        "collector_mapping_complete": bool(
+            (payload.get("current_collector_mapping") or {}).get("complete", False)
+        ),
+        "coverage_gaps": _as_int(coverage.get("gap_count")),
+        "candidate_blocking_gaps": _as_int(coverage.get("candidate_blocking_gap_count")),
+        "optional_gaps": _as_int(coverage.get("optional_gap_count")),
+        "coverage_debt_scope": "candidate_required_blocking_optional_advisory",
+        "required_usable_ratio": _as_float(summary.get("required_capability_usable_ratio")),
+        "required_redundancy_ratio": _as_float(
+            summary.get("required_capability_redundancy_ratio")
+        ),
+        "full_catalog_coverage_ready": bool(summary.get("full_catalog_coverage_ready", False)),
+        "paper_soak_ready": bool(payload.get("paper_soak_ready", False)),
+        "live_promotion_ready": bool(payload.get("live_promotion_ready", False)),
+        "cause": cause,
+        "impact": "none" if status == "ready" else "paper_soak_blocked",
+        "artifact_age_seconds": source.get("age_seconds"),
+        "action": "none" if status == "ready" else "collector-capability-control",
+    }
+
+
 def _effective_operational_state(name: str, row: dict[str, Any]) -> tuple[str, bool]:
     status = str(row.get("status") or "unknown").strip().lower()
     if name == "throttle" and bool(row.get("managed_control")):
@@ -839,6 +944,26 @@ def build_status_snapshot(project_root: Path, source: str = "main", now: datetim
         name: _artifact(project_root, filename, max_age, now)
         for name, (filename, max_age) in ARTIFACT_SPECS.items()
     }
+    capability_configured = (
+        project_root / "config" / "collector_capability_catalog_v1.json"
+    ).is_file()
+    materialization_configured = (
+        project_root / "config" / "capability_materialization_v1.json"
+    ).is_file()
+    if materialization_configured:
+        artifacts["capability_materialization"] = _artifact(
+            project_root,
+            "governance/collector_capabilities/materialized_capabilities_latest.json",
+            30 * 60,
+            now,
+        )
+    if capability_configured:
+        artifacts["collector_capabilities"] = _artifact(
+            project_root,
+            "collector_capability_control_latest.json",
+            30 * 60,
+            now,
+        )
     auth, schwab_auth = _auth_row(artifacts)
     system, collection = _system_and_collection_rows(artifacts)
     paper_ramp = _paper_ramp_row(artifacts, system)
@@ -862,10 +987,21 @@ def build_status_snapshot(project_root: Path, source: str = "main", now: datetim
         storage["paper_status"] = "blocked"
     soak = _soak_row(artifacts, system, storage)
     production_excellence = _production_excellence_row(artifacts)
+    collector_capabilities = (
+        _collector_capability_row(artifacts) if capability_configured else {}
+    )
+    capability_materialization = (
+        _capability_materialization_row(artifacts) if materialization_configured else {}
+    )
     fx_provider = _fx_provider_row(project_root, now)
     source_states = {name: artifact["state"] for name, artifact in artifacts.items()}
-    missing = sorted(name for name in REQUIRED_SOURCES if source_states[name] == "missing")
-    stale = sorted(name for name in REQUIRED_SOURCES if source_states[name] == "stale")
+    required_sources = set(REQUIRED_SOURCES)
+    if capability_configured:
+        required_sources.add("collector_capabilities")
+    if materialization_configured:
+        required_sources.add("capability_materialization")
+    missing = sorted(name for name in required_sources if source_states[name] == "missing")
+    stale = sorted(name for name in required_sources if source_states[name] == "stale")
     contradictions = []
     if auth["consistency"] == "conflict":
         contradictions.append("auth_sources_disagree")
@@ -884,6 +1020,12 @@ def build_status_snapshot(project_root: Path, source: str = "main", now: datetim
         "storage": storage,
         "throttle": throttle,
         "soak": soak,
+        **(
+            {"capability_materialization": capability_materialization}
+            if capability_materialization
+            else {}
+        ),
+        **({"collector_capabilities": collector_capabilities} if collector_capabilities else {}),
     }
     if fx_provider:
         operational_rows["fx_provider"] = fx_provider
@@ -940,6 +1082,12 @@ def build_status_snapshot(project_root: Path, source: str = "main", now: datetim
             "throttle": throttle,
             "soak": soak,
             "production_excellence": production_excellence,
+            **(
+                {"capability_materialization": capability_materialization}
+                if capability_materialization
+                else {}
+            ),
+            **({"collector_capabilities": collector_capabilities} if collector_capabilities else {}),
             **({"fx_provider": fx_provider} if fx_provider else {}),
         },
         "contract": {
@@ -1007,6 +1155,8 @@ def format_status_lines(snapshot: dict[str, Any]) -> list[str]:
     throttle = rows.get("throttle") if isinstance(rows.get("throttle"), dict) else {}
     soak = rows.get("soak") if isinstance(rows.get("soak"), dict) else {}
     production_excellence = rows.get("production_excellence") if isinstance(rows.get("production_excellence"), dict) else {}
+    capability_materialization = rows.get("capability_materialization") if isinstance(rows.get("capability_materialization"), dict) else {}
+    collector_capabilities = rows.get("collector_capabilities") if isinstance(rows.get("collector_capabilities"), dict) else {}
     fx_provider = rows.get("fx_provider") if isinstance(rows.get("fx_provider"), dict) else {}
     operator = snapshot.get("operator_summary") if isinstance(snapshot.get("operator_summary"), dict) else {}
     lines = [
@@ -1189,6 +1339,61 @@ def format_status_lines(snapshot: dict[str, Any]) -> list[str]:
             ],
         ),
     ]
+    if capability_materialization:
+        lines.insert(
+            2,
+            _line(
+                "capability-materialization",
+                [
+                    ("level", _level(capability_materialization.get("status"))),
+                    ("status", capability_materialization.get("status")),
+                    (
+                        "direct_proofs",
+                        f"{capability_materialization.get('direct_proofs', 0)}/{capability_materialization.get('required_proofs', 4)}",
+                    ),
+                    ("contracts", capability_materialization.get("contracts")),
+                    ("stress_scenarios", capability_materialization.get("stress_scenarios")),
+                    ("calendar_library", capability_materialization.get("calendar_library")),
+                    ("live_promotion", capability_materialization.get("live_promotion_ready")),
+                    ("cause", capability_materialization.get("cause")),
+                    ("impact", capability_materialization.get("impact")),
+                    ("age", _age(capability_materialization.get("artifact_age_seconds"))),
+                    ("action", capability_materialization.get("action")),
+                ],
+            ),
+        )
+    if collector_capabilities:
+        lines.insert(
+            2,
+            _line(
+                "collector-capabilities",
+                [
+                    ("level", _level(collector_capabilities.get("status"))),
+                    ("status", collector_capabilities.get("status")),
+                    ("planes", collector_capabilities.get("planes")),
+                    ("capabilities", collector_capabilities.get("capabilities")),
+                    (
+                        "bots",
+                        f"{collector_capabilities.get('bots', 0)}/{collector_capabilities.get('assignments', 0)}",
+                    ),
+                    ("profiles", collector_capabilities.get("profiles")),
+                    ("mapped", collector_capabilities.get("collector_mapping_complete")),
+                    ("coverage_gaps", collector_capabilities.get("coverage_gaps")),
+                    ("candidate_blocking", collector_capabilities.get("candidate_blocking_gaps")),
+                    ("optional_gaps", collector_capabilities.get("optional_gaps")),
+                    ("debt_scope", collector_capabilities.get("coverage_debt_scope")),
+                    ("required_usable", collector_capabilities.get("required_usable_ratio")),
+                    ("required_redundancy", collector_capabilities.get("required_redundancy_ratio")),
+                    ("full_catalog", collector_capabilities.get("full_catalog_coverage_ready")),
+                    ("paper", collector_capabilities.get("paper_soak_ready")),
+                    ("live_promotion", collector_capabilities.get("live_promotion_ready")),
+                    ("cause", collector_capabilities.get("cause")),
+                    ("impact", collector_capabilities.get("impact")),
+                    ("age", _age(collector_capabilities.get("artifact_age_seconds"))),
+                    ("action", collector_capabilities.get("action")),
+                ],
+            ),
+        )
     if fx_provider:
         lines.insert(
             3,

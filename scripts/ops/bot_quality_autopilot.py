@@ -496,6 +496,11 @@ def build_payload(
     }
 
 
+def _process_exit_code(payload: dict[str, Any]) -> int:
+    """Keep evidence debt distinct from an unsuccessful maintenance cycle."""
+    return 2 if str(payload.get("overall_status") or "").strip().lower() == "blocked" else 0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Automate bot-quality upkeep, teacher curation, and requalification queue refreshes.")
     parser.add_argument("--project-root", default=str(PROJECT_ROOT))
@@ -528,7 +533,7 @@ def main() -> int:
             f"overall_status={payload.get('overall_status', '')} "
             f"quality_queue={len(payload.get('quality_upgrade_queue') or [])}"
         )
-    return 0 if payload.get("overall_status") in {"ready", "degraded"} else 2
+    return _process_exit_code(payload)
 
 
 if __name__ == "__main__":

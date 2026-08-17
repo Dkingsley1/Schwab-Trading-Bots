@@ -1430,8 +1430,6 @@ def _base_env(*, critical: bool, backpressure: dict[str, Any] | None = None, hos
         "SQL_LINK_SERVICE_HOT_MIN_INTERVAL_SECONDS": "30",
         "SQL_LINK_SERVICE_HOT_BATCH_SIZE": "240000" if critical else "200000",
         "SQL_LINK_SERVICE_HOT_MAX_ROWS": "2400000" if critical else "1800000",
-        "SQL_LINK_SERVICE_AUTO_HOT_RETENTION": "0",
-        "SQL_LINK_SERVICE_AUTO_QUEUE_RETENTION": "0",
         "SQL_LINK_SERVICE_AUTO_LOCAL_FALLBACK_PRUNE": "0",
         "SQL_LINK_SERVICE_WAL_CHECKPOINT_THRESHOLD_GB": "0.25" if critical else "0.5",
         "SQL_LINK_SERVICE_WAL_CHECKPOINT_TRIGGER_GROWTH_GB": "0.25" if critical else "0.5",

@@ -83,6 +83,8 @@ fi
 [[ -x "$PROJECT_ROOT/scripts/install_retrain_schedule_launchd.sh" ]] && "$PROJECT_ROOT/scripts/install_retrain_schedule_launchd.sh"
 [[ -x "$PROJECT_ROOT/scripts/install_daily_retirement_launchd.sh" ]] && "$PROJECT_ROOT/scripts/install_daily_retirement_launchd.sh"
 [[ -x "$PROJECT_ROOT/scripts/ops/install_ops_automation_launchd.sh" ]] && "$PROJECT_ROOT/scripts/ops/install_ops_automation_launchd.sh"
+[[ -x "$PROJECT_ROOT/scripts/install_observability_exporter_launchd.sh" ]] && "$PROJECT_ROOT/scripts/install_observability_exporter_launchd.sh"
+[[ -x "$PROJECT_ROOT/scripts/install_production_resilience_control_launchd.sh" ]] && "$PROJECT_ROOT/scripts/install_production_resilience_control_launchd.sh"
 [[ -x "$PROJECT_ROOT/scripts/install_failover_watch_launchd.sh" ]] && "$PROJECT_ROOT/scripts/install_failover_watch_launchd.sh"
 [[ -x "$PROJECT_ROOT/scripts/install_premarket_token_guard_launchd.sh" ]] && "$PROJECT_ROOT/scripts/install_premarket_token_guard_launchd.sh"
 [[ -x "$PROJECT_ROOT/scripts/install_reboot_resilience_launchd.sh" ]] && "$PROJECT_ROOT/scripts/install_reboot_resilience_launchd.sh"

@@ -139,6 +139,25 @@ def test_system_drift_guard_manages_optional_stale_report_during_green_paper_soa
     assert row["recovery_deferred_reason"] == "guarded_paper_optional_report_stale"
 
 
+def test_system_drift_guard_accepts_guarded_ready_health_for_optional_stale_policy(tmp_path: Path) -> None:
+    health_root = tmp_path / "governance" / "health"
+    _write_json(
+        health_root / "health_fast_latest.json",
+        {
+            "overall_status": "guarded_ready",
+            "ok": True,
+            "strict_all_clear": False,
+            "operational_readiness": {
+                "guarded_paper": {"ok": True, "status": "ready"},
+                "live_execution": {"status": "blocked_read_only"},
+            },
+        },
+    )
+    spec = {"artifact_path": str(health_root / "report_pdf_bundle_latest.json")}
+
+    assert src._guarded_paper_strict_clear_for_spec(spec) is True
+
+
 def test_system_drift_guard_treats_written_commands_hygiene_apply_as_ready(monkeypatch, tmp_path: Path) -> None:
     health_root = tmp_path / "governance" / "health"
     artifact = health_root / "commands_hygiene_latest.json"
@@ -209,6 +228,65 @@ def test_system_drift_guard_treats_ok_watch_surface_as_ready(monkeypatch, tmp_pa
     assert payload["metrics"]["blocked_surface_count"] == 0
     assert payload["metrics"]["degraded_surface_count"] == 0
     assert payload["surfaces"][0]["status"] == "ready"
+
+
+def test_system_drift_guard_keeps_calibration_accrual_as_promotion_debt(monkeypatch, tmp_path: Path) -> None:
+    health_root = tmp_path / "governance" / "health"
+    artifact = health_root / "paper_execution_truth_layer_latest.json"
+    _write_guarded_paper_health_fast(health_root)
+    ready_gate = {"ok": True, "status": "ready"}
+    _write_json(
+        artifact,
+        {
+            "overall_status": "blocked",
+            "ok": False,
+            "failed_checks": ["live_quote_fill_calibration"],
+            "gates": {
+                "live_quote_fill_calibration": {
+                    "ok": False,
+                    "status": "blocked",
+                    "independent_evidence_ready": False,
+                    "independent_samples": 10,
+                    "minimum_independent_samples": 30,
+                },
+                "account_position_awareness": ready_gate,
+                "paper_broker_truth_reconciliation": ready_gate,
+                "data_ingestion_quality_gate": ready_gate,
+                "decision_replay_harness": {
+                    "ok": False,
+                    "status": "warn",
+                    "advisory_only": True,
+                    "grade_blocking": False,
+                },
+                "live_execution_transition_parity": ready_gate,
+                "paper_pnl_haircut_ledger": ready_gate,
+                "artifact_freshness_guard": {"ok": False, "operational_inputs_fresh": True},
+            },
+            "timestamp_utc": "2099-04-23T20:00:00+00:00",
+        },
+    )
+    monkeypatch.setattr(
+        src,
+        "surface_specs",
+        lambda _root: [
+            {
+                "name": "paper_execution_truth_layer",
+                "family": "paper_trading_surface",
+                "artifact_path": artifact,
+                "status_key": "overall_status",
+                "ok_key": "ok",
+                "max_age_minutes": 180,
+                "repair_commands": [["./scripts/ops/opsctl.sh", "paper-truth", "--json"]],
+            }
+        ],
+    )
+
+    payload = src.build_payload(tmp_path)
+
+    row = payload["surfaces"][0]
+    assert payload["overall_status"] == "ready"
+    assert row["status"] == "ready"
+    assert row["recovery_deferred_reason"] == "guarded_paper_calibration_evidence_accrual_debt"
 
 
 def test_system_drift_guard_downgrades_pressure_deferred_blocker(monkeypatch, tmp_path: Path) -> None:

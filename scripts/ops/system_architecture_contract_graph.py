@@ -335,7 +335,14 @@ def _guarded_paper_strict_clear(project_root: Path) -> bool:
         "read_only",
         "disabled",
     }
-    return bool(health_fast.get("strict_all_clear", False) and guarded_ready and live_locked)
+    operational_health_ready = bool(
+        health_fast.get("strict_all_clear", False)
+        or (
+            bool(health_fast.get("ok", False))
+            and str(health_fast.get("overall_status") or "").strip().lower() in {"ready", "guarded_ready"}
+        )
+    )
+    return bool(operational_health_ready and guarded_ready and live_locked)
 
 
 def _drift_guard_self_reference_reconciliation(project_root: Path) -> dict[str, Any]:

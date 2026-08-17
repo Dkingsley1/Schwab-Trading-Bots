@@ -13,10 +13,10 @@ if __package__ in {None, ""}:
     PROJECT_ROOT = Path(__file__).resolve().parents[2]
     if str(PROJECT_ROOT) not in sys.path:
         sys.path.insert(0, str(PROJECT_ROOT))
-    from scripts.ops import training_runtime_control
+    from scripts.ops import bot_needs_intelligence, training_runtime_control
     from scripts.ops.long_runtime_common import iso_now, load_json, ordered_unique, run_bounded_process_group, write_payload
 else:
-    from . import training_runtime_control
+    from . import bot_needs_intelligence, training_runtime_control
     from .long_runtime_common import PROJECT_ROOT, iso_now, load_json, ordered_unique, run_bounded_process_group, write_payload
 
 
@@ -80,7 +80,7 @@ def _candidate_rows(project_root: Path, *, limit: int, now: datetime) -> list[di
         blockers: list[str] = []
         if sample_count < 200:
             blockers.append("minimum_training_samples_pending")
-        if diagnostic_age is None or diagnostic_age > 168.0:
+        if diagnostic_age is None or diagnostic_age > bot_needs_intelligence.MAX_TRAINING_DIAGNOSTIC_AGE_HOURS:
             blockers.append("training_diagnostic_refresh_required")
         if not str(raw.get("model_path") or "").strip() or not model_path.exists():
             blockers.append("model_artifact_missing")
@@ -201,6 +201,8 @@ def build_payload(
         "control_contract": {
             "top_requalification_candidates_prioritized": True,
             "sample_starved_candidates_route_to_data_first": True,
+            "maximum_training_diagnostic_age_hours": bot_needs_intelligence.MAX_TRAINING_DIAGNOSTIC_AGE_HOURS,
+            "diagnostic_freshness_matches_authoritative_bot_needs_selector": True,
             "training_requires_two_consecutive_runtime_gate_checks": True,
             "master_registry_updates_disabled": True,
             "held_out_walk_forward_refresh_requested": True,

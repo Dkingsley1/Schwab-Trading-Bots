@@ -38,6 +38,7 @@ MASTER_RUNNER = os.path.join(PROJECT_ROOT, "scripts", "run_master_bot.py")
 TRADE_DATASET_BUILDER = os.path.join(PROJECT_ROOT, "scripts", "build_behavior_dataset_from_decisions.py")
 TRADE_DATASET_BUILDER_LEGACY = os.path.join(PROJECT_ROOT, "scripts", "build_trade_learning_dataset.py")
 TRADE_BEHAVIOR_TRAINER = os.path.join(PROJECT_ROOT, "scripts", "train_trade_behavior_bot.py")
+TRADE_BEHAVIOR_HELD_OUT_EXIT_CODE = 4
 TRADE_BEHAVIOR_DATASET = os.path.join(PROJECT_ROOT, "data", "trade_history", "trade_learning_dataset.json")
 SNAPSHOT_HEALTH_SYNC_SCRIPT = os.path.join(PROJECT_ROOT, "scripts", "sync_snapshot_health_to_sql.py")
 PRUNE_UNDERPERFORMERS = os.path.join(PROJECT_ROOT, "scripts", "prune_underperformers.py")
@@ -128,6 +129,15 @@ SEGMENT_TO_REPLAY_PROFILES = {
 }
 
 _MLX_LOCK_HANDLE = None
+
+
+def _trade_behavior_trainer_outcome(returncode: int) -> tuple[str, bool, bool]:
+    """Classify a guarded holdout separately from a trainer failure."""
+    if int(returncode) == 0:
+        return "promoted", True, False
+    if int(returncode) == TRADE_BEHAVIOR_HELD_OUT_EXIT_CODE:
+        return "held_out", False, False
+    return "failed", False, True
 
 
 def _acquire_mlx_lock(lock_path: str):
@@ -1496,6 +1506,8 @@ def _runtime_training_snapshot_preflight_failure(
 ) -> str:
     if not isinstance(summary, dict) or not summary:
         return "snapshot_missing"
+    if int(summary.get("schema_version", 1) or 1) >= 2 and not bool(summary.get("content_fresh", False)):
+        return "snapshot_content_stale"
     sequence_count = int(summary.get("sequence_count", 0) or 0)
     row_count = int(summary.get("row_count", 0) or 0)
     if sequence_count < max(int(min_sequences), 0):
@@ -5497,8 +5509,10 @@ def main() -> int:
 
         if os.path.exists(TRADE_BEHAVIOR_TRAINER):
             rc = run_cmd([VENV_PY, TRADE_BEHAVIOR_TRAINER], args.dry_run, child_env, extra_nice=max(args.ops_extra_nice, 0))
-            trade_behavior_trained_ok = (rc == 0)
-            if rc != 0 and trade_behavior_strict:
+            trainer_outcome, trade_behavior_trained_ok, trainer_failed = _trade_behavior_trainer_outcome(rc)
+            if trainer_outcome == "held_out":
+                print("Trade behavior candidate held out by promotion gates; deployed model remains unchanged.")
+            if trainer_failed and trade_behavior_strict:
                 print("FAIL: trade behavior trainer")
                 return finish(1, "failed_trade_behavior_trainer")
         else:

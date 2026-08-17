@@ -206,6 +206,8 @@ def test_hourly_stale_reaper_uses_application_taskpolicy_after_resource_guard() 
     assert "RETENTION_STALE_PCORE_GUARD_PASSED=1" in runner
     assert "/usr/sbin/taskpolicy -a" in runner
     assert "BOT_WORKLOAD_CLASS=maintenance_accelerated" in runner
+    assert "RETENTION_STALE_REINDEX_OVERSIZED_MAX_GB:-64" in runner
+    assert "RETENTION_STALE_PURGE_OVERSIZED_MAX_GB:-64" in runner
 
 
 def test_runtime_throttle_can_downshift_accelerated_stale_reaper() -> None:

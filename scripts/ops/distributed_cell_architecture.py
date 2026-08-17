@@ -48,6 +48,11 @@ STATUS_WEIGHT = {
 READY_STATUSES = {"ready", "ok", "active", "applied", "stable", "complete", "advisory"}
 SOAK_READY_GRADES = {"A", "A+", "A++"}
 CONTROLLED_TRAINING_ATTENTION_BUCKETS = {"coverage_shortfall", "training_not_confirmed"}
+CONTROLLED_TRAINING_IDLE_ATTENTION_BUCKETS = {
+    "stale_diagnostics",
+    "coverage_shortfall",
+    "training_not_confirmed",
+}
 GUARDED_SOAK_DRIFT_DEBT_SURFACES = {
     "system_architecture_autopilot",
     "system_architecture_contract_graph",
@@ -306,8 +311,15 @@ def _guarded_paper_soak_health(project_root: Path) -> dict[str, Any]:
         and _safe_int(paper_guard.get("failed_guard_count"), 0) == 0
     )
     health_fast_ready = bool(
-        str(health_fast.get("overall_status") or "").strip().lower() == "ready"
-        and bool(health_fast.get("strict_all_clear", health_fast.get("ok", False)))
+        str(health_fast.get("overall_status") or "").strip().lower() in {"ready", "guarded_ready"}
+        and bool(health_fast.get("ok", False) or health_fast.get("strict_all_clear", False))
+        and bool(
+            (
+                health_fast.get("operational_readiness", {}).get("guarded_paper", {})
+                if isinstance(health_fast.get("operational_readiness"), dict)
+                else {}
+            ).get("ok", health_fast.get("ok", False))
+        )
     )
     dashboard_ready = bool(
         str(dashboard_overall.get("status") or dashboard.get("overall_status") or "").strip().lower() in {"ok", "ready"}
@@ -394,11 +406,19 @@ def _drift_ready_for_guarded_soak(drift: dict[str, Any]) -> tuple[bool, dict[str
     degraded_count = _safe_int(metrics.get("degraded_surface_count"), 0)
     stale_count = _safe_int(metrics.get("stale_surface_count"), 0)
     status = str(drift.get("overall_status") or "").strip().lower()
+    surfaces = drift.get("surfaces") if isinstance(drift.get("surfaces"), list) else []
+    unmanaged_stale_names = [
+        str(row.get("name") or "")
+        for row in surfaces
+        if isinstance(row, dict) and bool(row.get("stale", False)) and not bool(row.get("managed_stale", False))
+    ]
     context: dict[str, Any] = {
         "status": status,
         "blocked_surface_count": blocked_count,
         "degraded_surface_count": degraded_count,
         "stale_surface_count": stale_count,
+        "unmanaged_stale_surface_count": len(unmanaged_stale_names),
+        "unmanaged_stale_surfaces": unmanaged_stale_names,
         "managed_degraded_surfaces": [],
         "managed": False,
     }
@@ -407,11 +427,10 @@ def _drift_ready_for_guarded_soak(drift: dict[str, Any]) -> tuple[bool, dict[str
         and bool(drift.get("ok", False))
         and blocked_count == 0
         and degraded_count == 0
-        and stale_count == 0
+        and not unmanaged_stale_names
     ):
         return True, context
 
-    surfaces = drift.get("surfaces") if isinstance(drift.get("surfaces"), list) else []
     degraded_names = [
         str(row.get("name") or "")
         for row in surfaces
@@ -420,7 +439,7 @@ def _drift_ready_for_guarded_soak(drift: dict[str, Any]) -> tuple[bool, dict[str
     managed = bool(
         status == "degraded"
         and blocked_count == 0
-        and stale_count == 0
+        and not unmanaged_stale_names
         and degraded_count <= len(GUARDED_SOAK_DRIFT_DEBT_SURFACES)
         and set(degraded_names).issubset(GUARDED_SOAK_DRIFT_DEBT_SURFACES)
     )
@@ -544,6 +563,14 @@ def _controlled_surface_state(name: str, status: str, payload: dict[str, Any]) -
             "status": "complete",
             "weight": 0,
             "reason": "writer_cycle_completed_lock_handoff_released",
+            "stale_exempt": True,
+        }
+    if surface_name == "writer_cycle_coordinator" and raw_status == "complete":
+        return {
+            "status": "complete",
+            "weight": 0,
+            "reason": "writer_cycle_terminal_completion_is_immutable_until_next_cycle",
+            "stale_exempt": True,
         }
     if raw_status == "protective_tightening" and bool(payload.get("ok", False)):
         return {
@@ -562,6 +589,20 @@ def _controlled_surface_state(name: str, status: str, payload: dict[str, Any]) -
                 "status": "advisory",
                 "weight": 0,
                 "reason": "training_quality_score_high_with_promotion_coverage_backlog_only",
+            }
+        idle_diagnostics_only = bool(buckets) and buckets <= CONTROLLED_TRAINING_IDLE_ATTENTION_BUCKETS
+        if (
+            score >= 90.0
+            and idle_diagnostics_only
+            and _safe_int(taxonomy.get("training_failure_count"), 0) == 0
+            and _safe_int(taxonomy.get("skipped_by_memory_count"), 0) == 0
+            and _safe_int(rollout.get("considered_bots"), 0) == 0
+            and bool(rollout.get("exact_replay_ready", False))
+        ):
+            return {
+                "status": "advisory",
+                "weight": 0,
+                "reason": "training_quality_high_and_idle_with_diagnostics_and_promotion_evidence_debt",
             }
     if surface_name == "data_collection_observation_rollup" and raw_status == "degraded":
         repair_lane = payload.get("zero_observation_repair_lane") if isinstance(payload.get("zero_observation_repair_lane"), dict) else {}
@@ -591,6 +632,30 @@ def _controlled_surface_state(name: str, status: str, payload: dict[str, Any]) -
                 "weight": 0,
                 "reason": "system_intelligence_degraded_only_by_guarded_advisory_or_model_backlog_signals",
             }
+    if surface_name == "system_needs_intelligence" and raw_status in {"needs_action", "needs_attention", "degraded"}:
+        if bool(payload.get("ok", False)):
+            return {
+                "status": "advisory",
+                "weight": 0,
+                "reason": "healthy_self_awareness_can_report_actionable_evidence_debt_without_failing_control_plane",
+            }
+    if surface_name == "provider_mesh" and raw_status == "degraded":
+        summary = payload.get("summary") if isinstance(payload.get("summary"), dict) else {}
+        required_collectors = _safe_int(summary.get("required_collectors"), 0)
+        required_contract_ok = _safe_int(summary.get("required_contract_ok"), 0)
+        required_snapshot_ready = _safe_int(summary.get("required_snapshot_ready"), 0)
+        required_failures = payload.get("required_failures") if isinstance(payload.get("required_failures"), list) else []
+        if (
+            required_collectors > 0
+            and required_contract_ok >= required_collectors
+            and required_snapshot_ready >= required_collectors
+            and not required_failures
+        ):
+            return {
+                "status": "advisory",
+                "weight": 0,
+                "reason": "required_provider_mesh_is_ready_with_optional_source_failures_only",
+            }
     if surface_name == "master_infrastructure_supervisor" and raw_status == "degraded":
         metrics = payload.get("metrics") if isinstance(payload.get("metrics"), dict) else {}
         if (
@@ -602,6 +667,21 @@ def _controlled_surface_state(name: str, status: str, payload: dict[str, Any]) -
                 "status": "advisory",
                 "weight": 0,
                 "reason": "master_infrastructure_degraded_only_by_advisory_refreshable_checks",
+            }
+    if surface_name == "infrastructure_autofix" and raw_status == "degraded":
+        metrics = payload.get("metrics") if isinstance(payload.get("metrics"), dict) else {}
+        if (
+            _safe_int(metrics.get("artifact_freshness_stale_required"), 0) == 0
+            and _safe_int(metrics.get("process_watchdog_active_issue_count"), 0) == 0
+            and _safe_int(metrics.get("runtime_paper_failed_guard_count"), 0) == 0
+            and _safe_int(metrics.get("unsent_critical_alerts"), 0) == 0
+            and not bool(metrics.get("timeout_budget_exhausted", False))
+            and bool(metrics.get("paper_trade_lock_active", False))
+        ):
+            return {
+                "status": "advisory",
+                "weight": 0,
+                "reason": "infrastructure_autofix_has_only_bounded_advisory_or_evidence_followups",
             }
     if surface_name == "storage_quota_guard" and raw_status == "degraded":
         summary = payload.get("quota_summary") if isinstance(payload.get("quota_summary"), dict) else {}
@@ -618,7 +698,7 @@ def _controlled_surface_state(name: str, status: str, payload: dict[str, Any]) -
                 "weight": 0,
                 "reason": "stateful_sql_soft_quota_compaction_debt_managed_by_guarded_soak",
             }
-    if surface_name == "training_runtime" and raw_status == "constrained":
+    if surface_name == "training_runtime" and raw_status in {"blocked", "constrained"}:
         launch_blockers = {str(item) for item in payload.get("launch_blockers", []) if str(item)}
         resource_guard = payload.get("resource_guard") if isinstance(payload.get("resource_guard"), dict) else {}
         storage_gate = payload.get("storage_quota_training_gate") if isinstance(payload.get("storage_quota_training_gate"), dict) else {}
@@ -632,6 +712,18 @@ def _controlled_surface_state(name: str, status: str, payload: dict[str, Any]) -
                 "status": "advisory",
                 "weight": 0,
                 "reason": "training_budget_closed_is_managed_during_guarded_paper_soak",
+            }
+        if (
+            "no_bot_needs_training_candidates" in launch_blockers
+            and bool(payload.get("prep_allowed", False))
+            and not bool(payload.get("launch_allowed", False))
+            and bool(resource_guard.get("training_ok", False))
+            and _safe_int(storage_gate.get("hard_breaches"), 0) == 0
+        ):
+            return {
+                "status": "advisory",
+                "weight": 0,
+                "reason": "training_is_fail_closed_and_idle_because_no_bot_is_currently_eligible",
             }
     return {}
 
@@ -651,6 +743,8 @@ def _load_surface(project_root: Path, surface: dict[str, Any]) -> dict[str, Any]
     controlled_state = _controlled_surface_state(str(surface.get("name") or path.name), status, payload)
     if controlled_state:
         status = str(controlled_state.get("status") or status)
+        if bool(controlled_state.get("stale_exempt", False)):
+            stale = False
     exists = path.exists()
     weight = STATUS_WEIGHT.get(status, 45)
     if "weight" in controlled_state:

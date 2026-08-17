@@ -103,6 +103,49 @@ def test_candidate_drift_requires_reasoned_acceptance_and_resets_only_affected_s
     assert accepted_candidate["event_chain"]["event_count"] == 2
 
 
+def test_registry_observation_counters_do_not_reset_candidate_but_strategy_thresholds_do(tmp_path: Path) -> None:
+    registry_path = tmp_path / "master_bot_registry.json"
+    registry = {
+        "updated_at_utc": "2026-08-10T20:00:00+00:00",
+        "summary": {"training_excluded_bots": 1},
+        "sub_bots": [
+            {
+                "bot_id": "bot-1",
+                "active": True,
+                "minimum_training_observations": 200,
+                "data_collection_observations": 10,
+                "data_collection_last_counted_utc": "2026-08-10T20:00:00+00:00",
+                "data_collection_threshold_progress": {"observations": 10, "training_ready": False},
+                "training_excluded": True,
+            }
+        ],
+    }
+    registry_path.write_text(json.dumps(registry), encoding="utf-8")
+    config = {"candidate": {"scope_globs": {"strategy": ["master_bot_registry.json"]}}}
+
+    initial = control.candidate_fingerprints(tmp_path, config)
+    registry["updated_at_utc"] = "2026-08-10T21:00:00+00:00"
+    registry["summary"]["training_excluded_bots"] = 0
+    registry["sub_bots"][0]["data_collection_observations"] = 250
+    registry["sub_bots"][0]["data_collection_last_counted_utc"] = "2026-08-10T21:00:00+00:00"
+    registry["sub_bots"][0]["data_collection_threshold_progress"] = {
+        "observations": 250,
+        "training_ready": True,
+    }
+    registry["sub_bots"][0]["training_excluded"] = False
+    registry_path.write_text(json.dumps(registry), encoding="utf-8")
+
+    observation_update = control.candidate_fingerprints(tmp_path, config)
+    assert observation_update["overall_sha256"] == initial["overall_sha256"]
+    assert observation_update["normalization_contract"]["strategy_definitions_and_thresholds_remain_hashed"] is True
+
+    registry["sub_bots"][0]["minimum_training_observations"] = 300
+    registry_path.write_text(json.dumps(registry), encoding="utf-8")
+
+    strategy_update = control.candidate_fingerprints(tmp_path, config)
+    assert strategy_update["overall_sha256"] != initial["overall_sha256"]
+
+
 def test_candidate_event_log_tampering_blocks_candidate(tmp_path: Path) -> None:
     config_path = _write_config(tmp_path)
     _seed_sources(tmp_path)

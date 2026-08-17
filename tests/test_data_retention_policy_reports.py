@@ -678,6 +678,107 @@ def test_legacy_stale_reindex_paces_one_old_low_value_oversized_file(tmp_path):
     assert {row['legacy_reindex_lane'] for row in rows} == {'standard', 'oversized_low_value'}
 
 
+def test_legacy_stale_reindex_paces_one_old_medium_value_oversized_file(tmp_path):
+    stale_root = tmp_path / 'stale_stage'
+    oversized = stale_root / 'external_live_sqlite' / 'large.sqlite3'
+    oversized.parent.mkdir(parents=True, exist_ok=True)
+    oversized.write_bytes(b'x' * 12)
+    os.utime(oversized, (1_735_689_600, 1_735_689_600))
+    manifest = stale_root / 'stale_manifest.jsonl'
+
+    result = data_retention_policy._reindex_legacy_stale_stage(
+        stale_root=stale_root,
+        manifest_path=manifest,
+        max_files=1,
+        max_bytes=8,
+        oversized_max_files=1,
+        oversized_max_bytes=16,
+        oversized_min_age_days=3,
+    )
+    row = json.loads(manifest.read_text(encoding='utf-8').strip())
+
+    assert result['reindexed_files'] == 1
+    assert result['oversized_selected_files'] == 1
+    assert row['economic_value'] == 'medium'
+    assert row['legacy_reindex_lane'] == 'oversized_medium_value'
+
+
+def test_stale_purge_skips_hashing_until_retention_window_expires(monkeypatch, tmp_path):
+    stale_root = tmp_path / 'stale_stage'
+    staged = stale_root / 'external_live_sqlite' / 'recent.sqlite3'
+    staged.parent.mkdir(parents=True, exist_ok=True)
+    staged.write_bytes(b'recent')
+    manifest = stale_root / 'stale_manifest.jsonl'
+    manifest.write_text(
+        json.dumps(
+            {
+                'event': 'staged',
+                'staged_path': str(staged),
+                'sha256': 'expected-but-not-read-yet',
+                'integrity_verified': True,
+                'economic_value': 'medium',
+                'protected_evidence': False,
+            }
+        ) + '\n',
+        encoding='utf-8',
+    )
+    hash_calls = []
+    monkeypatch.setattr(data_retention_policy, '_path_sha256', lambda path: hash_calls.append(path) or '')
+
+    result = data_retention_policy._purge_old_stale_stage(
+        stale_root=stale_root,
+        manifest_path=manifest,
+        older_than_days=30,
+        medium_value_days=14,
+        max_files=1,
+        max_bytes=8,
+        oversized_max_files=1,
+        oversized_max_bytes=16,
+    )
+
+    assert hash_calls == []
+    assert result['skipped_by_tier_files'] == 1
+    assert staged.exists() is True
+
+
+def test_stale_purge_allows_one_verified_expired_oversized_medium_file(tmp_path):
+    stale_root = tmp_path / 'stale_stage'
+    staged = stale_root / 'external_live_sqlite' / 'expired.sqlite3'
+    staged.parent.mkdir(parents=True, exist_ok=True)
+    staged.write_bytes(b'x' * 12)
+    os.utime(staged, (1_735_689_600, 1_735_689_600))
+    manifest = stale_root / 'stale_manifest.jsonl'
+    manifest.write_text(
+        json.dumps(
+            {
+                'event': 'staged',
+                'staged_path': str(staged),
+                'sha256': data_retention_policy._path_sha256(staged),
+                'integrity_verified': True,
+                'economic_value': 'medium',
+                'protected_evidence': False,
+            }
+        ) + '\n',
+        encoding='utf-8',
+    )
+
+    result = data_retention_policy._purge_old_stale_stage(
+        stale_root=stale_root,
+        manifest_path=manifest,
+        older_than_days=30,
+        medium_value_days=14,
+        max_files=1,
+        max_bytes=8,
+        oversized_max_files=1,
+        oversized_max_bytes=16,
+    )
+
+    assert result['deleted_files'] == 1
+    assert result['oversized_selected_files'] == 1
+    assert result['oversized_selected_bytes'] == 12
+    assert staged.exists() is False
+
+
 def test_main_stage_only_leaves_unmatched_candidates_in_place(monkeypatch, tmp_path):
     monkeypatch.setattr(data_retention_policy, 'PROJECT_ROOT', tmp_path)
 

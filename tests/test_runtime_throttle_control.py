@@ -74,6 +74,28 @@ def test_runtime_throttle_classifies_strategy_research_lane_as_research_pressure
     assert classification["throttle_candidate"] is False
 
 
+def test_runtime_throttle_classifies_canary_and_audio_workloads() -> None:
+    canary = src._classify_process(
+        "/repo/.venv/bin/python /repo/scripts/canary_rollout_guard.py --json"
+    )
+    audio = src._classify_process("/usr/sbin/coreaudiod")
+    media_analysis = src._classify_process(
+        "/System/Library/PrivateFrameworks/MediaAnalysis.framework/Versions/A/mediaanalysisd"
+    )
+
+    assert canary == {
+        "category": "support_maintenance",
+        "priority_tier": "throttle_first",
+        "throttle_candidate": True,
+    }
+    assert audio == {
+        "category": "system_cotenant",
+        "priority_tier": "external_system",
+        "throttle_candidate": False,
+    }
+    assert media_analysis == audio
+
+
 def test_runtime_throttle_never_marks_resource_guard_sensor_as_pauseable() -> None:
     classification = src._classify_process(
         "/repo/.venv/bin/python /repo/scripts/resource_guard.py --profile collection"
@@ -5503,6 +5525,8 @@ def test_runtime_throttle_marks_low_pressure_external_soft_cap_advisory(tmp_path
 def test_runtime_snapshot_excludes_controller_self_cpu(monkeypatch) -> None:
     self_pid = 4242
     monkeypatch.setattr(src.os, "getpid", lambda: self_pid)
+    monkeypatch.setenv("RUNTIME_PROCESS_CPU_SAMPLE_WINDOWS", "1")
+    monkeypatch.setattr(src.time, "sleep", lambda _seconds: None)
     monkeypatch.setattr(
         src,
         "_run_capture",
@@ -5542,6 +5566,65 @@ def test_runtime_process_cpu_delta_replaces_stale_ps_average() -> None:
     assert all(row["cpu_sample_source"] == "cpu_time_delta" for row in sampled)
     assert metadata["active"] is True
     assert metadata["sampled_process_count"] == 2
+
+
+def test_runtime_process_cpu_window_median_rejects_isolated_burst() -> None:
+    rows = [{"pid": 101, "cpu_percent": 82.0, "command": "periodic execution health update"}]
+
+    sampled, metadata = src._apply_process_cpu_sample_windows(
+        rows,
+        samples=[
+            ("101 15:00.00\n", "101 15:00.25\n", 0.25),
+            ("101 15:00.25\n", "101 15:00.25\n", 0.25),
+            ("101 15:00.25\n", "101 15:00.25\n", 0.25),
+        ],
+    )
+
+    assert sampled[0]["cpu_percent"] == 0.0
+    assert sampled[0]["cpu_sample_peak_percent"] == 100.0
+    assert sampled[0]["cpu_sample_source"] == "cpu_time_delta_window_median"
+    assert metadata["sample_window_count"] == 3
+    assert metadata["transient_burst_process_count"] == 1
+
+
+def test_runtime_process_cpu_window_median_preserves_sustained_pressure() -> None:
+    rows = [{"pid": 101, "cpu_percent": 82.0, "command": "sustained execution workload"}]
+
+    sampled, metadata = src._apply_process_cpu_sample_windows(
+        rows,
+        samples=[
+            ("101 15:00.00\n", "101 15:00.20\n", 0.25),
+            ("101 15:00.20\n", "101 15:00.40\n", 0.25),
+            ("101 15:00.40\n", "101 15:00.60\n", 0.25),
+        ],
+    )
+
+    assert sampled[0]["cpu_percent"] == 80.0
+    assert metadata["transient_burst_process_count"] == 0
+
+
+def test_runtime_payload_exposes_process_cpu_sampling_contract(tmp_path: Path) -> None:
+    sampling = {
+        "active": True,
+        "sample_window_count": 3,
+        "transient_burst_process_count": 1,
+    }
+
+    payload = src.build_payload(
+        tmp_path,
+        runtime_snapshot={
+            "cpu_count": 10,
+            "load_averages": {"one_minute": 1.0, "five_minutes": 1.0, "fifteen_minutes": 1.0},
+            "thermal": {},
+            "vm_stat": {},
+            "top_processes": [],
+            "category_cpu": {},
+            "category_counts": {},
+            "process_cpu_sampling": sampling,
+        },
+    )
+
+    assert payload["runtime_snapshot"]["process_cpu_sampling"] == sampling
 
 
 def test_runtime_process_cpu_time_parser_handles_day_and_hour_formats() -> None:

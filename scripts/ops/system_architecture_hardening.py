@@ -593,8 +593,9 @@ def _storage_writer_data_plane(ctx: dict[str, dict[str, Any]]) -> dict[str, Any]
     overlay_relief = _storage_overlay_relief(storage, plumbing)
     overlay_relief_active = bool(overlay_relief.get("active", False))
     bounded_recovery = _as_dict(storage.get("bounded_recovery_contract"))
+    continuous_soak = _as_dict(storage.get("continuous_run_soak_contract"))
     raw_live = _as_dict(backpressure.get("effective_raw_live")) or _as_dict(backpressure.get("raw_live"))
-    bounded_writer_pressure_managed = bool(
+    bounded_active_recovery = bool(
         0.35 <= pressure_index < 1.0
         and storage_status in {"stable", "ready", "normal", "calm"}
         and total_pending < pending_threshold
@@ -614,6 +615,24 @@ def _storage_writer_data_plane(ctx: dict[str, dict[str, Any]]) -> dict[str, Any]
         and single_primary
         and not risk_flags
     )
+    bounded_steady_state_storage = bool(
+        0.35 <= pressure_index <= 0.85
+        and storage_status in {"stable", "ready", "normal", "calm"}
+        and total_pending <= 5000
+        and _safe_int(raw_live.get("core_pending_lines"), total_pending) <= 2500
+        and _safe_int(raw_live.get("total_pending_lines"), total_pending) <= 5000
+        and _safe_float(raw_live.get("oldest_pending_age_seconds"), 0.0) <= 300.0
+        and bool(continuous_soak.get("soak_ready", False))
+        and not _as_list(continuous_soak.get("blockers"))
+        and data_status in {"ready", "ok", "degraded"}
+        and _safe_int(data_plane.get("write_failure_count"), 0) == 0
+        and _safe_int(data_plane.get("account_snapshot_failure_count"), 0) == 0
+        and plumbing_status in {"ready", "guarded_ready"}
+        and not plumbing.get("blockers")
+        and single_primary
+        and not risk_flags
+    )
+    bounded_writer_pressure_managed = bool(bounded_active_recovery or bounded_steady_state_storage)
     findings: list[str] = []
     watch_items: list[str] = []
     recommendations: list[str] = []
@@ -695,6 +714,8 @@ def _storage_writer_data_plane(ctx: dict[str, dict[str, Any]]) -> dict[str, Any]
             "storage_pressure_index": pressure_index,
             "storage_overlay_relief": overlay_relief,
             "bounded_writer_pressure_managed": bounded_writer_pressure_managed,
+            "bounded_active_recovery": bounded_active_recovery,
+            "bounded_steady_state_storage": bounded_steady_state_storage,
             "total_pending_lines": total_pending,
             "pending_lines_threshold": pending_threshold,
             "data_plane_status": data_status,

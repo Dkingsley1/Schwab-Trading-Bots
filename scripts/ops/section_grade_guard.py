@@ -179,8 +179,6 @@ def _storage_section_advisory_for_paper_soak(project_root: Path) -> bool:
     severity = str(storage.get("severity") or "").strip().lower()
     if status not in {"ready", "ok", "advisory"}:
         return False
-    if severity not in {"", "ready", "stable", "low", "normal"}:
-        return False
     pressure_index = _safe_float(storage.get("pressure_index"), 1.0)
     soak_contract = (
         storage.get("continuous_run_soak_contract")
@@ -197,6 +195,28 @@ def _storage_section_advisory_for_paper_soak(project_root: Path) -> bool:
     integrity = storage.get("data_integrity") if isinstance(storage.get("data_integrity"), dict) else {}
     writer = storage.get("writer_shedding") if isinstance(storage.get("writer_shedding"), dict) else {}
     efficiency = storage.get("storage_efficiency_contract") if isinstance(storage.get("storage_efficiency_contract"), dict) else {}
+    raw_live_clear = _raw_live_storage_backlog_clear(storage)
+    bounded_steady_state_ready = bool(
+        severity in {"", "ready", "stable", "low", "normal", "watch", "elevated"}
+        and pressure_index <= 0.85
+        and bool(bounded.get("route_verified", False))
+        and not bool(bounded.get("hard_gate_active", False))
+        and not bool(bounded.get("effective_hard_gate_active", False))
+        and not writer.get("hard_breaches")
+        and not writer.get("elevated_breaches")
+        and all(
+            _safe_int(integrity.get(key), 0) == 0
+            for key in (
+                "sql_invalid_lines",
+                "sql_overlay_invalid_lines",
+                "sql_overlay_oversize_payloads",
+                "sql_overlay_ops_write_failures",
+            )
+        )
+        and str(efficiency.get("overall_status") or "ready").strip().lower() in {"ready", "ok"}
+        and str(efficiency.get("grade") or "A").strip().upper() in {"A", "A+"}
+        and raw_live_clear
+    )
     bounded_transient_ready = bool(
         pressure_index <= STORAGE_SOAK_BOUNDED_PRESSURE_MAX
         and bool(bounded.get("route_verified", False))
@@ -218,11 +238,13 @@ def _storage_section_advisory_for_paper_soak(project_root: Path) -> bool:
         and str(efficiency.get("grade") or "A").strip().upper() in {"A", "A+"}
         and blockers.issubset({"steady_state_targets_not_clear"})
     )
-    if pressure_index > 0.50 and not bounded_transient_ready:
+    if severity not in {"", "ready", "stable", "low", "normal"} and not bounded_steady_state_ready and not bounded_transient_ready:
         return False
-    if (blockers or not soak_ready) and not bounded_transient_ready:
+    if pressure_index > 0.50 and not bounded_transient_ready and not bounded_steady_state_ready:
         return False
-    return _raw_live_storage_backlog_clear(storage)
+    if (blockers or not soak_ready) and not bounded_transient_ready and not bounded_steady_state_ready:
+        return False
+    return raw_live_clear
 
 
 def _advisory_below_floor_sections(

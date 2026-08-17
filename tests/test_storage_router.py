@@ -280,6 +280,39 @@ class StorageRouterTests(unittest.TestCase):
             self.assertEqual(len(details), 1)
             self.assertIn('logs/state.json', details[0])
 
+    def test_auto_sync_retains_divergent_local_source_until_reconciled(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            local_root = root / 'local'
+            external_root = root / 'external'
+            self._write_text(local_root / 'exports' / 'paper.jsonl', 'new-local-history')
+            self._write_text(external_root / 'exports' / 'paper.jsonl', 'older-external-history')
+            skip_details: list[str] = []
+
+            copied, errors, pruned, details = storage_router._auto_sync_local_to_external(
+                local_root=local_root,
+                external_root=external_root,
+                link_dirs=('exports',),
+                prune_local=True,
+                max_copy_files=10,
+                skip_details=skip_details,
+            )
+
+            self.assertEqual((copied, errors, pruned, details), (1, 0, 0, []))
+            self.assertTrue((local_root / 'exports' / 'paper.jsonl').exists())
+            self.assertEqual(
+                (external_root / 'exports' / 'paper.jsonl').read_text(encoding='utf-8'),
+                'older-external-history',
+            )
+            self.assertEqual(
+                (external_root / 'exports' / 'paper.jsonl.local_fallback').read_text(encoding='utf-8'),
+                'new-local-history',
+            )
+            self.assertIn(
+                'exports/paper.jsonl:divergent_source_retained_pending_reconciliation',
+                skip_details,
+            )
+
     def test_route_runtime_storage_skips_autosync_under_free_space_floor(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             root = Path(td) / 'repo'

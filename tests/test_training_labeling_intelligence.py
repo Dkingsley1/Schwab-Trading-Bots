@@ -43,6 +43,27 @@ def _write_registry(root: Path) -> None:
     )
 
 
+def test_central_bank_liquidity_source_routes_to_macro_rates_and_funding_contexts() -> None:
+    source_id = tli.CENTRAL_BANK_CONTEXT_SOURCE_ID
+    required_contexts = {
+        "central_bank_activity",
+        "central_bank_policy_divergence",
+        "fed_balance_sheet",
+        "fed_liquidity",
+        "funding_liquidity_context",
+        "funding_stress",
+        "liquidity_state",
+        "macro_context",
+        "net_liquidity",
+        "rates_context",
+        "repo_funding_curve_proxy",
+        "sofr",
+        "treasury_general_account",
+    }
+
+    assert all(source_id in tli.FREE_LABEL_CONTEXT_SOURCE_MAP[context] for context in required_contexts)
+
+
 def test_dry_run_reports_missing_labels_and_plans_intelligence_layer(tmp_path: Path) -> None:
     _write_registry(tmp_path)
     health = tmp_path / "governance" / "health"

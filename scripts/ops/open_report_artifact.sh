@@ -17,6 +17,7 @@ Reports:
   special
   posttrade
   training
+  retrain
   timeline
   incident
   incident-packet
@@ -181,6 +182,14 @@ case "$REPORT_KIND" in
       "$PROJECT_ROOT/exports/reports/training_reports/training_report_latest.pdf" \
       "$PROJECT_ROOT/exports/reports/training_reports/training_report_print_latest.html" \
       "$PROJECT_ROOT/exports/reports/training_reports/training_report_latest.md")"
+    ;;
+  retrain)
+    run_opsctl report-pdfs --only retrain_scorecard --json
+    REPORT="$(pick_existing \
+      "$PROJECT_ROOT/exports/sql_reports/retrain_scorecard_latest.pdf" \
+      "$PROJECT_ROOT/exports/reports/pdf_render_sources/retrain_scorecard_latest.html" \
+      "$PROJECT_ROOT/exports/sql_reports/retrain_scorecard_latest.md" \
+      "$PROJECT_ROOT/governance/health/retrain_scorecard_latest.json")"
     ;;
   timeline)
     run_opsctl report-pdfs --only project_timeline --json

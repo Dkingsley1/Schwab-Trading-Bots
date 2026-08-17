@@ -1,3 +1,6 @@
+import json
+from datetime import datetime, timedelta, timezone
+
 from scripts.ops import continuous_soak_integrity_control as control
 
 
@@ -29,3 +32,31 @@ def test_soak_hardening_a_plus_does_not_fake_elapsed_completion(tmp_path) -> Non
     assert payload["elapsed_evidence_grade"] != "A+"
     assert payload["runtime_checks"]["paper_runtime_regression_clear"] is False
     assert payload["runtime_checks"]["paper_truth_reconciled_A_plus"] is False
+
+
+def test_candidate_drift_preserves_observed_age_but_receives_zero_clean_credit(tmp_path) -> None:
+    now = datetime(2026, 8, 16, tzinfo=timezone.utc)
+    health = tmp_path / "governance" / "health"
+    health.mkdir(parents=True)
+    (health / "production_excellence_control_latest.json").write_text(
+        json.dumps(
+            {
+                "candidate": {
+                    "candidate_ready": False,
+                    "candidate_drift": True,
+                    "event_chain": {"ok": True, "event_count": 2},
+                    "scope_windows_started_utc": {
+                        "operations": (now - timedelta(hours=800)).isoformat()
+                    },
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    payload = control.build_payload(tmp_path, now=now)
+
+    assert payload["observed_window_elapsed_hours"] == 800.0
+    assert payload["clean_window_elapsed_hours"] == 0.0
+    assert payload["candidate_drift_invalidates_elapsed_credit"] is True
+    assert payload["clean_720_hours_complete"] is False

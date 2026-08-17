@@ -108,7 +108,7 @@ def main() -> int:
     payload = {
         "timestamp_utc": now.isoformat(),
         "schema_version": 2,
-        "ok": True,
+        "ok": sources_ready,
         "overall_status": "ready" if sources_ready else "degraded",
         "risk_level": risk_level,
         "risk_score": round(risk_score, 4),
@@ -146,7 +146,7 @@ def main() -> int:
     if args.json:
         print(json.dumps(payload, ensure_ascii=True))
     else:
-        print(f"risk_ledger_ok=True risk_level={risk_level} risk_score={risk_score:.2f}")
+        print(f"risk_ledger_ok={sources_ready} risk_level={risk_level} risk_score={risk_score:.2f}")
     return 0
 
 

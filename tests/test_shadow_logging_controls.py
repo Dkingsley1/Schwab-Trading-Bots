@@ -508,6 +508,50 @@ def test_runtime_pause_reserves_capacity_for_inflight_symbol_batches(tmp_path, m
     assert released["fresh_backlog_pause"]["clear_confirmed"] is True
 
 
+def test_deferred_backlog_does_not_pause_fresh_core_collection(tmp_path, monkeypatch) -> None:
+    health = tmp_path / "governance" / "health"
+    health.mkdir(parents=True, exist_ok=True)
+    now = datetime.now(timezone.utc)
+    (health / "ingestion_storage_control_latest.json").write_text(
+        json.dumps(
+            {
+                "timestamp_utc": (now - timedelta(seconds=10)).isoformat(),
+                "overall_status": "ready",
+                "severity": "stable",
+                "backpressure": {"total_pending_lines": 317, "core_pending_lines": 315},
+            }
+        ),
+        encoding="utf-8",
+    )
+    (health / "ingestion_backpressure_latest.json").write_text(
+        json.dumps(
+            {
+                "timestamp_utc": now.isoformat(),
+                "pending_lines": 353,
+                "pending_lines_total": 2087,
+                "pending_lines_deferred": 1734,
+            }
+        ),
+        encoding="utf-8",
+    )
+    storage_override = tmp_path / "storage.env"
+    storage_override.write_text(
+        "SHADOW_LOOP_FRESH_BACKLOG_PAUSE_LINES=4000\n"
+        "SHADOW_LOOP_FRESH_BACKLOG_INFLIGHT_RESERVE_LINES=2000\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(loop, "DYNAMIC_STORAGE_OVERRIDE_PATHS", (storage_override,))
+    _reset_dynamic_override_cache()
+
+    contract = loop._runtime_training_pause_contract(str(tmp_path))
+
+    assert contract["paused"] is False
+    assert contract["backlog_paused"] is False
+    assert contract["fresh_backlog_pause"]["raw_core_pending_lines"] == 353
+    assert contract["fresh_backlog_pause"]["raw_total_pending_lines"] == 2087
+    assert contract["fresh_backlog_pause"]["admission_pressure_lane"] == "core"
+
+
 def test_continuous_collectors_stagger_once_at_bootstrap(monkeypatch) -> None:
     monkeypatch.setattr(loop, "_dynamic_storage_flag", lambda _name, _default: True)
 

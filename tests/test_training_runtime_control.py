@@ -22,6 +22,46 @@ def _fresh_ts() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def test_training_evidence_gate_requires_one_fresh_epoch_in_production(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    health = project_root / "governance" / "health"
+    epoch = {"id": "epoch-one", "started_utc": _fresh_ts()}
+    _write_json(project_root / "master_bot_registry.json", {"sub_bots": []})
+    _write_json(
+        project_root / "governance" / "feature_store" / "latest.json",
+        {"timestamp_utc": _fresh_ts(), "strict_ok": True, "evidence_epoch": epoch},
+    )
+    _write_json(
+        health / "retrain_schema_compatibility_latest.json",
+        {"timestamp_utc": _fresh_ts(), "ok": True, "failed_checks": [], "evidence_epoch": epoch},
+    )
+    _write_json(
+        health / "golden_replay_regression_latest.json",
+        {"timestamp_utc": _fresh_ts(), "ok": True, "strict_ready": True, "evidence_epoch": epoch},
+    )
+    bot_needs_path = health / "bot_needs_intelligence_latest.json"
+    _write_json(
+        bot_needs_path,
+        {"timestamp_utc": _fresh_ts(), "training_stage_board": {"ready": True}, "evidence_epoch": epoch},
+    )
+
+    ready = src._build_training_evidence_gate(project_root, max_age_minutes=30)
+    assert ready["ready"] is True
+    assert ready["checks"]["single_evidence_epoch"] is True
+
+    _write_json(
+        bot_needs_path,
+        {
+            "timestamp_utc": _fresh_ts(),
+            "training_stage_board": {"ready": True},
+            "evidence_epoch": {"id": "epoch-two", "started_utc": _fresh_ts()},
+        },
+    )
+    mismatched = src._build_training_evidence_gate(project_root, max_age_minutes=30)
+    assert mismatched["ready"] is False
+    assert "training_evidence_epoch_mismatch" in mismatched["blockers"]
+
+
 def test_runtime_snapshot_cache_accepts_intrinsically_ready_snapshot(tmp_path: Path) -> None:
     project_root = tmp_path / "project"
     health = project_root / "governance" / "health"
