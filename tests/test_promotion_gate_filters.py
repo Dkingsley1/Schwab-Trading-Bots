@@ -196,3 +196,548 @@ def test_lane_gate_filters_same_registry_noise() -> None:
         assert payload["considered_bots"] == 1
         assert payload["promote_ok"] is True
         assert payload["excluded_counts"] == {"deleted_from_rotation": 1}
+
+
+def test_walk_forward_gate_excludes_training_excluded_by_default() -> None:
+    with tempfile.TemporaryDirectory() as td:
+        td_path = Path(td)
+        wf_file = td_path / "walk_forward.json"
+        registry_file = td_path / "registry.json"
+        out_file = td_path / "promotion_gate.json"
+
+        _write_json(
+            wf_file,
+            {
+                "bots": {
+                    "brain_refinery_v10_seasonal": {
+                        "runs": 19,
+                        "forward_mean": 0.92,
+                        "delta": 0.0,
+                        "trading_quality_score": 1.0,
+                        "overfit_gap": 0.0,
+                        "status": "pass",
+                    },
+                    "brain_refinery_v45_intraday_open_close_regimes": {
+                        "runs": 33,
+                        "forward_mean": 0.51,
+                        "delta": 0.0,
+                        "trading_quality_score": 0.70,
+                        "overfit_gap": 0.0,
+                        "status": "fail",
+                    },
+                }
+            },
+        )
+        _write_json(
+            registry_file,
+            {
+                "sub_bots": [
+                    {"bot_id": "brain_refinery_v10_seasonal", "active": True, "deleted_from_rotation": False, "bot_role": "signal_sub_bot"},
+                    {
+                        "bot_id": "brain_refinery_v45_intraday_open_close_regimes",
+                        "active": True,
+                        "deleted_from_rotation": False,
+                        "bot_role": "signal_sub_bot",
+                        "training_excluded": True,
+                    },
+                ]
+            },
+        )
+
+        proc = subprocess.run(
+            [
+                sys.executable,
+                str(PROJECT_ROOT / "scripts" / "walk_forward_promotion_gate.py"),
+                "--in-file",
+                str(wf_file),
+                "--registry-file",
+                str(registry_file),
+                "--out-file",
+                str(out_file),
+                "--min-considered-bots",
+                "1",
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+
+        assert proc.returncode == 0
+        payload = json.loads(out_file.read_text(encoding="utf-8"))
+        assert payload["considered_bots"] == 1
+        assert payload["promote_ok"] is True
+        assert payload["excluded_counts"] == {"training_excluded": 1}
+        assert payload["registry_filter"]["include_training_excluded"] is False
+        assert payload["effective_thresholds"]["min_considered_bots"] == 1
+        assert payload["considered_bot_ids"] == ["brain_refinery_v10_seasonal"]
+        assert payload["pass_examples"][0]["bot_id"] == "brain_refinery_v10_seasonal"
+
+
+def test_lane_gate_excludes_training_excluded_by_default() -> None:
+    with tempfile.TemporaryDirectory() as td:
+        td_path = Path(td)
+        wf_file = td_path / "walk_forward_lane.json"
+        registry_file = td_path / "registry_lane.json"
+        out_file = td_path / "lane_gate.json"
+
+        _write_json(
+            wf_file,
+            {
+                "bots": {
+                    "brain_refinery_v10_seasonal": {
+                        "runs": 19,
+                        "forward_mean": 0.92,
+                        "delta": 0.0,
+                        "trading_quality_score": 1.0,
+                        "overfit_gap": 0.0,
+                        "status": "pass",
+                    },
+                    "brain_refinery_v45_intraday_open_close_regimes": {
+                        "runs": 33,
+                        "forward_mean": 0.51,
+                        "delta": 0.0,
+                        "trading_quality_score": 0.70,
+                        "overfit_gap": 0.0,
+                        "status": "fail",
+                    },
+                }
+            },
+        )
+        _write_json(
+            registry_file,
+            {
+                "sub_bots": [
+                    {"bot_id": "brain_refinery_v10_seasonal", "active": True, "deleted_from_rotation": False, "bot_role": "signal_sub_bot"},
+                    {
+                        "bot_id": "brain_refinery_v45_intraday_open_close_regimes",
+                        "active": True,
+                        "deleted_from_rotation": False,
+                        "bot_role": "signal_sub_bot",
+                        "training_excluded": True,
+                    },
+                ]
+            },
+        )
+
+        proc = subprocess.run(
+            [
+                sys.executable,
+                str(PROJECT_ROOT / "scripts" / "lane_promotion_gate.py"),
+                "--in-file",
+                str(wf_file),
+                "--registry-file",
+                str(registry_file),
+                "--out-file",
+                str(out_file),
+                "--min-considered-per-lane",
+                "1",
+                "--min-covered-lanes",
+                "1",
+                "--json",
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+
+        assert proc.returncode == 0
+        payload = json.loads(out_file.read_text(encoding="utf-8"))
+        assert payload["considered_bots"] == 1
+        assert payload["promote_ok"] is True
+        assert payload["excluded_counts"] == {"training_excluded": 1}
+        assert payload["registry_filter"]["include_training_excluded"] is False
+
+
+def test_walk_forward_gate_reclassifies_narrow_single_metric_misses_as_near_pass() -> None:
+    with tempfile.TemporaryDirectory() as td:
+        td_path = Path(td)
+        wf_file = td_path / "walk_forward.json"
+        registry_file = td_path / "registry.json"
+        out_file = td_path / "promotion_gate.json"
+
+        _write_json(
+            wf_file,
+            {
+                "bots": {
+                    "brain_refinery_v10_seasonal": {
+                        "runs": 19,
+                        "forward_mean": 0.92,
+                        "delta": 0.0,
+                        "trading_quality_score": 1.0,
+                        "overfit_gap": 0.0,
+                        "status": "pass",
+                    },
+                    "brain_refinery_v35_dmi_state_machine": {
+                        "runs": 16,
+                        "forward_mean": 0.82,
+                        "delta": 0.01,
+                        "trading_quality_score": 1.0,
+                        "overfit_gap": 0.0,
+                        "status": "pass",
+                    },
+                    "brain_refinery_v12_news_shocks": {
+                        "runs": 29,
+                        "forward_mean": 0.692457,
+                        "delta": -0.024205,
+                        "trading_quality_score": 0.730543,
+                        "overfit_gap": 0.024205,
+                        "status": "fail",
+                    },
+                    "brain_refinery_v26_relative_strength_cross_section": {
+                        "runs": 21,
+                        "forward_mean": 0.504624,
+                        "delta": 0.004544,
+                        "trading_quality_score": 0.613388,
+                        "overfit_gap": -0.004544,
+                        "status": "fail",
+                    },
+                    "brain_refinery_v48_position_1m_3m": {
+                        "runs": 19,
+                        "forward_mean": 0.520615,
+                        "delta": 0.005329,
+                        "trading_quality_score": 0.617234,
+                        "overfit_gap": -0.005329,
+                        "status": "fail",
+                    },
+                }
+            },
+        )
+        _write_json(
+            registry_file,
+            {
+                "sub_bots": [
+                    {"bot_id": "brain_refinery_v10_seasonal", "active": True, "deleted_from_rotation": False, "bot_role": "signal_sub_bot"},
+                    {"bot_id": "brain_refinery_v35_dmi_state_machine", "active": True, "deleted_from_rotation": False, "bot_role": "signal_sub_bot"},
+                    {"bot_id": "brain_refinery_v12_news_shocks", "active": True, "deleted_from_rotation": False, "bot_role": "signal_sub_bot"},
+                    {"bot_id": "brain_refinery_v26_relative_strength_cross_section", "active": True, "deleted_from_rotation": False, "bot_role": "signal_sub_bot"},
+                    {"bot_id": "brain_refinery_v48_position_1m_3m", "active": True, "deleted_from_rotation": False, "bot_role": "signal_sub_bot"},
+                ]
+            },
+        )
+
+        proc = subprocess.run(
+            [
+                sys.executable,
+                str(PROJECT_ROOT / "scripts" / "walk_forward_promotion_gate.py"),
+                "--in-file",
+                str(wf_file),
+                "--registry-file",
+                str(registry_file),
+                "--out-file",
+                str(out_file),
+                "--near-pass-forward-slack",
+                "0.07",
+                "--near-pass-delta-slack",
+                "0.03",
+                "--near-pass-min-tq-cushion",
+                "0.0",
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+
+        assert proc.returncode == 0
+        payload = json.loads(out_file.read_text(encoding="utf-8"))
+        assert payload["promote_ok"] is True
+        assert payload["failed_bots"] == 1
+        assert payload["raw_failed_bots"] == 3
+        assert payload["near_pass_bots"] == 2
+        assert {row["bot_id"] for row in payload["near_pass_examples"]} == {
+            "brain_refinery_v12_news_shocks",
+            "brain_refinery_v48_position_1m_3m",
+        }
+
+
+def test_lane_gate_scales_coverage_to_observed_lanes_and_excludes_near_passes() -> None:
+    with tempfile.TemporaryDirectory() as td:
+        td_path = Path(td)
+        wf_file = td_path / "walk_forward_lane.json"
+        registry_file = td_path / "registry_lane.json"
+        out_file = td_path / "lane_gate.json"
+
+        _write_json(
+            wf_file,
+            {
+                "bots": {
+                    "brain_refinery_v10_seasonal": {
+                        "runs": 19,
+                        "forward_mean": 0.92,
+                        "delta": 0.0,
+                        "trading_quality_score": 1.0,
+                        "overfit_gap": 0.0,
+                        "status": "pass",
+                    },
+                    "brain_refinery_v35_dmi_state_machine": {
+                        "runs": 16,
+                        "forward_mean": 0.82,
+                        "delta": 0.01,
+                        "trading_quality_score": 1.0,
+                        "overfit_gap": 0.0,
+                        "status": "pass",
+                    },
+                    "brain_refinery_v12_news_shocks": {
+                        "runs": 29,
+                        "forward_mean": 0.692457,
+                        "delta": -0.024205,
+                        "trading_quality_score": 0.730543,
+                        "overfit_gap": 0.024205,
+                        "status": "fail",
+                    },
+                    "brain_refinery_v26_relative_strength_cross_section": {
+                        "runs": 21,
+                        "forward_mean": 0.504624,
+                        "delta": 0.004544,
+                        "trading_quality_score": 0.613388,
+                        "overfit_gap": -0.004544,
+                        "status": "fail",
+                    },
+                    "brain_refinery_v48_position_1m_3m": {
+                        "runs": 19,
+                        "forward_mean": 0.520615,
+                        "delta": 0.005329,
+                        "trading_quality_score": 0.617234,
+                        "overfit_gap": -0.005329,
+                        "status": "fail",
+                    },
+                }
+            },
+        )
+        _write_json(
+            registry_file,
+            {
+                "sub_bots": [
+                    {"bot_id": "brain_refinery_v10_seasonal", "active": True, "deleted_from_rotation": False, "bot_role": "signal_sub_bot"},
+                    {"bot_id": "brain_refinery_v35_dmi_state_machine", "active": True, "deleted_from_rotation": False, "bot_role": "signal_sub_bot"},
+                    {"bot_id": "brain_refinery_v12_news_shocks", "active": True, "deleted_from_rotation": False, "bot_role": "signal_sub_bot"},
+                    {"bot_id": "brain_refinery_v26_relative_strength_cross_section", "active": True, "deleted_from_rotation": False, "bot_role": "signal_sub_bot"},
+                    {"bot_id": "brain_refinery_v48_position_1m_3m", "active": True, "deleted_from_rotation": False, "bot_role": "signal_sub_bot"},
+                ]
+            },
+        )
+
+        proc = subprocess.run(
+            [
+                sys.executable,
+                str(PROJECT_ROOT / "scripts" / "lane_promotion_gate.py"),
+                "--in-file",
+                str(wf_file),
+                "--registry-file",
+                str(registry_file),
+                "--out-file",
+                str(out_file),
+                "--near-pass-forward-slack",
+                "0.07",
+                "--near-pass-delta-slack",
+                "0.03",
+                "--near-pass-min-tq-cushion",
+                "0.0",
+                "--json",
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+
+        assert proc.returncode == 0
+        payload = json.loads(out_file.read_text(encoding="utf-8"))
+        assert payload["promote_ok"] is True
+        assert payload["coverage_ok"] is True
+        assert payload["effective_thresholds"]["min_covered_lanes"] == 2
+        assert payload["lanes"]["equities"]["failed_bots"] == 1
+        assert payload["lanes"]["swing"]["failed_bots"] == 0
+        assert payload["lanes"]["swing"]["near_pass_bots"] == 1
+        assert payload["ranked_lanes"][0]["lane"] == "equities"
+        assert payload["ranked_lanes"][0]["fail_share"] == 0.25
+
+
+def test_walk_forward_gate_surfaces_coverage_gap_examples() -> None:
+    with tempfile.TemporaryDirectory() as td:
+        td_path = Path(td)
+        wf_file = td_path / "walk_forward.json"
+        registry_file = td_path / "registry.json"
+        out_file = td_path / "promotion_gate.json"
+
+        _write_json(
+            wf_file,
+            {
+                "bots": {
+                    "brain_refinery_v4_simple": {
+                        "runs": 9,
+                        "forward_mean": 0.61,
+                        "delta": 0.0,
+                        "trading_quality_score": 0.63,
+                        "overfit_gap": 0.01,
+                        "status": "insufficient_runs",
+                    }
+                }
+            },
+        )
+        _write_json(
+            registry_file,
+            {
+                "sub_bots": [
+                    {
+                        "bot_id": "brain_refinery_v4_simple",
+                        "active": True,
+                        "deleted_from_rotation": False,
+                        "bot_role": "signal_sub_bot",
+                    }
+                ]
+            },
+        )
+
+        proc = subprocess.run(
+            [
+                sys.executable,
+                str(PROJECT_ROOT / "scripts" / "walk_forward_promotion_gate.py"),
+                "--in-file",
+                str(wf_file),
+                "--registry-file",
+                str(registry_file),
+                "--out-file",
+                str(out_file),
+                "--min-runs-per-bot",
+                "12",
+                "--min-considered-bots",
+                "4",
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+
+        assert proc.returncode == 2
+        payload = json.loads(out_file.read_text(encoding="utf-8"))
+        assert payload["coverage_shortfall_bots"] == 4
+        assert payload["coverage_gap_examples"][0]["bot_id"] == "brain_refinery_v4_simple"
+        assert payload["coverage_gap_examples"][0]["runs_shortfall"] == 3
+
+
+def test_walk_forward_gate_counts_staged_coverage_candidates_when_active_filter_is_on() -> None:
+    with tempfile.TemporaryDirectory() as td:
+        td_path = Path(td)
+        wf_file = td_path / "walk_forward.json"
+        registry_file = td_path / "registry.json"
+        out_file = td_path / "promotion_gate.json"
+
+        _write_json(
+            wf_file,
+            {
+                "bots": {
+                    "brain_refinery_v10_seasonal": {
+                        "runs": 12,
+                        "forward_mean": 0.61,
+                        "delta": 0.0,
+                        "trading_quality_score": 0.71,
+                        "overfit_gap": 0.01,
+                        "status": "pass",
+                    }
+                }
+            },
+        )
+        _write_json(
+            registry_file,
+            {
+                "sub_bots": [
+                    {
+                        "bot_id": "brain_refinery_v10_seasonal",
+                        "active": False,
+                        "deleted_from_rotation": False,
+                        "bot_role": "signal_sub_bot",
+                        "coverage_candidate_active": True,
+                        "coverage_stage": "promotion_queue",
+                    }
+                ]
+            },
+        )
+
+        proc = subprocess.run(
+            [
+                sys.executable,
+                str(PROJECT_ROOT / "scripts" / "walk_forward_promotion_gate.py"),
+                "--in-file",
+                str(wf_file),
+                "--registry-file",
+                str(registry_file),
+                "--out-file",
+                str(out_file),
+                "--min-considered-bots",
+                "1",
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+
+        assert proc.returncode == 0
+        payload = json.loads(out_file.read_text(encoding="utf-8"))
+        assert payload["considered_bots"] == 1
+        assert payload["excluded_counts"] == {}
+        assert payload["registry_filter"]["coverage_candidate_active_enabled"] is True
+
+
+def test_lane_gate_counts_staged_coverage_candidates_when_active_filter_is_on() -> None:
+    with tempfile.TemporaryDirectory() as td:
+        td_path = Path(td)
+        wf_file = td_path / "walk_forward_lane.json"
+        registry_file = td_path / "registry_lane.json"
+        out_file = td_path / "lane_gate.json"
+
+        _write_json(
+            wf_file,
+            {
+                "bots": {
+                    "brain_refinery_v10_seasonal": {
+                        "runs": 12,
+                        "forward_mean": 0.61,
+                        "delta": 0.0,
+                        "trading_quality_score": 0.71,
+                        "overfit_gap": 0.01,
+                        "status": "pass",
+                    }
+                }
+            },
+        )
+        _write_json(
+            registry_file,
+            {
+                "sub_bots": [
+                    {
+                        "bot_id": "brain_refinery_v10_seasonal",
+                        "active": False,
+                        "deleted_from_rotation": False,
+                        "bot_role": "signal_sub_bot",
+                        "coverage_candidate_active": True,
+                        "coverage_stage": "promotion_queue",
+                    }
+                ]
+            },
+        )
+
+        proc = subprocess.run(
+            [
+                sys.executable,
+                str(PROJECT_ROOT / "scripts" / "lane_promotion_gate.py"),
+                "--in-file",
+                str(wf_file),
+                "--registry-file",
+                str(registry_file),
+                "--out-file",
+                str(out_file),
+                "--min-considered-per-lane",
+                "1",
+                "--min-covered-lanes",
+                "1",
+                "--json",
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+
+        assert proc.returncode == 0
+        payload = json.loads(out_file.read_text(encoding="utf-8"))
+        assert payload["considered_bots"] == 1
+        assert payload["excluded_counts"] == {}
+        assert payload["registry_filter"]["coverage_candidate_active_enabled"] is True

@@ -1,0 +1,1 @@
+../../../scripts/ops/core_bot_materialization_infrabot.py

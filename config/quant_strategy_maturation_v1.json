@@ -1,0 +1,96 @@
+{
+  "quant_strategy_maturation_version": "quant_strategy_maturation_v1",
+  "pack": {
+    "slug": "quant_strategy_maturation",
+    "lane_count": 7,
+    "paper_trading_enabled": false,
+    "live_trading_enabled": false,
+    "execution_enabled": false,
+    "allocation_enabled": false,
+    "activation_policy": {
+      "paper_canary_allowed_now": false,
+      "registry_promotion_side_effects_allowed": false,
+      "requires_signed_promotion_packet": true,
+      "live_activation_requires_separate_operator_approval": true
+    },
+    "lanes": [
+      {
+        "priority": 1,
+        "slug": "unified_equity_factor_sleeve",
+        "current_state": "collection_only",
+        "candidate_bot_ids": ["brain_refinery_v4_simple", "brain_refinery_v13_choppy", "brain_refinery_v35_dmi_state_machine", "brain_refinery_v38_multi_timeframe_confirmation", "brain_refinery_v41_long_interval_trend", "brain_refinery_v52_sector_rotation_rs"],
+        "paper_canary_when": ["queue_backpressure_clear", "runtime_capacity_ready", "promotion_quality_gates_ready"],
+        "paper_trading_enabled": false,
+        "live_trading_enabled": false,
+        "execution_enabled": false,
+        "allocation_enabled": false
+      },
+      {
+        "priority": 2,
+        "slug": "residual_stat_arb_ou_pairs",
+        "current_state": "collection_only",
+        "candidate_bot_ids": ["brain_refinery_v56_meta_ranker", "brain_refinery_v100_stock_crypto_overlap_context", "brain_refinery_v38_multi_timeframe_confirmation", "brain_refinery_v51_vol_regime_transition", "brain_refinery_v52_sector_rotation_rs", "brain_refinery_v107_cross_asset_master_candidate"],
+        "paper_canary_when": ["queue_backpressure_clear", "runtime_capacity_ready", "promotion_quality_gates_ready"],
+        "paper_trading_enabled": false,
+        "live_trading_enabled": false,
+        "execution_enabled": false,
+        "allocation_enabled": false
+      },
+      {
+        "priority": 3,
+        "slug": "vol_risk_premium_dispersion_dealer",
+        "current_state": "collection_only",
+        "candidate_bot_ids": ["brain_refinery_v51_vol_regime_transition", "brain_refinery_v39_event_risk_proximity", "brain_refinery_v54_event_shock_decay", "brain_refinery_v97_futures_event_order_book", "brain_refinery_v104_futures_event_followthrough", "brain_refinery_v105_feed_consensus_execution_guard"],
+        "paper_canary_when": ["queue_backpressure_clear", "runtime_capacity_ready", "promotion_quality_gates_ready"],
+        "paper_trading_enabled": false,
+        "live_trading_enabled": false,
+        "execution_enabled": false,
+        "allocation_enabled": false
+      },
+      {
+        "priority": 4,
+        "slug": "event_corporate_action_arb",
+        "current_state": "collection_only",
+        "candidate_bot_ids": ["brain_refinery_v39_event_risk_proximity", "brain_refinery_v54_event_shock_decay", "brain_refinery_v97_futures_event_order_book", "brain_refinery_v99_defensive_dividend_concentration", "brain_refinery_v104_futures_event_followthrough", "brain_refinery_v52_sector_rotation_rs"],
+        "paper_canary_when": ["queue_backpressure_clear", "runtime_capacity_ready", "promotion_quality_gates_ready"],
+        "paper_trading_enabled": false,
+        "live_trading_enabled": false,
+        "execution_enabled": false,
+        "allocation_enabled": false
+      },
+      {
+        "priority": 5,
+        "slug": "international_adr_fx_rates_rv",
+        "current_state": "collection_only",
+        "candidate_bot_ids": ["brain_refinery_v4_simple", "brain_refinery_v38_multi_timeframe_confirmation", "brain_refinery_v41_long_interval_trend", "brain_refinery_v100_stock_crypto_overlap_context", "brain_refinery_v106_cross_asset_regime_stability_guard", "brain_refinery_v107_cross_asset_master_candidate"],
+        "paper_canary_when": ["queue_backpressure_clear", "runtime_capacity_ready", "promotion_quality_gates_ready"],
+        "paper_trading_enabled": false,
+        "live_trading_enabled": false,
+        "execution_enabled": false,
+        "allocation_enabled": false
+      },
+      {
+        "priority": 6,
+        "slug": "microstructure_execution_intelligence",
+        "current_state": "collection_only",
+        "candidate_bot_ids": ["brain_refinery_v44_intraday_scalp_1m_5m", "brain_refinery_v97_futures_event_order_book", "brain_refinery_v98_crypto_execution_throttle_reentry", "brain_refinery_v102_open_drive_liquidity_pressure", "brain_refinery_v103_crypto_throttle_relief_momentum", "brain_refinery_v105_feed_consensus_execution_guard"],
+        "paper_canary_when": ["queue_backpressure_clear", "runtime_capacity_ready", "promotion_quality_gates_ready"],
+        "paper_trading_enabled": false,
+        "live_trading_enabled": false,
+        "execution_enabled": false,
+        "allocation_enabled": false
+      },
+      {
+        "priority": 7,
+        "slug": "capacity_aware_meta_allocator",
+        "current_state": "collection_only",
+        "candidate_bot_ids": ["brain_refinery_v56_meta_ranker", "brain_refinery_v101_guard_heavy_regime_memory", "brain_refinery_v105_feed_consensus_execution_guard", "brain_refinery_v106_cross_asset_regime_stability_guard", "brain_refinery_v107_cross_asset_master_candidate", "brain_refinery_v100_stock_crypto_overlap_context"],
+        "paper_canary_when": ["queue_backpressure_clear", "runtime_capacity_ready", "promotion_quality_gates_ready"],
+        "paper_trading_enabled": false,
+        "live_trading_enabled": false,
+        "execution_enabled": false,
+        "allocation_enabled": false
+      }
+    ]
+  }
+}

@@ -1,0 +1,1 @@
+../../../scripts/ops/command_validity_bot.py

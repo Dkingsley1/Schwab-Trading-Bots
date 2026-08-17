@@ -2,7 +2,7 @@
 set -euo pipefail
 
 PROJECT_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-PY="$PROJECT_ROOT/.venv312/bin/python"
+PY="$PROJECT_ROOT/.venv314/bin/python"
 SCRIPT="$PROJECT_ROOT/scripts/backup_restore_verify.py"
 PLIST_PATH="$HOME/Library/LaunchAgents/com.dankingsley.weekly_dr_drill.plist"
 LOG_DIR="$PROJECT_ROOT/logs"

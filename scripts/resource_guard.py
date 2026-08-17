@@ -1,13 +1,141 @@
 import argparse
 import json
 import os
+import re
 import shutil
 import subprocess
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+_PAGE_SIZE_BYTES = 16384
+DEFAULT_CREATIVE_APP_NAMES = "Final Cut Pro,Logic Pro,Music,iTunes"
+
+from scripts.ops.support_maintenance_gate import frozen_health_payload, support_maintenance_freeze_contract
+
+
+def _csv_env(name: str, default: str) -> list[str]:
+    values = [item.strip() for item in str(os.getenv(name, default) or "").split(",") if item.strip()]
+    return values or [item.strip() for item in default.split(",") if item.strip()]
+
+
+def _creative_block_levels(env_name: str, default: str) -> set[str]:
+    return {item.lower() for item in _csv_env(env_name, default)}
+
+
+def _truthy(value: str | None) -> bool:
+    return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _support_freeze_blocks_profile(profile: str) -> bool:
+    normalized = str(profile or "default").strip().lower()
+    if normalized == "collection":
+        return False
+    if normalized in {"optional", "refresh"}:
+        return True
+    return _truthy(os.getenv("RESOURCE_GUARD_DEFAULT_HONORS_SUPPORT_FREEZE", "1"))
+
+
+def _normalize_app_marker(value: str) -> str:
+    return re.sub(r"\s+", " ", str(value or "").strip().removesuffix(".app")).lower()
+
+
+def _command_bundle_names(command: str) -> list[str]:
+    names: list[str] = []
+    # App bundles are path segments. Anchoring each candidate to the command
+    # start or a slash keeps giant sleeve command lines linear to scan instead
+    # of retrying a non-greedy match at every character when no `.app` exists.
+    for match in re.finditer(r"(?:^|/)([^/\n]+?)\.app(?:/|\s|$)", str(command or ""), flags=re.IGNORECASE):
+        name = _normalize_app_marker(match.group(1))
+        if name and name not in names:
+            names.append(name)
+    return names
+
+
+def _bundle_matches_marker(bundle: str, marker: str) -> bool:
+    if not bundle or not marker:
+        return False
+    if bundle == marker:
+        return True
+    if bundle.endswith(f" {marker}"):
+        return True
+    aliases = {
+        "chrome": {"google chrome"},
+        "code": {"visual studio code"},
+        "music": {"music"},
+        "itunes": {"itunes"},
+    }
+    return bundle in aliases.get(marker, set())
+
+
+def _command_matches_marker(command: str, marker: str) -> bool:
+    marker_norm = _normalize_app_marker(marker)
+    if not marker_norm:
+        return False
+
+    lowered = str(command or "").lower()
+    bundles = _command_bundle_names(command)
+    if any(_bundle_matches_marker(bundle, marker_norm) for bundle in bundles):
+        if "/contents/extensions/" in lowered or ".appex" in lowered:
+            return False
+        return True
+
+    strict_gui_markers = {
+        "arc",
+        "brave browser",
+        "chrome",
+        "code",
+        "cursor",
+        "firefox",
+        "final cut pro",
+        "google chrome",
+        "intellij idea",
+        "itunes",
+        "logic pro",
+        "music",
+        "pycharm",
+        "safari",
+        "utm",
+        "visual studio code",
+        "webstorm",
+        "xcode",
+    }
+    if marker_norm in strict_gui_markers:
+        return False
+
+    token_pattern = rf"(?<![a-z0-9_./-]){re.escape(marker_norm)}(?![a-z0-9_./-])"
+    return bool(re.search(token_pattern, lowered, flags=re.IGNORECASE))
+
+
+def _scan_named_processes(markers: list[str]) -> tuple[dict[str, float], dict[str, str]]:
+    cpu_by_app: dict[str, float] = {}
+    active_commands: dict[str, str] = {}
+    try:
+        proc = subprocess.run(["/bin/ps", "-axo", "%cpu,command"], capture_output=True, text=True, check=False)
+        for line in (proc.stdout or "").splitlines():
+            raw = line.strip()
+            if not raw:
+                continue
+            parts = raw.split(maxsplit=1)
+            if len(parts) != 2:
+                continue
+            try:
+                cpu = float(parts[0])
+            except Exception:
+                continue
+            cmd = parts[1]
+            for marker in markers:
+                if _command_matches_marker(cmd, marker):
+                    cpu_by_app[marker] = round(cpu_by_app.get(marker, 0.0) + cpu, 2)
+                    active_commands.setdefault(marker, cmd)
+                    break
+    except Exception:
+        return {}, {}
+    return cpu_by_app, active_commands
 
 
 def _parse_memory_pressure() -> dict[str, float]:
@@ -26,34 +154,216 @@ def _parse_memory_pressure() -> dict[str, float]:
     return out
 
 
-def _heavy_app_cpu_sum() -> float:
-    total = 0.0
+def _parse_swap_usage() -> dict[str, float]:
+    out: dict[str, float] = {}
     try:
-        proc = subprocess.run(["/bin/ps", "-axo", "%cpu,command"], capture_output=True, text=True, check=False)
-        for line in (proc.stdout or "").splitlines():
-            line = line.strip()
-            if not line:
-                continue
-            parts = line.split(maxsplit=1)
-            if len(parts) != 2:
-                continue
-            try:
-                cpu = float(parts[0])
-            except Exception:
-                continue
-            cmd = parts[1]
-            if "Final Cut Pro" in cmd or "Logic Pro" in cmd:
-                total += cpu
+        proc = subprocess.run(["/usr/sbin/sysctl", "vm.swapusage"], capture_output=True, text=True, check=False)
+        text = (proc.stdout or "").strip()
+        if "used =" in text:
+            token = text.split("used =", 1)[1].strip().split()[0]
+            suffix = token[-1:].upper()
+            value = float(token[:-1] if suffix in {"G", "M", "K"} else token)
+            if suffix == "M":
+                value /= 1024.0
+            elif suffix == "K":
+                value /= (1024.0 * 1024.0)
+            out["swap_used_gb"] = round(value, 3)
     except Exception:
         pass
-    return round(total, 2)
+    return out
+
+
+def _parse_vm_stat() -> dict[str, float]:
+    out: dict[str, float] = {}
+    try:
+        proc = subprocess.run(["/usr/bin/vm_stat"], capture_output=True, text=True, check=False)
+        for raw in (proc.stdout or "").splitlines():
+            line = raw.strip()
+            if ":" not in line:
+                continue
+            label, value = line.split(":", 1)
+            digits = value.strip().rstrip(".").replace(".", "").replace(",", "")
+            try:
+                count = float(digits)
+            except Exception:
+                continue
+            key = label.strip().lower()
+            if key == "pages throttled":
+                out["pages_throttled"] = int(count)
+            elif key == "pages occupied by compressor":
+                out["compressor_gb"] = round((count * _PAGE_SIZE_BYTES) / (1024.0 ** 3), 3)
+            elif key == "pages stored in compressor":
+                out["compressed_store_gb"] = round((count * _PAGE_SIZE_BYTES) / (1024.0 ** 3), 3)
+    except Exception:
+        pass
+    return out
+
+
+def _creative_apps_snapshot() -> dict[str, Any]:
+    markers = _csv_env("RESOURCE_GUARD_CREATIVE_APP_NAMES", DEFAULT_CREATIVE_APP_NAMES)
+    cpu_by_app, active_commands = _scan_named_processes(markers)
+
+    active_apps = sorted(cpu_by_app)
+    total_cpu = round(sum(cpu_by_app.values()), 2)
+    hot_cpu_threshold = float(os.getenv("RESOURCE_GUARD_CREATIVE_HOT_CPU_THRESHOLD", "140"))
+    logic_hot_cpu_threshold = float(os.getenv("RESOURCE_GUARD_LOGIC_HOT_CPU_THRESHOLD", "80"))
+    final_cut_hot_cpu_threshold = float(os.getenv("RESOURCE_GUARD_FINAL_CUT_HOT_CPU_THRESHOLD", "140"))
+    music_hot_cpu_threshold = float(os.getenv("RESOURCE_GUARD_MUSIC_HOT_CPU_THRESHOLD", "45"))
+    has_logic = any("logic" in app.lower() for app in active_apps)
+    has_final_cut = any("final cut" in app.lower() for app in active_apps)
+    has_music = any(app.lower() in {"music", "itunes"} or "music.app" in app.lower() or "itunes" in app.lower() for app in active_apps)
+    logic_cpu = round(sum(cpu for app, cpu in cpu_by_app.items() if "logic" in app.lower()), 2)
+    final_cut_cpu = round(sum(cpu for app, cpu in cpu_by_app.items() if "final cut" in app.lower()), 2)
+    music_cpu = round(
+        sum(
+            cpu
+            for app, cpu in cpu_by_app.items()
+            if app.lower() in {"music", "itunes"} or "music.app" in app.lower() or "itunes" in app.lower()
+        ),
+        2,
+    )
+    creative_level = "none"
+    creative_kind = "none"
+    if has_logic and has_final_cut:
+        creative_level = "dual_pro"
+        creative_kind = "dual_pro"
+    elif has_logic:
+        creative_level = "hot" if max(logic_cpu, total_cpu) >= min(hot_cpu_threshold, logic_hot_cpu_threshold) else "active"
+        creative_kind = "logic_pro_hot" if creative_level == "hot" else "logic_pro"
+    elif has_final_cut:
+        creative_level = "hot" if max(final_cut_cpu, total_cpu) >= min(hot_cpu_threshold, final_cut_hot_cpu_threshold) else "active"
+        creative_kind = "final_cut_pro_hot" if creative_level == "hot" else "final_cut_pro"
+    elif has_music:
+        creative_level = "hot" if max(music_cpu, total_cpu) >= min(hot_cpu_threshold, music_hot_cpu_threshold) else "active"
+        creative_kind = "music_playback_hot" if creative_level == "hot" else "music_playback"
+    elif active_apps:
+        creative_level = "hot" if total_cpu >= hot_cpu_threshold else "active"
+        creative_kind = "other_creative_hot" if creative_level == "hot" else "other_creative"
+
+    return {
+        "editing_app_cpu_sum": total_cpu,
+        "creative_apps_active": bool(active_apps),
+        "creative_app_count": len(active_apps),
+        "creative_apps": active_apps,
+        "creative_apps_cpu": {key: round(value, 2) for key, value in sorted(cpu_by_app.items())},
+        "creative_session_level": creative_level,
+        "creative_session_kind": creative_kind,
+        "logic_pro_cpu": logic_cpu,
+        "final_cut_pro_cpu": final_cut_cpu,
+        "music_playback_cpu": music_cpu,
+        "creative_hot_cpu_threshold": hot_cpu_threshold,
+        "logic_hot_cpu_threshold": logic_hot_cpu_threshold,
+        "final_cut_hot_cpu_threshold": final_cut_hot_cpu_threshold,
+        "music_hot_cpu_threshold": music_hot_cpu_threshold,
+        "creative_app_commands": {key: active_commands.get(key, "") for key in active_apps},
+    }
+
+
+def _co_running_apps_snapshot() -> dict[str, Any]:
+    group_specs = {
+        "developer": _csv_env(
+            "RESOURCE_GUARD_DEVELOPER_APP_NAMES",
+            "Cursor,Visual Studio Code,Code,PyCharm,IntelliJ IDEA,WebStorm,Xcode",
+        ),
+        "browser": _csv_env(
+            "RESOURCE_GUARD_BROWSER_APP_NAMES",
+            "Google Chrome,Chrome,Safari,Firefox,Brave Browser,Arc",
+        ),
+        "virtualization": _csv_env(
+            "RESOURCE_GUARD_VIRTUALIZATION_APP_NAMES",
+            "Docker,OrbStack,Parallels,VMware,VirtualBox,UTM,qemu",
+        ),
+    }
+    class_apps: dict[str, list[str]] = {}
+    class_cpu: dict[str, float] = {}
+    app_cpu: dict[str, float] = {}
+    app_commands: dict[str, str] = {}
+    for class_name, markers in group_specs.items():
+        cpu_by_app, active_commands = _scan_named_processes(markers)
+        active = sorted(cpu_by_app)
+        if not active:
+            continue
+        class_apps[class_name] = active
+        class_cpu[class_name] = round(sum(cpu_by_app.values()), 2)
+        for app_name, cpu in cpu_by_app.items():
+            app_cpu[app_name] = round(cpu, 2)
+        for app_name, command in active_commands.items():
+            app_commands[app_name] = command
+
+    active_classes = sorted(class_apps)
+    total_cpu = round(sum(class_cpu.values()), 2)
+    interactive_threshold = float(os.getenv("RESOURCE_GUARD_COTENANT_INTERACTIVE_CPU_THRESHOLD", "90"))
+    heavy_threshold = float(os.getenv("RESOURCE_GUARD_COTENANT_HEAVY_CPU_THRESHOLD", "160"))
+    level = "none"
+    if "virtualization" in class_apps and class_cpu.get("virtualization", 0.0) >= interactive_threshold:
+        level = "heavy_competition"
+    elif len(active_classes) >= 2 and total_cpu >= heavy_threshold:
+        level = "heavy_competition"
+    elif total_cpu >= interactive_threshold or any(cpu >= interactive_threshold for cpu in class_cpu.values()):
+        level = "interactive"
+    elif active_classes:
+        level = "light_competition"
+
+    return {
+        "co_running_apps_active": bool(active_classes),
+        "co_running_class_count": len(active_classes),
+        "co_running_classes": active_classes,
+        "co_running_apps": sorted(app_cpu),
+        "co_running_apps_cpu": {key: round(value, 2) for key, value in sorted(app_cpu.items())},
+        "co_running_class_cpu": {key: round(value, 2) for key, value in sorted(class_cpu.items())},
+        "co_running_cpu_sum": total_cpu,
+        "co_running_session_level": level,
+        "co_running_interactive_cpu_threshold": interactive_threshold,
+        "co_running_heavy_cpu_threshold": heavy_threshold,
+        "co_running_app_commands": {key: app_commands.get(key, "") for key in sorted(app_commands)},
+        "coexistence_profile_hint": (
+            "constrained"
+            if level == "heavy_competition"
+            else ("pro_balanced" if level == "interactive" else ("air_safe" if level == "light_competition" else "max_throughput"))
+        ),
+    }
+
+
+def _storage_disk_snapshot(project_root: Path) -> dict[str, Any]:
+    local_disk = shutil.disk_usage(project_root)
+    local_free_gb = local_disk.free / (1024.0 ** 3)
+    local_total_gb = local_disk.total / (1024.0 ** 3)
+    local_used_pct = (local_disk.used / max(local_disk.total, 1)) * 100.0
+    probe_path = project_root
+    storage_mode = "local_project"
+    route_error = ""
+    try:
+        from core.storage_router import inspect_runtime_storage
+
+        routing = inspect_runtime_storage(project_root)
+        active_root = Path(str(getattr(routing, "active_root", "") or "")).expanduser()
+        if active_root:
+            probe_path = active_root
+        storage_mode = str(getattr(routing, "mode", "") or storage_mode)
+    except Exception as exc:
+        route_error = str(exc)
+
+    storage_disk = shutil.disk_usage(probe_path)
+    storage_free_gb = storage_disk.free / (1024.0 ** 3)
+    storage_total_gb = storage_disk.total / (1024.0 ** 3)
+    storage_used_pct = (storage_disk.used / max(storage_disk.total, 1)) * 100.0
+    return {
+        "disk_probe_path": str(probe_path),
+        "disk_storage_mode": storage_mode,
+        "disk_route_error": route_error,
+        "disk_free_gb": round(storage_free_gb, 2),
+        "disk_total_gb": round(storage_total_gb, 2),
+        "disk_used_pct": round(storage_used_pct, 3),
+        "local_disk_probe_path": str(project_root),
+        "local_disk_free_gb": round(local_free_gb, 2),
+        "local_disk_total_gb": round(local_total_gb, 2),
+        "local_disk_used_pct": round(local_used_pct, 3),
+    }
 
 
 def build_snapshot(project_root: Path) -> dict[str, Any]:
     cpu_count = max(os.cpu_count() or 1, 1)
     l1, l5, l15 = os.getloadavg()
-    disk = shutil.disk_usage(project_root)
-    free_gb = disk.free / (1024.0 ** 3)
 
     payload: dict[str, Any] = {
         "timestamp_utc": datetime.now(timezone.utc).isoformat(),
@@ -62,20 +372,141 @@ def build_snapshot(project_root: Path) -> dict[str, Any]:
         "load5": round(l5, 3),
         "load15": round(l15, 3),
         "load1_per_core": round(l1 / cpu_count, 3),
-        "disk_free_gb": round(free_gb, 2),
-        "editing_app_cpu_sum": _heavy_app_cpu_sum(),
     }
+    payload.update(_storage_disk_snapshot(project_root))
     payload.update(_parse_memory_pressure())
+    payload.update(_parse_swap_usage())
+    payload.update(_parse_vm_stat())
+    payload.update(_creative_apps_snapshot())
+    payload.update(_co_running_apps_snapshot())
     return payload
 
 
-def evaluate(snapshot: dict[str, Any], *, max_load_per_core: float, min_disk_gb: float, min_memory_free_pct: float, max_editing_cpu: float) -> tuple[bool, list[str]]:
+def _memory_pressure_state(snapshot: dict[str, Any]) -> tuple[str, list[str], dict[str, float]]:
+    thresholds = {
+        "yellow_available_pct": float(os.getenv("RESOURCE_GUARD_MEMORY_YELLOW_AVAILABLE_PCT", "50")),
+        "yellow_free_pct": float(os.getenv("RESOURCE_GUARD_MEMORY_YELLOW_FREE_PCT", "8")),
+        "yellow_swap_gb": float(os.getenv("RESOURCE_GUARD_MEMORY_YELLOW_SWAP_GB", "12")),
+        "yellow_swap_relax_available_pct": float(os.getenv("RESOURCE_GUARD_MEMORY_YELLOW_SWAP_RELAX_AVAILABLE_PCT", "60")),
+        "red_available_pct": float(os.getenv("RESOURCE_GUARD_MEMORY_RED_AVAILABLE_PCT", "35")),
+        "red_free_pct": float(os.getenv("RESOURCE_GUARD_MEMORY_RED_FREE_PCT", "4")),
+        "red_swap_gb": float(os.getenv("RESOURCE_GUARD_MEMORY_RED_SWAP_GB", "18")),
+        "red_throttled_pages": float(os.getenv("RESOURCE_GUARD_MEMORY_RED_THROTTLED_PAGES", "1")),
+        "yellow_local_disk_gb": float(os.getenv("RESOURCE_GUARD_MEMORY_YELLOW_LOCAL_DISK_GB", "32")),
+        "red_local_disk_gb": float(os.getenv("RESOURCE_GUARD_MEMORY_RED_LOCAL_DISK_GB", "8")),
+    }
+
+    avail = snapshot.get("memory_available_pct")
+    free = snapshot.get("memory_free_pct")
+    swap = float(snapshot.get("swap_used_gb", 0.0) or 0.0)
+    throttled = float(snapshot.get("pages_throttled", 0) or 0)
+    local_disk_free_raw = snapshot.get("local_disk_free_gb")
+    local_disk_free_gb = float(local_disk_free_raw) if local_disk_free_raw is not None else None
     reasons: list[str] = []
 
-    if float(snapshot.get("load1_per_core", 0.0)) > max_load_per_core:
-        reasons.append(f"load1_per_core_high:{snapshot.get('load1_per_core')}>{max_load_per_core}")
+    red = False
+    if throttled >= thresholds["red_throttled_pages"] and thresholds["red_throttled_pages"] > 0:
+        red = True
+        reasons.append(f"pages_throttled:{int(throttled)}")
+    if avail is not None and float(avail) < thresholds["red_available_pct"]:
+        red = True
+        reasons.append(f"available_pct:{avail}<{thresholds['red_available_pct']}")
+    if free is not None and float(free) < thresholds["red_free_pct"]:
+        red = True
+        reasons.append(f"free_pct:{free}<{thresholds['red_free_pct']}")
+    if swap >= thresholds["red_swap_gb"] and ((avail is None) or float(avail) < thresholds["yellow_swap_relax_available_pct"]):
+        red = True
+        reasons.append(f"swap_used_gb:{swap}>{thresholds['red_swap_gb']}")
+    if local_disk_free_gb is not None and local_disk_free_gb < thresholds["red_local_disk_gb"]:
+        red = True
+        reasons.append(f"local_disk_swap_headroom_gb:{local_disk_free_gb}<{thresholds['red_local_disk_gb']}")
+    if red:
+        return "red", reasons, thresholds
+
+    yellow = False
+    if avail is not None and float(avail) < thresholds["yellow_available_pct"]:
+        yellow = True
+        reasons.append(f"available_pct:{avail}<{thresholds['yellow_available_pct']}")
+    if free is not None and float(free) < thresholds["yellow_free_pct"]:
+        yellow = True
+        reasons.append(f"free_pct:{free}<{thresholds['yellow_free_pct']}")
+    if swap >= thresholds["yellow_swap_gb"] and ((avail is None) or float(avail) < thresholds["yellow_swap_relax_available_pct"]):
+        yellow = True
+        reasons.append(f"swap_used_gb:{swap}>{thresholds['yellow_swap_gb']}")
+    if local_disk_free_gb is not None and local_disk_free_gb < thresholds["yellow_local_disk_gb"]:
+        yellow = True
+        reasons.append(f"local_disk_swap_headroom_gb:{local_disk_free_gb}<{thresholds['yellow_local_disk_gb']}")
+    if yellow:
+        return "yellow", reasons, thresholds
+    return "green", reasons, thresholds
+
+
+def _memory_pressure_kind(snapshot: dict[str, Any], state: str, reasons: list[str]) -> str:
+    if str(state).strip().lower() == "green":
+        return "none"
+    if not reasons:
+        return "unknown"
+    if all(str(reason).startswith("local_disk_swap_headroom_gb:") for reason in reasons):
+        return "disk_swap_headroom"
+    if all(str(reason).startswith("swap_used_gb:") for reason in reasons):
+        available_pct = snapshot.get("memory_available_pct")
+        free_pct = snapshot.get("memory_free_pct")
+        throttled = float(snapshot.get("pages_throttled", 0.0) or 0.0)
+        if (
+            throttled <= 0
+            and available_pct is not None
+            and float(available_pct) >= float(os.getenv("RESOURCE_GUARD_SWAP_ONLY_HEALTHY_AVAILABLE_PCT", "55"))
+            and free_pct is not None
+            and float(free_pct) >= float(os.getenv("RESOURCE_GUARD_SWAP_ONLY_HEALTHY_FREE_PCT", "12"))
+        ):
+            return "swap_only_with_headroom"
+        return "swap_only"
+    if any(str(reason).startswith("pages_throttled:") for reason in reasons):
+        return "throttled"
+    if any(str(reason).startswith("available_pct:") or str(reason).startswith("free_pct:") for reason in reasons):
+        return "free_or_available"
+    return "mixed"
+
+
+def evaluate(
+    snapshot: dict[str, Any],
+    *,
+    max_load_per_core: float,
+    min_disk_gb: float,
+    min_memory_free_pct: float,
+    max_editing_cpu: float,
+    min_local_disk_gb: float | None = None,
+) -> tuple[bool, list[str]]:
+    reasons: list[str] = []
+    creative_level = str(snapshot.get("creative_session_level") or "none").strip().lower()
+    if creative_level in _creative_block_levels("RESOURCE_GUARD_BLOCK_ON_CREATIVE_SESSION_LEVELS", "dual_pro,hot"):
+        reasons.append(f"creative_session_{creative_level}")
+
+    load_limit = float(max_load_per_core)
+    relaxed_load_limit = float(os.getenv("RESOURCE_GUARD_RELAXED_MAX_LOAD_PER_CORE", "2.4"))
+    relaxed_min_available_pct = float(os.getenv("RESOURCE_GUARD_RELAXED_MIN_AVAILABLE_PCT", "35"))
+    relaxed_max_editing_cpu = float(os.getenv("RESOURCE_GUARD_RELAXED_MAX_EDITING_CPU", str(max_editing_cpu)))
+    available_pct = snapshot.get("memory_available_pct")
+    free_pct = snapshot.get("memory_free_pct")
+    relaxed_memory_pct = available_pct if available_pct is not None else free_pct
+    if (
+        relaxed_memory_pct is not None
+        and float(relaxed_memory_pct) >= relaxed_min_available_pct
+        and float(snapshot.get("editing_app_cpu_sum", 0.0)) <= relaxed_max_editing_cpu
+    ):
+        load_limit = max(load_limit, relaxed_load_limit)
+
+    if float(snapshot.get("load1_per_core", 0.0)) > load_limit:
+        reasons.append(f"load1_per_core_high:{snapshot.get('load1_per_core')}>{load_limit}")
     if float(snapshot.get("disk_free_gb", 0.0)) < min_disk_gb:
         reasons.append(f"disk_free_low:{snapshot.get('disk_free_gb')}<{min_disk_gb}")
+    local_floor = float(
+        min_local_disk_gb
+        if min_local_disk_gb is not None
+        else os.getenv("RESOURCE_GUARD_MIN_LOCAL_DISK_GB", "32")
+    )
+    if float(snapshot.get("local_disk_free_gb", snapshot.get("disk_free_gb", 0.0)) or 0.0) < max(local_floor, 0.1):
+        reasons.append(f"local_disk_free_low:{snapshot.get('local_disk_free_gb')}<{max(local_floor, 0.1)}")
 
     free_pct = snapshot.get("memory_free_pct")
     avail_pct = snapshot.get("memory_available_pct")
@@ -89,11 +520,151 @@ def evaluate(snapshot: dict[str, Any], *, max_load_per_core: float, min_disk_gb:
     return len(reasons) == 0, reasons
 
 
+def evaluate_optional_job(snapshot: dict[str, Any]) -> tuple[bool, list[str], dict[str, Any]]:
+    reasons: list[str] = []
+    state, state_reasons, state_thresholds = _memory_pressure_state(snapshot)
+    pressure_kind = _memory_pressure_kind(snapshot, state, state_reasons)
+    creative_level = str(snapshot.get("creative_session_level") or "none").strip().lower()
+    creative_block_levels = _creative_block_levels(
+        "RESOURCE_GUARD_OPTIONAL_BLOCK_ON_CREATIVE_SESSION_LEVELS",
+        "active,dual_pro,hot",
+    )
+    block_on_states = {
+        item.strip().lower()
+        for item in str(os.getenv("RESOURCE_GUARD_OPTIONAL_BLOCK_ON_MEMORY_STATES", "yellow,red")).split(",")
+        if item.strip()
+    }
+    if state in block_on_states:
+        reasons.append(f"memory_pressure_{state}")
+        reasons.extend(state_reasons)
+    if creative_level in creative_block_levels:
+        reasons.append(f"creative_session_{creative_level}")
+
+    max_load_per_core = float(os.getenv("RESOURCE_GUARD_OPTIONAL_MAX_LOAD_PER_CORE", "2.4"))
+    min_disk_gb = float(os.getenv("RESOURCE_GUARD_OPTIONAL_MIN_DISK_GB", "20"))
+    min_local_disk_gb = float(os.getenv("RESOURCE_GUARD_OPTIONAL_MIN_LOCAL_DISK_GB", "32"))
+    max_editing_cpu = float(os.getenv("RESOURCE_GUARD_OPTIONAL_MAX_EDITING_CPU", "300"))
+
+    if float(snapshot.get("load1_per_core", 0.0)) > max_load_per_core:
+        reasons.append(f"load1_per_core_high:{snapshot.get('load1_per_core')}>{max_load_per_core}")
+    if float(snapshot.get("disk_free_gb", 0.0)) < min_disk_gb:
+        reasons.append(f"disk_free_low:{snapshot.get('disk_free_gb')}<{min_disk_gb}")
+    if float(snapshot.get("local_disk_free_gb", snapshot.get("disk_free_gb", 0.0)) or 0.0) < max(min_local_disk_gb, 0.1):
+        reasons.append(f"local_disk_free_low:{snapshot.get('local_disk_free_gb')}<{max(min_local_disk_gb, 0.1)}")
+    if float(snapshot.get("editing_app_cpu_sum", 0.0)) > max_editing_cpu:
+        reasons.append(f"editing_apps_hot:{snapshot.get('editing_app_cpu_sum')}>{max_editing_cpu}")
+
+    details = {
+        "memory_pressure_state": state,
+        "memory_pressure_reasons": state_reasons,
+        "memory_pressure_kind": pressure_kind,
+        "memory_pressure_thresholds": state_thresholds,
+        "optional_job_thresholds": {
+            "block_on_memory_states": sorted(block_on_states),
+            "block_on_creative_session_levels": sorted(creative_block_levels),
+            "max_load_per_core": max_load_per_core,
+            "min_disk_gb": min_disk_gb,
+            "min_local_disk_gb": min_local_disk_gb,
+            "max_editing_cpu": max_editing_cpu,
+        },
+    }
+    return len(reasons) == 0, reasons, details
+
+
+def evaluate_refresh_job(snapshot: dict[str, Any]) -> tuple[bool, list[str], dict[str, Any]]:
+    ok, reasons, details = evaluate_optional_job(snapshot)
+    creative_level = str(snapshot.get("creative_session_level") or "none").strip().lower()
+    refresh_creative_block_levels = _creative_block_levels(
+        "RESOURCE_GUARD_REFRESH_BLOCK_ON_CREATIVE_SESSION_LEVELS",
+        "dual_pro,hot",
+    )
+
+    thresholds = {
+        "allow_memory_states": [
+            item.strip().lower()
+            for item in str(os.getenv("RESOURCE_GUARD_REFRESH_ALLOW_MEMORY_STATES", "yellow,red")).split(",")
+            if item.strip()
+        ],
+        "block_on_creative_session_levels": sorted(refresh_creative_block_levels),
+        "min_available_pct": float(os.getenv("RESOURCE_GUARD_REFRESH_MIN_AVAILABLE_PCT", "55")),
+        "min_free_pct": float(os.getenv("RESOURCE_GUARD_REFRESH_MIN_FREE_PCT", "12")),
+        "max_swap_gb": float(os.getenv("RESOURCE_GUARD_REFRESH_MAX_SWAP_GB", "32")),
+        "max_load_per_core": float(os.getenv("RESOURCE_GUARD_REFRESH_MAX_LOAD_PER_CORE", "1.2")),
+        "min_disk_gb": float(os.getenv("RESOURCE_GUARD_REFRESH_MIN_DISK_GB", "20")),
+        "min_local_disk_gb": float(os.getenv("RESOURCE_GUARD_REFRESH_MIN_LOCAL_DISK_GB", "32")),
+        "max_editing_cpu": float(os.getenv("RESOURCE_GUARD_REFRESH_MAX_EDITING_CPU", "220")),
+    }
+
+    details["refresh_job_thresholds"] = thresholds
+    details["refresh_relax_applied"] = False
+    details["refresh_relax_reason"] = ""
+    details["refresh_creative_override_applied"] = False
+    details["refresh_creative_override_reason"] = ""
+
+    if creative_level not in refresh_creative_block_levels and any(
+        str(reason).startswith("creative_session_") for reason in reasons
+    ):
+        reasons = [reason for reason in reasons if not str(reason).startswith("creative_session_")]
+        details["refresh_creative_override_applied"] = True
+        details["refresh_creative_override_reason"] = f"creative_session_{creative_level}_allowed"
+
+    if ok:
+        return ok, reasons, details
+    if not reasons:
+        return True, reasons, details
+
+    state = str(details.get("memory_pressure_state", "") or "").strip().lower()
+    state_reasons = [str(item or "") for item in (details.get("memory_pressure_reasons") or [])]
+    allow_states = set(thresholds["allow_memory_states"])
+    available_pct = snapshot.get("memory_available_pct")
+    free_pct = snapshot.get("memory_free_pct")
+    swap_used_gb = float(snapshot.get("swap_used_gb", 0.0) or 0.0)
+    load1_per_core = float(snapshot.get("load1_per_core", 0.0) or 0.0)
+    disk_free_gb = float(snapshot.get("disk_free_gb", 0.0) or 0.0)
+    local_disk_free_gb = float(snapshot.get("local_disk_free_gb", disk_free_gb) or 0.0)
+    editing_app_cpu_sum = float(snapshot.get("editing_app_cpu_sum", 0.0) or 0.0)
+    pages_throttled = float(snapshot.get("pages_throttled", 0.0) or 0.0)
+
+    swap_only_pressure = bool(state_reasons) and all(reason.startswith("swap_used_gb:") for reason in state_reasons)
+    effective_available_pct = available_pct if available_pct is not None else free_pct
+    effective_free_pct = free_pct if free_pct is not None else available_pct
+    healthy_available = effective_available_pct is not None and float(effective_available_pct) >= thresholds["min_available_pct"]
+    healthy_free = effective_free_pct is not None and float(effective_free_pct) >= thresholds["min_free_pct"]
+
+    relax_allowed = (
+        state in allow_states
+        and swap_only_pressure
+        and healthy_available
+        and healthy_free
+        and creative_level not in refresh_creative_block_levels
+        and pages_throttled <= 0
+        and swap_used_gb <= thresholds["max_swap_gb"]
+        and load1_per_core <= thresholds["max_load_per_core"]
+        and disk_free_gb >= thresholds["min_disk_gb"]
+        and local_disk_free_gb >= thresholds["min_local_disk_gb"]
+        and editing_app_cpu_sum <= thresholds["max_editing_cpu"]
+    )
+
+    if not relax_allowed:
+        return ok, reasons, details
+
+    filtered_reasons = [
+        reason
+        for reason in reasons
+        if (not reason.startswith("memory_pressure_")) and (not reason.startswith("swap_used_gb:"))
+    ]
+    details["refresh_relax_applied"] = True
+    details["refresh_relax_reason"] = "swap_only_pressure_with_healthy_headroom"
+    return len(filtered_reasons) == 0, filtered_reasons, details
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Resource guard for heavy jobs.")
     parser.add_argument("--project-root", default=str(PROJECT_ROOT))
+    parser.add_argument("--profile", choices=["default", "optional", "refresh", "collection"], default="default")
     parser.add_argument("--max-load-per-core", type=float, default=float(os.getenv("RESOURCE_GUARD_MAX_LOAD_PER_CORE", "1.80")))
     parser.add_argument("--min-disk-gb", type=float, default=float(os.getenv("RESOURCE_GUARD_MIN_DISK_GB", "20")))
+    parser.add_argument("--min-local-disk-gb", type=float, default=float(os.getenv("RESOURCE_GUARD_MIN_LOCAL_DISK_GB", "32")))
     parser.add_argument("--min-memory-free-pct", type=float, default=float(os.getenv("RESOURCE_GUARD_MIN_MEMORY_FREE_PCT", "10")))
     parser.add_argument("--max-editing-cpu", type=float, default=float(os.getenv("RESOURCE_GUARD_MAX_EDITING_CPU", "180")))
     parser.add_argument("--emit-path", default=None)
@@ -101,28 +672,79 @@ def main() -> int:
     args = parser.parse_args()
 
     project_root = Path(args.project_root).resolve()
+    emit = Path(args.emit_path).resolve() if args.emit_path else (project_root / "governance" / "health" / "resource_guard_latest.json")
+    freeze_contract = support_maintenance_freeze_contract(project_root, "resource_guard")
+    if bool(freeze_contract.get("active", False)) and _support_freeze_blocks_profile(args.profile):
+        payload = frozen_health_payload(emit, freeze_contract, ok=True)
+        payload.update(
+            {
+                "resource_guard_profile": args.profile,
+                "resource_guard_ok": False,
+                "resource_guard_reasons": [str(freeze_contract.get("reason") or "support_maintenance_frozen_for_mac_fluidity")],
+                "memory_pressure_state": "green",
+                "memory_pressure_kind": "normal",
+                "swap_used_gb": float(payload.get("swap_used_gb", 0.0) or 0.0),
+            }
+        )
+        emit.parent.mkdir(parents=True, exist_ok=True)
+        emit.write_text(json.dumps(payload, ensure_ascii=True, indent=2), encoding="utf-8")
+        if args.json:
+            print(json.dumps(payload, ensure_ascii=True))
+        else:
+            print(
+                f"resource_guard_ok=False profile={args.profile} "
+                "memory_pressure_state=green creative_session_level=none "
+                "load1_per_core=0 disk_free_gb=0 editing_app_cpu_sum=0 "
+                f"reasons={payload['resource_guard_reasons'][0]}"
+            )
+        return 2
+
     snapshot = build_snapshot(project_root)
-    ok, reasons = evaluate(
-        snapshot,
-        max_load_per_core=args.max_load_per_core,
-        min_disk_gb=args.min_disk_gb,
-        min_memory_free_pct=args.min_memory_free_pct,
-        max_editing_cpu=args.max_editing_cpu,
-    )
+    memory_state, memory_state_reasons, memory_thresholds = _memory_pressure_state(snapshot)
+
+    details: dict[str, Any] = {
+        "memory_pressure_state": memory_state,
+        "memory_pressure_reasons": memory_state_reasons,
+        "memory_pressure_kind": _memory_pressure_kind(snapshot, memory_state, memory_state_reasons),
+        "memory_pressure_thresholds": memory_thresholds,
+    }
+    if args.profile == "optional":
+        ok, reasons, optional_details = evaluate_optional_job(snapshot)
+        details.update(optional_details)
+    elif args.profile == "refresh":
+        ok, reasons, refresh_details = evaluate_refresh_job(snapshot)
+        details.update(refresh_details)
+    else:
+        ok, reasons = evaluate(
+            snapshot,
+            max_load_per_core=args.max_load_per_core,
+            min_disk_gb=args.min_disk_gb,
+            min_local_disk_gb=args.min_local_disk_gb,
+            min_memory_free_pct=args.min_memory_free_pct,
+            max_editing_cpu=args.max_editing_cpu,
+        )
 
     payload = {
         **snapshot,
+        "resource_guard_profile": args.profile,
         "resource_guard_ok": ok,
         "resource_guard_reasons": reasons,
+        **details,
         "thresholds": {
+            "block_on_creative_session_levels": sorted(
+                _creative_block_levels("RESOURCE_GUARD_BLOCK_ON_CREATIVE_SESSION_LEVELS", "dual_pro,hot")
+            ),
             "max_load_per_core": args.max_load_per_core,
+            "relaxed_max_load_per_core": float(os.getenv("RESOURCE_GUARD_RELAXED_MAX_LOAD_PER_CORE", "2.4")),
+            "relaxed_min_available_pct": float(os.getenv("RESOURCE_GUARD_RELAXED_MIN_AVAILABLE_PCT", "35")),
+            "relaxed_max_editing_cpu": float(os.getenv("RESOURCE_GUARD_RELAXED_MAX_EDITING_CPU", str(args.max_editing_cpu))),
             "min_disk_gb": args.min_disk_gb,
+            "min_local_disk_gb": args.min_local_disk_gb,
             "min_memory_free_pct": args.min_memory_free_pct,
             "max_editing_cpu": args.max_editing_cpu,
         },
     }
 
-    emit = Path(args.emit_path).resolve() if args.emit_path else (project_root / "governance" / "health" / "resource_guard_latest.json")
     emit.parent.mkdir(parents=True, exist_ok=True)
     emit.write_text(json.dumps(payload, ensure_ascii=True, indent=2), encoding="utf-8")
 
@@ -130,7 +752,9 @@ def main() -> int:
         print(json.dumps(payload, ensure_ascii=True))
     else:
         print(
-            f"resource_guard_ok={ok} load1_per_core={payload['load1_per_core']} "
+            f"resource_guard_ok={ok} profile={args.profile} memory_pressure_state={payload.get('memory_pressure_state','unknown')} "
+            f"creative_session_level={payload.get('creative_session_level', 'none')} "
+            f"load1_per_core={payload['load1_per_core']} "
             f"disk_free_gb={payload['disk_free_gb']} editing_app_cpu_sum={payload['editing_app_cpu_sum']} "
             f"reasons={';'.join(reasons) if reasons else 'none'}"
         )

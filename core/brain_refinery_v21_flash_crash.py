@@ -5,6 +5,9 @@ import numpy as np
 import json
 from datetime import datetime
 import os
+from pathlib import Path
+
+from indicator_bot_common import _distillation_config, _flatten_param_tree, _panel_from_prices, _teacher_soft_targets
 
 
 # -----------------------------
@@ -218,9 +221,9 @@ def save_artifacts(model, config, metrics, run_tag):
     base_name = f"{run_tag}_{ts}"
 
     params = model.parameters()
-    state = {f"p{i}": p for i, p in enumerate(params)}
+    state = _flatten_param_tree(params)
     model_path = os.path.join(models_dir, f"{base_name}.npz")
-    np.savez(model_path, **{k: np.array(v) for k, v in state.items()})
+    np.savez(model_path, **{k: np.asarray(v) for k, v in state.items()})
 
     log_path = os.path.join(logs_dir, f"{base_name}.json")
     payload = {
@@ -304,6 +307,7 @@ def simulate_flash_crash(n=5000):
 # -----------------------------
 def train_brain():
     np.random.seed(42)
+    project_root = Path(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
     prices = simulate_flash_crash(n=5000)
 
@@ -318,6 +322,28 @@ def train_brain():
         drawdown_threshold=drawdown_threshold,
     )
     x_train, y_train, x_val, y_val, x_test, y_test = split_data(x_arr, y_arr)
+    anchor_idx = np.arange(int(x_arr.shape[0]), dtype=np.int64) + (window - 1)
+    n_total = int(x_arr.shape[0])
+    n_train = int(n_total * 0.7)
+    n_val = int(n_total * 0.15)
+
+    distillation_enabled, teacher_ids, teacher_weight = _distillation_config(project_root)
+    teacher_soft_train = None
+    teacher_soft_val = None
+    used_teacher_ids = []
+    if distillation_enabled:
+        teacher_soft_all, used_teacher_ids = _teacher_soft_targets(
+            project_root=project_root,
+            teacher_ids=teacher_ids,
+            panel=_panel_from_prices(prices),
+            prices=prices,
+            student_anchor_idx=anchor_idx,
+        )
+        if teacher_soft_all is not None and used_teacher_ids:
+            teacher_soft_train = teacher_soft_all[:n_train]
+            teacher_soft_val = teacher_soft_all[n_train : n_train + n_val]
+        else:
+            distillation_enabled = False
 
     y_train_np = np.array(y_train).reshape(-1)
     pos_count = float(np.sum(y_train_np))
@@ -355,6 +381,12 @@ def train_brain():
             batch_idx = mx.array(idx[start:start + batch_size])
             xb = mx.take(x_train, batch_idx, axis=0)
             yb = mx.take(y_train, batch_idx, axis=0)
+            if distillation_enabled and teacher_soft_train is not None:
+                soft_np = teacher_soft_train[np.asarray(batch_idx)]
+                soft_np = np.where(np.isfinite(soft_np), soft_np, np.asarray(yb).reshape(-1))
+                hard_np = np.asarray(yb).reshape(-1)
+                target_np = ((1.0 - teacher_weight) * hard_np) + (teacher_weight * soft_np)
+                yb = mx.array(target_np.reshape(-1, 1), dtype=mx.float32)
 
             loss, grads = loss_and_grad_fn(brain, xb, yb, pos_weight, reg_lambda)
             optimizer.update(brain, grads)
@@ -363,7 +395,13 @@ def train_brain():
             total_loss += float(loss)
             num_batches += 1
 
-        val_loss = float(weighted_bce_loss(brain, x_val, y_val, pos_weight, reg_lambda))
+        if distillation_enabled and teacher_soft_val is not None:
+            val_soft = np.where(np.isfinite(teacher_soft_val), teacher_soft_val, np.asarray(y_val).reshape(-1))
+            val_hard = np.asarray(y_val).reshape(-1)
+            y_val_effective = mx.array((((1.0 - teacher_weight) * val_hard) + (teacher_weight * val_soft)).reshape(-1, 1), dtype=mx.float32)
+        else:
+            y_val_effective = y_val
+        val_loss = float(weighted_bce_loss(brain, x_val, y_val_effective, pos_weight, reg_lambda))
 
         val_probs_np = np.array(mx.sigmoid(brain(x_val))).reshape(-1)
         y_val_np = np.array(y_val).reshape(-1)
@@ -409,6 +447,11 @@ def train_brain():
         "pos_weight": pos_weight_value,
         "reg_lambda": float(reg_lambda),
         "target": "future drawdown <= threshold",
+        "distillation": {
+            "enabled": bool(distillation_enabled),
+            "teacher_ids": used_teacher_ids,
+            "teacher_weight": float(teacher_weight if distillation_enabled else 0.0),
+        },
     }
     metrics = {
         "best_val_f1": float(best_val_f1),
@@ -419,10 +462,13 @@ def train_brain():
         "test_f1": float(test_metrics["f1"]),
         "decision_threshold": float(best_threshold),
     }
+    if distillation_enabled:
+        metrics["distillation_active"] = True
+        metrics["distillation_teacher_count"] = len(used_teacher_ids)
     save_artifacts(brain, config, metrics, run_tag="brain_refinery_v21_flash_crash")
 
     return brain
 
 
 if __name__ == "__main__":
-    trained_model = train_brain()
+    train_brain()

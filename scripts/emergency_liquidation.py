@@ -11,6 +11,8 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from core.base_trader import BaseTrader
+from core.brokers import BrokerRuntimeConfig, available_broker_names, normalize_broker_name
+from core.halt_flags import write_halt_flag_atomic
 
 OPERATOR_FLAG = PROJECT_ROOT / "governance" / "health" / "OPERATOR_STOP.flag"
 GLOBAL_HALT_FLAG = PROJECT_ROOT / "governance" / "health" / "GLOBAL_TRADING_HALT.flag"
@@ -21,8 +23,14 @@ def _now() -> str:
 
 
 def _write_flag(path: Path, payload: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload, ensure_ascii=True, indent=2), encoding="utf-8")
+    ok = write_halt_flag_atomic(
+        path,
+        payload,
+        project_root=str(PROJECT_ROOT),
+        source="emergency_liquidation",
+    )
+    if not ok:
+        raise RuntimeError(f"flag_write_failed:{path}")
 
 
 def _env(name: str, default: str = "") -> str:
@@ -30,7 +38,9 @@ def _env(name: str, default: str = "") -> str:
 
 
 def main() -> int:
+    broker_runtime = BrokerRuntimeConfig.from_env()
     parser = argparse.ArgumentParser(description="Emergency liquidation tool (rare use only).")
+    parser.add_argument("--broker", default="", choices=list(available_broker_names()))
     parser.add_argument("--apply", action="store_true", help="Execute real cancels/flatten orders. Without this, dry-run only.")
     parser.add_argument("--confirm", default="", help="Must be EXACTLY: LIQUIDATE_NOW")
     parser.add_argument("--set-operator-stop", action="store_true", default=False)
@@ -40,16 +50,13 @@ def main() -> int:
     parser.add_argument("--reason", default="emergency_liquidation_manual")
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args()
+    broker = normalize_broker_name(args.broker or broker_runtime.broker_for_role("execution"))
 
     dry_run = not bool(args.apply)
     if bool(args.apply) and str(args.confirm).strip() != "LIQUIDATE_NOW":
         raise SystemExit("confirm_token_required: use --confirm LIQUIDATE_NOW")
 
-    api_key = _env("SCHWAB_API_KEY", "YOUR_KEY_HERE")
-    secret = _env("SCHWAB_SECRET", "YOUR_SECRET_HERE")
-    redirect = _env("SCHWAB_REDIRECT", "https://127.0.0.1:8182")
-
-    trader = BaseTrader(api_key, secret, redirect, mode="live")
+    trader = BaseTrader.from_env(mode="live", broker=broker, role="execution", runtime_config=broker_runtime)
     trader.token_path = str(PROJECT_ROOT / "token.json")
     trader.market_data_only = False
     trader.execution_enabled = True

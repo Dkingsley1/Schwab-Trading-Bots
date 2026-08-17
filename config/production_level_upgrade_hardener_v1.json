@@ -1,0 +1,515 @@
+{
+  "schema_version": 1,
+  "target_grade": "A+",
+  "policy": "all_twenty_controls_must_be_installed_guarded_and_regression_checked_before_live_money_canary_consideration",
+  "control_contract": {
+    "live_execution_authority": false,
+    "paper_soak_safe": true,
+    "raw_profitability_truth_must_remain_visible": true,
+    "degraded_but_managed_states_must_remain_visible": true,
+    "runtime_source_mutation_allowed": false
+  },
+  "production_depth_catalog": {
+    "enabled": true,
+    "controls_per_section_target": 50,
+    "section_keys": [
+      "broker_auth_execution",
+      "market_data_source_quality",
+      "paper_trading_profitability",
+      "risk_governance_kill_switches",
+      "model_training_promotion",
+      "storage_ingestion_backpressure",
+      "runtime_host_resources",
+      "observability_livefeed_alerting",
+      "infrastructure_self_healing",
+      "security_source_integrity",
+      "operator_soak_governance",
+      "ci_release_regression"
+    ]
+  },
+  "items": [
+    {
+      "control_id": "trade_evidence_court_v2",
+      "group": "production_upgrade",
+      "title": "Trade Evidence Court v2",
+      "production_contract": "every trade and promotion claim has packetized evidence, replayability, rollback, source, and committee context",
+      "expected_impact": "turns paper/live decisions into reviewable packets instead of loose dashboard claims",
+      "commands": [["./scripts/ops/opsctl.sh", "whole-system-governor", "--apply", "--json"]],
+      "requirements": [
+        {
+          "path": "governance/whole_system_governor/evidence_court_packets.json",
+          "existence_only": true,
+          "required_paths": ["packets", "required_sections"],
+          "min_value_by_path": {"packet_count": 1}
+        }
+      ]
+    },
+    {
+      "control_id": "raw_profitability_explainer",
+      "group": "production_upgrade",
+      "title": "Raw Profitability Explainer",
+      "production_contract": "raw profitability remains evidence-based while controlled recovery and low-grade subsections are explained",
+      "expected_impact": "prevents a cosmetic A+ while keeping the raw D/F recovery ladder visible and actionable",
+      "commands": [["./scripts/ops/opsctl.sh", "paper-profitability-control", "--apply", "--json"]],
+      "custom_checks": ["raw_profitability_truth"],
+      "requirements": [
+        {
+          "path": "governance/health/paper_profitability_control_latest.json",
+          "ready_statuses": ["ready", "needs_tuning", "protective_tightening"],
+          "truthy_paths": [
+            "ok",
+            "grade_transparency_contract.no_live_trade_authority",
+            "raw_d_recovery_ladder_contract.contract_ready",
+            "raw_d_recovery_ladder_contract.paper_only"
+          ],
+          "falsey_paths": ["raw_d_recovery_ladder_contract.live_execution_allowed"],
+          "required_paths": [
+            "raw_profitability_grade",
+            "controlled_profitability_grade",
+            "profitability_display_grade",
+            "low_grade_layer_summary"
+          ]
+        }
+      ]
+    },
+    {
+      "control_id": "paper_live_reconciliation_simulator",
+      "group": "production_upgrade",
+      "title": "Paper-vs-Live Reconciliation Simulator",
+      "production_contract": "paper fills, broker state, and read-only live mirrors reconcile before live canary review",
+      "expected_impact": "keeps paper collection realistic and catches broker or fill drift before money is at risk",
+      "commands": [["./scripts/ops/opsctl.sh", "paper-truth", "--json"]],
+      "requirements": [
+        {
+          "path": "governance/health/paper_reconciliation_slo_latest.json",
+          "ready_statuses": ["ready", "ok"],
+          "truthy_paths": ["ok"],
+          "zero_count_paths": ["failed_checks"]
+        },
+        {
+          "path": "governance/health/live_reconciliation_slo_latest.json",
+          "ready_statuses": ["ready", "ok"],
+          "truthy_paths": ["ok"],
+          "zero_count_paths": ["failed_checks"]
+        },
+        {
+          "path": "governance/health/paper_execution_truth_layer_latest.json",
+          "ready_statuses": ["ready"],
+          "truthy_paths": ["ok", "a_plus_ready"],
+          "zero_count_paths": ["blocked_gates"]
+        }
+      ]
+    },
+    {
+      "control_id": "provider_confidence_router",
+      "group": "production_upgrade",
+      "title": "Provider Confidence Router",
+      "production_contract": "required providers must be ready; optional and stale sources are confidence-routed or downweighted",
+      "expected_impact": "keeps data collection useful when optional providers are thin without letting them poison decisions",
+      "commands": [
+        ["./scripts/ops/opsctl.sh", "provider-mesh", "--json"],
+        ["./scripts/ops/opsctl.sh", "source-verification-refresh", "--apply", "--json"],
+        ["./scripts/ops/opsctl.sh", "collector-contracts", "--json"],
+        ["./scripts/ops/opsctl.sh", "health-gates", "--json"]
+      ],
+      "requirements": [
+        {
+          "path": "governance/health/provider_mesh_latest.json",
+          "ready_statuses": ["ready"],
+          "truthy_paths": ["ok"],
+          "zero_count_paths": ["summary.required_failure_count"]
+        },
+        {
+          "path": "governance/health/source_verification_latest.json",
+          "ready_statuses": ["ready", "degraded"],
+          "truthy_paths": ["autorefresh_contract.enabled"],
+          "required_paths": ["source_confidence_summary", "recommended_refresh_commands"],
+          "max_value_by_path": {"source_confidence_summary.low_confidence_source_count": 2}
+        }
+      ]
+    },
+    {
+      "control_id": "strategy_quarantine_board",
+      "group": "production_upgrade",
+      "title": "Strategy Quarantine Board",
+      "production_contract": "weak sleeves and strategy pairs are contained, deweighted, or reduce-only until raw evidence improves",
+      "expected_impact": "stops losing subsections from widening while preserving their training labels",
+      "commands": [["./scripts/ops/opsctl.sh", "paper-profitability-control", "--apply", "--json"]],
+      "requirements": [
+        {
+          "path": "governance/health/paper_profitability_control_latest.json",
+          "ready_statuses": ["ready", "needs_tuning", "protective_tightening"],
+          "truthy_paths": [
+            "ok",
+            "paper_profitability_hardening_contract.active",
+            "low_grade_layer_summary.a_plus_control_ready"
+          ],
+          "zero_count_paths": ["low_grade_layer_summary.active_blocker_count"],
+          "min_value_by_path": {"active_profile_control_count": 1}
+        }
+      ]
+    },
+    {
+      "control_id": "model_registry_promotion_lineage",
+      "group": "production_upgrade",
+      "title": "Model Registry With Promotion Lineage",
+      "production_contract": "model promotion requires signed packets, replay hashes, quality gates, and rollback evidence",
+      "expected_impact": "makes every model/routing promotion traceable and reversible",
+      "commands": [["./scripts/ops/opsctl.sh", "promotion-quality-gate", "--json"]],
+      "requirements": [
+        {
+          "path": "governance/champion_challenger/promotion_packet_latest.json",
+          "ready_statuses": ["ready", "ok"],
+          "truthy_paths": ["ok", "packet_complete", "committee_packet_seed_ready", "signing_material_ready"],
+          "required_paths": ["packet_sha256", "rollback_bundle", "replayability_contract"]
+        },
+        {
+          "path": "governance/health/promotion_quality_gate_latest.json",
+          "ready_statuses": ["ready", "ok"],
+          "truthy_paths": ["ok"],
+          "zero_count_paths": ["failed_checks"]
+        },
+        {
+          "path": "governance/health/replay_hash_registry_guard_latest.json",
+          "ready_statuses": ["ready", "ok"],
+          "truthy_paths": ["ok"],
+          "zero_count_paths": ["failed_checks"]
+        }
+      ]
+    },
+    {
+      "control_id": "operator_cockpit_v2",
+      "group": "production_upgrade",
+      "title": "Operator Cockpit v2",
+      "production_contract": "operator dashboard separates raw, forensic, managed, and blocking attention",
+      "expected_impact": "lets you walk away without hiding the reasons a lane is only managed-ready",
+      "commands": [
+        ["./scripts/ops/opsctl.sh", "operator-cockpit", "--json"],
+        ["./scripts/ops/opsctl.sh", "runtime-gate-dashboard", "--json"]
+      ],
+      "requirements": [
+        {
+          "path": "governance/health/operator_cockpit_latest.json",
+          "ready_statuses": ["ready"],
+          "truthy_paths": ["ok"],
+          "required_paths": ["hardening_scorecard", "readiness_domains", "surfaces"]
+        },
+        {
+          "path": "governance/health/runtime_gate_dashboard_latest.json",
+          "existence_only": true,
+          "required_paths": ["overall.raw_attention", "overall.managed_attention", "overall.forensic_attention"]
+        }
+      ]
+    },
+    {
+      "control_id": "continuous_replay_engine",
+      "group": "production_upgrade",
+      "title": "Continuous Replay Engine",
+      "production_contract": "golden, shadow, and hash replay controls stay ready before promotion",
+      "expected_impact": "catches deterministic drift and paper/live replay mismatches before they reach canary",
+      "commands": [
+        ["./scripts/ops/opsctl.sh", "golden-replay-regression", "--json"],
+        ["./scripts/ops/opsctl.sh", "replay-hash-registry", "--json"]
+      ],
+      "requirements": [
+        {
+          "path": "governance/health/golden_replay_regression_latest.json",
+          "ready_statuses": ["ready"],
+          "truthy_paths": ["ok", "seed_ready"],
+          "zero_count_paths": ["failed_case_count"]
+        },
+        {
+          "path": "governance/health/shadow_replay_diff_latest.json",
+          "ready_statuses": ["ready"],
+          "truthy_paths": ["exact_replay_reference_ready"],
+          "required_paths": ["replay_alignment"]
+        },
+        {
+          "path": "governance/health/replay_hash_registry_guard_latest.json",
+          "ready_statuses": ["ready", "ok"],
+          "truthy_paths": ["ok"],
+          "zero_count_paths": ["failed_checks"]
+        }
+      ]
+    },
+    {
+      "control_id": "canary_dry_run_lab",
+      "group": "production_upgrade",
+      "title": "Canary Dry-Run Lab",
+      "production_contract": "live canary remains a supervised read-only dry run until milestone and raw profitability gates clear",
+      "expected_impact": "keeps the canary runway prepared while live money stays locked",
+      "commands": [["./scripts/ops/opsctl.sh", "live-canary-control", "--json"]],
+      "requirements": [
+        {
+          "path": "governance/health/live_canary_control_latest.json",
+          "ready_statuses": ["ready", "guarded", "blocked"],
+          "truthy_paths": ["live_money_contract_enforced", "live_money_contract_hard_block", "canary_weight_ok"],
+          "required_paths": ["blocking_reasons", "live_money_contract_target_date"]
+        },
+        {
+          "path": "governance/health/canary_auto_tuner_latest.json",
+          "existence_only": true,
+          "required_paths": ["target_canary_max_weight", "reason"]
+        }
+      ]
+    },
+    {
+      "control_id": "autonomous_repair_planner",
+      "group": "production_upgrade",
+      "title": "Autonomous Repair Planner",
+      "production_contract": "safe repairs are planned through explicit allowlists with live execution disabled",
+      "expected_impact": "lets infra bots self-remediate repeat degradation without mutating source or enabling orders",
+      "commands": [["./scripts/ops/opsctl.sh", "production-quality", "--apply", "--refresh-contract", "--json"]],
+      "requirements": [
+        {
+          "path": "governance/health/infrastructure_autofix_bot_latest.json",
+          "ready_statuses": ["ready", "degraded"],
+          "required_paths": ["repair_plan", "post_apply_recheck"]
+        },
+        {
+          "path": "governance/health/infrabot_adaptive_governor_latest.json",
+          "ready_statuses": ["ready", "guarded", "coordinating"],
+          "falsey_paths": ["safety_guard.live_execution_authority"],
+          "required_paths": ["safety_guard", "capability_registry"]
+        },
+        {
+          "path": "governance/health/production_quality_control_latest.json",
+          "ready_statuses": ["ready", "coordinating", "blocked"],
+          "truthy_paths": [
+            "quality_checks.live_execution_authority_false",
+            "quality_checks.safe_apply_only",
+            "quality_checks.all_active_lanes_have_commands",
+            "quality_checks.all_active_lanes_have_stop_conditions",
+            "quality_checks.managed_live_money_locks_have_no_live_execution_authority"
+          ],
+          "falsey_paths": ["live_execution_authority"]
+        }
+      ]
+    },
+    {
+      "control_id": "no_fake_green_guard",
+      "group": "hardener",
+      "title": "No-Fake-Green Guard",
+      "production_contract": "dashboard green states must preserve raw and managed attention evidence",
+      "expected_impact": "prevents stale, managed, or raw D-grade items from disappearing behind an OK headline",
+      "commands": [["./scripts/ops/opsctl.sh", "runtime-gate-dashboard", "--json"]],
+      "custom_checks": ["no_fake_green_dashboard"],
+      "requirements": [
+        {
+          "path": "governance/health/runtime_gate_dashboard_latest.json",
+          "existence_only": true,
+          "truthy_paths": ["overall.soak_management_context.enabled"],
+          "required_paths": ["overall.raw_attention", "overall.forensic_attention", "overall.managed_attention", "overall.managed_controls"]
+        }
+      ]
+    },
+    {
+      "control_id": "live_execution_double_lock",
+      "group": "hardener",
+      "title": "Live Execution Double Lock",
+      "production_contract": "live order authority stays disabled unless both operator arming and market-data-only locks are intentionally changed",
+      "expected_impact": "makes live money fail closed while the soak and canary prep continue",
+      "commands": [["./scripts/ops/opsctl.sh", "production-readiness", "--apply", "--json", "--exit-zero"]],
+      "custom_checks": ["live_execution_double_lock"],
+      "requirements": [
+        {
+          "path": "governance/health/production_readiness_control_latest.json",
+          "ready_statuses": ["ready", "guarded"],
+          "truthy_paths": ["ok", "live_money_production_bar_ready"],
+          "zero_count_paths": ["blocked_domain_count"]
+        }
+      ]
+    },
+    {
+      "control_id": "source_mutation_runtime_firewall",
+      "group": "hardener",
+      "title": "Source Mutation Runtime Firewall",
+      "production_contract": "runtime automation may write outputs, not canonical source, unless the operator explicitly changes source",
+      "expected_impact": "stops the soak from creating unreviewed source drift",
+      "commands": [["./scripts/ops/opsctl.sh", "source-mutation-guard", "--check-clean", "--json"]],
+      "dynamic_checks": ["source_mutation_guard"]
+    },
+    {
+      "control_id": "stale_artifact_poisoning_guard",
+      "group": "hardener",
+      "title": "Stale Artifact Poisoning Guard",
+      "production_contract": "stale latest artifacts refresh or degrade visibility but cannot silently disable eligible paper lanes",
+      "expected_impact": "prevents the repeated stale-artifact paper-trading pauses seen during the soak",
+      "commands": [["./scripts/ops/opsctl.sh", "artifact-freshness-slo", "--json"]],
+      "requirements": [
+        {
+          "path": "governance/health/artifact_freshness_slo_latest.json",
+          "ready_statuses": ["ready"],
+          "truthy_paths": ["ok"],
+          "required_paths": ["sla_summary", "artifacts"]
+        },
+        {
+          "path": "governance/health/stale_artifact_sweeper_bot_latest.json",
+          "ready_statuses": ["ready", "ok"],
+          "truthy_paths": ["ok"],
+          "required_paths": ["summary", "top_labels"]
+        },
+        {
+          "path": "governance/health/stale_artifact_reaper_bot_latest.json",
+          "ready_statuses": ["ready", "ok"],
+          "truthy_paths": ["ok"],
+          "required_paths": ["summary"]
+        }
+      ]
+    },
+    {
+      "control_id": "dependency_drift_lock",
+      "group": "hardener",
+      "title": "Dependency Drift Lock",
+      "production_contract": "production core dependencies are smoke-tested and pinned before runtime use",
+      "expected_impact": "prevents a library or environment change from silently shifting soak behavior",
+      "commands": [["./scripts/ops/opsctl.sh", "dependency-activation-smoke", "--batch", "production_core_safe", "--profile", "live", "--import-smoke", "--require-installed", "--json"]],
+      "requirements": [
+        {
+          "path": "governance/health/dependency_activation_smoke_latest.json",
+          "ready_statuses": ["ready"],
+          "truthy_paths": ["ok", "control_contract.does_not_install_packages", "control_contract.activation_requires_smoke_before_lock_mutation"],
+          "zero_count_paths": ["summary.import_failed_count", "summary.pending_install_count"]
+        },
+        {
+          "path": "config/requirements.lock.txt",
+          "parse_json": false,
+          "existence_only": true
+        },
+        {
+          "path": "governance/health/production_readiness_replay_baseline.json",
+          "existence_only": true,
+          "required_paths": ["fingerprint_hash"]
+        }
+      ]
+    },
+    {
+      "control_id": "single_writer_enforcement",
+      "group": "hardener",
+      "title": "Single Writer Enforcement",
+      "production_contract": "storage and SQL writers coordinate instead of spawning competing drains",
+      "expected_impact": "reduces writer contention, backpressure loops, and external backlog churn",
+      "commands": [
+        ["./scripts/ops/opsctl.sh", "writer-cycle-coordinator", "--apply", "--handoff-only", "--json"],
+        ["./scripts/ops/opsctl.sh", "writer-process-intelligence", "--json"]
+      ],
+      "requirements": [
+        {
+          "path": "governance/health/writer_cycle_coordinator_latest.json",
+          "ready_statuses": ["ready", "writer_active", "idle"],
+          "truthy_paths": ["ok"],
+          "required_paths": ["writer_state_before", "writer_state_after_remediation", "summary"]
+        },
+        {
+          "path": "governance/health/writer_process_intelligence_latest.json",
+          "ready_statuses": ["ready", "advisory"],
+          "required_paths": ["writer_health", "process_playbook", "safety_envelope"]
+        }
+      ]
+    },
+    {
+      "control_id": "storage_soft_quota_escalator",
+      "group": "hardener",
+      "title": "Storage Soft-Quota Escalator",
+      "production_contract": "soft storage pressure is compacted and visible while hard breaches block",
+      "expected_impact": "keeps the soak collecting without letting storage run into hard failure",
+      "commands": [
+        ["./scripts/ops/opsctl.sh", "storage-quota-guard", "--json"],
+        ["./scripts/ops/opsctl.sh", "deep-cold-storage-layer", "--apply", "--move-to-second-cold", "--second-cold-root", "/Volumes/VIDEO/schwab_trading_bot_cold", "--max-move-gb", "96", "--max-move-files", "500", "--include-critical", "--json"],
+        ["./scripts/ops/opsctl.sh", "storage-retention-unison", "--apply", "--json"],
+        ["./scripts/ops/opsctl.sh", "ingestion-storage", "--json"]
+      ],
+      "custom_checks": ["storage_soft_quota_escalator"],
+      "requirements": [
+        {
+          "path": "governance/health/storage_quota_guard_latest.json",
+          "ready_statuses": ["ready", "degraded"],
+          "zero_count_paths": ["quota_summary.hard_breaches"],
+          "required_paths": [
+            "active_hot_buffer_containment.hot_path_green",
+            "active_hot_buffer_containment.hot_lane_control_active"
+          ]
+        },
+        {
+          "path": "governance/health/ingestion_storage_control_latest.json",
+          "ready_statuses": ["ready"],
+          "truthy_paths": ["ok"]
+        }
+      ]
+    },
+    {
+      "control_id": "auth_lease_preflight_guard",
+      "group": "hardener",
+      "title": "Auth Lease Preflight Guard",
+      "production_contract": "Schwab token, broker readiness, and auth lease are checked before they can pause paper collection",
+      "expected_impact": "reduces mid-week token surprises and gives the system a safe browser-refresh fallback",
+      "commands": [
+        ["./scripts/ops/opsctl.sh", "auth-lease", "--json"],
+        ["./scripts/ops/opsctl.sh", "schwab-auth-supervisor", "--apply", "--json"]
+      ],
+      "requirements": [
+        {
+          "path": "governance/health/auth_lease_manager_latest.json",
+          "ready_statuses": ["ready"],
+          "truthy_paths": ["ok", "broker_state.broker_ready", "lease_budget.probe_backed"],
+          "min_value_by_path": {"lease_budget.expires_in_seconds": 600}
+        },
+        {
+          "path": "governance/health/schwab_auth_supervisor_latest.json",
+          "ready_statuses": ["ready"],
+          "truthy_paths": ["ok", "token.ready", "paper_soak_auth_operable"],
+          "min_value_by_path": {"token.expires_in_seconds": 900}
+        }
+      ]
+    },
+    {
+      "control_id": "kill_switch_audit_trail",
+      "group": "hardener",
+      "title": "Kill-Switch Audit Trail",
+      "production_contract": "halt and operator-stop decisions are clear, auditable, and safe to recheck",
+      "expected_impact": "keeps lane kill switches from becoming unexplained production behavior",
+      "commands": [["./scripts/ops/opsctl.sh", "global-halt-refresh", "--json"]],
+      "custom_checks": ["kill_switch_audit_trail"],
+      "requirements": [
+        {
+          "path": "governance/health/global_killswitch_latest.json",
+          "existence_only": true,
+          "truthy_paths": ["clear_ready", "safe_clear.ready"],
+          "falsey_paths": ["halt", "halt_latched", "halt_required", "operator_stop"],
+          "required_paths": ["control_commands", "recommended_commands", "source_files"]
+        }
+      ]
+    },
+    {
+      "control_id": "regression_guard_matrix",
+      "group": "hardener",
+      "title": "Regression Guard Matrix",
+      "production_contract": "production-flow, source, paper-runtime, replay, and dependency checks protect the soak contract",
+      "expected_impact": "catches the exact failure patterns before they repeat in unattended runtime",
+      "commands": [
+        ["./scripts/ops/opsctl.sh", "production-flow-smoke", "--json"],
+        ["./scripts/ops/opsctl.sh", "runtime-paper-regression-guard", "--json"]
+      ],
+      "dynamic_checks": ["production_flow_smoke"],
+      "requirements": [
+        {
+          "path": "governance/health/runtime_paper_regression_guard_latest.json",
+          "ready_statuses": ["ready"],
+          "truthy_paths": ["ok", "runtime_paper_contract.raw_profitability_grade_is_evidence_based", "runtime_paper_contract.incident_replay_regressions_required"],
+          "zero_count_paths": ["failed_guard_count", "hard_failed_guard_count"]
+        },
+        {
+          "path": "governance/health/golden_replay_regression_latest.json",
+          "ready_statuses": ["ready"],
+          "truthy_paths": ["ok"],
+          "zero_count_paths": ["failed_case_count"]
+        },
+        {
+          "path": "governance/health/dependency_activation_smoke_latest.json",
+          "ready_statuses": ["ready"],
+          "truthy_paths": ["ok"]
+        }
+      ]
+    }
+  ]
+}

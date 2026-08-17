@@ -1,0 +1,87 @@
+{
+  "event_id": "20260714_apple_battery_service_soak_pause",
+  "schema_version": 1,
+  "created_utc": "2026-07-14T15:16:02Z",
+  "status": "completed",
+  "classification": "planned_external_hardware_maintenance",
+  "title": "Apple battery service planned maintenance pause",
+  "local_timezone": "America/New_York",
+  "expected_service_start_local": "2026-07-14T14:40:00-04:00",
+  "expected_service_start_utc": "2026-07-14T18:40:00Z",
+  "expected_service_end": "unknown_until_mac_returned",
+  "actual_offline_window": {
+    "offline_start_local": "2026-07-14T14:40:00-04:00",
+    "offline_start_utc": "2026-07-14T18:40:00Z",
+    "offline_end_local": "2026-07-22T20:53:55-04:00",
+    "offline_end_utc": "2026-07-23T00:53:55Z",
+    "duration_seconds": 713635,
+    "duration_human": "8 days, 6 hours, 13 minutes, 55 seconds",
+    "basis": "Start is the Apple battery service appointment/operator shutdown window; end is the Segment 2 acceptance timestamp after post-service route, paper, runtime, and soak-readiness checks passed.",
+    "system_state": "Schwab trading bot offline/not soak-continuous during planned external hardware service.",
+    "resume_acceptance_event": "governance/maintenance_events/20260722_apple_battery_service_segment_2_acceptance.json"
+  },
+  "operator_reason": "Mac battery replacement/service at Apple Store; Apple advised possible data loss as a standard service risk.",
+  "soak_accounting": {
+    "continuous_runtime_break_expected": true,
+    "counts_as_system_degradation": false,
+    "counts_as_trading_system_failure": false,
+    "treatment": "planned_maintenance_interruption_between_soak_segments",
+    "segment_1": "pre_service_soak_until_operator_shutdown_for_apple_battery_service",
+    "segment_2": "post_service_soak_resumes_after_restore_readiness_and_live_readiness_verify",
+    "review_statement": "The 30-day soak should preserve the pre-service segment as valid evidence, document the hardware-service pause, and restart continuity counting only after post-service health checks pass."
+  },
+  "pre_service_backup": {
+    "completed": true,
+    "primary_backup_path": "/Volumes/VIDEO/SchwabTradingBot_PreService_20260714T141912Z",
+    "primary_backup_size": "218G",
+    "primary_manifest_file_count": 57344,
+    "secondary_backup_path": "/Volumes/LaCie/SchwabTradingBot_PreService_Essentials_20260714T141912Z",
+    "secondary_backup_size": "9.7G",
+    "secondary_manifest_file_count": 17192,
+    "local_fallback_storage_included": true,
+    "local_fallback_storage_source_size": "164G",
+    "local_fallback_storage_backup_size": "165G",
+    "verification": {
+      "primary_critical_sha256": "ok",
+      "secondary_critical_sha256": "ok",
+      "git_bundle_verify": "ok_complete_history",
+      "daily_state_snapshot_ok": true,
+      "daily_state_snapshot_files_checked": 5,
+      "daily_state_snapshot_missing_files": []
+    }
+  },
+  "pre_service_health": {
+    "unattended_soak_readiness": {
+      "status": "ready",
+      "grade": "A+",
+      "target_days": 30.0
+    },
+    "live_readiness_smoke": {
+      "overall_status": "ready",
+      "readiness_score": 100.0,
+      "submit_enabled": 0
+    },
+    "live_orders_expected": false,
+    "paper_mode_expected": true
+  },
+  "post_service_acceptance_checks": [
+    "Confirm /Users/dankingsley/PycharmProjects/schwab_trading_bot exists on internal storage.",
+    "Mount /Volumes/BOT_LOGS and verify external storage routing.",
+    "Run ./scripts/ops/opsctl.sh soak-readiness --target-days 30.",
+    "Run python scripts/live_readiness_smoke.py using the project Python runtime.",
+    "Verify Schwab auth lease and token readiness.",
+    "Verify paper trading lanes and data collection are running before starting the post-service soak segment.",
+    "Keep live order submission disabled unless a separate supervised live approval is explicitly granted."
+  ],
+  "operator_notes": [
+    "Do not interpret the Apple service downtime as an unexplained outage.",
+    "Do not mark the soak as failed due to this event alone.",
+    "If internal storage returns intact, backups remain safety copies and are not required for normal operation.",
+    "If internal storage is lost or altered, restore from the verified VIDEO primary backup and use the LaCie essentials mirror as secondary insurance."
+  ],
+  "related_artifacts": {
+    "runbook_note": "docs/runbooks/2026-07-14-apple-battery-service-soak-pause.md",
+    "latest_pointer": "governance/maintenance_events/latest_planned_hardware_maintenance.json",
+    "event_log": "governance/maintenance_events/events.jsonl"
+  }
+}

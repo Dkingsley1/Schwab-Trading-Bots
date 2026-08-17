@@ -1,0 +1,1 @@
+../../../scripts/ops/bot_needs_intelligence.py

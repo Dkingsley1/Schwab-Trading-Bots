@@ -7,6 +7,7 @@ import mlx.optimizers as optim
 
 # --- THE PLUMBING (Schwab & Data) ---
 from core.base_trader import BaseTrader
+from core.brokers import BrokerRuntimeConfig
 from core.runtime_config import RuntimeConfig
 import pandas as pd
 import numpy as np
@@ -14,22 +15,17 @@ import numpy as np
 # --- THE OPTIONS MATH ---
 from py_vollib.black_scholes import black_scholes
 from py_vollib.black_scholes.greeks.numerical import delta, theta, gamma
-import pandas_ta as ta
+try:
+    import pandas_ta as ta
+    INDICATOR_LIBRARY_BACKEND = "pandas_ta"
+except ModuleNotFoundError:
+    import ta
+    INDICATOR_LIBRARY_BACKEND = "ta"
 
 # --- SYSTEM TOOLS ---
 import sqlite3  # To store your "Failure Logs" locally
 import datetime
 import os
-
-# Your Schwab Credentials (Keep these secret!)
-API_KEY = os.getenv("SCHWAB_API_KEY", "YOUR_KEY_HERE")
-SECRET = os.getenv("SCHWAB_SECRET", "YOUR_SECRET_HERE")
-REDIRECT = os.getenv("SCHWAB_REDIRECT", "https://127.0.0.1:8080")
-
-
-def _has_real_credentials() -> bool:
-    return API_KEY != "YOUR_KEY_HERE" and SECRET != "YOUR_SECRET_HERE"
-
 
 def _enforce_market_data_only_lock() -> tuple[str, str]:
     market_data_only = os.getenv("MARKET_DATA_ONLY", "1").strip()
@@ -64,26 +60,38 @@ def start_factory():
     market_data_only, allow_order_execution = _enforce_market_data_only_lock()
 
     cfg = RuntimeConfig.from_env()
+    broker_runtime = BrokerRuntimeConfig.from_env()
     print(f"Startup mode: {cfg.mode}")
     print(
         "Safety config: "
         f"MARKET_DATA_ONLY={market_data_only} "
         f"ALLOW_ORDER_EXECUTION={allow_order_execution}"
     )
+    print(
+        "Broker roles: "
+        f"auth={broker_runtime.auth_broker_name} "
+        f"market_data={broker_runtime.market_data_provider_name} "
+        f"paper_execution={broker_runtime.paper_execution_broker_name} "
+        f"live_execution={broker_runtime.execution_broker_name}"
+    )
 
     # BaseTrader handles auth/data plumbing and decision routing.
-    mecca = BaseTrader(API_KEY, SECRET, REDIRECT, mode=cfg.mode)
+    mecca = BaseTrader.from_env(mode=cfg.mode, role="auth", runtime_config=broker_runtime)
 
-    if not _has_real_credentials():
-        print("Credentials are placeholders. Skipping Schwab handshake.")
+    if mecca.credentials_are_placeholder():
+        print(f"Credentials are placeholders. Skipping {mecca.broker_display_name} handshake.")
         _run_decision_probe(mecca)
         return
 
-    schwab_client = mecca.authenticate()
+    mecca.authenticate()
 
     try:
-        account_info = schwab_client.get_account_numbers().json()
-        print(f"Bot Factory Online. Connected to Account: {account_info[0]['accountNumber']}")
+        account_rows = mecca.fetch_connected_account_rows()
+        if account_rows:
+            account_number = str(account_rows[0].get("account_number") or "").strip() or "unknown"
+            print(f"Bot Factory Online. Connected to {mecca.broker_display_name} account: {account_number}")
+        else:
+            print(f"Bot Factory Online. Connected to {mecca.broker_display_name}.")
     except Exception as e:
         print(f"Connection established, but could not fetch account info: {e}")
 

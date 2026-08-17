@@ -6,6 +6,18 @@ import json
 from datetime import datetime
 import os
 
+from indicator_bot_common import train_price_indicator_bot, train_runtime_indicator_bot
+from runtime_training_common import (
+    feature_ema,
+    feature_std,
+    future_max_drawdown,
+    future_realized_vol,
+    future_return,
+    observation_feature,
+    price_change,
+    symbol_role_features,
+)
+
 # -----------------------------
 # Feature engineering helpers
 # -----------------------------
@@ -171,84 +183,428 @@ def simulate_news_shocks(n=5000):
 # -----------------------------
 # Training
 # -----------------------------
+FEATURE_SOURCE = "prices"
+
+_NEWS_ROLE_MAP = {
+    "shock": ["UVXY", "VIXY", "SOXL", "SOXS", "MSTR", "SMCI", "COIN", "TSLA"],
+    "bond": ["TLT", "IEF", "SHY", "TIP", "LQD", "HYG"],
+    "dividend": ["SCHD", "VIG", "DGRO", "JNJ", "PG", "KO", "PEP"],
+}
+_NEWS_RUNTIME_MODES = [
+    "shadow_equities",
+    "shadow_aggressive_equities",
+    "shadow_conservative_equities",
+    "shadow_intraday_aggressive_equities",
+    "shadow_swing_aggressive_equities",
+]
+_NEWS_RUNTIME_SYMBOLS = sorted(
+    {
+        "SPY",
+        "QQQ",
+        "DIA",
+        "IWM",
+        "SMH",
+        "XLK",
+        "XLF",
+        "GLD",
+        "TLT",
+        "TSLA",
+        "AAPL",
+        "MSFT",
+        "NVDA",
+        "META",
+        "AVGO",
+        *(_NEWS_ROLE_MAP["shock"]),
+        *(_NEWS_ROLE_MAP["bond"]),
+    }
+)
+
+
+def _clip01(value):
+    return float(np.clip(value, 0.0, 1.0))
+
+
+def _quote_quality(obs):
+    return _clip01(
+        (0.58 * observation_feature(obs, "data_quality_quote_agreement_norm", 1.0))
+        + (0.22 * (1.0 - observation_feature(obs, "data_quality_quote_deviation_norm", 0.0)))
+        + (0.20 * (1.0 - observation_feature(obs, "data_quality_market_data_latency_norm", 0.0)))
+    )
+
+
+def _shock_regime_signal(obs):
+    event_signal = max(
+        observation_feature(obs, "news_shock_rate"),
+        observation_feature(obs, "news_recent_impact"),
+        observation_feature(obs, "calendar_macro_event_norm"),
+        observation_feature(obs, "calendar_macro_abs_surprise_norm"),
+        observation_feature(obs, "calendar_macro_revision_norm"),
+        observation_feature(obs, "calendar_fomc_event_norm"),
+        observation_feature(obs, "calendar_cpi_event_norm"),
+        observation_feature(obs, "calendar_labor_event_norm"),
+        observation_feature(obs, "calendar_treasury_auction_norm"),
+    )
+    topical_signal = max(
+        observation_feature(obs, "news_topic_earnings_norm"),
+        observation_feature(obs, "news_topic_guidance_norm"),
+        observation_feature(obs, "news_topic_mna_norm"),
+        observation_feature(obs, "news_topic_regulatory_norm"),
+    )
+    freshness_signal = max(
+        observation_feature(obs, "news_items_30m"),
+        observation_feature(obs, "news_items_2h") * 0.9,
+        observation_feature(obs, "news_items_24h") * 0.55,
+    )
+    micro_signal = max(
+        observation_feature(obs, "market_micro_options_flow_norm"),
+        observation_feature(obs, "market_micro_short_pressure_norm"),
+        observation_feature(obs, "market_micro_credit_flow_norm"),
+        observation_feature(obs, "market_micro_block_trade_norm"),
+        abs(observation_feature(obs, "market_micro_order_flow_imbalance_norm", 0.5) - 0.5) * 2.0,
+    )
+    return _clip01(max(event_signal, topical_signal, freshness_signal, micro_signal))
+
+
+def _directional_hint(obs):
+    sentiment = observation_feature(obs, "news_sentiment")
+    polarity = observation_feature(obs, "news_positive_share") - observation_feature(obs, "news_negative_share")
+    specialist = (
+        0.55 * observation_feature(obs, "options_specialist_vote")
+        + 0.35 * observation_feature(obs, "futures_specialist_vote")
+    )
+    order_flow = (observation_feature(obs, "market_micro_order_flow_imbalance_norm", 0.5) - 0.5) * 2.0
+    behavior = observation_feature(obs, "behavior_prior")
+    short_drag = observation_feature(obs, "market_micro_short_pressure_norm")
+    credit_drag = observation_feature(obs, "market_micro_credit_flow_norm")
+    risk_off_drag = max(observation_feature(obs, "breadth_risk_off_norm") - 0.5, 0.0) * 2.0
+    return float(
+        np.clip(
+            (0.34 * sentiment)
+            + (0.24 * polarity)
+            + (0.14 * specialist)
+            + (0.12 * order_flow)
+            + (0.10 * behavior)
+            - (0.05 * short_drag)
+            - (0.05 * credit_drag)
+            - (0.02 * risk_off_drag),
+            -1.0,
+            1.0,
+        )
+    )
+
+
+def build_features(prices):
+    returns = np.log(prices[1:] / prices[:-1])
+    returns = np.concatenate([[0.0], returns])
+    sma = np.convolve(prices, np.ones(10) / 10, mode="same")
+    ema10 = ema(prices, 10)
+    rsi14 = rsi(prices, 14)
+    vol10 = rolling_std(returns, 10)
+    return np.stack([returns, sma, ema10, rsi14, vol10], axis=1)
+
+
+def _runtime_feature_vector(sequence, idx):
+    obs = sequence[idx]
+    roles = symbol_role_features(str(obs.get("symbol") or ""), _NEWS_ROLE_MAP)
+    return np.asarray(
+        [
+            observation_feature(obs, "pct_from_close"),
+            observation_feature(obs, "mom_5m"),
+            observation_feature(obs, "vol_30m"),
+            observation_feature(obs, "range_pos"),
+            observation_feature(obs, "spread_bps"),
+            observation_feature(obs, "market_data_latency_ms"),
+            observation_feature(obs, "news_available"),
+            observation_feature(obs, "news_items_30m"),
+            observation_feature(obs, "news_items_2h"),
+            observation_feature(obs, "news_items_24h"),
+            observation_feature(obs, "news_sentiment"),
+            observation_feature(obs, "news_negative_share"),
+            observation_feature(obs, "news_positive_share"),
+            observation_feature(obs, "news_shock_rate"),
+            observation_feature(obs, "news_recent_impact"),
+            observation_feature(obs, "news_source_quality_norm"),
+            observation_feature(obs, "news_entity_relevance_norm"),
+            observation_feature(obs, "news_topic_earnings_norm"),
+            observation_feature(obs, "news_topic_guidance_norm"),
+            observation_feature(obs, "news_topic_mna_norm"),
+            observation_feature(obs, "news_topic_regulatory_norm"),
+            observation_feature(obs, "news_novelty_norm"),
+            observation_feature(obs, "news_duplicate_cluster_norm"),
+            observation_feature(obs, "news_premarket_norm"),
+            observation_feature(obs, "news_intraday_norm"),
+            observation_feature(obs, "news_after_hours_norm"),
+            observation_feature(obs, "calendar_event_proximity_norm"),
+            observation_feature(obs, "calendar_high_impact_24h_norm"),
+            observation_feature(obs, "calendar_macro_event_norm"),
+            observation_feature(obs, "calendar_macro_surprise_norm"),
+            observation_feature(obs, "calendar_macro_abs_surprise_norm"),
+            observation_feature(obs, "calendar_macro_revision_norm"),
+            observation_feature(obs, "calendar_fomc_event_norm"),
+            observation_feature(obs, "calendar_cpi_event_norm"),
+            observation_feature(obs, "calendar_labor_event_norm"),
+            observation_feature(obs, "calendar_treasury_auction_norm"),
+            observation_feature(obs, "ctx_VIX_X_pct_from_close"),
+            observation_feature(obs, "ctx_UUP_pct_from_close"),
+            observation_feature(obs, "breadth_advance_decline_norm"),
+            observation_feature(obs, "breadth_risk_off_norm"),
+            observation_feature(obs, "options_iv_atm_norm"),
+            observation_feature(obs, "options_iv_skew_norm"),
+            observation_feature(obs, "options_vol_expectation_norm"),
+            observation_feature(obs, "options_unusual_flow_norm"),
+            observation_feature(obs, "data_quality_quote_agreement_norm"),
+            observation_feature(obs, "data_quality_quote_deviation_norm"),
+            observation_feature(obs, "data_quality_stale_streak_norm"),
+            observation_feature(obs, "data_quality_market_data_latency_norm"),
+            observation_feature(obs, "market_micro_opening_auction_norm"),
+            observation_feature(obs, "market_micro_closing_auction_norm"),
+            observation_feature(obs, "market_micro_relative_volume_norm"),
+            observation_feature(obs, "market_micro_order_flow_imbalance_norm"),
+            observation_feature(obs, "market_micro_options_flow_norm"),
+            observation_feature(obs, "market_micro_short_pressure_norm"),
+            observation_feature(obs, "market_micro_credit_flow_norm"),
+            observation_feature(obs, "market_micro_block_trade_norm"),
+            observation_feature(obs, "options_specialist_vote"),
+            observation_feature(obs, "futures_specialist_vote"),
+            observation_feature(obs, "behavior_prior"),
+            observation_feature(obs, "active_sub_bots"),
+            observation_feature(obs, "active_futures_sub_bots"),
+            price_change(sequence, idx, 3),
+            feature_std(sequence, idx, "pct_from_close", 6),
+            feature_ema(sequence, idx, "news_sentiment", 4),
+            feature_ema(sequence, idx, "behavior_prior", 4),
+            roles["role_shock"],
+            roles["role_bond"],
+            roles["role_dividend"],
+        ],
+        dtype=np.float32,
+    )
+
+
+def _runtime_sample_filter(sequence, idx, horizon):
+    obs = sequence[idx]
+    quote_agreement = observation_feature(obs, "data_quality_quote_agreement_norm", 1.0)
+    quote_deviation = observation_feature(obs, "data_quality_quote_deviation_norm", 0.0)
+    stale_streak = observation_feature(obs, "data_quality_stale_streak_norm", 0.0)
+    latency = observation_feature(obs, "data_quality_market_data_latency_norm", 0.0)
+    quote_quality = _quote_quality(obs)
+    event_signal = _shock_regime_signal(obs)
+    freshness_signal = max(
+        observation_feature(obs, "news_items_30m"),
+        observation_feature(obs, "news_items_2h"),
+        observation_feature(obs, "news_items_24h") * 0.55,
+    )
+    directional_signal = abs(_directional_hint(obs))
+    source_signal = max(
+        observation_feature(obs, "news_source_quality_norm"),
+        observation_feature(obs, "news_entity_relevance_norm"),
+        observation_feature(obs, "news_novelty_norm"),
+    )
+    duplicate_cluster = observation_feature(obs, "news_duplicate_cluster_norm", 0.0)
+    return (
+        quote_agreement >= 0.80
+        and quote_deviation <= 0.24
+        and stale_streak <= 0.55
+        and latency <= 0.80
+        and quote_quality >= 0.78
+        and event_signal >= 0.24
+        and freshness_signal >= 0.10
+        and source_signal >= 0.24
+        and (directional_signal >= 0.12 or event_signal >= 0.60)
+        and (duplicate_cluster <= 0.80 or event_signal >= 0.56 or observation_feature(obs, "news_novelty_norm") >= 0.58)
+    )
+
+
+def _runtime_confidence(sequence, idx, horizon):
+    obs = sequence[idx]
+    event_signal = _clip01(max(_shock_regime_signal(obs), abs(observation_feature(obs, "news_sentiment"))))
+    topical_signal = _clip01(
+        max(
+            observation_feature(obs, "news_topic_earnings_norm"),
+            observation_feature(obs, "news_topic_guidance_norm"),
+            observation_feature(obs, "news_topic_mna_norm"),
+            observation_feature(obs, "news_topic_regulatory_norm"),
+        )
+    )
+    directional_signal = _clip01(abs(_directional_hint(obs)))
+    source_signal = _clip01(
+        max(
+            observation_feature(obs, "news_source_quality_norm"),
+            observation_feature(obs, "news_entity_relevance_norm"),
+            observation_feature(obs, "news_novelty_norm"),
+        )
+    )
+    freshness_signal = _clip01(
+        max(
+            observation_feature(obs, "news_items_30m"),
+            observation_feature(obs, "news_items_2h"),
+            observation_feature(obs, "news_items_24h"),
+        )
+    )
+    quote_signal = _quote_quality(obs)
+    return (0.28 * event_signal) + (0.16 * topical_signal) + (0.22 * directional_signal) + (0.16 * source_signal) + (0.08 * freshness_signal) + (0.10 * quote_signal)
+
+
+def _runtime_shock_label(sequence, idx, horizon):
+    obs = sequence[idx]
+    shock_signal = _shock_regime_signal(obs)
+    directional_hint = _directional_hint(obs)
+    directional_signal = abs(directional_hint)
+    if shock_signal < 0.22 or directional_signal < 0.10:
+        return None
+
+    fwd_ret = future_return(sequence, idx, horizon)
+    realized = future_realized_vol(sequence, idx, horizon)
+    drawdown = abs(future_max_drawdown(sequence, idx, horizon))
+    quote_quality = _quote_quality(obs)
+    source_signal = max(
+        observation_feature(obs, "news_source_quality_norm"),
+        observation_feature(obs, "news_entity_relevance_norm"),
+        observation_feature(obs, "news_novelty_norm"),
+    )
+    expected_up = directional_hint >= 0.0
+    signed_ret = fwd_ret if expected_up else -fwd_ret
+    vol_gate = abs(observation_feature(obs, "vol_30m", 0.0)) * 1.05
+    move_threshold = max(0.00065, 0.00145 - (0.00060 * shock_signal), vol_gate)
+    if abs(fwd_ret) < move_threshold and realized < 0.024 and drawdown < 0.014:
+        return None
+
+    success_score = (
+        signed_ret
+        + (0.00100 * shock_signal)
+        + (0.00040 * directional_signal)
+        + (0.00020 * quote_quality)
+        + (0.00020 * source_signal)
+        - (0.18 * realized)
+        - (0.20 * drawdown)
+        - (0.00015 * observation_feature(obs, "breadth_risk_off_norm"))
+    )
+    failure_score = (
+        (-signed_ret)
+        + (0.00085 * shock_signal)
+        + (0.00025 * directional_signal)
+        + (0.16 * realized)
+        + (0.18 * drawdown)
+    )
+    if success_score >= 0.00055:
+        return 1.0 if expected_up else 0.0
+    if failure_score >= 0.00080:
+        return 0.0 if expected_up else 1.0
+
+    return None
+
+
+def _train_synthetic():
+    return train_price_indicator_bot(
+        run_tag="brain_refinery_v12_news_shocks",
+        feature_names=["returns", "sma10", "ema10", "rsi14", "vol10"],
+        feature_builder=build_features,
+        price_simulator=simulate_news_shocks,
+    )
+
+
 def train_brain():
-    np.random.seed(42)
-
-    prices = simulate_news_shocks(n=5000)
-
-    window = 30
-    X, y = make_dataset(prices, window=window)
-    X_train, y_train, X_val, y_val, X_test, y_test = split_data(X, y)
-
-    input_dim = X.shape[1]
-    brain = TradingBrain(input_dim)
-    mx.eval(brain.parameters())
-
-    optimizer = optim.Adam(learning_rate=0.001)
-    loss_and_grad_fn = nn.value_and_grad(brain, loss_fn)
-
-    epochs = 200
-    batch_size = 128
-    patience = 15
-    best_val = float("inf")
-    patience_left = patience
-
-    print("Training...")
-
-    for epoch in range(epochs):
-        idx = np.random.permutation(X_train.shape[0])
-
-        total_loss = 0.0
-        num_batches = 0
-
-        for start in range(0, X_train.shape[0], batch_size):
-            batch_idx = mx.array(idx[start:start+batch_size])
-            xb = mx.take(X_train, batch_idx, axis=0)
-            yb = mx.take(y_train, batch_idx, axis=0)
-
-            loss, grads = loss_and_grad_fn(brain, xb, yb)
-            optimizer.update(brain, grads)
-            mx.eval(brain.parameters(), optimizer.state)
-
-            total_loss += float(loss)
-            num_batches += 1
-
-        val_loss = float(loss_fn(brain, X_val, y_val))
-        if epoch % 10 == 0:
-            print(f"Epoch {epoch} | Train {total_loss/num_batches:.6f} | Val {val_loss:.6f}")
-
-        if val_loss < best_val:
-            best_val = val_loss
-            patience_left = patience
-        else:
-            patience_left -= 1
-            if patience_left == 0:
-                print("Early stopping.")
-                break
-
-    preds = mx.sigmoid(brain(X_test))
-    pred_labels = (preds > 0.5).astype(mx.float32)
-    acc = float(mx.mean((pred_labels == y_test).astype(mx.float32)))
-
-    print(f"Test accuracy: {acc:.4f}")
-
-    config = {
-        "window": window,
-        "learning_rate": 0.001,
-        "epochs": epochs,
-        "batch_size": batch_size,
-        "patience": patience,
-        "input_dim": int(input_dim),
-        "num_points": int(len(prices)),
-    }
-    metrics = {
-        "best_val_loss": float(best_val),
-        "final_val_loss": float(val_loss),
-        "test_accuracy": float(acc),
-    }
-    save_artifacts(brain, config, metrics, run_tag="brain_refinery_v12_news_shocks")
-
-    return brain
+    return train_runtime_indicator_bot(
+        run_tag="brain_refinery_v12_news_shocks",
+        feature_names=[
+            "pct_from_close",
+            "mom_5m",
+            "vol_30m",
+            "range_pos",
+            "spread_bps",
+            "market_data_latency_ms",
+            "news_available",
+            "news_items_30m",
+            "news_items_2h",
+            "news_items_24h",
+            "news_sentiment",
+            "news_negative_share",
+            "news_positive_share",
+            "news_shock_rate",
+            "news_recent_impact",
+            "news_source_quality_norm",
+            "news_entity_relevance_norm",
+            "news_topic_earnings_norm",
+            "news_topic_guidance_norm",
+            "news_topic_mna_norm",
+            "news_topic_regulatory_norm",
+            "news_novelty_norm",
+            "news_duplicate_cluster_norm",
+            "news_premarket_norm",
+            "news_intraday_norm",
+            "news_after_hours_norm",
+            "calendar_event_proximity_norm",
+            "calendar_high_impact_24h_norm",
+            "calendar_macro_event_norm",
+            "calendar_macro_surprise_norm",
+            "calendar_macro_abs_surprise_norm",
+            "calendar_macro_revision_norm",
+            "calendar_fomc_event_norm",
+            "calendar_cpi_event_norm",
+            "calendar_labor_event_norm",
+            "calendar_treasury_auction_norm",
+            "ctx_VIX_X_pct_from_close",
+            "ctx_UUP_pct_from_close",
+            "breadth_advance_decline_norm",
+            "breadth_risk_off_norm",
+            "options_iv_atm_norm",
+            "options_iv_skew_norm",
+            "options_vol_expectation_norm",
+            "options_unusual_flow_norm",
+            "data_quality_quote_agreement_norm",
+            "data_quality_quote_deviation_norm",
+            "data_quality_stale_streak_norm",
+            "data_quality_market_data_latency_norm",
+            "market_micro_opening_auction_norm",
+            "market_micro_closing_auction_norm",
+            "market_micro_relative_volume_norm",
+            "market_micro_order_flow_imbalance_norm",
+            "market_micro_options_flow_norm",
+            "market_micro_short_pressure_norm",
+            "market_micro_credit_flow_norm",
+            "market_micro_block_trade_norm",
+            "options_specialist_vote",
+            "futures_specialist_vote",
+            "behavior_prior",
+            "active_sub_bots",
+            "active_futures_sub_bots",
+            "ret_3",
+            "pct_from_close_std_6",
+            "news_sentiment_ema_4",
+            "behavior_prior_ema_4",
+            "role_shock",
+            "role_bond",
+            "role_dividend",
+        ],
+        runtime_feature_builder=_runtime_feature_vector,
+        runtime_label_builder=_runtime_shock_label,
+        mode_allowlist=_NEWS_RUNTIME_MODES,
+        symbol_allowlist=_NEWS_RUNTIME_SYMBOLS,
+        sample_filter=_runtime_sample_filter,
+        confidence_builder=_runtime_confidence,
+        min_confidence=0.36,
+        sample_stride=2,
+        lookback_days=45,
+        window=18,
+        horizon=6,
+        min_samples=160,
+        min_sequences=6,
+        min_positive_samples=24,
+        min_negative_samples=24,
+        acted_prob_threshold=0.64,
+        fallback_trainer=_train_synthetic,
+        allow_fallback_on_insufficient_data=False,
+        max_best_val_loss=0.6929,
+        max_final_val_loss=0.7000,
+        min_long_precision=0.05,
+        min_short_precision=0.05,
+        require_both_sides_precision=True,
+        min_acted_accuracy=0.60,
+        min_long_acted_count=3,
+        min_short_acted_count=3,
+        min_accuracy_lift_over_majority=0.03,
+        min_precision_balance_score=0.25,
+    )
 
 if __name__ == "__main__":
-    trained_model = train_brain()
+    train_brain()

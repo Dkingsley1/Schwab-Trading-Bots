@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -39,6 +40,12 @@ def _safe_token(raw: str) -> str:
     return value or "default"
 
 
+def _day_from_path(path: str) -> str:
+    name = Path(path).name
+    match = re.search(r"(?<!\d)(20\d{6})(?!\d)", name)
+    return match.group(1) if match else ""
+
+
 def utc_day(now: Optional[datetime] = None) -> str:
     dt = now.astimezone(timezone.utc) if now else datetime.now(timezone.utc)
     return dt.strftime("%Y%m%d")
@@ -50,7 +57,14 @@ def build_shadow_context(*, profile: str = "", domain: str = "", broker: str = "
         prof = ""
 
     dom_raw = (domain or os.getenv("SHADOW_DOMAIN", "")).strip().lower()
-    brk = _safe_token((broker or os.getenv("DATA_BROKER", "schwab")).strip().lower() or "schwab")
+    brk = _safe_token(
+        (
+            broker
+            or os.getenv("SHADOW_BROKER", "")
+            or os.getenv("DATA_BROKER", "schwab")
+        ).strip().lower()
+        or "schwab"
+    )
     if dom_raw not in {"equities", "crypto"}:
         dom_raw = "crypto" if brk == "coinbase" else "equities"
     dom = _safe_token(dom_raw)
@@ -173,7 +187,7 @@ def default_channel_mirror_paths(path: str, *, project_root: str | Path, ctx: Op
         return []
 
     context = ctx or build_shadow_context()
-    mirror = channel_event_path(project_root, channel, context)
+    mirror = channel_event_path(project_root, channel, context, day=_day_from_path(path))
     if os.path.abspath(mirror) == os.path.abspath(path):
         return []
     return [mirror]

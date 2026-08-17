@@ -1,4 +1,7 @@
-from core.live_execution_controls import LiveExecutionGuard, LiveRiskConfig
+import json
+from pathlib import Path
+
+from core.live_execution_controls import LiveExecutionGuard, LiveRiskConfig, production_order_firewall_check
 
 
 def _cfg(**overrides):
@@ -14,10 +17,179 @@ def _cfg(**overrides):
         trade_min_interval_global_seconds=1.0,
         max_slippage_bps=35.0,
         max_fill_deviation_bps=45.0,
+        min_execution_realism_score=25.0,
+        min_effective_fill_ratio=0.50,
+        max_reject_probability=0.80,
+        max_cancel_probability=0.85,
+        max_stale_quote_probability=0.80,
     )
     for key, value in overrides.items():
         setattr(base, key, value)
     return base
+
+
+def _write_firewall_fixture(project_root: Path, *, excellence_ready: bool, symbols: list[str]) -> dict:
+    config = {
+        "live_execution_risk_firewall": {
+            "allow_order_execution_env": "ALLOW_ORDER_EXECUTION",
+            "market_data_only_env": "MARKET_DATA_ONLY",
+            "market_data_only_default": True,
+            "halt_flags": [],
+            "required_safety_flags": [],
+            "max_order_quantity": 5,
+            "max_single_order_notional": 100,
+            "allowed_asset_types": ["EQUITY"],
+            "allowed_instructions": ["BUY", "SELL"],
+            "canary_allowlist_path": "governance/runtime/live_canary_allowlist.json",
+            "production_excellence_artifact": "governance/health/production_excellence_control_latest.json",
+            "require_production_excellence_for_live_submit": True,
+        }
+    }
+    config_path = project_root / "config" / "production_readiness_control_v1.json"
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    config_path.write_text(json.dumps(config), encoding="utf-8")
+    allowlist = project_root / "governance" / "runtime" / "live_canary_allowlist.json"
+    allowlist.parent.mkdir(parents=True, exist_ok=True)
+    allowlist.write_text(json.dumps({"symbols": symbols}), encoding="utf-8")
+    excellence = project_root / "governance" / "health" / "production_excellence_control_latest.json"
+    excellence.parent.mkdir(parents=True, exist_ok=True)
+    excellence.write_text(
+        json.dumps(
+            {
+                "ten_out_of_ten_ready": excellence_ready,
+                "live_money_consideration_ready": excellence_ready,
+            }
+        ),
+        encoding="utf-8",
+    )
+    return {
+        "orderType": "LIMIT",
+        "price": 10.0,
+        "orderLegCollection": [
+            {
+                "instruction": "BUY",
+                "instrument": {"symbol": "AAPL", "assetType": "EQUITY"},
+            }
+        ],
+    }
+
+
+def test_production_firewall_requires_ten_pillar_evidence(tmp_path: Path) -> None:
+    order_spec = _write_firewall_fixture(tmp_path, excellence_ready=False, symbols=["AAPL"])
+
+    decision = production_order_firewall_check(
+        project_root=tmp_path,
+        symbol="AAPL",
+        action="BUY",
+        quantity=1.0,
+        order_spec=order_spec,
+        env={"ALLOW_ORDER_EXECUTION": "1", "MARKET_DATA_ONLY": "0"},
+    )
+
+    assert decision.ok is False
+    assert decision.reason == "production_excellence_not_ready"
+    assert "production_excellence_not_ready" in decision.details["blockers"]
+
+
+def test_production_firewall_allows_only_qualified_canary_entries(tmp_path: Path) -> None:
+    order_spec = _write_firewall_fixture(tmp_path, excellence_ready=True, symbols=["AAPL"])
+
+    allowed = production_order_firewall_check(
+        project_root=tmp_path,
+        symbol="AAPL",
+        action="BUY",
+        quantity=1.0,
+        order_spec=order_spec,
+        env={"ALLOW_ORDER_EXECUTION": "1", "MARKET_DATA_ONLY": "0"},
+    )
+    blocked_spec = json.loads(json.dumps(order_spec))
+    blocked_spec["orderLegCollection"][0]["instrument"]["symbol"] = "MSFT"
+    blocked = production_order_firewall_check(
+        project_root=tmp_path,
+        symbol="MSFT",
+        action="BUY",
+        quantity=1.0,
+        order_spec=blocked_spec,
+        env={"ALLOW_ORDER_EXECUTION": "1", "MARKET_DATA_ONLY": "0"},
+    )
+
+    assert allowed.ok is True
+    assert blocked.ok is False
+    assert blocked.reason == "symbol_not_in_live_canary_allowlist"
+
+
+def test_production_firewall_rejects_order_leg_symbol_mismatch(tmp_path: Path) -> None:
+    order_spec = _write_firewall_fixture(tmp_path, excellence_ready=True, symbols=["AAPL"])
+    order_spec["orderLegCollection"][0]["instrument"]["symbol"] = "MSFT"
+
+    decision = production_order_firewall_check(
+        project_root=tmp_path,
+        symbol="AAPL",
+        action="BUY",
+        quantity=1.0,
+        order_spec=order_spec,
+        env={"ALLOW_ORDER_EXECUTION": "1", "MARKET_DATA_ONLY": "0"},
+    )
+
+    assert decision.ok is False
+    assert "order_symbol_mismatch" in decision.details["blockers"]
+
+
+def test_production_firewall_requires_reference_price_for_market_entry(tmp_path: Path) -> None:
+    order_spec = _write_firewall_fixture(tmp_path, excellence_ready=True, symbols=["AAPL"])
+    order_spec.pop("price")
+
+    decision = production_order_firewall_check(
+        project_root=tmp_path,
+        symbol="AAPL",
+        action="BUY",
+        quantity=1.0,
+        order_spec=order_spec,
+        env={"ALLOW_ORDER_EXECUTION": "1", "MARKET_DATA_ONLY": "0"},
+    )
+
+    assert decision.ok is False
+    assert "reference_price_required_for_notional_cap" in decision.details["blockers"]
+
+
+def test_production_firewall_requires_transition_integrity_when_enabled(tmp_path: Path) -> None:
+    order_spec = _write_firewall_fixture(tmp_path, excellence_ready=True, symbols=["AAPL"])
+    config_path = tmp_path / "config" / "production_readiness_control_v1.json"
+    config = json.loads(config_path.read_text(encoding="utf-8"))
+    policy = config["live_execution_risk_firewall"]
+    policy["require_live_transition_integrity_for_live_submit"] = True
+    policy["live_transition_integrity_artifact"] = "governance/health/live_transition.json"
+    config_path.write_text(json.dumps(config), encoding="utf-8")
+    transition_path = tmp_path / "governance" / "health" / "live_transition.json"
+    transition_path.write_text(
+        json.dumps({"control_grade": "A+", "ready_for_live_transition": False}),
+        encoding="utf-8",
+    )
+
+    blocked = production_order_firewall_check(
+        project_root=tmp_path,
+        symbol="AAPL",
+        action="BUY",
+        quantity=1.0,
+        order_spec=order_spec,
+        env={"ALLOW_ORDER_EXECUTION": "1", "MARKET_DATA_ONLY": "0"},
+    )
+    transition_path.write_text(
+        json.dumps({"control_grade": "A+", "ready_for_live_transition": True}),
+        encoding="utf-8",
+    )
+    allowed = production_order_firewall_check(
+        project_root=tmp_path,
+        symbol="AAPL",
+        action="BUY",
+        quantity=1.0,
+        order_spec=order_spec,
+        env={"ALLOW_ORDER_EXECUTION": "1", "MARKET_DATA_ONLY": "0"},
+    )
+
+    assert blocked.ok is False
+    assert "live_transition_integrity_not_ready" in blocked.details["blockers"]
+    assert allowed.ok is True
 
 
 def test_position_limit_blocks_projected_qty():
@@ -150,6 +322,7 @@ def test_slippage_limit_blocks_adverse_buy_price():
 
 def test_slippage_limit_allows_favorable_sell_price():
     guard = LiveExecutionGuard(_cfg(max_slippage_bps=20.0, trade_min_interval_seconds=0.0, trade_min_interval_global_seconds=0.0))
+    guard.set_local_position(symbol="AAPL", quantity=1.0, avg_price=99.0)
 
     decision = guard.pre_trade_check(
         symbol="AAPL",
@@ -193,6 +366,42 @@ def test_fill_quality_can_fail_deviation_threshold():
     assert quality["ok"] is False
     assert quality["reason"] == "fill_deviation_limit"
     assert float(quality["fill_deviation_bps"]) > 5.0
+
+
+def test_live_pre_trade_realism_guard_blocks_stale_option_quote():
+    guard = LiveExecutionGuard(
+        _cfg(
+            trade_min_interval_seconds=0.0,
+            trade_min_interval_global_seconds=0.0,
+            allow_new_short_positions=True,
+        )
+    )
+
+    decision = guard.pre_trade_check(
+        symbol="NVDA_covered_call",
+        action="SELL_TO_OPEN",
+        quantity=10.0,
+        reference_price=4.0,
+        now_ts=1010.0,
+        enforce_execution_realism=True,
+        spread_bps=60.0,
+        volatility_1m=0.02,
+        latency_ms=500.0,
+        bid_size=5.0,
+        ask_size=5.0,
+        broker="schwab",
+        market_kind="options",
+        session="regular",
+        order_type="limit",
+        asset_class="options",
+        sleeve="covered_call",
+        quote_age_ms=6000.0,
+        open_interest=0.0,
+    )
+
+    assert decision.ok is False
+    assert decision.gate == "execution_realism_guard"
+    assert "simulated_stale_quote_rejected" in decision.details["reasons"]
 
 
 def test_reconcile_order_lifecycle_detects_mismatch_and_position_break():

@@ -1,11 +1,17 @@
 import argparse
 import json
 import os
+import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, List
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from scripts.ops.long_runtime_common import write_payload
+
 DEFAULT_MODE_FILE = PROJECT_ROOT / "governance" / "health" / "shadow_watchdog_halt_recovery_latest.json"
 
 
@@ -72,6 +78,9 @@ def _as_bool(value: Any, default: bool = False) -> bool:
 def _resolve_execution_mode(mode_payload: Dict[str, Any], reconcile_events: int) -> Dict[str, Any]:
     env_market_data_only = os.getenv("MARKET_DATA_ONLY")
     env_allow_order_execution = os.getenv("ALLOW_ORDER_EXECUTION")
+    mode_has_authority = "market_data_only" in mode_payload or "allow_order_execution" in mode_payload
+    env_has_authority = env_market_data_only is not None or env_allow_order_execution is not None
+    control_authority_present = bool(env_has_authority or mode_has_authority)
 
     market_data_only = _as_bool(
         env_market_data_only if env_market_data_only is not None else mode_payload.get("market_data_only"),
@@ -83,7 +92,8 @@ def _resolve_execution_mode(mode_payload: Dict[str, Any], reconcile_events: int)
     )
 
     execution_expected = bool(allow_order_execution and (not market_data_only))
-    inferred_from_events = int(reconcile_events) > 0
+    events_observed = int(reconcile_events) > 0
+    inferred_from_events = bool(events_observed and not control_authority_present)
     if (not execution_expected) and inferred_from_events:
         execution_expected = True
 
@@ -92,6 +102,9 @@ def _resolve_execution_mode(mode_payload: Dict[str, Any], reconcile_events: int)
         "allow_order_execution": bool(allow_order_execution),
         "execution_expected": bool(execution_expected),
         "inferred_execution_from_events": bool(inferred_from_events),
+        "reconciliation_events_observed": bool(events_observed),
+        "control_authority_present": bool(control_authority_present),
+        "execution_authority_source": "environment" if env_has_authority else "mode_file" if mode_has_authority else "event_fallback",
     }
 
 
@@ -192,9 +205,7 @@ def main() -> int:
         "failed_checks": failed_checks,
     }
 
-    out_path = Path(args.out_file)
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    out_path.write_text(json.dumps(out, ensure_ascii=True, indent=2), encoding="utf-8")
+    write_payload(Path(args.out_file), out)
 
     if failed_checks:
         alert = {
@@ -207,9 +218,7 @@ def main() -> int:
             "mode": mode,
         }
         _append_jsonl(Path(args.alert_file), alert)
-        latest_path = Path(args.latest_alert_file)
-        latest_path.parent.mkdir(parents=True, exist_ok=True)
-        latest_path.write_text(json.dumps(alert, ensure_ascii=True, indent=2), encoding="utf-8")
+        write_payload(Path(args.latest_alert_file), alert)
 
     if args.json:
         print(json.dumps(out, ensure_ascii=True))

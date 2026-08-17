@@ -1,0 +1,470 @@
+import json
+import math
+import os
+from datetime import datetime, timezone
+from pathlib import Path
+
+from scripts.collect_fx_market_context import (
+    _fx_carry_proxy,
+    _fx_dxy_yield_confirmation,
+    _fx_session_state_norms,
+    _alpha_vantage_intraday,
+    _canonical_pair_reconciliation,
+    _configured_twelve_data_pairs,
+    _parse_fed_h10_current,
+    _latest_currency_reference_history,
+    _latest_pair_history,
+    _normalize_pair_symbol,
+    _pair_levels,
+    _parse_frankfurter_latest,
+    _pressure_min_interval_active,
+    _pressure_skip_health,
+    _proxy_agreement,
+    _twelve_data_time_series,
+)
+
+
+def _write_fx_payload(path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(
+            {
+                "timestamp_utc": "2026-08-10T00:00:00+00:00",
+                "collection_contract": {"source_contracts": {"ecb": {"freshness_norm": 1.0}}},
+                "derived": {"pair_values": {"EURUSD": 1.1}},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+
+def test_pressure_interval_requires_a_real_payload_and_ages_from_that_payload(tmp_path: Path) -> None:
+    now = datetime.now(timezone.utc)
+    payload_path = tmp_path / "fx_market_context_latest.json"
+
+    assert _pressure_min_interval_active(payload_path, min_interval=600, now=now) is False
+    payload_path.write_text("{}", encoding="utf-8")
+    assert _pressure_min_interval_active(payload_path, min_interval=600, now=now) is False
+
+    _write_fx_payload(payload_path)
+    assert _pressure_min_interval_active(payload_path, min_interval=600, now=now) is True
+    old_epoch = now.timestamp() - 601
+    os.utime(payload_path, (old_epoch, old_epoch))
+    assert _pressure_min_interval_active(payload_path, min_interval=600, now=now) is False
+
+
+def test_pressure_skip_cannot_claim_health_when_payload_is_missing(tmp_path: Path) -> None:
+    health_path = tmp_path / "health.json"
+    health_path.write_text(json.dumps({"ok": True, "sources": {"ecb": {"ok": True}}}), encoding="utf-8")
+
+    health = _pressure_skip_health(
+        reason="pressure_single_flight_lock_active",
+        contract={"active": True},
+        external_path=tmp_path / "missing.json",
+        health_path=health_path,
+        now=datetime.now(timezone.utc),
+    )
+
+    assert health["ok"] is False
+    assert health["previous_payload_age_seconds"] > 1e100
+
+
+def test_pressure_skip_preserves_complete_last_good_health_contract(tmp_path: Path) -> None:
+    external_path = tmp_path / "fx_market_context_latest.json"
+    health_path = tmp_path / "health.json"
+    _write_fx_payload(external_path)
+    payload = json.loads(external_path.read_text(encoding="utf-8"))
+    payload["sources"] = {"ecb": {"ok": True}, "market_proxy": {"ok": True}}
+    payload["derived"].update(
+        {
+            "latest_market": {"UUP": {"last_price": 28.0}},
+            "canonical_reconciliation": {"EURUSD": {"canonical_value": 1.1}},
+            "global_features": {"fx_proxy_agreement_norm": 0.75},
+        }
+    )
+    external_path.write_text(json.dumps(payload), encoding="utf-8")
+    health_path.write_text(
+        json.dumps({"ok": True, "skipped": True, "sources": payload["sources"]}),
+        encoding="utf-8",
+    )
+
+    health = _pressure_skip_health(
+        reason="pressure_min_interval_active",
+        contract={"active": True},
+        external_path=external_path,
+        health_path=health_path,
+        now=datetime.now(timezone.utc),
+    )
+
+    assert health["ok"] is True
+    assert health["serving_last_good_snapshot"] is True
+    assert health["source_count"] == 2
+    assert health["ok_source_count"] == 2
+    assert health["official_pairs"] == 1
+    assert health["proxy_symbols_observed"] == 1
+    assert health["proxy_agreement_norm"] == 0.75
+    assert health["canonical_pairs"] == 1
+
+
+def test_pair_level_derivation():
+    rates = {
+        "USD": 1.10,
+        "JPY": 165.0,
+        "GBP": 0.85,
+        "CHF": 0.96,
+        "CAD": 1.48,
+        "AUD": 1.68,
+    }
+    pairs = _pair_levels(rates)
+    assert math.isclose(pairs["EURUSD"], 1.10, rel_tol=1e-9)
+    assert math.isclose(pairs["USDJPY"], 150.0, rel_tol=1e-9)
+    assert math.isclose(pairs["GBPUSD"], 1.10 / 0.85, rel_tol=1e-9)
+    assert math.isclose(pairs["USDCHF"], 0.96 / 1.10, rel_tol=1e-9)
+
+
+def test_frankfurter_latest_derives_supported_pairs():
+    pairs = _parse_frankfurter_latest(
+        {
+            "base": "EUR",
+            "rates": {
+                "USD": 1.10,
+                "JPY": 165.0,
+                "GBP": 0.85,
+                "CHF": 0.96,
+                "CAD": 1.48,
+                "AUD": 1.68,
+            },
+        }
+    )
+
+    assert math.isclose(pairs["EURUSD"], 1.10, rel_tol=1e-9)
+    assert math.isclose(pairs["USDJPY"], 150.0, rel_tol=1e-9)
+    assert math.isclose(pairs["AUDUSD"], 1.10 / 1.68, rel_tol=1e-9)
+
+
+def test_pair_history_and_proxy_agreement():
+    rows = [
+        {"date": "2026-03-20", "rates": {"USD": 1.08, "JPY": 162.0, "GBP": 0.84, "CAD": 1.46, "AUD": 1.66}},
+        {"date": "2026-03-21", "rates": {"USD": 1.10, "JPY": 170.0, "GBP": 0.85, "CAD": 1.48, "AUD": 1.68}},
+    ]
+    latest, previous = _latest_pair_history(rows)
+    assert latest["EURUSD"] > previous["EURUSD"]
+    assert latest["USDJPY"] > previous["USDJPY"]
+
+    pair_changes = {
+        "EURUSD": 0.01,
+        "USDJPY": 0.02,
+        "GBPUSD": 0.01,
+        "AUDUSD": 0.01,
+        "USDCAD": 0.01,
+    }
+    latest_market = {
+        "FXE": {"pct_from_close": 0.02},
+        "FXY": {"pct_from_close": -0.01},
+        "FXB": {"pct_from_close": 0.01},
+        "FXA": {"pct_from_close": 0.02},
+        "FXC": {"pct_from_close": -0.01},
+        "UUP": {"pct_from_close": 0.01},
+    }
+    agreement, checks = _proxy_agreement(pair_changes, latest_market, usd_strength_raw=0.02)
+    assert agreement > 0.8
+    assert checks["EURUSD_FXE"] is True
+    assert checks["USDJPY_FXY"] is True
+    assert checks["USD_UUP"] is True
+
+
+def test_currency_reference_history_covers_full_ecb_set_and_excludes_future_rows() -> None:
+    rows = [
+        {"date": "2026-08-13", "rates": {"USD": 1.10, "BRL": 6.0, "PLN": 4.2}},
+        {"date": "2026-08-14", "rates": {"USD": 1.11, "BRL": 6.12, "PLN": 4.16}},
+        {"date": "2026-08-16", "rates": {"USD": 9.99, "BRL": 99.0, "PLN": 99.0}},
+    ]
+
+    reference, changes, future = _latest_currency_reference_history(rows, as_of_date="2026-08-15")
+
+    assert reference["EUR"]["units_per_eur"] == 1.0
+    assert reference["BRL"]["date"] == "2026-08-14"
+    assert reference["BRL"]["units_per_eur"] == 6.12
+    assert changes["BRL"] > 0.0
+    assert changes["PLN"] < 0.0
+    assert future == ["2026-08-16"]
+
+
+def test_fx_session_state_norms_and_confirmation_helpers() -> None:
+    london = _fx_session_state_norms(datetime(2026, 4, 1, 14, 0, tzinfo=timezone.utc))
+    assert london["fx_session_london_norm"] == 1.0
+    assert london["fx_session_ny_norm"] == 1.0
+    assert london["fx_rollover_risk_norm"] == 0.0
+
+    rollover = _fx_session_state_norms(datetime(2026, 4, 1, 21, 0, tzinfo=timezone.utc))
+    assert rollover["fx_rollover_risk_norm"] == 1.0
+
+    confirmation = _fx_dxy_yield_confirmation(
+        {
+            "UUP": {"pct_from_close": 0.007},
+            "TLT": {"pct_from_close": -0.006},
+        },
+        usd_strength_raw=0.01,
+        proxy_agreement_raw=0.8,
+    )
+    assert confirmation > 0.7
+
+    carry = _fx_carry_proxy(
+        {
+            "USDJPY": 0.01,
+            "USDCHF": 0.008,
+            "USDCAD": 0.006,
+            "EURUSD": -0.005,
+            "GBPUSD": -0.004,
+            "AUDUSD": -0.003,
+        }
+    )
+    assert carry > 0.5
+
+
+def test_alpha_vantage_intraday_parsing(monkeypatch):
+    payload = {
+        "Meta Data": {"1. Information": "FX Intraday"},
+        "Time Series FX (5min)": {
+            "2026-03-23 15:55:00": {
+                "1. open": "1.0820",
+                "2. high": "1.0822",
+                "3. low": "1.0818",
+                "4. close": "1.0821",
+            },
+            "2026-03-23 16:00:00": {
+                "1. open": "1.0821",
+                "2. high": "1.0826",
+                "3. low": "1.0820",
+                "4. close": "1.0825",
+            },
+        },
+    }
+
+    monkeypatch.setattr(
+        "scripts.collect_fx_market_context._http_text",
+        lambda url, timeout=20.0: json.dumps(payload),
+    )
+
+    result = _alpha_vantage_intraday(
+        api_key="demo",
+        from_symbol="EUR",
+        to_symbol="USD",
+        interval="5min",
+        timeout=5.0,
+    )
+    assert result["ok"] is True
+    assert result["rows"] == 2
+    assert math.isclose(result["latest_close"], 1.0825, rel_tol=1e-9)
+    assert math.isclose(result["previous_close"], 1.0821, rel_tol=1e-9)
+
+
+def test_twelve_data_time_series_parsing(monkeypatch):
+    payload = {
+        "meta": {"symbol": "EUR/USD", "interval": "5min"},
+        "values": [
+            {"datetime": "2026-03-23 21:50:00", "close": "1.0812", "high": "1.0814", "low": "1.0811"},
+            {"datetime": "2026-03-23 21:55:00", "close": "1.0816", "high": "1.0818", "low": "1.0814"},
+            {"datetime": "2026-03-23 22:00:00", "close": "1.0820", "high": "1.0822", "low": "1.0817"},
+        ],
+    }
+
+    monkeypatch.setattr(
+        "scripts.collect_fx_market_context._http_text",
+        lambda url, timeout=20.0: json.dumps(payload),
+    )
+    monkeypatch.setattr(
+        "scripts.collect_fx_market_context.twelve_data_cooldown_status",
+        lambda project_root: {"active": False},
+    )
+
+    result = _twelve_data_time_series(
+        api_key="demo",
+        pair_symbol="EURUSD",
+        interval="5min",
+        outputsize=12,
+        timeout=5.0,
+    )
+    assert result["ok"] is True
+    assert result["pair_symbol"] == "EURUSD"
+    assert result["rows"] == 3
+    assert math.isclose(result["latest_close"], 1.0820, rel_tol=1e-9)
+    assert math.isclose(result["session_close"], 1.0812, rel_tol=1e-9)
+
+
+def test_twelve_data_time_series_skips_fetch_during_provider_cooldown(monkeypatch):
+    monkeypatch.setattr(
+        "scripts.collect_fx_market_context.twelve_data_cooldown_status",
+        lambda project_root: {"active": True, "kind": "daily_quota", "remaining_seconds": 321.0},
+    )
+    monkeypatch.setattr(
+        "scripts.collect_fx_market_context._http_text",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("should not fetch during cooldown")),
+    )
+
+    result = _twelve_data_time_series(
+        api_key="demo",
+        pair_symbol="EURUSD",
+        interval="5min",
+        outputsize=12,
+        timeout=5.0,
+    )
+
+    assert result["ok"] is False
+    assert result["error"].startswith("provider_cooldown_active:")
+
+
+def test_twelve_data_time_series_marks_daily_quota_cooldown(monkeypatch):
+    payload = {
+        "status": "error",
+        "code": "429",
+        "message": "You have run out of API credits for the day.",
+    }
+
+    monkeypatch.setattr(
+        "scripts.collect_fx_market_context.twelve_data_cooldown_status",
+        lambda project_root: {"active": False},
+    )
+    monkeypatch.setattr(
+        "scripts.collect_fx_market_context._http_text",
+        lambda url, timeout=20.0: json.dumps(payload),
+    )
+    monkeypatch.setattr(
+        "scripts.collect_fx_market_context.mark_twelve_data_cooldown",
+        lambda **kwargs: {"active": True, "kind": "daily_quota", "remaining_seconds": 123.0},
+    )
+
+    result = _twelve_data_time_series(
+        api_key="demo",
+        pair_symbol="EURUSD",
+        interval="5min",
+        outputsize=12,
+        timeout=5.0,
+    )
+
+    assert result["ok"] is False
+    assert result["cooldown"]["active"] is True
+    assert result["cooldown"]["kind"] == "daily_quota"
+
+
+def test_configured_twelve_data_pairs_prefers_context_pairs_and_respects_credit_budget(monkeypatch):
+    monkeypatch.setenv("FX_REALTIME_SYMBOLS", "EURUSD,USDJPY,GBPUSD,USDCHF,USDCAD,AUDUSD")
+    monkeypatch.setenv("FX_REALTIME_CONTEXT_SYMBOLS", "EURUSD,USDJPY,GBPUSD")
+    monkeypatch.setenv("FX_TWELVE_DATA_MAX_CREDITS_PER_MINUTE", "4")
+    monkeypatch.setenv("FX_TWELVE_DATA_CREDIT_RESERVE", "2")
+    monkeypatch.setenv("FX_TWELVE_DATA_MAX_PAIRS_PER_RUN", "6")
+
+    pairs, budget = _configured_twelve_data_pairs()
+
+    assert pairs == ["EURUSD", "USDJPY"]
+    assert budget["requested_pairs"] == ["EURUSD", "USDJPY", "GBPUSD"]
+    assert budget["deferred_pairs"] == ["GBPUSD"]
+    assert budget["credit_budget_per_run"] == 2
+
+
+def test_normalize_pair_symbol():
+    assert _normalize_pair_symbol("EUR/USD") == "EURUSD"
+    assert _normalize_pair_symbol("usd-jpy") == "USDJPY"
+    assert _normalize_pair_symbol("SPY") == ""
+
+
+def test_canonical_pair_reconciliation_prefers_closest_current_provider():
+    payload = _canonical_pair_reconciliation(
+        ecb_pairs={"EURUSD": 1.0819},
+        fed_pairs={"EURUSD": 1.0821},
+        twelve_data_intraday={"EURUSD": {"ok": True, "latest_close": 1.0820, "latest_ts": "2026-03-23 22:00:00"}},
+        alpha_vantage_intraday={"ok": True, "latest_close": 1.0823, "latest_ts": "2026-03-23 21:55:00"},
+    )
+
+    row = payload["EURUSD"]
+    assert row["canonical_source"] == "twelve_data"
+    assert row["provider_count"] == 4
+    assert row["confidence_norm"] > 0.5
+    assert row["divergence_ratio"] < 0.001
+
+
+def test_canonical_pair_reconciliation_marks_intraday_official_basis_as_watch():
+    payload = _canonical_pair_reconciliation(
+        ecb_pairs={"USDJPY": 156.562981},
+        fed_pairs={"USDJPY": 159.35},
+        twelve_data_intraday={
+            "USDJPY": {
+                "ok": True,
+                "latest_close": 157.07807,
+                "latest_ts": datetime.now(timezone.utc).isoformat(),
+            }
+        },
+        alpha_vantage_intraday={},
+    )
+
+    row = payload["USDJPY"]
+    assert row["divergence_ratio"] >= 0.01
+    assert row["divergence_severity"] == "basis_watch"
+    assert row["divergence_reason"] == "intraday_official_basis_difference"
+
+
+def test_fed_h10_current_parsing():
+    html = """
+    Release Date: March 23, 2026
+    *AUSTRALIA  DOLLAR  0.7055 0.7100 0.7078 0.7036 0.7033
+    CANADA  DOLLAR  1.3683 1.3706 1.3697 1.3721 1.3731
+    *EMU MEMBERS  EURO  1.1487 1.1525 1.1513 1.1515 1.1543
+    JAPAN  YEN  159.3000 159.0300 159.4800 158.1900 159.2600
+    SWITZERLAND  FRANC  0.7887 0.7857 0.7892 0.7924 0.7890
+    *UNITED KINGDOM  POUND  1.3302 1.3345 1.3323 1.3361 1.3303
+    1) BROAD  JAN06=100 120.0970 119.8328 119.9276 120.1802 120.2757
+    """
+    parsed = _parse_fed_h10_current(html)
+    assert parsed["ok"] is True
+    assert parsed["pair_count"] >= 6
+    assert math.isclose(parsed["pair_values"]["EURUSD"], 1.1543, rel_tol=1e-9)
+    assert math.isclose(parsed["pair_values"]["USDJPY"], 159.2600, rel_tol=1e-9)
+    assert math.isclose(parsed["pair_values"]["GBPUSD"], 1.3303, rel_tol=1e-9)
+    assert math.isclose(parsed["broad_index"], 120.2757, rel_tol=1e-9)
+
+
+def test_fed_h10_current_parsing_split_lines():
+    html = """
+    <tr>
+    <th>*EMU MEMBERS</th>
+    <td>EURO</td>
+    <td>1.1487</td>
+    <td>1.1525</td>
+    <td>1.1513</td>
+    <td>1.1515</td>
+    <td>1.1543</td>
+    </tr>
+    <tr>
+    <th>JAPAN</th>
+    <td>YEN</td>
+    <td>159.3000</td>
+    <td>159.0300</td>
+    <td>159.4800</td>
+    <td>158.1900</td>
+    <td>159.2600</td>
+    </tr>
+    <tr>
+    <th>*UNITED KINGDOM</th>
+    <td>POUND</td>
+    <td>1.3302</td>
+    <td>1.3345</td>
+    <td>1.3323</td>
+    <td>1.3361</td>
+    <td>1.3303</td>
+    </tr>
+    <tr>
+    <th>1) BROAD</th>
+    <td>JAN06=100</td>
+    <td>120.0970</td>
+    <td>119.8328</td>
+    <td>119.9276</td>
+    <td>120.1802</td>
+    <td>120.2757</td>
+    </tr>
+    """
+    parsed = _parse_fed_h10_current(html)
+    assert parsed["ok"] is True
+    assert math.isclose(parsed["pair_values"]["EURUSD"], 1.1543, rel_tol=1e-9)
+    assert math.isclose(parsed["pair_values"]["USDJPY"], 159.2600, rel_tol=1e-9)
+    assert math.isclose(parsed["pair_values"]["GBPUSD"], 1.3303, rel_tol=1e-9)
+    assert math.isclose(parsed["broad_index"], 120.2757, rel_tol=1e-9)

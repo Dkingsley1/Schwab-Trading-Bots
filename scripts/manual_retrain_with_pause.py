@@ -2,12 +2,18 @@ import argparse
 import os
 import shlex
 import subprocess
+import sys
 import time
 from pathlib import Path
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-VENV_PY = PROJECT_ROOT / ".venv312" / "bin" / "python"
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from core.runtime_python import resolve_training_python
+
+VENV_PY = resolve_training_python(PROJECT_ROOT)
 WEEKLY_RETRAIN = PROJECT_ROOT / "scripts" / "weekly_retrain.py"
 PARALLEL_SHADOWS = PROJECT_ROOT / "scripts" / "run_parallel_shadows.py"
 
@@ -85,12 +91,16 @@ def _run_retrain(dry_run: bool, continue_on_error: bool) -> int:
     cmd = [str(VENV_PY), str(WEEKLY_RETRAIN)]
     if continue_on_error:
         cmd.append("--continue-on-error")
+    env = dict(os.environ)
+    env["RETRAIN_TRIGGER_SOURCE"] = "manual_retrain_with_pause"
+    env["RETRAIN_TRIGGER_LABEL"] = "manual_retrain_with_pause"
+    env["RETRAIN_TRIGGER_CONTEXT"] = "pause_then_retrain"
 
     print("$ " + " ".join(cmd))
     if dry_run:
         return 0
 
-    proc = subprocess.run(cmd, cwd=str(PROJECT_ROOT))
+    proc = subprocess.run(cmd, cwd=str(PROJECT_ROOT), env=env)
     return int(proc.returncode)
 
 

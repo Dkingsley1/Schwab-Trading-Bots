@@ -1,0 +1,544 @@
+{
+  "generated_at_utc": "2026-08-07T02:21:01.136845+00:00",
+  "bot_summary": {
+    "total_registered": 1781,
+    "active_count": 1780,
+    "active_roles": {
+      "signal_sub_bot": 653,
+      "infrastructure_sub_bot": 936,
+      "options_sub_bot": 154,
+      "futures_sub_bot": 21,
+      "infrastructure_bot": 8,
+      "macro_sub_bot": 7,
+      "crypto_sub_bot": 1
+    },
+    "protected_collection_lane_floors": {},
+    "top_active_bots": [
+      {
+        "bot_id": "brain_refinery_v95_rates_regime_bond_bot",
+        "bot_role": "signal_sub_bot",
+        "test_accuracy": 1.0,
+        "quality_score": 0.22993565356731413,
+        "reason": "unsupported_runtime_inputs"
+      },
+      {
+        "bot_id": "brain_refinery_v99_defensive_dividend_concentration",
+        "bot_role": "options_sub_bot",
+        "test_accuracy": 1.0,
+        "quality_score": 0.923198602994283,
+        "reason": "unsupported_runtime_inputs"
+      },
+      {
+        "bot_id": "brain_refinery_v265_crypto_risk_off_contagion_shock_guard",
+        "bot_role": "signal_sub_bot",
+        "test_accuracy": 0.9767441749572754,
+        "quality_score": 0.9227682815988858,
+        "reason": "graduation_hold:runs<24"
+      },
+      {
+        "bot_id": "brain_refinery_v10_seasonal",
+        "bot_role": "signal_sub_bot",
+        "test_accuracy": 0.9383378028869629,
+        "quality_score": 0.9923673085025116,
+        "reason": "min_active_floor_override_30:supportable_recovery"
+      },
+      {
+        "bot_id": "brain_refinery_v96_credit_spread_rotation_bot",
+        "bot_role": "signal_sub_bot",
+        "test_accuracy": 0.8947368264198303,
+        "quality_score": 0.22869539018472032,
+        "reason": "unsupported_runtime_inputs"
+      }
+    ]
+  },
+  "lane_summary": {
+    "lane_count": 17,
+    "running_count": 2,
+    "lanes": [
+      {
+        "lane": "aggressive_equities_schwab",
+        "loop_state": "paused_runtime_training",
+        "iter": 725,
+        "api_error": 0
+      },
+      {
+        "lane": "bond_equities_schwab",
+        "loop_state": "paused_session_gate",
+        "iter": 2349,
+        "api_error": 0
+      },
+      {
+        "lane": "conservative_equities_schwab",
+        "loop_state": "resume_stagger",
+        "iter": 3322,
+        "api_error": 0
+      },
+      {
+        "lane": "crypto_futures_crypto_coinbase",
+        "loop_state": "running",
+        "iter": 5316,
+        "api_error": 0
+      },
+      {
+        "lane": "default_crypto_coinbase",
+        "loop_state": "running",
+        "iter": 4146,
+        "api_error": 0
+      },
+      {
+        "lane": "dividend_capture_equities_schwab",
+        "loop_state": "paused_session_gate",
+        "iter": 466,
+        "api_error": 0
+      },
+      {
+        "lane": "dividend_equities_schwab",
+        "loop_state": "paused_session_gate",
+        "iter": 2560,
+        "api_error": 0
+      },
+      {
+        "lane": "fx_equities_schwab",
+        "loop_state": "forex_session_context_only",
+        "iter": 211,
+        "api_error": 0
+      },
+      {
+        "lane": "intraday_aggressive_equities_schwab",
+        "loop_state": "split_running",
+        "iter": 2540,
+        "api_error": 0
+      },
+      {
+        "lane": "intraday_aggressive_equities_schwab_core_volatile",
+        "loop_state": "resume_stagger",
+        "iter": 2540,
+        "api_error": 0
+      },
+      {
+        "lane": "intraday_aggressive_equities_schwab_defensive",
+        "loop_state": "resume_stagger",
+        "iter": 2537,
+        "api_error": 0
+      },
+      {
+        "lane": "schwab_futures_equities_schwab",
+        "loop_state": "paused_session_gate",
+        "iter": 2065,
+        "api_error": 0
+      },
+      {
+        "lane": "short_bias_hedge_equities_schwab",
+        "loop_state": "paused_session_gate",
+        "iter": 57,
+        "api_error": 0
+      },
+      {
+        "lane": "stat_arb_market_neutral_equities_schwab",
+        "loop_state": "paused_session_gate",
+        "iter": 55,
+        "api_error": 0
+      },
+      {
+        "lane": "swing_aggressive_equities_schwab",
+        "loop_state": "split_running",
+        "iter": 1154,
+        "api_error": 0
+      },
+      {
+        "lane": "swing_aggressive_equities_schwab_core_volatile",
+        "loop_state": "paused_session_gate",
+        "iter": 1154,
+        "api_error": 0
+      },
+      {
+        "lane": "swing_aggressive_equities_schwab_defensive",
+        "loop_state": "paused_session_gate",
+        "iter": 1135,
+        "api_error": 0
+      }
+    ]
+  },
+  "artifacts": {
+    "crypto_context": {
+      "timestamp_utc": "2026-08-05T18:00:46.413148+00:00",
+      "ok": true,
+      "tracked_symbols": 18,
+      "tracked_assets": 18,
+      "ok_source_count": 16,
+      "source_count": 18,
+      "market_ok_source_count": 9,
+      "market_source_count": 11,
+      "news_ok_source_count": 7,
+      "news_source_count": 7,
+      "news_row_count": 69,
+      "news_symbol_count": 18,
+      "compared_assets": 17,
+      "error_count": 0,
+      "warning_count": 1,
+      "errors": [],
+      "warnings": [
+        "binance:HTTP Error 451: "
+      ],
+      "deadline_exceeded": false,
+      "max_runtime_seconds": 75.0,
+      "elapsed_seconds": 20.202,
+      "sources": {
+        "deribit": {
+          "ok": true,
+          "assets": [
+            "BTC",
+            "ETH",
+            "SOL"
+          ],
+          "errors": [],
+          "asset_count": 3
+        },
+        "kraken": {
+          "ok": true,
+          "pairs": 8,
+          "resolved_assets": 4,
+          "error": null
+        },
+        "hyperliquid": {
+          "ok": true,
+          "matched_assets": 18,
+          "error": null
+        },
+        "coinbase": {
+          "ok": true,
+          "requested_assets": 18,
+          "resolved_assets": 18,
+          "base_url": "https://api.exchange.coinbase.com",
+          "linked_provider": "schwab_crypto_bridge",
+          "error": null,
+          "errors": [],
+          "partial_error_count": 0
+        },
+        "binance": {
+          "ok": false,
+          "requested_assets": 14,
+          "resolved_assets": 0,
+          "url": "https://api.binance.com/api/v3/ticker/24hr",
+          "error": "HTTP Error 451: ",
+          "optional": true
+        },
+        "okx": {
+          "ok": true,
+          "requested_assets": 14,
+          "resolved_assets": 14,
+          "url": "https://www.okx.com/api/v5/market/tickers?instType=SPOT",
+          "error": null,
+          "optional": true
+        },
+        "coinmetrics": {
+          "ok": true,
+          "resolved_assets": 11,
+          "error": null,
+          "errors": [
+            "SOL:HTTP Error 403: Forbidden",
+            "AVAX:HTTP Error 403: Forbidden",
+            "ATOM:HTTP Error 403: Forbidden",
+            "NEAR:HTTP Error 400: Bad Request",
+            "OP:HTTP Error 400: Bad Request",
+            "ARB:HTTP Error 400: Bad Request"
+          ],
+          "partial_error_count": 6
+        },
+        "defillama": {
+          "ok": true,
+          "stablecoins_error": null,
+          "dexs_error": null,
+          "stablecoin_assets": 414,
+          "total24h": 6871166136.720001,
+          "total48hto24h": 6653276027.94
+        },
+        "etherscan": {
+          "ok": true,
+          "error": null,
+          "message": "OK-Missing/Invalid API Key, rate limit of 1/5sec applied",
+          "keyless_rate_limited": true
+        },
+        "coingecko": {
+          "ok": true,
+          "resolved_assets": 8,
+          "error": null
+        },
+        "schwab_crypto": {
+          "ok": false,
+          "state": "disabled_until_official_schwab_crypto_data_is_available",
+          "optional": true,
+          "error": null,
+          "linked_provider": "coinbase"
+        },
+        "coinbase_status": {
+          "ok": true,
+          "rows": 5,
+          "url": "https://status.coinbase.com/history.rss",
+          "error": null
+        },
+        "coinbase_market_notices": {
+          "ok": true,
+          "rows": 12,
+          "url": "https://www.coinbase.com/derivatives/market-notices",
+          "error": null
+        },
+        "coindesk": {
+          "ok": true,
+          "rows": 10,
+          "url": "https://www.coindesk.com/arc/outboundfeeds/rss/",
+          "error": null
+        },
+        "cointelegraph": {
+          "ok": true,
+          "rows": 12,
+          "url": "https://cointelegraph.com/rss",
+          "error": null
+        },
+        "decrypt": {
+          "ok": true,
+          "rows": 9,
+          "url": "https://decrypt.co/feed",
+          "error": null
+        },
+        "the_block": {
+          "ok": true,
+          "rows": 11,
+          "url": "https://www.theblock.co/rss.xml",
+          "error": null
+        },
+        "bitcoin_magazine": {
+          "ok": true,
+          "rows": 10,
+          "url": "https://bitcoinmagazine.com/.rss/full/",
+          "error": null
+        }
+      }
+    },
+    "correlation": {
+      "timestamp_utc": "2026-08-07T02:16:32.272965+00:00",
+      "schema_version": 2,
+      "ok": true,
+      "status": "skipped",
+      "reason": "host_saturation_support_cooldown",
+      "files_scanned": 0,
+      "rows_scanned": 0,
+      "aligned_pairs": 0,
+      "policy": "optional_market_crypto_correlation_yields_to_host_saturation_guard"
+    },
+    "training": {
+      "timestamp_utc": "2026-08-02T06:02:00.548953+00:00",
+      "log_schema_version": 2,
+      "run_id": "",
+      "iter_id": "",
+      "confirmed_training_success": false,
+      "training_completed_ok": true,
+      "promotion_applied": false,
+      "trained_ok_but_not_promotable": true,
+      "promotion_status": "held_out",
+      "data_quality_present": false,
+      "data_quality_ok": true,
+      "reason": "trained_ok_but_not_promotable:skipped_by_flag",
+      "trained_count": 1,
+      "failure_count": 0,
+      "failure_details": [],
+      "skipped_by_memory_count": 0,
+      "master_update_status": "skipped_by_flag",
+      "lineage": {
+        "lineage_schema_version": 1,
+        "stage": "post_master_update",
+        "retrain_profile": "coverage_micro_canary",
+        "timestamp_utc": "2026-08-02T06:01:57.859528+00:00",
+        "target_count": 1,
+        "git_commit": "e4e95c7947cd87e03e43fd28eacd2905e530c249",
+        "weekly_retrain_script": "/Users/dankingsley/PycharmProjects/schwab_trading_bot/scripts/weekly_retrain.py",
+        "weekly_retrain_script_sha256": "582ec1da90f7a8b974b2394041a8b22b283b00b114d55f88d19598cdc2617627",
+        "registry_path": "/Users/dankingsley/PycharmProjects/schwab_trading_bot/master_bot_registry.json",
+        "registry_sha256": "d9860db17fe6dd3aca8014af02f2d2f8edcdf40e0a2b5a1e4a425c3e244e0e1f",
+        "registry_payload_sha256": "46c744e342bf08b149de27cac299c7251864c369dfd498f594e787234b0f35d6",
+        "registry_backup_before_retrain": "/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/registry_backup_before_retrain.json",
+        "registry_backup_before_retrain_sha256": "d9860db17fe6dd3aca8014af02f2d2f8edcdf40e0a2b5a1e4a425c3e244e0e1f",
+        "trade_behavior_dataset": "/Users/dankingsley/PycharmProjects/schwab_trading_bot/data/trade_history/trade_learning_dataset.json",
+        "trade_behavior_dataset_sha256": "398cdc10385bd04ca7d0ef334eb8cf2457cd33cca9ab611c614555390b574b96",
+        "trade_behavior_feature_schema_version": "trade_behavior_features_v4",
+        "trade_behavior_dataset_payload_sha256": "",
+        "trade_behavior_dataset_builder_script": "/Users/dankingsley/PycharmProjects/schwab_trading_bot/scripts/build_behavior_dataset_from_decisions.py",
+        "trade_behavior_dataset_builder_script_sha256": "",
+        "trade_behavior_dataset_builder_git_commit": "",
+        "trade_behavior_model_latest": "",
+        "trade_behavior_model_latest_sha256": "",
+        "trade_behavior_log_latest": "",
+        "trade_behavior_log_latest_sha256": "",
+        "paper_hard_examples_latest": "/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/training_diagnostics/paper_hard_examples_latest.json",
+        "paper_hard_examples_sha256": "dc57a13e038b7e9cf9ac923784d5b1139b8f9a3b55ba614523461d904b4c349e",
+        "paper_hard_example_strategy_count": 20,
+        "counterfactual_replay_latest": "/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/health/counterfactual_replay_latest.json",
+        "counterfactual_replay_sha256": "6dfa49a96121934d26f3d5e686bbdf0b3dbea8cad2275631c28ac60449f4fcd8",
+        "counterfactual_replay_profiles": [
+          "crypto_futures",
+          "default"
+        ],
+        "retrain_input_feature_diagnostics_latest": "/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/training_diagnostics/retrain_input_feature_diagnostics_latest.json",
+        "retrain_input_feature_diagnostics_sha256": "2799043758579779e081814f8a87fdf74b300dfe63531e7203a8e2b3f37ce483",
+        "retrain_replay_summary_latest": "/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/training_diagnostics/retrain_replay_summary_latest.json",
+        "retrain_replay_summary_sha256": "249684ff3da84d20dec4dc18a75338ad2a1c8b9225f9f5ec1e1fca3eb37ec550",
+        "runtime_training_snapshot_latest": "/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/health/runtime_training_snapshot_latest.json",
+        "runtime_training_snapshot_sha256": "ffb602eef526ff8b61ee71897939de6f438d9d692e036dfd7814735bd13a3e8e",
+        "runtime_training_snapshot_rows_path": "/Users/dankingsley/PycharmProjects/schwab_trading_bot/exports/training/runtime_training_snapshot_latest.jsonl",
+        "runtime_training_snapshot_rows_sha256": "0fa7811c5346915b93ae2d425ddd60c28720a6d7ca362ec3214931e48ac27bd1",
+        "runtime_training_snapshot_row_count": 21366,
+        "runtime_training_snapshot_sequence_count": 825,
+        "collector_contracts_latest": "/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/health/collector_contracts_latest.json",
+        "collector_contracts_sha256": "31d9f31a51d6eaa98966ca56122803547646f8161fec29800a67a003a26ea8e0",
+        "storage_tier_policy_latest": "/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/health/storage_tier_policy_latest.json",
+        "storage_tier_policy_sha256": "16ecb76f5069289045431fb69c66974458c26f2d601c8f35f93156716f6b5943",
+        "jsonl_discovery_manifest_latest": "/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/health/jsonl_discovery_manifest_latest.json",
+        "jsonl_discovery_manifest_sha256": "bdf5b42578ec06eef8bbb0dbb823c093f4bafba0bb7d18a88795e08b35c7a9fd"
+      }
+    }
+  },
+  "readiness_summary": {
+    "institutional_status": "industry_leaning",
+    "institutional_score": 99.33,
+    "weakest_domain": {
+      "slug": "immutable_experiment_tracking",
+      "title": "Immutable experiment tracking with dataset/model hashes and exact replayability",
+      "score": 92.0
+    },
+    "live_status": "blocked",
+    "live_score": 85.71,
+    "live_ready_section_count": 12,
+    "live_required_section_count": 14,
+    "live_money_locked": true,
+    "runtime_smoke_status": "ready",
+    "runtime_smoke_score": 100.0,
+    "runtime_status": "ready",
+    "runtime_contention_score": 2,
+    "watchdog_target_count": 4,
+    "watchdog_healthy_targets": 4,
+    "watchdog_restart_storms": 0,
+    "watchdog_alerts": 0
+  },
+  "training_summary": {
+    "confirmed_training_success": false,
+    "trained_count": 1,
+    "failure_count": 0,
+    "reason": "trained_ok_but_not_promotable:skipped_by_flag",
+    "failure_reason": "trained_ok_but_not_promotable:skipped_by_flag",
+    "age_hours": 116.31682990638889,
+    "likely_environment_mismatch": false
+  },
+  "pytorch_summary": {
+    "disabled": false,
+    "status": "",
+    "assist_candidate_count": 0,
+    "assist_candidate_profiles": [],
+    "runs_tracked": 0,
+    "positive_calibrated_runs": 0,
+    "active_assist_candidate_runs": 0,
+    "recommendations": []
+  },
+  "autonomy_summary": {
+    "overall_status": "blocked",
+    "autonomy_score": 91.41,
+    "playbook_count": 1,
+    "open_incident_count": 0,
+    "promotion_state": "repairing_readiness",
+    "approval_state": "not_ready"
+  },
+  "architecture_summary": {
+    "upgrade_count": 12,
+    "ready_count": 11,
+    "portable_host_profile": "max_throughput",
+    "portable_proof_status": "ready",
+    "switchboard_active_modes": 3,
+    "provenance_card_count": 8,
+    "remote_pager_ready": false,
+    "incident_review_required": false,
+    "drill_program_score": 100.0
+  },
+  "special_features": {
+    "adaptive_apple_silicon_brain": "Adaptive Apple Silicon Brain: host-aware tuning now recognizes `Apple M1 Max`, sees memory architecture `unified`, and lands on `max_throughput` before the stack starts.",
+    "three_mode_switchboard": "Three-Mode Switchboard: mission control now tracks shadow/paper/live with `3` active modes and runtime clearance `guarded_live_read_only`.",
+    "event_to_trade_intelligence": "Event-to-Trade Intelligence: the macro lane now surfaces live-detection and media ingest proof as `ready` with `relevance=high transcript_quality=live_excerpt media_status=missing idle_ready=0`.",
+    "self_healing_ops_plane": "Self-Healing Ops Plane: autonomy currently sits at `91.41/100` with `1` triggered playbooks.",
+    "portable_brain_contract": "Portable Brain Contract: the host contract now recommends `native` mode with proof-node status `ready`, backend `pytorch`, and parity focus `mlx_vs_portable_replay` while keeping the broker/runtime seam portable."
+  },
+  "special_feature_details": {
+    "adaptive_apple_silicon_brain": {
+      "label": "Adaptive Apple Silicon Brain",
+      "summary": "Adaptive Apple Silicon Brain: host-aware tuning now recognizes `Apple M1 Max`, sees memory architecture `unified`, and lands on `max_throughput` before the stack starts.",
+      "why_it_matters": "This matters because Apple Silicon unified memory gives the live stack one shared CPU and GPU pool for feature windows, broker-context caches, and MLX inference, so the same code can stay responsive on a MacBook Air and then scale up hard on Max-class machines without copy-heavy rewrites.",
+      "current_watch_item": "Portable posture is still strongest on native Apple Silicon; non-Mac proof is `ready` and still about replay parity rather than full live parity.",
+      "proof_points": [
+        "Recognized host `Apple M1 Max` on `Darwin` with profile `max_throughput`.",
+        "Memory architecture is `unified` with shared CPU/GPU pool `True`.",
+        "Apple Silicon unified memory keeps CPU, GPU, and MLX tensors in one pool, which cuts copy overhead for large feature windows, broker context caches, and multi-model inference.",
+        "Recommended runtime posture is `native` with backend `mlx`.",
+        "Host override file is `present` at `/Users/dankingsley/PycharmProjects/schwab_trading_bot/config/.env.host_profile_override`."
+      ]
+    },
+    "three_mode_switchboard": {
+      "label": "Three-Mode Switchboard",
+      "summary": "Three-Mode Switchboard: mission control now tracks shadow/paper/live with `3` active modes and runtime clearance `guarded_live_read_only`.",
+      "why_it_matters": "This is the control surface that keeps the same trading brain coherent across shadow, paper, and live instead of forcing three separate systems to drift apart over time.",
+      "current_watch_item": "Runtime clearance is still `guarded_live_read_only`, which means the switchboard is operationally honest about when live should stay read-only.",
+      "proof_points": [
+        "Switchboard currently tracks `3` active modes and `3` ready modes.",
+        "Active modes: `shadow, paper, live`; ready modes: `shadow, paper, live`.",
+        "Control surface clearance is `guarded_live_read_only` with live read-only `True`."
+      ]
+    },
+    "event_to_trade_intelligence": {
+      "label": "Event-to-Trade Intelligence",
+      "summary": "Event-to-Trade Intelligence: the macro lane now surfaces live-detection and media ingest proof as `ready` with `relevance=high transcript_quality=live_excerpt media_status=missing idle_ready=0`.",
+      "why_it_matters": "It gives the platform a route from macro hearings, policy streams, and transcripts into market-aware stance, relevance, and bulletin surfaces that the rest of the brain can actually use.",
+      "current_watch_item": "Current transcript pipeline is `live_excerpt` and should keep moving toward fully clean replay-grade transcripts for every event.",
+      "proof_points": [
+        "Latest macro event status is `ready` from `Federal Reserve` with speaker `Federal Reserve`.",
+        "Transcript quality is `live_excerpt` at `0.0000`, cue match `0.0000`.",
+        "Market read is `hawkish` with sentiment `-0.7500` and relevance `high`."
+      ]
+    },
+    "self_healing_ops_plane": {
+      "label": "Self-Healing Ops Plane",
+      "summary": "Self-Healing Ops Plane: autonomy currently sits at `91.41/100` with `1` triggered playbooks.",
+      "why_it_matters": "It is the difference between a platform that merely runs and one that can diagnose pressure, throttle itself, freeze bad lanes, and preserve operator trust while the rest of the stack keeps moving.",
+      "current_watch_item": "Incident review is currently `ready`, so the self-healing story is strong but still not fully frictionless.",
+      "proof_points": [
+        "Autonomy score is `91.41/100` with `5` autonomous repair paths.",
+        "Triggered playbooks: `1`; notification ladder `ready`; incident review `ready`.",
+        "Process watchdog shows `4/4` healthy targets and `0` restart storms; chaos drill score `100.00`."
+      ]
+    },
+    "portable_brain_contract": {
+      "label": "Portable Brain Contract",
+      "summary": "Portable Brain Contract: the host contract now recommends `native` mode with proof-node status `ready`, backend `pytorch`, and parity focus `mlx_vs_portable_replay` while keeping the broker/runtime seam portable.",
+      "why_it_matters": "This is the selling point that keeps the platform from being a dead-end Mac-only build: Apple Silicon stays first-class for the live brain, but the runtime now has an explicit broker-agnostic contract for replay, research, and proof on Linux and Windows.",
+      "current_watch_item": "Next portability milestone is `run replay and parity checks on the non-Mac node before claiming live portability`, which is still the bridge between strong design and undeniable parity proof.",
+      "proof_points": [
+        "Native contract is `native` on backend `mlx`, portable contract is `portable` on `pytorch`.",
+        "Broker-specific news, options, and calendar context now sit behind adapter seams instead of being hardwired to one brokerage client.",
+        "Apple Silicon keeps a live-trading edge through `unified` memory architecture while the proof node preserves Linux and Windows replay portability.",
+        "Cross-platform proof node is `ready` and nightly parity support is `True`.",
+        "Linux and Windows deployment matrix entries are present, with next step `run replay and parity checks on the non-Mac node before claiming live portability`."
+      ]
+    }
+  },
+  "highlights": [
+    "Registry currently tracks 1781 bots with 1780 active across crypto_sub_bot, futures_sub_bot, infrastructure_bot, infrastructure_sub_bot, macro_sub_bot, options_sub_bot, signal_sub_bot lanes.",
+    "Live ingestion is wired across 17 lane artifacts with 2 currently reporting `running`.",
+    "Institutional-readiness score is `99.33/100` with status `industry_leaning` across 12 governance domains.",
+    "Live-money readiness is `blocked` with `12/14` required sections and live locked=`True`; runtime smoke is `ready` at `100.00/100`, with broker/session ready=`True/True` and watchdog healthy=`True`.",
+    "Runtime separation is `ready` with contention score `2` and live-read-only=`True`.",
+    "Autonomy control plane is `blocked` at `91.41/100`, with `1` triggered playbooks, `0` open incidents, and promotion state `repairing_readiness`.",
+    "Architecture upgrade scoreboard tracks `11` ready proof surfaces out of `12`, with host profile `max_throughput` and portable proof `ready`.",
+    "Crypto context is aggregating 16/18 healthy sources and 7/7 healthy crypto news feeds.",
+    "Latest divergence check is `ok=True` with worst relative spread 0.03%.",
+    "Market/crypto correlation overlay is running in `exact` mode with 0 aligned pairs and cache hits/misses 0/0.",
+    "Latest training summary is 4.8d old: 1 trained, 0 failed, `confirmed_training_success=False` with reason `trained_ok_but_not_promotable:skipped_by_flag`.",
+    "Process watchdog currently tracks `4` services with `4` healthy targets, `0` restart storms, and `0` alerts. Tripwire event flag remains `active=False`.",
+    "PyTorch sidecar stays observation-only, but it now carries `0` active shadow-assist candidate profiles across `0` tracked runs.",
+    "Latest daily ops quality score is 100.0 and the weakest institutional domain is `immutable_experiment_tracking` (92.00)."
+  ]
+}

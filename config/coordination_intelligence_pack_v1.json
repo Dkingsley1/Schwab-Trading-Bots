@@ -1,0 +1,223 @@
+{
+  "generated_at_utc": "2026-05-02T22:30:54.977106+00:00",
+  "coordination_version": "coordination_intelligence_pack_v1",
+  "coordination": {
+    "slug": "coordination_intelligence",
+    "display_name": "Coordination Intelligence Control Plane",
+    "sleeve_family": "coordination_control_plane",
+    "sleeve_profile": "coordination_intelligence",
+    "objective": "Coordinate lineage, conflict resolution, allocation simulation, regime memory, research admission, feature quality, adversarial paper testing, sleeve masters, admission, and explainability.",
+    "layer_count": 10,
+    "bot_count": 30,
+    "bot_ids": [
+      "brain_refinery_v849_coordination_lineage_genome_mapper_bot",
+      "brain_refinery_v850_coordination_lineage_trait_drift_guard_bot",
+      "brain_refinery_v851_coordination_lineage_visual_map_narrator_bot",
+      "brain_refinery_v852_coordination_strategy_conflict_detector_bot",
+      "brain_refinery_v853_coordination_cross_sleeve_view_netting_master_bot",
+      "brain_refinery_v854_coordination_conflict_regression_guard_bot",
+      "brain_refinery_v855_coordination_capital_flow_simulator_bot",
+      "brain_refinery_v856_coordination_margin_drawdown_sensitivity_bot",
+      "brain_refinery_v857_coordination_allocation_sandbox_guard_bot",
+      "brain_refinery_v858_coordination_regime_memory_writer_bot",
+      "brain_refinery_v859_coordination_regime_playbook_retriever_bot",
+      "brain_refinery_v860_coordination_regime_memory_decay_guard_bot",
+      "brain_refinery_v861_coordination_research_ingest_classifier_bot",
+      "brain_refinery_v862_coordination_research_to_bot_spec_builder_bot",
+      "brain_refinery_v863_coordination_research_admission_queue_guard_bot",
+      "brain_refinery_v864_coordination_feature_quality_scorer_bot",
+      "brain_refinery_v865_coordination_feature_overlap_leakage_guard_bot",
+      "brain_refinery_v866_coordination_feature_store_contract_master_bot",
+      "brain_refinery_v867_coordination_adversarial_fill_stress_bot",
+      "brain_refinery_v868_coordination_stale_quote_delay_lab_bot",
+      "brain_refinery_v869_coordination_broker_fault_injection_guard_bot",
+      "brain_refinery_v870_coordination_sleeve_master_conviction_summarizer_bot",
+      "brain_refinery_v871_coordination_sleeve_master_health_router_bot",
+      "brain_refinery_v872_coordination_grandmaster_briefing_bridge_bot",
+      "brain_refinery_v873_coordination_bot_duplicate_impact_screen_bot",
+      "brain_refinery_v874_coordination_bot_admission_capacity_vote_bot",
+      "brain_refinery_v875_coordination_admission_policy_regression_guard_bot",
+      "brain_refinery_v876_coordination_decision_provenance_explainer_bot",
+      "brain_refinery_v877_coordination_what_changed_today_narrator_bot",
+      "brain_refinery_v878_coordination_trust_surface_dashboard_builder_bot"
+    ],
+    "layers": [
+      {
+        "slug": "bot_genome_lineage_map_v2",
+        "display_name": "Bot Genome / Lineage Map v2",
+        "objective": "Track parent ideas, founder DNA, sleeve ancestry, source lineage, and trait drift.",
+        "outputs": [
+          "bot_genome_map",
+          "lineage_trait_drift_report",
+          "pycharm_visible_family_map"
+        ]
+      },
+      {
+        "slug": "strategy_conflict_resolver",
+        "display_name": "Strategy Conflict Resolver",
+        "objective": "Net conflicting cross-sleeve views before any paper or allocation surface can amplify them.",
+        "outputs": [
+          "cross_sleeve_conflict_matrix",
+          "net_view_packet",
+          "conflict_resolution_audit"
+        ]
+      },
+      {
+        "slug": "capital_allocation_simulator",
+        "display_name": "Capital Allocation Simulator",
+        "objective": "Dry-run capital flow, margin pressure, drawdown sensitivity, and sleeve concentration.",
+        "outputs": [
+          "capital_flow_sandbox",
+          "margin_sensitivity_packet",
+          "allocation_risk_budget"
+        ]
+      },
+      {
+        "slug": "market_regime_memory",
+        "display_name": "Market Regime Memory",
+        "objective": "Remember what worked, failed, decayed, or overloaded in each market regime.",
+        "outputs": [
+          "regime_memory_store",
+          "regime_playbook_lookup",
+          "regime_decay_flags"
+        ]
+      },
+      {
+        "slug": "research_to_bot_pipeline",
+        "display_name": "Research-to-Bot Pipeline",
+        "objective": "Classify research notes and papers into bot, sleeve, model, report, or ignore decisions.",
+        "outputs": [
+          "research_classification_queue",
+          "bot_spec_candidates",
+          "research_admission_votes"
+        ]
+      },
+      {
+        "slug": "feature_store_quality_layer",
+        "display_name": "Feature Store Quality Layer",
+        "objective": "Score features by freshness, missingness, leakage risk, predictive value, and overlap.",
+        "outputs": [
+          "feature_quality_scores",
+          "feature_overlap_map",
+          "feature_contracts"
+        ]
+      },
+      {
+        "slug": "adversarial_paper_trading_lab",
+        "display_name": "Adversarial Paper Trading Lab",
+        "objective": "Stress paper trades under bad fills, stale quotes, data delays, broker faults, and liquidity gaps.",
+        "outputs": [
+          "adversarial_fill_replay",
+          "stale_quote_delay_report",
+          "broker_fault_lab_packet"
+        ]
+      },
+      {
+        "slug": "sleeve_master_upgrade_pack",
+        "display_name": "Sleeve Master Upgrade Pack",
+        "objective": "Summarize sleeve conviction, data quality, halt pressure, and training readiness for grandmaster.",
+        "outputs": [
+          "sleeve_conviction_summary",
+          "sleeve_health_route",
+          "grandmaster_brief_packet"
+        ]
+      },
+      {
+        "slug": "bot_admission_committee",
+        "display_name": "Bot Admission Committee",
+        "objective": "Screen every new bot for duplicate alpha, storage load, CPU load, data availability, and label quality.",
+        "outputs": [
+          "bot_admission_vote",
+          "duplicate_idea_screen",
+          "capacity_impact_report"
+        ]
+      },
+      {
+        "slug": "system_explainability_dashboard",
+        "display_name": "System Explainability Dashboard",
+        "objective": "Explain what changed, which bots influenced a decision, and which surfaces deserve less trust.",
+        "outputs": [
+          "decision_provenance_story",
+          "daily_system_change_narrative",
+          "trust_surface_dashboard"
+        ]
+      }
+    ],
+    "dedicated_data_intake": [
+      "bot_genome_lineage_trace",
+      "cross_sleeve_signal_conflict_trace",
+      "capital_allocation_sandbox_trace",
+      "margin_drawdown_sensitivity_trace",
+      "market_regime_memory_trace",
+      "research_to_bot_admission_trace",
+      "feature_store_quality_trace",
+      "adversarial_paper_trade_lab_trace",
+      "sleeve_master_conviction_trace",
+      "bot_admission_committee_trace",
+      "decision_provenance_explainability_trace",
+      "trust_surface_dashboard_trace"
+    ],
+    "storage_retention_rule": {
+      "retention_profile": "coordination_hot_7d_warm_45d_cold_365d",
+      "storage_targets": [
+        "governance/coordination_intelligence",
+        "governance/coordination_intelligence/lineage",
+        "governance/coordination_intelligence/conflicts",
+        "governance/coordination_intelligence/capital_sim",
+        "governance/coordination_intelligence/regime_memory",
+        "governance/coordination_intelligence/research_admission",
+        "governance/coordination_intelligence/feature_quality",
+        "governance/coordination_intelligence/adversarial_paper_lab",
+        "governance/coordination_intelligence/explainability",
+        "governance/health/coordination_intelligence",
+        "data/jsonl_link.sqlite3"
+      ],
+      "max_daily_mb_per_bot": 28,
+      "capture_mode": "sampled_digest_first",
+      "sample_rate": 0.18,
+      "dedupe_required": true,
+      "stale_deletion_policy": "summarize_to_control_digest_then_stage_low_value_raw_traces"
+    },
+    "paper_only_floor": {
+      "paper_trade_lock_required": true,
+      "live_trading_enabled": false,
+      "execution_enabled": false,
+      "allocation_enabled": false,
+      "graduation_requires_minimum_observations": 15000,
+      "graduation_requires_collection_days": 60
+    },
+    "sleeve_master_bot_id": "brain_refinery_v853_coordination_cross_sleeve_view_netting_master_bot",
+    "regression_guard_bot_id": "brain_refinery_v854_coordination_conflict_regression_guard_bot",
+    "admission_committee_bot_id": "brain_refinery_v874_coordination_bot_admission_capacity_vote_bot",
+    "grandmaster_bridge_bot_id": "brain_refinery_v872_coordination_grandmaster_briefing_bridge_bot",
+    "capacity_check": {
+      "active_bot_floor": 700,
+      "runtime_stability_mode": "full_force_buffered",
+      "runtime_control_refresh_seconds": 240,
+      "queue_policy": "buffered_jsonl_batching",
+      "compute_guard_mode": "sustain",
+      "global_halt_mode": "summary_only_before_hard_halt",
+      "heavy_reasoning_mode": "digest_only_until_host_pressure_clear"
+    }
+  },
+  "coordination_contract": {
+    "contract_version": "coordination_intelligence_pack_v1",
+    "purpose": "coordinate_large_bot_fleet_views_admission_memory_allocation_and_explainability",
+    "layers": [
+      "bot_genome_lineage_map_v2",
+      "strategy_conflict_resolver",
+      "capital_allocation_simulator",
+      "market_regime_memory",
+      "research_to_bot_pipeline",
+      "feature_store_quality_layer",
+      "adversarial_paper_trading_lab",
+      "sleeve_master_upgrade_pack",
+      "bot_admission_committee",
+      "system_explainability_dashboard"
+    ],
+    "graduation_policy": "collection_only_until_conflict_capital_feature_adversarial_and_explainability_evidence_clears",
+    "resource_contract": "low_sample_digest_first_control_plane_with_no_direct_execution",
+    "global_halt_contract": "coordination_layers_must_switch_to_summary_only_before_hard_halt",
+    "paper_lock_contract": "no_direct_paper_or_live_execution_all_outputs_are_advisory_until_graduated"
+  }
+}

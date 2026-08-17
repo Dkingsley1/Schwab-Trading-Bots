@@ -1,0 +1,1 @@
+../../../scripts/ops/maintenance_slot_guard.py

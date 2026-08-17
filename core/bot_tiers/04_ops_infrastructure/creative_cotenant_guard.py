@@ -1,0 +1,1 @@
+../../../scripts/ops/creative_cotenant_guard.py

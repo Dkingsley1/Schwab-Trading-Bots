@@ -48,6 +48,35 @@ def score(row: dict) -> float:
     return 0.8 * a + 0.2 * qq
 
 
+def infer_lane(row: dict) -> str:
+    role = str((row or {}).get("bot_role", "")).strip().lower()
+    bot_id = str((row or {}).get("bot_id", "")).strip().lower()
+
+    if any(tok in bot_id for tok in ("long_term", "dividend_quality_compounder", "dividend_yield_trap_avoidance")):
+        return "long_term"
+    if role == "options_sub_bot" or any(tok in bot_id for tok in ("options", "greek", "iv_", "vol_surface", "put_call")):
+        return "options"
+    if role == "futures_sub_bot" or any(tok in bot_id for tok in ("futures", "funding", "basis", "order_book", "open_interest", "term_structure")):
+        return "futures"
+    if any(tok in bot_id for tok in ("intraday", "scalp", "open_close", "ultrafast", "day_trade", "daytrading")):
+        return "day"
+    if any(tok in bot_id for tok in ("swing", "position_1m_3m", "1w_3w", "2d_5d")):
+        return "swing"
+    return "equities"
+
+
+def protected_collection_lanes(registry: dict) -> set[str]:
+    master_policy = registry.get("master_policy") if isinstance(registry.get("master_policy"), dict) else {}
+    raw = master_policy.get("protected_collection_lanes", ["options", "long_term"])
+    if isinstance(raw, str):
+        items = [part.strip().lower() for part in raw.split(",")]
+    elif isinstance(raw, list):
+        items = [str(part).strip().lower() for part in raw]
+    else:
+        items = []
+    return {item for item in items if item}
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Soft-prune redundant bots by family clusters.")
     parser.add_argument("--registry", default=str(PROJECT_ROOT / "master_bot_registry.json"))
@@ -59,10 +88,15 @@ def main() -> int:
     reg_path = Path(args.registry)
     reg = json.loads(reg_path.read_text(encoding="utf-8"))
     original_reg = json.loads(json.dumps(reg))
+    protected_lanes = protected_collection_lanes(reg)
 
     grouped = defaultdict(list)
     for row in reg.get("sub_bots", []):
         if bool(row.get("deleted_from_rotation", False)):
+            continue
+        if bool(row.get("collection_priority", False)):
+            continue
+        if infer_lane(row) in protected_lanes:
             continue
         fam = family_key(str(row.get("bot_id", "")))
         role = str(row.get("bot_role", "signal_sub_bot"))

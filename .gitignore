@@ -23,12 +23,27 @@ token.json
 !config/.env.example
 
 # Runtime outputs (large / generated)
+.runtime_locks/
+runtime/
+tmp/
 logs/
 models/
 decisions/
 decision_explanations/
 governance/
 exports/
+logs
+models
+decisions
+decision_explanations
+governance
+exports
+data
+output/pdf/*.pdf
+output/pdf/*.html
+output/pdf/*.png
+output/pdf/*.json
+output/pdf/*.zip
 
 # Optional local data dumps
 *.jsonl
@@ -43,6 +58,7 @@ exports/
 !master_bot_registry.json
 
 # Generated registry backups / datasets
+backups/master_bot_registry_before_*.json
 master_bot_registry.backup_*.json
 data/trade_history/import_summary_*.json
 data/trade_history/trade_learning_dataset.json
@@ -77,3 +93,14 @@ data/*.sqlite3-shm
 
 # Local runtime failover storage
 local_fallback_storage/
+
+# Local Codex / auth / scratch cleanup
+$CODEX_HOME/
+.codex_write_probe*
+.codex_write_test*
+master_bot_registry.json.bak
+master_bot_registry.json.master_candidate.bak
+token.json.bad.*
+token.json.bak.*
+token.json.invalid_*
+skip

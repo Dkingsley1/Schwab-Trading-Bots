@@ -1,0 +1,243 @@
+{
+  "schema_version": 1,
+  "policy_id": "control_surface_ownership_v1",
+  "controls": [
+    {
+      "control_id": "local_storage_reserve_override",
+      "resource_path": "config/.env.local_storage_reserve_override",
+      "owner_source": "scripts/ops/local_storage_reserve_guard.py",
+      "owner_command": ["./scripts/ops/opsctl.sh", "local-storage-reserve-guard", "--apply", "--json"],
+      "owner_marker": ".env.local_storage_reserve_override",
+      "mutation_mode": "mutable_state",
+      "coordination": "file_lock",
+      "lock_path": "governance/locks/local_storage_reserve_guard.lock"
+    },
+    {
+      "control_id": "soak_reliability_sentinel_state",
+      "resource_path": "governance/runtime/soak_reliability_sentinel_state.json",
+      "owner_source": "scripts/ops/soak_reliability_sentinel.py",
+      "owner_command": ["./scripts/ops/opsctl.sh", "soak-reliability-sentinel", "--apply", "--json"],
+      "owner_marker": "soak_reliability_sentinel_state.json",
+      "mutation_mode": "mutable_state",
+      "coordination": "file_lock",
+      "lock_path": "governance/locks/soak_reliability_sentinel.lock"
+    },
+    {
+      "control_id": "soak_self_healing_state",
+      "resource_path": "governance/health/soak_self_healing_state.json",
+      "owner_source": "scripts/ops/soak_self_healing_control.py",
+      "owner_command": ["./scripts/ops/opsctl.sh", "soak-self-heal", "--apply", "--json"],
+      "owner_marker": "soak_self_healing_state.json",
+      "mutation_mode": "mutable_state",
+      "coordination": "file_lock",
+      "lock_path": "governance/locks/soak_self_healing.lock"
+    },
+    {
+      "control_id": "live_order_ledger",
+      "resource_path": "governance/runtime/live_order_ledger.sqlite3",
+      "owner_source": "core/live_order_ledger.py",
+      "owner_command": ["./scripts/ops/opsctl.sh", "live-order-ledger", "--json"],
+      "owner_marker": "LiveOrderLedger",
+      "mutation_mode": "transactional_state",
+      "coordination": "sqlite_immediate_transaction"
+    },
+    {
+      "control_id": "storage_disaster_recovery_state",
+      "resource_path": "governance/health/storage_disaster_recovery_state.json",
+      "owner_source": "scripts/ops/storage_disaster_recovery.py",
+      "owner_command": ["./scripts/ops/opsctl.sh", "storage-disaster-recovery", "--json"],
+      "owner_marker": "storage_disaster_recovery_state.json",
+      "mutation_mode": "mutable_state",
+      "coordination": "file_lock",
+      "lock_path": "governance/locks/storage_disaster_recovery.lock"
+    },
+    {
+      "control_id": "runtime_paper_regression_truth",
+      "resource_path": "governance/health/runtime_paper_regression_guard_latest.json",
+      "owner_source": "scripts/ops/runtime_paper_regression_guard.py",
+      "owner_command": ["./scripts/ops/opsctl.sh", "runtime-paper-regression-guard", "--json"],
+      "owner_marker": "runtime_paper_regression_guard_latest.json",
+      "mutation_mode": "atomic_snapshot",
+      "coordination": "atomic_replace"
+    },
+    {
+      "control_id": "paper_execution_truth",
+      "resource_path": "governance/health/paper_execution_truth_layer_latest.json",
+      "owner_source": "scripts/ops/paper_execution_truth_layer.py",
+      "owner_command": ["./scripts/ops/opsctl.sh", "paper-execution-truth", "--json"],
+      "owner_marker": "paper_execution_truth_layer_latest.json",
+      "mutation_mode": "atomic_snapshot",
+      "coordination": "atomic_replace"
+    },
+    {
+      "control_id": "profitability_evidence_firewall",
+      "resource_path": "governance/health/profitability_evidence_firewall_latest.json",
+      "owner_source": "scripts/ops/profitability_evidence_firewall.py",
+      "owner_command": ["./scripts/ops/opsctl.sh", "profitability-evidence-firewall", "--json"],
+      "owner_marker": "profitability_evidence_firewall_latest.json",
+      "mutation_mode": "atomic_snapshot",
+      "coordination": "atomic_replace"
+    },
+    {
+      "control_id": "artifact_freshness_slo",
+      "resource_path": "governance/health/artifact_freshness_slo_latest.json",
+      "owner_source": "scripts/ops/artifact_freshness_slo.py",
+      "owner_command": ["./scripts/ops/opsctl.sh", "artifact-freshness-slo", "--json"],
+      "owner_marker": "artifact_freshness_slo_latest.json",
+      "mutation_mode": "atomic_snapshot",
+      "coordination": "atomic_replace"
+    },
+    {
+      "control_id": "release_freeze_window",
+      "resource_path": "governance/runtime/release_freeze_window.json",
+      "owner_source": "scripts/ops/release_freeze_guard.py",
+      "owner_command": ["./scripts/ops/opsctl.sh", "release-freeze", "--json"],
+      "owner_marker": "release_freeze_window.json",
+      "mutation_mode": "operator_state",
+      "coordination": "operator_only"
+    },
+    {
+      "control_id": "independent_runtime_monitor",
+      "resource_path": "governance/health/independent_runtime_monitor_latest.json",
+      "owner_source": "scripts/observability_exporter.py",
+      "owner_command": ["./scripts/ops/opsctl.sh", "independent-runtime-monitor", "--json"],
+      "owner_marker": "independent_runtime_monitor_latest.json",
+      "mutation_mode": "atomic_snapshot",
+      "coordination": "atomic_replace"
+    },
+    {
+      "control_id": "production_resilience_control",
+      "resource_path": "governance/health/production_resilience_control_latest.json",
+      "owner_source": "scripts/ops/production_resilience_control.py",
+      "owner_command": ["./scripts/ops/opsctl.sh", "production-resilience", "--json"],
+      "owner_marker": "production_resilience_control_latest.json",
+      "mutation_mode": "atomic_snapshot",
+      "coordination": "atomic_replace"
+    },
+    {
+      "control_id": "bot_organization_health",
+      "resource_path": "governance/health/bot_organization_latest.json",
+      "owner_source": "scripts/ops/bot_organization_control.py",
+      "owner_command": [
+        "./scripts/ops/opsctl.sh",
+        "bot-organization",
+        "--json"
+      ],
+      "owner_marker": "bot_organization_latest.json",
+      "mutation_mode": "atomic_snapshot",
+      "coordination": "atomic_replace"
+    },
+    {
+      "control_id": "bot_hierarchy_catalog",
+      "resource_path": "governance/bot_organization/bot_hierarchy_latest.json",
+      "owner_source": "scripts/ops/bot_organization_control.py",
+      "owner_command": [
+        "./scripts/ops/opsctl.sh",
+        "bot-organization",
+        "--json"
+      ],
+      "owner_marker": "bot_hierarchy_latest.json",
+      "mutation_mode": "atomic_snapshot",
+      "coordination": "atomic_replace"
+    },
+    {
+      "control_id": "collector_capability_materialization",
+      "resource_path": "governance/collector_capabilities/materialized_capabilities_latest.json",
+      "owner_source": "scripts/ops/capability_materialization_control.py",
+      "owner_command": [
+        "./scripts/ops/opsctl.sh",
+        "capability-materialization",
+        "--json"
+      ],
+      "owner_marker": "materialized_capabilities_latest.json",
+      "mutation_mode": "atomic_snapshot",
+      "coordination": "atomic_replace"
+    },
+    {
+      "control_id": "collector_capability_health",
+      "resource_path": "governance/health/collector_capability_control_latest.json",
+      "owner_source": "scripts/ops/collector_capability_control.py",
+      "owner_command": [
+        "./scripts/ops/opsctl.sh",
+        "collector-capability-control",
+        "--json"
+      ],
+      "owner_marker": "collector_capability_control_latest.json",
+      "mutation_mode": "atomic_snapshot",
+      "coordination": "atomic_replace"
+    },
+    {
+      "control_id": "collector_capability_bot_subscriptions",
+      "resource_path": "governance/collector_capabilities/bot_subscriptions_latest.json",
+      "owner_source": "scripts/ops/collector_capability_control.py",
+      "owner_command": [
+        "./scripts/ops/opsctl.sh",
+        "collector-capability-control",
+        "--json"
+      ],
+      "owner_marker": "bot_subscriptions_latest.json",
+      "mutation_mode": "atomic_snapshot",
+      "coordination": "atomic_replace"
+    },
+    {
+      "control_id": "bot_profitability_scalability_health",
+      "resource_path": "governance/health/bot_profitability_scalability_latest.json",
+      "owner_source": "scripts/ops/bot_profitability_scalability_control.py",
+      "owner_command": [
+        "./scripts/ops/opsctl.sh",
+        "bot-profitability-scalability",
+        "--json"
+      ],
+      "owner_marker": "bot_profitability_scalability_latest.json",
+      "mutation_mode": "atomic_snapshot",
+      "coordination": "atomic_replace"
+    },
+    {
+      "control_id": "bot_profitability_scalability_manifest",
+      "resource_path": "governance/bot_organization/bot_profitability_scalability_latest.json",
+      "owner_source": "scripts/ops/bot_profitability_scalability_control.py",
+      "owner_command": [
+        "./scripts/ops/opsctl.sh",
+        "bot-profitability-scalability",
+        "--json"
+      ],
+      "owner_marker": "bot_profitability_scalability_latest.json",
+      "mutation_mode": "atomic_snapshot",
+      "coordination": "atomic_replace"
+    },
+    {
+      "control_id": "master_grandmaster_evidence_v2_health",
+      "resource_path": "governance/health/master_grandmaster_evidence_v2_latest.json",
+      "owner_source": "scripts/ops/master_grandmaster_evidence_control.py",
+      "owner_command": [
+        "./scripts/ops/opsctl.sh",
+        "master-grandmaster-evidence",
+        "--json"
+      ],
+      "owner_marker": "master_grandmaster_evidence_v2_latest.json",
+      "mutation_mode": "atomic_snapshot",
+      "coordination": "atomic_replace"
+    },
+    {
+      "control_id": "master_grandmaster_evidence_v2_packets",
+      "resource_path": "governance/master_grandmaster/evidence_packets_v2_latest.json",
+      "owner_source": "scripts/ops/master_grandmaster_evidence_control.py",
+      "owner_command": [
+        "./scripts/ops/opsctl.sh",
+        "master-grandmaster-evidence",
+        "--json"
+      ],
+      "owner_marker": "evidence_packets_v2_latest.json",
+      "mutation_mode": "atomic_snapshot",
+      "coordination": "atomic_replace"
+    }
+  ],
+  "control_contract": {
+    "resource_paths_are_unique": true,
+    "control_ids_are_unique": true,
+    "exactly_one_declared_writer_per_resource": true,
+    "mutable_automation_requires_coordination": true,
+    "owner_commands_must_be_routable": true,
+    "automatic_live_execution_authority": false
+  }
+}

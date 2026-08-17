@@ -1,0 +1,98 @@
+{
+  "schema_version": 1,
+  "scenario_id": "fed_2026_supervisory_severely_adverse",
+  "aliases": [
+    "fed_2026_adverse",
+    "fed_2026_standardized_adverse",
+    "fed_2026_supervisory_stress"
+  ],
+  "source": {
+    "publisher": "Board of Governors of the Federal Reserve System",
+    "title": "2026 Stress Test Scenarios",
+    "url": "https://www.federalreserve.gov/publications/2026-stress-test-scenarios.htm",
+    "retrieved_date": "2026-05-01",
+    "source_type": "official_public_federal_reserve_publication"
+  },
+  "scope": {
+    "scenario_type": "supervisory_severely_adverse",
+    "start_quarter": "2026-Q1",
+    "end_quarter": "2029-Q1",
+    "forecast_warning": "This Federal Reserve scenario is hypothetical stress-test data and is not a Federal Reserve forecast.",
+    "usage_policy": "research_replay_and_stress_labeling_only"
+  },
+  "key_stress_anchors": {
+    "equity_prices_decline_pct_approx": 58.0,
+    "vix_peak": 72.0,
+    "unemployment_peak_pct": 10.0,
+    "house_price_decline_pct_approx": 30.0,
+    "commercial_real_estate_price_decline_pct_approx": 39.0
+  },
+  "domestic_variables": {
+    "columns": [
+      "date",
+      "real_gdp_growth",
+      "nominal_gdp_growth",
+      "real_disposable_income_growth",
+      "nominal_disposable_income_growth",
+      "unemployment_rate",
+      "cpi_inflation_rate",
+      "three_month_treasury_rate",
+      "five_year_treasury_yield",
+      "ten_year_treasury_yield",
+      "bbb_corporate_yield",
+      "mortgage_rate",
+      "prime_rate",
+      "dow_jones_total_stock_market_index",
+      "house_price_index",
+      "commercial_real_estate_price_index",
+      "market_volatility_index"
+    ],
+    "rows": [
+      ["2026-Q1", -5.4, -3.1, -0.9, 1.4, 5.9, 2.5, 2.5, 2.4, 3.1, 7.5, 6.0, 5.5, 41364, 303, 291, 59.7],
+      ["2026-Q2", -4.9, -3.3, -1.1, 0.5, 7.2, 1.8, 0.1, 1.8, 2.7, 8.2, 5.9, 3.1, 34732, 283, 276, 72.0],
+      ["2026-Q3", -3.8, -2.9, -0.7, 0.2, 8.2, 1.1, 0.1, 1.4, 2.4, 8.1, 5.8, 3.1, 28490, 273, 261, 70.9],
+      ["2026-Q4", -2.7, -1.9, -0.3, 0.5, 9.0, 1.0, 0.1, 1.3, 2.3, 7.9, 5.7, 3.1, 31161, 263, 246, 66.6],
+      ["2027-Q1", -1.4, -0.5, 0.3, 1.2, 9.5, 1.1, 0.1, 1.3, 2.3, 7.5, 5.6, 3.1, 33832, 254, 232, 62.3],
+      ["2027-Q2", -0.3, 0.6, 0.7, 1.6, 9.9, 1.1, 0.1, 1.3, 2.3, 7.1, 5.5, 3.1, 36503, 244, 217, 58.1],
+      ["2027-Q3", 1.1, 2.0, 1.5, 2.3, 10.0, 1.1, 0.1, 1.3, 2.4, 6.7, 5.4, 3.1, 39174, 236, 202, 53.8],
+      ["2027-Q4", 3.0, 3.9, 2.4, 3.2, 9.8, 1.1, 0.1, 1.3, 2.4, 6.3, 5.3, 3.1, 41845, 227, 187, 49.5],
+      ["2028-Q1", 4.0, 4.9, 2.9, 3.8, 9.4, 1.1, 0.1, 1.3, 2.4, 5.9, 5.3, 3.1, 44516, 231, 189, 45.3],
+      ["2028-Q2", 4.0, 5.0, 2.9, 3.9, 9.1, 1.2, 0.1, 1.3, 2.5, 5.5, 5.2, 3.1, 47187, 235, 191, 41.0],
+      ["2028-Q3", 4.0, 5.1, 2.9, 3.9, 8.7, 1.2, 0.1, 1.4, 2.5, 5.2, 5.2, 3.1, 49858, 238, 193, 36.7],
+      ["2028-Q4", 4.0, 5.1, 2.9, 4.0, 8.4, 1.3, 0.1, 1.4, 2.6, 4.8, 5.1, 3.1, 52529, 242, 195, 32.5],
+      ["2029-Q1", 3.9, 5.1, 2.8, 4.0, 8.0, 1.3, 0.1, 1.5, 2.7, 4.5, 5.1, 3.1, 55200, 246, 196, 28.2]
+    ]
+  },
+  "international_variables": {
+    "columns": [
+      "date",
+      "euro_area_real_gdp_growth",
+      "euro_area_inflation",
+      "euro_area_usd_per_euro",
+      "developing_asia_real_gdp_growth",
+      "developing_asia_inflation",
+      "developing_asia_foreign_currency_per_usd_index",
+      "japan_real_gdp_growth",
+      "japan_inflation",
+      "japan_yen_per_usd",
+      "uk_real_gdp_growth",
+      "uk_inflation",
+      "uk_usd_per_pound"
+    ],
+    "rows": [
+      ["2026-Q1", -8.6, 0.5, 1.124, 0.4, -1.0, 111.5, -9.1, 0.5, 156.3, -8.8, 0.9, 1.288],
+      ["2026-Q2", -8.5, -0.4, 1.080, 0.4, -2.4, 116.1, -9.1, -0.4, 155.9, -8.7, -0.1, 1.237],
+      ["2026-Q3", -6.7, -1.0, 1.043, 1.4, -3.3, 120.3, -7.3, -1.0, 155.5, -6.9, -0.8, 1.195],
+      ["2026-Q4", -0.5, -1.1, 1.021, 4.7, -3.5, 122.9, -1.1, -1.2, 155.2, -0.5, -1.0, 1.169],
+      ["2027-Q1", 1.5, -0.9, 1.021, 5.8, -3.0, 122.8, 0.9, -0.9, 155.2, 1.5, -0.8, 1.170],
+      ["2027-Q2", 1.5, -0.5, 1.035, 5.8, -2.4, 121.2, 0.9, -0.6, 155.4, 1.5, -0.4, 1.185],
+      ["2027-Q3", 1.4, -0.1, 1.054, 5.7, -1.7, 119.0, 0.8, -0.2, 155.6, 1.4, 0.0, 1.207],
+      ["2027-Q4", 1.3, 0.2, 1.074, 5.7, -1.0, 116.7, 0.7, 0.2, 155.8, 1.3, 0.3, 1.231],
+      ["2028-Q1", 1.3, 0.6, 1.094, 5.7, -0.4, 114.6, 0.7, 0.5, 156.0, 1.3, 0.7, 1.254],
+      ["2028-Q2", 1.3, 0.9, 1.114, 5.7, 0.2, 112.6, 0.7, 0.8, 156.2, 1.3, 1.0, 1.276],
+      ["2028-Q3", 1.3, 1.2, 1.134, 5.7, 0.8, 110.6, 0.7, 1.2, 156.4, 1.3, 1.3, 1.299],
+      ["2028-Q4", 1.3, 1.6, 1.153, 5.7, 1.5, 108.7, 0.7, 1.5, 156.6, 1.3, 1.7, 1.322],
+      ["2029-Q1", 1.3, 1.9, 1.174, 5.7, 2.1, 106.8, 0.7, 1.8, 156.8, 1.3, 2.0, 1.345]
+    ]
+  }
+}

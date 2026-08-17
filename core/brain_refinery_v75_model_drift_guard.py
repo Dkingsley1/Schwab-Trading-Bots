@@ -1,13 +1,33 @@
 import numpy as np
 
-from indicator_bot_common import ema, rolling_std, train_indicator_bot
+from indicator_bot_common import ema, rolling_std, train_indicator_bot, train_runtime_indicator_bot
+from runtime_requested_bot_common import clip01
+from runtime_training_common import (
+    feature_ema,
+    feature_std,
+    future_realized_vol,
+    future_return,
+    observation_feature,
+    price_change,
+    risk_support_label_builder,
+)
+
+_DRIFT_MODES = [
+    "shadow_equities",
+    "shadow_conservative_equities",
+    "shadow_dividend_equities",
+    "shadow_bond_equities",
+    "shadow_aggressive_equities",
+    "shadow_intraday_aggressive_equities",
+    "shadow_swing_aggressive_equities",
+]
 
 
 def rolling_mean(x, w=60):
     out = np.zeros_like(x)
     for i in range(len(x)):
         s = max(0, i - w + 1)
-        out[i] = np.mean(x[s:i+1])
+        out[i] = np.mean(x[s : i + 1])
     return out
 
 
@@ -16,7 +36,6 @@ def build_features(panel):
     rb = panel["bench_ret"]
     v = panel["volume"]
 
-    # Drift proxy on feature manifold (returns + bench + volume state).
     f1 = r
     f2 = rb
     f3 = np.log(v + 1.0)
@@ -36,11 +55,246 @@ def build_features(panel):
     return np.stack([r, rb, z1, z2, z3, drift_mag, drift_fast, drift_slow, drift_guard], axis=1)
 
 
-if __name__ == "__main__":
-    train_indicator_bot(
+def _drift_signal(obs):
+    vote_dispersion = _vote_dispersion(obs)
+    friction = _drift_friction(obs)
+    return clip01(
+        (0.38 * vote_dispersion)
+        + (0.18 * abs(observation_feature(obs, "news_recent_impact")))
+        + (0.16 * observation_feature(obs, "breadth_risk_off_norm"))
+        + (0.16 * friction)
+        + (0.12 * observation_feature(obs, "market_micro_order_flow_imbalance_norm"))
+    )
+
+
+def _quote_quality(obs):
+    return clip01(
+        0.60 * observation_feature(obs, "data_quality_quote_agreement_norm", 1.0)
+        + 0.40 * (1.0 - observation_feature(obs, "data_quality_quote_deviation_norm", 0.0))
+    )
+
+
+def _vote_dispersion(obs):
+    return max(
+        abs(observation_feature(obs, "master_vote") - observation_feature(obs, "grand_master_vote")),
+        abs(observation_feature(obs, "options_master_vote") - observation_feature(obs, "futures_master_vote")),
+        abs(observation_feature(obs, "options_specialist_vote") - observation_feature(obs, "futures_specialist_vote")),
+    )
+
+
+def _drift_friction(obs):
+    return clip01(
+        abs(observation_feature(obs, "lag_expected_fill_delta_bps")) / 12.0
+        + abs(observation_feature(obs, "lag_slippage_bps")) / 12.0
+    )
+
+
+def _centered_vote(obs, name, default=0.5):
+    return float((observation_feature(obs, name, default) - 0.5) * 2.0)
+
+
+def _directional_drift_pressure(obs):
+    pressure = (
+        (0.28 * observation_feature(obs, "behavior_prior"))
+        + (0.18 * _centered_vote(obs, "master_vote"))
+        + (0.16 * _centered_vote(obs, "grand_master_vote"))
+        + (0.10 * _centered_vote(obs, "futures_master_vote"))
+        + (0.08 * _centered_vote(obs, "options_master_vote"))
+        + (0.08 * _centered_vote(obs, "futures_specialist_vote"))
+        + (0.06 * _centered_vote(obs, "options_specialist_vote"))
+        + (0.06 * _centered_vote(obs, "market_micro_order_flow_imbalance_norm"))
+    )
+    return float(np.clip(pressure, -1.0, 1.0))
+
+
+def _directional_drift_conviction(obs):
+    return clip01(abs(_directional_drift_pressure(obs)))
+
+
+def _drift_tradeability(obs):
+    return clip01(
+        (0.32 * _quote_quality(obs))
+        + (0.34 * (1.0 - _drift_friction(obs)))
+        + (0.18 * observation_feature(obs, "market_micro_relative_volume_norm"))
+        + (0.16 * _directional_drift_conviction(obs))
+    )
+
+
+def _runtime_feature_vector(sequence, idx):
+    obs = sequence[idx]
+    return np.asarray(
+        [
+            observation_feature(obs, "behavior_prior"),
+            observation_feature(obs, "master_vote"),
+            observation_feature(obs, "grand_master_vote"),
+            observation_feature(obs, "options_master_vote"),
+            observation_feature(obs, "futures_master_vote"),
+            observation_feature(obs, "options_specialist_vote"),
+            observation_feature(obs, "futures_specialist_vote"),
+            observation_feature(obs, "active_sub_bots"),
+            observation_feature(obs, "active_options_sub_bots"),
+            observation_feature(obs, "active_futures_sub_bots"),
+            observation_feature(obs, "news_recent_impact"),
+            observation_feature(obs, "breadth_risk_off_norm"),
+            observation_feature(obs, "data_quality_quote_agreement_norm", 1.0),
+            observation_feature(obs, "data_quality_quote_deviation_norm"),
+            observation_feature(obs, "lag_expected_fill_delta_bps"),
+            observation_feature(obs, "lag_slippage_bps"),
+            observation_feature(obs, "lag_latency_ms"),
+            observation_feature(obs, "market_micro_order_flow_imbalance_norm"),
+            observation_feature(obs, "market_micro_relative_volume_norm"),
+            price_change(sequence, idx, 3),
+            feature_std(sequence, idx, "master_vote", 6),
+            feature_std(sequence, idx, "grand_master_vote", 6),
+            feature_ema(sequence, idx, "master_vote", 4),
+            feature_ema(sequence, idx, "grand_master_vote", 4),
+        ],
+        dtype=np.float32,
+    )
+
+
+def _runtime_sample_filter(sequence, idx, horizon):
+    obs = sequence[idx]
+    tradeability = _drift_tradeability(obs)
+    if _directional_drift_conviction(obs) >= 0.24 and tradeability < 0.44:
+        return False
+    return (
+        observation_feature(obs, "active_sub_bots") >= 6.0
+        and observation_feature(obs, "data_quality_quote_agreement_norm", 1.0) >= 0.82
+        and observation_feature(obs, "data_quality_quote_deviation_norm", 0.0) <= 0.20
+        and observation_feature(obs, "market_micro_relative_volume_norm") >= 0.18
+        and _drift_signal(obs) >= 0.10
+        and _directional_drift_conviction(obs) >= 0.12
+        and tradeability >= 0.28
+    )
+
+
+def _runtime_confidence(sequence, idx, horizon):
+    obs = sequence[idx]
+    tradeability = _drift_tradeability(obs)
+    return clip01(
+        (0.22 * _drift_signal(obs))
+        + (0.24 * _directional_drift_conviction(obs))
+        + (0.22 * tradeability)
+        + (0.14 * observation_feature(obs, "market_micro_relative_volume_norm"))
+        + (0.10 * _quote_quality(obs))
+        + (0.08 * observation_feature(obs, "market_micro_order_flow_imbalance_norm"))
+    )
+
+
+def _train_synthetic():
+    return train_indicator_bot(
         run_tag="brain_refinery_v75_model_drift_guard",
         feature_names=["ret", "bench_ret", "z1", "z2", "z3", "drift_mag", "drift_fast", "drift_slow", "drift_guard"],
         feature_builder=build_features,
         window=52,
         horizon=4,
     )
+
+
+_RUNTIME_RISK_SUPPORT_LABEL = risk_support_label_builder(
+    min_return=-0.0002,
+    max_drawdown=0.018,
+    max_realized_vol=0.022,
+    vol_multiplier=2.5,
+)
+
+
+def _runtime_drift_label(sequence, idx, horizon):
+    obs = sequence[idx]
+    base_label = _RUNTIME_RISK_SUPPORT_LABEL(sequence, idx, horizon)
+    if base_label is None:
+        return None
+
+    drift_signal = _drift_signal(obs)
+    directional_pressure = _directional_drift_pressure(obs)
+    bullish_conviction = clip01(max(directional_pressure, 0.0))
+    bearish_conviction = clip01(max(-directional_pressure, 0.0))
+    fwd_ret = future_return(sequence, idx, horizon)
+    realized = future_realized_vol(sequence, idx, horizon)
+    tradeability = _drift_tradeability(obs)
+
+    if base_label >= 0.5:
+        upside_followthrough = max(fwd_ret, 0.0) + (0.10 * realized)
+        if bullish_conviction < 0.18:
+            return None
+        if tradeability < 0.44 and upside_followthrough < 0.00090:
+            return None
+        if upside_followthrough < max(0.00060, 0.00100 - (0.00060 * max(drift_signal, tradeability))):
+            return None
+        if bearish_conviction >= 0.20 and upside_followthrough < 0.00100:
+            return None
+        return 1.0
+
+    downside_followthrough = max(-fwd_ret, 0.0) + (0.12 * realized)
+    if bearish_conviction < 0.20:
+        return None
+    if tradeability < 0.42 and downside_followthrough < 0.00100:
+        return None
+    if downside_followthrough < max(0.00075, 0.00105 - (0.00055 * max(drift_signal, tradeability))):
+        return None
+    if bearish_conviction <= bullish_conviction and downside_followthrough < 0.00115:
+        return None
+    return 0.0
+
+
+def train_brain():
+    return train_runtime_indicator_bot(
+        run_tag="brain_refinery_v75_model_drift_guard",
+        feature_names=[
+            "behavior_prior",
+            "master_vote",
+            "grand_master_vote",
+            "options_master_vote",
+            "futures_master_vote",
+            "options_specialist_vote",
+            "futures_specialist_vote",
+            "active_sub_bots",
+            "active_options_sub_bots",
+            "active_futures_sub_bots",
+            "news_recent_impact",
+            "breadth_risk_off_norm",
+            "data_quality_quote_agreement_norm",
+            "data_quality_quote_deviation_norm",
+            "lag_expected_fill_delta_bps",
+            "lag_slippage_bps",
+            "lag_latency_ms",
+            "market_micro_order_flow_imbalance_norm",
+            "market_micro_relative_volume_norm",
+            "ret_3",
+            "master_vote_std_6",
+            "grand_master_vote_std_6",
+            "master_vote_ema_4",
+            "grand_master_vote_ema_4",
+        ],
+        runtime_feature_builder=_runtime_feature_vector,
+        runtime_label_builder=_runtime_drift_label,
+        mode_allowlist=_DRIFT_MODES,
+        sample_filter=_runtime_sample_filter,
+        confidence_builder=_runtime_confidence,
+        min_confidence=0.50,
+        sample_stride=4,
+        lookback_days=60,
+        window=18,
+        horizon=6,
+        min_samples=224,
+        min_sequences=4,
+        acted_prob_threshold=0.66,
+        fallback_trainer=_train_synthetic,
+        allow_fallback_on_insufficient_data=False,
+        max_best_val_loss=0.6925,
+        max_final_val_loss=0.7050,
+        min_long_precision=0.54,
+        min_short_precision=0.54,
+        require_both_sides_precision=True,
+        min_acted_accuracy=0.60,
+        min_long_acted_count=5,
+        min_short_acted_count=5,
+        min_accuracy_lift_over_majority=0.02,
+        min_precision_balance_score=0.30,
+        max_acted_coverage=0.22,
+    )
+
+
+if __name__ == "__main__":
+    train_brain()

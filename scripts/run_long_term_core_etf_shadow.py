@@ -1,11 +1,19 @@
 import argparse
 import os
 import subprocess
+import sys
 from pathlib import Path
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-VENV_PY = PROJECT_ROOT / ".venv312" / "bin" / "python"
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from core.runtime_python import resolve_runtime_python
+
+os.environ.setdefault("BOT_RUNTIME_LANE", os.getenv("BOT_SHADOW_RUNTIME_LANE", "canary314"))
+
+VENV_PY = resolve_runtime_python(PROJECT_ROOT)
 SHADOW_LOOP = PROJECT_ROOT / "scripts" / "run_shadow_training_loop.py"
 
 DEFAULT_CORE_ETF_SYMBOLS = "SPY,VOO,VTI,IVV,QQQ,SCHX,IWB,RSP,SPLG,VUG,VTV"
@@ -40,9 +48,9 @@ def main() -> int:
     env["LONG_TERM_STRICT_BUY_HOLD"] = "1"
     env["LONG_TERM_CORE_QUALITY_SYMBOLS"] = args.quality_symbols
     env.setdefault("LONG_TERM_HORIZON_YEARS", "10")
-    env.setdefault("LONG_TERM_10Y_BUY_SCORE_MIN", "0.56")
-    env.setdefault("LONG_TERM_10Y_STRONG_SCORE_MIN", "0.70")
-    env.setdefault("SHADOW_THRESHOLD_SHIFT", "+0.035")
+    env.setdefault("LONG_TERM_10Y_BUY_SCORE_MIN", "0.58")
+    env.setdefault("LONG_TERM_10Y_STRONG_SCORE_MIN", "0.72")
+    env.setdefault("SHADOW_THRESHOLD_SHIFT", "+0.040")
 
     cmd = [
         str(VENV_PY),

@@ -1,0 +1,151 @@
+{
+  "quant_strategy_lane_upgrades_version": "quant_strategy_lane_upgrades_v1",
+  "pack": {
+    "slug": "quant_strategy_lane_upgrades",
+    "lane_count": 7,
+    "total_upgrade_modules": 56,
+    "paper_trading_enabled": false,
+    "live_trading_enabled": false,
+    "execution_enabled": false,
+    "allocation_enabled": false,
+    "heavy_training_enabled": false,
+    "new_high_volume_collectors_enabled": false,
+    "registry_promotion_side_effects_allowed": false,
+    "blocked_runtime_scope_until_gates_clear": ["paper_execution", "live_execution", "capital_allocation", "registry_promotion"],
+    "lanes": [
+      {
+        "priority": 1,
+        "slug": "unified_equity_factor_sleeve",
+        "current_state": "collection_only_upgraded",
+        "paper_trading_enabled": false,
+        "live_trading_enabled": false,
+        "execution_enabled": false,
+        "allocation_enabled": false,
+        "upgrade_modules": [
+          {"module_id": "equity_feature_schema_guard", "safe_now": true, "outputs": ["feature_schema_report"]},
+          {"module_id": "equity_label_leakage_guard", "safe_now": true, "outputs": ["label_leakage_report"]},
+          {"module_id": "equity_source_consensus", "safe_now": true, "outputs": ["source_consensus_score"]},
+          {"module_id": "equity_regime_attribution", "safe_now": true, "outputs": ["regime_attribution"]},
+          {"module_id": "equity_cost_replay", "safe_now": true, "outputs": ["post_cost_replay"]},
+          {"module_id": "equity_capacity_estimator", "safe_now": true, "outputs": ["capacity_estimate"]},
+          {"module_id": "equity_abstention_calibrator", "safe_now": true, "outputs": ["abstention_curve"]},
+          {"module_id": "equity_promotion_evidence", "safe_now": true, "outputs": ["promotion_evidence_packet"]}
+        ]
+      },
+      {
+        "priority": 2,
+        "slug": "residual_stat_arb_ou_pairs",
+        "current_state": "collection_only_upgraded",
+        "paper_trading_enabled": false,
+        "live_trading_enabled": false,
+        "execution_enabled": false,
+        "allocation_enabled": false,
+        "upgrade_modules": [
+          {"module_id": "pairs_feature_schema_guard", "safe_now": true, "outputs": ["feature_schema_report"]},
+          {"module_id": "pairs_cointegration_stability", "safe_now": true, "outputs": ["cointegration_stability"]},
+          {"module_id": "pairs_residual_quality", "safe_now": true, "outputs": ["residual_quality"]},
+          {"module_id": "pairs_regime_attribution", "safe_now": true, "outputs": ["regime_attribution"]},
+          {"module_id": "pairs_cost_replay", "safe_now": true, "outputs": ["post_cost_replay"]},
+          {"module_id": "pairs_capacity_estimator", "safe_now": true, "outputs": ["capacity_estimate"]},
+          {"module_id": "pairs_abstention_calibrator", "safe_now": true, "outputs": ["abstention_curve"]},
+          {"module_id": "pairs_promotion_evidence", "safe_now": true, "outputs": ["promotion_evidence_packet"]}
+        ]
+      },
+      {
+        "priority": 3,
+        "slug": "vol_risk_premium_dispersion_dealer",
+        "current_state": "collection_only_upgraded",
+        "paper_trading_enabled": false,
+        "live_trading_enabled": false,
+        "execution_enabled": false,
+        "allocation_enabled": false,
+        "upgrade_modules": [
+          {"module_id": "vol_feature_schema_guard", "safe_now": true, "outputs": ["feature_schema_report"]},
+          {"module_id": "vol_surface_integrity", "safe_now": true, "outputs": ["surface_integrity"]},
+          {"module_id": "vol_source_consensus", "safe_now": true, "outputs": ["source_consensus_score"]},
+          {"module_id": "vol_regime_attribution", "safe_now": true, "outputs": ["regime_attribution"]},
+          {"module_id": "vol_cost_replay", "safe_now": true, "outputs": ["post_cost_replay"]},
+          {"module_id": "vol_capacity_estimator", "safe_now": true, "outputs": ["capacity_estimate"]},
+          {"module_id": "vol_abstention_calibrator", "safe_now": true, "outputs": ["abstention_curve"]},
+          {"module_id": "vol_promotion_evidence", "safe_now": true, "outputs": ["promotion_evidence_packet"]}
+        ]
+      },
+      {
+        "priority": 4,
+        "slug": "event_corporate_action_arb",
+        "current_state": "collection_only_upgraded",
+        "paper_trading_enabled": false,
+        "live_trading_enabled": false,
+        "execution_enabled": false,
+        "allocation_enabled": false,
+        "upgrade_modules": [
+          {"module_id": "event_feature_schema_guard", "safe_now": true, "outputs": ["feature_schema_report"]},
+          {"module_id": "event_timestamp_integrity", "safe_now": true, "outputs": ["timestamp_integrity"]},
+          {"module_id": "event_source_consensus", "safe_now": true, "outputs": ["source_consensus_score"]},
+          {"module_id": "event_regime_attribution", "safe_now": true, "outputs": ["regime_attribution"]},
+          {"module_id": "event_cost_replay", "safe_now": true, "outputs": ["post_cost_replay"]},
+          {"module_id": "event_capacity_estimator", "safe_now": true, "outputs": ["capacity_estimate"]},
+          {"module_id": "event_abstention_calibrator", "safe_now": true, "outputs": ["abstention_curve"]},
+          {"module_id": "event_promotion_evidence", "safe_now": true, "outputs": ["promotion_evidence_packet"]}
+        ]
+      },
+      {
+        "priority": 5,
+        "slug": "international_adr_fx_rates_rv",
+        "current_state": "collection_only_upgraded",
+        "paper_trading_enabled": false,
+        "live_trading_enabled": false,
+        "execution_enabled": false,
+        "allocation_enabled": false,
+        "upgrade_modules": [
+          {"module_id": "international_feature_schema_guard", "safe_now": true, "outputs": ["feature_schema_report"]},
+          {"module_id": "international_fx_alignment", "safe_now": true, "outputs": ["fx_alignment"]},
+          {"module_id": "international_source_consensus", "safe_now": true, "outputs": ["source_consensus_score"]},
+          {"module_id": "international_regime_attribution", "safe_now": true, "outputs": ["regime_attribution"]},
+          {"module_id": "international_cost_replay", "safe_now": true, "outputs": ["post_cost_replay"]},
+          {"module_id": "international_capacity_estimator", "safe_now": true, "outputs": ["capacity_estimate"]},
+          {"module_id": "international_abstention_calibrator", "safe_now": true, "outputs": ["abstention_curve"]},
+          {"module_id": "international_promotion_evidence", "safe_now": true, "outputs": ["promotion_evidence_packet"]}
+        ]
+      },
+      {
+        "priority": 6,
+        "slug": "microstructure_execution_intelligence",
+        "current_state": "collection_only_upgraded",
+        "paper_trading_enabled": false,
+        "live_trading_enabled": false,
+        "execution_enabled": false,
+        "allocation_enabled": false,
+        "upgrade_modules": [
+          {"module_id": "microstructure_feature_schema_guard", "safe_now": true, "outputs": ["feature_schema_report"]},
+          {"module_id": "microstructure_quote_integrity", "safe_now": true, "outputs": ["quote_integrity"]},
+          {"module_id": "microstructure_source_consensus", "safe_now": true, "outputs": ["source_consensus_score"]},
+          {"module_id": "microstructure_regime_attribution", "safe_now": true, "outputs": ["regime_attribution"]},
+          {"module_id": "microstructure_cost_replay", "safe_now": true, "outputs": ["post_cost_replay"]},
+          {"module_id": "microstructure_capacity_estimator", "safe_now": true, "outputs": ["capacity_estimate"]},
+          {"module_id": "microstructure_abstention_calibrator", "safe_now": true, "outputs": ["abstention_curve"]},
+          {"module_id": "microstructure_promotion_evidence", "safe_now": true, "outputs": ["promotion_evidence_packet"]}
+        ]
+      },
+      {
+        "priority": 7,
+        "slug": "capacity_aware_meta_allocator",
+        "current_state": "collection_only_upgraded",
+        "paper_trading_enabled": false,
+        "live_trading_enabled": false,
+        "execution_enabled": false,
+        "allocation_enabled": false,
+        "upgrade_modules": [
+          {"module_id": "allocator_feature_schema_guard", "safe_now": true, "outputs": ["feature_schema_report"]},
+          {"module_id": "allocator_dependency_integrity", "safe_now": true, "outputs": ["dependency_integrity"]},
+          {"module_id": "allocator_source_consensus", "safe_now": true, "outputs": ["source_consensus_score"]},
+          {"module_id": "allocator_regime_attribution", "safe_now": true, "outputs": ["regime_attribution"]},
+          {"module_id": "allocator_cost_replay", "safe_now": true, "outputs": ["post_cost_replay"]},
+          {"module_id": "allocator_capacity_estimator", "safe_now": true, "outputs": ["capacity_estimate"]},
+          {"module_id": "allocator_abstention_calibrator", "safe_now": true, "outputs": ["abstention_curve"]},
+          {"module_id": "allocator_promotion_evidence", "safe_now": true, "outputs": ["promotion_evidence_packet"]}
+        ]
+      }
+    ]
+  }
+}

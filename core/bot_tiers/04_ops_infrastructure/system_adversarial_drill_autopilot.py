@@ -1,0 +1,1 @@
+../../../scripts/ops/system_adversarial_drill_autopilot.py

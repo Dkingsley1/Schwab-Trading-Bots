@@ -1,0 +1,98 @@
+{
+  "schema_version": 1,
+  "updated_utc": "2026-07-27T23:51:06.997919+00:00",
+  "layer": "platform_settlement_stabilization_v1",
+  "section_keys": [
+    "queue_decay_meter",
+    "single_writer_guard",
+    "market_hours_cadence_smoother",
+    "global_clear_settlement_guard",
+    "paper_collection_floor_smoother",
+    "off_hours_drain_plan",
+    "stabilization_effectiveness_memory"
+  ],
+  "controls": [
+    {
+      "id": "queue_decay_meter",
+      "title": "Queue decay meter",
+      "env_key": "SETTLEMENT_QUEUE_DECAY_METER_ENABLED"
+    },
+    {
+      "id": "single_writer_guard",
+      "title": "Single writer guard",
+      "env_key": "SETTLEMENT_SINGLE_WRITER_GUARD_ENABLED"
+    },
+    {
+      "id": "market_hours_cadence_smoother",
+      "title": "Market-hours cadence smoother",
+      "env_key": "SETTLEMENT_MARKET_HOURS_CADENCE_ENABLED"
+    },
+    {
+      "id": "global_clear_settlement_guard",
+      "title": "Global-clear settlement guard",
+      "env_key": "SETTLEMENT_GLOBAL_CLEAR_GUARD_ENABLED"
+    },
+    {
+      "id": "paper_collection_floor_smoother",
+      "title": "Paper collection floor smoother",
+      "env_key": "SETTLEMENT_PAPER_COLLECTION_FLOOR_ENABLED"
+    },
+    {
+      "id": "off_hours_drain_plan",
+      "title": "Off-hours drain plan",
+      "env_key": "SETTLEMENT_OFF_HOURS_DRAIN_PLAN_ENABLED"
+    },
+    {
+      "id": "stabilization_effectiveness_memory",
+      "title": "Stabilization effectiveness memory",
+      "env_key": "SETTLEMENT_EFFECTIVENESS_MEMORY_ENABLED"
+    }
+  ],
+  "infra_assignments": {
+    "queue_decay_meter": [
+      "queue_decay_meter_bot",
+      "backpressure_slo_bot",
+      "storage_backpressure_autopilot"
+    ],
+    "single_writer_guard": [
+      "single_writer_settlement_guard",
+      "writer_cycle_coordinator",
+      "sql_link_writer_watchdog"
+    ],
+    "market_hours_cadence_smoother": [
+      "market_hours_cadence_infrabot",
+      "runtime_throttle_control",
+      "pressure_relief_governor"
+    ],
+    "global_clear_settlement_guard": [
+      "global_halt_clearance_watcher",
+      "global_killswitch_monitor",
+      "remote_alert_control"
+    ],
+    "paper_collection_floor_smoother": [
+      "paper_collection_floor_infrabot",
+      "paper_400_ramp_control",
+      "collector_priority_ranker"
+    ],
+    "off_hours_drain_plan": [
+      "off_hours_drain_scheduler",
+      "external_backlog_retry_bot",
+      "retention_debt_sheriff"
+    ],
+    "stabilization_effectiveness_memory": [
+      "stabilization_memory_writer",
+      "self_model_lesson_linker",
+      "fix_effectiveness_replay_scorer"
+    ]
+  },
+  "artifacts": {
+    "queue_decay_meter": "/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/platform_settlement_stabilization/queue_decay_meter_latest.json",
+    "single_writer_guard": "/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/platform_settlement_stabilization/single_writer_guard_latest.json",
+    "market_hours_cadence_smoother": "/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/platform_settlement_stabilization/market_hours_cadence_smoother_latest.json",
+    "global_clear_settlement_guard": "/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/platform_settlement_stabilization/global_clear_settlement_guard_latest.json",
+    "paper_collection_floor_smoother": "/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/platform_settlement_stabilization/paper_collection_floor_smoother_latest.json",
+    "off_hours_drain_plan": "/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/platform_settlement_stabilization/off_hours_drain_plan_latest.json",
+    "stabilization_effectiveness_memory": "/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/platform_settlement_stabilization/stabilization_effectiveness_memory_latest.json",
+    "infrabot_assignments": "/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/platform_settlement_stabilization/infrabot_assignments_latest.json"
+  }
+}

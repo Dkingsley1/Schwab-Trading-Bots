@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "rotation": {
+    "api_keys_days": 30,
+    "broker_tokens_days": 7,
+    "signing_keys_days": 90
+  },
+  "owners": [
+    "audit_reviewer",
+    "risk_operator"
+  ],
+  "emergency_controls": [
+    "rotate_partner_api_keys",
+    "reissue_broker_auth",
+    "invalidate_response_signing_key"
+  ],
+  "notes": [
+    "Apply shorter token rotation for broker auth than for partner signing keys.",
+    "Treat emergency rotations as auditable governance events with a linked incident or ticket."
+  ]
+}

@@ -1,16 +1,72 @@
 import argparse
 import csv
 import fcntl
+import gzip
 import json
 import os
+import re
 import sqlite3
+import zipfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Iterable
+from typing import Any, Iterable
+from xml.sax.saxutils import escape
+from zoneinfo import ZoneInfo
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_DB = PROJECT_ROOT / "data" / "jsonl_link.sqlite3"
+LOCAL_FALLBACK_ROOT = PROJECT_ROOT / "local_fallback_storage"
+DEFAULT_REPORT_TIMEZONE = "America/New_York"
+DEFAULT_ROLLUP_HISTORY_PATH = PROJECT_ROOT / "governance" / "health" / "one_numbers_rollup_history.json"
+DEFAULT_ROLLUP_HISTORY_MAX_DAYS = 400
+DAY_SUFFIX_RE = re.compile(r"_(\d{8})\.jsonl$")
+RAW_JSONL_DAY_RE = re.compile(r"_(\d{8})\.jsonl(?:\.gz)?$")
+ONE_NUMBERS_ARTIFACT_RE = re.compile(r"^one_numbers_(\d{8})_\d{8}_\d{6}\.csv$")
+ONE_NUMBERS_START_DAY_ENV_NAMES = (
+    "ONE_NUMBERS_ORIGINAL_START_DAY",
+    "ONE_NUMBERS_EXPECTED_START_DAY",
+    "INFRA_SUPERVISOR_ONE_NUMBERS_START_DAY",
+)
+ROLLUP_HISTORY_METRIC_KEYS = (
+    "combined_decision_total_rows",
+    "combined_governance_total_rows",
+    "combined_blocked_total",
+    "data_blocked_total",
+    "risk_blocked_total",
+    "paper_executed_total",
+    "watchdog_restarts",
+    "data_quality_score",
+)
+
+
+def _emit_progress(message: str) -> None:
+    print(message, flush=True)
+
+
+def _local_fallback_equivalent(path: Path) -> Path:
+    candidate = Path(path).expanduser()
+    try:
+        rel = candidate.relative_to(PROJECT_ROOT)
+    except ValueError:
+        return candidate
+    if rel.parts and rel.parts[0] == LOCAL_FALLBACK_ROOT.name:
+        return candidate
+    return LOCAL_FALLBACK_ROOT / rel
+
+
+def _is_broken_symlink(path: Path) -> bool:
+    try:
+        return path.is_symlink() and not path.exists()
+    except OSError:
+        return False
+
+
+def _routed_or_local_fallback_path(path: Path) -> Path:
+    candidate = Path(path).expanduser()
+    if _is_broken_symlink(candidate):
+        return _local_fallback_equivalent(candidate)
+    return candidate
 
 
 def _acquire_singleton_lock(lock_path: Path):
@@ -34,13 +90,548 @@ def _acquire_singleton_lock(lock_path: Path):
     return fh
 
 
-def _write_kv_csv(path: Path, rows: list[tuple[str, str]]) -> None:
+def _metric_value_to_str(value: object) -> str:
+    if isinstance(value, bool):
+        return str(value).lower()
+    if value is None:
+        return ""
+    return str(value)
+
+
+def _rows_from_summary_payload(payload: dict[str, object]) -> list[tuple[str, str]]:
+    ordered_keys = [
+        "report_section_01",
+        "day_utc",
+        "requested_day",
+        "resolved_day",
+        "day_fallback_applied",
+        "historical_coverage_status",
+        "all_time_coverage_complete",
+        "original_start_day",
+        "original_start_source",
+        "rollup_history_days_available",
+        "earliest_rollup_day",
+        "latest_rollup_day",
+        "source_days_discovered",
+        "earliest_source_day",
+        "latest_source_day",
+        "source_days_missing_from_rollup_count",
+        "historical_coverage_detail",
+        "generated_utc",
+        "db_path",
+        "report_section_02",
+        "combined_decision_total_rows",
+        "combined_governance_total_rows",
+        "combined_blocked_total",
+        "combined_blocked_rate",
+        "raw_data_blocked_total",
+        "raw_data_blocked_rate",
+        "observe_only_data_blocked_total",
+        "observe_only_data_blocked_rate",
+        "data_blocked_total",
+        "data_blocked_rate",
+        "risk_blocked_total",
+        "risk_blocked_rate",
+        "effective_blocked_rate",
+        "data_quality_score",
+        "paper_executed_total",
+        "watchdog_restarts",
+        "report_section_02b",
+        "backpressure_quality_score",
+        "backpressure_quality_label",
+        "backpressure_steady_state_ready",
+        "backpressure_target_breach_count",
+        "pressure_index",
+        "core_pending_lines",
+        "estimated_total_drain_minutes",
+        "stale_stage_pending_lines",
+        "backpressure_target_breaches",
+        "report_section_03",
+        "month_to_date_days_covered",
+        "month_to_date_decision_total_rows",
+        "month_to_date_governance_total_rows",
+        "month_to_date_blocked_total",
+        "month_to_date_data_blocked_total",
+        "month_to_date_risk_blocked_total",
+        "month_to_date_paper_executed_total",
+        "month_to_date_watchdog_restarts",
+        "month_to_date_avg_data_quality_score",
+        "report_section_04",
+        "all_time_days_covered",
+        "all_time_decision_total_rows",
+        "all_time_governance_total_rows",
+        "all_time_blocked_total",
+        "all_time_data_blocked_total",
+        "all_time_risk_blocked_total",
+        "all_time_paper_executed_total",
+        "all_time_watchdog_restarts",
+        "all_time_avg_data_quality_score",
+        "report_section_05",
+    ]
+    rows: list[tuple[str, str]] = []
+    seen: set[str] = set()
+    for key in ordered_keys:
+        if key not in payload:
+            continue
+        rows.append((key, _metric_value_to_str(payload[key])))
+        seen.add(key)
+    for key, value in payload.items():
+        key_str = str(key)
+        if key_str in seen or key_str.startswith("report_section_"):
+            continue
+        rows.append((key_str, _metric_value_to_str(value)))
+    return rows
+
+
+def _write_one_numbers_markdown(path: Path, rows: list[tuple[str, str]], *, csv_reference: Path | None = None) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    row_map = {str(metric): str(value) for metric, value in rows}
+
+    def _row_int(key: str, default: int = 0) -> int:
+        return _safe_int(row_map.get(key), default)
+
+    def _row_float(key: str, default: float = 0.0) -> float:
+        return _safe_float(row_map.get(key), default)
+
+    def _row_bool(key: str, default: bool = False) -> bool:
+        raw = str(row_map.get(key, str(default).lower())).strip().lower()
+        if raw in {"1", "true", "yes", "on"}:
+            return True
+        if raw in {"0", "false", "no", "off"}:
+            return False
+        return default
+
+    def _row_text(key: str, default: str = "") -> str:
+        return str(row_map.get(key, default))
+
+    day = row_map.get("resolved_day") or row_map.get("day_utc") or row_map.get("requested_day") or "unknown"
+    generated_utc = row_map.get("generated_utc", "")
+    requested_day = row_map.get("requested_day", "")
+    resolved_day = row_map.get("resolved_day", day)
+    report_mode = row_map.get("report_mode", "full")
+
+    md_lines = [
+        f"# One Numbers Report ({day})",
+        "",
+        f"Generated: {generated_utc}",
+        f"Requested day: {requested_day}",
+        f"Resolved day: {resolved_day}",
+        f"Report mode: {report_mode}",
+    ]
+    if _row_bool("lightweight_detail_fields_partial"):
+        md_lines.append("Detail fidelity: lightweight cached refresh (rollups are current; some detailed fields may lag the last full build)")
+    md_lines.extend(
+        [
+            "",
+            "## Current Day",
+            f"- Decisions: {_row_int('combined_decision_total_rows')}",
+            f"- Governance rows: {_row_int('combined_governance_total_rows')}",
+            f"- Blocked total: {_row_int('combined_blocked_total')} ({_fmt_pct(_row_float('combined_blocked_rate'))})",
+            f"- Data-blocked total: {_row_int('data_blocked_total')} ({_fmt_pct(_row_float('data_blocked_rate'))})",
+            f"- Risk-blocked total: {_row_int('risk_blocked_total')} ({_fmt_pct(_row_float('risk_blocked_rate'))})",
+            f"- Effective blocked rate: {_fmt_pct(_row_float('effective_blocked_rate'))}",
+            f"- Data quality score: {_row_float('data_quality_score'):.2f}/100",
+            f"- Paper executions: {_row_int('paper_executed_total')}",
+            f"- Watchdog restarts: {_row_int('watchdog_restarts')}",
+            "",
+            "## Backpressure Scorecard",
+            f"- Backpressure quality score: {_row_float('backpressure_quality_score'):.2f}/100",
+            f"- Quality label: {row_map.get('backpressure_quality_label', 'unknown')}",
+            f"- Steady-state ready: {str(_row_bool('backpressure_steady_state_ready')).lower()}",
+            f"- Pressure index: {_row_float('pressure_index'):.3f}",
+            f"- Core pending lines: {_row_int('core_pending_lines')}",
+            f"- Estimated total drain minutes: {_row_text('estimated_total_drain_minutes', 'n/a')}",
+            f"- Stale-stage pending lines: {_row_int('stale_stage_pending_lines')}",
+            f"- Target breaches: {row_map.get('backpressure_target_breaches', 'none') or 'none'}",
+            "",
+            "## Month To Date",
+            f"- Days covered: {_row_int('month_to_date_days_covered')}",
+            f"- Decisions: {_row_int('month_to_date_decision_total_rows')}",
+            f"- Governance rows: {_row_int('month_to_date_governance_total_rows')}",
+            f"- Blocked total: {_row_int('month_to_date_blocked_total')}",
+            f"- Data-blocked total: {_row_int('month_to_date_data_blocked_total')}",
+            f"- Risk-blocked total: {_row_int('month_to_date_risk_blocked_total')}",
+            f"- Paper executions: {_row_int('month_to_date_paper_executed_total')}",
+            f"- Watchdog restarts: {_row_int('month_to_date_watchdog_restarts')}",
+            f"- Avg data quality score: {_row_float('month_to_date_avg_data_quality_score'):.2f}/100",
+            "",
+            "## All Time",
+            f"- Days covered: {_row_int('all_time_days_covered')}",
+            f"- Decisions: {_row_int('all_time_decision_total_rows')}",
+            f"- Governance rows: {_row_int('all_time_governance_total_rows')}",
+            f"- Blocked total: {_row_int('all_time_blocked_total')}",
+            f"- Data-blocked total: {_row_int('all_time_data_blocked_total')}",
+            f"- Risk-blocked total: {_row_int('all_time_risk_blocked_total')}",
+            f"- Paper executions: {_row_int('all_time_paper_executed_total')}",
+            f"- Watchdog restarts: {_row_int('all_time_watchdog_restarts')}",
+            f"- Avg data quality score: {_row_float('all_time_avg_data_quality_score'):.2f}/100",
+            "",
+            "## Diagnostics",
+            f"- Decision stale windows (4h): {_row_int('decision_stale_windows_4h')}",
+            f"- Governance stale windows (4h): {_row_int('governance_stale_windows_4h')}",
+            f"- Storage mode: {row_map.get('ops_storage_mode', 'unknown')}",
+            f"- Logs target: {row_map.get('ops_storage_logs_target', 'unknown')}",
+            (
+                "- Historical coverage: "
+                f"{row_map.get('historical_coverage_status', 'unknown')} "
+                f"(complete={row_map.get('all_time_coverage_complete', 'false')}, "
+                f"start={row_map.get('original_start_day', 'unconfigured') or 'unconfigured'}, "
+                f"rollup_days={row_map.get('rollup_history_days_available', '0')}, "
+                f"source_days={row_map.get('source_days_discovered', '0')})"
+            ),
+            f"- Historical coverage detail: {row_map.get('historical_coverage_detail', 'n/a') or 'n/a'}",
+            "",
+            "## Alerts",
+            f"- ALERT_WATCHDOG_RESTARTS: {str(_row_bool('ALERT_WATCHDOG_RESTARTS')).lower()}",
+            f"- ALERT_STALE_WINDOWS: {str(_row_bool('ALERT_STALE_WINDOWS')).lower()}",
+            f"- ALERT_BLOCKED_RATE: {str(_row_bool('ALERT_BLOCKED_RATE')).lower()}",
+            f"- ALERT_DATA_QUALITY: {str(_row_bool('ALERT_DATA_QUALITY')).lower()}",
+        ]
+    )
+    if csv_reference is not None:
+        md_lines.extend(["", f"CSV: `{csv_reference}`"])
+    path.write_text("\n".join(md_lines) + "\n", encoding="utf-8")
+
+
+def _refresh_latest_artifact_aliases(*, out_dir: Path, csv_path: Path, md_path: Path, xlsx_path: Path) -> tuple[Path, Path, Path]:
+    latest_csv = out_dir / "latest.csv"
+    latest_md = out_dir / "latest.md"
+    latest_xlsx = out_dir / "latest.xlsx"
+    for alias_path in (latest_csv, latest_md, latest_xlsx):
+        if alias_path.exists() or alias_path.is_symlink():
+            alias_path.unlink()
+    latest_csv.symlink_to(csv_path.name)
+    latest_md.symlink_to(md_path.name)
+    latest_xlsx.symlink_to(xlsx_path.name)
+    return latest_csv, latest_md, latest_xlsx
+
+
+def _refresh_latest_metrics_alias(*, out_dir: Path, metrics_csv_path: Path) -> Path:
+    latest_metrics_csv = out_dir / "latest_metrics.csv"
+    if latest_metrics_csv.exists() or latest_metrics_csv.is_symlink():
+        latest_metrics_csv.unlink()
+    latest_metrics_csv.symlink_to(metrics_csv_path.name)
+    return latest_metrics_csv
+
+
+def _report_day_rank(day: object) -> int:
+    raw = str(day or "").strip()
+    if re.fullmatch(r"\d{8}", raw):
+        return int(raw)
+    return -1
+
+
+def _payload_report_day(payload: dict[str, object]) -> str:
+    return str(payload.get("resolved_day") or payload.get("day_utc") or payload.get("requested_day") or "").strip()
+
+
+def _current_latest_report_day(out_dir: Path) -> str:
+    candidates: list[str] = []
+    for path in (out_dir / "one_numbers_summary.json", PROJECT_ROOT / "governance" / "health" / "one_numbers_latest.json"):
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+        except Exception:
+            payload = {}
+        if isinstance(payload, dict):
+            day = _payload_report_day(payload)
+            if day:
+                candidates.append(day)
+    if out_dir.exists():
+        for path in out_dir.iterdir():
+            match = ONE_NUMBERS_ARTIFACT_RE.match(path.name)
+            if match:
+                candidates.append(match.group(1))
+    return max(candidates, key=_report_day_rank, default="")
+
+
+def _should_update_one_numbers_latest(out_dir: Path, payload: dict[str, object]) -> bool:
+    new_day = _payload_report_day(payload)
+    current_day = _current_latest_report_day(out_dir)
+    if not current_day:
+        return True
+    return _report_day_rank(new_day) >= _report_day_rank(current_day)
+
+
+def _xlsx_col_name(index: int) -> str:
+    name = ""
+    current = max(index, 1)
+    while current:
+        current, rem = divmod(current - 1, 26)
+        name = chr(65 + rem) + name
+    return name
+
+
+def _xlsx_inline_cell(ref: str, value: str, style: int = 0) -> str:
+    escaped = escape(str(value))
+    style_attr = f' s="{style}"' if style else ""
+    return f'<c r="{ref}" t="inlineStr"{style_attr}><is><t xml:space="preserve">{escaped}</t></is></c>'
+
+
+def _humanize_metric_label(metric: str) -> str:
+    text = str(metric or "").strip().replace("_", " ")
+    if not text:
+        return ""
+    text = text.title()
+    replacements = {
+        "Utc": "UTC",
+        "Pnl": "PnL",
+        "Sql": "SQL",
+        "Db": "DB",
+        "Pct": "Pct",
+        "1H": "1H",
+        "4H": "4H",
+        "15M": "15M",
+        "Mtd": "MTD",
+    }
+    for src, dst in replacements.items():
+        text = text.replace(src, dst)
+    return text
+
+
+def _one_numbers_metric_label(metric: str) -> str:
+    overrides = {
+        "generated_utc": "Generated UTC",
+        "day_utc": "Report Day (UTC)",
+        "requested_day": "Requested Day",
+        "resolved_day": "Resolved Day",
+        "day_fallback_applied": "Day Fallback Applied",
+        "historical_coverage_status": "Historical Coverage Status",
+        "all_time_coverage_complete": "All Time Coverage Complete",
+        "original_start_day": "Original Start Day",
+        "original_start_source": "Original Start Source",
+        "rollup_history_days_available": "Rollup History Days Available",
+        "earliest_rollup_day": "Earliest Rollup Day",
+        "latest_rollup_day": "Latest Rollup Day",
+        "source_days_discovered": "Source Days Discovered",
+        "earliest_source_day": "Earliest Source Day",
+        "latest_source_day": "Latest Source Day",
+        "source_days_missing_from_rollup_count": "Source Days Missing From Rollup Count",
+        "historical_coverage_detail": "Historical Coverage Detail",
+        "db_path": "Database Path",
+        "report_mode": "Report Mode",
+        "lightweight_detail_fields_partial": "Lightweight Detail Fields Partial",
+    }
+    return overrides.get(str(metric), _humanize_metric_label(metric))
+
+
+def _one_numbers_display_rows(rows: list[tuple[str, str]]) -> list[tuple[str, str, str, str]]:
+    row_map = {str(metric): str(value) for metric, value in rows}
+    metadata_keys = [
+        "generated_utc",
+        "day_utc",
+        "requested_day",
+        "resolved_day",
+        "day_fallback_applied",
+        "historical_coverage_status",
+        "all_time_coverage_complete",
+        "original_start_day",
+        "original_start_source",
+        "rollup_history_days_available",
+        "earliest_rollup_day",
+        "latest_rollup_day",
+        "source_days_discovered",
+        "earliest_source_day",
+        "latest_source_day",
+        "source_days_missing_from_rollup_count",
+        "historical_coverage_detail",
+        "report_mode",
+        "lightweight_detail_fields_partial",
+        "db_path",
+    ]
+    section_name_map = {
+        "Report Metadata": "Report Metadata",
+        "Current Day": "Current Day",
+        "Backpressure Scorecard": "Backpressure Scorecard",
+        "Month To Date": "Month To Date",
+        "All Time": "All Time",
+        "Detailed Metrics": "Detailed Metrics",
+    }
+    display_rows: list[tuple[str, str, str, str]] = []
+    for key in metadata_keys:
+        if key not in row_map:
+            continue
+        display_rows.append(("Report Metadata", _one_numbers_metric_label(key), row_map[key], key))
+
+    current_section = "Report Metadata"
+    for metric, value in rows:
+        metric_str = str(metric)
+        value_str = str(value)
+        if metric_str.startswith("report_section_"):
+            current_section = section_name_map.get(value_str, value_str)
+            continue
+        if metric_str in metadata_keys:
+            continue
+        display_rows.append((current_section or "Detailed Metrics", _one_numbers_metric_label(metric_str), value_str, metric_str))
+    return display_rows
+
+
+def _write_one_numbers_metrics_csv(path: Path, rows: list[tuple[str, str]]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", newline="", encoding="utf-8") as f:
         w = csv.writer(f)
-        w.writerow(["metric", "value"])
-        for r in rows:
-            w.writerow(list(r))
+        w.writerow(["section", "label", "value", "metric"])
+        for section, label, value, metric in _one_numbers_display_rows(rows):
+            w.writerow([section, label, value, metric])
+
+
+def _write_one_numbers_csv(path: Path, rows: list[tuple[str, str]]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    display_rows = _one_numbers_display_rows(rows)
+    with path.open("w", newline="", encoding="utf-8") as f:
+        w = csv.writer(f)
+        w.writerow(["label", "value"])
+        last_section = ""
+        for section, label, value, _metric in display_rows:
+            if section != last_section:
+                if last_section:
+                    w.writerow(["", ""])
+                w.writerow([section, ""])
+                last_section = section
+            w.writerow([label, value])
+
+
+def _report_title_date(day_value: str) -> str:
+    raw = str(day_value or "").strip()
+    if not raw:
+        return "Unknown Date"
+    try:
+        return datetime.strptime(raw, "%Y%m%d").strftime("%B %d, %Y")
+    except Exception:
+        return raw
+
+
+def _write_one_numbers_xlsx(path: Path, rows: list[tuple[str, str]]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    row_map = {str(metric): str(value) for metric, value in rows}
+    logical_rows: list[tuple[str, str, int]] = []
+
+    day = row_map.get("resolved_day") or row_map.get("day_utc") or row_map.get("requested_day") or "unknown"
+    logical_rows.append((f"One Numbers Report ({_report_title_date(day)})", "", 2))
+    logical_rows.append(("", "", 0))
+    for label, metric in [
+        ("Generated", "generated_utc"),
+        ("Requested Day", "requested_day"),
+        ("Resolved Day", "resolved_day"),
+        ("Day Fallback Applied", "day_fallback_applied"),
+    ]:
+        if metric in row_map:
+            logical_rows.append((label, row_map[metric], 0))
+    if "db_path" in row_map:
+        logical_rows.append(("Database Path", row_map["db_path"], 0))
+    logical_rows.append(("", "", 0))
+
+    section_name_map = {
+        "Report Metadata": "Report Metadata",
+        "Current Day": "Combined",
+        "Month To Date": "Month To Date",
+        "All Time": "All Time",
+        "Detailed Metrics": "Detailed Metrics",
+    }
+    current_section = ""
+    first_section = True
+    for metric, value in rows:
+        metric_str = str(metric)
+        value_str = str(value)
+        if metric_str.startswith("report_section_"):
+            section_title = section_name_map.get(value_str, value_str)
+            if section_title == "Report Metadata":
+                current_section = section_title
+                continue
+            if not first_section:
+                logical_rows.append(("", "", 0))
+            logical_rows.append((section_title, "", 1))
+            first_section = False
+            current_section = section_title
+            continue
+        if metric_str in {"day_utc", "generated_utc", "requested_day", "resolved_day", "day_fallback_applied", "db_path"}:
+            continue
+        label = _humanize_metric_label(metric_str)
+        logical_rows.append((label, value_str, 0))
+
+    row_xml: list[str] = []
+    used_rows = max(len(logical_rows), 1)
+    for row_index, (left, right, style) in enumerate(logical_rows, start=1):
+        cells = [
+            _xlsx_inline_cell(f"{_xlsx_col_name(1)}{row_index}", left, style),
+            _xlsx_inline_cell(f"{_xlsx_col_name(2)}{row_index}", right, style),
+        ]
+        row_xml.append(f'<row r="{row_index}" spans="1:2">{"".join(cells)}</row>')
+
+    worksheet_xml = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
+        f'<dimension ref="A1:B{used_rows}"/>'
+        f'<sheetViews><sheetView workbookViewId="0" tabSelected="1"><selection activeCell="A1" sqref="A1:B{used_rows}"/></sheetView></sheetViews>'
+        '<sheetFormatPr defaultRowHeight="15"/>'
+        '<cols>'
+        '<col min="1" max="1" width="38" customWidth="1"/>'
+        '<col min="2" max="2" width="68" customWidth="1"/>'
+        '<col min="3" max="16384" width="0" hidden="1" customWidth="1"/>'
+        '</cols>'
+        f'<sheetData>{"".join(row_xml)}</sheetData>'
+        '</worksheet>'
+    )
+    styles_xml = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        '<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
+        '<fonts count="3">'
+        '<font><sz val="11"/><name val="Aptos"/></font>'
+        '<font><b/><sz val="11"/><name val="Aptos"/></font>'
+        '<font><b/><sz val="15"/><name val="Aptos"/></font>'
+        '</fonts>'
+        '<fills count="3">'
+        '<fill><patternFill patternType="none"/></fill>'
+        '<fill><patternFill patternType="gray125"/></fill>'
+        '<fill><patternFill patternType="solid"><fgColor rgb="FFDEDEDE"/><bgColor indexed="64"/></patternFill></fill>'
+        '</fills>'
+        '<borders count="1"><border><left/><right/><top/><bottom/><diagonal/></border></borders>'
+        '<cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>'
+        '<cellXfs count="3">'
+        '<xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/>'
+        '<xf numFmtId="0" fontId="1" fillId="2" borderId="0" xfId="0" applyFont="1" applyFill="1"/>'
+        '<xf numFmtId="0" fontId="2" fillId="2" borderId="0" xfId="0" applyFont="1" applyFill="1"/>'
+        '</cellXfs>'
+        '<cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles>'
+        '</styleSheet>'
+    )
+    workbook_xml = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        '<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" '
+        'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'
+        '<sheets><sheet name="One Numbers" sheetId="1" r:id="rId1"/></sheets>'
+        '</workbook>'
+    )
+    workbook_rels_xml = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+        '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>'
+        '<Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>'
+        '</Relationships>'
+    )
+    root_rels_xml = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+        '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>'
+        '</Relationships>'
+    )
+    content_types_xml = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
+        '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>'
+        '<Default Extension="xml" ContentType="application/xml"/>'
+        '<Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>'
+        '<Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>'
+        '<Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>'
+        '</Types>'
+    )
+
+    with zipfile.ZipFile(path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("[Content_Types].xml", content_types_xml)
+        zf.writestr("_rels/.rels", root_rels_xml)
+        zf.writestr("xl/workbook.xml", workbook_xml)
+        zf.writestr("xl/_rels/workbook.xml.rels", workbook_rels_xml)
+        zf.writestr("xl/styles.xml", styles_xml)
+        zf.writestr("xl/worksheets/sheet1.xml", worksheet_xml)
 
 
 def _q1(conn: sqlite3.Connection, sql: str, params: tuple = ()):
@@ -75,6 +666,982 @@ def _read_json(path: Path) -> dict:
         return json.loads(path.read_text(encoding="utf-8"))
     except Exception:
         return {}
+
+
+def _sqlite_is_locked(exc: Exception) -> bool:
+    return "locked" in str(exc).lower()
+
+
+def _raw_jsonl_paths(project_root: Path, day: str, bucket: str) -> list[Path]:
+    if bucket == "decision":
+        candidates: list[Path] = []
+        for root in _one_numbers_source_scan_roots(project_root):
+            explanations_root = root / "decision_explanations"
+            if explanations_root.exists():
+                candidates.extend(
+                    path
+                    for path in explanations_root.glob(f"*/decision_explanations_{day}.jsonl*")
+                    if path.name.endswith(".jsonl") or path.name.endswith(".jsonl.gz")
+                )
+        if candidates:
+            return sorted(candidates)
+        trade_candidates: list[Path] = []
+        for root in _one_numbers_source_scan_roots(project_root):
+            decisions_root = root / "decisions"
+            if decisions_root.exists():
+                trade_candidates.extend(
+                    path
+                    for path in decisions_root.glob(f"*/trade_decisions_{day}.jsonl*")
+                    if path.name.endswith(".jsonl") or path.name.endswith(".jsonl.gz")
+                )
+        return sorted(trade_candidates)
+    elif bucket == "governance":
+        root = project_root / "governance"
+        pattern = f"shadow*/master_control_{day}.jsonl*"
+    elif bucket == "watchdog":
+        root = project_root / "governance" / "watchdog"
+        pattern = f"watchdog_events_{day}.jsonl*"
+    else:
+        return []
+    if not root.exists():
+        return []
+    return sorted(path for path in root.glob(pattern) if path.name.endswith(".jsonl") or path.name.endswith(".jsonl.gz"))
+
+
+def _raw_jsonl_days(project_root: Path, bucket: str) -> dict[str, list[Path]]:
+    if bucket == "decision":
+        out: dict[str, list[Path]] = {}
+        for root in _one_numbers_source_scan_roots(project_root):
+            for child_root, pattern in (
+                (root / "decision_explanations", "*/decision_explanations_*.jsonl*"),
+                (root / "decisions", "*/trade_decisions_*.jsonl*"),
+            ):
+                if not child_root.exists():
+                    continue
+                for path in child_root.glob(pattern):
+                    if not (path.name.endswith(".jsonl") or path.name.endswith(".jsonl.gz")):
+                        continue
+                    match = RAW_JSONL_DAY_RE.search(path.name)
+                    if not match:
+                        continue
+                    out.setdefault(match.group(1), []).append(path)
+        return {day: sorted(paths) for day, paths in out.items()}
+    elif bucket == "governance":
+        root = project_root / "governance"
+        pattern = "shadow*/master_control_*.jsonl*"
+    else:
+        return {}
+    if not root.exists():
+        return {}
+    out: dict[str, list[Path]] = {}
+    for path in root.glob(pattern):
+        if not (path.name.endswith(".jsonl") or path.name.endswith(".jsonl.gz")):
+            continue
+        match = RAW_JSONL_DAY_RE.search(path.name)
+        if not match:
+            continue
+        out.setdefault(match.group(1), []).append(path)
+    return {day: sorted(paths) for day, paths in out.items()}
+
+
+def _normalize_coverage_day(raw: object) -> str:
+    text = str(raw or "").strip().replace("-", "")
+    if not re.fullmatch(r"20\d{6}", text):
+        return ""
+    try:
+        datetime.strptime(text, "%Y%m%d")
+    except Exception:
+        return ""
+    return text
+
+
+def _expected_one_numbers_start_day(project_root: Path) -> tuple[str, str]:
+    for env_name in ONE_NUMBERS_START_DAY_ENV_NAMES:
+        day = _normalize_coverage_day(os.getenv(env_name))
+        if day:
+            return day, f"env:{env_name}"
+    config_path = project_root / "config" / "one_numbers_start_day.txt"
+    try:
+        for raw_line in config_path.read_text(encoding="utf-8").splitlines():
+            line = raw_line.split("#", 1)[0].strip()
+            day = _normalize_coverage_day(line)
+            if day:
+                return day, str(config_path)
+    except Exception:
+        pass
+    return "", ""
+
+
+def _active_storage_project_root(project_root: Path) -> Path | None:
+    route_status = _read_json(project_root / "governance" / "health" / "storage_route_status_latest.json")
+    raw_root = str(route_status.get("active_root") or "").strip()
+    if not raw_root:
+        return None
+    root = Path(raw_root).expanduser()
+    return root if root.exists() else None
+
+
+def _one_numbers_source_scan_roots(project_root: Path) -> list[Path]:
+    raw_roots = [project_root, project_root / "local_fallback_storage"]
+    active_root = _active_storage_project_root(project_root)
+    if active_root is not None:
+        raw_roots.append(active_root)
+    roots: list[Path] = []
+    seen: set[str] = set()
+    for root in raw_roots:
+        if not root.exists():
+            continue
+        try:
+            key = str(root.resolve())
+        except Exception:
+            key = str(root)
+        if key in seen:
+            continue
+        seen.add(key)
+        roots.append(root)
+    return roots
+
+
+def _one_numbers_source_day_set(project_root: Path) -> set[str]:
+    limit = max(_safe_int(os.getenv("ONE_NUMBERS_SOURCE_SCAN_FILE_LIMIT"), 50000), 1)
+    patterns = (
+        "decision_explanations/**/decision_explanations_*.jsonl*",
+        "decisions/**/trade_decisions_*.jsonl*",
+        "governance/**/master_control_*.jsonl*",
+    )
+    days: set[str] = set()
+    scanned = 0
+    for root in _one_numbers_source_scan_roots(project_root):
+        for pattern in patterns:
+            try:
+                iterator = root.glob(pattern)
+            except Exception:
+                continue
+            for path in iterator:
+                if scanned >= limit:
+                    return days
+                try:
+                    if not path.is_file():
+                        continue
+                except Exception:
+                    continue
+                scanned += 1
+                match = RAW_JSONL_DAY_RE.search(path.name)
+                if not match:
+                    continue
+                day = _normalize_coverage_day(match.group(1))
+                if day:
+                    days.add(day)
+    return days
+
+
+def _one_numbers_coverage_metadata(project_root: Path, history: dict[str, dict[str, object]]) -> dict[str, str]:
+    history_days = sorted(day for day in (_normalize_coverage_day(day) for day in history.keys()) if day)
+    history_day_set = set(history_days)
+    source_days = sorted(_one_numbers_source_day_set(project_root))
+    source_day_set = set(source_days)
+    expected_start_day, expected_start_source = _expected_one_numbers_start_day(project_root)
+    earliest_history_day = history_days[0] if history_days else ""
+    latest_history_day = history_days[-1] if history_days else ""
+    earliest_source_day = source_days[0] if source_days else ""
+    latest_source_day = source_days[-1] if source_days else ""
+    source_days_missing_from_history = sorted(source_day_set - history_day_set)
+    missing_since_start = (
+        [day for day in source_days_missing_from_history if day >= expected_start_day]
+        if expected_start_day
+        else source_days_missing_from_history
+    )
+
+    status = "ready"
+    detail = "durable rollup covers the configured original start and discovered source days"
+    if not history_days:
+        status = "blocked"
+        detail = "durable rollup history is missing"
+    elif not expected_start_day:
+        status = "degraded"
+        detail = "original start day is not pinned, so all-time coverage cannot be proven"
+    elif earliest_history_day and earliest_history_day > expected_start_day:
+        status = "degraded"
+        detail = f"rollup history starts at {earliest_history_day}, after configured original start {expected_start_day}"
+    elif missing_since_start:
+        status = "degraded"
+        detail = "discovered source days are missing from durable rollup history"
+
+    coverage_complete = bool(
+        status == "ready"
+        and expected_start_day
+        and earliest_history_day
+        and earliest_history_day <= expected_start_day
+        and not missing_since_start
+    )
+    return {
+        "historical_coverage_status": status,
+        "all_time_coverage_complete": str(coverage_complete).lower(),
+        "original_start_day": expected_start_day,
+        "original_start_source": expected_start_source,
+        "rollup_history_days_available": str(len(history_days)),
+        "earliest_rollup_day": earliest_history_day,
+        "latest_rollup_day": latest_history_day,
+        "source_days_discovered": str(len(source_days)),
+        "earliest_source_day": earliest_source_day,
+        "latest_source_day": latest_source_day,
+        "source_days_missing_from_rollup_count": str(len(source_days_missing_from_history)),
+        "source_days_missing_from_rollup_sample": ",".join(source_days_missing_from_history[:12]),
+        "historical_coverage_detail": detail,
+    }
+
+
+def _resolve_raw_jsonl_report_day(project_root: Path, requested_day: str) -> str:
+    requested = str(requested_day or "").strip() or _default_report_day()
+    decision_days = sorted(_raw_jsonl_days(project_root, "decision"))
+    governance_days = sorted(_raw_jsonl_days(project_root, "governance"))
+    if requested in decision_days:
+        return requested
+    if requested in governance_days:
+        return requested
+    prior_decision_days = [day for day in decision_days if day <= requested]
+    prior_governance_days = [day for day in governance_days if day <= requested]
+    prior_days = sorted(set(prior_decision_days) | set(prior_governance_days))
+    if prior_days:
+        return prior_days[-1]
+    all_days = sorted(set(decision_days) | set(governance_days))
+    return all_days[-1] if all_days else requested
+
+
+def _iter_raw_jsonl_rows(path: Path):
+    opener = gzip.open if path.name.endswith(".gz") else open
+    try:
+        with opener(path, "rt", encoding="utf-8") as handle:
+            for line in handle:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    row = json.loads(line)
+                except Exception:
+                    continue
+                if isinstance(row, dict):
+                    yield row
+    except Exception:
+        return
+
+
+def _count_raw_jsonl_rows(paths: list[Path]) -> int:
+    total = 0
+    for path in paths:
+        total += sum(1 for _row in _iter_raw_jsonl_rows(path))
+    return total
+
+
+def _requested_source_day_history_entry(
+    project_root: Path,
+    *,
+    requested_day: str,
+    resolved_day: str,
+    now_utc: datetime,
+) -> dict[str, object] | None:
+    requested = _normalize_coverage_day(requested_day)
+    resolved = _normalize_coverage_day(resolved_day)
+    if not requested or requested == resolved:
+        return None
+    decision_paths = _raw_jsonl_paths(project_root, requested, "decision")
+    governance_paths = _raw_jsonl_paths(project_root, requested, "governance")
+    watchdog_paths = _raw_jsonl_paths(project_root, requested, "watchdog")
+    if not (decision_paths or governance_paths or watchdog_paths):
+        return None
+    decision_rows = _count_raw_jsonl_rows(decision_paths)
+    governance_rows = _count_raw_jsonl_rows(governance_paths)
+    watchdog_rows = _count_raw_jsonl_rows(watchdog_paths)
+    return {
+        "day_utc": requested,
+        "generated_utc": now_utc.isoformat(),
+        "report_mode": "source_day_coverage_stub",
+        "metrics": {
+            "combined_decision_total_rows": decision_rows,
+            "combined_governance_total_rows": governance_rows,
+            "combined_blocked_total": 0,
+            "data_blocked_total": 0,
+            "risk_blocked_total": 0,
+            "paper_executed_total": 0,
+            "watchdog_restarts": watchdog_rows,
+            "data_quality_score": 100.0 if decision_rows > 0 else (60.0 if governance_rows > 0 or watchdog_rows > 0 else 0.0),
+        },
+    }
+
+
+def _add_requested_source_day_history_entry(
+    project_root: Path,
+    entries: dict[str, dict[str, object]],
+    *,
+    requested_day: str,
+    resolved_day: str,
+    now_utc: datetime,
+) -> None:
+    entry = _requested_source_day_history_entry(
+        project_root,
+        requested_day=requested_day,
+        resolved_day=resolved_day,
+        now_utc=now_utc,
+    )
+    if entry is not None:
+        entries[str(entry["day_utc"])] = entry
+
+
+def _raw_bucket_for_decision(row: dict, source_rel: str) -> str:
+    symbol = str(row.get("symbol") or "").strip()
+    mode = str(row.get("mode") or "").lower()
+    source = str(source_rel or "").lower()
+    if "futures" in source or "futures" in mode or _is_futures_symbol(symbol):
+        return "futures"
+    if _is_crypto_symbol(symbol):
+        return "crypto"
+    return "stocks"
+
+
+def _raw_report_payload_from_jsonl(
+    *,
+    project_root: Path,
+    requested_day: str,
+    db_path: Path,
+    stale_seconds: int,
+) -> tuple[dict[str, object], list[tuple[str, str]]]:
+    day = _resolve_raw_jsonl_report_day(project_root, requested_day)
+    now_utc = datetime.now(timezone.utc)
+    decision_paths = _raw_jsonl_paths(project_root, day, "decision")
+    governance_paths = _raw_jsonl_paths(project_root, day, "governance")
+    watchdog_paths = _raw_jsonl_paths(project_root, day, "watchdog")
+
+    status_counts: dict[str, int] = {}
+    action_counts: dict[str, int] = {}
+    split_counts = {"stocks": 0, "crypto": 0, "futures": 0}
+    split_actions = {
+        "stocks": {"BUY": 0, "SELL": 0, "HOLD": 0},
+        "crypto": {"BUY": 0, "SELL": 0, "HOLD": 0},
+        "futures": {"BUY": 0, "SELL": 0, "HOLD": 0},
+    }
+    top_symbols: dict[str, int] = {}
+    decision_stamps: list[tuple[str]] = []
+    observe_only_data_blocked_total = 0
+    decision_total_rows = 0
+    for path in decision_paths:
+        rel = str(path.relative_to(project_root)) if path.is_relative_to(project_root) else str(path)
+        for row in _iter_raw_jsonl_rows(path):
+            decision_total_rows += 1
+            status = str(row.get("status") or "UNKNOWN")
+            action = str(row.get("action") or "UNKNOWN")
+            symbol = str(row.get("symbol") or "UNKNOWN")
+            bucket = _raw_bucket_for_decision(row, rel)
+            status_counts[status] = status_counts.get(status, 0) + 1
+            action_counts[action] = action_counts.get(action, 0) + 1
+            split_counts[bucket] = split_counts.get(bucket, 0) + 1
+            if action in split_actions[bucket]:
+                split_actions[bucket][action] += 1
+            top_symbols[symbol] = top_symbols.get(symbol, 0) + 1
+            raw_ts = str(row.get("timestamp_utc") or "").strip()
+            if raw_ts:
+                decision_stamps.append((raw_ts,))
+            safety = row.get("safety") if isinstance(row.get("safety"), dict) else {}
+            if status == "DATA_ONLY_BLOCKED" and bool(safety.get("market_data_only")) and not bool(safety.get("execution_enabled")):
+                observe_only_data_blocked_total += 1
+
+    governance_total_rows = 0
+    governance_stamps: list[tuple[str]] = []
+    for path in governance_paths:
+        for row in _iter_raw_jsonl_rows(path):
+            governance_total_rows += 1
+            raw_ts = str(row.get("timestamp_utc") or "").strip()
+            if raw_ts:
+                governance_stamps.append((raw_ts,))
+
+    watchdog_restarts = 0
+    watchdog_throttled = 0
+    watchdog_restart_errors = 0
+    for path in watchdog_paths:
+        for row in _iter_raw_jsonl_rows(path):
+            actions = {str((target or {}).get("action") or "none") for target in list(row.get("targets") or [])}
+            if "restart" in actions:
+                watchdog_restarts += 1
+            if "throttled" in actions:
+                watchdog_throttled += 1
+            if "error" in actions:
+                watchdog_restart_errors += 1
+
+    blocked_metrics = _blocked_metrics(
+        status_counts,
+        decision_total_rows,
+        observe_only_data_blocked_total=observe_only_data_blocked_total,
+    )
+    paper_history = _paper_history_by_day(_read_json(project_root / "governance" / "health" / "paper_performance_latest.json"))
+    paper_daily = paper_history.get(day, {})
+    paper_executed_total = _safe_int(paper_daily.get("executions"), _safe_int(status_counts.get("PAPER_EXECUTED"), 0))
+    decision_stale_windows = _stale_windows(decision_stamps, stale_seconds)
+    governance_stale_windows = _stale_windows(governance_stamps, stale_seconds)
+    data_quality_score = _lightweight_data_quality_score(
+        decision_total_rows=decision_total_rows,
+        governance_total_rows=governance_total_rows,
+        decision_stale_windows=decision_stale_windows,
+        governance_stale_windows=governance_stale_windows,
+        watchdog_restarts=watchdog_restarts,
+        watchdog_throttled=watchdog_throttled,
+        watchdog_restart_errors=watchdog_restart_errors,
+    )
+    backpressure = _backpressure_scorecard_metrics(project_root)
+    current_rollup_metrics = {
+        "combined_decision_total_rows": decision_total_rows,
+        "combined_governance_total_rows": governance_total_rows,
+        "combined_blocked_total": _safe_int(blocked_metrics["combined_blocked_total"], 0),
+        "data_blocked_total": _safe_int(blocked_metrics["data_blocked_total"], 0),
+        "risk_blocked_total": _safe_int(blocked_metrics["risk_blocked_total"], 0),
+        "paper_executed_total": paper_executed_total,
+        "watchdog_restarts": watchdog_restarts,
+        "data_quality_score": data_quality_score,
+    }
+    entries = dict(_load_rollup_history(project_root))
+    entries[day] = {
+        "day_utc": day,
+        "generated_utc": now_utc.isoformat(),
+        "report_mode": "full",
+        "metrics": current_rollup_metrics,
+    }
+    _add_requested_source_day_history_entry(
+        project_root,
+        entries,
+        requested_day=requested_day,
+        resolved_day=day,
+        now_utc=now_utc,
+    )
+    month_rollup = _aggregate_rollup([entry for entry_day, entry in entries.items() if str(entry_day).startswith(day[:6])])
+    all_time_rollup = _aggregate_rollup(list(entries.values()))
+    persisted_history = _persist_rollup_history_entries(project_root, entries)
+    coverage_metadata = _one_numbers_coverage_metadata(project_root, persisted_history)
+    top_symbol_rows = sorted(top_symbols.items(), key=lambda item: (-item[1], item[0]))
+    payload: dict[str, object] = {
+        "generated_utc": now_utc.isoformat(),
+        "day_utc": day,
+        "requested_day": requested_day,
+        "resolved_day": day,
+        "day_fallback_applied": str(requested_day != day).lower(),
+        "rollup_history_days_available": str(len(persisted_history)),
+        "rollup_history_source": "durable_history",
+        **coverage_metadata,
+        "report_section_01": "Report Metadata",
+        "db_path": str(db_path),
+        "report_mode": "full",
+        "db_read_status": "locked_raw_jsonl_fallback",
+        "report_section_02": "Current Day",
+        "combined_decision_total_rows": str(decision_total_rows),
+        "combined_governance_total_rows": str(governance_total_rows),
+        "combined_blocked_total": str(_safe_int(blocked_metrics["combined_blocked_total"], 0)),
+        "combined_blocked_rate": f"{_safe_float(blocked_metrics['combined_blocked_rate'], 0.0):.6f}",
+        "raw_data_blocked_total": str(_safe_int(blocked_metrics["raw_data_blocked_total"], 0)),
+        "raw_data_blocked_rate": f"{_safe_float(blocked_metrics['raw_data_blocked_rate'], 0.0):.6f}",
+        "observe_only_data_blocked_total": str(observe_only_data_blocked_total),
+        "observe_only_data_blocked_rate": f"{_safe_float(blocked_metrics['observe_only_data_blocked_rate'], 0.0):.6f}",
+        "data_blocked_total": str(_safe_int(blocked_metrics["data_blocked_total"], 0)),
+        "data_blocked_rate": f"{_safe_float(blocked_metrics['data_blocked_rate'], 0.0):.6f}",
+        "risk_blocked_total": str(_safe_int(blocked_metrics["risk_blocked_total"], 0)),
+        "risk_blocked_rate": f"{_safe_float(blocked_metrics['risk_blocked_rate'], 0.0):.6f}",
+        "effective_blocked_rate": f"{_safe_float(blocked_metrics['effective_blocked_rate'], 0.0):.6f}",
+        "data_quality_score": f"{data_quality_score:.2f}",
+        "paper_executed_total": str(paper_executed_total),
+        "watchdog_restarts": str(watchdog_restarts),
+        "report_section_02b": "Backpressure Scorecard",
+        **backpressure,
+        "report_section_03": "Month To Date",
+        "month_to_date_days_covered": month_rollup["days_covered"],
+        "month_to_date_decision_total_rows": month_rollup["decision_total_rows"],
+        "month_to_date_governance_total_rows": month_rollup["governance_total_rows"],
+        "month_to_date_blocked_total": month_rollup["blocked_total"],
+        "month_to_date_data_blocked_total": month_rollup["data_blocked_total"],
+        "month_to_date_risk_blocked_total": month_rollup["risk_blocked_total"],
+        "month_to_date_paper_executed_total": month_rollup["paper_executed_total"],
+        "month_to_date_watchdog_restarts": month_rollup["watchdog_restarts"],
+        "month_to_date_avg_data_quality_score": month_rollup["avg_data_quality_score"],
+        "report_section_04": "All Time",
+        "all_time_days_covered": all_time_rollup["days_covered"],
+        "all_time_decision_total_rows": all_time_rollup["decision_total_rows"],
+        "all_time_governance_total_rows": all_time_rollup["governance_total_rows"],
+        "all_time_blocked_total": all_time_rollup["blocked_total"],
+        "all_time_data_blocked_total": all_time_rollup["data_blocked_total"],
+        "all_time_risk_blocked_total": all_time_rollup["risk_blocked_total"],
+        "all_time_paper_executed_total": all_time_rollup["paper_executed_total"],
+        "all_time_watchdog_restarts": all_time_rollup["watchdog_restarts"],
+        "all_time_avg_data_quality_score": all_time_rollup["avg_data_quality_score"],
+        "report_section_05": "Detailed Metrics",
+        "linked_source_files_total": str(len(decision_paths) + len(governance_paths) + len(watchdog_paths)),
+        "decision_source_files": str(len(decision_paths)),
+        "governance_source_files": str(len(governance_paths)),
+        "combined_action_buy": str(action_counts.get("BUY", 0)),
+        "combined_action_sell": str(action_counts.get("SELL", 0)),
+        "combined_action_hold": str(action_counts.get("HOLD", 0)),
+        "stocks_decision_rows": str(split_counts.get("stocks", 0)),
+        "stocks_action_buy": str(split_actions["stocks"].get("BUY", 0)),
+        "stocks_action_sell": str(split_actions["stocks"].get("SELL", 0)),
+        "stocks_action_hold": str(split_actions["stocks"].get("HOLD", 0)),
+        "crypto_decision_rows": str(split_counts.get("crypto", 0)),
+        "crypto_action_buy": str(split_actions["crypto"].get("BUY", 0)),
+        "crypto_action_sell": str(split_actions["crypto"].get("SELL", 0)),
+        "crypto_action_hold": str(split_actions["crypto"].get("HOLD", 0)),
+        "futures_decision_rows": str(split_counts.get("futures", 0)),
+        "futures_action_buy": str(split_actions["futures"].get("BUY", 0)),
+        "futures_action_sell": str(split_actions["futures"].get("SELL", 0)),
+        "futures_action_hold": str(split_actions["futures"].get("HOLD", 0)),
+        "decision_stale_windows_4h": str(decision_stale_windows),
+        "governance_stale_windows_4h": str(governance_stale_windows),
+        "watchdog_throttled": str(watchdog_throttled),
+        "watchdog_restart_errors": str(watchdog_restart_errors),
+        "ALERT_WATCHDOG_RESTARTS": str(watchdog_restarts > 0).lower(),
+        "ALERT_STALE_WINDOWS": str((decision_stale_windows + governance_stale_windows) > 0).lower(),
+        "ALERT_BLOCKED_RATE": str(_safe_float(blocked_metrics["effective_blocked_rate"], 0.0) > 0.25).lower(),
+        "ALERT_DATA_QUALITY": str(data_quality_score < 80.0).lower(),
+    }
+    for index, (symbol, count) in enumerate(top_symbol_rows[:5], start=1):
+        payload[f"top_symbol_{index}"] = f"{symbol}:{count}"
+    rows = _rows_from_summary_payload(payload)
+    return payload, rows
+
+
+def _write_one_numbers_artifact_set(out_dir: Path, payload: dict[str, object], rows: list[tuple[str, str]]) -> tuple[Path, Path, Path, Path, Path]:
+    stamp_day = str(payload.get("resolved_day") or payload.get("day_utc") or _default_report_day())
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+    csv_path = out_dir / f"one_numbers_{stamp_day}_{stamp}.csv"
+    metrics_csv_path = out_dir / f"one_numbers_{stamp_day}_{stamp}_metrics.csv"
+    md_path = out_dir / f"one_numbers_{stamp_day}_{stamp}.md"
+    xlsx_path = out_dir / f"one_numbers_{stamp_day}_{stamp}.xlsx"
+    _write_one_numbers_csv(csv_path, rows)
+    _write_one_numbers_metrics_csv(metrics_csv_path, rows)
+    _write_one_numbers_markdown(md_path, rows, csv_reference=out_dir / "latest.csv")
+    _write_one_numbers_xlsx(xlsx_path, rows)
+
+    legacy_latest_dir = out_dir / "latest"
+    legacy_latest_dir.mkdir(parents=True, exist_ok=True)
+    legacy_latest_json = legacy_latest_dir / "one_numbers_summary.json"
+    legacy_latest_csv = legacy_latest_dir / "one_numbers_latest.csv"
+    legacy_latest_metrics_csv = legacy_latest_dir / "one_numbers_latest_metrics.csv"
+    legacy_latest_md = legacy_latest_dir / "one_numbers_latest.md"
+    legacy_latest_xlsx = legacy_latest_dir / "one_numbers_latest.xlsx"
+    payload_text = json.dumps(payload, ensure_ascii=True, indent=2)
+    legacy_latest_json.write_text(payload_text, encoding="utf-8")
+    _write_one_numbers_csv(legacy_latest_csv, rows)
+    _write_one_numbers_metrics_csv(legacy_latest_metrics_csv, rows)
+    _write_one_numbers_markdown(legacy_latest_md, rows, csv_reference=out_dir / "latest.csv")
+    _write_one_numbers_xlsx(legacy_latest_xlsx, rows)
+
+    latest_csv, latest_md, latest_xlsx = _refresh_latest_artifact_aliases(
+        out_dir=out_dir,
+        csv_path=csv_path,
+        md_path=md_path,
+        xlsx_path=xlsx_path,
+    )
+    latest_metrics_csv = _refresh_latest_metrics_alias(out_dir=out_dir, metrics_csv_path=metrics_csv_path)
+    latest_json = out_dir / "one_numbers_summary.json"
+    latest_json.write_text(payload_text, encoding="utf-8")
+    health_latest_json = PROJECT_ROOT / "governance" / "health" / "one_numbers_latest.json"
+    health_latest_json.parent.mkdir(parents=True, exist_ok=True)
+    health_latest_json.write_text(payload_text, encoding="utf-8")
+    return latest_csv, latest_md, latest_xlsx, latest_metrics_csv, latest_json
+
+
+def _backpressure_scorecard_metrics(project_root: Path) -> dict[str, str]:
+    storage_control = _read_json(project_root / "governance" / "health" / "ingestion_storage_control_latest.json")
+    steady_state = storage_control.get("steady_state") if isinstance(storage_control.get("steady_state"), dict) else {}
+    target_status = steady_state.get("target_status") if isinstance(steady_state.get("target_status"), dict) else {}
+    backpressure = storage_control.get("backpressure") if isinstance(storage_control.get("backpressure"), dict) else {}
+    target_breaches = [
+        str(item)
+        for item in list(target_status.get("target_breaches") or [])
+        if str(item or "").strip()
+    ]
+    total_pending_lines = _safe_int(backpressure.get("total_pending_lines"), 0)
+    drain_raw = backpressure.get("estimated_total_drain_minutes")
+    if drain_raw in {None, ""} and total_pending_lines > 0:
+        drain_display = "n/a"
+    else:
+        drain_display = f"{_safe_float(drain_raw, 0.0):.3f}"
+    return {
+        "backpressure_quality_score": f"{_safe_float(steady_state.get('quality_score'), 0.0):.2f}",
+        "backpressure_quality_label": str(steady_state.get("quality_label") or "unknown"),
+        "backpressure_steady_state_ready": str(bool(target_status.get("steady_state_ready", False))).lower(),
+        "backpressure_target_breach_count": str(_safe_int(target_status.get("target_breach_count"), len(target_breaches))),
+        "pressure_index": f"{_safe_float(storage_control.get('pressure_index'), 0.0):.3f}",
+        "core_pending_lines": str(_safe_int(backpressure.get("core_pending_lines"), 0)),
+        "estimated_total_drain_minutes": drain_display,
+        "stale_stage_pending_lines": str(_safe_int(backpressure.get("stale_stage_pending_lines"), 0)),
+        "backpressure_target_breaches": ",".join(target_breaches) if target_breaches else "none",
+    }
+
+
+def _default_db_path() -> Path:
+    configured = str(os.getenv("SQL_LINK_SERVICE_PRIMARY_DB", "") or "").strip()
+    if configured:
+        return _routed_or_local_fallback_path(Path(configured))
+
+    progress = _read_json(PROJECT_ROOT / "governance" / "health" / "sql_link_service_progress_latest.json")
+    progress_db = str(progress.get("primary_db") or "").strip()
+    if progress_db:
+        return _routed_or_local_fallback_path(Path(progress_db))
+
+    latest = _read_json(PROJECT_ROOT / "governance" / "health" / "sql_link_service_latest.json")
+    latest_db = str(latest.get("db_path") or latest.get("primary_db") or "").strip()
+    if latest_db:
+        return _routed_or_local_fallback_path(Path(latest_db))
+
+    return _routed_or_local_fallback_path(DEFAULT_DB)
+
+
+def _json_timestamp(payload: dict, path: Path) -> datetime | None:
+    if not isinstance(payload, dict):
+        return None
+    for key in ("timestamp_utc", "updated_at_utc", "updated_at", "created_at", "ended_utc", "started_utc", "generated_utc"):
+        raw = str(payload.get(key, "") or "").strip()
+        if not raw:
+            continue
+        try:
+            dt = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        except Exception:
+            continue
+        if dt.tzinfo is None:
+            return dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(timezone.utc)
+    try:
+        return datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc)
+    except Exception:
+        return None
+
+
+def _freshest_json_payload(paths: Iterable[Path]) -> tuple[dict, Path | None]:
+    best_payload: dict = {}
+    best_path: Path | None = None
+    best_score = float("-inf")
+    for path in paths:
+        payload = _read_json(path)
+        if not payload:
+            continue
+        ts = _json_timestamp(payload, path)
+        score = float(ts.timestamp()) if ts is not None else 0.0
+        if score >= best_score:
+            best_score = score
+            best_payload = payload
+            best_path = path
+    return best_payload, best_path
+
+
+def _progress_sort_key(progress: dict) -> tuple[int, int, float, int]:
+    return (
+        int(_safe_float(progress.get("last_line", 0), 0.0)),
+        int(_safe_float(progress.get("file_size_bytes", 0), 0.0)),
+        float(progress.get("mtime", 0.0) or 0.0),
+        int(_safe_float(progress.get("last_offset_bytes", 0), 0.0)),
+    )
+
+
+def _merge_sqlite_progress(merged: dict[str, dict], entries: dict[str, dict]) -> None:
+    for rel, raw_progress in entries.items():
+        progress = raw_progress if isinstance(raw_progress, dict) else {}
+        current = merged.get(str(rel), {})
+        if not isinstance(current, dict) or _progress_sort_key(progress) >= _progress_sort_key(current):
+            merged[str(rel)] = progress
+
+
+def _load_sqlite_progress(path: Path) -> dict[str, dict]:
+    payload = _read_json(path)
+    if not isinstance(payload, dict):
+        return {}
+    sqlite_state = payload.get("sqlite", {})
+    return sqlite_state if isinstance(sqlite_state, dict) else {}
+
+
+def _resolve_sqlite_state(project_root: Path) -> dict[str, dict]:
+    shard_root = project_root / "governance" / "sql_link_shards"
+    shard_files = sorted(p for p in shard_root.glob("jsonl_sql_link_state_*.json") if p.is_file())
+    legacy_path = project_root / "governance" / "jsonl_sql_link_state.json"
+
+    state_files: list[Path] = []
+    if shard_files:
+        state_files.extend(shard_files)
+    if legacy_path.exists():
+        state_files.append(legacy_path)
+    if not state_files:
+        return {}
+
+    merged: dict[str, dict] = {}
+    for path in state_files:
+        _merge_sqlite_progress(merged, _load_sqlite_progress(path))
+    return merged
+
+
+def _report_timezone() -> timezone | ZoneInfo:
+    tz_name = str(os.getenv("ONE_NUMBERS_REPORT_TIMEZONE", DEFAULT_REPORT_TIMEZONE) or DEFAULT_REPORT_TIMEZONE).strip()
+    try:
+        return ZoneInfo(tz_name)
+    except Exception:
+        return timezone.utc
+
+
+def _default_report_day() -> str:
+    return datetime.now(_report_timezone()).strftime("%Y%m%d")
+
+
+def _env_flag(name: str, default: str = "0") -> bool:
+    return str(os.getenv(name, default) or default).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _parse_clock_minutes(raw: str, default: str) -> int:
+    candidate = str(raw or default).strip() or default
+    try:
+        hour_text, minute_text = candidate.split(":", 1)
+        hour = max(min(int(hour_text), 23), 0)
+        minute = max(min(int(minute_text), 59), 0)
+        return (hour * 60) + minute
+    except Exception:
+        return _parse_clock_minutes(default, "00:00") if candidate != default else 0
+
+
+def _data_quality_session_policy(now_utc: datetime) -> dict[str, object]:
+    tz_name = str(os.getenv("ONE_NUMBERS_SESSION_TIMEZONE", DEFAULT_REPORT_TIMEZONE) or DEFAULT_REPORT_TIMEZONE).strip()
+    try:
+        session_tz = ZoneInfo(tz_name)
+    except Exception:
+        session_tz = timezone.utc
+        tz_name = "UTC"
+
+    local_now = now_utc.astimezone(session_tz)
+    start_minutes = _parse_clock_minutes(os.getenv("ONE_NUMBERS_SESSION_START", "09:30"), "09:30")
+    end_minutes = _parse_clock_minutes(os.getenv("ONE_NUMBERS_SESSION_END", "16:00"), "16:00")
+    strict_decision_grace = max(_safe_int(os.getenv("ONE_NUMBERS_DECISION_STALE_GRACE_SECONDS", "120"), 120), 0)
+    strict_governance_grace = max(_safe_int(os.getenv("ONE_NUMBERS_GOVERNANCE_STALE_GRACE_SECONDS", "180"), 180), 0)
+    off_hours_grace = max(_safe_int(os.getenv("ONE_NUMBERS_OFF_HOURS_STALE_GRACE_SECONDS", "259200"), 259200), 0)
+    session_aware = _env_flag("ONE_NUMBERS_SESSION_AWARE_DATA_QUALITY", "1")
+
+    local_minutes = (local_now.hour * 60) + local_now.minute
+    weekday_open = local_now.weekday() < 5
+    session_open = weekday_open and start_minutes <= local_minutes < end_minutes
+
+    if session_aware and not session_open:
+        mode = "off_hours_relaxed"
+        decision_grace = max(strict_decision_grace, off_hours_grace)
+        governance_grace = max(strict_governance_grace, off_hours_grace)
+    else:
+        mode = "session_hours_strict" if session_open else "always_strict"
+        decision_grace = strict_decision_grace
+        governance_grace = strict_governance_grace
+
+    return {
+        "session_aware": bool(session_aware),
+        "session_open": bool(session_open),
+        "mode": mode,
+        "timezone": tz_name,
+        "local_timestamp": local_now.isoformat(),
+        "decision_grace_seconds": int(decision_grace),
+        "governance_grace_seconds": int(governance_grace),
+    }
+
+
+def _session_aligned_recent_cutoff(now_utc: datetime, *, lookback: timedelta = timedelta(hours=4)) -> datetime:
+    cutoff_utc = now_utc - lookback
+    policy = _data_quality_session_policy(now_utc)
+    if not bool(policy.get("session_aware")):
+        return cutoff_utc
+    if not bool(policy.get("session_open")):
+        return now_utc
+    try:
+        session_tz = ZoneInfo(str(policy.get("timezone") or DEFAULT_REPORT_TIMEZONE))
+    except Exception:
+        session_tz = timezone.utc
+    local_now = now_utc.astimezone(session_tz)
+    start_minutes = _parse_clock_minutes(os.getenv("ONE_NUMBERS_SESSION_START", "09:30"), "09:30")
+    session_start_local = local_now.replace(
+        hour=start_minutes // 60,
+        minute=start_minutes % 60,
+        second=0,
+        microsecond=0,
+    )
+    session_start_utc = session_start_local.astimezone(timezone.utc)
+    return max(cutoff_utc, session_start_utc)
+
+
+def _staleness_penalty(age_seconds: int, grace_seconds: int, divisor_seconds: float, cap: float) -> float:
+    overflow = max(float(age_seconds) - max(float(grace_seconds), 0.0), 0.0)
+    if overflow <= 0.0:
+        return 0.0
+    return min(overflow / max(float(divisor_seconds), 1.0), max(float(cap), 0.0))
+
+
+def _empty_day_sources() -> dict[str, list[str]]:
+    return {
+        "decision": [],
+        "decision_trade": [],
+        "governance": [],
+        "pnl": [],
+        "watchdog": [],
+    }
+
+
+def _extract_day_from_source_rel(source_rel: str) -> str:
+    match = DAY_SUFFIX_RE.search(str(source_rel or ""))
+    return match.group(1) if match else ""
+
+
+def _sqlite_state_sources_by_day(sqlite_state: dict) -> dict[str, dict[str, list[str]]]:
+    by_day: dict[str, dict[str, list[str]]] = {}
+    for rel in sqlite_state:
+        source_rel = str(rel)
+        bucket = ""
+        if source_rel.startswith("decision_explanations/") and "/decision_explanations_" in source_rel:
+            bucket = "decision"
+        elif source_rel.startswith("decisions/") and "/trade_decisions_" in source_rel:
+            bucket = "decision_trade"
+        elif source_rel.startswith("governance/") and "/master_control_" in source_rel:
+            bucket = "governance"
+        elif source_rel.startswith("governance/") and "/shadow_pnl_attribution_" in source_rel:
+            bucket = "pnl"
+        elif source_rel.startswith("governance/watchdog/watchdog_events_"):
+            bucket = "watchdog"
+        if not bucket:
+            continue
+        day = _extract_day_from_source_rel(source_rel)
+        if not day:
+            continue
+        day_entry = by_day.setdefault(day, _empty_day_sources())
+        day_entry[bucket].append(source_rel)
+    for day_entry in by_day.values():
+        for bucket in day_entry:
+            day_entry[bucket] = sorted(day_entry[bucket])
+    return by_day
+
+
+def _resolve_report_day(requested_day: str, sqlite_state: dict) -> tuple[str, dict[str, list[str]]]:
+    day_sources = _sqlite_state_sources_by_day(sqlite_state)
+    requested = str(requested_day or "").strip() or _default_report_day()
+    selected = day_sources.get(requested, _empty_day_sources())
+    if selected["decision"] or selected["decision_trade"]:
+        return requested, selected
+
+    decision_candidates = sorted(
+        day
+        for day, entry in day_sources.items()
+        if entry["decision"] or entry["decision_trade"]
+    )
+    if decision_candidates:
+        prior_or_equal = [day for day in decision_candidates if day <= requested]
+        resolved_day = prior_or_equal[-1] if prior_or_equal else decision_candidates[-1]
+        return resolved_day, day_sources.get(resolved_day, _empty_day_sources())
+
+    if selected["governance"]:
+        return requested, selected
+
+    candidates = sorted(
+        day
+        for day, entry in day_sources.items()
+        if entry["decision"] or entry["decision_trade"] or entry["governance"]
+    )
+    if not candidates:
+        return requested, selected
+
+    prior_or_equal = [day for day in candidates if day <= requested]
+    resolved_day = prior_or_equal[-1] if prior_or_equal else candidates[-1]
+    return resolved_day, day_sources.get(resolved_day, _empty_day_sources())
+
+
+def _latest_report_day_from_db(conn: sqlite3.Connection, requested_day: str) -> str:
+    requested = str(requested_day or "").strip() or _default_report_day()
+    requested_decision_row = conn.execute(
+        """
+        SELECT 1
+        FROM main.jsonl_records
+        WHERE substr(source_rel, -14, 8) = ?
+          AND (
+            source_rel LIKE 'decision_explanations/%/decision_explanations_%.jsonl'
+            OR source_rel LIKE 'decisions/%/trade_decisions_%.jsonl'
+          )
+        LIMIT 1
+        """,
+        (requested,),
+    ).fetchone()
+    if requested_decision_row:
+        return requested
+
+    decision_row = conn.execute(
+        """
+        SELECT MAX(substr(source_rel, -14, 8))
+        FROM main.jsonl_records
+        WHERE (
+            source_rel LIKE 'decision_explanations/%/decision_explanations_%.jsonl'
+            OR source_rel LIKE 'decisions/%/trade_decisions_%.jsonl'
+          )
+          AND substr(source_rel, -14, 8) <= ?
+        """,
+        (requested,),
+    ).fetchone()
+    decision_day = str((decision_row or [None])[0] or "").strip()
+    if decision_day:
+        return decision_day
+
+    requested_governance_row = conn.execute(
+        """
+        SELECT 1
+        FROM main.jsonl_records
+        WHERE substr(source_rel, -14, 8) = ?
+          AND source_rel LIKE 'governance/%/master_control_%.jsonl'
+        LIMIT 1
+        """,
+        (requested,),
+    ).fetchone()
+    if requested_governance_row:
+        return requested
+
+    governance_row = conn.execute(
+        """
+        SELECT MAX(substr(source_rel, -14, 8))
+        FROM main.jsonl_records
+        WHERE source_rel LIKE 'governance/%/master_control_%.jsonl'
+          AND substr(source_rel, -14, 8) <= ?
+        """,
+        (requested,),
+    ).fetchone()
+    governance_day = str((governance_row or [None])[0] or "").strip()
+    return governance_day or requested
+
+
+def _prefer_db_report_day(requested_day: str, state_day: str, db_day: str) -> str:
+    requested = str(requested_day or "").strip() or _default_report_day()
+    state = str(state_day or "").strip()
+    db = str(db_day or "").strip()
+    if not db:
+        return state or requested
+    if db == requested:
+        return db
+    if not state:
+        return db
+    if state <= requested and db <= requested and db > state:
+        return db
+    return state
+
+
+def _sqlite_has_source_like(conn: sqlite3.Connection, pattern: str) -> bool:
+    row = conn.execute(
+        """
+        SELECT 1
+        FROM main.jsonl_records
+        WHERE source_rel LIKE ?
+        LIMIT 1
+        """,
+        (pattern,),
+    ).fetchone()
+    return bool(row)
+
+
+def _sqlite_sources_like(conn: sqlite3.Connection, pattern: str) -> list[str]:
+    rows = conn.execute(
+        """
+        SELECT DISTINCT source_rel
+        FROM main.jsonl_records
+        WHERE source_rel LIKE ?
+        ORDER BY source_rel
+        """,
+        (pattern,),
+    ).fetchall()
+    return [str(row[0]) for row in rows if row and str(row[0] or "").strip()]
 
 
 def _chunked(items: list[str], size: int) -> list[list[str]]:
@@ -180,6 +1747,103 @@ def _stale_windows(ts_rows: Iterable[tuple], stale_seconds: int) -> int:
     return gaps
 
 
+def _recent_stale_windows_from_jsonl_files(
+    paths: Iterable[str | Path],
+    *,
+    cutoff_utc: datetime,
+    stale_seconds: int,
+) -> int:
+    stamps: list[datetime] = []
+    for raw_path in paths:
+        path = Path(str(raw_path))
+        if not path.exists():
+            continue
+        try:
+            with path.open("r", encoding="utf-8") as handle:
+                for line in handle:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        row = json.loads(line)
+                    except Exception:
+                        continue
+                    raw_ts = str((row if isinstance(row, dict) else {}).get("timestamp_utc") or "").strip()
+                    if not raw_ts:
+                        continue
+                    try:
+                        ts = datetime.fromisoformat(raw_ts.replace("Z", "+00:00")).astimezone(timezone.utc)
+                    except Exception:
+                        continue
+                    if ts >= cutoff_utc:
+                        stamps.append(ts)
+        except Exception:
+            continue
+    return _stale_windows(((ts.isoformat(),) for ts in stamps), stale_seconds)
+
+
+def _model_drift_snapshot(
+    slice_1h: tuple[int, int, int, int],
+    slice_4h: tuple[int, int, int, int],
+) -> dict[str, float | bool | str | int]:
+    rows_1h, buy_1h, sell_1h, blocked_1h = slice_1h
+    rows_4h, buy_4h, sell_4h, blocked_4h = slice_4h
+    actionable_1h = max(buy_1h + sell_1h, 0)
+    actionable_4h = max(buy_4h + sell_4h, 0)
+    buy_rate_1h = buy_1h / max(rows_1h, 1)
+    buy_rate_4h = buy_4h / max(rows_4h, 1)
+    sell_rate_1h = sell_1h / max(rows_1h, 1)
+    sell_rate_4h = sell_4h / max(rows_4h, 1)
+    blocked_rate_1h = blocked_1h / max(rows_1h, 1)
+    blocked_rate_4h = blocked_4h / max(rows_4h, 1)
+    actionable_rate_1h = actionable_1h / max(rows_1h, 1)
+    actionable_rate_4h = actionable_4h / max(rows_4h, 1)
+    drift_candidates = {
+        "buy_rate_drift_abs": abs(buy_rate_1h - buy_rate_4h),
+        "sell_rate_drift_abs": abs(sell_rate_1h - sell_rate_4h),
+        "actionable_rate_drift_abs": abs(actionable_rate_1h - actionable_rate_4h),
+        "blocked_rate_drift_abs": abs(blocked_rate_1h - blocked_rate_4h),
+    }
+    action_mix_drift_abs = max(drift_candidates.values()) if drift_candidates else 0.0
+    min_rows_1h = max(_safe_int(os.getenv("ONE_NUMBERS_MODEL_DRIFT_MIN_ROWS_1H", "120"), 120), 1)
+    min_rows_4h = max(_safe_int(os.getenv("ONE_NUMBERS_MODEL_DRIFT_MIN_ROWS_4H", "480"), 480), 1)
+    min_actionable_1h = max(_safe_int(os.getenv("ONE_NUMBERS_MODEL_DRIFT_MIN_ACTIONABLE_1H", "12"), 12), 0)
+    min_actionable_4h = max(_safe_int(os.getenv("ONE_NUMBERS_MODEL_DRIFT_MIN_ACTIONABLE_4H", "48"), 48), 0)
+    drift_threshold = max(_safe_float(os.getenv("ONE_NUMBERS_MODEL_DRIFT_THRESHOLD", "0.20"), 0.20), 0.0)
+    enough_rows = rows_1h >= min_rows_1h and rows_4h >= min_rows_4h
+    enough_actionable = actionable_1h >= min_actionable_1h and actionable_4h >= min_actionable_4h
+    model_drift_flag = enough_rows and enough_actionable and action_mix_drift_abs >= drift_threshold
+    if not enough_rows:
+        reason = "insufficient_rows"
+    elif not enough_actionable:
+        reason = "low_actionable_activity"
+    elif model_drift_flag:
+        reason = "action_mix_shift"
+    else:
+        reason = "within_threshold"
+    return {
+        "rows_1h": rows_1h,
+        "rows_4h": rows_4h,
+        "actionable_1h": actionable_1h,
+        "actionable_4h": actionable_4h,
+        "buy_rate_1h": buy_rate_1h,
+        "buy_rate_4h": buy_rate_4h,
+        "sell_rate_1h": sell_rate_1h,
+        "sell_rate_4h": sell_rate_4h,
+        "blocked_rate_1h": blocked_rate_1h,
+        "blocked_rate_4h": blocked_rate_4h,
+        "actionable_rate_1h": actionable_rate_1h,
+        "actionable_rate_4h": actionable_rate_4h,
+        "buy_rate_drift_abs": drift_candidates["buy_rate_drift_abs"],
+        "sell_rate_drift_abs": drift_candidates["sell_rate_drift_abs"],
+        "actionable_rate_drift_abs": drift_candidates["actionable_rate_drift_abs"],
+        "blocked_rate_drift_abs": drift_candidates["blocked_rate_drift_abs"],
+        "action_mix_drift_abs": action_mix_drift_abs,
+        "model_drift_flag": model_drift_flag,
+        "model_drift_reason": reason,
+    }
+
+
 def _ensure_sql_snapshot_table(conn: sqlite3.Connection) -> None:
     conn.execute(
         """
@@ -202,13 +1866,805 @@ def _ensure_sql_snapshot_table(conn: sqlite3.Connection) -> None:
     conn.execute("CREATE INDEX IF NOT EXISTS idx_one_numbers_generated ON one_numbers_snapshots(generated_utc)")
 
 
+def _register_sql_snapshot(
+    conn: sqlite3.Connection,
+    *,
+    generated_utc: str,
+    day: str,
+    decision_total_rows: int,
+    stocks_decision_rows: int,
+    crypto_decision_rows: int,
+    watchdog_restarts: int,
+    data_quality_score: float,
+    alerts: list[str],
+    metric_map: dict[str, str],
+) -> tuple[bool, str]:
+    try:
+        _ensure_sql_snapshot_table(conn)
+        conn.execute(
+            """
+            INSERT INTO one_numbers_snapshots (
+                generated_utc, day_utc, source_report_dir,
+                decision_total_rows, stocks_decision_rows, crypto_decision_rows,
+                watchdog_restarts, data_quality_score,
+                alerts_json, metrics_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                generated_utc,
+                day,
+                str(PROJECT_ROOT / "exports" / "sql_reports" / "latest"),
+                decision_total_rows,
+                stocks_decision_rows,
+                crypto_decision_rows,
+                watchdog_restarts,
+                data_quality_score,
+                json.dumps(alerts, ensure_ascii=True),
+                json.dumps(metric_map, ensure_ascii=True),
+            ),
+        )
+        conn.commit()
+        return True, ""
+    except sqlite3.OperationalError as exc:
+        if "locked" in str(exc).lower():
+            return False, str(exc)
+        raise
+
+
+def _latest_daily_snapshots(conn: sqlite3.Connection) -> dict[str, dict]:
+    try:
+        rows = conn.execute(
+            """
+            SELECT s.day_utc, s.generated_utc, s.metrics_json
+            FROM one_numbers_snapshots s
+            JOIN (
+                SELECT day_utc, MAX(id) AS max_id
+                FROM one_numbers_snapshots
+                GROUP BY day_utc
+            ) latest
+              ON latest.max_id = s.id
+            """
+        ).fetchall()
+    except sqlite3.OperationalError:
+        return {}
+
+    out: dict[str, dict] = {}
+    for day_utc, generated_utc, metrics_json in rows:
+        metrics = {}
+        try:
+            metrics = json.loads(metrics_json or "{}")
+        except Exception:
+            metrics = {}
+        out[str(day_utc)] = {
+            "day_utc": str(day_utc),
+            "generated_utc": str(generated_utc or ""),
+            "metrics": metrics if isinstance(metrics, dict) else {},
+        }
+    return out
+
+
+def _rollup_metric_int(metrics: dict, key: str) -> int:
+    return _safe_int(metrics.get(key, 0), 0)
+
+
+def _rollup_metric_float(metrics: dict, key: str) -> float:
+    return _safe_float(metrics.get(key, 0.0), 0.0)
+
+
+def _blocked_metrics(
+    status_counts: dict[str, int],
+    decision_total_rows: int,
+    *,
+    observe_only_data_blocked_total: int = 0,
+) -> dict[str, float | int]:
+    risk_blocked_total = _safe_int(status_counts.get("BLOCKED", 0), 0)
+    raw_data_blocked_total = _safe_int(status_counts.get("DATA_ONLY_BLOCKED", 0), 0)
+    observe_only_data_blocked_total = min(max(_safe_int(observe_only_data_blocked_total, 0), 0), raw_data_blocked_total)
+    data_blocked_total = max(raw_data_blocked_total - observe_only_data_blocked_total, 0)
+    combined_blocked_total = risk_blocked_total + data_blocked_total
+    denom = max(decision_total_rows, 1)
+    risk_blocked_rate = risk_blocked_total / denom
+    raw_data_blocked_rate = raw_data_blocked_total / denom
+    observe_only_data_blocked_rate = observe_only_data_blocked_total / denom
+    data_blocked_rate = data_blocked_total / denom
+    combined_blocked_rate = combined_blocked_total / denom
+    effective_blocked_rate = min(data_blocked_rate + (risk_blocked_rate * 0.25), 1.0)
+    return {
+        "risk_blocked_total": risk_blocked_total,
+        "risk_blocked_rate": risk_blocked_rate,
+        "raw_data_blocked_total": raw_data_blocked_total,
+        "raw_data_blocked_rate": raw_data_blocked_rate,
+        "observe_only_data_blocked_total": observe_only_data_blocked_total,
+        "observe_only_data_blocked_rate": observe_only_data_blocked_rate,
+        "data_blocked_total": data_blocked_total,
+        "data_blocked_rate": data_blocked_rate,
+        "combined_blocked_total": combined_blocked_total,
+        "combined_blocked_rate": combined_blocked_rate,
+        "effective_blocked_rate": effective_blocked_rate,
+    }
+
+
+def _aggregate_rollup(entries: list[dict]) -> dict[str, str]:
+    if not entries:
+        return {
+            "days_covered": "0",
+            "decision_total_rows": "0",
+            "governance_total_rows": "0",
+            "blocked_total": "0",
+            "data_blocked_total": "0",
+            "risk_blocked_total": "0",
+            "paper_executed_total": "0",
+            "watchdog_restarts": "0",
+            "avg_data_quality_score": "0.00",
+        }
+
+    days_covered = len(entries)
+    decision_total_rows = sum(_rollup_metric_int(e["metrics"], "combined_decision_total_rows") for e in entries)
+    governance_total_rows = sum(_rollup_metric_int(e["metrics"], "combined_governance_total_rows") for e in entries)
+    blocked_total = sum(_rollup_metric_int(e["metrics"], "combined_blocked_total") for e in entries)
+    data_blocked_total = sum(_rollup_metric_int(e["metrics"], "data_blocked_total") for e in entries)
+    risk_blocked_total = sum(_rollup_metric_int(e["metrics"], "risk_blocked_total") for e in entries)
+    paper_executed_total = sum(_rollup_metric_int(e["metrics"], "paper_executed_total") for e in entries)
+    watchdog_restarts = sum(_rollup_metric_int(e["metrics"], "watchdog_restarts") for e in entries)
+    avg_data_quality_score = sum(_rollup_metric_float(e["metrics"], "data_quality_score") for e in entries) / max(days_covered, 1)
+    return {
+        "days_covered": str(days_covered),
+        "decision_total_rows": str(decision_total_rows),
+        "governance_total_rows": str(governance_total_rows),
+        "blocked_total": str(blocked_total),
+        "data_blocked_total": str(data_blocked_total),
+        "risk_blocked_total": str(risk_blocked_total),
+        "paper_executed_total": str(paper_executed_total),
+        "watchdog_restarts": str(watchdog_restarts),
+        "avg_data_quality_score": f"{avg_data_quality_score:.2f}",
+    }
+
+
+def _history_entry_from_summary_payload(payload: dict[str, object]) -> dict[str, object] | None:
+    day_utc = str(payload.get("day_utc") or payload.get("resolved_day") or "").strip()
+    if not day_utc:
+        return None
+    metrics: dict[str, object] = {}
+    for key in ROLLUP_HISTORY_METRIC_KEYS:
+        if key in payload:
+            metrics[key] = payload.get(key)
+    if not metrics:
+        return None
+    return {
+        "day_utc": day_utc,
+        "generated_utc": str(payload.get("generated_utc") or ""),
+        "report_mode": str(payload.get("report_mode") or ""),
+        "metrics": metrics,
+    }
+
+
+def _normalize_rollup_history_entry(day_utc: str, raw: object) -> dict[str, object] | None:
+    if not isinstance(raw, dict):
+        return None
+    metrics_raw = raw.get("metrics") if isinstance(raw.get("metrics"), dict) else raw
+    metrics: dict[str, object] = {}
+    for key in ROLLUP_HISTORY_METRIC_KEYS:
+        if isinstance(metrics_raw, dict) and key in metrics_raw:
+            metrics[key] = metrics_raw.get(key)
+    if not metrics:
+        return None
+    return {
+        "day_utc": str(day_utc or raw.get("day_utc") or "").strip(),
+        "generated_utc": str(raw.get("generated_utc") or ""),
+        "report_mode": str(raw.get("report_mode") or ""),
+        "metrics": metrics,
+    }
+
+
+def _load_rollup_history(project_root: Path) -> dict[str, dict[str, object]]:
+    payload = _read_json(project_root / "governance" / "health" / "one_numbers_rollup_history.json")
+    history_raw = payload.get("history_by_day") if isinstance(payload.get("history_by_day"), dict) else payload
+    if not isinstance(history_raw, dict):
+        return {}
+    out: dict[str, dict[str, object]] = {}
+    for day_utc, raw in history_raw.items():
+        day = str(day_utc or "").strip()
+        if not day:
+            continue
+        normalized = _normalize_rollup_history_entry(day, raw)
+        if normalized is not None:
+            out[day] = normalized
+    return out
+
+
+def _persist_rollup_history_entries(project_root: Path, history: dict[str, dict[str, object]]) -> dict[str, dict[str, object]]:
+    max_days = max(
+        _safe_int(os.getenv("ONE_NUMBERS_ROLLUP_HISTORY_MAX_DAYS", DEFAULT_ROLLUP_HISTORY_MAX_DAYS), DEFAULT_ROLLUP_HISTORY_MAX_DAYS),
+        1,
+    )
+    trimmed_days = sorted(history.keys())[-max_days:]
+    trimmed = {day: history[day] for day in trimmed_days}
+    out_path = project_root / "governance" / "health" / "one_numbers_rollup_history.json"
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_path.write_text(
+        json.dumps(
+            {
+                "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+                "schema_version": 1,
+                "history_by_day": trimmed,
+            },
+            ensure_ascii=True,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    return trimmed
+
+
+def _persist_rollup_history(project_root: Path, summary_payload: dict[str, object]) -> dict[str, dict[str, object]]:
+    history = _load_rollup_history(project_root)
+    entry = _history_entry_from_summary_payload(summary_payload)
+    if entry is None:
+        return history
+    history[str(entry["day_utc"])] = entry
+    return _persist_rollup_history_entries(project_root, history)
+
+
+def _paper_history_by_day(paper_performance: dict) -> dict[str, dict]:
+    out: dict[str, dict] = {}
+    rows = paper_performance.get("history_daily_series") if isinstance(paper_performance.get("history_daily_series"), list) else []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        day = str(row.get("day_utc") or "").strip()
+        if not day:
+            continue
+        out[day] = row
+    return out
+
+
+def _lightweight_data_quality_score(
+    *,
+    decision_total_rows: int,
+    governance_total_rows: int,
+    decision_stale_windows: int,
+    governance_stale_windows: int,
+    watchdog_restarts: int,
+    watchdog_throttled: int,
+    watchdog_restart_errors: int,
+) -> float:
+    score = 100.0
+    if decision_total_rows == 0:
+        score -= 40.0
+    if governance_total_rows == 0:
+        score -= 25.0
+    score -= min(float(max(decision_stale_windows, 0)) * 12.0, 24.0)
+    score -= min(float(max(governance_stale_windows, 0)) * 8.0, 16.0)
+    score -= min(float(max(watchdog_restarts, 0)) * 1.0, 8.0)
+    score -= min(float(max(watchdog_throttled, 0)) * 2.0, 10.0)
+    score -= min(float(max(watchdog_restart_errors, 0)) * 3.0, 12.0)
+    return max(min(score, 100.0), 0.0)
+
+
+def _lightweight_metrics_from_daily_summary(
+    summary: dict,
+    paper_daily: dict,
+    *,
+    now_utc: datetime | None = None,
+) -> dict[str, float | int]:
+    decision = summary.get("decision") if isinstance(summary.get("decision"), dict) else {}
+    governance = summary.get("governance") if isinstance(summary.get("governance"), dict) else {}
+    watchdog = summary.get("watchdog") if isinstance(summary.get("watchdog"), dict) else {}
+    decision_total_rows = _safe_int(decision.get("rows"), 0)
+    governance_total_rows = _safe_int(governance.get("rows"), 0)
+    status_counts = decision.get("status_counts") if isinstance(decision.get("status_counts"), dict) else {}
+    blocked_metrics = _blocked_metrics(
+        {str(key): _safe_int(value, 0) for key, value in status_counts.items()},
+        decision_total_rows,
+        observe_only_data_blocked_total=_safe_int(decision.get("observe_only_data_blocked"), 0),
+    )
+    watchdog_restarts = _safe_int(watchdog.get("restarts"), 0)
+    watchdog_throttled = _safe_int(watchdog.get("throttled"), 0)
+    watchdog_restart_errors = _safe_int(watchdog.get("restart_errors"), 0)
+    decision_stale_windows = _safe_int(decision.get("stale_windows"), 0)
+    governance_stale_windows = _safe_int(governance.get("stale_windows"), 0)
+    if now_utc is not None:
+        cutoff_utc = _session_aligned_recent_cutoff(now_utc)
+        stale_seconds = max(_safe_int(os.getenv("ONE_NUMBERS_STALE_SECONDS", "180"), 180), 1)
+        if decision_stale_windows > 0:
+            decision_files = decision.get("files", []) if isinstance(decision.get("files"), list) else []
+            decision_stale_windows = _recent_stale_windows_from_jsonl_files(
+                decision_files,
+                cutoff_utc=cutoff_utc,
+                stale_seconds=stale_seconds,
+            )
+        if governance_stale_windows > 0:
+            governance_files = governance.get("files", []) if isinstance(governance.get("files"), list) else []
+            governance_stale_windows = _recent_stale_windows_from_jsonl_files(
+                governance_files,
+                cutoff_utc=cutoff_utc,
+                stale_seconds=stale_seconds,
+            )
+    return {
+        "combined_decision_total_rows": decision_total_rows,
+        "combined_governance_total_rows": governance_total_rows,
+        "combined_blocked_total": _safe_int(blocked_metrics["combined_blocked_total"], 0),
+        "raw_data_blocked_total": _safe_int(blocked_metrics["raw_data_blocked_total"], 0),
+        "observe_only_data_blocked_total": _safe_int(blocked_metrics["observe_only_data_blocked_total"], 0),
+        "data_blocked_total": _safe_int(blocked_metrics["data_blocked_total"], 0),
+        "risk_blocked_total": _safe_int(blocked_metrics["risk_blocked_total"], 0),
+        "combined_blocked_rate": _safe_float(blocked_metrics["combined_blocked_rate"], 0.0),
+        "raw_data_blocked_rate": _safe_float(blocked_metrics["raw_data_blocked_rate"], 0.0),
+        "observe_only_data_blocked_rate": _safe_float(blocked_metrics["observe_only_data_blocked_rate"], 0.0),
+        "data_blocked_rate": _safe_float(blocked_metrics["data_blocked_rate"], 0.0),
+        "risk_blocked_rate": _safe_float(blocked_metrics["risk_blocked_rate"], 0.0),
+        "effective_blocked_rate": _safe_float(blocked_metrics["effective_blocked_rate"], 0.0),
+        "paper_executed_total": _safe_int(paper_daily.get("executions"), 0),
+        "watchdog_restarts": watchdog_restarts,
+        "watchdog_throttled": watchdog_throttled,
+        "watchdog_restart_errors": watchdog_restart_errors,
+        "decision_stale_windows_4h": decision_stale_windows,
+        "governance_stale_windows_4h": governance_stale_windows,
+        "decision_source_files": len(decision.get("files", []) if isinstance(decision.get("files"), list) else []),
+        "governance_source_files": len(governance.get("files", []) if isinstance(governance.get("files"), list) else []),
+        "linked_source_files_total": len(decision.get("files", []) if isinstance(decision.get("files"), list) else [])
+        + len(governance.get("files", []) if isinstance(governance.get("files"), list) else []),
+        "combined_pnl_proxy": _safe_float(paper_daily.get("ending_net_pnl_total"), 0.0),
+        "data_quality_score": _lightweight_data_quality_score(
+            decision_total_rows=decision_total_rows,
+            governance_total_rows=governance_total_rows,
+            decision_stale_windows=decision_stale_windows,
+            governance_stale_windows=governance_stale_windows,
+            watchdog_restarts=watchdog_restarts,
+            watchdog_throttled=watchdog_throttled,
+            watchdog_restart_errors=watchdog_restart_errors,
+        ),
+    }
+
+
+def _load_daily_runtime_summary_history(project_root: Path) -> dict[str, dict]:
+    out: dict[str, dict] = {}
+    sql_root = project_root / "exports" / "sql_reports"
+    for path in sorted(sql_root.glob("daily_runtime_summary_*.json")):
+        payload = _read_json(path)
+        day = str(payload.get("day") or "").strip()
+        if not day:
+            continue
+        out[day] = payload
+    latest = _read_json(project_root / "governance" / "health" / "daily_runtime_summary_latest.json")
+    latest_day = str(latest.get("day") or "").strip()
+    if latest_day:
+        out[latest_day] = latest
+    return out
+
+
+def _resolve_lightweight_report_day(requested_day: str, history: dict[str, dict]) -> str:
+    requested = str(requested_day or "").strip() or _default_report_day()
+    current = history.get(requested, {})
+    current_decision_rows = _safe_int(((current.get("decision") or {}) if isinstance(current.get("decision"), dict) else {}).get("rows"), 0)
+    if isinstance(current, dict) and current and current_decision_rows > 0:
+        return requested
+
+    decision_candidates = sorted(
+        day
+        for day, payload in history.items()
+        if _safe_int(((payload.get("decision") or {}) if isinstance(payload.get("decision"), dict) else {}).get("rows"), 0) > 0
+    )
+    prior_or_equal = [day for day in decision_candidates if day <= requested]
+    if prior_or_equal:
+        return prior_or_equal[-1]
+    if decision_candidates:
+        return decision_candidates[-1]
+
+    current_governance_rows = _safe_int(((current.get("governance") or {}) if isinstance(current.get("governance"), dict) else {}).get("rows"), 0)
+    if current_governance_rows > 0:
+        return requested
+
+    candidates = sorted(
+        day
+        for day, payload in history.items()
+        if _safe_int(((payload.get("decision") or {}) if isinstance(payload.get("decision"), dict) else {}).get("rows"), 0) > 0
+        or _safe_int(((payload.get("governance") or {}) if isinstance(payload.get("governance"), dict) else {}).get("rows"), 0) > 0
+    )
+    prior_or_equal = [day for day in candidates if day <= requested]
+    if prior_or_equal:
+        return prior_or_equal[-1]
+    return candidates[-1] if candidates else requested
+
+
+def _build_lightweight_summary_payload(
+    *,
+    project_root: Path,
+    requested_day: str,
+    db_path: Path,
+) -> tuple[dict[str, object], dict[str, dict[str, object]]]:
+    previous_payload = _read_json(project_root / "governance" / "health" / "one_numbers_latest.json")
+    paper_performance = _read_json(project_root / "governance" / "health" / "paper_performance_latest.json")
+    paper_history = _paper_history_by_day(paper_performance)
+    history = _load_daily_runtime_summary_history(project_root)
+    resolved_day = _resolve_lightweight_report_day(requested_day, history)
+    summary = history.get(resolved_day, {})
+    now_utc = datetime.now(timezone.utc)
+    current_report_day = _default_report_day()
+    metrics = _lightweight_metrics_from_daily_summary(
+        summary,
+        paper_history.get(resolved_day, {}),
+        now_utc=now_utc if resolved_day == current_report_day else None,
+    )
+    persisted_history = _load_rollup_history(project_root)
+    entries: dict[str, dict] = dict(persisted_history)
+    for day_utc, payload in history.items():
+        if day_utc in entries:
+            continue
+        entries[day_utc] = {
+            "day_utc": day_utc,
+            "generated_utc": str(payload.get("generated_utc") or payload.get("timestamp_utc") or ""),
+            "report_mode": "daily_runtime_summary_fallback",
+            "metrics": _lightweight_metrics_from_daily_summary(payload, paper_history.get(day_utc, {})),
+        }
+    entries[resolved_day] = {
+        "day_utc": resolved_day,
+        "generated_utc": str(summary.get("generated_utc") or summary.get("timestamp_utc") or ""),
+        "report_mode": "lightweight_cached",
+        "metrics": metrics,
+    }
+    month_rollup = _aggregate_rollup(
+        [entry for day_utc, entry in entries.items() if str(day_utc).startswith(str(resolved_day)[:6])]
+    )
+    all_time_rollup = _aggregate_rollup(list(entries.values()))
+    coverage_metadata = _one_numbers_coverage_metadata(project_root, entries)
+    dq_policy = _data_quality_session_policy(now_utc)
+    logs_root = project_root / "logs"
+    try:
+        storage_logs_target = str(logs_root.resolve())
+    except Exception:
+        storage_logs_target = str(logs_root)
+    storage_mode = "external" if storage_logs_target.startswith("/Volumes/") else "local"
+
+    payload = dict(previous_payload if isinstance(previous_payload, dict) else {})
+    payload.update(
+        {
+            "generated_utc": now_utc.isoformat(),
+            "day_utc": resolved_day,
+            "requested_day": requested_day,
+            "resolved_day": resolved_day,
+            "day_fallback_applied": str(requested_day != resolved_day).lower(),
+            **coverage_metadata,
+            "report_section_01": "Report Metadata",
+            "report_section_02": "Current Day",
+            "report_section_02b": "Backpressure Scorecard",
+            "report_section_03": "Month To Date",
+            "report_section_04": "All Time",
+            "report_section_05": "Detailed Metrics",
+            "db_path": str(db_path),
+            "combined_decision_total_rows": str(_safe_int(metrics["combined_decision_total_rows"], 0)),
+            "combined_governance_total_rows": str(_safe_int(metrics["combined_governance_total_rows"], 0)),
+            "combined_blocked_total": str(_safe_int(metrics["combined_blocked_total"], 0)),
+            "combined_blocked_rate": f"{_safe_float(metrics['combined_blocked_rate'], 0.0):.6f}",
+            "raw_data_blocked_total": str(_safe_int(metrics["raw_data_blocked_total"], 0)),
+            "raw_data_blocked_rate": f"{_safe_float(metrics['raw_data_blocked_rate'], 0.0):.6f}",
+            "observe_only_data_blocked_total": str(_safe_int(metrics["observe_only_data_blocked_total"], 0)),
+            "observe_only_data_blocked_rate": f"{_safe_float(metrics['observe_only_data_blocked_rate'], 0.0):.6f}",
+            "data_blocked_total": str(_safe_int(metrics["data_blocked_total"], 0)),
+            "data_blocked_rate": f"{_safe_float(metrics['data_blocked_rate'], 0.0):.6f}",
+            "risk_blocked_total": str(_safe_int(metrics["risk_blocked_total"], 0)),
+            "risk_blocked_rate": f"{_safe_float(metrics['risk_blocked_rate'], 0.0):.6f}",
+            "effective_blocked_rate": f"{_safe_float(metrics['effective_blocked_rate'], 0.0):.6f}",
+            "paper_executed_total": str(_safe_int(metrics["paper_executed_total"], 0)),
+            "watchdog_restarts": str(_safe_int(metrics["watchdog_restarts"], 0)),
+            "month_to_date_days_covered": month_rollup["days_covered"],
+            "month_to_date_decision_total_rows": month_rollup["decision_total_rows"],
+            "month_to_date_governance_total_rows": month_rollup["governance_total_rows"],
+            "month_to_date_blocked_total": month_rollup["blocked_total"],
+            "month_to_date_data_blocked_total": month_rollup["data_blocked_total"],
+            "month_to_date_risk_blocked_total": month_rollup["risk_blocked_total"],
+            "month_to_date_paper_executed_total": month_rollup["paper_executed_total"],
+            "month_to_date_watchdog_restarts": month_rollup["watchdog_restarts"],
+            "month_to_date_avg_data_quality_score": month_rollup["avg_data_quality_score"],
+            "all_time_days_covered": all_time_rollup["days_covered"],
+            "all_time_decision_total_rows": all_time_rollup["decision_total_rows"],
+            "all_time_governance_total_rows": all_time_rollup["governance_total_rows"],
+            "all_time_blocked_total": all_time_rollup["blocked_total"],
+            "all_time_data_blocked_total": all_time_rollup["data_blocked_total"],
+            "all_time_risk_blocked_total": all_time_rollup["risk_blocked_total"],
+            "all_time_paper_executed_total": all_time_rollup["paper_executed_total"],
+            "all_time_watchdog_restarts": all_time_rollup["watchdog_restarts"],
+            "all_time_avg_data_quality_score": all_time_rollup["avg_data_quality_score"],
+            "linked_source_files_total": str(_safe_int(metrics["linked_source_files_total"], 0)),
+            "decision_source_files": str(_safe_int(metrics["decision_source_files"], 0)),
+            "governance_source_files": str(_safe_int(metrics["governance_source_files"], 0)),
+            "decision_stale_windows_4h": str(_safe_int(metrics["decision_stale_windows_4h"], 0)),
+            "governance_stale_windows_4h": str(_safe_int(metrics["governance_stale_windows_4h"], 0)),
+            "watchdog_throttled": str(_safe_int(metrics["watchdog_throttled"], 0)),
+            "watchdog_restart_errors": str(_safe_int(metrics["watchdog_restart_errors"], 0)),
+            "decision_last_age_sec": "0",
+            "governance_last_age_sec": "0",
+            "decision_stale_penalty": "0.000000",
+            "governance_stale_penalty": "0.000000",
+            "data_quality_score": f"{_safe_float(metrics['data_quality_score'], 0.0):.2f}",
+            "data_quality_mode": str(dq_policy["mode"]),
+            "data_quality_session_aware": str(bool(dq_policy["session_aware"])).lower(),
+            "data_quality_session_open": str(bool(dq_policy["session_open"])).lower(),
+            "data_quality_session_timezone": str(dq_policy["timezone"]),
+            "data_quality_session_local_timestamp": str(dq_policy["local_timestamp"]),
+            "data_quality_decision_stale_grace_seconds": str(dq_policy["decision_grace_seconds"]),
+            "data_quality_governance_stale_grace_seconds": str(dq_policy["governance_grace_seconds"]),
+            "ops_storage_mode": storage_mode,
+            "ops_storage_logs_target": storage_logs_target,
+            "combined_pnl_proxy": f"{_safe_float(metrics['combined_pnl_proxy'], 0.0):.6f}",
+            "ALERT_WATCHDOG_RESTARTS": str(_safe_int(metrics["watchdog_restarts"], 0) > 0).lower(),
+            "ALERT_STALE_WINDOWS": str(
+                (_safe_int(metrics["decision_stale_windows_4h"], 0) + _safe_int(metrics["governance_stale_windows_4h"], 0)) > 0
+            ).lower(),
+            "ALERT_BLOCKED_RATE": str(_safe_float(metrics["effective_blocked_rate"], 0.0) > 0.25).lower(),
+            "ALERT_DATA_QUALITY": str(_safe_float(metrics["data_quality_score"], 0.0) < 80.0).lower(),
+            "report_mode": "lightweight_cached",
+            "lightweight_mode": True,
+            "lightweight_detail_fields_partial": True,
+            "rollup_history_days_available": str(len(entries)),
+            "rollup_history_source": "durable_history" if persisted_history else "daily_runtime_summary_fallback",
+        }
+    )
+    return payload, entries
+
+
+def _observe_only_data_blocked_total(conn: sqlite3.Connection, decision_like: str) -> int:
+    return _safe_int(
+        _q1(
+            conn,
+            """
+            SELECT COUNT(*)
+            FROM jsonl_records
+            WHERE source_rel LIKE ?
+              AND COALESCE(json_extract(payload_json, '$.status'), '')='DATA_ONLY_BLOCKED'
+              AND COALESCE(json_extract(payload_json, '$.safety.market_data_only'), 0)=1
+              AND COALESCE(json_extract(payload_json, '$.safety.execution_enabled'), 1)=0
+            """,
+            (decision_like,),
+        ),
+        0,
+    )
+
+
+def _trade_decision_summary_payload_from_sqlite(
+    *,
+    conn: sqlite3.Connection,
+    project_root: Path,
+    requested_day: str,
+    day: str,
+    db_path: Path,
+    decision_like: str,
+    governance_like: str,
+    decision_sources: list[str],
+    governance_sources: list[str],
+    decision_source_files: int,
+    governance_source_files: int,
+    no_sql_write: bool,
+) -> tuple[dict[str, object], list[tuple[str, str]]]:
+    now_utc = datetime.now(timezone.utc)
+    status_expr = "COALESCE(json_extract(payload_json, '$.status'), json_extract(payload_json, '$.decision'), 'UNKNOWN')"
+    bucket_case = """
+    CASE
+      WHEN LOWER(COALESCE(source_rel, '')) LIKE '%futures%'
+        OR LOWER(COALESCE(json_extract(payload_json, '$.mode'), '')) LIKE '%futures%'
+        OR COALESCE(json_extract(payload_json, '$.symbol'), '') LIKE '/%'
+        OR UPPER(COALESCE(json_extract(payload_json, '$.symbol'), '')) LIKE '%=F'
+        OR UPPER(COALESCE(json_extract(payload_json, '$.symbol'), '')) LIKE '%1!'
+      THEN 'futures'
+      WHEN UPPER(COALESCE(json_extract(payload_json, '$.symbol'), '')) LIKE '%-USD'
+        OR UPPER(COALESCE(json_extract(payload_json, '$.symbol'), '')) LIKE '%-USDC'
+        OR UPPER(COALESCE(json_extract(payload_json, '$.symbol'), '')) LIKE '%-USDT'
+      THEN 'crypto'
+      ELSE 'stocks'
+    END
+    """
+
+    def _source_filter(sources: list[str], pattern: str) -> tuple[str, tuple[str, ...]]:
+        exact = tuple(sorted({str(source) for source in sources if str(source).strip()}))
+        if exact:
+            return f"source_rel IN ({','.join('?' for _ in exact)})", exact
+        return "source_rel LIKE ?", (pattern,)
+
+    decision_filter, decision_params = _source_filter(decision_sources, decision_like)
+    governance_filter, governance_params = _source_filter(governance_sources, governance_like)
+
+    decision_total_rows = _safe_int(_q1(conn, f"SELECT COUNT(*) FROM main.jsonl_records WHERE {decision_filter}", decision_params), 0)
+    governance_total_rows = _safe_int(_q1(conn, f"SELECT COUNT(*) FROM main.jsonl_records WHERE {governance_filter}", governance_params), 0)
+    _emit_progress(f"one_numbers trade_fallback counts decision_rows={decision_total_rows} governance_rows={governance_total_rows}")
+    if decision_source_files == 0:
+        decision_source_files = _safe_int(
+            _q1(conn, f"SELECT COUNT(DISTINCT source_rel) FROM main.jsonl_records WHERE {decision_filter}", decision_params),
+            0,
+        )
+    if governance_source_files == 0:
+        governance_source_files = _safe_int(
+            _q1(conn, f"SELECT COUNT(DISTINCT source_rel) FROM main.jsonl_records WHERE {governance_filter}", governance_params),
+            0,
+        )
+    status_counts: dict[str, int] = {}
+    _emit_progress("one_numbers trade_fallback status_groups=skipped")
+    source_count_rows = _qall(
+        conn,
+        f"""
+        SELECT source_rel, COUNT(*)
+        FROM main.jsonl_records
+        WHERE {decision_filter}
+        GROUP BY source_rel
+        """,
+        decision_params,
+    )
+    action_counts: dict[str, int] = {}
+    split_counts = {"stocks": 0, "crypto": 0, "futures": 0}
+    split_actions = {
+        "stocks": {"BUY": 0, "SELL": 0, "HOLD": 0},
+        "crypto": {"BUY": 0, "SELL": 0, "HOLD": 0},
+        "futures": {"BUY": 0, "SELL": 0, "HOLD": 0},
+    }
+    for source_rel, count in source_count_rows:
+        source_text = str(source_rel or "").lower()
+        if "futures" in source_text:
+            split_counts["futures"] += _safe_int(count)
+        elif "crypto" in source_text:
+            split_counts["crypto"] += _safe_int(count)
+        else:
+            split_counts["stocks"] += _safe_int(count)
+    _emit_progress(f"one_numbers trade_fallback source_groups={len(source_count_rows)}")
+
+    blocked_metrics = _blocked_metrics(status_counts, decision_total_rows, observe_only_data_blocked_total=0)
+    paper_executed_total = _safe_int(status_counts.get("PAPER_EXECUTED"), 0)
+    data_quality_score = 100.0 if decision_total_rows > 0 else 25.0
+    backpressure = _backpressure_scorecard_metrics(project_root)
+    _emit_progress("one_numbers trade_fallback backpressure_loaded")
+    current_rollup_metrics = {
+        "combined_decision_total_rows": decision_total_rows,
+        "combined_governance_total_rows": governance_total_rows,
+        "combined_blocked_total": _safe_int(blocked_metrics["combined_blocked_total"], 0),
+        "data_blocked_total": _safe_int(blocked_metrics["data_blocked_total"], 0),
+        "risk_blocked_total": _safe_int(blocked_metrics["risk_blocked_total"], 0),
+        "paper_executed_total": paper_executed_total,
+        "watchdog_restarts": 0,
+        "data_quality_score": data_quality_score,
+    }
+    entries = dict(_load_rollup_history(project_root))
+    entries.update(_latest_daily_snapshots(conn))
+    entries[day] = {
+        "day_utc": day,
+        "generated_utc": now_utc.isoformat(),
+        "report_mode": "full_trade_decision_fallback",
+        "metrics": current_rollup_metrics,
+    }
+    _add_requested_source_day_history_entry(
+        project_root,
+        entries,
+        requested_day=requested_day,
+        resolved_day=day,
+        now_utc=now_utc,
+    )
+    persisted_history = _persist_rollup_history_entries(project_root, entries)
+    month_rollup = _aggregate_rollup([entry for entry_day, entry in persisted_history.items() if str(entry_day).startswith(day[:6])])
+    all_time_rollup = _aggregate_rollup(list(persisted_history.values()))
+    coverage_metadata = _one_numbers_coverage_metadata(project_root, persisted_history)
+    _emit_progress("one_numbers trade_fallback rollups_ready")
+
+    last_decision_ts = ""
+    last_governance_ts = ""
+    _emit_progress("one_numbers trade_fallback freshness_skipped")
+
+    def _age_seconds(ts_raw: str) -> int:
+        if not ts_raw:
+            return 10**9
+        try:
+            return max(int((now_utc - datetime.fromisoformat(ts_raw.replace("Z", "+00:00")).astimezone(timezone.utc)).total_seconds()), 0)
+        except Exception:
+            return 10**9
+
+    payload: dict[str, object] = {
+        "generated_utc": now_utc.isoformat(),
+        "day_utc": day,
+        "requested_day": requested_day,
+        "resolved_day": day,
+        "day_fallback_applied": str(requested_day != day).lower(),
+        **coverage_metadata,
+        "report_section_01": "Report Metadata",
+        "report_mode": "full",
+        "decision_source_kind": "trade_decisions",
+        "detail_source": "trade_decision_fallback",
+        "db_path": str(db_path),
+        "report_section_02": "Current Day",
+        "combined_decision_total_rows": str(decision_total_rows),
+        "combined_governance_total_rows": str(governance_total_rows),
+        "combined_blocked_total": str(_safe_int(blocked_metrics["combined_blocked_total"], 0)),
+        "combined_blocked_rate": f"{_safe_float(blocked_metrics['combined_blocked_rate'], 0.0):.6f}",
+        "raw_data_blocked_total": str(_safe_int(blocked_metrics["raw_data_blocked_total"], 0)),
+        "raw_data_blocked_rate": f"{_safe_float(blocked_metrics['raw_data_blocked_rate'], 0.0):.6f}",
+        "observe_only_data_blocked_total": "0",
+        "observe_only_data_blocked_rate": "0.000000",
+        "data_blocked_total": str(_safe_int(blocked_metrics["data_blocked_total"], 0)),
+        "data_blocked_rate": f"{_safe_float(blocked_metrics['data_blocked_rate'], 0.0):.6f}",
+        "risk_blocked_total": str(_safe_int(blocked_metrics["risk_blocked_total"], 0)),
+        "risk_blocked_rate": f"{_safe_float(blocked_metrics['risk_blocked_rate'], 0.0):.6f}",
+        "effective_blocked_rate": f"{_safe_float(blocked_metrics['effective_blocked_rate'], 0.0):.6f}",
+        "data_quality_score": f"{data_quality_score:.2f}",
+        "paper_executed_total": str(paper_executed_total),
+        "watchdog_restarts": "0",
+        "report_section_02b": "Backpressure Scorecard",
+        **backpressure,
+        "report_section_03": "Month To Date",
+        "month_to_date_days_covered": month_rollup["days_covered"],
+        "month_to_date_decision_total_rows": month_rollup["decision_total_rows"],
+        "month_to_date_governance_total_rows": month_rollup["governance_total_rows"],
+        "month_to_date_blocked_total": month_rollup["blocked_total"],
+        "month_to_date_data_blocked_total": month_rollup["data_blocked_total"],
+        "month_to_date_risk_blocked_total": month_rollup["risk_blocked_total"],
+        "month_to_date_paper_executed_total": month_rollup["paper_executed_total"],
+        "month_to_date_watchdog_restarts": month_rollup["watchdog_restarts"],
+        "month_to_date_avg_data_quality_score": month_rollup["avg_data_quality_score"],
+        "report_section_04": "All Time",
+        "all_time_days_covered": all_time_rollup["days_covered"],
+        "all_time_decision_total_rows": all_time_rollup["decision_total_rows"],
+        "all_time_governance_total_rows": all_time_rollup["governance_total_rows"],
+        "all_time_blocked_total": all_time_rollup["blocked_total"],
+        "all_time_data_blocked_total": all_time_rollup["data_blocked_total"],
+        "all_time_risk_blocked_total": all_time_rollup["risk_blocked_total"],
+        "all_time_paper_executed_total": all_time_rollup["paper_executed_total"],
+        "all_time_watchdog_restarts": all_time_rollup["watchdog_restarts"],
+        "all_time_avg_data_quality_score": all_time_rollup["avg_data_quality_score"],
+        "report_section_05": "Detailed Metrics",
+        "linked_source_files_total": str(decision_source_files + governance_source_files),
+        "decision_source_files": str(decision_source_files),
+        "governance_source_files": str(governance_source_files),
+        "combined_action_buy": str(_safe_int(action_counts.get("BUY"), 0)),
+        "combined_action_sell": str(_safe_int(action_counts.get("SELL"), 0)),
+        "combined_action_hold": str(_safe_int(action_counts.get("HOLD"), 0)),
+        "stocks_decision_rows": str(_safe_int(split_counts.get("stocks"), 0)),
+        "stocks_action_buy": str(split_actions["stocks"]["BUY"]),
+        "stocks_action_sell": str(split_actions["stocks"]["SELL"]),
+        "stocks_action_hold": str(split_actions["stocks"]["HOLD"]),
+        "crypto_decision_rows": str(_safe_int(split_counts.get("crypto"), 0)),
+        "crypto_action_buy": str(split_actions["crypto"]["BUY"]),
+        "crypto_action_sell": str(split_actions["crypto"]["SELL"]),
+        "crypto_action_hold": str(split_actions["crypto"]["HOLD"]),
+        "futures_decision_rows": str(_safe_int(split_counts.get("futures"), 0)),
+        "futures_action_buy": str(split_actions["futures"]["BUY"]),
+        "futures_action_sell": str(split_actions["futures"]["SELL"]),
+        "futures_action_hold": str(split_actions["futures"]["HOLD"]),
+        "decision_stale_windows_4h": "0",
+        "governance_stale_windows_4h": "0",
+        "watchdog_throttled": "0",
+        "watchdog_restart_errors": "0",
+        "decision_last_age_sec": str(_age_seconds(last_decision_ts)),
+        "governance_last_age_sec": str(_age_seconds(last_governance_ts)),
+        "decision_stale_penalty": "0.000000",
+        "governance_stale_penalty": "0.000000",
+        "data_quality_mode": _data_quality_session_policy(now_utc)["mode"],
+        "data_quality_session_aware": str(_data_quality_session_policy(now_utc)["session_aware"]).lower(),
+    }
+    rows = _rows_from_summary_payload(payload)
+    if not no_sql_write:
+        metric_map = {str(k): str(v) for k, v in rows}
+        _register_sql_snapshot(
+            conn,
+            generated_utc=str(payload["generated_utc"]),
+            day=day,
+            decision_total_rows=decision_total_rows,
+            stocks_decision_rows=_safe_int(split_counts.get("stocks"), 0),
+            crypto_decision_rows=_safe_int(split_counts.get("crypto"), 0),
+            watchdog_restarts=0,
+            data_quality_score=data_quality_score,
+            alerts=[],
+            metric_map=metric_map,
+        )
+    return payload, rows
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Build one concise numbers file from SQL logs (stocks + crypto + futures + options + alerts).")
-    parser.add_argument("--day", default=datetime.now(timezone.utc).strftime("%Y%m%d"))
+    parser.add_argument("--day", default="", help="Preferred session day in YYYYMMDD. Defaults to the report timezone day and can fall back to the latest linked day with data.")
     parser.add_argument("--out-dir", default=str(PROJECT_ROOT / "exports" / "one_numbers"))
-    parser.add_argument("--db", default=str(DEFAULT_DB))
+    parser.add_argument("--db", default=str(_default_db_path()))
     parser.add_argument("--stale-seconds", type=int, default=180)
     parser.add_argument("--no-sql-write", action="store_true", help="Do not persist summary snapshot into SQLite")
+    parser.add_argument(
+        "--lightweight",
+        action="store_true",
+        help="Deprecated compatibility flag. One Numbers always performs a full data-backed rebuild.",
+    )
+    parser.add_argument("--sqlite-timeout-seconds", type=float, default=15.0)
     args = parser.parse_args()
 
     lock_path = Path(os.getenv("ONE_NUMBERS_LOCK_PATH", str(PROJECT_ROOT / "governance" / "locks" / "one_numbers.lock")))
@@ -219,10 +2675,19 @@ def main() -> int:
         print(f"{exc}")
         return 1
 
-    day = args.day
+    requested_day = str(args.day or "").strip() or _default_report_day()
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
-    db_path = Path(args.db)
+    db_path = _routed_or_local_fallback_path(Path(args.db))
+
+    _emit_progress(
+        f"one_numbers start requested_day={requested_day} "
+        f"db={db_path} out_dir={out_dir} no_sql_write={str(bool(args.no_sql_write)).lower()}"
+    )
+
+    if args.lightweight:
+        _emit_progress("one_numbers lightweight flag ignored: running full data-backed rebuild.")
+        args.lightweight = False
 
     if not db_path.exists():
         try:
@@ -233,12 +2698,36 @@ def main() -> int:
             pass
         raise SystemExit(f"SQLite DB not found: {db_path}")
 
-    conn = sqlite3.connect(str(db_path))
+    conn = sqlite3.connect(str(db_path), timeout=max(float(args.sqlite_timeout_seconds), 1.0))
+    conn.execute(f"PRAGMA busy_timeout={int(max(float(args.sqlite_timeout_seconds), 1.0) * 1000)}")
+    try:
+        conn.execute("SELECT 1 FROM main.jsonl_records LIMIT 1").fetchone()
+    except sqlite3.OperationalError as exc:
+        if not _sqlite_is_locked(exc):
+            raise
+        conn.close()
+        _emit_progress("one_numbers sqlite locked: reading raw JSONL files for full report artifacts.")
+        summary_payload, rows = _raw_report_payload_from_jsonl(
+            project_root=PROJECT_ROOT,
+            requested_day=requested_day,
+            db_path=db_path,
+            stale_seconds=max(int(args.stale_seconds), 1),
+        )
+        latest_csv, latest_md, latest_xlsx, latest_metrics_csv, latest_json = _write_one_numbers_artifact_set(out_dir, summary_payload, rows)
+        print(f"Latest CSV: {latest_csv}")
+        print(f"Latest MD: {latest_md}")
+        print(f"Latest XLSX: {latest_xlsx}")
+        print(f"Latest metrics CSV: {latest_metrics_csv}")
+        print(f"Latest JSON: {latest_json}")
+        try:
+            if lock_fh is not None:
+                fcntl.flock(lock_fh.fileno(), fcntl.LOCK_UN)
+                lock_fh.close()
+        except Exception:
+            pass
+        return 0
 
-    decision_like = f"decision_explanations/%/decision_explanations_{day}.jsonl"
-    governance_like = f"governance/%/master_control_{day}.jsonl"
-    pnl_like = f"governance/%/shadow_pnl_attribution_{day}.jsonl"
-    watchdog_like = f"governance/watchdog/watchdog_events_{day}.jsonl"
+    day = requested_day
     decision_bucket_case = """
     CASE
       WHEN LOWER(COALESCE(source_rel, '')) LIKE '%futures%'
@@ -268,44 +2757,92 @@ def main() -> int:
       ELSE 'stocks'
     END
     """
+    decision_status_expr = "COALESCE(json_extract(payload_json, '$.status'), json_extract(payload_json, '$.decision'), 'UNKNOWN')"
 
-    state_obj = _read_json(PROJECT_ROOT / "governance" / "jsonl_sql_link_state.json")
-    sqlite_state = state_obj.get("sqlite") if isinstance(state_obj.get("sqlite"), dict) else {}
+    sqlite_state = _resolve_sqlite_state(PROJECT_ROOT)
+    day, day_sources = _resolve_report_day(requested_day, sqlite_state)
+    db_day = _latest_report_day_from_db(conn, requested_day)
+    preferred_day = _prefer_db_report_day(requested_day, day, db_day)
+    if preferred_day != day:
+        day = preferred_day
+        day_sources = _sqlite_state_sources_by_day(sqlite_state).get(day, _empty_day_sources())
+    explanation_like_for_day = f"decision_explanations/%/decision_explanations_{day}.jsonl%"
+    trade_like_for_day = f"decisions/%/trade_decisions_{day}.jsonl%"
+    indexed_explanation_sources = _sqlite_sources_like(conn, explanation_like_for_day)
+    indexed_trade_sources = _sqlite_sources_like(conn, trade_like_for_day)
+    if indexed_explanation_sources:
+        decision_sources_day = indexed_explanation_sources
+        decision_source_kind = "decision_explanations"
+    elif indexed_trade_sources:
+        decision_sources_day = indexed_trade_sources
+        decision_source_kind = "trade_decisions"
+    else:
+        decision_sources_day = day_sources["decision"]
+        decision_source_kind = "decision_explanations"
+        if not decision_sources_day and day_sources.get("decision_trade"):
+            decision_sources_day = day_sources["decision_trade"]
+            decision_source_kind = "trade_decisions"
+    governance_like_for_day = f"governance/%/master_control_{day}.jsonl%"
+    pnl_like_for_day = f"governance/%/shadow_pnl_attribution_{day}.jsonl%"
+    watchdog_like_for_day = f"governance/watchdog/watchdog_events_{day}.jsonl%"
+    governance_sources_day = _sqlite_sources_like(conn, governance_like_for_day) or day_sources["governance"]
+    pnl_sources_day = _sqlite_sources_like(conn, pnl_like_for_day) or day_sources["pnl"]
+    watchdog_sources_day = _sqlite_sources_like(conn, watchdog_like_for_day) or day_sources["watchdog"]
 
-    decision_sources_day = sorted(
-        [
-            str(rel)
-            for rel in sqlite_state
-            if str(rel).startswith("decision_explanations/") and str(rel).endswith(f"decision_explanations_{day}.jsonl")
-        ]
+    _emit_progress(
+        f"one_numbers resolved_day={day} "
+        f"decision_source_kind={decision_source_kind} "
+        f"decision_sources={len(decision_sources_day)} governance_sources={len(governance_sources_day)} "
+        f"pnl_sources={len(pnl_sources_day)} watchdog_sources={len(watchdog_sources_day)}"
     )
-    governance_sources_day = sorted(
-        [
-            str(rel)
-            for rel in sqlite_state
-            if str(rel).startswith("governance/") and str(rel).endswith(f"master_control_{day}.jsonl")
-        ]
-    )
-    pnl_sources_day = sorted(
-        [
-            str(rel)
-            for rel in sqlite_state
-            if str(rel).startswith("governance/") and str(rel).endswith(f"shadow_pnl_attribution_{day}.jsonl")
-        ]
-    )
-    watchdog_sources_day = sorted(
-        [
-            str(rel)
-            for rel in sqlite_state
-            if str(rel) == f"governance/watchdog/watchdog_events_{day}.jsonl"
-        ]
-    )
+
+    if decision_source_kind == "trade_decisions":
+        decision_like = trade_like_for_day
+    else:
+        decision_like = explanation_like_for_day
+    governance_like = governance_like_for_day
+    pnl_like = pnl_like_for_day
+    watchdog_like = watchdog_like_for_day
 
     linked_source_files_total = len(sqlite_state) if sqlite_state else 0
     decision_source_files = len(decision_sources_day)
     governance_source_files = len(governance_sources_day)
 
-    _ = _materialize_working_subset(
+    if decision_source_kind == "trade_decisions" and not _env_flag("ONE_NUMBERS_FORCE_EXPLANATION_DETAIL", "0"):
+        _emit_progress("one_numbers trade_decision_fallback=enabled")
+        summary_payload, rows = _trade_decision_summary_payload_from_sqlite(
+            conn=conn,
+            project_root=PROJECT_ROOT,
+            requested_day=requested_day,
+            day=day,
+            db_path=db_path,
+            decision_like=decision_like,
+            governance_like=governance_like,
+            decision_sources=decision_sources_day,
+            governance_sources=governance_sources_day,
+            decision_source_files=decision_source_files,
+            governance_source_files=governance_source_files,
+            no_sql_write=bool(args.no_sql_write),
+        )
+        latest_csv, latest_md, latest_xlsx, latest_metrics_csv, latest_json = _write_one_numbers_artifact_set(out_dir, summary_payload, rows)
+        print(f"Wrote: {latest_csv.resolve()}")
+        print(f"Wrote: {latest_md.resolve()}")
+        print(f"Wrote: {latest_xlsx.resolve()}")
+        print(f"Latest CSV: {latest_csv}")
+        print(f"Latest MD: {latest_md}")
+        print(f"Latest XLSX: {latest_xlsx}")
+        print(f"Latest metrics CSV: {latest_metrics_csv}")
+        print(f"Latest JSON: {latest_json}")
+        conn.close()
+        try:
+            if lock_fh is not None:
+                fcntl.flock(lock_fh.fileno(), fcntl.LOCK_UN)
+                lock_fh.close()
+        except Exception:
+            pass
+        return 0
+
+    working_subset_rows = _materialize_working_subset(
         conn,
         source_rel_values=(
             decision_sources_day
@@ -320,6 +2857,8 @@ def main() -> int:
         watchdog_like=watchdog_like,
     )
 
+    _emit_progress(f"one_numbers working_subset_rows={working_subset_rows}")
+
     # Combined totals (computed against the temp working subset).
     decision_total_rows = _safe_int(_q1(conn, "SELECT COUNT(*) FROM jsonl_records WHERE source_rel LIKE ?", (decision_like,)), 0)
     governance_total_rows = _safe_int(_q1(conn, "SELECT COUNT(*) FROM jsonl_records WHERE source_rel LIKE ?", (governance_like,)), 0)
@@ -331,8 +2870,8 @@ def main() -> int:
 
     status_rows = _qall(
         conn,
-        """
-        SELECT COALESCE(json_extract(payload_json, '$.status'), 'UNKNOWN') AS status, COUNT(*)
+        f"""
+        SELECT {decision_status_expr} AS status, COUNT(*)
         FROM jsonl_records
         WHERE source_rel LIKE ?
         GROUP BY status
@@ -340,6 +2879,7 @@ def main() -> int:
         (decision_like,),
     )
     status_counts = {str(k): _safe_int(v) for k, v in status_rows}
+    observe_only_data_blocked_total = _observe_only_data_blocked_total(conn, decision_like)
 
     action_rows = _qall(
         conn,
@@ -362,7 +2902,7 @@ def main() -> int:
           {decision_bucket_case} AS bucket,
           COALESCE(json_extract(payload_json, '$.symbol'), 'UNKNOWN') AS symbol,
           COALESCE(json_extract(payload_json, '$.action'), 'UNKNOWN') AS action,
-          COALESCE(json_extract(payload_json, '$.status'), 'UNKNOWN') AS status
+          {decision_status_expr} AS status
         FROM jsonl_records
         WHERE source_rel LIKE ?
         """,
@@ -645,7 +3185,7 @@ def main() -> int:
         return (b - s) / denom
 
     # Stale windows in the last 4h for decisions/governance
-    cutoff_4h = (now_utc - timedelta(hours=4)).isoformat()
+    cutoff_4h = _session_aligned_recent_cutoff(now_utc).isoformat()
     decision_ts_rows = _qall(
         conn,
         """
@@ -690,8 +3230,22 @@ def main() -> int:
         0,
     )
 
-    blocked_total = status_counts.get("BLOCKED", 0) + status_counts.get("DATA_ONLY_BLOCKED", 0)
-    blocked_rate = blocked_total / max(decision_total_rows, 1)
+    blocked_metrics = _blocked_metrics(
+        status_counts,
+        decision_total_rows,
+        observe_only_data_blocked_total=observe_only_data_blocked_total,
+    )
+    blocked_total = int(blocked_metrics["combined_blocked_total"])
+    blocked_rate = float(blocked_metrics["combined_blocked_rate"])
+    raw_data_blocked_total = int(blocked_metrics["raw_data_blocked_total"])
+    raw_data_blocked_rate = float(blocked_metrics["raw_data_blocked_rate"])
+    observe_only_data_blocked_total = int(blocked_metrics["observe_only_data_blocked_total"])
+    observe_only_data_blocked_rate = float(blocked_metrics["observe_only_data_blocked_rate"])
+    data_blocked_total = int(blocked_metrics["data_blocked_total"])
+    data_blocked_rate = float(blocked_metrics["data_blocked_rate"])
+    risk_blocked_total = int(blocked_metrics["risk_blocked_total"])
+    risk_blocked_rate = float(blocked_metrics["risk_blocked_rate"])
+    effective_blocked_rate = float(blocked_metrics["effective_blocked_rate"])
     hold_no_edge_rate = hold_no_edge / max(action_counts.get("HOLD", 0), 1)
 
     # Paper execution (for paper-trading visibility in one-page report).
@@ -739,6 +3293,23 @@ def main() -> int:
         """,
         (decision_like,),
     )
+
+    paper_performance = _read_json(PROJECT_ROOT / "governance" / "health" / "paper_performance_latest.json")
+    paper_sleeves = paper_performance.get("sleeve_latest") if isinstance(paper_performance.get("sleeve_latest"), list) else []
+    dividend_sleeve = next(
+        (
+            row for row in paper_sleeves
+            if isinstance(row, dict) and str(row.get("profile", "")).strip().lower() == "dividend"
+        ),
+        {},
+    )
+    dividend_ingress = _read_json(PROJECT_ROOT / "governance" / "health" / "data_ingress_latest_dividend_equities_schwab.json")
+    dividend_loop_state = str(dividend_ingress.get("loop_state") or "unknown")
+    dividend_pause_reason = str(dividend_ingress.get("pause_reason") or "none")
+    dividend_paper_executions = _safe_int(dividend_sleeve.get("executions"), 0)
+    dividend_ending_realized_pnl_total = _safe_float(dividend_sleeve.get("ending_realized_pnl_total"), 0.0)
+    dividend_ending_unrealized_pnl_total = _safe_float(dividend_sleeve.get("ending_unrealized_pnl_total"), 0.0)
+    dividend_ending_net_pnl_total = _safe_float(dividend_sleeve.get("ending_net_pnl_total"), 0.0)
 
     # Guardrail counters for quick verification in the one-page report.
     guardrail_master_latency_slo_fail = _safe_int(
@@ -830,11 +3401,15 @@ def main() -> int:
         0,
     )
 
-    # Drift flag: compare buy rate last 1h vs last 4h baseline.
-    buy_rate_1h = s60[1] / max(s60[0], 1)
-    buy_rate_4h = s240[1] / max(s240[0], 1)
-    buy_rate_drift_abs = abs(buy_rate_1h - buy_rate_4h)
-    model_drift_flag = buy_rate_drift_abs >= 0.20
+    drift_snapshot = _model_drift_snapshot(s60, s240)
+    buy_rate_1h = float(drift_snapshot["buy_rate_1h"])
+    buy_rate_4h = float(drift_snapshot["buy_rate_4h"])
+    actionable_rate_1h = float(drift_snapshot["actionable_rate_1h"])
+    actionable_rate_4h = float(drift_snapshot["actionable_rate_4h"])
+    buy_rate_drift_abs = float(drift_snapshot["buy_rate_drift_abs"])
+    action_mix_drift_abs = float(drift_snapshot["action_mix_drift_abs"])
+    model_drift_flag = bool(drift_snapshot["model_drift_flag"])
+    model_drift_reason = str(drift_snapshot["model_drift_reason"])
 
     # Freshness ages
     last_decision_ts = _q1(
@@ -911,7 +3486,13 @@ def main() -> int:
         storage_logs_target = str(logs_root)
     storage_mode = "external" if storage_logs_target.startswith("/Volumes/") else "local"
 
-    sql_link_health = _read_json(PROJECT_ROOT / "governance" / "health" / "sql_link_service_latest.json")
+    sql_link_latest_path = PROJECT_ROOT / "governance" / "health" / "sql_link_service_latest.json"
+    sql_link_progress_path = PROJECT_ROOT / "governance" / "health" / "sql_link_service_progress_latest.json"
+    sql_link_health, sql_link_health_path = _freshest_json_payload([sql_link_progress_path, sql_link_latest_path])
+    if str((sql_link_health or {}).get("status", "")).strip().lower() == "running":
+        latest_completed = _read_json(sql_link_latest_path)
+        if latest_completed:
+            sql_link_health = {**latest_completed, **sql_link_health}
     sql_link_ok = bool(sql_link_health.get("ok"))
     sql_link_rc = _safe_int(sql_link_health.get("rc"), -1)
     sql_link_db_size_gb = _safe_float(sql_link_health.get("sqlite_db_size_gb"), 0.0)
@@ -928,46 +3509,158 @@ def main() -> int:
     canary_enabled = bool(canary_state.get("enabled", canary_state.get("active", canary_weight > 0.0)))
 
     # Data quality score
+    dq_policy = _data_quality_session_policy(now_utc)
+    decision_stale_penalty = _staleness_penalty(
+        decision_last_age_sec,
+        int(dq_policy["decision_grace_seconds"]),
+        30.0,
+        20.0,
+    )
+    governance_stale_penalty = _staleness_penalty(
+        governance_last_age_sec,
+        int(dq_policy["governance_grace_seconds"]),
+        45.0,
+        15.0,
+    )
     score = 100.0
     if decision_total_rows == 0:
         score -= 40
     if governance_total_rows == 0:
         score -= 25
-    score -= min(max(decision_last_age_sec - 120, 0) / 30.0, 20.0)
-    score -= min(max(governance_last_age_sec - 180, 0) / 45.0, 15.0)
+    score -= decision_stale_penalty
+    score -= governance_stale_penalty
     if heartbeat_recent == 0:
         score -= 15
     score -= min(watchdog_restarts * 1.0, 8.0)
     score -= min(watchdog_throttled * 2.0, 10.0)
     score -= min(watchdog_restart_errors * 3.0, 12.0)
     data_quality_score = max(min(score, 100.0), 0.0)
+    backpressure_scorecard = _backpressure_scorecard_metrics(PROJECT_ROOT)
 
     # Alert flags
     alerts = {
         "ALERT_WATCHDOG_RESTARTS": watchdog_restarts > 0,
         "ALERT_STALE_WINDOWS": (decision_stale_windows + governance_stale_windows) > 0,
-        "ALERT_BLOCKED_RATE": blocked_rate > 0.25,
+        "ALERT_BLOCKED_RATE": effective_blocked_rate > 0.25,
         "ALERT_SYMBOL_CONCENTRATION": symbol_concentration_top3_share > 0.75,
         "ALERT_MODEL_DRIFT": model_drift_flag,
         "ALERT_DATA_QUALITY": data_quality_score < 80.0,
     }
 
+    current_rollup_metrics = {
+        "combined_decision_total_rows": decision_total_rows,
+        "combined_governance_total_rows": governance_total_rows,
+        "combined_blocked_total": blocked_total,
+        "raw_data_blocked_total": raw_data_blocked_total,
+        "observe_only_data_blocked_total": observe_only_data_blocked_total,
+        "data_blocked_total": data_blocked_total,
+        "risk_blocked_total": risk_blocked_total,
+        "paper_executed_total": paper_executed_total,
+        "watchdog_restarts": watchdog_restarts,
+        "data_quality_score": data_quality_score,
+    }
+    persisted_rollup_history = _load_rollup_history(PROJECT_ROOT)
+    latest_snapshots = dict(persisted_rollup_history)
+    latest_snapshots.update(_latest_daily_snapshots(conn))
+    latest_snapshots[day] = {
+        "day_utc": day,
+        "generated_utc": now_utc.isoformat(),
+        "report_mode": "full",
+        "metrics": current_rollup_metrics,
+    }
+    _add_requested_source_day_history_entry(
+        PROJECT_ROOT,
+        latest_snapshots,
+        requested_day=requested_day,
+        resolved_day=day,
+        now_utc=now_utc,
+    )
+    month_prefix = day[:6]
+    month_rollup = _aggregate_rollup([entry for entry_day, entry in latest_snapshots.items() if str(entry_day).startswith(month_prefix)])
+    all_time_rollup = _aggregate_rollup(list(latest_snapshots.values()))
+    coverage_metadata = _one_numbers_coverage_metadata(PROJECT_ROOT, latest_snapshots)
+
     # Build output rows
     generated_utc = now_utc.isoformat()
-    rows: list[tuple[str, str]] = [
+    metadata_rows: list[tuple[str, str]] = [
+        ("report_section_01", "Report Metadata"),
         ("day_utc", day),
+        ("requested_day", requested_day),
+        ("resolved_day", day),
+        ("day_fallback_applied", str(requested_day != day).lower()),
+        ("historical_coverage_status", coverage_metadata["historical_coverage_status"]),
+        ("all_time_coverage_complete", coverage_metadata["all_time_coverage_complete"]),
+        ("original_start_day", coverage_metadata["original_start_day"]),
+        ("original_start_source", coverage_metadata["original_start_source"]),
+        ("rollup_history_days_available", coverage_metadata["rollup_history_days_available"]),
+        ("earliest_rollup_day", coverage_metadata["earliest_rollup_day"]),
+        ("latest_rollup_day", coverage_metadata["latest_rollup_day"]),
+        ("source_days_discovered", coverage_metadata["source_days_discovered"]),
+        ("earliest_source_day", coverage_metadata["earliest_source_day"]),
+        ("latest_source_day", coverage_metadata["latest_source_day"]),
+        ("source_days_missing_from_rollup_count", coverage_metadata["source_days_missing_from_rollup_count"]),
+        ("historical_coverage_detail", coverage_metadata["historical_coverage_detail"]),
         ("generated_utc", generated_utc),
+        ("report_mode", "full"),
         ("db_path", str(db_path)),
+    ]
+    summary_rows: list[tuple[str, str]] = [
+        ("report_section_02", "Current Day"),
         ("combined_decision_total_rows", str(decision_total_rows)),
         ("combined_governance_total_rows", str(governance_total_rows)),
+        ("combined_blocked_total", str(blocked_total)),
+        ("combined_blocked_rate", f"{blocked_rate:.6f}"),
+        ("raw_data_blocked_total", str(raw_data_blocked_total)),
+        ("raw_data_blocked_rate", f"{raw_data_blocked_rate:.6f}"),
+        ("observe_only_data_blocked_total", str(observe_only_data_blocked_total)),
+        ("observe_only_data_blocked_rate", f"{observe_only_data_blocked_rate:.6f}"),
+        ("data_blocked_total", str(data_blocked_total)),
+        ("data_blocked_rate", f"{data_blocked_rate:.6f}"),
+        ("risk_blocked_total", str(risk_blocked_total)),
+        ("risk_blocked_rate", f"{risk_blocked_rate:.6f}"),
+        ("effective_blocked_rate", f"{effective_blocked_rate:.6f}"),
+        ("data_quality_score", f"{data_quality_score:.2f}"),
+        ("paper_executed_total", str(paper_executed_total)),
+        ("watchdog_restarts", str(watchdog_restarts)),
+        ("report_section_02b", "Backpressure Scorecard"),
+        ("backpressure_quality_score", backpressure_scorecard["backpressure_quality_score"]),
+        ("backpressure_quality_label", backpressure_scorecard["backpressure_quality_label"]),
+        ("backpressure_steady_state_ready", backpressure_scorecard["backpressure_steady_state_ready"]),
+        ("backpressure_target_breach_count", backpressure_scorecard["backpressure_target_breach_count"]),
+        ("pressure_index", backpressure_scorecard["pressure_index"]),
+        ("core_pending_lines", backpressure_scorecard["core_pending_lines"]),
+        ("estimated_total_drain_minutes", backpressure_scorecard["estimated_total_drain_minutes"]),
+        ("stale_stage_pending_lines", backpressure_scorecard["stale_stage_pending_lines"]),
+        ("backpressure_target_breaches", backpressure_scorecard["backpressure_target_breaches"]),
+        ("report_section_03", "Month To Date"),
+        ("month_to_date_days_covered", month_rollup["days_covered"]),
+        ("month_to_date_decision_total_rows", month_rollup["decision_total_rows"]),
+        ("month_to_date_governance_total_rows", month_rollup["governance_total_rows"]),
+        ("month_to_date_blocked_total", month_rollup["blocked_total"]),
+        ("month_to_date_data_blocked_total", month_rollup["data_blocked_total"]),
+        ("month_to_date_risk_blocked_total", month_rollup["risk_blocked_total"]),
+        ("month_to_date_paper_executed_total", month_rollup["paper_executed_total"]),
+        ("month_to_date_watchdog_restarts", month_rollup["watchdog_restarts"]),
+        ("month_to_date_avg_data_quality_score", month_rollup["avg_data_quality_score"]),
+        ("report_section_04", "All Time"),
+        ("all_time_days_covered", all_time_rollup["days_covered"]),
+        ("all_time_decision_total_rows", all_time_rollup["decision_total_rows"]),
+        ("all_time_governance_total_rows", all_time_rollup["governance_total_rows"]),
+        ("all_time_blocked_total", all_time_rollup["blocked_total"]),
+        ("all_time_data_blocked_total", all_time_rollup["data_blocked_total"]),
+        ("all_time_risk_blocked_total", all_time_rollup["risk_blocked_total"]),
+        ("all_time_paper_executed_total", all_time_rollup["paper_executed_total"]),
+        ("all_time_watchdog_restarts", all_time_rollup["watchdog_restarts"]),
+        ("all_time_avg_data_quality_score", all_time_rollup["avg_data_quality_score"]),
+    ]
+    detail_rows: list[tuple[str, str]] = [
+        ("report_section_05", "Detailed Metrics"),
         ("linked_source_files_total", str(linked_source_files_total)),
         ("decision_source_files", str(decision_source_files)),
         ("governance_source_files", str(governance_source_files)),
         ("combined_action_buy", str(action_counts.get("BUY", 0))),
         ("combined_action_sell", str(action_counts.get("SELL", 0))),
         ("combined_action_hold", str(action_counts.get("HOLD", 0))),
-        ("combined_blocked_total", str(blocked_total)),
-        ("combined_blocked_rate", f"{blocked_rate:.6f}"),
         ("stocks_decision_rows", str(stocks_decision_rows)),
         ("stocks_action_buy", str(stocks_actions.get("BUY", 0))),
         ("stocks_action_sell", str(stocks_actions.get("SELL", 0))),
@@ -1009,21 +3702,37 @@ def main() -> int:
         ("symbol_concentration_top3_share", f"{symbol_concentration_top3_share:.6f}"),
         ("buy_rate_1h", f"{buy_rate_1h:.6f}"),
         ("buy_rate_4h", f"{buy_rate_4h:.6f}"),
+        ("actionable_rate_1h", f"{actionable_rate_1h:.6f}"),
+        ("actionable_rate_4h", f"{actionable_rate_4h:.6f}"),
         ("buy_rate_drift_abs", f"{buy_rate_drift_abs:.6f}"),
+        ("action_mix_drift_abs", f"{action_mix_drift_abs:.6f}"),
         ("model_drift_flag", str(model_drift_flag).lower()),
-        ("watchdog_restarts", str(watchdog_restarts)),
+        ("model_drift_reason", model_drift_reason),
         ("watchdog_throttled", str(watchdog_throttled)),
         ("watchdog_restart_errors", str(watchdog_restart_errors)),
         ("decision_last_age_sec", str(decision_last_age_sec)),
         ("governance_last_age_sec", str(governance_last_age_sec)),
+        ("decision_stale_penalty", f"{decision_stale_penalty:.6f}"),
+        ("governance_stale_penalty", f"{governance_stale_penalty:.6f}"),
+        ("data_quality_mode", str(dq_policy["mode"])),
+        ("data_quality_session_aware", str(bool(dq_policy["session_aware"])).lower()),
+        ("data_quality_session_open", str(bool(dq_policy["session_open"])).lower()),
+        ("data_quality_session_timezone", str(dq_policy["timezone"])),
+        ("data_quality_session_local_timestamp", str(dq_policy["local_timestamp"])),
+        ("data_quality_decision_stale_grace_seconds", str(dq_policy["decision_grace_seconds"])),
+        ("data_quality_governance_stale_grace_seconds", str(dq_policy["governance_grace_seconds"])),
         ("heartbeat_recent_count", str(heartbeat_recent)),
-        ("data_quality_score", f"{data_quality_score:.2f}"),
         ("bot_stack_overall_status", bot_stack_status),
         ("bot_stack_active_sub_bots", str(bot_stack_active_sub_bots)),
         ("bot_stack_watchdog_schwab_live", str(bot_stack_watchdog_schwab_live).lower()),
         ("bot_stack_watchdog_coinbase_live", str(bot_stack_watchdog_coinbase_live).lower()),
-        ("paper_executed_total", str(paper_executed_total)),
         ("paper_executed_crypto", str(paper_executed_crypto)),
+        ("dividend_loop_state", dividend_loop_state),
+        ("dividend_pause_reason", dividend_pause_reason),
+        ("dividend_paper_executions", str(dividend_paper_executions)),
+        ("dividend_ending_net_pnl_total", f"{dividend_ending_net_pnl_total:.6f}"),
+        ("dividend_ending_realized_pnl_total", f"{dividend_ending_realized_pnl_total:.6f}"),
+        ("dividend_ending_unrealized_pnl_total", f"{dividend_ending_unrealized_pnl_total:.6f}"),
         ("guardrail_master_latency_slo_fail", str(guardrail_master_latency_slo_fail)),
         ("guardrail_feature_freshness_fail", str(guardrail_feature_freshness_fail)),
         ("guardrail_canary_mentions", str(guardrail_canary_mentions)),
@@ -1041,6 +3750,7 @@ def main() -> int:
         ("ops_canary_enabled", str(canary_enabled).lower()),
         ("ops_canary_weight", f"{canary_weight:.6f}"),
     ]
+    rows: list[tuple[str, str]] = metadata_rows + summary_rows + detail_rows
 
     for k, v in alerts.items():
         rows.append((k, str(v).lower()))
@@ -1058,13 +3768,15 @@ def main() -> int:
         rows.append((f"futures_top_symbol_{i}", f"{sym}:{cnt}"))
     for i in range(len(futures_top[:5]) + 1, 6):
         rows.append((f"futures_top_symbol_{i}", "n/a"))
-    for i, (style, cnt) in enumerate(futures_active_styles[:5], start=1):
+    style_field_limit = 10
+
+    for i, (style, cnt) in enumerate(futures_active_styles[:style_field_limit], start=1):
         rows.append((f"futures_style_{i}", f"{style}:{cnt}"))
-    for i in range(len(futures_active_styles[:5]) + 1, 6):
+    for i in range(len(futures_active_styles[:style_field_limit]) + 1, style_field_limit + 1):
         rows.append((f"futures_style_{i}", "n/a"))
-    for i, (style, cnt) in enumerate(options_active_styles[:5], start=1):
+    for i, (style, cnt) in enumerate(options_active_styles[:style_field_limit], start=1):
         rows.append((f"options_style_{i}", f"{style}:{cnt}"))
-    for i in range(len(options_active_styles[:5]) + 1, 6):
+    for i in range(len(options_active_styles[:style_field_limit]) + 1, style_field_limit + 1):
         rows.append((f"options_style_{i}", "n/a"))
 
     for i, (bot_id, pnl) in enumerate(pnl_strategy_rows[:5], start=1):
@@ -1078,105 +3790,177 @@ def main() -> int:
 
     stamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
     csv_path = out_dir / f"one_numbers_{day}_{stamp}.csv"
+    metrics_csv_path = out_dir / f"one_numbers_{day}_{stamp}_metrics.csv"
     md_path = out_dir / f"one_numbers_{day}_{stamp}.md"
+    xlsx_path = out_dir / f"one_numbers_{day}_{stamp}.xlsx"
 
-    _write_kv_csv(csv_path, rows)
+    if not args.lightweight:
+        _write_one_numbers_csv(csv_path, rows)
+        _write_one_numbers_metrics_csv(metrics_csv_path, rows)
+        _write_one_numbers_xlsx(xlsx_path, rows)
 
-    stocks_top_md = ", ".join(f"{sym}:{cnt}" for sym, cnt in stocks_top[:5]) if stocks_top else "n/a"
-    crypto_top_md = ", ".join(f"{sym}:{cnt}" for sym, cnt in crypto_top[:5]) if crypto_top else "n/a"
-    futures_top_md = ", ".join(f"{sym}:{cnt}" for sym, cnt in futures_top[:5]) if futures_top else "n/a"
-    futures_styles_md = ", ".join(f"{style}:{cnt}" for style, cnt in futures_active_styles[:5]) if futures_active_styles else "n/a"
-    options_styles_md = ", ".join(f"{style}:{cnt}" for style, cnt in options_active_styles[:5]) if options_active_styles else "n/a"
+        stocks_top_md = ", ".join(f"{sym}:{cnt}" for sym, cnt in stocks_top[:5]) if stocks_top else "n/a"
+        crypto_top_md = ", ".join(f"{sym}:{cnt}" for sym, cnt in crypto_top[:5]) if crypto_top else "n/a"
+        futures_top_md = ", ".join(f"{sym}:{cnt}" for sym, cnt in futures_top[:5]) if futures_top else "n/a"
+        futures_styles_md = ", ".join(f"{style}:{cnt}" for style, cnt in futures_active_styles[:style_field_limit]) if futures_active_styles else "n/a"
+        options_styles_md = ", ".join(f"{style}:{cnt}" for style, cnt in options_active_styles[:style_field_limit]) if options_active_styles else "n/a"
 
-    md_lines = [
-        f"# One Numbers Report ({day})",
-        "",
-        f"Generated: {generated_utc}",
-        "",
-        "## Combined",
-        f"- Decisions: {decision_total_rows}",
-        f"- Actions: BUY={action_counts.get('BUY',0)}, SELL={action_counts.get('SELL',0)}, HOLD={action_counts.get('HOLD',0)}",
-        f"- Blocked: {blocked_total} ({_fmt_pct(blocked_rate)})",
-        f"- Data quality score: {data_quality_score:.2f}/100",
-        "",
-        "## Stocks",
-        f"- Rows: {stocks_decision_rows}",
-        f"- Actions: BUY={stocks_actions.get('BUY',0)}, SELL={stocks_actions.get('SELL',0)}, HOLD={stocks_actions.get('HOLD',0)}",
-        f"- PnL proxy: {stocks_pnl_proxy:.6f}",
-        f"- Top symbols: {stocks_top_md}",
-        "",
-        "## Crypto",
-        f"- Rows: {crypto_decision_rows}",
-        f"- Actions: BUY={crypto_actions.get('BUY',0)}, SELL={crypto_actions.get('SELL',0)}, HOLD={crypto_actions.get('HOLD',0)}",
-        f"- PnL proxy: {crypto_pnl_proxy:.6f}",
-        f"- Top symbols: {crypto_top_md}",
-        "",
-        "## Futures",
-        f"- Rows: {futures_decision_rows}",
-        f"- Actions: BUY={futures_actions.get('BUY',0)}, SELL={futures_actions.get('SELL',0)}, HOLD={futures_actions.get('HOLD',0)}",
-        f"- PnL proxy: {futures_pnl_proxy:.6f}",
-        f"- Strategy decisions (style!=NONE): {futures_strategy_rows}",
-        f"- Strategy decisions NONE: {futures_none_rows}",
-        f"- Top symbols: {futures_top_md}",
-        f"- Active futures styles: {futures_styles_md}",
-        f"- Governance rows tagged futures: {futures_governance_rows}",
-        "",
-        "## Options",
-        f"- Strategy decisions (style!=NONE): {options_decision_rows}",
-        f"- Strategy decisions NONE: {options_none_rows}",
-        f"- Total contracts: {options_contracts_total:.2f}",
-        f"- Options master actions: BUY={options_master_actions.get('BUY',0)}, SELL={options_master_actions.get('SELL',0)}, HOLD={options_master_actions.get('HOLD',0)}",
-        f"- Active options styles: {options_styles_md}",
-        "",
-        "## Stability (15m / 1h / 4h)",
-        f"- Rows: {s15[0]} / {s60[0]} / {s240[0]}",
-        f"- Buy-sell imbalance: {_imbalance(s15[1], s15[2]):.4f} / {_imbalance(s60[1], s60[2]):.4f} / {_imbalance(s240[1], s240[2]):.4f}",
-        f"- Blocked rate: {_fmt_pct(s15[3]/max(s15[0],1))} / {_fmt_pct(s60[3]/max(s60[0],1))} / {_fmt_pct(s240[3]/max(s240[0],1))}",
-        f"- Stale windows (decision/governance): {decision_stale_windows}/{governance_stale_windows}",
-        "",
-        "## Risk/Diagnostics",
-        f"- Hold-no-edge rate: {_fmt_pct(hold_no_edge_rate)}",
-        f"- Symbol concentration top3 share: {_fmt_pct(symbol_concentration_top3_share)}",
-        f"- Drift abs (buy_rate 1h vs 4h): {buy_rate_drift_abs:.4f} (flag={str(model_drift_flag).lower()})",
-        "",
-        "## Bot Stack",
-        f"- Overall status: {bot_stack_status}",
-        f"- Active sub-bots: {bot_stack_active_sub_bots}",
-        f"- Watchdog live (schwab/coinbase): {str(bot_stack_watchdog_schwab_live).lower()}/{str(bot_stack_watchdog_coinbase_live).lower()}",
-        f"- Source: {bot_stack_latest_json}",
-        "",
-        "## Paper + Guardrails",
-        f"- Paper executed (total/crypto): {paper_executed_total}/{paper_executed_crypto}",
-        f"- Guardrail hits: latency_slo_fail={guardrail_master_latency_slo_fail}, feature_freshness_fail={guardrail_feature_freshness_fail}, canary_mentions={guardrail_canary_mentions}, event_lock_hits={guardrail_event_lock_hits}",
-        f"- Preopen replay sanity (24h rows/failures): {preopen_replay_rows_24h}/{preopen_replay_fail_24h}",
-        "",
-        "## Ops/Storage",
-        f"- Storage mode: {storage_mode}",
-        f"- Logs target: {storage_logs_target}",
-        f"- SQL link service: ok={str(sql_link_ok).lower()} rc={sql_link_rc} db_size_gb={sql_link_db_size_gb:.3f}",
-        f"- Hot retention: ran={str(hot_retention_ran).lower()} rc={hot_retention_rc} db_after_gb={hot_retention_db_after:.3f}",
-        f"- Canary state: enabled={str(canary_enabled).lower()} weight={canary_weight:.4f}",
-        "",
-        "## Alerts",
-    ]
-    md_lines.extend([f"- {k}: {str(v).lower()}" for k, v in alerts.items()])
-    md_lines.append("")
-    md_lines.append(f"CSV: `{csv_path}`")
-    md_path.write_text("\n".join(md_lines) + "\n", encoding="utf-8")
+        md_lines = [
+            f"# One Numbers Report ({day})",
+            "",
+            f"Generated: {generated_utc}",
+            f"Requested day: {requested_day}",
+            f"Resolved day: {day}",
+            "",
+            "## Combined",
+            f"- Decisions: {decision_total_rows}",
+            f"- Actions: BUY={action_counts.get('BUY',0)}, SELL={action_counts.get('SELL',0)}, HOLD={action_counts.get('HOLD',0)}",
+            f"- Blocked: {blocked_total} ({_fmt_pct(blocked_rate)})",
+            f"- Data-blocked: {data_blocked_total} ({_fmt_pct(data_blocked_rate)})",
+            f"- Observe-only data-blocked excluded: {observe_only_data_blocked_total} ({_fmt_pct(observe_only_data_blocked_rate)})",
+            f"- Risk-blocked: {risk_blocked_total} ({_fmt_pct(risk_blocked_rate)})",
+            f"- Effective blocked rate: {_fmt_pct(effective_blocked_rate)}",
+            f"- Data quality score: {data_quality_score:.2f}/100",
+            f"- Data quality mode: {dq_policy['mode']} (session_open={str(bool(dq_policy['session_open'])).lower()}, tz={dq_policy['timezone']})",
+            "",
+            "## Backpressure Scorecard",
+            f"- Backpressure quality score: {backpressure_scorecard['backpressure_quality_score']}/100",
+            f"- Quality label: {backpressure_scorecard['backpressure_quality_label']}",
+            f"- Steady-state ready: {backpressure_scorecard['backpressure_steady_state_ready']}",
+            f"- Pressure index: {backpressure_scorecard['pressure_index']}",
+            f"- Core pending lines: {backpressure_scorecard['core_pending_lines']}",
+            f"- Estimated total drain minutes: {backpressure_scorecard['estimated_total_drain_minutes']}",
+            f"- Stale-stage pending lines: {backpressure_scorecard['stale_stage_pending_lines']}",
+            f"- Target breaches: {backpressure_scorecard['backpressure_target_breaches']}",
+            "",
+            "## Month To Date",
+            f"- Days covered: {month_rollup['days_covered']}",
+            f"- Decisions: {month_rollup['decision_total_rows']}",
+            f"- Governance rows: {month_rollup['governance_total_rows']}",
+            f"- Blocked total: {month_rollup['blocked_total']}",
+            f"- Data-blocked total: {month_rollup['data_blocked_total']}",
+            f"- Risk-blocked total: {month_rollup['risk_blocked_total']}",
+            f"- Paper executions: {month_rollup['paper_executed_total']}",
+            f"- Watchdog restarts: {month_rollup['watchdog_restarts']}",
+            f"- Avg data quality score: {month_rollup['avg_data_quality_score']}/100",
+            "",
+            "## All Time",
+            f"- Days covered: {all_time_rollup['days_covered']}",
+            f"- Decisions: {all_time_rollup['decision_total_rows']}",
+            f"- Governance rows: {all_time_rollup['governance_total_rows']}",
+            f"- Blocked total: {all_time_rollup['blocked_total']}",
+            f"- Data-blocked total: {all_time_rollup['data_blocked_total']}",
+            f"- Risk-blocked total: {all_time_rollup['risk_blocked_total']}",
+            f"- Paper executions: {all_time_rollup['paper_executed_total']}",
+            f"- Watchdog restarts: {all_time_rollup['watchdog_restarts']}",
+            f"- Avg data quality score: {all_time_rollup['avg_data_quality_score']}/100",
+            "",
+            "## Stocks",
+            f"- Rows: {stocks_decision_rows}",
+            f"- Actions: BUY={stocks_actions.get('BUY',0)}, SELL={stocks_actions.get('SELL',0)}, HOLD={stocks_actions.get('HOLD',0)}",
+            f"- PnL proxy: {stocks_pnl_proxy:.6f}",
+            f"- Top symbols: {stocks_top_md}",
+            "",
+            "## Crypto",
+            f"- Rows: {crypto_decision_rows}",
+            f"- Actions: BUY={crypto_actions.get('BUY',0)}, SELL={crypto_actions.get('SELL',0)}, HOLD={crypto_actions.get('HOLD',0)}",
+            f"- PnL proxy: {crypto_pnl_proxy:.6f}",
+            f"- Top symbols: {crypto_top_md}",
+            "",
+            "## Futures",
+            f"- Rows: {futures_decision_rows}",
+            f"- Actions: BUY={futures_actions.get('BUY',0)}, SELL={futures_actions.get('SELL',0)}, HOLD={futures_actions.get('HOLD',0)}",
+            f"- PnL proxy: {futures_pnl_proxy:.6f}",
+            f"- Strategy decisions (style!=NONE): {futures_strategy_rows}",
+            f"- Strategy decisions NONE: {futures_none_rows}",
+            f"- Top symbols: {futures_top_md}",
+            f"- Active futures styles: {futures_styles_md}",
+            f"- Governance rows tagged futures: {futures_governance_rows}",
+            "",
+            "## Options",
+            f"- Strategy decisions (style!=NONE): {options_decision_rows}",
+            f"- Strategy decisions NONE: {options_none_rows}",
+            f"- Total contracts: {options_contracts_total:.2f}",
+            f"- Options master actions: BUY={options_master_actions.get('BUY',0)}, SELL={options_master_actions.get('SELL',0)}, HOLD={options_master_actions.get('HOLD',0)}",
+            f"- Active options styles: {options_styles_md}",
+            "",
+            "## Stability (15m / 1h / 4h)",
+            f"- Rows: {s15[0]} / {s60[0]} / {s240[0]}",
+            f"- Buy-sell imbalance: {_imbalance(s15[1], s15[2]):.4f} / {_imbalance(s60[1], s60[2]):.4f} / {_imbalance(s240[1], s240[2]):.4f}",
+            f"- Blocked rate: {_fmt_pct(s15[3]/max(s15[0],1))} / {_fmt_pct(s60[3]/max(s60[0],1))} / {_fmt_pct(s240[3]/max(s240[0],1))}",
+            f"- Stale windows (decision/governance): {decision_stale_windows}/{governance_stale_windows}",
+            "",
+            "## Risk/Diagnostics",
+            f"- Hold-no-edge rate: {_fmt_pct(hold_no_edge_rate)}",
+            f"- Symbol concentration top3 share: {_fmt_pct(symbol_concentration_top3_share)}",
+            (
+                f"- Drift abs (buy/action mix 1h vs 4h): {buy_rate_drift_abs:.4f} / {action_mix_drift_abs:.4f} "
+                f"(actionable={_fmt_pct(actionable_rate_1h)} / {_fmt_pct(actionable_rate_4h)}, "
+                f"flag={str(model_drift_flag).lower()}, reason={model_drift_reason})"
+            ),
+            "",
+            "## Bot Stack",
+            f"- Overall status: {bot_stack_status}",
+            f"- Active sub-bots: {bot_stack_active_sub_bots}",
+            f"- Watchdog live (schwab/coinbase): {str(bot_stack_watchdog_schwab_live).lower()}/{str(bot_stack_watchdog_coinbase_live).lower()}",
+            f"- Source: {bot_stack_latest_json}",
+            "",
+            "## Paper + Guardrails",
+            f"- Paper executed (total/crypto): {paper_executed_total}/{paper_executed_crypto}",
+            f"- Dividend sleeve: loop_state={dividend_loop_state}, pause_reason={dividend_pause_reason}, executions={dividend_paper_executions}, end_net={dividend_ending_net_pnl_total:.6f}",
+            f"- Guardrail hits: latency_slo_fail={guardrail_master_latency_slo_fail}, feature_freshness_fail={guardrail_feature_freshness_fail}, canary_mentions={guardrail_canary_mentions}, event_lock_hits={guardrail_event_lock_hits}",
+            f"- Preopen replay sanity (24h rows/failures): {preopen_replay_rows_24h}/{preopen_replay_fail_24h}",
+            "",
+            "## Ops/Storage",
+            f"- Storage mode: {storage_mode}",
+            f"- Logs target: {storage_logs_target}",
+            f"- SQL link service: ok={str(sql_link_ok).lower()} rc={sql_link_rc} db_size_gb={sql_link_db_size_gb:.3f}",
+            f"- Hot retention: ran={str(hot_retention_ran).lower()} rc={hot_retention_rc} db_after_gb={hot_retention_db_after:.3f}",
+            f"- Canary state: enabled={str(canary_enabled).lower()} weight={canary_weight:.4f}",
+            (
+                "- Historical coverage: "
+                f"{coverage_metadata['historical_coverage_status']} "
+                f"(complete={coverage_metadata['all_time_coverage_complete']}, "
+                f"start={coverage_metadata['original_start_day'] or 'unconfigured'}, "
+                f"rollup_days={coverage_metadata['rollup_history_days_available']}, "
+                f"source_days={coverage_metadata['source_days_discovered']})"
+            ),
+            f"- Historical coverage detail: {coverage_metadata['historical_coverage_detail']}",
+            "",
+            "## Alerts",
+        ]
+        md_lines.extend([f"- {k}: {str(v).lower()}" for k, v in alerts.items()])
+        md_lines.append("")
+        md_lines.append(f"CSV: `{csv_path}`")
+        md_path.write_text("\n".join(md_lines) + "\n", encoding="utf-8")
 
     latest_csv = out_dir / "latest.csv"
     latest_md = out_dir / "latest.md"
+    latest_xlsx = out_dir / "latest.xlsx"
+    latest_metrics_csv = out_dir / "latest_metrics.csv"
     latest_json = out_dir / "one_numbers_summary.json"
     health_latest_json = PROJECT_ROOT / "governance" / "health" / "one_numbers_latest.json"
     legacy_latest_dir = out_dir / "latest"
     legacy_latest_json = legacy_latest_dir / "one_numbers_summary.json"
+    legacy_latest_csv = legacy_latest_dir / "one_numbers_latest.csv"
+    legacy_latest_metrics_csv = legacy_latest_dir / "one_numbers_latest_metrics.csv"
+    legacy_latest_md = legacy_latest_dir / "one_numbers_latest.md"
+    legacy_latest_xlsx = legacy_latest_dir / "one_numbers_latest.xlsx"
 
     metric_map = {k: v for k, v in rows}
     summary_payload = {
         "generated_utc": generated_utc,
         "day_utc": day,
+        "requested_day": requested_day,
+        "resolved_day": day,
+        "day_fallback_applied": requested_day != day,
+        "rollup_history_days_available": str(len(latest_snapshots)),
+        "rollup_history_source": "durable_history" if persisted_rollup_history else "sqlite_snapshots",
         **metric_map,
     }
+    persisted_history = _persist_rollup_history_entries(PROJECT_ROOT, latest_snapshots)
+    summary_payload["rollup_history_days_available"] = str(len(persisted_history))
+    summary_payload["rollup_history_source"] = "durable_history" if persisted_history else "sqlite_snapshots"
     payload_text = json.dumps(summary_payload, ensure_ascii=True, indent=2)
     latest_json.write_text(payload_text, encoding="utf-8")
 
@@ -1185,48 +3969,55 @@ def main() -> int:
 
     legacy_latest_dir.mkdir(parents=True, exist_ok=True)
     legacy_latest_json.write_text(payload_text, encoding="utf-8")
+    _write_one_numbers_csv(legacy_latest_csv, rows)
+    _write_one_numbers_metrics_csv(legacy_latest_metrics_csv, rows)
+    _write_one_numbers_markdown(legacy_latest_md, rows, csv_reference=out_dir / "latest.csv")
+    _write_one_numbers_xlsx(legacy_latest_xlsx, rows)
 
-    if latest_csv.exists() or latest_csv.is_symlink():
-        latest_csv.unlink()
-    if latest_md.exists() or latest_md.is_symlink():
-        latest_md.unlink()
-    latest_csv.symlink_to(csv_path)
-    latest_md.symlink_to(md_path)
+    if not args.lightweight:
+        latest_csv, latest_md, latest_xlsx = _refresh_latest_artifact_aliases(
+            out_dir=out_dir,
+            csv_path=csv_path,
+            md_path=md_path,
+            xlsx_path=xlsx_path,
+        )
+        latest_metrics_csv = _refresh_latest_metrics_alias(
+            out_dir=out_dir,
+            metrics_csv_path=metrics_csv_path,
+        )
 
     # SQL register snapshot
+    snapshot_write_ok = False
+    snapshot_write_warning = ""
     if not args.no_sql_write:
-        _ensure_sql_snapshot_table(conn)
-        conn.execute(
-            """
-            INSERT INTO one_numbers_snapshots (
-                generated_utc, day_utc, source_report_dir,
-                decision_total_rows, stocks_decision_rows, crypto_decision_rows,
-                watchdog_restarts, data_quality_score,
-                alerts_json, metrics_json
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                generated_utc,
-                day,
-                str(PROJECT_ROOT / "exports" / "sql_reports" / "latest"),
-                decision_total_rows,
-                stocks_decision_rows,
-                crypto_decision_rows,
-                watchdog_restarts,
-                data_quality_score,
-                json.dumps(alerts, ensure_ascii=True),
-                json.dumps(metric_map, ensure_ascii=True),
-            ),
+        snapshot_write_ok, snapshot_write_warning = _register_sql_snapshot(
+            conn,
+            generated_utc=generated_utc,
+            day=day,
+            decision_total_rows=decision_total_rows,
+            stocks_decision_rows=stocks_decision_rows,
+            crypto_decision_rows=crypto_decision_rows,
+            watchdog_restarts=watchdog_restarts,
+            data_quality_score=data_quality_score,
+            alerts=alerts,
+            metric_map=metric_map,
         )
-        conn.commit()
 
-    print(f"Wrote: {csv_path}")
-    print(f"Wrote: {md_path}")
-    print(f"Latest CSV: {latest_csv}")
-    print(f"Latest MD: {latest_md}")
+    if args.lightweight:
+        print("One Numbers lightweight mode enabled: skipped CSV/XLSX/markdown artifact bundle.")
+    else:
+        print(f"Wrote: {csv_path}")
+        print(f"Wrote: {md_path}")
+        print(f"Wrote: {xlsx_path}")
+        print(f"Latest CSV: {latest_csv}")
+        print(f"Latest MD: {latest_md}")
+        print(f"Latest XLSX: {latest_xlsx}")
+        print(f"Latest metrics CSV: {latest_metrics_csv}")
     print(f"Latest JSON: {latest_json}")
-    if not args.no_sql_write:
+    if not args.no_sql_write and snapshot_write_ok:
         print("Registered snapshot in SQLite table: one_numbers_snapshots")
+    elif snapshot_write_warning:
+        print(f"[WARN] Skipped one_numbers_snapshots SQL write: {snapshot_write_warning}")
 
     try:
         if lock_fh is not None:

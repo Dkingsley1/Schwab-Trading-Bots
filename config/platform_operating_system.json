@@ -1,0 +1,25 @@
+{
+  "timestamp_utc": "2026-06-22T14:52:27.050412+00:00",
+  "schema_version": 1,
+  "enabled": true,
+  "paper_only": true,
+  "protected_volume_denylist": [
+    "/Volumes/VIDEO"
+  ],
+  "sections": [
+    "platform_command_center",
+    "system_event_ledger",
+    "slo_control",
+    "bot_lifecycle_state_machine",
+    "paper_execution_truth_layer",
+    "release_train",
+    "sleeve_objective_loops",
+    "human_coexistence_layer"
+  ],
+  "recommended_refresh_command": [
+    "./scripts/ops/opsctl.sh",
+    "platform-operating-system",
+    "--apply",
+    "--json"
+  ]
+}

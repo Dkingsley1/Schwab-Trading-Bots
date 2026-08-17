@@ -1,0 +1,34 @@
+{
+  "timestamp_utc": "2026-05-24T00:30:46.569775+00:00",
+  "schema_version": 1,
+  "pack_version": "trading_three_sub_bot_expansion_v1",
+  "pack_slug": "intraday_options_crypto_trading_three",
+  "bot_ids": [
+    "brain_refinery_v1651_intraday_liquidity_sweep_reversal_scalper",
+    "brain_refinery_v1652_options_gamma_pin_breakout_trader",
+    "brain_refinery_v1653_crypto_futures_funding_momentum_switch"
+  ],
+  "sleeve_profiles": [
+    "intraday_aggressive",
+    "options_aggressive",
+    "crypto_futures"
+  ],
+  "bot_roles": [
+    "signal_sub_bot",
+    "options_sub_bot",
+    "futures_sub_bot"
+  ],
+  "safety_contract": {
+    "data_collection_only": true,
+    "execution_enabled": false,
+    "allocation_enabled": false,
+    "paper_trading_enabled": false,
+    "training_excluded_until_threshold": true,
+    "max_daily_mb_per_bot": 2,
+    "collection_throttle": "thin_digest",
+    "protected_volume_policy": "do_not_touch_/Volumes/VIDEO"
+  },
+  "applied": true,
+  "added_bot_count": 3,
+  "skipped_existing_bot_ids": []
+}

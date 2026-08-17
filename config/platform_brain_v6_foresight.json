@@ -1,0 +1,116 @@
+{
+  "schema_version": 1,
+  "updated_utc": "2026-07-28T14:34:40.693820+00:00",
+  "layer": "platform_brain_v6_foresight_cortex",
+  "section_keys": [
+    "counterfactual_world_model",
+    "causal_intervention_planner",
+    "hierarchical_memory_router",
+    "multi_agent_debate_chamber",
+    "uncertainty_risk_calibrator",
+    "alpha_research_thesis_factory",
+    "market_microstructure_world_model",
+    "macro_event_anticipator",
+    "execution_policy_sandbox",
+    "adaptive_resource_governor",
+    "data_value_active_learner",
+    "formal_safety_guard",
+    "self_upgrade_experiment_designer",
+    "bot_genome_lineage_planner",
+    "operator_narrative_synthesizer"
+  ],
+  "controls": [
+    {
+      "id": "counterfactual_world_model",
+      "title": "Counterfactual world model",
+      "env_key": "PLATFORM_BRAIN_V6_COUNTERFACTUAL_WORLD_MODEL_ENABLED"
+    },
+    {
+      "id": "causal_intervention_planner",
+      "title": "Causal intervention planner",
+      "env_key": "PLATFORM_BRAIN_V6_CAUSAL_INTERVENTION_ENABLED"
+    },
+    {
+      "id": "hierarchical_memory_router",
+      "title": "Hierarchical memory router",
+      "env_key": "PLATFORM_BRAIN_V6_MEMORY_ROUTER_ENABLED"
+    },
+    {
+      "id": "multi_agent_debate_chamber",
+      "title": "Multi-agent debate chamber",
+      "env_key": "PLATFORM_BRAIN_V6_DEBATE_CHAMBER_ENABLED"
+    },
+    {
+      "id": "uncertainty_risk_calibrator",
+      "title": "Uncertainty and risk calibrator",
+      "env_key": "PLATFORM_BRAIN_V6_UNCERTAINTY_CALIBRATOR_ENABLED"
+    },
+    {
+      "id": "alpha_research_thesis_factory",
+      "title": "Alpha research thesis factory",
+      "env_key": "PLATFORM_BRAIN_V6_ALPHA_THESIS_FACTORY_ENABLED"
+    },
+    {
+      "id": "market_microstructure_world_model",
+      "title": "Market microstructure world model",
+      "env_key": "PLATFORM_BRAIN_V6_MICROSTRUCTURE_WORLD_MODEL_ENABLED"
+    },
+    {
+      "id": "macro_event_anticipator",
+      "title": "Macro event anticipator",
+      "env_key": "PLATFORM_BRAIN_V6_MACRO_EVENT_ANTICIPATOR_ENABLED"
+    },
+    {
+      "id": "execution_policy_sandbox",
+      "title": "Execution policy sandbox",
+      "env_key": "PLATFORM_BRAIN_V6_EXECUTION_SANDBOX_ENABLED"
+    },
+    {
+      "id": "adaptive_resource_governor",
+      "title": "Adaptive resource governor",
+      "env_key": "PLATFORM_BRAIN_V6_RESOURCE_GOVERNOR_ENABLED"
+    },
+    {
+      "id": "data_value_active_learner",
+      "title": "Data-value active learner",
+      "env_key": "PLATFORM_BRAIN_V6_ACTIVE_LEARNER_ENABLED"
+    },
+    {
+      "id": "formal_safety_guard",
+      "title": "Formal safety guard",
+      "env_key": "PLATFORM_BRAIN_V6_FORMAL_SAFETY_ENABLED"
+    },
+    {
+      "id": "self_upgrade_experiment_designer",
+      "title": "Self-upgrade experiment designer",
+      "env_key": "PLATFORM_BRAIN_V6_EXPERIMENT_DESIGNER_ENABLED"
+    },
+    {
+      "id": "bot_genome_lineage_planner",
+      "title": "Bot genome lineage planner",
+      "env_key": "PLATFORM_BRAIN_V6_GENOME_LINEAGE_ENABLED"
+    },
+    {
+      "id": "operator_narrative_synthesizer",
+      "title": "Operator narrative synthesizer",
+      "env_key": "PLATFORM_BRAIN_V6_OPERATOR_NARRATIVE_ENABLED"
+    }
+  ],
+  "artifacts": {
+    "counterfactual_world_model": "/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/platform_brain_v6/counterfactual_world_model_latest.json",
+    "causal_intervention_planner": "/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/platform_brain_v6/causal_intervention_planner_latest.json",
+    "hierarchical_memory_router": "/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/platform_brain_v6/hierarchical_memory_router_latest.json",
+    "multi_agent_debate_chamber": "/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/platform_brain_v6/multi_agent_debate_chamber_latest.json",
+    "uncertainty_risk_calibrator": "/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/platform_brain_v6/uncertainty_risk_calibrator_latest.json",
+    "alpha_research_thesis_factory": "/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/platform_brain_v6/alpha_research_thesis_factory_latest.json",
+    "market_microstructure_world_model": "/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/platform_brain_v6/market_microstructure_world_model_latest.json",
+    "macro_event_anticipator": "/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/platform_brain_v6/macro_event_anticipator_latest.json",
+    "execution_policy_sandbox": "/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/platform_brain_v6/execution_policy_sandbox_latest.json",
+    "adaptive_resource_governor": "/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/platform_brain_v6/adaptive_resource_governor_latest.json",
+    "data_value_active_learner": "/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/platform_brain_v6/data_value_active_learner_latest.json",
+    "formal_safety_guard": "/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/platform_brain_v6/formal_safety_guard_latest.json",
+    "self_upgrade_experiment_designer": "/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/platform_brain_v6/self_upgrade_experiment_designer_latest.json",
+    "bot_genome_lineage_planner": "/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/platform_brain_v6/bot_genome_lineage_planner_latest.json",
+    "operator_narrative_synthesizer": "/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/platform_brain_v6/operator_narrative_synthesizer_latest.json"
+  }
+}

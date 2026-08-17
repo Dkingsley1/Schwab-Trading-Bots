@@ -10,7 +10,12 @@ from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 HALT_FLAG_PATH = PROJECT_ROOT / "governance" / "health" / "GLOBAL_TRADING_HALT.flag"
-VENV_PY = PROJECT_ROOT / ".venv312" / "bin" / "python"
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from core.runtime_python import resolve_runtime_python
+
+VENV_PY = resolve_runtime_python(PROJECT_ROOT)
 SHADOW_LOOP = PROJECT_ROOT / "scripts" / "run_shadow_training_loop.py"
 TOKEN_PATH = PROJECT_ROOT / "token.json"
 RESOURCE_GUARD_SCRIPT = PROJECT_ROOT / "scripts" / "resource_guard.py"
@@ -148,7 +153,13 @@ def _resource_guard_ok() -> bool:
         return True
     if not RESOURCE_GUARD_SCRIPT.exists():
         return True
-    proc = subprocess.run([str(VENV_PY), str(RESOURCE_GUARD_SCRIPT)], capture_output=True, text=True, check=False)
+    profile = os.getenv("PARALLEL_SHADOW_RESOURCE_GUARD_PROFILE", "collection").strip() or "collection"
+    proc = subprocess.run(
+        [str(VENV_PY), str(RESOURCE_GUARD_SCRIPT), "--profile", profile],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
     out = (proc.stdout or "").strip()
     if out:
         print(f"[ResourceGuard] {out}")
@@ -176,8 +187,8 @@ def main() -> int:
     parser.add_argument("--conservative-auto-retrain", action="store_true", default=False)
     parser.add_argument("--no-conservative-auto-retrain", dest="conservative_auto_retrain", action="store_false")
     parser.add_argument("--aggressive-auto-retrain", action="store_true", default=False)
-    parser.add_argument("--conservative-threshold-shift", type=float, default=0.00)
-    parser.add_argument("--aggressive-threshold-shift", type=float, default=-0.03)
+    parser.add_argument("--conservative-threshold-shift", type=float, default=0.015)
+    parser.add_argument("--aggressive-threshold-shift", type=float, default=-0.015)
     parser.add_argument("--symbols", default=None, help="Override full symbol list for both profiles.")
     parser.add_argument("--symbols-core", default=None)
     parser.add_argument("--symbols-volatile", default=None)
@@ -268,23 +279,33 @@ def main() -> int:
     t2 = threading.Thread(target=_stream, args=("aggressive", aggressive.stdout), daemon=True)
     t2.start()
 
-    procs = [conservative, aggressive]
+    procs = {"conservative": conservative, "aggressive": aggressive}
     try:
         while True:
             if _global_trading_halt_enabled():
                 print("GLOBAL_TRADING_HALT=1 detected; stopping both profiles.")
-                _stop_processes(procs)
+                _stop_processes(list(procs.values()))
                 return 0
 
-            exits = [p.poll() for p in procs]
+            exits = [p.poll() for p in procs.values()]
+            clean_exits = [name for name, proc in procs.items() if proc.poll() == 0]
+            if clean_exits:
+                for name in clean_exits:
+                    procs.pop(name, None)
+                print(f"Continuing after already-running profiles exited cleanly: {clean_exits}")
+                if not procs:
+                    print("Both profiles exited cleanly; existing lock owners are carrying those profiles.")
+                    return 0
+                time.sleep(1.0)
+                continue
             if any(code is not None for code in exits):
-                _stop_processes(procs)
+                _stop_processes(list(procs.values()))
                 print(f"Stopped because one profile exited: {exits}")
                 return 1
             time.sleep(1.0)
     except KeyboardInterrupt:
         print("Stopping both profiles...")
-        _stop_processes(procs)
+        _stop_processes(list(procs.values()))
         return 0
 
 

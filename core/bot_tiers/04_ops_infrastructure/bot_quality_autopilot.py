@@ -1,0 +1,1 @@
+../../../scripts/ops/bot_quality_autopilot.py

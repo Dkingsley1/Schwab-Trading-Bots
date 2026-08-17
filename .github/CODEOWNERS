@@ -1,0 +1,28 @@
+# Core runtime and registry contracts
+/core/ @research-review @risk-review
+/master_bot_registry.json @research-review @ops-review
+
+# Strategy and training lanes
+/scripts/run_shadow_training_loop.py @research-review
+/scripts/training_*.py @research-review
+/scripts/build_runtime_training_snapshot.py @research-review
+/governance/training_diagnostics/ @research-review
+
+# Risk, execution, and portfolio controls
+/governance/risk/ @risk-review
+/core/live_execution_controls.py @risk-review @ops-review
+/scripts/global_risk_killswitch.py @risk-review
+/scripts/incident_auto_halt.py @risk-review
+
+# Storage, ingestion, and ops
+/scripts/link_jsonl_to_sql.py @ops-review
+/scripts/ops/ @ops-review
+/scripts/data_retention_policy.py @ops-review
+/governance/sql_link_shards/ @ops-review
+/governance/security/ @ops-review @risk-review
+
+# Control-plane and governance artifacts
+/COMMANDS.md @ops-review
+/.github/workflows/ @ops-review
+/governance/champion_challenger/ @research-review @risk-review
+/governance/migrations/ @ops-review

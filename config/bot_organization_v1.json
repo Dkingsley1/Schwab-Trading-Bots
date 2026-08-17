@@ -1,0 +1,1469 @@
+{
+  "schema_version": 1,
+  "policy_id": "hierarchical_bot_organization_v1",
+  "operating_mode": "metadata_and_shadow_only",
+  "hierarchy": {
+    "levels": [
+      "sleeve_id",
+      "sub_sleeve_id",
+      "cohort_id",
+      "role_id"
+    ],
+    "required_registry_coverage_ratio": 1.0,
+    "required_unique_assignment_ratio": 1.0,
+    "minimum_high_confidence_ratio": 0.6,
+    "review_confidence_floor": 0.7,
+    "invalid_identifiers": [
+      "",
+      "unknown",
+      "unassigned",
+      "none",
+      "null"
+    ]
+  },
+  "classification": {
+    "precedence": [
+      "registry_explicit",
+      "registry_tag",
+      "module_literal",
+      "catalog_category",
+      "policy_fallback"
+    ],
+    "category_to_sleeve": {
+      "conservative": "conservative",
+      "crypto": "crypto_spot",
+      "dividend_income": "dividend_income",
+      "futures_macro": "futures_macro",
+      "general_signal": "equity_core",
+      "infrastructure": "system_governance",
+      "intraday": "intraday_aggressive",
+      "macro": "international_macro",
+      "ops_infrastructure": "system_governance",
+      "options": "options_flow",
+      "platform_organ_systems": "system_governance",
+      "quant_strategy_gap": "quant_strategy_gap",
+      "swing": "swing_aggressive",
+      "trading_muscle_systems": "cross_asset_strategy_research"
+    },
+    "default_signal_sleeve": "equity_core",
+    "default_infrastructure_sleeve": "system_governance",
+    "sleeve_rules": [
+      {
+        "sleeve_id": "quant_operational_intelligence",
+        "tokens": [
+          "quant_operational_"
+        ]
+      },
+      {
+        "sleeve_id": "autonomic_governance_mesh",
+        "tokens": [
+          "autonomic_governance_"
+        ]
+      },
+      {
+        "sleeve_id": "training_labeling_intelligence",
+        "tokens": [
+          "training_labeling_"
+        ]
+      },
+      {
+        "sleeve_id": "institutional_alpha_validation",
+        "tokens": [
+          "institutional_"
+        ]
+      },
+      {
+        "sleeve_id": "platform_organ_systems",
+        "tokens": [
+          "platform_organ_"
+        ]
+      },
+      {
+        "sleeve_id": "trading_muscle_systems",
+        "tokens": [
+          "trading_muscle_"
+        ]
+      },
+      {
+        "sleeve_id": "quant_strategy_gap",
+        "tokens": [
+          "strategy_gap_"
+        ]
+      }
+    ],
+    "strategy_family_rules": [
+      {
+        "family_id": "regime_and_forecasting",
+        "tokens": [
+          "regime",
+          "forecaster",
+          "classifier",
+          "state_machine",
+          "seasonal",
+          "choppy",
+          "multi_timeframe"
+        ]
+      },
+      {
+        "family_id": "data_and_model_governance",
+        "tokens": [
+          "data_quality",
+          "data_plane",
+          "data_source",
+          "feature_store",
+          "label_",
+          "training_",
+          "model_risk",
+          "replay",
+          "storage",
+          "memory_",
+          "backpressure",
+          "runtime_",
+          "auth_",
+          "broker_",
+          "observability",
+          "compliance",
+          "security",
+          "governance"
+        ]
+      },
+      {
+        "family_id": "execution_and_liquidity",
+        "tokens": [
+          "execution",
+          "slippage",
+          "market_making",
+          "liquidity",
+          "order_flow",
+          "microstructure",
+          "order_book",
+          "queue_position",
+          "quote_",
+          "tape_",
+          "auction_",
+          "vwap"
+        ]
+      },
+      {
+        "family_id": "risk_and_hedging",
+        "tokens": [
+          "tail_risk",
+          "black_swan",
+          "drawdown",
+          "risk_budget",
+          "risk_parity",
+          "hedg",
+          "capital_preservation",
+          "exposure_netting",
+          "position_sizing",
+          "kill_switch"
+        ]
+      },
+      {
+        "family_id": "event_driven",
+        "tokens": [
+          "event_",
+          "earnings",
+          "news_",
+          "catalyst",
+          "merger_",
+          "index_rebalance",
+          "corporate_action",
+          "fed_",
+          "fomc",
+          "cpi_",
+          "nfp_"
+        ]
+      },
+      {
+        "family_id": "relative_value",
+        "tokens": [
+          "relative_value",
+          "pairs",
+          "cointegration",
+          "parity",
+          "residual_",
+          "dispersion",
+          "spread_arb",
+          "capital_structure",
+          "convertible_bond",
+          "etf_basket_nav",
+          "corporate_bond_etf"
+        ]
+      },
+      {
+        "family_id": "volatility_and_convexity",
+        "tokens": [
+          "volatility",
+          "gamma",
+          "vanna",
+          "volga",
+          "variance",
+          "option",
+          "iv_",
+          "skew",
+          "straddle",
+          "strangle",
+          "barrier",
+          "greeks",
+          "swaption"
+        ]
+      },
+      {
+        "family_id": "carry_and_income",
+        "tokens": [
+          "dividend",
+          "income",
+          "carry",
+          "yield_",
+          "roll_",
+          "basis_",
+          "premium_harvesting",
+          "covered_call",
+          "cash_secured_put"
+        ]
+      },
+      {
+        "family_id": "fundamental_and_factor",
+        "tokens": [
+          "quality",
+          "value_",
+          "fundamental",
+          "factor_",
+          "balance_sheet",
+          "free_cash_flow",
+          "buyback",
+          "insider_",
+          "revision"
+        ]
+      },
+      {
+        "family_id": "macro_rates_credit",
+        "tokens": [
+          "macro",
+          "rates_",
+          "credit_",
+          "bond_",
+          "treasury",
+          "inflation",
+          "fx_",
+          "dollar_",
+          "commodity",
+          "sofr",
+          "curve_"
+        ]
+      },
+      {
+        "family_id": "mean_reversion",
+        "tokens": [
+          "mean_reversion",
+          "reversion",
+          "snapback",
+          "fade_",
+          "gap_fill",
+          "convergence",
+          "reclaim"
+        ]
+      },
+      {
+        "family_id": "trend_and_momentum",
+        "tokens": [
+          "momentum",
+          "trend_",
+          "breakout",
+          "continuation",
+          "relative_strength",
+          "followthrough",
+          "opening_drive"
+        ]
+      },
+      {
+        "family_id": "portfolio_and_allocation",
+        "tokens": [
+          "portfolio_",
+          "allocator",
+          "allocation",
+          "rotation",
+          "rebalance",
+          "capital_efficiency",
+          "optimization"
+        ]
+      },
+      {
+        "family_id": "research_and_simulation",
+        "tokens": [
+          "research_",
+          "simulation",
+          "causal_",
+          "quantum",
+          "neural_",
+          "adaptive_",
+          "state_space",
+          "pricing_model"
+        ]
+      }
+    ],
+    "horizon_rules": [
+      {
+        "horizon_id": "subminute",
+        "tokens": [
+          "high_frequency",
+          "low_latency",
+          "tick_",
+          "order_book",
+          "zero_dte",
+          "market_making"
+        ]
+      },
+      {
+        "horizon_id": "intraday",
+        "tokens": [
+          "intraday",
+          "day_trading",
+          "opening_",
+          "closing_",
+          "vwap",
+          "auction_",
+          "power_hour"
+        ]
+      },
+      {
+        "horizon_id": "overnight_to_swing",
+        "tokens": [
+          "swing",
+          "overnight",
+          "multi_day",
+          "earnings_drift",
+          "gap_"
+        ]
+      },
+      {
+        "horizon_id": "medium_term",
+        "tokens": [
+          "weekly",
+          "monthly",
+          "rotation",
+          "macro",
+          "carry",
+          "dividend",
+          "bond_",
+          "rates_"
+        ]
+      }
+    ],
+    "regime_rules": [
+      {
+        "regime_id": "crisis_and_stress",
+        "tokens": [
+          "crisis",
+          "flash_crash",
+          "black_swan",
+          "stress",
+          "halt_"
+        ]
+      },
+      {
+        "regime_id": "risk_off",
+        "tokens": [
+          "risk_off",
+          "defensive",
+          "de_risk",
+          "flight_to_quality"
+        ]
+      },
+      {
+        "regime_id": "risk_on_trend",
+        "tokens": [
+          "risk_on",
+          "trend_day",
+          "trend_regime",
+          "rapid_expansion"
+        ]
+      },
+      {
+        "regime_id": "rangebound",
+        "tokens": [
+          "rangebound",
+          "sideways",
+          "mean_reversion",
+          "low_volatility"
+        ]
+      },
+      {
+        "regime_id": "high_volatility",
+        "tokens": [
+          "volatility",
+          "gamma",
+          "vol_spike",
+          "vol_surface"
+        ]
+      },
+      {
+        "regime_id": "event_window",
+        "tokens": [
+          "event_",
+          "earnings",
+          "news_",
+          "macro_release",
+          "market_open"
+        ]
+      },
+      {
+        "regime_id": "liquidity_sensitive",
+        "tokens": [
+          "liquidity",
+          "market_making",
+          "order_flow",
+          "microstructure",
+          "auction_"
+        ]
+      },
+      {
+        "regime_id": "macro_transition",
+        "tokens": [
+          "macro",
+          "rates_",
+          "credit_",
+          "inflation",
+          "commodity"
+        ]
+      }
+    ],
+    "role_rules": [
+      {
+        "role_id": "evidence",
+        "tokens": [
+          "evidence_collector",
+          "telemetry_collector",
+          "data_collector",
+          "provenance_writer"
+        ]
+      },
+      {
+        "role_id": "signal",
+        "tokens": [
+          "signal_modeler",
+          "signal_scorer",
+          "forecast_scorer",
+          "candidate_modeler",
+          "hypothesis_modeler"
+        ]
+      },
+      {
+        "role_id": "risk",
+        "tokens": [
+          "risk_guard",
+          "policy_guard",
+          "risk_sizer",
+          "sentinel",
+          "gatekeeper"
+        ]
+      },
+      {
+        "role_id": "execution",
+        "tokens": [
+          "execution_simulator",
+          "execution_rehearsal",
+          "execution_router",
+          "fill_simulator",
+          "slippage_model"
+        ]
+      },
+      {
+        "role_id": "evaluation",
+        "tokens": [
+          "replay_auditor",
+          "quality_scorer",
+          "evaluator",
+          "validation_guard",
+          "regression_guard"
+        ]
+      },
+      {
+        "role_id": "coordination",
+        "tokens": [
+          "master_bridge",
+          "harmonizer",
+          "coordinator",
+          "orchestrator",
+          "controller",
+          "allocator"
+        ]
+      }
+    ],
+    "role_fallbacks": {
+      "signal_sub_bot": "signal",
+      "options_sub_bot": "signal",
+      "futures_sub_bot": "signal",
+      "macro_sub_bot": "signal",
+      "crypto_sub_bot": "signal",
+      "infrastructure_sub_bot": "shared_service",
+      "ops_infrastructure_bot": "shared_service"
+    },
+    "default_signal_family": "general_alpha",
+    "default_infrastructure_family": "control_and_evidence",
+    "default_signal_horizon": "daily_to_multiday",
+    "default_infrastructure_horizon": "continuous_control",
+    "default_regime": "all_regimes"
+  },
+  "regime_model": {
+    "schema_version": 1,
+    "model_id": "multi_axis_regime_taxonomy_v1",
+    "mode": "multi_axis_shadow_only",
+    "scope_policy": {
+      "signal_registry_roles": [
+        "signal_sub_bot",
+        "options_sub_bot",
+        "futures_sub_bot",
+        "macro_sub_bot",
+        "crypto_sub_bot"
+      ],
+      "operational_sub_sleeves": [
+        "data_and_model_governance",
+        "training_and_labeling_governance",
+        "control_and_evidence"
+      ],
+      "hybrid_sub_sleeves": [
+        "risk_and_hedging",
+        "portfolio_and_allocation",
+        "execution_and_liquidity",
+        "regime_and_forecasting"
+      ]
+    },
+    "axis_short_names": {
+      "market_direction": "dir",
+      "volatility_state": "vol",
+      "liquidity_state": "liq",
+      "macro_state": "macro",
+      "rates_credit_state": "rc",
+      "correlation_state": "corr",
+      "event_phase": "event",
+      "market_session": "session",
+      "operational_state": "ops"
+    },
+    "global_wildcard_tokens": [
+      "all_weather",
+      "all_regimes",
+      "mixed_regime"
+    ],
+    "maximum_values_per_axis": 3,
+    "maximum_wildcard_axes_before_review": 8,
+    "maximum_multi_value_axes_before_review": 3,
+    "scenario_partition_contract": {
+      "version": "regime_scenario_partition_v1",
+      "mode": "bounded_best_match_shadow_only",
+      "minimum_scenarios_per_profile": 2,
+      "maximum_scenarios_per_profile": 12,
+      "maximum_values_per_axis_per_scenario": 2,
+      "require_unique_scenario_ids": true,
+      "require_explicit_scope": true,
+      "require_explicit_axes": true,
+      "require_same_scope": true,
+      "selection_policy": "highest_compatible_score_then_scenario_id",
+      "unmatched_action": "exclude_and_report",
+      "paper_execution_authority": false,
+      "live_execution_authority": false
+    },
+    "minimum_axis_coverage_by_scope": {
+      "market_signal": 0.25,
+      "hybrid": 0.5,
+      "operational_control": 1.0
+    },
+    "critical_axes_by_scope": {
+      "market_signal": [
+        "market_direction",
+        "volatility_state",
+        "liquidity_state"
+      ],
+      "hybrid": [
+        "market_direction",
+        "volatility_state",
+        "liquidity_state",
+        "operational_state"
+      ],
+      "operational_control": [
+        "operational_state"
+      ]
+    },
+    "cohort_axes_by_scope": {
+      "market_signal": [
+        "market_direction",
+        "volatility_state",
+        "liquidity_state",
+        "event_phase"
+      ],
+      "hybrid": [
+        "market_direction",
+        "volatility_state",
+        "liquidity_state",
+        "operational_state"
+      ],
+      "operational_control": [
+        "operational_state"
+      ]
+    },
+    "axes": [
+      {
+        "axis_id": "market_direction",
+        "description": "Directional market behavior, independent of volatility or operations.",
+        "values": [
+          "bull_trend",
+          "bear_trend",
+          "rangebound",
+          "transition",
+          "any",
+          "unknown",
+          "not_applicable"
+        ],
+        "unknown_value": "unknown",
+        "wildcard_value": "any",
+        "not_applicable_value": "not_applicable",
+        "applicable_scopes": [
+          "market_signal",
+          "hybrid"
+        ],
+        "required_for_scopes": [
+          "market_signal",
+          "hybrid"
+        ],
+        "compatibility_weight": 1.25,
+        "wildcard_tokens": [
+          "direction_agnostic"
+        ],
+        "rules": [
+          {
+            "value_id": "transition",
+            "tokens": [
+              "fragile_transition",
+              "mixed_transition",
+              "regime_transition",
+              "rangebound_transition",
+              "nonlinear_regime_shift",
+              "macro_regime_shift",
+              "regime_shift",
+              "correlation_break",
+              "sector_rotation",
+              "trend_decay",
+              "allocation_drift",
+              "slow_rotation"
+            ]
+          },
+          {
+            "value_id": "bear_trend",
+            "tokens": [
+              "risk_off_trend",
+              "risk_off_shock",
+              "bearish",
+              "de_risk",
+              "defensive",
+              "recession"
+            ]
+          },
+          {
+            "value_id": "rangebound",
+            "tokens": [
+              "rangebound",
+              "range_bound",
+              "sideways",
+              "choppy_tape",
+              "mean_reversion"
+            ]
+          },
+          {
+            "value_id": "bull_trend",
+            "tokens": [
+              "risk_on_trend",
+              "risk_on",
+              "trend_day",
+              "rapid_expansion",
+              "bullish"
+            ]
+          }
+        ]
+      },
+      {
+        "axis_id": "volatility_state",
+        "description": "Volatility intensity and stress without conflating direction.",
+        "values": [
+          "compressed",
+          "normal",
+          "elevated",
+          "crisis",
+          "any",
+          "unknown",
+          "not_applicable"
+        ],
+        "unknown_value": "unknown",
+        "wildcard_value": "any",
+        "not_applicable_value": "not_applicable",
+        "applicable_scopes": [
+          "market_signal",
+          "hybrid"
+        ],
+        "required_for_scopes": [
+          "market_signal",
+          "hybrid"
+        ],
+        "compatibility_weight": 1.25,
+        "wildcard_tokens": [
+          "volatility_agnostic"
+        ],
+        "rules": [
+          {
+            "value_id": "crisis",
+            "tokens": [
+              "risk_off_shock",
+              "crisis",
+              "crisis_replay",
+              "black_swan",
+              "tail_cluster",
+              "pandemic_replay",
+              "stress_replay_window",
+              "liquidity_freeze",
+              "flash_crash"
+            ]
+          },
+          {
+            "value_id": "elevated",
+            "tokens": [
+              "event_volatility",
+              "high_volatility",
+              "volatility_expansion",
+              "vol_surface_shift",
+              "high_dispersion",
+              "rate_volatility",
+              "vol_of_vol_spike",
+              "volatility_spike",
+              "vol_spike",
+              "open_drive_stress",
+              "fx_stress"
+            ]
+          },
+          {
+            "value_id": "compressed",
+            "tokens": [
+              "low_volatility",
+              "stable_vol_surface",
+              "volatility_compression"
+            ]
+          },
+          {
+            "value_id": "normal",
+            "tokens": [
+              "normal_volatility",
+              "normal_collection",
+              "low_pressure"
+            ]
+          }
+        ]
+      },
+      {
+        "axis_id": "liquidity_state",
+        "description": "Tradable depth, spread, and dislocation conditions.",
+        "values": [
+          "deep",
+          "normal",
+          "thin",
+          "dislocated",
+          "any",
+          "unknown",
+          "not_applicable"
+        ],
+        "unknown_value": "unknown",
+        "wildcard_value": "any",
+        "not_applicable_value": "not_applicable",
+        "applicable_scopes": [
+          "market_signal",
+          "hybrid"
+        ],
+        "required_for_scopes": [
+          "market_signal",
+          "hybrid"
+        ],
+        "compatibility_weight": 1.25,
+        "wildcard_tokens": [
+          "liquidity_agnostic"
+        ],
+        "rules": [
+          {
+            "value_id": "dislocated",
+            "tokens": [
+              "liquidity_dislocation",
+              "liquidity_freeze",
+              "funding_stress",
+              "crowded_trade",
+              "short_squeeze",
+              "basis_dislocation",
+              "margin_stress",
+              "counterparty_default"
+            ]
+          },
+          {
+            "value_id": "thin",
+            "tokens": [
+              "thin_liquidity",
+              "liquidity_thin",
+              "wide_spread",
+              "intraday_liquidity",
+              "crypto_liquidity"
+            ]
+          },
+          {
+            "value_id": "deep",
+            "tokens": [
+              "high_liquidity",
+              "deep_liquidity",
+              "low_friction"
+            ]
+          },
+          {
+            "value_id": "normal",
+            "tokens": [
+              "normal_liquidity",
+              "stable_liquidity"
+            ]
+          }
+        ]
+      },
+      {
+        "axis_id": "macro_state",
+        "description": "Growth and inflation backdrop independent of rates implementation.",
+        "values": [
+          "growth_expansion",
+          "slowdown",
+          "recession",
+          "inflation_shock",
+          "deflation_shock",
+          "transition",
+          "any",
+          "unknown",
+          "not_applicable"
+        ],
+        "unknown_value": "unknown",
+        "wildcard_value": "any",
+        "not_applicable_value": "not_applicable",
+        "applicable_scopes": [
+          "market_signal",
+          "hybrid"
+        ],
+        "required_for_scopes": [
+          "market_signal"
+        ],
+        "compatibility_weight": 0.85,
+        "wildcard_tokens": [
+          "macro_agnostic"
+        ],
+        "rules": [
+          {
+            "value_id": "growth_expansion",
+            "tokens": [
+              "rapid_expansion",
+              "growth_expansion"
+            ]
+          },
+          {
+            "value_id": "slowdown",
+            "tokens": [
+              "slow_rotation",
+              "consumer_stress",
+              "growth_slowdown"
+            ]
+          },
+          {
+            "value_id": "recession",
+            "tokens": [
+              "recession",
+              "global_recession"
+            ]
+          },
+          {
+            "value_id": "inflation_shock",
+            "tokens": [
+              "inflation_shock",
+              "commodity_spike"
+            ]
+          },
+          {
+            "value_id": "deflation_shock",
+            "tokens": [
+              "deflation_shock"
+            ]
+          },
+          {
+            "value_id": "transition",
+            "tokens": [
+              "macro_transition",
+              "macro_repricing",
+              "macro_regime_shift",
+              "regime_transition"
+            ]
+          }
+        ]
+      },
+      {
+        "axis_id": "rates_credit_state",
+        "description": "Rates, credit, funding, and default transmission state.",
+        "values": [
+          "neutral",
+          "easing",
+          "tightening",
+          "rates_shock",
+          "credit_stress",
+          "funding_stress",
+          "default_event",
+          "any",
+          "unknown",
+          "not_applicable"
+        ],
+        "unknown_value": "unknown",
+        "wildcard_value": "any",
+        "not_applicable_value": "not_applicable",
+        "applicable_scopes": [
+          "market_signal",
+          "hybrid"
+        ],
+        "required_for_scopes": [
+          "market_signal"
+        ],
+        "compatibility_weight": 0.9,
+        "wildcard_tokens": [
+          "rates_credit_agnostic"
+        ],
+        "rules": [
+          {
+            "value_id": "neutral",
+            "tokens": [
+              "neutral_rates",
+              "stable_credit"
+            ]
+          },
+          {
+            "value_id": "easing",
+            "tokens": [
+              "rate_cuts",
+              "easing_cycle"
+            ]
+          },
+          {
+            "value_id": "tightening",
+            "tokens": [
+              "rate_hikes",
+              "tightening_cycle"
+            ]
+          },
+          {
+            "value_id": "rates_shock",
+            "tokens": [
+              "rates_shock",
+              "rate_shock",
+              "front_end_rate_shock",
+              "rates_shift",
+              "curve_regime_shift",
+              "duration_stress",
+              "rate_volatility"
+            ]
+          },
+          {
+            "value_id": "credit_stress",
+            "tokens": [
+              "credit_stress",
+              "credit_spread_widening",
+              "housing_stress",
+              "commercial_real_estate_stress"
+            ]
+          },
+          {
+            "value_id": "funding_stress",
+            "tokens": [
+              "funding_stress",
+              "margin_stress"
+            ]
+          },
+          {
+            "value_id": "default_event",
+            "tokens": [
+              "counterparty_default"
+            ]
+          }
+        ]
+      },
+      {
+        "axis_id": "correlation_state",
+        "description": "Cross-asset and peer-dependence stability.",
+        "values": [
+          "stable",
+          "weakening",
+          "broken",
+          "high_dispersion",
+          "crowded",
+          "any",
+          "unknown",
+          "not_applicable"
+        ],
+        "unknown_value": "unknown",
+        "wildcard_value": "any",
+        "not_applicable_value": "not_applicable",
+        "applicable_scopes": [
+          "market_signal",
+          "hybrid"
+        ],
+        "required_for_scopes": [
+          "market_signal"
+        ],
+        "compatibility_weight": 0.85,
+        "wildcard_tokens": [
+          "correlation_agnostic"
+        ],
+        "rules": [
+          {
+            "value_id": "stable",
+            "tokens": [
+              "stable_correlation"
+            ]
+          },
+          {
+            "value_id": "weakening",
+            "tokens": [
+              "trend_decay",
+              "correlation_weakening"
+            ]
+          },
+          {
+            "value_id": "broken",
+            "tokens": [
+              "correlation_break",
+              "basis_dislocation"
+            ]
+          },
+          {
+            "value_id": "high_dispersion",
+            "tokens": [
+              "high_dispersion",
+              "dispersion"
+            ]
+          },
+          {
+            "value_id": "crowded",
+            "tokens": [
+              "crowded_trade",
+              "short_squeeze"
+            ]
+          }
+        ]
+      },
+      {
+        "axis_id": "event_phase",
+        "description": "Lifecycle of discrete catalysts and scheduled events.",
+        "values": [
+          "pre_event",
+          "event_window",
+          "post_event",
+          "continuous",
+          "any",
+          "unknown",
+          "not_applicable"
+        ],
+        "unknown_value": "unknown",
+        "wildcard_value": "any",
+        "not_applicable_value": "not_applicable",
+        "applicable_scopes": [
+          "market_signal",
+          "hybrid"
+        ],
+        "required_for_scopes": [
+          "market_signal"
+        ],
+        "compatibility_weight": 0.75,
+        "wildcard_tokens": [
+          "event_agnostic"
+        ],
+        "rules": [
+          {
+            "value_id": "pre_event",
+            "tokens": [
+              "event_preparation",
+              "hypothesis_triage"
+            ]
+          },
+          {
+            "value_id": "event_window",
+            "tokens": [
+              "event_window",
+              "event_volatility",
+              "macro_event_window",
+              "macro_event",
+              "earnings_event",
+              "earnings_credit_event",
+              "earnings_cluster",
+              "earnings_season",
+              "dividend_event",
+              "news_event",
+              "news_shock",
+              "macro_release",
+              "fed_day",
+              "auction_day",
+              "market_open",
+              "market_close",
+              "overnight_gap",
+              "early_exercise_risk"
+            ]
+          },
+          {
+            "value_id": "post_event",
+            "tokens": [
+              "post_expansion_settlement",
+              "post_event"
+            ]
+          },
+          {
+            "value_id": "continuous",
+            "tokens": [
+              "normal_collection",
+              "research_cycle"
+            ]
+          }
+        ]
+      },
+      {
+        "axis_id": "market_session",
+        "description": "Trading-session context, independent of event phase.",
+        "values": [
+          "premarket",
+          "open",
+          "intraday",
+          "close",
+          "overnight",
+          "off_hours",
+          "continuous",
+          "any",
+          "unknown",
+          "not_applicable"
+        ],
+        "unknown_value": "unknown",
+        "wildcard_value": "any",
+        "not_applicable_value": "not_applicable",
+        "applicable_scopes": [
+          "market_signal",
+          "hybrid"
+        ],
+        "required_for_scopes": [
+          "market_signal"
+        ],
+        "compatibility_weight": 0.7,
+        "wildcard_tokens": [
+          "session_agnostic"
+        ],
+        "rules": [
+          {
+            "value_id": "premarket",
+            "tokens": [
+              "premarket",
+              "pre_market"
+            ]
+          },
+          {
+            "value_id": "open",
+            "tokens": [
+              "market_open",
+              "open_drive_stress",
+              "opening"
+            ]
+          },
+          {
+            "value_id": "intraday",
+            "tokens": [
+              "market_hours_pressure",
+              "intraday_liquidity",
+              "auction_day"
+            ]
+          },
+          {
+            "value_id": "close",
+            "tokens": [
+              "market_close",
+              "closing"
+            ]
+          },
+          {
+            "value_id": "overnight",
+            "tokens": [
+              "overnight_gap",
+              "overnight_drain",
+              "overnight_collection"
+            ]
+          },
+          {
+            "value_id": "off_hours",
+            "tokens": [
+              "off_hours",
+              "off_hours_targeted_retrain"
+            ]
+          },
+          {
+            "value_id": "continuous",
+            "tokens": [
+              "continuous_market",
+              "normal_collection"
+            ]
+          }
+        ]
+      },
+      {
+        "axis_id": "operational_state",
+        "description": "System-control posture kept separate from market conditions.",
+        "values": [
+          "normal_operations",
+          "resource_pressure",
+          "backlog_pressure",
+          "recovery",
+          "training_research",
+          "evidence_review",
+          "halted",
+          "maintenance",
+          "any",
+          "unknown",
+          "not_applicable"
+        ],
+        "unknown_value": "unknown",
+        "wildcard_value": "any",
+        "not_applicable_value": "not_applicable",
+        "applicable_scopes": [
+          "hybrid",
+          "operational_control"
+        ],
+        "required_for_scopes": [
+          "hybrid",
+          "operational_control"
+        ],
+        "compatibility_weight": 1.0,
+        "wildcard_tokens": [
+          "all_operational_states"
+        ],
+        "rules": [
+          {
+            "value_id": "normal_operations",
+            "tokens": [
+              "low_pressure",
+              "normal_collection",
+              "low_friction",
+              "high_confidence",
+              "stable_correlation",
+              "stable_vol_surface"
+            ]
+          },
+          {
+            "value_id": "resource_pressure",
+            "tokens": [
+              "resource_pressure",
+              "expansion_pressure",
+              "protective_pressure",
+              "operator_headroom_mode",
+              "heavy_operator_workload",
+              "market_hours_pressure",
+              "creative_cotenant_mode"
+            ]
+          },
+          {
+            "value_id": "backlog_pressure",
+            "tokens": [
+              "backpressure_spike",
+              "overnight_drain",
+              "post_expansion_settlement"
+            ]
+          },
+          {
+            "value_id": "recovery",
+            "tokens": [
+              "global_halt_recovery",
+              "incident_recovery",
+              "feed_gap_recovery",
+              "halt_reopen",
+              "global_halt_clearance",
+              "coverage_repair",
+              "schema_gate_repair",
+              "walk_forward_requalification"
+            ]
+          },
+          {
+            "value_id": "training_research",
+            "tokens": [
+              "research_cycle",
+              "research",
+              "off_hours_targeted_retrain",
+              "training_window",
+              "model_refresh",
+              "hypothesis_triage"
+            ]
+          },
+          {
+            "value_id": "evidence_review",
+            "tokens": [
+              "paper_realism_review",
+              "institutional_review",
+              "portfolio_risk_review",
+              "program_head_reporting",
+              "regression_guard",
+              "schema_drift",
+              "label_audit",
+              "audit_review",
+              "promotion_review",
+              "daily_review",
+              "external_review",
+              "report_refresh",
+              "program_head_packet",
+              "drift_watch",
+              "model_decay",
+              "parameter_drift",
+              "model_uncertainty",
+              "high_uncertainty"
+            ]
+          },
+          {
+            "value_id": "halted",
+            "tokens": [
+              "global_halt",
+              "global_halt_review",
+              "all_sleeves_down"
+            ]
+          },
+          {
+            "value_id": "maintenance",
+            "tokens": [
+              "maintenance",
+              "overnight_collection",
+              "off_hours"
+            ]
+          }
+        ]
+      }
+    ],
+    "metadata_access_contract": {
+      "version": "regime_metadata_access_v1",
+      "mode": "read_only_runtime_context",
+      "catalog_uri": "config/bot_organization_v1.json#/regime_model/axes",
+      "readable_axes_by_scope": {
+        "market_signal": [
+          "market_direction",
+          "volatility_state",
+          "liquidity_state",
+          "macro_state",
+          "rates_credit_state",
+          "correlation_state",
+          "event_phase",
+          "market_session"
+        ],
+        "hybrid": [
+          "market_direction",
+          "volatility_state",
+          "liquidity_state",
+          "operational_state"
+        ],
+        "operational_control": [
+          "operational_state"
+        ]
+      },
+      "resolver_precedence": [
+        "registry_explicit",
+        "module_literal",
+        "policy_rule",
+        "runtime_observed_context"
+      ],
+      "minimum_registry_access_ratio": 1.0,
+      "require_context_provenance": true,
+      "fail_closed_on_invalid_context": true,
+      "expose_unknown_profile_axes": true,
+      "allow_training_observation": true,
+      "infer_missing_profile_preferences": false,
+      "changes_runtime_decisions": false,
+      "paper_execution_authority": false,
+      "live_execution_authority": false
+    },
+    "compatibility_policy": {
+      "mode": "shadow_filter",
+    "minimum_context_axes": 2,
+    "minimum_context_axes_by_scope": {
+      "market_signal": 2,
+      "hybrid": 2,
+      "operational_control": 1
+    },
+      "minimum_compatibility_score": 0.55,
+      "hard_mismatch_axes_by_scope": {
+        "market_signal": [
+          "market_direction",
+          "volatility_state",
+          "liquidity_state"
+        ],
+        "hybrid": [
+          "market_direction",
+          "volatility_state",
+          "liquidity_state",
+          "operational_state"
+        ],
+        "operational_control": [
+          "operational_state"
+        ]
+      },
+      "unknown_profile_axis_score": 0.25,
+      "wildcard_profile_axis_score": 0.65,
+      "unknown_context_axis_score": 0.5,
+      "weight_shadow_votes_by_compatibility": true,
+      "missing_profile_action": "exclude_when_context_supplied",
+      "invalid_context_action": "exclude_and_report"
+    },
+    "safety_contract": {
+      "changes_runtime_decisions": false,
+      "paper_execution_authority": false,
+      "live_execution_authority": false,
+      "automatic_regime_promotion": false
+    }
+  },
+  "resource_budgets": {
+    "max_shadow_voters_per_cell_soft": 24,
+    "max_shadow_voters_per_cell_hard": 96,
+    "max_total_shadow_voters": 2000,
+    "max_parallel_training_jobs_per_sub_sleeve": 1,
+    "max_parallel_training_jobs_global": 1,
+    "max_review_queue_rows": 250,
+    "soft_limit_action": "rank_then_park_low_marginal_value_bots",
+    "hard_limit_action": "block_new_admission_and_shadow_voting_for_excess_rows"
+  },
+  "ensemble_policy": {
+    "mode": "shadow_only",
+    "score_minimum": -1.0,
+    "score_maximum": 1.0,
+    "minimum_confidence": 0.25,
+    "minimum_distinct_sub_sleeves": 2,
+    "minimum_distinct_sleeves": 1,
+    "decision_threshold": 0.15,
+    "maximum_disagreement": 0.72,
+    "max_bot_weight": 0.15,
+    "max_correlation_cluster_weight": 0.25,
+    "max_sub_sleeve_weight": 0.4,
+    "max_sleeve_weight": 0.55,
+    "duplicate_cluster_aggregation": "weighted_mean_before_hierarchy",
+    "missing_assignment_action": "exclude_and_report",
+    "insufficient_diversity_action": "abstain"
+  },
+  "admission_policy": {
+    "max_new_bots_per_release": 4,
+    "require_named_sleeve_and_sub_sleeve": true,
+    "require_documented_capability_gap": true,
+    "require_incremental_out_of_sample_value": true,
+    "require_positive_stressed_post_cost_expectancy": true,
+    "require_locked_holdout": true,
+    "require_multiple_testing_adjustment": true,
+    "require_maximum_parent_or_peer_correlation": true,
+    "maximum_parent_or_peer_correlation": 0.92,
+    "require_resource_budget_clearance": true,
+    "require_human_registry_admission": true
+  },
+  "safety_contract": {
+    "changes_runtime_decisions": false,
+    "automatic_registry_mutation": false,
+    "automatic_source_code_changes": false,
+    "paper_execution_authority": false,
+    "live_execution_authority": false,
+    "automatic_live_promotion": false,
+    "profitability_guaranteed": false
+  }
+}

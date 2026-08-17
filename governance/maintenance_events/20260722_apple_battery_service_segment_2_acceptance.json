@@ -1,0 +1,95 @@
+{
+  "event_id": "20260722_apple_battery_service_segment_2_acceptance",
+  "schema_version": 1,
+  "timestamp_utc": "2026-07-23T00:53:55Z",
+  "timestamp_local": "2026-07-22T20:53:55-04:00",
+  "parent_event_id": "20260714_apple_battery_service_soak_pause",
+  "title": "Post-service soak segment 2 acceptance",
+  "operator_context": "Mac returned after Apple battery service; external BOT_LOGS drive mounted and post-service checks refreshed.",
+  "soak_segment": {
+    "segment": 2,
+    "status": "active",
+    "treatment": "post_service_soak_resumes_after_restore_readiness_and_live_readiness_verify",
+    "segment_1_preserved": true,
+    "maintenance_pause_counts_as_system_degradation": false,
+    "maintenance_pause_counts_as_trading_system_failure": false
+  },
+  "closed_offline_window": {
+    "offline_start_local": "2026-07-14T14:40:00-04:00",
+    "offline_start_utc": "2026-07-14T18:40:00Z",
+    "offline_end_local": "2026-07-22T20:53:55-04:00",
+    "offline_end_utc": "2026-07-23T00:53:55Z",
+    "duration_seconds": 713635,
+    "duration_human": "8 days, 6 hours, 13 minutes, 55 seconds",
+    "treatment": "planned_external_hardware_maintenance_between_soak_segments"
+  },
+  "acceptance_checks": {
+    "unattended_soak_readiness": {
+      "timestamp_utc": "2026-07-23T00:53:55.921436+00:00",
+      "ok": true,
+      "overall_status": "ready",
+      "overall_grade": "A+",
+      "overall_score": 100.0,
+      "safe_to_leave_unattended": true,
+      "blockers": [],
+      "warnings": [],
+      "storage_grade": "A+",
+      "runtime_loops_grade": "A+",
+      "alerting_grade": "A+"
+    },
+    "runtime_paper_regression_guard": {
+      "timestamp_utc": "2026-07-23T00:53:55.871352+00:00",
+      "ok": true,
+      "overall_status": "ready",
+      "paper_stage": "armed",
+      "paper_armed": true,
+      "paper_blocked": false,
+      "failed_guard_count": 0,
+      "hard_failed_guard_count": 0,
+      "failed_guards": []
+    },
+    "paper_execution_truth": {
+      "timestamp_utc": "2026-07-23T00:53:55.867570+00:00",
+      "ok": true,
+      "overall_status": "ready",
+      "grade": "A+",
+      "score": 97.0,
+      "a_plus_ready": true,
+      "failed_checks": [],
+      "warnings": [],
+      "advisory_warnings": [
+        "decision_replay_harness",
+        "options_specific_realism"
+      ]
+    },
+    "external_storage_route": {
+      "timestamp_utc": "2026-07-23T00:53:08.456902+00:00",
+      "mode": "external",
+      "certified_mode": "external",
+      "active_root": "/Volumes/BOT_LOGS/schwab_trading_bot",
+      "verification_state": "ready",
+      "ready_count": 3,
+      "verified_count": 3,
+      "tracked_count": 3,
+      "coverage_ratio": 1.0,
+      "mismatches": [],
+      "split_brain_conflicts": 0
+    },
+    "process_watchdog": {
+      "overall_status": "ready",
+      "alerts": [],
+      "restarts": [],
+      "restart_storms": [],
+      "all_sleeves_running": true,
+      "all_sleeves_child_fanout_ok": true,
+      "all_sleeves_expected_jobs": 22,
+      "all_sleeves_running_jobs": 22,
+      "all_sleeves_child_process_count": 25
+    }
+  },
+  "notes": [
+    "Segment 2 is active after post-service restore, route, paper, runtime, and soak-readiness checks passed.",
+    "Paper execution advisory warnings remain visible but are not grade-blocking for the paper-soak execution path.",
+    "Live order submission remains disabled; this is paper trading and data collection only."
+  ]
+}

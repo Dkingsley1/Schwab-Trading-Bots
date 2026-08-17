@@ -1,0 +1,206 @@
+{
+  "generated_at_utc": "2026-05-04T00:12:12.839010+00:00",
+  "intelligence_layer_advancement_version": "intelligence_layer_advancement_v1",
+  "pack": {
+    "slug": "intelligence_layer_advancement",
+    "display_name": "Intelligence Layer Advancement Pack",
+    "sleeve_family": "meta_intelligence_control_plane",
+    "sleeve_profile": "intelligence_layer_advancement",
+    "objective": "Advance the system's intelligence layer through routing, world models, benchmarks, memory, debate, active learning, uncertainty, tool selection, safety verification, and self-improvement planning.",
+    "system_count": 10,
+    "bot_count": 30,
+    "bot_ids": [
+      "brain_refinery_v934_intelligence_metacognitive_reasoning_budget_allocator_bot",
+      "brain_refinery_v935_intelligence_expert_route_selector_bot",
+      "brain_refinery_v936_intelligence_uncertainty_escalation_guard_bot",
+      "brain_refinery_v937_intelligence_counterfactual_scenario_generator_bot",
+      "brain_refinery_v938_intelligence_world_model_residual_scorer_bot",
+      "brain_refinery_v939_intelligence_decision_alternative_critic_bot",
+      "brain_refinery_v940_intelligence_golden_replay_alpha_benchmarker_bot",
+      "brain_refinery_v941_intelligence_walk_forward_evidence_scorer_bot",
+      "brain_refinery_v942_intelligence_leakage_red_team_auditor_bot",
+      "brain_refinery_v943_intelligence_episodic_memory_distiller_v2_bot",
+      "brain_refinery_v944_intelligence_retrieval_relevance_scorer_v2_bot",
+      "brain_refinery_v945_intelligence_memory_decay_forgetting_guard_v2_bot",
+      "brain_refinery_v946_intelligence_proposal_agent_board_bot",
+      "brain_refinery_v947_intelligence_skeptic_critic_board_bot",
+      "brain_refinery_v948_intelligence_arbiter_resolution_master_bot",
+      "brain_refinery_v949_intelligence_active_learning_query_planner_v2_bot",
+      "brain_refinery_v950_intelligence_experiment_value_of_information_scorer_bot",
+      "brain_refinery_v951_intelligence_exploration_budget_guard_bot",
+      "brain_refinery_v952_intelligence_ensemble_diversity_governor_bot",
+      "brain_refinery_v953_intelligence_calibration_uncertainty_mapper_bot",
+      "brain_refinery_v954_intelligence_failure_mode_clusterer_bot",
+      "brain_refinery_v955_intelligence_mlx_route_optimizer_v2_bot",
+      "brain_refinery_v956_intelligence_quant_library_route_scorer_bot",
+      "brain_refinery_v957_intelligence_tool_reliability_canary_bot",
+      "brain_refinery_v958_intelligence_policy_invariant_verifier_v2_bot",
+      "brain_refinery_v959_intelligence_canary_violation_simulator_bot",
+      "brain_refinery_v960_intelligence_halt_preemption_intelligence_guard_bot",
+      "brain_refinery_v961_intelligence_upgrade_candidate_ranker_v2_bot",
+      "brain_refinery_v962_intelligence_implementation_dependency_mapper_bot",
+      "brain_refinery_v963_intelligence_risk_payoff_backlog_master_bot"
+    ],
+    "systems": [
+      {
+        "slug": "metacognitive_routing_v2",
+        "display_name": "Metacognitive Routing v2",
+        "objective": "Route reasoning effort, model families, sleeves, and memory calls by uncertainty, pressure, and payoff.",
+        "outputs": [
+          "reasoning_budget_packet",
+          "expert_route_vote",
+          "uncertainty_escalation_state"
+        ]
+      },
+      {
+        "slug": "world_model_counterfactual_lab",
+        "display_name": "World Model / Counterfactual Lab",
+        "objective": "Simulate what-if market states and compare current decisions against plausible alternate paths.",
+        "outputs": [
+          "counterfactual_scenario_packet",
+          "world_model_residual",
+          "decision_alternative_set"
+        ]
+      },
+      {
+        "slug": "alpha_evaluation_benchmark_suite",
+        "display_name": "Alpha Evaluation Benchmark Suite",
+        "objective": "Continuously benchmark alphas against golden replays, leakage checks, walk-forward windows, and crisis scenes.",
+        "outputs": [
+          "alpha_benchmark_score",
+          "leakage_red_flag",
+          "walk_forward_evidence_packet"
+        ]
+      },
+      {
+        "slug": "memory_compression_retrieval_v2",
+        "display_name": "Memory Compression / Retrieval v2",
+        "objective": "Compress experience into useful memories and test whether retrieved memories actually help current decisions.",
+        "outputs": [
+          "memory_distillation_packet",
+          "retrieval_quality_score",
+          "memory_decay_vote"
+        ]
+      },
+      {
+        "slug": "multi_agent_debate_critic_board",
+        "display_name": "Multi-Agent Debate / Critic Board",
+        "objective": "Let proposer, skeptic, and arbiter agents pressure-test high-impact advisory conclusions.",
+        "outputs": [
+          "debate_packet",
+          "critic_objection_set",
+          "arbiter_resolution_vote"
+        ]
+      },
+      {
+        "slug": "active_learning_experiment_design_v2",
+        "display_name": "Active Learning / Experiment Design v2",
+        "objective": "Choose which labels, sources, regimes, or simulations are worth collecting next.",
+        "outputs": [
+          "active_learning_query",
+          "experiment_value_score",
+          "exploration_budget_vote"
+        ]
+      },
+      {
+        "slug": "ensemble_governance_uncertainty",
+        "display_name": "Ensemble Governance / Uncertainty",
+        "objective": "Govern ensembles by diversity, calibration, disagreement, failure modes, and uncertainty routing.",
+        "outputs": [
+          "ensemble_diversity_score",
+          "calibration_packet",
+          "failure_mode_cluster"
+        ]
+      },
+      {
+        "slug": "library_tool_intelligence_router",
+        "display_name": "Library / Tool Intelligence Router",
+        "objective": "Route MLX, QuantLib, sklearn, stats, and internal engines to the tasks where they add the most value.",
+        "outputs": [
+          "library_route_packet",
+          "mlx_utilization_vote",
+          "tool_reliability_score"
+        ]
+      },
+      {
+        "slug": "safety_invariant_verification_v2",
+        "display_name": "Safety Invariant Verification v2",
+        "objective": "Verify no intelligence layer bypasses paper locks, halt contracts, storage guards, or training gates.",
+        "outputs": [
+          "safety_invariant_report",
+          "canary_violation_packet",
+          "halt_preemption_vote"
+        ]
+      },
+      {
+        "slug": "self_improvement_backlog_planner",
+        "display_name": "Self-Improvement Backlog Planner",
+        "objective": "Rank future upgrades by payoff, risk, dependency complexity, data availability, and resource load.",
+        "outputs": [
+          "upgrade_backlog_rank",
+          "implementation_dependency_graph",
+          "risk_payoff_packet"
+        ]
+      }
+    ],
+    "dedicated_data_intake": [
+      "metacognitive_routing_trace_v2",
+      "reasoning_budget_uncertainty_trace",
+      "world_model_counterfactual_trace",
+      "alpha_benchmark_replay_trace",
+      "memory_distillation_retrieval_trace",
+      "multi_agent_debate_critic_trace",
+      "active_learning_experiment_trace_v2",
+      "ensemble_uncertainty_calibration_trace",
+      "library_tool_route_trace",
+      "safety_invariant_verification_trace_v2",
+      "self_improvement_backlog_trace"
+    ],
+    "storage_retention_rule": {
+      "retention_profile": "intelligence_layer_hot_7d_warm_60d_cold_365d",
+      "storage_targets": [
+        "governance/intelligence_layer",
+        "governance/intelligence_layer/metacognition",
+        "governance/intelligence_layer/world_model",
+        "governance/intelligence_layer/benchmarks",
+        "governance/intelligence_layer/memory",
+        "governance/intelligence_layer/debate",
+        "governance/intelligence_layer/active_learning",
+        "governance/intelligence_layer/ensemble",
+        "governance/intelligence_layer/tool_router",
+        "governance/intelligence_layer/safety",
+        "governance/intelligence_layer/backlog",
+        "governance/health/intelligence_layer_advancement_latest.json"
+      ],
+      "max_daily_mb_per_bot": 22,
+      "capture_mode": "digest_first_reasoning_trace",
+      "sample_rate": 0.14,
+      "dedupe_required": true,
+      "stale_deletion_policy": "retain_decision_digests_stage_raw_reasoning_traces"
+    },
+    "paper_only_floor": {
+      "paper_trade_lock_required": true,
+      "live_trading_enabled": false,
+      "execution_enabled": false,
+      "allocation_enabled": false,
+      "graduation_requires_minimum_observations": 24000,
+      "graduation_requires_collection_days": 90
+    },
+    "sleeve_master_bot_id": "brain_refinery_v934_intelligence_metacognitive_reasoning_budget_allocator_bot",
+    "regression_guard_bot_id": "brain_refinery_v958_intelligence_policy_invariant_verifier_v2_bot",
+    "grandmaster_bridge_bot_id": "brain_refinery_v963_intelligence_risk_payoff_backlog_master_bot",
+    "runtime_capacity_floor": 925,
+    "intelligence_advancements": [
+      "metacognitive_routing_v2",
+      "world_model_counterfactual_lab",
+      "alpha_evaluation_benchmark_suite",
+      "memory_compression_retrieval_v2",
+      "multi_agent_debate_critic_board",
+      "active_learning_experiment_design_v2",
+      "ensemble_governance_uncertainty",
+      "library_tool_intelligence_router",
+      "safety_invariant_verification_v2",
+      "self_improvement_backlog_planner"
+    ]
+  }
+}

@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "policy_id": "production_resilience_v1",
+  "sections": [
+    {"section_id": "01_two_tier_self_healing", "title": "Two-tier self-healing", "artifact": "governance/health/soak_reliability_sentinel_latest.json", "owner_source": "scripts/ops/soak_reliability_sentinel.py", "max_age_minutes": 20, "paper_required": true},
+    {"section_id": "02_honest_grade_semantics", "title": "Honest non-cosmetic grades", "artifact": "governance/health/profitability_evidence_firewall_latest.json", "owner_source": "scripts/ops/profitability_evidence_firewall.py", "max_age_minutes": 60, "paper_required": true},
+    {"section_id": "03_exclusive_control_ownership", "title": "Exclusive control ownership", "artifact": "governance/health/control_surface_ownership_latest.json", "owner_source": "scripts/ops/control_surface_ownership.py", "max_age_minutes": 60, "paper_required": true},
+    {"section_id": "04_immutable_release_boundary", "title": "Immutable release boundary", "artifact": "governance/health/release_freeze_guard_latest.json", "owner_source": "scripts/ops/release_freeze_guard.py", "max_age_minutes": 60, "paper_required": false},
+    {"section_id": "05_scheduled_fault_injection", "title": "Scheduled paper-only fault injection", "artifact": "governance/health/chaos_drill_coordinator_latest.json", "owner_source": "scripts/ops/chaos_drill_coordinator.py", "max_age_minutes": 10080, "paper_required": false},
+    {"section_id": "06_bounded_repair_circuits", "title": "Bounded repair circuits", "artifact": "governance/health/soak_reliability_sentinel_latest.json", "owner_source": "scripts/ops/soak_reliability_sentinel.py", "max_age_minutes": 20, "paper_required": true},
+    {"section_id": "07_transactional_trading_truth", "title": "Transactional trading truth", "artifact": "governance/health/live_order_ledger_control_latest.json", "owner_source": "scripts/ops/live_order_ledger_control.py", "max_age_minutes": 30, "paper_required": true},
+    {"section_id": "08_measured_data_recoverability", "title": "Measured data recoverability", "artifact": "governance/health/storage_disaster_recovery_latest.json", "owner_source": "scripts/ops/storage_disaster_recovery.py", "max_age_minutes": 1440, "paper_required": false},
+    {"section_id": "09_independent_deadman_monitor", "title": "Independent deadman monitor", "artifact": "governance/health/independent_runtime_monitor_latest.json", "owner_source": "scripts/observability_exporter.py", "max_age_minutes": 5, "paper_required": true},
+    {"section_id": "10_honest_profitability_evidence", "title": "Honest profitability evidence", "artifact": "governance/health/profitability_evidence_firewall_latest.json", "owner_source": "scripts/ops/profitability_evidence_firewall.py", "max_age_minutes": 60, "paper_required": false}
+  ],
+  "control_contract": {
+    "all_ten_sections_required_for_live_promotion": true,
+    "production_only_evidence_debt_does_not_stop_healthy_paper_collection": true,
+    "structural_implementation_is_required_for_every_section": true,
+    "automatic_live_execution_authority": false,
+    "profitability_is_never_guaranteed": true
+  }
+}

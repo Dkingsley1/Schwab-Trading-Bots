@@ -4,22 +4,33 @@ import json
 import os
 import shlex
 import subprocess
+import sys
 import time
 from collections import deque
 from dataclasses import dataclass, field
-from typing import Iterable
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Deque, Dict, Optional, Set
+from typing import Any, Deque, Dict, Iterable, Optional, Sequence, Set
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-VENV_PY = PROJECT_ROOT / ".venv312" / "bin" / "python"
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from core.halt_flags import inspect_halt_flag
+from core.runtime_maintenance import maintenance_hold_snapshot
+from core.runtime_python import resolve_runtime_python
+
+VENV_PY = resolve_runtime_python(PROJECT_ROOT)
+ALL_SLEEVES_SCRIPT = PROJECT_ROOT / "scripts" / "run_all_sleeves.py"
 PARALLEL_SHADOW_SCRIPT = PROJECT_ROOT / "scripts" / "run_parallel_shadows.py"
 PARALLEL_AGGRESSIVE_SCRIPT = PROJECT_ROOT / "scripts" / "run_parallel_aggressive_modes.py"
 SHADOW_LOOP_SCRIPT = PROJECT_ROOT / "scripts" / "run_shadow_training_loop.py"
 DIVIDEND_SHADOW_SCRIPT = PROJECT_ROOT / "scripts" / "run_dividend_shadow.py"
+DIVIDEND_CAPTURE_SHADOW_SCRIPT = PROJECT_ROOT / "scripts" / "run_dividend_capture_shadow.py"
 BOND_SHADOW_SCRIPT = PROJECT_ROOT / "scripts" / "run_bond_shadow.py"
+FX_SHADOW_SCRIPT = PROJECT_ROOT / "scripts" / "run_fx_shadow.py"
+OPSCTL_SCRIPT = PROJECT_ROOT / "scripts" / "ops" / "opsctl.sh"
 WATCHDOG_DIR = PROJECT_ROOT / "governance" / "watchdog"
 HEALTH_DIR = PROJECT_ROOT / "governance" / "health"
 GLOBAL_HALT_FLAG = HEALTH_DIR / "GLOBAL_TRADING_HALT.flag"
@@ -27,19 +38,201 @@ OPERATOR_STOP_FLAG = HEALTH_DIR / "OPERATOR_STOP.flag"
 HALT_RECOVERY_LATEST = HEALTH_DIR / "shadow_watchdog_halt_recovery_latest.json"
 HALT_RECOVERY_EVENTS = WATCHDOG_DIR / "shadow_watchdog_halt_recovery_events.jsonl"
 HEALTH_PRUNE_LATEST = HEALTH_DIR / "shadow_watchdog_health_prune_latest.json"
+TRIPWIRE_LATEST = HEALTH_DIR / "shadow_watchdog_tripwire_latest.json"
+TRIPWIRE_EVENTS = WATCHDOG_DIR / "shadow_watchdog_tripwire_events.jsonl"
+PROCESS_FANOUT_OVERRIDE = PROJECT_ROOT / "config" / ".env.process_fanout_guard_override"
+OPERATOR_MODE_OVERRIDE = PROJECT_ROOT / "config" / ".env.operator_mode_override"
+COMPUTER_TASK_OVERRIDE = PROJECT_ROOT / "config" / ".env.computer_task_override"
+RUNTIME_RESOURCE_OVERRIDE = PROJECT_ROOT / "config" / ".env.runtime_resource_guard_override"
+CREATIVE_PAUSE_LATEST = HEALTH_DIR / "creative_heavy_research_pause_latest.json"
 
 
 @dataclass
 class Target:
     name: str
     match: str
-    start_cmd: Optional[str]
+    start_cmd: Optional[str | Sequence[str]]
     required: bool = True
     restart_times: Deque[float] = field(default_factory=deque)
     heartbeat_glob: Optional[str] = None
     heartbeat_stale_seconds: int = 0
     min_healthy_heartbeats: int = 1
+    heartbeat_profiles: tuple[str, ...] = ()
+    heartbeat_exclude_matches: Optional[tuple[str, ...]] = None
+    allow_processless_heartbeat_live: bool = False
+    heartbeat_startup_grace_seconds: int = 0
     exclude_matches: tuple[str, ...] = ()
+    terminate_excluded_conflicts: bool = True
+    suppress_tripwire_when_parent_live: bool = False
+    unhealthy_streak: int = 0
+    tripwire_open: bool = False
+
+
+
+
+def _process_fanout_guard_active() -> bool:
+    try:
+        text = PROCESS_FANOUT_OVERRIDE.read_text(encoding="utf-8")
+    except Exception:
+        text = ""
+    active_markers = (
+        "PROCESS_FANOUT_GUARD_ACTIVE=1",
+        "PROCESS_FANOUT_GUARD_ACTIVE='1'",
+        'PROCESS_FANOUT_GUARD_ACTIVE="1"',
+        "TRAINING_RUNTIME_PAUSED_FOR_FANOUT=1",
+        "TRAINING_RUNTIME_PAUSED_FOR_FANOUT='1'",
+        'TRAINING_RUNTIME_PAUSED_FOR_FANOUT="1"',
+    )
+    return any(marker in text for marker in active_markers)
+
+
+def _operator_mode_guard_active() -> bool:
+    if _env_flag("TRAINING_RUNTIME_PAUSED_BY_OPERATOR_MODE", "0") or _env_flag("SHADOW_RESEARCH_PAUSED_BY_OPERATOR_MODE", "0"):
+        return True
+    try:
+        text = OPERATOR_MODE_OVERRIDE.read_text(encoding="utf-8")
+    except Exception:
+        text = ""
+    active_markers = (
+        "TRAINING_RUNTIME_PAUSED_BY_OPERATOR_MODE=1",
+        "TRAINING_RUNTIME_PAUSED_BY_OPERATOR_MODE='1'",
+        'TRAINING_RUNTIME_PAUSED_BY_OPERATOR_MODE="1"',
+        "SHADOW_RESEARCH_PAUSED_BY_OPERATOR_MODE=1",
+        "SHADOW_RESEARCH_PAUSED_BY_OPERATOR_MODE='1'",
+        'SHADOW_RESEARCH_PAUSED_BY_OPERATOR_MODE="1"',
+        "SYSTEM_OPERATOR_MODE=daily_driver",
+        "SYSTEM_OPERATOR_MODE='daily_driver'",
+        'SYSTEM_OPERATOR_MODE="daily_driver"',
+    )
+    return any(marker in text for marker in active_markers)
+
+
+def _computer_task_guard_active() -> bool:
+    if _env_flag("TRAINING_RUNTIME_PAUSED_FOR_COMPUTER_TASK", "0") or _env_flag("SHADOW_RESEARCH_PAUSED_FOR_COMPUTER_TASK", "0"):
+        return True
+    try:
+        text = COMPUTER_TASK_OVERRIDE.read_text(encoding="utf-8")
+    except Exception:
+        text = ""
+    active_markers = (
+        "TRAINING_RUNTIME_PAUSED_FOR_COMPUTER_TASK=1",
+        "TRAINING_RUNTIME_PAUSED_FOR_COMPUTER_TASK='1'",
+        'TRAINING_RUNTIME_PAUSED_FOR_COMPUTER_TASK="1"',
+        "SHADOW_RESEARCH_PAUSED_FOR_COMPUTER_TASK=1",
+        "SHADOW_RESEARCH_PAUSED_FOR_COMPUTER_TASK='1'",
+        'SHADOW_RESEARCH_PAUSED_FOR_COMPUTER_TASK="1"',
+        "COMPUTER_NORMAL_USE_GOVERNOR_ACTIVE=1",
+        "COMPUTER_NORMAL_USE_GOVERNOR_ACTIVE='1'",
+        'COMPUTER_NORMAL_USE_GOVERNOR_ACTIVE="1"',
+    )
+    return any(marker in text for marker in active_markers)
+
+
+def _paper_crypto_feed_pressure_guard_active() -> bool:
+    if _env_flag("PAPER_CRYPTO_FEED_RUNTIME_PAUSED_FOR_PRESSURE", "0"):
+        return True
+    try:
+        text = RUNTIME_RESOURCE_OVERRIDE.read_text(encoding="utf-8")
+    except Exception:
+        text = ""
+    active_markers = (
+        "PAPER_CRYPTO_FEED_RUNTIME_PAUSED_FOR_PRESSURE=1",
+        "PAPER_CRYPTO_FEED_RUNTIME_PAUSED_FOR_PRESSURE='1'",
+        'PAPER_CRYPTO_FEED_RUNTIME_PAUSED_FOR_PRESSURE="1"',
+    )
+    return any(marker in text for marker in active_markers)
+
+
+def _creative_pause_guard_active(max_age_seconds: int = 900) -> bool:
+    if (
+        _env_flag("TRAINING_RUNTIME_PAUSED_FOR_CREATIVE", "0")
+        or _env_flag("SHADOW_RESEARCH_PAUSED_FOR_CREATIVE", "0")
+        or _env_flag("CREATIVE_HEAVY_RESEARCH_PAUSED", "0")
+    ):
+        return True
+    payload = _load_json(CREATIVE_PAUSE_LATEST)
+    if not payload or not bool(payload.get("active", False)):
+        return False
+    ts = _parse_ts(str(payload.get("timestamp_utc") or ""))
+    if ts is not None and (_now_utc() - ts).total_seconds() > max(int(max_age_seconds), 60):
+        return False
+    kind = str(payload.get("creative_session_kind") or "").strip().lower()
+    level = str(payload.get("creative_session_level") or "").strip().lower()
+    hard_pause = payload.get("hard_pause") if isinstance(payload.get("hard_pause"), dict) else {}
+    env_contract = payload.get("env_contract") if isinstance(payload.get("env_contract"), dict) else {}
+    return bool(
+        kind in {"music_playback", "music_playback_hot", "logic_pro", "logic_pro_hot", "final_cut_pro", "final_cut_pro_hot", "dual_pro"}
+        or level in {"active", "hot", "dual_pro", "cooldown"}
+        or hard_pause.get("active", False)
+        or str(env_contract.get("TRAINING_RUNTIME_PAUSED_FOR_CREATIVE") or "").strip() == "1"
+        or str(env_contract.get("SHADOW_RESEARCH_PAUSED_FOR_CREATIVE") or "").strip() == "1"
+    )
+
+
+def _target_suppressed_by_fanout_guard(target: Target) -> bool:
+    if target.name in {"all_sleeves", "aggressive_modes"}:
+        return True
+    command = _format_start_cmd(target.start_cmd)
+    if _paper_crypto_feed_pressure_guard_active() and (
+        target.name in {"coinbase", "coinbase_futures"}
+        or "coinbase-start" in command
+        or "coinbase-futures-start" in command
+        or "scripts/run_shadow_training_loop.py --broker coinbase" in command
+    ):
+        return True
+    return "scripts/run_all_sleeves.py" in command or "scripts/run_parallel_aggressive_modes.py" in command
+
+
+def _target_suppressed_by_creative_guard(target: Target) -> bool:
+    command = _format_start_cmd(target.start_cmd)
+    haystack = f"{target.name} {target.match} {command}"
+    return any(
+        token in haystack
+        for token in (
+            "scripts/run_all_sleeves.py",
+            "scripts/run_parallel_shadows.py",
+            "scripts/run_parallel_aggressive_modes.py",
+            "scripts/run_dividend_shadow.py",
+            "scripts/run_dividend_capture_shadow.py",
+            "scripts/run_bond_shadow.py",
+            "scripts/run_fx_shadow.py",
+            "scripts/run_shadow_training_loop.py",
+            "coinbase-start",
+            "coinbase-futures-start",
+            "schwab-futures-start",
+            "fx-start",
+        )
+    )
+
+
+def _restart_guard_active_for_target(target: Target) -> tuple[bool, str]:
+    command = _format_start_cmd(target.start_cmd)
+    if _paper_crypto_feed_pressure_guard_active() and (
+        target.name in {"coinbase", "coinbase_futures"}
+        or "coinbase-start" in command
+        or "coinbase-futures-start" in command
+        or "scripts/run_shadow_training_loop.py --broker coinbase" in command
+    ):
+        return True, "paper_crypto_feed_pressure_guard_active"
+    if (_process_fanout_guard_active() or _operator_mode_guard_active() or _computer_task_guard_active()) and _target_suppressed_by_fanout_guard(target):
+        return True, "process_fanout_operator_or_computer_task_guard_active"
+    if _creative_pause_guard_active() and _target_suppressed_by_creative_guard(target):
+        return True, "creative_audio_pause_guard_active"
+    return False, ""
+
+
+def _restart_guard_note() -> str:
+    if _paper_crypto_feed_pressure_guard_active():
+        return "paper_crypto_feed_pressure_guard_active"
+    if _creative_pause_guard_active():
+        return "creative_audio_pause_guard_active"
+    if _process_fanout_guard_active() or _operator_mode_guard_active() or _computer_task_guard_active():
+        return "process_fanout_operator_or_computer_task_guard_active"
+    return ""
+
+
+def _target_suppressed_by_restart_guard(target: Target) -> bool:
+    return _restart_guard_active_for_target(target)[0]
 
 
 def _now_utc() -> datetime:
@@ -78,7 +271,109 @@ def _load_json(path: Path) -> dict:
 
 def _write_latest(path: Path, payload: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload, ensure_ascii=True, indent=2), encoding="utf-8")
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(json.dumps(payload, ensure_ascii=True, indent=2), encoding="utf-8")
+    tmp.replace(path)
+
+
+def _halt_flag_state(path: Path) -> dict[str, Any]:
+    payload = inspect_halt_flag(path)
+    return {
+        "payload": payload.get("payload", {}) if isinstance(payload.get("payload"), dict) else {},
+        "reason": str(payload.get("reason") or "").strip(),
+        "valid": bool(payload.get("valid", False)),
+        "error": str(payload.get("error") or ""),
+        "size_bytes": int(payload.get("size_bytes", 0) or 0),
+    }
+
+
+def _start_cmd_executable_hints() -> tuple[str, ...]:
+    return (
+        str(VENV_PY),
+        str(OPSCTL_SCRIPT),
+    )
+
+
+def _start_cmd_executable_suffixes() -> tuple[str, ...]:
+    return (
+        ".venv314/bin/python",
+        ".venv312/bin/python",
+        "/scripts/ops/opsctl.sh",
+    )
+
+
+def _start_cmd_python_script_suffixes() -> tuple[str, ...]:
+    return (
+        "/scripts/run_all_sleeves.py",
+        "/scripts/run_parallel_shadows.py",
+        "/scripts/run_parallel_aggressive_modes.py",
+        "/scripts/run_dividend_shadow.py",
+        "/scripts/run_dividend_capture_shadow.py",
+        "/scripts/run_bond_shadow.py",
+        "/scripts/run_fx_shadow.py",
+        "/scripts/run_shadow_training_loop.py",
+    )
+
+
+def _decode_start_cmd(start_cmd: str | Sequence[str] | None) -> list[str]:
+    if start_cmd is None:
+        return []
+    if isinstance(start_cmd, (list, tuple)):
+        return [str(part) for part in start_cmd if str(part)]
+
+    raw = str(start_cmd).strip()
+    if not raw:
+        return []
+
+    if raw.startswith("["):
+        try:
+            payload = json.loads(raw)
+        except Exception:
+            payload = None
+        if isinstance(payload, list):
+            return [str(part) for part in payload if str(part)]
+
+    for executable in _start_cmd_executable_hints():
+        if raw == executable:
+            return [executable]
+        if raw.startswith(executable + " "):
+            remainder = raw[len(executable):].lstrip()
+            return [executable, *shlex.split(remainder)]
+
+    for suffix in _start_cmd_executable_suffixes():
+        end = raw.find(suffix)
+        if end < 0:
+            continue
+        executable = raw[: end + len(suffix)]
+        if not executable:
+            continue
+        remainder = raw[len(executable):].lstrip()
+        if executable.endswith("/bin/python") and remainder:
+            for script_suffix in _start_cmd_python_script_suffixes():
+                script_end = remainder.find(script_suffix)
+                if script_end < 0:
+                    continue
+                script_path = remainder[: script_end + len(script_suffix)]
+                script_tail = remainder[len(script_path):].lstrip()
+                return [executable, script_path, *shlex.split(script_tail)] if script_tail else [executable, script_path]
+        return [executable, *shlex.split(remainder)] if remainder else [executable]
+
+    return shlex.split(raw)
+
+
+def _format_start_cmd(start_cmd: str | Sequence[str] | None) -> str:
+    try:
+        args = _decode_start_cmd(start_cmd)
+    except Exception:
+        return str(start_cmd or "")
+    if not args:
+        return ""
+    return shlex.join(args)
+
+
+def _note_safe(value: str, *, limit: int = 160) -> str:
+    compact = " ".join(str(value or "").split()).replace(",", ";")
+    return compact[:limit]
 
 
 def _halt_flag_age_seconds(path: Path) -> Optional[float]:
@@ -92,6 +387,8 @@ def _evaluate_halt_auto_clear(
     *,
     halt_active: bool,
     halt_reason: str,
+    halt_payload_valid: bool,
+    halt_payload_error: str,
     halt_age_seconds: Optional[float],
     operator_stop_active: bool,
     auto_clear_enabled: bool,
@@ -115,6 +412,8 @@ def _evaluate_halt_auto_clear(
         return False, f"cooldown_not_elapsed:{halt_age_seconds:.1f}s<{min_age}s"
 
     normalized_reason = str(halt_reason or "").strip().lower()
+    if not normalized_reason and (not halt_payload_valid):
+        return True, f"malformed_payload_eligible:{halt_payload_error or 'missing_reason'}"
     if allowed_reasons and normalized_reason not in allowed_reasons:
         return False, f"reason_not_allowed:{normalized_reason or 'unknown'}"
 
@@ -131,8 +430,15 @@ def _auto_clear_global_halt(
 ) -> Dict[str, Any]:
     halt_active = GLOBAL_HALT_FLAG.exists()
     operator_stop_active = OPERATOR_STOP_FLAG.exists()
-    halt_payload = _load_json(GLOBAL_HALT_FLAG) if halt_active else {}
-    halt_reason = str(halt_payload.get("reason", "")).strip()
+    halt_state = _halt_flag_state(GLOBAL_HALT_FLAG) if halt_active else {
+        "payload": {},
+        "reason": "",
+        "valid": True,
+        "error": "",
+        "size_bytes": 0,
+    }
+    halt_payload = halt_state["payload"] if isinstance(halt_state.get("payload"), dict) else {}
+    halt_reason = str(halt_state.get("reason") or "").strip()
     halt_age_seconds = _halt_flag_age_seconds(GLOBAL_HALT_FLAG) if halt_active else None
 
     market_data_only = _env_flag("MARKET_DATA_ONLY", "1")
@@ -141,6 +447,8 @@ def _auto_clear_global_halt(
     should_clear, decision_reason = _evaluate_halt_auto_clear(
         halt_active=halt_active,
         halt_reason=halt_reason,
+        halt_payload_valid=bool(halt_state.get("valid", False)),
+        halt_payload_error=str(halt_state.get("error") or ""),
         halt_age_seconds=halt_age_seconds,
         operator_stop_active=operator_stop_active,
         auto_clear_enabled=auto_clear_enabled,
@@ -171,6 +479,9 @@ def _auto_clear_global_halt(
         "decision_reason": decision_reason,
         "halt_active": bool(halt_active),
         "halt_reason": halt_reason,
+        "halt_payload_valid": bool(halt_state.get("valid", False)),
+        "halt_payload_error": str(halt_state.get("error") or ""),
+        "halt_payload_size_bytes": int(halt_state.get("size_bytes", 0) or 0),
         "halt_age_seconds": (round(float(halt_age_seconds), 2) if halt_age_seconds is not None else None),
         "operator_stop_active": bool(operator_stop_active),
         "market_data_only": bool(market_data_only),
@@ -213,6 +524,75 @@ def _scan_process_rows() -> list[tuple[int, str]]:
     return rows
 
 
+def _parse_ps_etime_seconds(raw: str) -> Optional[float]:
+    text = str(raw or "").strip()
+    if not text:
+        return None
+    days = 0
+    if "-" in text:
+        day_raw, text = text.split("-", 1)
+        try:
+            days = int(day_raw)
+        except Exception:
+            return None
+    parts = text.split(":")
+    try:
+        values = [int(part) for part in parts]
+    except Exception:
+        return None
+    if len(values) == 2:
+        hours = 0
+        minutes, seconds = values
+    elif len(values) == 3:
+        hours, minutes, seconds = values
+    else:
+        return None
+    return float((((days * 24) + hours) * 60 + minutes) * 60 + seconds)
+
+
+def _pid_elapsed_seconds(pid: int) -> Optional[float]:
+    try:
+        proc = subprocess.run(
+            ["ps", "-p", str(int(pid)), "-o", "etime="],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except Exception:
+        return None
+    if proc.returncode != 0:
+        return None
+    return _parse_ps_etime_seconds((proc.stdout or "").strip().splitlines()[-1] if proc.stdout else "")
+
+
+def _oldest_process_elapsed_seconds(pids: list[int]) -> Optional[float]:
+    ages = [
+        age
+        for pid in pids
+        for age in [_pid_elapsed_seconds(pid)]
+        if age is not None
+    ]
+    if not ages:
+        return None
+    return max(ages)
+
+
+def _heartbeat_startup_grace_active(
+    target: Target,
+    *,
+    proc_live: bool,
+    hb_required: bool,
+    hb_ok: bool,
+    process_age_seconds: Optional[float],
+) -> bool:
+    grace = max(int(target.heartbeat_startup_grace_seconds or 0), 0)
+    if grace <= 0 or not proc_live or not hb_required or hb_ok:
+        return False
+    if process_age_seconds is None:
+        return False
+    return float(process_age_seconds) < float(grace)
+
+
 def _find_matching_rows(rows: list[tuple[int, str]], match: str, exclude_matches: Iterable[str] = ()) -> list[tuple[int, str]]:
     out: list[tuple[int, str]] = []
     excludes = [x for x in (exclude_matches or ()) if x]
@@ -223,6 +603,22 @@ def _find_matching_rows(rows: list[tuple[int, str]], match: str, exclude_matches
         if match not in cmd:
             continue
         if any(ex in cmd for ex in excludes):
+            continue
+        out.append((pid, cmd))
+    return out
+
+
+def _find_excluded_conflicts(rows: list[tuple[int, str]], match: str, exclude_matches: Iterable[str] = ()) -> list[tuple[int, str]]:
+    excludes = [x for x in (exclude_matches or ()) if x]
+    if not excludes:
+        return []
+    out: list[tuple[int, str]] = []
+    for pid, cmd in rows:
+        if "scripts/shadow_watchdog.py" in cmd:
+            continue
+        if match not in cmd:
+            continue
+        if not any(ex in cmd for ex in excludes):
             continue
         out.append((pid, cmd))
     return out
@@ -258,22 +654,50 @@ def _can_restart(target: Target, now_ts: float, max_restarts: int, window_second
     return len(target.restart_times) < max_restarts
 
 
-def _start_target(start_cmd: str, dry_run: bool) -> bool:
-    if dry_run:
-        return True
+def _runtime_restart_halt_reason(
+    maintenance_hold: dict[str, object],
+    halt_recovery: dict[str, object],
+) -> str:
+    if bool(maintenance_hold.get("active", False)):
+        return "runtime_maintenance_hold_active"
+    if bool(halt_recovery.get("operator_stop_active", False)):
+        return "operator_stop_active"
+    if bool(halt_recovery.get("halt_active", False)):
+        return "global_halt_active"
+    return ""
+
+
+def _start_target(start_cmd: str | Sequence[str], dry_run: bool) -> tuple[bool, str]:
     try:
-        args = shlex.split(start_cmd)
+        args = _decode_start_cmd(start_cmd)
+    except Exception as exc:
+        return False, f"cmd_parse_failed:{type(exc).__name__}:{exc}"
+    if not args:
+        return False, "cmd_parse_failed:empty"
+    if dry_run:
+        return True, shlex.join(args)
+    try:
         subprocess.Popen(args, cwd=str(PROJECT_ROOT))
-        return True
-    except Exception:
-        return False
+        return True, shlex.join(args)
+    except Exception as exc:
+        return False, f"{type(exc).__name__}:{exc}"
 
 
 def _build_default_schwab_cmd(simulate: bool) -> str:
-    base = f"{VENV_PY} {PARALLEL_SHADOW_SCRIPT}"
+    base = f"{VENV_PY} {ALL_SLEEVES_SCRIPT} --with-aggressive-modes"
     if simulate:
         return base + " --simulate"
     return base
+
+
+def _schwab_live_heartbeat_exclude_matches(
+    *,
+    simulate_schwab: bool,
+    allow_simulated_heartbeats: bool = False,
+) -> tuple[str, ...]:
+    if simulate_schwab or allow_simulated_heartbeats:
+        return ()
+    return ("--simulate",)
 
 
 def _build_default_aggressive_modes_cmd(simulate: bool) -> str:
@@ -304,8 +728,27 @@ def _build_default_coinbase_futures_cmd() -> str:
     )
 
 
+def _build_default_schwab_futures_cmd() -> str:
+    return (
+        f"{VENV_PY} {SHADOW_LOOP_SCRIPT} "
+        "--broker schwab "
+        "--profile schwab_futures "
+        "--domain equities "
+        "--symbols /ES,/NQ,/YM,/RTY,/CL,/GC,/ZN "
+        "--context-symbols SPY,UUP,GLD "
+        "--interval-seconds 12"
+    )
+
+
 def _build_default_dividend_cmd(simulate: bool) -> str:
     base = f"{VENV_PY} {DIVIDEND_SHADOW_SCRIPT} --interval-seconds 60"
+    if simulate:
+        return base + " --simulate"
+    return base
+
+
+def _build_default_dividend_capture_cmd(simulate: bool) -> str:
+    base = f"{VENV_PY} {DIVIDEND_CAPTURE_SHADOW_SCRIPT} --interval-seconds 60"
     if simulate:
         return base + " --simulate"
     return base
@@ -318,6 +761,13 @@ def _build_default_bond_cmd(simulate: bool) -> str:
     return base
 
 
+def _build_default_fx_cmd(simulate: bool) -> str:
+    base = f"{VENV_PY} {FX_SHADOW_SCRIPT} --broker schwab --interval-seconds 45"
+    if simulate:
+        return base + " --simulate"
+    return base
+
+
 def _parse_ts(ts: str) -> Optional[datetime]:
     try:
         return datetime.fromisoformat(ts.replace("Z", "+00:00")).astimezone(timezone.utc)
@@ -325,13 +775,21 @@ def _parse_ts(ts: str) -> Optional[datetime]:
         return None
 
 
-def _heartbeat_health(target: Target) -> tuple[bool, int, Optional[float]]:
+def _heartbeat_health(
+    target: Target,
+    rows_by_pid: Optional[dict[int, str]] = None,
+) -> tuple[bool, int, Optional[float], int]:
     if not target.heartbeat_glob or target.heartbeat_stale_seconds <= 0:
-        return True, 0, None
+        return True, 0, None, 0
 
     now = _now_utc()
+    rows_by_pid = rows_by_pid or {}
     healthy = 0
     latest_age: Optional[float] = None
+    live_process_backed = 0
+    profile_filter = {str(x).strip().lower() for x in target.heartbeat_profiles if str(x).strip()}
+    heartbeat_excludes = target.heartbeat_exclude_matches
+    excludes = tuple(x for x in (heartbeat_excludes if heartbeat_excludes is not None else target.exclude_matches) if x)
 
     for fp in glob.glob(target.heartbeat_glob):
         path = Path(fp)
@@ -342,12 +800,28 @@ def _heartbeat_health(target: Target) -> tuple[bool, int, Optional[float]]:
         ts = _parse_ts(str(payload.get("timestamp_utc", "")))
         if ts is None:
             continue
+        if profile_filter:
+            profile = str(payload.get("profile", "")).strip().lower()
+            if profile not in profile_filter:
+                continue
+        pid = payload.get("pid")
+        try:
+            pid_int = int(pid)
+        except Exception:
+            pid_int = _heartbeat_pid_from_filename(path)
+        cmd = ""
+        if pid_int is not None:
+            cmd = rows_by_pid.get(pid_int, "")
+            if cmd and any(ex in cmd for ex in excludes):
+                continue
         age = max((now - ts).total_seconds(), 0.0)
         latest_age = age if latest_age is None else min(latest_age, age)
         if age <= target.heartbeat_stale_seconds:
             healthy += 1
+            if pid_int is not None and cmd:
+                live_process_backed += 1
 
-    return healthy >= max(target.min_healthy_heartbeats, 1), healthy, latest_age
+    return healthy >= max(target.min_healthy_heartbeats, 1), healthy, latest_age, live_process_backed
 
 
 def _age_seconds_from_mtime(path: Path, now_ts: float) -> float:
@@ -545,6 +1019,95 @@ def _status_payload(entries: list[dict], halt_recovery: Optional[dict] = None, h
     return payload
 
 
+def _tripwire_payload(
+    targets: list[Target],
+    entries: list[dict],
+    *,
+    enabled: bool,
+    streak_threshold: int,
+) -> dict:
+    active_incidents: list[dict] = []
+    emitted_events: list[dict] = []
+    threshold = max(int(streak_threshold), 1)
+
+    for target, entry in zip(targets, entries):
+        heartbeat_required = bool(target.heartbeat_glob and target.heartbeat_stale_seconds > 0)
+        heartbeat_lost = bool(entry.get("heartbeat_lost", False))
+        tripwire_unhealthy = heartbeat_lost if heartbeat_required else (not bool(entry.get("process_live", False)))
+        if (
+            heartbeat_required
+            and heartbeat_lost
+            and bool(entry.get("process_live", False))
+            and bool(target.suppress_tripwire_when_parent_live)
+        ):
+            tripwire_unhealthy = False
+
+        if enabled and tripwire_unhealthy:
+            target.unhealthy_streak += 1
+            if target.unhealthy_streak >= threshold and not target.tripwire_open:
+                target.tripwire_open = True
+                event = {
+                    "timestamp_utc": _now_iso(),
+                    "event": "loop_tripwire_opened",
+                    "target": target.name,
+                    "required": bool(target.required),
+                    "consecutive_unhealthy_cycles": int(target.unhealthy_streak),
+                    "process_live": bool(entry.get("process_live", False)),
+                    "heartbeat_required": bool(heartbeat_required),
+                    "heartbeat_lost": bool(heartbeat_lost),
+                    "match_count": int(entry.get("match_count", 0) or 0),
+                    "action": str(entry.get("action", "none")),
+                    "note": str(entry.get("note", "")),
+                }
+                emitted_events.append(event)
+                _append_jsonl(TRIPWIRE_EVENTS, event)
+        else:
+            if target.tripwire_open:
+                event = {
+                    "timestamp_utc": _now_iso(),
+                    "event": "loop_tripwire_cleared",
+                    "target": target.name,
+                    "required": bool(target.required),
+                    "previous_consecutive_unhealthy_cycles": int(target.unhealthy_streak),
+                    "process_live": bool(entry.get("process_live", False)),
+                    "heartbeat_required": bool(heartbeat_required),
+                    "heartbeat_lost": bool(heartbeat_lost),
+                    "match_count": int(entry.get("match_count", 0) or 0),
+                    "action": str(entry.get("action", "none")),
+                    "note": str(entry.get("note", "")),
+                }
+                emitted_events.append(event)
+                _append_jsonl(TRIPWIRE_EVENTS, event)
+            target.unhealthy_streak = 0
+            target.tripwire_open = False
+
+        if target.tripwire_open:
+            active_incidents.append(
+                {
+                    "target": target.name,
+                    "required": bool(target.required),
+                    "consecutive_unhealthy_cycles": int(target.unhealthy_streak),
+                    "process_live": bool(entry.get("process_live", False)),
+                    "heartbeat_required": bool(heartbeat_required),
+                    "heartbeat_lost": bool(heartbeat_lost),
+                    "match_count": int(entry.get("match_count", 0) or 0),
+                    "action": str(entry.get("action", "none")),
+                    "note": str(entry.get("note", "")),
+                }
+            )
+
+    payload = {
+        "timestamp_utc": _now_iso(),
+        "enabled": bool(enabled),
+        "streak_threshold": int(threshold),
+        "active": bool(active_incidents),
+        "active_incidents": active_incidents,
+        "events_emitted": emitted_events,
+    }
+    _write_latest(TRIPWIRE_LATEST, payload)
+    return payload
+
+
 def _run_iteration(
     targets: list[Target],
     max_restarts_per_window: int,
@@ -561,6 +1124,8 @@ def _run_iteration(
     health_prune_data_ingress_stale_seconds: int,
     health_prune_orphan_marker_stale_seconds: int,
     health_prune_max_files_per_pass: int,
+    tripwire_enabled: bool,
+    tripwire_streak_threshold: int,
 ) -> int:
     halt_recovery = _auto_clear_global_halt(
         auto_clear_enabled=auto_clear_global_halt,
@@ -569,31 +1134,61 @@ def _run_iteration(
         require_paper_only=auto_clear_global_halt_require_paper_only,
         dry_run=dry_run,
     )
+    maintenance_hold = maintenance_hold_snapshot(PROJECT_ROOT)
+    runtime_restart_halt_reason = _runtime_restart_halt_reason(maintenance_hold, halt_recovery)
 
     rows = _scan_process_rows()
+    rows_by_pid = {pid: cmd for pid, cmd in rows}
     now_ts = time.time()
     overall_rc = 0
     entries: list[dict] = []
 
     for target in targets:
+        conflicting_matches = _find_excluded_conflicts(rows, target.match, target.exclude_matches)
+        conflicting_pids = [pid for pid, _ in conflicting_matches]
+        if conflicting_pids and target.terminate_excluded_conflicts:
+            if not dry_run:
+                _terminate_pids(conflicting_pids)
+            rows = [(pid, cmd) for pid, cmd in rows if pid not in set(conflicting_pids)]
+            rows_by_pid = {pid: cmd for pid, cmd in rows}
+
         matches = _find_matching_rows(rows, target.match, target.exclude_matches)
         pids = [pid for pid, _ in matches]
         proc_live = len(matches) > 0
 
-        hb_ok, hb_count, hb_age = _heartbeat_health(target)
+        hb_ok, hb_count, hb_age, hb_live_count = _heartbeat_health(target, rows_by_pid)
         hb_required = bool(target.heartbeat_glob and target.heartbeat_stale_seconds > 0)
-        live = proc_live and (hb_ok if hb_required else True)
+        process_age_seconds = _oldest_process_elapsed_seconds(pids) if pids else None
+        startup_grace_active = _heartbeat_startup_grace_active(
+            target,
+            proc_live=proc_live,
+            hb_required=hb_required,
+            hb_ok=hb_ok,
+            process_age_seconds=process_age_seconds,
+        )
+        live = (
+            hb_ok and (proc_live or (target.allow_processless_heartbeat_live and hb_live_count > 0))
+        ) if hb_required else proc_live
+        if startup_grace_active:
+            live = True
 
         note_parts = []
         if proc_live:
             note_parts.append("process_live")
         else:
             note_parts.append("process_missing")
+        if process_age_seconds is not None:
+            note_parts.append(f"process_age_s={process_age_seconds:.1f}")
         if hb_required:
             note_parts.append(f"heartbeat_ok={hb_ok}")
             note_parts.append(f"heartbeat_count={hb_count}")
+            note_parts.append(f"heartbeat_live_process_count={hb_live_count}")
             if hb_age is not None:
                 note_parts.append(f"heartbeat_age_s={hb_age:.1f}")
+            if startup_grace_active:
+                note_parts.append(f"startup_grace_s={target.heartbeat_startup_grace_seconds}")
+        if conflicting_pids:
+            note_parts.append(f"conflicting_excluded_pids={len(conflicting_pids)}")
 
         entry: Dict[str, object] = {
             "name": target.name,
@@ -601,38 +1196,57 @@ def _run_iteration(
             "match": target.match,
             "live": live,
             "process_live": proc_live,
+            "heartbeat_lost": bool(hb_required and (not hb_ok)),
             "match_count": len(matches),
             "match_pids": pids,
             "action": "none",
             "note": ",".join(note_parts),
         }
+        if startup_grace_active:
+            entry["heartbeat_startup_grace_active"] = True
+            entry["process_age_seconds"] = round(float(process_age_seconds or 0.0), 3)
+        if conflicting_pids:
+            entry["conflicting_match_pids"] = conflicting_pids
+            entry["conflicting_match_cmds"] = [_note_safe(cmd, limit=220) for _, cmd in conflicting_matches[:6]]
 
         if live:
             pass
         elif not target.required:
             entry["note"] = entry["note"] + ",optional_target_missing"
+        elif runtime_restart_halt_reason:
+            overall_rc = 1
+            entry["action"] = "halted"
+            entry["note"] = entry["note"] + f",{runtime_restart_halt_reason}"
         elif not target.start_cmd:
             overall_rc = 1
             entry["action"] = "error"
             entry["note"] = entry["note"] + ",missing_start_command"
-        elif not _can_restart(target, now_ts, max_restarts_per_window, restart_window_seconds):
-            overall_rc = 1
-            entry["action"] = "throttled"
-            entry["note"] = entry["note"] + ",restart_rate_limit"
         else:
-            if proc_live:
-                _terminate_pids(pids)
-            ok = _start_target(target.start_cmd, dry_run=dry_run)
-            if ok:
-                target.restart_times.append(now_ts)
-                entry["action"] = "restart"
-                entry["note"] = entry["note"] + ",restart_attempted"
-                entry["start_cmd"] = target.start_cmd
-            else:
+            restart_guard_active, restart_guard_reason = _restart_guard_active_for_target(target)
+            if restart_guard_active:
+                entry["action"] = "suppressed"
+                entry["note"] = entry["note"] + f",{restart_guard_reason}"
+            elif not _can_restart(target, now_ts, max_restarts_per_window, restart_window_seconds):
                 overall_rc = 1
-                entry["action"] = "error"
-                entry["note"] = entry["note"] + ",restart_failed"
-                entry["start_cmd"] = target.start_cmd
+                entry["action"] = "throttled"
+                entry["note"] = entry["note"] + ",restart_rate_limit"
+            else:
+                if proc_live:
+                    _terminate_pids(pids)
+                ok, start_detail = _start_target(target.start_cmd, dry_run=dry_run)
+                start_cmd_text = _format_start_cmd(target.start_cmd)
+                if start_cmd_text:
+                    entry["start_cmd"] = start_cmd_text
+                if ok:
+                    target.restart_times.append(now_ts)
+                    entry["action"] = "restart"
+                    entry["note"] = entry["note"] + ",restart_attempted"
+                    entry["start_detail"] = start_detail
+                else:
+                    overall_rc = 1
+                    entry["action"] = "error"
+                    entry["start_error"] = start_detail
+                    entry["note"] = entry["note"] + f",restart_failed={_note_safe(start_detail)}"
 
         entries.append(entry)
 
@@ -648,7 +1262,16 @@ def _run_iteration(
             max_files_per_pass=max(int(health_prune_max_files_per_pass), 1),
         )
 
+    tripwire_summary = _tripwire_payload(
+        targets,
+        entries,
+        enabled=bool(tripwire_enabled),
+        streak_threshold=max(int(tripwire_streak_threshold), 1),
+    )
+
     payload = _status_payload(entries, halt_recovery=halt_recovery, health_prune=health_prune_summary)
+    payload["runtime_maintenance_hold"] = maintenance_hold
+    payload["tripwire"] = tripwire_summary
 
     if event_log_path is not None:
         _append_jsonl(event_log_path, payload)
@@ -678,6 +1301,14 @@ def _run_iteration(
                     ingress=(health_prune_summary.get("data_ingress") or {}).get("candidates", 0),
                 )
             )
+        if tripwire_summary.get("active"):
+            active_targets = ",".join(str(x.get("target", "")) for x in tripwire_summary.get("active_incidents", []))
+            print(
+                " - tripwire: active=1 threshold={threshold} targets={targets}".format(
+                    threshold=tripwire_summary.get("streak_threshold", 0),
+                    targets=active_targets,
+                )
+            )
     return overall_rc
 
 
@@ -693,32 +1324,59 @@ def main() -> int:
     parser.add_argument("--json", action="store_true", help="Emit JSON lines.")
 
     parser.add_argument("--simulate-schwab", action="store_true", help="Default Schwab start command adds --simulate.")
+    parser.add_argument(
+        "--allow-schwab-standby-heartbeats",
+        action="store_true",
+        default=_env_flag("SHADOW_WATCHDOG_ALLOW_SCHWAB_STANDBY_HEARTBEATS", "0"),
+        help="Allow non-parent Schwab child heartbeats to cover the sleeve parent; simulated rows remain excluded unless explicitly allowed.",
+    )
+    parser.add_argument(
+        "--allow-schwab-simulate-heartbeats",
+        action="store_true",
+        default=_env_flag("SHADOW_WATCHDOG_ALLOW_SCHWAB_SIMULATE_HEARTBEATS", "0"),
+        help="Explicitly allow --simulate Schwab heartbeats to satisfy the Schwab watchdog target.",
+    )
     parser.add_argument("--schwab-start-cmd", default=None)
+    parser.add_argument("--schwab-futures-start-cmd", default=None)
     parser.add_argument("--coinbase-start-cmd", default=None)
     parser.add_argument("--coinbase-futures-start-cmd", default=None)
     parser.add_argument("--aggressive-modes-start-cmd", default=None)
     parser.add_argument("--dividend-start-cmd", default=None)
+    parser.add_argument("--dividend-capture-start-cmd", default=None)
     parser.add_argument("--bond-start-cmd", default=None)
+    parser.add_argument("--fx-start-cmd", default=None)
+    parser.add_argument("--watch-schwab-futures", action="store_true")
     parser.add_argument("--watch-coinbase", action="store_true")
     parser.add_argument("--watch-coinbase-futures", action="store_true")
     parser.add_argument("--watch-aggressive-modes", action="store_true")
     parser.add_argument("--watch-dividend", action="store_true")
+    parser.add_argument("--watch-dividend-capture", action="store_true")
     parser.add_argument("--watch-bond", action="store_true")
+    parser.add_argument("--watch-fx", action="store_true")
+    parser.add_argument("--schwab-futures-optional", action="store_true")
     parser.add_argument("--coinbase-optional", action="store_true")
     parser.add_argument("--coinbase-futures-optional", action="store_true")
     parser.add_argument("--dividend-optional", action="store_true")
+    parser.add_argument("--dividend-capture-optional", action="store_true")
     parser.add_argument("--bond-optional", action="store_true")
+    parser.add_argument("--fx-optional", action="store_true")
 
     parser.add_argument("--schwab-heartbeat-stale-seconds", type=int, default=120)
+    parser.add_argument("--schwab-futures-heartbeat-stale-seconds", type=int, default=180)
     parser.add_argument("--coinbase-heartbeat-stale-seconds", type=int, default=180)
     parser.add_argument("--schwab-min-heartbeats", type=int, default=2)
+    parser.add_argument("--schwab-futures-min-heartbeats", type=int, default=1)
     parser.add_argument("--coinbase-min-heartbeats", type=int, default=1)
     parser.add_argument("--aggressive-modes-heartbeat-stale-seconds", type=int, default=180)
     parser.add_argument("--aggressive-modes-min-heartbeats", type=int, default=2)
     parser.add_argument("--dividend-heartbeat-stale-seconds", type=int, default=240)
     parser.add_argument("--dividend-min-heartbeats", type=int, default=1)
+    parser.add_argument("--dividend-capture-heartbeat-stale-seconds", type=int, default=240)
+    parser.add_argument("--dividend-capture-min-heartbeats", type=int, default=1)
     parser.add_argument("--bond-heartbeat-stale-seconds", type=int, default=240)
     parser.add_argument("--bond-min-heartbeats", type=int, default=1)
+    parser.add_argument("--fx-heartbeat-stale-seconds", type=int, default=240)
+    parser.add_argument("--fx-min-heartbeats", type=int, default=1)
 
     parser.add_argument(
         "--auto-clear-global-halt",
@@ -736,7 +1394,7 @@ def main() -> int:
     parser.add_argument(
         "--auto-clear-global-halt-min-age-seconds",
         type=int,
-        default=int(os.getenv("SHADOW_WATCHDOG_AUTO_CLEAR_GLOBAL_HALT_MIN_AGE_SECONDS", "300")),
+        default=int(os.getenv("SHADOW_WATCHDOG_AUTO_CLEAR_GLOBAL_HALT_MIN_AGE_SECONDS", "60")),
         help="Minimum halt flag age before auto-clear is allowed.",
     )
     parser.add_argument(
@@ -804,6 +1462,25 @@ def main() -> int:
         default=int(os.getenv("SHADOW_WATCHDOG_PRUNE_MAX_FILES_PER_PASS", "300")),
         help="Safety cap on number of stale health files pruned per pass.",
     )
+    parser.add_argument(
+        "--tripwire-enabled",
+        dest="tripwire_enabled",
+        action="store_true",
+        default=_env_flag("SHADOW_WATCHDOG_TRIPWIRE_ENABLED", "1"),
+        help="Write a latest incident file when watched loops lose heartbeat for consecutive cycles.",
+    )
+    parser.add_argument(
+        "--no-tripwire-enabled",
+        dest="tripwire_enabled",
+        action="store_false",
+        help="Disable loop heartbeat tripwire incident files.",
+    )
+    parser.add_argument(
+        "--tripwire-streak-threshold",
+        type=int,
+        default=max(int(os.getenv("SHADOW_WATCHDOG_TRIPWIRE_STREAK_THRESHOLD", "2")), 1),
+        help="Consecutive unhealthy watchdog cycles required before opening a tripwire incident.",
+    )
 
     parser.add_argument(
         "--event-log-path",
@@ -814,23 +1491,50 @@ def main() -> int:
     args = parser.parse_args()
 
     schwab_cmd = args.schwab_start_cmd or _build_default_schwab_cmd(simulate=args.simulate_schwab)
+    schwab_futures_cmd = args.schwab_futures_start_cmd or _build_default_schwab_futures_cmd()
     coinbase_cmd = args.coinbase_start_cmd or _build_default_coinbase_cmd()
     coinbase_futures_cmd = args.coinbase_futures_start_cmd or _build_default_coinbase_futures_cmd()
     aggressive_modes_cmd = args.aggressive_modes_start_cmd or _build_default_aggressive_modes_cmd(simulate=args.simulate_schwab)
     dividend_cmd = args.dividend_start_cmd or _build_default_dividend_cmd(simulate=args.simulate_schwab)
+    dividend_capture_cmd = args.dividend_capture_start_cmd or _build_default_dividend_capture_cmd(simulate=args.simulate_schwab)
     bond_cmd = args.bond_start_cmd or _build_default_bond_cmd(simulate=args.simulate_schwab)
+    fx_cmd = args.fx_start_cmd or _build_default_fx_cmd(simulate=args.simulate_schwab)
 
     targets: list[Target] = [
         Target(
             name="schwab_parallel",
-            match="scripts/run_parallel_shadows.py",
+            match="scripts/run_all_sleeves.py",
             start_cmd=schwab_cmd,
             required=True,
             heartbeat_glob=str(PROJECT_ROOT / "governance" / "health" / "shadow_loop_*_equities_schwab_*.json"),
             heartbeat_stale_seconds=max(args.schwab_heartbeat_stale_seconds, 30),
             min_healthy_heartbeats=max(args.schwab_min_heartbeats, 1),
+            heartbeat_profiles=("conservative", "aggressive"),
+            allow_processless_heartbeat_live=bool(args.allow_schwab_standby_heartbeats),
+            heartbeat_startup_grace_seconds=max(
+                int(os.getenv("SHADOW_WATCHDOG_SCHWAB_STARTUP_GRACE_SECONDS", "420")),
+                60,
+            ),
+            suppress_tripwire_when_parent_live=True,
+            exclude_matches=_schwab_live_heartbeat_exclude_matches(
+                simulate_schwab=bool(args.simulate_schwab),
+                allow_simulated_heartbeats=bool(args.allow_schwab_simulate_heartbeats),
+            ),
         )
     ]
+
+    if args.watch_schwab_futures:
+        targets.append(
+            Target(
+                name="schwab_futures_shadow",
+                match="scripts/run_shadow_training_loop.py --broker schwab --profile schwab_futures",
+                start_cmd=schwab_futures_cmd,
+                required=not args.schwab_futures_optional,
+                heartbeat_glob=str(PROJECT_ROOT / "governance" / "health" / "shadow_loop_*schwab_futures*_equities_schwab_*.json"),
+                heartbeat_stale_seconds=max(args.schwab_futures_heartbeat_stale_seconds, 30),
+                min_healthy_heartbeats=max(args.schwab_futures_min_heartbeats, 1),
+            )
+        )
 
     if args.watch_coinbase:
         targets.append(
@@ -843,6 +1547,7 @@ def main() -> int:
                 heartbeat_stale_seconds=max(args.coinbase_heartbeat_stale_seconds, 30),
                 min_healthy_heartbeats=max(args.coinbase_min_heartbeats, 1),
                 exclude_matches=("--profile crypto_futures",),
+                terminate_excluded_conflicts=False,
             )
         )
 
@@ -856,6 +1561,8 @@ def main() -> int:
                 heartbeat_glob=str(PROJECT_ROOT / "governance" / "health" / "shadow_loop_*crypto_futures*_crypto_coinbase_*.json"),
                 heartbeat_stale_seconds=max(args.coinbase_heartbeat_stale_seconds, 30),
                 min_healthy_heartbeats=max(args.coinbase_min_heartbeats, 1),
+                heartbeat_profiles=("crypto_futures",),
+                allow_processless_heartbeat_live=True,
             )
         )
 
@@ -869,6 +1576,9 @@ def main() -> int:
                 heartbeat_glob=str(PROJECT_ROOT / "governance" / "health" / "shadow_loop_*aggressive*_equities_schwab_*.json"),
                 heartbeat_stale_seconds=max(args.aggressive_modes_heartbeat_stale_seconds, 30),
                 min_healthy_heartbeats=max(args.aggressive_modes_min_heartbeats, 1),
+                heartbeat_profiles=("intraday_aggressive", "swing_aggressive"),
+                allow_processless_heartbeat_live=False,
+                exclude_matches=(() if args.simulate_schwab else ("--simulate",)),
             )
         )
 
@@ -882,6 +1592,22 @@ def main() -> int:
                 heartbeat_glob=str(PROJECT_ROOT / "governance" / "health" / "shadow_loop_*dividend*_equities_schwab_*.json"),
                 heartbeat_stale_seconds=max(args.dividend_heartbeat_stale_seconds, 30),
                 min_healthy_heartbeats=max(args.dividend_min_heartbeats, 1),
+                exclude_matches=(() if args.simulate_schwab else ("--simulate",)),
+            )
+        )
+
+    if args.watch_dividend_capture:
+        targets.append(
+            Target(
+                name="dividend_capture_shadow",
+                match="scripts/run_dividend_capture_shadow.py",
+                start_cmd=dividend_capture_cmd,
+                required=not args.dividend_capture_optional,
+                heartbeat_glob=str(PROJECT_ROOT / "governance" / "health" / "shadow_loop_*dividend_capture*_equities_schwab_*.json"),
+                heartbeat_stale_seconds=max(args.dividend_capture_heartbeat_stale_seconds, 30),
+                min_healthy_heartbeats=max(args.dividend_capture_min_heartbeats, 1),
+                heartbeat_profiles=("dividend_capture",),
+                exclude_matches=(() if args.simulate_schwab else ("--simulate",)),
             )
         )
 
@@ -895,6 +1621,23 @@ def main() -> int:
                 heartbeat_glob=str(PROJECT_ROOT / "governance" / "health" / "shadow_loop_*bond*_equities_schwab_*.json"),
                 heartbeat_stale_seconds=max(args.bond_heartbeat_stale_seconds, 30),
                 min_healthy_heartbeats=max(args.bond_min_heartbeats, 1),
+                exclude_matches=(() if args.simulate_schwab else ("--simulate",)),
+            )
+        )
+
+    if args.watch_fx:
+        targets.append(
+            Target(
+                name="fx_shadow",
+                match="scripts/run_fx_shadow.py",
+                start_cmd=fx_cmd,
+                required=not args.fx_optional,
+                heartbeat_glob=str(PROJECT_ROOT / "governance" / "health" / "shadow_loop_*fx*_equities_schwab_*.json"),
+                heartbeat_stale_seconds=max(args.fx_heartbeat_stale_seconds, 30),
+                min_healthy_heartbeats=max(args.fx_min_heartbeats, 1),
+                heartbeat_profiles=("fx",),
+                allow_processless_heartbeat_live=True,
+                exclude_matches=(() if args.simulate_schwab else ("--simulate",)),
             )
         )
 
@@ -926,6 +1669,8 @@ def main() -> int:
             health_prune_data_ingress_stale_seconds=max(int(args.prune_data_ingress_stale_seconds), 60),
             health_prune_orphan_marker_stale_seconds=max(int(args.prune_orphan_marker_stale_seconds), 60),
             health_prune_max_files_per_pass=max(int(args.prune_max_files_per_pass), 1),
+            tripwire_enabled=bool(args.tripwire_enabled),
+            tripwire_streak_threshold=max(int(args.tripwire_streak_threshold), 1),
         )
 
     while True:
@@ -951,6 +1696,8 @@ def main() -> int:
             health_prune_data_ingress_stale_seconds=max(int(args.prune_data_ingress_stale_seconds), 60),
             health_prune_orphan_marker_stale_seconds=max(int(args.prune_orphan_marker_stale_seconds), 60),
             health_prune_max_files_per_pass=max(int(args.prune_max_files_per_pass), 1),
+            tripwire_enabled=bool(args.tripwire_enabled),
+            tripwire_streak_threshold=max(int(args.tripwire_streak_threshold), 1),
         )
         if rc != 0 and args.dry_run:
             return rc

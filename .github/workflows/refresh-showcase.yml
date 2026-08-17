@@ -1,0 +1,56 @@
+name: Refresh Showcase Highlights
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - "README.md"
+      - "master_bot_registry.json"
+      - "docs/showcase/**"
+      - "scripts/ops/update_showcase_highlights.py"
+      - "governance/health/**"
+      - "exports/external_context/**"
+      - "exports/reports/**"
+  schedule:
+    - cron: "27 */6 * * *"
+
+permissions:
+  contents: read
+
+jobs:
+  refresh-showcase:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.14"
+
+      - name: Refresh generated showcase docs
+        run: python3 scripts/ops/update_showcase_highlights.py
+
+      - name: Summarize generated changes
+        run: |
+          if [[ -n "$(git status --porcelain -- README.md docs/showcase/generated)" ]]; then
+            git diff -- README.md docs/showcase/generated > showcase-generated.diff
+            echo "Generated showcase changes were produced as an artifact." >> "$GITHUB_STEP_SUMMARY"
+            echo "Review and commit them with an explicit operator source-update command when intended." >> "$GITHUB_STEP_SUMMARY"
+          else
+            touch showcase-generated.diff
+            echo "No generated showcase changes." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Upload generated showcase artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: showcase-generated-${{ github.run_id }}
+          if-no-files-found: ignore
+          path: |
+            README.md
+            docs/showcase/generated
+            showcase-generated.diff

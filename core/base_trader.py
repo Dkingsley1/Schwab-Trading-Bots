@@ -10,6 +10,8 @@ import urllib.request
 import uuid
 import time
 from datetime import datetime, timezone
+from math import gcd, isfinite
+from pathlib import Path
 
 try:
     from zoneinfo import ZoneInfo
@@ -17,24 +19,224 @@ except Exception:
     ZoneInfo = None
 from typing import Any, Dict, List, Optional, Tuple
 
-from schwab.auth import easy_client
-
-from core.decision_logger import DecisionLogger
-from core.live_execution_controls import LiveExecutionGuard, LiveRiskConfig
+from core.decision_logger import DecisionLogger, compact_decision_features
+from core.derivatives_features import _days_to_expiry, _extract_option_rows, _option_row_strike, _option_side
+from core.exotic_derivatives_plumbing import exotic_direct_execution_allowed, is_exotic_derivative_sleeve
+from core.live_execution_controls import LiveExecutionGuard, LiveRiskConfig, production_order_firewall_check
+from core.live_order_ledger import LiveOrderLedger
+from core.order_intent import build_order_intent_evidence, compact_quote_snapshot
 from core.path_registry import auth_events_path, decision_explanations_paths, execution_guard_path, live_softguard_path
+from core.profitability_hardening import (
+    evaluate_profitability_entry,
+    position_valuation_compatible,
+    resolve_contract_valuation,
+)
+from core.brokers import (
+    BrokerAdapter,
+    BrokerAuthRequest,
+    BrokerCapabilities,
+    BrokerConnectedAccount,
+    BrokerCredentials,
+    BrokerOrderRequest,
+    BrokerOrderResult,
+    BrokerQuoteSnapshot,
+    BrokerRuntimeConfig,
+    build_broker_adapter,
+    normalize_broker_name,
+)
 
 from core.accountability import current_correlation, now_utc_iso, safe_append_jsonl, safe_append_channel_event, safe_write_json_atomic
+from core.halt_flags import write_halt_flag_atomic
+from core.runtime_override_precedence import merge_runtime_override_layers
+
+
+_FUTURES_MONTH_CODES = {
+    1: "F",
+    2: "G",
+    3: "H",
+    4: "J",
+    5: "K",
+    6: "M",
+    7: "N",
+    8: "Q",
+    9: "U",
+    10: "V",
+    11: "X",
+    12: "Z",
+}
+_FUTURES_CODE_TO_MONTH = {v: k for k, v in _FUTURES_MONTH_CODES.items()}
+_QUARTERLY_FUTURES_ROOTS = {
+    "ES", "MES", "NQ", "MNQ", "YM", "MYM", "RTY", "M2K", "ZB", "ZN", "ZF", "ZT", "6E", "6J", "6B",
+}
+_FUTURES_CONTRACT_MULTIPLIERS = {
+    "ES": 50.0,
+    "MES": 5.0,
+    "NQ": 20.0,
+    "MNQ": 2.0,
+    "YM": 5.0,
+    "MYM": 0.5,
+    "RTY": 50.0,
+    "M2K": 5.0,
+    "CL": 1000.0,
+    "MCL": 100.0,
+    "GC": 100.0,
+    "MGC": 10.0,
+    "SI": 5000.0,
+    "SIL": 1000.0,
+    "HG": 25000.0,
+    "NG": 10000.0,
+    "RB": 42000.0,
+    "HO": 42000.0,
+    "ZB": 1000.0,
+    "ZN": 1000.0,
+    "ZF": 1000.0,
+    "ZT": 2000.0,
+    "6E": 125000.0,
+    "6J": 12500000.0,
+    "6B": 62500.0,
+}
+_FUTURES_CONTRACT_RE = re.compile(r"^/?([A-Z0-9]+?)([FGHJKMNQUVXZ])(\d{1,4})$")
+
+
+_DYNAMIC_STORAGE_OVERRIDE_CACHE: Dict[str, Any] = {
+    "checked_at_monotonic": 0.0,
+    "fingerprint": (),
+    "values": {},
+}
+_DYNAMIC_STORAGE_OVERRIDE_POLL_SECONDS = 2.0
+_PAPER_PROFITABILITY_GUARD_CACHE: Dict[str, Any] = {
+    "checked_at_monotonic": 0.0,
+    "fingerprint": (),
+    "payload": {},
+}
+_PAPER_PROFITABILITY_GUARD_POLL_SECONDS = 2.0
+
+
+def _parse_env_override_file(path: Path) -> Dict[str, str]:
+    values: Dict[str, str] = {}
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except Exception:
+        return values
+    for raw in lines:
+        line = str(raw or "").strip()
+        if (not line) or line.startswith("#") or ("=" not in line):
+            continue
+        key, value = line.split("=", 1)
+        key = key.strip()
+        if key:
+            values[key] = value.strip()
+    return values
+
+
+def _dynamic_storage_override_paths(project_root: str) -> Tuple[Path, ...]:
+    root = Path(project_root).resolve()
+    return (
+        root / "config" / ".env.storage_pressure_override",
+        root / "config" / ".env.storage_override",
+        root / "config" / ".env.runtime_resource_guard_override",
+        root / "config" / ".env.local_storage_reserve_override",
+        # Hot-lane policy normally wins; active queue safety reclaims its
+        # logging keys in merge_runtime_override_layers.
+        root / "config" / ".env.hot_lane_retention_override",
+    )
+
+
+def _dynamic_storage_overrides(project_root: str) -> Dict[str, str]:
+    cache = _DYNAMIC_STORAGE_OVERRIDE_CACHE
+    now_monotonic = time.monotonic()
+    if (now_monotonic - float(cache.get("checked_at_monotonic", 0.0) or 0.0)) < _DYNAMIC_STORAGE_OVERRIDE_POLL_SECONDS:
+        values = cache.get("values")
+        if isinstance(values, dict):
+            return dict(values)
+
+    paths = _dynamic_storage_override_paths(project_root)
+    fingerprint = []
+    for path in paths:
+        try:
+            stat = path.stat()
+            fingerprint.append((str(path), int(stat.st_mtime_ns), int(stat.st_size)))
+        except Exception:
+            fingerprint.append((str(path), 0, 0))
+
+    if tuple(fingerprint) == tuple(cache.get("fingerprint") or ()):
+        cache["checked_at_monotonic"] = now_monotonic
+        values = cache.get("values")
+        return dict(values) if isinstance(values, dict) else {}
+
+    merged = merge_runtime_override_layers([_parse_env_override_file(path) for path in paths])
+
+    cache["checked_at_monotonic"] = now_monotonic
+    cache["fingerprint"] = tuple(fingerprint)
+    cache["values"] = dict(merged)
+    return merged
+
+
+def _dynamic_storage_flag(project_root: str, name: str, default: bool = True) -> bool:
+    raw = _dynamic_storage_overrides(project_root).get(name)
+    if raw is None:
+        raw = os.getenv(name, "1" if default else "0")
+    return str(raw).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _dynamic_storage_value(project_root: str, name: str, default: str = "") -> str:
+    raw = _dynamic_storage_overrides(project_root).get(name)
+    if raw is None:
+        raw = os.getenv(name, default)
+    return str(raw or "").strip()
 
 
 class BaseTrader:
-    def __init__(self, api_key: str, app_secret: str, callback_url: str, mode: str = "shadow"):
-        self.api_key = api_key
-        self.app_secret = app_secret
-        self.callback_url = callback_url
+    @classmethod
+    def from_env(
+        cls,
+        *,
+        mode: str = "shadow",
+        broker: Optional[str] = None,
+        role: str = "default",
+        runtime_config: Optional[BrokerRuntimeConfig] = None,
+    ) -> "BaseTrader":
+        brokers = runtime_config or BrokerRuntimeConfig.from_env(default_broker=broker or os.getenv("DATA_BROKER", "schwab"))
+        broker_name = normalize_broker_name(broker or brokers.broker_for_role(role))
+        broker_adapter = build_broker_adapter(broker_name)
+        credentials = broker_adapter.load_credentials_from_env()
+        return cls(
+            credentials.api_key,
+            credentials.app_secret,
+            credentials.callback_url,
+            mode=mode,
+            broker=broker_name,
+            broker_adapter=broker_adapter,
+        )
+
+    def __init__(
+        self,
+        api_key: str,
+        app_secret: str,
+        callback_url: str,
+        mode: str = "shadow",
+        broker: str = "schwab",
+        broker_adapter: Optional[BrokerAdapter] = None,
+    ):
+        self.broker_adapter = broker_adapter or build_broker_adapter(broker)
+        self.broker_name = normalize_broker_name(getattr(self.broker_adapter, "name", broker))
+        self.broker_display_name = str(getattr(self.broker_adapter, "display_name", self.broker_name.title()))
+        self.broker_capabilities = getattr(self.broker_adapter, "capabilities", BrokerCapabilities())
+
+        if not any(str(value or "").strip() for value in (api_key, app_secret, callback_url)):
+            env_credentials = self.broker_adapter.load_credentials_from_env()
+            api_key = env_credentials.api_key
+            app_secret = env_credentials.app_secret
+            callback_url = env_credentials.callback_url
+
+        self.api_key = str(api_key or "").strip()
+        self.app_secret = str(app_secret or "").strip()
+        self.callback_url = str(callback_url or "").strip()
         self.token_path = "token.json"
         self.client = None
 
         self.project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+        self._live_order_ledger: Optional[LiveOrderLedger] = None
         self.mode = "shadow"
         self.profile = os.getenv("SHADOW_PROFILE", "").strip().lower()
         self.shadow_domain = ""
@@ -52,10 +254,33 @@ class BaseTrader:
         self._paper_bridge_warned_missing_url = False
         self._paper_positions: Dict[str, Dict[str, float]] = {}
         self._paper_realized_total = 0.0
+        self._paper_profile_positions: Dict[str, Dict[str, Dict[str, float]]] = {}
+        self._paper_profile_realized_totals: Dict[str, float] = {}
+        self._paper_strategy_positions: Dict[str, Dict[str, Dict[str, float]]] = {}
+        self._paper_strategy_realized_totals: Dict[str, float] = {}
+        self._paper_trade_activity: Dict[str, Dict[str, Any]] = {}
+        self._paper_book_id = str(uuid.uuid4())
+        self._paper_book_started_utc = datetime.now(timezone.utc).isoformat()
+        self._paper_state_path = ""
 
         self.live_risk_config = LiveRiskConfig.from_env()
         self.live_guard = LiveExecutionGuard(self.live_risk_config)
-        self.live_account_hash = os.getenv("SCHWAB_ACCOUNT_HASH", "").strip()
+        account_ref_env = str(getattr(self.broker_adapter, "account_reference_env_var", "") or "").strip()
+        auto_discover_env = str(getattr(self.broker_adapter, "account_reference_auto_discover_env_var", "") or "").strip()
+        self.live_account_hash = (os.getenv(account_ref_env, "").strip() if account_ref_env else "")
+        self.live_account_reference = self.live_account_hash
+        self.live_account_hash_auto_discover = (
+            (os.getenv(auto_discover_env, "1").strip() == "1") if auto_discover_env else False
+        )
+        if not auto_discover_env and self._supports_broker_capability("supports_account_discovery"):
+            self.live_account_hash_auto_discover = True
+        self.live_accounts_snapshot_allow_global_fallback = (
+            os.getenv("LIVE_ACCOUNTS_SNAPSHOT_ALLOW_GLOBAL_FALLBACK", "0").strip() == "1"
+        )
+        self.live_accounts_snapshot_aggregate_connected = (
+            os.getenv("LIVE_ACCOUNTS_SNAPSHOT_AGGREGATE_CONNECTED", "0").strip() == "1"
+        )
+        self._live_account_hash_last_refresh_ts = 0.0
         self.live_position_reconcile_tolerance = max(
             float(os.getenv("LIVE_POSITION_RECONCILE_TOLERANCE", "0.0001")),
             0.0,
@@ -97,6 +322,20 @@ class BaseTrader:
         self.live_api_retry_backoff_multiplier = max(float(os.getenv("LIVE_API_RETRY_BACKOFF_MULTIPLIER", "2.0")), 1.0)
         self.live_api_retry_max_backoff_seconds = max(float(os.getenv("LIVE_API_RETRY_MAX_BACKOFF_SECONDS", "3.0")), 0.0)
         self.live_api_retry_jitter_seconds = max(float(os.getenv("LIVE_API_RETRY_JITTER_SECONDS", "0.1")), 0.0)
+        self.live_accounts_snapshot_soft_fail_grace = max(
+            int(os.getenv("LIVE_ACCOUNTS_SNAPSHOT_SOFT_FAIL_GRACE", "3")),
+            1,
+        )
+        self.live_accounts_snapshot_halt_min_failures = max(
+            int(
+                os.getenv(
+                    "LIVE_ACCOUNTS_SNAPSHOT_HALT_MIN_FAILURES",
+                    str(max(self.live_accounts_snapshot_soft_fail_grace + 2, 5)),
+                )
+            ),
+            self.live_accounts_snapshot_soft_fail_grace + 1,
+        )
+        self._accounts_snapshot_soft_fail_streak = 0
         retryable_codes = os.getenv("LIVE_API_RETRYABLE_STATUS_CODES", "408,425,429,500,502,503,504").strip()
         parsed_codes: set[int] = set()
         for token in retryable_codes.split(","):
@@ -116,12 +355,393 @@ class BaseTrader:
         self.decision_logger = DecisionLogger(self.project_root)
         self.set_mode(mode)
 
+    def _broker_credentials(self) -> BrokerCredentials:
+        return BrokerCredentials(
+            api_key=self.api_key,
+            app_secret=self.app_secret,
+            callback_url=self.callback_url,
+        )
+
+    def credentials_are_placeholder(self) -> bool:
+        return self.broker_adapter.is_placeholder_credentials(self._broker_credentials())
+
+    def _supports_broker_capability(self, capability_name: str) -> bool:
+        return bool(getattr(self.broker_capabilities, capability_name, False))
+
+    def _unsupported_broker_operation(self, operation: str, capability_name: str) -> Dict[str, Any]:
+        return {
+            "ok": False,
+            "operation": operation,
+            "error": f"unsupported_broker_capability:{capability_name}",
+            "broker": self.broker_name,
+            "details": {
+                "broker": self.broker_name,
+                "capability": capability_name,
+            },
+        }
+
+    def _metadata_sleeve_profile(self, metadata: Optional[Dict[str, Any]] = None) -> str:
+        md = metadata if isinstance(metadata, dict) else {}
+        for key in ("source_profile", "sleeve_profile", "profile", "shadow_profile"):
+            raw = str(md.get(key) or "").strip().lower()
+            if raw:
+                return raw
+        return str(self.profile or os.getenv("SHADOW_PROFILE", "")).strip().lower()
+
+    def _metadata_shadow_domain(self, metadata: Optional[Dict[str, Any]] = None) -> str:
+        md = metadata if isinstance(metadata, dict) else {}
+        raw = str(md.get("shadow_domain") or md.get("domain") or self.shadow_domain or os.getenv("SHADOW_DOMAIN", "")).strip().lower()
+        return raw
+
+    def _exotic_derivative_execution_blocked(self, metadata: Optional[Dict[str, Any]] = None) -> tuple[bool, str, Dict[str, Any]]:
+        sleeve = self._metadata_sleeve_profile(metadata)
+        domain = self._metadata_shadow_domain(metadata)
+        research_only = os.getenv("EXOTIC_DERIVATIVE_RESEARCH_ONLY", "0").strip() == "1"
+        direct_override = os.getenv("EXOTIC_DIRECT_EXECUTION_ALLOWED", "0").strip() == "1"
+        is_exotic = is_exotic_derivative_sleeve(sleeve) or domain == "exotic_derivatives" or research_only
+        if not is_exotic:
+            return False, "not_exotic_derivative_sleeve", {}
+        if direct_override and exotic_direct_execution_allowed(sleeve, broker=self.broker_name):
+            return False, "direct_execution_explicitly_allowed", {}
+        details = {
+            "sleeve_profile": sleeve,
+            "shadow_domain": domain,
+            "broker": self.broker_name,
+            "research_only": bool(research_only),
+            "direct_execution_allowed": False,
+        }
+        return True, "exotic_derivative_proxy_only_no_direct_execution", details
+
+    def _paper_profitability_control_payload(self) -> Dict[str, Any]:
+        cache = _PAPER_PROFITABILITY_GUARD_CACHE
+        now_monotonic = time.monotonic()
+        if (now_monotonic - float(cache.get("checked_at_monotonic", 0.0) or 0.0)) < _PAPER_PROFITABILITY_GUARD_POLL_SECONDS:
+            payload = cache.get("payload")
+            if isinstance(payload, dict):
+                return dict(payload)
+
+        health_root = Path(self.project_root) / "governance" / "health"
+        paths = (
+            health_root / "paper_runtime_profitability_controls_latest.json",
+            health_root / "paper_profitability_control_latest.json",
+        )
+        fingerprint: List[Tuple[str, int, int]] = []
+        for path in paths:
+            try:
+                stat = path.stat()
+                fingerprint.append((str(path), int(stat.st_mtime_ns), int(stat.st_size)))
+            except Exception:
+                fingerprint.append((str(path), 0, 0))
+
+        if tuple(fingerprint) == tuple(cache.get("fingerprint") or ()):
+            cache["checked_at_monotonic"] = now_monotonic
+            payload = cache.get("payload")
+            return dict(payload) if isinstance(payload, dict) else {}
+
+        payload: Dict[str, Any] = {}
+        for path in paths:
+            try:
+                with path.open("r", encoding="utf-8") as handle:
+                    raw = json.load(handle)
+            except Exception:
+                continue
+            if isinstance(raw, dict) and raw:
+                payload = raw
+                payload["_control_artifact_path"] = str(path)
+                break
+
+        cache["checked_at_monotonic"] = now_monotonic
+        cache["fingerprint"] = tuple(fingerprint)
+        cache["payload"] = dict(payload)
+        return payload
+
+    def _paper_profitability_new_entry_blocked(
+        self,
+        *,
+        symbol: str,
+        action: str,
+        quantity: float,
+        metadata: Optional[Dict[str, Any]] = None,
+        features: Optional[Dict[str, Any]] = None,
+        strategy: str = "",
+    ) -> Tuple[bool, str, Dict[str, Any]]:
+        exposure = self._paper_exposure_change_details(
+            symbol=symbol,
+            action=action,
+            quantity=quantity,
+            metadata=metadata,
+        )
+        if not bool(exposure.get("increases_exposure", False)):
+            return False, "reduce_close_or_hold", exposure
+
+        source_profile = self._metadata_sleeve_profile(metadata) or "default"
+        turnover_blocked, turnover_reason, turnover_details = self._paper_turnover_new_entry_blocked(
+            exposure=exposure,
+            profile=source_profile,
+            symbol=symbol,
+            action=action,
+        )
+        if turnover_blocked:
+            return True, turnover_reason, turnover_details
+        valuation = resolve_contract_valuation(symbol, metadata)
+        profile_book = self._paper_profile_positions.get(source_profile, {})
+        position = profile_book.get(str(symbol or "").strip().upper(), {}) if isinstance(profile_book, dict) else {}
+        valuation_compatible, valuation_reason = position_valuation_compatible(position, valuation)
+        if not bool(valuation.get("valuation_ready", False)) or not valuation_compatible:
+            return True, "paper_contract_valuation_block", {
+                "guard_gate": "paper_contract_valuation",
+                "source_profile": source_profile,
+                "valuation": valuation,
+                "valuation_compatible": valuation_compatible,
+                "valuation_reason": valuation_reason,
+                "exposure_change": exposure,
+                "policy": "new derivative exposure requires a known contract multiplier and compatible book state",
+            }
+
+        metadata_payload = metadata if isinstance(metadata, dict) else {}
+        declared_entry_policy = metadata_payload.get(
+            "entry_policy",
+            metadata_payload.get("profitability_entry_policy"),
+        )
+        evaluated_entry_policy: Dict[str, Any] | None = None
+        if declared_entry_policy is not None:
+            entry_evidence: Dict[str, Any] = {}
+            entry_evidence.update(features if isinstance(features, dict) else {})
+            entry_evidence.update(metadata_payload)
+            evaluated_entry_policy = evaluate_profitability_entry(
+                profile=source_profile,
+                features=entry_evidence,
+            )
+            declared_policy_valid = isinstance(declared_entry_policy, dict)
+            declared_policy_allowed = bool(
+                declared_entry_policy.get("allowed", False)
+                if declared_policy_valid
+                else False
+            )
+            if not declared_policy_allowed or not bool(evaluated_entry_policy.get("allowed", False)):
+                return True, "paper_profitability_entry_policy_block", {
+                    "guard_gate": "paper_profitability_entry_policy",
+                    "source_profile": source_profile,
+                    "declared_entry_policy_valid": declared_policy_valid,
+                    "declared_entry_policy": (
+                        declared_entry_policy if declared_policy_valid else {"allowed": False, "reason": "malformed"}
+                    ),
+                    "evaluated_entry_policy": evaluated_entry_policy,
+                    "valuation": valuation,
+                    "exposure_change": exposure,
+                    "policy": "declared entry-policy failures are fail-closed for new exposure even when recovery controls are inactive",
+                }
+
+        if evaluated_entry_policy is None:
+            entry_evidence: Dict[str, Any] = {}
+            entry_evidence.update(features if isinstance(features, dict) else {})
+            entry_evidence.update(metadata_payload)
+            evaluated_entry_policy = evaluate_profitability_entry(
+                profile=source_profile or "default",
+                features=entry_evidence,
+            )
+        if not bool(evaluated_entry_policy.get("allowed", False)):
+            return True, "paper_profitability_entry_policy_block", {
+                "guard_gate": "paper_profitability_entry_policy",
+                "source_profile": source_profile,
+                "entry_policy": evaluated_entry_policy,
+                "valuation": valuation,
+                "exposure_change": exposure,
+                "policy": "the local profitability entry policy always applies, including while generated recovery artifacts are absent or refreshing",
+            }
+
+        control = self._paper_profitability_control_payload()
+        if not control:
+            return False, "paper_profitability_control_missing", {}
+
+        raw_recovery = control.get("raw_profitability_a_recovery_contract")
+        if not isinstance(raw_recovery, dict):
+            raw_recovery = {}
+        raw_improvement = control.get("raw_profitability_improvement_contract")
+        if not isinstance(raw_improvement, dict):
+            raw_improvement = {}
+        enforcement = raw_improvement.get("runtime_enforcement")
+        if not isinstance(enforcement, dict):
+            enforcement = raw_recovery.get("runtime_enforcement") if isinstance(raw_recovery.get("runtime_enforcement"), dict) else {}
+
+        if not bool(raw_recovery.get("active", False)) and not bool(raw_improvement.get("active", False)):
+            return False, "raw_profitability_recovery_inactive", {}
+        if not bool(enforcement.get("block_new_entries_on_weak_profiles", False)):
+            return False, "weak_profile_new_entry_block_inactive", {}
+
+        weak_profiles = {
+            str(item or "").strip().lower()
+            for item in (raw_recovery.get("weak_profiles") if isinstance(raw_recovery.get("weak_profiles"), list) else [])
+            if str(item or "").strip()
+        }
+        weak_contract = raw_improvement.get("weak_sleeve_zero_entry_contract")
+        if isinstance(weak_contract, dict):
+            for row in weak_contract.get("profiles") if isinstance(weak_contract.get("profiles"), list) else []:
+                if isinstance(row, dict) and bool(row.get("block_new_entries", False)):
+                    profile = str(row.get("profile") or "").strip().lower()
+                    if profile:
+                        weak_profiles.add(profile)
+
+        source_profile = self._metadata_sleeve_profile(metadata)
+        strategy_key = str(strategy or (metadata or {}).get("strategy") or "").strip().lower()
+        pair_contract = raw_improvement.get("losing_strategy_pair_quarantine_contract")
+        if isinstance(pair_contract, dict) and bool(pair_contract.get("active", False)):
+            for row in pair_contract.get("pairs") if isinstance(pair_contract.get("pairs"), list) else []:
+                if not isinstance(row, dict) or not bool(row.get("protected", row.get("quarantine_ready", False))):
+                    continue
+                if (
+                    str(row.get("profile") or "").strip().lower() == source_profile
+                    and str(row.get("strategy") or "").strip().lower() == strategy_key
+                ):
+                    return True, "paper_profitability_strategy_pair_quarantine_block", {
+                        "guard_gate": "paper_profitability_strategy_pair_quarantine",
+                        "source_profile": source_profile,
+                        "strategy": strategy_key,
+                        "new_entry_cap": row.get("new_entry_cap", 0),
+                        "exposure_change": exposure,
+                        "policy": "a losing profile-strategy pair remains collect-only until its profitable requalification contract passes",
+                    }
+
+        if source_profile and source_profile in weak_profiles:
+            return True, "paper_profitability_weak_profile_new_entry_block", {
+                "guard_gate": "paper_profitability_weak_profile_new_entry",
+                "source_profile": source_profile,
+                "weak_profiles": sorted(weak_profiles),
+                "exposure_change": exposure,
+                "raw_profitability_grade": str(control.get("raw_profitability_grade") or raw_recovery.get("current_raw_profitability_grade") or ""),
+                "controlled_profitability_grade": str(control.get("controlled_profitability_grade") or ""),
+                "control_timestamp_utc": str(control.get("timestamp_utc") or ""),
+                "control_artifact_path": str(control.get("_control_artifact_path") or ""),
+                "policy": "weak profiles may only hold, sell, or reduce until raw profitability recovery clears reentry requirements",
+            }
+
+        if evaluated_entry_policy is None:
+            entry_evidence = {}
+            entry_evidence.update(features if isinstance(features, dict) else {})
+            entry_evidence.update(metadata_payload)
+            evaluated_entry_policy = evaluate_profitability_entry(
+                profile=source_profile or "default",
+                features=entry_evidence,
+            )
+        entry_policy = evaluated_entry_policy
+        if not bool(entry_policy.get("allowed", False)):
+            return True, "paper_profitability_entry_policy_block", {
+                "guard_gate": "paper_profitability_entry_policy",
+                "source_profile": source_profile,
+                "entry_policy": entry_policy,
+                "valuation": valuation,
+                "exposure_change": exposure,
+                "policy": "new exposure must clear execution quality, regime fit, and portfolio overlap budgets",
+            }
+
+        clean_gate = raw_improvement.get("clean_sleeve_strict_buy_gate_contract")
+        if not isinstance(clean_gate, dict) or not bool(clean_gate.get("active", False) and clean_gate.get("enforced", False)):
+            return False, "profile_not_quarantined", {
+                "source_profile": source_profile,
+                "weak_profiles": sorted(weak_profiles),
+            }
+
+        evidence: Dict[str, Any] = {}
+        evidence.update(features if isinstance(features, dict) else {})
+        evidence.update(metadata if isinstance(metadata, dict) else {})
+
+        def evidence_float(*keys: str) -> Optional[float]:
+            for key in keys:
+                raw_value = evidence.get(key)
+                if key not in evidence or raw_value is None or raw_value == "":
+                    continue
+                try:
+                    value = float(raw_value)
+                except Exception:
+                    continue
+                if isfinite(value):
+                    return value
+            return None
+
+        quality = evidence_float("quality_gate_norm", "news_source_quality_norm", "source_quality_norm")
+        tradeability = evidence_float("market_micro_tradeability_score_norm", "tradeability_norm", "tradeability_score")
+        execution_fitness = evidence_float("execution_fitness_norm", "fill_quality_norm", "modeled_fill_quality_norm")
+        confirmation = evidence_float("core_cross_asset_confirmation_norm", "cross_asset_confirmation_norm")
+        overlap = evidence_float("overlap_pressure_norm", "portfolio_overlap_pressure_norm")
+        spread_bps = evidence_float("spread_bps", "model_spread_bps")
+        event_confirmation = evidence_float("event_catalyst_confirmation_norm", "event_confirmation_norm")
+        conflict_clearance = evidence_float("portfolio_conflict_clearance_norm", "conflict_clearance_norm")
+        session_quality = evidence_float("session_quality_norm", "session_edge_norm")
+        session = str(evidence.get("session") or evidence.get("market_session") or "unknown").strip().lower()
+        failures: list[str] = []
+
+        thresholds = {
+            "quality_gate_norm": float(clean_gate.get("min_quality_gate_norm", 0.72) or 0.72),
+            "tradeability_norm": float(clean_gate.get("min_tradeability_norm", 0.58) or 0.58),
+            "execution_fitness_norm": float(clean_gate.get("min_execution_fitness_norm", 0.58) or 0.58),
+            "cross_asset_confirmation_norm": float(clean_gate.get("min_cross_asset_confirmation_norm", 0.56) or 0.56),
+            "max_overlap_pressure_norm": float(clean_gate.get("max_overlap_pressure_norm", 0.58) or 0.58),
+        }
+        for name, value, minimum in (
+            ("source_quality", quality, thresholds["quality_gate_norm"]),
+            ("tradeability", tradeability, thresholds["tradeability_norm"]),
+            ("execution_fitness", execution_fitness, thresholds["execution_fitness_norm"]),
+            ("cross_asset_confirmation", confirmation, thresholds["cross_asset_confirmation_norm"]),
+        ):
+            if value is None:
+                failures.append(f"{name}_unknown")
+            elif value < minimum:
+                failures.append(f"{name}_below_floor")
+        if overlap is None:
+            failures.append("overlap_pressure_unknown")
+        elif overlap > thresholds["max_overlap_pressure_norm"]:
+            failures.append("overlap_pressure_above_ceiling")
+        if bool(clean_gate.get("block_when_spread_regime_unknown", True)) and spread_bps is None:
+            failures.append("spread_regime_unknown")
+        if event_confirmation is None:
+            failures.append("event_catalyst_confirmation_unknown")
+        if conflict_clearance is None:
+            failures.append("portfolio_conflict_clearance_unknown")
+        if session_quality is None:
+            failures.append("session_quality_unknown")
+        if session in {"premarket", "after_hours", "overnight"} and not bool(evidence.get("extended_session_validated", False)):
+            failures.append("extended_session_not_independently_validated")
+
+        channel_values = (quality, execution_fitness, spread_bps, confirmation, event_confirmation, conflict_clearance, session_quality)
+        channel_count = sum(value is not None for value in channel_values)
+        minimum_channels = max(int(clean_gate.get("min_independent_evidence_channels", 4) or 4), 1)
+        if channel_count < minimum_channels:
+            failures.append("independent_evidence_channel_floor_not_met")
+        if failures:
+            return True, "paper_profitability_clean_profile_evidence_block", {
+                "guard_gate": "paper_profitability_clean_profile_evidence",
+                "source_profile": source_profile,
+                "strategy": strategy_key,
+                "failures": sorted(set(failures)),
+                "independent_evidence_channel_count": channel_count,
+                "minimum_independent_evidence_channels": minimum_channels,
+                "observed": {
+                    "quality_gate_norm": quality,
+                    "tradeability_norm": tradeability,
+                    "execution_fitness_norm": execution_fitness,
+                    "cross_asset_confirmation_norm": confirmation,
+                    "overlap_pressure_norm": overlap,
+                    "spread_bps": spread_bps,
+                    "event_catalyst_confirmation_norm": event_confirmation,
+                    "portfolio_conflict_clearance_norm": conflict_clearance,
+                    "session_quality_norm": session_quality,
+                    "session": session,
+                },
+                "thresholds": thresholds,
+                "policy": "clean sleeves may open paper exposure only when every declared point-in-time evidence gate is actually present and passes",
+            }
+        return False, "clean_profile_evidence_gate_passed", {
+            "source_profile": source_profile,
+            "strategy": strategy_key,
+            "independent_evidence_channel_count": channel_count,
+        }
+
     def _resolve_shadow_domain(self) -> str:
         raw = os.getenv("SHADOW_DOMAIN", "").strip().lower()
-        if raw in {"equities", "crypto"}:
+        if raw in {"equities", "crypto", "exotic_derivatives"}:
             return raw
 
-        broker = os.getenv("DATA_BROKER", "schwab").strip().lower()
+        broker = str(self.broker_name or os.getenv("DATA_BROKER", "schwab")).strip().lower()
         return "crypto" if broker == "coinbase" else "equities"
 
     def set_mode(self, mode: str) -> None:
@@ -154,6 +774,279 @@ class BaseTrader:
 
         self.paper_bridge_log_dir = os.path.join(self.project_root, "exports", "paper_broker_bridge", self.mode_label)
         self.decision_logger = DecisionLogger(self.project_root, subdir=os.path.join("decisions", self.mode_label))
+        if self.mode == "paper":
+            self._load_paper_book_state()
+
+    def _paper_state_enabled(self) -> bool:
+        return str(os.getenv("PAPER_BOOK_STATE_PERSIST_ENABLED", "1") or "1").strip().lower() not in {
+            "0",
+            "false",
+            "no",
+            "off",
+        }
+
+    def _paper_state_file(self) -> Path:
+        profile = self._metadata_sleeve_profile({}) or "default"
+        domain = self._metadata_shadow_domain({}) or self._resolve_shadow_domain() or "unknown"
+        broker = str(self.broker_name or "unknown").strip().lower() or "unknown"
+
+        def _safe_component(raw: str) -> str:
+            return re.sub(r"[^a-zA-Z0-9_.-]+", "_", str(raw or "unknown")).strip("._") or "unknown"
+
+        return (
+            Path(self.project_root)
+            / "exports"
+            / "paper_state"
+            / _safe_component(broker)
+            / f"{_safe_component(profile)}__{_safe_component(domain)}.json"
+        )
+
+    def _reset_paper_book_state(self) -> None:
+        self._paper_positions = {}
+        self._paper_realized_total = 0.0
+        self._paper_profile_positions = {}
+        self._paper_profile_realized_totals = {}
+        self._paper_strategy_positions = {}
+        self._paper_strategy_realized_totals = {}
+        self._paper_trade_activity = {}
+        self._paper_book_id = str(uuid.uuid4())
+        self._paper_book_started_utc = datetime.now(timezone.utc).isoformat()
+
+    def _coerce_paper_positions(self, raw: Any) -> Dict[str, Dict[str, float]]:
+        if not isinstance(raw, dict):
+            return {}
+        out: Dict[str, Dict[str, float]] = {}
+        for symbol, value in raw.items():
+            if not isinstance(value, dict):
+                continue
+            symbol_key = str(symbol or "").strip().upper()
+            if not symbol_key:
+                continue
+            out[symbol_key] = {
+                "qty": self._as_float(value.get("qty"), 0.0),
+                "avg_price": max(self._as_float(value.get("avg_price"), 0.0), 0.0),
+                "mark_price": max(self._as_float(value.get("mark_price"), 0.0), 0.0),
+                **(
+                    {"contract_multiplier": max(self._as_float(value.get("contract_multiplier"), 0.0), 0.0)}
+                    if "contract_multiplier" in value
+                    else {}
+                ),
+            }
+        return out
+
+    def _coerce_scoped_paper_positions(self, raw: Any) -> Dict[str, Dict[str, Dict[str, float]]]:
+        if not isinstance(raw, dict):
+            return {}
+        out: Dict[str, Dict[str, Dict[str, float]]] = {}
+        for scope, positions in raw.items():
+            scope_key = str(scope or "").strip().lower()
+            if not scope_key:
+                continue
+            coerced = self._coerce_paper_positions(positions)
+            if coerced:
+                out[scope_key] = coerced
+        return out
+
+    def _coerce_paper_totals(self, raw: Any) -> Dict[str, float]:
+        if not isinstance(raw, dict):
+            return {}
+        return {
+            str(key or "").strip().lower(): self._as_float(value, 0.0)
+            for key, value in raw.items()
+            if str(key or "").strip()
+        }
+
+    def _coerce_paper_trade_activity(self, raw: Any) -> Dict[str, Dict[str, Any]]:
+        if not isinstance(raw, dict):
+            return {}
+        out: Dict[str, Dict[str, Any]] = {}
+        for key, value in raw.items():
+            activity_key = str(key or "").strip().lower()
+            if not activity_key or not isinstance(value, dict):
+                continue
+            out[activity_key] = {
+                "day_utc": str(value.get("day_utc") or ""),
+                "entries_today": max(int(self._as_float(value.get("entries_today"), 0.0)), 0),
+                "direction_changes_today": max(
+                    int(self._as_float(value.get("direction_changes_today"), 0.0)),
+                    0,
+                ),
+                "last_trade_utc": str(value.get("last_trade_utc") or ""),
+                "last_entry_utc": str(value.get("last_entry_utc") or ""),
+                "last_entry_action": str(value.get("last_entry_action") or "").upper(),
+            }
+        return out
+
+    def _load_paper_book_state(self) -> None:
+        if not self._paper_state_enabled():
+            self._paper_state_path = ""
+            return
+        state_path = self._paper_state_file()
+        if self._paper_state_path == str(state_path):
+            return
+        self._paper_state_path = str(state_path)
+        try:
+            payload = json.loads(state_path.read_text(encoding="utf-8"))
+        except Exception:
+            payload = {}
+        if not isinstance(payload, dict) or int(payload.get("schema_version", 0) or 0) < 1:
+            self._reset_paper_book_state()
+            return
+
+        self._paper_positions = self._coerce_paper_positions(payload.get("positions"))
+        self._paper_realized_total = self._as_float(payload.get("realized_pnl_total"), 0.0)
+        self._paper_profile_positions = self._coerce_scoped_paper_positions(payload.get("profile_positions"))
+        self._paper_profile_realized_totals = self._coerce_paper_totals(payload.get("profile_realized_pnl_totals"))
+        self._paper_strategy_positions = self._coerce_scoped_paper_positions(payload.get("strategy_positions"))
+        self._paper_strategy_realized_totals = self._coerce_paper_totals(payload.get("strategy_realized_pnl_totals"))
+        self._paper_trade_activity = self._coerce_paper_trade_activity(payload.get("trade_activity"))
+        self._paper_book_id = str(payload.get("paper_book_id") or uuid.uuid4())
+        self._paper_book_started_utc = str(payload.get("paper_book_started_utc") or datetime.now(timezone.utc).isoformat())
+
+    def _persist_paper_book_state(self) -> None:
+        if not self._paper_state_enabled() or not self._paper_state_path:
+            return
+        payload = {
+            "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+            "schema_version": 3,
+            "paper_book_id": self._paper_book_id,
+            "paper_book_started_utc": self._paper_book_started_utc,
+            "broker": self.broker_name,
+            "profile": self._metadata_sleeve_profile({}) or "default",
+            "domain": self._metadata_shadow_domain({}) or self._resolve_shadow_domain(),
+            "positions": self._paper_positions,
+            "realized_pnl_total": float(self._paper_realized_total),
+            "profile_positions": self._paper_profile_positions,
+            "profile_realized_pnl_totals": self._paper_profile_realized_totals,
+            "strategy_positions": self._paper_strategy_positions,
+            "strategy_realized_pnl_totals": self._paper_strategy_realized_totals,
+            "trade_activity": self._paper_trade_activity,
+        }
+        try:
+            wrote = safe_write_json_atomic(
+                self._paper_state_path,
+                payload,
+                project_root=self.project_root,
+                source="paper_book_state",
+            )
+            if not wrote:
+                print(f"[PaperBookState] persist_failed path={self._paper_state_path} err=atomic_write_returned_false")
+        except Exception as exc:
+            print(f"[PaperBookState] persist_failed path={self._paper_state_path} err={exc}")
+
+    def _paper_activity_key(self, *, profile: str, symbol: str) -> str:
+        return f"{str(profile or 'default').strip().lower()}|{str(symbol or '').strip().upper()}".lower()
+
+    def _paper_turnover_new_entry_blocked(
+        self,
+        *,
+        exposure: Dict[str, Any],
+        profile: str,
+        symbol: str,
+        action: str,
+        now_utc: Optional[datetime] = None,
+    ) -> Tuple[bool, str, Dict[str, Any]]:
+        if not bool(exposure.get("increases_exposure", False)):
+            return False, "reduce_close_or_hold", {}
+        now = (now_utc or datetime.now(timezone.utc)).astimezone(timezone.utc)
+        key = self._paper_activity_key(profile=profile, symbol=symbol)
+        activity = dict(getattr(self, "_paper_trade_activity", {}).get(key, {}))
+        day = now.date().isoformat()
+        entries_today = int(activity.get("entries_today", 0) or 0) if activity.get("day_utc") == day else 0
+        max_entries = max(int(os.getenv("PAPER_MAX_NEW_ENTRIES_PER_SYMBOL_DAY", "6") or 6), 1)
+        cooldown_seconds = max(float(os.getenv("PAPER_NEW_ENTRY_COOLDOWN_SECONDS", "300") or 300), 0.0)
+        reversal_cooldown_seconds = max(
+            float(os.getenv("PAPER_REVERSAL_COOLDOWN_SECONDS", "1800") or 1800),
+            cooldown_seconds,
+        )
+        allow_same_order_reversal = os.getenv("PAPER_ALLOW_SAME_ORDER_REVERSAL", "0").strip() == "1"
+        details = {
+            "guard_gate": "paper_turnover_guard",
+            "policy_version": "paper_turnover_guard_v1",
+            "profile": str(profile or "default"),
+            "symbol": str(symbol or "").upper(),
+            "entries_today": entries_today,
+            "max_entries_per_symbol_day": max_entries,
+            "new_entry_cooldown_seconds": cooldown_seconds,
+            "reversal_cooldown_seconds": reversal_cooldown_seconds,
+            "exposure_change": exposure,
+        }
+        if bool(exposure.get("crosses_through_flat", False)) and not allow_same_order_reversal:
+            return True, "paper_same_order_reversal_block", details
+        if entries_today >= max_entries:
+            return True, "paper_symbol_daily_entry_cap_block", details
+
+        raw_last_entry = str(activity.get("last_entry_utc") or "").strip().replace("Z", "+00:00")
+        last_entry: Optional[datetime] = None
+        if raw_last_entry:
+            try:
+                last_entry = datetime.fromisoformat(raw_last_entry)
+                if last_entry.tzinfo is None:
+                    last_entry = last_entry.replace(tzinfo=timezone.utc)
+                last_entry = last_entry.astimezone(timezone.utc)
+            except ValueError:
+                last_entry = None
+        if last_entry is not None:
+            elapsed = max((now - last_entry).total_seconds(), 0.0)
+            details["seconds_since_last_entry"] = round(elapsed, 6)
+            last_action = str(activity.get("last_entry_action") or "").upper()
+            current_action = str(action or "").upper()
+            opposite = (last_action.startswith("BUY") and current_action.startswith("SELL")) or (
+                last_action.startswith("SELL") and current_action.startswith("BUY")
+            )
+            required = reversal_cooldown_seconds if opposite else cooldown_seconds
+            details["opposite_last_entry_direction"] = opposite
+            details["required_cooldown_seconds"] = required
+            if elapsed < required:
+                return True, (
+                    "paper_reversal_cooldown_block"
+                    if opposite
+                    else "paper_new_entry_cooldown_block"
+                ), details
+        return False, "paper_turnover_guard_clear", details
+
+    def _record_paper_trade_activity(
+        self,
+        *,
+        exposure: Dict[str, Any],
+        profile: str,
+        symbol: str,
+        action: str,
+        timestamp_utc: Optional[datetime] = None,
+    ) -> None:
+        now = (timestamp_utc or datetime.now(timezone.utc)).astimezone(timezone.utc)
+        key = self._paper_activity_key(profile=profile, symbol=symbol)
+        activity_store = getattr(self, "_paper_trade_activity", None)
+        if not isinstance(activity_store, dict):
+            activity_store = {}
+            self._paper_trade_activity = activity_store
+        prior = dict(activity_store.get(key, {}))
+        day = now.date().isoformat()
+        entries_today = int(prior.get("entries_today", 0) or 0) if prior.get("day_utc") == day else 0
+        direction_changes = (
+            int(prior.get("direction_changes_today", 0) or 0)
+            if prior.get("day_utc") == day
+            else 0
+        )
+        if bool(exposure.get("increases_exposure", False)):
+            entries_today += 1
+            direction_changes += int(bool(exposure.get("crosses_through_flat", False)))
+        activity_store[key] = {
+            "day_utc": day,
+            "entries_today": entries_today,
+            "direction_changes_today": direction_changes,
+            "last_trade_utc": now.isoformat(),
+            "last_entry_utc": (
+                now.isoformat()
+                if bool(exposure.get("increases_exposure", False))
+                else str(prior.get("last_entry_utc") or "")
+            ),
+            "last_entry_action": (
+                str(action or "").upper()
+                if bool(exposure.get("increases_exposure", False))
+                else str(prior.get("last_entry_action") or "").upper()
+            ),
+        }
 
     def _resolve_trade_log_path(self, file_name: str) -> str:
         legacy_path = os.path.join(self.project_root, file_name)
@@ -223,27 +1116,98 @@ class BaseTrader:
             with open(path, "r", encoding="utf-8") as f:
                 token_obj = json.load(f)
             if isinstance(token_obj, dict):
-                for k in ("expires_at", "expiresAt", "expires", "expires_time"):
-                    raw = token_obj.get(k)
-                    if isinstance(raw, str) and raw.strip():
-                        status["expires_at"] = raw.strip()
+                expiry_sources = [token_obj]
+                nested = token_obj.get("token")
+                if isinstance(nested, dict):
+                    expiry_sources.insert(0, nested)
+
+                exp_value: Any = ""
+                for source in expiry_sources:
+                    for k in ("expires_at", "expiresAt", "expires", "expires_time"):
+                        raw = source.get(k)
+                        if raw not in (None, ""):
+                            exp_value = raw
+                            break
+                    if exp_value not in (None, ""):
                         break
-                exp = status.get("expires_at")
-                if isinstance(exp, str) and exp:
-                    norm = exp.replace("Z", "+00:00")
+
+                if exp_value not in (None, ""):
+                    status["expires_at"] = str(exp_value)
                     try:
-                        exp_dt = datetime.fromisoformat(norm)
-                        if exp_dt.tzinfo is None:
-                            exp_dt = exp_dt.replace(tzinfo=timezone.utc)
-                        status["expires_in_seconds"] = float(
-                            exp_dt.astimezone(timezone.utc).timestamp() - datetime.now(timezone.utc).timestamp()
-                        )
+                        if isinstance(exp_value, (int, float)):
+                            exp_ts = float(exp_value)
+                        else:
+                            norm = str(exp_value).strip().replace("Z", "+00:00")
+                            exp_dt = datetime.fromisoformat(norm)
+                            if exp_dt.tzinfo is None:
+                                exp_dt = exp_dt.replace(tzinfo=timezone.utc)
+                            exp_ts = exp_dt.astimezone(timezone.utc).timestamp()
+                        status["expires_in_seconds"] = float(exp_ts - datetime.now(timezone.utc).timestamp())
                     except Exception:
                         pass
         except Exception:
             pass
 
         return status
+
+    def _extract_connected_accounts(self, payload: Any) -> List[BrokerConnectedAccount]:
+        return self.broker_adapter.extract_connected_accounts(payload)
+
+    def _extract_account_hash_rows(self, payload: Any) -> List[Dict[str, str]]:
+        return [row.to_dict() for row in self._extract_connected_accounts(payload)]
+
+    def fetch_connected_accounts(self) -> List[BrokerConnectedAccount]:
+        if not self._supports_broker_capability("supports_account_discovery"):
+            return []
+        if self.client is None:
+            return []
+
+        for method_name, args, kwargs in self.broker_adapter.account_numbers_candidates():
+            fn = getattr(self.client, method_name, None)
+            if not callable(fn):
+                continue
+            try:
+                response = fn(*args, **kwargs)
+                status_code = self._as_int(getattr(response, "status_code", 0), 0)
+                if status_code >= 400:
+                    raise RuntimeError(f"http_status_{status_code}")
+                payload = self._coerce_json_obj_or_list(response)
+                rows = self._extract_connected_accounts(payload)
+                if rows:
+                    return rows
+            except TypeError:
+                continue
+            except Exception:
+                continue
+        return []
+
+    def fetch_connected_account_rows(self) -> List[Dict[str, str]]:
+        return [row.to_dict() for row in self.fetch_connected_accounts()]
+
+    def _discover_live_account_hash(self, *, force: bool = False) -> str:
+        if self.client is None:
+            return str(self.live_account_hash or "").strip()
+        if not self._supports_broker_capability("supports_account_discovery"):
+            return str(self.live_account_hash or "").strip()
+        if not self.live_account_hash_auto_discover:
+            return str(self.live_account_hash or "").strip()
+        if self.live_account_hash and not force:
+            return str(self.live_account_hash).strip()
+
+        now_ts = time.time()
+        if not force and (now_ts - float(self._live_account_hash_last_refresh_ts)) < 30.0:
+            return str(self.live_account_hash or "").strip()
+        self._live_account_hash_last_refresh_ts = now_ts
+
+        try:
+            rows = self.fetch_connected_accounts()
+            if rows:
+                self.live_account_hash = str(rows[0].account_reference or "").strip()
+                self.live_account_reference = self.live_account_hash
+        except Exception:
+            pass
+
+        return str(self.live_account_hash or "").strip()
 
     def _log_auth_event(
         self,
@@ -258,10 +1222,15 @@ class BaseTrader:
             "event": event,
             "status": status,
             "reason": reason,
+            "broker": self.broker_name,
             "mode": self.mode,
             "mode_label": self.mode_label,
             "callback_url": self.callback_url,
-            "requested_browser": os.getenv("SCHWAB_AUTH_REQUESTED_BROWSER", "").strip(),
+            "requested_browser": (
+                os.getenv(self.broker_adapter.requested_browser_env_var, "").strip()
+                if getattr(self.broker_adapter, "requested_browser_env_var", "")
+                else ""
+            ),
             "token_status": self._token_status(),
         }
         corr = current_correlation()
@@ -281,10 +1250,13 @@ class BaseTrader:
         )
 
     def authenticate(self):
-        """Performs Schwab OAuth handshake."""
-        print("Starting Handshake with Schwab...")
+        """Performs broker OAuth handshake."""
+        print(f"Starting Handshake with {self.broker_display_name}...")
 
-        max_token_age_raw = os.getenv("SCHWAB_MAX_TOKEN_AGE_SECONDS", "0").strip().lower()
+        max_token_age_env = str(getattr(self.broker_adapter, "max_token_age_env_var", "") or "").strip()
+        max_token_age_raw = (
+            os.getenv(max_token_age_env, "0").strip().lower() if max_token_age_env else "0"
+        )
         if max_token_age_raw in {"", "none", "null"}:
             max_token_age = None
         else:
@@ -293,9 +1265,16 @@ class BaseTrader:
             except Exception:
                 max_token_age = 0.0
 
-        interactive = os.getenv("SCHWAB_AUTH_INTERACTIVE", "0").strip() == "1"
-        callback_timeout = float(os.getenv("SCHWAB_AUTH_CALLBACK_TIMEOUT_SECONDS", "300"))
-        requested_browser = os.getenv("SCHWAB_AUTH_REQUESTED_BROWSER", "").strip() or None
+        interactive_env = str(getattr(self.broker_adapter, "interactive_env_var", "") or "").strip()
+        callback_timeout_env = str(getattr(self.broker_adapter, "callback_timeout_env_var", "") or "").strip()
+        requested_browser_env = str(getattr(self.broker_adapter, "requested_browser_env_var", "") or "").strip()
+
+        interactive = (os.getenv(interactive_env, "0").strip() == "1") if interactive_env else False
+        try:
+            callback_timeout = float(os.getenv(callback_timeout_env, "300")) if callback_timeout_env else 300.0
+        except Exception:
+            callback_timeout = 300.0
+        requested_browser = (os.getenv(requested_browser_env, "").strip() or None) if requested_browser_env else None
 
         self._log_auth_event(
             event="auth_start",
@@ -309,16 +1288,18 @@ class BaseTrader:
         )
 
         try:
-            self.client = easy_client(
-                api_key=self.api_key,
-                app_secret=self.app_secret,
-                callback_url=self.callback_url,
-                token_path=self.token_path,
-                max_token_age=max_token_age,
-                callback_timeout=callback_timeout,
-                interactive=interactive,
-                requested_browser=requested_browser,
+            self.client = self.broker_adapter.authenticate(
+                BrokerAuthRequest(
+                    credentials=self._broker_credentials(),
+                    token_path=self.token_path,
+                    max_token_age=max_token_age,
+                    callback_timeout=callback_timeout,
+                    interactive=interactive,
+                    requested_browser=requested_browser,
+                )
             )
+            if not self.live_account_hash:
+                self._discover_live_account_hash(force=True)
             self._log_auth_event(
                 event="auth_success",
                 status="ok",
@@ -327,6 +1308,7 @@ class BaseTrader:
                     "callback_timeout_seconds": float(callback_timeout),
                     "requested_browser": requested_browser,
                     "max_token_age_seconds": max_token_age,
+                    "account_hash_configured": bool(self.live_account_hash),
                 },
             )
             print("Handshake Successful.")
@@ -360,6 +1342,8 @@ class BaseTrader:
             "BUY_TO_CLOSE",
             "SELL_TO_OPEN",
             "SELL_TO_CLOSE",
+            "CLOSE",
+            "ROLL",
         }
 
     def _as_float(self, value: Any, default: float = 0.0) -> float:
@@ -377,12 +1361,81 @@ class BaseTrader:
             return -qty
         return 0.0
 
+    def _paper_exposure_change_details(
+        self,
+        *,
+        symbol: str,
+        action: str,
+        quantity: float,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        profile = self._metadata_sleeve_profile(metadata) or "default"
+        symbol_key = str(symbol or "").strip().upper()
+        profile_book = self._paper_profile_positions.get(profile, {})
+        position = profile_book.get(symbol_key, {}) if isinstance(profile_book, dict) else {}
+        previous_qty = self._as_float(position.get("qty"), 0.0) if isinstance(position, dict) else 0.0
+        signed_qty = self._paper_signed_quantity(action, quantity)
+        next_qty = previous_qty + signed_qty
+        prior_abs = abs(previous_qty)
+        next_abs = abs(next_qty)
+        same_direction = bool(
+            previous_qty == 0.0
+            or signed_qty == 0.0
+            or (previous_qty > 0.0 and signed_qty > 0.0)
+            or (previous_qty < 0.0 and signed_qty < 0.0)
+        )
+        opening_qty = abs(signed_qty) if same_direction else max(abs(signed_qty) - abs(previous_qty), 0.0)
+        return {
+            "profile": profile,
+            "symbol": symbol_key,
+            "action": str(action or "").strip().upper(),
+            "previous_qty": float(previous_qty),
+            "signed_order_qty": float(signed_qty),
+            "projected_qty": float(next_qty),
+            "exposure_increase_qty": float(opening_qty),
+            "increases_exposure": bool(opening_qty > 1e-12),
+            "reduces_or_closes": bool(next_abs < prior_abs - 1e-12),
+            "crosses_through_flat": bool(
+                previous_qty != 0.0
+                and signed_qty != 0.0
+                and (previous_qty > 0.0) != (signed_qty > 0.0)
+                and abs(signed_qty) > abs(previous_qty)
+            ),
+        }
+
     def _paper_fill_price(self, *, features: Dict[str, Any], metadata: Dict[str, Any]) -> float:
         for key in ("fill_price", "execution_price", "price", "mark_price", "last_price"):
             val = self._as_float(metadata.get(key), 0.0)
             if val > 0.0:
                 return val
         return max(self._as_float(features.get("last_price"), 0.0), 0.0)
+
+    def _paper_expected_fill_enabled(self) -> bool:
+        return str(os.getenv("PAPER_EXECUTION_USE_EXPECTED_FILL_PRICE", "1") or "1").strip().lower() not in {
+            "0",
+            "false",
+            "no",
+            "off",
+        }
+
+    def _paper_fill_metadata(
+        self,
+        *,
+        metadata: Dict[str, Any],
+        expected_fill: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        out = dict(metadata or {})
+        explicit_fill = any(self._as_float(out.get(key), 0.0) > 0.0 for key in ("fill_price", "execution_price"))
+        expected_price = self._as_float(expected_fill.get("expected_fill_price"), 0.0)
+        if self._paper_expected_fill_enabled() and not explicit_fill and expected_price > 0.0:
+            out["fill_price"] = float(expected_price)
+            out["paper_fill_source"] = "expected_fill_model"
+            out["paper_fill_expected_slippage_bps"] = self._as_float(expected_fill.get("expected_slippage_bps"), 0.0)
+        elif explicit_fill:
+            out.setdefault("paper_fill_source", "explicit_fill")
+        else:
+            out.setdefault("paper_fill_source", "mark_price")
+        return out
 
     def _paper_execution_model_inputs(
         self,
@@ -431,27 +1484,102 @@ class BaseTrader:
             "ask_size": float(ask_size),
         }
 
-    def _paper_pnl_fields(
+    def _paper_regime_label(
         self,
         *,
-        symbol: str,
-        action: str,
-        quantity: float,
         features: Dict[str, Any],
         metadata: Dict[str, Any],
-    ) -> Dict[str, float]:
-        symbol_key = str(symbol).upper()
-        position = self._paper_positions.get(symbol_key, {"qty": 0.0, "avg_price": 0.0, "mark_price": 0.0})
+    ) -> Tuple[str, str]:
+        explicit_keys = (
+            "regime",
+            "market_regime",
+            "regime_label",
+            "regime_state",
+            "post_entry_regime_bucket",
+        )
+        for source, values in (("metadata", metadata), ("features", features)):
+            for key in explicit_keys:
+                raw = values.get(key)
+                if isinstance(raw, (dict, list, tuple, set)):
+                    continue
+                label = re.sub(r"[^a-z0-9]+", "_", str(raw or "").strip().lower()).strip("_")
+                if label and label not in {"unknown", "unclassified", "none", "n_a"}:
+                    aliases = {
+                        "mean_reversion": "mean_revert",
+                        "mean_reverting": "mean_revert",
+                        "range_bound": "chop",
+                        "rangebound": "chop",
+                        "choppy": "chop",
+                        "trending": "trend",
+                    }
+                    return aliases.get(label, label)[:96], f"explicit_{source}:{key}"
+
+        shock_keys = (
+            "news_shock_rate",
+            "calendar_macro_surprise_norm",
+            "market_micro_trade_halt_norm",
+            "market_micro_range_expansion_norm",
+        )
+        trend_keys = (
+            "day_regime_trend_norm",
+            "market_micro_trend_persistence_norm",
+            "futures_curve_shift_velocity_norm",
+        )
+        mean_revert_keys = (
+            "day_regime_mean_revert_norm",
+            "market_micro_reversal_risk_norm",
+        )
+        observed_keys = shock_keys + trend_keys + mean_revert_keys
+        if not any(key in features or key in metadata for key in observed_keys):
+            return "unknown", "regime_features_missing"
+
+        def axis_score(keys: Tuple[str, ...]) -> float:
+            return max(
+                (
+                    self._as_float(features.get(key), self._as_float(metadata.get(key), 0.0))
+                    for key in keys
+                ),
+                default=0.0,
+            )
+
+        shock_score = axis_score(shock_keys)
+        trend_score = axis_score(trend_keys)
+        mean_revert_score = axis_score(mean_revert_keys)
+        if shock_score >= 0.60:
+            return "shock", "derived_feature_axes"
+        if trend_score >= max(0.58, mean_revert_score + 0.08):
+            return "trend", "derived_feature_axes"
+        if mean_revert_score >= 0.55:
+            return "mean_revert", "derived_feature_axes"
+        return "chop", "derived_feature_axes"
+
+    def _update_paper_book(
+        self,
+        *,
+        positions: Dict[str, Dict[str, float]],
+        realized_total: float,
+        symbol_key: str,
+        signed_qty: float,
+        fill_price: float,
+        mark_price: float,
+        contract_multiplier: float = 1.0,
+    ) -> Dict[str, Any]:
+        position = positions.get(symbol_key, {"qty": 0.0, "avg_price": 0.0, "mark_price": 0.0})
         prev_qty = self._as_float(position.get("qty"), 0.0)
         prev_avg = self._as_float(position.get("avg_price"), 0.0)
-
-        fill_price = self._paper_fill_price(features=features, metadata=metadata)
-        mark_price = max(
-            self._as_float(metadata.get("mark_price"), 0.0),
-            self._as_float(features.get("last_price"), 0.0),
-            fill_price,
-        )
-        signed_qty = self._paper_signed_quantity(action, quantity)
+        multiplier = max(self._as_float(contract_multiplier, 1.0), 1e-12)
+        if prev_qty != 0.0 and "contract_multiplier" in position:
+            multiplier = max(self._as_float(position.get("contract_multiplier"), multiplier), 1e-12)
+        previous_unrealized_total = 0.0
+        for row in positions.values():
+            qty_i = self._as_float(row.get("qty"), 0.0)
+            avg_i = self._as_float(row.get("avg_price"), 0.0)
+            mark_i = self._as_float(row.get("mark_price"), 0.0)
+            if mark_i <= 0.0:
+                mark_i = avg_i
+            multiplier_i = max(self._as_float(row.get("contract_multiplier"), 1.0), 1e-12)
+            previous_unrealized_total += qty_i * (mark_i - avg_i) * multiplier_i
+        previous_net_total = float(realized_total) + previous_unrealized_total
 
         realized_delta = 0.0
         new_qty = prev_qty
@@ -468,9 +1596,9 @@ class BaseTrader:
             else:
                 closing_qty = min(abs(prev_qty), abs(signed_qty))
                 if prev_qty > 0.0:
-                    realized_delta = (fill_price - prev_avg) * closing_qty
+                    realized_delta = (fill_price - prev_avg) * closing_qty * multiplier
                 else:
-                    realized_delta = (prev_avg - fill_price) * closing_qty
+                    realized_delta = (prev_avg - fill_price) * closing_qty * multiplier
 
                 residual_abs = abs(signed_qty) - closing_qty
                 if residual_abs > 0.0:
@@ -486,35 +1614,161 @@ class BaseTrader:
         if mark_price <= 0.0:
             mark_price = fill_price
 
-        self._paper_realized_total += realized_delta
+        updated_realized_total = float(realized_total) + realized_delta
         position = {
             "qty": float(new_qty),
             "avg_price": float(new_avg),
             "mark_price": float(mark_price),
+            "contract_multiplier": float(multiplier),
         }
-        self._paper_positions[symbol_key] = position
+        positions[symbol_key] = position
 
-        unrealized_symbol = float(new_qty) * (float(mark_price) - float(new_avg))
+        unrealized_symbol = float(new_qty) * (float(mark_price) - float(new_avg)) * float(multiplier)
         unrealized_total = 0.0
-        for row in self._paper_positions.values():
+        for row in positions.values():
             qty_i = self._as_float(row.get("qty"), 0.0)
             avg_i = self._as_float(row.get("avg_price"), 0.0)
             mark_i = self._as_float(row.get("mark_price"), 0.0)
             if mark_i <= 0.0:
                 mark_i = avg_i
-            unrealized_total += qty_i * (mark_i - avg_i)
+            multiplier_i = max(self._as_float(row.get("contract_multiplier"), 1.0), 1e-12)
+            unrealized_total += qty_i * (mark_i - avg_i) * multiplier_i
+
+        net_total = updated_realized_total + unrealized_total
+        return {
+            "position_qty": float(new_qty),
+            "position_avg_price": float(new_avg),
+            "contract_multiplier": float(multiplier),
+            "realized_pnl_delta": float(realized_delta),
+            "unrealized_pnl_symbol": float(unrealized_symbol),
+            "realized_pnl_total": float(updated_realized_total),
+            "unrealized_pnl_total": float(unrealized_total),
+            "net_pnl_total": float(net_total),
+            "net_pnl_delta": float(net_total - previous_net_total),
+        }
+
+    def _paper_pnl_fields(
+        self,
+        *,
+        symbol: str,
+        action: str,
+        quantity: float,
+        strategy: str,
+        features: Dict[str, Any],
+        metadata: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        symbol_key = str(symbol).upper()
+        fill_price = self._paper_fill_price(features=features, metadata=metadata)
+        mark_price = max(
+            self._as_float(metadata.get("mark_price"), 0.0),
+            self._as_float(features.get("last_price"), 0.0),
+            fill_price,
+        )
+        signed_qty = self._paper_signed_quantity(action, quantity)
+        profile = self._metadata_sleeve_profile(metadata) or "default"
+        exposure_change = self._paper_exposure_change_details(
+            symbol=symbol,
+            action=action,
+            quantity=quantity,
+            metadata=metadata,
+        )
+        valuation = resolve_contract_valuation(symbol, metadata)
+        contract_multiplier = max(self._as_float(valuation.get("contract_multiplier"), 1.0), 1.0)
+        profile_position = self._paper_profile_positions.get(profile, {}).get(symbol_key, {})
+        legacy_position_preserved = bool(
+            isinstance(profile_position, dict)
+            and abs(self._as_float(profile_position.get("qty"), 0.0)) > 1e-12
+            and "contract_multiplier" not in profile_position
+            and contract_multiplier != 1.0
+        )
+        if legacy_position_preserved:
+            contract_multiplier = 1.0
+
+        ledger = self._update_paper_book(
+            positions=self._paper_positions,
+            realized_total=self._paper_realized_total,
+            symbol_key=symbol_key,
+            signed_qty=signed_qty,
+            fill_price=fill_price,
+            mark_price=mark_price,
+            contract_multiplier=contract_multiplier,
+        )
+        self._paper_realized_total = self._as_float(ledger.get("realized_pnl_total"), 0.0)
+
+        profile_positions = self._paper_profile_positions.setdefault(profile, {})
+        profile_book = self._update_paper_book(
+            positions=profile_positions,
+            realized_total=self._paper_profile_realized_totals.get(profile, 0.0),
+            symbol_key=symbol_key,
+            signed_qty=signed_qty,
+            fill_price=fill_price,
+            mark_price=mark_price,
+            contract_multiplier=contract_multiplier,
+        )
+        self._paper_profile_realized_totals[profile] = self._as_float(profile_book.get("realized_pnl_total"), 0.0)
+
+        strategy_key = str(strategy or "unknown").strip().lower() or "unknown"
+        strategy_positions = self._paper_strategy_positions.setdefault(strategy_key, {})
+        strategy_book = self._update_paper_book(
+            positions=strategy_positions,
+            realized_total=self._paper_strategy_realized_totals.get(strategy_key, 0.0),
+            symbol_key=symbol_key,
+            signed_qty=signed_qty,
+            fill_price=fill_price,
+            mark_price=mark_price,
+            contract_multiplier=contract_multiplier,
+        )
+        self._paper_strategy_realized_totals[strategy_key] = self._as_float(strategy_book.get("realized_pnl_total"), 0.0)
+        self._record_paper_trade_activity(
+            exposure=exposure_change,
+            profile=profile,
+            symbol=symbol_key,
+            action=action,
+        )
+        self._persist_paper_book_state()
 
         return {
             "fill_price": float(fill_price),
             "mark_price": float(mark_price),
-            "position_qty": float(new_qty),
-            "position_avg_price": float(new_avg),
-            "realized": float(realized_delta),
-            "unrealized": float(unrealized_symbol),
-            "realized_pnl": float(realized_delta),
-            "unrealized_pnl": float(unrealized_symbol),
-            "realized_pnl_total": float(self._paper_realized_total),
-            "unrealized_pnl_total": float(unrealized_total),
+            "position_qty": self._as_float(ledger.get("position_qty"), 0.0),
+            "position_avg_price": self._as_float(ledger.get("position_avg_price"), 0.0),
+            "contract_multiplier": self._as_float(ledger.get("contract_multiplier"), contract_multiplier),
+            "paper_valuation_policy_version": str(valuation.get("policy_version") or ""),
+            "paper_valuation_asset_type": str(valuation.get("asset_type") or ""),
+            "paper_valuation_contract_root": str(valuation.get("contract_root") or ""),
+            "paper_valuation_multiplier_source": (
+                "legacy_position_preserved"
+                if legacy_position_preserved
+                else str(valuation.get("multiplier_source") or "")
+            ),
+            "paper_valuation_ready": bool(valuation.get("valuation_ready", False)),
+            "paper_valuation_legacy_position_preserved": legacy_position_preserved,
+            "realized": self._as_float(ledger.get("realized_pnl_delta"), 0.0),
+            "unrealized": self._as_float(ledger.get("unrealized_pnl_symbol"), 0.0),
+            "realized_pnl": self._as_float(ledger.get("realized_pnl_delta"), 0.0),
+            "unrealized_pnl": self._as_float(ledger.get("unrealized_pnl_symbol"), 0.0),
+            "realized_pnl_total": self._as_float(ledger.get("realized_pnl_total"), 0.0),
+            "unrealized_pnl_total": self._as_float(ledger.get("unrealized_pnl_total"), 0.0),
+            "paper_pnl_schema_version": 3,
+            "paper_pnl_scope": "persistent_profile_book",
+            "paper_book_id": self._paper_book_id,
+            "paper_book_started_utc": self._paper_book_started_utc,
+            "paper_profile": profile,
+            "paper_profile_realized_pnl_total": self._as_float(profile_book.get("realized_pnl_total"), 0.0),
+            "paper_profile_unrealized_pnl_total": self._as_float(profile_book.get("unrealized_pnl_total"), 0.0),
+            "paper_profile_net_pnl_total": self._as_float(profile_book.get("net_pnl_total"), 0.0),
+            "paper_profile_net_pnl_delta": self._as_float(profile_book.get("net_pnl_delta"), 0.0),
+            "paper_strategy": strategy_key,
+            "paper_strategy_realized_pnl_total": self._as_float(strategy_book.get("realized_pnl_total"), 0.0),
+            "paper_strategy_unrealized_pnl_total": self._as_float(strategy_book.get("unrealized_pnl_total"), 0.0),
+            "paper_strategy_net_pnl_total": self._as_float(strategy_book.get("net_pnl_total"), 0.0),
+            "paper_strategy_net_pnl_delta": self._as_float(strategy_book.get("net_pnl_delta"), 0.0),
+            "paper_turnover_guard_version": "paper_turnover_guard_v1",
+            "paper_exposure_change": exposure_change,
+            "paper_ledger_realized_pnl_total": self._as_float(ledger.get("realized_pnl_total"), 0.0),
+            "paper_ledger_unrealized_pnl_total": self._as_float(ledger.get("unrealized_pnl_total"), 0.0),
+            "paper_ledger_net_pnl_total": self._as_float(ledger.get("net_pnl_total"), 0.0),
+            "paper_ledger_net_pnl_delta": self._as_float(ledger.get("net_pnl_delta"), 0.0),
         }
 
     def _explanation_log_paths(self) -> tuple[str, str]:
@@ -565,10 +1819,53 @@ class BaseTrader:
             "unrealized_pnl": float(paper_order.get("unrealized_pnl", 0.0) or 0.0),
             "realized_pnl_total": float(paper_order.get("realized_pnl_total", 0.0) or 0.0),
             "unrealized_pnl_total": float(paper_order.get("unrealized_pnl_total", 0.0) or 0.0),
+            "paper_pnl_schema_version": int(paper_order.get("paper_pnl_schema_version", 0) or 0),
+            "paper_pnl_scope": str(paper_order.get("paper_pnl_scope", "") or ""),
+            "paper_book_id": str(paper_order.get("paper_book_id", "") or ""),
+            "paper_book_started_utc": str(paper_order.get("paper_book_started_utc", "") or ""),
+            "paper_profile": str(paper_order.get("paper_profile", "") or ""),
+            "paper_profile_realized_pnl_total": float(paper_order.get("paper_profile_realized_pnl_total", 0.0) or 0.0),
+            "paper_profile_unrealized_pnl_total": float(paper_order.get("paper_profile_unrealized_pnl_total", 0.0) or 0.0),
+            "paper_profile_net_pnl_total": float(paper_order.get("paper_profile_net_pnl_total", 0.0) or 0.0),
+            "paper_profile_net_pnl_delta": float(paper_order.get("paper_profile_net_pnl_delta", 0.0) or 0.0),
+            "paper_strategy": str(paper_order.get("paper_strategy", "") or ""),
+            "paper_strategy_realized_pnl_total": float(paper_order.get("paper_strategy_realized_pnl_total", 0.0) or 0.0),
+            "paper_strategy_unrealized_pnl_total": float(paper_order.get("paper_strategy_unrealized_pnl_total", 0.0) or 0.0),
+            "paper_strategy_net_pnl_total": float(paper_order.get("paper_strategy_net_pnl_total", 0.0) or 0.0),
+            "paper_strategy_net_pnl_delta": float(paper_order.get("paper_strategy_net_pnl_delta", 0.0) or 0.0),
+            "paper_ledger_realized_pnl_total": float(paper_order.get("paper_ledger_realized_pnl_total", 0.0) or 0.0),
+            "paper_ledger_unrealized_pnl_total": float(paper_order.get("paper_ledger_unrealized_pnl_total", 0.0) or 0.0),
+            "paper_ledger_net_pnl_total": float(paper_order.get("paper_ledger_net_pnl_total", 0.0) or 0.0),
+            "paper_ledger_net_pnl_delta": float(paper_order.get("paper_ledger_net_pnl_delta", 0.0) or 0.0),
+            "reference_price": float(paper_order.get("reference_price", 0.0) or 0.0),
+            "expected_fill_price": float(paper_order.get("expected_fill_price", 0.0) or 0.0),
+            "expected_slippage_bps": float(paper_order.get("expected_slippage_bps", 0.0) or 0.0),
+            "realized_slippage_bps": float(paper_order.get("realized_slippage_bps", 0.0) or 0.0),
+            "slippage_gap_bps": float(paper_order.get("slippage_gap_bps", 0.0) or 0.0),
+            "expected_partial_fill_ratio": float(paper_order.get("expected_partial_fill_ratio", 1.0) or 1.0),
+            "expected_fill_quality_bucket": str(paper_order.get("expected_fill_quality_bucket", "") or ""),
+            "paper_fill_source": str(paper_order.get("paper_fill_source", "") or ""),
+            "execution_notional": float(paper_order.get("execution_notional", 0.0) or 0.0),
+            "expected_execution_cost_amount": float(paper_order.get("expected_execution_cost_amount", 0.0) or 0.0),
+            "post_cost_pnl_delta": float(paper_order.get("post_cost_pnl_delta", 0.0) or 0.0),
+            "post_cost_return_bps": float(paper_order.get("post_cost_return_bps", 0.0) or 0.0),
+            "tradeability_score": float(paper_order.get("tradeability_score", 0.0) or 0.0),
+            "source_quality_norm": float(paper_order.get("source_quality_norm", 0.0) or 0.0),
+            "event_proximity_norm": float(paper_order.get("event_proximity_norm", 0.0) or 0.0),
+            "allocation_conflict_norm": float(paper_order.get("allocation_conflict_norm", 0.0) or 0.0),
+            "model_spread_bps": float(paper_order.get("model_spread_bps", 0.0) or 0.0),
+            "spread_regime": str(paper_order.get("spread_regime", "") or ""),
+            "regime": str(paper_order.get("regime", "") or ""),
+            "regime_source": str(paper_order.get("regime_source", "") or ""),
             "decision_id": str(paper_order.get("decision_id", "") or ""),
             "parent_decision_id": str(paper_order.get("parent_decision_id", "") or ""),
             "run_id": str(paper_order.get("run_id", "") or ""),
             "iter_id": str(paper_order.get("iter_id", "") or ""),
+            "order_intent_evidence": (
+                paper_order.get("order_intent_evidence", {})
+                if isinstance(paper_order.get("order_intent_evidence"), dict)
+                else {}
+            ),
         }
 
         try:
@@ -616,6 +1913,9 @@ class BaseTrader:
         decision_entry: Dict[str, Any],
         safety: Optional[Dict[str, Any]] = None,
     ) -> None:
+        if not _dynamic_storage_flag(self.project_root, "LOG_DECISION_EXPLANATIONS", True):
+            return
+
         gates = decision_entry.get("gates", {})
         gate_summary = ", ".join(
             f"{k}={'PASS' if bool(v) else 'FAIL'}" for k, v in gates.items()
@@ -646,6 +1946,20 @@ class BaseTrader:
         )
         print(line)
 
+        explanation_features, explanation_feature_contract = compact_decision_features(
+            decision_entry.get("features", {}),
+            metadata=(
+                decision_entry.get("metadata", {})
+                if isinstance(decision_entry.get("metadata"), dict)
+                else {}
+            ),
+            mode=_dynamic_storage_value(
+                self.project_root,
+                "DECISION_EXPLANATION_FEATURE_MODE",
+                "minimal",
+            ),
+            preserve_primary_layers=False,
+        )
         payload = {
             "timestamp_utc": datetime.now(timezone.utc).isoformat(),
             "mode": self.mode_label,
@@ -662,7 +1976,11 @@ class BaseTrader:
             "threshold": float(decision_entry.get("threshold", 0.0)),
             "reasons": reasons,
             "gates": gates,
-            "features": decision_entry.get("features", {}),
+            "features": explanation_features,
+            "feature_compaction_contract": {
+                "explanation": explanation_feature_contract,
+                "decision": decision_entry.get("feature_compaction_contract", {}),
+            },
             "safety": safety or {},
             "metadata": decision_entry.get("metadata", {}),
         }
@@ -787,9 +2105,14 @@ class BaseTrader:
             "source": "base_trader.softguard",
         }
         try:
-            os.makedirs(os.path.dirname(self.global_halt_flag_path), exist_ok=True)
-            with open(self.global_halt_flag_path, "w", encoding="utf-8") as f:
-                f.write(json.dumps(payload, ensure_ascii=True, indent=2))
+            ok = write_halt_flag_atomic(
+                self.global_halt_flag_path,
+                payload,
+                project_root=self.project_root,
+                source="base_trader.softguard",
+            )
+            if not ok:
+                raise RuntimeError(f"halt_flag_write_failed:{self.global_halt_flag_path}")
             self._log_softguard_event(
                 event="global_halt_set",
                 status="ok",
@@ -806,6 +2129,51 @@ class BaseTrader:
                 details={"requested_reason": str(reason or "softguard")},
             )
             return {"ok": False, "error": err, "path": self.global_halt_flag_path}
+
+    def _should_auto_halt_for_api_circuit(
+        self,
+        *,
+        operation: str,
+        attempts_made: int = 0,
+        max_attempts: int = 1,
+        context: Optional[Dict[str, Any]] = None,
+    ) -> tuple[bool, Dict[str, Any]]:
+        details = dict(context or {})
+        execution_expected = bool(self.execution_enabled and not self.market_data_only)
+        details.update(
+            {
+                "operation": operation,
+                "attempts_made": int(attempts_made or 0),
+                "max_attempts": int(max_attempts or 1),
+                "execution_expected": execution_expected,
+                "execution_enabled": bool(self.execution_enabled),
+                "market_data_only": bool(self.market_data_only),
+            }
+        )
+        if operation != "get_accounts_snapshot":
+            return True, details
+
+        fail_streak = int(self._accounts_snapshot_soft_fail_streak)
+        min_failures = int(self.live_accounts_snapshot_halt_min_failures)
+        details.update(
+            {
+                "soft_fail_streak": fail_streak,
+                "halt_min_failures": min_failures,
+                "account_snapshot_halt_debounced": fail_streak < min_failures,
+            }
+        )
+        halt_in_data_only = os.getenv("LIVE_ACCOUNTS_SNAPSHOT_HALT_IN_MARKET_DATA_ONLY", "0").strip() == "1"
+        if not execution_expected and not halt_in_data_only:
+            details.update(
+                {
+                    "account_snapshot_halt_suppressed": True,
+                    "suppressed_reason": "market_data_only_or_paper_collection",
+                }
+            )
+            return False, details
+        if fail_streak < min_failures:
+            return False, details
+        return True, details
 
     def _auto_cancel_open_orders_if_due(self, *, reason: str) -> Dict[str, Any]:
         now_ts = time.time()
@@ -1057,11 +2425,36 @@ class BaseTrader:
                 reason="api_circuit_open",
                 details={"operation": operation, **(context or {})},
             )
-            if self.live_softguard_auto_halt_on_api_circuit:
-                self._engage_global_halt(
-                    reason="softguard_api_circuit_open",
-                    details={"operation": operation, **(context or {})},
+            if operation == "get_accounts_snapshot":
+                self._accounts_snapshot_soft_fail_streak += 1
+                soft_streak = int(self._accounts_snapshot_soft_fail_streak)
+                soft_grace = int(self.live_accounts_snapshot_soft_fail_grace)
+                out.update(
+                    {
+                        "soft_failure": bool(soft_streak <= soft_grace),
+                        "soft_fail_streak": soft_streak,
+                        "soft_fail_grace": soft_grace,
+                    }
                 )
+            if self.live_softguard_auto_halt_on_api_circuit:
+                should_halt, halt_details = self._should_auto_halt_for_api_circuit(
+                    operation=operation,
+                    attempts_made=0,
+                    max_attempts=max(int(self.live_api_retry_attempts), 1),
+                    context=context,
+                )
+                if should_halt:
+                    self._engage_global_halt(
+                        reason="softguard_api_circuit_open",
+                        details=halt_details,
+                    )
+                else:
+                    self._log_softguard_event(
+                        event="global_halt_debounced",
+                        status="blocked",
+                        reason="account_snapshot_soft_fail_grace",
+                        details=halt_details,
+                    )
             return out
 
         signature_errors: List[str] = []
@@ -1086,6 +2479,8 @@ class BaseTrader:
                     if status_code >= 400:
                         raise RuntimeError(f"http_status_{status_code}")
 
+                    if operation == "get_accounts_snapshot":
+                        self._accounts_snapshot_soft_fail_streak = 0
                     self.live_guard.record_api_success("broker_api")
                     latency_ms = round((time.time() - started) * 1000.0, 3)
                     payload = {
@@ -1227,8 +2622,63 @@ class BaseTrader:
                 "max_attempts": max_attempts,
             }
 
-        opened = self.live_guard.record_api_failure("broker_api")
         attempts_made = int(final_failure.get("attempt", len(attempt_failures)) or len(attempt_failures) or 1)
+        if operation == "get_accounts_snapshot":
+            self._accounts_snapshot_soft_fail_streak += 1
+            soft_streak = int(self._accounts_snapshot_soft_fail_streak)
+            soft_grace = int(self.live_accounts_snapshot_soft_fail_grace)
+            if soft_streak <= soft_grace:
+                details = {
+                    "method": str(final_failure.get("method", "")),
+                    "latency_ms": float(final_failure.get("latency_ms", 0.0) or 0.0),
+                    "retryable": bool(final_failure.get("retryable", False)),
+                    "status_code": int(final_failure.get("status_code", 0) or 0),
+                    "attempt": int(final_failure.get("attempt", attempts_made) or attempts_made),
+                    "attempts_made": attempts_made,
+                    "max_attempts": max_attempts,
+                    "soft_fail_streak": soft_streak,
+                    "soft_fail_grace": soft_grace,
+                    **(context or {}),
+                }
+                self._log_live_guard_event(
+                    event=operation,
+                    status="warn",
+                    reason=str(final_failure.get("error", "accounts_snapshot_transient_failure")),
+                    details=details,
+                )
+                self._log_softguard_event(
+                    event="accounts_snapshot_transient_failure",
+                    status="warn",
+                    reason=str(final_failure.get("error", "accounts_snapshot_transient_failure")),
+                    details={
+                        "operation": operation,
+                        "attempts_made": attempts_made,
+                        "max_attempts": max_attempts,
+                        "soft_fail_streak": soft_streak,
+                        "soft_fail_grace": soft_grace,
+                        **(context or {}),
+                    },
+                )
+                return {
+                    "ok": False,
+                    "operation": operation,
+                    "method": str(final_failure.get("method", "")),
+                    "error": str(final_failure.get("error", "api_call_failed")),
+                    "latency_ms": float(final_failure.get("latency_ms", 0.0) or 0.0),
+                    "status_code": int(final_failure.get("status_code", 0) or 0),
+                    "retryable": bool(final_failure.get("retryable", False)),
+                    "attempts_made": attempts_made,
+                    "max_attempts": max_attempts,
+                    "circuit_opened": False,
+                    "soft_failure": True,
+                    "soft_fail_streak": soft_streak,
+                    "soft_fail_grace": soft_grace,
+                    "details": {
+                        "failures": attempt_failures[-max_attempts:],
+                    },
+                }
+
+        opened = self.live_guard.record_api_failure("broker_api")
 
         self._log_live_guard_event(
             event=operation,
@@ -1247,15 +2697,24 @@ class BaseTrader:
             },
         )
         if opened and self.live_softguard_auto_halt_on_api_circuit:
-            self._engage_global_halt(
-                reason="softguard_api_circuit_opened",
-                details={
-                    "operation": operation,
-                    "attempts_made": attempts_made,
-                    "max_attempts": max_attempts,
-                    **(context or {}),
-                },
+            should_halt, halt_details = self._should_auto_halt_for_api_circuit(
+                operation=operation,
+                attempts_made=attempts_made,
+                max_attempts=max_attempts,
+                context=context,
             )
+            if should_halt:
+                self._engage_global_halt(
+                    reason="softguard_api_circuit_opened",
+                    details=halt_details,
+                )
+            else:
+                self._log_softguard_event(
+                    event="global_halt_debounced",
+                    status="blocked",
+                    reason="account_snapshot_soft_fail_grace",
+                    details=halt_details,
+                )
 
         return {
             "ok": False,
@@ -1268,6 +2727,15 @@ class BaseTrader:
             "attempts_made": attempts_made,
             "max_attempts": max_attempts,
             "circuit_opened": bool(opened),
+            **(
+                {
+                    "soft_failure": False,
+                    "soft_fail_streak": int(self._accounts_snapshot_soft_fail_streak),
+                    "soft_fail_grace": int(self.live_accounts_snapshot_soft_fail_grace),
+                }
+                if operation == "get_accounts_snapshot"
+                else {}
+            ),
             "details": {
                 "failures": attempt_failures[-max_attempts:],
             },
@@ -1289,7 +2757,733 @@ class BaseTrader:
             return mapping[side]
         raise ValueError(f"unsupported_order_action:{side}")
 
-    def _build_live_order_spec(
+    def _quote_client_candidates(self, *, symbol: str) -> List[Tuple[str, Tuple[Any, ...], Dict[str, Any]]]:
+        return self.broker_adapter.quote_candidates(symbol=symbol)
+
+    def _extract_quote_payload(self, raw: Any, symbol: str) -> Dict[str, Any]:
+        return self.broker_adapter.extract_quote_payload(raw, symbol)
+
+    def _quote_field(self, payload: Dict[str, Any], *keys: str) -> Any:
+        if not isinstance(payload, dict):
+            return None
+
+        containers: List[Dict[str, Any]] = [payload]
+        for nested in ("quote", "regular", "reference", "extended", "fundamental"):
+            child = payload.get(nested)
+            if isinstance(child, dict):
+                containers.append(child)
+
+        for container in containers:
+            for key in keys:
+                if key in container and container.get(key) is not None:
+                    return container.get(key)
+        return None
+
+    def _quote_snapshot_from_payload(self, *, symbol: str, payload: Any) -> BrokerQuoteSnapshot:
+        return self.broker_adapter.parse_quote_snapshot(symbol, payload)
+
+    def _build_live_order_request(
+        self,
+        *,
+        symbol: str,
+        action: str,
+        quantity: float,
+        order_spec: Dict[str, Any],
+        limit_price: float = 0.0,
+        asset_type: str = "EQUITY",
+    ) -> BrokerOrderRequest:
+        return BrokerOrderRequest(
+            symbol=str(symbol or "").strip().upper(),
+            action=str(action or "").strip().upper(),
+            quantity=float(quantity),
+            order_spec=dict(order_spec),
+            account_reference=str(self.live_account_hash or "").strip(),
+            asset_type=str(asset_type or "EQUITY").strip().upper(),
+            limit_price=float(limit_price or 0.0),
+        )
+
+    def _broker_order_result_from_output(self, out: Dict[str, Any], payload: Optional[Dict[str, Any]] = None) -> BrokerOrderResult:
+        response_payload = payload
+        if response_payload is None:
+            raw_payload = out.get("response_payload")
+            response_payload = raw_payload if isinstance(raw_payload, dict) else {}
+        return BrokerOrderResult(
+            ok=bool(out.get("ok")),
+            order_id=str(out.get("order_id", "") or "").strip(),
+            status_code=int(self._as_int(out.get("status_code", 0), 0)),
+            attempts_made=int(self._as_int(out.get("attempts_made", 1), 1)),
+            max_attempts=int(self._as_int(out.get("max_attempts", 1), 1)),
+            error=str(out.get("error", "") or "").strip(),
+            payload=dict(response_payload or {}),
+        )
+
+    def _fetch_live_quote(self, *, symbol: str) -> Dict[str, Any]:
+        if not self._supports_broker_capability("supports_market_data"):
+            return self._unsupported_broker_operation("get_quote", "supports_market_data")
+        out = self._invoke_client_candidates(
+            operation="get_quote",
+            candidates=self._quote_client_candidates(symbol=symbol),
+            context={"symbol": str(symbol).upper()},
+        )
+        if not out.get("ok"):
+            return out
+
+        payload = self._coerce_json_obj_or_list(out.get("response"))
+        if not isinstance(payload, dict):
+            return {
+                "ok": False,
+                "operation": "get_quote",
+                "error": "invalid_quote_payload",
+                "details": {"symbol": str(symbol).upper()},
+            }
+
+        snapshot = self._quote_snapshot_from_payload(symbol=symbol, payload=payload)
+        out["payload"] = dict(snapshot.raw_payload)
+        out["quote_payload"] = dict(snapshot.quote_payload)
+        out["quote_snapshot"] = snapshot.to_dict()
+        return out
+
+    def _option_chain_client_candidates(self, *, symbol: str, strike_count: int) -> List[Tuple[str, Tuple[Any, ...], Dict[str, Any]]]:
+        return self.broker_adapter.option_chain_candidates(symbol=symbol, strike_count=strike_count)
+
+    def _fetch_live_option_chain(self, *, symbol: str) -> Dict[str, Any]:
+        if not self._supports_broker_capability("supports_options"):
+            return self._unsupported_broker_operation("get_option_chain", "supports_options")
+        strike_count_env = str(getattr(self.broker_adapter, "options_chain_strike_count_env_var", "") or "").strip()
+        try:
+            strike_count = max(int(os.getenv(strike_count_env, "18") or 18), 4) if strike_count_env else 18
+        except Exception:
+            strike_count = 18
+        out = self._invoke_client_candidates(
+            operation="get_option_chain",
+            candidates=self._option_chain_client_candidates(symbol=symbol, strike_count=strike_count),
+            context={"symbol": str(symbol).upper(), "strike_count": strike_count},
+        )
+        if not out.get("ok"):
+            return out
+
+        payload = self._coerce_json_obj_or_list(out.get("response"))
+        if not isinstance(payload, dict):
+            return {
+                "ok": False,
+                "operation": "get_option_chain",
+                "error": "invalid_option_chain_payload",
+                "details": {"symbol": str(symbol).upper()},
+            }
+
+        out["payload"] = payload
+        return out
+
+    def _option_contract_symbol_from_row(self, row: Dict[str, Any]) -> str:
+        for key in ("symbol", "optionSymbol", "option_symbol"):
+            raw = row.get(key)
+            if raw is not None and str(raw).strip():
+                return str(raw).strip().upper()
+        return ""
+
+    def _option_quote_from_row(self, row: Dict[str, Any], *, instruction: str) -> float:
+        bid = max(self._as_float(row.get("bidPrice"), 0.0), self._as_float(row.get("bid"), 0.0))
+        ask = max(self._as_float(row.get("askPrice"), 0.0), self._as_float(row.get("ask"), 0.0))
+        mark = max(self._as_float(row.get("mark"), 0.0), self._as_float(row.get("markPrice"), 0.0))
+        last = max(self._as_float(row.get("last"), 0.0), self._as_float(row.get("lastPrice"), 0.0))
+        if instruction in {"BUY_TO_OPEN", "BUY_TO_CLOSE", "BUY", "BUY_TO_COVER"}:
+            return max(ask, mark, last, bid, 0.0)
+        return max(bid, mark, last, ask, 0.0)
+
+    def _option_leg_instruction(self, *, overall_action: str, leg_side: str) -> str:
+        side = str(leg_side or overall_action or "").strip().upper()
+        overall = str(overall_action or "").strip().upper()
+        close_reverse = {
+            "BUY_TO_OPEN": "SELL_TO_CLOSE",
+            "SELL_TO_OPEN": "BUY_TO_CLOSE",
+            "BUY": "SELL",
+            "SELL": "BUY_TO_COVER",
+        }
+        if overall in {"CLOSE", "BUY_TO_CLOSE", "SELL_TO_CLOSE"}:
+            side = close_reverse.get(side, side)
+        return self._order_instruction(side)
+
+    def _pick_option_chain_contract(
+        self,
+        *,
+        symbol: str,
+        payload: Dict[str, Any],
+        leg: Dict[str, Any],
+        overall_action: str,
+        now_ts: float,
+    ) -> Dict[str, Any]:
+        option_type = str(leg.get("type") or leg.get("option_type") or "").strip().upper()
+        target_strike = max(self._as_float(leg.get("strike"), 0.0), 0.0)
+        target_expiry_days = max(self._as_float(leg.get("expiry_days"), 0.0), 0.0)
+        requested_qty = max(int(round(self._as_float(leg.get("quantity"), 1.0))), 1)
+        if option_type not in {"CALL", "PUT"}:
+            raise ValueError(f"unsupported_option_type:{option_type or 'UNKNOWN'}")
+
+        instruction = self._option_leg_instruction(overall_action=overall_action, leg_side=str(leg.get("side") or ""))
+        best_match: Optional[Dict[str, Any]] = None
+        best_score = float("inf")
+
+        for row in _extract_option_rows(payload, now_ts=now_ts):
+            if _option_side(row) != option_type:
+                continue
+
+            contract_symbol = self._option_contract_symbol_from_row(row)
+            if not contract_symbol:
+                continue
+
+            strike_value = _option_row_strike(row, None)
+            expiry_value = _days_to_expiry(
+                row.get("daysToExpiration") if row.get("daysToExpiration") is not None else row.get("expirationDate"),
+                now_ts=now_ts,
+            )
+            if strike_value <= 0.0 or expiry_value is None:
+                continue
+
+            strike_gap = abs(strike_value - target_strike)
+            expiry_gap = abs(float(expiry_value) - target_expiry_days)
+            target_strike_denom = max(target_strike, 1.0)
+            target_expiry_denom = max(target_expiry_days, 1.0)
+            quote_value = self._option_quote_from_row(row, instruction=instruction)
+
+            bid = max(self._as_float(row.get("bidPrice"), 0.0), self._as_float(row.get("bid"), 0.0))
+            ask = max(self._as_float(row.get("askPrice"), 0.0), self._as_float(row.get("ask"), 0.0))
+            spread_penalty = 0.0
+            mid = (bid + ask) / 2.0 if bid > 0.0 and ask > 0.0 else 0.0
+            if mid > 0.0 and ask >= bid:
+                spread_penalty = min((ask - bid) / mid, 1.0)
+            elif quote_value <= 0.0:
+                spread_penalty = 1.0
+
+            score = (
+                7.0 * (strike_gap / target_strike_denom)
+                + 3.0 * (expiry_gap / target_expiry_denom)
+                + 0.5 * spread_penalty
+            )
+            if score >= best_score:
+                continue
+
+            best_score = score
+            best_match = {
+                "contract_symbol": contract_symbol,
+                "instruction": instruction,
+                "option_type": option_type,
+                "target_strike": float(target_strike),
+                "resolved_strike": float(strike_value),
+                "strike_gap": float(strike_gap),
+                "target_expiry_days": float(target_expiry_days),
+                "resolved_expiry_days": float(expiry_value),
+                "expiry_gap": float(expiry_gap),
+                "quantity": int(requested_qty),
+                "quote": float(quote_value),
+                "row": dict(row),
+            }
+
+        if best_match is None:
+            raise ValueError(f"option_contract_not_found:{str(symbol).upper()}:{option_type}:{target_strike:.2f}:{target_expiry_days:.1f}")
+
+        max_strike_gap = max(target_strike * 0.12, 3.0)
+        max_expiry_gap = max(target_expiry_days * 0.75, 14.0)
+        if best_match["strike_gap"] > max_strike_gap or best_match["expiry_gap"] > max_expiry_gap:
+            raise ValueError(
+                "option_contract_resolution_too_wide:"
+                f"{best_match['contract_symbol']}:strike_gap={best_match['strike_gap']:.2f}:expiry_gap={best_match['expiry_gap']:.2f}"
+            )
+        return best_match
+
+    def _strategy_unit_quantity(self, quantities: List[int]) -> int:
+        unit_qty = 0
+        for raw_qty in quantities:
+            qty = max(int(raw_qty), 1)
+            unit_qty = qty if unit_qty == 0 else gcd(unit_qty, qty)
+        return max(unit_qty, 1)
+
+    def _options_complex_strategy_type(self, *, options_style: str, legs: List[Dict[str, Any]], action: str = "") -> str:
+        style = str(options_style or "").strip().upper()
+        if str(action or "").strip().upper() == "ROLL":
+            if style in {
+                "BULL_PUT_CREDIT_SPREAD",
+                "BEAR_CALL_CREDIT_SPREAD",
+                "BULL_CALL_DEBIT_SPREAD",
+                "BEAR_PUT_DEBIT_SPREAD",
+            }:
+                return "VERTICAL_ROLL"
+            return "CUSTOM"
+        if len(legs) <= 1:
+            return "NONE"
+
+        mapping = {
+            "PROTECTIVE_COLLAR": "COLLAR_SYNTHETIC",
+            "EVENT_VOL_STRADDLE": "STRADDLE",
+            "EVENT_VOL_STRANGLE": "STRANGLE",
+            "POOR_MANS_COVERED_CALL": "DIAGONAL",
+            "BULL_PUT_CREDIT_SPREAD": "VERTICAL",
+            "BEAR_CALL_CREDIT_SPREAD": "VERTICAL",
+            "BULL_CALL_DEBIT_SPREAD": "VERTICAL",
+            "BEAR_PUT_DEBIT_SPREAD": "VERTICAL",
+            "CALL_CALENDAR_SPREAD": "CALENDAR",
+            "PUT_CALENDAR_SPREAD": "CALENDAR",
+            "DIAGONAL_CALENDAR_SPREAD": "DIAGONAL",
+            "IRON_CONDOR": "IRON_CONDOR",
+            "IRON_BUTTERFLY": "CUSTOM",
+            "BROKEN_WING_BUTTERFLY": "CUSTOM",
+            "RISK_REVERSAL_BULLISH": "CUSTOM",
+            "RISK_REVERSAL_BEARISH": "CUSTOM",
+        }
+        return mapping.get(style, "CUSTOM")
+
+    def _options_roll_leg_specs(self, *, options_plan: Dict[str, Any]) -> List[Dict[str, Any]]:
+        raw_legs = options_plan.get("legs")
+        if not isinstance(raw_legs, list) or not raw_legs:
+            return []
+        current_dte = max(int(round(self._as_float(options_plan.get("dte_days"), 0.0))), 0)
+        target_dte = max(int(round(self._as_float(options_plan.get("roll_target_dte_days"), 0.0))), 0)
+        if current_dte <= 0:
+            current_dte = max(int(round(max(self._as_float(leg.get("expiry_days"), 0.0), 0.0))) for leg in raw_legs if isinstance(leg, dict))
+        if target_dte <= 0:
+            target_dte = current_dte + max(int(os.getenv("OPTIONS_ROLL_FORWARD_DAYS", "21") or 21), 7)
+        delta_dte = max(target_dte - max(current_dte, 1), 7)
+
+        close_legs: List[Dict[str, Any]] = []
+        open_legs: List[Dict[str, Any]] = []
+        for raw_leg in raw_legs:
+            if not isinstance(raw_leg, dict):
+                continue
+            close_leg = dict(raw_leg)
+            close_leg["_execution_mode"] = "CLOSE"
+            close_legs.append(close_leg)
+
+            open_leg = dict(raw_leg)
+            open_leg["expiry_days"] = max(int(round(self._as_float(raw_leg.get("expiry_days"), current_dte))) + delta_dte, target_dte)
+            open_leg["_execution_mode"] = "OPEN"
+            open_legs.append(open_leg)
+        return close_legs + open_legs
+
+    def _futures_month_cycle(self, root_symbol: str) -> List[int]:
+        root = str(root_symbol or "").strip().upper()
+        if root in _QUARTERLY_FUTURES_ROOTS:
+            return [3, 6, 9, 12]
+        return list(range(1, 13))
+
+    def _normalize_futures_root_symbol(self, symbol: str) -> str:
+        raw = str(symbol or "").strip().upper()
+        if not raw:
+            return ""
+        if raw.startswith("/"):
+            raw = raw[1:]
+        if raw.endswith("=F"):
+            raw = raw[:-2]
+        match = _FUTURES_CONTRACT_RE.match(raw)
+        if match:
+            return match.group(1)
+        return raw
+
+    def _parse_futures_contract_symbol(self, symbol: str) -> Optional[Tuple[str, int, int]]:
+        raw = str(symbol or "").strip().upper()
+        match = _FUTURES_CONTRACT_RE.match(raw)
+        if not match:
+            return None
+        root, month_code, year_text = match.groups()
+        month = _FUTURES_CODE_TO_MONTH.get(month_code)
+        if month is None:
+            return None
+        year_value = int(year_text)
+        if year_value < 100:
+            year_value += 2000
+        return root, month, year_value
+
+    def _futures_contract_multiplier(self, root_symbol: str) -> float:
+        root = self._normalize_futures_root_symbol(root_symbol)
+        return max(float(_FUTURES_CONTRACT_MULTIPLIERS.get(root, float(os.getenv("FUTURES_CONTRACT_MULTIPLIER_DEFAULT", "50") or 50.0))), 1.0)
+
+    def _advance_futures_cycle(self, *, month: int, year: int, cycle: List[int], offset_contracts: int) -> Tuple[int, int]:
+        target_month = int(month)
+        target_year = int(year)
+        cycle_sorted = list(sorted(int(x) for x in cycle if 1 <= int(x) <= 12)) or list(range(1, 13))
+        current_index = cycle_sorted.index(target_month) if target_month in cycle_sorted else 0
+        remaining = max(int(offset_contracts), 0)
+        while remaining > 0:
+            current_index += 1
+            if current_index >= len(cycle_sorted):
+                current_index = 0
+                target_year += 1
+            remaining -= 1
+        return cycle_sorted[current_index], target_year
+
+    def _candidate_futures_symbols(self, *, root_symbol: str, month: int, year: int, prefer_slash: bool) -> List[str]:
+        root = self._normalize_futures_root_symbol(root_symbol)
+        code = _FUTURES_MONTH_CODES[int(month)]
+        yy = str(year)[-2:]
+        y = str(year)[-1:]
+        variants = [f"{root}{code}{yy}", f"{root}{code}{y}", f"{root}{code}{year}"]
+        out: List[str] = []
+        for base in variants:
+            if prefer_slash:
+                out.append(f"/{base}")
+            out.append(base)
+            if not prefer_slash:
+                out.append(f"/{base}")
+        seen: set[str] = set()
+        uniq: List[str] = []
+        for candidate in out:
+            if candidate in seen:
+                continue
+            seen.add(candidate)
+            uniq.append(candidate)
+        return uniq
+
+    def _futures_active_symbol_hints(self, payload: Dict[str, Any]) -> List[str]:
+        hints: List[str] = []
+        for key in (
+            "futureActiveSymbol",
+            "activeSymbol",
+            "activeContractSymbol",
+            "futureSymbol",
+            "symbol",
+        ):
+            raw = self._quote_field(payload, key)
+            if raw is None or not str(raw).strip():
+                continue
+            hints.append(str(raw).strip().upper())
+        seen: set[str] = set()
+        uniq: List[str] = []
+        for hint in hints:
+            if hint in seen:
+                continue
+            seen.add(hint)
+            uniq.append(hint)
+        return uniq
+
+    def _resolve_live_futures_contract_symbol(self, *, symbol: str, month_offset: int) -> Dict[str, Any]:
+        root_symbol = self._normalize_futures_root_symbol(symbol)
+        if not root_symbol:
+            raise ValueError("missing_futures_root_symbol")
+
+        prefer_slash = str(symbol or "").strip().startswith("/")
+        parsed = self._parse_futures_contract_symbol(symbol)
+        if parsed is not None:
+            base_root, base_month, base_year = parsed
+            cycle = self._futures_month_cycle(base_root)
+            target_month, target_year = self._advance_futures_cycle(
+                month=base_month,
+                year=base_year,
+                cycle=cycle,
+                offset_contracts=max(int(month_offset), 0),
+            )
+            for candidate in self._candidate_futures_symbols(
+                root_symbol=base_root,
+                month=target_month,
+                year=target_year,
+                prefer_slash=prefer_slash,
+            ):
+                quote = self._fetch_live_quote(symbol=candidate)
+                if quote.get("ok") and isinstance(quote.get("quote_payload"), dict) and quote.get("quote_payload"):
+                    return {
+                        "contract_symbol": candidate,
+                        "quote_payload": quote.get("quote_payload"),
+                        "method": str(quote.get("method", "")),
+                    }
+
+        root_quote = self._fetch_live_quote(symbol=symbol)
+        if root_quote.get("ok"):
+            quote_payload = root_quote.get("quote_payload") if isinstance(root_quote.get("quote_payload"), dict) else {}
+            for hint in self._futures_active_symbol_hints(quote_payload):
+                parsed_hint = self._parse_futures_contract_symbol(hint)
+                if parsed_hint is None:
+                    continue
+                hint_root, hint_month, hint_year = parsed_hint
+                cycle = self._futures_month_cycle(hint_root)
+                target_month, target_year = self._advance_futures_cycle(
+                    month=hint_month,
+                    year=hint_year,
+                    cycle=cycle,
+                    offset_contracts=max(int(month_offset), 0),
+                )
+                for candidate in self._candidate_futures_symbols(
+                    root_symbol=hint_root,
+                    month=target_month,
+                    year=target_year,
+                    prefer_slash=hint.startswith("/"),
+                ):
+                    quote = self._fetch_live_quote(symbol=candidate)
+                    if quote.get("ok") and isinstance(quote.get("quote_payload"), dict) and quote.get("quote_payload"):
+                        return {
+                            "contract_symbol": candidate,
+                            "quote_payload": quote.get("quote_payload"),
+                            "method": str(quote.get("method", "")),
+                        }
+
+        now_utc = datetime.now(timezone.utc)
+        cycle = self._futures_month_cycle(root_symbol)
+        candidate_month = cycle[0]
+        candidate_year = now_utc.year
+        for cycle_month in cycle:
+            if cycle_month >= now_utc.month:
+                candidate_month = cycle_month
+                break
+        else:
+            candidate_month = cycle[0]
+            candidate_year += 1
+
+        target_month, target_year = self._advance_futures_cycle(
+            month=candidate_month,
+            year=candidate_year,
+            cycle=cycle,
+            offset_contracts=max(int(month_offset), 0),
+        )
+        for candidate in self._candidate_futures_symbols(
+            root_symbol=root_symbol,
+            month=target_month,
+            year=target_year,
+            prefer_slash=prefer_slash,
+        ):
+            quote = self._fetch_live_quote(symbol=candidate)
+            if quote.get("ok") and isinstance(quote.get("quote_payload"), dict) and quote.get("quote_payload"):
+                return {
+                    "contract_symbol": candidate,
+                    "quote_payload": quote.get("quote_payload"),
+                    "method": str(quote.get("method", "")),
+                }
+
+        raise ValueError(f"futures_contract_not_found:{str(symbol).upper()}:offset={int(month_offset)}")
+
+    def _build_live_futures_order(
+        self,
+        *,
+        symbol: str,
+        action: str,
+        quantity: float,
+        limit_price: float,
+        futures_plan: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        plan_action = str(action or "").strip().upper()
+        raw_legs = futures_plan.get("roll_legs") if plan_action == "ROLL" else futures_plan.get("legs")
+        if not isinstance(raw_legs, list) or not raw_legs:
+            raise ValueError("missing_futures_plan_legs")
+
+        order_legs: List[Dict[str, Any]] = []
+        resolved_legs: List[Dict[str, Any]] = []
+        reference_price = 0.0
+        contract_multiplier = self._futures_contract_multiplier(symbol)
+        signed_price_total = 0.0
+        final_quantities: List[int] = []
+
+        for raw_leg in raw_legs:
+            if not isinstance(raw_leg, dict):
+                continue
+            side = self._order_instruction(str(raw_leg.get("side") or plan_action or "BUY"))
+            resolved = self._resolve_live_futures_contract_symbol(
+                symbol=str(symbol),
+                month_offset=max(int(raw_leg.get("month_offset", 0) or 0), 0),
+            )
+            contract_symbol = str(resolved.get("contract_symbol", "") or "").upper()
+            if not contract_symbol:
+                raise ValueError("resolved_futures_contract_missing_symbol")
+            quote_payload = resolved.get("quote_payload") if isinstance(resolved.get("quote_payload"), dict) else {}
+            quote_ref = max(
+                self._as_float(self._quote_field(quote_payload, "lastPrice", "mark", "markPrice", "closePrice"), 0.0),
+                0.0,
+            )
+            if quote_ref > 0.0:
+                reference_price = max(reference_price, quote_ref)
+            leg_qty = max(int(round(self._as_float(raw_leg.get("quantity"), quantity))), 1)
+            signed_leg_price = quote_ref if side.startswith("BUY") else -quote_ref
+            signed_price_total += signed_leg_price * leg_qty
+            final_quantities.append(leg_qty)
+            order_legs.append(
+                {
+                    "instruction": side,
+                    "quantity": float(leg_qty),
+                    "instrument": {
+                        "symbol": contract_symbol,
+                        "assetType": "FUTURE",
+                    },
+                }
+            )
+            resolved_legs.append(
+                {
+                    "contract_symbol": contract_symbol,
+                    "instruction": side,
+                    "quantity": leg_qty,
+                    "month_offset": int(raw_leg.get("month_offset", 0) or 0),
+                }
+            )
+
+        if not order_legs:
+            raise ValueError("empty_futures_order_legs")
+
+        price_value = max(self._as_float(limit_price, 0.0), 0.0)
+        order_spec: Dict[str, Any] = {
+            "orderType": "MARKET" if price_value <= 0.0 else "LIMIT",
+            "session": "NORMAL",
+            "duration": "DAY",
+            "orderStrategyType": "SINGLE",
+            "orderLegCollection": order_legs,
+        }
+        if price_value > 0.0:
+            order_spec["price"] = round(price_value, 6)
+
+        strategy_units = self._strategy_unit_quantity(final_quantities)
+        estimated_unit_price = abs(signed_price_total) / max(float(strategy_units), 1.0)
+        reference_value = float(price_value if price_value > 0.0 else (estimated_unit_price if estimated_unit_price > 0.0 else reference_price))
+
+        return {
+            "order_spec": order_spec,
+            "reference_price": reference_value,
+            "intended_price": reference_value,
+            "notional_multiplier": float(contract_multiplier),
+            "details": {
+                "futures_style": str(futures_plan.get("futures_style", "")),
+                "strategy_family": str(futures_plan.get("strategy_family", "")),
+                "resolved_legs": resolved_legs,
+                "estimated_unit_price": float(estimated_unit_price),
+            },
+        }
+
+    def _build_live_options_order(
+        self,
+        *,
+        symbol: str,
+        action: str,
+        quantity: float,
+        limit_price: float,
+        options_plan: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        raw_legs = options_plan.get("legs")
+        if not isinstance(raw_legs, list) or not raw_legs:
+            raise ValueError("missing_options_plan_legs")
+
+        plan_action = str(action or "").strip().upper()
+
+        fetch = self._fetch_live_option_chain(symbol=symbol)
+        if not fetch.get("ok"):
+            raise RuntimeError(str(fetch.get("error", "option_chain_unavailable")))
+
+        payload = fetch.get("payload") if isinstance(fetch.get("payload"), dict) else {}
+        now_ts = time.time()
+
+        requested_qty = max(int(round(self._as_float(quantity, 0.0))), 0)
+        plan_contracts = max(int(round(self._as_float(options_plan.get("contracts"), 0.0))), 0)
+        scale = 1
+        if plan_contracts > 0 and requested_qty > 0:
+            raw_scale = requested_qty / max(plan_contracts, 1)
+            rounded_scale = int(round(raw_scale))
+            if abs(raw_scale - rounded_scale) > 1e-6:
+                raise ValueError("non_integer_options_quantity_scale")
+            scale = max(rounded_scale, 1)
+        elif requested_qty > 0 and plan_contracts <= 0:
+            scale = max(requested_qty, 1)
+
+        leg_specs: List[Dict[str, Any]]
+        if plan_action == "ROLL":
+            leg_specs = self._options_roll_leg_specs(options_plan=options_plan)
+            if not leg_specs:
+                raise ValueError("options_roll_leg_specs_missing")
+        else:
+            leg_specs = [dict(leg) for leg in raw_legs if isinstance(leg, dict)]
+
+        order_legs: List[Dict[str, Any]] = []
+        resolved_legs: List[Dict[str, Any]] = []
+        signed_price_total = 0.0
+        final_quantities: List[int] = []
+        for raw_leg in leg_specs:
+            execution_mode = str(raw_leg.get("_execution_mode", "") or "").strip().upper()
+            overall_action = "CLOSE" if execution_mode == "CLOSE" else action
+
+            resolved = self._pick_option_chain_contract(
+                symbol=symbol,
+                payload=payload,
+                leg=raw_leg,
+                overall_action=overall_action,
+                now_ts=now_ts,
+            )
+            final_qty = max(int(resolved["quantity"]) * scale, 1)
+            instruction = str(resolved["instruction"])
+            quote_value = max(float(resolved["quote"]), 0.0)
+            signed_leg_price = quote_value if instruction.startswith("BUY") else -quote_value
+            signed_price_total += signed_leg_price * final_qty
+            final_quantities.append(final_qty)
+
+            order_legs.append(
+                {
+                    "instruction": instruction,
+                    "quantity": float(final_qty),
+                    "instrument": {
+                        "symbol": str(resolved["contract_symbol"]),
+                        "assetType": "OPTION",
+                    },
+                }
+            )
+            resolved_legs.append(
+                {
+                    "contract_symbol": str(resolved["contract_symbol"]),
+                    "instruction": instruction,
+                    "quantity": int(final_qty),
+                    "quote": float(quote_value),
+                    "resolved_strike": float(resolved["resolved_strike"]),
+                    "resolved_expiry_days": float(resolved["resolved_expiry_days"]),
+                    "execution_mode": execution_mode or ("OPEN" if plan_action == "ROLL" else "TRADE"),
+                }
+            )
+
+        if not order_legs:
+            raise ValueError("empty_options_order_legs")
+
+        strategy_units = self._strategy_unit_quantity(final_quantities)
+        estimated_unit_price = abs(signed_price_total) / max(float(strategy_units), 1.0)
+        explicit_limit = max(self._as_float(limit_price, 0.0), 0.0)
+
+        if len(order_legs) == 1:
+            effective_price = explicit_limit if explicit_limit > 0.0 else estimated_unit_price
+            order_type = "LIMIT" if effective_price > 0.0 else "MARKET"
+            price_value = effective_price
+        else:
+            effective_price = explicit_limit if explicit_limit > 0.0 else estimated_unit_price
+            if abs(signed_price_total) <= 0.005 * max(float(strategy_units), 1.0):
+                order_type = "NET_ZERO"
+                price_value = 0.0
+            elif signed_price_total > 0.0:
+                order_type = "NET_DEBIT"
+                price_value = effective_price
+            else:
+                order_type = "NET_CREDIT"
+                price_value = effective_price
+            if order_type != "NET_ZERO" and price_value <= 0.0:
+                raise ValueError("options_net_price_unavailable")
+
+        order_spec: Dict[str, Any] = {
+            "orderType": order_type,
+            "session": "NORMAL",
+            "duration": "DAY",
+            "orderStrategyType": "SINGLE",
+            "orderLegCollection": order_legs,
+        }
+
+        complex_type = self._options_complex_strategy_type(
+            options_style=str(options_plan.get("options_style", "")),
+            legs=order_legs,
+            action=plan_action,
+        )
+        if complex_type != "NONE":
+            order_spec["complexOrderStrategyType"] = complex_type
+
+        if price_value > 0.0 and order_type != "MARKET":
+            order_spec["price"] = round(price_value, 2)
+
+        return {
+            "order_spec": order_spec,
+            "reference_price": float(explicit_limit if explicit_limit > 0.0 else estimated_unit_price),
+            "intended_price": float(explicit_limit if explicit_limit > 0.0 else estimated_unit_price),
+            "notional_multiplier": 100.0,
+            "details": {
+                "option_chain_method": str(fetch.get("method", "")),
+                "options_style": str(options_plan.get("options_style", "")),
+                "strategy_family": str(options_plan.get("strategy_family", "")),
+                "resolved_legs": resolved_legs,
+                "estimated_unit_price": float(estimated_unit_price),
+            },
+        }
+
+    def _build_live_single_order_spec(
         self,
         *,
         symbol: str,
@@ -1327,6 +3521,123 @@ class BaseTrader:
             out["price"] = round(limit, 6)
         return out
 
+    def _build_live_order_spec(
+        self,
+        *,
+        symbol: str,
+        action: str,
+        quantity: float,
+        limit_price: float = 0.0,
+        asset_type: str = "EQUITY",
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        md = metadata if isinstance(metadata, dict) else {}
+        options_plan = md.get("options_plan") if isinstance(md.get("options_plan"), dict) else {}
+        futures_plan = md.get("futures_plan") if isinstance(md.get("futures_plan"), dict) else {}
+        if isinstance(options_plan, dict) and options_plan.get("legs"):
+            return self._build_live_options_order(
+                symbol=symbol,
+                action=action,
+                quantity=quantity,
+                limit_price=limit_price,
+                options_plan=options_plan,
+            )["order_spec"]
+        if isinstance(futures_plan, dict) and futures_plan.get("legs"):
+            return self._build_live_futures_order(
+                symbol=symbol,
+                action=action,
+                quantity=quantity,
+                limit_price=limit_price,
+                futures_plan=futures_plan,
+            )["order_spec"]
+        return self._build_live_single_order_spec(
+            symbol=symbol,
+            action=action,
+            quantity=quantity,
+            limit_price=limit_price,
+            asset_type=asset_type,
+        )
+
+    def _prepare_live_order(
+        self,
+        *,
+        symbol: str,
+        action: str,
+        quantity: float,
+        limit_price: float = 0.0,
+        asset_type: str = "EQUITY",
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        md = metadata if isinstance(metadata, dict) else {}
+        options_plan = md.get("options_plan") if isinstance(md.get("options_plan"), dict) else {}
+        futures_plan = md.get("futures_plan") if isinstance(md.get("futures_plan"), dict) else {}
+
+        if isinstance(options_plan, dict) and options_plan.get("legs"):
+            try:
+                preview = self._build_live_options_order(
+                    symbol=symbol,
+                    action=action,
+                    quantity=quantity,
+                    limit_price=limit_price,
+                    options_plan=options_plan,
+                )
+            except Exception as exc:
+                return {
+                    "ok": False,
+                    "error": f"options_order_prep_failed:{type(exc).__name__}:{exc}",
+                    "details": {
+                        "options_style": str(options_plan.get("options_style", "")),
+                        "strategy_family": str(options_plan.get("strategy_family", "")),
+                    },
+                }
+            return {"ok": True, **preview}
+
+        if isinstance(futures_plan, dict) and futures_plan.get("legs"):
+            try:
+                preview = self._build_live_futures_order(
+                    symbol=symbol,
+                    action=action,
+                    quantity=quantity,
+                    limit_price=limit_price,
+                    futures_plan=futures_plan,
+                )
+            except Exception as exc:
+                return {
+                    "ok": False,
+                    "error": f"futures_order_prep_failed:{type(exc).__name__}:{exc}",
+                    "details": {
+                        "futures_style": str(futures_plan.get("futures_style", "")),
+                        "strategy_family": str(futures_plan.get("strategy_family", "")),
+                    },
+                }
+            return {"ok": True, **preview}
+
+        return {
+            "ok": True,
+            "order_spec": self._build_live_single_order_spec(
+                symbol=symbol,
+                action=action,
+                quantity=quantity,
+                limit_price=limit_price,
+                asset_type=asset_type,
+            ),
+            "reference_price": 0.0,
+            "intended_price": 0.0,
+            "notional_multiplier": 1.0,
+            "details": {},
+        }
+
+    def _durable_live_order_ledger(self) -> LiveOrderLedger:
+        if self._live_order_ledger is None:
+            configured = os.getenv("LIVE_ORDER_LEDGER_PATH", "").strip()
+            path = (
+                Path(configured).expanduser()
+                if configured
+                else Path(self.project_root) / "governance" / "runtime" / "live_order_ledger.sqlite3"
+            )
+            self._live_order_ledger = LiveOrderLedger(path)
+        return self._live_order_ledger
+
     def _live_place_order(
         self,
         *,
@@ -1334,17 +3645,162 @@ class BaseTrader:
         action: str,
         quantity: float,
         order_spec: Dict[str, Any],
+        intent_id: str = "",
+        reference_price: float = 0.0,
+        risk_reducing_exit: bool = False,
+        intent_evidence: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
-        candidates: List[Tuple[str, Tuple[Any, ...], Dict[str, Any]]] = []
-        if self.live_account_hash:
-            candidates.append(("place_order", (self.live_account_hash, order_spec), {}))
-        candidates.append(("place_order", (order_spec,), {}))
-
+        if not self._supports_broker_capability("supports_order_place"):
+            return self._unsupported_broker_operation("place_order", "supports_order_place")
+        # The mock adapter never reaches a broker and is used to exercise PAPER
+        # execution contracts. Every real broker still passes the live firewall.
+        real_broker = str(self.broker_name or "").strip().lower() != "mock"
+        durable_intent_id = str(intent_id or "").strip()
+        ledger: Optional[LiveOrderLedger] = None
+        if real_broker:
+            ledger = self._durable_live_order_ledger()
+            ambiguity_rows = [
+                row
+                for row in ledger.unresolved()
+                if str(row.get("state") or "") in {"submitting", "submit_unknown", "cancel_pending", "cancel_unknown"}
+            ]
+            if ambiguity_rows:
+                return {
+                    "ok": False,
+                    "operation": "place_order",
+                    "error": "unresolved_broker_operation_requires_reconciliation",
+                    "broker_reconciliation_required": True,
+                    "unresolved_broker_operations": [
+                        {
+                            "intent_id": row.get("intent_id"),
+                            "broker_order_id": row.get("broker_order_id"),
+                            "state": row.get("state"),
+                        }
+                        for row in ambiguity_rows[:20]
+                    ],
+                }
+            firewall = production_order_firewall_check(
+                project_root=self.project_root,
+                symbol=symbol,
+                action=action,
+                quantity=quantity,
+                order_spec=order_spec,
+                reference_price=reference_price,
+                risk_reducing_exit=risk_reducing_exit,
+            )
+            if not firewall.ok:
+                details = {
+                    **firewall.details,
+                    "order_spec": order_spec,
+                }
+                self._log_live_guard_event(
+                    event="place_order",
+                    status="blocked",
+                    reason=firewall.reason,
+                    details=details,
+                )
+                self._log_softguard_event(
+                    event="production_order_firewall",
+                    status="blocked",
+                    reason=firewall.reason,
+                    details=details,
+                )
+                return {
+                    "ok": False,
+                    "operation": "place_order",
+                    "error": firewall.reason,
+                    "production_order_firewall": {
+                        "ok": False,
+                        "gate": firewall.gate,
+                        "reason": firewall.reason,
+                        "details": firewall.details,
+                    },
+                }
+            if not durable_intent_id:
+                return {
+                    "ok": False,
+                    "operation": "place_order",
+                    "error": "missing_live_order_intent_id",
+                    "details": {
+                        "symbol": str(symbol).upper(),
+                        "action": str(action).upper(),
+                        "policy": "every real broker submit requires a stable decision intent id",
+                    },
+                }
+            reservation = ledger.reserve(
+                intent_id=durable_intent_id,
+                payload={
+                    "broker": self.broker_name,
+                    "account_reference": self.live_account_hash,
+                    "symbol": str(symbol).upper(),
+                    "action": str(action).upper(),
+                    "quantity": float(quantity),
+                    "order_spec": order_spec,
+                    "mode_invariant_intent": intent_evidence or {},
+                },
+                requested_quantity=quantity,
+            )
+            if not reservation.get("reserved", False):
+                self._log_softguard_event(
+                    event="live_order_idempotency",
+                    status="blocked",
+                    reason=str(reservation.get("reason") or "intent_already_reserved"),
+                    details=reservation,
+                )
+                return {
+                    "ok": False,
+                    "operation": "place_order",
+                    "error": str(reservation.get("reason") or "intent_already_reserved"),
+                    "durable_order_intent": reservation,
+                }
+            ledger.mark_submitting(durable_intent_id)
+        order_request = self._build_live_order_request(
+            symbol=symbol,
+            action=action,
+            quantity=quantity,
+            order_spec=order_spec,
+        )
         out = self._invoke_client_candidates(
             operation="place_order",
-            candidates=candidates,
+            candidates=self.broker_adapter.place_order_candidates(
+                account_reference=order_request.account_reference,
+                order_spec=order_request.order_spec,
+            ),
             context={"symbol": str(symbol).upper(), "action": str(action).upper(), "quantity": float(quantity)},
         )
+        if ledger is not None:
+            broker_result = self._broker_order_result_from_output(out)
+            status_code = self._as_float(out.get("status_code"), 0.0)
+            definitive_rejection = bool(
+                not out.get("ok", False)
+                and 400 <= int(status_code) < 500
+                and int(status_code) not in {408, 409, 425, 429}
+            )
+            ledger_state = ledger.mark_submit_result(
+                intent_id=durable_intent_id,
+                acknowledged=bool(out.get("ok", False)),
+                broker_order_id=str(broker_result.order_id or ""),
+                error=str(out.get("error") or ""),
+                definitively_rejected=definitive_rejection,
+            )
+            out["durable_order_intent"] = ledger_state
+            if str(ledger_state.get("state") or "") == "submit_unknown":
+                out["ok"] = False
+                out["error"] = "broker_submit_outcome_unknown"
+                out["broker_submission_may_have_succeeded"] = True
+                out["broker_reconciliation_required"] = True
+                out["auto_halt"] = self._engage_global_halt(
+                    reason="broker_submit_outcome_unknown",
+                    details={
+                        "intent_id": durable_intent_id,
+                        "symbol": str(symbol).upper(),
+                        "action": str(action).upper(),
+                        "quantity": float(quantity),
+                    },
+                )
+        out["order_request"] = order_request.to_dict()
+        out["order_result"] = self._broker_order_result_from_output(out).to_dict()
+        out["order_intent_evidence"] = intent_evidence or {}
         return out
 
     def modify_live_order(
@@ -1370,6 +3826,8 @@ class BaseTrader:
         oid = str(order_id or "").strip()
         if not oid:
             return {"ok": False, "error": "missing_order_id"}
+        if not self._supports_broker_capability("supports_order_replace"):
+            return self._unsupported_broker_operation("replace_order", "supports_order_replace")
 
         spec = self._build_live_order_spec(
             symbol=symbol,
@@ -1378,17 +3836,26 @@ class BaseTrader:
             limit_price=limit_price,
             asset_type=asset_type,
         )
-
-        candidates: List[Tuple[str, Tuple[Any, ...], Dict[str, Any]]] = []
-        if self.live_account_hash:
-            candidates.append(("replace_order", (self.live_account_hash, oid, spec), {}))
-        candidates.append(("replace_order", (oid, spec), {}))
+        order_request = self._build_live_order_request(
+            symbol=symbol,
+            action=action,
+            quantity=quantity,
+            order_spec=spec,
+            limit_price=limit_price,
+            asset_type=asset_type,
+        )
 
         out = self._invoke_client_candidates(
             operation="replace_order",
-            candidates=candidates,
+            candidates=self.broker_adapter.replace_order_candidates(
+                account_reference=order_request.account_reference,
+                order_id=oid,
+                order_spec=order_request.order_spec,
+            ),
             context={"order_id": oid, "symbol": str(symbol).upper(), "action": str(action).upper(), "quantity": float(quantity)},
         )
+        out["order_request"] = order_request.to_dict()
+        out["order_result"] = self._broker_order_result_from_output(out).to_dict()
         if out.get("ok"):
             self.live_guard.register_open_order(order_id=oid, symbol=symbol, action=action, quantity=quantity)
         return out
@@ -1397,34 +3864,72 @@ class BaseTrader:
         oid = str(order_id or "").strip()
         if not oid:
             return {"ok": False, "error": "missing_order_id"}
+        if not self._supports_broker_capability("supports_order_cancel"):
+            return self._unsupported_broker_operation("cancel_order", "supports_order_cancel")
 
-        candidates: List[Tuple[str, Tuple[Any, ...], Dict[str, Any]]] = []
-        if self.live_account_hash:
-            candidates.append(("cancel_order", (self.live_account_hash, oid), {}))
-        candidates.append(("cancel_order", (oid,), {}))
+        ledger: Optional[LiveOrderLedger] = None
+        ledger_row: Dict[str, Any] = {}
+        if str(self.broker_name or "").strip().lower() != "mock":
+            ledger = self._durable_live_order_ledger()
+            ledger_row = ledger.get_by_broker_order_id(oid)
+            ledger_state = str(ledger_row.get("state") or "")
+            if ledger_state in {"filled", "canceled", "rejected", "expired"}:
+                return {
+                    "ok": False,
+                    "operation": "cancel_order",
+                    "error": "order_already_terminal",
+                    "durable_order_intent": ledger_row,
+                }
+            if ledger_state in {"cancel_pending", "cancel_unknown"}:
+                return {
+                    "ok": False,
+                    "operation": "cancel_order",
+                    "error": "cancel_reconciliation_required",
+                    "broker_reconciliation_required": True,
+                    "durable_order_intent": ledger_row,
+                }
+            if ledger_row:
+                ledger_row = ledger.mark_cancel_pending(oid)
 
         out = self._invoke_client_candidates(
             operation="cancel_order",
-            candidates=candidates,
+            candidates=self.broker_adapter.cancel_order_candidates(
+                account_reference=self.live_account_hash,
+                order_id=oid,
+            ),
             context={"order_id": oid},
         )
-        if out.get("ok"):
+        out["order_result"] = self._broker_order_result_from_output(out).to_dict()
+        if ledger is not None and ledger_row:
+            try:
+                if not out.get("ok"):
+                    out["durable_order_intent"] = ledger.mark_cancel_unknown(
+                        oid,
+                        error=str(out.get("error") or "cancel_result_unknown"),
+                    )
+                else:
+                    out["durable_order_intent"] = ledger.get_by_broker_order_id(oid)
+            except (KeyError, ValueError) as exc:
+                out["durable_order_ledger_error"] = f"{type(exc).__name__}:{exc}"
+        if out.get("ok") and not ledger_row:
             self.live_guard.close_open_order(oid)
+        elif out.get("ok") and ledger_row:
+            out["cancellation_pending_reconciliation"] = True
         return out
 
     def _live_fetch_order(self, order_id: str) -> Dict[str, Any]:
         oid = str(order_id or "").strip()
         if not oid:
             return {"ok": False, "error": "missing_order_id"}
-
-        candidates: List[Tuple[str, Tuple[Any, ...], Dict[str, Any]]] = []
-        if self.live_account_hash:
-            candidates.append(("get_order", (self.live_account_hash, oid), {}))
-        candidates.append(("get_order", (oid,), {}))
+        if not self._supports_broker_capability("supports_order_fetch"):
+            return self._unsupported_broker_operation("get_order", "supports_order_fetch")
 
         out = self._invoke_client_candidates(
             operation="get_order",
-            candidates=candidates,
+            candidates=self.broker_adapter.fetch_order_candidates(
+                account_reference=self.live_account_hash,
+                order_id=oid,
+            ),
             context={"order_id": oid},
         )
         if not out.get("ok"):
@@ -1432,6 +3937,7 @@ class BaseTrader:
 
         payload = self._coerce_json_payload(out.get("response"))
         out["order_payload"] = payload
+        out["order_result"] = self._broker_order_result_from_output(out, payload).to_dict()
         return out
 
     def _order_status(self, payload: Dict[str, Any]) -> str:
@@ -1493,8 +3999,23 @@ class BaseTrader:
                     inst = legs[0].get("instrument") if isinstance(legs[0].get("instrument"), dict) else {}
                     symbol = str(inst.get("symbol", "")).strip().upper()
 
+            qty, price = self._filled_qty_price(payload)
+            ledger_state: Optional[Dict[str, Any]] = None
+            ledger_error = ""
+            if str(self.broker_name or "").strip().lower() != "mock":
+                try:
+                    ledger = self._durable_live_order_ledger()
+                    if ledger.get_by_broker_order_id(oid):
+                        ledger_state = ledger.record_broker_update(
+                            broker_order_id=oid,
+                            broker_status=status,
+                            filled_quantity=qty,
+                            average_fill_price=price,
+                        )
+                except (KeyError, ValueError) as exc:
+                    ledger_error = f"{type(exc).__name__}:{exc}"
+
             if status in {"FILLED", "EXECUTED"}:
-                qty, price = self._filled_qty_price(payload)
                 action = self._extract_fill_action(payload)
                 fill_state = None
                 if qty > 0.0 and price > 0.0 and symbol:
@@ -1508,13 +4029,15 @@ class BaseTrader:
                         "filled_qty": float(qty),
                         "fill_price": float(price),
                         "fill_state": fill_state,
+                        "durable_order_intent": ledger_state,
+                        "durable_order_ledger_error": ledger_error,
                     }
                 )
             elif status in {"CANCELED", "REJECTED", "EXPIRED"}:
                 self.live_guard.close_open_order(oid)
-                rows.append({"order_id": oid, "status": status, "symbol": symbol})
+                rows.append({"order_id": oid, "status": status, "symbol": symbol, "durable_order_intent": ledger_state, "durable_order_ledger_error": ledger_error})
             else:
-                rows.append({"order_id": oid, "status": status, "symbol": symbol})
+                rows.append({"order_id": oid, "status": status, "symbol": symbol, "durable_order_intent": ledger_state, "durable_order_ledger_error": ledger_error})
 
         return {
             "status": "ok",
@@ -1619,26 +4142,174 @@ class BaseTrader:
 
         return sorted(order_ids)
 
+    def _account_snapshot_metadata(self, payload: Any, *, default_mode: str = "") -> Dict[str, Any]:
+        mode = str(default_mode or "").strip()
+        account_count = 0
+        failed_account_count = 0
+        discovered_account_count = 0
+        partial = False
+
+        if isinstance(payload, dict):
+            accounts = payload.get("accounts")
+            if isinstance(accounts, list):
+                account_count = len([row for row in accounts if isinstance(row, dict)])
+                if not mode:
+                    mode = str(payload.get("account_snapshot_mode") or "connected_account_aggregate")
+            elif isinstance(payload.get("securitiesAccount"), dict):
+                account_count = 1
+                if not mode:
+                    mode = "single_account"
+            elif any(key in payload for key in ("positions", "orderStrategies", "orders")):
+                account_count = 1
+                if not mode:
+                    mode = "single_account"
+            account_count = max(self._as_int(payload.get("account_count", account_count), account_count), account_count)
+            discovered_account_count = self._as_int(payload.get("discovered_account_count", account_count), account_count)
+            failed_account_count = self._as_int(payload.get("failed_account_count", 0), 0)
+            partial = bool(payload.get("partial", False))
+        elif isinstance(payload, list):
+            account_count = len([row for row in payload if isinstance(row, dict)])
+            discovered_account_count = account_count
+            if not mode:
+                mode = "account_list"
+
+        return {
+            "account_snapshot_mode": mode,
+            "account_count": int(account_count),
+            "discovered_account_count": int(discovered_account_count),
+            "failed_account_count": int(failed_account_count),
+            "account_snapshot_partial": bool(partial or failed_account_count > 0),
+        }
+
+    def _live_fetch_connected_accounts_payload(self) -> Dict[str, Any]:
+        accounts = self.fetch_connected_accounts()
+        if not accounts:
+            return {
+                "ok": False,
+                "operation": "get_accounts_snapshot",
+                "error": "no_connected_accounts_discovered",
+                "account_snapshot_mode": "connected_account_aggregate",
+                "account_count": 0,
+                "discovered_account_count": 0,
+                "failed_account_count": 0,
+            }
+
+        account_payloads: List[Dict[str, Any]] = []
+        failures: List[Dict[str, Any]] = []
+        for account in accounts:
+            account_reference = str(account.account_reference or "").strip()
+            account_number = str(account.account_number or "").strip()
+            candidates = self.broker_adapter.accounts_snapshot_candidates(
+                account_reference=account_reference,
+                allow_global_fallback=False,
+            )
+            out = self._invoke_client_candidates(
+                operation="get_accounts_snapshot",
+                candidates=candidates,
+                context={
+                    "account_hash_configured": bool(account_reference),
+                    "account_snapshot_mode": "connected_account_aggregate",
+                },
+            )
+            if not bool(out.get("ok", False)):
+                failures.append(
+                    {
+                        "account_number_tail": account_number[-4:] if account_number else "",
+                        "account_reference_present": bool(account_reference),
+                        "error": str(out.get("error") or "account_snapshot_failed"),
+                        "status_code": self._as_int(out.get("status_code", 0), 0),
+                        "soft_failure": bool(out.get("soft_failure", False)),
+                        "soft_fail_streak": self._as_int(out.get("soft_fail_streak", 0), 0),
+                        "soft_fail_grace": self._as_int(out.get("soft_fail_grace", 0), 0),
+                    }
+                )
+                continue
+            payload = self._coerce_json_obj_or_list(out.get("response"))
+            account_payload = dict(payload) if isinstance(payload, dict) else {"payload": payload}
+            account_payload["_broker_account"] = {
+                "account_number_tail": account_number[-4:] if account_number else "",
+                "account_reference_present": bool(account_reference),
+            }
+            account_payloads.append(account_payload)
+
+        aggregate_payload = {
+            "account_snapshot_mode": "connected_account_aggregate",
+            "accounts": account_payloads,
+            "account_count": len(account_payloads),
+            "discovered_account_count": len(accounts),
+            "failed_account_count": len(failures),
+            "partial": bool(failures),
+            "failures": failures[:10],
+        }
+        return {
+            "ok": bool(account_payloads),
+            "payload": aggregate_payload,
+            "operation": "get_accounts_snapshot",
+            "account_snapshot_mode": "connected_account_aggregate",
+            "account_count": len(account_payloads),
+            "discovered_account_count": len(accounts),
+            "failed_account_count": len(failures),
+            "account_snapshot_partial": bool(failures),
+            "error": "" if account_payloads else "all_connected_account_snapshots_failed",
+            "failures": failures[:10],
+            "status_code": max([self._as_int(row.get("status_code", 0), 0) for row in failures] or [0]),
+            "soft_failure": bool(failures) and all(bool(row.get("soft_failure", False)) for row in failures),
+            "soft_fail_streak": max([self._as_int(row.get("soft_fail_streak", 0), 0) for row in failures] or [0]),
+            "soft_fail_grace": max([self._as_int(row.get("soft_fail_grace", 0), 0) for row in failures] or [0]),
+        }
+
     def _live_fetch_accounts_payload(self) -> Dict[str, Any]:
-        candidates: List[Tuple[str, Tuple[Any, ...], Dict[str, Any]]] = []
-        if self.live_account_hash:
-            candidates.append(("get_account", (self.live_account_hash,), {}))
-        candidates.append(("get_accounts", tuple(), {}))
-        candidates.append(("get_account", tuple(), {}))
+        if not self._supports_broker_capability("supports_account_snapshot"):
+            return self._unsupported_broker_operation("get_accounts_snapshot", "supports_account_snapshot")
+        if self.live_accounts_snapshot_aggregate_connected and self._supports_broker_capability("supports_account_discovery"):
+            aggregate = self._live_fetch_connected_accounts_payload()
+            if bool(aggregate.get("ok", False)):
+                return aggregate
+            if not self.live_accounts_snapshot_allow_global_fallback:
+                return aggregate
+        if not self.live_account_hash:
+            self._discover_live_account_hash(force=True)
+
+        def _snapshot_candidates() -> List[Tuple[str, Tuple[Any, ...], Dict[str, Any]]]:
+            return self.broker_adapter.accounts_snapshot_candidates(
+                account_reference=self.live_account_hash,
+                allow_global_fallback=self.live_accounts_snapshot_allow_global_fallback,
+            )
 
         out = self._invoke_client_candidates(
             operation="get_accounts_snapshot",
-            candidates=candidates,
-            context={},
+            candidates=_snapshot_candidates(),
+            context={"account_hash_configured": bool(self.live_account_hash)},
         )
+        if (not out.get("ok")) and self.live_account_hash:
+            status_code = self._as_int(out.get("status_code", 0), 0)
+            if status_code in {401, 403, 404}:
+                previous_hash = str(self.live_account_hash)
+                self.live_account_hash = ""
+                self.live_account_reference = ""
+                refreshed_hash = self._discover_live_account_hash(force=True)
+                if refreshed_hash and refreshed_hash != previous_hash:
+                    out = self._invoke_client_candidates(
+                        operation="get_accounts_snapshot",
+                        candidates=_snapshot_candidates(),
+                        context={
+                            "account_hash_configured": bool(self.live_account_hash),
+                            "account_hash_refreshed": True,
+                        },
+                    )
         if not out.get("ok"):
             return out
 
         payload = self._coerce_json_obj_or_list(out.get("response"))
+        meta = self._account_snapshot_metadata(
+            payload,
+            default_mode="single_account_hash" if self.live_account_hash else "global_account_snapshot",
+        )
         return {
             "ok": True,
             "payload": payload,
             "operation": "get_accounts_snapshot",
+            **meta,
         }
 
     def cancel_all_live_open_orders(self, *, max_orders: int = 200) -> Dict[str, Any]:
@@ -1725,6 +4396,11 @@ class BaseTrader:
                     action=action,
                     quantity=qty,
                     order_spec=spec,
+                    risk_reducing_exit=True,
+                    intent_id=(
+                        f"emergency-liquidation:{datetime.now(timezone.utc).strftime('%Y%m%d')}:"
+                        f"{self.live_account_hash}:{symbol}:{action}:{qty:.8f}"
+                    ),
                 )
                 orders.append(
                     {
@@ -1800,15 +4476,11 @@ class BaseTrader:
         return None
 
     def _live_fetch_broker_position(self, *, symbol: str) -> Dict[str, Any]:
-        candidates: List[Tuple[str, Tuple[Any, ...], Dict[str, Any]]] = []
-        if self.live_account_hash:
-            candidates.append(("get_account", (self.live_account_hash,), {}))
-        candidates.append(("get_account", tuple(), {}))
-        candidates.append(("get_accounts", tuple(), {}))
-
+        if not self._supports_broker_capability("supports_positions"):
+            return self._unsupported_broker_operation("get_positions", "supports_positions")
         out = self._invoke_client_candidates(
             operation="get_positions",
-            candidates=candidates,
+            candidates=self.broker_adapter.position_candidates(account_reference=self.live_account_hash),
             context={"symbol": str(symbol).upper()},
         )
         if not out.get("ok"):
@@ -1994,7 +4666,46 @@ class BaseTrader:
             reasons=reasons,
             strategy=strategy,
             metadata={"mode": self.mode, **md},
+            feature_mode=_dynamic_storage_value(
+                self.project_root,
+                "DECISION_LOG_FEATURE_MODE",
+                "full",
+            ),
         )
+
+        intent_reference_price = self._reference_price(features=features, metadata=md)
+        intent_model_inputs: Dict[str, float] = {}
+        intent_expected_fill: Dict[str, Any] = {}
+        if self._is_trade_action(action) and intent_reference_price > 0.0:
+            intent_model_inputs = self._paper_execution_model_inputs(
+                symbol=symbol,
+                features=features,
+                metadata=md,
+            )
+            intent_expected_fill = self.live_guard.model_expected_fill(
+                action=action,
+                reference_price=intent_reference_price,
+                quantity=quantity,
+                spread_bps=float(intent_model_inputs.get("spread_bps", 8.0)),
+                volatility_1m=float(intent_model_inputs.get("volatility_1m", 0.0)),
+                latency_ms=float(intent_model_inputs.get("latency_ms", 120.0)),
+                bid_size=float(intent_model_inputs.get("bid_size", 1000.0)),
+                ask_size=float(intent_model_inputs.get("ask_size", 1000.0)),
+            )
+
+        def intent_evidence_for(risk_decision: Dict[str, Any]) -> Dict[str, Any]:
+            return build_order_intent_evidence(
+                decision_id=str(decision_entry.get("decision_id") or ""),
+                symbol=symbol,
+                action=action,
+                quantity=quantity,
+                strategy=strategy,
+                asset_type=str(md.get("asset_type") or "EQUITY"),
+                limit_price=self._as_float(md.get("limit_price"), 0.0),
+                quote_snapshot=compact_quote_snapshot(features, md),
+                expected_fill=intent_expected_fill,
+                risk_decision=risk_decision,
+            )
 
         safety: Optional[Dict[str, Any]] = None
 
@@ -2018,6 +4729,32 @@ class BaseTrader:
                 "decision": decision_entry,
                 "safety": safety,
             }
+        elif self._is_trade_action(action) and self._exotic_derivative_execution_blocked(md)[0]:
+            blocked, reason, details = self._exotic_derivative_execution_blocked(md)
+            safety = {
+                "market_data_only": self.market_data_only,
+                "execution_enabled": self.execution_enabled,
+                "exotic_derivative_execution_blocked": bool(blocked),
+                **details,
+            }
+            status = "EXOTIC_DERIVATIVE_EXECUTION_BLOCKED"
+            self._log_softguard_event(
+                event="exotic_derivative_execution_guard",
+                status="blocked",
+                reason=reason,
+                details={
+                    "symbol": str(symbol).upper(),
+                    "action": str(action).upper(),
+                    "quantity": float(quantity),
+                    **details,
+                },
+            )
+            result = {
+                "status": status,
+                "mode": self.mode,
+                "decision": decision_entry,
+                "safety": safety,
+            }
         elif self.mode == "shadow":
             status = "SHADOW_ONLY"
             result = {
@@ -2027,7 +4764,7 @@ class BaseTrader:
             }
         elif self.mode == "paper":
             paper_metadata = dict(md)
-            ref_price = self._reference_price(features=features, metadata=paper_metadata)
+            ref_price = intent_reference_price
             limit_price = self._as_float(paper_metadata.get("limit_price"), 0.0)
             intended_price = self._intended_live_execution_price(
                 action=action,
@@ -2036,15 +4773,71 @@ class BaseTrader:
                 metadata=paper_metadata,
                 features=features,
             )
+            paper_risk_decision: Dict[str, Any] = {
+                "ok": True,
+                "gate": "not_applicable",
+                "reason": "non_trade_action",
+                "details": {},
+            }
 
             if self._is_trade_action(action):
+                blocked, reason, details = self._paper_profitability_new_entry_blocked(
+                    symbol=symbol,
+                    action=action,
+                    quantity=quantity,
+                    metadata=paper_metadata,
+                    features=features,
+                    strategy=strategy,
+                )
+                if blocked:
+                    status = "PAPER_PROFITABILITY_GUARD_BLOCKED"
+                    guard_payload = {
+                        "gate": str(details.get("guard_gate") or "paper_profitability_weak_profile_new_entry"),
+                        "reason": reason,
+                        "details": details,
+                    }
+                    self._log_live_guard_event(
+                        event="pre_trade_check",
+                        status="blocked",
+                        reason=reason,
+                        details={
+                            "symbol": str(symbol).upper(),
+                            "action": str(action).upper(),
+                            "quantity": float(quantity),
+                            **guard_payload,
+                        },
+                    )
+                    result = {
+                        "status": status,
+                        "mode": self.mode,
+                        "decision": decision_entry,
+                        "live_guard_decision": guard_payload,
+                        "order_intent_evidence": intent_evidence_for(
+                            {"ok": False, "gate": guard_payload["gate"], "reason": reason, "details": details}
+                        ),
+                        "live_guard": self.live_guard.snapshot(),
+                    }
+                    self._emit_decision_explanation(
+                        status=status,
+                        decision_entry=decision_entry,
+                        safety=safety,
+                    )
+                    return result
+
                 paper_guard = self.live_guard.pre_trade_check(
                     symbol=symbol,
                     action=action,
                     quantity=quantity,
                     reference_price=ref_price,
                     intended_price=intended_price,
+                    enforce_long_only=False,
                 )
+                paper_risk_decision = {
+                    "ok": bool(paper_guard.ok),
+                    "gate": str(paper_guard.gate),
+                    "reason": str(paper_guard.reason),
+                    "details": dict(paper_guard.details),
+                }
                 if not paper_guard.ok:
                     status = "PAPER_GUARD_BLOCKED"
                     guard_payload = {
@@ -2068,6 +4861,7 @@ class BaseTrader:
                         "mode": self.mode,
                         "decision": decision_entry,
                         "live_guard_decision": guard_payload,
+                        "order_intent_evidence": intent_evidence_for(paper_risk_decision),
                         "live_guard": self.live_guard.snapshot(),
                     }
                     self._emit_decision_explanation(
@@ -2079,32 +4873,43 @@ class BaseTrader:
 
                 self.live_guard.mark_trade_submitted(symbol=symbol)
 
+            expected_fill = intent_expected_fill
+            model_inputs = intent_model_inputs
+            order_intent_evidence = intent_evidence_for(paper_risk_decision)
+            paper_fill_metadata = self._paper_fill_metadata(metadata=paper_metadata, expected_fill=expected_fill)
             paper_pnl = self._paper_pnl_fields(
                 symbol=symbol,
                 action=action,
                 quantity=quantity,
+                strategy=strategy,
+                features=features,
+                metadata=paper_fill_metadata,
+            )
+            realized_fill_price = self._as_float(paper_pnl.get("fill_price"), 0.0)
+            realized_slippage_bps = 0.0
+            if self._is_trade_action(action) and ref_price > 0.0 and realized_fill_price > 0.0:
+                if str(action).upper().startswith("BUY"):
+                    realized_slippage_bps = max(((realized_fill_price - ref_price) / ref_price) * 10000.0, 0.0)
+                elif str(action).upper().startswith("SELL"):
+                    realized_slippage_bps = max(((ref_price - realized_fill_price) / ref_price) * 10000.0, 0.0)
+            tradeability_score = self._as_float(features.get("tradeability_score"), self._as_float(paper_metadata.get("tradeability_score"), 0.0))
+            source_quality_norm = self._as_float(features.get("news_source_quality_norm"), self._as_float(paper_metadata.get("source_quality_norm"), 0.0))
+            event_proximity_norm = self._as_float(features.get("calendar_event_proximity_norm"), self._as_float(paper_metadata.get("event_proximity_norm"), 0.0))
+            allocation_conflict_norm = self._as_float(features.get("allocation_conflict_norm"), self._as_float(paper_metadata.get("allocation_conflict_norm"), 0.0))
+            model_spread_bps = float(model_inputs.get("spread_bps", 0.0) or 0.0)
+            spread_regime = "wide" if model_spread_bps >= 20.0 else ("normal" if model_spread_bps >= 8.0 else "tight")
+            regime, regime_source = self._paper_regime_label(
                 features=features,
                 metadata=paper_metadata,
             )
-
-            expected_fill: Dict[str, float] = {}
-            model_inputs: Dict[str, float] = {}
-            if self._is_trade_action(action) and ref_price > 0.0:
-                model_inputs = self._paper_execution_model_inputs(
-                    symbol=symbol,
-                    features=features,
-                    metadata=paper_metadata,
-                )
-                expected_fill = self.live_guard.model_expected_fill(
-                    action=action,
-                    reference_price=ref_price,
-                    quantity=quantity,
-                    spread_bps=float(model_inputs.get("spread_bps", 8.0)),
-                    volatility_1m=float(model_inputs.get("volatility_1m", 0.0)),
-                    latency_ms=float(model_inputs.get("latency_ms", 120.0)),
-                    bid_size=float(model_inputs.get("bid_size", 1000.0)),
-                    ask_size=float(model_inputs.get("ask_size", 1000.0)),
-                )
+            execution_notional = (
+                max(float(ref_price), float(realized_fill_price), 0.0)
+                * max(float(quantity), 0.0)
+                * max(self._as_float(paper_pnl.get("contract_multiplier"), 1.0), 1.0)
+            )
+            expected_cost_amount = execution_notional * max(float(expected_fill.get("expected_slippage_bps", 0.0) or 0.0), 0.0) / 10000.0
+            profile_net_delta = self._as_float(paper_pnl.get("paper_profile_net_pnl_delta"), 0.0)
+            post_cost_return_bps = (profile_net_delta / execution_notional) * 10000.0 if execution_notional > 0.0 else 0.0
 
             paper = self._record_jsonl(
                 self.paper_log_path,
@@ -2122,15 +4927,34 @@ class BaseTrader:
                     "run_id": str(decision_entry.get("run_id", "") or ""),
                     "iter_id": str(decision_entry.get("iter_id", "") or ""),
                     "metadata": paper_metadata,
+                    "order_intent_evidence": order_intent_evidence,
                     "reference_price": float(ref_price),
                     "intended_price": float(intended_price),
                     "expected_fill_price": float(expected_fill.get("expected_fill_price", 0.0) or 0.0),
                     "expected_slippage_bps": float(expected_fill.get("expected_slippage_bps", 0.0) or 0.0),
                     "expected_impact_bps": float(expected_fill.get("impact_bps", 0.0) or 0.0),
-                    "model_spread_bps": float(model_inputs.get("spread_bps", 0.0) or 0.0),
+                    "expected_partial_fill_ratio": float(expected_fill.get("partial_fill_ratio", 1.0) or 1.0),
+                    "expected_spread_jump_penalty_bps": float(expected_fill.get("spread_jump_penalty_bps", 0.0) or 0.0),
+                    "expected_symbol_curve_multiplier": float(expected_fill.get("symbol_curve_multiplier", 1.0) or 1.0),
+                    "expected_fill_quality_bucket": str(expected_fill.get("fill_quality_bucket") or ""),
+                    "execution_notional": float(execution_notional),
+                    "expected_execution_cost_amount": float(expected_cost_amount),
+                    "post_cost_pnl_delta": float(profile_net_delta),
+                    "post_cost_return_bps": float(post_cost_return_bps),
+                    "realized_slippage_bps": float(realized_slippage_bps),
+                    "slippage_gap_bps": round(float(realized_slippage_bps - float(expected_fill.get("expected_slippage_bps", 0.0) or 0.0)), 6),
+                    "paper_fill_source": str(paper_fill_metadata.get("paper_fill_source") or ""),
+                    "model_spread_bps": model_spread_bps,
                     "model_latency_ms": float(model_inputs.get("latency_ms", 0.0) or 0.0),
                     "model_bid_size": float(model_inputs.get("bid_size", 0.0) or 0.0),
                     "model_ask_size": float(model_inputs.get("ask_size", 0.0) or 0.0),
+                    "spread_regime": spread_regime,
+                    "regime": regime,
+                    "regime_source": regime_source,
+                    "tradeability_score": float(tradeability_score),
+                    "source_quality_norm": float(source_quality_norm),
+                    "event_proximity_norm": float(event_proximity_norm),
+                    "allocation_conflict_norm": float(allocation_conflict_norm),
                     **paper_pnl,
                 },
             )
@@ -2185,6 +5009,7 @@ class BaseTrader:
                 "mode": self.mode,
                 "decision": decision_entry,
                 "paper_order": paper,
+                "order_intent_evidence": order_intent_evidence,
                 "paper_fill_model": fill_state,
                 "position_reconcile": position_reconcile,
                 "order_lifecycle_reconcile": lifecycle_reconcile,
@@ -2295,7 +5120,7 @@ class BaseTrader:
                         )
                         return result
 
-                ref_price = self._reference_price(features=features, metadata=md)
+                ref_price = intent_reference_price
                 limit_price = self._as_float(md.get("limit_price"), 0.0)
                 intended_price = self._intended_live_execution_price(
                     action=action,
@@ -2304,13 +5129,72 @@ class BaseTrader:
                     metadata=md,
                     features=features,
                 )
+                asset_type = str(md.get("asset_type") or "EQUITY").strip().upper() or "EQUITY"
+                prepared_order = self._prepare_live_order(
+                    symbol=symbol,
+                    action=action,
+                    quantity=quantity,
+                    limit_price=limit_price,
+                    asset_type=asset_type,
+                    metadata=md,
+                )
+                if not prepared_order.get("ok"):
+                    unsupported = bool(prepared_order.get("unsupported", False))
+                    status = "LIVE_UNSUPPORTED_DERIVATIVES_ORDER" if unsupported else "LIVE_ORDER_PREP_FAILED"
+                    reason = str(prepared_order.get("error", "order_prep_failed"))
+                    self._log_softguard_event(
+                        event="derivatives_execution_guard" if unsupported else "order_prep_failed",
+                        status="blocked" if unsupported else "error",
+                        reason=reason,
+                        details={
+                            "symbol": str(symbol).upper(),
+                            "action": str(action).upper(),
+                            "quantity": float(quantity),
+                            **(prepared_order.get("details", {}) if isinstance(prepared_order.get("details"), dict) else {}),
+                        },
+                    )
+                    result = {
+                        "status": status,
+                        "mode": self.mode,
+                        "decision": decision_entry,
+                        "live_order": {
+                            "symbol": str(symbol).upper(),
+                            "action": str(action).upper(),
+                            "quantity": float(quantity),
+                            "error": reason,
+                            "details": prepared_order.get("details", {}),
+                        },
+                        "live_guard": self.live_guard.snapshot(),
+                    }
+                    self._emit_decision_explanation(
+                        status=status,
+                        decision_entry=decision_entry,
+                        safety=safety,
+                    )
+                    return result
+
+                guard_reference_price = float(prepared_order.get("reference_price", 0.0) or 0.0)
+                if guard_reference_price <= 0.0:
+                    guard_reference_price = ref_price
+                guard_intended_price = float(prepared_order.get("intended_price", 0.0) or 0.0)
+                if guard_intended_price <= 0.0:
+                    guard_intended_price = intended_price
+                notional_multiplier = max(float(prepared_order.get("notional_multiplier", 1.0) or 1.0), 1.0)
                 guard_decision = self.live_guard.pre_trade_check(
                     symbol=symbol,
                     action=action,
                     quantity=quantity,
-                    reference_price=ref_price,
-                    intended_price=intended_price,
+                    reference_price=guard_reference_price,
+                    intended_price=guard_intended_price,
+                    notional_multiplier=notional_multiplier,
                 )
+                live_risk_decision = {
+                    "ok": bool(guard_decision.ok),
+                    "gate": str(guard_decision.gate),
+                    "reason": str(guard_decision.reason),
+                    "details": dict(guard_decision.details),
+                }
+                order_intent_evidence = intent_evidence_for(live_risk_decision)
 
                 if not guard_decision.ok:
                     status = "LIVE_GUARD_BLOCKED"
@@ -2381,37 +5265,43 @@ class BaseTrader:
                         "mode": self.mode,
                         "decision": decision_entry,
                         "live_guard_decision": guard_payload,
+                        "order_intent_evidence": order_intent_evidence,
                         "live_guard": self.live_guard.snapshot(),
                     }
                 else:
-                    asset_type = str(md.get("asset_type") or "EQUITY").strip().upper() or "EQUITY"
-                    order_spec = self._build_live_order_spec(
-                        symbol=symbol,
-                        action=action,
-                        quantity=quantity,
-                        limit_price=limit_price,
-                        asset_type=asset_type,
-                    )
+                    order_spec = prepared_order.get("order_spec") if isinstance(prepared_order.get("order_spec"), dict) else {}
                     place = self._live_place_order(
                         symbol=symbol,
                         action=action,
                         quantity=quantity,
                         order_spec=order_spec,
+                        intent_id=str(decision_entry.get("decision_id") or ""),
+                        reference_price=guard_reference_price,
+                        intent_evidence=order_intent_evidence,
                     )
 
                     if not place.get("ok"):
-                        status = "LIVE_ORDER_SUBMIT_FAILED"
+                        unknown_outcome = bool(place.get("broker_submission_may_have_succeeded", False))
+                        status = "LIVE_ORDER_OUTCOME_UNKNOWN" if unknown_outcome else "LIVE_ORDER_SUBMIT_FAILED"
                         result = {
                             "status": status,
                             "mode": self.mode,
                             "decision": decision_entry,
+                            "order_intent_evidence": order_intent_evidence,
                             "live_order": {
                                 "symbol": str(symbol).upper(),
                                 "action": str(action).upper(),
                                 "quantity": float(quantity),
                                 "order_spec": order_spec,
                                 "error": place.get("error", "submit_failed"),
-                                "details": place.get("details", {}),
+                                "broker_submission_may_have_succeeded": unknown_outcome,
+                                "broker_reconciliation_required": bool(place.get("broker_reconciliation_required", False)),
+                                "durable_order_intent": place.get("durable_order_intent", {}),
+                                "auto_halt": place.get("auto_halt", {}),
+                                "details": {
+                                    **(prepared_order.get("details", {}) if isinstance(prepared_order.get("details"), dict) else {}),
+                                    **(place.get("details", {}) if isinstance(place.get("details"), dict) else {}),
+                                },
                             },
                             "live_guard": self.live_guard.snapshot(),
                         }
@@ -2438,6 +5328,7 @@ class BaseTrader:
                             "status": status,
                             "mode": self.mode,
                             "decision": decision_entry,
+                            "order_intent_evidence": order_intent_evidence,
                             "live_order": {
                                 "order_id": order_id,
                                 "symbol": str(symbol).upper(),
@@ -2449,6 +5340,7 @@ class BaseTrader:
                                     "latency_ms": place.get("latency_ms", 0.0),
                                     "status_code": place.get("status_code", 0),
                                 },
+                                "details": prepared_order.get("details", {}),
                             },
                             "fills": fills,
                             "position_reconcile": reconcile,

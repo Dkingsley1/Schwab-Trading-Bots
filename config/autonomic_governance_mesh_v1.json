@@ -1,0 +1,287 @@
+{
+  "generated_at_utc": "2026-05-06T21:07:09.618131+00:00",
+  "autonomic_governance_mesh_version": "autonomic_governance_mesh_v1",
+  "pack": {
+    "slug": "autonomic_governance_mesh",
+    "display_name": "Autonomic Governance Mesh Pack",
+    "sleeve_family": "autonomic_governance_mesh",
+    "objective": "Add a 56-bot collect-only mesh that makes the whole-system governor self-accommodating across evidence, memory, backlog, sleeve budgets, self-model, and operator handoff.",
+    "target_platform_total_bots": 1604,
+    "system_count": 14,
+    "bot_count": 56,
+    "bot_ids": [
+      "brain_refinery_v1558_autonomic_governance_system_governor_council_telemetry_collector_bot",
+      "brain_refinery_v1559_autonomic_governance_system_governor_council_value_scorer_bot",
+      "brain_refinery_v1560_autonomic_governance_system_governor_council_policy_guard_bot",
+      "brain_refinery_v1561_autonomic_governance_system_governor_council_governor_bridge_bot",
+      "brain_refinery_v1562_autonomic_governance_sleeve_budget_market_telemetry_collector_bot",
+      "brain_refinery_v1563_autonomic_governance_sleeve_budget_market_value_scorer_bot",
+      "brain_refinery_v1564_autonomic_governance_sleeve_budget_market_policy_guard_bot",
+      "brain_refinery_v1565_autonomic_governance_sleeve_budget_market_governor_bridge_bot",
+      "brain_refinery_v1566_autonomic_governance_evidence_packet_court_telemetry_collector_bot",
+      "brain_refinery_v1567_autonomic_governance_evidence_packet_court_value_scorer_bot",
+      "brain_refinery_v1568_autonomic_governance_evidence_packet_court_policy_guard_bot",
+      "brain_refinery_v1569_autonomic_governance_evidence_packet_court_governor_bridge_bot",
+      "brain_refinery_v1570_autonomic_governance_promotion_gate_witness_telemetry_collector_bot",
+      "brain_refinery_v1571_autonomic_governance_promotion_gate_witness_value_scorer_bot",
+      "brain_refinery_v1572_autonomic_governance_promotion_gate_witness_policy_guard_bot",
+      "brain_refinery_v1573_autonomic_governance_promotion_gate_witness_governor_bridge_bot",
+      "brain_refinery_v1574_autonomic_governance_memory_storage_triage_router_telemetry_collector_bot",
+      "brain_refinery_v1575_autonomic_governance_memory_storage_triage_router_value_scorer_bot",
+      "brain_refinery_v1576_autonomic_governance_memory_storage_triage_router_policy_guard_bot",
+      "brain_refinery_v1577_autonomic_governance_memory_storage_triage_router_governor_bridge_bot",
+      "brain_refinery_v1578_autonomic_governance_collector_value_decay_scorer_telemetry_collector_bot",
+      "brain_refinery_v1579_autonomic_governance_collector_value_decay_scorer_value_scorer_bot",
+      "brain_refinery_v1580_autonomic_governance_collector_value_decay_scorer_policy_guard_bot",
+      "brain_refinery_v1581_autonomic_governance_collector_value_decay_scorer_governor_bridge_bot",
+      "brain_refinery_v1582_autonomic_governance_backlog_effect_ledger_telemetry_collector_bot",
+      "brain_refinery_v1583_autonomic_governance_backlog_effect_ledger_value_scorer_bot",
+      "brain_refinery_v1584_autonomic_governance_backlog_effect_ledger_policy_guard_bot",
+      "brain_refinery_v1585_autonomic_governance_backlog_effect_ledger_governor_bridge_bot",
+      "brain_refinery_v1586_autonomic_governance_drainer_playbook_optimizer_telemetry_collector_bot",
+      "brain_refinery_v1587_autonomic_governance_drainer_playbook_optimizer_value_scorer_bot",
+      "brain_refinery_v1588_autonomic_governance_drainer_playbook_optimizer_policy_guard_bot",
+      "brain_refinery_v1589_autonomic_governance_drainer_playbook_optimizer_governor_bridge_bot",
+      "brain_refinery_v1590_autonomic_governance_dependency_blast_radius_mapper_telemetry_collector_bot",
+      "brain_refinery_v1591_autonomic_governance_dependency_blast_radius_mapper_value_scorer_bot",
+      "brain_refinery_v1592_autonomic_governance_dependency_blast_radius_mapper_policy_guard_bot",
+      "brain_refinery_v1593_autonomic_governance_dependency_blast_radius_mapper_governor_bridge_bot",
+      "brain_refinery_v1594_autonomic_governance_freshness_conflict_arbitrator_telemetry_collector_bot",
+      "brain_refinery_v1595_autonomic_governance_freshness_conflict_arbitrator_value_scorer_bot",
+      "brain_refinery_v1596_autonomic_governance_freshness_conflict_arbitrator_policy_guard_bot",
+      "brain_refinery_v1597_autonomic_governance_freshness_conflict_arbitrator_governor_bridge_bot",
+      "brain_refinery_v1598_autonomic_governance_operator_decision_digestor_telemetry_collector_bot",
+      "brain_refinery_v1599_autonomic_governance_operator_decision_digestor_value_scorer_bot",
+      "brain_refinery_v1600_autonomic_governance_operator_decision_digestor_policy_guard_bot",
+      "brain_refinery_v1601_autonomic_governance_operator_decision_digestor_governor_bridge_bot",
+      "brain_refinery_v1602_autonomic_governance_codex_handoff_negotiator_telemetry_collector_bot",
+      "brain_refinery_v1603_autonomic_governance_codex_handoff_negotiator_value_scorer_bot",
+      "brain_refinery_v1604_autonomic_governance_codex_handoff_negotiator_policy_guard_bot",
+      "brain_refinery_v1605_autonomic_governance_codex_handoff_negotiator_governor_bridge_bot",
+      "brain_refinery_v1606_autonomic_governance_safe_action_simulator_telemetry_collector_bot",
+      "brain_refinery_v1607_autonomic_governance_safe_action_simulator_value_scorer_bot",
+      "brain_refinery_v1608_autonomic_governance_safe_action_simulator_policy_guard_bot",
+      "brain_refinery_v1609_autonomic_governance_safe_action_simulator_governor_bridge_bot",
+      "brain_refinery_v1610_autonomic_governance_expansion_stability_stress_oracle_telemetry_collector_bot",
+      "brain_refinery_v1611_autonomic_governance_expansion_stability_stress_oracle_value_scorer_bot",
+      "brain_refinery_v1612_autonomic_governance_expansion_stability_stress_oracle_policy_guard_bot",
+      "brain_refinery_v1613_autonomic_governance_expansion_stability_stress_oracle_governor_bridge_bot"
+    ],
+    "governance_systems": [
+      {
+        "slug": "system_governor_council",
+        "layer": "system_governor",
+        "display_name": "System Governor Council",
+        "objective": "Fuse surface status, pressure, dependencies, and evidence into one governor vote.",
+        "outputs": [
+          "governor_vote",
+          "surface_risk_rank",
+          "safe_mode_recommendation"
+        ]
+      },
+      {
+        "slug": "sleeve_budget_market",
+        "layer": "sleeve_economy",
+        "display_name": "Sleeve Budget Market",
+        "objective": "Allocate collection, freshness, compute, and storage budgets by value, risk, and pressure.",
+        "outputs": [
+          "sleeve_budget_curve",
+          "budget_exception_packet",
+          "sleep_or_wake_vote"
+        ]
+      },
+      {
+        "slug": "evidence_packet_court",
+        "layer": "evidence_court",
+        "display_name": "Evidence Packet Court",
+        "objective": "Require auditable promotion packets before a strategy leaves collect-only status.",
+        "outputs": [
+          "evidence_packet_status",
+          "promotion_blocker_list",
+          "packet_quality_score"
+        ]
+      },
+      {
+        "slug": "promotion_gate_witness",
+        "layer": "evidence_court",
+        "display_name": "Promotion Gate Witness",
+        "objective": "Witness every promotion request against leakage, duplicate-alpha, paper/live, and cost gates.",
+        "outputs": [
+          "promotion_witness_attestation",
+          "unsafe_diff_alert",
+          "gate_reason_codes"
+        ]
+      },
+      {
+        "slug": "memory_storage_triage_router",
+        "layer": "memory_storage_triage",
+        "display_name": "Memory Storage Triage Router",
+        "objective": "Route collectors between raw, digest, heartbeat, and parked capture tiers.",
+        "outputs": [
+          "capture_tier_route",
+          "storage_pressure_tradeoff",
+          "collector_downgrade_packet"
+        ]
+      },
+      {
+        "slug": "collector_value_decay_scorer",
+        "layer": "memory_storage_triage",
+        "display_name": "Collector Value Decay Scorer",
+        "objective": "Score stale or duplicative collectors for heartbeat, parking, or deletion review.",
+        "outputs": [
+          "collector_value_score",
+          "decay_reason_codes",
+          "parking_candidate_list"
+        ]
+      },
+      {
+        "slug": "backlog_effect_ledger",
+        "layer": "backlog_outcome_learning",
+        "display_name": "Backlog Effect Ledger",
+        "objective": "Measure whether drainers, organizers, and writers actually reduce pressure after action.",
+        "outputs": [
+          "backlog_effect_delta",
+          "drainer_outcome_verdict",
+          "playbook_reward_signal"
+        ]
+      },
+      {
+        "slug": "drainer_playbook_optimizer",
+        "layer": "backlog_outcome_learning",
+        "display_name": "Drainer Playbook Optimizer",
+        "objective": "Choose the least risky backlog drain sequence for current memory, storage, and market window.",
+        "outputs": [
+          "drainer_playbook_rank",
+          "safe_window_vote",
+          "rollback_condition_packet"
+        ]
+      },
+      {
+        "slug": "dependency_blast_radius_mapper",
+        "layer": "self_model_upgrade",
+        "display_name": "Dependency Blast Radius Mapper",
+        "objective": "Map which launchers, reports, writers, and sleeves are affected by each degraded surface.",
+        "outputs": [
+          "blast_radius_graph",
+          "blocked_edge_packet",
+          "dependency_repair_order"
+        ]
+      },
+      {
+        "slug": "freshness_conflict_arbitrator",
+        "layer": "self_model_upgrade",
+        "display_name": "Freshness Conflict Arbitrator",
+        "objective": "Detect stale or contradictory health artifacts before they mislead the governor.",
+        "outputs": [
+          "freshness_conflict_vote",
+          "stale_surface_rank",
+          "last_good_artifact_map"
+        ]
+      },
+      {
+        "slug": "operator_decision_digestor",
+        "layer": "operator_interface",
+        "display_name": "Operator Decision Digestor",
+        "objective": "Compress the governor state into a short operator-facing packet with next safe actions.",
+        "outputs": [
+          "operator_decision_digest",
+          "attention_queue_delta",
+          "approval_needed_list"
+        ]
+      },
+      {
+        "slug": "codex_handoff_negotiator",
+        "layer": "operator_interface",
+        "display_name": "Codex Handoff Negotiator",
+        "objective": "Format system state and safe action proposals so Codex can reason over them without live authority.",
+        "outputs": [
+          "codex_handoff_packet",
+          "assistant_context_delta",
+          "bounded_command_options"
+        ]
+      },
+      {
+        "slug": "safe_action_simulator",
+        "layer": "system_governor",
+        "display_name": "Safe Action Simulator",
+        "objective": "Simulate bounded ops commands before they are recommended to the operator.",
+        "outputs": [
+          "preflight_result",
+          "postcondition_prediction",
+          "do_not_do_guardrail"
+        ]
+      },
+      {
+        "slug": "expansion_stability_stress_oracle",
+        "layer": "sleeve_economy",
+        "display_name": "Expansion Stability Stress Oracle",
+        "objective": "Stress future expansion against memory, storage, fanout, freshness, and materialization limits.",
+        "outputs": [
+          "expansion_stability_score",
+          "max_safe_wave_size",
+          "capacity_debt_list"
+        ]
+      }
+    ],
+    "dedicated_data_intake": [
+      "whole_system_governor_trace",
+      "system_self_model_trace",
+      "quant_operational_intelligence_trace",
+      "memory_efficiency_trace",
+      "backpressure_drainer_trace",
+      "operator_cockpit_trace",
+      "codex_handoff_trace"
+    ],
+    "storage_retention_rule": {
+      "retention_profile": "autonomic_governance_hot_3d_warm_120d_cold_540d",
+      "storage_targets": [
+        "governance/autonomic_governance_mesh",
+        "governance/autonomic_governance_mesh/system_governor_council",
+        "governance/autonomic_governance_mesh/sleeve_budget_market",
+        "governance/autonomic_governance_mesh/evidence_packet_court",
+        "governance/autonomic_governance_mesh/promotion_gate_witness",
+        "governance/autonomic_governance_mesh/memory_storage_triage_router",
+        "governance/autonomic_governance_mesh/collector_value_decay_scorer",
+        "governance/autonomic_governance_mesh/backlog_effect_ledger",
+        "governance/autonomic_governance_mesh/drainer_playbook_optimizer",
+        "governance/autonomic_governance_mesh/dependency_blast_radius_mapper",
+        "governance/autonomic_governance_mesh/freshness_conflict_arbitrator",
+        "governance/autonomic_governance_mesh/operator_decision_digestor",
+        "governance/autonomic_governance_mesh/codex_handoff_negotiator",
+        "governance/autonomic_governance_mesh/safe_action_simulator",
+        "governance/autonomic_governance_mesh/expansion_stability_stress_oracle",
+        "governance/health/autonomic_governance_mesh_latest.json"
+      ],
+      "max_daily_mb_per_bot": 2,
+      "capture_mode": "thin_digest_and_heartbeat_first",
+      "sample_rate": 0.012,
+      "dedupe_required": true,
+      "self_accommodation": "downgrade_to_heartbeat_under_memory_storage_or_fanout_pressure"
+    },
+    "paper_only_floor": {
+      "paper_trade_lock_required": true,
+      "paper_trading_enabled": false,
+      "live_trading_enabled": false,
+      "execution_enabled": false,
+      "allocation_enabled": false,
+      "graduation_requires_minimum_observations": 70000,
+      "graduation_requires_collection_days": 180
+    },
+    "anchor_bot_ids": {
+      "system_governor_council": "brain_refinery_v1558_autonomic_governance_system_governor_council_telemetry_collector_bot",
+      "sleeve_budget_market": "brain_refinery_v1562_autonomic_governance_sleeve_budget_market_telemetry_collector_bot",
+      "evidence_packet_court": "brain_refinery_v1566_autonomic_governance_evidence_packet_court_telemetry_collector_bot",
+      "promotion_gate_witness": "brain_refinery_v1570_autonomic_governance_promotion_gate_witness_telemetry_collector_bot",
+      "memory_storage_triage_router": "brain_refinery_v1574_autonomic_governance_memory_storage_triage_router_telemetry_collector_bot",
+      "collector_value_decay_scorer": "brain_refinery_v1578_autonomic_governance_collector_value_decay_scorer_telemetry_collector_bot",
+      "backlog_effect_ledger": "brain_refinery_v1582_autonomic_governance_backlog_effect_ledger_telemetry_collector_bot",
+      "drainer_playbook_optimizer": "brain_refinery_v1586_autonomic_governance_drainer_playbook_optimizer_telemetry_collector_bot",
+      "dependency_blast_radius_mapper": "brain_refinery_v1590_autonomic_governance_dependency_blast_radius_mapper_telemetry_collector_bot",
+      "freshness_conflict_arbitrator": "brain_refinery_v1594_autonomic_governance_freshness_conflict_arbitrator_telemetry_collector_bot",
+      "operator_decision_digestor": "brain_refinery_v1598_autonomic_governance_operator_decision_digestor_telemetry_collector_bot",
+      "codex_handoff_negotiator": "brain_refinery_v1602_autonomic_governance_codex_handoff_negotiator_telemetry_collector_bot",
+      "safe_action_simulator": "brain_refinery_v1606_autonomic_governance_safe_action_simulator_telemetry_collector_bot",
+      "expansion_stability_stress_oracle": "brain_refinery_v1610_autonomic_governance_expansion_stability_stress_oracle_telemetry_collector_bot"
+    }
+  }
+}

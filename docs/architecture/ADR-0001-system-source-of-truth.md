@@ -12,7 +12,7 @@ The platform has many generated artifacts: command docs, report PDFs, health sna
 
 The system source of truth is documented in `docs/architecture/SOURCE_OF_TRUTH.md`.
 
-Command documentation is generated from the command inventory. Report opening is controlled by the report artifact helper. Decision and signal evidence is emitted through the shared accountability writer, including the `governance/events/signal_generation_*.jsonl` stream for good and bad signal generation.
+Command documentation is generated from `scripts/ops/commands_hygiene_bot.py`. Report opening is controlled by `scripts/ops/open_report_artifact.sh`. Decision and signal evidence is emitted through `core/accountability.py`, including the `governance/events/signal_generation_*.jsonl` stream for good and bad signal generation.
 
 Aggressive sleeve performance is judged with Sortino ratio, because downside volatility matters more than upside variance for high-conviction sleeves. Conservative sleeve performance is judged with Sharpe ratio, because total volatility should stay low in capital-preservation sleeves.
 

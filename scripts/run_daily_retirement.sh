@@ -2,7 +2,7 @@
 set -euo pipefail
 
 PROJECT_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-PYTHON_BIN="$PROJECT_ROOT/.venv312/bin/python"
+PYTHON_BIN="$PROJECT_ROOT/.venv314/bin/python"
 STAMP="$(date -u +%Y%m%d_%H%M%S)"
 
 cd "$PROJECT_ROOT"

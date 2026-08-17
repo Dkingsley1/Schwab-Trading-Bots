@@ -1,0 +1,64 @@
+{
+  "schema_version": 1,
+  "policy": "turn_soak_into_repeatable_release_evidence_without_enabling_live_order_execution",
+  "default_dependency_batch": "production_core_safe",
+  "artifact_paths": {
+    "json": "governance/health/production_soak_enhancement_latest.json",
+    "markdown": "exports/reports/operator/production_soak_enhancement_latest.md",
+    "replay_baseline": "governance/health/production_readiness_replay_baseline.json",
+    "telemetry_canary": "governance/health/telemetry_redaction_canary_latest.json",
+    "profile_promotion_plan": "governance/health/safe_profile_promotion_plan_latest.json",
+    "rollback_drill": "governance/rollback/production_rollback_drill_latest.json"
+  },
+  "release_command": "./scripts/ops/opsctl.sh production-soak-enhancement --apply --json --exit-zero && ./scripts/ops/opsctl.sh production-readiness --apply --json --exit-zero && ./.venv314/bin/python -m pytest -q tests/test_dependency_activation_smoke.py tests/test_production_readiness_control.py tests/test_production_soak_enhancement.py tests/test_library_utilization_router.py tests/test_mlx_intelligence_router.py",
+  "soak_enhancements": [
+    {
+      "id": "sandbox_dependency_activation",
+      "control_number": 1,
+      "source_domain": "dependency_activation_smoke_runner",
+      "soak_enhancement": "Adds repeated dependency compatibility evidence without mutating the live runtime."
+    },
+    {
+      "id": "live_submit_firewall",
+      "control_number": 2,
+      "source_domain": "live_execution_risk_firewall",
+      "soak_enhancement": "Lets the soak prove that live submit attempts reject by default before broker API calls."
+    },
+    {
+      "id": "deterministic_replay_baseline",
+      "control_number": 3,
+      "source_domain": "deterministic_replay_harness",
+      "soak_enhancement": "Turns each soak cycle into a fingerprint comparison against stable replay inputs."
+    },
+    {
+      "id": "production_release_command",
+      "control_number": 4,
+      "source_domain": "release_gates",
+      "soak_enhancement": "Gives operators one repeatable gate command instead of scattered manual checks."
+    },
+    {
+      "id": "telemetry_redaction_canary",
+      "control_number": 5,
+      "source_domain": "observability_redaction",
+      "soak_enhancement": "Checks that telemetry samples redact secrets, account IDs, and order IDs before exporters are enabled."
+    },
+    {
+      "id": "safe_profile_promotion_plan",
+      "control_number": 6,
+      "source_domain": "dependency_activation_smoke_runner",
+      "soak_enhancement": "Keeps production-core libraries staged until installation and import smoke pass."
+    },
+    {
+      "id": "rollback_drill",
+      "control_number": 7,
+      "source_domain": "incident_and_rollback_system",
+      "soak_enhancement": "Proves rollback inputs and operator commands are hashable before promotion."
+    },
+    {
+      "id": "cockpit_operator_surface",
+      "control_number": 8,
+      "source_domain": "operator_cockpit",
+      "soak_enhancement": "Makes soak readiness visible in the normal operator cockpit/report path."
+    }
+  ]
+}

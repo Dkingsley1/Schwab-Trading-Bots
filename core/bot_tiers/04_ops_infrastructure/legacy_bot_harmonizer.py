@@ -1,0 +1,1 @@
+../../../scripts/ops/legacy_bot_harmonizer.py

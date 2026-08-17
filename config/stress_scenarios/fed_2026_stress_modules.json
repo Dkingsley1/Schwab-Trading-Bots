@@ -1,0 +1,182 @@
+{
+  "schema_version": 1,
+  "module_map_id": "fed_2026_supervisory_stress_modules",
+  "scenario_id": "fed_2026_supervisory_severely_adverse",
+  "module_count": 10,
+  "source": {
+    "publisher": "Board of Governors of the Federal Reserve System",
+    "title": "2026 Stress Test Scenarios",
+    "url": "https://www.federalreserve.gov/publications/2026-stress-test-scenarios.htm",
+    "retrieved_date": "2026-05-01",
+    "source_type": "official_public_federal_reserve_publication"
+  },
+  "usage_policy": {
+    "purpose": "research_replay_and_stress_labeling_only",
+    "direct_execution_allowed": false,
+    "forecast_warning": "Federal Reserve supervisory scenarios are hypothetical stress-test inputs, not forecasts.",
+    "training_policy": "eligible_only_after_replay_hash_source_verification_and_minimum_collection_thresholds"
+  },
+  "stress_modules": [
+    {
+      "module_id": "fed_2026_equity_crash_volatility_spike",
+      "module_label": "Equity Crash / Volatility Spike",
+      "source_component": "supervisory_severely_adverse_macro_path",
+      "official_basis": "Risk appetite declines abruptly; equity prices fall about 58 percent while VIX peaks at 72 in 2026-Q2.",
+      "primary_series": ["dow_jones_total_stock_market_index", "market_volatility_index"],
+      "anchor_values": {
+        "equity_decline_pct_approx": 58.0,
+        "vix_peak": 72.0,
+        "vix_peak_quarter": "2026-Q2"
+      },
+      "internal_feature_keys": ["fed_2026_equity_crash_vol_spike_norm", "fed_2026_equity_drawdown_norm", "fed_2026_vix_stress_norm"],
+      "proxy_symbol_groups": ["equity_beta", "equity_sector_stress", "volatility", "futures_context"],
+      "correlation_peer_sleeves": ["volatility_regime", "black_swan_hedging", "lobdif_crisis_microstructure", "portfolio_construction"],
+      "governance_controls": ["source_verification", "replay_hash_registry", "global_halt_pressure_reducer"]
+    },
+    {
+      "module_id": "fed_2026_corporate_credit_spread_blowout",
+      "module_label": "Corporate Credit Spread Blowout",
+      "source_component": "supervisory_severely_adverse_macro_path",
+      "official_basis": "Corporate bond spreads widen materially under recession and default-risk pressure.",
+      "primary_series": ["bbb_corporate_yield", "ten_year_treasury_yield"],
+      "anchor_values": {
+        "bbb_corporate_yield_peak": 8.2,
+        "bbb_corporate_yield_peak_quarter": "2026-Q2",
+        "corporate_bond_spread_level_pct_points": 5.7
+      },
+      "internal_feature_keys": ["fed_2026_credit_spread_blowout_norm", "fed_2026_credit_spread_stress_norm", "fed_2026_ten_year_yield_norm"],
+      "proxy_symbol_groups": ["credit_spread", "rates_duration", "counterparty_contagion"],
+      "correlation_peer_sleeves": ["rates_credit_macro", "credit_derivatives_cdx_cds", "xva_counterparty_margin", "synthetic_cdo"],
+      "governance_controls": ["source_verification", "risk_service", "portfolio_risk_ledger"]
+    },
+    {
+      "module_id": "fed_2026_housing_price_shock",
+      "module_label": "Housing Price Shock",
+      "source_component": "supervisory_severely_adverse_macro_path",
+      "official_basis": "Nominal house prices decline about 30 percent in the severely adverse scenario.",
+      "primary_series": ["house_price_index", "mortgage_rate", "unemployment_rate"],
+      "anchor_values": {
+        "house_price_decline_pct_approx": 30.0,
+        "table_start_house_price_index": 303,
+        "table_trough_house_price_index": 227,
+        "table_trough_quarter": "2027-Q4"
+      },
+      "internal_feature_keys": ["fed_2026_housing_price_shock_norm", "fed_2026_house_price_stress_norm", "fed_2026_mortgage_rate_norm"],
+      "proxy_symbol_groups": ["housing_reits", "rates_duration", "credit_spread"],
+      "correlation_peer_sleeves": ["real_estate_risk", "portfolio_construction", "securitized_products_mbs_abs_clo"],
+      "governance_controls": ["source_verification", "replay_hash_registry", "feature_store_manifest"]
+    },
+    {
+      "module_id": "fed_2026_commercial_real_estate_shock",
+      "module_label": "Commercial Real Estate Shock",
+      "source_component": "supervisory_severely_adverse_macro_path",
+      "official_basis": "Commercial real estate prices decline about 39 percent in the severely adverse scenario.",
+      "primary_series": ["commercial_real_estate_price_index", "bbb_corporate_yield", "unemployment_rate"],
+      "anchor_values": {
+        "commercial_real_estate_price_decline_pct_approx": 39.0,
+        "table_start_cre_price_index": 291,
+        "table_trough_cre_price_index": 187,
+        "table_trough_quarter": "2027-Q4"
+      },
+      "internal_feature_keys": ["fed_2026_cre_price_shock_norm", "fed_2026_cre_price_stress_norm", "fed_2026_credit_spread_stress_norm"],
+      "proxy_symbol_groups": ["cre_credit", "equity_sector_stress", "credit_spread"],
+      "correlation_peer_sleeves": ["real_estate_risk", "rates_credit_macro", "xva_counterparty_margin", "portfolio_construction"],
+      "governance_controls": ["source_verification", "risk_service", "portfolio_risk_ledger"]
+    },
+    {
+      "module_id": "fed_2026_unemployment_recession_shock",
+      "module_label": "Unemployment Recession Shock",
+      "source_component": "supervisory_severely_adverse_macro_path",
+      "official_basis": "Unemployment rises from the 2025-Q4 jump-off point to a 10 percent peak in 2027-Q3.",
+      "primary_series": ["real_gdp_growth", "unemployment_rate", "real_disposable_income_growth"],
+      "anchor_values": {
+        "unemployment_peak_pct": 10.0,
+        "unemployment_peak_quarter": "2027-Q3",
+        "real_gdp_growth_initial_trough_pct": -5.4
+      },
+      "internal_feature_keys": ["fed_2026_unemployment_recession_norm", "fed_2026_unemployment_stress_norm", "fed_2026_real_gdp_growth_norm"],
+      "proxy_symbol_groups": ["equity_beta", "defensive_equity", "credit_spread"],
+      "correlation_peer_sleeves": ["macro_regime", "event_intelligence", "tail_risk_parity", "portfolio_construction"],
+      "governance_controls": ["source_verification", "point_in_time_event_store", "training_label_audit"]
+    },
+    {
+      "module_id": "fed_2026_global_recession_deflation_shock",
+      "module_label": "Global Recession / Deflation Shock",
+      "source_component": "supervisory_severely_adverse_international_path",
+      "official_basis": "The international path includes recessions across major regions, a sharp developing Asia slowdown, and deflation across covered regions.",
+      "primary_series": ["euro_area_real_gdp_growth", "developing_asia_real_gdp_growth", "japan_real_gdp_growth", "uk_real_gdp_growth", "euro_area_inflation", "developing_asia_inflation", "japan_inflation", "uk_inflation"],
+      "anchor_values": {
+        "euro_area_real_gdp_initial_pct": -8.6,
+        "japan_real_gdp_initial_pct": -9.1,
+        "uk_real_gdp_initial_pct": -8.8,
+        "developing_asia_inflation_trough_pct": -3.5
+      },
+      "internal_feature_keys": ["fed_2026_global_recession_deflation_norm", "fed_2026_euro_area_growth_norm", "fed_2026_developing_asia_growth_norm", "fed_2026_japan_growth_norm", "fed_2026_uk_growth_norm"],
+      "proxy_symbol_groups": ["global_equity", "safe_haven", "usd_fx_stress"],
+      "correlation_peer_sleeves": ["sovereign_debt_macro", "fx", "global_macro", "tail_dependency_risk"],
+      "governance_controls": ["source_verification", "macro_context_sync", "cross_sleeve_correlation_matrix"]
+    },
+    {
+      "module_id": "fed_2026_commodity_inflation_shock",
+      "module_label": "Commodity Inflation Shock",
+      "source_component": "global_market_shock_component",
+      "official_basis": "The 2026 global market shock is characterized by higher commodity prices and high inflation expectations.",
+      "primary_series": ["cpi_inflation_rate", "three_month_treasury_rate", "ten_year_treasury_yield"],
+      "anchor_values": {
+        "global_market_shock_basis": "higher_inflation_expectations_and_higher_commodity_prices",
+        "commodity_products": ["energy", "oil", "metals", "agricultural_products"]
+      },
+      "internal_feature_keys": ["fed_2026_commodity_inflation_shock_norm", "fed_2026_cpi_inflation_norm", "fed_2026_treasury_yield_shock_norm"],
+      "proxy_symbol_groups": ["commodity_inflation", "futures_context", "safe_haven"],
+      "correlation_peer_sleeves": ["commodity_macro", "futures", "sovereign_debt_macro", "volatility_arbitrage"],
+      "governance_controls": ["source_verification", "feature_store_manifest", "runtime_throttle"]
+    },
+    {
+      "module_id": "fed_2026_treasury_yield_shock",
+      "module_label": "Treasury Yield Shock",
+      "source_component": "global_market_shock_component",
+      "official_basis": "The 2026 global market shock has short-term and long-term Treasury rates rising sharply on higher inflation expectations.",
+      "primary_series": ["three_month_treasury_rate", "five_year_treasury_yield", "ten_year_treasury_yield"],
+      "anchor_values": {
+        "global_market_shock_basis": "short_term_and_long_term_treasury_rates_rise_sharply",
+        "calibration_horizon_liquid_markets": "1_month"
+      },
+      "internal_feature_keys": ["fed_2026_treasury_yield_shock_norm", "fed_2026_front_end_rate_norm", "fed_2026_five_year_yield_norm", "fed_2026_ten_year_yield_norm"],
+      "proxy_symbol_groups": ["treasury_yield_shock", "rates_duration", "futures_context"],
+      "correlation_peer_sleeves": ["rates_credit_macro", "bond", "options_on_futures", "repo_securities_lending"],
+      "governance_controls": ["source_verification", "risk_service", "global_halt_pressure_reducer"]
+    },
+    {
+      "module_id": "fed_2026_us_dollar_stress",
+      "module_label": "U.S. Dollar Stress",
+      "source_component": "global_market_shock_component_and_international_path",
+      "official_basis": "The U.S. dollar appreciates against most major currencies and emerging-market currencies in the global market shock.",
+      "primary_series": ["euro_area_usd_per_euro", "developing_asia_foreign_currency_per_usd_index", "japan_yen_per_usd", "uk_usd_per_pound"],
+      "anchor_values": {
+        "developing_asia_fx_pressure_peak_index": 122.9,
+        "euro_area_usd_per_euro_trough": 1.021,
+        "uk_usd_per_pound_trough": 1.169
+      },
+      "internal_feature_keys": ["fed_2026_usd_stress_norm", "fed_2026_asia_fx_pressure_norm", "fed_2026_eur_usd_fx_norm", "fed_2026_jpy_usd_fx_norm", "fed_2026_gbp_usd_fx_norm"],
+      "proxy_symbol_groups": ["usd_fx_stress", "safe_haven", "futures_context"],
+      "correlation_peer_sleeves": ["fx", "sovereign_debt_macro", "global_macro", "crypto_futures"],
+      "governance_controls": ["source_verification", "macro_context_sync", "cross_asset_context_features"]
+    },
+    {
+      "module_id": "fed_2026_counterparty_default_contagion_shock",
+      "module_label": "Counterparty Default / Contagion Shock",
+      "source_component": "counterparty_default_component",
+      "official_basis": "Applicable firms must estimate losses from the unexpected default of the counterparty that would generate the largest net stressed losses under the global market shock.",
+      "primary_series": ["bbb_corporate_yield", "market_volatility_index", "dow_jones_total_stock_market_index"],
+      "anchor_values": {
+        "loss_recognition_quarter": "2026-Q1",
+        "applies_global_market_shock_to": ["derivatives", "securities_financing_transactions", "collateral_posted_or_received"],
+        "largest_counterparty_default_add_on": true
+      },
+      "internal_feature_keys": ["fed_2026_counterparty_default_contagion_norm", "fed_2026_credit_spread_blowout_norm", "fed_2026_vix_stress_norm"],
+      "proxy_symbol_groups": ["counterparty_contagion", "credit_spread", "volatility"],
+      "correlation_peer_sleeves": ["xva_counterparty_margin", "credit_derivatives_cdx_cds", "repo_securities_lending", "global_halt_refresh"],
+      "governance_controls": ["source_verification", "risk_service", "portfolio_risk_ledger", "global_halt_refresh"]
+    }
+  ]
+}

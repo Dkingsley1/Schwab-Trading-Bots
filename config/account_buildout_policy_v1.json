@@ -1,0 +1,30 @@
+{
+  "schema_version": 1,
+  "enabled": true,
+  "mode": "advisory_paper_only",
+  "cash_reserve_fraction": 0.1,
+  "max_deployable_equity_fraction": 1.0,
+  "max_single_symbol_fraction": 0.15,
+  "max_stage_account_fraction": 0.02,
+  "max_reduction_account_fraction_per_cycle": 0.1,
+  "minimum_order_notional": 5.0,
+  "fractional_equities": true,
+  "allow_margin_expansion": false,
+  "allow_new_short_positions": false,
+  "automatic_option_sizing": false,
+  "full_rebalance": false,
+  "freshness": {
+    "account_study_max_age_seconds": 300,
+    "position_opportunity_max_age_seconds": 900,
+    "position_round_trip_max_age_seconds": 900,
+    "portfolio_allocator_max_age_seconds": 900,
+    "portfolio_risk_max_age_seconds": 3600
+  },
+  "account_overrides": {},
+  "required_route": "portfolio_allocator_to_risk_service_to_standard_paper_execution_gateway",
+  "notes": [
+    "Existing positions are the starting state and consume account and symbol exposure before additions are considered.",
+    "This policy emits advisory paper plans only and cannot publish executable intents or enable live orders.",
+    "Account overrides must be keyed by redacted account_label values, never raw account numbers."
+  ]
+}

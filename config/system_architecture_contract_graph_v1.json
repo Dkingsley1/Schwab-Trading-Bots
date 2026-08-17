@@ -1,0 +1,346 @@
+{
+  "nodes": [
+    {
+      "node_id": "health_fast",
+      "title": "Fast Health",
+      "class": "readiness",
+      "artifact": "governance/health/health_fast_latest.json",
+      "max_age_minutes": 10,
+      "required": true,
+      "authority": "read_only_readiness",
+      "commands": [
+        [
+          "./scripts/ops/opsctl.sh",
+          "health-fast",
+          "--json"
+        ]
+      ],
+      "depends_on": []
+    },
+    {
+      "node_id": "runtime_throttle",
+      "title": "Runtime Throttle",
+      "class": "runtime",
+      "artifact": "governance/health/runtime_throttle_control_latest.json",
+      "max_age_minutes": 15,
+      "required": true,
+      "authority": "resource_control_plane",
+      "commands": [
+        [
+          "./scripts/ops/opsctl.sh",
+          "runtime-throttle",
+          "--apply",
+          "--json"
+        ]
+      ],
+      "depends_on": [
+        "health_fast"
+      ]
+    },
+    {
+      "node_id": "process_watchdog",
+      "title": "Process Watchdog",
+      "class": "infrastructure",
+      "artifact": "governance/health/process_watchdog_latest.json",
+      "max_age_minutes": 15,
+      "required": false,
+      "authority": "process_observation_and_repair",
+      "commands": [
+        [
+          "./scripts/ops/opsctl.sh",
+          "process-watchdog",
+          "--json"
+        ]
+      ],
+      "depends_on": [
+        "runtime_throttle"
+      ]
+    },
+    {
+      "node_id": "storage_control",
+      "title": "Storage Control",
+      "class": "storage",
+      "artifact": "governance/health/ingestion_storage_control_latest.json",
+      "max_age_minutes": 20,
+      "required": true,
+      "authority": "single_writer_backpressure_control",
+      "commands": [
+        [
+          "./scripts/ops/opsctl.sh",
+          "ingestion-storage-control",
+          "--json"
+        ]
+      ],
+      "depends_on": [
+        "runtime_throttle"
+      ]
+    },
+    {
+      "node_id": "paper_ramp",
+      "title": "Paper Ramp",
+      "class": "paper_execution",
+      "artifact": "governance/health/paper_400_ramp_latest.json",
+      "max_age_minutes": 30,
+      "required": true,
+      "authority": "guarded_paper_capacity_only",
+      "commands": [
+        [
+          "./scripts/ops/opsctl.sh",
+          "paper-400-ramp",
+          "--json"
+        ]
+      ],
+      "depends_on": [
+        "health_fast",
+        "runtime_throttle",
+        "storage_control"
+      ]
+    },
+    {
+      "node_id": "all_sleeves_launcher",
+      "title": "All Sleeves Launcher",
+      "class": "sleeve_runtime",
+      "artifact": "governance/health/all_sleeves_launcher_latest.json",
+      "max_age_minutes": 10,
+      "required": true,
+      "authority": "paper_collection_launcher",
+      "commands": [
+        [
+          "./scripts/ops/opsctl.sh",
+          "health-fast",
+          "--json"
+        ]
+      ],
+      "depends_on": [
+        "paper_ramp",
+        "process_watchdog",
+        "storage_control"
+      ]
+    },
+    {
+      "node_id": "grade_regression_guard",
+      "title": "Grade Regression Guard",
+      "class": "governance",
+      "artifact": "governance/health/grade_regression_guard_latest.json",
+      "max_age_minutes": 45,
+      "required": true,
+      "authority": "grade_regression_observation",
+      "commands": [
+        [
+          "./scripts/ops/opsctl.sh",
+          "grade-regression-guard",
+          "--json"
+        ]
+      ],
+      "depends_on": [
+        "storage_control"
+      ]
+    },
+    {
+      "node_id": "section_grade_guard",
+      "title": "Section Grade Guard",
+      "class": "governance",
+      "artifact": "governance/health/section_grade_guard_latest.json",
+      "max_age_minutes": 45,
+      "required": true,
+      "authority": "section_floor_observation",
+      "commands": [
+        [
+          "./scripts/ops/opsctl.sh",
+          "section-grade-guard",
+          "--json"
+        ]
+      ],
+      "depends_on": [
+        "grade_regression_guard"
+      ]
+    },
+    {
+      "node_id": "runtime_paper_guard",
+      "title": "Runtime Paper Guard",
+      "class": "governance",
+      "artifact": "governance/health/runtime_paper_regression_guard_latest.json",
+      "max_age_minutes": 45,
+      "required": true,
+      "authority": "paper_runtime_regression_observation",
+      "commands": [
+        [
+          "./scripts/ops/opsctl.sh",
+          "runtime-paper-regression-guard",
+          "--json"
+        ]
+      ],
+      "depends_on": [
+        "paper_ramp",
+        "runtime_throttle"
+      ]
+    },
+    {
+      "node_id": "adaptive_regression_guard",
+      "title": "Adaptive Regression Guard",
+      "class": "adaptive_governance",
+      "artifact": "governance/health/adaptive_regression_guard_latest.json",
+      "max_age_minutes": 10,
+      "required": true,
+      "authority": "adaptive_memory_observation_only",
+      "commands": [
+        [
+          "./scripts/ops/opsctl.sh",
+          "adaptive-regression-guard",
+          "--apply",
+          "--json"
+        ]
+      ],
+      "depends_on": [
+        "grade_regression_guard",
+        "section_grade_guard",
+        "runtime_paper_guard",
+        "system_drift_registry"
+      ]
+    },
+    {
+      "node_id": "system_drift_registry",
+      "title": "System Drift Registry",
+      "class": "governance_registry",
+      "artifact": "governance/health/system_drift_registry_latest.json",
+      "max_age_minutes": 240,
+      "required": false,
+      "authority": "surface_registry",
+      "commands": [
+        [
+          "./scripts/ops/opsctl.sh",
+          "system-drift-registry",
+          "--json"
+        ]
+      ],
+      "depends_on": []
+    },
+    {
+      "node_id": "system_drift_guard",
+      "title": "System Drift Guard",
+      "class": "governance",
+      "artifact": "governance/health/system_drift_guard_latest.json",
+      "max_age_minutes": 45,
+      "required": false,
+      "authority": "artifact_drift_observation",
+      "commands": [
+        [
+          "./scripts/ops/opsctl.sh",
+          "system-drift-guard",
+          "--json"
+        ]
+      ],
+      "depends_on": [
+        "system_drift_registry",
+        "adaptive_regression_guard"
+      ]
+    },
+    {
+      "node_id": "schwab_indicator_intelligence",
+      "title": "Schwab Indicator Intelligence",
+      "class": "intelligence_layer",
+      "artifact": "governance/health/schwab_indicator_intelligence_latest.json",
+      "max_age_minutes": 720,
+      "required": false,
+      "authority": "advisory_study_strategy_catalog_no_execution",
+      "commands": [
+        [
+          "./scripts/ops/opsctl.sh",
+          "schwab-indicator-intelligence",
+          "--json"
+        ]
+      ],
+      "depends_on": [
+        "health_fast",
+        "runtime_throttle",
+        "system_drift_registry"
+      ]
+    },
+    {
+      "node_id": "system_expansion_execution",
+      "title": "System Expansion Execution",
+      "class": "intelligence_layer",
+      "artifact": "governance/health/system_expansion_execution_layer_latest.json",
+      "max_age_minutes": 720,
+      "required": false,
+      "authority": "advisory_12_lane_expansion_control_no_execution",
+      "commands": [
+        [
+          "./scripts/ops/opsctl.sh",
+          "system-expansion-execution",
+          "--json"
+        ]
+      ],
+      "depends_on": [
+        "schwab_indicator_intelligence",
+        "runtime_throttle",
+        "system_drift_registry"
+      ]
+    },
+    {
+      "node_id": "distributed_cell_architecture",
+      "title": "Distributed Cell Architecture",
+      "class": "architecture",
+      "artifact": "governance/health/distributed_cell_architecture_latest.json",
+      "max_age_minutes": 360,
+      "required": false,
+      "authority": "cell_federation_contract",
+      "commands": [
+        [
+          "./scripts/ops/opsctl.sh",
+          "distributed-cell-architecture",
+          "--apply",
+          "--json"
+        ]
+      ],
+      "depends_on": [
+        "storage_control",
+        "runtime_throttle",
+        "adaptive_regression_guard"
+      ]
+    },
+    {
+      "node_id": "architecture_hardening",
+      "title": "Architecture Hardening",
+      "class": "architecture",
+      "artifact": "governance/health/system_architecture_hardening_latest.json",
+      "max_age_minutes": 360,
+      "required": false,
+      "authority": "cross_layer_hardening_contract",
+      "commands": [
+        [
+          "./scripts/ops/opsctl.sh",
+          "system-architecture-hardening",
+          "--apply",
+          "--json"
+        ]
+      ],
+      "depends_on": [
+        "distributed_cell_architecture",
+        "adaptive_regression_guard",
+        "health_fast"
+      ]
+    },
+    {
+      "node_id": "system_self_model",
+      "title": "System Self Model",
+      "class": "self_model",
+      "artifact": "governance/health/system_self_model_latest.json",
+      "max_age_minutes": 360,
+      "required": false,
+      "authority": "operator_self_model_report",
+      "commands": [
+        [
+          "./scripts/ops/opsctl.sh",
+          "big-platform-brain",
+          "--json"
+        ]
+      ],
+      "depends_on": [
+        "architecture_hardening",
+        "system_drift_guard",
+        "adaptive_regression_guard"
+      ]
+    }
+  ]
+}

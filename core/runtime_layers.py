@@ -67,10 +67,36 @@ class BackpressureController:
         return BackpressureStatus(overloaded=ratio >= self.overload_ratio, loop_seconds=float(loop_seconds), ratio_vs_interval=ratio)
 
 
+def _local_fallback_path(path: str) -> str:
+    abs_path = os.path.abspath(path)
+    marker = os.sep + "governance" + os.sep
+    if marker in abs_path:
+        root, rel = abs_path.split(marker, 1)
+        return os.path.join(root, "local_fallback_storage", "governance", rel)
+    parent = os.path.dirname(abs_path)
+    return os.path.join(parent, ".runtime_fallback", os.path.basename(abs_path))
+
+
+def _ensure_parent_dir(path: str) -> str:
+    parent = os.path.dirname(path)
+    try:
+        os.makedirs(parent, exist_ok=True)
+    except OSError:
+        if os.path.isdir(parent):
+            return path
+        fallback = _local_fallback_path(path)
+        os.makedirs(os.path.dirname(fallback), exist_ok=True)
+        return fallback
+    if os.path.isdir(parent):
+        return path
+    fallback = _local_fallback_path(path)
+    os.makedirs(os.path.dirname(fallback), exist_ok=True)
+    return fallback
+
+
 class TelemetryEmitter:
     def __init__(self, path: str) -> None:
-        self.path = path
-        os.makedirs(os.path.dirname(path), exist_ok=True)
+        self.path = _ensure_parent_dir(path)
 
     def emit(self, row: Dict[str, Any]) -> None:
         with open(self.path, "a", encoding="utf-8") as f:
@@ -79,8 +105,7 @@ class TelemetryEmitter:
 
 class CheckpointStore:
     def __init__(self, path: str) -> None:
-        self.path = path
-        os.makedirs(os.path.dirname(path), exist_ok=True)
+        self.path = _ensure_parent_dir(path)
 
     def load(self) -> Dict[str, Any]:
         if not os.path.exists(self.path):

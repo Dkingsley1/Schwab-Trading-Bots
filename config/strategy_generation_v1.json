@@ -1,0 +1,116 @@
+{
+  "schema_version": 2,
+  "policy_id": "bounded_strategy_lineage_v1",
+  "enabled": true,
+  "operating_mode": "collection_only_research",
+  "resource_limits": {
+    "max_offspring_per_generation": 2,
+    "max_active_offspring": 4,
+    "max_active_offspring_per_parent": 1,
+    "max_retained_offspring": 24,
+    "max_offspring_per_parent_per_generation": 1,
+    "max_offspring_per_role_per_generation": 1,
+    "max_concurrent_training_jobs": 1,
+    "max_lineage_depth": 3,
+    "generation_cooldown_hours": 168,
+    "training_timeout_seconds": 7200,
+    "training_stale_grace_seconds": 900,
+    "max_candidate_artifact_bytes": 536870912,
+    "max_total_candidate_artifact_bytes": 4294967296,
+    "minimum_free_disk_gb": 25.0,
+    "maximum_host_saturation_score": 55.0,
+    "allowed_compute_pressure_levels": [
+      "normal",
+      "low"
+    ],
+    "allowed_memory_pressure_levels": [
+      "normal",
+      "low"
+    ]
+  },
+  "parent_eligibility": {
+    "allowed_bot_roles": [
+      "signal_sub_bot",
+      "options_sub_bot",
+      "futures_sub_bot"
+    ],
+    "allowed_teacher_grades": [
+      "elite",
+      "strong"
+    ],
+    "minimum_teacher_score": 0.64,
+    "minimum_walk_forward_runs": 12,
+    "minimum_walk_forward_forward_mean": 0.53,
+    "require_active_parent": true,
+    "require_positive_paper_bonus": true,
+    "require_overfit_may_teach": true,
+    "require_training_allowed": true,
+    "maximum_teacher_evidence_age_hours": 6,
+    "require_source_module_hash": true,
+    "require_human_lineage_parent_approval_for_offspring": true
+  },
+  "genome_bounds": {
+    "teacher_weight": {
+      "minimum": 0.15,
+      "maximum": 0.35,
+      "step": 0.05
+    },
+    "lookback_days_delta": {
+      "minimum": 0,
+      "maximum": 21,
+      "step": 7
+    },
+    "minimum_confidence_delta": {
+      "minimum": -0.03,
+      "maximum": 0.0,
+      "step": 0.01
+    },
+    "sample_stride_delta": {
+      "minimum": -1,
+      "maximum": 1,
+      "step": 1
+    }
+  },
+  "evaluation": {
+    "minimum_out_of_sample_trades": 100,
+    "minimum_out_of_sample_net_pnl": 0.01,
+    "minimum_net_expectancy": 0.0,
+    "minimum_stressed_post_cost_expectancy": 0.0,
+    "minimum_lower_confidence_bound": 0.0,
+    "maximum_drawdown": 0.12,
+    "maximum_parent_return_correlation": 0.92,
+    "maximum_multiple_testing_adjusted_p_value": 0.05,
+    "maximum_evaluation_age_hours": 24,
+    "require_independent_evaluation": true,
+    "require_locked_holdout": true,
+    "require_exact_replay": true,
+    "require_candidate_model_hash": true,
+    "require_generation_manifest_hash": true,
+    "require_dataset_hash": true,
+    "require_holdout_hash": true,
+    "require_replay_hash": true,
+    "require_evaluator_identity": true,
+    "required_evaluator_role": "independent_strategy_evaluator",
+    "require_signed_attestation": true,
+    "require_unique_evaluation_run": true,
+    "allowed_evaluation_root": "governance/strategy_generations/evaluations"
+  },
+  "integrity": {
+    "event_signing_key_path": "governance/experiments/immutable_ledger_signing_key.txt",
+    "event_signing_key_id": "local-immutable-ledger",
+    "minimum_signing_key_bytes": 32,
+    "require_private_key_permissions": true,
+    "require_signed_events": true,
+    "require_state_hash": true
+  },
+  "safety_contract": {
+    "execution_authority": false,
+    "paper_execution_authority": false,
+    "initial_lifecycle_state": "proposed_collection_only",
+    "qualified_lifecycle_state": "paper_challenger_qualified",
+    "candidate_models_are_never_loaded_by_serving": true,
+    "offspring_never_inherit_parent_grades": true,
+    "human_release_required_for_registry_admission": true,
+    "live_money_promotion_allowed": false
+  }
+}

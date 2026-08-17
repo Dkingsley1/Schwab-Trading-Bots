@@ -1,0 +1,133 @@
+{
+  "schema_version": 1,
+  "scenario_id": "covid_2020_pandemic_crash",
+  "aliases": [
+    "covid_2020_replay",
+    "pandemic_crash_2020",
+    "march_2020_liquidity_shock"
+  ],
+  "source": {
+    "publisher": "Public historical macro and market data composite",
+    "title": "COVID-19 Pandemic Crash Replay Anchors",
+    "url": "https://fred.stlouisfed.org/",
+    "retrieved_date": "2026-05-02",
+    "source_type": "public_historical_replay_composite"
+  },
+  "scope": {
+    "scenario_type": "historical_pandemic_liquidity_and_policy_shock",
+    "start_date": "2020-02-19",
+    "end_date": "2020-06-30",
+    "peak_stress_window": "2020-03-09/2020-03-23",
+    "usage_policy": "research_replay_and_stress_labeling_only",
+    "forecast_warning": "This is a historical replay template and not a forecast or execution signal."
+  },
+  "key_stress_anchors": {
+    "equity_prices_decline_pct_approx": 34.0,
+    "vix_peak_approx": 82.69,
+    "unemployment_peak_pct": 14.7,
+    "fed_funds_target_lower_bound_pct_after_emergency_cut": 0.0,
+    "front_month_wti_intraday_low_usd_approx": -40.32,
+    "investment_grade_liquidity_stress": "severe",
+    "high_yield_liquidity_stress": "severe",
+    "policy_liquidity_facility_response": "extraordinary"
+  },
+  "event_timeline": [
+    {
+      "date": "2020-02-19",
+      "event": "us_equity_peak_before_pandemic_drawdown",
+      "stress_channel": "equity_beta"
+    },
+    {
+      "date": "2020-03-03",
+      "event": "federal_reserve_emergency_rate_cut",
+      "stress_channel": "policy_rate_shock"
+    },
+    {
+      "date": "2020-03-09",
+      "event": "oil_price_war_and_first_us_equity_limit_down_week",
+      "stress_channel": "commodity_liquidity_and_equity_volatility"
+    },
+    {
+      "date": "2020-03-12",
+      "event": "global_risk_asset_liquidation_accelerates",
+      "stress_channel": "correlation_convergence"
+    },
+    {
+      "date": "2020-03-16",
+      "event": "vix_peak_and_emergency_policy_response_window",
+      "stress_channel": "volatility_liquidity"
+    },
+    {
+      "date": "2020-03-23",
+      "event": "major_fed_credit_facility_response_and_equity_trough_window",
+      "stress_channel": "credit_liquidity_policy_backstop"
+    },
+    {
+      "date": "2020-04-20",
+      "event": "front_month_wti_futures_settles_negative",
+      "stress_channel": "commodity_storage_and_term_structure"
+    }
+  ],
+  "replay_path": {
+    "columns": [
+      "phase",
+      "start_date",
+      "end_date",
+      "equity_drawdown_norm",
+      "vix_stress_norm",
+      "credit_spread_stress_norm",
+      "liquidity_facility_stress_norm",
+      "unemployment_stress_norm",
+      "oil_price_shock_norm",
+      "correlation_convergence_norm",
+      "policy_rate_zero_bound_norm"
+    ],
+    "rows": [
+      ["pre_shock_peak", "2020-02-19", "2020-02-28", 0.10, 0.18, 0.16, 0.10, 0.05, 0.10, 0.18, 0.10],
+      ["liquidity_break", "2020-03-09", "2020-03-16", 0.82, 1.00, 0.86, 0.72, 0.35, 0.62, 0.88, 0.78],
+      ["policy_backstop_and_trough", "2020-03-17", "2020-03-23", 1.00, 0.94, 1.00, 1.00, 0.52, 0.58, 0.96, 1.00],
+      ["commodity_aftershock", "2020-04-01", "2020-04-30", 0.48, 0.58, 0.72, 0.92, 1.00, 1.00, 0.68, 1.00],
+      ["early_reopen_recovery", "2020-05-01", "2020-06-30", 0.30, 0.42, 0.46, 0.64, 0.92, 0.32, 0.44, 1.00]
+    ]
+  },
+  "market_proxy_symbols": {
+    "equity_beta": ["SPY", "QQQ", "IWM", "DIA"],
+    "stay_home_growth": ["QQQ", "XLK", "SMH", "AAPL", "MSFT"],
+    "financial_stress": ["XLF", "KRE", "JPM", "BAC", "SCHW"],
+    "credit_liquidity": ["LQD", "HYG", "JNK"],
+    "rates_duration": ["SHY", "IEF", "TLT"],
+    "volatility": ["VIXY", "UVXY"],
+    "commodity_oil": ["XLE", "DBC", "USO", "/CL"],
+    "defensive_healthcare_staples": ["XLV", "XLP", "XLU"],
+    "travel_reopen_proxy": ["JETS", "XRT"],
+    "safe_haven": ["GLD", "UUP"]
+  },
+  "internal_feature_keys": [
+    "quant_covid_2020_pandemic_replay_norm",
+    "covid_2020_pandemic_replay_trace",
+    "pandemic_shutdown_stress_norm",
+    "liquidity_facility_stress_norm",
+    "oil_price_shock_norm",
+    "policy_rate_zero_bound_norm",
+    "scenario_stress_ladder"
+  ],
+  "governance_targets": [
+    "source_verification",
+    "point_in_time_event_store",
+    "replay_hash_registry",
+    "macro_crisis_scenario_lab",
+    "golden_replay_regression"
+  ],
+  "storage_targets": [
+    "config/stress_scenarios",
+    "governance/quant_models/macro_crisis_scenario_lab",
+    "exports/quant_models/macro_crisis_scenario_lab"
+  ],
+  "replay_contract": {
+    "time_grain": "phase_window",
+    "alignment_key": "start_date/end_date",
+    "join_policy": "historical_replay_phase_template",
+    "label_policy": "research_only_no_execution",
+    "minimum_required_sections": ["key_stress_anchors", "event_timeline", "replay_path", "market_proxy_symbols"]
+  }
+}

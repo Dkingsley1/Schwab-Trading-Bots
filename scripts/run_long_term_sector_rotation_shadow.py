@@ -1,11 +1,19 @@
 import argparse
 import os
 import subprocess
+import sys
 from pathlib import Path
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-VENV_PY = PROJECT_ROOT / ".venv312" / "bin" / "python"
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from core.runtime_python import resolve_runtime_python
+
+os.environ.setdefault("BOT_RUNTIME_LANE", os.getenv("BOT_SHADOW_RUNTIME_LANE", "canary314"))
+
+VENV_PY = resolve_runtime_python(PROJECT_ROOT)
 SHADOW_LOOP = PROJECT_ROOT / "scripts" / "run_shadow_training_loop.py"
 
 DEFAULT_SECTOR_ROTATION_SYMBOLS = "XLB,XLC,XLE,XLF,XLI,XLK,XLP,XLRE,XLU,XLV,XLY,SMH,SOXX,ITB,KRE,IBB,ITA,JETS,XOP,OIH"

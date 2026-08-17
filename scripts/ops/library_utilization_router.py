@@ -1,0 +1,1343 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+from importlib import metadata
+from pathlib import Path
+from typing import Any
+
+try:
+    from packaging.version import InvalidVersion, Version
+except Exception:  # pragma: no cover - packaging is pinned, but keep the router bootable.
+    InvalidVersion = Exception
+    Version = None
+
+if __package__ in {None, ""}:
+    PROJECT_ROOT = Path(__file__).resolve().parents[2]
+    if str(PROJECT_ROOT) not in sys.path:
+        sys.path.insert(0, str(PROJECT_ROOT))
+    from scripts.ops.long_runtime_common import iso_now, load_json, ordered_unique, write_payload
+else:
+    from .long_runtime_common import PROJECT_ROOT, iso_now, load_json, ordered_unique, write_payload
+
+
+DEFAULT_LOCK = PROJECT_ROOT / "config" / "requirements.lock.txt"
+DEFAULT_CANDIDATE_ROUTES = PROJECT_ROOT / "config" / "library_candidate_routes_v1.json"
+DEFAULT_ACTIVATION_PROFILES = PROJECT_ROOT / "config" / "library_activation_profiles_v1.json"
+DEFAULT_OUT_PATH = PROJECT_ROOT / "governance" / "health" / "library_utilization_router_latest.json"
+DEFAULT_EXTERNAL_CONTEXT_PATH = PROJECT_ROOT / "exports" / "external_context" / "library_utilization_router_latest.json"
+DEFAULT_MARKDOWN_PATH = PROJECT_ROOT / "exports" / "reports" / "operator" / "library_utilization_router_latest.md"
+DEFAULT_OVERRIDE_PATH = PROJECT_ROOT / "config" / ".env.library_utilization_router_override"
+
+MLX_ROUTED_PACKAGES = {
+    "mlx",
+    "mlx-metal",
+    "mlx-lm",
+    "mlx-data",
+    "mlx-graphs",
+    "mlx-cluster",
+    "mlx-snn",
+    "mlx-vision",
+    "mlx-vlm",
+    "mlx-whisper",
+    "mlx-audio",
+    "mlx-embeddings",
+    "mlx-embedding-models",
+    "mlx-diffuser",
+    "mlxvm",
+    "parakeet-mlx",
+    "esig",
+    "roughpy",
+    "pyrecombine",
+}
+
+LANE_SPECS: dict[str, dict[str, Any]] = {
+    "broker_market_data": {
+        "workload_family": "broker_api_market_data_and_remote_context_collection",
+        "priority": "protected_if_live",
+        "target_surfaces": ["schwab_auth", "yfinance", "macro_context", "market_context"],
+    },
+    "async_networking": {
+        "workload_family": "async_http_websocket_dns_and_rate_limited_ingestion",
+        "priority": "protected_when_collecting",
+        "target_surfaces": ["livefeed_refresh", "macro_context_sync", "provider_mesh"],
+    },
+    "storage_sql": {
+        "workload_family": "sqlite_duckdb_arrow_adbc_sqlalchemy_and_backpressure_writers",
+        "priority": "protected_when_draining",
+        "target_surfaces": ["sql_link_writer", "duckdb_analytics", "backpressure_drainers"],
+    },
+    "dataframe_feature_engine": {
+        "workload_family": "dataframe_vectorized_features_technical_indicators_and_time_series",
+        "priority": "protected_when_training",
+        "target_surfaces": ["feature_store", "training_samples", "strategy_features"],
+    },
+    "quant_derivatives_risk": {
+        "workload_family": "options_pricing_quantlib_vollib_risk_metrics_and_symbolic_math",
+        "priority": "research_only_or_guarded_paper",
+        "target_surfaces": ["quant_model_control", "options_greeks", "risk_service"],
+    },
+    "statistical_ml": {
+        "workload_family": "classical_ml_optimization_stats_regime_filters_and_boosted_models",
+        "priority": "off_hours_preferred",
+        "target_surfaces": ["training_quality", "model_lifecycle", "regime_control"],
+    },
+    "time_series_forecasting": {
+        "workload_family": "time_series_forecasting_feature_generation_matrix_profiles_and_temporal_cross_validation",
+        "priority": "off_hours_preferred",
+        "target_surfaces": ["training_quality", "regime_control", "walk_forward", "profitability_forecasts"],
+    },
+    "anomaly_drift_detection": {
+        "workload_family": "data_quality_model_drift_outlier_detection_and_label_issue_triage",
+        "priority": "protected_when_training",
+        "target_surfaces": ["observation_rollup", "training_quality", "provider_mesh", "promotion_gate"],
+    },
+    "vector_memory_retrieval": {
+        "workload_family": "embedding_indexes_vector_search_research_memory_and_duplicate_alpha_detection",
+        "priority": "throttle_first",
+        "target_surfaces": ["research_memory", "alpha_overlap", "bot_similarity", "external_context"],
+    },
+    "provider_rate_limit_cache": {
+        "workload_family": "provider_rate_limits_response_caching_backoff_and_fetch_deduplication",
+        "priority": "protected_when_collecting",
+        "target_surfaces": ["provider_mesh", "macro_context", "symbol_news", "livefeed_refresh"],
+    },
+    "financial_filings_macro": {
+        "workload_family": "sec_filings_macro_factors_economic_data_and_public_fundamental_context",
+        "priority": "protected_if_live",
+        "target_surfaces": ["macro_context", "symbol_news", "research_pipeline", "fundamental_context"],
+    },
+    "sql_lineage_contracts": {
+        "workload_family": "sql_parsing_lineage_dialect_translation_and_query_contract_validation",
+        "priority": "protected_when_writing",
+        "target_surfaces": ["duckdb_analytics", "sql_link_writer", "feature_store", "report_quality"],
+    },
+    "graph_network_analysis": {
+        "workload_family": "graph_algorithms_bot_lineage_dependency_maps_and_cross_asset_network_research",
+        "priority": "off_hours_preferred",
+        "target_surfaces": ["dependency_memory", "sleeve_masters", "system_architecture", "spillover_graphs"],
+    },
+    "causal_survival_research": {
+        "workload_family": "causal_inference_survival_analysis_counterfactuals_and_time_to_event_models",
+        "priority": "research_only_or_guarded_paper",
+        "target_surfaces": ["cognitive_twin", "no_trade_counterfactuals", "risk_service", "strategy_research"],
+    },
+    "simulation_sensitivity": {
+        "workload_family": "discrete_event_simulation_sensitivity_analysis_and_execution_rehearsal",
+        "priority": "off_hours_preferred",
+        "target_surfaces": ["execution_rehearsal", "risk_service", "strategy_research", "walk_forward"],
+    },
+    "data_contract_validation": {
+        "workload_family": "dataset_contracts_schema_validation_deep_diff_and_artifact_quality_gates",
+        "priority": "protected_when_training",
+        "target_surfaces": ["feature_store", "health_artifacts", "governance", "training_samples"],
+    },
+    "telemetry_tracing": {
+        "workload_family": "opentelemetry_metrics_traces_instrumentation_and_exporters",
+        "priority": "protected_when_live",
+        "target_surfaces": ["local_api", "provider_mesh", "sql_link_writer", "runtime_throttle", "operator_cockpit"],
+    },
+    "runtime_performance_profiling": {
+        "workload_family": "cpu_memory_benchmarking_hotpath_and_allocation_profiling",
+        "priority": "off_hours_or_manual",
+        "target_surfaces": ["memory_efficiency", "runtime_throttle", "training_quality", "livefeed_refresh"],
+    },
+    "production_quality_gates": {
+        "workload_family": "static_analysis_type_checking_dependency_architecture_and_dead_code_gates",
+        "priority": "off_hours_or_ci",
+        "target_surfaces": ["regression_guard", "commands_hygiene", "codex_project_guard", "release_gate"],
+    },
+    "security_supply_chain": {
+        "workload_family": "source_security_dependency_audit_secret_scan_sbom_and_license_controls",
+        "priority": "protected_if_auth",
+        "target_surfaces": ["secret_scan", "dependency_audit", "release_gate", "runtime_env"],
+    },
+    "load_resilience_testing": {
+        "workload_family": "api_load_contract_fuzzing_benchmark_and_flake_resilience_tests",
+        "priority": "off_hours_or_ci",
+        "target_surfaces": ["local_api", "operator_cockpit", "provider_mesh", "regression_guard"],
+    },
+    "queue_job_orchestration": {
+        "workload_family": "durable_background_jobs_retries_worker_queues_and_deferred_execution",
+        "priority": "protected_when_draining",
+        "target_surfaces": ["ops_coordinator", "retrain_schedule", "reporting_layer", "provider_mesh"],
+    },
+    "config_release_controls": {
+        "workload_family": "typed_settings_env_layering_feature_flags_and_release_configuration",
+        "priority": "protected_if_auth",
+        "target_surfaces": ["runtime_env", "operator_overrides", "release_gate", "config_governance"],
+    },
+    "async_flow_control": {
+        "workload_family": "asyncio_task_concurrency_streams_and_backpressure_helpers",
+        "priority": "protected_when_collecting",
+        "target_surfaces": ["livefeed_refresh", "provider_mesh", "macro_context_sync", "backpressure_drainers"],
+    },
+    "portable_ml_replay": {
+        "workload_family": "pytorch_onnx_transformers_replay_canaries_and_model_interop",
+        "priority": "disabled_or_canary_during_live",
+        "target_surfaces": ["pytorch_replay_canary", "onnx_audit", "portable_brain"],
+    },
+    "nlp_tokenization_research": {
+        "workload_family": "tokenization_datasets_huggingface_and_text_research_inputs",
+        "priority": "throttle_first",
+        "target_surfaces": ["research_pipeline", "sentiment_agents", "macro_transcripts"],
+    },
+    "visualization_reporting": {
+        "workload_family": "plots_reports_pdf_markdown_terminal_tables_and_visual_quality",
+        "priority": "throttle_first",
+        "target_surfaces": ["report_quality", "paper_performance", "project_timeline"],
+    },
+    "web_api_ui": {
+        "workload_family": "local_api_cockpit_phone_feed_and_operator_web_surfaces",
+        "priority": "operator_visible",
+        "target_surfaces": ["operator_cockpit", "phone_feed", "local_api"],
+    },
+    "observability_ops": {
+        "workload_family": "metrics_profiling_logging_progress_and_runtime_diagnostics",
+        "priority": "throttle_first",
+        "target_surfaces": ["runtime_throttle", "memory_efficiency", "cost_telemetry"],
+    },
+    "security_auth_config": {
+        "workload_family": "auth_secrets_crypto_settings_validation_and_config_files",
+        "priority": "protected_if_auth",
+        "target_surfaces": ["schwab_auth_supervisor", "secret_scan", "runtime_env"],
+    },
+    "serialization_compression": {
+        "workload_family": "json_msgpack_arrow_safetensors_flatbuffers_and_compression",
+        "priority": "protected_when_writing",
+        "target_surfaces": ["jsonl_buffers", "artifact_store", "external_context"],
+    },
+    "testing_dev_tooling": {
+        "workload_family": "tests_formatting_packaging_and_developer_feedback",
+        "priority": "off_hours_or_manual",
+        "target_surfaces": ["regression_guard", "commands_hygiene", "codex_project_guard"],
+    },
+    "system_runtime_primitives": {
+        "workload_family": "python_runtime_dependency_glue_typing_dates_paths_and_low_level_support",
+        "priority": "always_available",
+        "target_surfaces": ["runtime_python", "supportability_control", "opsctl"],
+    },
+    "audio_media_non_mlx": {
+        "workload_family": "audio_file_io_resampling_waveforms_and_media_support_outside_mlx",
+        "priority": "protected_if_live_event",
+        "target_surfaces": ["macro_media_ingest", "live_macro_auto_watch"],
+    },
+    "runtime_support_misc": {
+        "workload_family": "dependency_support_packages_that_exist_to_make_primary_lanes_work",
+        "priority": "always_available",
+        "target_surfaces": ["runtime_dependency_profiles", "ops_coordinator"],
+    },
+}
+
+DEFAULT_PROFILE_ORDER = ("live", "ops", "research", "media")
+
+DEFAULT_LANE_ACTIVATION_PROFILES: dict[str, list[str]] = {
+    "broker_market_data": ["live"],
+    "provider_rate_limit_cache": ["live"],
+    "sql_lineage_contracts": ["live", "research"],
+    "data_contract_validation": ["live", "ops"],
+    "async_flow_control": ["live"],
+    "telemetry_tracing": ["ops", "live"],
+    "runtime_performance_profiling": ["ops"],
+    "production_quality_gates": ["ops"],
+    "security_supply_chain": ["ops"],
+    "load_resilience_testing": ["ops"],
+    "queue_job_orchestration": ["ops"],
+    "config_release_controls": ["ops"],
+    "observability_ops": ["ops"],
+    "testing_dev_tooling": ["ops"],
+    "security_auth_config": ["ops", "live"],
+    "visualization_reporting": ["ops"],
+    "web_api_ui": ["ops"],
+    "dataframe_feature_engine": ["live", "research"],
+    "storage_sql": ["live", "research"],
+    "quant_derivatives_risk": ["research"],
+    "statistical_ml": ["research"],
+    "time_series_forecasting": ["research"],
+    "anomaly_drift_detection": ["research"],
+    "vector_memory_retrieval": ["research"],
+    "graph_network_analysis": ["research"],
+    "causal_survival_research": ["research"],
+    "simulation_sensitivity": ["research"],
+    "financial_filings_macro": ["research", "ops"],
+    "portable_ml_replay": ["research"],
+    "nlp_tokenization_research": ["research"],
+    "language_reasoning": ["research"],
+    "vision_vlm_intelligence": ["media", "research"],
+    "audio_media_non_mlx": ["media"],
+    "system_runtime_primitives": ["ops", "live"],
+    "runtime_support_misc": ["ops"],
+}
+
+DEFAULT_PROFILE_ACTIVATION_MODES: dict[str, str] = {
+    "live": "installed_disabled_by_default_until_runtime_smoke_and_feature_gate",
+    "ops": "installed_available_to_release_gates_and_operator_commands",
+    "research": "installed_off_hours_or_replay_only",
+    "media": "installed_off_hours_media_or_visual_fixture_only",
+}
+
+PACKAGE_LANE_OVERRIDES: dict[str, str] = {
+    "apscheduler": "observability_ops",
+    "authlib": "security_auth_config",
+    "bottleneck": "dataframe_feature_engine",
+    "flask": "web_api_ui",
+    "jinja2": "visualization_reporting",
+    "mako": "storage_sql",
+    "markupsafe": "visualization_reporting",
+    "pyyaml": "security_auth_config",
+    "pygments": "visualization_reporting",
+    "quantlib": "quant_derivatives_risk",
+    "sqlalchemy": "storage_sql",
+    "werkzeug": "web_api_ui",
+    "adbc-driver-manager": "storage_sql",
+    "adbc-driver-sqlite": "storage_sql",
+    "alembic": "storage_sql",
+    "apsw": "storage_sql",
+    "duckdb": "storage_sql",
+    "duckdb-engine": "storage_sql",
+    "peewee": "storage_sql",
+    "redis": "storage_sql",
+    "pyarrow": "storage_sql",
+    "deltalake": "storage_sql",
+    "ibis-framework": "storage_sql",
+    "connectorx": "storage_sql",
+    "diskcache": "storage_sql",
+    "sqlglot": "sql_lineage_contracts",
+    "sqlparse": "sql_lineage_contracts",
+    "polars": "dataframe_feature_engine",
+    "polars-runtime-32": "dataframe_feature_engine",
+    "pandas": "dataframe_feature_engine",
+    "pandas-stubs": "dataframe_feature_engine",
+    "pandas-ta": "dataframe_feature_engine",
+    "numpy": "dataframe_feature_engine",
+    "numexpr": "dataframe_feature_engine",
+    "ta": "dataframe_feature_engine",
+    "arch": "statistical_ml",
+    "empyrical-reloaded": "quant_derivatives_risk",
+    "lets-be-rational": "quant_derivatives_risk",
+    "py-lets-be-rational": "quant_derivatives_risk",
+    "py-vollib": "quant_derivatives_risk",
+    "py-vollib-vectorized": "quant_derivatives_risk",
+    "quantstats": "quant_derivatives_risk",
+    "scipy": "statistical_ml",
+    "scikit-learn": "statistical_ml",
+    "statsmodels": "statistical_ml",
+    "sympy": "quant_derivatives_risk",
+    "xgboost": "statistical_ml",
+    "optuna": "statistical_ml",
+    "numba": "statistical_ml",
+    "llvmlite": "statistical_ml",
+    "linearmodels": "statistical_ml",
+    "pymoo": "statistical_ml",
+    "nevergrad": "statistical_ml",
+    "statsforecast": "time_series_forecasting",
+    "mlforecast": "time_series_forecasting",
+    "sktime": "time_series_forecasting",
+    "tsfresh": "time_series_forecasting",
+    "stumpy": "time_series_forecasting",
+    "tslearn": "time_series_forecasting",
+    "pyod": "anomaly_drift_detection",
+    "alibi-detect": "anomaly_drift_detection",
+    "evidently": "anomaly_drift_detection",
+    "cleanlab": "anomaly_drift_detection",
+    "lancedb": "vector_memory_retrieval",
+    "qdrant-client": "vector_memory_retrieval",
+    "sqlite-vec": "vector_memory_retrieval",
+    "hnswlib": "vector_memory_retrieval",
+    "usearch": "vector_memory_retrieval",
+    "fastembed": "vector_memory_retrieval",
+    "mlxvm": "vector_memory_retrieval",
+    "networkx": "graph_network_analysis",
+    "igraph": "graph_network_analysis",
+    "leidenalg": "graph_network_analysis",
+    "python-louvain": "graph_network_analysis",
+    "scikit-network": "graph_network_analysis",
+    "dowhy": "causal_survival_research",
+    "econml": "causal_survival_research",
+    "causal-learn": "causal_survival_research",
+    "doubleml": "causal_survival_research",
+    "lifelines": "causal_survival_research",
+    "simpy": "simulation_sensitivity",
+    "salib": "simulation_sensitivity",
+    "chaospy": "simulation_sensitivity",
+    "torch": "portable_ml_replay",
+    "onnx": "portable_ml_replay",
+    "onnxruntime": "portable_ml_replay",
+    "transformers": "nlp_tokenization_research",
+    "datasets": "nlp_tokenization_research",
+    "huggingface-hub": "nlp_tokenization_research",
+    "hf-xet": "nlp_tokenization_research",
+    "safetensors": "serialization_compression",
+    "sentencepiece": "nlp_tokenization_research",
+    "tiktoken": "nlp_tokenization_research",
+    "tokenizers": "nlp_tokenization_research",
+    "regex": "nlp_tokenization_research",
+    "rapidfuzz": "nlp_tokenization_research",
+    "dateparser": "nlp_tokenization_research",
+    "trafilatura": "nlp_tokenization_research",
+    "aiohttp": "async_networking",
+    "aiodns": "async_networking",
+    "aiofiles": "async_networking",
+    "aiohappyeyeballs": "async_networking",
+    "aiosignal": "async_networking",
+    "anyio": "async_networking",
+    "curl-cffi": "broker_market_data",
+    "httpcore": "async_networking",
+    "httpx": "async_networking",
+    "requests": "broker_market_data",
+    "aiolimiter": "provider_rate_limit_cache",
+    "asynciolimiter": "provider_rate_limit_cache",
+    "cachetools": "provider_rate_limit_cache",
+    "requests-cache": "provider_rate_limit_cache",
+    "requests-ratelimiter": "provider_rate_limit_cache",
+    "limits": "provider_rate_limit_cache",
+    "urllib3": "async_networking",
+    "websockets": "async_networking",
+    "uvloop": "async_networking",
+    "watchfiles": "observability_ops",
+    "yarl": "async_networking",
+    "multidict": "async_networking",
+    "frozenlist": "async_networking",
+    "pycares": "async_networking",
+    "schwab-py": "broker_market_data",
+    "yfinance": "broker_market_data",
+    "beautifulsoup4": "broker_market_data",
+    "soupsieve": "broker_market_data",
+    "selectolax": "broker_market_data",
+    "feedparser": "broker_market_data",
+    "pandas-datareader": "financial_filings_macro",
+    "edgartools": "financial_filings_macro",
+    "sec-edgar-downloader": "financial_filings_macro",
+    "sec-cik-mapper": "financial_filings_macro",
+    "certifi": "async_networking",
+    "charset-normalizer": "async_networking",
+    "idna": "async_networking",
+    "matplotlib": "visualization_reporting",
+    "seaborn": "visualization_reporting",
+    "plotly": "visualization_reporting",
+    "pillow": "visualization_reporting",
+    "opencv-python": "visualization_reporting",
+    "fonttools": "visualization_reporting",
+    "contourpy": "visualization_reporting",
+    "cycler": "visualization_reporting",
+    "kiwisolver": "visualization_reporting",
+    "pyparsing": "visualization_reporting",
+    "rich": "visualization_reporting",
+    "markdown-it-py": "visualization_reporting",
+    "mdurl": "visualization_reporting",
+    "tabulate": "visualization_reporting",
+    "fastapi": "web_api_ui",
+    "starlette": "web_api_ui",
+    "uvicorn": "web_api_ui",
+    "click": "web_api_ui",
+    "typer": "web_api_ui",
+    "shellingham": "web_api_ui",
+    "blinker": "web_api_ui",
+    "itsdangerous": "web_api_ui",
+    "orjson": "serialization_compression",
+    "ujson": "serialization_compression",
+    "simplejson": "serialization_compression",
+    "msgspec": "serialization_compression",
+    "msgpack": "serialization_compression",
+    "flatbuffers": "serialization_compression",
+    "protobuf": "serialization_compression",
+    "zstandard": "serialization_compression",
+    "xxhash": "serialization_compression",
+    "jsonschema": "security_auth_config",
+    "great-expectations": "data_contract_validation",
+    "frictionless": "data_contract_validation",
+    "deepdiff": "data_contract_validation",
+    "jsonpath-ng": "data_contract_validation",
+    "opentelemetry-api": "telemetry_tracing",
+    "opentelemetry-sdk": "telemetry_tracing",
+    "opentelemetry-exporter-otlp": "telemetry_tracing",
+    "opentelemetry-instrumentation": "telemetry_tracing",
+    "opentelemetry-instrumentation-fastapi": "telemetry_tracing",
+    "opentelemetry-instrumentation-httpx": "telemetry_tracing",
+    "opentelemetry-instrumentation-requests": "telemetry_tracing",
+    "opentelemetry-instrumentation-sqlalchemy": "telemetry_tracing",
+    "opentelemetry-instrumentation-sqlite3": "telemetry_tracing",
+    "opentelemetry-semantic-conventions": "telemetry_tracing",
+    "prometheus-fastapi-instrumentator": "telemetry_tracing",
+    "scalene": "runtime_performance_profiling",
+    "memray": "runtime_performance_profiling",
+    "pyperf": "runtime_performance_profiling",
+    "ruff": "production_quality_gates",
+    "mypy": "production_quality_gates",
+    "pyright": "production_quality_gates",
+    "import-linter": "production_quality_gates",
+    "deptry": "production_quality_gates",
+    "vulture": "production_quality_gates",
+    "bandit": "security_supply_chain",
+    "pip-audit": "security_supply_chain",
+    "cyclonedx-bom": "security_supply_chain",
+    "detect-secrets": "security_supply_chain",
+    "pip-licenses": "security_supply_chain",
+    "locust": "load_resilience_testing",
+    "schemathesis": "load_resilience_testing",
+    "pytest-benchmark": "load_resilience_testing",
+    "pytest-socket": "load_resilience_testing",
+    "pytest-rerunfailures": "load_resilience_testing",
+    "arq": "queue_job_orchestration",
+    "rq": "queue_job_orchestration",
+    "dramatiq": "queue_job_orchestration",
+    "huey": "queue_job_orchestration",
+    "dynaconf": "config_release_controls",
+    "hydra-core": "config_release_controls",
+    "omegaconf": "config_release_controls",
+    "python-decouple": "config_release_controls",
+    "environs": "config_release_controls",
+    "aiometer": "async_flow_control",
+    "aiostream": "async_flow_control",
+    "asyncstdlib": "async_flow_control",
+    "httptools": "async_flow_control",
+    "cryptography": "security_auth_config",
+    "python-dotenv": "security_auth_config",
+    "pydantic": "security_auth_config",
+    "pydantic-core": "security_auth_config",
+    "pydantic-settings": "security_auth_config",
+    "annotated-types": "security_auth_config",
+    "typing-inspection": "system_runtime_primitives",
+    "typing-extensions": "system_runtime_primitives",
+    "psutil": "observability_ops",
+    "prometheus-client": "observability_ops",
+    "sentry-sdk": "observability_ops",
+    "structlog": "observability_ops",
+    "loguru": "observability_ops",
+    "colorlog": "observability_ops",
+    "memory-profiler": "observability_ops",
+    "line-profiler": "observability_ops",
+    "py-spy": "observability_ops",
+    "pyinstrument": "observability_ops",
+    "tqdm": "observability_ops",
+    "pytest": "testing_dev_tooling",
+    "pytest-xdist": "testing_dev_tooling",
+    "pytest-timeout": "testing_dev_tooling",
+    "respx": "testing_dev_tooling",
+    "vcrpy": "testing_dev_tooling",
+    "hypothesis-jsonschema": "testing_dev_tooling",
+    "pluggy": "testing_dev_tooling",
+    "iniconfig": "testing_dev_tooling",
+    "autopep8": "testing_dev_tooling",
+    "pycodestyle": "testing_dev_tooling",
+    "setuptools": "testing_dev_tooling",
+    "wheel": "testing_dev_tooling",
+    "packaging": "system_runtime_primitives",
+    "pip": "system_runtime_primitives",
+    "platformdirs": "system_runtime_primitives",
+    "python-dateutil": "system_runtime_primitives",
+    "pytz": "system_runtime_primitives",
+    "tzlocal": "system_runtime_primitives",
+    "six": "system_runtime_primitives",
+    "attrs": "system_runtime_primitives",
+    "frozendict": "system_runtime_primitives",
+    "fsspec": "system_runtime_primitives",
+    "filelock": "system_runtime_primitives",
+    "importlib-resources": "system_runtime_primitives",
+    "more-itertools": "system_runtime_primitives",
+    "multiprocess": "system_runtime_primitives",
+    "multitasking": "system_runtime_primitives",
+    "dill": "system_runtime_primitives",
+    "joblib": "system_runtime_primitives",
+    "threadpoolctl": "system_runtime_primitives",
+    "tenacity": "system_runtime_primitives",
+    "ml-dtypes": "system_runtime_primitives",
+    "mpmath": "system_runtime_primitives",
+    "cffi": "system_runtime_primitives",
+    "pycparser": "system_runtime_primitives",
+    "propcache": "system_runtime_primitives",
+    "h11": "async_networking",
+    "miniaudio": "audio_media_non_mlx",
+    "audioread": "audio_media_non_mlx",
+    "librosa": "audio_media_non_mlx",
+    "sounddevice": "audio_media_non_mlx",
+    "soundfile": "audio_media_non_mlx",
+    "soxr": "audio_media_non_mlx",
+    "pyloudnorm": "audio_media_non_mlx",
+}
+
+OPTIONAL_PACKAGE_FALLBACKS: dict[str, list[str]] = {
+    "pandas-ta": ["ta", "pandas", "numpy"],
+}
+
+CRITICAL_RUNTIME_LANES = {
+    "broker_market_data",
+    "async_networking",
+    "storage_sql",
+    "dataframe_feature_engine",
+    "security_auth_config",
+    "serialization_compression",
+    "system_runtime_primitives",
+    "telemetry_tracing",
+    "security_supply_chain",
+    "queue_job_orchestration",
+    "config_release_controls",
+    "async_flow_control",
+}
+
+
+def _safe_float(value: Any, default: float = 0.0) -> float:
+    try:
+        return float(value)
+    except Exception:
+        return float(default)
+
+
+def _safe_int(value: Any, default: int = 0) -> int:
+    try:
+        return int(float(value))
+    except Exception:
+        return int(default)
+
+
+def _norm_package(name: str) -> str:
+    return str(name or "").strip().lower().replace("_", "-")
+
+
+def _string_list(value: Any) -> list[str]:
+    if isinstance(value, list):
+        return [str(item).strip() for item in value if str(item).strip()]
+    if isinstance(value, str) and value.strip():
+        return [value.strip()]
+    return []
+
+
+def _load_activation_config(project_root: Path) -> dict[str, Any]:
+    payload = load_json(project_root / "config" / "library_activation_profiles_v1.json")
+    return payload if isinstance(payload, dict) else {}
+
+
+def _profile_order(activation_config: dict[str, Any]) -> list[str]:
+    configured = _string_list(activation_config.get("profile_order"))
+    return configured or list(DEFAULT_PROFILE_ORDER)
+
+
+def _lane_activation_profiles(activation_config: dict[str, Any]) -> dict[str, list[str]]:
+    lane_to_profiles: dict[str, list[str]] = {
+        lane: list(profiles)
+        for lane, profiles in DEFAULT_LANE_ACTIVATION_PROFILES.items()
+    }
+    profile_lanes = activation_config.get("profile_lanes")
+    if isinstance(profile_lanes, dict):
+        for profile, lanes in profile_lanes.items():
+            profile_name = str(profile or "").strip()
+            if not profile_name:
+                continue
+            for lane in _string_list(lanes):
+                lane_to_profiles[lane] = ordered_unique([*lane_to_profiles.get(lane, []), profile_name])
+    return lane_to_profiles
+
+
+def _package_activation_profiles(package: str, lane: str, runtime_family: str, activation_config: dict[str, Any]) -> list[str]:
+    raw_overrides = activation_config.get("package_profile_overrides")
+    overrides = {_norm_package(str(key)): value for key, value in raw_overrides.items()} if isinstance(raw_overrides, dict) else {}
+    if package in overrides:
+        return _ordered_profiles(_string_list(overrides.get(package)), activation_config)
+    lane_profiles = _lane_activation_profiles(activation_config)
+    profiles = lane_profiles.get(lane)
+    if not profiles:
+        profiles = ["research"] if runtime_family == "mlx" else ["ops"]
+    return _ordered_profiles(profiles, activation_config)
+
+
+def _ordered_profiles(profiles: list[str], activation_config: dict[str, Any]) -> list[str]:
+    profile_order = _profile_order(activation_config)
+    profile_rank = {profile: index for index, profile in enumerate(profile_order)}
+    return sorted(ordered_unique(profiles), key=lambda profile: profile_rank.get(profile, len(profile_rank)))
+
+
+def _candidate_activation_state(status: str, activation_profiles: list[str]) -> str:
+    if status in {"installed_locked", "installed_runtime_only"}:
+        return "active_runtime"
+    if status == "locked_missing_runtime":
+        return "active_lock_missing_runtime"
+    if activation_profiles:
+        return "profile_eligible_pending_install"
+    return "candidate_only_no_activation_profile"
+
+
+def _activation_modes(activation_profiles: list[str], activation_config: dict[str, Any]) -> dict[str, str]:
+    configured = activation_config.get("profile_activation_modes")
+    profile_modes = configured if isinstance(configured, dict) else {}
+    return {
+        profile: str(profile_modes.get(profile) or DEFAULT_PROFILE_ACTIVATION_MODES.get(profile) or "profile_scoped_install")
+        for profile in activation_profiles
+    }
+
+
+def _activation_batch(package: str, activation_config: dict[str, Any]) -> str:
+    batches = activation_config.get("initial_activation_batches")
+    if not isinstance(batches, dict):
+        return ""
+    for batch_name, packages in batches.items():
+        if package in {_norm_package(item) for item in _string_list(packages)}:
+            return str(batch_name or "").strip()
+    return ""
+
+
+def _parse_version_lines(lines: list[str]) -> dict[str, str]:
+    versions: dict[str, str] = {}
+    for raw in lines:
+        line = raw.strip()
+        if not line or line.startswith("#") or "==" not in line:
+            continue
+        package, version = line.split("==", 1)
+        package_name = _norm_package(package)
+        if package_name:
+            versions[package_name] = version.strip()
+    return versions
+
+
+def _load_lock_versions(lock_file: Path = DEFAULT_LOCK) -> dict[str, str]:
+    try:
+        return _parse_version_lines(lock_file.read_text(encoding="utf-8").splitlines())
+    except OSError:
+        return {}
+
+
+def _load_installed_versions() -> dict[str, str]:
+    versions: dict[str, str] = {}
+    for dist in metadata.distributions():
+        name = _norm_package(dist.metadata.get("Name", ""))
+        if name:
+            versions[name] = str(dist.version)
+    return versions
+
+
+def _is_mlx_routed(package: str) -> bool:
+    normalized = _norm_package(package)
+    return normalized in MLX_ROUTED_PACKAGES or normalized.startswith("mlx-")
+
+
+def _package_status(package: str, lock_versions: dict[str, str], installed_versions: dict[str, str]) -> str:
+    locked = lock_versions.get(package)
+    installed = installed_versions.get(package)
+    if locked and installed:
+        return "ok" if locked == installed else _version_drift_status(locked, installed)
+    if locked:
+        return "missing_runtime"
+    if installed:
+        return "runtime_only"
+    return "missing"
+
+
+def _version_drift_status(locked: str, installed: str) -> str:
+    if Version is None:
+        return "version_mismatch"
+    try:
+        locked_version = Version(str(locked))
+        installed_version = Version(str(installed))
+    except InvalidVersion:
+        return "version_mismatch"
+    if installed_version > locked_version:
+        return "runtime_ahead_of_lock"
+    if installed_version < locked_version:
+        return "runtime_behind_lock"
+    return "version_mismatch"
+
+
+def _infer_lane(package: str) -> str:
+    normalized = _norm_package(package)
+    if normalized in PACKAGE_LANE_OVERRIDES:
+        return PACKAGE_LANE_OVERRIDES[normalized]
+    if any(token in normalized for token in ("sql", "duck", "arrow", "adbc", "sqlite")):
+        return "storage_sql"
+    if any(token in normalized for token in ("aio", "http", "websocket", "curl", "request", "url")):
+        return "async_networking"
+    if any(token in normalized for token in ("pandas", "numpy", "polars", "bottle", "dataframe")):
+        return "dataframe_feature_engine"
+    if any(token in normalized for token in ("quant", "vollib", "rational", "sympy", "mpmath")):
+        return "quant_derivatives_risk"
+    if any(token in normalized for token in ("sklearn", "learn", "stats", "xgboost", "optuna", "numba")):
+        return "statistical_ml"
+    if any(token in normalized for token in ("torch", "onnx", "transformer", "token", "dataset", "huggingface")):
+        return "portable_ml_replay"
+    if any(token in normalized for token in ("plot", "matplotlib", "pillow", "opencv", "rich", "markdown", "font")):
+        return "visualization_reporting"
+    if any(token in normalized for token in ("fastapi", "flask", "uvicorn", "werkzeug", "starlette")):
+        return "web_api_ui"
+    if any(token in normalized for token in ("crypto", "auth", "dotenv", "pydantic", "yaml")):
+        return "security_auth_config"
+    if any(token in normalized for token in ("json", "msg", "flat", "proto", "zstandard", "safetensor")):
+        return "serialization_compression"
+    if "opentelemetry" in normalized or normalized in {"prometheus-fastapi-instrumentator"}:
+        return "telemetry_tracing"
+    if any(token in normalized for token in ("scalene", "memray", "pyperf", "benchmark")):
+        return "runtime_performance_profiling"
+    if any(token in normalized for token in ("ruff", "mypy", "pyright", "linter", "deptry", "vulture")):
+        return "production_quality_gates"
+    if any(token in normalized for token in ("bandit", "audit", "cyclonedx", "secret", "license")):
+        return "security_supply_chain"
+    if any(token in normalized for token in ("locust", "schemathesis", "rerun", "socket")):
+        return "load_resilience_testing"
+    if normalized in {"arq", "rq", "dramatiq", "huey"} or "queue" in normalized:
+        return "queue_job_orchestration"
+    if any(token in normalized for token in ("dynaconf", "hydra", "omegaconf", "decouple", "environs")):
+        return "config_release_controls"
+    if any(token in normalized for token in ("aiometer", "aiostream", "asyncstdlib", "httptools")):
+        return "async_flow_control"
+    if any(token in normalized for token in ("profile", "sentry", "prometheus", "psutil", "log", "tqdm")):
+        return "observability_ops"
+    if any(token in normalized for token in ("pytest", "pep", "pluggy", "setuptools", "wheel")):
+        return "testing_dev_tooling"
+    if any(token in normalized for token in ("audio", "sound", "soxr", "loudnorm")):
+        return "audio_media_non_mlx"
+    return "runtime_support_misc"
+
+
+def _package_inventory(lock_versions: dict[str, str], installed_versions: dict[str, str]) -> list[dict[str, Any]]:
+    packages = sorted((set(lock_versions) | set(installed_versions)) - {pkg for pkg in set(lock_versions) | set(installed_versions) if _is_mlx_routed(pkg)})
+    rows: list[dict[str, Any]] = []
+    for package in packages:
+        lane = _infer_lane(package)
+        status = _package_status(package, lock_versions, installed_versions)
+        fallback_packages = OPTIONAL_PACKAGE_FALLBACKS.get(package, [])
+        available_fallbacks = [pkg for pkg in fallback_packages if _norm_package(pkg) in installed_versions]
+        if status == "missing_runtime" and available_fallbacks:
+            status = "optional_fallback_active"
+        rows.append(
+            {
+                "package": package,
+                "lane": lane,
+                "locked_version": lock_versions.get(package),
+                "installed_version": installed_versions.get(package),
+                "status": status,
+                "source": "locked" if package in lock_versions else "runtime_only",
+                "fallback_packages": fallback_packages,
+                "available_fallback_packages": available_fallbacks,
+            }
+        )
+    return rows
+
+
+def _lane_drift_is_critical(lane: str, statuses: set[str]) -> bool:
+    if not statuses.intersection({"runtime_behind_lock", "version_mismatch"}):
+        return False
+    return str(lane or "") in CRITICAL_RUNTIME_LANES
+
+
+def _lane_routes(package_rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    by_lane: dict[str, list[dict[str, Any]]] = {lane: [] for lane in LANE_SPECS}
+    for row in package_rows:
+        lane = str(row.get("lane") or "runtime_support_misc")
+        by_lane.setdefault(lane, []).append(row)
+    routes: list[dict[str, Any]] = []
+    for lane, spec in LANE_SPECS.items():
+        rows = by_lane.get(lane, [])
+        statuses = {str(row.get("status") or "") for row in rows}
+        if "missing_runtime" in statuses:
+            status = "blocked"
+        elif _lane_drift_is_critical(lane, statuses):
+            status = "degraded"
+        elif any(
+            item in statuses
+            for item in ("runtime_behind_lock", "version_mismatch", "runtime_ahead_of_lock", "optional_fallback_active")
+        ) or any(str(row.get("source") or "") == "runtime_only" for row in rows):
+            status = "advisory"
+        else:
+            status = "ready" if rows else "thin"
+        routes.append(
+            {
+                "lane": lane,
+                "status": status,
+                "workload_family": spec.get("workload_family"),
+                "priority": spec.get("priority"),
+                "target_surfaces": spec.get("target_surfaces", []),
+                "package_count": len(rows),
+                "locked_package_count": sum(1 for row in rows if str(row.get("source") or "") == "locked"),
+                "runtime_only_package_count": sum(1 for row in rows if str(row.get("source") or "") == "runtime_only"),
+                "packages": [str(row.get("package") or "") for row in rows],
+                "blocked_packages": [str(row.get("package") or "") for row in rows if str(row.get("status") or "") == "missing_runtime"],
+                "version_mismatch_packages": [str(row.get("package") or "") for row in rows if str(row.get("status") or "") in {"version_mismatch", "runtime_behind_lock"}],
+                "runtime_ahead_packages": [str(row.get("package") or "") for row in rows if str(row.get("status") or "") == "runtime_ahead_of_lock"],
+                "optional_fallback_packages": [str(row.get("package") or "") for row in rows if str(row.get("status") or "") == "optional_fallback_active"],
+            }
+        )
+    return routes
+
+
+def _coverage(package_rows: list[dict[str, Any]]) -> dict[str, Any]:
+    locked_rows = [row for row in package_rows if str(row.get("source") or "") == "locked"]
+    managed_rows = package_rows
+    missing = [row for row in locked_rows if str(row.get("status") or "") == "missing_runtime"]
+    mismatched = [row for row in locked_rows if str(row.get("status") or "") in {"version_mismatch", "runtime_behind_lock"}]
+    runtime_ahead = [row for row in locked_rows if str(row.get("status") or "") == "runtime_ahead_of_lock"]
+    fallback_active = [row for row in locked_rows if str(row.get("status") or "") == "optional_fallback_active"]
+    runtime_only = [row for row in managed_rows if str(row.get("source") or "") == "runtime_only"]
+    mapped = [row for row in managed_rows if str(row.get("lane") or "")]
+    runtime_usable = [
+        row
+        for row in locked_rows
+        if str(row.get("status") or "") in {"ok", "runtime_ahead_of_lock", "optional_fallback_active"}
+    ]
+    return {
+        "locked_non_mlx_package_count": len(locked_rows),
+        "managed_non_mlx_package_count": len(managed_rows),
+        "mapped_package_count": len(mapped),
+        "runtime_only_package_count": len(runtime_only),
+        "missing_runtime_count": len(missing),
+        "version_mismatch_count": len(mismatched),
+        "runtime_ahead_of_lock_count": len(runtime_ahead),
+        "optional_fallback_active_count": len(fallback_active),
+        "dependency_reconciliation_count": len(mismatched) + len(runtime_ahead) + len(fallback_active) + len(runtime_only),
+        "coverage_ratio": round(len(mapped) / max(len(managed_rows), 1), 4),
+        "locked_runtime_ok_ratio": round((len(locked_rows) - len(missing) - len(mismatched)) / max(len(locked_rows), 1), 4),
+        "locked_runtime_usable_ratio": round(len(runtime_usable) / max(len(locked_rows), 1), 4),
+        "missing_runtime_packages": [str(row.get("package") or "") for row in missing],
+        "version_mismatch_packages": [str(row.get("package") or "") for row in mismatched],
+        "runtime_ahead_of_lock_packages": [str(row.get("package") or "") for row in runtime_ahead],
+        "optional_fallback_active_packages": [str(row.get("package") or "") for row in fallback_active],
+        "runtime_only_packages": [str(row.get("package") or "") for row in runtime_only],
+    }
+
+
+def _runtime_caps(memory: dict[str, Any], throttle: dict[str, Any], mlx_router: dict[str, Any]) -> dict[str, Any]:
+    throttle_profile = str(throttle.get("throttle_profile") or "observe")
+    memory_level = str(throttle.get("memory_pressure_level") or "").strip().lower()
+    if not memory_level:
+        snapshot = memory.get("memory_snapshot") if isinstance(memory.get("memory_snapshot"), dict) else {}
+        state = str(snapshot.get("memory_pressure_state") or "").strip().lower()
+        memory_level = "high" if state in {"red", "critical"} else "elevated" if state in {"yellow", "orange"} else "normal"
+    mlx_caps = mlx_router.get("runtime_caps") if isinstance(mlx_router.get("runtime_caps"), dict) else {}
+    mlx_jobs = _safe_int(mlx_caps.get("max_concurrent_mlx_jobs"), 2)
+    profile = "max_library_coverage"
+    async_concurrency = 12
+    sql_writer_workers = 3
+    dataframe_workers = 4
+    model_replay_jobs = 1
+    report_render_jobs = 2
+    if throttle_profile == "protect_live" or memory_level == "high":
+        profile = "protect_live"
+        async_concurrency = 4
+        sql_writer_workers = 1
+        dataframe_workers = 1
+        model_replay_jobs = 0
+        report_render_jobs = 1
+    elif throttle_profile == "sustain" or memory_level == "elevated":
+        profile = "sustain"
+        async_concurrency = 6
+        sql_writer_workers = 1
+        dataframe_workers = 2
+        model_replay_jobs = 0
+        report_render_jobs = 1
+    elif throttle_profile == "soft_cap" or mlx_jobs <= 2:
+        profile = "foreground_safe"
+        async_concurrency = 8
+        sql_writer_workers = 2
+        dataframe_workers = 2
+        model_replay_jobs = 0
+        report_render_jobs = 1
+    return {
+        "profile": profile,
+        "throttle_profile": throttle_profile,
+        "memory_pressure_level": memory_level,
+        "max_async_request_concurrency": async_concurrency,
+        "max_sql_writer_workers": sql_writer_workers,
+        "max_dataframe_workers": dataframe_workers,
+        "max_portable_model_replay_jobs": model_replay_jobs,
+        "max_report_render_jobs": report_render_jobs,
+        "respect_mlx_job_cap": mlx_jobs,
+        "policy": "100_percent_library_lane_coverage_with_runtime_caps",
+    }
+
+
+def _recommended_env(caps: dict[str, Any]) -> dict[str, str]:
+    return {
+        "LIBRARY_UTILIZATION_ROUTER_ENABLED": "1",
+        "LIBRARY_UTILIZATION_PROFILE": str(caps.get("profile") or "foreground_safe"),
+        "LIBRARY_ASYNC_REQUEST_CONCURRENCY_CAP": str(_safe_int(caps.get("max_async_request_concurrency"), 8)),
+        "LIBRARY_SQL_WRITER_WORKER_CAP": str(_safe_int(caps.get("max_sql_writer_workers"), 1)),
+        "LIBRARY_DATAFRAME_WORKER_CAP": str(_safe_int(caps.get("max_dataframe_workers"), 2)),
+        "LIBRARY_PORTABLE_MODEL_REPLAY_JOBS": str(_safe_int(caps.get("max_portable_model_replay_jobs"), 0)),
+        "LIBRARY_REPORT_RENDER_JOBS": str(_safe_int(caps.get("max_report_render_jobs"), 1)),
+        "LIBRARY_RESPECT_MLX_JOB_CAP": str(_safe_int(caps.get("respect_mlx_job_cap"), 2)),
+        "LIBRARY_UTILIZATION_GOAL": "100_percent_lane_coverage_not_100_percent_hardware_load",
+        "LIBRARY_DEFAULT_ML_BACKEND": "mlx",
+        "PRIMARY_ML_RUNTIME_BACKEND": "mlx",
+        "PORTABLE_MODEL_REPLAY_POLICY": "canary_or_off_hours_only",
+    }
+
+
+def _library_utilization_matrix(package_rows: list[dict[str, Any]], routes: list[dict[str, Any]]) -> dict[str, Any]:
+    package_to_lane = {str(row.get("package") or ""): str(row.get("lane") or "") for row in package_rows}
+    lane_to_packages = {
+        str(route.get("lane") or ""): list(route.get("packages") or [])
+        for route in routes
+    }
+    unmapped = [package for package, lane in package_to_lane.items() if not lane]
+    return {
+        "package_count": len(package_to_lane),
+        "mapped_package_count": len(package_to_lane) - len(unmapped),
+        "mapped_package_ratio": round((len(package_to_lane) - len(unmapped)) / max(len(package_to_lane), 1), 4),
+        "unmapped_packages": unmapped,
+        "package_to_lane": package_to_lane,
+        "lane_to_packages": lane_to_packages,
+        "utilization_goal": "100_percent_non_mlx_library_coverage_in_control_plane_not_hardware_saturation",
+    }
+
+
+def _candidate_library_rows(
+    project_root: Path,
+    lock_versions: dict[str, str],
+    installed_versions: dict[str, str],
+    *,
+    candidate_file: Path | None = None,
+    activation_config: dict[str, Any] | None = None,
+) -> list[dict[str, Any]]:
+    activation_config = activation_config if isinstance(activation_config, dict) else {}
+    payload = load_json(candidate_file or project_root / "config" / "library_candidate_routes_v1.json")
+    raw_rows = payload.get("candidate_libraries") if isinstance(payload.get("candidate_libraries"), list) else []
+    rows: list[dict[str, Any]] = []
+    for raw in raw_rows:
+        if not isinstance(raw, dict):
+            continue
+        package = _norm_package(str(raw.get("package") or ""))
+        if not package:
+            continue
+        lane = str(raw.get("lane") or "").strip() or _infer_lane(package)
+        locked = lock_versions.get(package)
+        installed = installed_versions.get(package)
+        if locked and installed:
+            status = "installed_locked"
+        elif installed:
+            status = "installed_runtime_only"
+        elif locked:
+            status = "locked_missing_runtime"
+        else:
+            status = "candidate_only"
+        runtime_family = str(raw.get("runtime_family") or ("mlx" if _is_mlx_routed(package) else "python")).strip().lower()
+        activation_profiles = _package_activation_profiles(package, lane, runtime_family, activation_config)
+        activation_state = _candidate_activation_state(status, activation_profiles)
+        activation_batch = _activation_batch(package, activation_config)
+        rows.append(
+            {
+                "package": package,
+                "lane": lane,
+                "status": status,
+                "runtime_family": runtime_family,
+                "priority": str(raw.get("priority") or "medium").strip().lower(),
+                "reason": str(raw.get("reason") or "").strip(),
+                "install_window": str(raw.get("install_window") or "maintenance").strip().lower(),
+                "target_surfaces": _string_list(raw.get("target_surfaces")),
+                "target_functions": _string_list(raw.get("target_functions")),
+                "compatibility_notes": _string_list(raw.get("compatibility_notes")),
+                "promotion_gate": str(
+                    raw.get("promotion_gate") or "compatibility_smoke_then_canary_before_lock_or_runtime_mutation"
+                ).strip(),
+                "activation_profiles": activation_profiles,
+                "activation_state": activation_state,
+                "activation_modes": _activation_modes(activation_profiles, activation_config),
+                "initial_activation_batch": activation_batch,
+                "activation_policy": str(
+                    activation_config.get("activation_policy")
+                    or "profile_scoped_activation_with_smoke_before_lock_mutation"
+                ),
+                "locked_version": locked,
+                "installed_version": installed,
+                "soak_policy": "do_not_count_candidate_only_as_missing_runtime",
+            }
+        )
+    return sorted(rows, key=lambda row: (str(row.get("lane") or ""), str(row.get("priority") or ""), str(row.get("package") or "")))
+
+
+def _candidate_library_matrix(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    package_to_lane = {str(row.get("package") or ""): str(row.get("lane") or "") for row in rows}
+    lane_to_packages: dict[str, list[str]] = {}
+    profile_to_packages: dict[str, list[str]] = {}
+    batch_to_packages: dict[str, list[str]] = {}
+    for row in rows:
+        package = str(row.get("package") or "")
+        if not package:
+            continue
+        lane_to_packages.setdefault(str(row.get("lane") or "runtime_support_misc"), []).append(package)
+        for profile in _string_list(row.get("activation_profiles")):
+            profile_to_packages.setdefault(profile, []).append(package)
+        batch = str(row.get("initial_activation_batch") or "").strip()
+        if batch:
+            batch_to_packages.setdefault(batch, []).append(package)
+    unmapped = [package for package, lane in package_to_lane.items() if not lane]
+    candidate_only = [row for row in rows if str(row.get("status") or "") == "candidate_only"]
+    installed = [row for row in rows if str(row.get("status") or "").startswith("installed")]
+    runtime_family_counts: dict[str, int] = {}
+    activation_state_counts: dict[str, int] = {}
+    target_functions: dict[str, list[str]] = {}
+    for row in rows:
+        family = str(row.get("runtime_family") or "python")
+        runtime_family_counts[family] = runtime_family_counts.get(family, 0) + 1
+        state = str(row.get("activation_state") or "unknown")
+        activation_state_counts[state] = activation_state_counts.get(state, 0) + 1
+        for function_name in _string_list(row.get("target_functions")):
+            target_functions.setdefault(function_name, []).append(str(row.get("package") or ""))
+    return {
+        "candidate_package_count": len(rows),
+        "mapped_candidate_count": len(rows) - len(unmapped),
+        "mapped_candidate_ratio": round((len(rows) - len(unmapped)) / max(len(rows), 1), 4),
+        "candidate_only_count": len(candidate_only),
+        "installed_candidate_count": len(installed),
+        "runtime_family_counts": dict(sorted(runtime_family_counts.items())),
+        "activation_state_counts": dict(sorted(activation_state_counts.items())),
+        "unmapped_candidate_packages": unmapped,
+        "package_to_lane": package_to_lane,
+        "lane_to_packages": {lane: sorted(set(packages)) for lane, packages in lane_to_packages.items()},
+        "activation_profile_to_packages": {profile: sorted(set(packages)) for profile, packages in sorted(profile_to_packages.items())},
+        "initial_activation_batch_to_packages": {batch: sorted(set(packages)) for batch, packages in sorted(batch_to_packages.items())},
+        "target_function_to_packages": {name: sorted(set(packages)) for name, packages in sorted(target_functions.items())},
+        "soak_scoring_policy": "candidate_only_packages_are_stageable_not_missing_runtime",
+    }
+
+
+def _recommended_actions(coverage: dict[str, Any], caps: dict[str, Any], candidate_matrix: dict[str, Any] | None = None) -> list[str]:
+    candidate_matrix = candidate_matrix if isinstance(candidate_matrix, dict) else {}
+    activation_batches = candidate_matrix.get("initial_activation_batch_to_packages")
+    has_activation_batches = bool(activation_batches) if isinstance(activation_batches, dict) else False
+    return ordered_unique(
+        [
+            "route every non-MLX runtime package through library-utilization-router before adding more dependency weight",
+            "treat 100 percent library utilization as lane ownership and coverage, not CPU or memory saturation",
+            "keep PyTorch and ONNX in replay/canary lanes during live MLX collection"
+            if _safe_int(caps.get("max_portable_model_replay_jobs"), 0) == 0
+            else "",
+            "repair missing locked packages before relying on their owner lane"
+            if _safe_int(coverage.get("missing_runtime_count"), 0)
+            else "",
+            "align runtime-behind/version-mismatch packages between the lock and runtime before broad retrains"
+            if _safe_int(coverage.get("version_mismatch_count"), 0)
+            else "",
+            "adopt newer runtime packages into the lock after canary evidence instead of marking active routes failed"
+            if _safe_int(coverage.get("runtime_ahead_of_lock_count"), 0)
+            else "",
+            "keep optional library fallbacks routed until the pinned package can be installed in a maintenance window"
+            if _safe_int(coverage.get("optional_fallback_active_count"), 0)
+            else "",
+            "stage candidate libraries through config/library_candidate_routes_v1.json and promote them only after compatibility smoke"
+            if _safe_int(candidate_matrix.get("candidate_package_count"), 0)
+            else "",
+            "activate staged candidates by profile batch, then freeze the lock and rerun smoke before enabling any live feature gate"
+            if has_activation_batches
+            else "",
+            "./scripts/ops/opsctl.sh runtime-throttle --apply --json",
+        ]
+    )
+
+
+def _has_critical_version_drift(rows: list[dict[str, Any]]) -> bool:
+    for row in rows:
+        status = str(row.get("status") or "")
+        if status not in {"runtime_behind_lock", "version_mismatch"}:
+            continue
+        if str(row.get("lane") or "") in CRITICAL_RUNTIME_LANES:
+            return True
+    return False
+
+
+def _write_env_override(path: Path, env: dict[str, str]) -> bool:
+    lines = ["# Auto-managed by scripts/ops/library_utilization_router.py"]
+    for key, value in sorted(env.items()):
+        safe_value = str(value).replace("'", "'\"'\"'")
+        lines.append(f"{key}='{safe_value}'")
+    content = "\n".join(lines) + "\n"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    current = path.read_text(encoding="utf-8") if path.exists() else ""
+    if current == content:
+        return False
+    path.write_text(content, encoding="utf-8")
+    return True
+
+
+def build_payload(
+    project_root: Path = PROJECT_ROOT,
+    *,
+    lock_file: Path | None = None,
+    installed_versions: dict[str, str] | None = None,
+) -> dict[str, Any]:
+    health_root = project_root / "governance" / "health"
+    lock_versions = _load_lock_versions(lock_file or project_root / "config" / "requirements.lock.txt")
+    installed = {
+        _norm_package(name): str(version)
+        for name, version in (installed_versions if isinstance(installed_versions, dict) else _load_installed_versions()).items()
+        if _norm_package(name)
+    }
+    rows = _package_inventory(lock_versions, installed)
+    routes = _lane_routes(rows)
+    coverage = _coverage(rows)
+    matrix = _library_utilization_matrix(rows, routes)
+    activation_config = _load_activation_config(project_root)
+    candidate_rows = _candidate_library_rows(project_root, lock_versions, installed, activation_config=activation_config)
+    candidate_matrix = _candidate_library_matrix(candidate_rows)
+    runtime_caps = _runtime_caps(
+        load_json(health_root / "memory_efficiency_control_latest.json"),
+        load_json(health_root / "runtime_throttle_control_latest.json"),
+        load_json(health_root / "mlx_intelligence_router_latest.json"),
+    )
+    env = _recommended_env(runtime_caps)
+    status = "ready"
+    if _safe_int(coverage.get("missing_runtime_count"), 0):
+        status = "blocked"
+    elif _has_critical_version_drift(rows):
+        status = "degraded"
+    elif (
+        _safe_int(coverage.get("version_mismatch_count"), 0)
+        or _safe_int(coverage.get("runtime_ahead_of_lock_count"), 0)
+        or _safe_int(coverage.get("optional_fallback_active_count"), 0)
+        or _safe_int(coverage.get("runtime_only_package_count"), 0)
+    ):
+        status = "advisory"
+    return {
+        "timestamp_utc": iso_now(),
+        "schema_version": 1,
+        "ok": status in {"ready", "advisory"},
+        "overall_status": status,
+        "coverage": coverage,
+        "runtime_caps": runtime_caps,
+        "recommended_runtime_env": env,
+        "workload_routes": routes,
+        "candidate_library_routes": candidate_rows,
+        "candidate_library_matrix": candidate_matrix,
+        "library_utilization_matrix": matrix,
+        "package_inventory": rows,
+        "control_contract": {
+            "uses_all_managed_non_mlx_libraries": bool(matrix.get("mapped_package_ratio") == 1.0 and _safe_int(coverage.get("missing_runtime_count"), 0) == 0),
+            "hardware_saturation_goal": "no",
+            "safe_utilization_goal": "100_percent_non_mlx_library_lane_coverage_with_runtime_caps",
+            "default_ml_backend": "mlx",
+            "mlx_boundary": "mlx_specific_packages_are_owned_by_mlx_intelligence_router",
+            "portable_ml_policy": "pytorch_onnx_transformers_stay_canary_or_off_hours_when_live_collection_is_active",
+            "lock_drift_policy": "newer_runtime_versions_are_routed_as_advisory_until_canary_reconciles_the_lock",
+            "optional_fallback_policy": "optional_missing_packages_use_declared_fallback_routes_without blocking the soak",
+            "candidate_add_policy": "stage_candidates_without_dependency_mutation_then_install_only_in_maintenance_after_smoke",
+            "candidate_activation_policy": str(
+                activation_config.get("activation_policy")
+                or "profile_scoped_activation_with_smoke_before_lock_mutation"
+            ),
+            "candidate_activation_state": "profile_eligible_is_not_live_enabled_until_installed_smoked_and_feature_gated",
+        },
+        "recommended_actions": _recommended_actions(coverage, runtime_caps, candidate_matrix),
+        "artifact_paths": {
+            "json": str(DEFAULT_OUT_PATH),
+            "external_context": str(DEFAULT_EXTERNAL_CONTEXT_PATH),
+            "markdown": str(DEFAULT_MARKDOWN_PATH),
+            "candidate_routes": str(DEFAULT_CANDIDATE_ROUTES),
+            "activation_profiles": str(DEFAULT_ACTIVATION_PROFILES),
+            "env_override": str(DEFAULT_OVERRIDE_PATH),
+        },
+    }
+
+
+def render_markdown(payload: dict[str, Any]) -> str:
+    coverage = payload.get("coverage") if isinstance(payload.get("coverage"), dict) else {}
+    candidate_matrix = payload.get("candidate_library_matrix") if isinstance(payload.get("candidate_library_matrix"), dict) else {}
+    caps = payload.get("runtime_caps") if isinstance(payload.get("runtime_caps"), dict) else {}
+    lines = [
+        "# Library Utilization Router",
+        "",
+        f"Generated UTC: `{payload.get('timestamp_utc', '')}`",
+        f"Overall status: `{payload.get('overall_status', '')}`",
+        "",
+        "## Coverage",
+        "",
+        f"- Managed non-MLX packages: `{coverage.get('managed_non_mlx_package_count', 0)}`",
+        f"- Locked non-MLX packages: `{coverage.get('locked_non_mlx_package_count', 0)}`",
+        f"- Mapped package coverage: `{coverage.get('coverage_ratio', 0.0)}`",
+        f"- Locked runtime OK ratio: `{coverage.get('locked_runtime_ok_ratio', 0.0)}`",
+        f"- Missing locked packages: `{', '.join(coverage.get('missing_runtime_packages') or []) or 'none'}`",
+        "",
+        "## Candidate Routes",
+        "",
+        f"- Candidate packages staged: `{candidate_matrix.get('candidate_package_count', 0)}`",
+        f"- Candidate route coverage: `{candidate_matrix.get('mapped_candidate_ratio', 0.0)}`",
+        f"- Candidate-only packages: `{candidate_matrix.get('candidate_only_count', 0)}`",
+        f"- Runtime families: `{json.dumps(candidate_matrix.get('runtime_family_counts') or {}, sort_keys=True)}`",
+        f"- Activation states: `{json.dumps(candidate_matrix.get('activation_state_counts') or {}, sort_keys=True)}`",
+        f"- Activation profiles: `{json.dumps({profile: len(packages) for profile, packages in (candidate_matrix.get('activation_profile_to_packages') or {}).items()}, sort_keys=True)}`",
+        f"- Initial activation batches: `{json.dumps({batch: len(packages) for batch, packages in (candidate_matrix.get('initial_activation_batch_to_packages') or {}).items()}, sort_keys=True)}`",
+        f"- Target functions covered: `{len(candidate_matrix.get('target_function_to_packages') or {})}`",
+        "",
+        "## Runtime Caps",
+        "",
+        f"- Profile: `{caps.get('profile', '')}`",
+        f"- Async request concurrency cap: `{caps.get('max_async_request_concurrency', '')}`",
+        f"- SQL writer worker cap: `{caps.get('max_sql_writer_workers', '')}`",
+        f"- Dataframe worker cap: `{caps.get('max_dataframe_workers', '')}`",
+        f"- Portable model replay jobs: `{caps.get('max_portable_model_replay_jobs', '')}`",
+        f"- Report render jobs: `{caps.get('max_report_render_jobs', '')}`",
+        "",
+        "## Workload Routes",
+        "",
+    ]
+    for route in payload.get("workload_routes") or []:
+        if not isinstance(route, dict):
+            continue
+        lines.append(
+            f"- `{route.get('lane', '')}`: `{route.get('status', '')}`, "
+            f"`{route.get('package_count', 0)}` packages"
+        )
+    lines.extend(["", "## Recommended Actions", ""])
+    for action in payload.get("recommended_actions") or []:
+        lines.append(f"- {action}")
+    return "\n".join(lines) + "\n"
+
+
+def write_outputs(
+    payload: dict[str, Any],
+    *,
+    out_path: Path = DEFAULT_OUT_PATH,
+    external_context_path: Path = DEFAULT_EXTERNAL_CONTEXT_PATH,
+    markdown_path: Path = DEFAULT_MARKDOWN_PATH,
+    override_path: Path = DEFAULT_OVERRIDE_PATH,
+    apply: bool = False,
+) -> dict[str, Any]:
+    apply_result = {"applied": False, "override_path": str(override_path), "override_changed": False}
+    if apply:
+        env = payload.get("recommended_runtime_env") if isinstance(payload.get("recommended_runtime_env"), dict) else {}
+        apply_result = {
+            "applied": True,
+            "override_path": str(override_path),
+            "override_changed": _write_env_override(override_path, {str(k): str(v) for k, v in env.items()}),
+            "env_override_count": len(env),
+        }
+    payload["apply_result"] = apply_result
+    write_payload(out_path, payload)
+    write_payload(external_context_path, payload)
+    markdown_path.parent.mkdir(parents=True, exist_ok=True)
+    markdown_path.write_text(render_markdown(payload), encoding="utf-8")
+    return apply_result
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Map non-MLX runtime libraries to workload lanes with safe utilization caps.")
+    parser.add_argument("--project-root", default=str(PROJECT_ROOT))
+    parser.add_argument("--lock-file", default=str(DEFAULT_LOCK))
+    parser.add_argument("--out-file", default=str(DEFAULT_OUT_PATH))
+    parser.add_argument("--external-context-file", default=str(DEFAULT_EXTERNAL_CONTEXT_PATH))
+    parser.add_argument("--markdown-file", default=str(DEFAULT_MARKDOWN_PATH))
+    parser.add_argument("--override-file", default=str(DEFAULT_OVERRIDE_PATH))
+    parser.add_argument("--apply", action="store_true")
+    parser.add_argument("--json", action="store_true")
+    args = parser.parse_args()
+
+    project_root = Path(args.project_root).resolve()
+    payload = build_payload(project_root, lock_file=Path(args.lock_file).expanduser())
+    write_outputs(
+        payload,
+        out_path=Path(args.out_file).expanduser(),
+        external_context_path=Path(args.external_context_file).expanduser(),
+        markdown_path=Path(args.markdown_file).expanduser(),
+        override_path=Path(args.override_file).expanduser(),
+        apply=args.apply,
+    )
+    if args.json:
+        print(json.dumps(payload, ensure_ascii=True))
+    else:
+        coverage = payload.get("coverage") if isinstance(payload.get("coverage"), dict) else {}
+        print(
+            "library_utilization_router "
+            f"status={payload.get('overall_status', '')} "
+            f"coverage={float(coverage.get('coverage_ratio', 0.0) or 0.0):.3f}"
+        )
+    return 0 if payload.get("overall_status") in {"ready", "advisory", "degraded"} else 2
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

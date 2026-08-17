@@ -1,0 +1,1 @@
+../../../scripts/ops/soak_self_healing_control.py

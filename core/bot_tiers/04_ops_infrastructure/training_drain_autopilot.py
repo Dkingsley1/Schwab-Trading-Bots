@@ -1,0 +1,1 @@
+../../../scripts/ops/training_drain_autopilot.py

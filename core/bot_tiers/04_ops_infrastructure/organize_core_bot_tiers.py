@@ -1,0 +1,1 @@
+../../../scripts/ops/organize_core_bot_tiers.py

@@ -24,6 +24,7 @@ if [[ ! -x "$PY_BIN" ]]; then
 fi
 
 "$PY_BIN" /Users/dankingsley/PycharmProjects/schwab_trading_bot/scripts/secret_scan.py --staged >/dev/null || status=1
+"$PY_BIN" /Users/dankingsley/PycharmProjects/schwab_trading_bot/scripts/ops/codex_project_guard.py --staged >/dev/null || status=1
 
 if (( status != 0 )); then
   exit 1

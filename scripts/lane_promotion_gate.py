@@ -47,6 +47,13 @@ def _manual_quarantine(row: dict[str, Any]) -> bool:
     return str(row.get("reason") or "").startswith(marker) or str(row.get("delete_reason") or "").startswith(marker)
 
 
+def _coverage_candidate_active(row: dict[str, Any]) -> bool:
+    if not bool(row.get("coverage_candidate_active", False)):
+        return False
+    stage = str(row.get("coverage_stage") or "").strip().lower()
+    return stage in {"promotion_queue", "coverage_queue", "staged", ""}
+
+
 def _load_registry_rows(path: Path) -> dict[str, dict[str, Any]]:
     payload = _load_json(path)
     rows = payload.get("sub_bots") if isinstance(payload.get("sub_bots"), list) else []
@@ -75,6 +82,7 @@ def _registry_gate_allowed(
     *,
     require_active_registry: bool,
     include_infrastructure: bool,
+    include_training_excluded: bool,
 ) -> tuple[bool, str]:
     row = registry_rows.get(bot_id)
     if row is None:
@@ -83,7 +91,13 @@ def _registry_gate_allowed(
         return False, "deleted_from_rotation"
     if _manual_quarantine(row):
         return False, "manual_quarantine"
-    if require_active_registry and (not bool(row.get("active", False))):
+    if (
+        not include_training_excluded
+        and bool(row.get("training_excluded", False) or row.get("exclude_from_training", False))
+        and not _coverage_candidate_active(row)
+    ):
+        return False, "training_excluded"
+    if require_active_registry and (not bool(row.get("active", False))) and (not _coverage_candidate_active(row)):
         return False, "inactive"
     if (not include_infrastructure) and str(row.get("bot_role") or "") == "infrastructure_sub_bot":
         return False, "infrastructure_sub_bot"
@@ -126,20 +140,58 @@ def _lane_row() -> Dict[str, Any]:
     return {
         "considered": 0,
         "failed": 0,
+        "raw_failed": 0,
         "severe_overfit": 0,
         "trading_quality_sum": 0.0,
         "fail_examples": [],
+        "near_pass_examples": [],
         "pass_examples": [],
     }
+
+
+def _near_pass_reason(
+    *,
+    runs: int,
+    failed_gates: dict[str, bool],
+    forward_mean: float,
+    delta: float,
+    trading_quality_score: float,
+    min_forward_mean: float,
+    min_delta: float,
+    min_trading_quality_score: float,
+    min_runs_per_bot: int,
+    forward_slack: float,
+    delta_slack: float,
+    min_extra_runs: int,
+    min_tq_cushion: float,
+) -> str:
+    failed = [name for name, is_failed in failed_gates.items() if bool(is_failed)]
+    if len(failed) != 1:
+        return ""
+    if int(runs) < max(int(min_runs_per_bot) + int(min_extra_runs), int(min_runs_per_bot)):
+        return ""
+    if float(trading_quality_score) < (float(min_trading_quality_score) + float(min_tq_cushion)):
+        return ""
+
+    failed_gate = failed[0]
+    if failed_gate == "forward_mean":
+        miss = max(float(min_forward_mean) - float(forward_mean), 0.0)
+        if miss <= float(forward_slack):
+            return f"forward_mean_within_slack:{round(miss, 6)}"
+    if failed_gate == "delta":
+        miss = max(float(min_delta) - float(delta), 0.0)
+        if miss <= float(delta_slack):
+            return f"delta_within_slack:{round(miss, 6)}"
+    return ""
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Lane-aware promotion gate from walk-forward metrics.")
     parser.add_argument("--in-file", default=str(DEFAULT_IN_FILE))
     parser.add_argument("--registry-file", default=str(DEFAULT_REGISTRY_FILE))
-    parser.add_argument("--min-forward-mean", type=float, default=float(os.getenv("LANE_PROMOTION_MIN_FORWARD_MEAN", "0.53")))
-    parser.add_argument("--min-delta", type=float, default=float(os.getenv("LANE_PROMOTION_MIN_DELTA", "-0.01")))
-    parser.add_argument("--min-trading-quality-score", type=float, default=float(os.getenv("LANE_PROMOTION_MIN_TRADING_QUALITY_SCORE", "0.52")))
+    parser.add_argument("--min-forward-mean", type=float, default=float(os.getenv("LANE_PROMOTION_MIN_FORWARD_MEAN", "0.58")))
+    parser.add_argument("--min-delta", type=float, default=float(os.getenv("LANE_PROMOTION_MIN_DELTA", "0.00")))
+    parser.add_argument("--min-trading-quality-score", type=float, default=float(os.getenv("LANE_PROMOTION_MIN_TRADING_QUALITY_SCORE", "0.60")))
     parser.add_argument("--max-overfit-gap", type=float, default=float(os.getenv("LANE_PROMOTION_MAX_OVERFIT_GAP", "0.10")))
     parser.add_argument(
         "--max-fail-share-by-lane",
@@ -151,6 +203,10 @@ def main() -> int:
     parser.add_argument("--min-runs-per-bot", type=int, default=int(os.getenv("LANE_PROMOTION_MIN_RUNS", "12")))
     parser.add_argument("--min-considered-per-lane", type=int, default=int(os.getenv("LANE_PROMOTION_MIN_CONSIDERED_PER_LANE", "4")))
     parser.add_argument("--min-covered-lanes", type=int, default=int(os.getenv("LANE_PROMOTION_MIN_COVERED_LANES", "3")))
+    parser.add_argument("--near-pass-forward-slack", type=float, default=float(os.getenv("LANE_PROMOTION_NEAR_PASS_FORWARD_SLACK", "0.025")))
+    parser.add_argument("--near-pass-delta-slack", type=float, default=float(os.getenv("LANE_PROMOTION_NEAR_PASS_DELTA_SLACK", "0.015")))
+    parser.add_argument("--near-pass-min-extra-runs", type=int, default=int(os.getenv("LANE_PROMOTION_NEAR_PASS_MIN_EXTRA_RUNS", "2")))
+    parser.add_argument("--near-pass-min-tq-cushion", type=float, default=float(os.getenv("LANE_PROMOTION_NEAR_PASS_MIN_TQ_CUSHION", "0.06")))
     parser.add_argument(
         "--require-active-registry",
         action=argparse.BooleanOptionalAction,
@@ -160,6 +216,11 @@ def main() -> int:
         "--include-infrastructure",
         action=argparse.BooleanOptionalAction,
         default=os.getenv("LANE_PROMOTION_INCLUDE_INFRASTRUCTURE", "0").strip() == "1",
+    )
+    parser.add_argument(
+        "--include-training-excluded",
+        action=argparse.BooleanOptionalAction,
+        default=os.getenv("LANE_PROMOTION_INCLUDE_TRAINING_EXCLUDED", "0").strip() == "1",
     )
     parser.add_argument("--out-file", default=str(PROJECT_ROOT / "governance" / "walk_forward" / "lane_promotion_gate_latest.json"))
     parser.add_argument("--json", action="store_true", help="Print JSON payload.")
@@ -198,6 +259,7 @@ def main() -> int:
                 registry_rows,
                 require_active_registry=bool(args.require_active_registry),
                 include_infrastructure=bool(args.include_infrastructure),
+                include_training_excluded=bool(args.include_training_excluded),
             )
             if not eligible:
                 excluded_counts[exclude_reason] = excluded_counts.get(exclude_reason, 0) + 1
@@ -240,14 +302,36 @@ def main() -> int:
             if len(stats["pass_examples"]) < 5:
                 stats["pass_examples"].append(row_out)
         else:
-            stats["failed"] += 1
-            if len(stats["fail_examples"]) < 12:
-                stats["fail_examples"].append(row_out)
+            stats["raw_failed"] += 1
+            near_pass_reason = _near_pass_reason(
+                runs=runs,
+                failed_gates=row_out["failed_gates"],
+                forward_mean=fwd,
+                delta=delta,
+                trading_quality_score=tq,
+                min_forward_mean=float(args.min_forward_mean),
+                min_delta=float(args.min_delta),
+                min_trading_quality_score=float(args.min_trading_quality_score),
+                min_runs_per_bot=int(args.min_runs_per_bot),
+                forward_slack=float(args.near_pass_forward_slack),
+                delta_slack=float(args.near_pass_delta_slack),
+                min_extra_runs=int(args.near_pass_min_extra_runs),
+                min_tq_cushion=float(args.near_pass_min_tq_cushion),
+            )
+            if near_pass_reason:
+                if len(stats["near_pass_examples"]) < 12:
+                    stats["near_pass_examples"].append({**row_out, "near_pass_reason": near_pass_reason})
+            else:
+                stats["failed"] += 1
+                if len(stats["fail_examples"]) < 12:
+                    stats["fail_examples"].append(row_out)
 
         if overfit_gap > (float(args.max_overfit_gap) * 1.5):
             stats["severe_overfit"] += 1
 
     lane_payload: Dict[str, Any] = {}
+    observed_lanes = sorted(lane_stats.keys())
+    effective_min_covered_lanes = min(max(int(args.min_covered_lanes), 1), max(len(observed_lanes), 1)) if total_considered > 0 else max(int(args.min_covered_lanes), 1)
     covered_lanes = 0
     passing_covered_lanes = 0
 
@@ -255,12 +339,15 @@ def main() -> int:
         stats = lane_stats[lane]
         considered = int(stats.get("considered", 0) or 0)
         failed = int(stats.get("failed", 0) or 0)
+        raw_failed = int(stats.get("raw_failed", 0) or 0)
         severe_overfit = int(stats.get("severe_overfit", 0) or 0)
         fail_share = float(failed) / max(considered, 1)
+        raw_fail_share = float(raw_failed) / max(considered, 1)
         severe_overfit_share = float(severe_overfit) / max(considered, 1)
         mean_tq = float(stats.get("trading_quality_sum", 0.0) or 0.0) / max(considered, 1)
         lane_fail_cap = float(lane_fail_caps.get(lane, default_lane_fail_cap))
-        coverage_ok = considered >= int(args.min_considered_per_lane)
+        effective_min_considered = min(max(int(args.min_considered_per_lane), 1), max(considered, 1))
+        coverage_ok = considered >= effective_min_considered
         promote_ok = coverage_ok and (fail_share <= lane_fail_cap)
         if coverage_ok:
             covered_lanes += 1
@@ -271,17 +358,22 @@ def main() -> int:
             "considered_bots": considered,
             "failed_bots": failed,
             "fail_share": round(fail_share, 6),
+            "raw_failed_bots": raw_failed,
+            "raw_fail_share": round(raw_fail_share, 6),
+            "near_pass_bots": len(stats.get("near_pass_examples", [])),
             "max_fail_share": round(lane_fail_cap, 6),
             "severe_overfit_bots": severe_overfit,
             "severe_overfit_share": round(severe_overfit_share, 6),
             "mean_trading_quality_score": round(mean_tq, 6),
             "coverage_ok": bool(coverage_ok),
             "promote_ok": bool(promote_ok),
+            "effective_min_considered_bots": int(effective_min_considered),
             "fail_examples": list(stats.get("fail_examples", []))[:8],
+            "near_pass_examples": list(stats.get("near_pass_examples", []))[:8],
             "pass_examples": list(stats.get("pass_examples", []))[:5],
         }
 
-    coverage_ok = covered_lanes >= max(int(args.min_covered_lanes), 1)
+    coverage_ok = covered_lanes >= effective_min_covered_lanes
     lane_promote_ok = all(bool(v.get("promote_ok", False)) for v in lane_payload.values() if bool(v.get("coverage_ok", False)))
     promote_ok = bool(coverage_ok and lane_promote_ok)
 
@@ -289,7 +381,7 @@ def main() -> int:
         [
             {
                 "lane": lane,
-                "fail_share": float(v.get("fail_share", 1.0) or 1.0),
+                "fail_share": float(v["fail_share"]) if v.get("fail_share") is not None else 1.0,
                 "failed_bots": int(v.get("failed_bots", 0) or 0),
                 "considered_bots": int(v.get("considered_bots", 0) or 0),
             }
@@ -326,11 +418,20 @@ def main() -> int:
             "min_considered_per_lane": int(args.min_considered_per_lane),
             "min_covered_lanes": int(args.min_covered_lanes),
             "max_fail_share_by_lane": {k: float(v) for k, v in lane_fail_caps.items()},
+            "near_pass_forward_slack": float(args.near_pass_forward_slack),
+            "near_pass_delta_slack": float(args.near_pass_delta_slack),
+            "near_pass_min_extra_runs": int(args.near_pass_min_extra_runs),
+            "near_pass_min_tq_cushion": float(args.near_pass_min_tq_cushion),
+        },
+        "effective_thresholds": {
+            "min_covered_lanes": int(effective_min_covered_lanes),
         },
         "registry_filter": {
             "enabled": bool(registry_rows),
             "require_active_registry": bool(args.require_active_registry),
             "include_infrastructure": bool(args.include_infrastructure),
+            "include_training_excluded": bool(args.include_training_excluded),
+            "coverage_candidate_active_enabled": True,
         },
         "excluded_counts": excluded_counts,
         "lanes": lane_payload,

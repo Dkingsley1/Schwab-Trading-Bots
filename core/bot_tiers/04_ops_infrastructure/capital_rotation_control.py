@@ -1,0 +1,1 @@
+../../../scripts/ops/capital_rotation_control.py

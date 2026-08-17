@@ -17,11 +17,15 @@ def _run(cmd: list[str]) -> tuple[int, str, str]:
         return 1, "", str(exc)
 
 
-def _proc_count(pattern: str) -> int:
+def _proc_count(pattern: str, *, exclude: tuple[str, ...] = ()) -> int:
     rc, out, _ = _run(["ps", "-axo", "command"])
     if rc != 0:
         return 0
-    return sum(1 for line in out.splitlines() if pattern in line)
+    return sum(
+        1
+        for line in out.splitlines()
+        if pattern in line and not any(marker in line for marker in exclude)
+    )
 
 
 def _latest_age_seconds(glob_pat: str) -> float | None:
@@ -71,6 +75,7 @@ def main() -> int:
 
     latest_schwab_log = _latest_path("logs/schwab_live_*.log")
     latest_coinbase_log = _latest_path("logs/coinbase_live_*.log")
+    latest_coinbase_futures_log = _latest_path("logs/coinbase_futures_live_*.log")
 
     storage = _load_json(PROJECT_ROOT / "governance" / "health" / "storage_failback_sync_latest.json")
     preflight_alert = _load_json(PROJECT_ROOT / "governance" / "alerts" / "preflight_critical_latest.json")
@@ -81,8 +86,17 @@ def main() -> int:
             "all_sleeves": _proc_count("scripts/run_all_sleeves.py"),
             "parallel_shadows": _proc_count("scripts/run_parallel_shadows.py"),
             "aggressive_modes": _proc_count("scripts/run_parallel_aggressive_modes.py"),
-            "coinbase_loop": _proc_count("scripts/run_shadow_training_loop.py --broker coinbase"),
-            "sql_link_writer": _proc_count("scripts/ops/sql_link_writer_service.py"),
+            "coinbase_loop": _proc_count(
+                "scripts/run_shadow_training_loop.py --broker coinbase",
+                exclude=("--profile crypto_futures",),
+            ),
+            "coinbase_futures_loop": _proc_count(
+                "scripts/run_shadow_training_loop.py --broker coinbase --profile crypto_futures"
+            ),
+            "sql_link_writer": (
+                _proc_count("scripts/ops/sql_link_shard_manager.py")
+                + _proc_count("scripts/ops/sql_link_writer_service.py")
+            ),
         },
         "heartbeats": {
             "schwab_age_seconds": _latest_age_seconds("governance/health/shadow_loop_*schwab*.json"),
@@ -91,6 +105,7 @@ def main() -> int:
         "logs": {
             "schwab_latest": latest_schwab_log,
             "coinbase_latest": latest_coinbase_log,
+            "coinbase_futures_latest": latest_coinbase_futures_log,
         },
         "storage": {
             "mode": storage.get("mode", "unknown"),
@@ -114,7 +129,8 @@ def main() -> int:
         print(f"ops_doctor generated_utc={generated}")
         print(
             "processes all_sleeves={all_sleeves} parallel_shadows={parallel_shadows} "
-            "aggressive_modes={aggressive_modes} coinbase_loop={coinbase_loop} sql_link_writer={sql_link_writer}".format(**p)
+            "aggressive_modes={aggressive_modes} coinbase_loop={coinbase_loop} "
+            "coinbase_futures_loop={coinbase_futures_loop} sql_link_writer={sql_link_writer}".format(**p)
         )
         print(
             f"heartbeats schwab_age_s={hb['schwab_age_seconds']} coinbase_age_s={hb['coinbase_age_seconds']}"
@@ -124,7 +140,8 @@ def main() -> int:
         )
         print(
             f"logs schwab_latest={payload['logs']['schwab_latest'] or 'none'} "
-            f"coinbase_latest={payload['logs']['coinbase_latest'] or 'none'}"
+            f"coinbase_latest={payload['logs']['coinbase_latest'] or 'none'} "
+            f"coinbase_futures_latest={payload['logs']['coinbase_futures_latest'] or 'none'}"
         )
         print(f"paper_mirror status={payload['paper_mirror']['status']}")
         if payload["alerts"]["preflight_critical_latest"]:

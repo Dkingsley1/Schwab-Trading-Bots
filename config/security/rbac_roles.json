@@ -1,0 +1,67 @@
+{
+  "schema_version": 1,
+  "roles": [
+    {
+      "role": "research_reviewer",
+      "permissions": [
+        "review_training_candidates",
+        "approve_promotion_packets",
+        "inspect_replay_evidence"
+      ]
+    },
+    {
+      "role": "risk_reviewer",
+      "permissions": [
+        "approve_risk_contracts",
+        "review_execution_budget_changes",
+        "approve_live_enablement"
+      ]
+    },
+    {
+      "role": "live_operator",
+      "permissions": [
+        "enable_live_submit_path",
+        "release_operator_stop",
+        "run_blackstart_recovery"
+      ]
+    },
+    {
+      "role": "risk_operator",
+      "permissions": [
+        "set_global_halt",
+        "approve_runtime_throttle_override",
+        "freeze_high_risk_lanes"
+      ]
+    },
+    {
+      "role": "storage_maintainer",
+      "permissions": [
+        "run_storage_failback",
+        "restore_bot_logs",
+        "prune_verified_standby"
+      ]
+    },
+    {
+      "role": "audit_reviewer",
+      "permissions": [
+        "review_registry_mutation_journal",
+        "approve_artifact_deletion",
+        "sign_incident_closeout"
+      ]
+    }
+  ],
+  "separation_of_duties": {
+    "promotion_approval_requires_distinct_roles": [
+      "research_reviewer",
+      "risk_reviewer"
+    ],
+    "live_execution_enable_requires_roles": [
+      "live_operator",
+      "risk_operator"
+    ],
+    "artifact_delete_requires_roles": [
+      "storage_maintainer",
+      "audit_reviewer"
+    ]
+  }
+}

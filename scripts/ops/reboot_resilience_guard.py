@@ -2,23 +2,54 @@ import argparse
 import json
 import os
 import subprocess
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from core.runtime_python import resolve_runtime_python
+
 ALERT_ROUTER = PROJECT_ROOT / 'scripts' / 'pager_alert_router.py'
-PY = PROJECT_ROOT / '.venv312' / 'bin' / 'python'
+PY = resolve_runtime_python(PROJECT_ROOT)
 DEFAULT_OUT_PATH = PROJECT_ROOT / 'governance' / 'health' / 'reboot_resilience_latest.json'
 FALLBACK_OUT_PATH = Path('/tmp/reboot_resilience_latest.json')
 
-DEFAULT_REQUIRED_LABELS = [
-    'com.dankingsley.all_sleeves',
+CORE_REQUIRED_LABELS = [
     'com.dankingsley.shadow_watchdog',
     'com.dankingsley.caffeinate_guard',
     'com.dankingsley.ops.watchdog',
+    'com.dankingsley.ops.sql_link_writer',
     'com.dankingsley.failover_hot_standby',
+    'com.dankingsley.observability_exporter',
+    'com.dankingsley.livefeed-local',
+    'com.dankingsley.premarket_token_guard',
+    'com.dankingsley.ops.schwab_auth_supervisor',
 ]
+
+STACK_STOPPED_FLAG = PROJECT_ROOT / 'governance' / 'health' / 'STACK_STOPPED.flag'
+
+PRESSURE_RELIEF_ENV_FILES = [
+    PROJECT_ROOT / 'config' / '.env.pressure_relief_override',
+    PROJECT_ROOT / 'config' / '.env.runtime_resource_guard_override',
+]
+
+PRESSURE_SENSITIVE_LABELS = [
+    'com.dankingsley.shadow_watchdog',
+    'com.dankingsley.failover_hot_standby',
+    'com.dankingsley.all_sleeves',
+]
+
+
+def _default_required_labels() -> List[str]:
+    mode = str(os.getenv('STACK_ORCHESTRATOR_MODE', 'watchdog') or 'watchdog').strip().lower()
+    labels = list(CORE_REQUIRED_LABELS)
+    if mode == 'all_sleeves':
+        labels.insert(0, 'com.dankingsley.all_sleeves')
+    return labels
 
 
 def _run(cmd: List[str]) -> Tuple[int, str, str]:
@@ -42,6 +73,47 @@ def _write_payload(path: Path, fallback: Path, payload: Dict[str, Any]) -> str:
 
 def _split_csv(raw: str) -> List[str]:
     return [x.strip() for x in (raw or '').split(',') if x.strip()]
+
+
+def _load_key_values(paths: List[Path]) -> Dict[str, str]:
+    values: Dict[str, str] = {}
+    for path in paths:
+        if not path.exists():
+            continue
+        try:
+            lines = path.read_text(encoding='utf-8').splitlines()
+        except Exception:
+            continue
+        for line in lines:
+            stripped = line.strip()
+            if not stripped or stripped.startswith('#') or '=' not in stripped:
+                continue
+            key, raw_value = stripped.split('=', 1)
+            values[key.strip()] = raw_value.strip().strip('"').strip("'")
+    return values
+
+
+def _pressure_relief_context() -> Dict[str, Any]:
+    values = _load_key_values(PRESSURE_RELIEF_ENV_FILES)
+    env_values = {key: os.getenv(key, '') for key in values.keys()}
+    merged = {**values, **{k: v for k, v in env_values.items() if v}}
+    active_keys = [
+        'PRESSURE_RELIEF_ACTIVE',
+        'TRAINING_RUNTIME_PAUSED_FOR_HOST_HEADROOM',
+        'MAC_FLUIDITY_RESEARCH_PAUSE',
+        'OPS_SUPPORT_MAINTENANCE_FREEZE',
+    ]
+    active = any(str(merged.get(key, '')).strip() == '1' for key in active_keys)
+    skip_labels = _split_csv(
+        os.getenv('REBOOT_GUARD_PRESSURE_SKIP_LABELS', ','.join(PRESSURE_SENSITIVE_LABELS))
+    )
+    return {
+        'active': bool(active),
+        'skip_labels': skip_labels,
+        'source_files': [str(path) for path in PRESSURE_RELIEF_ENV_FILES if path.exists()],
+        'active_keys': {key: merged.get(key, '') for key in active_keys if merged.get(key, '')},
+        'policy': 'do_not_recover fanout watchdogs while host pressure relief is active',
+    }
 
 
 
@@ -82,6 +154,16 @@ def _is_loaded(domain: str, label: str) -> bool:
     return rc == 0
 
 
+def _enable_label(domain: str, label: str) -> Dict[str, Any]:
+    rc, out, err = _run(['launchctl', 'enable', f'{domain}/{label}'])
+    return {
+        'action': 'enable',
+        'rc': int(rc),
+        'stdout': out[-200:],
+        'stderr': err[-200:],
+    }
+
+
 
 def _recover_label(domain: str, label: str) -> Dict[str, Any]:
     row: Dict[str, Any] = {
@@ -97,8 +179,7 @@ def _recover_label(domain: str, label: str) -> Dict[str, Any]:
     loaded_before = _is_loaded(domain, label)
     row['loaded_before'] = bool(loaded_before)
 
-    rc_en, out_en, err_en = _run(['launchctl', 'enable', f'{domain}/{label}'])
-    row['actions'].append({'action': 'enable', 'rc': int(rc_en), 'stdout': out_en[-200:], 'stderr': err_en[-200:]})
+    row['actions'].append(_enable_label(domain, label))
 
     if plist.exists():
         rc_bootout, out_bootout, err_bootout = _run(['launchctl', 'bootout', domain, str(plist)])
@@ -132,7 +213,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description='Reboot resilience guard for launchd runtime stack.')
     parser.add_argument(
         '--required-labels',
-        default=os.getenv('REBOOT_GUARD_REQUIRED_LABELS', ','.join(DEFAULT_REQUIRED_LABELS)),
+        default=os.getenv('REBOOT_GUARD_REQUIRED_LABELS', ','.join(_default_required_labels())),
         help='Comma-separated LaunchAgent labels to keep loaded.',
     )
     parser.add_argument(
@@ -148,17 +229,56 @@ def main() -> int:
     domain = f'gui/{uid}'
     required = _split_csv(args.required_labels)
     critical = _split_csv(args.critical_labels) if args.critical_labels.strip() else list(required)
+    pressure_relief = _pressure_relief_context()
+    pressure_skip_labels = set(str(label) for label in pressure_relief.get('skip_labels', []))
+    explicit_stack_stop = STACK_STOPPED_FLAG.exists()
 
     recovered: List[Dict[str, Any]] = []
     healthy: List[Dict[str, Any]] = []
+    skipped: List[Dict[str, Any]] = []
 
     for label in required:
+        if explicit_stack_stop:
+            loaded = _is_loaded(domain, label)
+            skipped.append(
+                {
+                    'label': label,
+                    'loaded_before': loaded,
+                    'loaded_after': loaded,
+                    'ok': True,
+                    'skipped': True,
+                    'reason': 'explicit_stack_stop',
+                    'actions': [],
+                }
+            )
+            continue
+        if bool(pressure_relief.get('active', False)) and label in pressure_skip_labels:
+            skipped.append(
+                {
+                    'label': label,
+                    'loaded_before': _is_loaded(domain, label),
+                    'loaded_after': _is_loaded(domain, label),
+                    'ok': True,
+                    'skipped': True,
+                    'reason': 'pressure_relief_active',
+                    'actions': [],
+                }
+            )
+            continue
         if _is_loaded(domain, label):
-            healthy.append({'label': label, 'loaded_before': True, 'loaded_after': True, 'ok': True, 'actions': []})
+            healthy.append(
+                {
+                    'label': label,
+                    'loaded_before': True,
+                    'loaded_after': True,
+                    'ok': True,
+                    'actions': [_enable_label(domain, label)],
+                }
+            )
             continue
         recovered.append(_recover_label(domain, label))
 
-    all_rows = healthy + recovered
+    all_rows = healthy + skipped + recovered
     failed = [r for r in all_rows if not bool(r.get('ok'))]
     failed_critical = [r for r in failed if r.get('label') in critical]
 
@@ -197,7 +317,15 @@ def main() -> int:
         'domain': domain,
         'required_labels': required,
         'critical_labels': critical,
+        'overall_status': 'stopped' if explicit_stack_stop else ('ready' if ok else 'blocked'),
+        'explicit_stack_stop': {
+            'active': explicit_stack_stop,
+            'path': str(STACK_STOPPED_FLAG),
+            'policy': 'never recover launchd runtime services across an explicit stack stop',
+        },
+        'pressure_relief': pressure_relief,
         'healthy': healthy,
+        'skipped': skipped,
         'recovered': recovered,
         'failed': failed,
         'alerts': alerts,

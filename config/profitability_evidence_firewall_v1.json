@@ -1,0 +1,167 @@
+{
+  "schema_version": 2,
+  "policy_id": "profitability_evidence_firewall_v2",
+  "source_verification": {
+    "minimum_mean_confidence": 0.9,
+    "minimum_source_confidence": 0.7,
+    "require_all_verified": true
+  },
+  "independent_fill_evidence": {
+    "minimum_samples": 100,
+    "require_independent_evidence_ready": true,
+    "require_candidate_binding": true,
+    "require_zero_conflicts": true
+  },
+  "strict_graduation": {
+    "minimum_post_cost_samples": 200,
+    "minimum_independent_days": 30,
+    "minimum_symbols": 10,
+    "minimum_effective_samples": 100,
+    "minimum_regimes": 3,
+    "minimum_profitable_sleeves": 4,
+    "require_positive_conservative_lcb": true
+  },
+  "experiment_lineage": {
+    "require_complete_registry_floor": true,
+    "strategy_roles": [
+      "crypto_sub_bot",
+      "futures_sub_bot",
+      "macro_sub_bot",
+      "options_sub_bot",
+      "signal_sub_bot"
+    ]
+  },
+  "holdout_vault": {
+    "artifact": "governance/research/profitability_holdout_vault_latest.json",
+    "manifest": "governance/research/profitability_holdout_manifest.json",
+    "access_log": "governance/research/profitability_holdout_access.jsonl",
+    "maximum_evaluation_accesses_per_candidate": 1,
+    "require_candidate_binding": true,
+    "forbid_training_access": true
+  },
+  "entry_quality": {
+    "unknown_evidence_fails_closed": true,
+    "extended_sessions_require_independent_validation": true
+  },
+  "paper_execution_authority": {
+    "required_version": "paper_execution_authority_v2",
+    "require_explicit_market_signal_authority": true,
+    "require_all_active_mirror_disabled": true,
+    "require_bounded_cohort": true,
+    "require_hierarchy_identity": true,
+    "require_zero_unauthorized_bots": true
+  },
+  "accounting_scope": {
+    "required_views": [
+      "lifetime_flow",
+      "current_day_flow",
+      "candidate_forward_flow",
+      "active_book_snapshot"
+    ],
+    "candidate_binding_required": true,
+    "carried_inventory_may_grade_current_candidate": false,
+    "heartbeat_only_profile_may_grade_current_financials": false
+  },
+  "mandatory_quarantine_profiles": [
+    "futures_event_reaction",
+    "options_on_futures_aggressive"
+  ],
+  "counterfactual_labels": [
+    "no_trade_counterfactual_outcome",
+    "mae_bucket",
+    "mfe_bucket",
+    "exit_timing_bucket",
+    "post_entry_regime_bucket"
+  ],
+  "stress_cost_bps": [25.0, 50.0, 100.0],
+  "execution_stress": {
+    "queue_artifact": "governance/health/execution_queue_stress_latest.json",
+    "maximum_artifact_age_hours": 24,
+    "scenarios": [
+      {"name": "wide_spread", "additional_cost_bps": 25.0},
+      {"name": "latency_and_partial_fill", "additional_cost_bps": 50.0},
+      {"name": "gap_and_liquidity_shock", "additional_cost_bps": 100.0}
+    ]
+  },
+  "benchmark_hurdle": {
+    "artifact": "governance/research/profitability_benchmark_hurdle_latest.json",
+    "capture_artifact": "governance/research/profitability_benchmark_capture_latest.json",
+    "series": "governance/research/profitability_benchmark_returns.jsonl",
+    "minimum_common_days": 30,
+    "minimum_excess_return_bps": 0.0,
+    "maximum_drawdown_ratio_to_passive": 1.0,
+    "cash_annual_rate": 0.04,
+    "capture": {
+      "symbol": "SPY",
+      "local_timezone": "America/New_York",
+      "session_open_local_time": "09:30",
+      "capture_after_local_time": "16:05",
+      "minimum_source_quality_score": 0.9,
+      "require_broker_native": true,
+      "tail_bytes_per_file": 67108864,
+      "source_globs": [
+        "governance/shadow*/master_control_*.jsonl",
+        "governance/shadow*/master_control_*.jsonl.gz"
+      ]
+    }
+  },
+  "edge_decay": {
+    "artifact": "governance/research/decay_monitor_latest.json",
+    "minimum_history_days": 10,
+    "recent_window_days": 3,
+    "maximum_mean_decay_fraction": 0.5,
+    "maximum_decayed_position_multiplier": 0.1
+  },
+  "risk_of_ruin": {
+    "artifact": "governance/health/profitability_independent_validator_latest.json",
+    "initial_capital": 10000.0,
+    "ruin_equity_fraction": 0.5,
+    "drawdown_budget_fraction": 0.1,
+    "horizon_days": 252,
+    "iterations": 2000,
+    "block_days": 5,
+    "minimum_days": 30,
+    "maximum_ruin_probability": 0.01,
+    "maximum_drawdown_breach_probability": 0.05
+  },
+  "independent_validator": {
+    "artifact": "governance/health/profitability_independent_validator_latest.json",
+    "source_paths": [
+      "exports/trade_logs/paper/paper_trades_paper.jsonl"
+    ],
+    "source_globs": [
+      "exports/trade_logs/**/paper_trades_*.jsonl",
+      "exports/trade_logs/**/paper_trades_*.jsonl.gz",
+      "exports/paper_broker_bridge/paper/paper_bridge_orders_*.jsonl",
+      "exports/paper_broker_bridge/paper/paper_bridge_orders_*.jsonl.gz",
+      "paper_trades_*.jsonl",
+      "paper_trades_*.jsonl.gz"
+    ],
+    "maximum_artifact_age_minutes": 30,
+    "require_report_snapshot_watermark": true,
+    "absolute_tolerance": 0.000001,
+    "relative_tolerance": 0.000001
+  },
+  "statistical_evidence": {
+    "minimum_independent_days": 30,
+    "minimum_regimes": 3,
+    "minimum_effective_samples": 100,
+    "minimum_deflated_sharpe_probability": 0.95,
+    "maximum_probability_of_backtest_overfitting": 0.2,
+    "fdr_alpha": 0.05
+  },
+  "allocation": {
+    "minimum_profitable_sleeves": 4,
+    "maximum_pairwise_correlation": 0.5,
+    "maximum_tail_correlation": 0.6,
+    "maximum_single_sleeve_weight": 0.25,
+    "minimum_daily_observations": 20,
+    "minimum_tail_observations": 5
+  },
+  "grading": {
+    "control_a_plus_requires_all_baseline_and_hardening_controls_implemented": true,
+    "hardening_control_a_plus_requires_all_ten_hardeners_implemented": true,
+    "economic_a_plus_requires_all_baseline_and_hardening_evidence_checks": true,
+    "raw_profitability_grade_is_never_overridden": true
+  }
+}

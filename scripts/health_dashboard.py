@@ -169,7 +169,7 @@ def main() -> None:
     retrain_reason = (retrain_last or {}).get("reason", "")
 
     storage_targets = {
-        ".venv312": PROJECT_ROOT / ".venv312",
+        ".venv314": PROJECT_ROOT / ".venv314",
         "decision_explanations": PROJECT_ROOT / "decision_explanations",
         "decisions": PROJECT_ROOT / "decisions",
         "exports": PROJECT_ROOT / "exports",
@@ -257,7 +257,7 @@ def main() -> None:
     print(
         "Storage: total={total} | venv={venv} | decision_explanations={de} | decisions={ds} | exports={ex} | governance={gov}".format(
             total=_human_bytes(project_total),
-            venv=_human_bytes(storage_sizes.get('.venv312', 0)),
+            venv=_human_bytes(storage_sizes.get('.venv314', 0)),
             de=_human_bytes(storage_sizes.get('decision_explanations', 0)),
             ds=_human_bytes(storage_sizes.get('decisions', 0)),
             ex=_human_bytes(storage_sizes.get('exports', 0)),

@@ -6,6 +6,8 @@ import json
 from datetime import datetime
 import os
 
+from indicator_bot_common import train_price_indicator_bot
+
 # -----------------------------
 # Feature engineering helpers
 # -----------------------------
@@ -31,6 +33,20 @@ def rolling_std(x, window):
     for i in range(len(x)):
         start = max(0, i - window + 1)
         out[i] = np.std(x[start:i+1])
+    return out
+
+def rolling_mean(x, window):
+    out = np.zeros_like(x)
+    for i in range(len(x)):
+        start = max(0, i - window + 1)
+        out[i] = np.mean(x[start:i+1])
+    return out
+
+def rolling_max(x, window):
+    out = np.zeros_like(x)
+    for i in range(len(x)):
+        start = max(0, i - window + 1)
+        out[i] = np.max(x[start:i+1])
     return out
 
 # -----------------------------
@@ -160,94 +176,88 @@ def simulate_garch(n=5000):
     alpha = 0.08
     beta = 0.90
     var = 0.0001
+    regime = 1.0
+    prev_ret = 0.0
     for i in range(1, n):
+        if i % 1400 == 0:
+            regime *= -1.0
         eps = np.sqrt(var) * np.random.randn()
-        ret = eps
+        vol_state = np.sqrt(var)
+        momentum = np.tanh(prev_ret / (vol_state + 1e-8))
+        drift = (0.00012 * regime) + (0.00008 * momentum) - (0.00005 * (vol_state > 0.018))
+        ret = drift + eps
         var = omega + alpha * (eps ** 2) + beta * var
         prices[i] = max(0.1, prices[i-1] * np.exp(ret))
+        prev_ret = ret
     return prices
 
 # -----------------------------
 # Training
 # -----------------------------
+FEATURE_SOURCE = "prices"
+
+
+def build_features(prices):
+    returns = np.log(prices[1:] / prices[:-1])
+    returns = np.concatenate([[0.0], returns])
+    sma = rolling_mean(prices, 30)
+    ema10 = ema(prices, 10)
+    ema30 = ema(prices, 30)
+    rsi14 = rsi(prices, 14)
+    vol8 = rolling_std(returns, 8)
+    vol20 = rolling_std(returns, 20)
+    vol60 = rolling_std(returns, 60)
+    vol_ratio = vol8 / (vol60 + 1e-8)
+    vol_slope = np.diff(vol20, prepend=vol20[0])
+    shock = np.abs(returns) / (vol20 + 1e-8)
+    trend = (ema10 - ema30) / (prices + 1e-8)
+    drawdown = (prices - rolling_max(prices, 80)) / (rolling_max(prices, 80) + 1e-8)
+    reversion_z = (prices - sma) / (rolling_std(prices, 30) + 1e-8)
+    return np.stack(
+        [
+            returns,
+            np.abs(returns),
+            returns * returns,
+            trend,
+            rsi14 / 100.0,
+            vol8,
+            vol20,
+            vol_ratio,
+            vol_slope,
+            shock,
+            drawdown,
+            reversion_z,
+        ],
+        axis=1,
+    )
+
+
 def train_brain():
-    np.random.seed(42)
-
-    prices = simulate_garch(n=5000)
-
-    window = 30
-    X, y = make_dataset(prices, window=window)
-    X_train, y_train, X_val, y_val, X_test, y_test = split_data(X, y)
-
-    input_dim = X.shape[1]
-    brain = TradingBrain(input_dim)
-    mx.eval(brain.parameters())
-
-    optimizer = optim.Adam(learning_rate=0.001)
-    loss_and_grad_fn = nn.value_and_grad(brain, loss_fn)
-
-    epochs = 200
-    batch_size = 128
-    patience = 15
-    best_val = float("inf")
-    patience_left = patience
-
-    print("Training...")
-
-    for epoch in range(epochs):
-        idx = np.random.permutation(X_train.shape[0])
-
-        total_loss = 0.0
-        num_batches = 0
-
-        for start in range(0, X_train.shape[0], batch_size):
-            batch_idx = mx.array(idx[start:start+batch_size])
-            xb = mx.take(X_train, batch_idx, axis=0)
-            yb = mx.take(y_train, batch_idx, axis=0)
-
-            loss, grads = loss_and_grad_fn(brain, xb, yb)
-            optimizer.update(brain, grads)
-            mx.eval(brain.parameters(), optimizer.state)
-
-            total_loss += float(loss)
-            num_batches += 1
-
-        val_loss = float(loss_fn(brain, X_val, y_val))
-        if epoch % 10 == 0:
-            print(f"Epoch {epoch} | Train {total_loss/num_batches:.6f} | Val {val_loss:.6f}")
-
-        if val_loss < best_val:
-            best_val = val_loss
-            patience_left = patience
-        else:
-            patience_left -= 1
-            if patience_left == 0:
-                print("Early stopping.")
-                break
-
-    preds = mx.sigmoid(brain(X_test))
-    pred_labels = (preds > 0.5).astype(mx.float32)
-    acc = float(mx.mean((pred_labels == y_test).astype(mx.float32)))
-
-    print(f"Test accuracy: {acc:.4f}")
-
-    config = {
-        "window": window,
-        "learning_rate": 0.001,
-        "epochs": epochs,
-        "batch_size": batch_size,
-        "patience": patience,
-        "input_dim": int(input_dim),
-        "num_points": int(len(prices)),
-    }
-    metrics = {
-        "best_val_loss": float(best_val),
-        "final_val_loss": float(val_loss),
-        "test_accuracy": float(acc),
-    }
-    save_artifacts(brain, config, metrics, run_tag="brain_refinery_v20_garch")
-
-    return brain
+    return train_price_indicator_bot(
+        run_tag="brain_refinery_v20_garch",
+        feature_names=[
+            "returns",
+            "abs_returns",
+            "squared_returns",
+            "ema_trend_10_30",
+            "rsi14_norm",
+            "vol8",
+            "vol20",
+            "vol_ratio_8_60",
+            "vol_slope_20",
+            "shock_vs_vol20",
+            "drawdown_80",
+            "reversion_z_30",
+        ],
+        feature_builder=build_features,
+        price_simulator=simulate_garch,
+        num_points=9000,
+        window=48,
+        horizon=2,
+        learning_rate=0.0008,
+        epochs=260,
+        patience=24,
+    )
 
 if __name__ == "__main__":
-    trained_model = train_brain()
+    train_brain()

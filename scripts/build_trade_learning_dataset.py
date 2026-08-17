@@ -9,11 +9,13 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
+from sql_dataset_io import iter_sqlite_jsonl_rows, resolve_sqlite_path, source_rel_for_path, source_rels_present_in_sqlite
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 SHOCK_SYMBOLS = {"UVXY", "VIXY", "SOXL", "SOXS", "MSTR", "SMCI", "COIN", "TSLA"}
 MEAN_REVERT_SYMBOLS = {"TLT", "IEF", "SHY", "BND", "AGG", "GLD", "XLU", "XLP"}
+DEFENSIVE_DIVIDEND_SYMBOLS = {"SCHD", "VYM", "DVY", "XLP", "XLU", "PG", "MO", "XOM", "O", "CVX", "KO", "PEP", "JNJ"}
 
 BASE_FEATURE_NAMES = [
     "pnl_scaled",
@@ -157,11 +159,11 @@ def _role_index(role: str) -> int:
 def _regime_bucket(symbol: str, tx_type: str, pnl: float) -> str:
     s = (symbol or "").upper()
     t = (tx_type or "").lower()
-    if s in SHOCK_SYMBOLS or abs(float(pnl)) >= 300.0:
+    if s in SHOCK_SYMBOLS or abs(float(pnl)) >= 300.0 or any(k in t for k in ("event", "macro", "futures", "shock", "crash", "hedge")):
         return "shock"
-    if s in MEAN_REVERT_SYMBOLS or any(k in t for k in ("bond", "dividend", "rebalance", "income")):
+    if s in MEAN_REVERT_SYMBOLS or s in DEFENSIVE_DIVIDEND_SYMBOLS or any(k in t for k in ("bond", "dividend", "rebalance", "income", "yield", "drip", "compound", "defensive")):
         return "mean_revert"
-    if any(k in t for k in ("trend", "breakout", "momentum", "swing")):
+    if any(k in t for k in ("trend", "breakout", "momentum", "swing", "rotation")):
         return "trend"
     return "other"
 
@@ -381,6 +383,12 @@ def main() -> int:
     parser.add_argument("--in-file", default=str(PROJECT_ROOT / "data" / "trade_history" / "trades_normalized.jsonl"))
     parser.add_argument("--out-file", default=str(PROJECT_ROOT / "data" / "trade_history" / "trade_learning_dataset.json"))
     parser.add_argument("--policy", default=str(PROJECT_ROOT / "config" / "trade_learning_policy.json"))
+    parser.add_argument("--sqlite-path", default=os.getenv("TRADE_DATASET_SQLITE_PATH", ""))
+    parser.add_argument(
+        "--prefer-sql",
+        action=argparse.BooleanOptionalAction,
+        default=os.getenv("TRADE_DATASET_PREFER_SQL", "1").strip() == "1",
+    )
     args = parser.parse_args()
 
     in_path = Path(args.in_file)
@@ -441,17 +449,36 @@ def main() -> int:
 
     rows: List[Dict[str, Any]] = []
     skipped_lines = 0
-    with in_path.open("r", encoding="utf-8") as f:
-        for line in f:
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                obj = json.loads(line)
-                if isinstance(obj, dict):
+    sql_source_rel = ""
+    sql_rows_used = 0
+    if bool(args.prefer_sql):
+        try:
+            sqlite_path = resolve_sqlite_path(args.sqlite_path)
+            sql_source_rel = source_rel_for_path(PROJECT_ROOT, in_path)
+            present = source_rels_present_in_sqlite(
+                sqlite_path=sqlite_path,
+                source_rels=[sql_source_rel],
+            )
+            if sql_source_rel in present:
+                for obj in iter_sqlite_jsonl_rows(sqlite_path=sqlite_path, source_rels=[sql_source_rel]):
                     rows.append(obj)
-            except json.JSONDecodeError:
-                skipped_lines += 1
+                sql_rows_used = len(rows)
+        except Exception:
+            sql_source_rel = ""
+            sql_rows_used = 0
+
+    if not rows:
+        with in_path.open("r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    obj = json.loads(line)
+                    if isinstance(obj, dict):
+                        rows.append(obj)
+                except json.JSONDecodeError:
+                    skipped_lines += 1
 
     examples: List[Dict[str, Any]] = []
     by_role_labels = defaultdict(lambda: defaultdict(int))
@@ -548,6 +575,10 @@ def main() -> int:
         "skipped_lines": skipped_lines,
         "skipped_ambiguous": skipped_ambiguous,
         "source": str(in_path),
+        "source_mode": "sqlite" if sql_rows_used > 0 else "jsonl",
+        "source_sqlite_path": (str(resolve_sqlite_path(args.sqlite_path)) if bool(args.prefer_sql) else ""),
+        "source_sql_rel": sql_source_rel,
+        "source_sql_rows": int(sql_rows_used),
         "feature_dim": len(feature_names),
         "feature_names": feature_names,
         "lineage": {

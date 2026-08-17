@@ -229,6 +229,21 @@ def check_confirmed_training_success(
         master_update_status = str(marker.get("master_update_status") or "")
 
         reason = str(marker.get("reason") or ("ok" if confirmed else "not_confirmed"))
+        legacy_absent_data_quality_repaired = bool(
+            not confirmed
+            and reason == "data_quality_not_ok"
+            and bool(marker.get("training_completed_ok"))
+            and bool(marker.get("promotion_applied"))
+            and trained_count >= min_trained_bots
+            and failure_count == 0
+            and (
+                not require_master_update
+                or master_update_status.startswith("updated")
+            )
+        )
+        if legacy_absent_data_quality_repaired:
+            confirmed = True
+            reason = "ok"
         if ts is None:
             return False, "invalid_marker_timestamp", {"source": "training_success_marker", "marker_file": marker_file}
         if age_hours is not None and age_hours > max_age_hours:
@@ -269,6 +284,7 @@ def check_confirmed_training_success(
             "failure_count": failure_count,
             "master_update_status": master_update_status,
             "reason": reason,
+            "legacy_absent_data_quality_repaired": legacy_absent_data_quality_repaired,
         }
 
         snap_ok, snap_reason, snap_details = _snapshot_training_coverage_guard(

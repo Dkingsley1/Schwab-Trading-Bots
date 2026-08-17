@@ -56,6 +56,44 @@ def timestamp_from_log_name(name: str) -> datetime:
     return dt.replace(tzinfo=timezone.utc)
 
 
+def _load_json(path: Path) -> dict:
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+def _safe_log_paths(logs_dir: Path, max_log_files: int) -> list[Path]:
+    try:
+        paths = list(logs_dir.glob("brain_refinery_*.json"))
+    except Exception:
+        return []
+    paths.sort(key=lambda p: timestamp_from_log_name(p.name), reverse=True)
+    if max_log_files > 0:
+        return paths[:max_log_files]
+    return paths
+
+
+def _registry_repair_boundaries(registry_path: Path) -> dict[str, datetime]:
+    payload = _load_json(registry_path)
+    rows = payload.get("sub_bots") if isinstance(payload.get("sub_bots"), list) else []
+    out: dict[str, datetime] = {}
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        bot_id = str(row.get("bot_id") or "").strip()
+        evidence = row.get("training_repair_evidence") if isinstance(row.get("training_repair_evidence"), dict) else {}
+        log_file = str(evidence.get("log_file") or row.get("log_file") or "").strip()
+        if not bot_id or not log_file:
+            continue
+        if str(row.get("training_repair_status") or "").strip().lower() != "repaired":
+            continue
+        boundary = timestamp_from_log_name(Path(log_file).name)
+        if boundary > datetime.min.replace(tzinfo=timezone.utc):
+            out[bot_id] = boundary
+    return out
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Walk-forward style validation over historical bot training logs.")
     parser.add_argument("--min-runs", type=int, default=int(os.getenv("WALK_FORWARD_MIN_RUNS", "12")))
@@ -63,13 +101,15 @@ def main() -> int:
     parser.add_argument("--pass-delta-threshold", type=float, default=float(os.getenv("WALK_FORWARD_PASS_DELTA_THRESHOLD", "-0.02")))
     parser.add_argument("--min-trading-quality-score", type=float, default=float(os.getenv("WALK_FORWARD_MIN_TRADING_QUALITY_SCORE", "0.48")))
     parser.add_argument("--max-overfit-gap", type=float, default=float(os.getenv("WALK_FORWARD_MAX_OVERFIT_GAP", "0.10")))
+    parser.add_argument("--max-log-files", type=int, default=int(os.getenv("WALK_FORWARD_MAX_LOG_FILES", "0")))
+    parser.add_argument("--registry-file", default=str(PROJECT_ROOT / "master_bot_registry.json"))
     parser.add_argument("--out", default=str(PROJECT_ROOT / "governance" / "walk_forward" / "walk_forward_latest.json"))
     args = parser.parse_args()
 
     logs_dir = PROJECT_ROOT / "logs"
     groups = defaultdict(list)
 
-    for p in logs_dir.glob("brain_refinery_*.json"):
+    for p in _safe_log_paths(logs_dir, max(int(args.max_log_files), 0)):
         try:
             obj = json.loads(p.read_text(encoding="utf-8"))
         except Exception:
@@ -81,11 +121,29 @@ def main() -> int:
             continue
         groups[bot_id].append((ts, float(acc)))
 
+    repair_boundaries = _registry_repair_boundaries(Path(args.registry_file))
     report = {}
     for bot_id, vals in groups.items():
         vals.sort(key=lambda x: x[0])
+        lineage_reset = False
+        lineage_start_utc = ""
+        pre_repair_runs_excluded = 0
+        boundary = repair_boundaries.get(bot_id)
+        if boundary is not None:
+            current_vals = [row for row in vals if row[0] >= boundary]
+            if current_vals:
+                lineage_reset = True
+                lineage_start_utc = boundary.isoformat()
+                pre_repair_runs_excluded = len(vals) - len(current_vals)
+                vals = current_vals
         if len(vals) < args.min_runs:
-            report[bot_id] = {"runs": len(vals), "status": "insufficient_runs"}
+            report[bot_id] = {
+                "runs": len(vals),
+                "status": "insufficient_runs",
+                "lineage_reset_active": lineage_reset,
+                "lineage_start_utc": lineage_start_utc,
+                "pre_repair_runs_excluded": pre_repair_runs_excluded,
+            }
             continue
 
         split = max(int(len(vals) * 0.7), 1)
@@ -125,6 +183,9 @@ def main() -> int:
             "overfit_gap": round(overfit_gap, 6),
             "trading_quality_score": round(trading_quality_score, 6),
             "status": status,
+            "lineage_reset_active": lineage_reset,
+            "lineage_start_utc": lineage_start_utc,
+            "pre_repair_runs_excluded": pre_repair_runs_excluded,
         }
 
     payload = {
@@ -136,6 +197,7 @@ def main() -> int:
             "min_trading_quality_score": float(args.min_trading_quality_score),
             "max_overfit_gap": float(args.max_overfit_gap),
         },
+        "lineage_reset_bot_count": sum(1 for row in report.values() if isinstance(row, dict) and row.get("lineage_reset_active")),
         "bots": report,
     }
 

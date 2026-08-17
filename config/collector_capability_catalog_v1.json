@@ -1,0 +1,2707 @@
+{
+  "schema_version": 1,
+  "catalog_id": "collector_capability_catalog_v1",
+  "operating_mode": "metadata_subscription_shadow_only",
+  "catalog_contract": {
+    "required_plane_count": 25,
+    "minimum_capability_count": 250,
+    "logical_capabilities_are_not_physical_processes": true,
+    "one_physical_fetch_may_publish_many_capabilities": true,
+    "many_bots_may_share_one_snapshot": true,
+    "missing_producer_is_explicit_coverage_debt": true
+  },
+  "capability_axes": {
+    "source_kinds": [
+      "broker_native",
+      "official",
+      "licensed",
+      "public",
+      "public_mesh",
+      "public_licensed_mesh",
+      "official_public_mesh",
+      "official_derived",
+      "internal_derived",
+      "internal_replay",
+      "internal_control"
+    ],
+    "cadences": [
+      "streaming",
+      "intraday",
+      "daily",
+      "event_driven",
+      "quiet_hours"
+    ],
+    "resource_classes": [
+      "hot",
+      "warm",
+      "cold",
+      "support"
+    ],
+    "authorities": [
+      "context_only",
+      "training_eligible",
+      "accounting_evidence",
+      "promotion_evidence",
+      "operational_health"
+    ]
+  },
+  "planes": [
+    {
+      "plane_id": "instrument_identity",
+      "title": "Instrument Identity",
+      "plane_class": "strategy_context",
+      "default_cadence": "daily",
+      "default_resource_class": "warm",
+      "routing": {
+        "target_scopes": [
+          "market_signal",
+          "hybrid"
+        ],
+        "target_roles": [],
+        "target_tokens": [],
+        "required_when_matched": [
+          "security_master",
+          "trading_calendars",
+          "market_session_state"
+        ],
+        "all_capabilities_subscription": "optional_when_matched"
+      },
+      "capabilities": [
+        "security_master",
+        "identifier_mapping",
+        "symbol_change_history",
+        "exchange_mapping",
+        "asset_classification",
+        "contract_specifications",
+        "trading_calendars",
+        "market_session_state",
+        "point_in_time_constituent_membership",
+        "borrow_shortability"
+      ]
+    },
+    {
+      "plane_id": "price_tape",
+      "title": "Price And Tape",
+      "plane_class": "strategy_context",
+      "default_cadence": "intraday",
+      "default_resource_class": "hot",
+      "routing": {
+        "target_scopes": [
+          "market_signal",
+          "hybrid"
+        ],
+        "target_roles": [],
+        "target_tokens": [],
+        "required_when_matched": [
+          "ohlcv_bars"
+        ],
+        "all_capabilities_subscription": "optional_when_matched"
+      },
+      "capabilities": [
+        "trade_tape",
+        "ohlcv_bars",
+        "adjusted_prices",
+        "nbbo_quotes",
+        "midpoint_quotes",
+        "bid_ask_spread",
+        "auction_prints",
+        "trading_halts",
+        "gap_state",
+        "consolidated_tape_quality"
+      ]
+    },
+    {
+      "plane_id": "liquidity_microstructure",
+      "title": "Liquidity And Microstructure",
+      "plane_class": "strategy_context",
+      "default_cadence": "intraday",
+      "default_resource_class": "hot",
+      "routing": {
+        "target_scopes": [
+          "market_signal",
+          "hybrid"
+        ],
+        "target_roles": [
+          "signal",
+          "execution"
+        ],
+        "target_tokens": [
+          "liquidity",
+          "microstructure",
+          "market_making",
+          "order_flow",
+          "intraday",
+          "auction",
+          "vwap"
+        ],
+        "required_when_matched": [],
+        "all_capabilities_subscription": "optional_when_matched"
+      },
+      "capabilities": [
+        "order_book_depth",
+        "order_book_imbalance",
+        "queue_state",
+        "market_impact",
+        "turnover",
+        "volume_profile",
+        "vwap_state",
+        "block_activity",
+        "liquidity_regime",
+        "adverse_selection_risk"
+      ]
+    },
+    {
+      "plane_id": "options_volatility",
+      "title": "Options And Volatility",
+      "plane_class": "strategy_context",
+      "default_cadence": "intraday",
+      "default_resource_class": "hot",
+      "routing": {
+        "target_scopes": [
+          "market_signal",
+          "hybrid"
+        ],
+        "target_roles": [
+          "signal",
+          "execution"
+        ],
+        "target_tokens": [
+          "option",
+          "volatility",
+          "gamma",
+          "vanna",
+          "volga",
+          "variance",
+          "greeks",
+          "zero_dte"
+        ],
+        "required_when_matched": [
+          "options_chain"
+        ],
+        "all_capabilities_subscription": "optional_when_matched"
+      },
+      "capabilities": [
+        "options_chain",
+        "implied_volatility_surface",
+        "volatility_skew",
+        "volatility_term_structure",
+        "option_greeks",
+        "option_open_interest",
+        "options_flow",
+        "dealer_exposure_estimate",
+        "realized_volatility",
+        "volatility_risk_premium"
+      ]
+    },
+    {
+      "plane_id": "futures_forwards",
+      "title": "Futures And Forwards",
+      "plane_class": "strategy_context",
+      "default_cadence": "intraday",
+      "default_resource_class": "hot",
+      "routing": {
+        "target_scopes": [
+          "market_signal",
+          "hybrid"
+        ],
+        "target_roles": [
+          "signal",
+          "execution"
+        ],
+        "target_tokens": [
+          "future",
+          "forward",
+          "basis",
+          "roll",
+          "calendar_spread",
+          "carry"
+        ],
+        "required_when_matched": [
+          "derivatives_contract_master"
+        ],
+        "all_capabilities_subscription": "optional_when_matched"
+      },
+      "capabilities": [
+        "derivatives_contract_master",
+        "futures_term_structure",
+        "futures_basis",
+        "roll_yield",
+        "futures_open_interest",
+        "futures_volume_migration",
+        "expiry_state",
+        "carry_state",
+        "calendar_spreads",
+        "spot_futures_dislocation"
+      ]
+    },
+    {
+      "plane_id": "company_fundamentals",
+      "title": "Company Fundamentals",
+      "plane_class": "strategy_context",
+      "default_cadence": "daily",
+      "default_resource_class": "warm",
+      "routing": {
+        "target_scopes": [
+          "market_signal",
+          "hybrid"
+        ],
+        "target_roles": [
+          "signal"
+        ],
+        "target_tokens": [
+          "fundamental",
+          "quality",
+          "value",
+          "balance_sheet",
+          "cash_flow",
+          "leverage"
+        ],
+        "required_when_matched": [],
+        "all_capabilities_subscription": "optional_when_matched"
+      },
+      "capabilities": [
+        "financial_statements",
+        "quality_ratios",
+        "valuation_multiples",
+        "operating_profitability",
+        "leverage_state",
+        "cash_flow_quality",
+        "capital_structure",
+        "peer_comparison",
+        "fundamental_revisions",
+        "distress_indicators"
+      ]
+    },
+    {
+      "plane_id": "earnings_expectations",
+      "title": "Earnings And Expectations",
+      "plane_class": "strategy_context",
+      "default_cadence": "event_driven",
+      "default_resource_class": "warm",
+      "routing": {
+        "target_scopes": [
+          "market_signal",
+          "hybrid"
+        ],
+        "target_roles": [
+          "signal"
+        ],
+        "target_tokens": [
+          "earnings",
+          "estimate",
+          "guidance",
+          "analyst",
+          "revision"
+        ],
+        "required_when_matched": [],
+        "all_capabilities_subscription": "optional_when_matched"
+      },
+      "capabilities": [
+        "earnings_calendar",
+        "reported_earnings",
+        "earnings_surprise",
+        "company_guidance",
+        "estimate_revisions",
+        "estimate_dispersion",
+        "analyst_actions",
+        "conference_call_events",
+        "post_earnings_drift",
+        "revision_momentum"
+      ]
+    },
+    {
+      "plane_id": "corporate_actions",
+      "title": "Corporate Actions",
+      "plane_class": "strategy_context",
+      "default_cadence": "event_driven",
+      "default_resource_class": "warm",
+      "routing": {
+        "target_scopes": [
+          "market_signal",
+          "hybrid"
+        ],
+        "target_roles": [
+          "signal",
+          "evaluation"
+        ],
+        "target_tokens": [
+          "dividend",
+          "drip",
+          "split",
+          "buyback",
+          "merger",
+          "spinoff",
+          "tender",
+          "delisting"
+        ],
+        "required_when_matched": [],
+        "all_capabilities_subscription": "optional_when_matched"
+      },
+      "capabilities": [
+        "dividend_events",
+        "drip_state",
+        "stock_splits",
+        "share_buybacks",
+        "capital_issuance",
+        "merger_events",
+        "spinoff_events",
+        "tender_offers",
+        "delisting_events",
+        "bankruptcy_events"
+      ]
+    },
+    {
+      "plane_id": "ownership_positioning",
+      "title": "Ownership And Positioning",
+      "plane_class": "strategy_context",
+      "default_cadence": "daily",
+      "default_resource_class": "warm",
+      "routing": {
+        "target_scopes": [
+          "market_signal",
+          "hybrid"
+        ],
+        "target_roles": [
+          "signal",
+          "evaluation"
+        ],
+        "target_tokens": [
+          "ownership",
+          "insider",
+          "short",
+          "positioning",
+          "crowding",
+          "flow"
+        ],
+        "required_when_matched": [],
+        "all_capabilities_subscription": "optional_when_matched"
+      },
+      "capabilities": [
+        "institutional_ownership",
+        "insider_activity",
+        "short_interest",
+        "short_volume_activity",
+        "securities_lending",
+        "etf_fund_flows",
+        "commitment_of_traders",
+        "fund_positioning",
+        "crowding_state",
+        "flow_concentration",
+        "positioning_change"
+      ]
+    },
+    {
+      "plane_id": "growth_inflation",
+      "title": "Growth And Inflation",
+      "plane_class": "strategy_context",
+      "default_cadence": "daily",
+      "default_resource_class": "warm",
+      "routing": {
+        "target_scopes": [
+          "market_signal",
+          "hybrid"
+        ],
+        "target_roles": [
+          "signal"
+        ],
+        "target_tokens": [
+          "macro",
+          "growth",
+          "inflation",
+          "labor",
+          "wage",
+          "housing",
+          "economic"
+        ],
+        "required_when_matched": [],
+        "all_capabilities_subscription": "optional_when_matched"
+      },
+      "capabilities": [
+        "growth_indicators",
+        "labor_market",
+        "wage_growth",
+        "inflation_indicators",
+        "industrial_production",
+        "consumption_indicators",
+        "housing_indicators",
+        "survey_indicators",
+        "productivity_indicators",
+        "economic_surprise"
+      ]
+    },
+    {
+      "plane_id": "monetary_fiscal_policy",
+      "title": "Monetary And Fiscal Policy",
+      "plane_class": "strategy_context",
+      "default_cadence": "event_driven",
+      "default_resource_class": "warm",
+      "routing": {
+        "target_scopes": [
+          "market_signal",
+          "hybrid"
+        ],
+        "target_roles": [
+          "signal",
+          "evaluation"
+        ],
+        "target_tokens": [
+          "central_bank",
+          "fed",
+          "fomc",
+          "fiscal",
+          "policy",
+          "regulatory",
+          "treasury"
+        ],
+        "required_when_matched": [],
+        "all_capabilities_subscription": "optional_when_matched"
+      },
+      "capabilities": [
+        "central_bank_decisions",
+        "central_bank_speeches",
+        "central_bank_balance_sheets",
+        "liquidity_facilities",
+        "government_spending",
+        "taxation_policy",
+        "government_debt_issuance",
+        "trade_policy",
+        "fiscal_impulse",
+        "regulatory_policy",
+        "cross_border_capital_flows"
+      ]
+    },
+    {
+      "plane_id": "rates_credit_funding",
+      "title": "Rates Credit And Funding",
+      "plane_class": "strategy_context",
+      "default_cadence": "intraday",
+      "default_resource_class": "warm",
+      "routing": {
+        "target_scopes": [
+          "market_signal",
+          "hybrid"
+        ],
+        "target_roles": [
+          "signal",
+          "risk"
+        ],
+        "target_tokens": [
+          "rates",
+          "credit",
+          "bond",
+          "treasury",
+          "yield",
+          "sofr",
+          "repo",
+          "funding"
+        ],
+        "required_when_matched": [],
+        "all_capabilities_subscription": "optional_when_matched"
+      },
+      "capabilities": [
+        "treasury_yield_curve",
+        "real_rates",
+        "inflation_breakevens",
+        "credit_spreads",
+        "default_risk",
+        "credit_ratings",
+        "funding_stress",
+        "repo_conditions",
+        "debt_issuance",
+        "treasury_auction_calendar",
+        "rates_credit_regime"
+      ]
+    },
+    {
+      "plane_id": "fx_commodities",
+      "title": "FX And Commodities",
+      "plane_class": "strategy_context",
+      "default_cadence": "intraday",
+      "default_resource_class": "hot",
+      "routing": {
+        "target_scopes": [
+          "market_signal",
+          "hybrid"
+        ],
+        "target_roles": [
+          "signal"
+        ],
+        "target_tokens": [
+          "fx",
+          "currency",
+          "dollar",
+          "commodity",
+          "energy",
+          "metals",
+          "agriculture",
+          "crypto"
+        ],
+        "required_when_matched": [],
+        "all_capabilities_subscription": "optional_when_matched"
+      },
+      "capabilities": [
+        "fx_spot",
+        "fx_forward_points",
+        "dollar_regime",
+        "energy_markets",
+        "metals_markets",
+        "agriculture_markets",
+        "commodity_inventories",
+        "shipping_constraints",
+        "freight_activity",
+        "commodity_curves",
+        "cross_market_basis",
+        "crypto_spot"
+      ]
+    },
+    {
+      "plane_id": "cross_asset_state",
+      "title": "Cross Asset State",
+      "plane_class": "strategy_context",
+      "default_cadence": "intraday",
+      "default_resource_class": "warm",
+      "routing": {
+        "target_scopes": [
+          "market_signal",
+          "hybrid"
+        ],
+        "target_roles": [
+          "signal",
+          "risk",
+          "coordination"
+        ],
+        "target_tokens": [
+          "cross_asset",
+          "correlation",
+          "dispersion",
+          "risk_on",
+          "contagion",
+          "factor",
+          "sector",
+          "crypto"
+        ],
+        "required_when_matched": [],
+        "all_capabilities_subscription": "optional_when_matched"
+      },
+      "capabilities": [
+        "cross_asset_correlation",
+        "cross_asset_dispersion",
+        "market_breadth",
+        "risk_on_off_state",
+        "contagion_state",
+        "factor_leadership",
+        "sector_rotation",
+        "volatility_regime",
+        "global_liquidity_regime",
+        "cross_asset_dislocation",
+        "crypto_correlation"
+      ]
+    },
+    {
+      "plane_id": "news_events",
+      "title": "News And Events",
+      "plane_class": "strategy_context",
+      "default_cadence": "event_driven",
+      "default_resource_class": "warm",
+      "routing": {
+        "target_scopes": [
+          "market_signal",
+          "hybrid"
+        ],
+        "target_roles": [
+          "signal",
+          "evaluation"
+        ],
+        "target_tokens": [
+          "news",
+          "event",
+          "catalyst",
+          "policy",
+          "geopolitical",
+          "rebalance",
+          "sentiment",
+          "filing",
+          "crypto"
+        ],
+        "required_when_matched": [],
+        "all_capabilities_subscription": "optional_when_matched"
+      },
+      "capabilities": [
+        "symbol_news",
+        "sector_news",
+        "issuer_filings",
+        "policy_news",
+        "geopolitical_events",
+        "economic_event_calendar",
+        "index_rebalance_events",
+        "analyst_events",
+        "verified_sentiment",
+        "news_novelty",
+        "crypto_news",
+        "crypto_event_calendar"
+      ]
+    },
+    {
+      "plane_id": "broker_account_truth",
+      "title": "Broker And Account Truth",
+      "plane_class": "account_execution",
+      "default_cadence": "streaming",
+      "default_resource_class": "hot",
+      "routing": {
+        "target_scopes": [
+          "hybrid"
+        ],
+        "target_roles": [
+          "execution",
+          "risk",
+          "coordination"
+        ],
+        "target_tokens": [
+          "broker",
+          "account",
+          "position",
+          "buying_power",
+          "margin"
+        ],
+        "required_when_matched": [
+          "broker_accounts",
+          "account_positions",
+          "account_reconciliation"
+        ],
+        "all_capabilities_subscription": "optional_when_matched"
+      },
+      "capabilities": [
+        "broker_accounts",
+        "cash_balance",
+        "buying_power",
+        "account_positions",
+        "position_cost_basis",
+        "account_restrictions",
+        "margin_state",
+        "broker_shortability",
+        "account_reconciliation",
+        "broker_connectivity"
+      ]
+    },
+    {
+      "plane_id": "order_fill_truth",
+      "title": "Order And Fill Truth",
+      "plane_class": "account_execution",
+      "default_cadence": "streaming",
+      "default_resource_class": "hot",
+      "routing": {
+        "target_scopes": [
+          "hybrid"
+        ],
+        "target_roles": [
+          "execution",
+          "evaluation"
+        ],
+        "target_tokens": [
+          "order",
+          "fill",
+          "execution",
+          "reconciliation"
+        ],
+        "required_when_matched": [
+          "order_intents",
+          "order_ledger_reconciliation"
+        ],
+        "all_capabilities_subscription": "optional_when_matched"
+      },
+      "capabilities": [
+        "order_intents",
+        "order_submissions",
+        "broker_acknowledgements",
+        "order_rejections",
+        "partial_fills",
+        "final_fills",
+        "order_cancellations",
+        "order_replacements",
+        "duplicate_order_detection",
+        "order_ledger_reconciliation"
+      ]
+    },
+    {
+      "plane_id": "execution_quality",
+      "title": "Execution Quality",
+      "plane_class": "account_execution",
+      "default_cadence": "intraday",
+      "default_resource_class": "hot",
+      "routing": {
+        "target_scopes": [
+          "market_signal",
+          "hybrid"
+        ],
+        "target_roles": [
+          "execution",
+          "evaluation"
+        ],
+        "target_tokens": [
+          "execution",
+          "slippage",
+          "fill",
+          "latency",
+          "venue"
+        ],
+        "required_when_matched": [
+          "execution_calibration"
+        ],
+        "all_capabilities_subscription": "optional_when_matched"
+      },
+      "capabilities": [
+        "quote_age",
+        "fill_latency",
+        "execution_slippage",
+        "spread_capture",
+        "execution_impact",
+        "fill_probability",
+        "venue_quality",
+        "session_execution_quality",
+        "execution_calibration",
+        "execution_model_drift",
+        "strategy_capacity"
+      ]
+    },
+    {
+      "plane_id": "portfolio_risk",
+      "title": "Portfolio And Risk",
+      "plane_class": "account_execution",
+      "default_cadence": "intraday",
+      "default_resource_class": "hot",
+      "routing": {
+        "target_scopes": [
+          "hybrid"
+        ],
+        "target_roles": [
+          "risk",
+          "coordination",
+          "evaluation"
+        ],
+        "target_tokens": [
+          "portfolio",
+          "risk",
+          "drawdown",
+          "exposure",
+          "allocation",
+          "hedge"
+        ],
+        "required_when_matched": [
+          "portfolio_exposure",
+          "drawdown_state"
+        ],
+        "all_capabilities_subscription": "optional_when_matched"
+      },
+      "capabilities": [
+        "portfolio_exposure",
+        "concentration_risk",
+        "portfolio_beta",
+        "factor_exposure",
+        "sector_exposure",
+        "correlation_risk",
+        "portfolio_liquidity",
+        "drawdown_state",
+        "stress_scenarios",
+        "risk_of_ruin"
+      ]
+    },
+    {
+      "plane_id": "accounting_tax",
+      "title": "Accounting And Tax Context",
+      "plane_class": "account_execution",
+      "default_cadence": "daily",
+      "default_resource_class": "warm",
+      "routing": {
+        "target_scopes": [
+          "hybrid"
+        ],
+        "target_roles": [
+          "evaluation",
+          "coordination"
+        ],
+        "target_tokens": [
+          "accounting",
+          "tax",
+          "pnl",
+          "ledger",
+          "cost_basis"
+        ],
+        "required_when_matched": [],
+        "all_capabilities_subscription": "optional_when_matched"
+      },
+      "capabilities": [
+        "realized_pnl",
+        "unrealized_pnl",
+        "transaction_fees",
+        "financing_costs",
+        "tax_lots",
+        "holding_periods",
+        "wash_sale_context",
+        "taxable_income_estimate",
+        "accounting_ledger_verification",
+        "pnl_attribution"
+      ]
+    },
+    {
+      "plane_id": "point_in_time_training",
+      "title": "Point In Time Training",
+      "plane_class": "training_evidence",
+      "default_cadence": "intraday",
+      "default_resource_class": "warm",
+      "routing": {
+        "target_scopes": [
+          "market_signal",
+          "hybrid"
+        ],
+        "target_roles": [
+          "signal",
+          "evidence",
+          "evaluation"
+        ],
+        "target_tokens": [
+          "training",
+          "feature",
+          "label",
+          "snapshot",
+          "lineage"
+        ],
+        "required_when_matched": [
+          "point_in_time_decision_snapshot",
+          "feature_lineage"
+        ],
+        "all_capabilities_subscription": "optional_when_matched"
+      },
+      "capabilities": [
+        "point_in_time_decision_snapshot",
+        "event_time_joins",
+        "point_in_time_universe",
+        "feature_versions",
+        "feature_source_hashes",
+        "label_eligibility",
+        "leakage_checks",
+        "data_revision_tracking",
+        "snapshot_coverage",
+        "feature_lineage"
+      ]
+    },
+    {
+      "plane_id": "research_evidence",
+      "title": "Research Evidence",
+      "plane_class": "training_evidence",
+      "default_cadence": "quiet_hours",
+      "default_resource_class": "cold",
+      "routing": {
+        "target_scopes": [
+          "market_signal",
+          "hybrid"
+        ],
+        "target_roles": [
+          "signal",
+          "evidence",
+          "evaluation"
+        ],
+        "target_tokens": [
+          "research",
+          "replay",
+          "holdout",
+          "walk_forward",
+          "counterfactual",
+          "champion",
+          "challenger"
+        ],
+        "required_when_matched": [],
+        "all_capabilities_subscription": "optional_when_matched"
+      },
+      "capabilities": [
+        "locked_holdouts",
+        "walk_forward_tests",
+        "deterministic_replay",
+        "counterfactual_replay",
+        "multiple_testing_control",
+        "edge_decay_analysis",
+        "regime_attribution",
+        "benchmark_comparison",
+        "champion_challenger_evidence",
+        "reproducibility_receipts"
+      ]
+    },
+    {
+      "plane_id": "profitability_evidence",
+      "title": "Profitability Evidence",
+      "plane_class": "training_evidence",
+      "default_cadence": "intraday",
+      "default_resource_class": "warm",
+      "routing": {
+        "target_scopes": [
+          "market_signal",
+          "hybrid"
+        ],
+        "target_roles": [
+          "evaluation",
+          "risk",
+          "coordination"
+        ],
+        "target_tokens": [
+          "profit",
+          "pnl",
+          "expectancy",
+          "attribution",
+          "fill"
+        ],
+        "required_when_matched": [],
+        "all_capabilities_subscription": "optional_when_matched"
+      },
+      "capabilities": [
+        "gross_expectancy",
+        "post_cost_expectancy",
+        "clustered_confidence",
+        "sleeve_profit_contribution",
+        "regime_profit_contribution",
+        "source_profit_contribution",
+        "profit_concentration",
+        "drawdown_attribution",
+        "independent_fill_evidence",
+        "forward_cohort_pnl"
+      ]
+    },
+    {
+      "plane_id": "data_governance",
+      "title": "Data Governance",
+      "plane_class": "data_governance",
+      "default_cadence": "intraday",
+      "default_resource_class": "support",
+      "routing": {
+        "target_scopes": [
+          "market_signal",
+          "hybrid",
+          "operational_control"
+        ],
+        "target_roles": [
+          "signal",
+          "execution",
+          "risk",
+          "evidence",
+          "evaluation",
+          "coordination",
+          "shared_service"
+        ],
+        "target_tokens": [],
+        "required_when_matched": [
+          "source_provenance",
+          "source_freshness",
+          "schema_validation"
+        ],
+        "all_capabilities_subscription": "optional_when_matched"
+      },
+      "capabilities": [
+        "source_provenance",
+        "source_confidence",
+        "schema_validation",
+        "source_freshness",
+        "payload_completeness",
+        "payload_deduplication",
+        "source_cross_verification",
+        "survivorship_control",
+        "source_licensing",
+        "source_revision_history",
+        "reference_documentation"
+      ]
+    },
+    {
+      "plane_id": "operational_health",
+      "title": "Operational Health",
+      "plane_class": "operations",
+      "default_cadence": "intraday",
+      "default_resource_class": "support",
+      "routing": {
+        "target_scopes": [
+          "operational_control",
+          "hybrid"
+        ],
+        "target_roles": [
+          "shared_service",
+          "coordination",
+          "evidence",
+          "evaluation"
+        ],
+        "target_tokens": [
+          "auth",
+          "provider",
+          "schedule",
+          "process",
+          "runtime",
+          "storage",
+          "ingestion",
+          "network",
+          "alert",
+          "incident"
+        ],
+        "required_when_matched": [
+          "auth_lease_health",
+          "process_health",
+          "runtime_resource_state",
+          "ingestion_backlog"
+        ],
+        "all_capabilities_subscription": "optional_when_matched"
+      },
+      "capabilities": [
+        "auth_lease_health",
+        "provider_quota_health",
+        "schedule_health",
+        "process_health",
+        "runtime_resource_state",
+        "storage_health",
+        "ingestion_backlog",
+        "network_health",
+        "alert_delivery",
+        "incident_recovery"
+      ]
+    }
+  ],
+  "producers": [
+    {
+      "producer_id": "tradingeconomics_guest",
+      "producer_kind": "collector",
+      "source_kind": "public",
+      "cadence": "daily",
+      "resource_class": "warm",
+      "max_age_minutes": 1440,
+      "capabilities": [
+        "growth_indicators",
+        "inflation_indicators",
+        "economic_event_calendar"
+      ],
+      "cache_contract": {
+        "mode": "shared_snapshot",
+        "deduplicate_by": [
+          "producer_id",
+          "payload_sha256",
+          "capability_id"
+        ]
+      },
+      "fallback_policy": "serve_last_good_only_within_freshness_contract",
+      "collector_name": "tradingeconomics_guest"
+    },
+    {
+      "producer_id": "bls_census",
+      "producer_kind": "collector",
+      "source_kind": "official",
+      "cadence": "daily",
+      "resource_class": "warm",
+      "max_age_minutes": 1440,
+      "capabilities": [
+        "labor_market",
+        "wage_growth",
+        "inflation_indicators",
+        "industrial_production",
+        "consumption_indicators",
+        "housing_indicators"
+      ],
+      "cache_contract": {
+        "mode": "shared_snapshot",
+        "deduplicate_by": [
+          "producer_id",
+          "payload_sha256",
+          "capability_id"
+        ]
+      },
+      "fallback_policy": "serve_last_good_only_within_freshness_contract",
+      "collector_name": "bls_census"
+    },
+    {
+      "producer_id": "official_macro_context",
+      "producer_kind": "collector",
+      "source_kind": "official",
+      "cadence": "daily",
+      "resource_class": "warm",
+      "max_age_minutes": 1440,
+      "capabilities": [
+        "central_bank_decisions",
+        "central_bank_speeches",
+        "government_debt_issuance",
+        "treasury_auction_calendar",
+        "economic_event_calendar"
+      ],
+      "cache_contract": {
+        "mode": "shared_snapshot",
+        "deduplicate_by": [
+          "producer_id",
+          "payload_sha256",
+          "capability_id"
+        ]
+      },
+      "fallback_policy": "serve_last_good_only_within_freshness_contract",
+      "collector_name": "official_macro_context"
+    },
+    {
+      "producer_id": "central_bank_liquidity_context",
+      "producer_kind": "collector",
+      "source_kind": "official_derived",
+      "cadence": "daily",
+      "resource_class": "warm",
+      "max_age_minutes": 1440,
+      "capabilities": [
+        "central_bank_balance_sheets",
+        "liquidity_facilities",
+        "funding_stress",
+        "repo_conditions",
+        "global_liquidity_regime"
+      ],
+      "cache_contract": {
+        "mode": "shared_snapshot",
+        "deduplicate_by": [
+          "producer_id",
+          "payload_sha256",
+          "capability_id"
+        ]
+      },
+      "fallback_policy": "serve_last_good_only_within_freshness_contract",
+      "collector_name": "central_bank_liquidity_context"
+    },
+    {
+      "producer_id": "global_central_bank_context",
+      "producer_kind": "collector",
+      "source_kind": "official_derived",
+      "cadence": "daily",
+      "resource_class": "warm",
+      "max_age_minutes": 2880,
+      "capabilities": [
+        "central_bank_decisions",
+        "central_bank_balance_sheets",
+        "global_liquidity_regime",
+        "source_provenance",
+        "source_freshness"
+      ],
+      "cache_contract": {
+        "mode": "shared_snapshot",
+        "deduplicate_by": [
+          "producer_id",
+          "payload_sha256",
+          "capability_id"
+        ]
+      },
+      "fallback_policy": "serve_last_good_only_within_freshness_contract",
+      "collector_name": "global_central_bank_context"
+    },
+    {
+      "producer_id": "central_bank_cross_source_context",
+      "producer_kind": "collector",
+      "source_kind": "official_derived",
+      "cadence": "daily",
+      "resource_class": "warm",
+      "max_age_minutes": 1440,
+      "capabilities": [
+        "central_bank_decisions",
+        "fx_spot",
+        "economic_surprise",
+        "global_liquidity_regime",
+        "cross_asset_correlation",
+        "feature_lineage",
+        "source_provenance",
+        "source_freshness"
+      ],
+      "cache_contract": {
+        "mode": "shared_snapshot",
+        "deduplicate_by": [
+          "producer_id",
+          "payload_sha256",
+          "capability_id"
+        ]
+      },
+      "fallback_policy": "omit_stale_or_conflicted_dimensions_and_surface_coverage",
+      "collector_name": "central_bank_cross_source_context"
+    },
+    {
+      "producer_id": "decision_context_mesh",
+      "producer_kind": "collector",
+      "source_kind": "official_derived",
+      "cadence": "intraday",
+      "resource_class": "warm",
+      "max_age_minutes": 1440,
+      "capabilities": [
+        "fiscal_impulse",
+        "government_debt_issuance",
+        "funding_stress",
+        "repo_conditions",
+        "cross_border_capital_flows",
+        "fund_positioning",
+        "crowding_state",
+        "securities_lending",
+        "credit_spreads",
+        "rates_credit_regime",
+        "implied_volatility_surface",
+        "volatility_term_structure",
+        "etf_fund_flows",
+        "index_rebalance_events",
+        "trading_calendars",
+        "market_session_state",
+        "commodity_inventories",
+        "freight_activity",
+      "estimate_revisions",
+      "estimate_dispersion",
+      "revision_momentum",
+      "market_impact",
+        "execution_impact",
+        "strategy_capacity",
+        "feature_lineage",
+        "source_cross_verification"
+      ],
+      "capability_proofs": {
+        "cross_border_capital_flows": {
+          "mode": "all",
+          "paths": [
+            "derived.global_features.context_cross_border_capital_signal_norm"
+          ],
+          "proof_family": "point_in_time_context_mesh_feature"
+        },
+        "freight_activity": {
+          "mode": "all",
+          "paths": [
+            "derived.global_features.context_supply_chain_inventory_signal_norm"
+          ],
+          "proof_family": "point_in_time_context_mesh_feature"
+        },
+      "strategy_capacity": {
+          "mode": "all",
+          "paths": [
+            "derived.global_features.context_capacity_market_impact_signal_norm"
+          ],
+        "proof_family": "point_in_time_context_mesh_feature"
+      },
+      "estimate_revisions": {
+        "mode": "all",
+        "paths": [
+          "derived.global_features.context_estimates_dispersion_signal_norm"
+        ],
+        "equals": {
+          "planes.10.direct_consensus_ready": true
+        },
+        "proof_family": "direct_point_in_time_analyst_consensus"
+      },
+      "estimate_dispersion": {
+        "mode": "all",
+        "paths": [
+          "derived.global_features.context_estimates_dispersion_signal_norm"
+        ],
+        "equals": {
+          "planes.10.direct_consensus_ready": true
+        },
+        "proof_family": "direct_point_in_time_analyst_consensus"
+      },
+      "revision_momentum": {
+        "mode": "all",
+        "paths": [
+          "derived.global_features.context_estimates_dispersion_signal_norm"
+        ],
+        "equals": {
+          "planes.10.direct_consensus_ready": true
+        },
+        "proof_family": "direct_point_in_time_analyst_consensus"
+      },
+      "feature_lineage": {
+          "mode": "all",
+          "paths": [
+            "planes.0.lineage"
+          ],
+          "proof_family": "point_in_time_context_mesh_lineage"
+        }
+      },
+      "cache_contract": {
+        "mode": "shared_snapshot",
+        "deduplicate_by": [
+          "producer_id",
+          "payload_sha256",
+          "capability_id"
+        ]
+      },
+      "fallback_policy": "serve_last_good_only_within_each_source_freshness_contract_and_omit_missing_dimensions",
+      "collector_name": "decision_context_mesh"
+    },
+    {
+      "producer_id": "schwab_education_context",
+      "producer_kind": "collector",
+      "source_kind": "broker_native",
+      "cadence": "daily",
+      "resource_class": "warm",
+      "max_age_minutes": 720,
+      "capabilities": [
+        "reference_documentation"
+      ],
+      "cache_contract": {
+        "mode": "shared_snapshot",
+        "deduplicate_by": [
+          "producer_id",
+          "payload_sha256",
+          "capability_id"
+        ]
+      },
+      "fallback_policy": "serve_last_good_only_within_freshness_contract",
+      "collector_name": "schwab_education_context"
+    },
+    {
+      "producer_id": "market_micro_context",
+      "producer_kind": "collector",
+      "source_kind": "official_public_mesh",
+      "cadence": "intraday",
+      "resource_class": "hot",
+      "max_age_minutes": 1440,
+      "capabilities": [
+        "short_volume_activity",
+        "trading_halts",
+        "treasury_auction_calendar",
+        "liquidity_regime",
+        "block_activity",
+        "auction_prints",
+        "gap_state",
+        "queue_state",
+        "adverse_selection_risk"
+      ],
+      "capability_proofs": {
+        "auction_prints": {
+          "mode": "all",
+          "paths": [
+            "derived.global_features.market_micro_auction_print_pressure_norm"
+          ],
+          "proof_family": "derived_market_micro_field"
+        },
+        "gap_state": {
+          "mode": "all",
+          "paths": [
+            "derived.global_features.market_micro_overnight_gap_norm"
+          ],
+          "proof_family": "derived_market_micro_field"
+        },
+        "queue_state": {
+          "mode": "all",
+          "paths": [
+            "derived.global_features.market_micro_queue_depth_decay_norm"
+          ],
+          "proof_family": "derived_market_micro_field"
+        },
+        "adverse_selection_risk": {
+          "mode": "all",
+          "paths": [
+            "derived.global_features.market_micro_quote_fade_rate_norm"
+          ],
+          "proof_family": "derived_market_micro_field"
+        }
+      },
+      "cache_contract": {
+        "mode": "shared_snapshot",
+        "deduplicate_by": [
+          "producer_id",
+          "payload_sha256",
+          "capability_id"
+        ]
+      },
+      "fallback_policy": "serve_last_good_only_within_freshness_contract",
+      "collector_name": "market_micro_context"
+    },
+    {
+      "producer_id": "sec_edgar_context",
+      "producer_kind": "collector",
+      "source_kind": "official",
+      "cadence": "event_driven",
+      "resource_class": "warm",
+      "max_age_minutes": 1440,
+      "capabilities": [
+        "issuer_filings",
+        "institutional_ownership",
+        "insider_activity",
+        "bankruptcy_events",
+        "delisting_events"
+      ],
+      "cache_contract": {
+        "mode": "shared_snapshot",
+        "deduplicate_by": [
+          "producer_id",
+          "payload_sha256",
+          "capability_id"
+        ]
+      },
+      "fallback_policy": "serve_last_good_only_within_freshness_contract",
+      "collector_name": "sec_edgar_context"
+    },
+    {
+      "producer_id": "extended_quant_context",
+      "producer_kind": "collector",
+      "source_kind": "official_public_mesh",
+      "cadence": "intraday",
+      "resource_class": "warm",
+      "max_age_minutes": 1440,
+      "capabilities": [
+        "commitment_of_traders",
+        "short_interest",
+        "funding_stress",
+        "repo_conditions",
+        "volatility_regime",
+        "verified_sentiment",
+        "fund_positioning",
+        "crowding_state"
+      ],
+      "capability_proofs": {
+        "fund_positioning": {
+          "mode": "all",
+          "paths": [
+            "derived.global_features.cot_macro_positioning_stress_norm"
+          ],
+          "proof_family": "official_cot_derived_field"
+        },
+        "crowding_state": {
+          "mode": "all",
+          "paths": [
+            "derived.global_features.cot_equity_crowding_norm"
+          ],
+          "proof_family": "official_cot_derived_field"
+        }
+      },
+      "cache_contract": {
+        "mode": "shared_snapshot",
+        "deduplicate_by": [
+          "producer_id",
+          "payload_sha256",
+          "capability_id"
+        ]
+      },
+      "fallback_policy": "serve_last_good_only_within_freshness_contract",
+      "collector_name": "extended_quant_context"
+    },
+    {
+      "producer_id": "options_flow_context",
+      "producer_kind": "collector",
+      "source_kind": "public_licensed_mesh",
+      "cadence": "intraday",
+      "resource_class": "hot",
+      "max_age_minutes": 240,
+      "capabilities": [
+        "options_chain",
+        "implied_volatility_surface",
+        "option_open_interest",
+        "options_flow",
+        "volatility_skew",
+        "volatility_term_structure",
+        "dealer_exposure_estimate",
+        "borrow_shortability"
+      ],
+      "capability_proofs": {
+        "volatility_term_structure": {
+          "mode": "all",
+          "paths": [
+            "derived.global_features.options_iv_term_structure_norm"
+          ],
+          "proof_family": "derived_options_field"
+        },
+        "dealer_exposure_estimate": {
+          "mode": "all",
+          "paths": [
+            "derived.global_features.tasty_dealer_gamma_pressure_norm"
+          ],
+          "proof_family": "licensed_options_derived_field"
+        },
+        "borrow_shortability": {
+          "mode": "all",
+          "paths": [
+            "derived.global_features.short_borrow_availability_norm"
+          ],
+          "proof_family": "derived_short_borrow_field"
+        }
+      },
+      "cache_contract": {
+        "mode": "shared_snapshot",
+        "deduplicate_by": [
+          "producer_id",
+          "payload_sha256",
+          "capability_id"
+        ]
+      },
+      "fallback_policy": "serve_last_good_only_within_freshness_contract",
+      "collector_name": "options_flow_context"
+    },
+    {
+      "producer_id": "crypto_market_context",
+      "producer_kind": "collector",
+      "source_kind": "public_mesh",
+      "cadence": "intraday",
+      "resource_class": "hot",
+      "max_age_minutes": 1440,
+      "capabilities": [
+        "crypto_spot",
+        "crypto_news",
+        "crypto_event_calendar"
+      ],
+      "cache_contract": {
+        "mode": "shared_snapshot",
+        "deduplicate_by": [
+          "producer_id",
+          "payload_sha256",
+          "capability_id"
+        ]
+      },
+      "fallback_policy": "serve_last_good_only_within_freshness_contract",
+      "collector_name": "crypto_market_context"
+    },
+    {
+      "producer_id": "free_equity_reference_context",
+      "producer_kind": "collector",
+      "source_kind": "public",
+      "cadence": "intraday",
+      "resource_class": "warm",
+      "max_age_minutes": 720,
+      "capabilities": [
+        "security_master",
+        "identifier_mapping",
+        "asset_classification",
+        "ohlcv_bars",
+        "adjusted_prices"
+      ],
+      "cache_contract": {
+        "mode": "shared_snapshot",
+        "deduplicate_by": [
+          "producer_id",
+          "payload_sha256",
+          "capability_id"
+        ]
+      },
+      "fallback_policy": "serve_last_good_only_within_freshness_contract",
+      "collector_name": "free_equity_reference_context"
+    },
+    {
+      "producer_id": "market_crypto_correlation",
+      "producer_kind": "collector",
+      "source_kind": "internal_derived",
+      "cadence": "intraday",
+      "resource_class": "warm",
+      "max_age_minutes": 1440,
+      "capabilities": [
+        "cross_asset_correlation",
+        "crypto_correlation",
+        "contagion_state"
+      ],
+      "cache_contract": {
+        "mode": "shared_snapshot",
+        "deduplicate_by": [
+          "producer_id",
+          "payload_sha256",
+          "capability_id"
+        ]
+      },
+      "fallback_policy": "serve_last_good_only_within_freshness_contract",
+      "collector_name": "market_crypto_correlation"
+    },
+    {
+      "producer_id": "fx_market_context",
+      "producer_kind": "collector",
+      "source_kind": "official_public_mesh",
+      "cadence": "intraday",
+      "resource_class": "hot",
+      "max_age_minutes": 240,
+      "capabilities": [
+        "fx_spot",
+        "dollar_regime",
+        "cross_market_basis",
+        "cross_asset_correlation"
+      ],
+      "cache_contract": {
+        "mode": "shared_snapshot",
+        "deduplicate_by": [
+          "producer_id",
+          "payload_sha256",
+          "capability_id"
+        ]
+      },
+      "fallback_policy": "serve_last_good_only_within_freshness_contract",
+      "collector_name": "fx_market_context"
+    },
+    {
+      "producer_id": "bond_reference_context",
+      "producer_kind": "collector",
+      "source_kind": "official",
+      "cadence": "daily",
+      "resource_class": "warm",
+      "max_age_minutes": 1440,
+      "capabilities": [
+        "treasury_yield_curve",
+        "credit_spreads",
+        "treasury_auction_calendar",
+        "rates_credit_regime"
+      ],
+      "cache_contract": {
+        "mode": "shared_snapshot",
+        "deduplicate_by": [
+          "producer_id",
+          "payload_sha256",
+          "capability_id"
+        ]
+      },
+      "fallback_policy": "serve_last_good_only_within_freshness_contract",
+      "collector_name": "bond_reference_context"
+    },
+    {
+      "producer_id": "dividend_drip_context",
+      "producer_kind": "collector",
+      "source_kind": "broker_native",
+      "cadence": "event_driven",
+      "resource_class": "warm",
+      "max_age_minutes": 1440,
+      "capabilities": [
+        "dividend_events",
+        "drip_state",
+        "position_cost_basis"
+      ],
+      "cache_contract": {
+        "mode": "shared_snapshot",
+        "deduplicate_by": [
+          "producer_id",
+          "payload_sha256",
+          "capability_id"
+        ]
+      },
+      "fallback_policy": "serve_last_good_only_within_freshness_contract",
+      "collector_name": "dividend_drip_context"
+    },
+    {
+      "producer_id": "macro_cross_asset_context",
+      "producer_kind": "collector",
+      "source_kind": "official_derived",
+      "cadence": "daily",
+      "resource_class": "warm",
+      "max_age_minutes": 1440,
+      "capabilities": [
+        "dollar_regime",
+        "real_rates",
+        "cross_asset_correlation",
+        "risk_on_off_state",
+        "global_liquidity_regime",
+        "energy_markets"
+      ],
+      "capability_proofs": {
+        "energy_markets": {
+          "mode": "all",
+          "paths": [
+            "cross_asset.wti_spot"
+          ],
+          "proof_family": "official_energy_market_field"
+        }
+      },
+      "cache_contract": {
+        "mode": "shared_snapshot",
+        "deduplicate_by": [
+          "producer_id",
+          "payload_sha256",
+          "capability_id"
+        ]
+      },
+      "fallback_policy": "serve_last_good_only_within_freshness_contract",
+      "collector_name": "macro_cross_asset_context"
+    },
+    {
+      "producer_id": "public_policy_context",
+      "producer_kind": "collector",
+      "source_kind": "official",
+      "cadence": "daily",
+      "resource_class": "warm",
+      "max_age_minutes": 1440,
+      "capabilities": [
+        "government_spending",
+        "government_debt_issuance",
+        "fiscal_impulse",
+        "trade_policy",
+        "regulatory_policy"
+      ],
+      "cache_contract": {
+        "mode": "shared_snapshot",
+        "deduplicate_by": [
+          "producer_id",
+          "payload_sha256",
+          "capability_id"
+        ]
+      },
+      "fallback_policy": "serve_last_good_only_within_freshness_contract",
+      "collector_name": "public_policy_context"
+    },
+    {
+      "producer_id": "schwab_symbol_news",
+      "producer_kind": "collector",
+      "source_kind": "broker_native",
+      "cadence": "event_driven",
+      "resource_class": "warm",
+      "max_age_minutes": 720,
+      "capabilities": [
+        "symbol_news",
+        "sector_news",
+        "news_novelty"
+      ],
+      "cache_contract": {
+        "mode": "shared_snapshot",
+        "deduplicate_by": [
+          "producer_id",
+          "payload_sha256",
+          "capability_id"
+        ]
+      },
+      "fallback_policy": "serve_last_good_only_within_freshness_contract",
+      "collector_name": "schwab_symbol_news"
+    },
+    {
+      "producer_id": "ticker_news_context",
+      "producer_kind": "collector",
+      "source_kind": "public_mesh",
+      "cadence": "event_driven",
+      "resource_class": "warm",
+      "max_age_minutes": 720,
+      "capabilities": [
+        "symbol_news",
+        "sector_news",
+        "crypto_news",
+        "verified_sentiment",
+        "news_novelty"
+      ],
+      "cache_contract": {
+        "mode": "shared_snapshot",
+        "deduplicate_by": [
+          "producer_id",
+          "payload_sha256",
+          "capability_id"
+        ]
+      },
+      "fallback_policy": "serve_last_good_only_within_freshness_contract",
+      "collector_name": "ticker_news_context"
+    },
+    {
+      "producer_id": "point_in_time_event_store",
+      "producer_kind": "collector",
+      "source_kind": "internal_derived",
+      "cadence": "intraday",
+      "resource_class": "warm",
+      "max_age_minutes": 30,
+      "capabilities": [
+        "point_in_time_decision_snapshot",
+        "event_time_joins",
+        "point_in_time_universe",
+        "data_revision_tracking"
+      ],
+      "cache_contract": {
+        "mode": "shared_snapshot",
+        "deduplicate_by": [
+          "producer_id",
+          "payload_sha256",
+          "capability_id"
+        ]
+      },
+      "fallback_policy": "serve_last_good_only_within_freshness_contract",
+      "collector_name": "point_in_time_event_store"
+    },
+    {
+      "producer_id": "feature_store_lineage",
+      "producer_kind": "collector",
+      "source_kind": "internal_derived",
+      "cadence": "intraday",
+      "resource_class": "warm",
+      "max_age_minutes": 60,
+      "capabilities": [
+        "feature_versions",
+        "feature_source_hashes",
+        "label_eligibility",
+        "leakage_checks",
+        "snapshot_coverage",
+        "feature_lineage",
+        "reproducibility_receipts"
+      ],
+      "cache_contract": {
+        "mode": "shared_snapshot",
+        "deduplicate_by": [
+          "producer_id",
+          "payload_sha256",
+          "capability_id"
+        ]
+      },
+      "fallback_policy": "serve_last_good_only_within_freshness_contract",
+      "collector_name": "feature_store_lineage"
+    },
+    {
+      "producer_id": "candidate_fill_replay",
+      "producer_kind": "collector",
+      "source_kind": "internal_replay",
+      "cadence": "intraday",
+      "resource_class": "warm",
+      "max_age_minutes": 10,
+      "capabilities": [
+        "deterministic_replay",
+        "execution_calibration",
+        "independent_fill_evidence",
+        "execution_slippage"
+      ],
+      "cache_contract": {
+        "mode": "shared_snapshot",
+        "deduplicate_by": [
+          "producer_id",
+          "payload_sha256",
+          "capability_id"
+        ]
+      },
+      "fallback_policy": "serve_last_good_only_within_freshness_contract",
+      "collector_name": "candidate_fill_replay"
+    },
+    {
+      "producer_id": "capability_materialization_control",
+      "producer_kind": "artifact",
+      "source_kind": "internal_derived",
+      "cadence": "intraday",
+      "resource_class": "support",
+      "max_age_minutes": 30,
+      "capabilities": [
+        "trading_calendars",
+        "market_session_state",
+        "derivatives_contract_master",
+        "stress_scenarios"
+      ],
+      "capability_evidence_contract": {
+        "mode": "capability_rows",
+        "path": "capabilities",
+        "id_field": "capability_id",
+        "usable_field": "usable",
+        "receipt_field": "proof_receipt_sha256",
+        "require_receipt": true,
+        "required_equals": {
+          "ok": true,
+          "live_promotion_ready": true
+        }
+      },
+      "cache_contract": {
+        "mode": "shared_snapshot",
+        "deduplicate_by": [
+          "producer_id",
+          "payload_sha256",
+          "capability_id"
+        ]
+      },
+      "fallback_policy": "serve_last_good_only_within_freshness_contract",
+      "artifact_path": "governance/collector_capabilities/materialized_capabilities_latest.json"
+    },
+    {
+      "producer_id": "counterfactual_replay_control",
+      "producer_kind": "artifact",
+      "source_kind": "internal_replay",
+      "cadence": "intraday",
+      "resource_class": "warm",
+      "max_age_minutes": 60,
+      "capabilities": [
+        "counterfactual_replay"
+      ],
+      "capability_proofs": {
+        "counterfactual_replay": {
+          "mode": "all",
+          "paths": [
+            "candidate_count",
+            "profiles_reviewed",
+            "processing"
+          ],
+          "equals": {
+            "ok": true
+          },
+          "proof_family": "counterfactual_replay_receipt"
+        }
+      },
+      "cache_contract": {
+        "mode": "shared_snapshot",
+        "deduplicate_by": [
+          "producer_id",
+          "payload_sha256",
+          "capability_id"
+        ]
+      },
+      "fallback_policy": "serve_last_good_only_within_freshness_contract",
+      "artifact_path": "governance/health/counterfactual_replay_latest.json"
+    },
+    {
+      "producer_id": "profitability_benchmark_control",
+      "producer_kind": "artifact",
+      "source_kind": "internal_control",
+      "cadence": "daily",
+      "resource_class": "warm",
+      "max_age_minutes": 2880,
+      "capabilities": [
+        "benchmark_comparison"
+      ],
+      "capability_proofs": {
+        "benchmark_comparison": {
+          "mode": "all",
+          "paths": [
+            "candidate_binding",
+            "metrics",
+            "thresholds"
+          ],
+          "equals": {
+            "ok": true
+          },
+          "proof_family": "benchmark_hurdle_receipt"
+        }
+      },
+      "cache_contract": {
+        "mode": "shared_snapshot",
+        "deduplicate_by": [
+          "producer_id",
+          "payload_sha256",
+          "capability_id"
+        ]
+      },
+      "fallback_policy": "serve_last_good_only_within_freshness_contract",
+      "artifact_path": "governance/research/profitability_benchmark_hurdle_latest.json"
+    },
+    {
+      "producer_id": "trading_tax_evidence_control",
+      "producer_kind": "artifact",
+      "source_kind": "internal_control",
+      "cadence": "daily",
+      "resource_class": "warm",
+      "max_age_minutes": 2880,
+      "capabilities": [
+        "taxable_income_estimate",
+        "accounting_ledger_verification"
+      ],
+      "capability_proofs": {
+        "taxable_income_estimate": {
+          "mode": "all",
+          "paths": [
+            "tax_owed_from_trading_estimate_usd",
+            "recommended_tax_reserve",
+            "policy_validation"
+          ],
+          "equals": {
+            "ok": true,
+            "policy_validation.ok": true
+          },
+          "proof_family": "tax_estimate_receipt"
+        },
+        "accounting_ledger_verification": {
+          "mode": "all",
+          "paths": [
+            "ledger_coverage",
+            "reconciliation_contract"
+          ],
+          "equals": {
+            "ok": true,
+            "ledger_coverage.ledger_complete": true,
+            "ledger_coverage.all_relevant_accounts_included": true
+          },
+          "proof_family": "tax_ledger_reconciliation_receipt"
+        }
+      },
+      "cache_contract": {
+        "mode": "shared_snapshot",
+        "deduplicate_by": [
+          "producer_id",
+          "payload_sha256",
+          "capability_id"
+        ]
+      },
+      "fallback_policy": "serve_last_good_only_within_freshness_contract",
+      "artifact_path": "governance/health/trading_tax_estimate_latest.json"
+    },
+    {
+      "producer_id": "source_verification_control",
+      "producer_kind": "artifact",
+      "source_kind": "internal_control",
+      "cadence": "intraday",
+      "resource_class": "support",
+      "max_age_minutes": 1440,
+      "capabilities": [
+        "source_provenance",
+        "source_confidence",
+        "source_cross_verification",
+        "source_licensing"
+      ],
+      "cache_contract": {
+        "mode": "shared_snapshot",
+        "deduplicate_by": [
+          "producer_id",
+          "payload_sha256",
+          "capability_id"
+        ]
+      },
+      "fallback_policy": "serve_last_good_only_within_freshness_contract",
+      "artifact_path": "governance/health/source_verification_latest.json"
+    },
+    {
+      "producer_id": "collector_contract_control",
+      "producer_kind": "artifact",
+      "source_kind": "internal_control",
+      "cadence": "intraday",
+      "resource_class": "support",
+      "max_age_minutes": 30,
+      "capabilities": [
+        "source_freshness",
+        "schema_validation",
+        "payload_completeness",
+        "payload_deduplication"
+      ],
+      "cache_contract": {
+        "mode": "shared_snapshot",
+        "deduplicate_by": [
+          "producer_id",
+          "payload_sha256",
+          "capability_id"
+        ]
+      },
+      "fallback_policy": "serve_last_good_only_within_freshness_contract",
+      "artifact_path": "governance/health/collector_contracts_latest.json"
+    },
+    {
+      "producer_id": "broker_readiness_control",
+      "producer_kind": "artifact",
+      "source_kind": "broker_native",
+      "cadence": "streaming",
+      "resource_class": "hot",
+      "max_age_minutes": 30,
+      "capabilities": [
+        "broker_connectivity"
+      ],
+      "capability_proofs": {
+        "broker_connectivity": {
+          "mode": "all",
+          "paths": [
+            "preflight_checks.token_ready_for_open",
+            "token_expires_in_seconds"
+          ],
+          "equals": {
+            "auth_ok": true,
+            "network_ok": true,
+            "ready_for_open": true
+          },
+          "proof_family": "broker_connectivity_probe"
+        }
+      },
+      "cache_contract": {
+        "mode": "shared_snapshot",
+        "deduplicate_by": [
+          "producer_id",
+          "payload_sha256",
+          "capability_id"
+        ]
+      },
+      "fallback_policy": "serve_last_good_only_within_freshness_contract",
+      "artifact_path": "governance/health/broker_readiness_latest.json"
+    },
+    {
+      "producer_id": "broker_account_snapshot_control",
+      "producer_kind": "artifact",
+      "source_kind": "broker_native",
+      "cadence": "streaming",
+      "resource_class": "hot",
+      "max_age_minutes": 10,
+      "capabilities": [
+        "broker_accounts",
+        "cash_balance",
+        "buying_power",
+        "account_positions",
+        "position_cost_basis",
+        "account_restrictions",
+        "margin_state",
+        "account_reconciliation"
+      ],
+      "capability_proofs": {
+        "broker_accounts": {
+          "mode": "all",
+          "paths": [
+            "fetched.payload.accounts",
+            "fetched.account_count"
+          ],
+          "equals": {
+            "fetched.ok": true,
+            "fetched.account_snapshot_partial": false
+          },
+          "proof_family": "broker_account_snapshot"
+        },
+        "cash_balance": {
+          "mode": "any",
+          "paths": [
+            "fetched.payload.accounts.*.securitiesAccount.currentBalances.cashBalance"
+          ],
+          "proof_family": "broker_account_snapshot_field"
+        },
+        "buying_power": {
+          "mode": "any",
+          "paths": [
+            "fetched.payload.accounts.*.securitiesAccount.currentBalances.buyingPower"
+          ],
+          "proof_family": "broker_account_snapshot_field"
+        },
+        "account_positions": {
+          "mode": "any",
+          "paths": [
+            "fetched.payload.accounts.*.securitiesAccount.positions"
+          ],
+          "proof_family": "broker_account_snapshot_field"
+        },
+        "position_cost_basis": {
+          "mode": "any",
+          "paths": [
+            "fetched.payload.accounts.*.securitiesAccount.positions.*.taxLotAverageLongPrice",
+            "fetched.payload.accounts.*.securitiesAccount.positions.*.taxLotAverageShortPrice",
+            "fetched.payload.accounts.*.securitiesAccount.positions.*.averagePrice"
+          ],
+          "proof_family": "broker_position_cost_basis_field"
+        },
+        "account_restrictions": {
+          "mode": "any",
+          "paths": [
+            "fetched.payload.accounts.*.securitiesAccount.isClosingOnlyRestricted"
+          ],
+          "proof_family": "broker_account_snapshot_field"
+        },
+        "margin_state": {
+          "mode": "any",
+          "paths": [
+            "fetched.payload.accounts.*.securitiesAccount.currentBalances.marginBalance"
+          ],
+          "proof_family": "broker_account_snapshot_field"
+        },
+        "account_reconciliation": {
+          "mode": "all",
+          "paths": [
+            "fetched.account_count",
+            "fetched.discovered_account_count",
+            "fetched.failed_account_count"
+          ],
+          "equals": {
+            "fetched.ok": true,
+            "fetched.failed_account_count": 0,
+            "fetched.account_snapshot_partial": false
+          },
+          "proof_family": "broker_account_reconciliation_receipt"
+        }
+      },
+      "cache_contract": {
+        "mode": "shared_snapshot",
+        "deduplicate_by": [
+          "producer_id",
+          "payload_sha256",
+          "capability_id"
+        ]
+      },
+      "fallback_policy": "serve_last_good_only_within_freshness_contract",
+      "artifact_path": "governance/health/broker_truth_shared_snapshot_schwab_latest.json"
+    },
+    {
+      "producer_id": "live_order_ledger_control",
+      "producer_kind": "artifact",
+      "source_kind": "internal_control",
+      "cadence": "streaming",
+      "resource_class": "hot",
+      "max_age_minutes": 30,
+      "capabilities": [
+        "order_intents",
+        "order_submissions",
+        "broker_acknowledgements",
+        "order_rejections",
+        "partial_fills",
+        "final_fills",
+        "order_cancellations",
+        "order_replacements",
+        "duplicate_order_detection",
+        "order_ledger_reconciliation"
+      ],
+      "cache_contract": {
+        "mode": "shared_snapshot",
+        "deduplicate_by": [
+          "producer_id",
+          "payload_sha256",
+          "capability_id"
+        ]
+      },
+      "fallback_policy": "serve_last_good_only_within_freshness_contract",
+      "artifact_path": "governance/health/live_order_ledger_control_latest.json"
+    },
+    {
+      "producer_id": "paper_execution_truth_control",
+      "producer_kind": "artifact",
+      "source_kind": "internal_control",
+      "cadence": "intraday",
+      "resource_class": "hot",
+      "max_age_minutes": 60,
+      "capabilities": [
+        "account_reconciliation",
+        "order_ledger_reconciliation",
+        "execution_slippage",
+        "spread_capture",
+        "fill_probability"
+      ],
+      "cache_contract": {
+        "mode": "shared_snapshot",
+        "deduplicate_by": [
+          "producer_id",
+          "payload_sha256",
+          "capability_id"
+        ]
+      },
+      "fallback_policy": "serve_last_good_only_within_freshness_contract",
+      "artifact_path": "governance/health/paper_execution_truth_layer_latest.json"
+    },
+    {
+      "producer_id": "paper_execution_calibration_control",
+      "producer_kind": "artifact",
+      "source_kind": "internal_control",
+      "cadence": "intraday",
+      "resource_class": "warm",
+      "max_age_minutes": 60,
+      "capabilities": [
+        "quote_age",
+        "fill_latency",
+        "execution_slippage",
+        "execution_calibration",
+        "execution_model_drift"
+      ],
+      "cache_contract": {
+        "mode": "shared_snapshot",
+        "deduplicate_by": [
+          "producer_id",
+          "payload_sha256",
+          "capability_id"
+        ]
+      },
+      "fallback_policy": "serve_last_good_only_within_freshness_contract",
+      "artifact_path": "governance/health/paper_execution_calibration_latest.json"
+    },
+    {
+      "producer_id": "paper_performance_control",
+      "producer_kind": "artifact",
+      "source_kind": "internal_control",
+      "cadence": "intraday",
+      "resource_class": "warm",
+      "max_age_minutes": 60,
+      "capabilities": [
+        "realized_pnl",
+        "unrealized_pnl",
+        "transaction_fees",
+        "pnl_attribution",
+        "portfolio_exposure",
+        "concentration_risk",
+        "drawdown_state",
+        "sleeve_profit_contribution"
+      ],
+      "cache_contract": {
+        "mode": "shared_snapshot",
+        "deduplicate_by": [
+          "producer_id",
+          "payload_sha256",
+          "capability_id"
+        ]
+      },
+      "fallback_policy": "serve_last_good_only_within_freshness_contract",
+      "artifact_path": "governance/health/paper_performance_latest.json"
+    },
+    {
+      "producer_id": "profitability_firewall_control",
+      "producer_kind": "artifact",
+      "source_kind": "internal_control",
+      "cadence": "intraday",
+      "resource_class": "warm",
+      "max_age_minutes": 120,
+      "capabilities": [
+        "gross_expectancy",
+        "post_cost_expectancy",
+        "clustered_confidence",
+        "profit_concentration",
+        "drawdown_attribution",
+        "forward_cohort_pnl",
+        "risk_of_ruin"
+      ],
+      "cache_contract": {
+        "mode": "shared_snapshot",
+        "deduplicate_by": [
+          "producer_id",
+          "payload_sha256",
+          "capability_id"
+        ]
+      },
+      "fallback_policy": "serve_last_good_only_within_freshness_contract",
+      "artifact_path": "governance/health/profitability_evidence_firewall_latest.json"
+    },
+    {
+      "producer_id": "training_lineage_control",
+      "producer_kind": "artifact",
+      "source_kind": "internal_control",
+      "cadence": "daily",
+      "resource_class": "cold",
+      "max_age_minutes": 1440,
+      "capabilities": [
+        "locked_holdouts",
+        "walk_forward_tests",
+        "multiple_testing_control",
+        "edge_decay_analysis",
+        "champion_challenger_evidence",
+        "reproducibility_receipts"
+      ],
+      "cache_contract": {
+        "mode": "shared_snapshot",
+        "deduplicate_by": [
+          "producer_id",
+          "payload_sha256",
+          "capability_id"
+        ]
+      },
+      "fallback_policy": "serve_last_good_only_within_freshness_contract",
+      "artifact_path": "governance/health/training_lineage_manifest_latest.json"
+    },
+    {
+      "producer_id": "runtime_throttle_control",
+      "producer_kind": "artifact",
+      "source_kind": "internal_control",
+      "cadence": "intraday",
+      "resource_class": "support",
+      "max_age_minutes": 30,
+      "capabilities": [
+        "runtime_resource_state"
+      ],
+      "cache_contract": {
+        "mode": "shared_snapshot",
+        "deduplicate_by": [
+          "producer_id",
+          "payload_sha256",
+          "capability_id"
+        ]
+      },
+      "fallback_policy": "serve_last_good_only_within_freshness_contract",
+      "artifact_path": "governance/health/runtime_throttle_control_latest.json"
+    },
+    {
+      "producer_id": "memory_efficiency_control",
+      "producer_kind": "artifact",
+      "source_kind": "internal_control",
+      "cadence": "intraday",
+      "resource_class": "support",
+      "max_age_minutes": 30,
+      "capabilities": [
+        "runtime_resource_state"
+      ],
+      "cache_contract": {
+        "mode": "shared_snapshot",
+        "deduplicate_by": [
+          "producer_id",
+          "payload_sha256",
+          "capability_id"
+        ]
+      },
+      "fallback_policy": "serve_last_good_only_within_freshness_contract",
+      "artifact_path": "governance/health/memory_efficiency_control_latest.json"
+    },
+    {
+      "producer_id": "ingestion_storage_control",
+      "producer_kind": "artifact",
+      "source_kind": "internal_control",
+      "cadence": "intraday",
+      "resource_class": "support",
+      "max_age_minutes": 30,
+      "capabilities": [
+        "storage_health",
+        "ingestion_backlog"
+      ],
+      "cache_contract": {
+        "mode": "shared_snapshot",
+        "deduplicate_by": [
+          "producer_id",
+          "payload_sha256",
+          "capability_id"
+        ]
+      },
+      "fallback_policy": "serve_last_good_only_within_freshness_contract",
+      "artifact_path": "governance/health/ingestion_storage_control_latest.json"
+    },
+    {
+      "producer_id": "auth_lease_control",
+      "producer_kind": "artifact",
+      "source_kind": "internal_control",
+      "cadence": "intraday",
+      "resource_class": "support",
+      "max_age_minutes": 30,
+      "capabilities": [
+        "auth_lease_health",
+        "provider_quota_health"
+      ],
+      "cache_contract": {
+        "mode": "shared_snapshot",
+        "deduplicate_by": [
+          "producer_id",
+          "payload_sha256",
+          "capability_id"
+        ]
+      },
+      "fallback_policy": "serve_last_good_only_within_freshness_contract",
+      "artifact_path": "governance/health/auth_lease_manager_latest.json"
+    },
+    {
+      "producer_id": "process_watchdog_control",
+      "producer_kind": "artifact",
+      "source_kind": "internal_control",
+      "cadence": "intraday",
+      "resource_class": "support",
+      "max_age_minutes": 30,
+      "capabilities": [
+        "process_health",
+        "network_health"
+      ],
+      "cache_contract": {
+        "mode": "shared_snapshot",
+        "deduplicate_by": [
+          "producer_id",
+          "payload_sha256",
+          "capability_id"
+        ]
+      },
+      "fallback_policy": "serve_last_good_only_within_freshness_contract",
+      "artifact_path": "governance/health/process_watchdog_latest.json"
+    },
+    {
+      "producer_id": "notification_control",
+      "producer_kind": "artifact",
+      "source_kind": "internal_control",
+      "cadence": "intraday",
+      "resource_class": "support",
+      "max_age_minutes": 120,
+      "capabilities": [
+        "alert_delivery"
+      ],
+      "cache_contract": {
+        "mode": "shared_snapshot",
+        "deduplicate_by": [
+          "producer_id",
+          "payload_sha256",
+          "capability_id"
+        ]
+      },
+      "fallback_policy": "serve_last_good_only_within_freshness_contract",
+      "artifact_path": "governance/health/notification_escalation_ladder_latest.json"
+    },
+    {
+      "producer_id": "storage_recovery_control",
+      "producer_kind": "artifact",
+      "source_kind": "internal_control",
+      "cadence": "daily",
+      "resource_class": "support",
+      "max_age_minutes": 1440,
+      "capabilities": [
+        "storage_health",
+        "incident_recovery"
+      ],
+      "cache_contract": {
+        "mode": "shared_snapshot",
+        "deduplicate_by": [
+          "producer_id",
+          "payload_sha256",
+          "capability_id"
+        ]
+      },
+      "fallback_policy": "serve_last_good_only_within_freshness_contract",
+      "artifact_path": "governance/health/storage_disaster_recovery_latest.json"
+    },
+    {
+      "producer_id": "soak_reliability_control",
+      "producer_kind": "artifact",
+      "source_kind": "internal_control",
+      "cadence": "intraday",
+      "resource_class": "support",
+      "max_age_minutes": 30,
+      "capabilities": [
+        "schedule_health",
+        "incident_recovery"
+      ],
+      "cache_contract": {
+        "mode": "shared_snapshot",
+        "deduplicate_by": [
+          "producer_id",
+          "payload_sha256",
+          "capability_id"
+        ]
+      },
+      "fallback_policy": "serve_last_good_only_within_freshness_contract",
+      "artifact_path": "governance/health/soak_reliability_sentinel_latest.json"
+    },
+    {
+      "producer_id": "incident_closeout_control",
+      "producer_kind": "artifact",
+      "source_kind": "internal_control",
+      "cadence": "intraday",
+      "resource_class": "support",
+      "max_age_minutes": 120,
+      "capabilities": [
+        "incident_recovery"
+      ],
+      "cache_contract": {
+        "mode": "shared_snapshot",
+        "deduplicate_by": [
+          "producer_id",
+          "payload_sha256",
+          "capability_id"
+        ]
+      },
+      "fallback_policy": "serve_last_good_only_within_freshness_contract",
+      "artifact_path": "governance/health/incident_closeout_latest.json"
+    }
+  ],
+  "scope_required_capabilities": {
+    "market_signal": [
+      "security_master",
+      "ohlcv_bars",
+      "point_in_time_decision_snapshot",
+      "feature_lineage",
+      "source_provenance",
+      "source_freshness"
+    ],
+    "hybrid": [
+      "security_master",
+      "ohlcv_bars",
+      "point_in_time_decision_snapshot",
+      "feature_lineage",
+      "source_provenance",
+      "source_freshness",
+      "process_health"
+    ],
+    "operational_control": [
+      "source_provenance",
+      "source_freshness",
+      "process_health",
+      "runtime_resource_state",
+      "ingestion_backlog",
+      "auth_lease_health"
+    ]
+  },
+  "role_required_capabilities": {
+    "signal": [
+      "point_in_time_decision_snapshot",
+      "feature_lineage"
+    ],
+    "execution": [
+      "broker_accounts",
+      "account_positions",
+      "account_reconciliation",
+      "order_intents",
+      "order_ledger_reconciliation",
+      "execution_calibration"
+    ],
+    "risk": [
+      "portfolio_exposure",
+      "drawdown_state",
+      "stress_scenarios"
+    ],
+    "evidence": [
+      "source_provenance",
+      "feature_source_hashes",
+      "reproducibility_receipts"
+    ],
+    "evaluation": [
+      "deterministic_replay",
+      "pnl_attribution",
+      "source_provenance"
+    ],
+    "coordination": [
+      "process_health",
+      "account_reconciliation"
+    ],
+    "shared_service": [
+      "process_health",
+      "runtime_resource_state",
+      "ingestion_backlog"
+    ]
+  },
+  "regime_axis_capability_map": {
+    "market_direction": [
+      "ohlcv_bars",
+      "market_breadth",
+      "factor_leadership"
+    ],
+    "volatility_state": [
+      "realized_volatility",
+      "implied_volatility_surface",
+      "volatility_regime"
+    ],
+    "liquidity_state": [
+      "bid_ask_spread",
+      "order_book_imbalance",
+      "liquidity_regime"
+    ],
+    "macro_state": [
+      "growth_indicators",
+      "inflation_indicators",
+      "central_bank_decisions"
+    ],
+    "rates_credit_state": [
+      "treasury_yield_curve",
+      "credit_spreads",
+      "funding_stress"
+    ],
+    "correlation_state": [
+      "cross_asset_correlation",
+      "cross_asset_dispersion",
+      "contagion_state"
+    ],
+    "event_phase": [
+      "economic_event_calendar",
+      "symbol_news",
+      "dividend_events"
+    ],
+    "market_session": [
+      "trading_calendars",
+      "market_session_state",
+      "auction_prints"
+    ],
+    "operational_state": [
+      "process_health",
+      "runtime_resource_state",
+      "ingestion_backlog"
+    ]
+  },
+  "routing_policy": {
+    "profile_mode": "content_addressed_shared_subscription_profiles",
+    "fail_closed_on_invalid_catalog": true,
+    "fail_closed_to_collect_only_on_missing_required_capability": true,
+    "unsupported_optional_capabilities_are_advisory": true,
+    "unsupported_required_capabilities_block_live_promotion_not_guarded_paper_soak": true,
+    "required_current_collector_failure_blocks_guarded_paper_soak": true,
+    "max_required_capabilities_per_profile": 48,
+    "max_optional_capabilities_per_profile": 160,
+    "max_gap_rows": 100,
+    "source_kind_priority": [
+      "official",
+      "broker_native",
+      "official_derived",
+      "official_public_mesh",
+      "internal_control",
+      "internal_derived",
+      "internal_replay",
+      "public_licensed_mesh",
+      "public_mesh",
+      "public"
+    ],
+    "bot_binding_fields": [
+      "bot_id",
+      "cell_id",
+      "profile_id",
+      "runtime_context_profile_id"
+    ],
+    "cache_reuse_required": true,
+    "external_fetch_launch_authority": false
+  },
+  "physical_producer_admission": {
+    "minimum_subscribed_bot_count": 3,
+    "require_named_capability_gap": true,
+    "require_verified_source_provenance": true,
+    "require_point_in_time_timestamp_contract": true,
+    "require_shared_cache_plan": true,
+    "require_freshness_and_fallback_contract": true,
+    "require_resource_budget_clearance": true,
+    "require_failure_isolation_boundary": true,
+    "require_incremental_out_of_sample_value_for_promotion": true,
+    "require_human_approval": true
+  },
+  "safety_contract": {
+    "changes_runtime_decisions": false,
+    "launches_collectors": false,
+    "fetches_external_data": false,
+    "mutates_bot_registry": false,
+    "rewrites_historical_outcomes": false,
+    "paper_execution_authority": false,
+    "live_execution_authority": false,
+    "automatic_promotion_authority": false,
+    "profitability_guaranteed": false
+  }
+}

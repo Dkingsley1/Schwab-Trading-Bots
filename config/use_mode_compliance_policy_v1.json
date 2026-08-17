@@ -1,0 +1,240 @@
+{
+  "schema_version": 1,
+  "policy_id": "use_mode_compliance_policy_v1",
+  "default_use_mode": "personal",
+  "control_policy": "personal_use_can_run_guarded_paper_only_commercial_or_customer_facing_use_requires_explicit_review_evidence",
+  "environment_contract": {
+    "use_mode_env": "SYSTEM_USE_MODE",
+    "approval_envs": {
+      "commercial_legal_review": "COMMERCIAL_LEGAL_REVIEW_APPROVED",
+      "commercial_compliance_review": "COMMERCIAL_COMPLIANCE_REVIEW_APPROVED",
+      "investment_adviser_review": "INVESTMENT_ADVISER_REVIEW_APPROVED",
+      "broker_dealer_review": "BROKER_DEALER_REVIEW_APPROVED",
+      "commodity_advice_review": "COMMODITY_ADVICE_REVIEW_APPROVED",
+      "marketing_review": "MARKETING_REVIEW_APPROVED"
+    },
+    "commercial_trigger_envs": [
+      "COMMERCIAL_USE_ENABLED",
+      "CUSTOMER_FUNDS_ENABLED",
+      "CUSTOMER_ACCOUNTS_ENABLED",
+      "CUSTOMER_ORDER_EXECUTION_ENABLED",
+      "PAID_SIGNALS_ENABLED",
+      "MODEL_PORTFOLIO_ENABLED",
+      "INVESTMENT_ADVICE_ENABLED",
+      "PERFORMANCE_MARKETING_ENABLED",
+      "TESTIMONIALS_ENABLED",
+      "FUTURES_OR_DERIVATIVES_ADVICE_ENABLED",
+      "COMMODITY_POOL_ENABLED",
+      "CUSTODY_ENABLED",
+      "COPY_TRADING_ENABLED"
+    ]
+  },
+  "personal_use_perfection_criteria": [
+    {
+      "criterion_id": "health_fast_strict_clear",
+      "title": "Fast Health Strict Clear",
+      "required": true,
+      "artifact": "governance/health/health_fast_latest.json"
+    },
+    {
+      "criterion_id": "guarded_paper_ready",
+      "title": "Guarded Paper Ready",
+      "required": true,
+      "artifact": "governance/health/health_fast_latest.json"
+    },
+    {
+      "criterion_id": "auth_and_broker_ready",
+      "title": "Auth And Broker Ready",
+      "required": true,
+      "artifact": "governance/health/auth_lease_manager_latest.json"
+    },
+    {
+      "criterion_id": "all_sleeves_effective_runtime",
+      "title": "All Sleeves Effective Runtime",
+      "required": true,
+      "artifact": "governance/health/process_watchdog_latest.json"
+    },
+    {
+      "criterion_id": "paper_execution_continuity",
+      "title": "Paper Execution Continuity",
+      "required": true,
+      "artifact": "governance/health/runtime_paper_regression_guard_latest.json"
+    },
+    {
+      "criterion_id": "data_collection_nonzero",
+      "title": "Data Collection Nonzero",
+      "required": true,
+      "artifact": "governance/health/data_collection_observation_rollup_latest.json"
+    },
+    {
+      "criterion_id": "storage_pressure_clean",
+      "title": "Storage Pressure Clean",
+      "required": true,
+      "artifact": "governance/health/ingestion_storage_control_latest.json"
+    },
+    {
+      "criterion_id": "live_execution_read_only",
+      "title": "Live Execution Read Only",
+      "required": true,
+      "artifact": "governance/health/live_runtime_separation_control_latest.json"
+    },
+    {
+      "criterion_id": "no_customer_or_commercial_flags",
+      "title": "No Customer Or Commercial Flags",
+      "required": true,
+      "artifact": "environment"
+    },
+    {
+      "criterion_id": "profitability_evidence_labeled",
+      "title": "Profitability Evidence Labeled",
+      "required": true,
+      "artifact": "governance/health/paper_runtime_profitability_controls_latest.json"
+    }
+  ],
+  "personal_use_operator_grade_criteria": [
+    {
+      "criterion_id": "base_personal_a_plus_ready",
+      "title": "Base Personal A+ Ready",
+      "artifact": "governance/health/use_mode_compliance_guard_latest.json"
+    },
+    {
+      "criterion_id": "a_plus_operating_packet_all_lanes",
+      "title": "A+ Operating Packet All Lanes",
+      "artifact": "governance/health/a_plus_operating_packet_latest.json"
+    },
+    {
+      "criterion_id": "unattended_soak_green",
+      "title": "Unattended Soak Green",
+      "artifact": "governance/health/unattended_soak_readiness_latest.json"
+    },
+    {
+      "criterion_id": "source_mutation_guard_clean",
+      "title": "Source Mutation Guard Clean",
+      "artifact": "computed:source_mutation_guard"
+    },
+    {
+      "criterion_id": "production_flow_smoke_ready",
+      "title": "Production Flow Smoke Ready",
+      "artifact": "computed:production_flow_smoke"
+    },
+    {
+      "criterion_id": "autonomy_recovery_score",
+      "title": "Autonomy Recovery Score",
+      "artifact": "governance/health/autonomy_control_plane_latest.json",
+      "minimum_score": 95.0
+    },
+    {
+      "criterion_id": "disaster_recovery_blackstart_ready",
+      "title": "Disaster Recovery And Blackstart Ready",
+      "artifact": "governance/health/storage_disaster_recovery_latest.json"
+    },
+    {
+      "criterion_id": "data_plane_recovery_managed",
+      "title": "Data Plane Recovery Managed",
+      "artifact": "governance/health/data_plane_recovery_controller_latest.json"
+    },
+    {
+      "criterion_id": "live_money_boundaries_locked",
+      "title": "Live Money Boundaries Locked",
+      "artifact": "governance/health/live_canary_readiness_contract_latest.json"
+    },
+    {
+      "criterion_id": "commercial_personal_boundary_clean",
+      "title": "Commercial Personal Boundary Clean",
+      "artifact": "governance/health/commercial_readiness_control_latest.json"
+    },
+    {
+      "criterion_id": "security_privacy_runtime_clean",
+      "title": "Security And Privacy Runtime Clean",
+      "artifact": "governance/health/security_audit_latest.json"
+    }
+  ],
+  "commercial_boundary_triggers": [
+    {
+      "trigger_id": "compensated_securities_advice",
+      "envs": [
+        "INVESTMENT_ADVICE_ENABLED",
+        "PAID_SIGNALS_ENABLED",
+        "MODEL_PORTFOLIO_ENABLED"
+      ],
+      "review_required": "investment_adviser_review",
+      "summary": "Compensated advice, paid signals, or model portfolios about securities require investment-adviser review before commercial use."
+    },
+    {
+      "trigger_id": "customer_execution_or_copy_trading",
+      "envs": [
+        "CUSTOMER_ORDER_EXECUTION_ENABLED",
+        "CUSTOMER_ACCOUNTS_ENABLED",
+        "COPY_TRADING_ENABLED"
+      ],
+      "review_required": "broker_dealer_review",
+      "summary": "Handling customer accounts, customer order flow, or copy trading requires broker-dealer review before commercial use."
+    },
+    {
+      "trigger_id": "customer_funds_or_custody",
+      "envs": [
+        "CUSTOMER_FUNDS_ENABLED",
+        "CUSTODY_ENABLED"
+      ],
+      "review_required": "commercial_compliance_review",
+      "hard_block": true,
+      "summary": "Customer funds, pooled money, or custody must stay hard-blocked until a registered, reviewed program exists."
+    },
+    {
+      "trigger_id": "commodities_futures_swaps_or_pool",
+      "envs": [
+        "FUTURES_OR_DERIVATIVES_ADVICE_ENABLED",
+        "COMMODITY_POOL_ENABLED"
+      ],
+      "review_required": "commodity_advice_review",
+      "summary": "Futures, swaps, commodity advice, or pooled commodity money requires CFTC/NFA review before commercial use."
+    },
+    {
+      "trigger_id": "performance_marketing",
+      "envs": [
+        "PERFORMANCE_MARKETING_ENABLED",
+        "TESTIMONIALS_ENABLED"
+      ],
+      "review_required": "marketing_review",
+      "summary": "Performance advertising, testimonials, endorsements, or rankings require marketing-rule review before public commercial use."
+    }
+  ],
+  "authority_boundaries": {
+    "does_not_enable_live_execution": true,
+    "customer_funds_allowed": false,
+    "customer_accounts_allowed": false,
+    "customer_order_execution_allowed": false,
+    "custody_allowed": false,
+    "copy_trading_allowed": false,
+    "performance_claims_allowed_without_review": false,
+    "raw_profitability_is_not_live_money_proof": true,
+    "commercial_clearance_requires_explicit_operator_evidence": true
+  },
+  "regulatory_source_references": [
+    {
+      "source_id": "sec_investment_adviser_marketing",
+      "url": "https://www.sec.gov/resources-small-businesses/small-business-compliance-guides/investment-adviser-marketing",
+      "scope": "Investment adviser marketing, performance advertising, testimonials, endorsements, and third-party ratings."
+    },
+    {
+      "source_id": "sec_marketing_compliance_faqs_2026_01_15",
+      "url": "https://www.sec.gov/rules-regulations/staff-guidance/division-investment-management-frequently-asked-questions/marketing-compliance-frequently-asked-questions",
+      "scope": "Current SEC staff FAQ context for marketing compliance."
+    },
+    {
+      "source_id": "sec_investment_adviser_definition",
+      "url": "https://www.sec.gov/interps/legal/slbim11.htm",
+      "scope": "Investment adviser definition and compensated advice boundary."
+    },
+    {
+      "source_id": "finra_broker_dealer_registration",
+      "url": "https://www.finra.org/registration-exams-ce/broker-dealers",
+      "scope": "Broker-dealer registration and customer transaction boundary."
+    },
+    {
+      "source_id": "cftc_intermediaries_cta_cpo",
+      "url": "https://www.cftc.gov/IndustryOversight/Intermediaries/index.htm",
+      "scope": "CTA, CPO, futures, swaps, and commodity-pool intermediary boundaries."
+    }
+  ]
+}

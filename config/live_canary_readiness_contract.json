@@ -1,0 +1,100 @@
+{
+  "schema_version": 1,
+  "policy_id": "production_hardening_live_canary_bar_v1",
+  "sustained_window_hours": 168,
+  "raw_profitability_live_canary_grade_floor": "A",
+  "raw_profitability_hard_block_floor": "C",
+  "auth_min_expires_in_seconds": 1200,
+  "storage_max_pressure_index": 0.2,
+  "storage_max_total_pending_lines": 15000,
+  "require_live_money_canary_milestones": true,
+  "live_money_canary_min_soak_hours": 720,
+  "max_initial_live_canary_weight": 0.01,
+  "gate_freshness_hours": {
+    "health_gates": 2,
+    "promotion_quality_gate": 24,
+    "promotion_readiness": 24,
+    "paper_performance": 12,
+    "runtime_paper_regression_guard": 12
+  },
+  "live_money_canary_milestones": [
+    {
+      "milestone_id": "m01_continuous_soak_no_hard_blockers",
+      "title": "30-Day Soak With No Hard Blockers",
+      "owner": "unattended_soak_readiness",
+      "required": true,
+      "description": "Guarded paper stays strict-clear for 720 continuous hours before live-money canary consideration."
+    },
+    {
+      "milestone_id": "m02_live_like_paper_execution",
+      "title": "Live-Like Paper Execution Evidence",
+      "owner": "paper_execution_truth_layer",
+      "required": true,
+      "description": "Paper PnL is backed by execution truth, continuity, slippage, latency, spread, fees, and rejected-order handling."
+    },
+    {
+      "milestone_id": "m03_pre_trade_risk_controls",
+      "title": "Pre-Trade Risk Controls Proven",
+      "owner": "risk_service_boundary",
+      "required": true,
+      "description": "Kill switch, pre-trade approval, risk budgets, and portfolio caps are fresh and enforceable."
+    },
+    {
+      "milestone_id": "m04_autonomous_recovery_without_operator",
+      "title": "Autonomous Recovery Without Operator",
+      "owner": "process_watchdog",
+      "required": true,
+      "description": "Auth, storage, providers, and sleeve fanout can repair, quarantine, or degrade without manual babysitting."
+    },
+    {
+      "milestone_id": "m05_no_fake_green_dashboard_semantics",
+      "title": "No Hidden Fake-Green Dashboard State",
+      "owner": "health_fast",
+      "required": true,
+      "description": "Dashboards separate ready, managed advisory, true blocker, and live-money blocker states."
+    },
+    {
+      "milestone_id": "m06_explained_loss_attribution",
+      "title": "Explained Loss Attribution",
+      "owner": "paper_profitability_control",
+      "required": true,
+      "description": "Losses trace to expected strategy behavior, not stale data, duplicate exposure, sizing, or fill modeling bugs."
+    },
+    {
+      "milestone_id": "m07_broker_order_reconciliation",
+      "title": "Broker And Order Reconciliation",
+      "owner": "broker_truth_reconciliation",
+      "required": true,
+      "description": "Every intended, paper, rejected, canceled, filled, and position state reconciles with no mystery exposure."
+    },
+    {
+      "milestone_id": "m08_microscopic_canary_plan",
+      "title": "Microscopic Canary Plan",
+      "owner": "live_canary_control",
+      "required": true,
+      "description": "The first live canary is capped at a tiny weight with rollback, no leverage, and supervised release."
+    },
+    {
+      "milestone_id": "m09_explainable_trade_permission",
+      "title": "Explainable Trade Permission",
+      "owner": "live_canary_readiness_contract",
+      "required": true,
+      "description": "The system can explain why a sleeve is allowed to trade before any live-money canary is considered."
+    },
+    {
+      "milestone_id": "m10_live_money_production_bar",
+      "title": "Live-Money Production Bar",
+      "owner": "production_readiness_control",
+      "required": true,
+      "description": "External supervision, immutable evidence, security, recovery, release, SLO, and read-only firewall controls are all production-ready."
+    },
+    {
+      "milestone_id": "m11_use_mode_and_commercial_boundary",
+      "title": "Use-Mode And Commercial Boundary",
+      "owner": "use_mode_compliance_guard",
+      "required": true,
+      "description": "Personal use, commercial use, customer-facing use, marketing, advice, custody, broker/customer execution, and seven-section commercial readiness boundaries are explicit before live-money canary consideration."
+    }
+  ],
+  "infrastructure_message": "Before live canary money: no raw D-grade posture, no unexplained sleeve paper-trading dropouts, no auth/token surprises, no source mutation from runtime, clean CI, clean storage pressure, clean promotion/paper gate freshness, sustained window proof, 30-day strict-clear soak, live-like paper execution, proven pre-trade risk controls, autonomous recovery, no fake-green dashboard state, explained loss attribution, broker/order reconciliation, microscopic canary plan, explainable trade permission, live-money production bar, clear use-mode/commercial boundary, and clear seven-section commercial readiness framework."
+}

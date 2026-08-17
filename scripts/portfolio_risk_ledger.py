@@ -25,16 +25,53 @@ def _event_day() -> str:
     return datetime.now(timezone.utc).strftime("%Y%m%d")
 
 
+def _source_freshness(path: Path, *, now: datetime, max_age_seconds: float) -> dict:
+    try:
+        modified = datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc)
+        age_seconds = max((now - modified).total_seconds(), 0.0)
+        exists = True
+    except Exception:
+        modified = None
+        age_seconds = None
+        exists = False
+    return {
+        "path": str(path),
+        "exists": exists,
+        "modified_utc": modified.isoformat() if modified is not None else None,
+        "age_seconds": round(age_seconds, 3) if age_seconds is not None else None,
+        "max_age_seconds": float(max_age_seconds),
+        "fresh": bool(exists and age_seconds is not None and age_seconds <= max(float(max_age_seconds), 0.0)),
+    }
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Portfolio-level risk ledger across sleeves.")
     parser.add_argument("--allocator", default=str(PROJECT_ROOT / "governance" / "allocator" / "sleeve_allocator_latest.json"))
     parser.add_argument("--one-numbers", default=str(PROJECT_ROOT / "exports" / "one_numbers" / "one_numbers_summary.json"))
     parser.add_argument("--out", default=str(PROJECT_ROOT / "governance" / "risk" / "portfolio_risk_latest.json"))
+    parser.add_argument("--allocator-max-age-seconds", type=float, default=3600.0)
+    parser.add_argument("--one-numbers-max-age-seconds", type=float, default=21600.0)
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args()
 
-    alloc = _read_json(Path(args.allocator))
-    one = _read_json(Path(args.one_numbers))
+    now = datetime.now(timezone.utc)
+    allocator_path = Path(args.allocator)
+    one_numbers_path = Path(args.one_numbers)
+    alloc = _read_json(allocator_path)
+    one = _read_json(one_numbers_path)
+    source_freshness = {
+        "sleeve_allocator": _source_freshness(
+            allocator_path,
+            now=now,
+            max_age_seconds=max(float(args.allocator_max_age_seconds), 0.0),
+        ),
+        "one_numbers": _source_freshness(
+            one_numbers_path,
+            now=now,
+            max_age_seconds=max(float(args.one_numbers_max_age_seconds), 0.0),
+        ),
+    }
+    sources_ready = all(row["fresh"] for row in source_freshness.values())
 
     weights = alloc.get("target_weights") or {}
     gross_budget = _safe_float(alloc.get("gross_risk_budget"), 0.75)
@@ -69,7 +106,10 @@ def main() -> int:
     sleeve_caps = {k: round(float(v) * gross_exposure_cap, 6) for k, v in weights.items()}
 
     payload = {
-        "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+        "timestamp_utc": now.isoformat(),
+        "schema_version": 2,
+        "ok": sources_ready,
+        "overall_status": "ready" if sources_ready else "degraded",
         "risk_level": risk_level,
         "risk_score": round(risk_score, 4),
         "metrics": {
@@ -86,6 +126,12 @@ def main() -> int:
             "max_single_symbol_share": 0.20 if risk_level == "low" else (0.15 if risk_level == "medium" else 0.10),
             "max_intraday_turnover": 1.20 if risk_level == "low" else (0.90 if risk_level == "medium" else 0.60),
         },
+        "input_freshness": {
+            "sources_ready": sources_ready,
+            "sources": source_freshness,
+            "stale_sources": sorted(name for name, row in source_freshness.items() if not row["fresh"]),
+            "fresh_wrapper_timestamp_does_not_override_stale_sources": True,
+        },
     }
 
     out_path = Path(args.out)
@@ -100,7 +146,7 @@ def main() -> int:
     if args.json:
         print(json.dumps(payload, ensure_ascii=True))
     else:
-        print(f"risk_ledger_ok=True risk_level={risk_level} risk_score={risk_score:.2f}")
+        print(f"risk_ledger_ok={sources_ready} risk_level={risk_level} risk_score={risk_score:.2f}")
     return 0
 
 

@@ -12,6 +12,7 @@ from core.accountability import write_registry_mutation_journal
 
 
 TIMESTAMP_SUFFIX_RE = re.compile(r"_\d{8}_\d{6}$")
+SOURCE_REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 
 
 @dataclass
@@ -58,18 +59,27 @@ class MasterBot:
         project_root: str,
         preferred_low: float = 0.55,
         preferred_high: float = 0.65,
-        deactivate_below: float = 0.50,
-        quality_floor: float = 0.52,
+        deactivate_below: float = 0.60,
+        quality_floor: float = 0.60,
         flash_crash_weight_cap: float = 0.35,
-        decay_guard_drop: float = 0.08,
-        promotion_margin: float = 0.005,
+        decay_guard_drop: float = 0.05,
+        promotion_margin: float = 0.015,
         no_improvement_retire_streak: int = 3,
-        min_active_bots: int = 20,
+        min_active_bots: int = 150,
         correlation_prune_threshold: float = 0.92,
     ) -> None:
         self.project_root = project_root
         self.logs_dir = os.path.join(project_root, "logs")
         self.registry_path = os.path.join(project_root, "master_bot_registry.json")
+        self.allow_source_registry_write = os.getenv("MASTER_ALLOW_SOURCE_REGISTRY_WRITE", "0").strip() == "1"
+        self.registry_candidate_path = os.getenv(
+            "MASTER_REGISTRY_CANDIDATE_FILE",
+            os.path.join(self.project_root, "governance", "health", "master_bot_registry_candidate_latest.json"),
+        )
+        self.registry_source_write_guard_path = os.getenv(
+            "MASTER_REGISTRY_SOURCE_WRITE_GUARD_FILE",
+            os.path.join(self.project_root, "governance", "health", "master_bot_registry_source_write_guard_latest.json"),
+        )
         self.preferred_low = preferred_low
         self.preferred_high = preferred_high
         self.deactivate_below = deactivate_below
@@ -81,17 +91,28 @@ class MasterBot:
         self.max_active_no_improvement_streak = max(int(os.getenv("ACTIVE_STREAK_HARD_CAP", "12")), self.no_improvement_retire_streak)
         self.min_active_bots = max(int(min_active_bots), 0)
         self.correlation_prune_threshold = float(correlation_prune_threshold)
-        self.signal_group_weight_target = float(os.getenv("SIGNAL_GROUP_WEIGHT_TARGET", "0.78"))
+        self.signal_group_weight_target = float(os.getenv("SIGNAL_GROUP_WEIGHT_TARGET", "0.50"))
+        self.min_active_options_bots = max(int(os.getenv("MASTER_MIN_ACTIVE_OPTIONS_BOTS", "6")), 0)
+        self.min_active_infrastructure_bots = max(int(os.getenv("MASTER_MIN_ACTIVE_INFRASTRUCTURE_BOTS", "6")), 0)
+        self.quant_research_zero_weight = os.getenv("MASTER_QUANT_RESEARCH_ZERO_WEIGHT", "1").strip() == "1"
+        self.quant_model_control_file = os.getenv(
+            "QUANT_MODEL_CONTROL_FILE",
+            os.path.join(self.project_root, "governance", "health", "quant_model_control_latest.json"),
+        )
+        self.infrastructure_always_active = os.getenv("MASTER_INFRASTRUCTURE_ALWAYS_ACTIVE", "1").strip() == "1"
+        self.infrastructure_floor_min_quality_score = float(os.getenv("MASTER_INFRA_FLOOR_MIN_QUALITY_SCORE", "0.44"))
         self.walk_forward_fail_penalty = float(os.getenv("WALK_FORWARD_FAIL_PENALTY", "0.82"))
         self.walk_forward_min_forward_mean = float(os.getenv("WALK_FORWARD_MIN_FORWARD_MEAN", "0.51"))
         self.graduation_gate_enabled = os.getenv("MASTER_GRADUATION_GATE_ENABLED", "1").strip() == "1"
         self.graduation_min_runs = max(int(os.getenv("GRADUATION_MIN_RUNS", "24")), 1)
-        self.graduation_min_forward_mean = float(os.getenv("GRADUATION_MIN_FORWARD_MEAN", "0.52"))
-        self.graduation_min_delta = float(os.getenv("GRADUATION_MIN_DELTA", "-0.02"))
-        self.min_trading_quality_score = float(os.getenv("MASTER_MIN_TRADING_QUALITY_SCORE", "0.50"))
+        self.graduation_min_forward_mean = float(os.getenv("GRADUATION_MIN_FORWARD_MEAN", "0.58"))
+        self.graduation_min_delta = float(os.getenv("GRADUATION_MIN_DELTA", "0.00"))
+        self.min_trading_quality_score = float(os.getenv("MASTER_MIN_TRADING_QUALITY_SCORE", "0.60"))
         self.trading_quality_weight = min(max(float(os.getenv("MASTER_TRADING_QUALITY_WEIGHT", "0.35")), 0.0), 0.8)
         self.freeze_bot_count_enabled = os.getenv("MASTER_FREEZE_BOT_COUNT", "1").strip() == "1"
         self.strict_live_pass_only = os.getenv("MASTER_STRICT_LIVE_PASS_ONLY", "1").strip() == "1"
+        self.supportable_floor_recovery_enabled = os.getenv("MASTER_SUPPORTABLE_FLOOR_RECOVERY", "1").strip() == "1"
+        self.promote_held_champion_when_gate_green = os.getenv("MASTER_PROMOTE_HELD_CHAMPION_WHEN_GATE_GREEN", "0").strip() == "1"
         self.require_confirmed_training_success = os.getenv("REQUIRE_CONFIRMED_TRAINING_SUCCESS", "1").strip() == "1"
         self.confirmed_training_success_max_age_hours = float(os.getenv("CONFIRMED_TRAINING_SUCCESS_MAX_AGE_HOURS", "72"))
         self.training_success_file = os.getenv(
@@ -119,7 +140,9 @@ class MasterBot:
         self._refresh_deletion_guard()
         outcomes = self._load_outcomes()
         statuses = self._evaluate_statuses(outcomes)
+        statuses = self._carry_forward_missing_statuses(statuses, outcomes)
         statuses = self._enforce_bucket_diversity(statuses)
+        statuses = self._enforce_role_floors(statuses)
         statuses = self._enforce_min_active_bots(statuses)
         statuses = self._apply_correlation_pruning(statuses)
         statuses = self._enforce_active_streak_cap(statuses)
@@ -284,6 +307,26 @@ class MasterBot:
 
         return True, "ok"
 
+    @staticmethod
+    def _active_held_champion_prev_row(prev_row: Dict[str, object]) -> bool:
+        if not bool(prev_row.get("active", False)):
+            return False
+        if bool(prev_row.get("deleted_from_rotation", False)):
+            return False
+        reason = str(prev_row.get("promotion_reason") or "").strip()
+        status = str(prev_row.get("promotion_status") or "").strip().lower()
+        return reason.startswith("quality_gate_hold_prev_plus_") or status == "candidate"
+
+    def _held_champion_gate_green(self, wf: Dict[str, object], graduated: bool | None = None) -> bool:
+        if not self.promote_held_champion_when_gate_green:
+            return False
+        if graduated is None:
+            graduated, _reason = self._is_graduated(wf)
+        if not graduated:
+            return False
+        status = str(wf.get("status") or "").strip().lower()
+        return status in {"", "pass"}
+
     def _load_decision_correlation_map(self) -> Dict[tuple[str, str], float]:
         corr: Dict[tuple[str, str], float] = {}
         files = []
@@ -352,6 +395,8 @@ class MasterBot:
     @staticmethod
     def _bucket(bot_id: str, bot_role: str) -> str:
         name = (bot_id or "").lower()
+        if any(t in name for t in ("quant", "monte_carlo", "kalman", "heston", "merton", "hawkes", "signature", "neural_sde", "pinn", "pinsde", "critic", "hmm", "omni", "symbolic", "rlbf", "equivariant", "transformer")):
+            return "quant_research"
         if bot_role == "infrastructure_sub_bot":
             if any(t in name for t in ("risk", "drawdown", "budget", "allocator", "sentinel")):
                 return "risk"
@@ -378,8 +423,12 @@ class MasterBot:
             return False
         if status.deleted_from_rotation:
             return False
-
         reason = str(status.reason or "")
+        if reason in {"no_classification_accuracy", "new_runtime_candidate", "planned_roster_expansion_slot", "unsupported_runtime_inputs"}:
+            return False
+        if reason.startswith("active_streak_cap_"):
+            return False
+
         if reason.startswith("graduation_hold:"):
             return False
         if reason.startswith("walk_forward_"):
@@ -417,6 +466,49 @@ class MasterBot:
 
         return True
 
+    def _supportable_floor_override_eligible(self, status: BotStatus) -> bool:
+        if self._is_manual_quarantine(status):
+            return False
+        if status.deleted_from_rotation:
+            return False
+        if status.candidate_test_accuracy is None:
+            return False
+
+        reason = str(status.reason or "")
+        blocked_reasons = {
+            "no_classification_accuracy",
+            "new_runtime_candidate",
+            "planned_roster_expansion_slot",
+            "unsupported_runtime_inputs",
+        }
+        blocked_prefixes = (
+            "accuracy_below_",
+            "decay_guard_drop_",
+            "active_streak_cap_",
+            "trading_quality_below_",
+        )
+        if reason in blocked_reasons:
+            return False
+        if reason.startswith(blocked_prefixes):
+            return False
+
+        wf = self.walk_forward_map.get(status.bot_id, {})
+        if isinstance(wf, dict) and wf:
+            wf_status = str(wf.get("status") or "").strip().lower()
+            wf_forward = self._as_float(wf.get("forward_mean"))
+            wf_delta = self._as_float(wf.get("delta"))
+            wf_tq = self._as_float(wf.get("trading_quality_score"))
+            if wf_status == "fail":
+                return False
+            if wf_forward is not None and wf_forward < self.walk_forward_min_forward_mean:
+                return False
+            if wf_delta is not None and wf_delta < self.graduation_min_delta:
+                return False
+            if wf_tq is not None and wf_tq < self.min_trading_quality_score:
+                return False
+
+        return True
+
     @staticmethod
     def _normalized_lifecycle_state(active: bool, deleted_from_rotation: bool) -> str:
         if deleted_from_rotation:
@@ -432,7 +524,11 @@ class MasterBot:
         active = bool(normalized.get("active", False)) and (not deleted_from_rotation)
         normalized["deleted_from_rotation"] = deleted_from_rotation
         normalized["active"] = active
-        normalized["lifecycle_state"] = cls._normalized_lifecycle_state(active, deleted_from_rotation)
+        lifecycle = str(normalized.get("lifecycle_state") or "").strip().lower()
+        if lifecycle == "data_collection_only" and active and not deleted_from_rotation:
+            normalized["lifecycle_state"] = "data_collection_only"
+        else:
+            normalized["lifecycle_state"] = cls._normalized_lifecycle_state(active, deleted_from_rotation)
         if deleted_from_rotation:
             normalized["weight"] = 0.0
         return normalized
@@ -475,6 +571,65 @@ class MasterBot:
                 if c.quality_score <= 0:
                     c.quality_score = max(c.candidate_quality_score, 0.01)
                 c.preference_score = max(self._preference_score(c.test_accuracy or 0.5), 1e-6)
+        return statuses
+
+    def _role_floor_override_eligible(self, status: BotStatus, role: str) -> bool:
+        if self._is_manual_quarantine(status):
+            return False
+        if status.deleted_from_rotation:
+            return False
+        if status.candidate_test_accuracy is None:
+            return False
+
+        if role == "infrastructure_sub_bot":
+            if self.infrastructure_always_active:
+                return self._supportable_floor_override_eligible(status)
+            candidate_quality = max(float(status.candidate_quality_score or 0.0), float(status.quality_score or 0.0))
+            return candidate_quality >= self.infrastructure_floor_min_quality_score
+
+        return self._rotation_override_eligible(status)
+
+    def _enforce_role_floors(self, statuses: List[BotStatus]) -> List[BotStatus]:
+        role_floors = {
+            "options_sub_bot": self.min_active_options_bots,
+            "infrastructure_sub_bot": self.min_active_infrastructure_bots,
+        }
+
+        for role, need in role_floors.items():
+            if need <= 0:
+                continue
+            active = [s for s in statuses if s.active and s.bot_role == role]
+            if len(active) >= need:
+                if role != "infrastructure_sub_bot" or not self.infrastructure_always_active:
+                    continue
+
+            candidates = sorted(
+                [
+                    s
+                    for s in statuses
+                    if (not s.active)
+                    and s.bot_role == role
+                    and self._role_floor_override_eligible(s, role)
+                ],
+                key=lambda s: (s.candidate_quality_score, s.candidate_test_accuracy or 0.0, s.quality_score),
+                reverse=True,
+            )
+
+            role_need = need
+            if role == "infrastructure_sub_bot" and self.infrastructure_always_active:
+                role_need = max(role_need, len(active) + len(candidates))
+
+            for st in candidates[: max(role_need - len(active), 0)]:
+                st.active = True
+                st.reason = f"role_floor_{role}"
+                st.deleted_from_rotation = False
+                st.delete_reason = ""
+                if st.test_accuracy is None and st.candidate_test_accuracy is not None:
+                    st.test_accuracy = st.candidate_test_accuracy
+                if st.quality_score <= 0.0:
+                    st.quality_score = max(st.candidate_quality_score, 0.01)
+                st.preference_score = max(self._preference_score(st.test_accuracy or 0.50), 1e-6)
+
         return statuses
 
     def _apply_correlation_pruning(self, statuses: List[BotStatus]) -> List[BotStatus]:
@@ -525,7 +680,14 @@ class MasterBot:
             prev_best = self.prev_best_accuracy_by_bot.get(o.bot_id)
             prev_row = self.prev_status_by_bot.get(o.bot_id, {})
             prev_streak = self.prev_streak_by_bot.get(o.bot_id, 0)
-            prev_candidate_log_file = str(prev_row.get("candidate_log_file") or "")
+            prev_candidate_log_file = str(prev_row.get("candidate_log_file") or prev_row.get("log_file") or "")
+
+            if prev_row and (
+                (prev_candidate_log_file and o.log_file == prev_candidate_log_file)
+                or self._registry_snapshot_is_newer_than(o.log_file)
+            ):
+                statuses.append(self._status_from_registry_row(prev_row))
+                continue
 
             prev_deleted = bool(prev_row.get("deleted_from_rotation", False))
             if prev_deleted:
@@ -641,6 +803,11 @@ class MasterBot:
             wf_forward = self._as_float(wf.get("forward_mean"))
             wf_tq = self._as_float(wf.get("trading_quality_score"))
             graduated, grad_reason = self._is_graduated(wf)
+            held_previous_model = (not promoted) and self._active_held_champion_prev_row(prev_row)
+            if held_previous_model and self._held_champion_gate_green(wf, graduated):
+                promoted = True
+                promotion_reason = "promoted_held_champion_quality_gate_hold"
+                streak = 0
             if wf_status == "fail" or (wf_forward is not None and wf_forward < self.walk_forward_min_forward_mean):
                 effective_quality *= self.walk_forward_fail_penalty
 
@@ -654,8 +821,12 @@ class MasterBot:
             delete_reason = ""
 
             if self.graduation_gate_enabled and (not graduated):
-                active = False
-                reason = f"graduation_hold:{grad_reason}"
+                if held_previous_model:
+                    active = True
+                    reason = str(prev_row.get("reason") or "active_outside_band")
+                else:
+                    active = False
+                    reason = f"graduation_hold:{grad_reason}"
             elif self.strict_live_pass_only and wf_status != "pass":
                 active = False
                 reason = f"walk_forward_{wf_status}_live_hold"
@@ -728,6 +899,82 @@ class MasterBot:
 
         return statuses
 
+    def _status_from_registry_row(self, row: Dict[str, object]) -> BotStatus:
+        normalized = self._normalize_registry_row(row if isinstance(row, dict) else {})
+        bot_id = str(normalized.get("bot_id", "")).strip()
+        test_accuracy = self._as_float(normalized.get("test_accuracy"))
+        candidate_test_accuracy = self._as_float(normalized.get("candidate_test_accuracy"))
+        if candidate_test_accuracy is None:
+            candidate_test_accuracy = test_accuracy
+        quality_score = self._as_float(normalized.get("quality_score"))
+        if quality_score is None:
+            quality_score = 0.0
+        candidate_quality_score = self._as_float(normalized.get("candidate_quality_score"))
+        if candidate_quality_score is None:
+            candidate_quality_score = quality_score
+        previous_best_accuracy = self._as_float(normalized.get("previous_best_accuracy"))
+        if previous_best_accuracy is None:
+            previous_best_accuracy = test_accuracy
+        preference_score = self._as_float(normalized.get("preference_score"))
+        if preference_score is None:
+            accuracy_for_preference = test_accuracy if test_accuracy is not None else candidate_test_accuracy
+            preference_score = self._preference_score(accuracy_for_preference) if accuracy_for_preference is not None else 0.0
+
+        status = BotStatus(
+            bot_id=bot_id,
+            bot_role=str(normalized.get("bot_role") or self._infer_bot_role(bot_id)),
+            active=bool(normalized.get("active", False)),
+            reason=str(normalized.get("reason") or ""),
+            weight=float(normalized.get("weight") or 0.0),
+            preference_score=float(preference_score or 0.0),
+            quality_score=float(quality_score),
+            test_accuracy=test_accuracy,
+            candidate_test_accuracy=candidate_test_accuracy,
+            candidate_quality_score=float(candidate_quality_score),
+            previous_best_accuracy=previous_best_accuracy,
+            no_improvement_streak=self._as_int(normalized.get("no_improvement_streak"), 0),
+            deleted_from_rotation=bool(normalized.get("deleted_from_rotation", False)),
+            delete_reason=str(normalized.get("delete_reason") or ""),
+            promoted=bool(normalized.get("promoted", False)),
+            promotion_reason=str(normalized.get("promotion_reason") or ""),
+            model_path=normalized.get("model_path"),
+            log_file=str(normalized.get("log_file") or ""),
+            candidate_log_file=str(normalized.get("candidate_log_file") or ""),
+        )
+        if self._active_held_champion_prev_row(normalized):
+            wf = self.walk_forward_map.get(bot_id, {})
+            if self._held_champion_gate_green(wf):
+                status.promoted = True
+                status.promotion_reason = "promoted_held_champion_quality_gate_hold"
+                status.active = True
+                status.deleted_from_rotation = False
+                status.delete_reason = ""
+                status.reason = str(normalized.get("reason") or "active_outside_band")
+                status.no_improvement_streak = 0
+        return status
+
+    def _registry_snapshot_is_newer_than(self, path: str) -> bool:
+        if (not path) or (not os.path.exists(path)) or (not os.path.exists(self.registry_path)):
+            return False
+        try:
+            return os.path.getmtime(path) <= os.path.getmtime(self.registry_path)
+        except OSError:
+            return False
+
+    def _carry_forward_missing_statuses(self, statuses: List[BotStatus], outcomes: List[BotOutcome]) -> List[BotStatus]:
+        if not self.prev_status_by_bot:
+            return statuses
+
+        seen_bot_ids = {status.bot_id for status in statuses}
+        outcome_bot_ids = {outcome.bot_id for outcome in outcomes}
+
+        for bot_id in sorted(self.prev_status_by_bot):
+            if bot_id in seen_bot_ids or bot_id in outcome_bot_ids:
+                continue
+            statuses.append(self._status_from_registry_row(self.prev_status_by_bot[bot_id]))
+
+        return statuses
+
     def _enforce_min_active_bots(self, statuses: List[BotStatus]) -> List[BotStatus]:
         active_count = sum(1 for s in statuses if s.active)
         if active_count >= self.min_active_bots:
@@ -739,7 +986,7 @@ class MasterBot:
             acc = s.candidate_test_accuracy if s.candidate_test_accuracy is not None else -1.0
             return (s.candidate_quality_score, acc, s.quality_score)
 
-        candidates = sorted(
+        strict_candidates = sorted(
             [
                 s
                 for s in statuses
@@ -751,6 +998,24 @@ class MasterBot:
             key=rank_key,
             reverse=True,
         )
+        strict_ids = {s.bot_id for s in strict_candidates}
+        candidates = list(strict_candidates)
+
+        if self.supportable_floor_recovery_enabled and len(candidates) < needed:
+            recovery_candidates = sorted(
+                [
+                    s
+                    for s in statuses
+                    if (not s.active)
+                    and (not s.deleted_from_rotation)
+                    and (s.candidate_test_accuracy is not None)
+                    and (s.bot_id not in strict_ids)
+                    and self._supportable_floor_override_eligible(s)
+                ],
+                key=rank_key,
+                reverse=True,
+            )
+            candidates.extend(recovery_candidates)
 
         promoted: List[BotStatus] = []
         for st in candidates:
@@ -760,7 +1025,10 @@ class MasterBot:
 
         for st in promoted:
             st.active = True
-            st.reason = f"min_active_floor_override_{self.min_active_bots}"
+            recovery_reason = ""
+            if st.bot_id not in strict_ids:
+                recovery_reason = ":supportable_recovery"
+            st.reason = f"min_active_floor_override_{self.min_active_bots}{recovery_reason}"
             st.deleted_from_rotation = False
             st.delete_reason = ""
             if st.test_accuracy is None and st.candidate_test_accuracy is not None:
@@ -782,7 +1050,7 @@ class MasterBot:
         remaining = len(active_now)
 
         candidates = sorted(
-            [s for s in active_now if s.no_improvement_streak >= cap],
+            [s for s in active_now if s.no_improvement_streak >= cap and not s.promoted],
             key=lambda s: (s.quality_score, -(s.test_accuracy or 0.0), -s.no_improvement_streak),
         )
 
@@ -801,8 +1069,26 @@ class MasterBot:
         return statuses
 
 
+    def _weight_blocked(self, status: BotStatus) -> bool:
+        row = self.prev_status_by_bot.get(status.bot_id, {})
+        if not isinstance(row, dict):
+            return False
+        lifecycle = str(row.get("lifecycle_state") or "").strip().lower()
+        if lifecycle == "data_collection_only":
+            return True
+        if bool(row.get("training_excluded", False)) or bool(row.get("exclude_from_training", False)):
+            return True
+        if str(row.get("execution_policy_label") or "").strip().lower() == "research_only_no_execution":
+            return True
+        if self.quant_research_zero_weight and str(row.get("sleeve_family") or "").strip().lower() == "quant_models":
+            return True
+        return False
+
     def _assign_weights(self, statuses: List[BotStatus]) -> List[BotStatus]:
-        active = [s for s in statuses if s.active]
+        active = [s for s in statuses if s.active and not self._weight_blocked(s)]
+        for s in statuses:
+            if s.active and self._weight_blocked(s):
+                s.weight = 0.0
         total = sum(max(s.preference_score, 1e-8) for s in active)
 
         if total <= 0.0:
@@ -853,12 +1139,44 @@ class MasterBot:
 
         return statuses
 
+    def _preserve_registry_metadata(self, row: Dict[str, object], status: BotStatus) -> Dict[str, object]:
+        prev_row = self.prev_status_by_bot.get(status.bot_id, {})
+        if not isinstance(prev_row, dict):
+            prev_row = {}
+
+        for key in (
+            "coverage_candidate_active",
+            "training_excluded",
+            "exclude_from_training",
+            "execution_policy_label",
+            "sleeve_family",
+            "coverage_stage",
+        ):
+            if key in prev_row:
+                row[key] = prev_row[key]
+
+        if status.promoted:
+            row["promotion_status"] = "promoted"
+            row["coverage_candidate_active"] = False
+        else:
+            row["promotion_status"] = str(prev_row.get("promotion_status") or row.get("promotion_status") or "candidate")
+
+        prev_lifecycle = str(prev_row.get("lifecycle_state") or "").strip().lower()
+        if prev_lifecycle == "data_collection_only" and bool(row.get("active", False)) and not bool(row.get("deleted_from_rotation", False)):
+            row["lifecycle_state"] = "data_collection_only"
+            row["training_excluded"] = bool(prev_row.get("training_excluded", True))
+            row["exclude_from_training"] = bool(prev_row.get("exclude_from_training", True))
+
+        return row
+
     def _build_registry_payload(self, statuses: List[BotStatus]) -> Dict[str, object]:
         rows: List[Dict[str, object]] = []
         for status in sorted(statuses, key=lambda x: x.bot_id):
-            rows.append(self._normalize_registry_row(asdict(status)))
+            row = self._normalize_registry_row(asdict(status))
+            rows.append(self._preserve_registry_metadata(row, status))
 
         active_rows = [row for row in rows if bool(row.get("active", False))]
+        data_collection_rows = [row for row in rows if str(row.get("lifecycle_state") or "").strip().lower() == "data_collection_only"]
         active_count = len(active_rows)
         inactive_count = len(rows) - active_count
         deleted_count = sum(1 for row in rows if bool(row.get("deleted_from_rotation", False)))
@@ -884,8 +1202,16 @@ class MasterBot:
                 "trading_quality_weight": self.trading_quality_weight,
                 "freeze_bot_count_enabled": self.freeze_bot_count_enabled,
                 "strict_live_pass_only": self.strict_live_pass_only,
+                "supportable_floor_recovery_enabled": self.supportable_floor_recovery_enabled,
                 "require_confirmed_training_success": self.require_confirmed_training_success,
                 "confirmed_training_success_max_age_hours": self.confirmed_training_success_max_age_hours,
+                "signal_group_weight_target": self.signal_group_weight_target,
+                "min_active_options_bots": self.min_active_options_bots,
+                "min_active_infrastructure_bots": self.min_active_infrastructure_bots,
+                "quant_research_zero_weight": self.quant_research_zero_weight,
+                "quant_model_control_file": self.quant_model_control_file,
+                "infrastructure_always_active": self.infrastructure_always_active,
+                "infrastructure_floor_min_quality_score": self.infrastructure_floor_min_quality_score,
                 "quality_score_formula": {
                     "accuracy_weight": 0.65,
                     "val_f1_weight": 0.25,
@@ -901,6 +1227,9 @@ class MasterBot:
                 "active_infrastructure_sub_bots": sum(1 for row in rows if bool(row.get("active", False)) and row.get("bot_role") == "infrastructure_sub_bot"),
                 "inactive_signal_sub_bots": sum(1 for row in rows if (not bool(row.get("active", False))) and row.get("bot_role") == "signal_sub_bot"),
                 "inactive_infrastructure_sub_bots": sum(1 for row in rows if (not bool(row.get("active", False))) and row.get("bot_role") == "infrastructure_sub_bot"),
+                "active_quant_model_bots": sum(1 for row in rows if bool(row.get("active", False)) and row.get("sleeve_family") == "quant_models"),
+                "data_collection_only_bots": len(data_collection_rows),
+                "zero_weight_research_bots": sum(1 for row in active_rows if float(row.get("weight") or 0.0) == 0.0 and str(row.get("lifecycle_state") or "").strip().lower() == "data_collection_only"),
                 "promoted_models": sum(1 for row in rows if bool(row.get("promoted", False))),
                 "held_previous_models": sum(1 for row in rows if not bool(row.get("promoted", False))),
                 "deletion_guard_ok": bool(self.deletion_guard_ok),
@@ -929,6 +1258,25 @@ class MasterBot:
             except Exception:
                 before = {}
 
+        if self._canonical_registry_write_blocked():
+            self._write_registry_candidate(payload)
+            try:
+                write_registry_mutation_journal(
+                    project_root=self.project_root,
+                    actor="master_bot",
+                    reason="registry_refresh_candidate_only",
+                    before=before,
+                    after=payload if isinstance(payload, dict) else {},
+                    extra={
+                        "registry_path": self.registry_path,
+                        "candidate_path": self.registry_candidate_path,
+                        "source_write_blocked": True,
+                    },
+                )
+            except Exception:
+                pass
+            return
+
         with open(self.registry_path, "w", encoding="utf-8") as f:
             json.dump(payload, f, indent=2)
 
@@ -945,6 +1293,32 @@ class MasterBot:
             )
         except Exception:
             pass
+
+    def _canonical_registry_write_blocked(self) -> bool:
+        source_registry = os.path.abspath(os.path.join(SOURCE_REPO_ROOT, "master_bot_registry.json"))
+        return os.path.abspath(self.registry_path) == source_registry and not self.allow_source_registry_write
+
+    def _write_registry_candidate(self, payload: Dict[str, object]) -> None:
+        now = datetime.now(timezone.utc).isoformat()
+        candidate_path = os.path.abspath(self.registry_candidate_path)
+        guard_path = os.path.abspath(self.registry_source_write_guard_path)
+        os.makedirs(os.path.dirname(candidate_path), exist_ok=True)
+        os.makedirs(os.path.dirname(guard_path), exist_ok=True)
+        with open(candidate_path, "w", encoding="utf-8") as f:
+            json.dump(payload, f, indent=2)
+        guard_payload = {
+            "timestamp_utc": now,
+            "ok": True,
+            "overall_status": "ready",
+            "source_write_blocked": True,
+            "source_path": os.path.abspath(self.registry_path),
+            "candidate_path": candidate_path,
+            "reason": "canonical_registry_requires_explicit_source_write",
+            "allow_env": "MASTER_ALLOW_SOURCE_REGISTRY_WRITE=1",
+            "allow_cli": "scripts/run_master_bot.py --allow-source-registry-write",
+        }
+        with open(guard_path, "w", encoding="utf-8") as f:
+            json.dump(guard_payload, f, indent=2)
 
     def _refresh_deletion_guard(self) -> None:
         if not self.require_confirmed_training_success:
@@ -1031,19 +1405,50 @@ class MasterBot:
             dd_abs = abs(float(max_drawdown))
             dd_component = self._clamp(1.0 - min(dd_abs / 0.20, 1.0))
 
+        acted_component = acc_component
+        precision_component = acc_component
+        balance_component = 0.5
+        lift_component = acc_component
         no_trade_component = 0.5
         if raw_metrics:
             nt = self._as_float(raw_metrics.get("neutral_f1") or raw_metrics.get("hold_f1") or raw_metrics.get("flat_f1"))
             if nt is not None:
                 no_trade_component = self._clamp(nt)
+            acted_accuracy = self._as_float(raw_metrics.get("acted_accuracy"))
+            acted_coverage = self._as_float(raw_metrics.get("acted_coverage"))
+            long_precision = self._as_float(raw_metrics.get("long_precision"))
+            short_precision = self._as_float(raw_metrics.get("short_precision"))
+            label_balance_score = self._as_float(raw_metrics.get("label_balance_score"))
+            precision_balance_score = self._as_float(raw_metrics.get("precision_balance_score"))
+            accuracy_lift = self._as_float(raw_metrics.get("accuracy_lift_over_majority"))
+            if acted_accuracy is not None:
+                acted_accuracy_component = self._clamp((acted_accuracy - 0.50) / 0.18)
+                coverage_component = self._clamp(((acted_coverage or 0.0) - 0.05) / 0.35)
+                acted_component = acted_accuracy_component * (0.55 + (0.45 * coverage_component))
+            if long_precision is not None or short_precision is not None:
+                precision_values = [x for x in (long_precision, short_precision) if x is not None]
+                if precision_values:
+                    precision_component = self._clamp((sum(precision_values) / len(precision_values) - 0.50) / 0.18)
+            if label_balance_score is not None or precision_balance_score is not None:
+                label_component = self._clamp(label_balance_score if label_balance_score is not None else 0.5)
+                precision_balance_component = self._clamp(
+                    precision_balance_score if precision_balance_score is not None else 0.5
+                )
+                balance_component = (0.60 * label_component) + (0.40 * precision_balance_component)
+            if accuracy_lift is not None:
+                lift_component = self._clamp((accuracy_lift + 0.02) / 0.12)
 
         return (
-            0.45 * acc_component
-            + 0.18 * f1_component
-            + 0.10 * macro_component
-            + 0.10 * loss_component
-            + 0.10 * dd_component
-            + 0.07 * no_trade_component
+            0.18 * acc_component
+            + 0.16 * acted_component
+            + 0.14 * precision_component
+            + 0.10 * balance_component
+            + 0.10 * lift_component
+            + 0.12 * f1_component
+            + 0.08 * macro_component
+            + 0.07 * loss_component
+            + 0.03 * dd_component
+            + 0.02 * no_trade_component
         )
 
     def _preference_score(self, accuracy: float) -> float:

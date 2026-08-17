@@ -1,0 +1,81 @@
+{
+  "schema_version": 1,
+  "profile_selection_env": "SCHWAB_TRADING_BOT_DEPLOYMENT_PROFILE",
+  "default_profile": "local_mac_soak",
+  "profiles": {
+    "local_mac_soak": {
+      "intent": "30_day_unattended_soak",
+      "process_manager": "launchd",
+      "auth_profile": "local_token_lease_monitor",
+      "source_registry_write": "candidate_only",
+      "runtime_output_roots": ["governance", "runtime", "exports", "logs", "tmp"],
+      "protected_source_paths": ["master_bot_registry.json", "README.md", "docs/showcase/generated"],
+      "broker_mode": {
+        "market_data": "schwab",
+        "paper_execution": "schwab",
+        "live_execution": false,
+        "live_orders": false,
+        "market_data_only": true
+      },
+      "canonical_source_write_requires": ["MASTER_ALLOW_SOURCE_REGISTRY_WRITE=1", "--allow-source-registry-write"]
+    },
+    "ci": {
+      "intent": "source_and_contract_regression",
+      "process_manager": "github_actions",
+      "auth_profile": "fixtures_only",
+      "source_registry_write": "forbidden",
+      "runtime_output_roots": ["/tmp"],
+      "protected_source_paths": ["master_bot_registry.json", "README.md", "docs/showcase/generated"],
+      "broker_mode": {
+        "market_data": "fixtures",
+        "paper_execution": "fixtures",
+        "live_execution": false,
+        "live_orders": false,
+        "market_data_only": true
+      }
+    },
+    "paper_prod": {
+      "intent": "production_grade_paper_trading",
+      "process_manager": "launchd_or_system_service",
+      "auth_profile": "encrypted_secret_store_token_lease",
+      "source_registry_write": "candidate_only",
+      "runtime_output_roots": ["governance", "runtime", "exports", "logs"],
+      "protected_source_paths": ["master_bot_registry.json", "README.md", "docs/showcase/generated"],
+      "broker_mode": {
+        "market_data": "schwab",
+        "paper_execution": "schwab",
+        "live_execution": false,
+        "live_orders": false,
+        "market_data_only": false
+      },
+      "required_runtime_guards": [
+        "source_mutation_guard",
+        "token_lease_monitor",
+        "promotion_gate_snapshot_contract",
+        "self_healing_policy"
+      ]
+    },
+    "live_canary": {
+      "intent": "future_live_money_canary",
+      "process_manager": "dedicated_supervisor",
+      "auth_profile": "encrypted_secret_store_token_lease",
+      "source_registry_write": "forbidden",
+      "runtime_output_roots": ["governance", "runtime", "exports", "logs"],
+      "protected_source_paths": ["master_bot_registry.json", "README.md", "docs/showcase/generated"],
+      "broker_mode": {
+        "market_data": "schwab",
+        "paper_execution": "schwab",
+        "live_execution": "canary_only",
+        "live_orders": "explicit_canary_allowlist_only",
+        "market_data_only": false
+      },
+      "required_runtime_guards": [
+        "source_mutation_guard",
+        "token_lease_monitor",
+        "promotion_gate_snapshot_contract",
+        "paper_feedback_floor",
+        "operator_acknowledged_live_canary_window"
+      ]
+    }
+  }
+}

@@ -2,7 +2,7 @@
 set -euo pipefail
 
 PROJECT_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-PYTHON_BIN="$PROJECT_ROOT/.venv312/bin/python"
+PYTHON_BIN="$PROJECT_ROOT/.venv314/bin/python"
 RUN_SCRIPT="$PROJECT_ROOT/scripts/ops/reboot_resilience_guard.py"
 PLIST_PATH="$HOME/Library/LaunchAgents/com.dankingsley.reboot_resilience_guard.plist"
 LABEL="com.dankingsley.reboot_resilience_guard"

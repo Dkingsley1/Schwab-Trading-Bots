@@ -35,6 +35,44 @@ OPTIONS_FEATURE_KEYS = [
     "options_atm_strike",
     "options_strike_dispersion_norm",
     "options_vol_expectation_norm",
+    "options_gamma_exposure_norm",
+    "options_call_wall_distance_norm",
+    "options_put_wall_distance_norm",
+    "options_oi_concentration_norm",
+    "options_unusual_flow_norm",
+    "options_0dte_share_norm",
+    "options_net_call_premium_bias_norm",
+    "options_sweep_flow_norm",
+    "options_block_flow_norm",
+    "options_iv_percentile_norm",
+    "options_iv_realized_spread_norm",
+    "options_gamma_front_share_norm",
+    "options_gamma_expiry_skew_norm",
+    "options_surface_change_norm",
+    "options_strike_expiry_concentration_change_norm",
+    "options_gamma_flip_distance_norm",
+    "options_earnings_setup_norm",
+    "options_iv_crush_risk_norm",
+    "options_assignment_risk_norm",
+    "options_zero_dte_regime_norm",
+    "options_vol_of_vol_change_norm",
+    "options_spread_execution_risk_norm",
+    "options_vanna_mean_norm",
+    "options_charm_abs_mean_norm",
+    "options_vomma_mean_norm",
+    "options_speed_abs_mean_norm",
+    "options_color_abs_mean_norm",
+    "options_zomma_abs_mean_norm",
+    "options_ultima_abs_mean_norm",
+    "options_higher_order_greek_pressure_norm",
+    "options_barrier_touch_risk_norm",
+    "options_lookback_path_dependency_norm",
+    "options_variance_swap_proxy_norm",
+    "options_volatility_swap_proxy_norm",
+    "options_gamma_scalping_pressure_norm",
+    "options_vanna_volga_hedge_pressure_norm",
+    "options_dispersion_trade_proxy_norm",
+    "options_volatility_arbitrage_proxy_norm",
 ]
 
 FUTURES_FEATURE_KEYS = [
@@ -58,6 +96,22 @@ FUTURES_FEATURE_KEYS = [
     "futures_roll_yield_norm",
     "futures_expiry_days",
     "futures_expiry_norm",
+    "futures_taker_imbalance_norm",
+    "futures_cvd_norm",
+    "futures_liquidation_risk_norm",
+    "futures_long_short_ratio_norm",
+    "futures_basis_divergence_norm",
+    "futures_mark_index_dislocation_norm",
+    "futures_session_volume_profile_norm",
+    "futures_calendar_spread_curve_norm",
+    "futures_curve_shift_velocity_norm",
+    "futures_cross_asset_confirmation_norm",
+    "futures_liquidation_squeeze_norm",
+    "futures_intraday_structure_norm",
+    "futures_roll_pressure_norm",
+    "futures_inventory_state_norm",
+    "futures_delivery_hazard_norm",
+    "futures_cash_basis_confirmation_norm",
 ]
 
 CALENDAR_FEATURE_KEYS = [
@@ -68,7 +122,19 @@ CALENDAR_FEATURE_KEYS = [
     "calendar_event_proximity_norm",
     "calendar_next_event_norm",
     "calendar_macro_event_norm",
+    "calendar_macro_surprise_norm",
+    "calendar_macro_abs_surprise_norm",
+    "calendar_macro_revision_norm",
+    "calendar_fomc_event_norm",
+    "calendar_cpi_event_norm",
+    "calendar_labor_event_norm",
+    "calendar_treasury_auction_norm",
     "calendar_options_expiry_week_norm",
+    "calendar_opex_week_norm",
+    "calendar_month_end_rebalance_norm",
+    "calendar_quarter_end_rebalance_norm",
+    "calendar_futures_roll_window_norm",
+    "calendar_index_rebalance_window_norm",
     "calendar_dividend_events_30d_norm",
     "calendar_dividend_exdate_proximity_norm",
     "calendar_dividend_payout_proximity_norm",
@@ -79,6 +145,18 @@ CALENDAR_FEATURE_KEYS = [
 
 def _to_float(value: Any, default: float = 0.0) -> float:
     try:
+        if isinstance(value, str):
+            text = value.strip().replace(",", "")
+            if not text or text.lower() in {"n/a", "na", "none", "null", "--", "-"}:
+                return default
+            mult = 1.0
+            tail = text[-1:].lower()
+            if tail in {"k", "m", "b"}:
+                mult = {"k": 1.0e3, "m": 1.0e6, "b": 1.0e9}[tail]
+                text = text[:-1]
+            if text.endswith("%"):
+                text = text[:-1]
+            return float(text) * mult
         return float(value)
     except Exception:
         return default
@@ -86,6 +164,10 @@ def _to_float(value: Any, default: float = 0.0) -> float:
 
 def _clamp01(value: float) -> float:
     return max(0.0, min(float(value), 1.0))
+
+
+def _signed_centered_norm(value: float, scale: float) -> float:
+    return _clamp01(0.5 + (float(value) / max(float(scale), 1e-8)))
 
 
 def _safe_mean(values: List[float]) -> float:
@@ -162,6 +244,29 @@ def _first_numeric(node: Any, keys: Iterable[str]) -> Optional[float]:
                     return float(v)
                 except Exception:
                     continue
+    return None
+
+
+def _all_numeric(node: Any, keys: Iterable[str]) -> List[float]:
+    key_set = {str(k).lower() for k in keys}
+    out: List[float] = []
+    for d in _iter_dict_nodes(node):
+        for k, v in d.items():
+            if str(k).lower() not in key_set:
+                continue
+            num = _to_float(v, float("nan"))
+            if math.isfinite(num):
+                out.append(float(num))
+    return out
+
+
+def _dict_get_ci(row: Dict[str, Any], *keys: str) -> Any:
+    if not isinstance(row, dict):
+        return None
+    key_map = {str(k).lower(): v for k, v in row.items()}
+    for key in keys:
+        if key.lower() in key_map:
+            return key_map[key.lower()]
     return None
 
 
@@ -285,6 +390,7 @@ def summarize_option_chain(
     *,
     symbol: str = "",
     underlying_price: float = 0.0,
+    realized_vol: Optional[float] = None,
     now_ts: Optional[float] = None,
     max_contracts: int = 1200,
 ) -> Dict[str, float]:
@@ -314,10 +420,31 @@ def summarize_option_chain(
 
     call_oi = 0.0
     put_oi = 0.0
+    call_volume = 0.0
+    put_volume = 0.0
     delta_abs_vals: List[float] = []
     gamma_vals: List[float] = []
     theta_abs_vals: List[float] = []
     vega_vals: List[float] = []
+    vanna_vals: List[float] = []
+    charm_abs_vals: List[float] = []
+    vomma_vals: List[float] = []
+    speed_abs_vals: List[float] = []
+    color_abs_vals: List[float] = []
+    zomma_abs_vals: List[float] = []
+    ultima_abs_vals: List[float] = []
+    unusual_flow_ratios: List[float] = []
+    strike_open_interest: Dict[float, float] = {}
+    call_wall_oi: Dict[float, float] = {}
+    put_wall_oi: Dict[float, float] = {}
+    gamma_exposure = 0.0
+    gamma_front = 0.0
+    gamma_back = 0.0
+    zero_dte_oi = 0.0
+    call_premium = 0.0
+    put_premium = 0.0
+    sweep_premium = 0.0
+    block_premium = 0.0
 
     atm_strike = 0.0
     atm_iv = 0.0
@@ -380,6 +507,51 @@ def summarize_option_chain(
             call_oi += oi
         elif side == "PUT":
             put_oi += oi
+        if strike > 0.0 and oi > 0.0:
+            strike_open_interest[strike] = strike_open_interest.get(strike, 0.0) + oi
+            if side == "CALL":
+                call_wall_oi[strike] = call_wall_oi.get(strike, 0.0) + oi
+            elif side == "PUT":
+                put_wall_oi[strike] = put_wall_oi.get(strike, 0.0) + oi
+
+        volume = max(
+            _to_float(
+                row.get("totalVolume")
+                if row.get("totalVolume") is not None
+                else row.get("volume"),
+                0.0,
+            ),
+            0.0,
+        )
+        if side == "CALL":
+            call_volume += volume
+        elif side == "PUT":
+            put_volume += volume
+        mark_for_premium = _to_float(
+            row.get("mark")
+            if row.get("mark") is not None
+            else row.get("last"),
+            0.0,
+        )
+        if mark_for_premium <= 0.0:
+            bid_for_mid = _to_float(row.get("bid"), 0.0)
+            ask_for_mid = _to_float(row.get("ask"), 0.0)
+            if bid_for_mid > 0.0 and ask_for_mid > bid_for_mid:
+                mark_for_premium = 0.5 * (bid_for_mid + ask_for_mid)
+        premium_notional = max(mark_for_premium, 0.0) * max(volume, 0.0) * 100.0
+        if side == "CALL":
+            call_premium += premium_notional
+        elif side == "PUT":
+            put_premium += premium_notional
+        if volume > 0.0:
+            unusual_flow_ratios.append(min(volume / max(oi, 1.0), 4.0))
+        if dte is not None and dte <= 1.0:
+            zero_dte_oi += oi
+        if dte is not None and dte <= 7.0 and volume > 0.0 and premium_notional > 0.0:
+            if volume / max(oi, 1.0) >= 1.5:
+                sweep_premium += premium_notional
+        if premium_notional >= 50000.0 or volume >= 500.0:
+            block_premium += premium_notional
 
         d = row.get("delta")
         if d is not None:
@@ -391,6 +563,12 @@ def summarize_option_chain(
             g_val = abs(_to_float(g, 0.0))
             if g_val <= 5.0:
                 gamma_vals.append(g_val)
+                gamma_piece = g_val * max(oi, 0.0)
+                gamma_exposure += gamma_piece
+                if dte is not None and dte <= 7.0:
+                    gamma_front += gamma_piece
+                elif dte is not None and dte >= 30.0:
+                    gamma_back += gamma_piece
         t = row.get("theta")
         if t is not None:
             t_val = abs(_to_float(t, 0.0))
@@ -401,6 +579,42 @@ def summarize_option_chain(
             v_val = abs(_to_float(v, 0.0))
             if v_val <= 20.0:
                 vega_vals.append(v_val)
+
+        vanna = _dict_get_ci(row, "vanna")
+        if vanna is not None:
+            vanna_val = abs(_to_float(vanna, 0.0))
+            if vanna_val <= 20.0:
+                vanna_vals.append(vanna_val)
+        charm = _dict_get_ci(row, "charm", "deltaDecay", "delta_decay")
+        if charm is not None:
+            charm_val = abs(_to_float(charm, 0.0))
+            if charm_val <= 20.0:
+                charm_abs_vals.append(charm_val)
+        vomma = _dict_get_ci(row, "vomma", "volga")
+        if vomma is not None:
+            vomma_val = abs(_to_float(vomma, 0.0))
+            if vomma_val <= 50.0:
+                vomma_vals.append(vomma_val)
+        speed = _dict_get_ci(row, "speed")
+        if speed is not None:
+            speed_val = abs(_to_float(speed, 0.0))
+            if speed_val <= 50.0:
+                speed_abs_vals.append(speed_val)
+        color = _dict_get_ci(row, "color", "gammaDecay", "gamma_decay")
+        if color is not None:
+            color_val = abs(_to_float(color, 0.0))
+            if color_val <= 50.0:
+                color_abs_vals.append(color_val)
+        zomma = _dict_get_ci(row, "zomma")
+        if zomma is not None:
+            zomma_val = abs(_to_float(zomma, 0.0))
+            if zomma_val <= 50.0:
+                zomma_abs_vals.append(zomma_val)
+        ultima = _dict_get_ci(row, "ultima")
+        if ultima is not None:
+            ultima_val = abs(_to_float(ultima, 0.0))
+            if ultima_val <= 100.0:
+                ultima_abs_vals.append(ultima_val)
 
         bid = _to_float(row.get("bid"), 0.0)
         ask = _to_float(row.get("ask"), 0.0)
@@ -445,6 +659,19 @@ def summarize_option_chain(
     near_exp = min(dte_all) if dte_all else 0.0
     far_exp = max(dte_all) if dte_all else 0.0
     strike_dispersion = _safe_stdev(moneyness_all)
+    total_oi = max(call_oi + put_oi, 0.0)
+    oi_concentration = (max(strike_open_interest.values()) / total_oi) if strike_open_interest and total_oi > 0.0 else 0.0
+
+    call_wall_distance = 0.0
+    put_wall_distance = 0.0
+    call_wall_strike = under if under > 0.0 else 0.0
+    put_wall_strike = under if under > 0.0 else 0.0
+    if under > 0.0 and call_wall_oi:
+        call_wall_strike = max(call_wall_oi.items(), key=lambda kv: kv[1])[0]
+        call_wall_distance = abs(call_wall_strike - under) / max(under, 1e-8)
+    if under > 0.0 and put_wall_oi:
+        put_wall_strike = max(put_wall_oi.items(), key=lambda kv: kv[1])[0]
+        put_wall_distance = abs(put_wall_strike - under) / max(under, 1e-8)
 
     negative_bias = _clamp01(
         (0.55 * _clamp01((put_call_ratio - 1.0) / 1.5))
@@ -455,6 +682,192 @@ def summarize_option_chain(
     roll_yield = _clamp01((near_iv - far_iv + 0.25) / 0.50)
     vwap_bias = _clamp01(abs(_safe_mean(mark_mid_bias)) * 12.0)
     vol_expect = _clamp01((0.65 * _clamp01(atm_iv / 1.20)) + (0.35 * _clamp01((near_iv + max(iv_term, 0.0)) / 1.20)))
+    total_premium = max(call_premium + put_premium, 1.0)
+    net_call_premium = (call_premium - put_premium) / total_premium
+    zero_dte_share = zero_dte_oi / max(total_oi, 1.0)
+    sweep_flow = sweep_premium / total_premium
+    block_flow = block_premium / total_premium
+    iv_percentile = 0.5
+    if iv_all and atm_iv > 0.0:
+        iv_percentile = sum(1.0 for val in iv_all if val <= atm_iv) / max(len(iv_all), 1)
+    realized_proxy = 0.0
+    if realized_vol is not None and float(realized_vol) > 0.0:
+        realized_proxy = min(max(float(realized_vol), 0.0) * 12.0, 2.0)
+    elif iv_mean > 0.0:
+        realized_proxy = min(max(iv_mean * 0.85, 0.0), 2.0)
+    iv_realized_spread = _clamp01((atm_iv - realized_proxy + 0.40) / 0.80)
+    gamma_front_share = gamma_front / max(gamma_exposure, 1.0)
+    gamma_expiry_skew = 0.0
+    if gamma_exposure > 0.0:
+        gamma_expiry_skew = (gamma_front - gamma_back) / max(gamma_exposure, 1.0)
+    surface_change = _clamp01(
+        (0.30 * _clamp01(abs(iv_term) / 0.25))
+        + (0.25 * _clamp01(abs(iv_skew) / 0.20))
+        + (0.20 * _clamp01(abs(atm_iv - iv_mean) / 0.20))
+        + (0.15 * iv_realized_spread)
+        + (0.10 * _clamp01(abs(_safe_mean(mark_mid_bias)) * 10.0))
+    )
+    strike_expiry_concentration = _clamp01(
+        (0.40 * _clamp01(oi_concentration))
+        + (0.25 * _clamp01(gamma_front_share))
+        + (0.20 * _clamp01(zero_dte_share))
+        + (0.15 * _clamp01(abs(gamma_expiry_skew)))
+    )
+    gamma_flip_distance = 0.0
+    if under > 0.0 and call_wall_strike > 0.0 and put_wall_strike > 0.0:
+        flip_ref = 0.5 * (call_wall_strike + put_wall_strike)
+        gamma_flip_distance = abs(flip_ref - under) / max(under * 0.12, 1.0)
+    earnings_setup = _clamp01(
+        (0.28 * _clamp01(max(21.0 - near_exp, 0.0) / 21.0))
+        + (0.24 * iv_realized_spread)
+        + (0.18 * _clamp01(iv_percentile))
+        + (0.16 * _clamp01(_safe_mean(unusual_flow_ratios) / 4.0))
+        + (0.14 * _clamp01(abs(iv_term) / 0.20))
+    )
+    iv_crush_risk = _clamp01(
+        (0.32 * _clamp01(max(14.0 - near_exp, 0.0) / 14.0))
+        + (0.24 * iv_realized_spread)
+        + (0.18 * _clamp01(iv_percentile))
+        + (0.16 * surface_change)
+        + (0.10 * _clamp01(zero_dte_share))
+    )
+    assignment_risk = _clamp01(
+        (0.34 * _clamp01(max(7.0 - near_exp, 0.0) / 7.0))
+        + (0.24 * _clamp01(oi_concentration))
+        + (0.22 * _clamp01(gamma_front_share))
+        + (0.20 * _clamp01(zero_dte_share))
+    )
+    zero_dte_regime = _clamp01(
+        (0.55 * _clamp01(zero_dte_share))
+        + (0.20 * strike_expiry_concentration)
+        + (0.15 * _clamp01(abs(gamma_expiry_skew)))
+        + (0.10 * _clamp01(sweep_flow))
+    )
+    vol_of_vol_change = _clamp01(
+        (0.38 * surface_change)
+        + (0.24 * _clamp01(abs(iv_term) / 0.20))
+        + (0.20 * _clamp01(abs(iv_skew) / 0.18))
+        + (0.18 * _clamp01(abs(gamma_expiry_skew)))
+    )
+    spread_execution_risk = _clamp01(
+        (0.42 * _clamp01(spread_bps_mean / 150.0))
+        + (0.22 * _clamp01(abs(spread_skew) / 60.0))
+        + (0.18 * _clamp01(zero_dte_share))
+        + (0.10 * _clamp01(abs(_safe_mean(mark_mid_bias)) * 10.0))
+        + (0.08 * _clamp01(abs(iv_term) / 0.20))
+    )
+    vanna_proxy = _clamp01(
+        (0.45 * _clamp01(abs(iv_skew) / 0.20))
+        + (0.30 * _clamp01(_safe_mean(delta_abs_vals)))
+        + (0.25 * _clamp01(strike_dispersion / 0.35))
+    )
+    charm_proxy = _clamp01(
+        (0.40 * _clamp01(_safe_mean(theta_abs_vals) / 2.0))
+        + (0.35 * _clamp01(gamma_front_share))
+        + (0.25 * _clamp01(max(14.0 - near_exp, 0.0) / 14.0))
+    )
+    vomma_proxy = _clamp01(
+        (0.42 * _clamp01(_safe_mean(vega_vals) / 2.0))
+        + (0.33 * _clamp01(abs(iv_term) / 0.20))
+        + (0.25 * vol_of_vol_change)
+    )
+    speed_proxy = _clamp01(
+        (0.42 * _clamp01(_safe_mean(gamma_vals) / 0.25))
+        + (0.32 * _clamp01(strike_dispersion / 0.20))
+        + (0.26 * zero_dte_regime)
+    )
+    color_proxy = _clamp01(
+        (0.42 * _clamp01(_safe_mean(gamma_vals) / 0.25))
+        + (0.34 * _clamp01(max(10.0 - near_exp, 0.0) / 10.0))
+        + (0.24 * _clamp01(abs(gamma_expiry_skew)))
+    )
+    zomma_proxy = _clamp01(
+        (0.40 * _clamp01(_safe_mean(gamma_vals) / 0.25))
+        + (0.34 * vol_of_vol_change)
+        + (0.26 * _clamp01(abs(iv_skew) / 0.18))
+    )
+    ultima_proxy = _clamp01(
+        (0.45 * vomma_proxy)
+        + (0.30 * vol_of_vol_change)
+        + (0.25 * _clamp01(abs(iv_term) / 0.18))
+    )
+    vanna_norm = _clamp01(_safe_mean(vanna_vals) / 2.0) if vanna_vals else vanna_proxy
+    charm_norm = _clamp01(_safe_mean(charm_abs_vals) / 2.0) if charm_abs_vals else charm_proxy
+    vomma_norm = _clamp01(_safe_mean(vomma_vals) / 5.0) if vomma_vals else vomma_proxy
+    speed_norm = _clamp01(_safe_mean(speed_abs_vals) / 3.0) if speed_abs_vals else speed_proxy
+    color_norm = _clamp01(_safe_mean(color_abs_vals) / 3.0) if color_abs_vals else color_proxy
+    zomma_norm = _clamp01(_safe_mean(zomma_abs_vals) / 3.0) if zomma_abs_vals else zomma_proxy
+    ultima_norm = _clamp01(_safe_mean(ultima_abs_vals) / 8.0) if ultima_abs_vals else ultima_proxy
+    higher_order_greek_pressure = _clamp01(
+        (0.16 * vanna_norm)
+        + (0.14 * charm_norm)
+        + (0.16 * vomma_norm)
+        + (0.14 * speed_norm)
+        + (0.14 * color_norm)
+        + (0.13 * zomma_norm)
+        + (0.13 * ultima_norm)
+    )
+    nearest_wall_distance = min(
+        call_wall_distance if call_wall_distance > 0.0 else 1.0,
+        put_wall_distance if put_wall_distance > 0.0 else 1.0,
+    )
+    barrier_touch_risk = _clamp01(
+        (0.32 * _clamp01(1.0 - (nearest_wall_distance / 0.20)))
+        + (0.22 * strike_expiry_concentration)
+        + (0.18 * zero_dte_regime)
+        + (0.16 * _clamp01(abs(gamma_expiry_skew)))
+        + (0.12 * spread_execution_risk)
+    )
+    lookback_path_dependency = _clamp01(
+        (0.30 * surface_change)
+        + (0.24 * _clamp01(strike_dispersion / 0.25))
+        + (0.20 * vol_of_vol_change)
+        + (0.14 * _clamp01(_safe_mean(unusual_flow_ratios) / 4.0))
+        + (0.12 * vwap_bias)
+    )
+    variance_swap_proxy = _clamp01(
+        (0.34 * iv_realized_spread)
+        + (0.28 * vol_of_vol_change)
+        + (0.22 * surface_change)
+        + (0.16 * _clamp01(abs(iv_skew) / 0.18))
+    )
+    volatility_swap_proxy = _clamp01(
+        (0.36 * vol_expect)
+        + (0.24 * _clamp01(iv_percentile))
+        + (0.20 * surface_change)
+        + (0.12 * spread_execution_risk)
+        + (0.08 * _clamp01(abs(iv_term) / 0.20))
+    )
+    gamma_scalping_pressure = _clamp01(
+        (0.26 * _clamp01(_safe_mean(gamma_vals) / 0.25))
+        + (0.22 * gamma_front_share)
+        + (0.18 * zero_dte_regime)
+        + (0.14 * _clamp01(abs(gamma_expiry_skew)))
+        + (0.10 * _clamp01(1.0 - spread_execution_risk))
+        + (0.10 * vwap_bias)
+    )
+    vanna_volga_hedge_pressure = _clamp01(
+        (0.24 * vanna_norm)
+        + (0.24 * vomma_norm)
+        + (0.18 * vol_of_vol_change)
+        + (0.16 * _clamp01(abs(iv_skew) / 0.18))
+        + (0.10 * _clamp01(abs(iv_term) / 0.20))
+        + (0.08 * _clamp01(_safe_mean(vega_vals) / 2.0))
+    )
+    dispersion_trade_proxy = _clamp01(
+        (0.28 * _clamp01(abs(atm_iv - iv_mean) / 0.20))
+        + (0.22 * _clamp01(abs(iv_skew) / 0.18))
+        + (0.18 * _clamp01(strike_dispersion / 0.25))
+        + (0.16 * vol_of_vol_change)
+        + (0.16 * higher_order_greek_pressure)
+    )
+    volatility_arbitrage_proxy = _clamp01(
+        (0.30 * iv_realized_spread)
+        + (0.24 * variance_swap_proxy)
+        + (0.18 * volatility_swap_proxy)
+        + (0.14 * _clamp01(1.0 - spread_execution_risk))
+        + (0.14 * vol_of_vol_change)
+    )
 
     out.update(
         {
@@ -488,6 +901,44 @@ def summarize_option_chain(
             "options_atm_strike": float(max(atm_strike, 0.0)),
             "options_strike_dispersion_norm": _clamp01(strike_dispersion / 0.35),
             "options_vol_expectation_norm": vol_expect,
+            "options_gamma_exposure_norm": _clamp01(math.log1p(max(gamma_exposure, 0.0)) / 10.0),
+            "options_call_wall_distance_norm": _clamp01(call_wall_distance / 0.20),
+            "options_put_wall_distance_norm": _clamp01(put_wall_distance / 0.20),
+            "options_oi_concentration_norm": _clamp01(oi_concentration),
+            "options_unusual_flow_norm": _clamp01(_safe_mean(unusual_flow_ratios) / 4.0),
+            "options_0dte_share_norm": _clamp01(zero_dte_share),
+            "options_net_call_premium_bias_norm": _signed_centered_norm(net_call_premium, 1.0),
+            "options_sweep_flow_norm": _clamp01(sweep_flow),
+            "options_block_flow_norm": _clamp01(block_flow),
+            "options_iv_percentile_norm": _clamp01(iv_percentile),
+            "options_iv_realized_spread_norm": iv_realized_spread,
+            "options_gamma_front_share_norm": _clamp01(gamma_front_share),
+            "options_gamma_expiry_skew_norm": _signed_centered_norm(gamma_expiry_skew, 1.0),
+            "options_surface_change_norm": surface_change,
+            "options_strike_expiry_concentration_change_norm": strike_expiry_concentration,
+            "options_gamma_flip_distance_norm": _clamp01(gamma_flip_distance),
+            "options_earnings_setup_norm": earnings_setup,
+            "options_iv_crush_risk_norm": iv_crush_risk,
+            "options_assignment_risk_norm": assignment_risk,
+            "options_zero_dte_regime_norm": zero_dte_regime,
+            "options_vol_of_vol_change_norm": vol_of_vol_change,
+            "options_spread_execution_risk_norm": spread_execution_risk,
+            "options_vanna_mean_norm": vanna_norm,
+            "options_charm_abs_mean_norm": charm_norm,
+            "options_vomma_mean_norm": vomma_norm,
+            "options_speed_abs_mean_norm": speed_norm,
+            "options_color_abs_mean_norm": color_norm,
+            "options_zomma_abs_mean_norm": zomma_norm,
+            "options_ultima_abs_mean_norm": ultima_norm,
+            "options_higher_order_greek_pressure_norm": higher_order_greek_pressure,
+            "options_barrier_touch_risk_norm": barrier_touch_risk,
+            "options_lookback_path_dependency_norm": lookback_path_dependency,
+            "options_variance_swap_proxy_norm": variance_swap_proxy,
+            "options_volatility_swap_proxy_norm": volatility_swap_proxy,
+            "options_gamma_scalping_pressure_norm": gamma_scalping_pressure,
+            "options_vanna_volga_hedge_pressure_norm": vanna_volga_hedge_pressure,
+            "options_dispersion_trade_proxy_norm": dispersion_trade_proxy,
+            "options_volatility_arbitrage_proxy_norm": volatility_arbitrage_proxy,
         }
     )
     return out
@@ -559,6 +1010,39 @@ def summarize_order_book(
     return out
 
 
+def _extract_futures_curve_rows(payload: Any, *, now_ts: float) -> List[Tuple[float, float]]:
+    rows: List[Tuple[float, float]] = []
+    seen: set[Tuple[int, int]] = set()
+    for node in _iter_dict_nodes(payload):
+        if not isinstance(node, dict):
+            continue
+        dte = None
+        for key in ("daysToExpiration", "days_to_expiration", "daysToExpiry", "expiry", "expirationDate", "expiryDate", "maturityDate"):
+            if key in node:
+                dte = _days_to_expiry(node.get(key), now_ts=now_ts)
+                if dte is not None:
+                    break
+        if dte is None:
+            continue
+        mark = _to_float(_dict_get_ci(node, "markPrice", "mark", "mark_price"), 0.0)
+        index = _to_float(_dict_get_ci(node, "indexPrice", "index", "index_price", "spotPrice", "spot_price"), 0.0)
+        last = _to_float(_dict_get_ci(node, "lastPrice", "last", "price"), 0.0)
+        basis_bps = None
+        if mark > 0.0 and index > 0.0:
+            basis_bps = ((mark - index) / index) * 10000.0
+        elif mark > 0.0 and last > 0.0:
+            basis_bps = ((mark - last) / last) * 10000.0
+        if basis_bps is None:
+            continue
+        key = (int(round(dte)), int(round(basis_bps)))
+        if key in seen:
+            continue
+        seen.add(key)
+        rows.append((max(float(dte), 0.0), float(basis_bps)))
+    rows.sort(key=lambda item: item[0])
+    return rows
+
+
 def summarize_futures_quote_features(
     payload: Any,
     *,
@@ -583,12 +1067,38 @@ def summarize_futures_quote_features(
     basis_mark = _first_numeric(payload, ("markPrice", "mark", "mark_price"))
     basis_index = _first_numeric(payload, ("indexPrice", "index", "index_price", "spotPrice", "spot_price"))
     vwap = _first_numeric(payload, ("vwap", "VWAP", "volumeWeightedAveragePrice"))
+    taker_buy = _first_numeric(payload, ("takerBuyVolume", "taker_buy_volume", "buyVolume", "buyQty", "takerBuyVol", "buyVol"))
+    taker_sell = _first_numeric(payload, ("takerSellVolume", "taker_sell_volume", "sellVolume", "sellQty", "takerSellVol", "sellVol"))
+    cvd_raw = _first_numeric(payload, ("cvd", "cumulativeVolumeDelta", "cumulative_volume_delta", "volumeDelta", "deltaVolume"))
+    long_short_ratio = _first_numeric(payload, ("longShortRatio", "long_short_ratio", "globalLongShortRatio", "accountLongShortRatio", "longShortAccountRatio"))
+    session_profile = _first_numeric(payload, ("sessionVolumeProfile", "session_volume_profile", "relativeVolume", "relative_volume", "volumeProfile", "volume_profile", "volumeZscore", "volume_zscore"))
 
     basis_bps = 0.0
     if basis_mark is not None and basis_index is not None and basis_index > 0.0:
         basis_bps = ((basis_mark - basis_index) / basis_index) * 10000.0
     elif basis_mark is not None and last_price > 0.0:
         basis_bps = ((basis_mark - last_price) / max(last_price, 1e-8)) * 10000.0
+
+    dislocation_bps = 0.0
+    if basis_mark is not None and basis_index is not None and basis_index > 0.0:
+        dislocation_bps = abs((basis_mark - basis_index) / basis_index) * 10000.0
+
+    reference_prices = [
+        float(x)
+        for x in (
+            basis_mark,
+            basis_index,
+            _first_numeric(payload, ("oraclePrice", "oracle_price", "fairPrice", "fair_value", "indicativePrice", "premiumIndex")),
+            _first_numeric(payload, ("spotPrice", "spot_price", "index", "indexPrice")),
+            float(last_price or 0.0),
+        )
+        if x is not None and float(x) > 0.0
+    ]
+    basis_divergence_bps = 0.0
+    if len(reference_prices) >= 2:
+        ref_min = min(reference_prices)
+        ref_max = max(reference_prices)
+        basis_divergence_bps = ((ref_max - ref_min) / max(ref_min, 1e-8)) * 10000.0
 
     expiry_days = 0.0
     for key in ("daysToExpiration", "days_to_expiration", "daysToExpiry", "expiry"):
@@ -618,6 +1128,65 @@ def summarize_futures_quote_features(
     if abs(funding_val) > 0.5:
         funding_val /= 100.0
 
+    taker_imbalance = 0.0
+    buy_flow = max(float(taker_buy or 0.0), 0.0)
+    sell_flow = max(float(taker_sell or 0.0), 0.0)
+    if buy_flow > 0.0 or sell_flow > 0.0:
+        taker_imbalance = (buy_flow - sell_flow) / max(buy_flow + sell_flow, 1e-8)
+
+    if cvd_raw is None and (buy_flow > 0.0 or sell_flow > 0.0):
+        cvd_raw = buy_flow - sell_flow
+    cvd_scale = max(buy_flow + sell_flow, abs(float(cvd_raw or 0.0)), 1.0)
+
+    liq_long = sum(
+        abs(v)
+        for v in _all_numeric(
+            payload,
+            (
+                "longLiquidationVolume",
+                "longLiquidationQty",
+                "longLiquidationUsd",
+                "longLiquidations",
+                "liquidationLong",
+                "liquidationsLong",
+            ),
+        )
+    )
+    liq_short = sum(
+        abs(v)
+        for v in _all_numeric(
+            payload,
+            (
+                "shortLiquidationVolume",
+                "shortLiquidationQty",
+                "shortLiquidationUsd",
+                "shortLiquidations",
+                "liquidationShort",
+                "liquidationsShort",
+            ),
+        )
+    )
+    liq_total = max(
+        liq_long + liq_short,
+        sum(abs(v) for v in _all_numeric(payload, ("liquidationVolume", "liquidationQty", "liquidationUsd", "liquidations"))),
+    )
+
+    curve_rows = _extract_futures_curve_rows(payload, now_ts=ts_now)
+    curve_norm = 0.5
+    curve_step_slopes: List[float] = []
+    if len(curve_rows) >= 2:
+        near_dte, near_basis = curve_rows[0]
+        far_dte, far_basis = curve_rows[-1]
+        slope_bps_per_month = (far_basis - near_basis) / max((far_dte - near_dte) / 30.0, 1e-6)
+        curve_norm = _clamp01((slope_bps_per_month + 150.0) / 300.0)
+        for prev, curr in zip(curve_rows, curve_rows[1:]):
+            prev_dte, prev_basis = prev
+            curr_dte, curr_basis = curr
+            slope = (curr_basis - prev_basis) / max((curr_dte - prev_dte) / 30.0, 1e-6)
+            curve_step_slopes.append(slope)
+    elif expiry_days > 0.0:
+        curve_norm = _clamp01((basis_bps / max(expiry_days, 1.0) * 30.0 + 150.0) / 300.0)
+
     term_structure = _clamp01((basis_bps + 300.0) / 600.0)
     negative_bias = _clamp01(
         (0.45 * _clamp01((-funding_val * 100.0 + 2.0) / 4.0))
@@ -625,6 +1194,73 @@ def summarize_futures_quote_features(
         + (0.20 * _clamp01((-basis_bps + 250.0) / 500.0))
     )
     roll_yield = _clamp01((basis_bps / max(expiry_days, 1.0) + 20.0) / 40.0)
+    if session_profile is None:
+        session_profile_norm = 0.0
+    else:
+        raw = float(session_profile)
+        if abs(raw) > 4.0:
+            session_profile_norm = _clamp01(math.log1p(abs(raw)) / 4.0)
+        else:
+            session_profile_norm = _clamp01((raw + 2.0) / 4.0)
+    curve_shift_velocity = 0.0
+    if curve_step_slopes:
+        curve_shift_velocity = _clamp01(max(abs(val) for val in curve_step_slopes) / 300.0)
+    elif expiry_days > 0.0:
+        curve_shift_velocity = _clamp01(abs((basis_bps / max(expiry_days, 1.0)) * 30.0) / 300.0)
+    directional_votes: List[float] = []
+    for signed_value, min_abs in (
+        (imbalance, 0.05),
+        (taker_imbalance, 0.05),
+        (float(cvd_raw or 0.0), max(cvd_scale * 0.05, 1.0)),
+        (vwap_bias, 0.003),
+        (basis_bps, 25.0),
+    ):
+        if abs(signed_value) >= min_abs:
+            directional_votes.append(1.0 if signed_value > 0.0 else -1.0)
+    if abs(funding_val) >= 0.0003:
+        directional_votes.append(1.0 if funding_val > 0.0 else -1.0)
+    if float(long_short_ratio or 1.0) >= 1.05:
+        directional_votes.append(1.0)
+    elif float(long_short_ratio or 1.0) <= 0.95:
+        directional_votes.append(-1.0)
+    cross_asset_confirmation = 0.0
+    if directional_votes:
+        cross_asset_confirmation = abs(sum(directional_votes)) / max(len(directional_votes), 1)
+    liquidation_squeeze = _clamp01(
+        (0.34 * _clamp01(math.log1p(max(liq_total, 0.0)) / 12.0))
+        + (0.22 * _clamp01(abs(taker_imbalance)))
+        + (0.18 * _clamp01(abs(float(long_short_ratio or 1.0) - 1.0) / 0.75))
+        + (0.14 * _clamp01(abs(funding_val) * 600.0))
+        + (0.12 * _clamp01(basis_divergence_bps / 300.0))
+    )
+    intraday_structure = _clamp01(
+        (0.24 * depth_ratio)
+        + (0.22 * (1.0 - _clamp01(spread_bps / 80.0)))
+        + (0.20 * _clamp01(abs(imbalance)))
+        + (0.18 * _clamp01(abs(vwap_bias) / 0.03))
+        + (0.16 * session_profile_norm)
+    )
+    roll_pressure = _clamp01(
+        (0.38 * _clamp01(max(14.0 - expiry_days, 0.0) / 14.0))
+        + (0.28 * curve_shift_velocity)
+        + (0.18 * _clamp01(abs(basis_bps) / 250.0))
+        + (0.16 * abs(term_structure - 0.5) * 2.0)
+    )
+    inventory_state = _signed_centered_norm(
+        (0.45 * imbalance) + (0.30 * taker_imbalance) + (0.25 * (vwap_bias / 0.03 if abs(vwap_bias) > 0.0 else 0.0)),
+        1.0,
+    )
+    delivery_hazard = _clamp01(
+        (0.50 * _clamp01(max(7.0 - expiry_days, 0.0) / 7.0))
+        + (0.25 * _clamp01(basis_divergence_bps / 250.0))
+        + (0.25 * _clamp01(dislocation_bps / 200.0))
+    )
+    cash_basis_confirmation = _clamp01(
+        (0.45 * _clamp01(cross_asset_confirmation))
+        + (0.25 * (1.0 - _clamp01(dislocation_bps / 300.0)))
+        + (0.20 * (1.0 - _clamp01(basis_divergence_bps / 400.0)))
+        + (0.10 * _clamp01(abs(basis_bps) / 250.0))
+    )
 
     out.update(
         {
@@ -648,6 +1284,22 @@ def summarize_futures_quote_features(
             "futures_roll_yield_norm": roll_yield,
             "futures_expiry_days": float(max(expiry_days, 0.0)),
             "futures_expiry_norm": _clamp01(max(expiry_days, 0.0) / 120.0),
+            "futures_taker_imbalance_norm": _signed_centered_norm(taker_imbalance, 1.0),
+            "futures_cvd_norm": _signed_centered_norm(float(cvd_raw or 0.0), max(cvd_scale, 1.0)),
+            "futures_liquidation_risk_norm": _clamp01(math.log1p(max(liq_total, 0.0)) / 12.0),
+            "futures_long_short_ratio_norm": _clamp01((max(float(long_short_ratio or 1.0), 0.0) - 0.5) / 2.0),
+            "futures_basis_divergence_norm": _clamp01(basis_divergence_bps / 400.0),
+            "futures_mark_index_dislocation_norm": _clamp01(dislocation_bps / 300.0),
+            "futures_session_volume_profile_norm": session_profile_norm,
+            "futures_calendar_spread_curve_norm": curve_norm,
+            "futures_curve_shift_velocity_norm": curve_shift_velocity,
+            "futures_cross_asset_confirmation_norm": _clamp01(cross_asset_confirmation),
+            "futures_liquidation_squeeze_norm": liquidation_squeeze,
+            "futures_intraday_structure_norm": intraday_structure,
+            "futures_roll_pressure_norm": roll_pressure,
+            "futures_inventory_state_norm": inventory_state,
+            "futures_delivery_hazard_norm": delivery_hazard,
+            "futures_cash_basis_confirmation_norm": cash_basis_confirmation,
         }
     )
     return out
@@ -721,6 +1373,14 @@ def summarize_calendar_payload(
     earnings_7d = 0
     macro_24h = 0
     options_expiry_week = 0
+    macro_surprise = 0.0
+    macro_abs_surprise = 0.0
+    macro_revision = 0.0
+    macro_surprise_n = 0
+    fomc_7d = 0
+    cpi_7d = 0
+    labor_7d = 0
+    treasury_auction_7d = 0
 
     macro_tokens = (
         "fomc",
@@ -735,6 +1395,9 @@ def summarize_calendar_payload(
         "rates",
         "treasury",
     )
+    cpi_tokens = ("cpi", "pce", "inflation")
+    labor_tokens = ("payroll", "nonfarm", "unemployment", "jobless", "labor")
+    treasury_auction_tokens = ("treasury auction", "10-year auction", "30-year auction", "2-year auction", "bond auction", "note auction")
     high_tokens = ("high", "critical", "red", "major")
     earnings_tokens = ("earnings", "guidance", "revenue")
     options_expiry_tokens = ("options expiration", "opex", "triple witching")
@@ -771,6 +1434,10 @@ def summarize_calendar_payload(
         impact_score = _to_float(impact_raw, 0.0)
         is_high = any(tok in impact for tok in high_tokens) or ("high impact" in text) or (impact_score >= 3.0)
         is_macro = any(tok in text for tok in macro_tokens)
+        is_fomc = ("fomc" in text) or ("fed" in text) or ("rate decision" in text)
+        is_cpi = any(tok in text for tok in cpi_tokens)
+        is_labor = any(tok in text for tok in labor_tokens)
+        is_treasury_auction = any(tok in text for tok in treasury_auction_tokens)
         is_earnings = any(tok in text for tok in earnings_tokens)
         is_opex = any(tok in text for tok in options_expiry_tokens)
         is_dividend = any(tok in text for tok in dividend_tokens)
@@ -792,6 +1459,14 @@ def summarize_calendar_payload(
                 earnings_7d += 1
             if delta_s <= 7 * 24 * 3600 and is_opex:
                 options_expiry_week += 1
+            if delta_s <= 7 * 24 * 3600 and is_fomc:
+                fomc_7d += 1
+            if delta_s <= 7 * 24 * 3600 and is_cpi:
+                cpi_7d += 1
+            if delta_s <= 7 * 24 * 3600 and is_labor:
+                labor_7d += 1
+            if delta_s <= 7 * 24 * 3600 and is_treasury_auction:
+                treasury_auction_7d += 1
 
             if delta_s <= 30 * 24 * 3600 and is_dividend:
                 dividend_events_30d += 1
@@ -805,12 +1480,31 @@ def summarize_calendar_payload(
             if is_dividend_exdate:
                 dividend_recent_exdate += 1
 
+        if is_macro:
+            actual = _to_float(_row_get_ci(row, "actual", "actualvalue", "last"), 0.0)
+            forecast = _to_float(_row_get_ci(row, "forecast", "consensus", "estimate", "teforecast"), 0.0)
+            previous = _to_float(_row_get_ci(row, "previous", "prior"), 0.0)
+            revised = _to_float(_row_get_ci(row, "revised", "revision", "revisedfromprevious"), 0.0)
+
+            baseline = forecast if abs(forecast) > 0.0 else previous
+            if abs(actual) > 0.0 and abs(baseline) > 0.0:
+                scale = max(abs(baseline), 1.0)
+                surprise = max(min((actual - baseline) / scale, 3.0), -3.0)
+                macro_surprise += surprise
+                macro_abs_surprise += abs(surprise)
+                macro_surprise_n += 1
+            if abs(revised) > 0.0 and abs(previous) > 0.0:
+                revision = max(min((revised - previous) / max(abs(previous), 1.0), 3.0), -3.0)
+                macro_revision += revision
+
     if next_minutes >= 1e8:
         next_minutes = 0.0
     if next_dividend_ex_minutes >= 1e8:
         next_dividend_ex_minutes = 0.0
     if next_dividend_payout_minutes >= 1e8:
         next_dividend_payout_minutes = 0.0
+    if macro_surprise_n <= 0:
+        macro_surprise_n = 1
 
     out.update(
         {
@@ -821,6 +1515,13 @@ def summarize_calendar_payload(
             "calendar_event_proximity_norm": _clamp01(1.0 - (next_minutes / 240.0)) if next_minutes > 0 else 0.0,
             "calendar_next_event_norm": _clamp01(next_minutes / 1440.0) if next_minutes > 0 else 0.0,
             "calendar_macro_event_norm": _clamp01(macro_24h / 12.0),
+            "calendar_macro_surprise_norm": _signed_centered_norm(macro_surprise / macro_surprise_n, 3.0),
+            "calendar_macro_abs_surprise_norm": _clamp01((macro_abs_surprise / macro_surprise_n) / 3.0),
+            "calendar_macro_revision_norm": _signed_centered_norm(macro_revision / macro_surprise_n, 3.0),
+            "calendar_fomc_event_norm": _clamp01(fomc_7d / 3.0),
+            "calendar_cpi_event_norm": _clamp01(cpi_7d / 4.0),
+            "calendar_labor_event_norm": _clamp01(labor_7d / 4.0),
+            "calendar_treasury_auction_norm": _clamp01(treasury_auction_7d / 5.0),
             "calendar_options_expiry_week_norm": _clamp01(options_expiry_week / 4.0),
             "calendar_dividend_events_30d_norm": _clamp01(dividend_events_30d / 20.0),
             "calendar_dividend_exdate_proximity_norm": _clamp01(1.0 - (next_dividend_ex_minutes / (7.0 * 1440.0))) if next_dividend_ex_minutes > 0 else 0.0,

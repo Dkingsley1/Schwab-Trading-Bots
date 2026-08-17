@@ -20,7 +20,11 @@ def parse_modes() -> List[str]:
 
 
 def launch_modes(project_root: str, modes: List[str]) -> List[subprocess.Popen]:
-    py = os.path.join(project_root, ".venv312", "bin", "python")
+    if project_root not in sys.path:
+        sys.path.insert(0, project_root)
+    from core.runtime_python import resolve_runtime_python
+
+    py = str(resolve_runtime_python(project_root))
     main_py = os.path.join(project_root, "main.py")
 
     children: List[subprocess.Popen] = []

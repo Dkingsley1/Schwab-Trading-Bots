@@ -1,0 +1,1 @@
+../../../scripts/ops/blackstart_recovery.py

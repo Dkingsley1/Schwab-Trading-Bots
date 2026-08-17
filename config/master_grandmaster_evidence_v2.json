@@ -1,0 +1,118 @@
+{
+  "schema_version": 1,
+  "policy_id": "master_grandmaster_evidence_v2",
+  "operating_mode": "evidence_synthesis_shadow_only",
+  "required_regime_model_id": "multi_axis_regime_taxonomy_v1",
+  "source_contracts": {
+    "bot_organization_health": {
+      "max_age_minutes": 1440.0,
+      "synthesis_required": true,
+      "promotion_required": true
+    },
+    "bot_hierarchy": {
+      "max_age_minutes": 1440.0,
+      "synthesis_required": true,
+      "promotion_required": true
+    },
+    "regime_context": {
+      "max_age_minutes": 1440.0,
+      "synthesis_required": false,
+      "promotion_required": true
+    },
+    "paper_truth": {
+      "max_age_minutes": 30.0,
+      "synthesis_required": true,
+      "promotion_required": true
+    },
+    "profitability_evidence": {
+      "max_age_minutes": 60.0,
+      "synthesis_required": false,
+      "promotion_required": true
+    },
+    "source_verification": {
+      "max_age_minutes": 60.0,
+      "synthesis_required": false,
+      "promotion_required": true
+    },
+    "runtime_throttle": {
+      "max_age_minutes": 30.0,
+      "synthesis_required": true,
+      "promotion_required": true
+    },
+    "account_positions": {
+      "max_age_minutes": 30.0,
+      "synthesis_required": false,
+      "promotion_required": true
+    },
+    "execution_calibration": {
+      "max_age_minutes": 180.0,
+      "synthesis_required": false,
+      "promotion_required": true
+    },
+    "sleeve_profitability": {
+      "max_age_minutes": 1440.0,
+      "synthesis_required": false,
+      "promotion_required": true
+    }
+  },
+  "thresholds": {
+    "maximum_sleeve_master_packets": 256,
+    "maximum_review_examples_per_sleeve": 8,
+    "maximum_future_clock_skew_minutes": 5.0,
+    "minimum_hierarchy_coverage_ratio": 1.0,
+    "minimum_known_context_axes": 2,
+    "minimum_regime_compatibility_score": 0.55,
+    "maximum_master_review_ratio_ready": 0.25,
+    "maximum_unknown_profile_ratio_ready": 0.35,
+    "minimum_paper_truth_score": 95.0,
+    "minimum_source_evidence_score": 95.0,
+    "minimum_profitability_economic_evidence_score": 90.0,
+    "minimum_regime_axis_coverage_for_promotion": 0.9,
+    "minimum_regime_axis_specificity_for_promotion": 0.8,
+    "minimum_independent_execution_samples": 30,
+    "minimum_human_review_master_grade": "B"
+  },
+  "master_score_weights": {
+    "classification_confidence": 0.25,
+    "regime_axis_coverage": 0.25,
+    "regime_compatibility": 0.2,
+    "paper_truth": 0.15,
+    "source_evidence": 0.1,
+    "economic_evidence": 0.05
+  },
+  "recommendation_contract": {
+    "allowed_recommendations": [
+      "continue_paper_collection",
+      "collect_missing_regime_evidence",
+      "review_incompatible_profiles",
+      "refresh_stale_sources",
+      "prioritize_guarded_retraining",
+      "investigate_negative_post_cost_results",
+      "hold_for_human_promotion_review",
+      "abstain_until_broker_truth_recovers",
+      "abstain_until_runtime_capacity_recovers"
+    ],
+    "forbidden_recommendations": [
+      "place_order",
+      "cancel_order",
+      "change_execution_flag",
+      "change_live_trading_flag",
+      "mutate_source_registry",
+      "automatic_live_promotion"
+    ]
+  },
+  "safety_contract": {
+    "direct_paper_order_authority": false,
+    "direct_live_order_authority": false,
+    "order_payload_creation": false,
+    "registry_mutation_authority": false,
+    "source_code_mutation_authority": false,
+    "execution_flag_mutation_authority": false,
+    "global_halt_override_authority": false,
+    "broker_truth_override_authority": false,
+    "automatic_allocation_authority": false,
+    "automatic_promotion_authority": false,
+    "profitability_guaranteed": false,
+    "human_authorization_required_for_live": true
+  }
+}

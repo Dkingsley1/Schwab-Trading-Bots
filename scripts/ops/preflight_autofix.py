@@ -8,7 +8,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-PY = PROJECT_ROOT / '.venv312' / 'bin' / 'python'
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from core.runtime_python import resolve_runtime_python
+
+PY = resolve_runtime_python(PROJECT_ROOT)
 PREFLIGHT = PROJECT_ROOT / 'scripts' / 'shadow_preflight.py'
 OUT = PROJECT_ROOT / 'governance' / 'health' / 'preflight_autofix_latest.json'
 ALERT_LATEST = PROJECT_ROOT / 'governance' / 'alerts' / 'preflight_critical_latest.json'
@@ -154,14 +159,14 @@ def main() -> int:
                 'issue': name,
                 'severity': 'high',
                 'fix': 'Run retention prune before startup.',
-                'command': './.venv312/bin/python scripts/data_retention_policy.py --apply --json',
+                'command': './.venv314/bin/python scripts/data_retention_policy.py --apply --json',
             })
         elif name == 'storage_route_writable':
             suggestions.append({
                 'issue': name,
                 'severity': 'critical',
                 'fix': 'Storage route was not writable. Verify SSD mount or local fallback permissions.',
-                'command': './.venv312/bin/python scripts/ops/storage_failback_sync.py --json',
+                'command': './.venv314/bin/python scripts/ops/storage_failback_sync.py --json',
             })
         elif name == 'no_duplicate_parallel_launcher':
             pids = _find_pids(

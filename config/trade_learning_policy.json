@@ -1,5 +1,65 @@
 {
   "version": 3,
+  "behavior_forward_labels": {
+    "positive_bps": 6.0,
+    "negative_bps": 6.0,
+    "hold_positive_max_bps": 4.0,
+    "hold_negative_min_bps": 14.0,
+    "post_cost_labels": {
+      "enabled": true,
+      "minimum_entry_cost_bps": 2.0,
+      "default_exit_cost_bps": 2.0,
+      "fee_bps": 0.0,
+      "unknown_cost_policy": "use_conservative_floor",
+      "label_policy": "directional_forward_return_after_round_trip_costs"
+    },
+    "path_dependent_labels": {
+      "enabled": true,
+      "required_outputs": [
+        "maximum_favorable_excursion",
+        "maximum_adverse_excursion",
+        "mfe_bucket",
+        "mae_bucket",
+        "exit_timing_bucket",
+        "post_entry_regime_bucket",
+        "no_trade_counterfactual_outcome",
+        "trade_vs_no_trade_excess_return"
+      ],
+      "endpoint_only_training_allowed": false,
+      "hold_counterfactual_policy": "compare_hold_with_best_observed_counter_side_after_cost_hurdle",
+      "trade_counterfactual_policy": "compare_post_cost_trade_outcome_with_cash_return_zero"
+    }
+  },
+  "validation_contract": {
+    "split_policy": "purged_chronological_walk_forward",
+    "embargo_required": true,
+    "normalization_fit_scope": "train_partition_only",
+    "locked_holdout_required": true,
+    "multiple_testing_adjustment_required": true,
+    "deflated_sharpe_required": true,
+    "probability_of_backtest_overfitting_required": true,
+    "minimum_independent_days": 30,
+    "minimum_regimes": 3,
+    "minimum_effective_samples": 100
+  },
+  "champion_challenger_contract": {
+    "paper_only_until_promotion": true,
+    "candidate_bound_evidence_required": true,
+    "positive_post_cost_lower_confidence_bound_required": true,
+    "passive_benchmark_hurdle_required": true,
+    "execution_stress_required": true,
+    "calibration_required": true,
+    "automatic_live_promotion": false,
+    "retire_only_after_repeated_failed_retests": true
+  },
+  "retraining_contract": {
+    "trigger_mode": "drift_or_evidence_threshold_only",
+    "calendar_only_retraining_allowed": false,
+    "single_flight": true,
+    "preserve_current_champion_on_failure": true,
+    "rollback_receipt_required": true,
+    "resource_pressure_may_defer_training": true
+  },
   "lookback_years": 4,
   "account_profiles": {
     "ROTH": {

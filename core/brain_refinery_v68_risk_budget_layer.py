@@ -1,6 +1,14 @@
 import numpy as np
 
-from indicator_bot_common import ema, rolling_std, train_indicator_bot
+from indicator_bot_common import ema, rolling_std, train_indicator_bot, train_runtime_indicator_bot
+from runtime_training_common import (
+    feature_ema,
+    feature_std,
+    observation_feature,
+    price_change,
+    risk_support_label_builder,
+    rolling_drawdown,
+)
 
 
 def build_features(panel):
@@ -21,11 +29,173 @@ def build_features(panel):
     return np.stack([r, edge, vol, draw_stress, vix_shock, risk_budget, low, high], axis=1)
 
 
-if __name__ == "__main__":
-    train_indicator_bot(
+def _runtime_feature_vector(sequence, idx):
+    obs = sequence[idx]
+    pct = observation_feature(obs, "pct_from_close")
+    return np.asarray(
+        [
+            pct,
+            abs(pct),
+            observation_feature(obs, "mom_5m"),
+            observation_feature(obs, "vol_30m"),
+            observation_feature(obs, "range_pos"),
+            observation_feature(obs, "spread_bps"),
+            observation_feature(obs, "market_data_latency_ms"),
+            observation_feature(obs, "queue_depth"),
+            observation_feature(obs, "ctx_VIX_X_pct_from_close"),
+            observation_feature(obs, "ctx_UUP_pct_from_close"),
+            observation_feature(obs, "options_chain_available"),
+            observation_feature(obs, "options_iv_atm_norm"),
+            observation_feature(obs, "options_iv_skew_norm"),
+            observation_feature(obs, "options_spread_bps_norm"),
+            observation_feature(obs, "options_vol_expectation_norm"),
+            observation_feature(obs, "news_shock_rate"),
+            observation_feature(obs, "news_recent_impact"),
+            observation_feature(obs, "bond_duration_regime_norm"),
+            observation_feature(obs, "bond_credit_risk_off_norm"),
+            observation_feature(obs, "bond_credit_spread_level_norm"),
+            observation_feature(obs, "dividend_quality_score_norm"),
+            observation_feature(obs, "breadth_risk_off_norm"),
+            observation_feature(obs, "calendar_macro_abs_surprise_norm"),
+            observation_feature(obs, "data_quality_quote_agreement_norm"),
+            observation_feature(obs, "data_quality_market_data_latency_norm"),
+            observation_feature(obs, "lag_adjusted_return_1m"),
+            observation_feature(obs, "lag_slippage_bps"),
+            price_change(sequence, idx, 3),
+            feature_std(sequence, idx, "pct_from_close", 6),
+            feature_std(sequence, idx, "vol_30m", 6),
+            rolling_drawdown(sequence, idx, 10),
+            feature_ema(sequence, idx, "options_iv_skew_norm", 4),
+        ],
+        dtype=np.float32,
+    )
+
+
+def _clip01(value):
+    return float(np.clip(value, 0.0, 1.0))
+
+
+def _risk_pressure(obs):
+    return _clip01(
+        (0.24 * abs(observation_feature(obs, "pct_from_close")))
+        + (0.18 * observation_feature(obs, "vol_30m"))
+        + (0.14 * observation_feature(obs, "breadth_risk_off_norm"))
+        + (0.12 * observation_feature(obs, "options_vol_expectation_norm"))
+        + (0.10 * observation_feature(obs, "calendar_macro_abs_surprise_norm"))
+        + (0.10 * observation_feature(obs, "news_recent_impact"))
+        + (0.08 * abs(observation_feature(obs, "capital_flow_signed_scaled")))
+        + (0.04 * observation_feature(obs, "options_chain_available"))
+    )
+
+
+def _runtime_sample_filter(sequence, idx, horizon):
+    obs = sequence[idx]
+    pressure = _risk_pressure(obs)
+    return (
+        observation_feature(obs, "data_quality_quote_agreement_norm", 1.0) >= 0.70
+        and observation_feature(obs, "data_quality_quote_deviation_norm", 0.0) <= 0.35
+        and abs(observation_feature(obs, "spread_bps", 0.0)) <= 45.0
+        and observation_feature(obs, "queue_depth", 0.0) >= 0.0
+        and (
+            pressure >= 0.30
+            or abs(observation_feature(obs, "behavior_prior")) >= 0.07
+            or abs(observation_feature(obs, "capital_flow_signed_scaled")) >= 0.08
+        )
+    )
+
+
+def _runtime_confidence(sequence, idx, horizon):
+    obs = sequence[idx]
+    quote = _clip01(
+        0.65 * observation_feature(obs, "data_quality_quote_agreement_norm", 1.0)
+        + 0.35 * (1.0 - observation_feature(obs, "data_quality_quote_deviation_norm", 0.0))
+    )
+    slippage = _clip01(1.0 - abs(observation_feature(obs, "lag_slippage_bps")) / 25.0)
+    return _clip01(
+        (0.28 * _risk_pressure(obs))
+        + (0.20 * quote)
+        + (0.16 * _clip01(abs(observation_feature(obs, "behavior_prior")) * 4.0))
+        + (0.14 * _clip01(abs(observation_feature(obs, "capital_flow_signed_scaled")) * 4.0))
+        + (0.12 * observation_feature(obs, "options_chain_available"))
+        + (0.10 * slippage)
+    )
+
+
+def _train_synthetic():
+    return train_indicator_bot(
         run_tag="brain_refinery_v68_risk_budget_layer",
         feature_names=["ret", "edge", "vol", "draw_stress", "vix_shock", "risk_budget", "low_budget", "high_budget"],
         feature_builder=build_features,
         window=48,
         horizon=4,
+    )
+
+
+if __name__ == "__main__":
+    train_runtime_indicator_bot(
+        run_tag="brain_refinery_v68_risk_budget_layer",
+        feature_names=[
+            "pct_from_close",
+            "abs_pct_from_close",
+            "mom_5m",
+            "vol_30m",
+            "range_pos",
+            "spread_bps",
+            "market_data_latency_ms",
+            "queue_depth",
+            "ctx_VIX_X_pct_from_close",
+            "ctx_UUP_pct_from_close",
+            "options_chain_available",
+            "options_iv_atm_norm",
+            "options_iv_skew_norm",
+            "options_spread_bps_norm",
+            "options_vol_expectation_norm",
+            "news_shock_rate",
+            "news_recent_impact",
+            "bond_duration_regime_norm",
+            "bond_credit_risk_off_norm",
+            "bond_credit_spread_level_norm",
+            "dividend_quality_score_norm",
+            "breadth_risk_off_norm",
+            "calendar_macro_abs_surprise_norm",
+            "data_quality_quote_agreement_norm",
+            "data_quality_market_data_latency_norm",
+            "lag_adjusted_return_1m",
+            "lag_slippage_bps",
+            "ret_3",
+            "pct_from_close_std_6",
+            "vol_30m_std_6",
+            "drawdown_10",
+            "options_iv_skew_ema_4",
+        ],
+        runtime_feature_builder=_runtime_feature_vector,
+        runtime_label_builder=risk_support_label_builder(
+            min_return=0.0001,
+            max_drawdown=0.010,
+            max_realized_vol=0.015,
+            vol_multiplier=2.8,
+        ),
+        sample_filter=_runtime_sample_filter,
+        confidence_builder=_runtime_confidence,
+        min_confidence=0.34,
+        sample_stride=1,
+        lookback_days=45,
+        window=24,
+        horizon=8,
+        min_samples=224,
+        min_sequences=3,
+        fallback_trainer=_train_synthetic,
+        allow_fallback_on_insufficient_data=False,
+        max_best_val_loss=0.690,
+        max_final_val_loss=0.705,
+        acted_prob_threshold=0.72,
+        min_long_precision=0.54,
+        min_short_precision=0.54,
+        require_both_sides_precision=True,
+        min_acted_accuracy=0.58,
+        min_long_acted_count=4,
+        min_short_acted_count=4,
+        min_accuracy_lift_over_majority=0.015,
+        min_precision_balance_score=0.50,
+        max_acted_coverage=0.28,
     )

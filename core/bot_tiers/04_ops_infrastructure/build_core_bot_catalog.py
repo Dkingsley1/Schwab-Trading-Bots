@@ -1,0 +1,1 @@
+../../../scripts/ops/build_core_bot_catalog.py

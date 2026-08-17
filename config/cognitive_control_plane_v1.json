@@ -1,0 +1,123 @@
+{
+  "generated_at_utc": "2026-05-02T21:13:32.720880+00:00",
+  "cognitive_control_version": "cognitive_control_plane_v1",
+  "control_plane": {
+    "slug": "cognitive_control_plane",
+    "display_name": "Cognitive Control Plane",
+    "sleeve_family": "cognitive_governance",
+    "sleeve_profile": "cognitive_control_plane",
+    "objective": "Push the platform into recursive cognitive governance: planning, debate, alignment checks, memory distillation, and safe strategy synthesis.",
+    "bot_count": 15,
+    "bot_ids": [
+      "brain_refinery_v819_cognitive_planning_orchestrator_master_bot",
+      "brain_refinery_v820_cognitive_belief_state_fusion_engine_bot",
+      "brain_refinery_v821_cognitive_multi_agent_debate_panel_bot",
+      "brain_refinery_v822_cognitive_formal_objective_alignment_guard_bot",
+      "brain_refinery_v823_cognitive_strategy_synthesis_generator_bot",
+      "brain_refinery_v824_cognitive_curriculum_learning_scheduler_bot",
+      "brain_refinery_v825_cognitive_memory_distillation_compression_bot",
+      "brain_refinery_v826_cognitive_epistemic_risk_budget_allocator_bot",
+      "brain_refinery_v827_cognitive_counterfactual_scenario_planner_bot",
+      "brain_refinery_v828_cognitive_autonomous_research_backlog_prioritizer_bot",
+      "brain_refinery_v829_cognitive_policy_simulation_sandbox_bot",
+      "brain_refinery_v830_cognitive_safety_case_builder_bot",
+      "brain_refinery_v831_cognitive_feedback_credit_assignment_bot",
+      "brain_refinery_v832_cognitive_agent_market_specialist_router_bot",
+      "brain_refinery_v833_cognitive_grandmaster_cognition_bridge_bot"
+    ],
+    "dedicated_data_intake": [
+      "cognitive_plan_trace",
+      "belief_state_posterior_trace",
+      "multi_agent_debate_score_trace",
+      "formal_alignment_invariant_trace",
+      "strategy_synthesis_candidate_trace",
+      "curriculum_learning_gap_trace",
+      "memory_distillation_digest_trace",
+      "epistemic_risk_budget_trace",
+      "counterfactual_plan_replay_trace",
+      "research_backlog_priority_trace",
+      "policy_simulation_sandbox_trace",
+      "safety_case_evidence_trace",
+      "feedback_credit_assignment_trace",
+      "agent_market_routing_trace",
+      "grandmaster_cognitive_packet_trace"
+    ],
+    "storage_retention_rule": {
+      "retention_profile": "cognitive_hot_7d_warm_90d_cold_365d",
+      "storage_targets": [
+        "governance/cognitive_control_plane",
+        "governance/cognitive_control_plane/plans",
+        "governance/cognitive_control_plane/debate",
+        "governance/cognitive_control_plane/safety_cases",
+        "governance/health/cognitive_control_plane",
+        "data/jsonl_link.sqlite3"
+      ],
+      "max_daily_mb_per_bot": 45,
+      "capture_mode": "sampled",
+      "sample_rate": 0.25,
+      "dedupe_required": true,
+      "stale_deletion_policy": "distill_then_stage_low_value_cognitive_raw_traces_under_quota_guard"
+    },
+    "paper_only_floor": {
+      "paper_trade_lock_required": true,
+      "live_trading_enabled": false,
+      "execution_enabled": false,
+      "allocation_enabled": false,
+      "graduation_requires_minimum_observations": 8000,
+      "graduation_requires_collection_days": 30
+    },
+    "sleeve_master_bot_id": "brain_refinery_v819_cognitive_planning_orchestrator_master_bot",
+    "regression_guard_bot_id": "brain_refinery_v822_cognitive_formal_objective_alignment_guard_bot",
+    "capacity_check": {
+      "active_bot_floor": 700,
+      "runtime_stability_mode": "full_force_buffered",
+      "runtime_control_refresh_seconds": 240,
+      "queue_policy": "buffered_jsonl_batching",
+      "compute_guard_mode": "sustain",
+      "global_halt_mode": "downshift_and_distill_before_hard_halt",
+      "heavy_reasoning_mode": "cold_lane_only_when_host_pressure_is_clear"
+    },
+    "cognitive_depth": [
+      "hierarchical_planning",
+      "belief_state_fusion",
+      "multi_agent_debate",
+      "formal_objective_alignment",
+      "strategy_synthesis",
+      "curriculum_learning",
+      "memory_distillation",
+      "epistemic_risk_budgeting",
+      "counterfactual_planning",
+      "autonomous_research_backlog",
+      "policy_simulation_sandbox",
+      "safety_case_construction",
+      "feedback_credit_assignment",
+      "agent_market_routing",
+      "grandmaster_cognition_bridge"
+    ]
+  },
+  "cognitive_control_contract": {
+    "contract_version": "cognitive_control_plane_v1",
+    "purpose": "recursive_cognitive_governance_for_planning_debate_memory_distillation_and_safe_strategy_synthesis",
+    "cognitive_depth": [
+      "hierarchical_planning",
+      "belief_state_fusion",
+      "multi_agent_debate",
+      "formal_objective_alignment",
+      "strategy_synthesis",
+      "curriculum_learning",
+      "memory_distillation",
+      "epistemic_risk_budgeting",
+      "counterfactual_planning",
+      "autonomous_research_backlog",
+      "policy_simulation_sandbox",
+      "safety_case_construction",
+      "feedback_credit_assignment",
+      "agent_market_routing",
+      "grandmaster_cognition_bridge"
+    ],
+    "graduation_policy": "collection_only_until_long_horizon_evidence_replay_and_alignment_guards_clear",
+    "global_halt_contract": "cognitive_expansion_must_downshift_before_global_halt",
+    "paper_lock_contract": "paper_trade_lock_required_before_any_execution_path",
+    "resource_contract": "heavy_cognition_runs_off_hot_path_and_prefers_cold_lane_windows"
+  }
+}

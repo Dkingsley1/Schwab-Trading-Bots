@@ -3,16 +3,25 @@ set -euo pipefail
 
 PROJECT_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 AGENTS_DIR="$HOME/Library/LaunchAgents"
+UID_NUM="$(id -u)"
 LOG_DIR="$PROJECT_ROOT/logs"
 mkdir -p "$AGENTS_DIR" "$LOG_DIR"
 
 RUN_ALL_LAUNCHER="$PROJECT_ROOT/scripts/ops/run_all_sleeves_launchd.sh"
 ALL_SLEEVES_PLIST="$AGENTS_DIR/com.dankingsley.all_sleeves.plist"
+ALL_SLEEVES_LABEL="com.dankingsley.all_sleeves"
 RUNTIME_PROFILE="${BOT_RUNTIME_PROFILE:-live}"
+BOT_RUNTIME_LANE_VALUE="${BOT_RUNTIME_LANE:-${BOT_SHADOW_RUNTIME_LANE:-canary314}}"
+BOT_PYTHON_VERSION_VALUE="${BOT_PYTHON_VERSION:-3.14.5}"
+BOT_TRAINING_RUNTIME_LANE_VALUE="${BOT_TRAINING_RUNTIME_LANE:-canary314}"
+BOT_TRAINING_PYTHON_VERSION_VALUE="${BOT_TRAINING_PYTHON_VERSION:-3.14.5}"
 MARKET_OPEN_HOUR="${MARKET_SESSION_START_HOUR:-4}"
-OUT_LOG="/tmp/com.dankingsley.all_sleeves.out.log"
-ERR_LOG="/tmp/com.dankingsley.all_sleeves.err.log"
+LAUNCHD_LOG_DIR="$HOME/Library/Logs/schwab_trading_bot"
+OUT_LOG="$LAUNCHD_LOG_DIR/all_sleeves.out.log"
+ERR_LOG="$LAUNCHD_LOG_DIR/all_sleeves.err.log"
 ORCHESTRATOR_MODE="${STACK_ORCHESTRATOR_MODE:-watchdog}"
+
+mkdir -p "$LAUNCHD_LOG_DIR"
 
 if [[ "$ORCHESTRATOR_MODE" == "all_sleeves" ]]; then
   chmod +x "$RUN_ALL_LAUNCHER"
@@ -22,14 +31,23 @@ if [[ "$ORCHESTRATOR_MODE" == "all_sleeves" ]]; then
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-  <key>Label</key><string>com.dankingsley.all_sleeves</string>
+  <key>Label</key><string>$ALL_SLEEVES_LABEL</string>
   <key>ProgramArguments</key>
   <array>
+    <string>/bin/zsh</string>
     <string>$RUN_ALL_LAUNCHER</string>
   </array>
   <key>EnvironmentVariables</key>
   <dict>
+    <key>PATH</key><string>/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    <key>HOME</key><string>$HOME</string>
     <key>BOT_RUNTIME_PROFILE</key><string>$RUNTIME_PROFILE</string>
+    <key>BOT_RUNTIME_LANE</key><string>$BOT_RUNTIME_LANE_VALUE</string>
+    <key>BOT_PYTHON_VERSION</key><string>$BOT_PYTHON_VERSION_VALUE</string>
+    <key>BOT_TRAINING_RUNTIME_LANE</key><string>$BOT_TRAINING_RUNTIME_LANE_VALUE</string>
+    <key>BOT_TRAINING_PYTHON_VERSION</key><string>$BOT_TRAINING_PYTHON_VERSION_VALUE</string>
+    <key>PY314_RUNTIME_FLIP_APPROVED</key><string>1</string>
+    <key>PY314_RETIRE_312_ANCHOR</key><string>1</string>
     <key>MARKET_SESSION_START_HOUR</key><string>$MARKET_OPEN_HOUR</string>
     <key>MARKET_DATA_ONLY</key><string>1</string>
     <key>ALLOW_ORDER_EXECUTION</key><string>0</string>
@@ -43,26 +61,34 @@ if [[ "$ORCHESTRATOR_MODE" == "all_sleeves" ]]; then
 </plist>
 PLIST
 
-  launchctl unload "$ALL_SLEEVES_PLIST" >/dev/null 2>&1 || true
-  launchctl load "$ALL_SLEEVES_PLIST"
+  launchctl bootout "gui/$UID_NUM" "$ALL_SLEEVES_PLIST" >/dev/null 2>&1 || true
+  launchctl enable "gui/$UID_NUM/$ALL_SLEEVES_LABEL" || true
+  launchctl bootstrap "gui/$UID_NUM" "$ALL_SLEEVES_PLIST"
+  launchctl kickstart -k "gui/$UID_NUM/$ALL_SLEEVES_LABEL" || true
   echo "Installed all-sleeves launcher (orchestrator_mode=all_sleeves)"
 else
-  launchctl bootout "gui/$(id -u)" "$ALL_SLEEVES_PLIST" >/dev/null 2>&1 || launchctl unload "$ALL_SLEEVES_PLIST" >/dev/null 2>&1 || true
+  launchctl bootout "gui/$UID_NUM" "$ALL_SLEEVES_PLIST" >/dev/null 2>&1 || launchctl unload "$ALL_SLEEVES_PLIST" >/dev/null 2>&1 || true
+  launchctl disable "gui/$UID_NUM/$ALL_SLEEVES_LABEL" >/dev/null 2>&1 || true
   rm -f "$ALL_SLEEVES_PLIST" >/dev/null 2>&1 || true
   echo "Skipped all-sleeves launcher (orchestrator_mode=$ORCHESTRATOR_MODE)"
 fi
 
 # Install companion jobs via existing installers
 [[ -x "$PROJECT_ROOT/scripts/install_shadow_watchdog_launchd.sh" ]] && "$PROJECT_ROOT/scripts/install_shadow_watchdog_launchd.sh"
+[[ -x "$PROJECT_ROOT/scripts/install_storage_eject_guard_launchd.sh" ]] && "$PROJECT_ROOT/scripts/install_storage_eject_guard_launchd.sh"
+[[ -x "$PROJECT_ROOT/scripts/install_storage_disaster_recovery_launchd.sh" ]] && "$PROJECT_ROOT/scripts/install_storage_disaster_recovery_launchd.sh"
 [[ -x "$PROJECT_ROOT/scripts/install_caffeinate_launchd.sh" ]] && "$PROJECT_ROOT/scripts/install_caffeinate_launchd.sh"
 [[ -x "$PROJECT_ROOT/scripts/install_daily_log_refresh_launchd.sh" ]] && "$PROJECT_ROOT/scripts/install_daily_log_refresh_launchd.sh"
 [[ -x "$PROJECT_ROOT/scripts/install_daily_auto_verify_launchd.sh" ]] && "$PROJECT_ROOT/scripts/install_daily_auto_verify_launchd.sh"
 [[ -x "$PROJECT_ROOT/scripts/install_retrain_schedule_launchd.sh" ]] && "$PROJECT_ROOT/scripts/install_retrain_schedule_launchd.sh"
 [[ -x "$PROJECT_ROOT/scripts/install_daily_retirement_launchd.sh" ]] && "$PROJECT_ROOT/scripts/install_daily_retirement_launchd.sh"
 [[ -x "$PROJECT_ROOT/scripts/ops/install_ops_automation_launchd.sh" ]] && "$PROJECT_ROOT/scripts/ops/install_ops_automation_launchd.sh"
+[[ -x "$PROJECT_ROOT/scripts/install_observability_exporter_launchd.sh" ]] && "$PROJECT_ROOT/scripts/install_observability_exporter_launchd.sh"
+[[ -x "$PROJECT_ROOT/scripts/install_production_resilience_control_launchd.sh" ]] && "$PROJECT_ROOT/scripts/install_production_resilience_control_launchd.sh"
 [[ -x "$PROJECT_ROOT/scripts/install_failover_watch_launchd.sh" ]] && "$PROJECT_ROOT/scripts/install_failover_watch_launchd.sh"
 [[ -x "$PROJECT_ROOT/scripts/install_premarket_token_guard_launchd.sh" ]] && "$PROJECT_ROOT/scripts/install_premarket_token_guard_launchd.sh"
 [[ -x "$PROJECT_ROOT/scripts/install_reboot_resilience_launchd.sh" ]] && "$PROJECT_ROOT/scripts/install_reboot_resilience_launchd.sh"
+[[ -x "$PROJECT_ROOT/scripts/install_process_fanout_guard_launchd.sh" ]] && "$PROJECT_ROOT/scripts/install_process_fanout_guard_launchd.sh"
 
 echo "Installed infra launchd stack"
 if [[ "$ORCHESTRATOR_MODE" == "all_sleeves" ]]; then

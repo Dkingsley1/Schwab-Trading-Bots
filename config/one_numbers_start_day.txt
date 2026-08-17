@@ -1,0 +1,7 @@
+# One Numbers historical coverage baseline.
+#
+# This is pinned to the earliest source/rollup day currently recoverable after
+# the 2026-04-23 storage incident. If an older verified source day is restored,
+# replace this value with that earlier YYYYMMDD so the regression guard backfills
+# and verifies the full historical window.
+20260422

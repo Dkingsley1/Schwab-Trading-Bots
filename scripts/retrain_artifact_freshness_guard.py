@@ -8,9 +8,16 @@ from pathlib import Path
 from typing import Any
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-VENV_PY = PROJECT_ROOT / ".venv312" / "bin" / "python"
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from core.runtime_python import resolve_runtime_python
+
+VENV_PY = resolve_runtime_python(PROJECT_ROOT)
 PAPER_REPLAY_SCRIPT = PROJECT_ROOT / "scripts" / "paper_replay_drill.py"
 PAPER_RECON_SCRIPT = PROJECT_ROOT / "scripts" / "paper_reconciliation_slo_guard.py"
+SAMPLE_SUFFICIENCY_CHECKS = {"paper_rows_low", "events_low"}
+FRESHNESS_CHECKS = {"staleness", "artifact_stale"}
 
 
 def _load(path: Path) -> dict[str, Any]:
@@ -54,19 +61,70 @@ def _run_step(name: str, cmd: list[str]) -> dict[str, Any]:
     }
 
 
+def _paper_replay_refresh_hours_plan(base_hours: int, fallback_hours: int) -> list[int]:
+    plan: list[int] = []
+    for raw in [base_hours, fallback_hours]:
+        hours = max(int(raw), 1)
+        if hours not in plan:
+            plan.append(hours)
+    return plan
+
+
+def _unique(items: list[str]) -> list[str]:
+    out: list[str] = []
+    seen: set[str] = set()
+    for item in items:
+        key = str(item or "").strip()
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        out.append(key)
+    return out
+
+
+def _failed_checks(payload: dict[str, Any]) -> list[str]:
+    raw = payload.get("failed_checks") if isinstance(payload.get("failed_checks"), list) else []
+    return _unique([str(item or "").strip() for item in raw])
+
+
+def _failure_category(reason: str) -> str:
+    key = str(reason or "").strip().lower()
+    if key == "artifact_missing":
+        return "availability"
+    if key in FRESHNESS_CHECKS or "stale" in key:
+        return "freshness"
+    if key in SAMPLE_SUFFICIENCY_CHECKS:
+        return "sample_sufficiency"
+    return "artifact_health"
+
+
 def _check(path: Path, max_age_min: float, require_ok: bool) -> dict[str, Any]:
     payload = _load(path)
     ts = _parse_ts(payload.get("timestamp_utc"))
     now = datetime.now(timezone.utc)
     age_min = ((now - ts).total_seconds() / 60.0) if ts else 1e9
+    exists = path.exists()
     ok_field = bool(payload.get("ok", True))
-    ok = path.exists() and (age_min <= max_age_min) and ((not require_ok) or ok_field)
+    payload_failed_checks = _failed_checks(payload)
+    failure_reasons: list[str] = []
+    if not exists:
+        failure_reasons.append("artifact_missing")
+    if exists and age_min > max_age_min:
+        failure_reasons.append("artifact_stale")
+    if require_ok and not ok_field:
+        failure_reasons.extend(payload_failed_checks or ["artifact_not_ok"])
+    failure_reasons = _unique(failure_reasons)
+    failure_categories = _unique([_failure_category(reason) for reason in failure_reasons])
+    ok = exists and (age_min <= max_age_min) and ((not require_ok) or ok_field)
     return {
         "path": str(path),
-        "exists": path.exists(),
+        "exists": exists,
         "timestamp_utc": ts.isoformat() if ts else "",
         "age_minutes": round(float(age_min), 4),
         "ok_field": bool(ok_field),
+        "failed_checks": payload_failed_checks,
+        "failure_reasons": failure_reasons,
+        "failure_categories": failure_categories,
         "ok": bool(ok),
     }
 
@@ -138,18 +196,30 @@ def main() -> int:
     if args.auto_refresh and failed_initial:
         py = _python_bin()
         if "paper_replay" in failed_initial and PAPER_REPLAY_SCRIPT.exists():
-            refresh_steps.append(
-                _run_step(
-                    "refresh_paper_replay",
-                    [
-                        py,
-                        str(PAPER_REPLAY_SCRIPT),
-                        "--hours",
-                        str(max(int(args.paper_replay_refresh_hours), 1)),
-                        "--json",
-                    ],
-                )
+            paper_replay_initial = checks_initial.get("paper_replay", {})
+            failed_categories = list(paper_replay_initial.get("failure_categories") or [])
+            refresh_hours_plan = _paper_replay_refresh_hours_plan(
+                int(args.paper_replay_refresh_hours),
+                max(int(args.paper_replay_refresh_hours), 72),
             )
+            if "sample_sufficiency" not in failed_categories:
+                refresh_hours_plan = refresh_hours_plan[:1]
+            for refresh_hours in refresh_hours_plan:
+                refresh_steps.append(
+                    _run_step(
+                        f"refresh_paper_replay_{refresh_hours}h",
+                        [
+                            py,
+                            str(PAPER_REPLAY_SCRIPT),
+                            "--hours",
+                            str(refresh_hours),
+                            "--json",
+                        ],
+                    )
+                )
+                paper_replay_check = _check(paper_replay_file, max_age_minutes, require_ok)
+                if bool(paper_replay_check.get("ok", False)):
+                    break
         if "paper_reconciliation" in failed_initial and PAPER_RECON_SCRIPT.exists():
             refresh_steps.append(
                 _run_step(
@@ -167,11 +237,22 @@ def main() -> int:
         "paper_reconciliation": _check(paper_recon_file, max_age_minutes, require_ok),
     }
     failed = [k for k, v in checks.items() if not bool(v.get("ok", False))]
+    failure_categories = {
+        "availability": [name for name, check in checks.items() if "availability" in list(check.get("failure_categories") or [])],
+        "freshness": [name for name, check in checks.items() if "freshness" in list(check.get("failure_categories") or [])],
+        "sample_sufficiency": [name for name, check in checks.items() if "sample_sufficiency" in list(check.get("failure_categories") or [])],
+        "artifact_health": [name for name, check in checks.items() if "artifact_health" in list(check.get("failure_categories") or [])],
+    }
 
     out = {
         "timestamp_utc": datetime.now(timezone.utc).isoformat(),
         "ok": len(failed) == 0,
         "failed_checks": failed,
+        "availability_failed_checks": failure_categories["availability"],
+        "freshness_failed_checks": failure_categories["freshness"],
+        "sample_sufficiency_failed_checks": failure_categories["sample_sufficiency"],
+        "artifact_health_failed_checks": failure_categories["artifact_health"],
+        "failure_categories": failure_categories,
         "max_age_minutes": max_age_minutes,
         "require_ok": require_ok,
         "auto_prune_stale": bool(args.auto_prune_stale),

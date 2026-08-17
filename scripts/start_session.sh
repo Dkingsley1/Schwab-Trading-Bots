@@ -2,7 +2,9 @@
 set -euo pipefail
 
 PROJECT_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-PY="$PROJECT_ROOT/.venv312/bin/python"
+RUNTIME_PY_HELPER="$PROJECT_ROOT/scripts/ops/runtime_python.sh"
+OPS_PY="$PROJECT_ROOT/.venv314/bin/python"
+SHADOW_PY="$PROJECT_ROOT/.venv314/bin/python"
 DAY_UTC="$(date -u +%Y%m%d)"
 FORCE=0
 [[ "${1:-}" == "--force" ]] && FORCE=1
@@ -10,6 +12,16 @@ FORCE=0
 cd "$PROJECT_ROOT"
 
 [[ -f "$PROJECT_ROOT/scripts/load_ops_thresholds_env.sh" ]] && source "$PROJECT_ROOT/scripts/load_ops_thresholds_env.sh"
+[[ -f "$PROJECT_ROOT/scripts/ops/load_runtime_env.sh" ]] && source "$PROJECT_ROOT/scripts/ops/load_runtime_env.sh" live --quiet
+
+if [[ -x "$RUNTIME_PY_HELPER" ]]; then
+  OPS_PY="$(
+    BOT_RUNTIME_LANE="${BOT_OPS_RUNTIME_LANE:-${BOT_RUNTIME_LANE:-canary314}}" /bin/zsh "$RUNTIME_PY_HELPER"
+  )"
+  SHADOW_PY="$(
+    BOT_RUNTIME_LANE="${BOT_SHADOW_RUNTIME_LANE:-${BOT_RUNTIME_LANE:-canary314}}" /bin/zsh "$RUNTIME_PY_HELPER"
+  )"
+fi
 
 export MARKET_DATA_ONLY="${MARKET_DATA_ONLY:-1}"
 export ALLOW_ORDER_EXECUTION="${ALLOW_ORDER_EXECUTION:-0}"
@@ -21,7 +33,7 @@ export SHADOW_SYMBOLS_COMMOD_FX_INTL="${SHADOW_SYMBOLS_COMMOD_FX_INTL:-DBC,UNG,C
 
 export DIVIDEND_SYMBOLS="${DIVIDEND_SYMBOLS:-SCHD,VIG,DGRO,HDV,NOBL,VYM,DIVO,JEPI,JEPQ,SPYD,DIV,FDVV,SCHY,JNJ,PG,KO,PEP,MCD,MO,ABBV,ABT,MRK,PFE,T,VZ,O,VICI,MAIN,XOM,CVX,COP,KMI,MPC,PSX,VLO,EOG,SLB}"
 export DIVIDEND_QUALITY_SYMBOLS="${DIVIDEND_QUALITY_SYMBOLS:-SCHD,VIG,DGRO,HDV,NOBL,VYM,DIVO,SCHY,JNJ,PG,KO,PEP,MCD,ABBV,ABT,MRK,XOM,CVX,COP,O,VICI,MSFT,AAPL}"
-export BOND_SYMBOLS="${BOND_SYMBOLS:-TLT,IEF,SHY,TLH,TIP,LQD,HYG,JNK,BND,AGG,MUB,IGIB,USHY,FLOT,VGIT}"
+export BOND_SYMBOLS="${BOND_SYMBOLS:-TLT,IEF,SHY,TIP,LQD,HYG}"
 
 existing_launchers=$(ps -axo command | grep "scripts/run_parallel_shadows.py" | grep -v grep | wc -l | tr -d ' ')
 if [[ "$existing_launchers" -gt 0 && "$FORCE" -ne 1 ]]; then
@@ -29,16 +41,16 @@ if [[ "$existing_launchers" -gt 0 && "$FORCE" -ne 1 ]]; then
   exit 1
 fi
 
-"$PY" "$PROJECT_ROOT/scripts/capture_run_config.py"
-"$PY" "$PROJECT_ROOT/scripts/version_data_features.py"
-"$PY" "$PROJECT_ROOT/scripts/shadow_preflight.py" --broker schwab --simulate
-"$PY" "$PROJECT_ROOT/scripts/resource_guard.py"
-"$PY" "$PROJECT_ROOT/scripts/restore_state_probe.py" || true
-"$PY" "$PROJECT_ROOT/scripts/global_risk_killswitch.py" --auto-clear || true
+"$OPS_PY" "$PROJECT_ROOT/scripts/capture_run_config.py"
+"$OPS_PY" "$PROJECT_ROOT/scripts/version_data_features.py"
+"$OPS_PY" "$PROJECT_ROOT/scripts/shadow_preflight.py" --broker schwab --simulate
+"$OPS_PY" "$PROJECT_ROOT/scripts/resource_guard.py"
+"$OPS_PY" "$PROJECT_ROOT/scripts/restore_state_probe.py" || true
+"$OPS_PY" "$PROJECT_ROOT/scripts/global_risk_killswitch.py" --auto-clear || true
 
-"$PY" "$PROJECT_ROOT/scripts/link_jsonl_to_sql.py" --mode sqlite
-"$PY" "$PROJECT_ROOT/scripts/build_one_numbers_report.py" --day "$DAY_UTC"
-"$PY" "$PROJECT_ROOT/scripts/daily_auto_verify.py" --day "$DAY_UTC" || true
+"$OPS_PY" "$PROJECT_ROOT/scripts/ops/sql_link_shard_manager.py" --once --json
+"$OPS_PY" "$PROJECT_ROOT/scripts/build_one_numbers_report.py"
+"$OPS_PY" "$PROJECT_ROOT/scripts/daily_auto_verify.py" --day "$DAY_UTC" || true
 
 if [[ -f "$HOME/Library/LaunchAgents/com.dankingsley.shadow_watchdog.plist" ]]; then
   launchctl unload "$HOME/Library/LaunchAgents/com.dankingsley.shadow_watchdog.plist" >/dev/null 2>&1 || true
@@ -48,10 +60,10 @@ else
 fi
 
 sleep 2
-"$PY" "$PROJECT_ROOT/scripts/shadow_watchdog.py" --once --watch-coinbase --simulate-schwab --interval-seconds 30
-"$PY" "$PROJECT_ROOT/scripts/session_ready_check.py" || true
-"$PY" "$PROJECT_ROOT/scripts/event_bus_relay.py" --day "$DAY_UTC" || true
+"$SHADOW_PY" "$PROJECT_ROOT/scripts/shadow_watchdog.py" --once --watch-coinbase --simulate-schwab --interval-seconds 30
+"$OPS_PY" "$PROJECT_ROOT/scripts/session_ready_check.py" || true
+"$OPS_PY" "$PROJECT_ROOT/scripts/event_bus_relay.py" --day "$DAY_UTC" || true
 
-"$PY" "$PROJECT_ROOT/scripts/experiment_tracker.py" --name "runtime_session" --status "started" --notes "start_session" || true
+"$OPS_PY" "$PROJECT_ROOT/scripts/experiment_tracker.py" --name "runtime_session" --status "started" --notes "start_session" || true
 
 echo "session_start_complete"

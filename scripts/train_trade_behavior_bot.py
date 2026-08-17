@@ -93,6 +93,38 @@ def _safe_read_json(path: Path) -> Dict[str, Any]:
         return {}
 
 
+def _fresh_health_payload(payload: Dict[str, Any], *, max_age_hours: float) -> Tuple[Dict[str, Any], bool]:
+    if not isinstance(payload, dict) or not payload:
+        return {}, False
+    ts = _parse_ts_epoch(payload.get("timestamp_utc"), -1.0)
+    if ts <= 0:
+        return payload, False
+    age_hours = max(datetime.now(timezone.utc).timestamp() - ts, 0.0) / 3600.0
+    return payload, age_hours <= max(max_age_hours, 0.0)
+
+
+def _paper_feedback_summary(project_root: Path) -> Dict[str, Any]:
+    payload = _safe_read_json(project_root / "governance" / "health" / "paper_performance_latest.json")
+    sleeves = payload.get("sleeve_latest") if isinstance(payload.get("sleeve_latest"), list) else []
+    total_executions = 0
+    active_sleeves = 0
+    non_flat_strategies = 0
+    for row in sleeves:
+        if not isinstance(row, dict):
+            continue
+        executions = int(float(row.get("executions", 0) or 0))
+        total_executions += max(executions, 0)
+        if executions > 0:
+            active_sleeves += 1
+        non_flat_strategies += max(int(float(row.get("non_flat_strategy_count", 0) or 0)), 0)
+    return {
+        "artifact_present": bool(payload),
+        "total_executions": total_executions,
+        "active_sleeves": active_sleeves,
+        "non_flat_strategies": non_flat_strategies,
+    }
+
+
 def _softmax(z: np.ndarray) -> np.ndarray:
     z = z - np.max(z, axis=1, keepdims=True)
     ez = np.exp(z)
@@ -292,6 +324,28 @@ def _load_dataset(path: Path) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.nd
     meta["_skipped_dim_mismatch"] = int(skipped_dim_mismatch)
     meta["_feature_dim"] = int(X.shape[1]) if X.ndim == 2 and X.size else 0
     return X, y, w, ts, symbols, regimes, meta
+
+
+def _curated_dataset_guard(ds: Dict[str, Any]) -> Tuple[bool, str, Dict[str, Any]]:
+    source = ds.get("source") if isinstance(ds.get("source"), dict) else {}
+    dataset_kind = str(ds.get("dataset_kind") or "").strip().lower()
+    decision_sources = int(source.get("decision_files", 0) or 0) + int(source.get("decision_sql_files", 0) or 0)
+    governance_sources = int(source.get("governance_files", 0) or 0) + int(source.get("governance_sql_files", 0) or 0)
+    pnl_sources = int(source.get("pnl_attribution_files", 0) or 0) + int(source.get("pnl_sql_files", 0) or 0)
+
+    summary = {
+        "dataset_kind": dataset_kind,
+        "decision_sources": int(decision_sources),
+        "governance_sources": int(governance_sources),
+        "pnl_sources": int(pnl_sources),
+    }
+    if dataset_kind != "curated_decision_governance":
+        return False, "dataset_kind_not_curated", summary
+    if decision_sources <= 0:
+        return False, "decision_sources_missing", summary
+    if governance_sources <= 0:
+        return False, "governance_sources_missing", summary
+    return True, "ok", summary
 
 
 def _standardize_train_test(X: np.ndarray, train_idx: np.ndarray, test_idx: np.ndarray) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
@@ -1018,18 +1072,23 @@ def _rollback_schema_compatible(
     prev_dim = int(prev_schema.get("effective_dim", 0) or 0)
     if prev_dim <= 0:
         return False, "previous_model_dim_invalid"
-    if prev_dim != int(dataset_feature_dim):
+    dataset_dim = int(dataset_feature_dim)
+    if prev_dim > dataset_dim:
         return False, f"feature_dim_mismatch prev={prev_dim} dataset={int(dataset_feature_dim)}"
 
     if not require_feature_names:
         return True, "ok"
 
     prev_names = [str(x) for x in (prev_schema.get("feature_names") or []) if str(x)]
-    if len(prev_names) != int(dataset_feature_dim):
+    if len(prev_names) != prev_dim:
         return False, "previous_model_missing_feature_names"
-    if dataset_feature_names and (prev_names != dataset_feature_names):
-        return False, "feature_name_order_mismatch"
-    return True, "ok"
+    if dataset_feature_names:
+        expected_prefix = dataset_feature_names[:prev_dim]
+        if prev_names != expected_prefix:
+            return False, "feature_name_order_mismatch"
+    if prev_dim == dataset_dim:
+        return True, "ok"
+    return True, f"prefix_compatible prev={prev_dim} dataset={dataset_dim}"
 
 
 def _data_quality_gate(project_root: Path, *, require_walk_forward_ok: bool) -> Tuple[bool, List[str], Dict[str, Any]]:
@@ -1039,13 +1098,20 @@ def _data_quality_gate(project_root: Path, *, require_walk_forward_ok: bool) -> 
     coverage = _safe_read_json(health / "snapshot_coverage_latest.json")
     replay = _safe_read_json(health / "replay_preopen_sanity_latest.json")
     drift = _safe_read_json(health / "preopen_replay_drift_latest.json")
-    divergence = _safe_read_json(health / "data_source_divergence_latest.json")
+    divergence, divergence_fresh = _fresh_health_payload(
+        _safe_read_json(health / "data_source_divergence_latest.json"),
+        max_age_hours=float(os.getenv("TRADE_BEHAVIOR_PROMOTION_DIVERGENCE_MAX_AGE_HOURS", "8")),
+    )
 
     min_coverage_ratio = float(os.getenv("TRADE_BEHAVIOR_PROMOTION_MIN_COVERAGE_RATIO", "0.30"))
     max_divergence_spread = float(os.getenv("TRADE_BEHAVIOR_PROMOTION_MAX_DIVERGENCE_SPREAD", "0.04"))
     max_row_drift = float(os.getenv("TRADE_BEHAVIOR_PROMOTION_MAX_ROW_DRIFT", "1.2"))
     max_stale_drift = float(os.getenv("TRADE_BEHAVIOR_PROMOTION_MAX_STALE_DRIFT", "1.0"))
     require_replay_ok = _parse_bool(os.getenv("TRADE_BEHAVIOR_PROMOTION_REQUIRE_REPLAY_OK", "1"), default=True)
+    require_health_gate_clear = _parse_bool(os.getenv("TRADE_BEHAVIOR_PROMOTION_REQUIRE_HEALTH_GATE_CLEAR", "1"), default=True)
+    require_paper_feedback_floor = _parse_bool(os.getenv("TRADE_BEHAVIOR_PROMOTION_REQUIRE_PAPER_FEEDBACK_FLOOR", "1"), default=True)
+    min_paper_executions = max(int(float(os.getenv("TRADE_BEHAVIOR_PROMOTION_MIN_PAPER_EXECUTIONS", "24"))), 0)
+    min_paper_sleeves = max(int(float(os.getenv("TRADE_BEHAVIOR_PROMOTION_MIN_PAPER_SLEEVES", "3"))), 0)
 
     coverage_ratio = float(coverage.get("coverage_ratio", 0.0) or 0.0)
     if coverage and coverage_ratio < min_coverage_ratio:
@@ -1067,15 +1133,36 @@ def _data_quality_gate(project_root: Path, *, require_walk_forward_ok: bool) -> 
     if require_replay_ok and replay and (not replay_ok):
         reasons.append("replay_preopen_sanity_not_ok")
 
+    health_gates = _safe_read_json(project_root / "governance" / "health" / "health_gates_latest.json")
+    health_gate_triggered = bool(health_gates.get("hard_gate_triggered", False))
+    if require_health_gate_clear:
+        if not health_gates:
+            reasons.append("health_gate_artifact_missing")
+        elif health_gate_triggered:
+            reasons.append("health_gate_triggered")
+
     walk_forward = _safe_read_json(project_root / "governance" / "walk_forward" / "promotion_readiness_latest.json")
     if require_walk_forward_ok and walk_forward and (not bool(walk_forward.get("promote_ok", False))):
         reasons.append("walk_forward_promote_ok=false")
+
+    paper_feedback = _paper_feedback_summary(project_root)
+    if require_paper_feedback_floor:
+        if paper_feedback["total_executions"] < min_paper_executions:
+            reasons.append(
+                f"paper_feedback_executions={paper_feedback['total_executions']} < min={min_paper_executions}"
+            )
+        if paper_feedback["active_sleeves"] < min_paper_sleeves:
+            reasons.append(
+                f"paper_feedback_active_sleeves={paper_feedback['active_sleeves']} < min={min_paper_sleeves}"
+            )
 
     summary = {
         "coverage_ratio": coverage_ratio,
         "min_coverage_ratio": min_coverage_ratio,
         "worst_relative_spread": worst_relative_spread,
         "max_divergence_spread": max_divergence_spread,
+        "divergence_timestamp_utc": divergence.get("timestamp_utc", ""),
+        "divergence_fresh": divergence_fresh,
         "row_drift": row_drift,
         "max_row_drift": max_row_drift,
         "stale_drift": stale_drift,
@@ -1084,6 +1171,15 @@ def _data_quality_gate(project_root: Path, *, require_walk_forward_ok: bool) -> 
         "require_replay_ok": require_replay_ok,
         "walk_forward_required": bool(require_walk_forward_ok),
         "walk_forward_promote_ok": bool(walk_forward.get("promote_ok", False)) if walk_forward else None,
+        "health_gate_triggered": health_gate_triggered,
+        "require_health_gate_clear": require_health_gate_clear,
+        "paper_feedback_artifact_present": bool(paper_feedback.get("artifact_present", False)),
+        "paper_feedback_total_executions": int(paper_feedback.get("total_executions", 0) or 0),
+        "paper_feedback_active_sleeves": int(paper_feedback.get("active_sleeves", 0) or 0),
+        "paper_feedback_non_flat_strategies": int(paper_feedback.get("non_flat_strategies", 0) or 0),
+        "require_paper_feedback_floor": require_paper_feedback_floor,
+        "min_paper_executions": min_paper_executions,
+        "min_paper_sleeves": min_paper_sleeves,
     }
     return len(reasons) == 0, reasons, summary
 
@@ -1356,6 +1452,11 @@ def main() -> int:
         action=argparse.BooleanOptionalAction,
         default=_parse_bool(os.getenv("TRADE_BEHAVIOR_REQUIRE_FEATURE_NAMES", "1"), default=True),
     )
+    parser.add_argument(
+        "--require-curated-dataset",
+        action=argparse.BooleanOptionalAction,
+        default=_parse_bool(os.getenv("TRADE_BEHAVIOR_REQUIRE_CURATED_DATASET", "1"), default=True),
+    )
     parser.add_argument("--strict-promotion-gate", action=argparse.BooleanOptionalAction, default=_parse_bool(os.getenv("TRADE_BEHAVIOR_STRICT_PROMOTION_GATE", "0"), default=False))
     parser.add_argument("--require-walk-forward-ok", action=argparse.BooleanOptionalAction, default=_parse_bool(os.getenv("TRADE_BEHAVIOR_REQUIRE_WALK_FORWARD_OK", "0"), default=False))
     parser.add_argument("--max-abs-snapshot-weight", type=float, default=float(os.getenv("TRADE_BEHAVIOR_MAX_ABS_SNAPSHOT_WEIGHT", "1.25")))
@@ -1369,6 +1470,11 @@ def main() -> int:
     X, y, w, ts_epoch, symbols, regimes, ds = _load_dataset(dataset_path)
     if len(y) < 20:
         print(f"Not enough rows to train behavior model: {len(y)}")
+        return 2
+
+    curated_ok, curated_reason, curated_summary = _curated_dataset_guard(ds)
+    if args.require_curated_dataset and not curated_ok:
+        print(f"Curated dataset guard failed: {curated_reason}")
         return 2
 
     if args.split_mode == "time_purged":
@@ -1673,6 +1779,12 @@ def main() -> int:
         "test_rows": int(len(y_te)),
         "label_counts": label_counts,
         "dataset_skipped_dim_mismatch": int(ds.get("_skipped_dim_mismatch", 0) or 0),
+        "dataset_curated_guard": {
+            "enabled": bool(args.require_curated_dataset),
+            "ok": bool(curated_ok),
+            "reason": str(curated_reason),
+            "summary": curated_summary,
+        },
         "split": split_meta,
         "class_balance_factors": class_balance_factors,
         "class_regime_factors": class_regime_factors,

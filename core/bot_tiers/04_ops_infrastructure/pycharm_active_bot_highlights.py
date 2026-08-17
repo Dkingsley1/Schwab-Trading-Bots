@@ -1,0 +1,1 @@
+../../../scripts/ops/pycharm_active_bot_highlights.py

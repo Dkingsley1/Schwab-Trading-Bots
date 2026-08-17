@@ -1,0 +1,1 @@
+../../../scripts/ops/daily_verify_auto_remediation_bot.py

@@ -2,19 +2,22 @@
 set -euo pipefail
 
 PROJECT_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-PYTHON_BIN="$PROJECT_ROOT/.venv312/bin/python"
-RUN_SCRIPT="$PROJECT_ROOT/scripts/ops/project_timeline_report.py"
+PYTHON_BIN="$PROJECT_ROOT/.venv314/bin/python"
+RUN_SCRIPT="$PROJECT_ROOT/scripts/ops/run_project_timeline_autoupdate_launchd.sh"
 PLIST_PATH="$HOME/Library/LaunchAgents/com.dankingsley.project_timeline_autoupdate.plist"
 PRUNE_DAYS="${PROJECT_TIMELINE_PRUNE_OLDER_DAYS:-7}"
 PRUNE_KEEP_RUNS="${PROJECT_TIMELINE_PRUNE_KEEP_RUNS:-20}"
-UPDATE_SECONDS="${PROJECT_TIMELINE_UPDATE_SECONDS:-10}"
+UPDATE_SECONDS="${PROJECT_TIMELINE_UPDATE_SECONDS:-300}"
 ACTIVITY_HOURS="${PROJECT_TIMELINE_ACTIVITY_HOURS:-72}"
 ACTIVITY_LIMIT="${PROJECT_TIMELINE_ACTIVITY_LIMIT:-600}"
+PDF_AUTO_RENDER="${PROJECT_TIMELINE_AUTO_RENDER_PDF:-1}"
+ALLOW_GUI_PDF_RENDERER="${PROJECT_TIMELINE_ALLOW_GUI_PDF_RENDERER:-1}"
 LOG_DIR="$HOME/Library/Logs/schwab_trading_bot"
 OUT_LOG="$LOG_DIR/project_timeline_autoupdate.out.log"
 ERR_LOG="$LOG_DIR/project_timeline_autoupdate.err.log"
 
 mkdir -p "$HOME/Library/LaunchAgents" "$LOG_DIR"
+chmod +x "$RUN_SCRIPT"
 
 cat > "$PLIST_PATH" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
@@ -26,7 +29,6 @@ cat > "$PLIST_PATH" <<PLIST
 
   <key>ProgramArguments</key>
   <array>
-    <string>$PYTHON_BIN</string>
     <string>$RUN_SCRIPT</string>
     <string>--auto</string>
     <string>--json</string>
@@ -50,6 +52,10 @@ cat > "$PLIST_PATH" <<PLIST
     <string>/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
     <key>HOME</key>
     <string>$HOME</string>
+    <key>PROJECT_TIMELINE_AUTO_RENDER_PDF</key>
+    <string>$PDF_AUTO_RENDER</string>
+    <key>PROJECT_TIMELINE_ALLOW_GUI_PDF_RENDERER</key>
+    <string>$ALLOW_GUI_PDF_RENDERER</string>
   </dict>
 
   <key>RunAtLoad</key>
@@ -71,10 +77,6 @@ cat > "$PLIST_PATH" <<PLIST
     <string>$PROJECT_ROOT/tests</string>
     <string>$PROJECT_ROOT/governance/health</string>
     <string>$PROJECT_ROOT/governance/walk_forward</string>
-    <string>$PROJECT_ROOT/logs</string>
-    <string>$PROJECT_ROOT/data</string>
-    <string>$PROJECT_ROOT/exports/sql_reports</string>
-    <string>$PROJECT_ROOT/exports/reports</string>
   </array>
 
   <key>StandardOutPath</key>
