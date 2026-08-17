@@ -28,6 +28,12 @@ if [[ "${SQL_LINK_SERVICE_PAUSED_FOR_LOCAL_STORAGE:-0:l}" == "1" \
   exit 0
 fi
 
+if "$PYTHON_BIN" "$PROJECT_ROOT/scripts/ops/runtime_maintenance_hold.py" --json \
+  | "$PYTHON_BIN" -c 'import json,sys; raise SystemExit(0 if json.load(sys.stdin).get("active") else 1)'; then
+  print -r -- "sql_link_writer status=deferred reason=runtime_maintenance_hold"
+  exit 0
+fi
+
 if [[ -n "${SQL_LINK_SERVICE_SHARDS:-}" ]]; then
   "$PROJECT_ROOT/scripts/ops/run_guarded_maintenance.sh" sql_link_writer \
     "$PYTHON_BIN" "$PROJECT_ROOT/scripts/ops/sql_link_shard_manager.py"

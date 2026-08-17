@@ -20,7 +20,11 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from core.channel_queue import default_queue_db_path
-from core.runtime_maintenance import maintenance_hold_snapshot
+from core.runtime_maintenance import (
+    MAINTENANCE_HOLD_TOKEN_ENV,
+    maintenance_hold_snapshot,
+    maintenance_hold_token_authorized,
+)
 from core.runtime_python import resolve_runtime_python
 from core.sqlite_runtime import connect_sqlite, resolve_sqlite_runtime_settings
 from scripts import ops_data_plane
@@ -346,7 +350,7 @@ DEFAULT_SHARD_DEFS = {
         "hot_retention_trigger_growth_gb": 0.5,
         "hot_retention_trigger_rows": 100000,
         "hot_retention_hot_days": 1,
-        "hot_retention_hot_hours": 0,
+        "hot_retention_hot_hours": 6,
         "hot_retention_archive_period": "day",
         "hot_retention_archive_retention_days": 90,
         "hot_retention_vacuum_threshold_gb": 1.0,
@@ -1553,8 +1557,18 @@ def _write_service_progress(
     _write_json(PROGRESS_HEALTH, payload)
 
 
-def _cycle_boundary_maintenance_hold(project_root: Path = PROJECT_ROOT) -> dict[str, object]:
+def _maintenance_hold_authorized(hold: dict[str, object], *, token: str, once: bool) -> bool:
+    return bool(once and maintenance_hold_token_authorized(hold, token=token))
+
+
+def _cycle_boundary_maintenance_hold(
+    project_root: Path = PROJECT_ROOT,
+    *,
+    authorized_token: str = "",
+) -> dict[str, object]:
     hold = maintenance_hold_snapshot(project_root)
+    if _maintenance_hold_authorized(hold, token=authorized_token, once=True):
+        return {}
     return hold if bool(hold.get("active", False)) else {}
 
 
@@ -3720,7 +3734,13 @@ def main() -> int:
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args()
     maintenance_hold = maintenance_hold_snapshot(PROJECT_ROOT)
-    if bool(maintenance_hold.get("active", False)):
+    maintenance_hold_token = str(os.getenv(MAINTENANCE_HOLD_TOKEN_ENV, "") or "").strip()
+    maintenance_hold_authorized = _maintenance_hold_authorized(
+        maintenance_hold,
+        token=maintenance_hold_token,
+        once=bool(args.once),
+    )
+    if bool(maintenance_hold.get("active", False)) and not maintenance_hold_authorized:
         payload = {
             "ok": True,
             "overall_status": "guarded_hold",
@@ -3786,7 +3806,10 @@ def main() -> int:
     last_queue_retention_ts = 0.0
 
     while True:
-        boundary_hold = _cycle_boundary_maintenance_hold(PROJECT_ROOT)
+        boundary_hold = _cycle_boundary_maintenance_hold(
+            PROJECT_ROOT,
+            authorized_token=maintenance_hold_token if maintenance_hold_authorized else "",
+        )
         if boundary_hold:
             _write_service_progress(
                 cycle_started_utc=_now_utc(),

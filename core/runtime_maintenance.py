@@ -9,6 +9,7 @@ from typing import Any
 
 
 FLAG_NAME = "RUNTIME_MAINTENANCE_HOLD.flag"
+MAINTENANCE_HOLD_TOKEN_ENV = "SQL_LINK_SERVICE_MAINTENANCE_HOLD_TOKEN"
 
 
 def _utc_now() -> datetime:
@@ -82,6 +83,18 @@ def maintenance_hold_snapshot(project_root: str | Path, *, now_utc: datetime | N
         "ttl_seconds": int(payload.get("ttl_seconds", 0) or 0),
         "payload": payload,
     }
+
+
+def maintenance_hold_token_authorized(snapshot: dict[str, Any], *, token: str = "") -> bool:
+    expected = str(snapshot.get("token") or "").strip()
+    supplied = str(token or os.getenv(MAINTENANCE_HOLD_TOKEN_ENV, "") or "").strip()
+    return bool(
+        snapshot.get("active", False)
+        and snapshot.get("valid", False)
+        and expected
+        and supplied
+        and supplied == expected
+    )
 
 
 def engage_maintenance_hold(
