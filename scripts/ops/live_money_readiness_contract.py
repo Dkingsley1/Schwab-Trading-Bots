@@ -665,6 +665,7 @@ def build_payload(
     promotion_packet_ready = bool(promotion_packet_full_ready or managed_idle_promotion_packet_preclearance)
     source_overall = _as_dict(source_verification.get("overall"))
     soak_contract = _as_dict(storage.get("continuous_run_soak_contract"))
+    soak_history = _as_dict(soak_integrity.get("historical_soak_evidence"))
     live_release = _as_dict(live_runtime.get("release_contract"))
 
     source_confidence_score = _safe_float(source_overall.get("mean_source_confidence_score"), 0.0) * 100.0
@@ -753,11 +754,129 @@ def build_payload(
         and _grade_ok(profitability_firewall.get("hardening_economic_evidence_grade"), "A+")
         and profitability_firewall.get("promotion_evidence_ready", False)
     )
+    paper_debt_recovery = _as_dict(paper_profit.get("paper_debt_recovery_contract"))
+    paper_debt_recovery_ready = bool(
+        paper_debt_recovery
+        and paper_debt_recovery.get("debt_cleared", False)
+        and paper_debt_recovery.get("live_promotion_ready", False)
+    )
+    scaling_contract = _as_dict(
+        paper_profit.get("sleeve_strategy_profitability_scaling_contract")
+    )
+    scaling_binding = _as_dict(scaling_contract.get("candidate_binding"))
+    scaling_profiles = _as_dict(scaling_contract.get("profile_controls"))
+    validated_scaling_profiles = [
+        profile
+        for profile, row in scaling_profiles.items()
+        if isinstance(row, dict)
+        and str(row.get("tier") or "")
+        in {"validated_baseline", "scale_tier_1", "scale_tier_2"}
+        and not bool(row.get("block_new_entries", False))
+    ]
+    scaling_hard_limits = _as_dict(scaling_contract.get("hard_limits"))
+    scaling_max_multiplier = _safe_float(
+        scaling_contract.get("maximum_above_baseline_entry_size_multiplier_norm"),
+        99.0,
+    )
+    scaling_global_entry_cap = _safe_float(
+        scaling_contract.get("global_entry_size_cap_norm"),
+        99.0,
+    )
+    required_scaling_hard_limits = {
+        "never_scale_from_loss_recovery_pressure",
+        "never_use_martingale",
+        "never_average_down_for_recovery",
+        "never_scale_above_1_10x_from_profitability_evidence",
+        "portfolio_and_execution_risk_caps_remain_authoritative",
+    }
+    scaling_hard_limits_ready = all(
+        bool(scaling_hard_limits.get(limit, False))
+        for limit in required_scaling_hard_limits
+    )
+    sleeve_strategy_scaling_ready = bool(
+        scaling_contract.get("active", False)
+        and scaling_contract.get("mode") == "candidate_bound_sleeve_strategy_scaling_v1"
+        and scaling_contract.get("paper_only", False)
+        and not scaling_contract.get("live_execution_allowed", True)
+        and scaling_contract.get("source_ready", False)
+        and scaling_binding.get("candidate_binding_valid", False)
+        and scaling_contract.get("entry_only", False)
+        and scaling_contract.get("keep_sells_and_reduce_only_paths_open", False)
+        and scaling_contract.get("fail_closed_on_missing_or_mismatched_candidate_evidence", False)
+        and 0.0 < scaling_max_multiplier <= 1.10
+        and 0.0 <= scaling_global_entry_cap <= scaling_max_multiplier
+        and scaling_hard_limits_ready
+        and validated_scaling_profiles
+    )
+    sleeve_strategy_scaling_blockers = [
+        blocker
+        for blocker, blocked in (
+            ("sleeve_strategy_scaling_contract_missing", not scaling_contract),
+            (
+                "sleeve_strategy_scaling_mode_invalid",
+                bool(scaling_contract)
+                and scaling_contract.get("mode") != "candidate_bound_sleeve_strategy_scaling_v1",
+            ),
+            (
+                "sleeve_strategy_scaling_not_paper_only",
+                bool(scaling_contract) and not scaling_contract.get("paper_only", False),
+            ),
+            (
+                "sleeve_strategy_scaling_claims_live_authority",
+                bool(scaling_contract) and scaling_contract.get("live_execution_allowed", True),
+            ),
+            (
+                "sleeve_strategy_scaling_source_not_ready",
+                bool(scaling_contract) and not scaling_contract.get("source_ready", False),
+            ),
+            (
+                "sleeve_strategy_scaling_candidate_binding_invalid",
+                bool(scaling_contract) and not scaling_binding.get("candidate_binding_valid", False),
+            ),
+            (
+                "sleeve_strategy_scaling_not_entry_only",
+                bool(scaling_contract) and not scaling_contract.get("entry_only", False),
+            ),
+            (
+                "sleeve_strategy_scaling_exit_path_not_guaranteed",
+                bool(scaling_contract)
+                and not scaling_contract.get("keep_sells_and_reduce_only_paths_open", False),
+            ),
+            (
+                "sleeve_strategy_scaling_not_fail_closed",
+                bool(scaling_contract)
+                and not scaling_contract.get(
+                    "fail_closed_on_missing_or_mismatched_candidate_evidence",
+                    False,
+                ),
+            ),
+            (
+                "sleeve_strategy_scaling_cap_invalid",
+                bool(scaling_contract) and not 0.0 < scaling_max_multiplier <= 1.10,
+            ),
+            (
+                "sleeve_strategy_scaling_global_cap_invalid",
+                bool(scaling_contract)
+                and not 0.0 <= scaling_global_entry_cap <= scaling_max_multiplier,
+            ),
+            (
+                "sleeve_strategy_scaling_hard_limits_incomplete",
+                bool(scaling_contract) and not scaling_hard_limits_ready,
+            ),
+            (
+                "no_validated_candidate_bound_sleeve",
+                bool(scaling_contract) and not validated_scaling_profiles,
+            ),
+        )
+        if blocked
+    ]
     paper_profit_control_ready = bool(
         paper_profit
         and str(paper_profit.get("overall_status") or paper_profit.get("status") or "").strip().lower()
         in {"ready", "stable", "protective_tightening", "ok"}
         and _grade_ok(paper_profit_control_grade)
+        and paper_debt_recovery_ready
+        and sleeve_strategy_scaling_ready
     )
     replay_reasons = {
         str(item or "").strip()
@@ -877,7 +996,12 @@ def build_payload(
         _section(
             "paper_profitability_control",
             title="Paper Profitability Control",
-            grade=_minimum_grade(paper_profit_control_grade, profitability_economic_grade),
+            grade=_minimum_grade(
+                paper_profit_control_grade,
+                profitability_economic_grade,
+                "A+" if paper_debt_recovery_ready else "F",
+                "A+" if sleeve_strategy_scaling_ready else "F",
+            ),
             ready=bool(paper_profit_control_ready and profitability_firewall_ready),
             evidence={
                 "overall_status": paper_profit.get("overall_status") or paper_profit.get("status"),
@@ -900,6 +1024,24 @@ def build_payload(
                 ),
                 "promotion_evidence_ready": profitability_firewall.get("promotion_evidence_ready", False),
                 "firewall_blockers": profitability_firewall.get("blockers", []),
+                "paper_debt_recovery_state": paper_debt_recovery.get("state") or "missing",
+                "paper_debt_recovery_ready": paper_debt_recovery_ready,
+                "paper_debt_recovery_remaining_amount": paper_debt_recovery.get("remaining_debt_amount"),
+                "paper_debt_recovery_progress_norm": paper_debt_recovery.get("recovery_progress_norm"),
+                "paper_debt_recovery_promotion_blockers": paper_debt_recovery.get("promotion_blockers", []),
+                "sleeve_strategy_scaling_ready": sleeve_strategy_scaling_ready,
+                "sleeve_strategy_scaling_mode": scaling_contract.get("mode") or "missing",
+                "sleeve_strategy_scaling_candidate_binding": scaling_binding,
+                "sleeve_strategy_scaling_validated_profiles": sorted(validated_scaling_profiles),
+                "sleeve_strategy_scaling_global_entry_cap_norm": scaling_contract.get(
+                    "global_entry_size_cap_norm"
+                ),
+                "sleeve_strategy_scaling_maximum_multiplier_norm": scaling_contract.get(
+                    "maximum_above_baseline_entry_size_multiplier_norm"
+                ),
+                "sleeve_strategy_scaling_hard_limits": scaling_hard_limits,
+                "sleeve_strategy_scaling_hard_limits_ready": scaling_hard_limits_ready,
+                "sleeve_strategy_scaling_blockers": sleeve_strategy_scaling_blockers,
                 "paper_control_source_artifact": str(paper_profit_path),
             },
             source_artifact=str(profitability_firewall_path),
@@ -977,8 +1119,28 @@ def build_payload(
                 "forecast": soak_contract.get("forecast", {}),
                 "hardening_control_grade": soak_integrity.get("control_grade"),
                 "operational_capacity_grade": soak_integrity.get("operational_capacity_grade"),
+                "main_soak_elapsed_hours": soak_integrity.get("main_soak_elapsed_hours"),
+                "main_soak_elapsed_days": soak_integrity.get("main_soak_elapsed_days"),
+                "main_soak_progress_percent": soak_integrity.get("main_soak_progress_percent"),
+                "main_soak_includes_pre_reset_time": bool(
+                    soak_integrity.get("main_soak_includes_pre_reset_time", False)
+                ),
+                "main_soak_count_is_promotion_credit": bool(
+                    soak_integrity.get("main_soak_count_is_promotion_credit", False)
+                ),
                 "clean_window_elapsed_hours": soak_integrity.get("clean_window_elapsed_hours"),
+                "observed_window_elapsed_hours": soak_integrity.get("observed_window_elapsed_hours"),
                 "clean_720_hours_complete": soak_integrity.get("clean_720_hours_complete", False),
+                "historical_segmented_wall_clock_hours": soak_history.get(
+                    "historical_segmented_wall_clock_hours"
+                ),
+                "historical_segmented_wall_clock_days": soak_history.get(
+                    "historical_segmented_wall_clock_days"
+                ),
+                "historical_segment_count": soak_history.get("segment_count"),
+                "historical_counts_toward_clean_720_hours": bool(
+                    soak_history.get("counts_toward_current_clean_720_hours", False)
+                ),
                 "elapsed_evidence_grade": soak_elapsed_grade,
                 "capacity_is_not_elapsed_completion": True,
             },

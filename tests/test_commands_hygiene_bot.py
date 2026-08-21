@@ -237,11 +237,14 @@ def test_commands_hygiene_bot_authors_commands_surface_and_runbook(tmp_path: Pat
     assert "./scripts/ops/opsctl.sh paper-profitability-control --apply --json" in commands_text
     assert "./scripts/ops/opsctl.sh profitability-hardening --json" in commands_text
     assert "./scripts/ops/opsctl.sh profitability-evidence-firewall --json" in commands_text
+    assert "./scripts/ops/opsctl.sh profitability-self-assessment --json" in commands_text
+    assert "./scripts/ops/opsctl.sh counterfactual-replay --json" in commands_text
     assert "./scripts/ops/opsctl.sh profitability-independent-validator --json" in commands_text
     assert "./scripts/ops/opsctl.sh profitability-holdout-vault --json" in commands_text
     assert "./scripts/ops/opsctl.sh profitability-benchmark-capture --apply --json" in commands_text
     assert "./scripts/ops/opsctl.sh profitability-benchmark-hurdle --json" in commands_text
     assert "./scripts/ops/opsctl.sh multiple-testing --json" in commands_text
+    assert "./scripts/ops/opsctl.sh quantitative-challengers --json" in commands_text
     assert "./scripts/ops/opsctl.sh decay-monitor --json" in commands_text
     assert "./scripts/ops/opsctl.sh system-plumbing-control --json" in commands_text
     assert "./scripts/ops/opsctl.sh system-architecture-hardening --apply --json" in commands_text
@@ -253,9 +256,15 @@ def test_commands_hygiene_bot_authors_commands_surface_and_runbook(tmp_path: Pat
     assert 'refresh) print -r -- "Most Used" ;;' in runbook_text
     assert 'refresh) print -r -- "Live Feed Refreshes" ;;' not in runbook_text
     assert contract_payload["schema_version"] == commands_src.COMMAND_CONTRACT_SCHEMA_VERSION
-    assert contract_payload["entry_count"] == 195
+    assert contract_payload["entry_count"] == len(contract_payload["entries"])
+    assert "### Review system responsibility and runtime authority" in commands_text
+    assert "./scripts/ops/opsctl.sh system-role-contract --json" in commands_text
     assert "### Review ten-pillar production excellence" in commands_text
     assert "./scripts/ops/opsctl.sh production-excellence --json" in commands_text
+    assert "### Build the twenty-control investor readiness packet" in commands_text
+    assert "./scripts/ops/opsctl.sh investor-readiness --json" in commands_text
+    assert "### Review institutional capability and evidence gaps" in commands_text
+    assert "./scripts/ops/opsctl.sh institutional-capability-control --json" in commands_text
     assert "### Freeze or accept a production candidate" in commands_text
     assert "### Verify the durable live-order ledger" in commands_text
     assert contract_payload["contract_hash"] in commands_text

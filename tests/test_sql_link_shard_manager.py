@@ -46,6 +46,19 @@ def test_cycle_boundary_maintenance_hold_keeps_writer_running_without_hold(monke
     assert shard_manager._cycle_boundary_maintenance_hold(tmp_path) == {}
 
 
+def test_matching_token_authorizes_one_shot_manager_during_maintenance_hold(monkeypatch, tmp_path: Path) -> None:
+    hold = {"active": True, "valid": True, "token": "retention-token", "reason": "priority_retention"}
+    monkeypatch.setattr(shard_manager, "maintenance_hold_snapshot", lambda _root: hold)
+
+    assert shard_manager._maintenance_hold_authorized(hold, token="retention-token", once=True) is True
+    assert shard_manager._maintenance_hold_authorized(hold, token="wrong", once=True) is False
+    assert shard_manager._maintenance_hold_authorized(hold, token="retention-token", once=False) is False
+    assert shard_manager._cycle_boundary_maintenance_hold(
+        tmp_path,
+        authorized_token="retention-token",
+    ) == {}
+
+
 def test_child_python_inherits_manager_runtime(monkeypatch, tmp_path: Path) -> None:
     fake_parent = tmp_path / ".venv314" / "bin" / "python"
     fake_parent.parent.mkdir(parents=True, exist_ok=True)
@@ -609,6 +622,7 @@ def test_build_shards_separates_fast_trading_streams() -> None:
     assert "shadow_pnl_attribution_" in str(shards["crypto_shadow_attribution"]["path_contains"])
     assert "governance/channels/risk/" in str(shards["crypto_shadow_attribution"]["path_not_contains"])
     assert shards["crypto_shadow_attribution"]["merge_to_primary"] is False
+    assert shards["crypto_shadow_attribution"]["hot_retention_hot_hours"] == 6
     assert shards["runtime"]["include_streams"] == "governance"
     assert "governance/channels/runtime/" in str(shards["runtime"]["path_contains"])
     assert shards["runtime"]["max_lines_per_file"] == 12000

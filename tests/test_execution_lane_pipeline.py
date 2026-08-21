@@ -23,6 +23,12 @@ from core.execution_lane_pipeline import (
     publish_execution_intent,
     update_lane_health,
 )
+from core.institutional_decision_flow import (
+    apply_paper_decision_flow_control,
+    evaluate_decision,
+    load_policy,
+)
+from core.sleeve_strategy_specialization import attach_strategy_specialization
 
 
 @pytest.fixture(autouse=True)
@@ -205,6 +211,10 @@ def _write_json(path: Path, payload: dict) -> None:
 
 
 def _seed_gates(project_root: Path, *, promote_ok: bool, quality_ok: bool) -> None:
+    role_contract_source = Path(__file__).resolve().parents[1] / "config" / "system_role_contracts_v1.json"
+    role_contract_target = project_root / "config" / "system_role_contracts_v1.json"
+    role_contract_target.parent.mkdir(parents=True, exist_ok=True)
+    role_contract_target.write_text(role_contract_source.read_text(encoding="utf-8"), encoding="utf-8")
     _write_json(
         project_root / "governance" / "walk_forward" / "promotion_gate_latest.json",
         {
@@ -261,6 +271,133 @@ def _paper_consensus_metadata(bot_ids: list[str], *, segment: str = "core") -> d
             json.dumps(manifest, sort_keys=True, separators=(",", ":")).encode("utf-8")
         ).hexdigest(),
     }
+
+
+def _qualified_decision_flow_metadata(
+    *,
+    symbol: str = "SPY",
+    action: str = "BUY",
+    quantity: float = 1.0,
+    profile: str = "default",
+) -> dict:
+    policy = load_policy()
+    timestamp = datetime.now(timezone.utc).isoformat()
+    evaluation = evaluate_decision(
+        {
+            "timestamp_utc": timestamp,
+            "message_id": f"flow-{symbol}-{action}",
+            "run_id": "run-flow",
+            "snapshot_id": "snapshot-flow",
+            "broker": "schwab",
+            "shadow_profile": profile,
+            "shadow_domain": "equities",
+            "routing_lane": "default",
+            "symbol": symbol,
+            "action": action,
+            "master_action": action,
+            "master_intent_action": action,
+            "master_intent_score": 0.82 if action == "BUY" else 0.18,
+            "source_quality_score": 1.0,
+            "feature_freshness": {"ok": True},
+            "data_quality_features": {
+                "data_quality_quote_agreement_norm": 1.0,
+                "data_quality_missing_feature_ratio_norm": 0.0,
+            },
+            "market": {
+                "last_price": 100.0,
+                "spread_bps": 1.0,
+                "market_data_latency_ms": 20.0,
+                "market_impact_curve": {"1000": 0.4},
+            },
+            "market_micro_features": {
+                "market_micro_tradeability_score_norm": 0.95,
+                "market_micro_trend_persistence_norm": 0.80,
+                "market_micro_post_event_drift_norm": 0.75,
+                "market_micro_reversal_risk_norm": 0.10,
+            },
+            "grand_master_meta": {
+                "specialist_consensus": 0.80 if action == "BUY" else -0.80,
+                "sleeve_master_consensus": 0.75 if action == "BUY" else -0.75,
+                "directional_alignment": 0.70 if action == "BUY" else -0.70,
+                "master_disagreement": 0.10,
+                "quant_strategy_fit": 0.85,
+                "quant_data_confidence": 1.0,
+            },
+            "allocation_confidence": {
+                "allocation_confidence_norm": 0.90,
+                "allocation_conflict_norm": 0.10,
+                "portfolio_overlap_pressure_norm": 0.10,
+            },
+            "execution_guard": {"ok": True},
+            "execution_sim": {
+                "slippage_bps": 0.5,
+                "impact_bps": 0.2,
+                "fee_bps": 0.1,
+            },
+            "portfolio": {"lane_budget_mult": 1.0},
+            "portfolio_risk_engine": {"blocked": False},
+            "long_term_turnover_policy": {"blocked": False},
+            "circuit_breakers": {},
+            "broker_truth_reconcile": {"ok": True},
+            "position_context": {
+                "truth_available": True,
+                "current_quantity": 0.0,
+                "short_permission_confirmed": True,
+                "linked_leg_truth_ready": True,
+                "defined_risk_structure_ready": True,
+            },
+            "quantitative_evidence": {
+                "selection_bias_control": 0.90,
+                "independent_samples": 0.90,
+                "uncertainty_calibration": 0.90,
+                "signal_decay_fit": 0.90,
+                "payoff_asymmetry": 0.90,
+                "capacity_headroom": 0.90,
+                "crowding_residual": 0.90,
+                "tail_survival": 0.90,
+                "regime_stability": 0.90,
+            },
+            "predicted_edge_lower_confidence_bound_bps": 40.0,
+            "post_cost_samples": 100,
+            "post_cost_lower_confidence_bound": 0.01,
+        },
+        policy,
+    )
+    output_action, output_quantity, control = apply_paper_decision_flow_control(
+        target_mode="paper",
+        current_action=action,
+        quantity=quantity,
+        evaluation=evaluation,
+        policy=policy,
+    )
+    assert evaluation["qualified_shadow_candidate"] is True
+    assert (output_action, output_quantity) == (action, quantity)
+    metadata = {
+        "layer": "grand_master",
+        "source_profile": profile,
+        "shadow_domain": "equities",
+        "lifecycle_state": "",
+        "institutional_decision_flow": {
+            "policy_receipt": evaluation["policy_receipt"],
+            "evaluation": evaluation,
+            "control": control,
+        },
+    }
+    return attach_strategy_specialization(
+        {
+            **metadata,
+            "production_candidate_id": "pc-test-g1",
+        },
+        profile=profile,
+        raw_strategy="grand_master_bot",
+        features={
+            "market_regime_snapshot": {
+                "regime_state": "mixed_transition",
+            }
+        },
+        action=action,
+        quantity=quantity,
+    )
 
 
 def test_publish_execution_intent_enqueues_channel_message(tmp_path: Path) -> None:
@@ -349,6 +486,51 @@ def test_evaluate_live_promotion_respects_existing_gate_truth(tmp_path: Path) ->
     assert "promotion_quality_gate_blocked" in out["reasons"]
 
 
+def test_direct_live_execution_fails_closed_without_sleeve_policy_receipt(
+    tmp_path: Path,
+) -> None:
+    trader = BaseTrader(
+        "dummy_key",
+        "dummy_secret",
+        "https://127.0.0.1:8182",
+        mode="live",
+    )
+    trader.project_root = str(tmp_path)
+    configure_trader_for_lane(trader, "live")
+    message = ChannelMessage(
+        id=1,
+        channel=EXECUTION_PROMOTED_CHANNEL,
+        message_id="live-missing-flow",
+        parent_message_id="paper-parent",
+        run_id="run-live",
+        iter_id="iter-live",
+        source_path="",
+        payload={
+            "message_id": "live-missing-flow",
+            "intent_kind": "master",
+            "symbol": "SPY",
+            "action": "BUY",
+            "quantity": 1.0,
+            "strategy": "grand_master_bot",
+            "metadata": {"source_profile": "default"},
+        },
+        created_at=datetime.now(timezone.utc).isoformat(),
+    )
+
+    out = process_execution_intent(
+        project_root=str(tmp_path),
+        trader=trader,
+        mode="live",
+        message=message,
+    )
+
+    assert out["result"]["result_status"] == "LIVE_DECISION_FLOW_BLOCKED"
+    assert out["result"]["decision_flow_guard"]["allow_execute"] is False
+    assert "decision_flow_metadata_missing" in out["result"][
+        "decision_flow_guard"
+    ]["reasons"]
+
+
 def test_process_execution_intent_paper_emits_result_and_promoted_message(tmp_path: Path) -> None:
     _seed_gates(tmp_path, promote_ok=True, quality_ok=True)
     _write_json(
@@ -392,6 +574,7 @@ def test_process_execution_intent_paper_emits_result_and_promoted_message(tmp_pa
             "reasons": ["score_above_threshold"],
             "strategy": "grand_master_bot",
             "metadata": {
+                **_qualified_decision_flow_metadata(),
                 "snapshot_id": "snap-1",
                 "allow_live_promotion": True,
                 "runtime_lane": "default",

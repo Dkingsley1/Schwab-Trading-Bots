@@ -18,7 +18,7 @@ jobs:
           python-version: '3.14'
 
       - name: Install CLI smoke dependencies
-        run: python -m pip install --disable-pip-version-check "python-dotenv==1.2.2"
+        run: python -m pip install --disable-pip-version-check "python-dotenv==1.2.2" "pytest==9.0.3"
 
       - name: Python compile checks
         run: |
@@ -29,6 +29,8 @@ jobs:
             scripts/walk_forward_validate.py \
             scripts/walk_forward_promotion_gate.py \
             scripts/run_master_bot.py \
+            scripts/run_execution_lane.py \
+            scripts/shadow_watchdog.py \
             scripts/weekly_retrain.py \
             scripts/daily_auto_verify.py \
             scripts/promotion_readiness_summary.py \
@@ -49,6 +51,10 @@ jobs:
             scripts/ops/bot_profitability_scalability_control.py \
             scripts/ops/master_grandmaster_evidence_control.py \
             scripts/ops/control_surface_ownership.py \
+            scripts/ops/system_role_contract_control.py \
+            scripts/ops/process_watchdog.py \
+            scripts/ops/runtime_gate_dashboard.py \
+            scripts/ops/system_self_model.py \
             scripts/ops/chaos_drill_coordinator.py \
             scripts/ops/artifact_freshness_slo.py \
             scripts/ops/use_mode_compliance_guard.py \
@@ -69,7 +75,12 @@ jobs:
             scripts/ops/production_quality_slo_guard.py \
             scripts/ops/production_excellence_control.py \
             scripts/ops/live_order_ledger_control.py \
+            scripts/ops/live_canary_control.py \
             core/live_order_ledger.py \
+            core/live_canary_allowlist.py \
+            core/live_execution_controls.py \
+            core/execution_lane_pipeline.py \
+            core/system_role_contracts.py \
             core/bot_profitability_scalability.py \
             core/master_grandmaster_evidence.py \
             scripts/ops/production_recovery_drill_harness.py \
@@ -102,6 +113,7 @@ jobs:
           python scripts/ops/bot_profitability_scalability_control.py --help >/dev/null
           python scripts/ops/master_grandmaster_evidence_control.py --help >/dev/null
           python scripts/ops/control_surface_ownership.py --help >/dev/null
+          python scripts/ops/system_role_contract_control.py --help >/dev/null
           python scripts/ops/chaos_drill_coordinator.py --help >/dev/null
           python scripts/ops/artifact_freshness_slo.py --help >/dev/null
           python scripts/ops/use_mode_compliance_guard.py --help >/dev/null
@@ -140,6 +152,7 @@ jobs:
       - name: Resilience configuration validation
         run: |
           python -m json.tool config/control_surface_ownership_v1.json >/dev/null
+          python -m json.tool config/system_role_contracts_v1.json >/dev/null
           python -m json.tool config/bot_organization_v1.json >/dev/null
           python -m json.tool config/bot_profitability_scalability_v1.json >/dev/null
           python -m json.tool config/master_grandmaster_evidence_v2.json >/dev/null
@@ -149,12 +162,44 @@ jobs:
           python -m py_compile core/hierarchical_ensemble.py
           python -m py_compile core/master_grandmaster_evidence.py
           python -m json.tool config/production_resilience_v1.json >/dev/null
+          python -m json.tool config/live_canary_micro_policy_v1.json >/dev/null
+          python -m json.tool config/symbol_lifecycle_v1.json >/dev/null
+          python -m json.tool config/sleeve_strategy_expansion.json >/dev/null
+          python -m json.tool config/authoritative_systems_v1.json >/dev/null
+          python -m json.tool config/broker_capability_contracts_v1.json >/dev/null
+          python -m py_compile core/authoritative_systems.py
+          python -m py_compile core/brokers/capability_contract.py
+          python -m py_compile core/strategy_validity.py
+          python -m py_compile core/event_time_control.py
+          python -m py_compile core/causal_attribution.py
+          python -m py_compile core/paper_live_equivalence.py
+          python -m py_compile core/execution_scenarios.py
+          python -m py_compile scripts/ops/authoritative_systems_control.py
+
+      - name: Authoritative systems and execution semantics floor
+        run: |
+          python scripts/ops/authoritative_systems_control.py --out-file /tmp/authoritative_systems_control_latest.json --json >/dev/null
+          python -m pytest -q \
+            tests/test_authoritative_systems.py \
+            tests/test_broker_capability_contract.py \
+            tests/test_strategy_validity.py \
+            tests/test_event_time_control.py \
+            tests/test_causal_attribution.py \
+            tests/test_paper_live_equivalence.py \
+            tests/test_execution_scenarios.py \
+            tests/test_live_order_ledger.py
 
       - name: Hierarchical bot organization structural floor
         run: |
           python scripts/ops/bot_organization_control.py \
             --out-file /tmp/bot_organization_latest.json \
             --hierarchy-out governance/bot_organization/bot_hierarchy_latest.json \
+            --json >/dev/null
+
+      - name: System responsibility and authority structural floor
+        run: |
+          python scripts/ops/system_role_contract_control.py \
+            --out-file /tmp/system_role_contract_latest.json \
             --json >/dev/null
 
       - name: Bot profitability and scalability structural floor
@@ -264,6 +309,17 @@ jobs:
       - name: Production flow smoke
         run: |
           python scripts/ops/production_flow_smoke.py --json
+
+      - name: Canary and soak regression contracts
+        run: |
+          python -m pytest -q \
+            tests/test_live_canary_allowlist.py \
+            tests/test_live_execution_controls.py \
+            tests/test_system_role_contracts.py \
+            tests/test_live_canary_control.py \
+            tests/test_readiness_blocker_rollup.py \
+            tests/test_sleeve_ticker_universe_expansion.py \
+            tests/test_symbol_lifecycle.py
 
       - name: Uniform hardening structural floor
         run: |

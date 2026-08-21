@@ -1923,6 +1923,74 @@ def test_storage_efficiency_treats_tiny_raw_compaction_tail_as_manifest_watch(tm
     assert "raw_training_compaction_debt" not in contract["active_blockers"]
 
 
+def test_storage_efficiency_retention_relief_uses_configured_target(tmp_path: Path) -> None:
+    common = {
+        "project_root": tmp_path,
+        "severity": "stable",
+        "queue_watermarks": {"overall_status": "ready"},
+        "backlog_relief_contract": {"active": False, "overall_grade": "A+"},
+        "data_collection_storage_guard": {
+            "disk": {"available_gb": 510.0, "used_percent": 45.0},
+            "safe_space_recovery": {
+                "candidate_count": 0,
+                "candidate_gb": 0.0,
+                "selected_gb": 0.0,
+                "target_free_gb": 125.0,
+                "target_free_deficit_gb": 0.0,
+                "scan": {"unbacked_duplicate_count": 0, "unbacked_duplicate_gb": 0.0},
+            },
+            "duplicate_cleanup": {"candidate_count": 0, "candidate_gb": 0.0},
+        },
+        "raw_training_compaction": {
+            "raw_summary": {
+                "raw_jsonl_count": 0,
+                "eligible_training_source_count": 0,
+                "compression_candidate_count": 0,
+                "compression_candidate_gb": 0.0,
+                "local_fallback_reconciliation_count": 0,
+                "current_day_protected_count": 0,
+            }
+        },
+        "storage_mount": {"external_available": True, "storage_mode": "external"},
+        "route_drift": False,
+        "route_verified": True,
+        "route_verification_state": "ready",
+        "route_verification": {"mismatches": []},
+        "unresolved_split_brain_conflicts": 0,
+        "line_estimation": {},
+        "total_pending_lines": 0,
+        "core_pending_lines": 0,
+        "overlay_pressure_clear": True,
+    }
+
+    below_target = src._ingestion_storage_efficiency_contract(
+        **common,
+        storage_quota={"quota_summary": {"hard_breaches": 0, "soft_breaches": 0}, "lanes": []},
+        retention_debt_gb=0.025,
+    )
+    above_target = src._ingestion_storage_efficiency_contract(
+        **common,
+        storage_quota={"quota_summary": {"hard_breaches": 0, "soft_breaches": 0}, "lanes": []},
+        retention_debt_gb=0.251,
+    )
+    hard_quota_breach = src._ingestion_storage_efficiency_contract(
+        **common,
+        storage_quota={"quota_summary": {"hard_breaches": 1, "soft_breaches": 0}, "lanes": []},
+        retention_debt_gb=0.0,
+    )
+
+    assert below_target["overall_status"] == "ready"
+    assert below_target["quota_relief_required"] is False
+    assert below_target["metrics"]["retention_debt_gb"] == 0.025
+    assert below_target["metrics"]["retention_debt_target_gb"] == 0.25
+    assert below_target["metrics"]["retention_debt_over_target"] is False
+    assert above_target["quota_relief_required"] is True
+    assert above_target["metrics"]["retention_debt_over_target"] is True
+    assert "storage_quota_or_retention_relief" in above_target["active_blockers"]
+    assert hard_quota_breach["quota_relief_required"] is True
+    assert "storage_quota_or_retention_relief" in hard_quota_breach["active_blockers"]
+
+
 def test_storage_efficiency_accepts_expected_local_hot_sources_as_managed_debt(tmp_path: Path) -> None:
     contract = src._ingestion_storage_efficiency_contract(
         project_root=tmp_path,

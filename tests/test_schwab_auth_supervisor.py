@@ -285,6 +285,24 @@ def test_schwab_auth_supervisor_degrades_and_cleans_stale_helpers(tmp_path: Path
     assert any(row.get("action") == "kill_stale_auth_helper" for row in payload["attempts"])
 
 
+def test_auth_process_discovery_ignores_test_runners_and_substring_matches(monkeypatch) -> None:
+    class Result:
+        stdout = "\n".join(
+            [
+                "101 1 02:30 python /project/scripts/ops/schwab_auth_refresh.py --json",
+                "102 1 03:00 python -m pytest -q tests/test_schwab_auth_refresh.py",
+                "103 102 00:01 python /project/scripts/ops/schwab_auth_refresh.py --json",
+                "104 1 04:00 rg schwab_auth_refresh.py",
+            ]
+        )
+
+    monkeypatch.setattr(supervisor.subprocess, "run", lambda *args, **kwargs: Result())
+
+    rows = supervisor._list_auth_processes()
+
+    assert [row.pid for row in rows] == [101]
+
+
 def test_schwab_auth_supervisor_blocks_auth_errors_misclassified_as_symbol_failures(tmp_path: Path, monkeypatch) -> None:
     project_root = tmp_path / "project"
     health = project_root / "governance" / "health"

@@ -15,8 +15,74 @@ def _write_json(path: Path, payload: dict) -> None:
 def _seed_ready_artifacts(project_root: Path) -> None:
     now = datetime.now(timezone.utc).isoformat()
     health = project_root / "governance" / "health"
-    _write_json(health / "paper_profitability_control_latest.json", {"timestamp_utc": now, "overall_status": "ready", "raw_profitability_grade": "A"})
-    _write_json(health / "paper_runtime_profitability_controls_latest.json", {"timestamp_utc": now, "overall_status": "ready", "raw_profitability_grade": "A"})
+    debt_recovery = {
+        "state": "cleared_and_proven",
+        "debt_cleared": True,
+        "live_promotion_ready": True,
+        "baseline_debt_amount": 100.0,
+        "remaining_debt_amount": 0.0,
+        "recovery_progress_norm": 1.0,
+        "candidate_attribution": {
+            "candidate_id": "candidate-ready",
+            "sample_count": 40,
+            "observed_days": 5,
+            "total_candidate_attributed_pnl": 110.0,
+        },
+        "candidate_proof": {"ready": True},
+        "risk_budget": {"new_entries_paused": False},
+        "promotion_blockers": [],
+    }
+    scaling_contract = {
+        "active": True,
+        "mode": "candidate_bound_sleeve_strategy_scaling_v1",
+        "paper_only": True,
+        "live_execution_allowed": False,
+        "source_ready": True,
+        "entry_only": True,
+        "keep_sells_and_reduce_only_paths_open": True,
+        "fail_closed_on_missing_or_mismatched_candidate_evidence": True,
+        "global_entry_size_cap_norm": 1.0,
+        "maximum_above_baseline_entry_size_multiplier_norm": 1.10,
+        "candidate_binding": {
+            "candidate_id": "candidate-ready",
+            "candidate_binding_valid": True,
+        },
+        "profile_controls": {
+            "default": {
+                "tier": "validated_baseline",
+                "block_new_entries": False,
+            }
+        },
+        "above_baseline_ready_count": 0,
+        "scale_up_ready": False,
+        "hard_limits": {
+            "never_scale_from_loss_recovery_pressure": True,
+            "never_use_martingale": True,
+            "never_average_down_for_recovery": True,
+            "never_scale_above_1_10x_from_profitability_evidence": True,
+            "portfolio_and_execution_risk_caps_remain_authoritative": True,
+        },
+    }
+    _write_json(
+        health / "paper_profitability_control_latest.json",
+        {
+            "timestamp_utc": now,
+            "overall_status": "ready",
+            "raw_profitability_grade": "A",
+            "paper_debt_recovery_contract": debt_recovery,
+            "sleeve_strategy_profitability_scaling_contract": scaling_contract,
+        },
+    )
+    _write_json(
+        health / "paper_runtime_profitability_controls_latest.json",
+        {
+            "timestamp_utc": now,
+            "overall_status": "ready",
+            "raw_profitability_grade": "A",
+            "paper_debt_recovery_contract": debt_recovery,
+            "sleeve_strategy_profitability_scaling_contract": scaling_contract,
+        },
+    )
     _write_json(
         health / "paper_execution_truth_layer_latest.json",
         {
@@ -294,6 +360,86 @@ def test_live_canary_readiness_contract_can_clear_after_sustained_window(tmp_pat
     assert payload["ready_gate_count"] == payload["gate_count"]
     assert payload["required_live_money_canary_milestones_ready"] is True
     assert payload["ready_required_milestone_count"] == payload["required_milestone_count"]
+
+
+def test_live_canary_readiness_contract_blocks_uncleared_paper_recovery_balance(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    project_root = tmp_path / "project"
+    _seed_ready_artifacts(project_root)
+    health = project_root / "governance" / "health"
+    paper_profit = json.loads(
+        (health / "paper_profitability_control_latest.json").read_text(encoding="utf-8")
+    )
+    paper_profit["paper_debt_recovery_contract"] = {
+        "state": "recovering",
+        "debt_cleared": False,
+        "live_promotion_ready": False,
+        "baseline_debt_amount": 20_000.0,
+        "remaining_debt_amount": 12_000.0,
+        "recovery_progress_norm": 0.4,
+        "promotion_blockers": ["paper_recovery_balance_not_cleared"],
+    }
+    _write_json(health / "paper_profitability_control_latest.json", paper_profit)
+    monkeypatch.setattr(
+        src.source_mutation_guard,
+        "build_payload",
+        lambda _root: {"ok": True, "overall_status": "ready", "dirty_count": 0, "dirty_entries": []},
+    )
+    monkeypatch.setattr(
+        src.production_flow_smoke,
+        "build_payload",
+        lambda _root: {"ok": True, "overall_status": "ready", "failed_checks": []},
+    )
+
+    payload = src.build_payload(project_root)
+    gate = next(row for row in payload["gates"] if row["gate_id"] == "paper_debt_recovery_proof")
+
+    assert gate["ready"] is False
+    assert gate["evidence"]["remaining_debt_amount"] == 12_000.0
+    assert "paper_recovery_balance_not_cleared" in gate["blockers"]
+    assert payload["live_canary_money_ready"] is False
+
+
+def test_live_canary_readiness_contract_rejects_scaling_contract_with_live_authority(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    project_root = tmp_path / "project"
+    _seed_ready_artifacts(project_root)
+    health = project_root / "governance" / "health"
+    paper_profit = json.loads(
+        (health / "paper_profitability_control_latest.json").read_text(encoding="utf-8")
+    )
+    scaling = paper_profit["sleeve_strategy_profitability_scaling_contract"]
+    scaling["paper_only"] = False
+    scaling["live_execution_allowed"] = True
+    scaling["fail_closed_on_missing_or_mismatched_candidate_evidence"] = False
+    _write_json(health / "paper_profitability_control_latest.json", paper_profit)
+    monkeypatch.setattr(
+        src.source_mutation_guard,
+        "build_payload",
+        lambda _root: {"ok": True, "overall_status": "ready", "dirty_count": 0, "dirty_entries": []},
+    )
+    monkeypatch.setattr(
+        src.production_flow_smoke,
+        "build_payload",
+        lambda _root: {"ok": True, "overall_status": "ready", "failed_checks": []},
+    )
+
+    payload = src.build_payload(project_root)
+    gate = next(
+        row
+        for row in payload["gates"]
+        if row["gate_id"] == "candidate_bound_sleeve_strategy_scaling"
+    )
+
+    assert gate["ready"] is False
+    assert "sleeve_strategy_scaling_not_paper_only" in gate["blockers"]
+    assert "sleeve_strategy_scaling_claims_live_authority" in gate["blockers"]
+    assert "sleeve_strategy_scaling_not_fail_closed" in gate["blockers"]
+    assert payload["live_canary_money_ready"] is False
 
 
 def test_live_canary_readiness_contract_blocks_until_live_money_milestones_clear(tmp_path: Path, monkeypatch) -> None:

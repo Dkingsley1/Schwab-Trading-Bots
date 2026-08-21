@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 from datetime import datetime, timezone
 from pathlib import Path
@@ -72,11 +73,89 @@ def _write_json(path: Path, payload: dict[str, Any]) -> None:
     path.write_text(json.dumps(payload, ensure_ascii=True, indent=2), encoding="utf-8")
 
 
+def _source_receipt(path: Path, payload: dict[str, Any]) -> dict[str, Any]:
+    try:
+        digest = hashlib.sha256(path.read_bytes()).hexdigest()
+    except OSError:
+        digest = ""
+    return {
+        "path": str(path),
+        "present": bool(payload),
+        "timestamp_utc": str(payload.get("timestamp_utc") or ""),
+        "sha256": digest,
+    }
+
+
+def _declared_candidate_id(payload: dict[str, Any]) -> str:
+    binding = payload.get("candidate_binding") if isinstance(payload.get("candidate_binding"), dict) else {}
+    return str(
+        payload.get("candidate_id")
+        or binding.get("candidate_id")
+        or binding.get("valid_candidate_id")
+        or ""
+    ).strip()
+
+
+def _candidate_binding(
+    project_root: Path,
+    *,
+    source_payloads: dict[str, tuple[dict[str, Any], Path]],
+) -> dict[str, Any]:
+    state_path = project_root / "governance" / "runtime" / "production_candidate_state.json"
+    state = _load_json(state_path)
+    candidate_id = str(state.get("candidate_id") or "").strip()
+    declared = {
+        name: _declared_candidate_id(payload)
+        for name, (payload, _path) in source_payloads.items()
+        if _declared_candidate_id(payload)
+    }
+    mismatches = sorted(
+        name for name, declared_id in declared.items() if candidate_id and declared_id != candidate_id
+    )
+    source_receipts = {
+        name: _source_receipt(path, payload)
+        for name, (payload, path) in source_payloads.items()
+    }
+    source_receipts["production_candidate"] = _source_receipt(state_path, state)
+    evidence_scope = (
+        "candidate_bound"
+        if candidate_id and declared and not mismatches and all(value == candidate_id for value in declared.values())
+        else "historical_diagnostic"
+    )
+    return {
+        "candidate_id": candidate_id,
+        "generation": int(state.get("generation", 0) or 0),
+        "accepted_at_utc": str(state.get("accepted_at_utc") or ""),
+        "candidate_state_receipt_sha256": str(state.get("overall_sha256") or ""),
+        "identity_consistent": bool(candidate_id and not mismatches),
+        "declared_source_candidate_ids": declared,
+        "mismatch_sources": mismatches,
+        "evidence_scope": evidence_scope,
+        "safe_application_scope": "paper_only_tightening",
+        "valid_until_candidate_changes": True,
+        "source_receipts": source_receipts,
+        "policy": "historical diagnostics may tighten the current paper candidate but may never loosen, promote, or cross a candidate boundary",
+    }
+
+
 def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
-    label_audit = _load_json(project_root / "governance" / "health" / "training_label_audit_latest.json")
-    training_quality = _load_json(project_root / "governance" / "health" / "training_quality_control_latest.json")
-    bot_needs = _load_json(project_root / "governance" / "health" / "bot_needs_intelligence_latest.json")
-    existing_overrides = _load_json(DEFAULT_OVERRIDE_PATH if project_root == PROJECT_ROOT else project_root / "governance" / "health" / "calibration_abstention_overrides_latest.json")
+    health = project_root / "governance" / "health"
+    label_path = health / "training_label_audit_latest.json"
+    quality_path = health / "training_quality_control_latest.json"
+    bot_needs_path = health / "bot_needs_intelligence_latest.json"
+    override_path = health / "calibration_abstention_overrides_latest.json"
+    label_audit = _load_json(label_path)
+    training_quality = _load_json(quality_path)
+    bot_needs = _load_json(bot_needs_path)
+    existing_overrides = _load_json(override_path)
+    candidate_binding = _candidate_binding(
+        project_root,
+        source_payloads={
+            "training_label_audit": (label_audit, label_path),
+            "training_quality_control": (training_quality, quality_path),
+            "bot_needs_intelligence": (bot_needs, bot_needs_path),
+        },
+    )
     overacting = label_audit.get("active_overacting") if isinstance(label_audit.get("active_overacting"), list) else []
     underacting = label_audit.get("active_underacting") if isinstance(label_audit.get("active_underacting"), list) else []
     recommendations: list[dict[str, Any]] = []
@@ -198,9 +277,20 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
         calibration_confidence_score += 6.0
     calibration_confidence_score = min(max(round(calibration_confidence_score, 2), 0.0), 100.0)
     overall_status = "ready" if not recommendations and not family_overrides else "needs_tuning"
+    existing_binding = (
+        existing_overrides.get("candidate_binding")
+        if isinstance(existing_overrides.get("candidate_binding"), dict)
+        else {}
+    )
+    existing_candidate_bound = bool(
+        int(existing_overrides.get("schema_version", 0) or 0) >= 2
+        and str(existing_binding.get("valid_candidate_id") or "")
+        == str(candidate_binding.get("candidate_id") or "")
+        and bool(existing_binding.get("valid_until_candidate_changes", False))
+    )
     payload = {
         "timestamp_utc": datetime.now(timezone.utc).isoformat(),
-        "schema_version": 1,
+        "schema_version": 2,
         "ok": overall_status == "ready",
         "overall_status": overall_status,
         "overacting_count": len(overacting),
@@ -211,6 +301,16 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
         "override_state": {
             "bot_override_count": bot_override_count,
             "family_override_count": family_override_count,
+            "candidate_bound": existing_candidate_bound,
+        },
+        "candidate_binding": candidate_binding,
+        "application_contract": {
+            "paper_only": True,
+            "tightening_only": True,
+            "direct_loosen_allowed": False,
+            "candidate_change_invalidates_overrides": True,
+            "live_execution_allowed": False,
+            "grant_promotion": False,
         },
         "a_plus_contract": {
             "calibration_confidence_target": 90.0,
@@ -227,6 +327,46 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
     return payload
 
 
+def _candidate_id(control_payload: dict[str, Any]) -> str:
+    binding = control_payload.get("candidate_binding") if isinstance(control_payload.get("candidate_binding"), dict) else {}
+    return str(binding.get("candidate_id") or "")
+
+
+def _is_override_leaf(value: dict[str, Any]) -> bool:
+    return any(
+        key in value
+        for key in (
+            "mode",
+            "acted_prob_threshold_uplift",
+            "target_acceptance_rate",
+            "recommended_abstention_budget",
+            "valid_candidate_id",
+        )
+    )
+
+
+def _is_safe_tightening(value: dict[str, Any]) -> bool:
+    return bool(
+        str(value.get("mode") or "tighten").strip().lower() == "tighten"
+        and _safe_float(value.get("acted_prob_threshold_uplift"), 0.0) >= 0.0
+    )
+
+
+def _bind_tightening_rows(values: dict[str, Any], candidate_id: str) -> None:
+    for row in values.values():
+        if not isinstance(row, dict):
+            continue
+        if not _is_override_leaf(row):
+            _bind_tightening_rows(row, candidate_id)
+            continue
+        row["mode"] = "tighten"
+        row["acted_prob_threshold_uplift"] = round(
+            max(_safe_float(row.get("acted_prob_threshold_uplift"), 0.0), 0.0),
+            6,
+        )
+        row["valid_candidate_id"] = candidate_id
+
+
 def build_override_payload(control_payload: dict[str, Any], existing_overrides: dict[str, Any] | None = None) -> dict[str, Any]:
     recommendations = control_payload.get("recommendations") if isinstance(control_payload.get("recommendations"), list) else []
     family_recommendations = control_payload.get("family_recommendations") if isinstance(control_payload.get("family_recommendations"), list) else []
@@ -235,18 +375,61 @@ def build_override_payload(control_payload: dict[str, Any], existing_overrides: 
     bot_overrides: dict[str, dict[str, Any]] = {
         str(bot_id): dict(value)
         for bot_id, value in (existing.get("bot_overrides") or {}).items()
-        if isinstance(value, dict) and str(value.get("mode") or "").strip().lower() != "loosen"
+        if isinstance(value, dict)
+        and str(value.get("mode") or "tighten").strip().lower() == "tighten"
+        and _safe_float(value.get("acted_prob_threshold_uplift"), 0.0) >= 0.0
     }
     family_overrides: dict[str, dict[str, Any]] = {
         str(family): dict(value)
         for family, value in (existing.get("family_overrides") or {}).items()
-        if isinstance(value, dict) and str(value.get("mode") or "").strip().lower() != "loosen"
+        if isinstance(value, dict)
+        and str(value.get("mode") or "tighten").strip().lower() == "tighten"
+        and _safe_float(value.get("acted_prob_threshold_uplift"), 0.0) >= 0.0
     }
+    regime_overrides: dict[str, Any] = {}
+    raw_regime_overrides = existing.get("regime_overrides") or {}
+    if isinstance(raw_regime_overrides, dict):
+        for family_or_key, value in raw_regime_overrides.items():
+            if not isinstance(value, dict):
+                continue
+            if _is_override_leaf(value):
+                if _is_safe_tightening(value):
+                    regime_overrides[str(family_or_key)] = dict(value)
+                else:
+                    retired_overrides.append(
+                        {
+                            "scope": "regime",
+                            "key": str(family_or_key),
+                            "reason": "unsafe_direct_loosen_retired",
+                        }
+                    )
+                continue
+            nested: dict[str, Any] = {}
+            for regime, row in value.items():
+                if not isinstance(row, dict):
+                    continue
+                if _is_safe_tightening(row):
+                    nested[str(regime)] = dict(row)
+                else:
+                    retired_overrides.append(
+                        {
+                            "scope": "regime",
+                            "key": f"{family_or_key}:{regime}",
+                            "reason": "unsafe_direct_loosen_retired",
+                        }
+                    )
+            if nested:
+                regime_overrides[str(family_or_key)] = nested
     for scope, values in (("bot", existing.get("bot_overrides") or {}), ("family", existing.get("family_overrides") or {})):
         if not isinstance(values, dict):
             continue
         for key, value in values.items():
-            if isinstance(value, dict) and str(value.get("mode") or "").strip().lower() == "loosen":
+            if not isinstance(value, dict):
+                continue
+            if (
+                str(value.get("mode") or "").strip().lower() == "loosen"
+                or _safe_float(value.get("acted_prob_threshold_uplift"), 0.0) < 0.0
+            ):
                 retired_overrides.append({"scope": scope, "key": str(key), "reason": "unsafe_direct_loosen_retired"})
 
     for row in recommendations:
@@ -265,6 +448,7 @@ def build_override_payload(control_payload: dict[str, Any], existing_overrides: 
             "acted_prob_threshold_uplift": round(uplift if mode == "tighten" else -uplift, 6),
             "target_acceptance_rate": round(_safe_float(row.get("target_acceptance_rate"), 0.0), 6),
             "recommended_abstention_budget": round(_safe_float(row.get("recommended_abstention_budget"), 0.0), 6),
+            "valid_candidate_id": _candidate_id(control_payload),
         }
 
     for row in family_recommendations:
@@ -282,15 +466,37 @@ def build_override_payload(control_payload: dict[str, Any], existing_overrides: 
             "acted_prob_threshold_uplift": round(uplift if mode == "tighten" else -uplift, 6),
             "recommended_abstention_budget": round(_safe_float(row.get("recommended_abstention_budget"), 0.0), 6),
             "source_profile": str(row.get("source_profile") or ""),
+            "valid_candidate_id": _candidate_id(control_payload),
         }
+
+    candidate_binding = (
+        dict(control_payload.get("candidate_binding"))
+        if isinstance(control_payload.get("candidate_binding"), dict)
+        else {}
+    )
+    candidate_binding["valid_candidate_id"] = str(candidate_binding.get("candidate_id") or "")
+    candidate_binding["valid_candidate_generation"] = int(candidate_binding.get("generation", 0) or 0)
+    candidate_binding["valid_until_candidate_changes"] = True
+    valid_candidate_id = str(candidate_binding.get("valid_candidate_id") or "")
+    for values in (bot_overrides, family_overrides, regime_overrides):
+        _bind_tightening_rows(values, valid_candidate_id)
 
     return {
         "timestamp_utc": datetime.now(timezone.utc).isoformat(),
-        "schema_version": 1,
+        "schema_version": 2,
         "bot_overrides": bot_overrides,
         "family_overrides": family_overrides,
+        "regime_overrides": regime_overrides,
+        "candidate_binding": candidate_binding,
         "retired_overrides": retired_overrides,
         "direct_loosen_policy": "never_apply_without_counterfactual_replay_and_positive_post_cost_expectancy",
+        "application_contract": {
+            "paper_only": True,
+            "tightening_only": True,
+            "candidate_change_invalidates_overrides": True,
+            "live_execution_allowed": False,
+            "grant_promotion": False,
+        },
         "recommended_actions": _ordered_unique(
             [
                 "apply per-bot threshold uplifts first for active overacting bots",
@@ -319,6 +525,12 @@ def main() -> int:
         payload["applied_override_summary"] = {
             "bot_override_count": len(override_payload.get("bot_overrides") or {}),
             "family_override_count": len(override_payload.get("family_overrides") or {}),
+            "regime_override_count": len(override_payload.get("regime_overrides") or {}),
+            "valid_candidate_id": str(
+                (override_payload.get("candidate_binding") or {}).get("valid_candidate_id")
+                if isinstance(override_payload.get("candidate_binding"), dict)
+                else ""
+            ),
         }
     out_path = Path(args.out_file).expanduser()
     _write_json(out_path, payload)

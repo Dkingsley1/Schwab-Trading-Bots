@@ -12,10 +12,13 @@ from typing import Any, Dict, Optional
 
 from core.accountability import safe_append_jsonl, safe_write_json_atomic
 from core.channel_queue import ChannelMessage, ChannelQueue, default_queue_db_path
+from core.causal_attribution import build_execution_trace, ensure_trace_context
+from core.institutional_decision_flow import evaluate_execution_policy_guard
 from core.profitability_hardening import (
     PAPER_EXECUTION_AUTHORITY_VERSION,
     evaluate_paper_execution_authority,
 )
+from core.system_role_contracts import RoleAuthorityError, component_action_guard
 
 
 EXECUTION_INTENT_CHANNEL = "execution_intent"
@@ -130,6 +133,7 @@ def _execution_transport_payload(channel: str, payload: Dict[str, Any]) -> Dict[
         "source_features_sha256": hashlib.sha256(encoded_features.encode("utf-8")).hexdigest(),
         "canonical_evidence_policy": "full_features_remain_in_source_decision_telemetry",
     }
+    row["trace_context"] = ensure_trace_context(row)
     return row
 
 
@@ -886,6 +890,17 @@ def evaluate_live_promotion(
     bot_id = _extract_bot_id(intent)
     reasons: list[str] = []
 
+    decision_flow_guard = evaluate_execution_policy_guard(
+        intent=intent,
+        target_mode="live",
+    )
+    if not bool(decision_flow_guard.get("allow_execute", False)):
+        reasons.extend(
+            f"decision_flow:{reason}"
+            for reason in (decision_flow_guard.get("reasons") or [])
+        )
+        reasons.append("decision_flow_live_parity_blocked")
+
     if not _safe_bool(metadata.get("allow_live_promotion", intent_kind == "master")):
         reasons.append("intent_marked_paper_only")
 
@@ -986,6 +1001,7 @@ def evaluate_live_promotion(
             "deleted_from_rotation": bool(registry_row.get("deleted_from_rotation", False)) if registry_row else None,
         },
         "execution_gateway": gateway,
+        "decision_flow_guard": decision_flow_guard,
     }
 
 
@@ -1056,6 +1072,17 @@ def process_execution_intent(
 ) -> Dict[str, Any]:
     intent = dict(message.payload or {})
     kwargs = intent_to_decision_kwargs(intent)
+    decision_flow_guard = evaluate_execution_policy_guard(
+        intent=intent,
+        target_mode=mode,
+    )
+    if bool(decision_flow_guard.get("required", False)) and bool(
+        decision_flow_guard.get("allow_execute", False)
+    ):
+        kwargs["action"] = str(decision_flow_guard.get("action") or kwargs["action"])
+        kwargs["quantity"] = _safe_float(
+            decision_flow_guard.get("quantity"), kwargs["quantity"]
+        )
     paper_standard_gateway: Dict[str, Any] = {}
     if str(mode).strip().lower() == "paper":
         paper_standard_gateway = evaluate_paper_standard_gateway(
@@ -1073,6 +1100,15 @@ def process_execution_intent(
             "reason": "paper_live_data_standard_blocked",
             "paper_standard_gateway": paper_standard_gateway,
         }
+    elif bool(decision_flow_guard.get("required", False)) and not bool(
+        decision_flow_guard.get("allow_execute", False)
+    ):
+        normalized_mode = str(mode).strip().upper() or "UNKNOWN"
+        result = {
+            "status": f"{normalized_mode}_DECISION_FLOW_BLOCKED",
+            "reason": "decision_flow_policy_guard_blocked",
+            "decision_flow_guard": decision_flow_guard,
+        }
     elif str(mode).strip().lower() == "live" and not bool(gateway.get("allow_execute", False)):
         result = {
             "status": "LIVE_GATEWAY_BLOCKED",
@@ -1080,9 +1116,36 @@ def process_execution_intent(
             "execution_gateway": gateway,
         }
     else:
-        result = trader.execute_decision(**kwargs)
+        normalized_mode = str(mode).strip().lower()
+        component_id = "paper_execution_gateway" if normalized_mode == "paper" else "live_execution_gateway"
+        action = "paper_submit" if normalized_mode == "paper" else "live_submit"
+        state_domain = "paper_order_submission" if normalized_mode == "paper" else "live_order_submission"
+        try:
+            with component_action_guard(
+                project_root,
+                component_id=component_id,
+                action=action,
+                state_domain=state_domain,
+            ) as authority:
+                result = trader.execute_decision(**kwargs)
+                result.setdefault("system_role_authority", authority)
+        except RoleAuthorityError as exc:
+            result = {
+                "status": "ROLE_AUTHORITY_BLOCKED",
+                "reason": str(exc) or "role_authority_denied",
+                "component_id": component_id,
+                "action": action,
+                "state_domain": state_domain,
+            }
     if str(mode).strip().lower() == "paper":
         _annotate_paper_realism(intent, result)
+
+    causal_trace = build_execution_trace(
+        intent=intent,
+        result=result,
+        gateway=gateway,
+        mode=str(mode),
+    )
 
     result_payload = {
         "timestamp_utc": _now_utc(),
@@ -1096,6 +1159,10 @@ def process_execution_intent(
         "result": result,
         "execution_gateway": gateway,
         "paper_standard_gateway": paper_standard_gateway,
+        "decision_flow_guard": decision_flow_guard,
+        "trace_context": causal_trace["trace_context"],
+        "causal_trace": causal_trace,
+        "causal_attribution": causal_trace["attribution"],
     }
     publish_execution_result(
         project_root=project_root,
@@ -1118,6 +1185,7 @@ def process_execution_intent(
             "paper_result_status": str(result.get("status") or ""),
             "promotion": promotion,
             "execution_gateway": gateway,
+            "decision_flow_guard": decision_flow_guard,
         }
         publish_execution_promotion(
             project_root=project_root,

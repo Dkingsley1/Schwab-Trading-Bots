@@ -18,17 +18,17 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from core.central_bank_liquidity import (
+from core.central_bank_liquidity import (  # noqa: E402
     CENTRAL_BANK_LIQUIDITY_FEATURE_KEYS,
     assess_central_bank_liquidity_context,
 )
-from core.global_central_bank_context import (
+from core.global_central_bank_context import (  # noqa: E402
     CENTRAL_BANK_CROSS_SOURCE_FEATURE_KEYS,
     GLOBAL_CENTRAL_BANK_FEATURE_KEYS,
     assess_central_bank_cross_source_context,
     assess_global_central_bank_context,
 )
-from core.decision_context_mesh import (
+from core.decision_context_mesh import (  # noqa: E402
     DECISION_CONTEXT_MESH_FEATURE_KEYS,
     assess_decision_context_mesh,
 )
@@ -572,6 +572,8 @@ def _crypto_market_row(health_dir: Path, now: datetime) -> dict[str, Any]:
     compared_assets = int(payload.get("compared_assets", 0) or 0)
     ok_sources = int(payload.get("ok_source_count", 0) or 0)
     total_sources = int(payload.get("source_count", 0) or 0)
+    market_ok_sources = int(payload.get("market_ok_source_count", ok_sources) or 0)
+    market_total_sources = int(payload.get("market_source_count", total_sources) or 0)
     if compared_assets <= 0:
         notes.append("no_cross_provider_overlap")
     if ok_sources < total_sources:
@@ -585,7 +587,8 @@ def _crypto_market_row(health_dir: Path, now: datetime) -> dict[str, Any]:
         STATUS_CROSS_VERIFIED
         if bool(payload.get("ok", False))
         and compared_assets >= 3
-        and ok_sources >= _minimum_ok_sources(total_sources, floor=5, tolerate_failures=2, min_ratio=0.70)
+        and market_ok_sources
+        >= _minimum_ok_sources(market_total_sources, floor=5, tolerate_failures=2, min_ratio=0.70)
         and fresh
         else STATUS_SINGLE_UNVERIFIED
     )
@@ -606,6 +609,8 @@ def _crypto_market_row(health_dir: Path, now: datetime) -> dict[str, Any]:
             "tracked_assets": int(payload.get("tracked_assets", 0) or 0),
             "ok_sources": ok_sources,
             "total_sources": total_sources,
+            "market_ok_sources": market_ok_sources,
+            "market_total_sources": market_total_sources,
             "compared_assets": compared_assets,
             "warning_count": warning_count,
             "sources": {

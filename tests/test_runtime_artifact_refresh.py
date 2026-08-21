@@ -526,12 +526,17 @@ def test_runtime_artifact_refresh_profitability_scope_includes_every_epoch_input
     assert "source_verification_verified" in names
     assert "profitability_hardening_control" in names
     assert "profitability_evidence_firewall" in names
+    assert "profitability_self_assessment" in names
     assert "paper_live_data_standard" in names
     assert "control_surface_ownership" in names
+    assert "system_role_contract" in names
     firewall = next(row for row in selected if row["name"] == "profitability_evidence_firewall")
     assert set(firewall["depends_on"]) <= names
+    assessment = next(row for row in selected if row["name"] == "profitability_self_assessment")
+    assert set(assessment["depends_on"]) <= names
     freshness = next(row for row in selected if row["name"] == "artifact_freshness_slo_post_master")
     assert "control_surface_ownership" in freshness["depends_on"]
+    assert "system_role_contract" in freshness["depends_on"]
 
 
 def test_runtime_artifact_refresh_requires_secondary_outputs_from_same_producer_to_be_fresh(tmp_path: Path) -> None:
@@ -915,8 +920,19 @@ def test_runtime_artifact_refresh_step_specs_include_training_storage_and_harden
     assert "promotion_autopilot_packet" in names
     assert "source_verification" in names
     assert "capability_materialization" in names
+    assert "tradingeconomics_route_context_refresh" in names
+    assert "options_flow_route_context_refresh" in names
+    assert names.index("tradingeconomics_route_context_refresh") < names.index("collector_contracts")
+    assert names.index("options_flow_route_context_refresh") < names.index("collector_contracts")
+    assert next(
+        row for row in specs if row["name"] == "tradingeconomics_route_context_refresh"
+    )["optional"] is True
+    assert next(
+        row for row in specs if row["name"] == "options_flow_route_context_refresh"
+    )["optional"] is True
     assert names.index("source_verification_verified") < names.index("capability_materialization")
     assert names.index("capability_materialization") < names.index("collector_capability_control")
+    assert "sleeve_ingestion_production_control_terminal" in names
     assert "paper_performance" in names
     assert "paper_live_data_standard" in names
     assert "paper_profitability_control" in names
@@ -948,6 +964,38 @@ def test_runtime_artifact_refresh_step_specs_include_training_storage_and_harden
     assert "market_cycle_extraction_engine" in names
     assert "chrome_headless_guard" in names
     assert "multiple_testing_guard" in names
+    assert "sleeve_strategy_specialization_verified" in names
+    assert "quantitative_challenger_verified" in names
+    assert "calibration_abstention_control_verified" in names
+    assert "profitability_self_assessment" in names
+    assert "institutional_capability_control" in names
+    assert "authoritative_systems_control" in names
+    assert "paper_live_equivalence" in names
+    assert names.index("paper_performance_verified") < names.index(
+        "sleeve_strategy_specialization_verified"
+    )
+    assert names.index("paper_performance_verified") < names.index(
+        "quantitative_challenger_verified"
+    )
+    assert names.index("multiple_testing_guard_verified") < names.index(
+        "institutional_capability_control"
+    )
+    institutional = next(
+        row for row in specs if row["name"] == "institutional_capability_control"
+    )
+    assert {
+        "source_verification_verified",
+        "collector_capability_control",
+        "independent_fill_evidence_acquisition_verified",
+        "paper_execution_calibration_verified",
+        "sleeve_strategy_specialization_verified",
+        "quantitative_challenger_verified",
+        "multiple_testing_guard_verified",
+        "system_role_contract",
+        "control_surface_ownership",
+        "live_order_ledger_control",
+        "risk_service_boundary",
+    } == set(institutional["depends_on"])
     assert "decay_monitor" in names
     assert "execution_queue_stress" in names
     assert "profitability_independent_validator" in names
@@ -1149,7 +1197,12 @@ def test_runtime_artifact_refresh_step_specs_include_training_storage_and_harden
     assert names.index("runtime_paper_regression_guard_terminal") < names.index("halt_trigger_control_plane_terminal")
     assert names.index("halt_trigger_control_plane_terminal") < names.index("coordination_state_control_terminal")
     assert names.index("coordination_state_control_terminal") < names.index("health_fast_terminal")
-    assert names.index("health_fast_terminal") < names.index("unattended_soak_readiness_terminal")
+    assert names.index("health_fast_terminal") < names.index(
+        "sleeve_ingestion_production_control_terminal"
+    )
+    assert names.index("sleeve_ingestion_production_control_terminal") < names.index(
+        "unattended_soak_readiness_terminal"
+    )
     assert names.index("unattended_soak_readiness_terminal") < names.index("one_numbers_regression_guard_terminal")
     assert names.index("one_numbers_regression_guard_terminal") < names.index("grade_regression_guard_terminal")
     assert names.index("grade_regression_guard_terminal") < names.index("section_grade_guard_terminal")

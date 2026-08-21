@@ -15,7 +15,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from scripts import ops_data_plane
+from scripts import ops_data_plane  # noqa: E402
 
 HEALTH_ROOT = PROJECT_ROOT / "governance" / "health"
 EXTERNAL_CONTEXT_ROOT = PROJECT_ROOT / "exports" / "external_context"
@@ -30,6 +30,10 @@ COLLECTOR_SPECS = [
         "freshness_minutes": 1440,
         "required": False,
         "safe_to_degrade": True,
+        "collector_class": "source_context",
+        "data_plane_key": "economic_context",
+        "evidence_domains": ["source_verification", "training_models", "profitability_research"],
+        "owner_command": ["./scripts/ops/opsctl.sh", "tradingeconomics-sync", "--json"],
     },
     {
         "name": "bls_census",
@@ -38,6 +42,10 @@ COLLECTOR_SPECS = [
         "freshness_minutes": 1440,
         "required": False,
         "safe_to_degrade": True,
+        "collector_class": "source_context",
+        "data_plane_key": "economic_context",
+        "evidence_domains": ["source_verification", "training_models", "profitability_research"],
+        "owner_command": ["./scripts/ops/opsctl.sh", "macro-context-sync", "--json"],
     },
     {
         "name": "official_macro_context",
@@ -48,6 +56,10 @@ COLLECTOR_SPECS = [
         "safe_to_degrade": False,
         "min_source_coverage_ratio": 0.80,
         "max_failed_sources": 1,
+        "collector_class": "decision_critical_source_context",
+        "data_plane_key": "official_macro_context",
+        "evidence_domains": ["source_verification", "training_models", "profitability_research", "risk_controls"],
+        "owner_command": ["./scripts/ops/opsctl.sh", "macro-context-sync", "--json"],
     },
     {
         "name": "global_central_bank_context",
@@ -58,6 +70,10 @@ COLLECTOR_SPECS = [
         "safe_to_degrade": True,
         "min_source_coverage_ratio": 0.80,
         "max_failed_sources": 1,
+        "collector_class": "source_context",
+        "data_plane_key": "global_central_bank_context",
+        "evidence_domains": ["source_verification", "training_models", "profitability_research"],
+        "owner_command": ["./scripts/ops/opsctl.sh", "global-central-bank-sync", "--json"],
     },
     {
         "name": "central_bank_cross_source_context",
@@ -68,6 +84,10 @@ COLLECTOR_SPECS = [
         "safe_to_degrade": True,
         "min_source_coverage_ratio": 0.60,
         "max_failed_sources": 1,
+        "collector_class": "source_context",
+        "data_plane_key": "central_bank_cross_source_context",
+        "evidence_domains": ["source_verification", "training_models", "profitability_research", "risk_controls"],
+        "owner_command": ["./scripts/ops/opsctl.sh", "central-bank-context-sync", "--json"],
     },
     {
         "name": "decision_context_mesh",
@@ -90,6 +110,10 @@ COLLECTOR_SPECS = [
         "freshness_minutes": 720,
         "required": False,
         "safe_to_degrade": True,
+        "collector_class": "source_context",
+        "data_plane_key": "schwab_education_context",
+        "evidence_domains": ["source_verification", "training_models", "risk_controls"],
+        "owner_command": ["./scripts/ops/opsctl.sh", "schwab-education-sync", "--json"],
     },
     {
         "name": "market_micro_context",
@@ -100,6 +124,10 @@ COLLECTOR_SPECS = [
         "safe_to_degrade": False,
         "min_source_coverage_ratio": 0.75,
         "max_failed_sources": 1,
+        "collector_class": "decision_critical_source_context",
+        "data_plane_key": "market_micro_context",
+        "evidence_domains": ["source_verification", "training_models", "profitability_research", "risk_controls"],
+        "owner_command": ["./scripts/ops/opsctl.sh", "market-micro-sync", "--json"],
     },
     {
         "name": "sec_edgar_context",
@@ -108,6 +136,10 @@ COLLECTOR_SPECS = [
         "freshness_minutes": 1440,
         "required": False,
         "safe_to_degrade": True,
+        "collector_class": "source_context",
+        "data_plane_key": "sec_edgar_context",
+        "evidence_domains": ["source_verification", "training_models", "profitability_research"],
+        "owner_command": ["./scripts/ops/opsctl.sh", "sec-edgar-sync", "--json"],
     },
     {
         "name": "extended_quant_context",
@@ -116,6 +148,10 @@ COLLECTOR_SPECS = [
         "freshness_minutes": 1440,
         "required": False,
         "safe_to_degrade": True,
+        "collector_class": "source_context",
+        "data_plane_key": "extended_quant_context",
+        "evidence_domains": ["source_verification", "training_models", "profitability_research"],
+        "owner_command": ["./scripts/ops/opsctl.sh", "extended-quant-sync", "--json"],
     },
     {
         "name": "options_flow_context",
@@ -124,6 +160,10 @@ COLLECTOR_SPECS = [
         "freshness_minutes": 240,
         "required": False,
         "safe_to_degrade": True,
+        "collector_class": "decision_critical_source_context",
+        "data_plane_key": "options_derivatives_context",
+        "evidence_domains": ["source_verification", "training_models", "profitability_research", "risk_controls"],
+        "owner_command": ["./scripts/ops/opsctl.sh", "options-flow-sync", "--json"],
     },
     {
         "name": "crypto_market_context",
@@ -132,6 +172,10 @@ COLLECTOR_SPECS = [
         "freshness_minutes": 1440,
         "required": True,
         "safe_to_degrade": False,
+        "collector_class": "decision_critical_source_context",
+        "data_plane_key": "crypto_market_context",
+        "evidence_domains": ["source_verification", "training_models", "profitability_research", "risk_controls"],
+        "owner_command": ["./scripts/ops/opsctl.sh", "crypto-market-sync", "--json"],
     },
     {
         "name": "free_equity_reference_context",
@@ -142,6 +186,10 @@ COLLECTOR_SPECS = [
         "safe_to_degrade": True,
         "min_source_coverage_ratio": 0.50,
         "max_failed_sources": 1,
+        "collector_class": "source_context",
+        "data_plane_key": "free_equity_reference_context",
+        "evidence_domains": ["source_verification", "training_models", "profitability_research"],
+        "owner_command": ["./scripts/ops/opsctl.sh", "free-equity-reference-sync", "--json"],
     },
     {
         "name": "market_crypto_correlation",
@@ -150,6 +198,10 @@ COLLECTOR_SPECS = [
         "freshness_minutes": 720,
         "required": False,
         "safe_to_degrade": True,
+        "collector_class": "source_context",
+        "data_plane_key": "market_crypto_correlation",
+        "evidence_domains": ["source_verification", "training_models", "profitability_research", "risk_controls"],
+        "owner_command": ["./scripts/ops/opsctl.sh", "market-correlation-sync", "--json"],
     },
     {
         "name": "fx_market_context",
@@ -158,6 +210,10 @@ COLLECTOR_SPECS = [
         "freshness_minutes": 360,
         "required": True,
         "safe_to_degrade": False,
+        "collector_class": "decision_critical_source_context",
+        "data_plane_key": "fx_market_context",
+        "evidence_domains": ["source_verification", "training_models", "profitability_research", "risk_controls"],
+        "owner_command": ["./scripts/ops/opsctl.sh", "fx-market-sync", "--json"],
     },
 ]
 

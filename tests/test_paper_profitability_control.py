@@ -27,6 +27,38 @@ def _write_jsonl(path: Path, rows: list[dict]) -> None:
     path.write_text("".join(json.dumps(row, ensure_ascii=True) + "\n" for row in rows), encoding="utf-8")
 
 
+def _positive_scaling_expectancy(
+    *,
+    samples: int = 600,
+    days: int = 25,
+    symbols: int = 10,
+) -> dict:
+    return {
+        "available": True,
+        "status": "positive_with_95pct_confidence",
+        "sample_count": samples,
+        "evidence_sufficient": True,
+        "positive_lower_confidence_bound_95": True,
+        "promotion_evidence_sufficient": True,
+        "positive_clustered_lower_confidence_bound_95": True,
+        "positive_sample_rate": 0.62,
+        "total_post_cost_pnl_delta": 1000.0,
+        "mean_post_cost_pnl_delta": 2.0,
+        "max_cumulative_drawdown_post_cost_pnl": 300.0,
+        "payoff_asymmetry": {"profit_factor": 1.50},
+        "robust_statistics": {
+            "sample_count": samples,
+            "unique_day_count": days,
+            "unique_symbol_count": symbols,
+            "effective_sample_size": 150.0,
+            "deflated_sharpe": {
+                "available": True,
+                "probability": 0.99,
+            },
+        },
+    }
+
+
 def test_paper_profitability_control_builds_profile_and_strategy_brakes(tmp_path: Path) -> None:
     module = _load_module()
     health = tmp_path / "governance" / "health"
@@ -1546,3 +1578,331 @@ def test_base_harvest_low_grade_is_visible_watch_without_active_exposure() -> No
     assert report["active_blocker_count"] == 0
     assert report["control_posture_grade"] == "A+"
     assert report["status"] == "visible_raw_evidence_watch"
+
+
+def _paper_debt_input(
+    *,
+    active_book_net: float,
+    candidate_id: str,
+    generation: int,
+    candidate_pnl: float,
+    samples: int,
+    observed_days: int,
+    promotion_ready: bool = False,
+    daily_series: dict | None = None,
+) -> dict:
+    return {
+        "accounting_views": {
+            "active_book_snapshot": {
+                "scope": "lifetime_active_paper_inventory",
+                "ending_net_pnl_total": active_book_net,
+            },
+            "candidate_forward_flow": {
+                "candidate_id": candidate_id,
+                "candidate_generation": generation,
+                "candidate_cutoff_utc": "2026-08-20T12:00:00+00:00",
+                "candidate_state_receipt_sha256": f"receipt-{generation}",
+                "candidate_binding_required": True,
+                "candidate_binding_mismatch_rows_excluded": 0,
+                "sample_count": samples,
+                "observed_days": observed_days,
+                "post_cost_pnl_delta_total": candidate_pnl,
+            },
+        },
+        "profitability_evidence_window": {
+            "candidate_id": candidate_id,
+            "candidate_generation": generation,
+            "candidate_binding_required": True,
+            "candidate_binding_mismatch_rows_excluded": 0,
+        },
+        "post_cost_expectancy": {
+            "minimum_samples": 30,
+            "promotion_evidence_sufficient": promotion_ready,
+            "positive_clustered_lower_confidence_bound_95": promotion_ready,
+        },
+        "candidate_post_cost_daily_series": daily_series or {},
+    }
+
+
+def test_paper_debt_recovery_preserves_baseline_without_double_counting_candidate_flow() -> None:
+    module = _load_module()
+    previous = {
+        "started_at_utc": "2026-08-20T12:00:00+00:00",
+        "baseline_debt_amount": 20_000.0,
+        "remaining_debt_amount": 18_500.0,
+        "candidate_attribution": {
+            "candidate_id": "candidate-g72",
+            "sample_count": 8,
+            "current_candidate_post_cost_pnl": 1_500.0,
+            "carried_prior_candidate_pnl": 0.0,
+            "total_candidate_attributed_pnl": 1_500.0,
+        },
+    }
+    paper = _paper_debt_input(
+        active_book_net=-18_000.0,
+        candidate_id="candidate-g72",
+        generation=72,
+        candidate_pnl=2_000.0,
+        samples=10,
+        observed_days=2,
+    )
+
+    contract = module._paper_debt_recovery_contract(
+        paper=paper,
+        previous_contract=previous,
+        input_contract={"source_fresh": True, "source_stable_during_read": True},
+        now_utc=module.datetime(2026, 8, 22, 12, 0, tzinfo=module.timezone.utc),
+    )
+
+    assert contract["baseline_debt_amount"] == 20_000.0
+    assert contract["remaining_debt_amount"] == 18_000.0
+    assert contract["recovery_amount"] == 2_000.0
+    assert contract["recovery_progress_norm"] == 0.1
+    assert contract["candidate_attribution"]["total_candidate_attributed_pnl"] == 2_000.0
+    assert contract["state"] == "recovering"
+    assert contract["runtime_enforcement"]["recovery_entry_size_multiplier_norm"] == 0.25
+    assert contract["runtime_enforcement"]["do_not_force_trades"] is True
+    assert contract["runtime_enforcement"]["prohibit_martingale"] is True
+    assert contract["live_promotion_ready"] is False
+
+
+def test_paper_debt_recovery_candidate_rollover_carries_prior_result_once() -> None:
+    module = _load_module()
+    previous = {
+        "started_at_utc": "2026-08-20T12:00:00+00:00",
+        "baseline_debt_amount": 20_000.0,
+        "remaining_debt_amount": 18_000.0,
+        "candidate_attribution": {
+            "candidate_id": "candidate-g72",
+            "sample_count": 30,
+            "current_candidate_post_cost_pnl": 2_000.0,
+            "carried_prior_candidate_pnl": 0.0,
+            "total_candidate_attributed_pnl": 2_000.0,
+        },
+    }
+    paper = _paper_debt_input(
+        active_book_net=-17_500.0,
+        candidate_id="candidate-g73",
+        generation=73,
+        candidate_pnl=500.0,
+        samples=5,
+        observed_days=1,
+    )
+
+    contract = module._paper_debt_recovery_contract(
+        paper=paper,
+        previous_contract=previous,
+        input_contract={"source_fresh": True, "source_stable_during_read": True},
+    )
+
+    attribution = contract["candidate_attribution"]
+    assert attribution["carried_prior_candidate_pnl"] == 2_000.0
+    assert attribution["current_candidate_post_cost_pnl"] == 500.0
+    assert attribution["total_candidate_attributed_pnl"] == 2_500.0
+    assert contract["remaining_debt_amount"] == 17_500.0
+
+
+def test_paper_debt_recovery_requires_cleared_book_and_positive_candidate_proof() -> None:
+    module = _load_module()
+    previous = {
+        "started_at_utc": "2026-08-01T12:00:00+00:00",
+        "baseline_debt_amount": 20_000.0,
+        "remaining_debt_amount": 1_000.0,
+        "candidate_attribution": {
+            "candidate_id": "candidate-g71",
+            "sample_count": 40,
+            "current_candidate_post_cost_pnl": 19_500.0,
+            "carried_prior_candidate_pnl": 0.0,
+            "total_candidate_attributed_pnl": 19_500.0,
+        },
+    }
+    paper = _paper_debt_input(
+        active_book_net=100.0,
+        candidate_id="candidate-g72",
+        generation=72,
+        candidate_pnl=1_000.0,
+        samples=35,
+        observed_days=4,
+        promotion_ready=True,
+    )
+
+    contract = module._paper_debt_recovery_contract(
+        paper=paper,
+        previous_contract=previous,
+        input_contract={"source_fresh": True, "source_stable_during_read": True},
+    )
+
+    assert contract["remaining_debt_amount"] == 0.0
+    assert contract["debt_cleared"] is True
+    assert contract["candidate_proof"]["ready"] is True
+    assert contract["state"] == "cleared_and_proven"
+    assert contract["live_promotion_ready"] is True
+    assert contract["promotion_blockers"] == []
+
+
+def test_paper_debt_recovery_pauses_new_entries_after_daily_loss_limit() -> None:
+    module = _load_module()
+    paper = _paper_debt_input(
+        active_book_net=-20_250.0,
+        candidate_id="candidate-g72",
+        generation=72,
+        candidate_pnl=-250.0,
+        samples=2,
+        observed_days=1,
+        daily_series={
+            "default": [
+                {
+                    "day_utc": "20260820",
+                    "post_cost_pnl_delta_total": -250.0,
+                }
+            ]
+        },
+    )
+
+    contract = module._paper_debt_recovery_contract(
+        paper=paper,
+        previous_contract={},
+        input_contract={"source_fresh": True, "source_stable_during_read": True},
+    )
+
+    assert contract["state"] == "paused_drawdown"
+    assert contract["risk_budget"]["daily_loss_breach"] is True
+    assert contract["risk_budget"]["new_entries_paused"] is True
+    assert contract["runtime_enforcement"]["recovery_entry_size_multiplier_norm"] == 0.0
+    assert "candidate_daily_loss_limit_breached" in contract["promotion_blockers"]
+
+
+def test_sleeve_strategy_scaling_requires_candidate_bound_robust_evidence() -> None:
+    module = _load_module()
+    expectancy = _positive_scaling_expectancy()
+    paper = {
+        "sleeve_latest": [
+            {
+                "profile": "default",
+                "post_cost_expectancy": expectancy,
+            }
+        ],
+        "strategy_latest": [
+            {
+                "strategy_id": "paper_mirror::candidate_bound_winner",
+                "strategy_name": "candidate_bound_winner",
+                "profile": "default",
+                "objective_class": "directional_alpha",
+                "contract_complete": True,
+                "sample_count": 600,
+                "independent_day_count": 25,
+                "independent_symbol_count": 10,
+                "regime_assessment": {
+                    "relevance": "aligned",
+                    "execution_alignment_ready": True,
+                },
+                "post_cost_expectancy": expectancy,
+            }
+        ],
+    }
+    debt = {
+        "active": False,
+        "candidate_attribution": {
+            "candidate_id": "candidate-g75",
+            "candidate_generation": 75,
+            "candidate_binding_valid": True,
+            "candidate_binding_mismatch_rows_excluded": 0,
+        },
+        "runtime_enforcement": {},
+    }
+
+    contract = module._sleeve_strategy_profitability_scaling_contract(
+        paper=paper,
+        input_contract={"source_fresh": True, "source_stable_during_read": True},
+        active_profile_controls={},
+        strategy_controls=[],
+        paper_debt_recovery_contract=debt,
+    )
+
+    profile = contract["profile_controls"]["default"]
+    strategy = contract["strategy_controls"][
+        "default::paper_mirror::candidate_bound_winner"
+    ]
+    assert profile["tier"] == "scale_tier_2"
+    assert profile["entry_size_multiplier_norm"] == 1.10
+    assert strategy["tier"] == "scale_tier_2"
+    assert strategy["entry_size_multiplier_norm"] == 1.10
+    assert contract["above_baseline_ready_count"] == 2
+    assert contract["scale_up_ready"] is True
+    assert contract["hard_limits"]["never_use_martingale"] is True
+    assert contract["keep_sells_and_reduce_only_paths_open"] is True
+
+
+def test_sleeve_strategy_scaling_respects_recovery_cap_and_weak_quarantine() -> None:
+    module = _load_module()
+    expectancy = _positive_scaling_expectancy()
+    paper = {
+        "sleeve_latest": [
+            {"profile": "default", "post_cost_expectancy": expectancy},
+            {"profile": "bond", "post_cost_expectancy": expectancy},
+        ],
+        "strategy_latest": [],
+    }
+    debt = {
+        "active": True,
+        "candidate_attribution": {
+            "candidate_id": "candidate-g75",
+            "candidate_generation": 75,
+            "candidate_binding_valid": True,
+            "candidate_binding_mismatch_rows_excluded": 0,
+        },
+        "runtime_enforcement": {"recovery_entry_size_multiplier_norm": 0.25},
+    }
+
+    contract = module._sleeve_strategy_profitability_scaling_contract(
+        paper=paper,
+        input_contract={"source_fresh": True, "source_stable_during_read": True},
+        active_profile_controls={
+            "bond": {
+                "action": "quarantine_new_entries",
+                "new_entry_cap": 0,
+            }
+        },
+        strategy_controls=[],
+        paper_debt_recovery_contract=debt,
+    )
+
+    assert contract["profile_controls"]["default"]["evidence_entry_size_multiplier_norm"] == 1.0
+    assert contract["profile_controls"]["default"]["entry_size_multiplier_norm"] == 0.25
+    assert contract["profile_controls"]["default"]["above_baseline_scale_ready"] is False
+    assert contract["profile_controls"]["bond"]["entry_size_multiplier_norm"] == 0.0
+    assert contract["profile_controls"]["bond"]["block_new_entries"] is True
+    assert contract["scale_up_ready"] is False
+    assert "paper_debt_recovery_global_entry_cap_active" in contract["scale_up_blockers"]
+
+
+def test_sleeve_strategy_scaling_fails_closed_on_candidate_mismatch() -> None:
+    module = _load_module()
+    contract = module._sleeve_strategy_profitability_scaling_contract(
+        paper={
+            "sleeve_latest": [
+                {
+                    "profile": "default",
+                    "post_cost_expectancy": _positive_scaling_expectancy(),
+                }
+            ],
+            "strategy_latest": [],
+        },
+        input_contract={"source_fresh": True, "source_stable_during_read": True},
+        active_profile_controls={},
+        strategy_controls=[],
+        paper_debt_recovery_contract={
+            "active": False,
+            "candidate_attribution": {
+                "candidate_id": "candidate-g75",
+                "candidate_binding_valid": False,
+                "candidate_binding_mismatch_rows_excluded": 2,
+            },
+        },
+    )
+
+    profile = contract["profile_controls"]["default"]
+    assert profile["tier"] == "candidate_binding_blocked"
+    assert profile["entry_size_multiplier_norm"] == 0.0
+    assert profile["block_new_entries"] is True
+    assert "candidate_binding_not_valid" in contract["scale_up_blockers"]

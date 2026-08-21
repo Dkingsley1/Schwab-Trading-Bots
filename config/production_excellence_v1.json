@@ -11,6 +11,13 @@
         "scripts/quant_models/**/*.py",
         "scripts/run_*training*.py",
         "scripts/run_*shadow*.py",
+        "config/institutional_decision_flow_v1.json",
+        "config/sleeve_strategy_contracts_v1.json",
+        "config/sleeve_strategy_expansion.json",
+        "core/sleeve_strategy_specialization.py",
+        "scripts/sleeve_strategy_specialization_report.py",
+        "scripts/strategy_library_query.py",
+        "config/symbol_lifecycle_v1.json",
         "master_bot_registry.json"
       ],
       "execution": [
@@ -22,14 +29,24 @@
         "scripts/*execution*.py",
         "scripts/ops/*execution*.py",
         "scripts/ops/*fill*.py",
-        "config/production_readiness_control_v1.json"
+        "config/institutional_decision_flow_v1.json",
+        "config/sleeve_strategy_contracts_v1.json",
+        "config/live_canary_micro_policy_v1.json",
+        "config/symbol_lifecycle_v1.json",
+        "config/production_readiness_control_v1.json",
+        "config/system_role_contracts_v1.json"
       ],
       "risk": [
         "core/risk*.py",
         "scripts/*risk*.py",
         "scripts/ops/*risk*.py",
         "config/*risk*.json",
-        "config/live_canary_readiness_contract.json"
+        "config/institutional_decision_flow_v1.json",
+        "config/sleeve_strategy_contracts_v1.json",
+        "config/live_canary_micro_policy_v1.json",
+        "config/symbol_lifecycle_v1.json",
+        "config/live_canary_readiness_contract.json",
+        "config/system_role_contracts_v1.json"
       ],
       "data": [
         "core/*data*.py",
@@ -40,6 +57,8 @@
         "scripts/ops/*ingestion*.py",
         "scripts/ops/*provider*.py",
         "scripts/ops/*storage*.py",
+        "config/sleeve_strategy_expansion.json",
+        "config/symbol_lifecycle_v1.json",
         "config/*provider*.json",
         "config/*storage*.json"
       ],
@@ -57,6 +76,7 @@
         "scripts/ops/*fill*.py",
         "scripts/ops/profitability*.py",
         "core/profitability_statistics.py",
+        "config/institutional_decision_flow_v1.json",
         "config/*promotion*.json",
         "config/profitability*.json",
         "config/production_excellence_v1.json"
@@ -67,6 +87,7 @@
         "scripts/**/*.sh",
         "scripts/ops/**/*.py",
         "config/production*.json",
+        "config/system_role_contracts_v1.json",
         "config/deployment_profiles.json"
       ],
       "dependencies": [
@@ -106,10 +127,16 @@
     "max_artifact_age_hours": 12,
     "max_initial_canary_weight": 0.01,
     "max_single_order_notional": 100.0,
-    "max_daily_loss": 25.0,
+    "max_daily_loss": 2.0,
+    "max_cumulative_loss": 10.0,
+    "max_order_quantity": 1,
+    "max_concurrent_positions": 1,
     "allowed_asset_types": ["EQUITY"],
     "allowed_instructions": ["BUY", "SELL"],
     "required_source_paths": [
+      "config/live_canary_micro_policy_v1.json",
+      "config/symbol_lifecycle_v1.json",
+      "core/live_canary_allowlist.py",
       "core/live_execution_controls.py",
       "core/live_order_ledger.py",
       "core/base_trader.py"

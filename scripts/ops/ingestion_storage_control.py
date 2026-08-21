@@ -1879,6 +1879,13 @@ def _ingestion_storage_efficiency_contract(
     current_day_protected_count = _safe_int(raw_summary.get("current_day_protected_count"), 0)
     quota_hard_breaches = _safe_int(quota_summary.get("hard_breaches"), 0)
     quota_soft_breaches = _safe_int(quota_summary.get("soft_breaches"), 0)
+    retention_debt_target_gb = max(
+        _safe_float(
+            _steady_state_targets().get("retention_debt_gb"),
+            DEFAULT_TARGET_RETENTION_DEBT_GB,
+        ),
+        0.0,
+    )
     quota_breach_families = [
         str(row.get("family") or "")
         for row in quota_lanes
@@ -1948,7 +1955,7 @@ def _ingestion_storage_efficiency_contract(
         and int(core_pending_lines) <= 7500
         and int(total_pending_lines) <= 20000
         and quota_hard_breaches <= 0
-        and float(retention_debt_gb) <= 0.0
+        and float(retention_debt_gb) <= retention_debt_target_gb
         and not emergency_disk_guard
         and not low_free_guard
         and not route_drift
@@ -2033,7 +2040,10 @@ def _ingestion_storage_efficiency_contract(
         or int(unresolved_split_brain_conflicts) > 0
     )
     quota_soft_pressure = bool(quota_soft_breaches > 0)
-    quota_relief_required = quota_hard_breaches > 0 or float(retention_debt_gb) > 0.0
+    quota_relief_required = bool(
+        quota_hard_breaches > 0
+        or float(retention_debt_gb) > retention_debt_target_gb
+    )
     manifest_first_required = bool(
         high_pressure
         or raw_compaction_required
@@ -2349,11 +2359,12 @@ def _ingestion_storage_efficiency_contract(
             "active": bool(quota_relief_required),
             "exact_blocker": (
                 f"quota_hard={quota_hard_breaches}, quota_soft={quota_soft_breaches}, "
-                f"retention_debt_gb={float(retention_debt_gb):.3f}"
+                f"retention_debt_gb={float(retention_debt_gb):.3f}, "
+                f"retention_debt_target_gb={retention_debt_target_gb:.3f}"
             ),
             "expected_impact": "keeps storage families below quota before expansion writes more data",
             "risk_level": "low",
-            "when_to_stop": "storage_quota_guard is ready and retention_debt_gb is at target",
+            "when_to_stop": "storage_quota_guard has no hard breach and retention_debt_gb is at or below target",
         },
     ]
     commands = {
@@ -2520,6 +2531,9 @@ def _ingestion_storage_efficiency_contract(
             "quota_hard_breaches": quota_hard_breaches,
             "quota_soft_breaches": quota_soft_breaches,
             "quota_soft_pressure_advisory": bool(quota_soft_pressure),
+            "retention_debt_gb": round(float(retention_debt_gb), 3),
+            "retention_debt_target_gb": round(retention_debt_target_gb, 3),
+            "retention_debt_over_target": bool(float(retention_debt_gb) > retention_debt_target_gb),
             "quota_breach_families": quota_breach_families,
             "sparse_large_line_active": bool(sparse_large_active),
             "sparse_large_line_pending_bytes": int(sparse_pending_bytes),

@@ -64,6 +64,9 @@ def test_valid_fill_is_content_addressed_and_materialized_idempotently(tmp_path:
     assert len(rows) == 1
     assert rows[0]["paper_fill_source"] == "broker_paper_fill"
     assert rows[0]["promotion_evidence_eligible"] is True
+    assert rows[0]["candidate_id"] == "pc-test-g1"
+    assert rows[0]["candidate_generation"] == 1
+    assert rows[0]["provenance"]["candidate_id"] == "pc-test-g1"
 
 
 def test_model_fill_and_pre_candidate_fill_are_rejected(tmp_path: Path) -> None:
@@ -129,3 +132,42 @@ def test_relocated_source_and_replay_dataset_metadata_do_not_mutate_fill_identit
     assert payload["duplicate_rows_seen"] == 1
     assert payload["accepted_ledger_records"] == 1
     assert payload["control_contract"]["identity_material_excludes_storage_location"] is True
+
+
+def test_source_declared_cross_candidate_fill_is_rejected(tmp_path: Path) -> None:
+    _candidate(tmp_path)
+    inbox = tmp_path / "exports" / "independent_fill_inbox"
+    inbox.mkdir(parents=True)
+    fill = _valid_fill()
+    fill["candidate_id"] = "pc-old-g0"
+    (inbox / "wrong_candidate.jsonl").write_text(json.dumps(fill) + "\n", encoding="utf-8")
+
+    payload = acquisition.build_payload(tmp_path, apply=True, now=NOW)
+
+    assert payload["accepted_ledger_records"] == 0
+    assert payload["rejected_count"] == 1
+    assert "source_candidate_id_mismatch" in payload["rejected_tail"][0]["reasons"]
+
+
+def test_legacy_unbound_ledger_record_remains_lifetime_only(tmp_path: Path) -> None:
+    _candidate(tmp_path)
+    ledger = tmp_path / "governance" / "evidence" / "independent_fill_records"
+    ledger.mkdir(parents=True)
+    (ledger / "legacy.json").write_text(
+        json.dumps(
+            {
+                "timestamp_utc": "2026-08-06T17:00:00+00:00",
+                "promotion_evidence_eligible": True,
+                "evidence_identity": "test:broker_paper_fill:legacy",
+                "evidence_sha256": "legacy",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    payload = acquisition.build_payload(tmp_path, apply=False, now=NOW)
+
+    assert payload["accepted_ledger_records"] == 1
+    assert payload["candidate_eligible_ledger_records"] == 0
+    assert payload["candidate_identity_missing_ledger_records"] == 1
+    assert payload["control_contract"]["legacy_unbound_records_remain_lifetime_only"] is True

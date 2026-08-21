@@ -343,12 +343,96 @@ def test_halt_clear_events_share_imessage_allowlist_family() -> None:
 
 
 def test_notification_allowlist_honors_reason_aliases() -> None:
-    allowlist = watch._parse_event_allowlist("tripwire,storage_critical,health_gate_critical")
+    allowlist = watch._parse_event_allowlist("tripwire,storage_critical,health_gate_critical,auth_expired")
 
     assert watch._notification_event_allowed("tripwire:all_sleeves", allowlist) is True
     assert watch._notification_event_allowed("storage_mount_missing", allowlist) is True
     assert watch._notification_event_allowed("critical_alert:critical:critical_latest_default_crypto_coinbase", allowlist) is True
+    assert watch._notification_event_allowed("auth_lease:critical:interactive_refresh_required", allowlist) is True
     assert watch._notification_event_allowed("creative_mode:creative_mode_active:music", allowlist) is False
+
+
+def test_auth_lease_event_surfaces_interactive_schwab_refresh() -> None:
+    stamp = datetime.now(timezone.utc).isoformat()
+    event = watch._auth_lease_event(
+        {
+            "timestamp_utc": stamp,
+            "overall_status": "blocked",
+            "lease_state": "critical",
+            "broker_state": {
+                "auth_reason": "OAuthError: invalid_grant: Refresh token is invalid, expired or revoked",
+            },
+        },
+        {
+            "timestamp_utc": stamp,
+            "overall_status": "blocked",
+            "token": {"ready": False},
+            "findings": ["token_not_ready:token_expired"],
+            "operator_followups": ["./scripts/ops/opsctl.sh token-refresh-interactive --force --json"],
+        },
+        900.0,
+    )
+
+    assert event is not None
+    key, message = event
+    assert key == "auth_lease:critical:interactive_refresh_required"
+    assert "Schwab sign-in is required" in message
+    assert "Paper execution and broker reconciliation are paused" in message
+    assert watch._event_severity(key, message) == "critical"
+    assert watch._notification_heading(key, message) == ("Trading Bot Critical", "Schwab Authorization")
+    assert "token-refresh-interactive" in watch._notification_body(key, message)
+
+
+def test_auth_lease_event_surfaces_warning_without_claiming_paper_is_paused() -> None:
+    stamp = datetime.now(timezone.utc).isoformat()
+    event = watch._auth_lease_event(
+        {
+            "timestamp_utc": stamp,
+            "overall_status": "degraded",
+            "lease_state": "warning",
+        },
+        {"timestamp_utc": stamp, "overall_status": "ready", "token": {"ready": True}},
+        900.0,
+    )
+
+    assert event == (
+        "auth_lease:warn:lease_warning",
+        "Schwab authorization is nearing its critical lease floor.\nPaper collection remains active.",
+    )
+    assert watch._event_severity(event[0], event[1]) == "warn"
+    assert watch._notification_heading(event[0], event[1]) == ("Trading Bot Warning", "Schwab Authorization")
+
+
+def test_auth_lease_event_clears_when_current_contract_is_ready() -> None:
+    stamp = datetime.now(timezone.utc).isoformat()
+
+    assert watch._auth_lease_event(
+        {"timestamp_utc": stamp, "overall_status": "ready", "lease_state": "healthy"},
+        {"timestamp_utc": stamp, "overall_status": "ready", "token": {"ready": True}},
+        900.0,
+    ) is None
+
+
+def test_auth_lease_event_ignores_stale_blocked_supervisor_when_lease_is_current() -> None:
+    now = datetime.now(timezone.utc)
+
+    assert watch._auth_lease_event(
+        {"timestamp_utc": now.isoformat(), "overall_status": "ready", "lease_state": "healthy"},
+        {
+            "timestamp_utc": (now - timedelta(hours=1)).isoformat(),
+            "overall_status": "blocked",
+            "token": {"ready": False},
+            "operator_followups": ["./scripts/ops/opsctl.sh token-refresh-interactive --force --json"],
+        },
+        900.0,
+    ) is None
+
+
+def test_auth_notification_repeat_floor_defaults_to_thirty_minutes(monkeypatch) -> None:
+    monkeypatch.delenv(watch.AUTH_MIN_REPEAT_SECONDS_ENV, raising=False)
+
+    assert watch._event_repeat_seconds("auth_lease:critical:blocked", 300.0) == 1800.0
+    assert watch._event_repeat_seconds("tripwire:all_sleeves", 300.0) == 300.0
 
 
 def test_critical_alert_events_suppress_training_done(monkeypatch, tmp_path: Path) -> None:

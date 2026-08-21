@@ -1,0 +1,86 @@
+{
+  "schema_version": 1,
+  "policy_id": "candidate_bound_profitability_self_assessment_v1",
+  "source_freshness_hours": {
+    "production_candidate": 720,
+    "paper_performance": 2,
+    "paper_execution_calibration": 2,
+    "calibration_control": 4,
+    "calibration_overrides": 168,
+    "profitability_firewall": 4,
+    "paper_profitability": 2,
+    "counterfactual_replay": 24,
+    "sleeve_dashboard": 4,
+    "live_money_readiness": 4,
+    "risk_service": 4,
+    "decision_policy": 8760,
+    "profitability_policy": 8760,
+    "broker_capabilities": 8760
+  },
+  "confidence_and_abstention": {
+    "direct_loosen_allowed": false,
+    "maximum_threshold_uplift": 0.25,
+    "minimum_target_acceptance_rate": 0.05,
+    "maximum_target_acceptance_rate": 0.18,
+    "candidate_change_invalidates_overrides": true
+  },
+  "sleeve_and_regime_thresholds": {
+    "require_sleeve_policy_family": true,
+    "require_regime_stage": true,
+    "require_counterfactual_replay_before_loosen": true,
+    "require_positive_post_cost_expectancy_before_loosen": true
+  },
+  "income_sleeves": {
+    "families": ["bond", "dividend"],
+    "paper_confidence_threshold_uplift": 0.08,
+    "paper_abstention_budget": 0.88,
+    "live_application_allowed": false
+  },
+  "tradeability_and_conflict": {
+    "required_stages": ["06_execution_feasibility", "07_portfolio_fit"],
+    "require_tradeability_floor": true,
+    "require_conflict_limit": true,
+    "unknown_evidence_fails_closed": true
+  },
+  "exit_learning": {
+    "required_labels": [
+      "mae_bucket",
+      "mfe_bucket",
+      "exit_timing_bucket",
+      "post_entry_regime_bucket"
+    ],
+    "require_harvest_regret_control": true,
+    "exit_paths_must_remain_open": true
+  },
+  "execution_realism": {
+    "minimum_independent_fills_per_market_type": 30,
+    "required_broker": "schwab",
+    "require_candidate_binding": true,
+    "model_defaults_count_as_evidence": false
+  },
+  "sizing": {
+    "paper_entry_cap_norm": 0.25,
+    "maximum_evidence_validated_scale_norm": 1.1,
+    "scale_before_evidence_allowed": false,
+    "loss_recovery_size_increase_allowed": false
+  },
+  "portfolio_allocation": {
+    "minimum_independently_profitable_sleeves": 4,
+    "maximum_single_sleeve_weight": 0.25,
+    "automatic_allocation_allowed": false,
+    "cash_weight_until_qualified": 1.0
+  },
+  "authority": {
+    "paper_only": true,
+    "live_execution_allowed": false,
+    "grant_promotion": false,
+    "guarantee_profitability": false,
+    "force_trades": false
+  },
+  "soak_contract": {
+    "cumulative_history_preserved": true,
+    "full_clock_reset_requested": false,
+    "candidate_semantic_changes_require_new_clean_segment": true,
+    "historical_pnl_is_not_current_candidate_evidence": true
+  }
+}

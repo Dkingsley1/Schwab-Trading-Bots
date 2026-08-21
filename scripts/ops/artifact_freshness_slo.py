@@ -49,6 +49,12 @@ def _artifact_contract(project_root: Path) -> dict[str, dict[str, Any]]:
             "required": True,
             "refresh_command": "./scripts/ops/opsctl.sh control-surface-ownership --json",
         },
+        "system_role_contract": {
+            "path": project_root / "governance" / "health" / "system_role_contract_latest.json",
+            "max_age_minutes": 30.0,
+            "required": True,
+            "refresh_command": "./scripts/ops/opsctl.sh system-role-contract --json",
+        },
         "independent_runtime_monitor": {
             "path": project_root / "governance" / "health" / "independent_runtime_monitor_latest.json",
             "max_age_minutes": 10.0,

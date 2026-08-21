@@ -4,8 +4,10 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from core.runtime_maintenance import (
+    MAINTENANCE_HOLD_TOKEN_ENV,
     engage_maintenance_hold,
     maintenance_hold_snapshot,
+    maintenance_hold_token_authorized,
     release_maintenance_hold,
 )
 
@@ -24,6 +26,10 @@ def test_maintenance_hold_engage_expire_and_release(tmp_path: Path, monkeypatch)
     assert engaged["active"] is True
     assert engaged["reason"] == "sqlite_local_failover"
     assert engaged["token"]
+    assert maintenance_hold_token_authorized(engaged, token=engaged["token"]) is True
+    assert maintenance_hold_token_authorized(engaged, token="wrong-token") is False
+    monkeypatch.setenv(MAINTENANCE_HOLD_TOKEN_ENV, engaged["token"])
+    assert maintenance_hold_token_authorized(engaged) is True
     expires_at = datetime.fromisoformat(engaged["expires_at_utc"])
     expired = maintenance_hold_snapshot(tmp_path, now_utc=expires_at + timedelta(seconds=1))
     assert expired["active"] is False

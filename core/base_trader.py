@@ -44,10 +44,15 @@ from core.brokers import (
     build_broker_adapter,
     normalize_broker_name,
 )
+from core.brokers.capability_contract import evaluate_order_request
 
 from core.accountability import current_correlation, now_utc_iso, safe_append_jsonl, safe_append_channel_event, safe_write_json_atomic
 from core.halt_flags import write_halt_flag_atomic
 from core.runtime_override_precedence import merge_runtime_override_layers
+from core.sleeve_strategy_specialization import (
+    attach_strategy_specialization,
+    strategy_id_from_metadata,
+)
 
 
 _FUTURES_MONTH_CODES = {
@@ -263,7 +268,8 @@ class BaseTrader:
         self._paper_book_started_utc = datetime.now(timezone.utc).isoformat()
         self._paper_state_path = ""
 
-        self.live_risk_config = LiveRiskConfig.from_env()
+        live_policy_root = self.project_root if str(mode or "").strip().lower() == "live" else None
+        self.live_risk_config = LiveRiskConfig.from_env(live_policy_root)
         self.live_guard = LiveExecutionGuard(self.live_risk_config)
         account_ref_env = str(getattr(self.broker_adapter, "account_reference_env_var", "") or "").strip()
         auto_discover_env = str(getattr(self.broker_adapter, "account_reference_auto_discover_env_var", "") or "").strip()
@@ -1707,7 +1713,7 @@ class BaseTrader:
         )
         self._paper_profile_realized_totals[profile] = self._as_float(profile_book.get("realized_pnl_total"), 0.0)
 
-        strategy_key = str(strategy or "unknown").strip().lower() or "unknown"
+        strategy_key = strategy_id_from_metadata(metadata, strategy)
         strategy_positions = self._paper_strategy_positions.setdefault(strategy_key, {})
         strategy_book = self._update_paper_book(
             positions=strategy_positions,
@@ -3652,9 +3658,29 @@ class BaseTrader:
     ) -> Dict[str, Any]:
         if not self._supports_broker_capability("supports_order_place"):
             return self._unsupported_broker_operation("place_order", "supports_order_place")
+        order_request = self._build_live_order_request(
+            symbol=symbol,
+            action=action,
+            quantity=quantity,
+            order_spec=order_spec,
+        )
         # The mock adapter never reaches a broker and is used to exercise PAPER
         # execution contracts. Every real broker still passes the live firewall.
         real_broker = str(self.broker_name or "").strip().lower() != "mock"
+        capability_contract = evaluate_order_request(
+            self.broker_name,
+            order_request.to_dict(),
+            mode="live",
+            require_production_eligible=real_broker,
+        )
+        if not capability_contract.get("ok", False):
+            return {
+                "ok": False,
+                "operation": "place_order",
+                "error": "broker_capability_contract_blocked",
+                "broker_capability_contract": capability_contract,
+                "order_request": order_request.to_dict(),
+            }
         durable_intent_id = str(intent_id or "").strip()
         ledger: Optional[LiveOrderLedger] = None
         if real_broker:
@@ -3754,12 +3780,6 @@ class BaseTrader:
                     "durable_order_intent": reservation,
                 }
             ledger.mark_submitting(durable_intent_id)
-        order_request = self._build_live_order_request(
-            symbol=symbol,
-            action=action,
-            quantity=quantity,
-            order_spec=order_spec,
-        )
         out = self._invoke_client_candidates(
             operation="place_order",
             candidates=self.broker_adapter.place_order_candidates(
@@ -3799,6 +3819,7 @@ class BaseTrader:
                     },
                 )
         out["order_request"] = order_request.to_dict()
+        out["broker_capability_contract"] = capability_contract
         out["order_result"] = self._broker_order_result_from_output(out).to_dict()
         out["order_intent_evidence"] = intent_evidence or {}
         return out
@@ -4654,6 +4675,44 @@ class BaseTrader:
             snap = str(md.get("snapshot_id") or "").strip()
             if snap:
                 md["parent_decision_id"] = f"{snap}:root"
+        md.setdefault("source_broker", self.broker_name)
+        shadow_domain = self._metadata_shadow_domain(md)
+        if shadow_domain:
+            md.setdefault("shadow_domain", shadow_domain)
+
+        try:
+            md = attach_strategy_specialization(
+                md,
+                profile=(
+                    md.get("source_profile")
+                    or md.get("profile")
+                    or self._metadata_sleeve_profile(md)
+                    or "default"
+                ),
+                raw_strategy=strategy,
+                features=features,
+                action=action,
+                quantity=quantity,
+                project_root=Path(self.project_root),
+            )
+        except Exception as exc:
+            # Paper collection remains available; future live parity fails closed
+            # when the required contract receipt is absent.
+            md["strategy_specialization"] = {
+                "schema_version": 1,
+                "status": "unavailable",
+                "error": f"{type(exc).__name__}:{exc}",
+                "action_or_quantity_mutated": False,
+                "authority": {
+                    "can_create_intent": False,
+                    "can_reverse_intent": False,
+                    "can_increase_quantity": False,
+                    "can_allocate_capital": False,
+                    "can_change_labels": False,
+                    "can_grant_promotion": False,
+                    "can_submit_live_order": False,
+                },
+            }
 
         decision_entry = self.decision_logger.log_decision(
             symbol=symbol,
@@ -5217,7 +5276,15 @@ class BaseTrader:
 
                     guard_event = "pre_trade_guard"
                     gate_name = str(guard_decision.gate or "")
-                    if gate_name in {"position_limit", "order_notional_limit", "open_order_limit_total", "open_order_limit_symbol", "daily_loss_cap"}:
+                    if gate_name in {
+                        "position_limit",
+                        "order_notional_limit",
+                        "open_order_limit_total",
+                        "open_order_limit_symbol",
+                        "daily_loss_cap",
+                        "cumulative_loss_cap",
+                        "persistent_risk_state",
+                    }:
                         guard_event = "risk_limit_breach"
                     elif gate_name == "slippage_limit":
                         guard_event = "slippage_guard"

@@ -57,6 +57,11 @@ _PRODUCTION_CANDIDATE_CACHE: Dict[str, Any] = {
     "fingerprint": None,
     "payload": {},
 }
+_INGESTION_ROUTING_CACHE: Dict[str, Any] = {
+    "checked_at_monotonic": 0.0,
+    "fingerprint": None,
+    "payload": {},
+}
 HALT_FLAG_PATH = PROJECT_ROOT_PATH / "governance" / "health" / "GLOBAL_TRADING_HALT.flag"
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
@@ -73,7 +78,15 @@ from core.profitability_hardening import (
     evaluate_profitability_entry,
     resolve_contract_valuation,
 )
+from core.institutional_decision_flow import (
+    apply_paper_decision_flow_control,
+    build_candidate_bound_quantitative_evidence,
+    evaluate_decision as evaluate_institutional_decision,
+    load_policy as load_institutional_decision_flow_policy,
+)
+from core.collector_capability_routing import resolve_runtime_ingestion_route
 from core.runtime_override_precedence import merge_runtime_override_layers
+from core.sleeve_strategy_specialization import attach_strategy_specialization
 from core.execution_queue import ExecutionQueue, OrderRequest
 from core.execution_lane_pipeline import publish_execution_intent
 from core.coinbase_market_data import CoinbaseMarketDataClient, MarketDataAPIError
@@ -172,6 +185,8 @@ from core.path_registry import (
 runtime_event_legacy_path,
 )
 
+INSTITUTIONAL_DECISION_FLOW_POLICY = load_institutional_decision_flow_policy()
+
 TWELVE_DATA_TIME_SERIES_URL = "https://api.twelvedata.com/time_series"
 FX_TWELVE_DATA_SYMBOL_MAP = {
     "EURUSD": "EUR/USD",
@@ -193,6 +208,8 @@ _PAPER_RUNTIME_CONTROLS_CACHE: Dict[str, Any] = {
         "profitability_global_policy": {},
         "profitability_upgrade_lanes": [],
         "raw_profitability_a_recovery_contract": {},
+        "paper_debt_recovery_contract": {},
+        "sleeve_strategy_profitability_scaling_contract": {},
         "master_grandmaster_training_contract": {},
         "profit_harvest_strategy_controls": {},
         "profit_harvest_position_ledger": {},
@@ -519,6 +536,59 @@ def _intent_message_id(*parts: Any) -> str:
     return hashlib.sha1(payload.encode("utf-8")).hexdigest()
 
 
+def _attach_strategy_specialization_safe(
+    metadata: Mapping[str, Any] | None,
+    *,
+    profile: Any,
+    raw_strategy: Any,
+    features: Mapping[str, Any] | None,
+    action: Any,
+    quantity: Any,
+) -> Dict[str, Any]:
+    md = dict(metadata or {})
+    try:
+        return attach_strategy_specialization(
+            md,
+            profile=profile,
+            raw_strategy=raw_strategy,
+            features=features,
+            action=action,
+            quantity=quantity,
+            project_root=PROJECT_ROOT_PATH,
+        )
+    except Exception as exc:
+        md["strategy_specialization"] = {
+            "schema_version": 1,
+            "status": "unavailable",
+            "error": f"{type(exc).__name__}:strategy_specialization_attachment_failed",
+            "profile": str(profile or "default"),
+            "raw_strategy": str(raw_strategy or "default"),
+            "selected_strategy_id": "",
+            "contract_complete": False,
+            "candidate_binding": {
+                "candidate_id": str(
+                    md.get("production_candidate_id") or md.get("candidate_id") or ""
+                ),
+                "required": True,
+                "historical_fallback_allowed": False,
+                "cross_candidate_pooling_allowed": False,
+            },
+            "action_observed": str(action or "").strip().upper(),
+            "quantity_observed": max(float(quantity or 0.0), 0.0),
+            "action_or_quantity_mutated": False,
+            "authority": {
+                "can_create_intent": False,
+                "can_reverse_intent": False,
+                "can_increase_quantity": False,
+                "can_allocate_capital": False,
+                "can_change_labels": False,
+                "can_grant_promotion": False,
+                "can_submit_live_order": False,
+            },
+        }
+        return md
+
+
 def _publish_execution_lane_intent(
     *,
     broker: str,
@@ -540,9 +610,18 @@ def _publish_execution_lane_intent(
         return
 
     md = dict(metadata or {})
+    md.setdefault("source_broker", str(broker or "").strip().lower())
     candidate_context = _production_candidate_context(PROJECT_ROOT)
     for key, value in candidate_context.items():
         md.setdefault(key, value)
+    md = _attach_strategy_specialization_safe(
+        md,
+        profile=md.get("source_profile") or "default",
+        raw_strategy=strategy,
+        features=features,
+        action=action,
+        quantity=qty,
+    )
     snapshot_id = str(md.get("snapshot_id") or "")
     bot_id = str(md.get("bot_id") or "")
     message_id = str(md.get("decision_id") or "") or _intent_message_id(
@@ -601,7 +680,11 @@ def _execute_paper_mirror_consensus(
     if action not in {"BUY", "SELL"}:
         return consensus
 
-    quantity_multiplier = _clamp01(float(consensus.get("quantity_multiplier", 0.0) or 0.0))
+    quantity_multiplier = _clamp(
+        float(consensus.get("quantity_multiplier", 0.0) or 0.0),
+        0.0,
+        1.10,
+    )
     if quantity_multiplier <= 0.0:
         consensus["action"] = "HOLD"
         consensus["reason"] = "portfolio_consensus_zero_risk_budget"
@@ -1244,6 +1327,129 @@ def _parse_lane_int_caps(raw: str) -> Dict[str, int]:
     return out
 
 
+def _update_actionable_market_stress_quorum(
+    *,
+    state: Dict[str, float],
+    symbol: str,
+    action: str,
+    metric_value: float,
+    threshold: float,
+    now_ts: float,
+    window_seconds: float,
+    minimum_distinct_symbols: int,
+) -> Dict[str, Any]:
+    """Track broad market stress only when it affects an actionable intent."""
+    window = max(float(window_seconds), 1.0)
+    cutoff = float(now_ts) - window
+    for tracked_symbol, observed_ts in list(state.items()):
+        if float(observed_ts or 0.0) < cutoff:
+            state.pop(tracked_symbol, None)
+
+    normalized_action = str(action or "HOLD").strip().upper()
+    normalized_symbol = str(symbol or "").strip().upper()
+    actionable = normalized_action in {"BUY", "SELL"}
+    breached = float(metric_value) >= float(threshold)
+    observed = bool(actionable and breached and normalized_symbol)
+    if observed:
+        state[normalized_symbol] = float(now_ts)
+
+    distinct_symbols = sorted(state)
+    quorum = max(int(minimum_distinct_symbols), 1)
+    return {
+        "actionable": actionable,
+        "breached": breached,
+        "observed": observed,
+        "triggered": bool(observed and len(distinct_symbols) >= quorum),
+        "distinct_symbol_count": len(distinct_symbols),
+        "minimum_distinct_symbols": quorum,
+        "window_seconds": window,
+        "symbols": distinct_symbols,
+    }
+
+
+def _decision_disposition(
+    *,
+    intent_action: str,
+    final_action: str,
+    reasons: List[str],
+) -> Dict[str, Any]:
+    intent = str(intent_action or "HOLD").strip().upper()
+    final = str(final_action or "HOLD").strip().upper()
+    if final in {"BUY", "SELL"}:
+        return {
+            "disposition": "paper_trade",
+            "blocking_stage": "none",
+            "guard_categories": [],
+            "guard_reasons": [],
+        }
+    if intent not in {"BUY", "SELL"}:
+        return {
+            "disposition": "no_edge_hold",
+            "blocking_stage": "signal_selection",
+            "guard_categories": [],
+            "guard_reasons": [],
+        }
+
+    normalized_reasons = [str(reason) for reason in reasons if str(reason).strip()]
+    category_patterns = (
+        ("broker_truth", ("broker_truth", "account_position")),
+        ("risk", ("risk_", "drawdown", "consecutive_loss", "max_daily_loss")),
+        ("freshness", ("freshness", "stale_quote", "stale_feature")),
+        ("execution", ("execution_guard", "tradeability", "transaction_cost")),
+        (
+            "circuit_breaker",
+            ("circuit_breaker", "lane_kill", "symbol_circuit", "regime_dislocation"),
+        ),
+        ("profitability", ("profitability", "edge_cost_margin")),
+        (
+            "decision_quality",
+            ("institutional_decision_flow", "decision_flow=", "required_stage_failed"),
+        ),
+        ("portfolio", ("portfolio_", "exposure_cap", "overlap_pressure")),
+        ("idempotency", ("idempotency", "duplicate_intent")),
+        ("margin", ("margin_guard", "margin_")),
+        ("manual_control", ("manual_trade", "manual_reconcile")),
+        ("latency", ("latency_slo", "market_data_latency")),
+    )
+    matched_categories: set[str] = set()
+    guard_reasons: List[str] = []
+    for reason in normalized_reasons:
+        lowered = reason.lower()
+        matched = False
+        for category, patterns in category_patterns:
+            if any(pattern in lowered for pattern in patterns):
+                matched_categories.add(category)
+                matched = True
+        if matched and reason not in guard_reasons:
+            guard_reasons.append(reason)
+    categories = [category for category, _ in category_patterns if category in matched_categories]
+    if not categories:
+        categories = ["other_guard"]
+
+    return {
+        "disposition": "protected_hold",
+        "blocking_stage": categories[0],
+        "guard_categories": categories,
+        "guard_reasons": guard_reasons[-8:],
+    }
+
+
+def _symbol_scoped_guard_failure(
+    *,
+    intent_action: str,
+    final_action: str,
+    execution_guard_ok: bool,
+    feature_freshness_ok: bool,
+) -> bool:
+    intent = str(intent_action or "HOLD").strip().upper()
+    final = str(final_action or "HOLD").strip().upper()
+    return bool(
+        intent in {"BUY", "SELL"}
+        and final != intent
+        and (not execution_guard_ok or not feature_freshness_ok)
+    )
+
+
 def _canary_id_overrides() -> set[str]:
     raw = os.getenv("CANARY_BOT_IDS", "").strip()
     if not raw:
@@ -1628,7 +1834,7 @@ _CAPITAL_FLOW_FEATURE_KEYS = [
     "capital_flow_outflow_norm",
 ]
 
-_LONG_TERM_CORE_QUALITY_DEFAULT = "SPY,VOO,VTI,IVV,QQQ,SCHX,IWB,RSP,SPLG,VUG,VTV"
+_LONG_TERM_CORE_QUALITY_DEFAULT = "SPY,VOO,VTI,IVV,QQQ,SCHX,IWB,RSP,SPYM,VUG,VTV"
 _LONG_TERM_SECTOR_QUALITY_DEFAULT = "XLK,XLV,XLP,XLU,XLI,XLF,XLE,SMH,SOXX"
 
 
@@ -2195,11 +2401,40 @@ def _paper_runtime_controls_snapshot() -> Dict[str, Any]:
     project_root = Path(PROJECT_ROOT)
     perf_path = project_root / "governance" / "health" / "paper_performance_latest.json"
     profitability_control_path = project_root / "governance" / "health" / "paper_runtime_profitability_controls_latest.json"
+    multiple_testing_path = (
+        project_root
+        / "governance"
+        / "research"
+        / "multiple_testing_guard_latest.json"
+    )
+    independent_validator_path = (
+        project_root
+        / "governance"
+        / "health"
+        / "profitability_independent_validator_latest.json"
+    )
+    decay_monitor_path = (
+        project_root / "governance" / "research" / "decay_monitor_latest.json"
+    )
+    quantitative_challenger_path = (
+        project_root
+        / "governance"
+        / "research"
+        / "quantitative_challenger_latest.json"
+    )
     bridge_files = sorted(
         (project_root / "exports" / "paper_broker_bridge" / "paper").glob("paper_bridge_orders_*.jsonl")
     )[-3:]
     cache_parts: list[str] = []
-    for path in [perf_path, profitability_control_path, *bridge_files]:
+    for path in [
+        perf_path,
+        profitability_control_path,
+        multiple_testing_path,
+        independent_validator_path,
+        decay_monitor_path,
+        quantitative_challenger_path,
+        *bridge_files,
+    ]:
         try:
             cache_parts.append(f"{path}:{int(path.stat().st_mtime)}:{int(path.stat().st_size)}")
         except Exception:
@@ -2278,6 +2513,7 @@ def _paper_runtime_controls_snapshot() -> Dict[str, Any]:
         profile_symbol_penalties.setdefault(profile, {})[symbol] = round(float(penalty), 6)
 
     profile_drag: Dict[str, Dict[str, Any]] = {}
+    perf_payload: Dict[str, Any] = {}
     if perf_path.exists():
         try:
             perf_payload = json.loads(perf_path.read_text(encoding="utf-8"))
@@ -2311,6 +2547,44 @@ def _paper_runtime_controls_snapshot() -> Dict[str, Any]:
                 "win_rate": (round(float(win_rate), 6) if win_rate is not None else None),
             }
 
+    def _read_control_payload(path: Path) -> Dict[str, Any]:
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            return {}
+        return payload if isinstance(payload, dict) else {}
+
+    multiple_testing_payload = _read_control_payload(multiple_testing_path)
+    independent_validator_payload = _read_control_payload(
+        independent_validator_path
+    )
+    decay_monitor_payload = _read_control_payload(decay_monitor_path)
+    quantitative_challenger_payload = _read_control_payload(
+        quantitative_challenger_path
+    )
+    candidate_context = _production_candidate_context(PROJECT_ROOT)
+    expected_candidate_id = str(
+        candidate_context.get("production_candidate_id") or ""
+    )
+    quantitative_evidence_by_profile: Dict[str, Dict[str, Any]] = {}
+    for raw_sleeve in perf_payload.get("sleeve_latest") or []:
+        if not isinstance(raw_sleeve, dict):
+            continue
+        profile = str(raw_sleeve.get("profile") or "").strip().lower()
+        if not profile:
+            continue
+        quantitative_evidence_by_profile[profile] = (
+            build_candidate_bound_quantitative_evidence(
+                profile,
+                paper_performance=perf_payload,
+                multiple_testing=multiple_testing_payload,
+                independent_validator=independent_validator_payload,
+                decay_monitor=decay_monitor_payload,
+                quantitative_challengers=quantitative_challenger_payload,
+                expected_candidate_id=expected_candidate_id,
+            )
+        )
+
     profitability_profile_controls: Dict[str, Dict[str, Any]] = {}
     profitability_strategy_controls: Dict[str, Dict[str, Any]] = {}
     profitability_global_policy: Dict[str, Any] = {}
@@ -2334,6 +2608,8 @@ def _paper_runtime_controls_snapshot() -> Dict[str, Any]:
     profit_realization_contract: Dict[str, Any] = {}
     max_grade_push_contract: Dict[str, Any] = {}
     raw_profitability_a_recovery_contract: Dict[str, Any] = {}
+    paper_debt_recovery_contract: Dict[str, Any] = {}
+    sleeve_strategy_profitability_scaling_contract: Dict[str, Any] = {}
     master_grandmaster_training_contract: Dict[str, Any] = {}
     if profitability_control_path.exists():
         try:
@@ -2395,6 +2671,11 @@ def _paper_runtime_controls_snapshot() -> Dict[str, Any]:
             ("grand_master_profit_harvest_awareness_contract", "grand_master_profit_harvest_awareness_contract"),
             ("max_grade_push_contract", "max_grade_push_contract"),
             ("raw_profitability_a_recovery_contract", "raw_profitability_a_recovery_contract"),
+            ("paper_debt_recovery_contract", "paper_debt_recovery_contract"),
+            (
+                "sleeve_strategy_profitability_scaling_contract",
+                "sleeve_strategy_profitability_scaling_contract",
+            ),
         ):
             raw_contract = profitability_payload.get(key_name) if isinstance(profitability_payload, dict) else {}
             if not isinstance(raw_contract, dict):
@@ -2427,6 +2708,10 @@ def _paper_runtime_controls_snapshot() -> Dict[str, Any]:
                 max_grade_push_contract = raw_contract
             elif target_name == "raw_profitability_a_recovery_contract":
                 raw_profitability_a_recovery_contract = raw_contract
+            elif target_name == "paper_debt_recovery_contract":
+                paper_debt_recovery_contract = raw_contract
+            elif target_name == "sleeve_strategy_profitability_scaling_contract":
+                sleeve_strategy_profitability_scaling_contract = raw_contract
         raw_profit_realization_contract = (
             profitability_payload.get("profit_realization_contract")
             if isinstance(profitability_payload, dict)
@@ -2457,6 +2742,7 @@ def _paper_runtime_controls_snapshot() -> Dict[str, Any]:
     snapshot = {
         "profile_symbol_penalties": profile_symbol_penalties,
         "profile_drag": profile_drag,
+        "quantitative_evidence_by_profile": quantitative_evidence_by_profile,
         "profitability_profile_controls": profitability_profile_controls,
         "profitability_strategy_controls": profitability_strategy_controls,
         "profitability_global_policy": profitability_global_policy,
@@ -2480,6 +2766,8 @@ def _paper_runtime_controls_snapshot() -> Dict[str, Any]:
         "profit_realization_contract": profit_realization_contract,
         "max_grade_push_contract": max_grade_push_contract,
         "raw_profitability_a_recovery_contract": raw_profitability_a_recovery_contract,
+        "paper_debt_recovery_contract": paper_debt_recovery_contract,
+        "sleeve_strategy_profitability_scaling_contract": sleeve_strategy_profitability_scaling_contract,
         "master_grandmaster_training_contract": master_grandmaster_training_contract,
     }
     cache["loaded_at"] = now_ts
@@ -2502,6 +2790,20 @@ def _profile_drag_snapshot(profile: str) -> Dict[str, Any]:
     drag_map = snapshot.get("profile_drag") if isinstance(snapshot.get("profile_drag"), dict) else {}
     row = drag_map.get(str(profile or "").strip().lower(), {}) if isinstance(drag_map, dict) else {}
     return row if isinstance(row, dict) else {}
+
+
+def _profile_quantitative_evidence(profile: str) -> Dict[str, Any]:
+    snapshot = _paper_runtime_controls_snapshot()
+    evidence_by_profile = (
+        snapshot.get("quantitative_evidence_by_profile")
+        if isinstance(snapshot.get("quantitative_evidence_by_profile"), dict)
+        else {}
+    )
+    row = evidence_by_profile.get(
+        str(profile or "default").strip().lower(),
+        {},
+    )
+    return dict(row) if isinstance(row, dict) else {}
 
 
 def _profile_profitability_control(profile: str) -> Dict[str, Any]:
@@ -2566,6 +2868,78 @@ def _raw_profitability_a_recovery_contract() -> Dict[str, Any]:
         else {}
     )
     return contract if isinstance(contract, dict) else {}
+
+
+def _paper_debt_recovery_contract() -> Dict[str, Any]:
+    snapshot = _paper_runtime_controls_snapshot()
+    contract = (
+        snapshot.get("paper_debt_recovery_contract")
+        if isinstance(snapshot.get("paper_debt_recovery_contract"), dict)
+        else {}
+    )
+    return contract if isinstance(contract, dict) else {}
+
+
+def _sleeve_strategy_profitability_scaling_contract() -> Dict[str, Any]:
+    snapshot = _paper_runtime_controls_snapshot()
+    contract = snapshot.get("sleeve_strategy_profitability_scaling_contract")
+    return contract if isinstance(contract, dict) else {}
+
+
+def _profile_profitability_scaling_control(profile: str) -> Dict[str, Any]:
+    contract = _sleeve_strategy_profitability_scaling_contract()
+    if not bool(contract.get("active", False)):
+        return {}
+    controls = contract.get("profile_controls")
+    controls = controls if isinstance(controls, dict) else {}
+    profile_key = str(profile or "default").strip().lower() or "default"
+    row = controls.get(profile_key)
+    if isinstance(row, dict):
+        return row
+    default_multiplier = _clamp01(
+        _to_float(contract.get("default_unproven_entry_size_multiplier_norm"), 0.0)
+    )
+    return {
+        "profile": profile_key,
+        "tier": "paper_probation_default",
+        "entry_size_multiplier_norm": default_multiplier,
+        "evidence_entry_size_multiplier_norm": default_multiplier,
+        "max_new_entry_notional_pct": 0.015 if default_multiplier > 0.0 else 0.0,
+        "block_new_entries": default_multiplier <= 0.0,
+        "above_baseline_scale_ready": False,
+        "reason_codes": ["profile_candidate_evidence_not_materialized"],
+    }
+
+
+def _strategy_profitability_scaling_control(profile: str, strategy: str) -> Dict[str, Any]:
+    contract = _sleeve_strategy_profitability_scaling_contract()
+    if not bool(contract.get("active", False)):
+        return {}
+    controls = contract.get("strategy_controls")
+    controls = controls if isinstance(controls, dict) else {}
+    profile_key = str(profile or "default").strip().lower() or "default"
+    strategy_key = str(strategy or "").strip().lower()
+    bot_id = strategy_key.split("::", 1)[1] if "::" in strategy_key else strategy_key
+    for key in (
+        f"{profile_key}::{strategy_key}",
+        f"{profile_key}::{bot_id}",
+    ):
+        row = controls.get(key)
+        if isinstance(row, dict):
+            return row
+    default_multiplier = _clamp01(
+        _to_float(contract.get("default_unproven_entry_size_multiplier_norm"), 0.0)
+    )
+    return {
+        "profile": profile_key,
+        "strategy": strategy_key,
+        "tier": "paper_probation_default",
+        "entry_size_multiplier_norm": default_multiplier,
+        "evidence_entry_size_multiplier_norm": default_multiplier,
+        "block_new_entries": default_multiplier <= 0.0,
+        "above_baseline_scale_ready": False,
+        "reason_codes": ["strategy_candidate_evidence_not_materialized"],
+    }
 
 
 def _profile_profit_harvest_control(profile: str) -> Dict[str, Any]:
@@ -2955,6 +3329,39 @@ def _apply_paper_mirror_profitability_control(
     if new_action not in {"BUY", "SELL"}:
         return new_action, new_score, new_reasons, out_features
 
+    scaling_control = _strategy_profitability_scaling_control(profile, strategy)
+    scaling_multiplier = 1.0
+    if scaling_control:
+        scaling_multiplier = _clamp(
+            _to_float(scaling_control.get("entry_size_multiplier_norm"), 0.0),
+            0.0,
+            1.10,
+        )
+        out_features["paper_profitability_strategy_scaling_active_norm"] = 1.0
+        out_features["paper_profitability_strategy_scaling_entry_only_norm"] = 1.0
+        out_features["paper_profitability_strategy_above_baseline_scale_norm"] = (
+            1.0 if bool(scaling_control.get("above_baseline_scale_ready", False)) else 0.0
+        )
+        out_features["paper_profitability_strategy_size_multiplier_norm"] = (
+            scaling_multiplier if new_action == "BUY" else 1.0
+        )
+        if new_action == "BUY" and (
+            bool(scaling_control.get("block_new_entries", False))
+            or scaling_multiplier <= 0.0
+        ):
+            new_action, new_score = _force_action_score("HOLD", new_score, threshold)
+            new_reasons = new_reasons + [
+                f"candidate_bound_strategy_scaling_block tier={scaling_control.get('tier', 'unknown')}"
+            ]
+            return new_action, new_score, new_reasons, out_features
+        new_reasons = new_reasons + [
+            f"candidate_bound_strategy_scaling tier={scaling_control.get('tier', 'unknown')} multiplier={scaling_multiplier:.3f}"
+            if new_action == "BUY"
+            else "candidate_bound_strategy_scaling_exit_path_open"
+        ]
+    else:
+        out_features.setdefault("paper_profitability_strategy_scaling_active_norm", 0.0)
+
     if str(global_policy.get("apply_loser_quarantine", "true")).strip().lower() == "false":
         return new_action, new_score, new_reasons, out_features
 
@@ -2964,7 +3371,12 @@ def _apply_paper_mirror_profitability_control(
 
     mode = str(control.get("mode") or "").strip().lower()
     penalty = _clamp01(float(control.get("score_penalty_norm", 0.0) or 0.0))
-    size_multiplier = _clamp01(_to_float(control.get("position_size_multiplier"), 1.0))
+    loser_size_multiplier = _clamp01(_to_float(control.get("position_size_multiplier"), 1.0))
+    size_multiplier = (
+        min(loser_size_multiplier, scaling_multiplier)
+        if new_action == "BUY"
+        else 1.0
+    )
     confirmation_contract = (
         control.get("confirmation_bias_control")
         if isinstance(control.get("confirmation_bias_control"), dict)
@@ -2989,10 +3401,14 @@ def _apply_paper_mirror_profitability_control(
     out_features["paper_profitability_confirmation_bias_score_norm"] = confirmation_bias_score
     out_features["paper_profitability_strategy_confirmation_quality_norm"] = confirmation_quality
     out_features["paper_profitability_strategy_confirmation_channels_norm"] = _clamp01(confirmation_channels / 6.0)
-    if mode == "paper_quarantine":
+    if mode == "paper_quarantine" and new_action == "BUY":
         new_action, new_score = _force_action_score("HOLD", new_score, threshold)
         new_reasons = new_reasons + [f"paper_strategy_quarantine penalty={penalty:.3f}"]
-    elif bool(confirmation_contract.get("active", False)) and (
+    elif mode == "paper_quarantine" and new_action == "SELL":
+        new_reasons = new_reasons + [
+            f"paper_strategy_reduce_only_quarantine_exit_open penalty={penalty:.3f}"
+        ]
+    elif new_action == "BUY" and bool(confirmation_contract.get("active", False)) and (
         (confirmation_block_floor > 0.0 and confirmation_quality < confirmation_block_floor)
         or (min_confirmation_channels > 0 and confirmation_channels < min_confirmation_channels)
     ):
@@ -3001,11 +3417,11 @@ def _apply_paper_mirror_profitability_control(
             f"confirmation_bias_guard quality={confirmation_quality:.3f}",
             f"channels={confirmation_channels}/{min_confirmation_channels}",
         ]
-    elif bool(confirmation_contract.get("active", False)) and confirmation_dampen_floor > 0.0 and confirmation_quality < confirmation_dampen_floor:
+    elif new_action == "BUY" and bool(confirmation_contract.get("active", False)) and confirmation_dampen_floor > 0.0 and confirmation_quality < confirmation_dampen_floor:
         dampen = max(0.18, 1.0 - (0.45 * max(confirmation_bias_score, penalty)))
         new_score = 0.5 + ((new_score - 0.5) * dampen)
         new_reasons = new_reasons + [f"confirmation_bias_dampen quality={confirmation_quality:.3f}"]
-    elif penalty > 0.0:
+    elif new_action == "BUY" and penalty > 0.0:
         new_score = 0.5 + ((new_score - 0.5) * max(0.20, 1.0 - (0.65 * penalty)))
         new_reasons = new_reasons + [f"paper_strategy_deweight penalty={penalty:.3f}"]
     return new_action, new_score, new_reasons, out_features
@@ -9637,6 +10053,69 @@ def _load_health_payload(project_root: str, name: str) -> Dict[str, Any]:
     return payload if isinstance(payload, dict) else {}
 
 
+def _runtime_ingestion_route_context(
+    project_root: str,
+    profile: str,
+) -> Dict[str, Any]:
+    now_monotonic = time.monotonic()
+    cache = _INGESTION_ROUTING_CACHE
+    path = (
+        Path(project_root)
+        / "governance"
+        / "collector_capabilities"
+        / "bot_subscriptions_latest.json"
+    )
+    if now_monotonic - float(cache.get("checked_at_monotonic", 0.0) or 0.0) >= 15.0:
+        try:
+            stat = path.stat()
+            fingerprint = (int(stat.st_mtime_ns), int(stat.st_size))
+        except OSError:
+            fingerprint = None
+        if fingerprint != cache.get("fingerprint"):
+            try:
+                loaded = json.loads(path.read_text(encoding="utf-8"))
+            except Exception:
+                loaded = {}
+            cache["payload"] = loaded if isinstance(loaded, dict) else {}
+            cache["fingerprint"] = fingerprint
+        cache["checked_at_monotonic"] = now_monotonic
+    payload = cache.get("payload")
+    if not isinstance(payload, dict):
+        payload = {}
+    try:
+        return dict(
+            resolve_runtime_ingestion_route(
+                payload,
+                profile,
+                max_age_minutes=max(
+                    float(
+                        os.getenv(
+                            "SLEEVE_INGESTION_ROUTE_MAX_AGE_MINUTES",
+                            "30",
+                        )
+                        or 30.0
+                    ),
+                    1.0,
+                ),
+            )
+        )
+    except Exception as exc:
+        return {
+            "status": "error",
+            "route_state": "missing",
+            "runtime_profile": str(profile or "default"),
+            "paper_decision_data_ready": False,
+            "live_decision_data_ready": False,
+            "receipt_valid": False,
+            "cause": f"runtime_ingestion_route_error:{type(exc).__name__}",
+            "authority_contract": {
+                "paper_execution_authority": False,
+                "live_execution_authority": False,
+                "automatic_promotion_authority": False,
+            },
+        }
+
+
 def _production_candidate_context(project_root: str) -> Dict[str, Any]:
     now_monotonic = time.monotonic()
     cache = _PRODUCTION_CANDIDATE_CACHE
@@ -12389,9 +12868,11 @@ def _apply_core_sleeve_strategy_overlay(
     profile_symbol_drag = _profile_symbol_drag_penalty_norm(prof, symbol)
     profile_drag = _profile_drag_snapshot(prof)
     profitability_control = _profile_profitability_control(prof)
+    profitability_scaling_control = _profile_profitability_scaling_control(prof)
     profit_harvest_control = _profile_profit_harvest_control(prof)
     profitability_global_policy = _profitability_global_policy()
     raw_a_recovery_contract = _raw_profitability_a_recovery_contract()
+    paper_debt_recovery_contract = _paper_debt_recovery_contract()
     profile_kill_switch_norm = _clamp01(float(profile_drag.get("drag_norm", 0.0) or 0.0))
     lead_signal = _clamp11(float(features.get("lead_lag_signal_signed", 0.0) or 0.0))
     flow_direction = _clamp11(float(features.get("flow_direction_signed", 0.0) or 0.0))
@@ -12492,6 +12973,85 @@ def _apply_core_sleeve_strategy_overlay(
         if raw_recovery_breaches:
             new_action, new_score = _force_action_score("HOLD", new_score, threshold)
             new_reasons = new_reasons + [f"raw_profitability_a_recovery_gate {';'.join(raw_recovery_breaches[:5])}"]
+    if (
+        new_action == "BUY"
+        and bool(paper_debt_recovery_contract.get("active", False))
+        and str(profitability_global_policy.get("apply_paper_debt_recovery", "true")).strip().lower() != "false"
+    ):
+        debt_enforcement = (
+            paper_debt_recovery_contract.get("runtime_enforcement")
+            if isinstance(paper_debt_recovery_contract.get("runtime_enforcement"), dict)
+            else {}
+        )
+        debt_risk = (
+            paper_debt_recovery_contract.get("risk_budget")
+            if isinstance(paper_debt_recovery_contract.get("risk_budget"), dict)
+            else {}
+        )
+        debt_min_quality = _clamp01(float(debt_enforcement.get("min_quality_gate_norm", 0.72) or 0.72))
+        debt_min_tradeability = _clamp01(float(debt_enforcement.get("min_tradeability_norm", 0.58) or 0.58))
+        debt_min_execution = _clamp01(float(debt_enforcement.get("min_execution_fitness_norm", 0.58) or 0.58))
+        debt_min_confirmation = _clamp01(
+            float(debt_enforcement.get("min_cross_asset_confirmation_norm", 0.56) or 0.56)
+        )
+        debt_max_overlap = _clamp01(float(debt_enforcement.get("max_overlap_pressure_norm", 0.58) or 0.58))
+        debt_recovery_breaches: List[str] = []
+        if bool(debt_risk.get("new_entries_paused", False)):
+            debt_recovery_breaches.append(
+                f"paused={str(paper_debt_recovery_contract.get('state') or 'risk_budget')}"
+            )
+        if (
+            bool(profitability_control.get("active", False))
+            and bool(debt_enforcement.get("block_new_entries_on_weak_profiles", True))
+            and not _coinbase_paper_probation_allows_weak_profile(prof)
+        ):
+            debt_recovery_breaches.append(f"weak_profile={prof}")
+        if profitability_quality_gate < debt_min_quality:
+            debt_recovery_breaches.append(f"quality={profitability_quality_gate:.3f}<{debt_min_quality:.3f}")
+        if tradeability < debt_min_tradeability:
+            debt_recovery_breaches.append(f"tradeability={tradeability:.3f}<{debt_min_tradeability:.3f}")
+        if execution_fitness < debt_min_execution:
+            debt_recovery_breaches.append(f"execution={execution_fitness:.3f}<{debt_min_execution:.3f}")
+        if cross_asset_confirmation < debt_min_confirmation:
+            debt_recovery_breaches.append(f"confirmation={cross_asset_confirmation:.3f}<{debt_min_confirmation:.3f}")
+        if overlap_pressure > debt_max_overlap:
+            debt_recovery_breaches.append(f"overlap={overlap_pressure:.3f}>{debt_max_overlap:.3f}")
+        if debt_recovery_breaches:
+            new_action, new_score = _force_action_score("HOLD", new_score, threshold)
+            new_reasons = new_reasons + [
+                f"paper_debt_recovery_gate {';'.join(debt_recovery_breaches[:6])}"
+            ]
+    if (
+        new_action == "BUY"
+        and profitability_scaling_control
+        and str(
+            profitability_global_policy.get(
+                "apply_candidate_bound_sleeve_strategy_scaling",
+                "true",
+            )
+        ).strip().lower()
+        != "false"
+    ):
+        scaling_multiplier = _clamp(
+            _to_float(
+                profitability_scaling_control.get("entry_size_multiplier_norm"),
+                0.0,
+            ),
+            0.0,
+            1.10,
+        )
+        if (
+            bool(profitability_scaling_control.get("block_new_entries", False))
+            or scaling_multiplier <= 0.0
+        ):
+            new_action, new_score = _force_action_score("HOLD", new_score, threshold)
+            new_reasons = new_reasons + [
+                f"candidate_bound_sleeve_scaling_block tier={profitability_scaling_control.get('tier', 'unknown')}"
+            ]
+        else:
+            new_reasons = new_reasons + [
+                f"candidate_bound_sleeve_scaling tier={profitability_scaling_control.get('tier', 'unknown')} multiplier={scaling_multiplier:.3f}"
+            ]
     if new_action in {"BUY", "SELL"} and bool(profitability_control.get("active", False)):
         action_mode = str(profitability_control.get("action") or "").strip().lower()
         min_source = _clamp01(float(profitability_thresholds.get("min_source_quality_norm", 0.0) or 0.0))
@@ -13077,7 +13637,65 @@ def _apply_core_sleeve_strategy_overlay(
     out_features["profile_kill_switch_norm"] = profile_kill_switch_norm
     out_features["paper_profitability_control_active_norm"] = 1.0 if bool(profitability_control.get("active", False)) else 0.0
     out_features["paper_profitability_quality_gate_norm"] = profitability_quality_gate
-    out_features["paper_profitability_size_multiplier_norm"] = _clamp01(_to_float(profitability_control.get("position_size_multiplier"), 1.0))
+    legacy_profitability_multiplier = _clamp01(
+        _to_float(profitability_control.get("position_size_multiplier"), 1.0)
+    )
+    scaling_multiplier = (
+        _clamp(
+            _to_float(
+                profitability_scaling_control.get("entry_size_multiplier_norm"),
+                0.0,
+            ),
+            0.0,
+            1.10,
+        )
+        if profitability_scaling_control
+        else 1.0
+    )
+    effective_profitability_multiplier = (
+        min(legacy_profitability_multiplier, scaling_multiplier)
+        if bool(profitability_control.get("active", False))
+        else scaling_multiplier
+    )
+    out_features["paper_profitability_size_multiplier_norm"] = effective_profitability_multiplier
+    out_features["paper_profitability_scaling_active_norm"] = (
+        1.0 if bool(profitability_scaling_control) else 0.0
+    )
+    out_features["paper_profitability_scaling_entry_only_norm"] = 1.0
+    out_features["paper_profitability_scaling_above_baseline_ready_norm"] = (
+        1.0
+        if bool(profitability_scaling_control.get("above_baseline_scale_ready", False))
+        else 0.0
+    )
+    out_features["paper_profitability_max_new_entry_notional_pct"] = max(
+        _to_float(profitability_scaling_control.get("max_new_entry_notional_pct"), 0.0),
+        0.0,
+    ) if profitability_scaling_control else 0.0
+    debt_runtime_enforcement = (
+        paper_debt_recovery_contract.get("runtime_enforcement")
+        if isinstance(paper_debt_recovery_contract.get("runtime_enforcement"), dict)
+        else {}
+    )
+    debt_baseline = max(_to_float(paper_debt_recovery_contract.get("baseline_debt_amount"), 0.0), 0.0)
+    debt_remaining = max(_to_float(paper_debt_recovery_contract.get("remaining_debt_amount"), 0.0), 0.0)
+    out_features["paper_debt_recovery_active_norm"] = 1.0 if bool(paper_debt_recovery_contract.get("active", False)) else 0.0
+    out_features["paper_debt_recovery_progress_norm"] = _clamp01(
+        _to_float(paper_debt_recovery_contract.get("recovery_progress_norm"), 0.0)
+    )
+    out_features["paper_debt_recovery_remaining_norm"] = _clamp01(
+        debt_remaining / debt_baseline if debt_baseline > 0.0 else (1.0 if debt_remaining > 0.0 else 0.0)
+    )
+    out_features["paper_debt_recovery_entry_size_multiplier_norm"] = (
+        _clamp01(_to_float(debt_runtime_enforcement.get("recovery_entry_size_multiplier_norm"), 0.0))
+        if bool(paper_debt_recovery_contract.get("active", False))
+        else 1.0
+    )
+    out_features["paper_debt_recovery_no_loss_chasing_norm"] = 1.0 if bool(
+        debt_runtime_enforcement.get("do_not_force_trades", True)
+        and debt_runtime_enforcement.get("prohibit_martingale", True)
+        and debt_runtime_enforcement.get("prohibit_averaging_down_for_recovery", True)
+        and debt_runtime_enforcement.get("prohibit_loss_based_size_increase", True)
+    ) else 0.0
     outcome_training = profitability_control.get("outcome_weighted_training") if isinstance(profitability_control.get("outcome_weighted_training"), dict) else {}
     exit_contract = profitability_control.get("exit_intelligence") if isinstance(profitability_control.get("exit_intelligence"), dict) else {}
     execution_contract = profitability_control.get("execution_aware_alpha") if isinstance(profitability_control.get("execution_aware_alpha"), dict) else {}
@@ -16958,6 +17576,20 @@ def run_loop(
     vol_shock_pause_seconds = max(int(os.getenv("RISK_VOL_SHOCK_PAUSE_SECONDS", "120")), 30)
     liquidity_spread_bps_threshold = float(os.getenv("RISK_LIQUIDITY_SPREAD_BPS_THRESHOLD", "35"))
     liquidity_pause_seconds = max(int(os.getenv("RISK_LIQUIDITY_PAUSE_SECONDS", "120")), 30)
+    market_stress_quorum_window_seconds = max(
+        float(os.getenv("RISK_MARKET_STRESS_QUORUM_WINDOW_SECONDS", "120") or 120.0),
+        15.0,
+    )
+    global_market_stress_min_symbols = max(
+        int(os.getenv("RISK_GLOBAL_MARKET_STRESS_MIN_DISTINCT_SYMBOLS", "4") or 4),
+        2,
+    )
+    lane_market_stress_min_symbols = max(
+        int(os.getenv("RISK_LANE_MARKET_STRESS_MIN_DISTINCT_SYMBOLS", "3") or 3),
+        2,
+    )
+    global_volatility_stress_symbols: Dict[str, float] = {}
+    global_liquidity_stress_symbols: Dict[str, float] = {}
     max_daily_loss_proxy = float(os.getenv("RISK_MAX_DAILY_LOSS_PROXY", "0.05"))
     max_intraday_drawdown_proxy = float(os.getenv("RISK_MAX_INTRADAY_DRAWDOWN_PROXY", "0.04"))
     symbol_circuit_hit_limit = max(int(os.getenv("RISK_SYMBOL_CIRCUIT_HIT_LIMIT", "4") or 4), 1)
@@ -16968,6 +17600,8 @@ def run_loop(
     lane_loss_streak: Dict[str, int] = {}
     lane_kill_until_ts: Dict[str, float] = {}
     lane_pause_counts: Dict[str, int] = {}
+    lane_volatility_stress_symbols: Dict[str, Dict[str, float]] = {}
+    lane_liquidity_stress_symbols: Dict[str, Dict[str, float]] = {}
     lane_max_consecutive_losses = _parse_lane_int_caps(
         os.getenv(
             "RISK_LANE_MAX_CONSECUTIVE_LOSSES",
@@ -18824,19 +19458,23 @@ def run_loop(
                 }
 
             if _is_long_term_profile():
-                profile = _shadow_profile_name()
+                long_term_profile = current_profile
                 shared_features = {
                     **shared_features,
                     **_long_term_underwriting_features(
                         symbol=symbol,
                         features=shared_features,
-                        profile=profile,
+                        profile=long_term_profile,
                         iter_count=iter_count,
                         state=long_term_policy_state,
                     ),
                 }
-                long_term_ten_year_score, long_term_components = _long_term_10y_score(symbol, shared_features, profile)
-                buy_floor, strong_floor = _long_term_buy_floors(profile)
+                long_term_ten_year_score, long_term_components = _long_term_10y_score(
+                    symbol,
+                    shared_features,
+                    long_term_profile,
+                )
+                buy_floor, strong_floor = _long_term_buy_floors(long_term_profile)
                 shared_features = {
                     **shared_features,
                     "long_term_profile_active": 1.0,
@@ -19757,9 +20395,30 @@ def run_loop(
             vol_now = float(shared_features.get("volatility_1m", shared_features.get("vol", 0.0)) or 0.0)
             spread_now = float(shared_features.get("spread_bps", 0.0) or 0.0)
 
-            if vol_now >= vol_shock_threshold:
+            global_volatility_quorum = _update_actionable_market_stress_quorum(
+                state=global_volatility_stress_symbols,
+                symbol=symbol,
+                action=gm_intent_action,
+                metric_value=vol_now,
+                threshold=vol_shock_threshold,
+                now_ts=now_ts,
+                window_seconds=market_stress_quorum_window_seconds,
+                minimum_distinct_symbols=global_market_stress_min_symbols,
+            )
+            global_liquidity_quorum = _update_actionable_market_stress_quorum(
+                state=global_liquidity_stress_symbols,
+                symbol=symbol,
+                action=gm_intent_action,
+                metric_value=spread_now,
+                threshold=liquidity_spread_bps_threshold,
+                now_ts=now_ts,
+                window_seconds=market_stress_quorum_window_seconds,
+                minimum_distinct_symbols=global_market_stress_min_symbols,
+            )
+
+            if bool(global_volatility_quorum.get("triggered", False)):
                 vol_shock_pause_until_ts = max(vol_shock_pause_until_ts, now_ts + vol_shock_pause_seconds)
-            if spread_now >= liquidity_spread_bps_threshold:
+            if bool(global_liquidity_quorum.get("triggered", False)):
                 liquidity_pause_until_ts = max(liquidity_pause_until_ts, now_ts + liquidity_pause_seconds)
             if intraday_pnl_proxy <= -abs(max_daily_loss_proxy):
                 kill_switch_until_ts = max(kill_switch_until_ts, now_ts + kill_switch_cooldown_seconds)
@@ -19778,6 +20437,13 @@ def run_loop(
                 kill_switch_active=bool(now_ts < kill_switch_until_ts),
                 vol_shock_pause_active=bool(now_ts < vol_shock_pause_until_ts),
                 liquidity_pause_active=bool(now_ts < liquidity_pause_until_ts),
+                global_volatility_stress_distinct_symbols=int(
+                    global_volatility_quorum.get("distinct_symbol_count", 0) or 0
+                ),
+                global_liquidity_stress_distinct_symbols=int(
+                    global_liquidity_quorum.get("distinct_symbol_count", 0) or 0
+                ),
+                global_market_stress_min_distinct_symbols=global_market_stress_min_symbols,
                 intraday_drawdown_proxy=intraday_drawdown_proxy,
                 max_intraday_drawdown_proxy=max_intraday_drawdown_proxy,
             )
@@ -19884,11 +20550,37 @@ def run_loop(
             lane_spread_threshold = float(lane_liquidity_spread_bps_thresholds.get(lane_key, lane_liquidity_spread_bps_thresholds.get("default", liquidity_spread_bps_threshold)))
             lane_cooldown = int(lane_kill_cooldown_seconds.get(lane_key, lane_kill_cooldown_seconds.get("default", kill_switch_cooldown_seconds)))
             lane_cooldown = max(lane_cooldown, 30)
+            lane_volatility_quorum = _update_actionable_market_stress_quorum(
+                state=lane_volatility_stress_symbols.setdefault(lane_key, {}),
+                symbol=symbol,
+                action=gm_intent_action,
+                metric_value=vol_now,
+                threshold=lane_vol_threshold,
+                now_ts=now_ts,
+                window_seconds=market_stress_quorum_window_seconds,
+                minimum_distinct_symbols=lane_market_stress_min_symbols,
+            )
+            lane_liquidity_quorum = _update_actionable_market_stress_quorum(
+                state=lane_liquidity_stress_symbols.setdefault(lane_key, {}),
+                symbol=symbol,
+                action=gm_intent_action,
+                metric_value=spread_now,
+                threshold=lane_spread_threshold,
+                now_ts=now_ts,
+                window_seconds=market_stress_quorum_window_seconds,
+                minimum_distinct_symbols=lane_market_stress_min_symbols,
+            )
             lane_trigger_reasons: List[str] = []
-            if vol_now >= lane_vol_threshold:
-                lane_trigger_reasons.append(f"vol_shock={vol_now:.4f}>={lane_vol_threshold:.4f}")
-            if spread_now >= lane_spread_threshold:
-                lane_trigger_reasons.append(f"spread_bps={spread_now:.2f}>={lane_spread_threshold:.2f}")
+            if bool(lane_volatility_quorum.get("triggered", False)):
+                lane_trigger_reasons.append(
+                    f"vol_shock_quorum={int(lane_volatility_quorum.get('distinct_symbol_count', 0) or 0)} "
+                    f"vol_shock={vol_now:.4f}>={lane_vol_threshold:.4f}"
+                )
+            if bool(lane_liquidity_quorum.get("triggered", False)):
+                lane_trigger_reasons.append(
+                    f"spread_quorum={int(lane_liquidity_quorum.get('distinct_symbol_count', 0) or 0)} "
+                    f"spread_bps={spread_now:.2f}>={lane_spread_threshold:.2f}"
+                )
 
             lane_prev_until = float(lane_kill_until_ts.get(lane_key, 0.0) or 0.0)
             if lane_trigger_reasons:
@@ -19906,6 +20598,18 @@ def run_loop(
                             "iter": int(iter_count),
                             "lane": lane_key,
                             "reasons": lane_trigger_reasons,
+                            "volatility_stress_symbols": list(
+                                lane_volatility_quorum.get("symbols") or []
+                            ),
+                            "liquidity_stress_symbols": list(
+                                lane_liquidity_quorum.get("symbols") or []
+                            ),
+                            "minimum_distinct_symbols": int(
+                                lane_market_stress_min_symbols
+                            ),
+                            "quorum_window_seconds": float(
+                                market_stress_quorum_window_seconds
+                            ),
                             "cooldown_seconds": int(lane_cooldown),
                             "cooldown_until_utc": lane_until_utc,
                             "expires_at_utc": lane_until_utc,
@@ -19923,6 +20627,13 @@ def run_loop(
                 lane=lane_key,
                 lane_pause_until=lane_pause_until,
                 lane_loss_streak=int(lane_loss_streak.get(lane_key, 0) or 0),
+                lane_volatility_stress_distinct_symbols=int(
+                    lane_volatility_quorum.get("distinct_symbol_count", 0) or 0
+                ),
+                lane_liquidity_stress_distinct_symbols=int(
+                    lane_liquidity_quorum.get("distinct_symbol_count", 0) or 0
+                ),
+                lane_market_stress_min_distinct_symbols=lane_market_stress_min_symbols,
             )
             if lane_pause_active and gm_action in {"BUY", "SELL"}:
                 lane_pause_counts[lane_key] = int(lane_pause_counts.get(lane_key, 0) or 0) + 1
@@ -20040,13 +20751,39 @@ def run_loop(
                         or sizing_kelly_signal_norm
                     )
                 )
+            sizing_max_notional_pct = max(float(max_notional_pct), 0.0)
+            if (
+                gm_action == "BUY"
+                and float(
+                    shared_features.get(
+                        "paper_profitability_scaling_active_norm",
+                        0.0,
+                    )
+                    or 0.0
+                )
+                >= 0.5
+            ):
+                scaling_notional_cap = max(
+                    float(
+                        shared_features.get(
+                            "paper_profitability_max_new_entry_notional_pct",
+                            0.0,
+                        )
+                        or 0.0
+                    ),
+                    0.0,
+                )
+                sizing_max_notional_pct = min(
+                    sizing_max_notional_pct,
+                    scaling_notional_cap,
+                )
             raw_qty = size_from_action(
                 action=gm_action,
                 score=gm_score,
                 threshold=gm_threshold,
                 volatility_1m=volatility_now,
                 equity_proxy=effective_equity_proxy,
-                max_notional_pct=max_notional_pct,
+                max_notional_pct=sizing_max_notional_pct,
                 confidence_norm=float(shared_features.get("allocation_confidence_norm", 0.5) or 0.5),
                 liquidity_score=sizing_liquidity_score,
                 drawdown_pressure=sizing_drawdown_pressure,
@@ -20071,12 +20808,37 @@ def run_loop(
                     gm_reasons.append(f"quant_strategy_fit={sizing_quant_strategy_fit_norm:.3f}")
                 if sizing_quant_strategy_conviction_norm is not None:
                     gm_reasons.append(f"quant_strategy_conviction={sizing_quant_strategy_conviction_norm:.3f}")
-                paper_profitability_size_multiplier = _clamp01(
-                    _to_float(shared_features.get("paper_profitability_size_multiplier_norm"), 1.0)
-                )
+                paper_profitability_size_multiplier = 1.0
+                paper_debt_recovery_size_multiplier = 1.0
+                if gm_action == "BUY":
+                    paper_profitability_size_multiplier = _clamp(
+                        _to_float(
+                            shared_features.get(
+                                "paper_profitability_size_multiplier_norm",
+                                1.0,
+                            ),
+                            1.0,
+                        ),
+                        0.0,
+                        1.10,
+                    )
+                    paper_debt_recovery_size_multiplier = _clamp01(
+                        _to_float(
+                            shared_features.get("paper_debt_recovery_entry_size_multiplier_norm"),
+                            1.0,
+                        )
+                    )
+                    paper_profitability_size_multiplier = min(
+                        paper_profitability_size_multiplier,
+                        paper_debt_recovery_size_multiplier,
+                    )
                 if paper_profitability_size_multiplier < 0.999:
                     raw_qty = round(raw_qty * paper_profitability_size_multiplier, 6)
                     gm_reasons.append(f"paper_profitability_size_multiplier={paper_profitability_size_multiplier:.3f}")
+                    if gm_action == "BUY" and paper_debt_recovery_size_multiplier < 0.999:
+                        gm_reasons.append(
+                            f"paper_debt_recovery_size_multiplier={paper_debt_recovery_size_multiplier:.3f}"
+                        )
             alloc_qty = allocate_quantity(
                 raw_qty=raw_qty,
                 symbol=symbol,
@@ -20133,6 +20895,270 @@ def run_loop(
                         for reason in list(grand_master_entry_policy.get("blockers") or [])[:6]
                     ],
                 ]
+
+            pre_decision_flow_action = gm_action
+            pre_decision_flow_quantity = alloc_qty
+            pre_decision_flow_disposition = _decision_disposition(
+                intent_action=gm_intent_action,
+                final_action=gm_action,
+                reasons=gm_reasons,
+            )
+            decision_flow_quote_agreement = _clamp01(
+                float(shared_features.get("data_quality_quote_agreement_norm", 1.0) or 1.0)
+            )
+            decision_flow_profile = _shadow_profile_name() or "default"
+            ingestion_route_context = _runtime_ingestion_route_context(
+                PROJECT_ROOT,
+                decision_flow_profile,
+            )
+            ingestion_route_receipt_valid = bool(
+                ingestion_route_context.get("receipt_valid", False)
+            )
+            ingestion_route_fresh = bool(
+                ingestion_route_context.get("artifact_fresh", False)
+            )
+            ingestion_route_enforced = bool(
+                os.getenv("SLEEVE_INGESTION_ROUTE_ENFORCEMENT", "1").strip()
+                != "0"
+            )
+            ingestion_route_quality = _clamp01(
+                float(
+                    ingestion_route_context.get("average_route_score", 0.0)
+                    or 0.0
+                )
+            )
+            ingestion_route_paper_ready = bool(
+                ingestion_route_context.get("paper_decision_data_ready", False)
+            )
+            decision_flow_source_quality = decision_flow_quote_agreement
+            if ingestion_route_enforced and ingestion_route_receipt_valid:
+                if ingestion_route_fresh and ingestion_route_paper_ready:
+                    decision_flow_source_quality = min(
+                        decision_flow_quote_agreement,
+                        ingestion_route_quality,
+                    )
+                elif ingestion_route_fresh:
+                    decision_flow_source_quality = 0.0
+                else:
+                    # Stale control metadata cannot overwrite fresh quote evidence.
+                    ingestion_route_context["paper_fallback"] = (
+                        "fresh_runtime_quote_quality_preserved"
+                    )
+            elif ingestion_route_enforced:
+                decision_flow_source_quality = 0.0
+            decision_flow_row = {
+                **shared_features,
+                "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+                "message_id": _intent_message_id(
+                    run_id,
+                    snapshot_id,
+                    broker,
+                    decision_flow_profile,
+                    lane_key,
+                    symbol,
+                    "institutional_decision_flow_sleeve_playbooks_v4",
+                ),
+                "run_id": run_id,
+                "snapshot_id": snapshot_id,
+                "broker": broker,
+                "shadow_profile": decision_flow_profile,
+                "shadow_domain": _shadow_domain_name(broker=broker),
+                "lifecycle_state": os.getenv("SLEEVE_LIFECYCLE_STATE", "").strip().lower(),
+                "routing_lane": lane_key,
+                "symbol": symbol,
+                "action": gm_action,
+                "master_action": gm_action,
+                "master_intent_action": gm_intent_action,
+                "master_intent_score": gm_intent_score,
+                "master_score": gm_score,
+                "source_quality_score": decision_flow_source_quality,
+                "ingestion_route": dict(ingestion_route_context),
+                "market": {
+                    **mkt,
+                    "spread_bps": float(shared_features.get("spread_bps", 0.0) or 0.0),
+                    "market_data_latency_ms": float(
+                        shared_features.get(
+                            "market_data_latency_ms",
+                            shared_features.get("lag_latency_ms", 0.0),
+                        )
+                        or 0.0
+                    ),
+                },
+                "market_micro_features": {
+                    key: float(shared_features.get(key, 0.0) or 0.0)
+                    for key in _MARKET_MICRO_FEATURE_KEYS
+                },
+                "data_quality_features": {
+                    **{
+                        key: float(shared_features.get(key, 0.0) or 0.0)
+                        for key in DATA_QUALITY_FEATURE_KEYS
+                    },
+                    "ingestion_route_quality_norm": ingestion_route_quality,
+                    "ingestion_route_paper_ready_norm": (
+                        1.0 if ingestion_route_paper_ready else 0.0
+                    ),
+                    "ingestion_route_receipt_valid_norm": (
+                        1.0 if ingestion_route_receipt_valid else 0.0
+                    ),
+                },
+                "feature_freshness": {
+                    "enabled": feature_freshness_enabled,
+                    "ok": freshness_ok,
+                    "reason": freshness_reason,
+                    "age_seconds": round(float(freshness_age_s), 4),
+                    "max_age_seconds": feature_freshness_max_age_seconds,
+                },
+                "allocation_confidence": {
+                    key: float(shared_features.get(key, 0.0) or 0.0)
+                    for key in _ALLOCATION_FEATURE_KEYS
+                },
+                "grand_master_meta": dict(gm_vote),
+                "execution_guard": dict(execution_guard_meta),
+                "execution_sim": {
+                    "slippage_bps": float(
+                        shared_features.get(
+                            "expected_slippage_bps",
+                            shared_features.get("lag_slippage_bps", 0.0),
+                        )
+                        or 0.0
+                    ),
+                    "impact_bps": float(shared_features.get("lag_impact_bps", 0.0) or 0.0),
+                    "fee_bps": float(shared_features.get("lag_fee_bps", 0.0) or 0.0),
+                    "latency_ms": float(
+                        shared_features.get(
+                            "market_data_latency_ms",
+                            shared_features.get("lag_latency_ms", 0.0),
+                        )
+                        or 0.0
+                    ),
+                },
+                "portfolio": {
+                    "equity_proxy": effective_equity_proxy,
+                    "raw_qty": raw_qty,
+                    "alloc_qty": alloc_qty,
+                    "runtime_lane": runtime_lane,
+                    "lane_budget_mult": lane_budget_mult,
+                },
+                "portfolio_risk_engine": dict(portfolio_risk_meta),
+                "long_term_turnover_policy": dict(long_term_turnover_meta),
+                "circuit_breakers": {
+                    "kill_switch_active": time.time() < kill_switch_until_ts,
+                    "vol_shock_pause_active": time.time() < vol_shock_pause_until_ts,
+                    "liquidity_pause_active": time.time() < liquidity_pause_until_ts,
+                    "symbol_circuit_active": time.time()
+                    < float(symbol_circuit_until.get(symbol, 0.0) or 0.0),
+                    "lane_kill_switch_active": time.time()
+                    < float(lane_kill_until_ts.get(lane_key, 0.0) or 0.0),
+                },
+                "quantitative_evidence": _profile_quantitative_evidence(current_profile),
+                "quant_model_features": {
+                    key: float(shared_features.get(key, 0.0) or 0.0)
+                    for key in QUANT_MODEL_FEATURE_KEYS
+                },
+                "dividend_features": {
+                    key: float(shared_features.get(key, 0.0) or 0.0)
+                    for key in _DIVIDEND_FEATURE_KEYS
+                },
+                "broker_truth_reconcile": dict(broker_truth_state),
+                "position_context": {
+                    "truth_available": bool(
+                        broker_truth_state.get("ok", False)
+                        and isinstance(broker_truth_state.get("positions"), dict)
+                    ),
+                    "current_quantity": float(
+                        (
+                            broker_truth_state.get("positions", {}).get(symbol, 0.0)
+                            if isinstance(broker_truth_state.get("positions"), dict)
+                            else 0.0
+                        )
+                        or 0.0
+                    ),
+                    "position_source": str(
+                        broker_truth_state.get("source") or "unavailable"
+                    ),
+                    "short_permission_confirmed": bool(
+                        broker_truth_state.get("short_permission_confirmed", False)
+                    ),
+                    "linked_leg_truth_ready": bool(
+                        shared_features.get("paired_leg_truth_ready_norm", 0.0)
+                    ),
+                    "defined_risk_structure_ready": bool(
+                        shared_features.get("defined_risk_structure_ready_norm", 0.0)
+                    ),
+                },
+                "decision_disposition": str(
+                    pre_decision_flow_disposition.get("disposition", "")
+                ),
+                "decision_blocking_stage": str(
+                    pre_decision_flow_disposition.get("blocking_stage", "")
+                ),
+                "decision_guard_categories": list(
+                    pre_decision_flow_disposition.get("guard_categories") or []
+                ),
+                "decision_guard_reasons": list(
+                    pre_decision_flow_disposition.get("guard_reasons") or []
+                ),
+            }
+            decision_flow_strategy_metadata = _attach_strategy_specialization_safe(
+                {
+                    **_production_candidate_context(PROJECT_ROOT),
+                    "source_profile": decision_flow_profile,
+                    "shadow_domain": _shadow_domain_name(broker=broker),
+                },
+                profile=decision_flow_profile,
+                raw_strategy="grand_master_bot",
+                features=shared_features,
+                action=gm_action,
+                quantity=alloc_qty,
+            )
+            decision_flow_row["strategy_specialization"] = dict(
+                decision_flow_strategy_metadata.get("strategy_specialization") or {}
+            )
+            institutional_decision_evaluation = evaluate_institutional_decision(
+                decision_flow_row,
+                INSTITUTIONAL_DECISION_FLOW_POLICY,
+            )
+            gm_action, alloc_qty, institutional_decision_control = (
+                apply_paper_decision_flow_control(
+                    target_mode="paper",
+                    current_action=gm_action,
+                    quantity=alloc_qty,
+                    evaluation=institutional_decision_evaluation,
+                    policy=INSTITUTIONAL_DECISION_FLOW_POLICY,
+                )
+            )
+            institutional_decision_operator_summary = dict(
+                institutional_decision_control.get("operator_summary") or {}
+            )
+            if pre_decision_flow_action in {"BUY", "SELL"} and gm_action == "HOLD":
+                gm_score = 0.5 + 0.5 * (gm_score - 0.5)
+                gm_reasons = gm_reasons + [
+                    "institutional_decision_flow_paper_veto",
+                    *[
+                        f"decision_flow={reason}"
+                        for reason in institutional_decision_control.get("reasons", [])[:4]
+                    ],
+                ]
+            elif alloc_qty + 1e-12 < pre_decision_flow_quantity:
+                gm_reasons = gm_reasons + [
+                    (
+                        "institutional_decision_flow_paper_downsize "
+                        f"multiplier={float(institutional_decision_control.get('quantity_multiplier', 0.0) or 0.0):.3f}"
+                    )
+                ]
+            _log_gate(
+                symbol,
+                "institutional_decision_flow_paper_control",
+                not bool(institutional_decision_control.get("action_vetoed", False)),
+                reason=str(institutional_decision_control.get("disposition", "")),
+                evaluation_id=str(institutional_decision_control.get("evaluation_id", "")),
+                classification=str(institutional_decision_control.get("classification", "")),
+                blocking_stage=str(institutional_decision_control.get("blocking_stage", "")),
+                quantity_multiplier=float(
+                    institutional_decision_control.get("quantity_multiplier", 0.0) or 0.0
+                ),
+                live_execution_authority=False,
+            )
 
             idempotency_key = ""
             idempotency_meta: Dict[str, Any] = {
@@ -20249,6 +21275,42 @@ def run_loop(
                 "runtime_lane_code": runtime_lane_code,
                 "lane_budget_mult": lane_budget_mult,
                 "manual_trade_reconcile_active": 1.0 if bool(manual_reconcile_meta.get("active", False)) else 0.0,
+                "institutional_decision_quality_utility_norm": float(
+                    institutional_decision_evaluation.get(
+                        "decision_quality_utility_norm", 0.0
+                    )
+                    or 0.0
+                ),
+                "institutional_decision_quantity_multiplier_norm": float(
+                    institutional_decision_control.get("quantity_multiplier", 0.0) or 0.0
+                ),
+                "institutional_ingestion_route_quality_norm": float(
+                    institutional_decision_operator_summary.get(
+                        "ingestion_route_quality_norm", 0.0
+                    )
+                    or 0.0
+                ),
+                "institutional_ingestion_paper_coverage_norm": float(
+                    institutional_decision_operator_summary.get(
+                        "ingestion_paper_coverage_norm", 0.0
+                    )
+                    or 0.0
+                ),
+                "institutional_ingestion_live_coverage_norm": float(
+                    institutional_decision_operator_summary.get(
+                        "ingestion_live_coverage_norm", 0.0
+                    )
+                    or 0.0
+                ),
+                "institutional_ingestion_route_receipt_valid_norm": (
+                    1.0
+                    if bool(
+                        institutional_decision_operator_summary.get(
+                            "ingestion_route_receipt_valid", False
+                        )
+                    )
+                    else 0.0
+                ),
             }
             grand_gates = {
                 "ensemble_has_members": active_sub_bots_total > 0,
@@ -20263,11 +21325,28 @@ def run_loop(
                 "options_margin_ok": bool(options_margin_meta.get("ok", True)),
                 "futures_margin_ok": bool(futures_margin_meta.get("ok", True)),
                 "broker_truth_ok": bool(broker_truth_state.get("ok", True)),
+                "institutional_decision_flow_authorized": bool(
+                    institutional_decision_control.get("authorized_mode", False)
+                ),
+                "institutional_decision_flow_not_vetoed": not bool(
+                    institutional_decision_control.get("action_vetoed", False)
+                ),
                 **risk_gates,
                 "exec_queue_ok": enq_ok,
             }
             guard_blocked_intent = gm_intent_action in {"BUY", "SELL"} and gm_action != gm_intent_action
-            if guard_blocked_intent:
+            decision_disposition_meta = _decision_disposition(
+                intent_action=gm_intent_action,
+                final_action=gm_action,
+                reasons=gm_reasons,
+            )
+            symbol_scoped_guard_failure = _symbol_scoped_guard_failure(
+                intent_action=gm_intent_action,
+                final_action=gm_action,
+                execution_guard_ok=bool(execution_guard_meta.get("ok", True)),
+                feature_freshness_ok=bool(freshness_ok),
+            )
+            if symbol_scoped_guard_failure:
                 hits = int(symbol_circuit_hits.get(symbol, 0) or 0) + 1
                 symbol_circuit_hits[symbol] = hits
                 if hits >= symbol_circuit_hit_limit:
@@ -20275,9 +21354,11 @@ def run_loop(
                         float(symbol_circuit_until.get(symbol, 0.0) or 0.0),
                         time.time() + symbol_circuit_cooldown_seconds,
                     )
-            else:
-                if gm_action in {"BUY", "SELL"}:
-                    symbol_circuit_hits[symbol] = max(int(symbol_circuit_hits.get(symbol, 0) or 0) - 1, 0)
+            elif gm_intent_action in {"BUY", "SELL"}:
+                symbol_circuit_hits[symbol] = max(
+                    int(symbol_circuit_hits.get(symbol, 0) or 0) - 1,
+                    0,
+                )
 
             if guard_blocked_intent and _dynamic_storage_flag("LOG_GRAND_MASTER_DECISIONS", log_grand_master_decisions):
                 trader.execute_decision(
@@ -20317,13 +21398,28 @@ def run_loop(
                 "intent_action": gm_intent_action,
                 "intent_score": gm_intent_score,
                 "guard_blocked_intent": guard_blocked_intent,
+                "symbol_scoped_guard_failure": symbol_scoped_guard_failure,
+                "decision_disposition": decision_disposition_meta,
                 "runtime_lane": runtime_lane,
                 "lane_budget_mult": lane_budget_mult,
                 "source_profile": _shadow_profile_name() or "default",
                 "shadow_domain": _shadow_domain_name(broker=broker),
+                "lifecycle_state": os.getenv("SLEEVE_LIFECYCLE_STATE", "").strip().lower(),
                 "allow_live_promotion": True,
                 "grand_master_meta": dict(gm_vote),
                 "entry_policy": grand_master_entry_policy,
+                "institutional_decision_flow": {
+                    "policy_receipt": institutional_decision_evaluation.get(
+                        "policy_receipt", {}
+                    ),
+                    "evaluation": institutional_decision_evaluation,
+                    "control": institutional_decision_control,
+                },
+                "strategy_specialization": dict(
+                    institutional_decision_evaluation.get(
+                        "strategy_specialization", {}
+                    )
+                ),
                 "paper_execution_authority_version": "grand_master_paper_authority_v2",
             }
 
@@ -20881,6 +21977,201 @@ def run_loop(
                 "master_intent_action": gm_intent_action,
                 "master_intent_score": gm_intent_score,
                 "master_guard_blocked_intent": guard_blocked_intent,
+                "master_symbol_scoped_guard_failure": symbol_scoped_guard_failure,
+                "decision_disposition": str(decision_disposition_meta.get("disposition", "")),
+                "decision_blocking_stage": str(decision_disposition_meta.get("blocking_stage", "")),
+                "decision_guard_categories": list(decision_disposition_meta.get("guard_categories") or []),
+                "decision_guard_reasons": list(decision_disposition_meta.get("guard_reasons") or []),
+                "institutional_decision_flow_evaluation_id": str(
+                    institutional_decision_evaluation.get("evaluation_id", "")
+                ),
+                "institutional_decision_flow_policy_id": str(
+                    institutional_decision_control.get("policy_id", "")
+                ),
+                "institutional_decision_flow_policy_family_id": str(
+                    institutional_decision_evaluation.get("policy_receipt", {}).get(
+                        "policy_family_id", ""
+                    )
+                ),
+                "institutional_decision_flow_resolved_policy_id": str(
+                    institutional_decision_evaluation.get("policy_receipt", {}).get(
+                        "resolved_policy_id", ""
+                    )
+                ),
+                "institutional_decision_flow_strategy_variant_id": str(
+                    institutional_decision_evaluation.get("policy_receipt", {}).get(
+                        "strategy_variant_id", ""
+                    )
+                ),
+                "institutional_decision_flow_horizon": str(
+                    institutional_decision_evaluation.get("strategy_definition", {}).get(
+                        "decision_horizon", ""
+                    )
+                ),
+                "institutional_decision_flow_portfolio_role": str(
+                    institutional_decision_evaluation.get("strategy_definition", {}).get(
+                        "portfolio_role", ""
+                    )
+                ),
+                "institutional_decision_flow_primary_edge": str(
+                    institutional_decision_evaluation.get("strategy_definition", {}).get(
+                        "primary_edge", ""
+                    )
+                ),
+                "institutional_decision_flow_action_semantic": str(
+                    institutional_decision_evaluation.get("action_semantics", {}).get(
+                        "semantic", ""
+                    )
+                ),
+                "institutional_decision_flow_quantitative_evidence_ready": bool(
+                    institutional_decision_evaluation.get("quantitative_evidence", {}).get(
+                        "live_ready", False
+                    )
+                ),
+                "institutional_decision_flow_quantitative_evidence_gaps": list(
+                    institutional_decision_evaluation.get("quantitative_evidence", {}).get(
+                        "live_blockers", []
+                    )
+                ),
+                "institutional_decision_flow_challenger_status": str(
+                    institutional_decision_evaluation.get(
+                        "research_challengers", {}
+                    ).get("status", "")
+                ),
+                "institutional_decision_flow_challenger_available_count": int(
+                    institutional_decision_evaluation.get(
+                        "research_challengers", {}
+                    ).get("available_method_count", 0)
+                    or 0
+                ),
+                "institutional_decision_flow_challenger_supported_count": int(
+                    institutional_decision_evaluation.get(
+                        "research_challengers", {}
+                    ).get("supported_method_count", 0)
+                    or 0
+                ),
+                "institutional_decision_flow_challenger_method_count": int(
+                    institutional_decision_evaluation.get(
+                        "research_challengers", {}
+                    ).get("method_count", 0)
+                    or 0
+                ),
+                "institutional_decision_flow_classification": str(
+                    institutional_decision_evaluation.get("classification", "")
+                ),
+                "institutional_decision_flow_disposition": str(
+                    institutional_decision_control.get("disposition", "")
+                ),
+                "institutional_decision_flow_blocking_stage": str(
+                    institutional_decision_control.get("blocking_stage", "")
+                ),
+                "institutional_decision_flow_utility_norm": float(
+                    institutional_decision_evaluation.get(
+                        "decision_quality_utility_norm", 0.0
+                    )
+                    or 0.0
+                ),
+                "institutional_decision_flow_quantity_multiplier": float(
+                    institutional_decision_control.get("quantity_multiplier", 0.0) or 0.0
+                ),
+                "institutional_decision_flow_decision_state": str(
+                    institutional_decision_operator_summary.get("decision_state", "")
+                ),
+                "institutional_decision_flow_current_stage": str(
+                    institutional_decision_operator_summary.get("current_stage", "")
+                ),
+                "institutional_decision_flow_blocking_reason_code": str(
+                    institutional_decision_operator_summary.get(
+                        "blocking_reason_code", ""
+                    )
+                ),
+                "institutional_decision_flow_regime_state": str(
+                    institutional_decision_operator_summary.get("regime_state", "")
+                ),
+                "institutional_decision_flow_edge_state": str(
+                    institutional_decision_operator_summary.get("edge_state", "")
+                ),
+                "institutional_decision_flow_position_transition": str(
+                    institutional_decision_operator_summary.get(
+                        "position_transition", ""
+                    )
+                ),
+                "institutional_decision_flow_playbook_sha256": str(
+                    institutional_decision_operator_summary.get(
+                        "decision_playbook_sha256", ""
+                    )
+                ),
+                "institutional_decision_flow_summary_sha256": str(
+                    institutional_decision_operator_summary.get(
+                        "summary_sha256", ""
+                    )
+                ),
+                "institutional_decision_flow_ingestion_route_status": str(
+                    institutional_decision_operator_summary.get(
+                        "ingestion_route_status", ""
+                    )
+                ),
+                "institutional_decision_flow_ingestion_route_state": str(
+                    institutional_decision_operator_summary.get(
+                        "ingestion_route_state", ""
+                    )
+                ),
+                "institutional_decision_flow_ingestion_route_profile_id": str(
+                    institutional_decision_operator_summary.get(
+                        "ingestion_route_profile_id", ""
+                    )
+                ),
+                "institutional_decision_flow_ingestion_route_quality_norm": float(
+                    institutional_decision_operator_summary.get(
+                        "ingestion_route_quality_norm", 0.0
+                    )
+                    or 0.0
+                ),
+                "institutional_decision_flow_ingestion_paper_coverage_norm": float(
+                    institutional_decision_operator_summary.get(
+                        "ingestion_paper_coverage_norm", 0.0
+                    )
+                    or 0.0
+                ),
+                "institutional_decision_flow_ingestion_live_coverage_norm": float(
+                    institutional_decision_operator_summary.get(
+                        "ingestion_live_coverage_norm", 0.0
+                    )
+                    or 0.0
+                ),
+                "institutional_decision_flow_ingestion_selected_producer_count": int(
+                    institutional_decision_operator_summary.get(
+                        "ingestion_selected_producer_count", 0
+                    )
+                    or 0
+                ),
+                "institutional_decision_flow_ingestion_route_receipt_valid": bool(
+                    institutional_decision_operator_summary.get(
+                        "ingestion_route_receipt_valid", False
+                    )
+                ),
+                "institutional_decision_flow_ingestion_route_receipt_sha256": str(
+                    institutional_decision_operator_summary.get(
+                        "ingestion_route_receipt_sha256", ""
+                    )
+                ),
+                "institutional_decision_flow_ingestion_route_summary_receipt_sha256": str(
+                    institutional_decision_operator_summary.get(
+                        "ingestion_route_summary_receipt_sha256", ""
+                    )
+                ),
+                "institutional_decision_flow_stage_progress": dict(
+                    institutional_decision_operator_summary.get("stage_progress")
+                    or {}
+                ),
+                "institutional_decision_flow": {
+                    "policy_receipt": institutional_decision_evaluation.get(
+                        "policy_receipt", {}
+                    ),
+                    "evaluation": institutional_decision_evaluation,
+                    "control": institutional_decision_control,
+                    "operator_summary": institutional_decision_operator_summary,
+                },
                 "master_outputs": master_outputs,
                 "grand_master_weights": gm_weights,
                 "options_master": {"action": optm_action, "score": optm_score, "vote": optm_vote["vote"]},
@@ -20987,6 +22278,15 @@ def run_loop(
                     "kill_switch_active": time.time() < kill_switch_until_ts,
                     "vol_shock_pause_active": time.time() < vol_shock_pause_until_ts,
                     "liquidity_pause_active": time.time() < liquidity_pause_until_ts,
+                    "global_volatility_stress_distinct_symbols": int(
+                        global_volatility_quorum.get("distinct_symbol_count", 0) or 0
+                    ),
+                    "global_liquidity_stress_distinct_symbols": int(
+                        global_liquidity_quorum.get("distinct_symbol_count", 0) or 0
+                    ),
+                    "global_market_stress_min_distinct_symbols": int(
+                        global_market_stress_min_symbols
+                    ),
                     "symbol_circuit_hits": int(symbol_circuit_hits.get(symbol, 0) or 0),
                     "symbol_circuit_active": time.time() < float(symbol_circuit_until.get(symbol, 0.0) or 0.0),
                     "lane": lane_key,
@@ -20994,6 +22294,18 @@ def run_loop(
                     "lane_kill_switch_active": time.time() < float(lane_kill_until_ts.get(lane_key, 0.0) or 0.0),
                     "lane_kill_switch_until": float(lane_kill_until_ts.get(lane_key, 0.0) or 0.0),
                     "lane_pause_count": int(lane_pause_counts.get(lane_key, 0) or 0),
+                    "lane_volatility_stress_distinct_symbols": int(
+                        lane_volatility_quorum.get("distinct_symbol_count", 0) or 0
+                    ),
+                    "lane_liquidity_stress_distinct_symbols": int(
+                        lane_liquidity_quorum.get("distinct_symbol_count", 0) or 0
+                    ),
+                    "lane_market_stress_min_distinct_symbols": int(
+                        lane_market_stress_min_symbols
+                    ),
+                    "market_stress_quorum_window_seconds": float(
+                        market_stress_quorum_window_seconds
+                    ),
                     "intraday_drawdown_proxy": max(peak_intraday_pnl_proxy - intraday_pnl_proxy, 0.0),
                     "regime_dislocation_active": bool(
                         float(shared_features.get("regime_dislocation_norm", 0.0) or 0.0)
@@ -21015,6 +22327,116 @@ def run_loop(
                 "action": gm_action,
                 "intent_action": gm_intent_action,
                 "intent_blocked": guard_blocked_intent,
+                "symbol_scoped_guard_failure": symbol_scoped_guard_failure,
+                "decision_disposition": str(decision_disposition_meta.get("disposition", "")),
+                "decision_blocking_stage": str(decision_disposition_meta.get("blocking_stage", "")),
+                "decision_guard_categories": list(decision_disposition_meta.get("guard_categories") or []),
+                "institutional_decision_flow_evaluation_id": str(
+                    institutional_decision_evaluation.get("evaluation_id", "")
+                ),
+                "institutional_decision_flow_classification": str(
+                    institutional_decision_evaluation.get("classification", "")
+                ),
+                "institutional_decision_flow_disposition": str(
+                    institutional_decision_control.get("disposition", "")
+                ),
+                "institutional_decision_flow_blocking_stage": str(
+                    institutional_decision_control.get("blocking_stage", "")
+                ),
+                "institutional_decision_flow_utility_norm": float(
+                    institutional_decision_evaluation.get(
+                        "decision_quality_utility_norm", 0.0
+                    )
+                    or 0.0
+                ),
+                "strategy_specialization_id": str(
+                    institutional_decision_evaluation.get(
+                        "strategy_specialization", {}
+                    ).get("selected_strategy_id", "")
+                ),
+                "strategy_specialization_objective": str(
+                    institutional_decision_evaluation.get(
+                        "strategy_specialization", {}
+                    ).get("objective_class", "")
+                ),
+                "strategy_specialization_receipt_sha256": str(
+                    institutional_decision_evaluation.get(
+                        "strategy_specialization", {}
+                    ).get("contract_receipt_sha256", "")
+                ),
+                "institutional_decision_flow_quantity_multiplier": float(
+                    institutional_decision_control.get("quantity_multiplier", 0.0) or 0.0
+                ),
+                "institutional_decision_flow_decision_state": str(
+                    institutional_decision_operator_summary.get("decision_state", "")
+                ),
+                "institutional_decision_flow_current_stage": str(
+                    institutional_decision_operator_summary.get("current_stage", "")
+                ),
+                "institutional_decision_flow_blocking_reason_code": str(
+                    institutional_decision_operator_summary.get(
+                        "blocking_reason_code", ""
+                    )
+                ),
+                "institutional_decision_flow_regime_state": str(
+                    institutional_decision_operator_summary.get("regime_state", "")
+                ),
+                "institutional_decision_flow_edge_state": str(
+                    institutional_decision_operator_summary.get("edge_state", "")
+                ),
+                "institutional_decision_flow_position_transition": str(
+                    institutional_decision_operator_summary.get(
+                        "position_transition", ""
+                    )
+                ),
+                "institutional_decision_flow_playbook_sha256": str(
+                    institutional_decision_operator_summary.get(
+                        "decision_playbook_sha256", ""
+                    )
+                ),
+                "institutional_decision_flow_summary_sha256": str(
+                    institutional_decision_operator_summary.get(
+                        "summary_sha256", ""
+                    )
+                ),
+                "institutional_decision_flow_ingestion_route_status": str(
+                    institutional_decision_operator_summary.get(
+                        "ingestion_route_status", ""
+                    )
+                ),
+                "institutional_decision_flow_ingestion_route_state": str(
+                    institutional_decision_operator_summary.get(
+                        "ingestion_route_state", ""
+                    )
+                ),
+                "institutional_decision_flow_ingestion_route_quality_norm": float(
+                    institutional_decision_operator_summary.get(
+                        "ingestion_route_quality_norm", 0.0
+                    )
+                    or 0.0
+                ),
+                "institutional_decision_flow_ingestion_paper_coverage_norm": float(
+                    institutional_decision_operator_summary.get(
+                        "ingestion_paper_coverage_norm", 0.0
+                    )
+                    or 0.0
+                ),
+                "institutional_decision_flow_ingestion_live_coverage_norm": float(
+                    institutional_decision_operator_summary.get(
+                        "ingestion_live_coverage_norm", 0.0
+                    )
+                    or 0.0
+                ),
+                "institutional_decision_flow_ingestion_route_receipt_valid": bool(
+                    institutional_decision_operator_summary.get(
+                        "ingestion_route_receipt_valid", False
+                    )
+                ),
+                "institutional_decision_flow_ingestion_route_summary_receipt_sha256": str(
+                    institutional_decision_operator_summary.get(
+                        "ingestion_route_summary_receipt_sha256", ""
+                    )
+                ),
                 "score": gm_score,
                 "risk_limit_ok": all(risk_gates.values()),
                 "execution_guard_ok": bool(execution_guard_meta.get("ok", True)),

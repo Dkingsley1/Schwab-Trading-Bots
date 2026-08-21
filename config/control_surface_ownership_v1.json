@@ -115,6 +115,51 @@
       "coordination": "atomic_replace"
     },
     {
+      "control_id": "investor_readiness_health",
+      "resource_path": "governance/health/investor_readiness_control_latest.json",
+      "owner_source": "scripts/ops/investor_readiness_control.py",
+      "owner_command": ["./scripts/ops/opsctl.sh", "investor-readiness", "--json"],
+      "owner_marker": "investor_readiness_control_latest.json",
+      "mutation_mode": "atomic_snapshot",
+      "coordination": "atomic_replace"
+    },
+    {
+      "control_id": "investor_readiness_packet",
+      "resource_path": "exports/reports/operator/investor_readiness_packet_latest.md",
+      "owner_source": "scripts/ops/investor_readiness_control.py",
+      "owner_command": ["./scripts/ops/opsctl.sh", "investor-readiness", "--json"],
+      "owner_marker": "investor_readiness_packet_latest.md",
+      "mutation_mode": "atomic_snapshot",
+      "coordination": "atomic_replace"
+    },
+    {
+      "control_id": "investor_paper_tear_sheet",
+      "resource_path": "exports/reports/investor/paper_performance_tear_sheet_latest.md",
+      "owner_source": "scripts/ops/investor_readiness_control.py",
+      "owner_command": ["./scripts/ops/opsctl.sh", "investor-readiness", "--json"],
+      "owner_marker": "paper_performance_tear_sheet_latest.md",
+      "mutation_mode": "atomic_snapshot",
+      "coordination": "atomic_replace"
+    },
+    {
+      "control_id": "investor_data_room_index",
+      "resource_path": "exports/investor_data_room/index_latest.json",
+      "owner_source": "scripts/ops/investor_readiness_control.py",
+      "owner_command": ["./scripts/ops/opsctl.sh", "investor-readiness", "--json"],
+      "owner_marker": "index_latest.json",
+      "mutation_mode": "atomic_snapshot",
+      "coordination": "atomic_replace"
+    },
+    {
+      "control_id": "investor_data_room_readme",
+      "resource_path": "exports/investor_data_room/README_latest.md",
+      "owner_source": "scripts/ops/investor_readiness_control.py",
+      "owner_command": ["./scripts/ops/opsctl.sh", "investor-readiness", "--json"],
+      "owner_marker": "README_latest.md",
+      "mutation_mode": "atomic_snapshot",
+      "coordination": "atomic_replace"
+    },
+    {
       "control_id": "bot_organization_health",
       "resource_path": "governance/health/bot_organization_latest.json",
       "owner_source": "scripts/ops/bot_organization_control.py",
@@ -228,6 +273,71 @@
         "--json"
       ],
       "owner_marker": "evidence_packets_v2_latest.json",
+      "mutation_mode": "atomic_snapshot",
+      "coordination": "atomic_replace"
+    },
+    {
+      "control_id": "system_role_contract_health",
+      "resource_path": "governance/health/system_role_contract_latest.json",
+      "owner_source": "scripts/ops/system_role_contract_control.py",
+      "owner_command": [
+        "./scripts/ops/opsctl.sh",
+        "system-role-contract",
+        "--json"
+      ],
+      "owner_marker": "system_role_contract_latest.json",
+      "mutation_mode": "atomic_snapshot",
+      "coordination": "atomic_replace"
+    },
+    {
+      "control_id": "sleeve_strategy_specialization_health",
+      "resource_path": "governance/research/sleeve_strategy_specialization_latest.json",
+      "owner_source": "scripts/sleeve_strategy_specialization_report.py",
+      "owner_command": [
+        "./scripts/ops/opsctl.sh",
+        "sleeve-strategy-specialization",
+        "--json"
+      ],
+      "owner_marker": "sleeve_strategy_specialization_latest.json",
+      "mutation_mode": "atomic_snapshot",
+      "coordination": "atomic_replace"
+    },
+    {
+      "control_id": "sleeve_strategy_contract_registry",
+      "resource_path": "governance/research/sleeve_strategy_contracts_latest.json",
+      "owner_source": "scripts/sleeve_strategy_specialization_report.py",
+      "owner_command": [
+        "./scripts/ops/opsctl.sh",
+        "sleeve-strategy-specialization",
+        "--json"
+      ],
+      "owner_marker": "sleeve_strategy_contracts_latest.json",
+      "mutation_mode": "atomic_snapshot",
+      "coordination": "atomic_replace"
+    },
+    {
+      "control_id": "sleeve_strategy_library_registry",
+      "resource_path": "governance/research/sleeve_strategy_library_latest.json",
+      "owner_source": "scripts/sleeve_strategy_specialization_report.py",
+      "owner_command": [
+        "./scripts/ops/opsctl.sh",
+        "sleeve-strategy-specialization",
+        "--json"
+      ],
+      "owner_marker": "sleeve_strategy_library_latest.json",
+      "mutation_mode": "atomic_snapshot",
+      "coordination": "atomic_replace"
+    },
+    {
+      "control_id": "sleeve_strategy_family_registry",
+      "resource_path": "governance/research/sleeve_strategy_families_latest.json",
+      "owner_source": "scripts/sleeve_strategy_specialization_report.py",
+      "owner_command": [
+        "./scripts/ops/opsctl.sh",
+        "sleeve-strategy-specialization",
+        "--json"
+      ],
+      "owner_marker": "sleeve_strategy_families_latest.json",
       "mutation_mode": "atomic_snapshot",
       "coordination": "atomic_replace"
     }

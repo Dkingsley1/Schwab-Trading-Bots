@@ -1,0 +1,324 @@
+{
+  "schema_version": 1,
+  "policy_id": "authoritative_systems_v1",
+  "purpose": "Translate public primary-source design patterns into locally owned, testable controls without treating source count as trading evidence or granting execution authority.",
+  "authority": {
+    "influence_only": true,
+    "can_create_order_intent": false,
+    "can_change_signal": false,
+    "can_change_quantity": false,
+    "can_change_risk_limits": false,
+    "can_promote_live": false,
+    "can_submit_live_order": false
+  },
+  "required_control_ids": [
+    "broker_capability_conformance",
+    "order_state_idempotency",
+    "point_in_time_validity",
+    "event_time_watermarks",
+    "causal_attribution",
+    "paper_live_equivalence",
+    "execution_fault_simulation",
+    "end_to_end_traceability"
+  ],
+  "controls": {
+    "broker_capability_conformance": {
+      "owner": "core/brokers/capability_contract.py",
+      "test": "tests/test_broker_capability_contract.py",
+      "description": "Separate market-data, paper, live, asset-class, order-type, time-in-force, precision, and production eligibility claims."
+    },
+    "order_state_idempotency": {
+      "owner": "core/live_order_ledger.py",
+      "test": "tests/test_live_order_ledger.py",
+      "description": "Persist legal order transitions, immutable broker identity, monotonic fills, terminal-state immutability, and duplicate-submit protection."
+    },
+    "point_in_time_validity": {
+      "owner": "core/strategy_validity.py",
+      "test": "tests/test_strategy_validity.py",
+      "description": "Reject high-confidence lookahead patterns and prove suffix invariance and recursive warmup stability.",
+      "scan_paths": [
+        "core/base_trader.py",
+        "core/institutional_decision_flow.py",
+        "core/profitability_hardening.py",
+        "core/sleeve_strategy_specialization.py",
+        "scripts/run_shadow_training_loop.py",
+        "scripts/paper_performance_report.py",
+        "scripts/quantitative_challenger_report.py"
+      ]
+    },
+    "event_time_watermarks": {
+      "owner": "core/event_time_control.py",
+      "test": "tests/test_event_time_control.py",
+      "description": "Classify bounded out-of-order events, quarantine late or future-skewed events, and restore deterministic watermarks."
+    },
+    "causal_attribution": {
+      "owner": "core/causal_attribution.py",
+      "test": "tests/test_causal_attribution.py",
+      "description": "Attribute signal, sizing, risk, execution, cost, and outcome observations without inventing unavailable values."
+    },
+    "paper_live_equivalence": {
+      "owner": "core/paper_live_equivalence.py",
+      "test": "tests/test_paper_live_equivalence.py",
+      "description": "Compare mode-invariant intent semantics while explicitly allowing broker fill and latency differences."
+    },
+    "execution_fault_simulation": {
+      "owner": "core/execution_scenarios.py",
+      "test": "tests/test_execution_scenarios.py",
+      "description": "Exercise latency, submit disconnect, duplicate intent, progressive partial fill, halt, gap, and cancel-race behavior."
+    },
+    "end_to_end_traceability": {
+      "owner": "core/causal_attribution.py",
+      "test": "tests/test_causal_attribution.py",
+      "description": "Carry deterministic trace identity and a hash-linked source-to-outcome stage chain in existing execution artifacts."
+    }
+  },
+  "references": [
+    {
+      "id": "quantconnect_lean",
+      "name": "LEAN Engine",
+      "organization": "QuantConnect",
+      "category": "trading_engine",
+      "official_url": "https://www.quantconnect.com/docs/v2/writing-algorithms/reality-modeling/key-concepts",
+      "supplementary_urls": [],
+      "adopted_controls": ["broker_capability_conformance", "paper_live_equivalence", "causal_attribution"],
+      "principles": ["explicit reality models", "brokerage-specific behavior", "fee slippage and fill modeling"],
+      "primary_source": true,
+      "influence_only": true
+    },
+    {
+      "id": "nautilus_trader",
+      "name": "NautilusTrader",
+      "organization": "NautilusTrader",
+      "category": "trading_engine",
+      "official_url": "https://nautilustrader.io/docs/latest/concepts/execution/",
+      "supplementary_urls": [],
+      "adopted_controls": ["order_state_idempotency", "broker_capability_conformance", "end_to_end_traceability"],
+      "principles": ["execution state machines", "order event reconciliation", "adapter boundaries"],
+      "primary_source": true,
+      "influence_only": true
+    },
+    {
+      "id": "microsoft_qlib",
+      "name": "Qlib",
+      "organization": "Microsoft",
+      "category": "quant_research",
+      "official_url": "https://qlib.readthedocs.io/en/stable/component/workflow.html",
+      "supplementary_urls": [],
+      "adopted_controls": ["point_in_time_validity", "causal_attribution"],
+      "principles": ["recorded research workflows", "dataset model and record separation", "reproducible experiments"],
+      "primary_source": true,
+      "influence_only": true
+    },
+    {
+      "id": "hummingbot",
+      "name": "Hummingbot",
+      "organization": "Hummingbot Foundation",
+      "category": "execution_framework",
+      "official_url": "https://hummingbot.org/strategies/v2-strategies/",
+      "supplementary_urls": ["https://hummingbot.org/connectors/connectors/api_throttler/"],
+      "adopted_controls": ["broker_capability_conformance", "order_state_idempotency", "execution_fault_simulation"],
+      "principles": ["controller and executor separation", "finite executor lifecycles", "pooled weighted rate limits"],
+      "primary_source": true,
+      "influence_only": true
+    },
+    {
+      "id": "freqtrade",
+      "name": "Freqtrade",
+      "organization": "Freqtrade",
+      "category": "strategy_validation",
+      "official_url": "https://docs.freqtrade.io/en/stable/lookahead-analysis/",
+      "supplementary_urls": ["https://docs.freqtrade.io/en/stable/recursive-analysis/"],
+      "adopted_controls": ["point_in_time_validity"],
+      "principles": ["sliced-signal lookahead analysis", "recursive startup stability", "fail-closed strategy validation"],
+      "primary_source": true,
+      "influence_only": true
+    },
+    {
+      "id": "vnpy",
+      "name": "vn.py",
+      "organization": "VeighNa",
+      "category": "trading_framework",
+      "official_url": "https://www.vnpy.com/",
+      "supplementary_urls": [],
+      "adopted_controls": ["broker_capability_conformance", "end_to_end_traceability"],
+      "principles": ["gateway isolation", "event-driven components", "multi-venue extensibility"],
+      "primary_source": true,
+      "influence_only": true
+    },
+    {
+      "id": "zipline_reloaded",
+      "name": "Zipline Reloaded",
+      "organization": "ML4Trading",
+      "category": "backtesting",
+      "official_url": "https://zipline.ml4trading.io/",
+      "supplementary_urls": [],
+      "adopted_controls": ["point_in_time_validity", "paper_live_equivalence"],
+      "principles": ["event-driven backtesting", "calendar-aware simulation", "data portal boundaries"],
+      "primary_source": true,
+      "influence_only": true
+    },
+    {
+      "id": "abides",
+      "name": "ABIDES",
+      "organization": "ABIDES Project",
+      "category": "market_simulation",
+      "official_url": "https://github.com/abides-sim/abides",
+      "supplementary_urls": [],
+      "adopted_controls": ["execution_fault_simulation", "causal_attribution"],
+      "principles": ["discrete-event market simulation", "latency modeling", "reproducible agent scenarios"],
+      "primary_source": true,
+      "influence_only": true
+    },
+    {
+      "id": "finrl",
+      "name": "FinRL",
+      "organization": "AI4Finance Foundation",
+      "category": "machine_learning",
+      "official_url": "https://finrl.readthedocs.io/_/downloads/en/stable/pdf/",
+      "supplementary_urls": [],
+      "adopted_controls": ["point_in_time_validity", "causal_attribution"],
+      "principles": ["train validate test separation", "market-friction-aware environments", "reproducible pipelines"],
+      "primary_source": true,
+      "influence_only": true
+    },
+    {
+      "id": "quantrocket",
+      "name": "QuantRocket",
+      "organization": "QuantRocket",
+      "category": "research_and_execution",
+      "official_url": "https://www.quantrocket.com/docs/",
+      "supplementary_urls": [],
+      "adopted_controls": ["broker_capability_conformance", "paper_live_equivalence", "causal_attribution"],
+      "principles": ["service boundaries", "data lineage", "paper and live workflow separation"],
+      "primary_source": true,
+      "influence_only": true
+    },
+    {
+      "id": "fix_trading_community",
+      "name": "FIX Order State Changes",
+      "organization": "FIX Trading Community",
+      "category": "execution_standard",
+      "official_url": "https://www.fixtrading.org/online-specification/order-state-changes/",
+      "supplementary_urls": [],
+      "adopted_controls": ["order_state_idempotency", "paper_live_equivalence"],
+      "principles": ["explicit order states", "execution type versus order status", "terminal and pending transition semantics"],
+      "primary_source": true,
+      "influence_only": true
+    },
+    {
+      "id": "apache_flink",
+      "name": "Apache Flink",
+      "organization": "Apache Software Foundation",
+      "category": "stream_processing",
+      "official_url": "https://nightlies.apache.org/flink/flink-docs-stable/docs/learn-flink/streaming_analytics/",
+      "supplementary_urls": ["https://nightlies.apache.org/flink/flink-docs-stable/docs/learn-flink/fault_tolerance/"],
+      "adopted_controls": ["event_time_watermarks", "execution_fault_simulation"],
+      "principles": ["event time and watermarks", "bounded out-of-order handling", "checkpointed state recovery"],
+      "primary_source": true,
+      "influence_only": true
+    },
+    {
+      "id": "apache_kafka",
+      "name": "Apache Kafka",
+      "organization": "Apache Software Foundation",
+      "category": "event_log",
+      "official_url": "https://kafka.apache.org/43/design/design/",
+      "supplementary_urls": [],
+      "adopted_controls": ["order_state_idempotency", "event_time_watermarks", "end_to_end_traceability"],
+      "principles": ["durable ordered logs", "idempotent production", "transactional processing semantics"],
+      "primary_source": true,
+      "influence_only": true
+    },
+    {
+      "id": "temporal",
+      "name": "Temporal",
+      "organization": "Temporal Technologies",
+      "category": "durable_workflows",
+      "official_url": "https://docs.temporal.io/",
+      "supplementary_urls": [],
+      "adopted_controls": ["order_state_idempotency", "execution_fault_simulation", "end_to_end_traceability"],
+      "principles": ["durable workflow state", "crash recovery", "activity idempotency"],
+      "primary_source": true,
+      "influence_only": true
+    },
+    {
+      "id": "mlflow",
+      "name": "MLflow Tracking",
+      "organization": "MLflow",
+      "category": "experiment_tracking",
+      "official_url": "https://mlflow.org/docs/latest/ml/tracking/",
+      "supplementary_urls": [],
+      "adopted_controls": ["causal_attribution", "end_to_end_traceability", "point_in_time_validity"],
+      "principles": ["parameter metric and artifact lineage", "run identity", "reproducible experiment records"],
+      "primary_source": true,
+      "influence_only": true
+    },
+    {
+      "id": "feast",
+      "name": "Feast",
+      "organization": "Feast",
+      "category": "feature_store",
+      "official_url": "https://docs.feast.dev/getting-started/components/overview",
+      "supplementary_urls": ["https://docs.feast.dev/reference/offline-stores/overview"],
+      "adopted_controls": ["point_in_time_validity", "event_time_watermarks", "end_to_end_traceability"],
+      "principles": ["offline and online feature consistency", "point-in-time joins", "feature service contracts"],
+      "primary_source": true,
+      "influence_only": true
+    },
+    {
+      "id": "openlineage",
+      "name": "OpenLineage",
+      "organization": "OpenLineage",
+      "category": "data_lineage",
+      "official_url": "https://openlineage.io/docs/spec/run-cycle/",
+      "supplementary_urls": [],
+      "adopted_controls": ["causal_attribution", "end_to_end_traceability"],
+      "principles": ["run job and dataset identity", "run lifecycle events", "input output lineage"],
+      "primary_source": true,
+      "influence_only": true
+    },
+    {
+      "id": "opentelemetry",
+      "name": "OpenTelemetry",
+      "organization": "Cloud Native Computing Foundation",
+      "category": "observability",
+      "official_url": "https://opentelemetry.io/docs/concepts/observability-primer/",
+      "supplementary_urls": [],
+      "adopted_controls": ["causal_attribution", "end_to_end_traceability", "execution_fault_simulation"],
+      "principles": ["traces metrics and logs", "context propagation", "causal span relationships"],
+      "primary_source": true,
+      "influence_only": true
+    },
+    {
+      "id": "sec_rule_15c3_5",
+      "name": "SEC Market Access Rule 15c3-5",
+      "organization": "U.S. Securities and Exchange Commission",
+      "category": "market_access_control",
+      "official_url": "https://www.sec.gov/rules-regulations/2011/06/risk-management-controls-brokers-or-dealers-market-access",
+      "supplementary_urls": [],
+      "adopted_controls": ["broker_capability_conformance", "order_state_idempotency", "execution_fault_simulation"],
+      "principles": ["pre-trade financial and regulatory controls", "restricted access", "regular review and post-trade reporting"],
+      "primary_source": true,
+      "influence_only": true
+    },
+    {
+      "id": "nist_csf_2",
+      "name": "NIST Cybersecurity Framework 2.0",
+      "organization": "National Institute of Standards and Technology",
+      "category": "operational_resilience",
+      "official_url": "https://www.nist.gov/cyberframework",
+      "supplementary_urls": [],
+      "adopted_controls": ["execution_fault_simulation", "end_to_end_traceability", "broker_capability_conformance"],
+      "principles": ["govern identify protect detect respond recover", "risk governance", "continuous improvement"],
+      "primary_source": true,
+      "influence_only": true
+    }
+  ],
+  "readiness_semantics": {
+    "reference_count_is_not_evidence": true,
+    "implementation_ready_is_not_live_ready": true,
+    "paper_live_equivalence_requires_observed_pairs": true,
+    "profitability_requires_candidate_bound_forward_post_cost_evidence": true,
+    "live_execution_remains_independently_gated": true
+  }
+}

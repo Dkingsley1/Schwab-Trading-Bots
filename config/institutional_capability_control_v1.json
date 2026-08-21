@@ -1,0 +1,102 @@
+{
+  "schema_version": 1,
+  "policy_id": "institutional_capability_control_v1",
+  "provider_policy": {
+    "authoritative_provider_family_target_min": 15,
+    "authoritative_provider_family_target_max": 30,
+    "provider_or_source_count_is_not_a_readiness_score": true,
+    "admit_only_strategy_declared_capabilities": true,
+    "prefer_primary_official_or_direct_market_sources": true,
+    "reuse_shared_snapshots_across_bots": true,
+    "derived_features_may_expand_context_but_not_source_count": true,
+    "credentials_or_entitlements_may_not_be_stored_in_repository": true,
+    "ten_thousand_sources_required": false
+  },
+  "pillars": [
+    {
+      "pillar_id": "scientific_research_platform",
+      "title": "Scientific research and reproducibility",
+      "public_reference_urls": [
+        "https://www.twosigma.com/businesses/investment-management/",
+        "https://www.janestreet.com/quantitative-research/"
+      ]
+    },
+    {
+      "pillar_id": "market_visibility_and_data_lineage",
+      "title": "Market visibility, point-in-time data, and lineage",
+      "public_reference_urls": [
+        "https://www.nasdaq.com/solutions/data/equities/nasdaq-totalview",
+        "https://www.cmegroup.com/market-data/distributor/market-data-platform.html"
+      ]
+    },
+    {
+      "pillar_id": "independent_execution_evidence",
+      "title": "Independent fills and transaction-cost calibration",
+      "public_reference_urls": [
+        "https://www.aqr.com/Insights/Research/Working-Paper/Trading-Costs"
+      ]
+    },
+    {
+      "pillar_id": "selection_bias_and_overfit_control",
+      "title": "Selection-bias and overfit control",
+      "public_reference_urls": [
+        "https://escholarship.org/uc/item/4w1110bb"
+      ]
+    },
+    {
+      "pillar_id": "resource_routing_and_role_separation",
+      "title": "Bounded compute routing and role separation",
+      "public_reference_urls": [
+        "https://www.janestreet.com/quantitative-research/"
+      ]
+    },
+    {
+      "pillar_id": "market_access_risk_controls",
+      "title": "Pre-trade market-access risk controls",
+      "public_reference_urls": [
+        "https://www.sec.gov/rules-regulations/2011/06/risk-management-controls-brokers-or-dealers-market-access"
+      ]
+    }
+  ],
+  "conditional_external_entitlements": [
+    {
+      "entitlement_id": "nasdaq_totalview_depth",
+      "provider": "Nasdaq TotalView",
+      "status": "optional_unsubscribed",
+      "capabilities": ["full_depth_equities", "order_book_imbalance", "auction_imbalance"],
+      "required_only_for_live_families": ["market_making", "order_flow_microstructure", "high_frequency_execution"]
+    },
+    {
+      "entitlement_id": "cme_mdp_3_depth",
+      "provider": "CME MDP 3.0",
+      "status": "optional_unsubscribed",
+      "capabilities": ["direct_futures_depth", "implied_book", "venue_sequence_data"],
+      "required_only_for_live_families": ["futures_intraday", "futures_market_making", "futures_order_flow"]
+    },
+    {
+      "entitlement_id": "licensed_news_estimates_borrow",
+      "provider": "Licensed news, estimates, corporate-action, and borrow bundle",
+      "status": "optional_unsubscribed",
+      "capabilities": ["low_latency_news", "analyst_revision_history", "borrow_cost", "corporate_action_reference"],
+      "required_only_for_live_families": ["earnings_event", "short_bias", "news_event_reaction"]
+    },
+    {
+      "entitlement_id": "broker_or_venue_fill_receipts",
+      "provider": "Broker paper receipts or licensed venue replay",
+      "status": "evidence_required",
+      "capabilities": ["independent_fill_truth", "queue_calibration", "realized_slippage"],
+      "required_only_for_live_families": ["all_live_execution"]
+    }
+  ],
+  "control_contract": {
+    "implementation_paper_evidence_entitlement_and_live_states_are_separate": true,
+    "optional_unsubscribed_depth_does_not_block_guarded_paper_soak": true,
+    "activated_live_strategy_families_must_prove_their_declared_entitlements": true,
+    "local_stale_artifacts_may_receive_bounded_refresh_actions": true,
+    "subscriptions_fills_attestations_and_operator_release_are_never_self_healed": true,
+    "automatic_source_purchase_authority": false,
+    "automatic_strategy_admission_authority": false,
+    "automatic_live_execution_authority": false,
+    "profitability_is_not_guaranteed": true
+  }
+}

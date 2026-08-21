@@ -823,6 +823,63 @@ def _self_healing_sentinel_contract(project_root: Path) -> dict[str, Any]:
     }
 
 
+def _system_role_contract(project_root: Path) -> dict[str, Any]:
+    path = project_root / "governance" / "health" / "system_role_contract_latest.json"
+    payload = load_json(path)
+    age = payload_age_minutes(payload, path) if payload else None
+    summary = _dict(payload.get("summary"))
+    safety = _dict(payload.get("safety_contract"))
+    blockers: list[str] = []
+    if not payload:
+        blockers.append("system_role_contract_missing")
+    elif age is None or float(age) > 30.0:
+        blockers.append("system_role_contract_stale")
+    if payload and payload.get("ok") is not True:
+        blockers.append("system_role_contract_not_ready")
+    if payload and str(payload.get("grade") or "").upper() != "A+":
+        blockers.append("system_role_contract_grade_below_a_plus")
+    if payload and str(payload.get("operating_mode") or "") != "enforced_responsibility_contracts":
+        blockers.append("system_role_contract_not_enforced")
+    if payload and _safe_float(summary.get("registry_role_coverage_ratio"), 0.0) < 1.0:
+        blockers.append("system_role_contract_registry_coverage_incomplete")
+    if payload and _safe_int(summary.get("authority_conflict_count"), 0) > 0:
+        blockers.append("system_role_contract_authority_conflict")
+    if payload and not all(
+        safety.get(key) is True
+        for key in (
+            "single_writer_state_domains",
+            "fail_closed_unknown_actions",
+            "explicit_execution_authority",
+            "sensitive_action_leases",
+        )
+    ):
+        blockers.append("system_role_contract_safety_controls_incomplete")
+    ready = not blockers
+    return {
+        "status": "ready" if ready else "blocked",
+        "ready": ready,
+        "score": 100.0 if ready else 0.0,
+        "grade": "A+" if ready else "F",
+        "path": str(path),
+        "age_minutes": round(float(age), 3) if age is not None else None,
+        "max_age_minutes": 30.0,
+        "role_count": _safe_int(summary.get("role_count"), 0),
+        "component_count": _safe_int(summary.get("component_count"), 0),
+        "state_domain_count": _safe_int(summary.get("state_domain_count"), 0),
+        "exclusive_action_count": _safe_int(summary.get("exclusive_action_count"), 0),
+        "operating_plane_count": _safe_int(summary.get("operating_plane_count"), 0),
+        "classified_action_count": _safe_int(summary.get("classified_action_count"), 0),
+        "action_lease_count": _safe_int(summary.get("action_lease_count"), 0),
+        "escalation_route_count": _safe_int(summary.get("escalation_route_count"), 0),
+        "registry_role_coverage_ratio": _safe_float(summary.get("registry_role_coverage_ratio"), 0.0),
+        "authority_conflict_count": _safe_int(summary.get("authority_conflict_count"), 0),
+        "blockers": ordered_unique(blockers),
+        "warnings": [],
+        "managed_controls": ["single_writer_role_authority_enforced"] if ready else [],
+        "evidence_epoch": _dict(payload.get("evidence_epoch")),
+    }
+
+
 def _collector_capability_contract(project_root: Path) -> dict[str, Any]:
     config_path = project_root / "config" / "collector_capability_catalog_v1.json"
     path = project_root / "governance" / "health" / "collector_capability_control_latest.json"
@@ -980,6 +1037,7 @@ def build_payload(
     alerting = _alerting_contract(project_root)
     freshness = _freshness_contract(project_root)
     self_healing = _self_healing_sentinel_contract(project_root)
+    system_roles = _system_role_contract(project_root)
     capability_materialization = _capability_materialization_contract(project_root)
     collector_capabilities = _collector_capability_contract(project_root)
     sections = {
@@ -989,6 +1047,7 @@ def build_payload(
         "alerting": alerting,
         "artifact_freshness": freshness,
         "self_healing_sentinel": self_healing,
+        "system_role_contract": system_roles,
         "capability_materialization": capability_materialization,
         "collector_capabilities": collector_capabilities,
     }
@@ -998,6 +1057,7 @@ def build_payload(
         + list(runtime.get("blockers") or [])
         + list(alerting.get("blockers") or [])
         + list(self_healing.get("blockers") or [])
+        + list(system_roles.get("blockers") or [])
         + list(capability_materialization.get("blockers") or [])
         + list(collector_capabilities.get("blockers") or [])
     )
@@ -1008,6 +1068,7 @@ def build_payload(
         + list(alerting.get("warnings") or [])
         + list(freshness.get("warnings") or [])
         + list(self_healing.get("warnings") or [])
+        + list(system_roles.get("warnings") or [])
         + list(capability_materialization.get("warnings") or [])
         + list(collector_capabilities.get("warnings") or [])
     )
@@ -1018,6 +1079,7 @@ def build_payload(
         + list(host.get("managed_controls") or [])
         + list(runtime.get("managed_controls") or [])
         + list(alerting.get("managed_controls") or [])
+        + list(system_roles.get("managed_controls") or [])
         + list(collector_capabilities.get("managed_controls") or [])
     )
     section_scores = [_safe_float(row.get("score"), 92.0) for row in sections.values() if isinstance(row, dict)]
@@ -1055,6 +1117,7 @@ def build_payload(
             ["./scripts/ops/opsctl.sh", "local-storage-reserve-guard", "--apply", "--json"],
             ["./scripts/ops/opsctl.sh", "capability-materialization", "--json"],
             ["./scripts/ops/opsctl.sh", "collector-capability-control", "--json"],
+            ["./scripts/ops/opsctl.sh", "system-role-contract", "--json"],
         ],
         "next_action": (
             "all unattended soak gates are ready; leave live money locked and let the soak run"

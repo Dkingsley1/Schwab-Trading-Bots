@@ -788,6 +788,7 @@ def main() -> int:
             ("storage_resilience_control", [str(VENV_PY), str(PROJECT_ROOT / "scripts" / "ops" / "storage_resilience_control.py"), "--fast", "--json"], 5000),
             ("ingestion_storage_control", [str(VENV_PY), str(PROJECT_ROOT / "scripts" / "ops" / "ingestion_storage_control.py"), "--json"], 5000),
             ("blackstart_recovery", [str(VENV_PY), str(PROJECT_ROOT / "scripts" / "ops" / "blackstart_recovery.py"), "--json"], 5000),
+            ("system_role_contract", [str(VENV_PY), str(PROJECT_ROOT / "scripts" / "ops" / "system_role_contract_control.py"), "--json"], 5000),
         ]
         for name, cmd, stdout_limit in common_zero_checks:
             ok_predicate = (lambda rc: rc == 0)

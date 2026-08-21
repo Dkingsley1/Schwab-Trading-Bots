@@ -10,7 +10,7 @@ OPS_DIR = PROJECT_ROOT / "scripts" / "ops"
 if str(OPS_DIR) not in sys.path:
     sys.path.insert(0, str(OPS_DIR))
 
-import source_verification_report as svr
+import source_verification_report as svr  # noqa: E402
 
 
 def _write_json(path: Path, payload: dict) -> None:
@@ -757,6 +757,45 @@ def test_cross_verified_crypto_source_warnings_are_not_actionable() -> None:
         "evidence": {"warning_count": 1},
     }
 
+    assert svr._row_has_actionable_notes(row) is False
+
+
+def test_crypto_cross_verification_uses_market_sources_not_optional_news_sources(tmp_path: Path) -> None:
+    fresh_ts = datetime.now(timezone.utc).isoformat()
+    _write_json(
+        tmp_path / "governance" / "health" / "crypto_market_context_sync_latest.json",
+        {
+            "timestamp_utc": fresh_ts,
+            "ok": True,
+            "tracked_symbols": 18,
+            "tracked_assets": 18,
+            "ok_source_count": 15,
+            "source_count": 18,
+            "market_ok_source_count": 9,
+            "market_source_count": 11,
+            "news_ok_source_count": 6,
+            "news_source_count": 7,
+            "compared_assets": 14,
+            "warning_count": 2,
+            "sources": {
+                "coinbase": {"ok": True},
+                "kraken": {"ok": True},
+                "binance": {"ok": False, "optional": True},
+                "the_block": {"ok": False},
+            },
+        },
+    )
+
+    row = svr._crypto_market_row(
+        tmp_path / "governance" / "health",
+        datetime.now(timezone.utc),
+    )
+
+    assert row["verification_status"] == "cross_verified"
+    assert row["evidence"]["market_ok_sources"] == 9
+    assert row["evidence"]["market_total_sources"] == 11
+    assert "partial_sources=15/18" in row["notes"]
+    assert "source_warnings=2" in row["notes"]
     assert svr._row_has_actionable_notes(row) is False
 
 

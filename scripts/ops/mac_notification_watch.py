@@ -24,6 +24,8 @@ STORAGE_GUARD_PATH = HEALTH_DIR / "storage_mount_guard_latest.json"
 CREATIVE_COTENANT_PATH = HEALTH_DIR / "creative_cotenant_guard_latest.json"
 SWAP_PRESSURE_GOVERNOR_PATH = HEALTH_DIR / "swap_pressure_governor_latest.json"
 RUNTIME_THROTTLE_PATH = HEALTH_DIR / "runtime_throttle_control_latest.json"
+AUTH_LEASE_PATH = HEALTH_DIR / "auth_lease_manager_latest.json"
+SCHWAB_AUTH_SUPERVISOR_PATH = HEALTH_DIR / "schwab_auth_supervisor_latest.json"
 GLOBAL_HALT_PATH = HEALTH_DIR / "GLOBAL_TRADING_HALT.flag"
 HALT_RECOVERY_PATH = HEALTH_DIR / "shadow_watchdog_halt_recovery_latest.json"
 INCIDENT_AUTO_HALT_PATH = ALERTS_DIR / "incident_auto_halt_latest.json"
@@ -40,6 +42,7 @@ IMESSAGE_MIN_SEVERITY_ENV = "MAC_NOTIFICATION_WATCH_IMESSAGE_MIN_SEVERITY"
 IMESSAGE_EVENT_ALLOWLIST_ENV = "MAC_NOTIFICATION_WATCH_IMESSAGE_EVENT_ALLOWLIST"
 EVENT_ALLOWLIST_ENV = "MAC_NOTIFICATION_WATCH_ALLOW_REASONS"
 MIN_REPEAT_SECONDS_ENV = "MAC_NOTIFICATION_WATCH_MIN_REPEAT_SECONDS"
+AUTH_MIN_REPEAT_SECONDS_ENV = "MAC_NOTIFICATION_WATCH_AUTH_MIN_REPEAT_SECONDS"
 SUPPRESS_TRAINING_DONE_ENV = "MAC_NOTIFICATION_WATCH_SUPPRESS_TRAINING_DONE"
 POWER_EVENTS_ENABLED_ENV = "MAC_NOTIFICATION_WATCH_POWER_EVENTS_ENABLED"
 PMSET_POWER_LOG_CACHE_SECONDS_ENV = "MAC_NOTIFICATION_WATCH_PMSET_CACHE_SECONDS"
@@ -48,6 +51,7 @@ DEFAULT_MAX_ALERT_AGE_SECONDS = 900.0
 DEFAULT_IMESSAGE_MIN_SEVERITY = "warn"
 DEFAULT_IMESSAGE_EVENT_ALLOWLIST = ""
 DEFAULT_MIN_REPEAT_SECONDS = 300.0
+DEFAULT_AUTH_MIN_REPEAT_SECONDS = 1800.0
 TERMINAL_NOTIFIER_CANDIDATES = [
     "/opt/homebrew/bin/terminal-notifier",
     "/usr/local/bin/terminal-notifier",
@@ -127,6 +131,8 @@ def _event_family(key: str) -> str:
         return "swap_pressure"
     if normalized_key.startswith("system_talk:"):
         return "system_talk"
+    if normalized_key.startswith("auth_lease:"):
+        return "auth_lease"
     return normalized_key
 
 
@@ -146,7 +152,7 @@ def _normalize_event_allow_token(value: str) -> str:
         "health_gate_critical": "critical_alert",
         "guardrail_critical": "critical_alert",
         "storage_critical": "storage_mount_missing",
-        "auth_expired": "critical_alert",
+        "auth_expired": "auth_lease",
     }
     return aliases.get(token, token)
 
@@ -220,6 +226,9 @@ def _event_severity(key: str, message: str) -> str:
         return "info"
     if normalized_key.startswith("system_talk:"):
         return "critical" if ":blocked:" in normalized_key else "warn"
+    if normalized_key.startswith("auth_lease:"):
+        parts = normalized_key.split(":", 2)
+        return _normalize_severity(parts[1] if len(parts) >= 2 else "", "critical")
     if normalized_key in {"tripwire", "all_sleeves_down", "global_halt", "incident_auto_halt", "preflight_critical", "storage_mount_missing"}:
         return "critical"
     return "warn"
@@ -264,6 +273,10 @@ def _notification_heading(key: str, message: str) -> Tuple[str, str]:
         if severity == "critical":
             return ("Trading Bot Critical", "System Intelligence")
         return ("Trading Bot Update", "System Intelligence")
+    if key.startswith("auth_lease:"):
+        if severity == "critical":
+            return ("Trading Bot Critical", "Schwab Authorization")
+        return ("Trading Bot Warning", "Schwab Authorization")
     if key == "preflight_critical":
         return ("Trading Bot Critical", "Preflight")
     if key == "storage_mount_missing":
@@ -314,6 +327,13 @@ def _notification_action_hint(key: str, message: str) -> str:
         return "Action: bot stack downshifted automatically; keep live collection running calm."
     if normalized_key.startswith("system_talk:"):
         return "Action: run the suggested safe command or ask Codex to inspect."
+    if normalized_key.startswith("auth_lease:"):
+        if ":critical:" in normalized_key:
+            return (
+                "Action: run ./scripts/ops/opsctl.sh token-refresh-interactive --force "
+                "--requested-browser chrome --json"
+            )
+        return "Action: renew Schwab authorization before the lease reaches its critical floor."
     return ""
 
 
@@ -345,6 +365,8 @@ def _notification_inspect_target(key: str, message: str) -> Path | None:
         return SWAP_PRESSURE_GOVERNOR_PATH
     if normalized_key.startswith("system_talk:"):
         return CODEX_HANDOFF_PATH
+    if normalized_key.startswith("auth_lease:"):
+        return SCHWAB_AUTH_SUPERVISOR_PATH if SCHWAB_AUTH_SUPERVISOR_PATH.exists() else AUTH_LEASE_PATH
     return INCIDENT_TIMELINE_PATH if INCIDENT_TIMELINE_PATH.exists() else None
 
 
@@ -366,6 +388,15 @@ def _notification_group_key(key: str, message: str) -> str:
         compact = re.sub(r"[^a-z0-9]+", "_", first_line).strip("_")
         return f"critical_alert:{compact or 'default'}"
     return normalized_key
+
+
+def _event_repeat_seconds(key: str, default_seconds: float) -> float:
+    if str(key or "").strip().lower().startswith("auth_lease:"):
+        return max(
+            _env_float(AUTH_MIN_REPEAT_SECONDS_ENV, DEFAULT_AUTH_MIN_REPEAT_SECONDS),
+            float(default_seconds),
+        )
+    return float(default_seconds)
 
 
 def _notification_body(key: str, message: str) -> str:
@@ -929,6 +960,83 @@ def _swap_pressure_event(payload: Dict[str, Any], max_age_seconds: float) -> Tup
     return (f"swap_pressure:{event}:{key_tier}", message)
 
 
+def _auth_lease_event(
+    lease_payload: Dict[str, Any],
+    supervisor_payload: Dict[str, Any],
+    max_age_seconds: float,
+) -> Tuple[str, str] | None:
+    lease_recent = bool(lease_payload and _is_recent(lease_payload, max_age_seconds))
+    supervisor_recent = bool(supervisor_payload and _is_recent(supervisor_payload, max_age_seconds))
+    if not lease_recent and not supervisor_recent:
+        return None
+
+    current_lease = lease_payload if lease_recent else {}
+    current_supervisor = supervisor_payload if supervisor_recent else {}
+    lease_state = str(current_lease.get("lease_state") or "").strip().lower()
+    lease_status = str(current_lease.get("overall_status") or "").strip().lower()
+    supervisor_status = str(current_supervisor.get("overall_status") or "").strip().lower()
+    token = current_supervisor.get("token") if isinstance(current_supervisor.get("token"), dict) else {}
+    token_ready = token.get("ready")
+    broker_state = current_lease.get("broker_state") if isinstance(current_lease.get("broker_state"), dict) else {}
+    auth_reason = str(broker_state.get("auth_reason") or "").strip().lower()
+    findings_rows = current_supervisor.get("findings") if isinstance(current_supervisor.get("findings"), list) else []
+    findings = {
+        str(item or "").strip().lower()
+        for item in findings_rows
+        if str(item or "").strip()
+    }
+    followup_rows = (
+        current_supervisor.get("operator_followups")
+        if isinstance(current_supervisor.get("operator_followups"), list)
+        else []
+    )
+    operator_followups = {
+        str(item or "").strip().lower()
+        for item in followup_rows
+        if str(item or "").strip()
+    }
+
+    critical = bool(
+        lease_state == "critical"
+        or lease_status == "blocked"
+        or supervisor_status == "blocked"
+        or token_ready is False
+    )
+    warning = bool(
+        lease_state == "warning"
+        or lease_status == "degraded"
+        or supervisor_status == "degraded"
+    )
+    if not critical and not warning:
+        return None
+
+    interactive_required = bool(
+        critical
+        and (
+            "invalid_grant" in auth_reason
+            or "refresh token is invalid" in auth_reason
+            or any("token_not_ready" in item for item in findings)
+            or any("token-refresh-interactive" in item for item in operator_followups)
+        )
+    )
+    if critical:
+        state = "interactive_refresh_required" if interactive_required else "blocked"
+        reason = (
+            "Schwab sign-in is required; the saved refresh token is no longer usable."
+            if interactive_required
+            else "Schwab authorization is blocked."
+        )
+        return (
+            f"auth_lease:critical:{state}",
+            f"{reason}\nPaper execution and broker reconciliation are paused.",
+        )
+
+    return (
+        "auth_lease:warn:lease_warning",
+        "Schwab authorization is nearing its critical lease floor.\nPaper collection remains active.",
+    )
+
+
 def _critical_alert_events(max_age_seconds: float) -> List[Tuple[str, str]]:
     out: List[Tuple[str, str]] = []
     suppress_training_done = _env_flag(SUPPRESS_TRAINING_DONE_ENV, False)
@@ -1045,6 +1153,11 @@ def _event_candidates(max_age_seconds: float) -> List[Tuple[str, str]]:
         _storage_event(_read_json(STORAGE_GUARD_PATH), max_age_seconds),
         _creative_mode_event(_read_json(CREATIVE_COTENANT_PATH), max_age_seconds),
         _swap_pressure_event(_read_json(SWAP_PRESSURE_GOVERNOR_PATH), max_age_seconds),
+        _auth_lease_event(
+            _read_json(AUTH_LEASE_PATH),
+            _read_json(SCHWAB_AUTH_SUPERVISOR_PATH),
+            max_age_seconds,
+        ),
         _codex_handoff_event(_read_json(CODEX_HANDOFF_PATH), max_age_seconds),
         _incident_auto_halt_event(_read_json(INCIDENT_AUTO_HALT_PATH), max_age_seconds),
         _preflight_critical_event(_read_json(PREFLIGHT_CRITICAL_PATH), max_age_seconds),
@@ -1083,6 +1196,7 @@ def _run_watch_loop(
             body = _notification_body(key, message)
             should_send = sent.get(group_key) != body
             if not should_send:
+                event_repeat_seconds = _event_repeat_seconds(key, min_repeat_seconds)
                 ts_raw = str(last_sent_at.get(group_key, "")).strip()
                 if ts_raw:
                     try:
@@ -1091,8 +1205,8 @@ def _run_watch_loop(
                             - datetime.fromisoformat(ts_raw.replace("Z", "+00:00")).astimezone(timezone.utc)
                         ).total_seconds()
                     except Exception:
-                        age = min_repeat_seconds + 1.0
-                    should_send = age >= min_repeat_seconds
+                        age = event_repeat_seconds + 1.0
+                    should_send = age >= event_repeat_seconds
             if should_send:
                 title, subtitle = _notification_heading(key, message)
                 severity = _event_severity(key, message)

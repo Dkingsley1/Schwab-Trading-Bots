@@ -1055,6 +1055,9 @@ case "$cmd" in
   commercial-readiness|commercial-framework|commercial-release-readiness|commercial-expansion)
     run_then_refresh_self_model "$PY" "$PROJECT_ROOT/scripts/ops/commercial_readiness_control.py" "$@"
     ;;
+  investor-readiness|investor-packet|investor-due-diligence)
+    exec "$PY" "$PROJECT_ROOT/scripts/ops/investor_readiness_control.py" "$@"
+    ;;
   production-level-upgrades|prod-level-upgrades|upgrade-hardener-control|production-hardener-control|production-20)
     run_then_refresh_self_model "$PY" "$PROJECT_ROOT/scripts/ops/production_level_upgrade_hardener_control.py" "$@"
     ;;
@@ -1117,6 +1120,35 @@ case "$cmd" in
     ;;
   multiple-testing|multiple-testing-guard)
     exec "$PY" "$PROJECT_ROOT/scripts/multiple_testing_guard.py" "$@"
+    ;;
+  institutional-capability-control|institutional-capabilities|institutional-gap-control)
+    exec "$PY" "$PROJECT_ROOT/scripts/ops/institutional_capability_control.py" "$@"
+    ;;
+  authoritative-systems|authoritative-systems-control|production-reference-control)
+    exec "$PY" "$PROJECT_ROOT/scripts/ops/authoritative_systems_control.py" "$@"
+    ;;
+  strategy-validity|point-in-time-validity|lookahead-recursive-guard)
+    exec "$PY" "$PROJECT_ROOT/scripts/strategy_validity_control.py" "$@"
+    ;;
+  paper-live-equivalence|execution-equivalence)
+    exec "$PY" "$PROJECT_ROOT/scripts/paper_live_equivalence_report.py" "$@"
+    ;;
+  execution-scenarios|execution-fault-scenarios)
+    exec "$PY" "$PROJECT_ROOT/scripts/execution_scenario_report.py" "$@"
+    ;;
+  quantitative-challengers|quant-challengers|advanced-quant-challengers)
+    exec "$PY" "$PROJECT_ROOT/scripts/quantitative_challenger_report.py" "$@"
+    ;;
+  sleeve-strategy-specialization|strategy-specialization|strategy-contracts)
+    exec "$PY" "$PROJECT_ROOT/scripts/sleeve_strategy_specialization_report.py" "$@"
+    ;;
+  strategy-library|strategy-scorecard|sleeve-strategy-library)
+    "$PY" "$PROJECT_ROOT/scripts/sleeve_strategy_specialization_report.py" >/dev/null || exit $?
+    exec "$PY" "$PROJECT_ROOT/scripts/strategy_library_query.py" "$@"
+    ;;
+  strategy-families|strategy-family-catalog|consolidated-strategies)
+    "$PY" "$PROJECT_ROOT/scripts/sleeve_strategy_specialization_report.py" >/dev/null || exit $?
+    exec "$PY" "$PROJECT_ROOT/scripts/strategy_library_query.py" --families "$@"
     ;;
   decay-monitor)
     exec "$PY" "$PROJECT_ROOT/scripts/decay_monitor.py" "$@"
@@ -1511,6 +1543,9 @@ case "$cmd" in
   profitability-evidence-firewall|profitability-firewall|profit-evidence)
     exec "$PY" "$PROJECT_ROOT/scripts/ops/profitability_evidence_firewall.py" "$@"
     ;;
+  profitability-self-assessment|profitability-self-model|profitability-tuning-plan|what-needs-tuning)
+    exec "$PY" "$PROJECT_ROOT/scripts/ops/profitability_self_assessment.py" "$@"
+    ;;
   continuous-soak-integrity|soak-integrity|soak-capacity)
     exec "$PY" "$PROJECT_ROOT/scripts/ops/continuous_soak_integrity_control.py" "$@"
     ;;
@@ -1702,6 +1737,9 @@ case "$cmd" in
     ;;
   control-surface-ownership|control-ownership|framework-ownership)
     exec "$PY" "$PROJECT_ROOT/scripts/ops/control_surface_ownership.py" "$@"
+    ;;
+  system-role-contract|role-contract|responsibility-contract)
+    exec "$PY" "$PROJECT_ROOT/scripts/ops/system_role_contract_control.py" "$@"
     ;;
   bot-organization|bot-hierarchy|sleeve-subsections|hierarchical-bots)
     exec "$PY" "$PROJECT_ROOT/scripts/ops/bot_organization_control.py" "$@"
@@ -2735,6 +2773,9 @@ case "$cmd" in
   paper-performance)
     exec "$PY" "$PROJECT_ROOT/scripts/paper_performance_report.py" "$@"
     ;;
+  counterfactual-replay|threshold-replay|decision-threshold-replay)
+    exec "$PY" "$PROJECT_ROOT/scripts/counterfactual_replay_harness.py" "$@"
+    ;;
   sentiment-report)
     exec "$PY" "$PROJECT_ROOT/scripts/ops/sentiment_report.py" "$@"
     ;;
@@ -3036,6 +3077,15 @@ opsctl commands:
   training-probation-isolation [--apply] [--limit N] [--include-bot-ids CSV] [--json]
   feature-store [--json]
   multiple-testing|multiple-testing-guard [--json]
+  institutional-capability-control|institutional-capabilities|institutional-gap-control [--json]
+  authoritative-systems|production-reference-control [--json]
+  strategy-validity|point-in-time-validity [--json]
+  paper-live-equivalence|execution-equivalence [--json]
+  execution-scenarios|execution-fault-scenarios [--json]
+  quantitative-challengers|quant-challengers [--json]
+  sleeve-strategy-specialization|strategy-specialization|strategy-contracts [--json]
+  strategy-library|strategy-scorecard [--sleeve ID] [--good|--bad] [--verdict NAME] [--tier NAME] [--regime-relevance NAME] [--limit N] [--json]
+  strategy-families|strategy-family-catalog [--sleeve ID] [--objective NAME] [--family TEXT] [--limit N] [--json]
   decay-monitor [--json]
   security-audit
   secret-scan [--staged]
@@ -3159,6 +3209,7 @@ opsctl commands:
   live-canary-readiness|canary-readiness-contract|production-hardening-bar [--apply] [--json]
   use-mode-compliance|commercial-compliance|personal-use-readiness [--json]
   commercial-readiness|commercial-framework|commercial-release-readiness [--json]
+  investor-readiness|investor-packet|investor-due-diligence [--json]
   production-quality|production-quality-control|production-hardening-quality [--apply] [--refresh-contract] [--execute-safe-repairs] [--max-actions N] [--max-execute-actions N] [--json]
   production-excellence|ten-pillar-readiness [--apply] [--initialize-candidate | --accept-candidate-change | --recover-candidate-event-chain --change-reason TEXT] [--json]
   production-resilience|resilience-1-10 [--json]
@@ -3166,6 +3217,7 @@ opsctl commands:
   live-transition-integrity|paper-live-transition [--json]
   live-transition-chaos|transition-chaos [--json]
   profitability-evidence-firewall|profitability-firewall [--json]
+  profitability-self-assessment|profitability-self-model|what-needs-tuning [--json]
   profitability-independent-validator|independent-profit-validator [--json]
   profitability-holdout-vault|holdout-vault [--seal-dataset PATH] [--record-evaluation-access --evidence TEXT] [--json]
   profitability-benchmark-capture|benchmark-capture [--apply] [--json]
@@ -3243,6 +3295,7 @@ opsctl commands:
   sleeve-isolation [--max-quarantine-events N] [--json]
   artifact-freshness-slo [--json]
   control-surface-ownership|control-ownership [--json]
+  system-role-contract|role-contract|responsibility-contract [--component ID --action ACTION] [--state-domain ID] [--resource PATH] [--json]
   bot-organization|bot-hierarchy|sleeve-subsections [--json]
   bot-profitability-scalability|bot-profit-scale [--max-files N] [--max-rows-per-file N] [--json]
   independent-runtime-monitor|independent-monitor [--receiver-url URL] [--json]
@@ -3395,6 +3448,7 @@ opsctl commands:
   storage-maintenance [--force] [--vacuum] [--json]
   paper-calibration [--hours N] [--json]
   paper-performance [--day YYYYMMDD] [--week-days N] [--json]
+  counterfactual-replay|threshold-replay [--json]
   sentiment-report [--day YYYYMMDD] [--lookback-days N] [--allow-gui-pdf-renderer] [--json]
   post-trade-analysis [--day YYYYMMDD] [--hours N] [--json]
   report-quality-guard|reporter-quality|reporter-infrabot [--repair] [--json]

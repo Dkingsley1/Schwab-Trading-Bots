@@ -29,13 +29,15 @@ flowchart TD
     B --> D["Health, Verification, and Divergence Artifacts"]
     C --> E["Specialist Bots"]
     E --> F["Master and Grand-Master Decision Layers"]
-    F --> G["Paper Execution + Decision Logging"]
+    F --> Q["Monotonic Paper Decision Quality Gate"]
+    Q --> G["Paper Execution + Decision Logging"]
     G --> H["JSONL + SQLite History"]
     H --> I["Behavior Dataset Builder"]
     I --> J["Targeted and Full Retraining"]
     J --> K["Registry, Promotion Gates, Paper Canary"]
     K --> C
     D --> F
+    D --> Q
     L["Watchdogs, Token Guard, Storage Failover, Launchd"] --> C
     L --> H
     K --> M{"Evidence Complete + Operator Release?"}
@@ -47,7 +49,7 @@ flowchart TD
 
 ## Production Readiness
 
-As of **2026-08-15**, the system is operating as a guarded paper-trading and data-collection platform. Live market data, shadow evaluation, selective paper execution, reconciliation, monitoring, and bounded recovery are enabled; live orders remain locked. Runtime health and safety grades are not treated as proof of financial profitability.
+As of **2026-08-20**, the system is operating as a guarded paper-trading and data-collection platform. Live market data, shadow evaluation, selective paper execution, reconciliation, monitoring, and bounded recovery are enabled; live orders remain locked. Runtime health and safety grades are not treated as proof of financial profitability.
 
 | Surface | Current evidence | Meaning |
 | --- | --- | --- |
@@ -55,15 +57,24 @@ As of **2026-08-15**, the system is operating as a guarded paper-trading and dat
 | Profitability evidence firewall | authoritative structural and economic grades in `governance/health/profitability_evidence_firewall_latest.json` | all ten future-profitability hardeners are evaluated; candidate-bound evidence counts update on each refresh and cannot be relabeled |
 | Six-pillar transition runway | authoritative count in `governance/health/live_canary_readiness_contract_latest.json` | every pillar keeps its own blockers and evidence floor; no headline health grade substitutes for them |
 | Production-excellence proof | authoritative count in `governance/health/production_excellence_control_latest.json` | only candidate-bound, independently evidenced pillars count; elapsed time and missing evidence cannot be relabeled |
+| Hierarchical institutional decision flow | v4 policy in `config/institutional_decision_flow_v1.json`, hash-bound per-profile playbooks, ten-stage outcome traces, position-aware action semantics, candidate-bound quantitative evidence, execution-lane receipt validation, and a shared live-feed operator summary | every sleeve resolves its objective, horizon, entry, exit, sizing, regime, cost, validation, transition, and stage-priority contract once; paper and future live consume that same thesis, missing or adverse evidence remains explicit, playbook drift fails closed, and the layer never grants promotion or order authority |
+| Candidate-bound quantitative challengers | eight-method policy in `config/quantitative_challengers_v1.json` and report in `governance/research/quantitative_challenger_latest.json` | sequential inference, SPA/Reality Check, Bayesian Sharpe utility, constrained Kelly, entropy pooling, optimal stopping, CPCV/triple barriers, and cost-aware expert aggregation use only current-candidate post-cost series; results are read-only research metadata with zero action, sizing, allocator, label, promotion, or order authority |
+| Institutional capability contract | six separate implementation, paper-soak, candidate-evidence, and live-promotion pillars in `governance/health/institutional_capability_control_latest.json` | a planning target of `15-30` authoritative provider families replaces vanity source counts; shared snapshots and derived features do not earn extra readiness credit, while optional paid depth is conditional on an activated strategy family |
+| Authoritative systems contract | exactly 20 public primary references mapped to eight executable local controls in `governance/health/authoritative_systems_control_latest.json` | structural A+ is explicitly separate from profitability, runtime evidence, paper/live observed pairs, promotion, and live-order authority |
+| Investor-readiness proof | 20-control status counts in `governance/health/investor_readiness_control_latest.json` | implementation, organic candidate/live evidence, and external attestations remain separate; no blended percentage or self-issued review is allowed |
 | Frozen candidate | content fingerprint, generation, accepted Git head, and scope clocks in `governance/runtime/production_candidate_state.json` | reviewed scope changes restart only the affected evidence windows; unaccepted drift fails closed |
+| Microscopic canary contract | advisory stages in `config/live_canary_micro_policy_v1.json` plus a short-lived candidate-bound runtime allowlist | live entries fail closed on absent, expired, stale-candidate, out-of-stage, or deprecated-symbol admission; the contract never creates an allowlist or grants execution authority |
+| Symbol lifecycle | canonical replacements in `config/symbol_lifecycle_v1.json` | collection normalizes renamed tickers, while live submission rejects deprecated symbols instead of silently changing an order |
 | Recovery | `10/10` isolated, non-destructive recovery drills pass | auth, broker network, process, reboot, disk, storage, memory, database, market-data, and order-lifecycle failures are covered |
 | Storage continuity | pinned local-durable route with online SQLite snapshots | snapshots can be taken while active database writers remain online |
 | Ten-part resilience control | authoritative counts in `governance/health/production_resilience_control_latest.json` | implementation, unattended paper-soak readiness, and live-promotion evidence are graded separately; the control never authorizes orders |
 | Organic collector mesh | `25` formal collector contracts, including the governed twelve-plane macro/micro context mesh and `10` organically tracked source/evidence additions | context, point-in-time lineage, and candidate fill evidence accrue from real producer output; collectors have no order or automatic-promotion authority |
 | Capability materialization | `4/4` direct receipts over exchange calendars, point-in-time session state, a `10`-root derivative contract master, and `2` versioned stress scenarios | formerly hard capability gaps are source-backed and freshness guarded; the materializer has no fetch, execution, registry-mutation, or promotion authority |
-| Collector capability routing | `25` versioned data planes, `260` logical capabilities, `171` currently mapped capabilities, `48` shared producers, and content-addressed bot subscriptions | all candidate-required capabilities are currently usable; every organized bot has a shared subscription, while unsupported optional capabilities remain explicit advisory debt rather than false live blockers |
+| Decision-aligned ingestion routing | `25` versioned data planes, `260` logical capabilities, `15` decision families, family-specific paper/live evidence tiers, quality-scored shared producers, independent failovers, and signed bot/runtime route receipts | every organized bot and runtime sleeve receives a bounded data plan matched to its decision playbook; paper qualification debt, live enrichment debt, and optional research context remain separate, while routing has no signal, order, or promotion authority |
 
 The candidate-specific review boundary is generated from the latest accepted scope windows in `governance/runtime/production_candidate_state.json` and reported by `governance/health/production_excellence_control_latest.json`; it is never a hard-coded calendar promise or automatic permission to trade. Clearance still requires the unchanged-candidate time windows, independent fill calibration, a sealed unseen holdout, cash and passive benchmark outperformance, acceptable risk-of-ruin stress, qualified promotion candidates, positive post-cost expectancy across independent days and symbols, profitable-sleeve diversity, bounded concentration, successful paper-canary cohorts, and explicit operator release. Until all gates pass, `MARKET_DATA_ONLY=1` and `ALLOW_ORDER_EXECUTION=0` remain the intended posture.
+
+The headline main-soak counter includes cumulative segmented wall-clock history and preserves per-scope ages across accepted resets, so reviewed hardening work does not erase the system's total soak exposure. The same artifact publishes a separate clean unchanged-candidate clock for promotion. The cumulative count supports diagnostics and operational-maturity review, but it is not heartbeat or uninterrupted-uptime proof and never substitutes for the clean `720`-hour promotion gate.
 
 The transition contract is:
 
@@ -71,11 +82,25 @@ The transition contract is:
 
 Paper and live evaluation are parallel safety lanes. A live order is never authorized merely because the same opportunity produced a paper fill, and choosing no trade is a valid outcome.
 
+Before an approved paper intent reaches idempotency and queue publication, the institutional decision-quality layer resolves a versioned family and profile strategy definition for its sleeve. The receipt binds horizon, portfolio role, edge thesis, entry, exit, sizing, regime, costs, uncertainty, capacity, validation, shorting, and allowed position transitions, then checks data, signed consensus and regime, post-cost edge, execution feasibility, portfolio fit, quantitative evidence, and non-bypassable risk. A candidate-bound adapter attaches only current-generation direct sample, payoff, selection-bias, decay, and tail evidence; lifetime snapshots and stale artifacts cannot qualify a new generation. Paper may use a small bounded evidence probe when confidence-bound edge is not yet materialized and may collect missing or proxy-only evidence without fabricating a pass; direct adverse evidence can only tighten size. Future live requires the current strategy hash, direct passing family-required evidence, and fresh account-position-aware action semantics. Promotion and live execution revalidate the same receipt, evaluation digest, action, quantity, lifecycle eligibility, and freshness before the existing live firewalls run. Activation is documented as an accepted in-soak hardening event: cumulative segmented soak hours remain in the headline history, while changed scopes begin a new clean evidence segment for honest promotion accounting. See [INSTITUTIONAL_DECISION_FLOW.md](docs/architecture/INSTITUTIONAL_DECISION_FLOW.md).
+
+An adjacent candidate-bound challenger report computes eight genuinely distinct research diagnostics outside the hot path: always-valid sequential sign evidence, family-level SPA/Reality Check, probabilistic Sharpe with Bayesian posterior utility, drawdown-constrained Kelly diagnostics, entropy-pooled downside scenarios, holdout optimal stopping, purged/embargoed CPCV with triple barriers, and transaction-cost-aware online expert aggregation. The runtime may display their availability and support counts, but those fields are intentionally excluded from active evidence axes, decision utility, quantity, labels, allocation, promotion, and order submission. A method can graduate only through a separately reviewed policy change after point-in-time, leakage-safe, candidate-forward, post-cost evidence. Run `./scripts/ops/opsctl.sh quantitative-challengers --json`; an `8/8` implementation count is not an `8/8` evidence result and does not imply future profitability.
+
+The institutional-capability controller evaluates six practical local analogs: reproducible research, market-data lineage, independent execution evidence, selection-bias control, resource and role isolation, and market-access risk controls. It does not claim equivalence with an institutional firm and does not require thousands of feeds. The provider mesh should reuse a compact set of authoritative observations across sleeves, then derive features with explicit lineage; a derived feature is not a new source. Licensed order-book depth, news, estimates, borrow, venue replay, or other paid data remains a conditional entitlement with a named consumer and measured benefit. Run `./scripts/ops/opsctl.sh institutional-capabilities --json` and see [INSTITUTIONAL_CAPABILITY_CONTROL.md](docs/architecture/INSTITUTIONAL_CAPABILITY_CONTROL.md).
+
+The sleeve strategy specialization layer materializes a deterministic contract for every active runtime and collection strategy, plus an on-demand research library of exactly `12,000` strategies across `111` sleeves. Every sleeve has `108` or `109` objective-appropriate hypotheses; the existing `879` contracts remain hot and the other `11,121` remain cold, dormant, and zero-authority. A read-only primary catalog consolidates those identities into `1,989` canonical records: the `879` native hot identities plus `1,110` cold parent families. Every original strategy ID remains a child receipt, variant evidence is never pooled, and all `12` configured conditions remain visible even when a condition was not materialized by the bounded 12,000-row generator. Each parent owns the thesis, signal, label, horizon, benchmark, and shared failure contract; each child owns its exact overlay, receipt, regime annotation, and evidence. Fresh regime evidence can alter ranking and reviewed research admission, but cannot mutate intent, size, risk limits, history, promotion, or live authority. The scorecard calls a strategy good only after candidate-bound robust post-cost and objective-specific evidence, calls it bad only after mature adverse evidence, and labels missing evidence unknown rather than bad. Broad Grand Master votes remain `ensemble_champion` instead of receiving false named-strategy credit. Run `./scripts/ops/opsctl.sh sleeve-strategy-specialization --json` for control health, `./scripts/ops/opsctl.sh strategy-families --sleeve crypto_spot --limit 40` for the consolidated view, or `./scripts/ops/opsctl.sh strategy-library --sleeve crypto_spot --limit 40` for exact child variants. See [SLEEVE_STRATEGY_SPECIALIZATION.md](docs/architecture/SLEEVE_STRATEGY_SPECIALIZATION.md).
+
+The authoritative systems layer converts 20 official public references into broker conformance, transactional order state, point-in-time validity, event-time watermarks, causal attribution, paper/live equivalence, deterministic execution faults, and end-to-end trace receipts. It adds no external runtime cluster and grants no trading authority. Run `./scripts/ops/opsctl.sh authoritative-systems --json`; see [AUTHORITATIVE_SYSTEMS_CONTROL.md](docs/architecture/AUTHORITATIVE_SYSTEMS_CONTROL.md).
+
+The advisory microscopic-canary ladder starts with one share and one position at a time under the lower of the production firewall and the `$200` plan limits. That `$200` is an execution-validation envelope, not an income target or permanent portfolio size. Future deposits may increase account equity, but account growth alone cannot increase strategy weight; every increase still requires post-cost, drawdown, risk-of-ruin, capacity, diversification, paper/live-divergence, clean-window, and explicit operator-release gates. Daily and cumulative realized-loss budgets are candidate-bound, and cumulative state survives a live-process restart. Each allowlist must name the exact accepted candidate, expire in the future, stay inside its approved stage, use a pinned broker account, and pass production-excellence and transition-integrity gates. Candidate acceptance does not create that allowlist, arm execution, or turn off market-data-only mode.
+
+The investor-readiness layer implements the 20 engineering controls needed to organize an investable evidence package: broker-verifiable results, net-of-cost accounting, drawdown and statistical controls, capacity, diversification, immutable records, bounded automation, resilience, defensibility, qualified sleeve selection, experiment lineage, soak completion, paper/live divergence, predetermined scaling, tear sheets, independent reviews, a data-room index, and legal-structure review. It generates a strictly labeled paper tear sheet and indexes missing evidence instead of inventing it. The framework is documented in [INVESTOR_READINESS_FRAMEWORK.md](docs/operations/INVESTOR_READINESS_FRAMEWORK.md) and never grants live execution, allocation, promotion, marketing, customer-funds, legal, or profitability authority.
+
 Unattended evidence maintenance uses two serialized cadences: the bounded `accrual` profile maintains organic collection every 15 minutes, and the bounded `production` profile refreshes the ten-pillar owner surfaces every 45 minutes. The production cadence covers risk inputs, reconciliation, recovery drills, remote alerts, security, immutable evidence, backup/restore, blackstart, promotion, profitability, canary, and derived readiness controls. Its training and profitability evidence is rebuilt through the dependency-closed `training-profitability` graph while holding the paper-profitability generation lock for the entire epoch, so an accrual writer cannot interleave mutable `latest` publications or create mixed-epoch proof. The same profile owns storage, live-feed, project, drift, architecture, and infrastructure-supervisor evidence, then republishes the self-model and architecture graph after supervisor convergence so stale parent state cannot survive a successful repair cycle. Replay-fill capture retains previously materialized immutable rows, limits work to unmatched orders, prunes irrelevant date partitions, and tails active observation files under a per-file byte budget. Normal dashboard reads use a separate bounded hot-state `dashboard` profile. A full dependency-closed runtime refresh remains an explicit reconciliation operation rather than a dashboard side effect. Every profile forces market-data/paper-only environment locks and has no training-launch or live-order authority.
 
 The collector mesh now formalizes ten additional observation-only streams: bond reference, dividend/DRIP state, macro cross-asset context, central-bank/Fed-liquidity context, public-policy context, Schwab symbol news, ticker-news context, point-in-time events, feature-store lineage, and candidate fill replay. Organic readiness reaches `100` only when every stream is fresh and its real evidence target is met; no collector may rewrite historical outcomes, promote a bot, or authorize an order.
 
-The capability layer organizes those physical producers into 25 logical planes spanning instrument identity, market state, fundamentals, events, broker and execution truth, risk, training, evidence, governance, and operational health. Logical capabilities are subscriptions, not processes: one bounded producer snapshot can satisfy many capabilities for many bots. Missing candidate-required capabilities fail readiness closed. Unsupported or temporarily unavailable optional capabilities stay visible as advisory catalog debt instead of being presented as implemented or falsely vetoing an otherwise complete candidate.
+The capability layer organizes those physical producers into 25 logical planes spanning instrument identity, market state, fundamentals, events, broker and execution truth, risk, training, evidence, governance, and operational health. Its v2 route policy maps every bot and runtime sleeve to the same 15 families used by the institutional decision flow. Paper requires the compact capability set needed to qualify a bounded decision; live additionally requires family enrichment, a higher quality floor, and independent failover evidence. Producers are selected by authority, collector quality, freshness, proof, source coverage, error budget, and payload integrity. Logical capabilities remain subscriptions rather than processes, and every binding and decision-route summary carries a signed receipt. The shared transport enforces bounded payloads, transient-only retries, `Retry-After`, redacted URLs, watermarks, dead letters, and payload digests across both sync and bounded async callers.
 
 ### Global Central Bank And Fed Liquidity Context
 
@@ -99,24 +124,26 @@ Local storage uses a `125 GiB` warning target and a `135 GiB` recovery target by
 
 ### Paper Profitability Hardening
 
-The paper path applies fourteen coordinated controls before profitability evidence is considered promotion-worthy:
+The paper path applies sixteen coordinated controls before profitability evidence is considered promotion-worthy:
 
 1. Options and futures use explicit contract multipliers; unknown derivative valuation fails closed for new exposure.
 2. Collection remains broad, but only explicit, bounded market-signal authority can enter a paper execution cohort; legacy paper flags and control identities are observation-only.
 3. Eligible directional intents are coalesced through hierarchy-mapped sleeve, sub-sleeve, duplicate-signal, and correlation-cluster caps.
 4. Behavior labels use forward returns after modeled round-trip costs plus path-aware MAE, MFE, no-trade, exit-timing, and post-entry regime outcomes.
 5. Sleeve and regime compatibility can block a new entry without suppressing the underlying observation.
-6. Evidence quality can only reduce order size; weak evidence cannot increase risk.
+6. Weak, incomplete, stale, or candidate-mismatched evidence can only reduce or block new-entry size.
 7. Execution plans use bounded limit-order styles, quote freshness, spread, liquidity, and session constraints; market orders are disabled on this path.
 8. Predicted edge must clear a conservative multiple of round-trip costs; the bootstrap prior is paper-only and never counts as promotion evidence.
 9. Correlation, directional conflict, and existing exposure impose an overlap budget before entry.
 10. Persistent turnover state enforces new-entry cooldowns, daily symbol caps, and same-order reversal rejection while leaving exits open.
 11. Every paper intent carries the current production-candidate identity and scope receipt.
 12. Lifetime flow, current-day flow, candidate-forward flow, and active inventory are reported separately; carried inventory cannot grade the current candidate.
-13. Persistent-loser retirement requires post-cost sample depth, elapsed days, a negative confidence bound, and repeated failed retests.
-14. The artifact refresher rebuilds a hash-bound paper-authority registry overlay without granting unattended source mutation or live execution.
+13. A persistent paper recovery balance survives refreshes and candidate rollovers; active-book improvement and candidate-attributed post-cost PnL must agree before legacy negative PnL is considered recovered. Recovery never forces trades, martingales, averages down, or increases size because of a loss.
+14. Persistent-loser retirement requires post-cost sample depth, elapsed days, a negative confidence bound, and repeated failed retests.
+15. The artifact refresher rebuilds a hash-bound paper-authority registry overlay without granting unattended source mutation or live execution.
+16. Candidate-bound sleeve and strategy scaling applies only to `BUY` entries: probation starts at `0.25`, validated evidence returns to `1.00`, and independently supported tiers may rise only to `1.05` or `1.10`. `SELL` and reduce-only exits remain at full requested size, paper-debt and quarantine caps always win, and live execution receives no scaling authority.
 
-Run `./scripts/ops/opsctl.sh profitability-hardening --json` to inspect adoption. `armed` means the code and policies are installed; it does not mean fresh runtime evidence or future profitability has been proven. Live execution remains unchanged and locked.
+Run `./scripts/ops/opsctl.sh paper-profitability-control --apply --json` to inspect the paper recovery balance, recovery velocity, candidate attribution, per-sleeve and per-strategy scaling tiers, entry caps, and live-proof blockers. The live feed exposes the same contract as `[profit-scaling]`. Run `./scripts/ops/opsctl.sh profitability-hardening --json` to inspect broader adoption. `armed` means the code and policies are installed; it does not mean fresh runtime evidence or future profitability has been proven. Live execution remains unchanged and locked.
 
 ### Training Evidence Hardening
 
@@ -145,6 +172,14 @@ The registered fleet is now projected into a canonical `sleeve -> sub-sleeve -> 
 The hierarchy evaluator remains execution-free, while its read-only sleeve, sub-sleeve, and correlation identities are now consumed by the separately authorized paper consensus. Paper consensus caps individual bots and correlated groups, removes duplicate signals, and abstains on missing hierarchy, insufficient diversity, or excessive disagreement. The hierarchy cannot grant authority, mutate the registry, or unlock live money; adoption evidence remains candidate-bound and post-cost.
 
 Run `./scripts/ops/opsctl.sh bot-organization --json` to inspect the structural grade, classification-quality grade, regime coverage and specificity, review queue, capacity posture, and generated hierarchy. Regime compatibility is an optional shadow-evidence filter only; it has no paper or live execution authority. See [docs/architecture/BOT_ORGANIZATION.md](docs/architecture/BOT_ORGANIZATION.md) for the full contract.
+
+### System Responsibility And Authority
+
+The platform now separates complexity from ambiguity with an executable responsibility catalog. Fifteen roles span data, decision, control, execution, truth, and operations planes; 23 concrete components and 23 mutable state domains declare purpose, inputs, outputs, write authority, triggers, freshness SLOs, failure behavior, resource budgets, escalation owners, evidence, and forbidden actions. Redundant observers remain available, but every mutable domain has one logical writer.
+
+Paper and live execution have distinct exclusive gateways and single-flight leases. Risk may veto but cannot originate signals; strategy and coordinator bots may recommend but cannot submit orders; truth reconciliation is append-only; infrastructure repair cannot change trade logic; dashboards cannot manufacture canonical facts. Unknown or ambiguous actions fail closed, and the Grand Master cannot grant itself execution or promotion authority.
+
+Run `./scripts/ops/opsctl.sh system-role-contract --json` to inspect coverage and conflicts or pass `--component`, `--action`, and `--state-domain` to evaluate a specific action. The resulting artifact is required by the unattended soak, sentinel, dashboard, daily verifier, self-model, and live firewall. See [docs/architecture/SYSTEM_ROLE_CONTRACTS.md](docs/architecture/SYSTEM_ROLE_CONTRACTS.md) for the full operating contract. An `A+` is structural authority evidence, not profitability proof or a live-money unlock.
 
 ### Bot Profitability And Scalability
 
@@ -183,6 +218,7 @@ Key operating upgrades:
 - The independent monitor runs as a separate stdlib-only launchd process, publishes atomic local heartbeat and Prometheus evidence, and requires proven off-host delivery before live promotion can be considered fully monitored.
 - Paper performance now suppresses mirrored execution rows by execution/fill identity or paper-book decision identity, publishes a closed scan watermark that defers later appends, and requires a separately implemented accountant to reproduce candidate-bound P&L, notional, costs, and drawdown over that exact interval.
 - The profitability firewall separates structural readiness from economic proof across twenty-two controls, including explicit paper authority, candidate accounting scope, complete experiment-family accounting, a locked holdout vault, adversarial execution stress, passive/cash benchmarks, edge-decay containment, moving-block risk-of-ruin stress, and tail-concentration limits.
+- The candidate-bound profitability self-assessment reports eight implementation lanes separately from economic proof, hashes its source receipts, rejects cross-candidate evidence, and publishes exact collection or repair needs to the self-model and live feed. Run `./scripts/ops/opsctl.sh profitability-self-assessment --json`; `assessment_status=ready` means the assessor is healthy, while `overall_status=collecting` means profitability is still unproven. See [PROFITABILITY_SELF_ASSESSMENT.md](docs/architecture/PROFITABILITY_SELF_ASSESSMENT.md).
 - Live-money readiness now fails closed on a fresh A+ economic firewall instead of treating an A+ safety posture or runtime smoke test as proof of profitability; generated README highlights preserve the same distinction.
 
 ## Operational Evidence
@@ -190,6 +226,7 @@ Key operating upgrades:
 The important generated artifacts are:
 
 - `governance/health/paper_performance_latest.json`: sleeve scoreboard, PnL, Sortino/Sharpe fields, chart/PDF metadata.
+- `governance/health/profitability_self_assessment_latest.json`: current-candidate identity, eight-lane implementation and evidence states, historical-ledger separation, and bounded next actions.
 - `governance/health/profitability_evidence_firewall_latest.json`: separate structural and economic grades for the baseline and ten future-profitability hardeners.
 - `governance/health/profitability_independent_validator_latest.json`: independently recomputed candidate P&L, notional, drawdown, reconciliation, and risk-of-ruin evidence.
 - `governance/research/profitability_holdout_vault_latest.json`: sealed holdout identity, candidate binding, access count, and tamper status.
@@ -209,6 +246,9 @@ The important generated artifacts are:
 - `governance/health/strategy_generation_control_latest.json`: reproduction-grade parent eligibility, resource caps, active offspring, and signed append-only lineage-chain health.
 - `governance/strategy_generations/strategy_generation_state.json`: persistent offspring lifecycle, model hashes, evaluation results, and parent-child lineage.
 - `governance/health/production_excellence_control_latest.json`: frozen-candidate integrity and the stricter ten-pillar production-evidence scoreboard.
+- `governance/health/investor_readiness_control_latest.json`: the 20-control investor evidence state with separate implementation, organic/live, and external-review outcomes.
+- `exports/reports/investor/paper_performance_tear_sheet_latest.md`: paper/hypothetical tear sheet with candidate, current-day, lifetime, and active-inventory scopes kept separate.
+- `exports/investor_data_room/index_latest.json`: content-hashed evidence index that leaves absent live records and independent attestations explicitly missing.
 - `governance/health/readiness_evidence_refresh_latest.json`: bounded evidence-refresh execution, timeouts, and producer failures.
 - `governance/health/readiness_evidence_accrual_latest.json`: candidate-bound progress, observed rates, honest ETAs, producer prerequisites/schedules, and stalled or regressed evidence counters.
 - `governance/health/readiness_blocker_rollup_latest.json`: unique causal blockers and their downstream grade/readiness surfaces.
@@ -367,6 +407,7 @@ cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
 ./scripts/runbook.sh retrain
 ./scripts/ops/opsctl.sh health-fast --json
 ./scripts/ops/opsctl.sh production-excellence --json
+./scripts/ops/opsctl.sh investor-readiness --json
 ./scripts/ops/opsctl.sh live-money-readiness --json
 ./scripts/ops/opsctl.sh master-grandmaster-evidence --json
 ./scripts/ops/open_report_artifact.sh bundle
