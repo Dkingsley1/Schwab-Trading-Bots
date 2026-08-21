@@ -46,13 +46,6 @@ MLX_INTELLIGENCE_ROUTER_SCRIPT = Path(__file__).resolve().with_name("mlx_intelli
 LIBRARY_UPGRADE_ROUTE_CONTROL_SCRIPT = Path(__file__).resolve().with_name("library_upgrade_route_control.py")
 SHADOW_WATCHDOG_SCRIPT = PROJECT_ROOT / "scripts" / "shadow_watchdog.py"
 HEAVY_FEED_GUARD_SCRIPT = PROJECT_ROOT / "scripts" / "ops" / "live_feed_heavy_guarded.sh"
-REQUIRED_COLLECTOR_REFRESH_NAMES = {
-    "official_macro_context",
-    "central_bank_liquidity_context",
-    "market_micro_context",
-    "crypto_market_context",
-    "fx_market_context",
-}
 SYSTEM_DRIFT_AUTOFIX_STEP_TIMEOUT_SECONDS = 90
 REPAIR_CALL_STACK_ENV = "INFRA_REPAIR_CALL_STACK"
 
@@ -203,6 +196,25 @@ def _required_collector_refresh_command(project_root: Path, collector_name: str)
     if name == "fx_market_context":
         return [str(PYTHON_BIN), str(project_root / "scripts" / "collect_fx_market_context.py"), "--json"]
     return []
+
+
+def _owned_collector_refresh_command(project_root: Path, contract: dict[str, Any]) -> list[str]:
+    command = [str(part or "").strip() for part in contract.get("owner_command", []) if str(part or "").strip()]
+    if not command:
+        return _required_collector_refresh_command(project_root, str(contract.get("name") or ""))
+    executable = Path(command[0]).expanduser()
+    if not executable.is_absolute():
+        executable = (project_root / executable).resolve()
+    else:
+        executable = executable.resolve()
+    try:
+        executable.relative_to(project_root.resolve())
+    except ValueError:
+        return []
+    lowered = {part.lower() for part in command[1:]}
+    if "start-live" in lowered or "--live" in lowered or "--allow-orders" in lowered:
+        return []
+    return [str(executable), *command[1:]]
 
 
 def _run_json(cmd: list[str], *, cwd: Path, timeout_sec: int) -> dict[str, Any]:
@@ -653,9 +665,12 @@ def build_payload(
 
     schwab_contract = _collector_contract_row(collector_contracts, "schwab_education_context")
     for collector_name in _required_collector_failures(collector_contracts):
-        if collector_name not in REQUIRED_COLLECTOR_REFRESH_NAMES:
-            continue
-        refresh_cmd = _required_collector_refresh_command(project_root, collector_name)
+        contract = _collector_contract_row(collector_contracts, collector_name)
+        refresh_cmd = (
+            _owned_collector_refresh_command(project_root, contract)
+            if contract
+            else _required_collector_refresh_command(project_root, collector_name)
+        )
         if not refresh_cmd:
             continue
         add_plan(

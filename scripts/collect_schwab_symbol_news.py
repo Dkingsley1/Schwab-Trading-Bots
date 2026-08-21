@@ -18,9 +18,12 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from core.base_trader import BaseTrader
-from core.market_context_features import summarize_structured_news_items
-from scripts.ops.sleeve_ticker_universe_expansion import UNIVERSES, build_payload as build_universe_payload
+from core.base_trader import BaseTrader  # noqa: E402
+from core.market_context_features import summarize_structured_news_items  # noqa: E402
+from scripts.ops.sleeve_ticker_universe_expansion import (  # noqa: E402
+    UNIVERSES,
+    build_payload as build_universe_payload,
+)
 
 
 HEALTH_PATH = PROJECT_ROOT / "governance" / "health" / "schwab_symbol_news_latest.json"
@@ -1030,10 +1033,12 @@ def build_payload(
 
     fallback_active = False
     fallback_symbol_count = 0
+    fallback_source_contract: dict[str, Any] = {}
     if attempted > 0 and no_callable_count == attempted:
         fallback_items = public_schwab_fallback_by_symbol(project_root, symbols, limit_per_symbol=limit_per_symbol)
         fallback_symbol_count = len(fallback_items)
-        fallback_active = fallback_symbol_count > 0
+        fallback_source_contract = _public_fallback_source_contract(project_root, now=now)
+        fallback_active = bool(fallback_symbol_count > 0 and fallback_source_contract.get("fresh", False))
         for symbol, items in fallback_items.items():
             features = _symbol_features(symbol, items, now_ts=now_ts, max_items=limit_per_symbol)
             symbol_features[symbol] = features
@@ -1112,6 +1117,7 @@ def build_payload(
         "fallback_active": fallback_active,
         "fallback_mode": "schwab_public_context" if fallback_active else "",
         "fallback_symbol_count": fallback_symbol_count,
+        "fallback_source_contract": fallback_source_contract,
         "method_counts": dict(method_counts),
         "source_counts": dict(source_counts.most_common(20)),
         "symbols": symbol_rows,

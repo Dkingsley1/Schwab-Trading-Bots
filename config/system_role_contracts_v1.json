@@ -416,9 +416,11 @@
     {"component_id": "collector_capability_controller", "role_id": "evaluation_auditor", "source_paths": ["scripts/ops/capability_materialization_control.py", "scripts/ops/collector_capability_control.py"], "allowed_actions": ["validate_evidence", "publish_evidence", "emit_health"], "state_domains": ["collector_capability_metadata"]},
     {"component_id": "strategy_quality_controller", "role_id": "evaluation_auditor", "source_paths": ["scripts/ops/bot_profitability_scalability_control.py"], "allowed_actions": ["validate_evidence", "publish_evidence", "emit_health"], "state_domains": ["strategy_quality_evidence"]},
     {"component_id": "master_grandmaster_evidence_controller", "role_id": "evaluation_auditor", "source_paths": ["scripts/ops/master_grandmaster_evidence_control.py"], "allowed_actions": ["validate_evidence", "publish_evidence", "emit_health"], "state_domains": ["master_grandmaster_evidence"]},
+    {"component_id": "investor_readiness_controller", "role_id": "evaluation_auditor", "source_paths": ["scripts/ops/investor_readiness_control.py"], "allowed_actions": ["validate_evidence", "publish_evidence", "emit_health"], "state_domains": ["investor_readiness_evidence"]},
     {"component_id": "training_orchestrator", "role_id": "training_research", "source_paths": ["scripts/weekly_retrain.py", "scripts/retrain_orchestrator.py"], "allowed_actions": ["train_model", "publish_model_candidate", "emit_health"], "state_domains": ["training_model_artifacts"]},
     {"component_id": "production_candidate_controller", "role_id": "promotion_governance", "source_paths": ["scripts/ops/production_excellence_control.py", "scripts/ops/release_freeze_guard.py"], "allowed_actions": ["promote_candidate", "write_candidate_state", "publish_evidence", "emit_health"], "state_domains": ["production_candidate_state"]},
-    {"component_id": "system_role_contract_controller", "role_id": "evaluation_auditor", "source_paths": ["core/system_role_contracts.py", "scripts/ops/system_role_contract_control.py"], "allowed_actions": ["validate_authority", "publish_evidence", "emit_health"], "state_domains": ["system_role_contract_health"]}
+    {"component_id": "system_role_contract_controller", "role_id": "evaluation_auditor", "source_paths": ["core/system_role_contracts.py", "scripts/ops/system_role_contract_control.py"], "allowed_actions": ["validate_authority", "publish_evidence", "emit_health"], "state_domains": ["system_role_contract_health"]},
+    {"component_id": "sleeve_strategy_specialization_controller", "role_id": "evaluation_auditor", "source_paths": ["core/sleeve_strategy_specialization.py", "scripts/sleeve_strategy_specialization_report.py"], "allowed_actions": ["validate_evidence", "publish_evidence", "emit_health"], "state_domains": ["sleeve_strategy_specialization_evidence"]}
   ],
   "state_domains": [
     {"domain_id": "raw_observation_events", "writer_component_id": "collector_runtime", "required_action": "append_observation", "resource_patterns": ["logs/shadow/**/*.jsonl"], "reader_roles": ["context_processor", "evaluation_auditor"]},
@@ -441,9 +443,11 @@
     {"domain_id": "collector_capability_metadata", "writer_component_id": "collector_capability_controller", "required_action": "publish_evidence", "resource_patterns": ["governance/collector_capabilities/materialized_capabilities_latest.json", "governance/health/collector_capability_control_latest.json", "governance/collector_capabilities/bot_subscriptions_latest.json"], "reader_roles": ["data_collector", "context_processor", "evaluation_auditor"]},
     {"domain_id": "strategy_quality_evidence", "writer_component_id": "strategy_quality_controller", "required_action": "publish_evidence", "resource_patterns": ["governance/health/bot_profitability_scalability_latest.json", "governance/bot_organization/bot_profitability_scalability_latest.json"], "reader_roles": ["master_coordinator", "promotion_governance", "evaluation_auditor"]},
     {"domain_id": "master_grandmaster_evidence", "writer_component_id": "master_grandmaster_evidence_controller", "required_action": "publish_evidence", "resource_patterns": ["governance/health/master_grandmaster_evidence_v2_latest.json", "governance/master_grandmaster/evidence_packets_v2_latest.json"], "reader_roles": ["grand_master_coordinator", "promotion_governance", "observability_reporter"]},
+    {"domain_id": "investor_readiness_evidence", "writer_component_id": "investor_readiness_controller", "required_action": "publish_evidence", "resource_patterns": ["governance/health/investor_readiness_control_latest.json", "exports/reports/operator/investor_readiness_packet_latest.md", "exports/reports/investor/paper_performance_tear_sheet_latest.md", "exports/investor_data_room/index_latest.json", "exports/investor_data_room/README_latest.md"], "reader_roles": ["operator", "promotion_governance", "observability_reporter", "evaluation_auditor"]},
     {"domain_id": "training_model_artifacts", "writer_component_id": "training_orchestrator", "required_action": "train_model", "resource_patterns": ["models/**/*.npz", "governance/training_diagnostics/*_latest.json"], "reader_roles": ["strategy_bot", "evaluation_auditor", "promotion_governance"]},
     {"domain_id": "production_candidate_state", "writer_component_id": "production_candidate_controller", "required_action": "write_candidate_state", "resource_patterns": ["governance/runtime/production_candidate_state.json", "governance/runtime/release_freeze_window.json"], "reader_roles": ["risk_governance", "live_execution_gateway", "observability_reporter", "evaluation_auditor"]},
-    {"domain_id": "system_role_contract_health", "writer_component_id": "system_role_contract_controller", "required_action": "publish_evidence", "resource_patterns": ["governance/health/system_role_contract_latest.json"], "reader_roles": ["operator", "infrastructure_maintainer", "observability_reporter", "promotion_governance"]}
+    {"domain_id": "system_role_contract_health", "writer_component_id": "system_role_contract_controller", "required_action": "publish_evidence", "resource_patterns": ["governance/health/system_role_contract_latest.json"], "reader_roles": ["operator", "infrastructure_maintainer", "observability_reporter", "promotion_governance"]},
+    {"domain_id": "sleeve_strategy_specialization_evidence", "writer_component_id": "sleeve_strategy_specialization_controller", "required_action": "publish_evidence", "resource_patterns": ["governance/research/sleeve_strategy_specialization_latest.json", "governance/research/sleeve_strategy_contracts_latest.json", "governance/research/sleeve_strategy_library_latest.json", "governance/research/sleeve_strategy_families_latest.json"], "reader_roles": ["strategy_bot", "sleeve_manager", "master_coordinator", "promotion_governance", "observability_reporter", "evaluation_auditor"]}
   ],
   "registry_role_bindings": {
     "signal_sub_bot": "strategy_bot",
@@ -476,7 +480,16 @@
     "bot_profitability_scalability_manifest": "strategy_quality_controller",
     "master_grandmaster_evidence_v2_health": "master_grandmaster_evidence_controller",
     "master_grandmaster_evidence_v2_packets": "master_grandmaster_evidence_controller",
-    "system_role_contract_health": "system_role_contract_controller"
+    "investor_readiness_health": "investor_readiness_controller",
+    "investor_readiness_packet": "investor_readiness_controller",
+    "investor_paper_tear_sheet": "investor_readiness_controller",
+    "investor_data_room_index": "investor_readiness_controller",
+    "investor_data_room_readme": "investor_readiness_controller",
+    "system_role_contract_health": "system_role_contract_controller",
+    "sleeve_strategy_specialization_health": "sleeve_strategy_specialization_controller",
+    "sleeve_strategy_contract_registry": "sleeve_strategy_specialization_controller",
+    "sleeve_strategy_library_registry": "sleeve_strategy_specialization_controller",
+    "sleeve_strategy_family_registry": "sleeve_strategy_specialization_controller"
   },
   "exclusive_action_owners": {
     "paper_submit": "paper_execution_gateway",

@@ -572,6 +572,33 @@ RAW_D_RECOVERY_PRESSURE_GAP_PNL = 10_000.0
 RAW_D_RECOVERY_TRIM_BOOST_NORM = 0.12
 RAW_D_RECOVERY_MAX_TRIM_FRACTION = 0.78
 RAW_D_RECOVERY_MAX_STALE_HOLD_MINUTES = 5
+PAPER_DEBT_RECOVERY_MIN_SAMPLES = 30
+PAPER_DEBT_RECOVERY_MIN_OBSERVED_DAYS = 3
+PAPER_DEBT_RECOVERY_TARGET_DAYS = 30
+PAPER_DEBT_RECOVERY_CLEAR_EPSILON = 0.01
+PAPER_DEBT_RECOVERY_ACCUMULATION_SIZE_MULTIPLIER = 0.25
+PAPER_DEBT_RECOVERY_VALIDATED_SIZE_MULTIPLIER = 0.50
+
+SLEEVE_SCALING_MIN_SAMPLES = 30
+SLEEVE_SCALING_VALIDATED_SAMPLES = 100
+SLEEVE_SCALING_TIER_ONE_SAMPLES = 200
+SLEEVE_SCALING_TIER_TWO_SAMPLES = 500
+SLEEVE_SCALING_VALIDATED_DAYS = 7
+SLEEVE_SCALING_TIER_ONE_DAYS = 14
+SLEEVE_SCALING_TIER_TWO_DAYS = 21
+SLEEVE_SCALING_VALIDATED_SYMBOLS = 3
+SLEEVE_SCALING_TIER_ONE_SYMBOLS = 5
+SLEEVE_SCALING_TIER_TWO_SYMBOLS = 8
+SLEEVE_SCALING_MAX_ENTRY_MULTIPLIER = 1.10
+SLEEVE_SCALING_PROBATION_MULTIPLIER = 0.25
+SLEEVE_SCALING_EVIDENCE_MULTIPLIER = 0.50
+SLEEVE_SCALING_TIER_ONE_MULTIPLIER = 1.05
+SLEEVE_SCALING_TIER_TWO_MULTIPLIER = 1.10
+SLEEVE_SCALING_NON_RETURN_OBJECTIVES = {
+    "capital_preservation",
+    "control_only",
+    "hedge_utility",
+}
 RAW_RECOVERY_REQUIRED_POSITION_TELEMETRY_FIELDS = [
     "timestamp_utc",
     "profile",
@@ -1278,6 +1305,821 @@ def _financial_grade_basis_contract(
             for row in excluded[:12]
         ],
         "raw_grade_rule": "raw current financial grade uses only explicit fresh grade-eligible rows; carried inventory remains visible as lifetime debt and never becomes current evidence merely because a heartbeat is fresh",
+    }
+
+
+def _candidate_daily_pnl_by_day(raw_series: Any) -> dict[str, float]:
+    totals: dict[str, float] = {}
+    if not isinstance(raw_series, dict):
+        return totals
+    for raw_rows in raw_series.values():
+        rows = raw_rows if isinstance(raw_rows, list) else [raw_rows]
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            day = str(row.get("day_utc") or "").strip()
+            if not day:
+                continue
+            totals[day] = totals.get(day, 0.0) + _safe_float(
+                row.get("post_cost_pnl_delta_total"),
+                0.0,
+            )
+    return totals
+
+
+def _paper_debt_recovery_contract(
+    *,
+    paper: dict[str, Any],
+    previous_contract: dict[str, Any] | None,
+    input_contract: dict[str, Any],
+    now_utc: datetime | None = None,
+) -> dict[str, Any]:
+    """Keep legacy paper losses visible while candidate-forward evidence repays them."""
+
+    now = now_utc or datetime.now(timezone.utc)
+    previous = previous_contract if isinstance(previous_contract, dict) else {}
+    accounting_views = _as_dict(paper.get("accounting_views"))
+    active_book = _as_dict(accounting_views.get("active_book_snapshot"))
+    candidate_flow = _as_dict(accounting_views.get("candidate_forward_flow"))
+    evidence_window = _as_dict(paper.get("profitability_evidence_window"))
+    expectancy = _as_dict(paper.get("post_cost_expectancy"))
+
+    active_book_available = bool(
+        active_book
+        and "ending_net_pnl_total" in active_book
+        and str(active_book.get("scope") or "").strip() == "lifetime_active_paper_inventory"
+    )
+    current_book_net_pnl = _safe_float(active_book.get("ending_net_pnl_total"), 0.0)
+    observed_book_debt = max(-current_book_net_pnl, 0.0) if active_book_available else 0.0
+
+    previous_baseline = max(_safe_float(previous.get("baseline_debt_amount"), 0.0), 0.0)
+    previous_remaining = max(_safe_float(previous.get("remaining_debt_amount"), previous_baseline), 0.0)
+    if previous_baseline > PAPER_DEBT_RECOVERY_CLEAR_EPSILON:
+        baseline_debt = previous_baseline
+        baseline_source = "persisted_recovery_baseline"
+    elif active_book_available and observed_book_debt > PAPER_DEBT_RECOVERY_CLEAR_EPSILON:
+        baseline_debt = observed_book_debt
+        baseline_source = "active_paper_book_at_recovery_activation"
+    else:
+        baseline_debt = previous_baseline
+        baseline_source = "no_negative_active_paper_book"
+
+    previous_started_at = str(previous.get("started_at_utc") or "").strip()
+    started_at_utc = previous_started_at or now.isoformat()
+    started_at_seconds = _parse_timestamp_seconds(started_at_utc)
+    elapsed_days = max((now.timestamp() - started_at_seconds) / 86400.0, 0.0) if started_at_seconds else 0.0
+
+    candidate_id = str(candidate_flow.get("candidate_id") or evidence_window.get("candidate_id") or "").strip()
+    candidate_generation = max(
+        _safe_int(candidate_flow.get("candidate_generation"), 0),
+        _safe_int(evidence_window.get("candidate_generation"), 0),
+    )
+    candidate_cutoff_utc = str(
+        candidate_flow.get("candidate_cutoff_utc")
+        or evidence_window.get("candidate_cutoff_utc")
+        or ""
+    ).strip()
+    candidate_receipt = str(candidate_flow.get("candidate_state_receipt_sha256") or "").strip()
+    candidate_binding_required = bool(
+        candidate_flow.get("candidate_binding_required", evidence_window.get("candidate_binding_required", False))
+    )
+    mismatch_rows = max(
+        _safe_int(candidate_flow.get("candidate_binding_mismatch_rows_excluded"), 0),
+        _safe_int(evidence_window.get("candidate_binding_mismatch_rows_excluded"), 0),
+    )
+    flow_candidate_id = str(candidate_flow.get("candidate_id") or "").strip()
+    window_candidate_id = str(evidence_window.get("candidate_id") or "").strip()
+    candidate_ids_agree = bool(
+        candidate_id
+        and (not flow_candidate_id or flow_candidate_id == candidate_id)
+        and (not window_candidate_id or window_candidate_id == candidate_id)
+    )
+    binding_valid = bool(
+        candidate_ids_agree
+        and mismatch_rows == 0
+        and (not candidate_binding_required or bool(candidate_receipt))
+    )
+
+    candidate_samples = max(_safe_int(candidate_flow.get("sample_count"), 0), 0)
+    candidate_observed_days = max(_safe_int(candidate_flow.get("observed_days"), 0), 0)
+    previous_attribution = _as_dict(previous.get("candidate_attribution"))
+    previous_candidate_id = str(previous_attribution.get("candidate_id") or "").strip()
+    previous_candidate_samples = max(_safe_int(previous_attribution.get("sample_count"), 0), 0)
+    previous_current_candidate_pnl = _safe_float(
+        previous_attribution.get("current_candidate_post_cost_pnl"),
+        0.0,
+    )
+    previous_carried_pnl = _safe_float(previous_attribution.get("carried_prior_candidate_pnl"), 0.0)
+    previous_total_attributed_pnl = _safe_float(
+        previous_attribution.get("total_candidate_attributed_pnl"),
+        previous_carried_pnl + previous_current_candidate_pnl,
+    )
+    same_candidate = bool(candidate_id and candidate_id == previous_candidate_id)
+    candidate_evidence_regressed = bool(
+        same_candidate
+        and previous_candidate_samples > 0
+        and candidate_samples < previous_candidate_samples
+    )
+    reported_current_candidate_pnl = _safe_float(candidate_flow.get("post_cost_pnl_delta_total"), 0.0)
+    if same_candidate:
+        carried_prior_candidate_pnl = previous_carried_pnl
+        credited_current_candidate_pnl = (
+            previous_current_candidate_pnl
+            if candidate_evidence_regressed
+            else reported_current_candidate_pnl
+            if binding_valid
+            else 0.0
+        )
+    elif candidate_id:
+        carried_prior_candidate_pnl = previous_total_attributed_pnl
+        credited_current_candidate_pnl = reported_current_candidate_pnl if binding_valid else 0.0
+    else:
+        carried_prior_candidate_pnl = previous_total_attributed_pnl
+        credited_current_candidate_pnl = 0.0
+    total_candidate_attributed_pnl = carried_prior_candidate_pnl + credited_current_candidate_pnl
+
+    source_ready = bool(
+        input_contract.get("source_fresh", False)
+        and input_contract.get("source_stable_during_read", False)
+    )
+    accounting_evidence_ready = bool(
+        source_ready
+        and active_book_available
+        and binding_valid
+        and not candidate_evidence_regressed
+    )
+    attribution_required_remaining = max(baseline_debt - total_candidate_attributed_pnl, 0.0)
+    if accounting_evidence_ready:
+        remaining_debt = max(observed_book_debt, attribution_required_remaining)
+    else:
+        persisted_remaining = previous_remaining if previous else baseline_debt
+        remaining_debt = max(persisted_remaining, observed_book_debt)
+
+    recovery_amount = max(baseline_debt - remaining_debt, 0.0)
+    worsening_amount = max(remaining_debt - baseline_debt, 0.0)
+    recovery_progress_norm = (
+        _clamp(recovery_amount / baseline_debt)
+        if baseline_debt > PAPER_DEBT_RECOVERY_CLEAR_EPSILON
+        else (1.0 if remaining_debt <= PAPER_DEBT_RECOVERY_CLEAR_EPSILON else 0.0)
+    )
+
+    daily_pnl = _candidate_daily_pnl_by_day(paper.get("candidate_post_cost_daily_series"))
+    daily_loss_limit = max(25.0, min(250.0, baseline_debt * 0.005))
+    candidate_drawdown_limit = max(100.0, min(1000.0, baseline_debt * 0.02))
+    cumulative_pnl = 0.0
+    peak_pnl = 0.0
+    max_candidate_drawdown = 0.0
+    worst_daily_pnl = 0.0
+    for day in sorted(daily_pnl):
+        value = float(daily_pnl[day])
+        cumulative_pnl += value
+        peak_pnl = max(peak_pnl, cumulative_pnl)
+        max_candidate_drawdown = max(max_candidate_drawdown, peak_pnl - cumulative_pnl)
+        worst_daily_pnl = min(worst_daily_pnl, value)
+    daily_loss_breach = worst_daily_pnl < -daily_loss_limit
+    candidate_drawdown_breach = max_candidate_drawdown > candidate_drawdown_limit
+
+    minimum_samples = max(
+        PAPER_DEBT_RECOVERY_MIN_SAMPLES,
+        _safe_int(expectancy.get("minimum_samples"), PAPER_DEBT_RECOVERY_MIN_SAMPLES),
+    )
+    positive_lcb = bool(
+        expectancy.get(
+            "positive_clustered_lower_confidence_bound_95",
+            expectancy.get("positive_lower_confidence_bound_95", False),
+        )
+    )
+    candidate_proof_ready = bool(
+        accounting_evidence_ready
+        and candidate_samples >= minimum_samples
+        and candidate_observed_days >= PAPER_DEBT_RECOVERY_MIN_OBSERVED_DAYS
+        and expectancy.get("promotion_evidence_sufficient", False)
+        and positive_lcb
+    )
+    risk_paused = bool(daily_loss_breach or candidate_drawdown_breach)
+    debt_cleared = remaining_debt <= PAPER_DEBT_RECOVERY_CLEAR_EPSILON
+    live_promotion_ready = bool(
+        debt_cleared
+        and candidate_proof_ready
+        and total_candidate_attributed_pnl > 0.0
+        and not risk_paused
+    )
+
+    if not accounting_evidence_ready:
+        state = "evidence_unavailable"
+    elif risk_paused:
+        state = "paused_drawdown"
+    elif debt_cleared:
+        state = "cleared_and_proven" if live_promotion_ready else "debt_cleared_pending_proof"
+    elif remaining_debt > baseline_debt + PAPER_DEBT_RECOVERY_CLEAR_EPSILON or total_candidate_attributed_pnl < 0.0:
+        state = "debt_worsening"
+    elif recovery_amount > PAPER_DEBT_RECOVERY_CLEAR_EPSILON and total_candidate_attributed_pnl > 0.0:
+        state = "recovering"
+    elif candidate_samples > 0:
+        state = "holding_line"
+    else:
+        state = "collecting_recovery_evidence"
+
+    if state in {"evidence_unavailable", "paused_drawdown"}:
+        entry_size_multiplier = 0.0
+    elif state == "debt_worsening":
+        entry_size_multiplier = 0.10
+    elif live_promotion_ready:
+        entry_size_multiplier = 1.0
+    elif candidate_proof_ready:
+        entry_size_multiplier = PAPER_DEBT_RECOVERY_VALIDATED_SIZE_MULTIPLIER
+    else:
+        entry_size_multiplier = PAPER_DEBT_RECOVERY_ACCUMULATION_SIZE_MULTIPLIER
+
+    target_daily_recovery = baseline_debt / PAPER_DEBT_RECOVERY_TARGET_DAYS if baseline_debt > 0.0 else 0.0
+    actual_daily_recovery = recovery_amount / elapsed_days if elapsed_days >= 1.0 else 0.0
+    velocity_ratio = actual_daily_recovery / target_daily_recovery if target_daily_recovery > 0.0 else 0.0
+    estimated_days_to_clear = (
+        remaining_debt / actual_daily_recovery
+        if remaining_debt > PAPER_DEBT_RECOVERY_CLEAR_EPSILON and actual_daily_recovery > 0.0
+        else 0.0
+        if debt_cleared
+        else None
+    )
+
+    promotion_blockers: list[str] = []
+    if not source_ready:
+        promotion_blockers.append("paper_performance_source_not_fresh_and_stable")
+    if not active_book_available:
+        promotion_blockers.append("active_paper_book_snapshot_missing")
+    if not candidate_id:
+        promotion_blockers.append("candidate_identity_missing")
+    if not binding_valid:
+        promotion_blockers.append("candidate_binding_not_valid")
+    if candidate_evidence_regressed:
+        promotion_blockers.append("candidate_evidence_sample_count_regressed")
+    if remaining_debt > PAPER_DEBT_RECOVERY_CLEAR_EPSILON:
+        promotion_blockers.append("paper_recovery_balance_not_cleared")
+    if candidate_samples < minimum_samples:
+        promotion_blockers.append("candidate_post_cost_samples_below_minimum")
+    if candidate_observed_days < PAPER_DEBT_RECOVERY_MIN_OBSERVED_DAYS:
+        promotion_blockers.append("candidate_observed_days_below_minimum")
+    if not expectancy.get("promotion_evidence_sufficient", False):
+        promotion_blockers.append("candidate_promotion_evidence_not_sufficient")
+    if not positive_lcb:
+        promotion_blockers.append("candidate_post_cost_lcb_not_positive")
+    if total_candidate_attributed_pnl <= 0.0:
+        promotion_blockers.append("candidate_attributed_recovery_not_positive")
+    if daily_loss_breach:
+        promotion_blockers.append("candidate_daily_loss_limit_breached")
+    if candidate_drawdown_breach:
+        promotion_blockers.append("candidate_drawdown_limit_breached")
+
+    return {
+        "active": not live_promotion_ready,
+        "mode": "paper_debt_recovery_v1",
+        "semantic_note": "paper debt is a persistent negative-PnL recovery balance, not money owed to a lender",
+        "paper_only": True,
+        "live_execution_allowed": False,
+        "started_at_utc": started_at_utc,
+        "state": state,
+        "baseline_source": baseline_source,
+        "baseline_debt_amount": round(baseline_debt, 6),
+        "current_active_inventory_net_pnl": round(current_book_net_pnl, 6) if active_book_available else None,
+        "observed_book_remaining_debt": round(observed_book_debt, 6) if active_book_available else None,
+        "attribution_required_remaining_debt": round(attribution_required_remaining, 6),
+        "remaining_debt_amount": round(remaining_debt, 6),
+        "recovery_amount": round(recovery_amount, 6),
+        "worsening_amount": round(worsening_amount, 6),
+        "recovery_progress_norm": round(recovery_progress_norm, 6),
+        "debt_cleared": debt_cleared,
+        "accounting_evidence_ready": accounting_evidence_ready,
+        "candidate_attribution": {
+            "candidate_id": candidate_id,
+            "candidate_generation": candidate_generation,
+            "candidate_cutoff_utc": candidate_cutoff_utc,
+            "candidate_state_receipt_sha256": candidate_receipt,
+            "candidate_binding_required": candidate_binding_required,
+            "candidate_binding_valid": binding_valid,
+            "candidate_binding_mismatch_rows_excluded": mismatch_rows,
+            "sample_count": candidate_samples,
+            "observed_days": candidate_observed_days,
+            "reported_current_candidate_post_cost_pnl": round(reported_current_candidate_pnl, 6),
+            "current_candidate_post_cost_pnl": round(credited_current_candidate_pnl, 6),
+            "carried_prior_candidate_pnl": round(carried_prior_candidate_pnl, 6),
+            "total_candidate_attributed_pnl": round(total_candidate_attributed_pnl, 6),
+            "candidate_evidence_regressed": candidate_evidence_regressed,
+            "rollover_policy": "carry each completed candidate cumulative post-cost PnL exactly once; never reset legacy paper debt on generation change",
+        },
+        "recovery_velocity": {
+            "target_clearance_days": PAPER_DEBT_RECOVERY_TARGET_DAYS,
+            "elapsed_days": round(elapsed_days, 6),
+            "target_daily_net_improvement": round(target_daily_recovery, 6),
+            "actual_daily_net_improvement": round(actual_daily_recovery, 6),
+            "velocity_ratio_norm": round(max(velocity_ratio, 0.0), 6),
+            "on_target": bool(elapsed_days >= 1.0 and velocity_ratio >= 1.0),
+            "estimated_days_to_clear_at_current_velocity": (
+                round(estimated_days_to_clear, 3) if estimated_days_to_clear is not None else None
+            ),
+            "efficiency_rule": "maximize candidate-bound post-cost expectancy and opportunity use inside unchanged loss, drawdown, quality, overlap, and sizing limits",
+        },
+        "risk_budget": {
+            "daily_loss_limit": round(daily_loss_limit, 6),
+            "worst_candidate_daily_pnl": round(worst_daily_pnl, 6),
+            "daily_loss_breach": daily_loss_breach,
+            "candidate_drawdown_limit": round(candidate_drawdown_limit, 6),
+            "max_candidate_drawdown": round(max_candidate_drawdown, 6),
+            "candidate_drawdown_breach": candidate_drawdown_breach,
+            "new_entries_paused": risk_paused or not accounting_evidence_ready,
+        },
+        "candidate_proof": {
+            "ready": candidate_proof_ready,
+            "minimum_samples": minimum_samples,
+            "sample_count": candidate_samples,
+            "minimum_observed_days": PAPER_DEBT_RECOVERY_MIN_OBSERVED_DAYS,
+            "observed_days": candidate_observed_days,
+            "promotion_evidence_sufficient": bool(expectancy.get("promotion_evidence_sufficient", False)),
+            "positive_post_cost_lower_confidence_bound_95": positive_lcb,
+        },
+        "runtime_enforcement": {
+            "do_not_force_trades": True,
+            "prohibit_martingale": True,
+            "prohibit_averaging_down_for_recovery": True,
+            "prohibit_loss_based_size_increase": True,
+            "keep_sells_and_reduce_only_paths_open": True,
+            "block_new_entries_on_weak_profiles": True,
+            "block_new_entries_when_recovery_paused": True,
+            "recovery_entry_size_multiplier_norm": round(_clamp(entry_size_multiplier), 6),
+            "min_quality_gate_norm": RAW_A_RECOVERY_QUALITY_GATE_FLOOR,
+            "min_tradeability_norm": RAW_A_RECOVERY_TRADEABILITY_FLOOR,
+            "min_execution_fitness_norm": RAW_A_RECOVERY_EXECUTION_FLOOR,
+            "min_cross_asset_confirmation_norm": RAW_A_RECOVERY_CONFIRMATION_FLOOR,
+            "max_overlap_pressure_norm": RAW_A_RECOVERY_MAX_OVERLAP_PRESSURE,
+            "prioritize_positive_post_cost_expectancy": True,
+            "prefer_reduce_only_for_unrealized_drag": True,
+            "paper_only": True,
+            "live_execution_allowed": False,
+        },
+        "live_promotion_ready": live_promotion_ready,
+        "promotion_blockers": ordered_unique(promotion_blockers),
+        "success_rule": "remaining recovery balance is zero, candidate-attributed post-cost PnL is positive, sample/day minimums pass, and the 95% lower confidence bound is positive",
+    }
+
+
+def _scaling_evidence_metrics(
+    expectancy: dict[str, Any],
+    *,
+    sample_count: int | None = None,
+    independent_day_count: int | None = None,
+    independent_symbol_count: int | None = None,
+) -> dict[str, Any]:
+    robust = _as_dict(expectancy.get("robust_statistics"))
+    payoff = _as_dict(expectancy.get("payoff_asymmetry"))
+    deflated_sharpe = _as_dict(robust.get("deflated_sharpe"))
+    samples = max(
+        _safe_int(sample_count, 0),
+        _safe_int(expectancy.get("sample_count"), 0),
+        _safe_int(robust.get("sample_count"), 0),
+    )
+    days = max(
+        _safe_int(independent_day_count, 0),
+        _safe_int(robust.get("unique_day_count"), 0),
+    )
+    symbols = max(
+        _safe_int(independent_symbol_count, 0),
+        _safe_int(robust.get("unique_symbol_count"), 0),
+    )
+    effective_samples = max(_safe_float(robust.get("effective_sample_size"), 0.0), 0.0)
+    total_pnl = _safe_float(expectancy.get("total_post_cost_pnl_delta"), 0.0)
+    max_drawdown = max(
+        _safe_float(expectancy.get("max_cumulative_drawdown_post_cost_pnl"), 0.0),
+        0.0,
+    )
+    drawdown_to_profit = (
+        max_drawdown / max(total_pnl, 1e-9)
+        if total_pnl > 0.0
+        else None
+    )
+    return {
+        "sample_count": samples,
+        "independent_day_count": days,
+        "independent_symbol_count": symbols,
+        "effective_sample_size": round(effective_samples, 6),
+        "mean_post_cost_pnl_delta": round(
+            _safe_float(expectancy.get("mean_post_cost_pnl_delta"), 0.0),
+            8,
+        ),
+        "total_post_cost_pnl_delta": round(total_pnl, 8),
+        "positive_iid_lower_confidence_bound_95": bool(
+            expectancy.get("positive_lower_confidence_bound_95", False)
+        ),
+        "promotion_evidence_sufficient": bool(
+            expectancy.get("promotion_evidence_sufficient", False)
+        ),
+        "positive_clustered_lower_confidence_bound_95": bool(
+            expectancy.get("positive_clustered_lower_confidence_bound_95", False)
+        ),
+        "profit_factor": (
+            round(_safe_float(payoff.get("profit_factor"), 0.0), 6)
+            if payoff.get("profit_factor") is not None
+            else None
+        ),
+        "positive_sample_rate": round(
+            _safe_float(expectancy.get("positive_sample_rate"), 0.0),
+            6,
+        ),
+        "max_cumulative_drawdown_post_cost_pnl": round(max_drawdown, 8),
+        "drawdown_to_positive_pnl_ratio": (
+            round(drawdown_to_profit, 6) if drawdown_to_profit is not None else None
+        ),
+        "deflated_sharpe_probability": (
+            round(_safe_float(deflated_sharpe.get("probability"), 0.0), 8)
+            if bool(deflated_sharpe.get("available", False))
+            else None
+        ),
+        "expectancy_status": str(expectancy.get("status") or "unavailable"),
+        "promotion_status": str(expectancy.get("promotion_status") or "unavailable"),
+        "promotion_blockers": ordered_unique(
+            [str(item) for item in expectancy.get("promotion_blockers", []) if str(item)]
+        ),
+    }
+
+
+def _scaling_tier_control(
+    *,
+    metrics: dict[str, Any],
+    candidate_binding_valid: bool,
+    source_ready: bool,
+    blocked: bool,
+    block_reason: str = "",
+    contract_complete: bool = True,
+    objective_class: str = "",
+    regime_assessment: dict[str, Any] | None = None,
+    global_entry_cap: float = 1.0,
+) -> dict[str, Any]:
+    reasons: list[str] = []
+    objective = str(objective_class or "").strip().lower()
+    regime = regime_assessment if isinstance(regime_assessment, dict) else {}
+    regime_aligned = bool(
+        str(regime.get("relevance") or "").strip().lower() == "aligned"
+        and regime.get("execution_alignment_ready", False)
+    )
+    samples = _safe_int(metrics.get("sample_count"), 0)
+    days = _safe_int(metrics.get("independent_day_count"), 0)
+    symbols = _safe_int(metrics.get("independent_symbol_count"), 0)
+    effective_samples = _safe_float(metrics.get("effective_sample_size"), 0.0)
+    mean_pnl = _safe_float(metrics.get("mean_post_cost_pnl_delta"), 0.0)
+    positive_iid = bool(metrics.get("positive_iid_lower_confidence_bound_95", False))
+    robust_sufficient = bool(metrics.get("promotion_evidence_sufficient", False))
+    robust_positive = bool(metrics.get("positive_clustered_lower_confidence_bound_95", False))
+    profit_factor = metrics.get("profit_factor")
+    profit_factor_value = _safe_float(profit_factor, 0.0) if profit_factor is not None else 0.0
+    drawdown_ratio = metrics.get("drawdown_to_positive_pnl_ratio")
+    drawdown_ratio_value = _safe_float(drawdown_ratio, float("inf")) if drawdown_ratio is not None else float("inf")
+    dsr_probability = metrics.get("deflated_sharpe_probability")
+    dsr_probability_value = _safe_float(dsr_probability, 0.0) if dsr_probability is not None else 0.0
+
+    if blocked:
+        tier = "quarantine"
+        evidence_multiplier = 0.0
+        max_notional_pct = 0.0
+        reasons.append(block_reason or "existing_profitability_quarantine")
+    elif not source_ready:
+        tier = "evidence_source_blocked"
+        evidence_multiplier = 0.0
+        max_notional_pct = 0.0
+        reasons.append("paper_performance_source_not_fresh_and_stable")
+    elif not candidate_binding_valid:
+        tier = "candidate_binding_blocked"
+        evidence_multiplier = 0.0
+        max_notional_pct = 0.0
+        reasons.append("candidate_binding_not_valid")
+    elif not contract_complete:
+        tier = "specialization_contract_blocked"
+        evidence_multiplier = 0.0
+        max_notional_pct = 0.0
+        reasons.append("complete_strategy_specialization_contract_required")
+    elif objective == "control_only":
+        tier = "control_only"
+        evidence_multiplier = 0.0
+        max_notional_pct = 0.0
+        reasons.append("control_only_objective_has_no_trading_size_authority")
+    elif robust_sufficient and not robust_positive and mean_pnl <= 0.0:
+        tier = "negative_evidence_quarantine"
+        evidence_multiplier = 0.0
+        max_notional_pct = 0.0
+        reasons.append("robust_post_cost_evidence_nonpositive")
+    elif samples < SLEEVE_SCALING_MIN_SAMPLES:
+        tier = "paper_probation"
+        evidence_multiplier = SLEEVE_SCALING_PROBATION_MULTIPLIER
+        max_notional_pct = 0.015
+        reasons.append("minimum_candidate_samples_pending")
+    elif not positive_iid:
+        tier = "confidence_building"
+        evidence_multiplier = SLEEVE_SCALING_PROBATION_MULTIPLIER
+        max_notional_pct = 0.015
+        reasons.append("positive_post_cost_iid_lcb_pending")
+    elif not robust_positive:
+        tier = "independent_evidence_building"
+        evidence_multiplier = SLEEVE_SCALING_EVIDENCE_MULTIPLIER
+        max_notional_pct = 0.025
+        reasons.append("positive_clustered_post_cost_lcb_pending")
+    elif (
+        samples < SLEEVE_SCALING_VALIDATED_SAMPLES
+        or days < SLEEVE_SCALING_VALIDATED_DAYS
+        or symbols < SLEEVE_SCALING_VALIDATED_SYMBOLS
+    ):
+        tier = "validated_evidence_building"
+        evidence_multiplier = 0.75
+        max_notional_pct = 0.035
+        reasons.append("full_validation_breadth_pending")
+    else:
+        tier = "validated_baseline"
+        evidence_multiplier = 1.0
+        max_notional_pct = 0.04
+        reasons.append("candidate_bound_robust_post_cost_evidence_validated")
+
+        tier_two_ready = bool(
+            samples >= SLEEVE_SCALING_TIER_TWO_SAMPLES
+            and days >= SLEEVE_SCALING_TIER_TWO_DAYS
+            and symbols >= SLEEVE_SCALING_TIER_TWO_SYMBOLS
+            and effective_samples >= 125.0
+            and profit_factor_value >= 1.30
+            and drawdown_ratio_value <= 0.50
+            and dsr_probability_value >= 0.975
+            and regime_aligned
+        )
+        tier_one_ready = bool(
+            samples >= SLEEVE_SCALING_TIER_ONE_SAMPLES
+            and days >= SLEEVE_SCALING_TIER_ONE_DAYS
+            and symbols >= SLEEVE_SCALING_TIER_ONE_SYMBOLS
+            and effective_samples >= 75.0
+            and profit_factor_value >= 1.15
+            and drawdown_ratio_value <= 0.75
+            and dsr_probability_value >= 0.95
+            and regime_aligned
+        )
+        if objective in SLEEVE_SCALING_NON_RETURN_OBJECTIVES:
+            reasons.append("portfolio_contribution_objective_capped_at_baseline")
+        elif tier_two_ready:
+            tier = "scale_tier_2"
+            evidence_multiplier = SLEEVE_SCALING_TIER_TWO_MULTIPLIER
+            max_notional_pct = 0.06
+            reasons.append("tier_2_capacity_and_regime_evidence_passed")
+        elif tier_one_ready:
+            tier = "scale_tier_1"
+            evidence_multiplier = SLEEVE_SCALING_TIER_ONE_MULTIPLIER
+            max_notional_pct = 0.05
+            reasons.append("tier_1_capacity_and_regime_evidence_passed")
+        else:
+            if not regime_aligned:
+                reasons.append("current_regime_alignment_required_for_above_baseline_scale")
+            if dsr_probability_value < 0.95:
+                reasons.append("deflated_sharpe_probability_below_scale_floor")
+            if profit_factor_value < 1.15:
+                reasons.append("profit_factor_below_scale_floor")
+            if drawdown_ratio_value > 0.75:
+                reasons.append("drawdown_efficiency_below_scale_floor")
+
+    evidence_multiplier = min(
+        max(float(evidence_multiplier), 0.0),
+        SLEEVE_SCALING_MAX_ENTRY_MULTIPLIER,
+    )
+    effective_multiplier = min(evidence_multiplier, max(float(global_entry_cap), 0.0))
+    return {
+        "tier": tier,
+        "evidence_entry_size_multiplier_norm": round(evidence_multiplier, 6),
+        "entry_size_multiplier_norm": round(effective_multiplier, 6),
+        "max_new_entry_notional_pct": round(max_notional_pct, 6),
+        "block_new_entries": bool(effective_multiplier <= 0.0),
+        "above_baseline_scale_ready": bool(evidence_multiplier > 1.0 and effective_multiplier > 1.0),
+        "regime_alignment_ready": regime_aligned,
+        "candidate_binding_valid": candidate_binding_valid,
+        "source_ready": source_ready,
+        "contract_complete": contract_complete,
+        "objective_class": objective or "unclassified",
+        "metrics": metrics,
+        "reason_codes": ordered_unique(reasons),
+    }
+
+
+def _sleeve_strategy_profitability_scaling_contract(
+    *,
+    paper: dict[str, Any],
+    input_contract: dict[str, Any],
+    active_profile_controls: dict[str, dict[str, Any]],
+    strategy_controls: list[dict[str, Any]],
+    paper_debt_recovery_contract: dict[str, Any],
+) -> dict[str, Any]:
+    attribution = _as_dict(paper_debt_recovery_contract.get("candidate_attribution"))
+    debt_runtime = _as_dict(paper_debt_recovery_contract.get("runtime_enforcement"))
+    candidate_binding_valid = bool(attribution.get("candidate_binding_valid", False))
+    source_ready = bool(
+        input_contract.get("source_fresh", False)
+        and input_contract.get("source_stable_during_read", False)
+    )
+    global_entry_cap = (
+        _clamp(_safe_float(debt_runtime.get("recovery_entry_size_multiplier_norm"), 1.0), 0.0, 1.0)
+        if bool(paper_debt_recovery_contract.get("active", False))
+        else SLEEVE_SCALING_MAX_ENTRY_MULTIPLIER
+    )
+    strategy_latest = [
+        row for row in paper.get("strategy_latest", []) if isinstance(row, dict)
+    ]
+    strategies_by_profile: dict[str, list[dict[str, Any]]] = {}
+    for row in strategy_latest:
+        profile = _normal_profile(row.get("profile"))
+        if profile:
+            strategies_by_profile.setdefault(profile, []).append(row)
+
+    weak_profiles = {
+        _normal_profile(profile): control
+        for profile, control in active_profile_controls.items()
+        if _normal_profile(profile)
+    }
+    losing_pairs: set[tuple[str, str]] = set()
+    for control in strategy_controls:
+        profile = _normal_profile(control.get("profile"))
+        strategy = str(control.get("strategy") or "").strip().lower()
+        bot_id = str(control.get("bot_id") or "").strip().lower()
+        if profile and strategy:
+            losing_pairs.add((profile, strategy))
+        if profile and bot_id:
+            losing_pairs.add((profile, bot_id))
+
+    profile_controls: dict[str, dict[str, Any]] = {}
+    for raw in paper.get("sleeve_latest", []):
+        if not isinstance(raw, dict):
+            continue
+        profile = _normal_profile(raw.get("profile"))
+        if not profile:
+            continue
+        profile_strategies = strategies_by_profile.get(profile, [])
+        aligned_strategy = next(
+            (
+                row
+                for row in profile_strategies
+                if str(_as_dict(row.get("regime_assessment")).get("relevance") or "").lower() == "aligned"
+                and bool(_as_dict(row.get("regime_assessment")).get("execution_alignment_ready", False))
+            ),
+            None,
+        )
+        objective_classes = ordered_unique(
+            [str(row.get("objective_class") or "").strip().lower() for row in profile_strategies]
+        )
+        objective = (
+            objective_classes[0]
+            if len(objective_classes) == 1
+            else "mixed_objectives"
+            if objective_classes
+            else "unclassified"
+        )
+        metrics = _scaling_evidence_metrics(_as_dict(raw.get("post_cost_expectancy")))
+        weak_control = _as_dict(weak_profiles.get(profile))
+        blocked = bool(
+            weak_control
+            and (
+                str(weak_control.get("action") or "").strip().lower() == "quarantine_new_entries"
+                or _safe_int(weak_control.get("new_entry_cap"), 1) <= 0
+            )
+        )
+        profile_controls[profile] = {
+            "profile": profile,
+            **_scaling_tier_control(
+                metrics=metrics,
+                candidate_binding_valid=candidate_binding_valid,
+                source_ready=source_ready,
+                blocked=blocked,
+                block_reason="weak_sleeve_profitability_quarantine" if blocked else "",
+                objective_class=objective,
+                regime_assessment=_as_dict(aligned_strategy.get("regime_assessment")) if aligned_strategy else {},
+                global_entry_cap=global_entry_cap,
+            ),
+        }
+
+    strategy_scaling_controls: dict[str, dict[str, Any]] = {}
+    for raw in strategy_latest:
+        profile = _normal_profile(raw.get("profile"))
+        strategy_id = str(raw.get("strategy_id") or "").strip()
+        if not profile or not strategy_id:
+            continue
+        strategy_key = strategy_id.lower()
+        bot_id = strategy_key.split("::", 1)[1] if "::" in strategy_key else strategy_key
+        blocked = (profile, strategy_key) in losing_pairs or (profile, bot_id) in losing_pairs
+        metrics = _scaling_evidence_metrics(
+            _as_dict(raw.get("post_cost_expectancy")),
+            sample_count=_safe_int(raw.get("sample_count"), 0),
+            independent_day_count=_safe_int(raw.get("independent_day_count"), 0),
+            independent_symbol_count=_safe_int(raw.get("independent_symbol_count"), 0),
+        )
+        profile_cap = _safe_float(
+            _as_dict(profile_controls.get(profile)).get("entry_size_multiplier_norm"),
+            global_entry_cap,
+        )
+        control = _scaling_tier_control(
+            metrics=metrics,
+            candidate_binding_valid=candidate_binding_valid,
+            source_ready=source_ready,
+            blocked=blocked,
+            block_reason="losing_profile_strategy_pair_quarantined" if blocked else "",
+            contract_complete=bool(raw.get("contract_complete", False)),
+            objective_class=str(raw.get("objective_class") or ""),
+            regime_assessment=_as_dict(raw.get("regime_assessment")),
+            global_entry_cap=min(global_entry_cap, profile_cap),
+        )
+        strategy_scaling_controls[f"{profile}::{strategy_key}"] = {
+            "profile": profile,
+            "strategy": strategy_id,
+            "strategy_name": str(raw.get("strategy_name") or strategy_id),
+            **control,
+        }
+
+    all_controls = [*profile_controls.values(), *strategy_scaling_controls.values()]
+    tier_counts = Counter(str(row.get("tier") or "unknown") for row in all_controls)
+    above_baseline = [row for row in all_controls if bool(row.get("above_baseline_scale_ready", False))]
+    blocked_count = sum(1 for row in all_controls if bool(row.get("block_new_entries", False)))
+    probation_count = sum(
+        1
+        for row in all_controls
+        if str(row.get("tier") or "") in {
+            "paper_probation",
+            "confidence_building",
+            "independent_evidence_building",
+            "validated_evidence_building",
+        }
+    )
+    return {
+        "active": True,
+        "mode": "candidate_bound_sleeve_strategy_scaling_v1",
+        "paper_only": True,
+        "live_execution_allowed": False,
+        "candidate_binding": {
+            "candidate_id": str(attribution.get("candidate_id") or ""),
+            "candidate_generation": _safe_int(attribution.get("candidate_generation"), 0),
+            "candidate_binding_valid": candidate_binding_valid,
+            "candidate_binding_mismatch_rows_excluded": _safe_int(
+                attribution.get("candidate_binding_mismatch_rows_excluded"),
+                0,
+            ),
+        },
+        "source_ready": source_ready,
+        "entry_only": True,
+        "keep_sells_and_reduce_only_paths_open": True,
+        "fail_closed_on_missing_or_mismatched_candidate_evidence": True,
+        "global_entry_size_cap_norm": round(global_entry_cap, 6),
+        "default_unproven_entry_size_multiplier_norm": round(
+            min(SLEEVE_SCALING_PROBATION_MULTIPLIER, global_entry_cap),
+            6,
+        ) if source_ready and candidate_binding_valid else 0.0,
+        "maximum_above_baseline_entry_size_multiplier_norm": SLEEVE_SCALING_MAX_ENTRY_MULTIPLIER,
+        "tier_thresholds": {
+            "minimum_samples": SLEEVE_SCALING_MIN_SAMPLES,
+            "validated_samples": SLEEVE_SCALING_VALIDATED_SAMPLES,
+            "validated_independent_days": SLEEVE_SCALING_VALIDATED_DAYS,
+            "validated_independent_symbols": SLEEVE_SCALING_VALIDATED_SYMBOLS,
+            "scale_tier_1": {
+                "samples": SLEEVE_SCALING_TIER_ONE_SAMPLES,
+                "independent_days": SLEEVE_SCALING_TIER_ONE_DAYS,
+                "independent_symbols": SLEEVE_SCALING_TIER_ONE_SYMBOLS,
+                "effective_samples": 75,
+                "profit_factor": 1.15,
+                "max_drawdown_to_positive_pnl_ratio": 0.75,
+                "deflated_sharpe_probability": 0.95,
+                "current_regime_alignment_required": True,
+            },
+            "scale_tier_2": {
+                "samples": SLEEVE_SCALING_TIER_TWO_SAMPLES,
+                "independent_days": SLEEVE_SCALING_TIER_TWO_DAYS,
+                "independent_symbols": SLEEVE_SCALING_TIER_TWO_SYMBOLS,
+                "effective_samples": 125,
+                "profit_factor": 1.30,
+                "max_drawdown_to_positive_pnl_ratio": 0.50,
+                "deflated_sharpe_probability": 0.975,
+                "current_regime_alignment_required": True,
+            },
+        },
+        "profile_control_count": len(profile_controls),
+        "strategy_control_count": len(strategy_scaling_controls),
+        "blocked_control_count": blocked_count,
+        "probationary_control_count": probation_count,
+        "above_baseline_ready_count": len(above_baseline),
+        "tier_counts": dict(sorted(tier_counts.items())),
+        "profile_controls": profile_controls,
+        "strategy_controls": strategy_scaling_controls,
+        "scale_up_ready": bool(above_baseline),
+        "scale_up_blockers": ordered_unique(
+            [
+                "candidate_binding_not_valid" if not candidate_binding_valid else "",
+                "paper_performance_source_not_fresh_and_stable" if not source_ready else "",
+                "no_candidate_bound_control_has_cleared_above_baseline_thresholds" if not above_baseline else "",
+                "paper_debt_recovery_global_entry_cap_active" if global_entry_cap < 1.0 else "",
+            ]
+        ),
+        "hard_limits": {
+            "never_scale_from_loss_recovery_pressure": True,
+            "never_use_martingale": True,
+            "never_average_down_for_recovery": True,
+            "never_scale_above_1_10x_from_profitability_evidence": True,
+            "never_scale_control_only_objectives": True,
+            "hedge_and_capital_preservation_objectives_capped_at_baseline": True,
+            "portfolio_and_execution_risk_caps_remain_authoritative": True,
+        },
+        "policy": "size can rise above baseline only from candidate-bound robust post-cost evidence, independent breadth, current-regime alignment, payoff quality, drawdown efficiency, and deflated-Sharpe confidence; exits are never reduced by entry scaling controls",
     }
 
 
@@ -7415,6 +8257,11 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
         if isinstance(previous_runtime_control.get("daily_sleeve_harvest_goal_contract"), dict)
         else {}
     )
+    previous_paper_debt_recovery_contract = (
+        previous_runtime_control.get("paper_debt_recovery_contract")
+        if isinstance(previous_runtime_control.get("paper_debt_recovery_contract"), dict)
+        else {}
+    )
     history_latest = _latest_history_row(paper)
     day_row = paper.get("day") if isinstance(paper.get("day"), dict) else {}
     sleeves = paper.get("sleeve_latest") if isinstance(paper.get("sleeve_latest"), list) else []
@@ -7788,6 +8635,20 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
         weak_strengthening_contract=weak_sleeve_a_plus_plus_strengthening_contract,
         position_ledger=profit_harvest_position_ledger,
     )
+    paper_debt_recovery_contract = _paper_debt_recovery_contract(
+        paper=paper,
+        previous_contract=previous_paper_debt_recovery_contract,
+        input_contract=paper_performance_input_contract,
+    )
+    sleeve_strategy_profitability_scaling_contract = (
+        _sleeve_strategy_profitability_scaling_contract(
+            paper=paper,
+            input_contract=paper_performance_input_contract,
+            active_profile_controls=active_profile_controls,
+            strategy_controls=strategy_controls,
+            paper_debt_recovery_contract=paper_debt_recovery_contract,
+        )
+    )
     controlled_profitability_grade_contract = _controlled_profitability_grade_contract(
         financial_grade=financial_grade,
         raw_profitability_grade=raw_profitability_grade,
@@ -7880,6 +8741,8 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
         "financial_grade_lift_contract": financial_grade_lift_contract,
         "raw_profitability_a_recovery_contract": raw_profitability_a_recovery_contract,
         "raw_profitability_improvement_contract": raw_profitability_improvement_contract,
+        "paper_debt_recovery_contract": paper_debt_recovery_contract,
+        "sleeve_strategy_profitability_scaling_contract": sleeve_strategy_profitability_scaling_contract,
         "raw_profitability_six_point_recovery_contract": raw_profitability_improvement_contract.get(
             "six_point_recovery_contract",
             {},
@@ -8005,6 +8868,7 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
                 "weak_sleeve_systemic_weak_point_guard",
                 "financial_grade_lift",
                 "controlled_profitability_grade_contract",
+                "paper_debt_recovery_balance_and_candidate_attribution",
             ],
             "refresh_command": [
                 "./scripts/ops/opsctl.sh",
@@ -8208,6 +9072,16 @@ def build_runtime_control_payload(payload: dict[str, Any]) -> dict[str, Any]:
         if isinstance(payload.get("raw_profitability_a_recovery_contract"), dict)
         else {}
     )
+    paper_debt_recovery_contract = (
+        payload.get("paper_debt_recovery_contract")
+        if isinstance(payload.get("paper_debt_recovery_contract"), dict)
+        else {}
+    )
+    sleeve_strategy_profitability_scaling_contract = (
+        payload.get("sleeve_strategy_profitability_scaling_contract")
+        if isinstance(payload.get("sleeve_strategy_profitability_scaling_contract"), dict)
+        else {}
+    )
     raw_profitability_improvement_contract = (
         payload.get("raw_profitability_improvement_contract")
         if isinstance(payload.get("raw_profitability_improvement_contract"), dict)
@@ -8394,6 +9268,8 @@ def build_runtime_control_payload(payload: dict[str, Any]) -> dict[str, Any]:
         "financial_grade_lift_contract": financial_grade_lift_contract,
         "raw_profitability_a_recovery_contract": raw_profitability_a_recovery_contract,
         "raw_profitability_improvement_contract": raw_profitability_improvement_contract,
+        "paper_debt_recovery_contract": paper_debt_recovery_contract,
+        "sleeve_strategy_profitability_scaling_contract": sleeve_strategy_profitability_scaling_contract,
         "raw_profitability_six_point_recovery_contract": raw_profitability_six_point_recovery_contract,
         "raw_d_recovery_ladder_contract": raw_d_recovery_ladder_contract,
         "controlled_profitability_grade_contract": controlled_profitability_grade_contract,
@@ -8437,6 +9313,11 @@ def build_runtime_control_payload(payload: dict[str, Any]) -> dict[str, Any]:
         "master_grandmaster_training_contract": upper_layer_training_contract,
         "sub_bot_accuracy_target_contract": SUB_BOT_ACCURACY_TARGET_CONTRACT,
         "global_runtime_policy": {
+            "apply_candidate_bound_sleeve_strategy_scaling": bool(
+                sleeve_strategy_profitability_scaling_contract.get("active", False)
+            ),
+            "sleeve_strategy_scaling_entry_only": True,
+            "keep_sells_and_reduce_only_paths_open_during_scaling": True,
             "apply_outcome_weighted_training": True,
             "apply_per_sleeve_profit_score": True,
             "apply_dynamic_sizing": True,
@@ -8462,6 +9343,53 @@ def build_runtime_control_payload(payload: dict[str, Any]) -> dict[str, Any]:
             ),
             "apply_financial_grade_lift_contract": bool(financial_grade_lift_contract.get("active", False)),
             "apply_raw_profitability_a_recovery": bool(raw_profitability_a_recovery_contract.get("active", False)),
+            "apply_paper_debt_recovery": bool(paper_debt_recovery_contract.get("active", False)),
+            "paper_debt_recovery_state": str(paper_debt_recovery_contract.get("state") or "unknown"),
+            "paper_debt_recovery_remaining_amount": round(
+                _safe_float(paper_debt_recovery_contract.get("remaining_debt_amount"), 0.0),
+                6,
+            ),
+            "paper_debt_recovery_progress_norm": round(
+                _safe_float(paper_debt_recovery_contract.get("recovery_progress_norm"), 0.0),
+                6,
+            ),
+            "paper_debt_recovery_entry_size_multiplier_norm": round(
+                _safe_float(
+                    _as_dict(paper_debt_recovery_contract.get("runtime_enforcement")).get(
+                        "recovery_entry_size_multiplier_norm",
+                        0.0,
+                    ),
+                    0.0,
+                ),
+                6,
+            ),
+            "paper_debt_recovery_paused": bool(
+                _as_dict(paper_debt_recovery_contract.get("risk_budget")).get("new_entries_paused", True)
+            ),
+            "do_not_force_trades_for_paper_debt_recovery": bool(
+                _as_dict(paper_debt_recovery_contract.get("runtime_enforcement")).get(
+                    "do_not_force_trades",
+                    True,
+                )
+            ),
+            "prohibit_martingale_for_paper_debt_recovery": bool(
+                _as_dict(paper_debt_recovery_contract.get("runtime_enforcement")).get(
+                    "prohibit_martingale",
+                    True,
+                )
+            ),
+            "prohibit_averaging_down_for_paper_debt_recovery": bool(
+                _as_dict(paper_debt_recovery_contract.get("runtime_enforcement")).get(
+                    "prohibit_averaging_down_for_recovery",
+                    True,
+                )
+            ),
+            "prohibit_loss_based_size_increase_for_paper_debt_recovery": bool(
+                _as_dict(paper_debt_recovery_contract.get("runtime_enforcement")).get(
+                    "prohibit_loss_based_size_increase",
+                    True,
+                )
+            ),
             "apply_raw_profitability_improvement_contract": bool(
                 raw_profitability_improvement_contract.get("active", False)
             ),

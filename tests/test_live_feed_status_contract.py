@@ -5,6 +5,48 @@ from pathlib import Path
 from scripts.ops import live_feed_status_contract as contract
 
 
+def test_profitability_assessment_row_keeps_history_separate_from_candidate() -> None:
+    row = contract._profitability_assessment_row(
+        {
+            "present": True,
+            "fresh": True,
+            "age_seconds": 12.0,
+            "payload": {
+                "overall_status": "collecting",
+                "assessment_status": "ready",
+                "candidate_binding": {
+                    "candidate_id": "candidate-1",
+                    "identity_consistent": True,
+                },
+                "grades": {
+                    "implementation_grade": "A+",
+                    "implementation_score": 100.0,
+                    "economic_evidence_grade": "F",
+                    "economic_evidence_score": 25.0,
+                    "economic_evidence_ready": False,
+                    "evidence_ready_lanes": 0,
+                    "evidence_lane_count": 8,
+                },
+                "measurement": {
+                    "candidate_post_cost_sample_count": 0,
+                    "candidate_post_cost_minimum_samples": 30,
+                    "candidate_post_cost_pnl": 0.0,
+                    "historical_active_book_net_pnl": -100.0,
+                    "historical_active_book_candidate_grade_eligible": False,
+                },
+                "next_safe_action": {"blocker": "candidate_post_cost_observations_collecting"},
+            },
+        }
+    )
+
+    assert row["status"] == "collecting"
+    assert row["assessment_status"] == "ready"
+    assert row["implementation_grade"] == "A+"
+    assert row["economic_grade"] == "F"
+    assert row["historical_grades_candidate"] is False
+    assert row["live_execution"] is False
+
+
 NOW = datetime(2026, 8, 3, 12, 0, tzinfo=timezone.utc)
 STAMP = NOW.isoformat()
 
@@ -131,6 +173,104 @@ def _ready_fixture(project_root: Path) -> Path:
             "safe_to_leave_unattended": True,
         },
     )
+    _write(
+        health / "paper_runtime_profitability_controls_latest.json",
+        {
+            "timestamp_utc": STAMP,
+            "paper_debt_recovery_contract": {
+                "state": "collecting_recovery_evidence",
+                "baseline_debt_amount": 20_000.0,
+                "remaining_debt_amount": 20_000.0,
+                "recovery_progress_norm": 0.0,
+                "live_promotion_ready": False,
+                "candidate_attribution": {
+                    "candidate_id": "pc-test-g1",
+                    "sample_count": 0,
+                    "observed_days": 0,
+                    "total_candidate_attributed_pnl": 0.0,
+                },
+                "recovery_velocity": {"actual_daily_net_improvement": 0.0},
+                "risk_budget": {"new_entries_paused": False},
+                "runtime_enforcement": {"recovery_entry_size_multiplier_norm": 0.25},
+            },
+            "sleeve_strategy_profitability_scaling_contract": {
+                "active": True,
+                "mode": "candidate_bound_sleeve_strategy_scaling_v1",
+                "source_ready": True,
+                "entry_only": True,
+                "keep_sells_and_reduce_only_paths_open": True,
+                "candidate_binding": {
+                    "candidate_id": "pc-test-g1",
+                    "candidate_binding_valid": True,
+                },
+                "profile_control_count": 2,
+                "strategy_control_count": 3,
+                "blocked_control_count": 1,
+                "probationary_control_count": 3,
+                "above_baseline_ready_count": 0,
+                "global_entry_size_cap_norm": 0.25,
+                "maximum_above_baseline_entry_size_multiplier_norm": 1.10,
+                "scale_up_ready": False,
+                "tier_counts": {
+                    "paper_probation": 3,
+                    "quarantine": 1,
+                    "validated_baseline": 1,
+                },
+            },
+        },
+    )
+    _write(
+        project_root
+        / "governance"
+        / "research"
+        / "sleeve_strategy_specialization_latest.json",
+        {
+            "timestamp_utc": STAMP,
+            "schema_version": 2,
+            "ok": True,
+            "status": "ready",
+            "contract_coverage": {
+                "grade": "A+",
+                "sleeve_count": 111,
+                "strategy_count": 879,
+                "complete_contract_count": 879,
+                "authority_violation_count": 0,
+            },
+            "candidate_binding": {
+                "candidate_id": "pc-test-g1",
+                "bound": True,
+            },
+            "lifecycle_counts": {
+                "parked_candidate": 851,
+                "probation": 0,
+                "validated_candidate": 0,
+                "control_only": 28,
+            },
+            "strategy_library": {
+                "target_total_strategies": 12000,
+                "strategy_count": 12000,
+                "hot_strategy_count": 879,
+                "cold_strategy_count": 11121,
+            },
+            "strategy_families": {
+                "canonical_record_count": 1989,
+                "native_hot_family_count": 879,
+                "cold_parent_family_count": 1110,
+                "lineage_covered_strategy_count": 12000,
+                "runtime_identity_change_count": 0,
+            },
+            "quality_summary": {
+                "validated_good_count": 0,
+                "promising_unconfirmed_count": 0,
+                "weak_count": 0,
+                "retirement_candidate_count": 0,
+            },
+            "current_regime": {
+                "current_regime": "mixed_transition",
+                "activation_ready": False,
+            },
+        },
+    )
     return health
 
 
@@ -151,8 +291,8 @@ def test_ready_contract_reports_fresh_consistent_runtime(tmp_path: Path) -> None
     assert payload["operator_summary"]["paper_impact"] == "none"
     assert payload["active_operational_rows"] == {}
     assert payload["managed_operational_watches"] == []
-    assert payload["fresh_source_count"] == 8
-    assert payload["source_count"] == 9
+    assert payload["fresh_source_count"] == 9
+    assert payload["source_count"] == 11
     assert payload["rows"]["production_excellence"]["status"] == "missing"
     assert payload["rows"]["production_excellence"]["paper_impact"] == "none"
     assert payload["contradictions"] == []
@@ -166,6 +306,58 @@ def test_ready_contract_reports_fresh_consistent_runtime(tmp_path: Path) -> None
     assert payload["rows"]["soak"]["effective_safe"] is True
     assert payload["rows"]["soak"]["action"] == "none"
     assert payload["rows"]["soak"]["warning_count"] == 0
+    strategy = payload["rows"]["strategy_specialization"]
+    assert strategy["library_strategies"] == 12000
+    assert strategy["cold_strategies"] == 11121
+    assert strategy["canonical_families"] == 1989
+    assert strategy["native_hot_families"] == 879
+    assert strategy["cold_parent_families"] == 1110
+    assert strategy["family_lineage_covered"] == 12000
+    assert strategy["family_identity_changes"] == 0
+    assert strategy["current_regime"] == "mixed_transition"
+    assert strategy["regime_activation_ready"] is False
+
+
+def test_livefeed_soak_row_preserves_historical_segmented_time(tmp_path: Path) -> None:
+    health = _ready_fixture(tmp_path)
+    _write(
+        health / "continuous_soak_integrity_control_latest.json",
+        {
+            "timestamp_utc": STAMP,
+            "main_soak_elapsed_hours": 318.0,
+            "main_soak_elapsed_days": 13.25,
+            "main_soak_progress_percent": 44.167,
+            "main_soak_includes_pre_reset_time": True,
+            "main_soak_count_is_promotion_credit": False,
+            "clean_window_elapsed_hours": 0.0,
+            "observed_window_elapsed_hours": 2.5,
+            "historical_soak_evidence": {
+                "historical_segmented_wall_clock_hours": 318.0,
+                "historical_segmented_wall_clock_days": 13.25,
+                "segment_count": 53,
+                "counts_toward_current_clean_720_hours": False,
+            },
+        },
+    )
+
+    payload = contract.build_status_snapshot(tmp_path, now=NOW)
+    soak = payload["rows"]["soak"]
+
+    assert soak["main_soak_elapsed_hours"] == 318.0
+    assert soak["main_soak_progress_percent"] == 44.167
+    assert soak["main_soak_includes_pre_reset_time"] is True
+    assert soak["main_soak_count_is_promotion_credit"] is False
+    assert soak["clean_window_elapsed_hours"] == 0.0
+    assert soak["observed_window_elapsed_hours"] == 2.5
+    assert soak["historical_segmented_hours"] == 318.0
+    assert soak["historical_segment_count"] == 53
+    assert soak["historical_counts_toward_clean_720"] is False
+    joined = "\n".join(contract.format_status_lines(payload))
+    assert "main_h=318" in joined
+    assert "main_includes_resets=true" in joined
+    assert "main_is_promotion_credit=false" in joined
+    assert "historical_h=318" in joined
+    assert "history_counts_clean=false" in joined
 
 
 def test_livefeed_surfaces_configured_collector_capability_contract(tmp_path: Path) -> None:
@@ -175,6 +367,7 @@ def test_livefeed_surfaces_configured_collector_capability_contract(tmp_path: Pa
         health / "collector_capability_control_latest.json",
         {
             "timestamp_utc": STAMP,
+            "schema_version": 2,
             "ok": True,
             "overall_status": "ready_with_coverage_debt",
             "paper_soak_ready": True,
@@ -185,6 +378,31 @@ def test_livefeed_surfaces_configured_collector_capability_contract(tmp_path: Pa
                 "bot_binding_count": 1781,
                 "assignment_count": 1781,
                 "subscription_profile_count": 681,
+                "ingestion_route_profile_count": 104,
+                "required_capability_independent_redundancy_ratio": 0.75,
+            },
+            "ingestion_routing_contract": {
+                "policy_id": "sleeve_ingestion_routing_v2",
+                "decision_stage": "02_data_qualification",
+                "decision_family_count": 15,
+                "runtime_route_count": 104,
+                "runtime_paper_ready_route_count": 91,
+                "runtime_live_ready_route_count": 18,
+                "paper_ready_profile_route_count": 32,
+                "live_ready_profile_route_count": 6,
+                "average_profile_route_quality": 0.88,
+                "routing_artifact_receipt_sha256": "a" * 64,
+                "transport_contract": {
+                    "idempotency_required": True,
+                    "payload_digest_required": True,
+                    "source_timestamp_required": True,
+                    "bounded_response_size_required": True,
+                    "retry_only_transient_failures": True,
+                    "respect_retry_after": True,
+                    "redact_query_parameters_from_receipts": True,
+                    "watermark_on_success": True,
+                    "dead_letter_after_retry_exhaustion": True,
+                },
             },
             "current_collector_mapping": {"complete": True},
             "coverage_debt": {"gap_count": 118},
@@ -197,12 +415,19 @@ def test_livefeed_surfaces_configured_collector_capability_contract(tmp_path: Pa
     row = payload["rows"]["collector_capabilities"]
 
     assert payload["headline_status"] == "ready"
-    assert payload["source_count"] == 10
+    assert payload["source_count"] == 12
     assert row["status"] == "ready"
     assert row["bots"] == row["assignments"] == 1781
     assert row["coverage_debt_scope"] == "candidate_required_blocking_optional_advisory"
     assert row["paper_soak_ready"] is True
-    assert "[collector-capabilities]" in "\n".join(contract.format_status_lines(payload))
+    assert row["runtime_routes"] == 104
+    assert row["runtime_paper_ready_routes"] == 91
+    assert row["transport_contract_complete"] is True
+    lines = "\n".join(contract.format_status_lines(payload))
+    assert "[collector-capabilities]" in lines
+    assert "routing_policy=sleeve_ingestion_routing_v2" in lines
+    assert "paper_routes=91/104" in lines
+    assert "live_routes=18/104" in lines
 
 
 def test_livefeed_surfaces_direct_capability_materialization_proofs(tmp_path: Path) -> None:
@@ -248,6 +473,58 @@ def test_livefeed_surfaces_direct_capability_materialization_proofs(tmp_path: Pa
     assert row["direct_proofs"] == row["required_proofs"] == 4
     assert row["contracts"] == 10
     assert "[capability-materialization]" in "\n".join(contract.format_status_lines(payload))
+
+
+def test_livefeed_surfaces_institutional_capabilities_without_false_source_count_target(tmp_path: Path) -> None:
+    health = _ready_fixture(tmp_path)
+    _write(
+        tmp_path / "config" / "institutional_capability_control_v1.json",
+        {"schema_version": 1},
+    )
+    _write(
+        health / "institutional_capability_control_latest.json",
+        {
+            "timestamp_utc": STAMP,
+            "overall_status": "ready_with_evidence_debt",
+            "paper_soak_ready": True,
+            "live_promotion_ready": False,
+            "candidate_binding": {"candidate_id": "pc-test-g1", "bound": True},
+            "summary": {
+                "pillar_count": 6,
+                "implementation_ready_count": 6,
+                "paper_soak_ready_count": 6,
+                "candidate_evidence_ready_count": 3,
+                "live_promotion_ready_count": 1,
+                "verified_source_bundle_count": 20,
+                "local_refresh_action_count": 0,
+            },
+            "provider_policy": {
+                "target_range": [15, 30],
+                "ten_thousand_sources_required": False,
+            },
+            "conditional_external_entitlements": [
+                {"entitlement_id": "depth"},
+                {"entitlement_id": "independent_fills"},
+            ],
+            "external_or_human_actions": [{"need": "fills"}],
+        },
+    )
+
+    payload = contract.build_status_snapshot(tmp_path, now=NOW)
+    row = payload["rows"]["institutional_capabilities"]
+    lines = "\n".join(contract.format_status_lines(payload))
+
+    assert payload["headline_status"] == "ready"
+    assert row["paper_soak_ready"] is True
+    assert row["live_promotion_ready"] is False
+    assert row["verified_source_bundles"] == 20
+    assert row["ten_thousand_sources_required"] is False
+    assert "[institutional-capabilities]" in lines
+    assert "implementation=6/6" in lines
+    assert "paper=6/6" in lines
+    assert "evidence=3/6" in lines
+    assert "provider_target=15-30" in lines
+    assert "need_10000=false" in lines
 
 
 def test_managed_throttle_advisory_is_visible_without_false_remediation(tmp_path: Path) -> None:
@@ -627,7 +904,7 @@ def test_formatted_lines_expose_cause_recovery_impact_and_action(tmp_path: Path)
     lines = contract.format_status_lines(payload)
     joined = "\n".join(lines)
 
-    assert len(lines) == 9
+    assert len(lines) == 12
     assert "[status-contract]" in joined
     assert "[system]" in joined
     assert "[collection]" in joined
@@ -635,6 +912,8 @@ def test_formatted_lines_expose_cause_recovery_impact_and_action(tmp_path: Path)
     assert "[storage]" in joined
     assert "[throttle]" in joined
     assert "[soak]" in joined
+    assert "[paper-debt]" in joined
+    assert "[profit-scaling]" in joined
     assert "[production-excellence]" in joined
     assert "cause=" in joined
     assert "recovery=" in joined

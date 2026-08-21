@@ -654,6 +654,156 @@ def build_payload(
         },
         owner="paper_profitability_control",
     )
+    paper_debt_recovery = _as_dict(
+        paper_profit.get("paper_debt_recovery_contract")
+        or paper_runtime_profit.get("paper_debt_recovery_contract")
+    )
+    paper_debt_recovery_ready = bool(
+        paper_debt_recovery
+        and paper_debt_recovery.get("live_promotion_ready", False)
+        and paper_debt_recovery.get("debt_cleared", False)
+    )
+    paper_debt_gate = _gate(
+        "paper_debt_recovery_proof",
+        "Paper Recovery Balance And Candidate Proof",
+        paper_debt_recovery_ready,
+        [
+            "paper_debt_recovery_contract_missing" if not paper_debt_recovery else "",
+            *[
+                str(item)
+                for item in _as_list(paper_debt_recovery.get("promotion_blockers"))
+                if str(item or "").strip()
+            ],
+        ],
+        {
+            "state": paper_debt_recovery.get("state") or "unknown",
+            "baseline_debt_amount": paper_debt_recovery.get("baseline_debt_amount"),
+            "remaining_debt_amount": paper_debt_recovery.get("remaining_debt_amount"),
+            "recovery_progress_norm": paper_debt_recovery.get("recovery_progress_norm"),
+            "candidate_attribution": paper_debt_recovery.get("candidate_attribution", {}),
+            "candidate_proof": paper_debt_recovery.get("candidate_proof", {}),
+            "risk_budget": paper_debt_recovery.get("risk_budget", {}),
+            "live_execution_allowed": False,
+        },
+        owner="paper_profitability_control",
+    )
+    scaling_contract = _as_dict(
+        paper_profit.get("sleeve_strategy_profitability_scaling_contract")
+        or paper_runtime_profit.get("sleeve_strategy_profitability_scaling_contract")
+    )
+    scaling_profiles = _as_dict(scaling_contract.get("profile_controls"))
+    validated_scaling_profiles = [
+        profile
+        for profile, row in scaling_profiles.items()
+        if isinstance(row, dict)
+        and str(row.get("tier") or "")
+        in {"validated_baseline", "scale_tier_1", "scale_tier_2"}
+        and not bool(row.get("block_new_entries", False))
+    ]
+    scaling_binding = _as_dict(scaling_contract.get("candidate_binding"))
+    scaling_hard_limits = _as_dict(scaling_contract.get("hard_limits"))
+    scaling_max_multiplier = _safe_float(
+        scaling_contract.get("maximum_above_baseline_entry_size_multiplier_norm"),
+        99.0,
+    )
+    scaling_global_entry_cap = _safe_float(
+        scaling_contract.get("global_entry_size_cap_norm"),
+        99.0,
+    )
+    required_scaling_hard_limits = {
+        "never_scale_from_loss_recovery_pressure",
+        "never_use_martingale",
+        "never_average_down_for_recovery",
+        "never_scale_above_1_10x_from_profitability_evidence",
+        "portfolio_and_execution_risk_caps_remain_authoritative",
+    }
+    scaling_hard_limits_ready = all(
+        bool(scaling_hard_limits.get(limit, False))
+        for limit in required_scaling_hard_limits
+    )
+    scaling_contract_ready = bool(
+        scaling_contract.get("active", False)
+        and scaling_contract.get("mode") == "candidate_bound_sleeve_strategy_scaling_v1"
+        and scaling_contract.get("paper_only", False)
+        and not scaling_contract.get("live_execution_allowed", True)
+        and scaling_contract.get("source_ready", False)
+        and scaling_binding.get("candidate_binding_valid", False)
+        and scaling_contract.get("entry_only", False)
+        and scaling_contract.get("keep_sells_and_reduce_only_paths_open", False)
+        and scaling_contract.get("fail_closed_on_missing_or_mismatched_candidate_evidence", False)
+        and 0.0 < scaling_max_multiplier <= 1.10
+        and 0.0 <= scaling_global_entry_cap <= scaling_max_multiplier
+        and scaling_hard_limits_ready
+        and bool(validated_scaling_profiles)
+    )
+    scaling_gate = _gate(
+        "candidate_bound_sleeve_strategy_scaling",
+        "Candidate-Bound Sleeve And Strategy Scaling",
+        scaling_contract_ready,
+        [
+            "sleeve_strategy_scaling_contract_missing" if not scaling_contract else "",
+            "sleeve_strategy_scaling_mode_invalid"
+            if scaling_contract
+            and scaling_contract.get("mode") != "candidate_bound_sleeve_strategy_scaling_v1"
+            else "",
+            "sleeve_strategy_scaling_not_paper_only"
+            if scaling_contract and not scaling_contract.get("paper_only", False)
+            else "",
+            "sleeve_strategy_scaling_claims_live_authority"
+            if scaling_contract and scaling_contract.get("live_execution_allowed", True)
+            else "",
+            "sleeve_strategy_scaling_source_not_ready"
+            if scaling_contract and not scaling_contract.get("source_ready", False)
+            else "",
+            "sleeve_strategy_scaling_candidate_binding_invalid"
+            if scaling_contract and not scaling_binding.get("candidate_binding_valid", False)
+            else "",
+            "sleeve_strategy_scaling_not_entry_only"
+            if scaling_contract and not scaling_contract.get("entry_only", False)
+            else "",
+            "sleeve_strategy_scaling_exit_path_not_guaranteed"
+            if scaling_contract
+            and not scaling_contract.get("keep_sells_and_reduce_only_paths_open", False)
+            else "",
+            "sleeve_strategy_scaling_not_fail_closed"
+            if scaling_contract
+            and not scaling_contract.get(
+                "fail_closed_on_missing_or_mismatched_candidate_evidence",
+                False,
+            )
+            else "",
+            "sleeve_strategy_scaling_cap_above_1_10x"
+            if scaling_contract
+            and not 0.0 < scaling_max_multiplier <= 1.10
+            else "",
+            "sleeve_strategy_scaling_global_cap_invalid"
+            if scaling_contract
+            and not 0.0 <= scaling_global_entry_cap <= scaling_max_multiplier
+            else "",
+            "sleeve_strategy_scaling_hard_limits_incomplete"
+            if scaling_contract and not scaling_hard_limits_ready
+            else "",
+            "no_validated_candidate_bound_sleeve_for_canary"
+            if scaling_contract and not validated_scaling_profiles
+            else "",
+        ],
+        {
+            "mode": scaling_contract.get("mode") or "missing",
+            "candidate_binding": scaling_binding,
+            "global_entry_size_cap_norm": scaling_contract.get("global_entry_size_cap_norm"),
+            "maximum_above_baseline_entry_size_multiplier_norm": scaling_contract.get(
+                "maximum_above_baseline_entry_size_multiplier_norm"
+            ),
+            "validated_profile_count": len(validated_scaling_profiles),
+            "validated_profiles": sorted(validated_scaling_profiles),
+            "above_baseline_ready_count": scaling_contract.get("above_baseline_ready_count", 0),
+            "scale_up_ready": bool(scaling_contract.get("scale_up_ready", False)),
+            "hard_limits": scaling_hard_limits,
+            "hard_limits_ready": scaling_hard_limits_ready,
+            "live_execution_allowed": False,
+        },
+        owner="paper_profitability_control",
+    )
 
     ramp_blockers = [str(item) for item in _as_list(paper_ramp.get("blockers")) if str(item or "").strip()]
     truth_failed = [str(item) for item in _as_list(paper_truth.get("failed_checks")) if str(item or "").strip()]
@@ -849,7 +999,17 @@ def build_payload(
         owner="promotion_gate_snapshot_policy",
     )
 
-    gates = [raw_gate, paper_gate, auth_gate, source_gate, ci_gate, storage_gate, freshness_gate]
+    gates = [
+        raw_gate,
+        paper_debt_gate,
+        scaling_gate,
+        paper_gate,
+        auth_gate,
+        source_gate,
+        ci_gate,
+        storage_gate,
+        freshness_gate,
+    ]
     all_gates_ready = all(gate["ready"] for gate in gates)
     previous = load_json(out_path)
     sustained = _sustained_state(
@@ -907,6 +1067,7 @@ def build_payload(
         "infrastructure_message": str(config.get("infrastructure_message") or ""),
         "readiness_bar": [
             "no raw D-grade posture",
+            "paper recovery balance cleared with candidate-bound post-cost proof",
             "no unexplained sleeve paper-trading dropouts",
             "no auth/token surprises",
             "no source mutation from runtime",

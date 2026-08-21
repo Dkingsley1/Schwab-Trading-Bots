@@ -133,6 +133,55 @@ def _write_artifacts(
                 "strategy_covered_needs_launcher": [],
             },
         )
+    _write_json(
+        health / "collector_capability_control_latest.json",
+        {
+            "overall_status": "ready_with_coverage_debt",
+            "ok": True,
+            "paper_soak_ready": True,
+            "live_promotion_ready": False,
+            "routing_receipt_sha256": "route-receipt",
+            "summary": {
+                "assignment_count": 1781,
+                "bot_binding_count": 1781,
+            },
+            "ingestion_routing_contract": {
+                "policy_id": "sleeve_ingestion_routing_v2",
+                "policy_receipt_sha256": "policy-receipt",
+                "routing_artifact_receipt_sha256": "route-receipt",
+                "decision_policy_id": "institutional_decision_flow_sleeve_playbooks_v4",
+                "decision_stage": "02_data_qualification",
+                "decision_family_count": 15,
+                "runtime_route_count": 25,
+                "runtime_paper_ready_route_count": 20,
+                "runtime_live_ready_route_count": 4,
+                "average_profile_route_quality": 0.91,
+                "paper_data_debt_blocks_global_collection": False,
+                "live_data_debt_blocks_candidate_promotion": True,
+                "transport_contract": {
+                    "idempotency_required": True,
+                    "payload_digest_required": True,
+                    "source_timestamp_required": True,
+                    "bounded_response_size_required": True,
+                    "retry_only_transient_failures": True,
+                    "respect_retry_after": True,
+                    "redact_query_parameters_from_receipts": True,
+                    "watermark_on_success": True,
+                    "dead_letter_after_retry_exhaustion": True,
+                },
+            },
+            "ingestion_authority_contract": {
+                "changes_strategy_signal": False,
+                "launches_collectors": False,
+                "fetches_external_data": False,
+                "mutates_bot_registry": False,
+                "paper_execution_authority": False,
+                "live_execution_authority": False,
+                "automatic_promotion_authority": False,
+                "profitability_guaranteed": False,
+            },
+        },
+    )
 
 
 def test_managed_deferred_backlog_gets_a_plus_manifest_first_control(tmp_path: Path) -> None:
@@ -152,12 +201,19 @@ def test_managed_deferred_backlog_gets_a_plus_manifest_first_control(tmp_path: P
     assert payload["data_tier_contract"]["deferred_budget"] == "0"
     assert "idempotency_key" in payload["sleeve_event_envelope_contract"]["required_fields"]
     assert "payload_digest" in payload["sleeve_event_envelope_contract"]["required_fields"]
+    assert "ingestion_route_receipt_sha256" in payload["sleeve_event_envelope_contract"]["required_fields"]
+    assert payload["decision_aligned_routing_contract"]["policy_id"] == "sleeve_ingestion_routing_v2"
+    assert payload["decision_aligned_routing_contract"]["all_bots_route_bound"] is True
 
     text = override_path.read_text(encoding="utf-8")
     assert "SLEEVE_INGESTION_MODE=production_owned_manifest_first" in text
     assert "SLEEVE_INGESTION_MAX_ACTIVE_RATIO=0.16" in text
     assert "SLEEVE_INGESTION_EVENT_ENVELOPE_REQUIRED=1" in text
     assert "SLEEVE_INGESTION_IDEMPOTENCY_REQUIRED=1" in text
+    assert "SLEEVE_INGESTION_ROUTE_RECEIPT_REQUIRED=1" in text
+    assert "SLEEVE_INGESTION_ROUTE_ENFORCEMENT=1" in text
+    assert "SLEEVE_INGESTION_ROUTE_MAX_AGE_MINUTES=30" in text
+    assert "SLEEVE_INGESTION_ROUTING_POLICY_ID=sleeve_ingestion_routing_v2" in text
     assert "MARKET_DATA_ONLY=1" in text
     assert "ALLOW_ORDER_EXECUTION=0" in text
     assert payload["source_freshness_contract"]["all_required_fresh"] is True

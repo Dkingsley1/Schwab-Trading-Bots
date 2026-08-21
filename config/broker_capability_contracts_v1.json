@@ -1,0 +1,104 @@
+{
+  "schema_version": 1,
+  "policy_id": "broker_capability_contracts_v1",
+  "brokers": {
+    "schwab": {
+      "declared_capabilities": {
+        "requires_auth": true,
+        "supports_market_data": true,
+        "supports_live_execution": true,
+        "supports_paper_execution": true,
+        "supports_account_discovery": true,
+        "supports_account_snapshot": true,
+        "supports_positions": true,
+        "supports_order_place": true,
+        "supports_order_replace": true,
+        "supports_order_cancel": true,
+        "supports_order_fetch": true,
+        "supports_options": true,
+        "supports_futures": true,
+        "supports_news_context": true,
+        "supports_calendar_context": true
+      },
+      "market_data_transport": "broker_call_candidates",
+      "market_data_asset_classes": ["EQUITY", "ETF", "OPTION", "FUTURE", "FOREX"],
+      "paper": {
+        "enabled": true,
+        "implementation": "local_realism_simulator",
+        "production_eligible": false,
+        "asset_classes": ["EQUITY", "ETF", "OPTION", "FUTURE", "FOREX"],
+        "order_types": ["MARKET", "LIMIT", "STOP", "STOP_LIMIT", "NET_DEBIT", "NET_CREDIT", "NET_ZERO"],
+        "time_in_force": ["DAY", "GOOD_TILL_CANCEL", "FILL_OR_KILL", "IMMEDIATE_OR_CANCEL"]
+      },
+      "live": {
+        "enabled": true,
+        "implementation": "native_broker_api",
+        "production_eligible": true,
+        "asset_classes": ["EQUITY", "ETF", "OPTION"],
+        "order_types": ["MARKET", "LIMIT", "STOP", "STOP_LIMIT", "NET_DEBIT", "NET_CREDIT", "NET_ZERO"],
+        "time_in_force": ["DAY", "GOOD_TILL_CANCEL", "FILL_OR_KILL", "IMMEDIATE_OR_CANCEL"]
+      },
+      "quantity": {"minimum": 0.000001, "maximum_decimals": 6},
+      "price": {"minimum": 0.0001, "maximum_decimals": 4},
+      "rate_limit_pools": {"market_data": 120, "accounts": 60, "orders": 60},
+      "account_types": ["BROKERAGE", "IRA", "ROTH_IRA"],
+      "settlement": {"EQUITY": "T+1", "ETF": "T+1", "OPTION": "T+1"}
+    },
+    "coinbase": {
+      "declared_capabilities": {
+        "requires_auth": false,
+        "supports_market_data": true,
+        "supports_live_execution": false,
+        "supports_paper_execution": false,
+        "supports_account_discovery": false,
+        "supports_account_snapshot": false,
+        "supports_positions": false,
+        "supports_order_place": false,
+        "supports_order_replace": false,
+        "supports_order_cancel": false,
+        "supports_order_fetch": false,
+        "supports_options": false,
+        "supports_futures": true,
+        "supports_news_context": false,
+        "supports_calendar_context": false
+      },
+      "market_data_transport": "authenticated_client_direct",
+      "market_data_asset_classes": ["CRYPTO", "CRYPTO_FUTURE"],
+      "paper": {"enabled": false, "implementation": "unsupported", "production_eligible": false, "asset_classes": [], "order_types": [], "time_in_force": []},
+      "live": {"enabled": false, "implementation": "market_data_only", "production_eligible": false, "asset_classes": [], "order_types": [], "time_in_force": []},
+      "quantity": {"minimum": 0.00000001, "maximum_decimals": 8},
+      "price": {"minimum": 0.00000001, "maximum_decimals": 8},
+      "rate_limit_pools": {"market_data": 30},
+      "account_types": [],
+      "settlement": {}
+    },
+    "mock": {
+      "declared_capabilities": {
+        "requires_auth": false,
+        "supports_market_data": true,
+        "supports_live_execution": true,
+        "supports_paper_execution": true,
+        "supports_account_discovery": true,
+        "supports_account_snapshot": true,
+        "supports_positions": true,
+        "supports_order_place": true,
+        "supports_order_replace": true,
+        "supports_order_cancel": true,
+        "supports_order_fetch": true,
+        "supports_options": false,
+        "supports_futures": false,
+        "supports_news_context": false,
+        "supports_calendar_context": false
+      },
+      "market_data_transport": "broker_call_candidates",
+      "market_data_asset_classes": ["EQUITY", "ETF"],
+      "paper": {"enabled": true, "implementation": "deterministic_test_double", "production_eligible": false, "asset_classes": ["EQUITY", "ETF"], "order_types": ["MARKET", "LIMIT"], "time_in_force": ["DAY"]},
+      "live": {"enabled": true, "implementation": "deterministic_test_double", "production_eligible": false, "asset_classes": ["EQUITY", "ETF"], "order_types": ["MARKET", "LIMIT"], "time_in_force": ["DAY"]},
+      "quantity": {"minimum": 0.000001, "maximum_decimals": 6},
+      "price": {"minimum": 0.0001, "maximum_decimals": 4},
+      "rate_limit_pools": {"test": 1000000},
+      "account_types": ["TEST"],
+      "settlement": {"EQUITY": "SIMULATED", "ETF": "SIMULATED"}
+    }
+  }
+}

@@ -1,0 +1,1250 @@
+{
+  "schema_version": 4,
+  "policy_id": "institutional_decision_flow_sleeve_playbooks_v4",
+  "operating_mode": "hierarchical_strategy_resolved_monotonic_paper_live_quality_control",
+  "objective": "Apply one versioned family and profile-resolved strategy definition plus quantitative evidence policy to shadow evidence, paper execution, promotion, and future live execution while only vetoing or downsizing existing authorized intents.",
+  "authority": {
+    "read_decision_evidence": true,
+    "write_shadow_research_evidence": true,
+    "change_active_action": false,
+    "change_position_size": false,
+    "submit_paper_order": false,
+    "submit_live_order": false,
+    "mutate_registry": false,
+    "accept_candidate_change": false,
+    "grant_promotion": false
+  },
+  "soak_contract": {
+    "candidate_behavior_changed": true,
+    "cumulative_soak_history_preserved": true,
+    "accepted_in_soak_hardening_event_required": true,
+    "changed_scope_clean_segment_required": true,
+    "full_soak_clock_reset_requested": false,
+    "source_boundary": "core/institutional_decision_flow.py and config/institutional_decision_flow_v1.json",
+    "policy": "Preserve cumulative soak time and event history while starting honest clean evidence segments for changed candidate scopes."
+  },
+  "active_paper_control": {
+    "enabled": true,
+    "target_mode": "paper",
+    "mode": "monotonic_quality_gate",
+    "can_create_intent": false,
+    "can_reverse_intent": false,
+    "can_increase_quantity": false,
+    "can_bypass_existing_hold": false,
+    "can_submit_live_order": false,
+    "can_grant_promotion": false,
+    "required_pass_stages": [
+      "02_data_qualification",
+      "04_consensus_and_regime",
+      "06_execution_feasibility",
+      "07_portfolio_fit",
+      "08_non_bypassable_risk"
+    ],
+    "explicit_nonpositive_edge_action": "veto",
+    "missing_edge_action": "bounded_evidence_probe",
+    "missing_edge_max_quantity_multiplier": 0.1,
+    "point_estimate_max_quantity_multiplier": 0.15,
+    "adverse_quantitative_evidence_max_quantity_multiplier": 0.25,
+    "immature_evidence_max_quantity_multiplier": 0.25,
+    "near_miss_max_quantity_multiplier": 0.5,
+    "qualified_max_quantity_multiplier": 1.0,
+    "minimum_quantity_floor": 0.0,
+    "live_execution_authority": false
+  },
+  "active_live_control": {
+    "enabled": true,
+    "target_mode": "live",
+    "mode": "monotonic_qualified_candidate_gate",
+    "can_create_intent": false,
+    "can_reverse_intent": false,
+    "can_increase_quantity": false,
+    "can_bypass_existing_hold": false,
+    "can_submit_live_order": false,
+    "can_grant_promotion": false,
+    "require_current_policy_receipt": true,
+    "require_qualified_candidate": true,
+    "require_execution_eligible_sleeve": true,
+    "require_complete_strategy_definition": true,
+    "require_quantitative_evidence_ready": true,
+    "require_action_semantics_ready": true,
+    "max_evaluation_age_seconds": 900,
+    "required_pass_stages": [
+      "02_data_qualification",
+      "03_signal_formation",
+      "04_consensus_and_regime",
+      "05_post_cost_edge",
+      "06_execution_feasibility",
+      "07_portfolio_fit",
+      "08_non_bypassable_risk",
+      "09_shadow_priority"
+    ],
+    "missing_edge_action": "veto",
+    "point_estimate_action": "veto",
+    "qualified_max_quantity_multiplier": 1.0,
+    "minimum_quantity_floor": 0.0,
+    "live_execution_authority": false
+  },
+  "mode_parity_contract": {
+    "enabled": true,
+    "paper_and_live_use_same_resolved_policy": true,
+    "paper_may_collect_bounded_probe_evidence": true,
+    "live_requires_fully_qualified_candidate": true,
+    "live_requires_current_policy_receipt": true,
+    "live_may_be_stricter_than_paper": true,
+    "live_may_not_create_reverse_or_enlarge_intent": true,
+    "policy": "The strategy thesis, component model, sleeve family, evidence floors, and stage results are identical across paper and live. Live adds promotion, account, canary, and execution firewalls and never receives looser strategy evidence rules."
+  },
+  "strategy_definition_contract": {
+    "required_fields": [
+      "decision_horizon",
+      "portfolio_role",
+      "primary_edge",
+      "entry_style",
+      "exit_style",
+      "sizing_method",
+      "regime_dependency",
+      "cost_model",
+      "uncertainty_method",
+      "capacity_method",
+      "validation_method",
+      "shorting_policy",
+      "allowed_position_transitions"
+    ],
+    "registered_profiles_require_explicit_policy_family": true,
+    "profile_overrides_merge_on_family_definition": true,
+    "live_requires_complete_definition": true,
+    "policy": "Every registered sleeve inherits a complete economic and lifecycle definition from its resolved family. Profile overrides may specialize that definition but may not erase a required field."
+  },
+  "quantitative_evidence_contract": {
+    "axes": {
+      "selection_bias_control": {"floor": 0.80, "critical": false},
+      "independent_samples": {"floor": 0.70, "critical": false},
+      "uncertainty_calibration": {"floor": 0.70, "critical": false},
+      "signal_decay_fit": {"floor": 0.65, "critical": false},
+      "payoff_asymmetry": {"floor": 0.60, "critical": false},
+      "capacity_headroom": {"floor": 0.70, "critical": true},
+      "crowding_residual": {"floor": 0.65, "critical": false},
+      "tail_survival": {"floor": 0.80, "critical": true},
+      "regime_stability": {"floor": 0.65, "critical": false}
+    },
+    "paper_missing_evidence_is_visible_not_fabricated": true,
+    "paper_explicit_adverse_evidence_downsizes_only": true,
+    "live_requires_every_family_axis_available": true,
+    "live_requires_every_family_axis_passing": true,
+    "live_proxy_evidence_counts_as_available": false,
+    "direct_measurement_preferred_over_proxy": true,
+    "policy": "Paper mode may gather missing evidence without treating absence as failure. Explicit adverse evidence can only reduce or veto size. Future live mode requires all family-required evidence to be measured and passing."
+  },
+  "strategy_definitions": {
+    "balanced_directional": {
+      "decision_horizon": "intraday_to_multi_day",
+      "portfolio_role": "tactical_directional_alpha",
+      "primary_edge": "ensemble_directional_post_cost_alpha",
+      "entry_style": "directional_threshold_with_consensus_and_regime_confirmation",
+      "exit_style": "signal_decay_target_stop_or_risk_veto",
+      "sizing_method": "risk_budgeted_fractional_kelly_with_portfolio_caps",
+      "regime_dependency": "conditional",
+      "cost_model": "spread_slippage_impact_and_fees",
+      "uncertainty_method": "post_cost_lower_confidence_bound_and_calibration",
+      "capacity_method": "impact_curve_lane_budget_and_concentration",
+      "validation_method": "purged_out_of_sample_clustered_bootstrap",
+      "shorting_policy": "position_aware_long_or_short",
+      "allowed_position_transitions": ["enter_long", "add_long", "reduce_or_exit_long", "enter_short", "add_short", "cover_short", "abstain"],
+      "required_quantitative_evidence": ["selection_bias_control", "independent_samples", "uncertainty_calibration", "capacity_headroom", "tail_survival", "regime_stability"]
+    },
+    "long_horizon_income": {
+      "decision_horizon": "weeks_to_years",
+      "portfolio_role": "income_and_compounding_core",
+      "primary_edge": "durable_income_growth_quality_and_valuation",
+      "entry_style": "quality_valuation_and_income_durability_confirmation",
+      "exit_style": "thesis_decay_dividend_risk_valuation_or_turnover_guard",
+      "sizing_method": "risk_budgeted_core_weight_with_overlap_and_turnover_caps",
+      "regime_dependency": "low_to_moderate",
+      "cost_model": "spread_slippage_impact_fees_and_turnover_drag",
+      "uncertainty_method": "post_cost_lcb_and_income_durability_calibration",
+      "capacity_method": "impact_curve_liquidity_and_portfolio_overlap",
+      "validation_method": "walk_forward_regime_stratified_income_outcomes",
+      "shorting_policy": "long_only_position_aware",
+      "allowed_position_transitions": ["enter_long", "add_long", "reduce_or_exit_long", "abstain"],
+      "required_quantitative_evidence": ["selection_bias_control", "independent_samples", "uncertainty_calibration", "payoff_asymmetry", "crowding_residual", "tail_survival", "regime_stability"]
+    },
+    "intraday_momentum": {
+      "decision_horizon": "seconds_to_hours",
+      "portfolio_role": "short_horizon_tactical_alpha",
+      "primary_edge": "fresh_trend_persistence_and_order_flow_continuation",
+      "entry_style": "fresh_breakout_or_continuation_with_microstructure_confirmation",
+      "exit_style": "time_stop_signal_decay_target_stop_or_liquidity_veto",
+      "sizing_method": "intraday_risk_budget_with_latency_and_impact_caps",
+      "regime_dependency": "high",
+      "cost_model": "real_time_spread_slippage_impact_fees_and_latency_decay",
+      "uncertainty_method": "short_horizon_lcb_conformal_abstention_and_decay_fit",
+      "capacity_method": "displayed_depth_participation_and_impact_curve",
+      "validation_method": "purged_event_time_walk_forward_with_clustered_sessions",
+      "shorting_policy": "position_aware_two_sided",
+      "allowed_position_transitions": ["enter_long", "add_long", "reduce_or_exit_long", "enter_short", "add_short", "cover_short", "abstain"],
+      "required_quantitative_evidence": ["independent_samples", "uncertainty_calibration", "signal_decay_fit", "capacity_headroom", "crowding_residual", "tail_survival", "regime_stability"]
+    },
+    "swing_directional": {
+      "decision_horizon": "days_to_weeks",
+      "portfolio_role": "medium_horizon_directional_alpha",
+      "primary_edge": "persistent_regime_aligned_directional_repricing",
+      "entry_style": "multi_signal_confirmation_after_cost_and_regime_checks",
+      "exit_style": "thesis_decay_trailing_stop_target_or_regime_break",
+      "sizing_method": "volatility_targeted_fractional_kelly_with_portfolio_caps",
+      "regime_dependency": "moderate_to_high",
+      "cost_model": "spread_slippage_impact_fees_and_overnight_gap_risk",
+      "uncertainty_method": "post_cost_lcb_calibration_and_signal_half_life",
+      "capacity_method": "impact_curve_liquidity_and_concentration",
+      "validation_method": "purged_walk_forward_regime_and_symbol_clusters",
+      "shorting_policy": "position_aware_two_sided",
+      "allowed_position_transitions": ["enter_long", "add_long", "reduce_or_exit_long", "enter_short", "add_short", "cover_short", "abstain"],
+      "required_quantitative_evidence": ["selection_bias_control", "independent_samples", "uncertainty_calibration", "signal_decay_fit", "payoff_asymmetry", "capacity_headroom", "tail_survival", "regime_stability"]
+    },
+    "relative_value": {
+      "decision_horizon": "minutes_to_weeks",
+      "portfolio_role": "market_neutral_relative_value",
+      "primary_edge": "cointegration_factor_neutral_spread_or_cross_sectional_mispricing",
+      "entry_style": "paired_residual_divergence_with_neutrality_and_cost_confirmation",
+      "exit_style": "spread_convergence_half_life_timeout_or_relationship_break",
+      "sizing_method": "beta_factor_and_dollar_neutral_risk_budget",
+      "regime_dependency": "relationship_stability_dependent",
+      "cost_model": "two_leg_spread_slippage_impact_borrow_and_fees",
+      "uncertainty_method": "spread_lcb_relationship_stability_and_half_life",
+      "capacity_method": "weakest_leg_depth_cross_impact_and_borrow_capacity",
+      "validation_method": "purged_pair_walk_forward_with_multiple_testing_control",
+      "shorting_policy": "paired_position_aware_shorting_only",
+      "allowed_position_transitions": ["enter_long", "add_long", "reduce_or_exit_long", "enter_short", "add_short", "cover_short", "abstain"],
+      "required_quantitative_evidence": ["selection_bias_control", "independent_samples", "uncertainty_calibration", "signal_decay_fit", "capacity_headroom", "crowding_residual", "tail_survival", "regime_stability"]
+    },
+    "volatility_derivatives": {
+      "decision_horizon": "hours_to_months",
+      "portfolio_role": "volatility_relative_value_and_convexity",
+      "primary_edge": "surface_skew_term_structure_realized_implied_or_greek_mispricing",
+      "entry_style": "surface_and_regime_confirmation_with_defined_liquidity",
+      "exit_style": "surface_normalization_greek_limit_event_decay_or_risk_veto",
+      "sizing_method": "greek_budgeted_scenario_and_margin_constrained",
+      "regime_dependency": "high",
+      "cost_model": "multi_leg_spread_slippage_impact_fees_and_hedging_drag",
+      "uncertainty_method": "scenario_distribution_lcb_and_surface_calibration",
+      "capacity_method": "contract_depth_open_interest_hedge_liquidity_and_margin",
+      "validation_method": "walk_forward_surface_regime_and_payoff_scenario_validation",
+      "shorting_policy": "defined_risk_or_fully_hedged_short_exposure",
+      "allowed_position_transitions": ["enter_long", "add_long", "reduce_or_exit_long", "enter_short", "add_short", "cover_short", "abstain"],
+      "required_quantitative_evidence": ["selection_bias_control", "independent_samples", "uncertainty_calibration", "payoff_asymmetry", "capacity_headroom", "tail_survival", "regime_stability"]
+    },
+    "liquidity_microstructure": {
+      "decision_horizon": "milliseconds_to_minutes",
+      "portfolio_role": "liquidity_capture_and_microstructure_alpha",
+      "primary_edge": "spread_capture_queue_position_and_order_flow_imbalance",
+      "entry_style": "toxicity_filtered_route_and_queue_aware_quote_or_taker_entry",
+      "exit_style": "inventory_rebalance_toxicity_spike_time_stop_or_route_failure",
+      "sizing_method": "inventory_and_depth_constrained_participation",
+      "regime_dependency": "very_high",
+      "cost_model": "queue_fill_probability_adverse_selection_fees_rebates_and_impact",
+      "uncertainty_method": "online_fill_calibration_decay_and_toxicity_bounds",
+      "capacity_method": "queue_depth_participation_cross_impact_and_inventory_limits",
+      "validation_method": "event_time_replay_with_latency_and_fill_calibration",
+      "shorting_policy": "inventory_bounded_position_aware_two_sided",
+      "allowed_position_transitions": ["enter_long", "add_long", "reduce_or_exit_long", "enter_short", "add_short", "cover_short", "abstain"],
+      "required_quantitative_evidence": ["independent_samples", "uncertainty_calibration", "signal_decay_fit", "capacity_headroom", "crowding_residual", "tail_survival", "regime_stability"]
+    },
+    "macro_rates_fx": {
+      "decision_horizon": "days_to_months",
+      "portfolio_role": "macro_carry_duration_and_currency_alpha",
+      "primary_edge": "policy_liquidity_curve_carry_and_cross_asset_regime_divergence",
+      "entry_style": "point_in_time_macro_surprise_with_cross_asset_confirmation",
+      "exit_style": "policy_repricing_curve_normalization_regime_break_or_stop",
+      "sizing_method": "scenario_risk_duration_beta_and_correlation_budgeted",
+      "regime_dependency": "high",
+      "cost_model": "spread_roll_carry_slippage_impact_and_financing",
+      "uncertainty_method": "scenario_weighted_lcb_and_macro_revision_stability",
+      "capacity_method": "market_depth_roll_liquidity_and_cross_asset_concentration",
+      "validation_method": "vintage_point_in_time_walk_forward_across_policy_regimes",
+      "shorting_policy": "instrument_and_account_permission_aware_two_sided",
+      "allowed_position_transitions": ["enter_long", "add_long", "reduce_or_exit_long", "enter_short", "add_short", "cover_short", "abstain"],
+      "required_quantitative_evidence": ["selection_bias_control", "independent_samples", "uncertainty_calibration", "payoff_asymmetry", "capacity_headroom", "tail_survival", "regime_stability"]
+    },
+    "event_driven": {
+      "decision_horizon": "minutes_to_days",
+      "portfolio_role": "catalyst_and_repricing_alpha",
+      "primary_edge": "timestamped_surprise_drift_and_event_mispricing",
+      "entry_style": "event_lineage_surprise_and_post_event_liquidity_confirmation",
+      "exit_style": "drift_exhaustion_event_window_timeout_gap_stop_or_thesis_break",
+      "sizing_method": "gap_scenario_and_liquidity_constrained_risk_budget",
+      "regime_dependency": "event_and_liquidity_dependent",
+      "cost_model": "event_spread_gap_slippage_impact_fees_and_option_skew",
+      "uncertainty_method": "event_cohort_lcb_surprise_calibration_and_decay_fit",
+      "capacity_method": "event_depth_participation_gap_stress_and_crowding",
+      "validation_method": "point_in_time_event_cohorts_with_embargo_and_multiple_testing_control",
+      "shorting_policy": "borrow_and_gap_risk_aware_two_sided",
+      "allowed_position_transitions": ["enter_long", "add_long", "reduce_or_exit_long", "enter_short", "add_short", "cover_short", "abstain"],
+      "required_quantitative_evidence": ["selection_bias_control", "independent_samples", "uncertainty_calibration", "signal_decay_fit", "payoff_asymmetry", "capacity_headroom", "tail_survival", "regime_stability"]
+    },
+    "commodity_inflation": {
+      "decision_horizon": "days_to_months",
+      "portfolio_role": "inflation_carry_and_real_asset_alpha",
+      "primary_edge": "curve_inventory_seasonality_inflation_and_currency_divergence",
+      "entry_style": "curve_and_macro_confirmation_with_roll_and_liquidity_checks",
+      "exit_style": "curve_normalization_seasonal_expiry_regime_break_or_stop",
+      "sizing_method": "volatility_curve_and_cross_asset_risk_budgeted",
+      "regime_dependency": "high",
+      "cost_model": "spread_slippage_impact_roll_storage_proxy_and_fees",
+      "uncertainty_method": "regime_stratified_lcb_and_curve_stability",
+      "capacity_method": "contract_depth_roll_window_and_cross_impact",
+      "validation_method": "seasonality_aware_point_in_time_walk_forward",
+      "shorting_policy": "instrument_and_account_permission_aware_two_sided",
+      "allowed_position_transitions": ["enter_long", "add_long", "reduce_or_exit_long", "enter_short", "add_short", "cover_short", "abstain"],
+      "required_quantitative_evidence": ["selection_bias_control", "independent_samples", "uncertainty_calibration", "capacity_headroom", "crowding_residual", "tail_survival", "regime_stability"]
+    },
+    "digital_asset_basis": {
+      "decision_horizon": "minutes_to_weeks",
+      "portfolio_role": "cross_venue_basis_and_funding_alpha",
+      "primary_edge": "spot_futures_perpetual_basis_funding_and_venue_dislocation",
+      "entry_style": "cross_venue_verified_basis_after_funding_cost_and_custody_checks",
+      "exit_style": "basis_convergence_funding_flip_liquidity_break_or_venue_risk",
+      "sizing_method": "collateral_venue_and_liquidity_constrained_delta_neutral_budget",
+      "regime_dependency": "high_and_continuous_market",
+      "cost_model": "cross_venue_spread_fees_funding_slippage_impact_and_transfer_risk",
+      "uncertainty_method": "venue_robust_lcb_funding_stability_and_gap_scenarios",
+      "capacity_method": "weakest_venue_depth_collateral_and_liquidation_headroom",
+      "validation_method": "continuous_market_walk_forward_by_venue_and_liquidity_regime",
+      "shorting_policy": "hedged_basis_legs_only_with_venue_permissions",
+      "allowed_position_transitions": ["enter_long", "add_long", "reduce_or_exit_long", "enter_short", "add_short", "cover_short", "abstain"],
+      "required_quantitative_evidence": ["selection_bias_control", "independent_samples", "uncertainty_calibration", "signal_decay_fit", "capacity_headroom", "crowding_residual", "tail_survival", "regime_stability"]
+    },
+    "tail_hedge": {
+      "decision_horizon": "days_to_months",
+      "portfolio_role": "drawdown_control_and_convex_protection",
+      "primary_edge": "portfolio_hedge_need_convexity_and_stress_regime_mispricing",
+      "entry_style": "portfolio_exposure_and_stress_confirmation_with_cost_budget",
+      "exit_style": "hedge_need_decay_convexity_realization_expiry_or_rebalance",
+      "sizing_method": "expected_shortfall_drawdown_and_premium_budgeted",
+      "regime_dependency": "stress_sensitive",
+      "cost_model": "premium_carry_spread_slippage_impact_fees_and_roll_decay",
+      "uncertainty_method": "stress_scenarios_expected_shortfall_and_payoff_distribution",
+      "capacity_method": "stress_liquidity_open_interest_and_premium_budget",
+      "validation_method": "historical_and_synthetic_crisis_replay_with_pathwise_survival",
+      "shorting_policy": "hedge_mandate_only_defined_loss_preferred",
+      "allowed_position_transitions": ["enter_long", "add_long", "reduce_or_exit_long", "enter_short", "add_short", "cover_short", "abstain"],
+      "required_quantitative_evidence": ["selection_bias_control", "independent_samples", "uncertainty_calibration", "payoff_asymmetry", "capacity_headroom", "tail_survival", "regime_stability"]
+    },
+    "structured_credit": {
+      "decision_horizon": "months_to_years",
+      "portfolio_role": "research_only_structured_credit_relative_value",
+      "primary_edge": "waterfall_dependency_credit_liquidity_and_counterparty_mispricing",
+      "entry_style": "research_ranking_only_no_direct_order_eligibility",
+      "exit_style": "research_repricing_default_dependency_or_liquidity_deterioration",
+      "sizing_method": "scenario_loss_and_liquidity_budget_research_only",
+      "regime_dependency": "credit_and_liquidity_cycle_dependent",
+      "cost_model": "bid_ask_marking_funding_margin_and_unwind_cost",
+      "uncertainty_method": "dependency_stress_loss_distribution_and_model_risk",
+      "capacity_method": "dealer_depth_issue_size_collateral_and_unwind_capacity",
+      "validation_method": "vintage_waterfall_stress_and_out_of_sample_default_cohorts",
+      "shorting_policy": "disabled_for_direct_execution",
+      "allowed_position_transitions": ["abstain"],
+      "required_quantitative_evidence": ["selection_bias_control", "independent_samples", "uncertainty_calibration", "payoff_asymmetry", "capacity_headroom", "tail_survival", "regime_stability"]
+    },
+    "research_models": {
+      "decision_horizon": "research_dependent",
+      "portfolio_role": "research_and_candidate_generation_only",
+      "primary_edge": "validated_incremental_predictive_information",
+      "entry_style": "candidate_ranking_only_no_direct_order_eligibility",
+      "exit_style": "retire_on_decay_instability_leakage_or_replication_failure",
+      "sizing_method": "no_capital_sizing_research_priority_only",
+      "regime_dependency": "explicitly_measured",
+      "cost_model": "full_post_cost_execution_model_required_for_candidate_claims",
+      "uncertainty_method": "calibration_conformal_bounds_and_multiple_testing_control",
+      "capacity_method": "impact_curve_required_before_execution_promotion",
+      "validation_method": "purged_embargoed_walk_forward_replication_and_false_discovery_control",
+      "shorting_policy": "disabled_for_direct_execution",
+      "allowed_position_transitions": ["abstain"],
+      "required_quantitative_evidence": ["selection_bias_control", "independent_samples", "uncertainty_calibration", "signal_decay_fit", "payoff_asymmetry", "capacity_headroom", "tail_survival", "regime_stability"]
+    },
+    "infrastructure_control": {
+      "decision_horizon": "continuous_runtime",
+      "portfolio_role": "control_plane_observation_only",
+      "primary_edge": "operational_integrity_and_failure_prevention",
+      "entry_style": "no_trade_intent_control_assessment_only",
+      "exit_style": "clear_control_only_after_fresh_verified_recovery",
+      "sizing_method": "no_capital_sizing",
+      "regime_dependency": "runtime_state_dependent",
+      "cost_model": "resource_latency_storage_and_failure_cost",
+      "uncertainty_method": "source_attributed_freshness_and_cross_verification",
+      "capacity_method": "runtime_pressure_backlog_and_storage_headroom",
+      "validation_method": "fault_injection_recovery_replay_and_regression_guards",
+      "shorting_policy": "disabled_for_direct_execution",
+      "allowed_position_transitions": ["abstain"],
+      "required_quantitative_evidence": ["independent_samples", "uncertainty_calibration", "capacity_headroom", "tail_survival", "regime_stability"]
+    }
+  },
+  "profile_strategy_overrides": {
+    "dividend_capture": {
+      "decision_horizon": "days_around_ex_dividend_event",
+      "portfolio_role": "event_income_capture",
+      "primary_edge": "net_dividend_after_price_drop_tax_cost_and_recovery",
+      "entry_style": "pre_ex_date_liquidity_and_total_return_confirmation",
+      "exit_style": "post_ex_recovery_window_tax_aware_target_or_thesis_break"
+    },
+    "dividend_compound": {
+      "portfolio_role": "long_horizon_income_reinvestment",
+      "primary_edge": "durable_dividend_growth_reinvestment_and_quality_compounding"
+    },
+    "long_term_dividend_compound": {
+      "portfolio_role": "long_horizon_income_reinvestment",
+      "primary_edge": "durable_dividend_growth_reinvestment_and_quality_compounding"
+    },
+    "bond": {
+      "portfolio_role": "duration_carry_income_and_defensive_allocation",
+      "primary_edge": "curve_roll_down_real_yield_credit_quality_and_duration_regime",
+      "sizing_method": "duration_spread_and_portfolio_beta_budgeted"
+    },
+    "cash_rotation_tactical": {
+      "decision_horizon": "days_to_months",
+      "portfolio_role": "capital_preservation_and_opportunity_cost_rotation",
+      "primary_edge": "risk_adjusted_cash_equivalent_yield_and_regime_rotation"
+    },
+    "futures_index_intraday": {
+      "primary_edge": "index_futures_intraday_momentum_basis_and_liquidity",
+      "cost_model": "futures_spread_fees_slippage_impact_and_roll"
+    },
+    "earnings_event": {
+      "primary_edge": "earnings_surprise_guidance_revision_and_post_event_drift",
+      "entry_style": "timestamp_verified_earnings_surprise_and_liquidity_confirmation"
+    },
+    "single_name_options_event": {
+      "primary_edge": "event_implied_distribution_skew_and_realized_repricing",
+      "sizing_method": "defined_risk_greek_and_gap_scenario_budgeted",
+      "shorting_policy": "defined_risk_options_structures_only"
+    },
+    "pairs_correlation": {
+      "primary_edge": "pair_relationship_residual_divergence_and_convergence",
+      "validation_method": "purged_pair_specific_walk_forward_and_break_detection"
+    },
+    "stat_arb_market_neutral": {
+      "primary_edge": "cross_sectional_residual_alpha_with_factor_neutrality",
+      "sizing_method": "factor_beta_dollar_and_cluster_neutral_risk_budget"
+    },
+    "dispersion_trading": {
+      "primary_edge": "index_component_correlation_and_volatility_dispersion",
+      "sizing_method": "vega_gamma_correlation_and_scenario_neutral_budget"
+    },
+    "volatility_arbitrage": {
+      "primary_edge": "realized_implied_volatility_surface_and_term_structure_relative_value",
+      "exit_style": "volatility_spread_convergence_greek_limit_or_regime_break"
+    },
+    "high_frequency_market_making": {
+      "decision_horizon": "milliseconds_to_seconds",
+      "entry_style": "queue_and_toxicity_filtered_two_sided_quote",
+      "exit_style": "immediate_inventory_toxicity_or_latency_rebalance"
+    },
+    "gamma_scalping": {
+      "primary_edge": "realized_volatility_relative_to_gamma_theta_and_hedging_cost",
+      "exit_style": "gamma_realization_theta_budget_surface_break_or_hedge_cost_limit"
+    },
+    "crypto_futures_basis": {
+      "portfolio_role": "delta_neutral_cross_venue_basis",
+      "primary_edge": "spot_futures_perpetual_basis_and_funding_convergence"
+    },
+    "short_bias_hedge": {
+      "portfolio_role": "directional_drawdown_hedge",
+      "primary_edge": "overvaluation_deterioration_and_portfolio_downside_offset",
+      "shorting_policy": "borrow_verified_position_aware_shorting"
+    },
+    "tail_risk_parity": {
+      "portfolio_role": "cross_asset_tail_risk_balancing",
+      "sizing_method": "expected_shortfall_contribution_and_crisis_correlation_budgeted"
+    },
+    "black_swan_hedging": {
+      "portfolio_role": "low_frequency_extreme_tail_protection",
+      "primary_edge": "convex_crisis_payoff_relative_to_premium_and_carry_budget"
+    }
+  },
+  "profile_policy_map": {
+    "default": "balanced_directional",
+    "baseline": "balanced_directional",
+    "conservative": "balanced_directional",
+    "aggressive": "swing_directional",
+    "intraday_aggressive": "intraday_momentum",
+    "swing_aggressive": "swing_directional",
+    "dividend": "long_horizon_income",
+    "dividend_capture": "long_horizon_income",
+    "dividend_income": "long_horizon_income",
+    "dividend_compound": "long_horizon_income",
+    "long_term_dividend_compound": "long_horizon_income",
+    "bond": "long_horizon_income",
+    "cash_rotation_tactical": "long_horizon_income",
+    "fx": "macro_rates_fx",
+    "international_macro": "macro_rates_fx",
+    "rates_credit_macro": "macro_rates_fx",
+    "futures_rates_curve": "macro_rates_fx",
+    "sovereign_debt_macro": "macro_rates_fx",
+    "commodity_inflation": "commodity_inflation",
+    "futures_commodity_macro": "commodity_inflation",
+    "futures_index_intraday": "intraday_momentum",
+    "futures_event_reaction": "event_driven",
+    "earnings_event": "event_driven",
+    "single_name_options_event": "event_driven",
+    "pairs_correlation": "relative_value",
+    "stat_arb_market_neutral": "relative_value",
+    "statistical_arbitrage": "relative_value",
+    "cross_asset_basis_training": "relative_value",
+    "dispersion_trading": "relative_value",
+    "volatility_arbitrage": "relative_value",
+    "market_making_liquidity": "liquidity_microstructure",
+    "high_frequency_market_making": "liquidity_microstructure",
+    "order_flow_market_microstructure": "liquidity_microstructure",
+    "order_flow_toxicity": "liquidity_microstructure",
+    "lit_order_book_transformers": "liquidity_microstructure",
+    "transaction_cost_slippage_intelligence": "liquidity_microstructure",
+    "volatility": "volatility_derivatives",
+    "options_on_futures": "volatility_derivatives",
+    "options_on_futures_aggressive": "volatility_derivatives",
+    "compound_options": "volatility_derivatives",
+    "rainbow_options": "volatility_derivatives",
+    "variance_volatility_swaps": "volatility_derivatives",
+    "barrier_lookback_options": "volatility_derivatives",
+    "second_third_order_greeks": "volatility_derivatives",
+    "gamma_scalping": "volatility_derivatives",
+    "vanna_volga_hedging": "volatility_derivatives",
+    "swaptions": "volatility_derivatives",
+    "crypto_futures_basis": "digital_asset_basis",
+    "short_bias_hedge": "tail_hedge",
+    "tail_risk_parity": "tail_hedge",
+    "black_swan_hedging": "tail_hedge",
+    "structured_products": "structured_credit",
+    "synthetic_cdo": "structured_credit",
+    "cdo_squared": "structured_credit",
+    "cdo_cubed": "structured_credit",
+    "xva_counterparty_margin": "structured_credit",
+    "credit_derivatives_cdx_cds": "structured_credit",
+    "securitized_products_mbs_abs_clo": "structured_credit",
+    "repo_securities_lending": "structured_credit",
+    "collateral_margin_liquidity": "structured_credit"
+  },
+  "profile_policy_rules": [
+    {
+      "policy_family_id": "infrastructure_control",
+      "profile_tokens_any": [
+        "governance",
+        "infrastructure",
+        "plumbing",
+        "provider_adapter",
+        "data_plane",
+        "backpressure",
+        "runtime_capacity",
+        "halt_recovery",
+        "system_governor",
+        "expansion_quality",
+        "signal_governance",
+        "market_data_tape",
+        "privacy_zkp",
+        "adversarial_ml_security",
+        "low_latency_orchestration"
+      ]
+    },
+    {
+      "policy_family_id": "structured_credit",
+      "profile_tokens_any": [
+        "structured",
+        "synthetic_cdo",
+        "cdo_",
+        "credit_derivative",
+        "securitized",
+        "counterparty",
+        "collateral",
+        "repo_"
+      ]
+    },
+    {
+      "policy_family_id": "liquidity_microstructure",
+      "profile_tokens_any": [
+        "market_making",
+        "microstructure",
+        "order_flow",
+        "liquidity_regime",
+        "slippage",
+        "lob",
+        "dealer_positioning"
+      ]
+    },
+    {
+      "policy_family_id": "relative_value",
+      "profile_tokens_any": [
+        "pairs",
+        "stat_arb",
+        "statistical_arbitrage",
+        "dispersion",
+        "cross_asset_basis",
+        "arbitrage",
+        "spillover"
+      ]
+    },
+    {
+      "policy_family_id": "volatility_derivatives",
+      "profile_tokens_any": [
+        "option",
+        "volatility",
+        "greeks",
+        "gamma",
+        "vanna",
+        "swaption",
+        "martingale_flow_pricing"
+      ]
+    },
+    {
+      "policy_family_id": "tail_hedge",
+      "profile_tokens_any": [
+        "tail_risk",
+        "black_swan",
+        "short_bias",
+        "crisis"
+      ]
+    },
+    {
+      "policy_family_id": "event_driven",
+      "profile_tokens_any": [
+        "event",
+        "earnings",
+        "sentiment",
+        "news"
+      ]
+    },
+    {
+      "policy_family_id": "commodity_inflation",
+      "profile_tokens_any": [
+        "commodity",
+        "inflation"
+      ]
+    },
+    {
+      "policy_family_id": "macro_rates_fx",
+      "profile_tokens_any": [
+        "macro",
+        "rates",
+        "sovereign",
+        "central_bank",
+        "fx"
+      ]
+    },
+    {
+      "policy_family_id": "digital_asset_basis",
+      "domain_tokens_any": [
+        "crypto"
+      ],
+      "profile_tokens_any": [
+        "crypto",
+        "digital_asset"
+      ]
+    },
+    {
+      "policy_family_id": "long_horizon_income",
+      "profile_tokens_any": [
+        "dividend",
+        "income",
+        "compound",
+        "bond",
+        "cash_rotation",
+        "etf_flow",
+        "portfolio_construction"
+      ]
+    },
+    {
+      "policy_family_id": "intraday_momentum",
+      "profile_tokens_any": [
+        "intraday",
+        "opening_range"
+      ]
+    },
+    {
+      "policy_family_id": "research_models",
+      "domain_tokens_any": [
+        "quant_models"
+      ],
+      "profile_tokens_any": [
+        "research",
+        "model",
+        "neural",
+        "state_space",
+        "optimization",
+        "causal",
+        "uncertainty",
+        "qemc",
+        "signature",
+        "critic",
+        "rlbf",
+        "alpha_research",
+        "feature_quality",
+        "proof_quantum",
+        "adaptive_architectures",
+        "gpu_quant"
+      ]
+    }
+  ],
+  "sleeve_policy_families": {
+    "balanced_directional": {
+      "objective": "Balanced directional selection across data, edge, execution, portfolio, and risk evidence.",
+      "execution_eligible_default": true,
+      "evidence_focus": [
+        "post_cost_edge_lcb",
+        "ensemble_consensus",
+        "regime_alignment",
+        "portfolio_fit"
+      ],
+      "component_weights": {
+        "data_integrity": 0.10,
+        "signal_conviction": 0.16,
+        "ensemble_consensus": 0.11,
+        "regime_alignment": 0.10,
+        "net_edge_quality": 0.17,
+        "execution_quality": 0.12,
+        "portfolio_fit": 0.09,
+        "risk_headroom": 0.07,
+        "evidence_maturity": 0.04,
+        "long_term_alignment": 0.04
+      }
+    },
+    "long_horizon_income": {
+      "objective": "Prefer durable income, compounding quality, turnover discipline, portfolio fit, and post-cost edge.",
+      "execution_eligible_default": true,
+      "evidence_focus": [
+        "dividend_quality",
+        "turnover_discipline",
+        "portfolio_overlap",
+        "post_cost_edge_lcb"
+      ],
+      "component_weights": {
+        "data_integrity": 0.10,
+        "signal_conviction": 0.10,
+        "ensemble_consensus": 0.10,
+        "regime_alignment": 0.10,
+        "net_edge_quality": 0.15,
+        "execution_quality": 0.08,
+        "portfolio_fit": 0.14,
+        "risk_headroom": 0.10,
+        "evidence_maturity": 0.06,
+        "long_term_alignment": 0.07
+      },
+      "qualification_floor_overrides": {
+        "data_integrity": 0.70,
+        "ensemble_consensus": 0.58,
+        "regime_alignment": 0.50,
+        "execution_quality": 0.62,
+        "portfolio_fit": 0.62,
+        "risk_headroom": 0.85,
+        "evidence_maturity": 0.55,
+        "long_term_alignment": 0.60,
+        "qualified_utility": 0.74,
+        "near_miss_utility": 0.58,
+        "minimum_edge_cost_multiple": 1.75
+      },
+      "market_quality_overrides": {
+        "spread_ceiling_bps": 30.0,
+        "latency_ceiling_ms": 1800.0
+      }
+    },
+    "intraday_momentum": {
+      "objective": "Require fresh data, persistent regime alignment, fast execution, and strong post-cost edge for short-horizon trades.",
+      "execution_eligible_default": true,
+      "evidence_focus": [
+        "quote_freshness",
+        "trend_persistence",
+        "latency_and_slippage",
+        "post_cost_edge_lcb"
+      ],
+      "component_weights": {
+        "data_integrity": 0.14,
+        "signal_conviction": 0.15,
+        "ensemble_consensus": 0.10,
+        "regime_alignment": 0.12,
+        "net_edge_quality": 0.16,
+        "execution_quality": 0.15,
+        "portfolio_fit": 0.05,
+        "risk_headroom": 0.08,
+        "evidence_maturity": 0.03,
+        "long_term_alignment": 0.02
+      },
+      "qualification_floor_overrides": {
+        "data_integrity": 0.78,
+        "signal_conviction": 0.16,
+        "ensemble_consensus": 0.58,
+        "regime_alignment": 0.55,
+        "execution_quality": 0.72,
+        "portfolio_fit": 0.50,
+        "risk_headroom": 0.90,
+        "evidence_maturity": 0.52,
+        "qualified_utility": 0.76,
+        "near_miss_utility": 0.60,
+        "minimum_edge_cost_multiple": 2.0
+      },
+      "market_quality_overrides": {
+        "spread_ceiling_bps": 18.0,
+        "latency_ceiling_ms": 500.0
+      }
+    },
+    "swing_directional": {
+      "objective": "Balance directional conviction with regime persistence, post-cost edge, and multi-day portfolio fit.",
+      "execution_eligible_default": true,
+      "evidence_focus": [
+        "regime_persistence",
+        "signal_conviction",
+        "post_cost_edge_lcb",
+        "portfolio_fit"
+      ],
+      "component_weights": {
+        "data_integrity": 0.10,
+        "signal_conviction": 0.15,
+        "ensemble_consensus": 0.11,
+        "regime_alignment": 0.13,
+        "net_edge_quality": 0.17,
+        "execution_quality": 0.11,
+        "portfolio_fit": 0.09,
+        "risk_headroom": 0.07,
+        "evidence_maturity": 0.04,
+        "long_term_alignment": 0.03
+      },
+      "qualification_floor_overrides": {
+        "regime_alignment": 0.52,
+        "qualified_utility": 0.73,
+        "minimum_edge_cost_multiple": 1.65
+      }
+    },
+    "relative_value": {
+      "objective": "Require paired or cross-sectional consensus, low conflict, portfolio neutrality, and a robust post-cost spread edge.",
+      "execution_eligible_default": true,
+      "evidence_focus": [
+        "paired_identity",
+        "cross_sectional_consensus",
+        "neutrality_and_overlap",
+        "spread_edge_lcb"
+      ],
+      "component_weights": {
+        "data_integrity": 0.11,
+        "signal_conviction": 0.10,
+        "ensemble_consensus": 0.16,
+        "regime_alignment": 0.10,
+        "net_edge_quality": 0.18,
+        "execution_quality": 0.11,
+        "portfolio_fit": 0.11,
+        "risk_headroom": 0.07,
+        "evidence_maturity": 0.04,
+        "long_term_alignment": 0.02
+      },
+      "qualification_floor_overrides": {
+        "data_integrity": 0.72,
+        "ensemble_consensus": 0.67,
+        "regime_alignment": 0.50,
+        "execution_quality": 0.65,
+        "portfolio_fit": 0.60,
+        "risk_headroom": 0.88,
+        "qualified_utility": 0.75,
+        "minimum_edge_cost_multiple": 1.9
+      },
+      "market_quality_overrides": {
+        "spread_ceiling_bps": 22.0,
+        "latency_ceiling_ms": 900.0
+      }
+    },
+    "volatility_derivatives": {
+      "objective": "Prioritize volatility-regime fit, convexity-aware execution, liquidity, risk headroom, and post-cost edge.",
+      "execution_eligible_default": true,
+      "evidence_focus": [
+        "volatility_regime",
+        "surface_and_greeks",
+        "liquidity_and_slippage",
+        "tail_risk"
+      ],
+      "component_weights": {
+        "data_integrity": 0.11,
+        "signal_conviction": 0.12,
+        "ensemble_consensus": 0.11,
+        "regime_alignment": 0.11,
+        "net_edge_quality": 0.17,
+        "execution_quality": 0.15,
+        "portfolio_fit": 0.07,
+        "risk_headroom": 0.10,
+        "evidence_maturity": 0.04,
+        "long_term_alignment": 0.02
+      },
+      "qualification_floor_overrides": {
+        "data_integrity": 0.76,
+        "regime_alignment": 0.57,
+        "execution_quality": 0.74,
+        "portfolio_fit": 0.55,
+        "risk_headroom": 0.92,
+        "evidence_maturity": 0.58,
+        "qualified_utility": 0.78,
+        "minimum_edge_cost_multiple": 2.2
+      },
+      "market_quality_overrides": {
+        "spread_ceiling_bps": 25.0,
+        "latency_ceiling_ms": 700.0
+      }
+    },
+    "liquidity_microstructure": {
+      "objective": "Require high-integrity order-book evidence, low latency, route quality, and strict inventory and liquidity risk.",
+      "execution_eligible_default": true,
+      "evidence_focus": [
+        "order_book_quality",
+        "flow_toxicity",
+        "latency",
+        "inventory_risk"
+      ],
+      "component_weights": {
+        "data_integrity": 0.16,
+        "signal_conviction": 0.10,
+        "ensemble_consensus": 0.11,
+        "regime_alignment": 0.08,
+        "net_edge_quality": 0.15,
+        "execution_quality": 0.20,
+        "portfolio_fit": 0.05,
+        "risk_headroom": 0.10,
+        "evidence_maturity": 0.03,
+        "long_term_alignment": 0.02
+      },
+      "qualification_floor_overrides": {
+        "data_integrity": 0.85,
+        "execution_quality": 0.82,
+        "portfolio_fit": 0.55,
+        "risk_headroom": 0.94,
+        "qualified_utility": 0.80,
+        "minimum_edge_cost_multiple": 2.5
+      },
+      "market_quality_overrides": {
+        "spread_ceiling_bps": 12.0,
+        "latency_ceiling_ms": 250.0
+      }
+    },
+    "macro_rates_fx": {
+      "objective": "Require synchronized macro evidence, regime consistency, liquidity, portfolio fit, and durable post-cost edge.",
+      "execution_eligible_default": true,
+      "evidence_focus": [
+        "central_bank_and_liquidity_context",
+        "curve_and_currency_regime",
+        "cross_asset_confirmation",
+        "post_cost_edge_lcb"
+      ],
+      "component_weights": {
+        "data_integrity": 0.11,
+        "signal_conviction": 0.10,
+        "ensemble_consensus": 0.11,
+        "regime_alignment": 0.18,
+        "net_edge_quality": 0.16,
+        "execution_quality": 0.09,
+        "portfolio_fit": 0.09,
+        "risk_headroom": 0.08,
+        "evidence_maturity": 0.05,
+        "long_term_alignment": 0.03
+      },
+      "qualification_floor_overrides": {
+        "data_integrity": 0.74,
+        "ensemble_consensus": 0.60,
+        "regime_alignment": 0.62,
+        "execution_quality": 0.63,
+        "portfolio_fit": 0.58,
+        "risk_headroom": 0.88,
+        "evidence_maturity": 0.56,
+        "qualified_utility": 0.76,
+        "minimum_edge_cost_multiple": 1.9
+      }
+    },
+    "event_driven": {
+      "objective": "Require timestamped event lineage, fresh repricing evidence, regime agreement, and executable post-cost edge.",
+      "execution_eligible_default": true,
+      "evidence_focus": [
+        "event_timestamp_and_source",
+        "surprise_and_drift",
+        "quote_freshness",
+        "gap_and_slippage_risk"
+      ],
+      "component_weights": {
+        "data_integrity": 0.14,
+        "signal_conviction": 0.13,
+        "ensemble_consensus": 0.11,
+        "regime_alignment": 0.15,
+        "net_edge_quality": 0.17,
+        "execution_quality": 0.13,
+        "portfolio_fit": 0.06,
+        "risk_headroom": 0.07,
+        "evidence_maturity": 0.03,
+        "long_term_alignment": 0.01
+      },
+      "qualification_floor_overrides": {
+        "data_integrity": 0.82,
+        "regime_alignment": 0.58,
+        "execution_quality": 0.72,
+        "risk_headroom": 0.90,
+        "qualified_utility": 0.78,
+        "minimum_edge_cost_multiple": 2.25
+      },
+      "market_quality_overrides": {
+        "spread_ceiling_bps": 24.0,
+        "latency_ceiling_ms": 450.0
+      }
+    },
+    "commodity_inflation": {
+      "objective": "Require synchronized commodity, inflation, currency, and macro-regime evidence with realistic liquidity costs.",
+      "execution_eligible_default": true,
+      "evidence_focus": [
+        "commodity_curve",
+        "inflation_context",
+        "currency_confirmation",
+        "liquidity_and_roll_cost"
+      ],
+      "component_weights": {
+        "data_integrity": 0.11,
+        "signal_conviction": 0.11,
+        "ensemble_consensus": 0.10,
+        "regime_alignment": 0.17,
+        "net_edge_quality": 0.17,
+        "execution_quality": 0.10,
+        "portfolio_fit": 0.08,
+        "risk_headroom": 0.08,
+        "evidence_maturity": 0.05,
+        "long_term_alignment": 0.03
+      },
+      "qualification_floor_overrides": {
+        "data_integrity": 0.74,
+        "regime_alignment": 0.60,
+        "execution_quality": 0.65,
+        "risk_headroom": 0.88,
+        "qualified_utility": 0.76,
+        "minimum_edge_cost_multiple": 2.0
+      }
+    },
+    "digital_asset_basis": {
+      "objective": "Require resilient venue data, basis or directional edge, fast execution, and elevated liquidity and gap-risk headroom.",
+      "execution_eligible_default": true,
+      "evidence_focus": [
+        "cross_venue_quality",
+        "basis_and_funding",
+        "weekend_liquidity",
+        "gap_and_custody_risk"
+      ],
+      "component_weights": {
+        "data_integrity": 0.15,
+        "signal_conviction": 0.13,
+        "ensemble_consensus": 0.10,
+        "regime_alignment": 0.12,
+        "net_edge_quality": 0.17,
+        "execution_quality": 0.15,
+        "portfolio_fit": 0.05,
+        "risk_headroom": 0.09,
+        "evidence_maturity": 0.03,
+        "long_term_alignment": 0.01
+      },
+      "qualification_floor_overrides": {
+        "data_integrity": 0.82,
+        "regime_alignment": 0.55,
+        "execution_quality": 0.76,
+        "risk_headroom": 0.93,
+        "qualified_utility": 0.79,
+        "minimum_edge_cost_multiple": 2.4
+      },
+      "market_quality_overrides": {
+        "spread_ceiling_bps": 20.0,
+        "latency_ceiling_ms": 400.0
+      }
+    },
+    "tail_hedge": {
+      "objective": "Treat convex protection and short-bias trades as portfolio hedges requiring regime, portfolio, and risk justification.",
+      "execution_eligible_default": true,
+      "evidence_focus": [
+        "portfolio_hedge_need",
+        "stress_regime",
+        "convexity_cost",
+        "liquidity_under_stress"
+      ],
+      "component_weights": {
+        "data_integrity": 0.10,
+        "signal_conviction": 0.08,
+        "ensemble_consensus": 0.11,
+        "regime_alignment": 0.17,
+        "net_edge_quality": 0.13,
+        "execution_quality": 0.09,
+        "portfolio_fit": 0.13,
+        "risk_headroom": 0.12,
+        "evidence_maturity": 0.04,
+        "long_term_alignment": 0.03
+      },
+      "qualification_floor_overrides": {
+        "data_integrity": 0.72,
+        "regime_alignment": 0.62,
+        "execution_quality": 0.66,
+        "portfolio_fit": 0.68,
+        "risk_headroom": 0.94,
+        "qualified_utility": 0.77,
+        "minimum_edge_cost_multiple": 1.8
+      }
+    },
+    "structured_credit": {
+      "objective": "Evaluate structured and credit research with dependency, liquidity, counterparty, and tail-risk evidence; direct execution remains disabled by default.",
+      "execution_eligible_default": false,
+      "evidence_focus": [
+        "dependency_and_waterfall",
+        "counterparty_and_collateral",
+        "liquidity_and_marking",
+        "tail_dependency"
+      ],
+      "component_weights": {
+        "data_integrity": 0.12,
+        "signal_conviction": 0.08,
+        "ensemble_consensus": 0.12,
+        "regime_alignment": 0.14,
+        "net_edge_quality": 0.16,
+        "execution_quality": 0.10,
+        "portfolio_fit": 0.13,
+        "risk_headroom": 0.10,
+        "evidence_maturity": 0.04,
+        "long_term_alignment": 0.01
+      },
+      "qualification_floor_overrides": {
+        "data_integrity": 0.82,
+        "ensemble_consensus": 0.65,
+        "regime_alignment": 0.60,
+        "execution_quality": 0.75,
+        "portfolio_fit": 0.70,
+        "risk_headroom": 0.96,
+        "evidence_maturity": 0.70,
+        "qualified_utility": 0.82,
+        "minimum_edge_cost_multiple": 2.5
+      }
+    },
+    "research_models": {
+      "objective": "Rank model and research evidence for training and validation without order eligibility.",
+      "execution_eligible_default": false,
+      "evidence_focus": [
+        "point_in_time_lineage",
+        "out_of_sample_validation",
+        "uncertainty_calibration",
+        "model_decay"
+      ],
+      "component_weights": {
+        "data_integrity": 0.18,
+        "signal_conviction": 0.08,
+        "ensemble_consensus": 0.13,
+        "regime_alignment": 0.12,
+        "net_edge_quality": 0.10,
+        "execution_quality": 0.07,
+        "portfolio_fit": 0.07,
+        "risk_headroom": 0.10,
+        "evidence_maturity": 0.13,
+        "long_term_alignment": 0.02
+      },
+      "qualification_floor_overrides": {
+        "data_integrity": 0.85,
+        "ensemble_consensus": 0.65,
+        "evidence_maturity": 0.75,
+        "qualified_utility": 0.80,
+        "minimum_edge_cost_multiple": 2.0
+      }
+    },
+    "infrastructure_control": {
+      "objective": "Grade source, routing, runtime, and control evidence without producing a trade intent.",
+      "execution_eligible_default": false,
+      "evidence_focus": [
+        "source_integrity",
+        "runtime_health",
+        "routing_quality",
+        "control_freshness"
+      ],
+      "component_weights": {
+        "data_integrity": 0.22,
+        "signal_conviction": 0.04,
+        "ensemble_consensus": 0.12,
+        "regime_alignment": 0.08,
+        "net_edge_quality": 0.05,
+        "execution_quality": 0.16,
+        "portfolio_fit": 0.08,
+        "risk_headroom": 0.13,
+        "evidence_maturity": 0.11,
+        "long_term_alignment": 0.01
+      },
+      "qualification_floor_overrides": {
+        "data_integrity": 0.90,
+        "execution_quality": 0.80,
+        "risk_headroom": 0.96,
+        "evidence_maturity": 0.75,
+        "qualified_utility": 0.82
+      }
+    }
+  },
+  "component_weights": {
+    "data_integrity": 0.10,
+    "signal_conviction": 0.16,
+    "ensemble_consensus": 0.11,
+    "regime_alignment": 0.10,
+    "net_edge_quality": 0.17,
+    "execution_quality": 0.12,
+    "portfolio_fit": 0.09,
+    "risk_headroom": 0.07,
+    "evidence_maturity": 0.04,
+    "long_term_alignment": 0.04
+  },
+  "qualification_floors": {
+    "data_integrity": 0.65,
+    "signal_conviction": 0.12,
+    "ensemble_consensus": 0.55,
+    "execution_quality": 0.60,
+    "portfolio_fit": 0.50,
+    "risk_headroom": 0.80,
+    "evidence_maturity": 0.50,
+    "qualified_utility": 0.72,
+    "near_miss_utility": 0.55,
+    "minimum_edge_cost_multiple": 1.50
+  },
+  "market_quality": {
+    "spread_ceiling_bps": 35.0,
+    "latency_ceiling_ms": 1500.0,
+    "displayed_depth_capacity_is_not_notional_capacity": true
+  },
+  "stages": [
+    {
+      "stage_id": "01_observation",
+      "purpose": "Bind the decision to a timestamped broker, profile, lane, symbol, and snapshot."
+    },
+    {
+      "stage_id": "02_data_qualification",
+      "purpose": "Require fresh, sufficiently complete, source-attributed market and context evidence."
+    },
+    {
+      "stage_id": "03_signal_formation",
+      "purpose": "Separate a directional hypothesis from an intentional no-edge HOLD."
+    },
+    {
+      "stage_id": "04_consensus_and_regime",
+      "purpose": "Require independent ensemble agreement and compatibility with the observed regime."
+    },
+    {
+      "stage_id": "05_post_cost_edge",
+      "purpose": "Require an explicit lower-confidence-bound edge greater than modeled round-trip costs."
+    },
+    {
+      "stage_id": "06_execution_feasibility",
+      "purpose": "Evaluate spread, depth, latency, slippage, impact, and route quality."
+    },
+    {
+      "stage_id": "07_portfolio_fit",
+      "purpose": "Evaluate overlap, conflict, available budget, concentration, and long-term mandate fit."
+    },
+    {
+      "stage_id": "08_non_bypassable_risk",
+      "purpose": "Preserve broker truth, drawdown, loss, circuit, freshness, and portfolio-risk vetoes."
+    },
+    {
+      "stage_id": "09_shadow_priority",
+      "purpose": "Rank qualified and near-miss opportunities and apply a bounded cap to an already-approved paper quantity."
+    },
+    {
+      "stage_id": "10_outcome_learning",
+      "purpose": "Join later fills, costs, excursions, exits, and forward outcomes to the original evidence hash."
+    }
+  ],
+  "capital_scale_contract": {
+    "infer_max_deployable_capital": false,
+    "require_market_impact_curve": true,
+    "require_post_cost_out_of_sample_evidence": true,
+    "require_capacity_stress_evidence": true,
+    "require_drawdown_and_liquidity_evidence": true,
+    "policy": "A high decision score is not evidence that a strategy can absorb one million dollars of capital."
+  }
+}

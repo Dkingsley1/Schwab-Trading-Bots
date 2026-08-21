@@ -27,7 +27,7 @@ DEFAULT_LEDGER_DIR = Path("governance/evidence/independent_fill_records")
 DEFAULT_TRADE_LOG_DIR = Path("exports/trade_logs/independent_fills")
 DEFAULT_STATE = Path("governance/runtime/independent_fill_acquisition_state.json")
 DEFAULT_OUT = Path("governance/health/independent_fill_evidence_acquisition_latest.json")
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 INDEPENDENT_SOURCES = {
     "explicit_fill",
     "broker_paper_fill",
@@ -110,6 +110,7 @@ def _normalize(
     source_file: Path,
     line_number: int,
     cutoff: datetime | None,
+    candidate: dict[str, Any],
     now: datetime,
 ) -> tuple[dict[str, Any] | None, list[str], str]:
     metadata = row.get("metadata") if isinstance(row.get("metadata"), dict) else {}
@@ -138,6 +139,15 @@ def _normalize(
     expected_fill_price = _safe_float(row.get("expected_fill_price"))
     quantity = _safe_float(row.get("quantity", row.get("filled_quantity")))
     replay_dataset_id = _first_text(provenance.get("replay_dataset_id"), row.get("replay_dataset_id"))
+    current_candidate_id = str(candidate.get("candidate_id") or "").strip()
+    declared_candidate_id = _first_text(
+        row.get("candidate_id"),
+        row.get("production_candidate_id"),
+        metadata.get("candidate_id"),
+        metadata.get("production_candidate_id"),
+        provenance.get("candidate_id"),
+        provenance.get("production_candidate_id"),
+    )
     errors: list[str] = []
     if source in MODEL_SOURCES:
         errors.append("model_derived_source_not_independent")
@@ -161,6 +171,8 @@ def _normalize(
         errors.append("capture_timestamp_in_future")
     if cutoff is not None and timestamp is not None and timestamp < cutoff:
         errors.append("before_candidate_evidence_cutoff")
+    if declared_candidate_id and declared_candidate_id != current_candidate_id:
+        errors.append("source_candidate_id_mismatch")
     if not symbol:
         errors.append("symbol_missing")
     if action not in {"BUY", "SELL", "BUY_TO_OPEN", "BUY_TO_CLOSE", "SELL_TO_OPEN", "SELL_TO_CLOSE"}:
@@ -198,6 +210,7 @@ def _normalize(
             "source_profile": profile.strip().lower(),
             "account_mode": account_mode,
             "independent_fill_evidence": True,
+            "candidate_id": current_candidate_id,
         },
         "provenance": {
             "source_system": source_system,
@@ -205,8 +218,15 @@ def _normalize(
             "account_mode": account_mode,
             "captured_at_utc": observed_at.isoformat(),
             "replay_dataset_id": replay_dataset_id,
-            "normalizer": "independent_fill_evidence_acquisition_v1",
+            "candidate_id": current_candidate_id,
+            "candidate_generation": int(candidate.get("generation") or 0),
+            "candidate_cutoff_utc": str(candidate.get("cutoff_utc") or ""),
+            "source_declared_candidate_id": declared_candidate_id,
+            "normalizer": "independent_fill_evidence_acquisition_v2",
         },
+        "candidate_id": current_candidate_id,
+        "candidate_generation": int(candidate.get("generation") or 0),
+        "candidate_cutoff_utc": str(candidate.get("cutoff_utc") or ""),
         "evidence_identity": identity,
         "promotion_evidence_eligible": True,
     }
@@ -260,6 +280,46 @@ def _load_ledger_rows(ledger_dir: Path) -> list[dict[str, Any]]:
             rows.append(payload)
     rows.sort(key=lambda row: (str(row.get("timestamp_utc") or ""), str(row.get("evidence_identity") or "")))
     return rows
+
+
+def _record_candidate_id(row: dict[str, Any]) -> str:
+    metadata = row.get("metadata") if isinstance(row.get("metadata"), dict) else {}
+    provenance = row.get("provenance") if isinstance(row.get("provenance"), dict) else {}
+    return _first_text(
+        row.get("candidate_id"),
+        row.get("production_candidate_id"),
+        metadata.get("candidate_id"),
+        metadata.get("production_candidate_id"),
+        provenance.get("candidate_id"),
+        provenance.get("production_candidate_id"),
+    )
+
+
+def _candidate_eligible_rows(
+    rows: list[dict[str, Any]],
+    *,
+    candidate: dict[str, Any],
+    cutoff: datetime | None,
+) -> tuple[list[dict[str, Any]], int, int, int]:
+    current_candidate_id = str(candidate.get("candidate_id") or "").strip()
+    eligible: list[dict[str, Any]] = []
+    mismatched = 0
+    missing_identity = 0
+    before_cutoff = 0
+    for row in rows:
+        timestamp = parse_iso_utc(row.get("timestamp_utc"))
+        if cutoff is None or timestamp is None or timestamp < cutoff:
+            before_cutoff += 1
+            continue
+        row_candidate_id = _record_candidate_id(row)
+        if not row_candidate_id:
+            missing_identity += 1
+            continue
+        if row_candidate_id != current_candidate_id:
+            mismatched += 1
+            continue
+        eligible.append(row)
+    return eligible, mismatched, missing_identity, before_cutoff
 
 
 def _materialize_trade_logs(trade_log_dir: Path, rows: list[dict[str, Any]]) -> list[str]:
@@ -334,6 +394,7 @@ def build_payload(
             source_file=path,
             line_number=line_number,
             cutoff=cutoff,
+            candidate=candidate,
             now=current,
         )
         if cutoff is None:
@@ -394,13 +455,16 @@ def build_payload(
                 write_payload(record_path, row)
                 new_record_count += 1
         ledger_rows = _load_ledger_rows(ledger_path)
-        eligible_ledger_rows = [
-            row
-            for row in ledger_rows
-            if cutoff is not None
-            and (timestamp := parse_iso_utc(row.get("timestamp_utc"))) is not None
-            and timestamp >= cutoff
-        ]
+        (
+            eligible_ledger_rows,
+            candidate_mismatch_records,
+            candidate_identity_missing_records,
+            before_cutoff_records,
+        ) = _candidate_eligible_rows(
+            ledger_rows,
+            candidate=candidate,
+            cutoff=cutoff,
+        )
         materialized_paths = _materialize_trade_logs(trade_log_path, eligible_ledger_rows)
         next_state = {
             "schema_version": SCHEMA_VERSION,
@@ -414,13 +478,16 @@ def build_payload(
         write_payload(effective_state_path, next_state)
     else:
         ledger_rows = existing_ledger_rows
-        eligible_ledger_rows = [
-            row
-            for row in ledger_rows
-            if cutoff is not None
-            and (timestamp := parse_iso_utc(row.get("timestamp_utc"))) is not None
-            and timestamp >= cutoff
-        ]
+        (
+            eligible_ledger_rows,
+            candidate_mismatch_records,
+            candidate_identity_missing_records,
+            before_cutoff_records,
+        ) = _candidate_eligible_rows(
+            ledger_rows,
+            candidate=candidate,
+            cutoff=cutoff,
+        )
 
     total_accepted = len(ledger_rows)
     candidate_eligible = len(eligible_ledger_rows)
@@ -441,6 +508,9 @@ def build_payload(
         "new_ledger_records": new_record_count,
         "accepted_ledger_records": total_accepted,
         "candidate_eligible_ledger_records": candidate_eligible,
+        "candidate_mismatch_ledger_records": candidate_mismatch_records,
+        "candidate_identity_missing_ledger_records": candidate_identity_missing_records,
+        "before_candidate_cutoff_ledger_records": before_cutoff_records,
         "rejected_count": len(rejected),
         "conflict_count": len(conflicts),
         "source_counts": dict(sorted(source_counts.items())),
@@ -451,6 +521,9 @@ def build_payload(
             "model_derived_fills_never_accepted": True,
             "paper_or_replay_account_mode_required": True,
             "candidate_cutoff_enforced": cutoff is not None,
+            "exact_candidate_identity_required": True,
+            "legacy_unbound_records_remain_lifetime_only": True,
+            "source_declared_candidate_mismatch_rejected": True,
             "content_addressed_evidence_ledger": True,
             "source_record_id_conflicts_fail_closed": True,
             "identity_material_excludes_storage_location": True,

@@ -1324,46 +1324,112 @@ def _resolve_learned_acted_threshold(
     run_tag: str,
     family: str,
     base_threshold: float,
+    regime: str = "",
 ) -> tuple[float, Dict[str, Any]]:
     payload = _load_calibration_abstention_overrides(project_root)
     bot_overrides = payload.get("bot_overrides") if isinstance(payload.get("bot_overrides"), dict) else {}
     family_overrides = payload.get("family_overrides") if isinstance(payload.get("family_overrides"), dict) else {}
+    regime_overrides = payload.get("regime_overrides") if isinstance(payload.get("regime_overrides"), dict) else {}
     normalized_bot_id = str(run_tag or "").strip().lower()
     normalized_family = str(family or "").strip().lower()
+    normalized_regime = str(regime or "").strip().lower()
     adjusted = float(min(max(base_threshold, 0.5), 0.95))
     applied_sources: List[Dict[str, Any]] = []
+    rejected_sources: List[Dict[str, Any]] = []
+
+    schema_version = int(payload.get("schema_version", 1) or 1) if payload else 0
+    current_candidate = _safe_json_load(
+        project_root / "governance" / "runtime" / "production_candidate_state.json"
+    )
+    current_candidate_id = str(current_candidate.get("candidate_id") or "").strip()
+    binding = payload.get("candidate_binding") if isinstance(payload.get("candidate_binding"), dict) else {}
+    override_candidate_id = str(
+        binding.get("valid_candidate_id") or binding.get("candidate_id") or ""
+    ).strip()
+    if schema_version >= 2:
+        payload_applicable = bool(
+            current_candidate_id
+            and override_candidate_id == current_candidate_id
+            and bool(binding.get("valid_until_candidate_changes", False))
+        )
+        applicability_reason = (
+            "candidate_match"
+            if payload_applicable
+            else "candidate_missing_or_changed"
+        )
+    else:
+        payload_applicable = True
+        applicability_reason = "legacy_tightening_only"
+
+    def apply_row(scope: str, identity: str, row: Any) -> None:
+        nonlocal adjusted
+        if not isinstance(row, dict):
+            return
+        mode = str(row.get("mode") or "tighten").strip().lower()
+        uplift = float(row.get("acted_prob_threshold_uplift", 0.0) or 0.0)
+        row_candidate_id = str(row.get("valid_candidate_id") or "").strip()
+        rejection_reason = ""
+        if not payload_applicable:
+            rejection_reason = applicability_reason
+        elif mode != "tighten" or uplift < 0.0:
+            rejection_reason = "non_monotonic_override_rejected"
+        elif schema_version >= 2 and row_candidate_id and row_candidate_id != current_candidate_id:
+            rejection_reason = "row_candidate_changed"
+        if rejection_reason:
+            rejected_sources.append(
+                {
+                    "scope": scope,
+                    "id": identity,
+                    "reason": rejection_reason,
+                }
+            )
+            return
+        adjusted = float(min(max(adjusted + uplift, 0.5), 0.95))
+        applied_sources.append(
+            {
+                "scope": scope,
+                "id": identity,
+                "mode": "tighten",
+                "acted_prob_threshold_uplift": round(uplift, 6),
+                "candidate_id": row_candidate_id or override_candidate_id or "legacy",
+            }
+        )
 
     family_row = family_overrides.get(normalized_family)
-    if isinstance(family_row, dict):
-        uplift = float(family_row.get("acted_prob_threshold_uplift", 0.0) or 0.0)
-        adjusted = float(min(max(adjusted + uplift, 0.5), 0.95))
-        applied_sources.append(
-            {
-                "scope": "family",
-                "id": normalized_family,
-                "mode": str(family_row.get("mode") or ""),
-                "acted_prob_threshold_uplift": round(uplift, 6),
-            }
-        )
+    apply_row("family", normalized_family, family_row)
+
+    if normalized_regime:
+        regime_row: Any = None
+        nested_family = regime_overrides.get(normalized_family)
+        if isinstance(nested_family, dict) and isinstance(nested_family.get(normalized_regime), dict):
+            regime_row = nested_family.get(normalized_regime)
+        else:
+            for key in (
+                f"{normalized_family}::{normalized_regime}",
+                f"{normalized_family}:{normalized_regime}",
+                normalized_regime,
+            ):
+                if isinstance(regime_overrides.get(key), dict):
+                    regime_row = regime_overrides.get(key)
+                    break
+        apply_row("regime", f"{normalized_family}:{normalized_regime}", regime_row)
 
     bot_row = bot_overrides.get(normalized_bot_id)
-    if isinstance(bot_row, dict):
-        uplift = float(bot_row.get("acted_prob_threshold_uplift", 0.0) or 0.0)
-        adjusted = float(min(max(adjusted + uplift, 0.5), 0.95))
-        applied_sources.append(
-            {
-                "scope": "bot",
-                "id": normalized_bot_id,
-                "mode": str(bot_row.get("mode") or ""),
-                "acted_prob_threshold_uplift": round(uplift, 6),
-            }
-        )
+    apply_row("bot", normalized_bot_id, bot_row)
 
     meta = {
         "override_file": str(project_root / "governance" / "health" / "calibration_abstention_overrides_latest.json"),
         "base_threshold": round(float(base_threshold), 6),
         "adjusted_threshold": round(float(adjusted), 6),
+        "schema_version": schema_version,
+        "current_candidate_id": current_candidate_id,
+        "override_candidate_id": override_candidate_id,
+        "payload_applicable": payload_applicable,
+        "applicability_reason": applicability_reason,
+        "regime": normalized_regime,
         "applied_sources": applied_sources,
+        "rejected_sources": rejected_sources,
+        "direct_loosen_allowed": False,
     }
     return adjusted, meta
 

@@ -24,7 +24,9 @@ def test_refresh_profiles_are_bounded_and_keep_required_ordering() -> None:
         "independent_fill_acquisition",
         "paper_execution_calibration",
         "paper_performance",
+        "sleeve_strategy_specialization",
         "paper_profitability_control",
+        "quantitative_challenger_report",
         "readiness_evidence_accrual",
     ]
     assert len(dashboard) < len(refresh.default_steps())
@@ -45,6 +47,8 @@ def test_refresh_profiles_are_bounded_and_keep_required_ordering() -> None:
     assert dashboard.index("blackstart_recovery") < dashboard.index("unattended_soak_readiness")
     assert dashboard.index("notification_escalation_ladder") < dashboard.index("unattended_soak_readiness")
     assert dashboard.index("paper_execution_calibration") < dashboard.index("readiness_evidence_accrual")
+    assert dashboard.index("paper_performance") < dashboard.index("quantitative_challenger_report")
+    assert dashboard.index("paper_performance") < dashboard.index("sleeve_strategy_specialization")
     dashboard_steps = {row["name"]: row for row in refresh.profile_steps("dashboard")}
     assert set(dashboard_steps["storage_retention_unison"]["allowed_returncodes"]) == {0, 2}
 
@@ -61,8 +65,11 @@ def test_refresh_profiles_are_bounded_and_keep_required_ordering() -> None:
         "content_addressed_store",
         "production_readiness",
         "production_excellence",
+        "investor_readiness_control",
         "system_drift_guard",
         "master_infrastructure_supervisor",
+        "quantitative_challenger_report",
+        "institutional_capability_control",
     }
     assert required_pillar_owners.issubset(set(production))
     assert production.index("memory_pressure_intelligence") < production.index("autonomic_resource_governor")
@@ -94,6 +101,15 @@ def test_refresh_profiles_are_bounded_and_keep_required_ordering() -> None:
     ]
     assert "--apply" in production_steps["storage_disaster_recovery"]["args"]
     assert set(production_steps["live_canary_control"]["allowed_returncodes"]) == {0, 2}
+    assert production_steps["investor_readiness_control"]["args"] == ["--json"]
+    assert set(production_steps["investor_readiness_control"]["allowed_returncodes"]) == {0, 2}
+    assert set(production_steps["investor_readiness_control"]["depends_on"]) == {
+        "production_excellence",
+        "profitability_evidence_firewall",
+        "profitability_independent_validator",
+        "portfolio_allocator_service",
+        "live_canary_control",
+    }
     assert production_steps["livefeed_refresh_guard"]["args"] == ["--apply", "--json"]
     assert production_steps["livefeed_refresh_guard"]["max_age_minutes"] == 15.0
     assert production_steps["stateful_storage_regression_guard"]["args"] == ["--apply", "--json"]
@@ -129,6 +145,24 @@ def test_refresh_profiles_are_bounded_and_keep_required_ordering() -> None:
     assert production.index("system_architecture_contract_graph_settled") < production.index(
         "system_architecture_autopilot_settled"
     )
+    assert production.index("production_excellence") < production.index("investor_readiness_control")
+    assert production.index("coherent_training_profitability_refresh") < production.index(
+        "quantitative_challenger_report"
+    )
+    assert production.index("quantitative_challenger_report") < production.index(
+        "institutional_capability_control"
+    )
+    assert set(production_steps["institutional_capability_control"]["depends_on"]) == {
+        "autonomic_resource_governor",
+        "source_verification",
+        "collector_capability_control",
+        "independent_fill_acquisition",
+        "paper_execution_calibration",
+        "sleeve_strategy_specialization",
+        "multiple_testing_guard",
+        "quantitative_challenger_report",
+        "risk_service_boundary",
+    }
 
 
 def test_accrual_collectors_are_bounded_and_evidence_only() -> None:

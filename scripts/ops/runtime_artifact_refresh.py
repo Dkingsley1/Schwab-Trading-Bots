@@ -49,6 +49,7 @@ REFRESH_SCOPE_ROOTS: dict[str, tuple[str, ...]] = {
         "profitability_hardening_control",
         "market_replay_fill_capture_verified",
         "profitability_evidence_firewall",
+        "profitability_self_assessment",
         "bot_profitability_scalability_control",
         "artifact_freshness_slo_post_master",
     ),
@@ -61,6 +62,7 @@ REFRESH_SCOPE_ROOTS: dict[str, tuple[str, ...]] = {
         "profitability_hardening_control",
         "market_replay_fill_capture_verified",
         "profitability_evidence_firewall",
+        "profitability_self_assessment",
         "bot_profitability_scalability_control",
         "artifact_freshness_slo_post_master",
     ),
@@ -547,6 +549,20 @@ def _step_specs(project_root: Path) -> list[dict[str, Any]]:
             "payload_path": health_root / "bot_organization_latest.json",
             "cmd": [str(PY), str(ops_root / "bot_organization_control.py"), "--json"],
             "timeout_sec": 120,
+        },
+        {
+            "name": "tradingeconomics_route_context_refresh",
+            "payload_path": health_root / "tradingeconomics_guest_sync_latest.json",
+            "cmd": [str(ops_root / "opsctl.sh"), "tradingeconomics-sync", "--json"],
+            "timeout_sec": 120,
+            "optional": True,
+        },
+        {
+            "name": "options_flow_route_context_refresh",
+            "payload_path": health_root / "options_flow_context_sync_latest.json",
+            "cmd": [str(ops_root / "opsctl.sh"), "options-flow-sync", "--json"],
+            "timeout_sec": 120,
+            "optional": True,
         },
         {
             "name": "collector_contracts",
@@ -1066,6 +1082,13 @@ def _step_specs(project_root: Path) -> list[dict[str, Any]]:
             "depends_on": ["training_quality_control_verified", "training_label_audit_verified"],
         },
         {
+            "name": "calibration_abstention_control_verified",
+            "payload_path": health_root / "calibration_abstention_control_latest.json",
+            "cmd": [str(PY), str(ops_root / "calibration_abstention_control.py"), "--json"],
+            "timeout_sec": 180,
+            "depends_on": ["training_quality_control_verified", "bot_needs_intelligence_verified"],
+        },
+        {
             "name": "retrain_schema_compatibility_verified",
             "payload_path": health_root / "retrain_schema_compatibility_latest.json",
             "cmd": [str(PY), str(project_root / "scripts" / "retrain_schema_compatibility_guard.py"), "--json"],
@@ -1533,11 +1556,32 @@ def _step_specs(project_root: Path) -> list[dict[str, Any]]:
             ],
         },
         {
+            "name": "sleeve_ingestion_production_control_terminal",
+            "payload_path": health_root
+            / "sleeve_ingestion_production_control_latest.json",
+            "cmd": [
+                str(PY),
+                str(ops_root / "sleeve_ingestion_production_control.py"),
+                "--apply",
+                "--json",
+            ],
+            "timeout_sec": 120,
+            "depends_on": [
+                "collector_capability_control",
+                "data_collection_observation_rollup_terminal",
+                "health_fast_terminal",
+                "ingestion_storage_control_terminal",
+            ],
+        },
+        {
             "name": "unattended_soak_readiness_terminal",
             "payload_path": health_root / "unattended_soak_readiness_latest.json",
             "cmd": [str(PY), str(ops_root / "unattended_soak_readiness.py"), "--json"],
             "timeout_sec": 60,
-            "depends_on": ["health_fast_terminal"],
+            "depends_on": [
+                "health_fast_terminal",
+                "sleeve_ingestion_production_control_terminal",
+            ],
         },
         {
             "name": "grade_regression_guard_cell_pre",
@@ -2282,6 +2326,34 @@ def _step_specs(project_root: Path) -> list[dict[str, Any]]:
             "depends_on": ["paper_execution_calibration_verified"],
         },
         {
+            "name": "sleeve_strategy_specialization_verified",
+            "payload_path": project_root
+            / "governance"
+            / "research"
+            / "sleeve_strategy_specialization_latest.json",
+            "cmd": [
+                str(PY),
+                str(project_root / "scripts" / "sleeve_strategy_specialization_report.py"),
+                "--json",
+            ],
+            "timeout_sec": 180,
+            "depends_on": ["paper_performance_verified"],
+        },
+        {
+            "name": "quantitative_challenger_verified",
+            "payload_path": project_root
+            / "governance"
+            / "research"
+            / "quantitative_challenger_latest.json",
+            "cmd": [
+                str(PY),
+                str(project_root / "scripts" / "quantitative_challenger_report.py"),
+                "--json",
+            ],
+            "timeout_sec": 180,
+            "depends_on": ["paper_performance_verified"],
+        },
+        {
             "name": "paper_profitability_control_verified",
             "payload_path": health_root / "paper_profitability_control_latest.json",
             "additional_payload_paths": [health_root / "paper_runtime_profitability_controls_latest.json"],
@@ -2302,6 +2374,51 @@ def _step_specs(project_root: Path) -> list[dict[str, Any]]:
             "cmd": [str(PY), str(project_root / "scripts" / "multiple_testing_guard.py"), "--json"],
             "timeout_sec": 180,
             "depends_on": ["counterfactual_replay_verified"],
+        },
+        {
+            "name": "institutional_capability_control",
+            "payload_path": health_root
+            / "institutional_capability_control_latest.json",
+            "cmd": [
+                str(PY),
+                str(ops_root / "institutional_capability_control.py"),
+                "--json",
+            ],
+            "timeout_sec": 180,
+            "depends_on": [
+                "source_verification_verified",
+                "collector_capability_control",
+                "independent_fill_evidence_acquisition_verified",
+                "paper_execution_calibration_verified",
+                "sleeve_strategy_specialization_verified",
+                "quantitative_challenger_verified",
+                "multiple_testing_guard_verified",
+                "system_role_contract",
+                "control_surface_ownership",
+                "live_order_ledger_control",
+                "risk_service_boundary",
+            ],
+        },
+        {
+            "name": "authoritative_systems_control",
+            "payload_path": health_root
+            / "authoritative_systems_control_latest.json",
+            "cmd": [
+                str(PY),
+                str(ops_root / "authoritative_systems_control.py"),
+                "--json",
+            ],
+            "timeout_sec": 60,
+        },
+        {
+            "name": "paper_live_equivalence",
+            "payload_path": health_root / "paper_live_equivalence_latest.json",
+            "cmd": [
+                str(PY),
+                str(project_root / "scripts" / "paper_live_equivalence_report.py"),
+                "--json",
+            ],
+            "timeout_sec": 60,
         },
         {
             "name": "decay_monitor_verified",
@@ -2515,12 +2632,36 @@ def _step_specs(project_root: Path) -> list[dict[str, Any]]:
             "timeout_sec": 180,
         },
         {
+            "name": "profitability_self_assessment",
+            "payload_path": health_root / "profitability_self_assessment_latest.json",
+            "additional_payload_paths": [
+                project_root
+                / "exports"
+                / "reports"
+                / "operator"
+                / "profitability_self_assessment_latest.md"
+            ],
+            "cmd": [str(PY), str(ops_root / "profitability_self_assessment.py"), "--json"],
+            "timeout_sec": 180,
+            "depends_on": [
+                "calibration_abstention_control_verified",
+                "paper_execution_calibration_verified",
+                "paper_performance_verified",
+                "paper_profitability_control_verified",
+                "counterfactual_replay_verified",
+                "profitability_evidence_firewall",
+                "live_money_readiness_contract_verified",
+                "risk_service_boundary",
+            ],
+        },
+        {
             "name": "production_resilience_control",
             "payload_path": health_root / "production_resilience_control_latest.json",
             "cmd": [str(PY), str(ops_root / "production_resilience_control.py"), "--json"],
             "timeout_sec": 60,
             "depends_on": [
                 "profitability_evidence_firewall",
+                "profitability_self_assessment",
                 "storage_disaster_recovery_verified",
                 "live_money_readiness_contract_verified",
             ],
@@ -2548,6 +2689,7 @@ def _step_specs(project_root: Path) -> list[dict[str, Any]]:
             "payload_path": health_root / "system_self_model_latest.json",
             "cmd": [str(ops_root / "opsctl.sh"), "big-platform-brain", "--json"],
             "timeout_sec": 180,
+            "depends_on": ["profitability_self_assessment"],
         },
         {
             "name": "master_infrastructure_supervisor_post_evidence_verified",

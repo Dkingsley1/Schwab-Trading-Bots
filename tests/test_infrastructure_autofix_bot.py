@@ -7,7 +7,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from scripts.ops import infrastructure_autofix_bot as src
+from scripts.ops import infrastructure_autofix_bot as src  # noqa: E402
 
 
 READY_STAMP = "2099-04-23T20:00:00+00:00"
@@ -75,6 +75,31 @@ def _install_isolated_loaders(
 
     monkeypatch.setattr(src, "_load_freshest_json_with_path", fake_load)
     monkeypatch.setattr(src, "_run_json", fake_run_json)
+
+
+def test_infrastructure_autofix_uses_declared_collector_owner_command(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    contract = {
+        "name": "crypto_market_context",
+        "owner_command": ["./scripts/ops/opsctl.sh", "crypto-market-sync", "--json"],
+    }
+
+    command = src._owned_collector_refresh_command(project_root, contract)
+
+    assert command == [
+        str(project_root / "scripts" / "ops" / "opsctl.sh"),
+        "crypto-market-sync",
+        "--json",
+    ]
+
+
+def test_infrastructure_autofix_rejects_live_collector_owner_command(tmp_path: Path) -> None:
+    contract = {
+        "name": "unsafe",
+        "owner_command": ["./scripts/ops/opsctl.sh", "start-live", "--live"],
+    }
+
+    assert src._owned_collector_refresh_command(tmp_path, contract) == []
 
 
 def test_infrastructure_autofix_refreshes_health_gates_before_rechecking_halt_control(tmp_path: Path, monkeypatch) -> None:

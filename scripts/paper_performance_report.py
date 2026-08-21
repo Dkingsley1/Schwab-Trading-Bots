@@ -547,10 +547,23 @@ def _profile_of(row: dict[str, Any]) -> str:
 
 
 def _strategy_of(row: dict[str, Any]) -> str:
-    text = str(row.get("strategy") or "").strip()
+    meta = row.get("metadata")
+    if isinstance(meta, dict):
+        specialization = meta.get("strategy_specialization")
+        if isinstance(specialization, dict):
+            contract_text = str(
+                specialization.get("selected_strategy_id") or ""
+            ).strip()
+            if contract_text:
+                return contract_text
+        contract = meta.get("strategy_contract")
+        if isinstance(contract, dict):
+            contract_text = str(contract.get("strategy_id") or "").strip()
+            if contract_text:
+                return contract_text
+    text = str(row.get("paper_strategy") or row.get("strategy") or "").strip()
     if text:
         return text
-    meta = row.get("metadata")
     if isinstance(meta, dict):
         meta_text = str(meta.get("strategy_id") or meta.get("bot_id") or "").strip()
         if meta_text:
@@ -1031,6 +1044,203 @@ def _post_cost_flow_view(rows: Iterable[dict[str, Any]], *, scope: str) -> dict[
     }
 
 
+def _candidate_post_cost_daily_series(
+    rows: Iterable[dict[str, Any]],
+) -> dict[str, list[dict[str, Any]]]:
+    buckets: dict[str, dict[str, dict[str, Any]]] = {}
+    for row in rows:
+        if not isinstance(row, dict) or _pnl_schema_version(row) < 2:
+            continue
+        timestamp = _parse_ts(row.get("timestamp_utc"))
+        if timestamp is None:
+            continue
+        profile = _profile_of(row)
+        day = _day_key(timestamp)
+        profile_rows = buckets.setdefault(profile, {})
+        bucket = profile_rows.setdefault(
+            day,
+            {
+                "day_utc": day,
+                "sample_count": 0,
+                "post_cost_pnl_delta_total": 0.0,
+                "post_cost_return_bps_total": 0.0,
+                "symbols": set(),
+                "strategies": set(),
+            },
+        )
+        bucket["sample_count"] += 1
+        bucket["post_cost_pnl_delta_total"] += _safe_float(
+            row.get("post_cost_pnl_delta"),
+            0.0,
+        )
+        bucket["post_cost_return_bps_total"] += _safe_float(
+            row.get("post_cost_return_bps"),
+            0.0,
+        )
+        symbol = str(row.get("symbol") or "").strip().upper()
+        strategy = _strategy_of(row)
+        if symbol:
+            bucket["symbols"].add(symbol)
+        if strategy:
+            bucket["strategies"].add(strategy)
+
+    result: dict[str, list[dict[str, Any]]] = {}
+    for profile, by_day in sorted(buckets.items()):
+        result[profile] = []
+        for day, bucket in sorted(by_day.items()):
+            sample_count = max(int(bucket.get("sample_count", 0) or 0), 1)
+            result[profile].append(
+                {
+                    "day_utc": day,
+                    "sample_count": sample_count,
+                    "post_cost_pnl_delta_total": round(
+                        float(bucket.get("post_cost_pnl_delta_total", 0.0) or 0.0),
+                        8,
+                    ),
+                    "post_cost_return_bps_total": round(
+                        float(bucket.get("post_cost_return_bps_total", 0.0) or 0.0),
+                        8,
+                    ),
+                    "mean_post_cost_return_bps": round(
+                        float(bucket.get("post_cost_return_bps_total", 0.0) or 0.0)
+                        / sample_count,
+                        8,
+                    ),
+                    "unique_symbol_count": len(bucket.get("symbols") or set()),
+                    "unique_strategy_count": len(bucket.get("strategies") or set()),
+                }
+            )
+    return result
+
+
+def _candidate_strategy_post_cost_daily_series(
+    rows: Iterable[dict[str, Any]],
+) -> dict[str, list[dict[str, Any]]]:
+    buckets: dict[str, dict[str, dict[str, Any]]] = {}
+    for row in rows:
+        if not isinstance(row, dict) or _pnl_schema_version(row) < 2:
+            continue
+        timestamp = _parse_ts(row.get("timestamp_utc"))
+        if timestamp is None:
+            continue
+        strategy = _strategy_of(row)
+        day = _day_key(timestamp)
+        strategy_rows = buckets.setdefault(strategy, {})
+        bucket = strategy_rows.setdefault(
+            day,
+            {
+                "day_utc": day,
+                "sample_count": 0,
+                "post_cost_pnl_delta_total": 0.0,
+                "post_cost_return_bps_total": 0.0,
+                "profiles": set(),
+                "symbols": set(),
+            },
+        )
+        bucket["sample_count"] += 1
+        bucket["post_cost_pnl_delta_total"] += _safe_float(
+            row.get("post_cost_pnl_delta"), 0.0
+        )
+        bucket["post_cost_return_bps_total"] += _safe_float(
+            row.get("post_cost_return_bps"), 0.0
+        )
+        bucket["profiles"].add(_profile_of(row))
+        symbol = str(row.get("symbol") or "").strip().upper()
+        if symbol:
+            bucket["symbols"].add(symbol)
+
+    result: dict[str, list[dict[str, Any]]] = {}
+    for strategy, by_day in sorted(buckets.items()):
+        result[strategy] = []
+        for day, bucket in sorted(by_day.items()):
+            sample_count = max(int(bucket.get("sample_count", 0) or 0), 1)
+            result[strategy].append(
+                {
+                    "day_utc": day,
+                    "sample_count": sample_count,
+                    "post_cost_pnl_delta_total": round(
+                        float(bucket.get("post_cost_pnl_delta_total", 0.0) or 0.0), 8
+                    ),
+                    "post_cost_return_bps_total": round(
+                        float(bucket.get("post_cost_return_bps_total", 0.0) or 0.0), 8
+                    ),
+                    "mean_post_cost_return_bps": round(
+                        float(bucket.get("post_cost_return_bps_total", 0.0) or 0.0)
+                        / sample_count,
+                        8,
+                    ),
+                    "profiles": sorted(bucket.get("profiles") or set()),
+                    "unique_symbol_count": len(bucket.get("symbols") or set()),
+                }
+            )
+    return result
+
+
+def _strategy_specialization_metadata(row: dict[str, Any]) -> dict[str, Any]:
+    metadata = row.get("metadata")
+    if not isinstance(metadata, dict):
+        return {}
+    value = metadata.get("strategy_specialization")
+    return dict(value) if isinstance(value, dict) else {}
+
+
+def _strategy_post_cost_latest(rows: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
+    grouped: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for row in rows:
+        if isinstance(row, dict) and _pnl_schema_version(row) >= 2:
+            grouped[_strategy_of(row)].append(row)
+    output: list[dict[str, Any]] = []
+    for strategy_id, strategy_rows in sorted(grouped.items()):
+        latest = max(
+            strategy_rows,
+            key=lambda row: _parse_ts(row.get("timestamp_utc")) or datetime.min.replace(tzinfo=timezone.utc),
+        )
+        specialization = _strategy_specialization_metadata(latest)
+        timestamps = [
+            timestamp
+            for timestamp in (_parse_ts(row.get("timestamp_utc")) for row in strategy_rows)
+            if timestamp is not None
+        ]
+        output.append(
+            {
+                "strategy_id": strategy_id,
+                "strategy_name": str(
+                    specialization.get("selected_strategy_name") or strategy_id
+                ),
+                "profile": _profile_of(latest),
+                "source_kind": str(specialization.get("source_kind") or "legacy"),
+                "objective_class": str(
+                    specialization.get("objective_class") or "unclassified"
+                ),
+                "contract_complete": bool(
+                    specialization.get("contract_complete", False)
+                ),
+                "contract_receipt_sha256": str(
+                    specialization.get("contract_receipt_sha256") or ""
+                ),
+                "regime_assessment": dict(
+                    specialization.get("regime_assessment")
+                    if isinstance(specialization.get("regime_assessment"), dict)
+                    else {}
+                ),
+                "sample_count": len(strategy_rows),
+                "independent_day_count": len({_day_key(value) for value in timestamps}),
+                "independent_symbol_count": len(
+                    {
+                        str(row.get("symbol") or "").strip().upper()
+                        for row in strategy_rows
+                        if str(row.get("symbol") or "").strip()
+                    }
+                ),
+                "first_observation_utc": min(timestamps).isoformat() if timestamps else "",
+                "last_observation_utc": max(timestamps).isoformat() if timestamps else "",
+                "post_cost_expectancy": _post_cost_expectancy(strategy_rows),
+                "authority": "evidence_only_no_decision_sizing_promotion_or_live_authority",
+            }
+        )
+    return output
+
+
 def _post_cost_expectancy(
     rows: Iterable[dict[str, Any]],
     *,
@@ -1065,6 +1275,13 @@ def _post_cost_expectancy(
             "promotion_evidence_sufficient": False,
             "positive_clustered_lower_confidence_bound_95": False,
             "promotion_blockers": ["no_post_cost_observations"],
+            "payoff_asymmetry": {
+                "available": False,
+                "positive_sample_count": 0,
+                "negative_sample_count": 0,
+                "average_win_to_average_loss_ratio": None,
+                "profit_factor": None,
+            },
         }
 
     pnl_values = [item[0] for item in samples]
@@ -1134,6 +1351,50 @@ def _post_cost_expectancy(
         "last_sample_timestamp_utc": max(timestamps).isoformat().replace("+00:00", "Z") if timestamps else "",
         "positive_sample_count": int(sum(1 for value in pnl_values if value > 0.0)),
         "positive_sample_rate": round(float(sum(1 for value in pnl_values if value > 0.0) / sample_count), 6),
+        "payoff_asymmetry": {
+            "available": bool(
+                any(value > 0.0 for value in pnl_values)
+                and any(value < 0.0 for value in pnl_values)
+            ),
+            "positive_sample_count": int(
+                sum(1 for value in pnl_values if value > 0.0)
+            ),
+            "negative_sample_count": int(
+                sum(1 for value in pnl_values if value < 0.0)
+            ),
+            "average_positive_post_cost_pnl_delta": round(
+                _mean([value for value in pnl_values if value > 0.0]),
+                8,
+            )
+            if any(value > 0.0 for value in pnl_values)
+            else None,
+            "average_negative_post_cost_pnl_delta_abs": round(
+                abs(_mean([value for value in pnl_values if value < 0.0])),
+                8,
+            )
+            if any(value < 0.0 for value in pnl_values)
+            else None,
+            "average_win_to_average_loss_ratio": round(
+                _mean([value for value in pnl_values if value > 0.0])
+                / max(
+                    abs(_mean([value for value in pnl_values if value < 0.0])),
+                    1e-12,
+                ),
+                8,
+            )
+            if any(value > 0.0 for value in pnl_values)
+            and any(value < 0.0 for value in pnl_values)
+            else None,
+            "profit_factor": round(
+                sum(value for value in pnl_values if value > 0.0)
+                / max(abs(sum(value for value in pnl_values if value < 0.0)), 1e-12),
+                8,
+            )
+            if any(value > 0.0 for value in pnl_values)
+            and any(value < 0.0 for value in pnl_values)
+            else None,
+            "policy": "payoff asymmetry is measured only from candidate-bound post-cost wins and losses; independent-sample sufficiency remains a separate live gate",
+        },
         "total_post_cost_pnl_delta": round(float(sum(pnl_values)), 6),
         "mean_post_cost_pnl_delta": round(float(mean_pnl), 6),
         "standard_error_post_cost_pnl_delta": round(float(pnl_se), 6),
@@ -1854,6 +2115,13 @@ def build_paper_performance_report(project_root: Path, *, day: str, week_days: i
         "day": day_summary,
         "week": week_summary,
         "post_cost_expectancy": _post_cost_expectancy(all_post_cost_rows),
+        "candidate_post_cost_daily_series": _candidate_post_cost_daily_series(
+            all_post_cost_rows
+        ),
+        "candidate_strategy_post_cost_daily_series": (
+            _candidate_strategy_post_cost_daily_series(all_post_cost_rows)
+        ),
+        "strategy_latest": _strategy_post_cost_latest(all_post_cost_rows),
         "accounting_views": {
             "lifetime_flow": _post_cost_flow_view(
                 lifetime_post_cost_rows,

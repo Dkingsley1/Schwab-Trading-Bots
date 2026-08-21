@@ -61,6 +61,41 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
     history_daily = paper.get("history_daily_series") if isinstance(paper.get("history_daily_series"), list) else []
     period_change = paper.get("period_change_series") if isinstance(paper.get("period_change_series"), list) else []
     sleeve_daily = paper.get("sleeve_daily_series") if isinstance(paper.get("sleeve_daily_series"), dict) else {}
+    candidate_daily = (
+        paper.get("candidate_post_cost_daily_series")
+        if isinstance(paper.get("candidate_post_cost_daily_series"), dict)
+        else {}
+    )
+    evidence_window = (
+        paper.get("profitability_evidence_window")
+        if isinstance(paper.get("profitability_evidence_window"), dict)
+        else {}
+    )
+    candidate_id = str(evidence_window.get("candidate_id") or "").strip()
+    candidate_binding_required = bool(
+        evidence_window.get("candidate_binding_required", False)
+    )
+    candidate_binding_mismatches = max(
+        _safe_int(
+            evidence_window.get("candidate_binding_mismatch_rows_excluded"),
+            0,
+        ),
+        0,
+    )
+    candidate_bound = bool(
+        not candidate_binding_required
+        or (
+            candidate_id
+            and evidence_window.get("candidate_filter_active", False)
+            and candidate_binding_mismatches == 0
+        )
+    )
+    decay_daily = candidate_daily if candidate_binding_required else sleeve_daily
+    decay_value_key = (
+        "post_cost_pnl_delta_total"
+        if candidate_binding_required
+        else "change_vs_previous_day"
+    )
 
     weak_sleeves: list[dict[str, Any]] = []
     active_sleeves = 0
@@ -130,11 +165,23 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
     insufficient_profiles: list[str] = []
     decayed_profiles: list[str] = []
     uncontained_profiles: list[str] = []
-    for profile, rows in sleeve_daily.items():
+    known_profiles = {
+        str(row.get("profile") or "").strip().lower()
+        for row in sleeve_latest
+        if isinstance(row, dict) and str(row.get("profile") or "").strip()
+    }
+    known_profiles.update(
+        str(profile or "").strip().lower()
+        for profile in decay_daily
+        if str(profile or "").strip()
+    )
+    for profile in sorted(known_profiles):
+        rows = decay_daily.get(profile) if isinstance(decay_daily, dict) else []
         if not isinstance(rows, list):
+            insufficient_profiles.append(str(profile))
             continue
         values = [
-            _safe_float(row.get("change_vs_previous_day"), 0.0)
+            _safe_float(row.get(decay_value_key), 0.0)
             for row in rows
             if isinstance(row, dict)
         ]
@@ -176,7 +223,9 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
                 "automatic_action": "collect_only_or_reduce_only" if decayed else "retain_current_guarded_posture",
             }
         )
-    edge_evidence_ready = bool(sleeve_daily and not insufficient_profiles and edge_rows)
+    edge_evidence_ready = bool(
+        candidate_bound and decay_daily and not insufficient_profiles and edge_rows
+    )
     automatic_demotion_ready = bool(profitability_control and not uncontained_profiles)
     edge_decay_contract = {
         "implementation_ready": bool(decay_policy),
@@ -188,6 +237,11 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
         "uncontained_decayed_profiles": sorted(uncontained_profiles),
         "profiles": sorted(edge_rows, key=lambda row: str(row.get("profile") or "")),
         "thresholds": decay_policy,
+        "evidence_scope": (
+            "candidate_forward_profile_daily_post_cost_pnl"
+            if candidate_binding_required
+            else "legacy_lifetime_sleeve_daily_pnl"
+        ),
         "policy": "edge decay automatically requires collect-only or reduce-only containment before promotion can remain eligible",
     }
 
@@ -200,10 +254,36 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
 
     payload = {
         "timestamp_utc": now.isoformat(),
-        "schema_version": 1,
+        "schema_version": 2,
         "ok": ok,
         "overall_status": overall_status,
-        "history_days_available": len(history_daily),
+        "history_days_available": (
+            max(
+                (
+                    len(rows)
+                    for rows in decay_daily.values()
+                    if isinstance(rows, list)
+                ),
+                default=0,
+            )
+            if candidate_binding_required
+            else len(history_daily)
+        ),
+        "candidate_binding": {
+            "candidate_id": candidate_id,
+            "generation": _safe_int(
+                evidence_window.get("candidate_generation"),
+                0,
+            ),
+            "cutoff_utc": str(evidence_window.get("candidate_cutoff_utc") or ""),
+            "evidence_through_utc": str(
+                evidence_window.get("evidence_through_utc") or ""
+            ),
+            "required": candidate_binding_required,
+            "bound": candidate_bound,
+            "mismatch_rows_excluded": candidate_binding_mismatches,
+            "series_scope": edge_decay_contract["evidence_scope"],
+        },
         "active_sleeves": active_sleeves,
         "weak_sleeve_count": len(weak_sleeves),
         "weak_sleeves": weak_sleeves[:10],

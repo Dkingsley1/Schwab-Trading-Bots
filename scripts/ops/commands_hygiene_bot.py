@@ -1250,6 +1250,72 @@ def _commands_inventory(project_root: Path) -> list[dict[str, Any]]:
             ),
             _command_entry(
                 project_root,
+                "Review institutional capability and evidence gaps",
+                ["./scripts/ops/opsctl.sh institutional-capability-control --json"],
+                notes=[
+                    "Separates six implementation, guarded-paper, candidate-evidence, entitlement, and live-promotion states without treating source count as alpha.",
+                    "The target is a compact set of authoritative provider families and shared derived features, not 10,000 feeds; subscriptions, independent fills, attestations, and live release remain external or human actions.",
+                ],
+            ),
+            _command_entry(
+                project_root,
+                "Validate the 20 authoritative production references and eight controls",
+                ["./scripts/ops/opsctl.sh authoritative-systems --json"],
+                notes=[
+                    "Runs broker conformance, order-state invariants, point-in-time validity, event-time watermarks, causal attribution, paper/live equivalence, execution fault scenarios, and trace-chain checks.",
+                    "The A+ grade is limited to local structural implementation; it is not profitability evidence and grants no live execution authority.",
+                ],
+            ),
+            _command_entry(
+                project_root,
+                "Compare paper and live-shadow intent semantics",
+                ["./scripts/ops/opsctl.sh paper-live-equivalence --json"],
+                notes=[
+                    "Requires action, quantity, strategy, candidate, asset, risk, and order intent to match while permitting broker-specific fills, fees, latency, and venue state to differ.",
+                ],
+            ),
+            _command_entry(
+                project_root,
+                "Review candidate-bound quantitative challengers",
+                ["./scripts/ops/opsctl.sh quantitative-challengers --json"],
+                notes=[
+                    "Evaluates eight deterministic, candidate-forward research methods without changing actions, sizing, allocation, labels, promotion, or live execution.",
+                    "Collecting or unsupported results remain visible and never borrow lifetime or pre-candidate performance.",
+                ],
+            ),
+            _command_entry(
+                project_root,
+                "Review sleeve strategy contracts and lifecycle evidence",
+                ["./scripts/ops/opsctl.sh sleeve-strategy-specialization --json"],
+                notes=[
+                    "Materializes complete objective-aware contracts for every active runtime and collection strategy, then joins only candidate-bound post-cost evidence.",
+                    "Broad master decisions stay attributed to an ensemble identity; hedge, cash, and control sleeves use portfolio-appropriate objectives and the report has no action, sizing, allocation, promotion, or live-order authority.",
+                ],
+            ),
+            _command_entry(
+                project_root,
+                "Search the 12,000-strategy sleeve library and scorecards",
+                [
+                    "./scripts/ops/opsctl.sh strategy-library --sleeve crypto_spot --regime-relevance aligned --limit 40"
+                ],
+                notes=[
+                    "Refreshes the deterministic library, then shows hot or cold tier, current-regime relevance, evidence maturity, and honest quality verdicts.",
+                    "Use `--good`, `--bad`, `--verdict NAME`, `--tier cold_research`, or `--json`; unknown evidence is never mislabeled bad and the query has no execution authority.",
+                ],
+            ),
+            _command_entry(
+                project_root,
+                "Browse the consolidated strategy-family catalog",
+                [
+                    "./scripts/ops/opsctl.sh strategy-families --sleeve crypto_spot --objective digital_asset_alpha --limit 40"
+                ],
+                notes=[
+                    "Presents all 12,000 preserved identities as 1,989 canonical records: 879 native hot identities plus 11,121 cold child receipts under 1,110 parent families.",
+                    "Every cold child keeps separate evidence and lineage; the catalog cannot alter runtime IDs, activate a strategy, pool evidence, promote a candidate, or submit an order.",
+                ],
+            ),
+            _command_entry(
+                project_root,
                 "Review the locked profitability holdout vault",
                 ["./scripts/ops/opsctl.sh profitability-holdout-vault --json"],
                 notes=[
@@ -1270,6 +1336,23 @@ def _commands_inventory(project_root: Path) -> list[dict[str, Any]]:
                 ["./scripts/ops/opsctl.sh profitability-evidence-firewall --json"],
                 notes=[
                     "Keeps structural control grades separate from candidate-bound economic proof and blocks promotion until every baseline and future-profitability hardener has current evidence.",
+                ],
+            ),
+            _command_entry(
+                project_root,
+                "Ask the system what profitability needs next",
+                ["./scripts/ops/opsctl.sh profitability-self-assessment --json"],
+                notes=[
+                    "Publishes one candidate-bound truth packet for confidence, sleeve/regime thresholds, income-sleeve acceptance, tradeability/conflict, exits, fills, sizing, and allocation.",
+                    "Historical paper debt remains visible but cannot grade the current candidate or authorize live execution.",
+                ],
+            ),
+            _command_entry(
+                project_root,
+                "Replay decision thresholds and exit choices",
+                ["./scripts/ops/opsctl.sh counterfactual-replay --json"],
+                notes=[
+                    "Tests threshold, tradeability, conflict, and exit alternatives before any future loosening or size increase.",
                 ],
             ),
         ),
@@ -1680,6 +1763,15 @@ def _commands_inventory(project_root: Path) -> list[dict[str, Any]]:
                 notes=[
                     "Reports the frozen candidate, clean soak, recovery drills, live execution, independent fills, promotion candidates, profitability, canary, grading integrity, and institutional evidence as ten fail-closed pillars.",
                     "Evidence debt is visible but does not interrupt healthy paper collection; live order submission stays locked until all ten pillars are ready.",
+                ],
+            ),
+            _command_entry(
+                project_root,
+                "Build the twenty-control investor readiness packet",
+                ["./scripts/ops/opsctl.sh investor-readiness --json"],
+                notes=[
+                    "Separates implemented controls, candidate and live evidence, and real external attestations without publishing a blended readiness percentage.",
+                    "Generates a clearly labeled paper tear sheet and data-room index. It cannot select an allocation, self-issue an audit, scale the canary, or grant live-order authority.",
                 ],
             ),
             _command_entry(

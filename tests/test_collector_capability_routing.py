@@ -3,8 +3,14 @@ from copy import deepcopy
 from datetime import datetime, timezone
 from pathlib import Path
 
-from core.collector_capability_routing import build_capability_routing, validate_catalog
+from core.collector_capability_routing import (
+    build_capability_routing,
+    resolve_runtime_ingestion_route,
+    validate_catalog,
+)
+from scripts.collector_contracts import COLLECTOR_SPECS
 from scripts.ops.collector_capability_control import build_payload
+from scripts.run_all_sleeves import SPECIALIZED_SLEEVE_PROFILES
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -116,6 +122,31 @@ def test_repository_catalog_is_complete_and_execution_free() -> None:
     assert set(catalog["safety_contract"].values()) == {False}
 
 
+def test_route_context_collectors_publish_owned_repair_commands() -> None:
+    contracts = {str(row.get("name") or ""): row for row in COLLECTOR_SPECS}
+
+    assert contracts["tradingeconomics_guest"]["owner_command"] == [
+        "./scripts/ops/opsctl.sh",
+        "tradingeconomics-sync",
+        "--json",
+    ]
+    assert contracts["options_flow_context"]["owner_command"] == [
+        "./scripts/ops/opsctl.sh",
+        "options-flow-sync",
+        "--json",
+    ]
+    assert contracts["tradingeconomics_guest"]["data_plane_key"] == "economic_context"
+    assert contracts["options_flow_context"]["data_plane_key"] == "options_derivatives_context"
+    assert all(row.get("collector_class") for row in COLLECTOR_SPECS)
+    assert all(row.get("data_plane_key") for row in COLLECTOR_SPECS)
+    assert all(row.get("owner_command") for row in COLLECTOR_SPECS)
+    assert all(
+        row.get("owner_command")
+        for row in COLLECTOR_SPECS
+        if bool(row.get("required", False))
+    )
+
+
 def test_router_shares_profiles_and_reports_unsupported_coverage(tmp_path: Path) -> None:
     catalog = _catalog()
     health, routing = build_capability_routing(
@@ -203,6 +234,75 @@ def test_repository_runtime_maps_every_collector_and_binds_every_bot() -> None:
         "global_liquidity_regime",
     }.issubset(set(central_bank["capabilities"]))
     assert health["coverage_debt"]["next_admission_candidates"]
+
+
+def test_ingestion_routes_are_decision_family_specific_and_receipt_bound() -> None:
+    health, routing = build_payload(PROJECT_ROOT)
+    runtime = {
+        row["runtime_profile"]: row
+        for row in routing["runtime_sleeve_routes"]
+    }
+
+    assert routing["schema_version"] == 2
+    assert health["ingestion_routing_contract"]["decision_stage"] == "02_data_qualification"
+    assert runtime["dividend"]["decision_policy_family_id"] == "long_horizon_income"
+    assert runtime["fx"]["decision_policy_family_id"] == "macro_rates_fx"
+    assert runtime["pairs_correlation"]["decision_policy_family_id"] == "relative_value"
+    assert runtime["crypto_futures_basis"]["decision_policy_family_id"] == "digital_asset_basis"
+    assert set(SPECIALIZED_SLEEVE_PROFILES).issubset(runtime)
+    assert health["summary"]["runtime_sleeve_route_count"] == len(runtime)
+    assert all(row["route_binding_receipt_sha256"] for row in runtime.values())
+    assert all(binding["binding_receipt_sha256"] for binding in routing["bot_bindings"])
+    assert max(
+        len(row["optional_capability_ids"])
+        for row in routing["ingestion_route_profiles"]
+    ) <= 78
+
+
+def test_runtime_ingestion_route_detects_tampering(tmp_path: Path) -> None:
+    catalog = _catalog()
+    _write_artifact_fixtures(tmp_path, catalog)
+    _health, routing = build_capability_routing(
+        tmp_path,
+        catalog,
+        _collector_contracts(catalog),
+        _hierarchy(),
+        now=datetime(2026, 8, 13, 16, 0, tzinfo=timezone.utc),
+    )
+    route = resolve_runtime_ingestion_route(
+        routing,
+        "default",
+        now=datetime(2026, 8, 13, 16, 1, tzinfo=timezone.utc),
+    )
+
+    assert route["receipt_valid"] is True
+    assert route["artifact_fresh"] is True
+    assert route["decision_policy_family_id"] == "balanced_directional"
+    assert route["paper_required_capability_coverage_ratio"] >= 0.0
+    assert route["live_required_capability_coverage_ratio"] >= 0.0
+    assert route["route_summary_receipt_sha256"]
+
+    tampered = deepcopy(routing)
+    default_profile_id = next(
+        row["profile_id"]
+        for row in tampered["runtime_sleeve_routes"]
+        if row["runtime_profile"] == "default"
+    )
+    delivery = next(
+        row
+        for row in tampered["profile_delivery_routes"]
+        if row["profile_id"] == default_profile_id
+    )
+    delivery["delivery_routes"][0]["selected_producer_id"] = "tampered"
+    invalid = resolve_runtime_ingestion_route(
+        tampered,
+        "default",
+        now=datetime(2026, 8, 13, 16, 1, tzinfo=timezone.utc),
+    )
+
+    assert invalid["status"] == "invalid_receipt"
+    assert invalid["receipt_valid"] is False
+    assert invalid["paper_decision_data_ready"] is False
 
 
 def test_live_capability_readiness_is_candidate_specific(tmp_path: Path) -> None:

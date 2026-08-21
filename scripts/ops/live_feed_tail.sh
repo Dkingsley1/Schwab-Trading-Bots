@@ -1327,6 +1327,8 @@ truncate_live_lines() {
       guard_ok = bool_field(line, "ok")
       schema_valid = bool_field(line, "schema_valid")
       blocked_intent = bool_field(line, "master_guard_blocked_intent")
+      disposition = text_field(line, "decision_disposition")
+      blocking_stage = text_field(line, "decision_blocking_stage")
       reason = text_field(line, "reason")
       if (mode == "none" || mode == "null") mode = ""
       if (status == "" && blocked_intent == "true") status = "blocked"
@@ -1347,6 +1349,8 @@ truncate_live_lines() {
       out = append_token(out, "mode", mode)
       out = append_token(out, "driver", driver)
       out = append_token(out, "guard", guard)
+      out = append_token(out, "disposition", disposition)
+      out = append_token(out, "blocking_stage", blocking_stage)
       out = append_token(out, "reason", reason)
       out = append_token(out, "len", human_length(length(line)))
       print colorize_line(out)
@@ -1755,11 +1759,15 @@ def decision_contract_state(original: dict[str, Any], normalized: dict[str, Any]
     return "unchecked"
 
 
-def newest_jsonl(pattern: str) -> Path | None:
+def newest_jsonl_per_parent(pattern: str) -> list[Path]:
     matches = [path for path in root.glob(pattern) if path.is_file() and path.suffix == ".jsonl"]
-    if not matches:
-        return None
-    return max(matches, key=lambda path: path.stat().st_mtime)
+    newest: dict[str, Path] = {}
+    for path in matches:
+        parent_key = str(path.parent)
+        current = newest.get(parent_key)
+        if current is None or path.stat().st_mtime > current.stat().st_mtime:
+            newest[parent_key] = path
+    return list(newest.values())
 
 
 def decision_candidates() -> list[Path]:
@@ -1767,22 +1775,33 @@ def decision_candidates() -> list[Path]:
     if source in {"schwab", "main", "all"}:
         patterns.extend(
             [
-                "governance/channels/decision/aggressive_equities_schwab/decision_*.jsonl",
-                "governance/channels/decision/conservative_equities_schwab/decision_*.jsonl",
-                "governance/channels/decision/dividend_equities_schwab/decision_*.jsonl",
-                "governance/channels/decision/bond_equities_schwab/decision_*.jsonl",
-                "governance/channels/decision/schwab_futures_equities_schwab/decision_*.jsonl",
+                "governance/channels/decision/*_equities_schwab/decision_*.jsonl",
                 "decision_explanations/shadow_equities/decision_explanations_*.jsonl",
+                "decision_explanations/shadow_schwab_futures_equities/decision_explanations_*.jsonl",
+            ]
+        )
+    if source in {"schwab_futures", "futures"}:
+        patterns.extend(
+            [
+                "governance/channels/decision/schwab_futures_equities_schwab/decision_*.jsonl",
                 "decision_explanations/shadow_schwab_futures_equities/decision_explanations_*.jsonl",
             ]
         )
     if source in {"coinbase", "main", "all"}:
         patterns.extend(
             [
-                "governance/channels/decision/default_crypto_schwab/decision_*.jsonl",
-                "governance/channels/decision/crypto_futures_crypto_schwab/decision_*.jsonl",
+                "governance/channels/decision/*_crypto_coinbase/decision_*.jsonl",
+                "governance/channels/decision/*_crypto_schwab/decision_*.jsonl",
                 "decision_explanations/shadow_crypto/decision_explanations_*.jsonl",
                 "decision_explanations/shadow_coinbase/decision_explanations_*.jsonl",
+                "decision_explanations/shadow_crypto_futures_crypto/decision_explanations_*.jsonl",
+            ]
+        )
+    if source in {"coinbase_futures", "futures"}:
+        patterns.extend(
+            [
+                "governance/channels/decision/crypto_futures_crypto_coinbase/decision_*.jsonl",
+                "governance/channels/decision/crypto_futures_crypto_schwab/decision_*.jsonl",
                 "decision_explanations/shadow_crypto_futures_crypto/decision_explanations_*.jsonl",
             ]
         )
@@ -1793,7 +1812,7 @@ def decision_candidates() -> list[Path]:
                 "decision_explanations/shadow_fx_equities/decision_explanations_*.jsonl",
             ]
         )
-    paths = [path for path in (newest_jsonl(pattern) for pattern in patterns) if path is not None]
+    paths = [path for pattern in patterns for path in newest_jsonl_per_parent(pattern)]
     deduped: dict[str, Path] = {str(path): path for path in paths}
     return sorted(deduped.values(), key=lambda path: path.stat().st_mtime, reverse=True)[:12]
 
@@ -1839,10 +1858,11 @@ def decision_action(payload: dict[str, Any]) -> Any:
 
 
 def emit_decisions() -> None:
-    rows: list[tuple[datetime, str]] = []
-    seen: set[tuple[str, str, str, str]] = set()
+    rows: list[tuple[int, datetime, str]] = []
+    seen: set[tuple[str, str, str, str, str]] = set()
     unresolved_routes: list[str] = []
     for path in decision_candidates():
+        path_row_count = 0
         for line in reversed(recent_lines(path)):
             try:
                 payload = json.loads(line)
@@ -1871,10 +1891,325 @@ def emit_decisions() -> None:
             asset_class = compact(usable_route_label(route.get("asset_class") or normalized.get("asset_class")), 24)
             quality = compact(usable_route_label(route.get("source_quality_label") or normalized.get("source_quality_label")), 28)
             contract_state = decision_contract_state(payload, normalized)
+            disposition = compact(first_value(normalized, ("decision_disposition",)) or "", 32)
+            blocking_stage = compact(first_value(normalized, ("decision_blocking_stage",)) or "", 32)
+            flow = normalized.get("institutional_decision_flow")
+            if not isinstance(flow, dict):
+                flow = nested(normalized, "metadata", "institutional_decision_flow")
+            flow = flow if isinstance(flow, dict) else {}
+            flow_evaluation = flow.get("evaluation") if isinstance(flow.get("evaluation"), dict) else {}
+            flow_control = flow.get("control") if isinstance(flow.get("control"), dict) else {}
+            flow_summary = flow.get("operator_summary") if isinstance(flow.get("operator_summary"), dict) else {}
+            if not flow_summary and isinstance(flow_control.get("operator_summary"), dict):
+                flow_summary = flow_control.get("operator_summary")
+            flow_receipt = flow.get("policy_receipt") if isinstance(flow.get("policy_receipt"), dict) else {}
+            if not flow_receipt and isinstance(flow_evaluation.get("policy_receipt"), dict):
+                flow_receipt = flow_evaluation.get("policy_receipt")
+            flow_classification = compact(
+                first_value(normalized, ("institutional_decision_flow_classification",))
+                or flow_evaluation.get("classification")
+                or "",
+                36,
+            )
+            flow_disposition = compact(
+                first_value(normalized, ("institutional_decision_flow_disposition",))
+                or flow_control.get("disposition")
+                or "",
+                36,
+            )
+            flow_stage = compact(
+                first_value(normalized, ("institutional_decision_flow_blocking_stage",))
+                or flow_control.get("blocking_stage")
+                or "",
+                32,
+            )
+            flow_utility = as_num(
+                first_value(normalized, ("institutional_decision_flow_utility_norm",))
+                or flow_evaluation.get("decision_quality_utility_norm")
+            )
+            flow_quantity_multiplier = as_num(
+                first_value(normalized, ("institutional_decision_flow_quantity_multiplier",))
+                or flow_control.get("quantity_multiplier")
+            )
+            flow_evaluation_id = compact(
+                first_value(normalized, ("institutional_decision_flow_evaluation_id",))
+                or flow_evaluation.get("evaluation_id")
+                or flow_control.get("evaluation_id")
+                or "",
+                12,
+            )
+            flow_family = compact(
+                first_value(normalized, ("institutional_decision_flow_policy_family_id",))
+                or flow_receipt.get("policy_family_id")
+                or "",
+                32,
+            )
+            flow_policy = compact(
+                first_value(normalized, ("institutional_decision_flow_resolved_policy_id",))
+                or flow_receipt.get("resolved_policy_id")
+                or "",
+                24,
+            )
+            flow_execution_eligible = flow_receipt.get("execution_eligible")
+            flow_strategy = compact(
+                first_value(normalized, ("institutional_decision_flow_strategy_variant_id",))
+                or flow_receipt.get("strategy_variant_id")
+                or "",
+                28,
+            )
+            flow_definition = (
+                flow_evaluation.get("strategy_definition")
+                if isinstance(flow_evaluation.get("strategy_definition"), dict)
+                else {}
+            )
+            flow_horizon = compact(
+                first_value(normalized, ("institutional_decision_flow_horizon",))
+                or flow_definition.get("decision_horizon")
+                or "",
+                32,
+            )
+            flow_role = compact(
+                first_value(normalized, ("institutional_decision_flow_portfolio_role",))
+                or flow_definition.get("portfolio_role")
+                or "",
+                36,
+            )
+            flow_edge = compact(
+                first_value(normalized, ("institutional_decision_flow_primary_edge",))
+                or flow_definition.get("primary_edge")
+                or "",
+                42,
+            )
+            flow_action_semantics = (
+                flow_evaluation.get("action_semantics")
+                if isinstance(flow_evaluation.get("action_semantics"), dict)
+                else {}
+            )
+            flow_action_semantic = compact(
+                first_value(normalized, ("institutional_decision_flow_action_semantic",))
+                or flow_action_semantics.get("semantic")
+                or "",
+                28,
+            )
+            flow_quantitative = (
+                flow_evaluation.get("quantitative_evidence")
+                if isinstance(flow_evaluation.get("quantitative_evidence"), dict)
+                else {}
+            )
+            flow_quant_ready_raw = first_value(
+                normalized,
+                ("institutional_decision_flow_quantitative_evidence_ready",),
+            )
+            if flow_quant_ready_raw is None:
+                flow_quant_ready_raw = flow_quantitative.get("live_ready")
+            flow_quant_gaps_raw = first_value(
+                normalized,
+                ("institutional_decision_flow_quantitative_evidence_gaps",),
+            )
+            if not isinstance(flow_quant_gaps_raw, list):
+                flow_quant_gaps_raw = flow_quantitative.get("live_blockers", [])
+            flow_quant_gaps = compact(
+                ",".join(str(value) for value in flow_quant_gaps_raw[:3]),
+                72,
+            )
+            flow_challengers = (
+                flow_evaluation.get("research_challengers")
+                if isinstance(flow_evaluation.get("research_challengers"), dict)
+                else {}
+            )
+            flow_challenger_status = compact(
+                first_value(
+                    normalized,
+                    ("institutional_decision_flow_challenger_status",),
+                )
+                or flow_challengers.get("status")
+                or "",
+                24,
+            )
+            flow_challenger_available = first_value(
+                normalized,
+                ("institutional_decision_flow_challenger_available_count",),
+            )
+            if flow_challenger_available is None:
+                flow_challenger_available = flow_challengers.get(
+                    "available_method_count"
+                )
+            flow_challenger_supported = first_value(
+                normalized,
+                ("institutional_decision_flow_challenger_supported_count",),
+            )
+            if flow_challenger_supported is None:
+                flow_challenger_supported = flow_challengers.get(
+                    "supported_method_count"
+                )
+            flow_challenger_total = first_value(
+                normalized,
+                ("institutional_decision_flow_challenger_method_count",),
+            )
+            if flow_challenger_total is None:
+                flow_challenger_total = flow_challengers.get("method_count")
+            flow_decision_state = compact(
+                first_value(normalized, ("institutional_decision_flow_decision_state",))
+                or flow_summary.get("decision_state")
+                or flow_classification
+                or "",
+                36,
+            )
+            flow_current_stage = compact(
+                first_value(normalized, ("institutional_decision_flow_current_stage",))
+                or flow_summary.get("current_stage")
+                or flow_stage
+                or "",
+                32,
+            )
+            flow_blocking_reason = compact(
+                first_value(normalized, ("institutional_decision_flow_blocking_reason_code",))
+                or flow_summary.get("blocking_reason_code")
+                or "",
+                48,
+            )
+            flow_regime_state = compact(
+                first_value(normalized, ("institutional_decision_flow_regime_state",))
+                or flow_summary.get("regime_state")
+                or "",
+                28,
+            )
+            flow_edge_state = compact(
+                first_value(normalized, ("institutional_decision_flow_edge_state",))
+                or flow_summary.get("edge_state")
+                or "",
+                32,
+            )
+            flow_transition = compact(
+                first_value(normalized, ("institutional_decision_flow_position_transition",))
+                or flow_summary.get("position_transition")
+                or flow_action_semantic
+                or "",
+                28,
+            )
+            flow_playbook = compact(
+                first_value(normalized, ("institutional_decision_flow_playbook_sha256",))
+                or flow_summary.get("decision_playbook_sha256")
+                or flow_receipt.get("decision_playbook_sha256")
+                or "",
+                12,
+            )
+            flow_summary_receipt = compact(
+                first_value(normalized, ("institutional_decision_flow_summary_sha256",))
+                or flow_summary.get("summary_sha256")
+                or "",
+                12,
+            )
+            flow_data_status = compact(
+                first_value(
+                    normalized,
+                    ("institutional_decision_flow_ingestion_route_status",),
+                )
+                or flow_summary.get("ingestion_route_status")
+                or "",
+                24,
+            )
+            flow_data_state = compact(
+                first_value(
+                    normalized,
+                    ("institutional_decision_flow_ingestion_route_state",),
+                )
+                or flow_summary.get("ingestion_route_state")
+                or "",
+                24,
+            )
+            flow_data_profile = compact(
+                first_value(
+                    normalized,
+                    ("institutional_decision_flow_ingestion_route_profile_id",),
+                )
+                or flow_summary.get("ingestion_route_profile_id")
+                or "",
+                36,
+            )
+            flow_data_quality = as_num(
+                first_value(
+                    normalized,
+                    ("institutional_decision_flow_ingestion_route_quality_norm",),
+                )
+                or flow_summary.get("ingestion_route_quality_norm")
+            )
+            flow_data_paper_coverage = as_num(
+                first_value(
+                    normalized,
+                    ("institutional_decision_flow_ingestion_paper_coverage_norm",),
+                )
+                or flow_summary.get("ingestion_paper_coverage_norm")
+            )
+            flow_data_live_coverage = as_num(
+                first_value(
+                    normalized,
+                    ("institutional_decision_flow_ingestion_live_coverage_norm",),
+                )
+                or flow_summary.get("ingestion_live_coverage_norm")
+            )
+            flow_data_sources = first_value(
+                normalized,
+                (
+                    "institutional_decision_flow_ingestion_selected_producer_count",
+                ),
+            )
+            if flow_data_sources is None:
+                flow_data_sources = flow_summary.get(
+                    "ingestion_selected_producer_count"
+                )
+            flow_data_receipt = compact(
+                first_value(
+                    normalized,
+                    (
+                        "institutional_decision_flow_ingestion_route_summary_receipt_sha256",
+                    ),
+                )
+                or flow_summary.get("ingestion_route_summary_receipt_sha256")
+                or "",
+                12,
+            )
+            flow_progress = flow_summary.get("stage_progress")
+            if not isinstance(flow_progress, dict):
+                flow_progress = first_value(
+                    normalized,
+                    ("institutional_decision_flow_stage_progress",),
+                )
+            flow_progress = flow_progress if isinstance(flow_progress, dict) else {}
+            flow_paper_progress = flow_progress.get("paper") if isinstance(flow_progress.get("paper"), dict) else {}
+            flow_live_progress = flow_progress.get("live") if isinstance(flow_progress.get("live"), dict) else {}
+            flow_progress_text = ""
+            if flow_paper_progress or flow_live_progress:
+                flow_progress_text = (
+                    f"paper:{int(flow_paper_progress.get('passed', 0) or 0)}/"
+                    f"{int(flow_paper_progress.get('required', 0) or 0)},"
+                    f"live:{int(flow_live_progress.get('passed', 0) or 0)}/"
+                    f"{int(flow_live_progress.get('required', 0) or 0)}"
+                )
+            flow_paper_gate = compact(
+                flow_summary.get("paper_quality_gate_state") or "",
+                32,
+            )
+            flow_live_gate = compact(
+                flow_summary.get("live_quality_gate_state") or "",
+                36,
+            )
+            flow_reason_codes = flow_summary.get("reason_codes")
+            if not isinstance(flow_reason_codes, list):
+                flow_reason_codes = []
+            flow_reason_text = compact(
+                ",".join(str(value) for value in flow_reason_codes[:2]),
+                72,
+            )
             if not lane:
                 unresolved_routes.append(f"{profile}:{symbol}:{path.parent.name}")
                 lane = "unknown"
-            key = (symbol, profile, status, action)
+            flow_contract_class = (
+                "operator_summary"
+                if flow_summary_receipt and flow_playbook
+                else ("decision_flow" if flow_evaluation_id else "raw")
+            )
+            key = (symbol, profile, status, action, flow_contract_class)
             if key in seen:
                 continue
             seen.add(key)
@@ -1893,20 +2228,104 @@ def emit_decisions() -> None:
                 f"symbol={symbol}",
                 f"status={status}" if status else "",
                 f"action={action}",
+                f"disposition={disposition}" if disposition else "",
+                f"blocking_stage={blocking_stage}" if blocking_stage else "",
+                f"flow={flow_disposition}" if flow_disposition else "",
+                f"flow_class={flow_classification}" if flow_classification else "",
+                f"flow_stage={flow_stage}" if flow_stage else "",
+                f"flow_state={flow_decision_state}" if flow_decision_state else "",
+                f"flow_current={flow_current_stage}" if flow_current_stage else "",
+                f"flow_progress={flow_progress_text}" if flow_progress_text else "",
+                f"flow_blocker={flow_blocking_reason}" if flow_blocking_reason else "",
+                f"flow_regime={flow_regime_state}" if flow_regime_state else "",
+                f"flow_edge_state={flow_edge_state}" if flow_edge_state else "",
+                f"flow_transition={flow_transition}" if flow_transition else "",
+                f"flow_paper_gate={flow_paper_gate}" if flow_paper_gate else "",
+                f"flow_live_gate={flow_live_gate}" if flow_live_gate else "",
+                f"flow_reason={flow_reason_text}" if flow_reason_text else "",
+                f"flow_playbook={flow_playbook}" if flow_playbook else "",
+                f"flow_receipt={flow_summary_receipt}" if flow_summary_receipt else "",
+                f"flow_data_status={flow_data_status}" if flow_data_status else "",
+                f"flow_data_state={flow_data_state}" if flow_data_state else "",
+                f"flow_data_profile={flow_data_profile}" if flow_data_profile else "",
+                f"flow_data_quality={flow_data_quality}" if flow_data_quality else "",
+                (
+                    f"flow_data_paper={flow_data_paper_coverage}"
+                    if flow_data_paper_coverage
+                    else ""
+                ),
+                (
+                    f"flow_data_live={flow_data_live_coverage}"
+                    if flow_data_live_coverage
+                    else ""
+                ),
+                (
+                    f"flow_data_sources={int(flow_data_sources or 0)}"
+                    if flow_data_sources is not None
+                    else ""
+                ),
+                f"flow_data_receipt={flow_data_receipt}" if flow_data_receipt else "",
+                f"flow_utility={flow_utility}" if flow_utility else "",
+                f"flow_qty_cap={flow_quantity_multiplier}" if flow_quantity_multiplier else "",
+                f"flow_evidence={flow_evaluation_id}" if flow_evaluation_id else "",
+                f"flow_family={flow_family}" if flow_family else "",
+                f"flow_policy={flow_policy}" if flow_policy else "",
+                f"flow_strategy={flow_strategy}" if flow_strategy else "",
+                f"flow_horizon={flow_horizon}" if flow_horizon else "",
+                f"flow_role={flow_role}" if flow_role else "",
+                f"flow_edge={flow_edge}" if flow_edge else "",
+                f"flow_action_semantic={flow_action_semantic}" if flow_action_semantic else "",
+                (
+                    f"flow_quant_ready={str(bool(flow_quant_ready_raw)).lower()}"
+                    if flow_quant_ready_raw is not None
+                    else ""
+                ),
+                f"flow_quant_gaps={flow_quant_gaps}" if flow_quant_gaps else "",
+                (
+                    f"flow_challengers={flow_challenger_status}:"
+                    f"{int(flow_challenger_available or 0)}/"
+                    f"{int(flow_challenger_total or 0)}"
+                    if flow_challenger_status or flow_challenger_total is not None
+                    else ""
+                ),
+                (
+                    f"flow_challenger_supported={int(flow_challenger_supported or 0)}"
+                    if flow_challenger_supported is not None
+                    else ""
+                ),
+                (
+                    f"flow_execution_eligible={str(bool(flow_execution_eligible)).lower()}"
+                    if flow_execution_eligible is not None
+                    else ""
+                ),
                 f"score={score}" if score else "",
                 f"threshold={threshold}" if threshold else "",
                 f"schema={contract_state}",
                 f"file={path.parent.name}/{path.name}",
             ]
-            rows.append((parsed, " ".join(part for part in parts if part)))
-            if len(rows) >= max_lines:
+            flow_contract_priority = (
+                2
+                if flow_contract_class == "operator_summary"
+                else (1 if flow_contract_class == "decision_flow" else 0)
+            )
+            rows.append(
+                (
+                    flow_contract_priority,
+                    parsed,
+                    " ".join(part for part in parts if part),
+                )
+            )
+            path_row_count += 1
+            if path_row_count >= max_lines:
                 break
-        if len(rows) >= max_lines:
-            break
     if not rows:
         print("[decision-latest] status=none reason=no_recent_decision_jsonl")
         return
-    for _timestamp, line in sorted(rows, key=lambda item: item[0], reverse=True)[:max_lines]:
+    for _priority, _timestamp, line in sorted(
+        rows,
+        key=lambda item: (item[0], item[1]),
+        reverse=True,
+    )[:max_lines]:
         print(line)
     if unresolved_routes:
         examples = ",".join(dict.fromkeys(unresolved_routes))
@@ -2055,6 +2474,53 @@ def emit_paper() -> None:
             f"net_pnl={as_num(current.get('portfolio_net_pnl_total') or current.get('net_pnl') or recovery_current.get('net_pnl') or burn_down_current.get('net_pnl'))} "
             f"low_grade_blockers={low.get('active_blocker_count', '')}"
         )
+        paper_debt = (
+            profit.get("paper_debt_recovery_contract")
+            if isinstance(profit.get("paper_debt_recovery_contract"), dict)
+            else {}
+        )
+        if paper_debt:
+            attribution = (
+                paper_debt.get("candidate_attribution")
+                if isinstance(paper_debt.get("candidate_attribution"), dict)
+                else {}
+            )
+            velocity = (
+                paper_debt.get("recovery_velocity")
+                if isinstance(paper_debt.get("recovery_velocity"), dict)
+                else {}
+            )
+            risk = (
+                paper_debt.get("risk_budget")
+                if isinstance(paper_debt.get("risk_budget"), dict)
+                else {}
+            )
+            debt_state = str(paper_debt.get("state") or "unknown")
+            debt_level = (
+                "ok"
+                if paper_debt.get("live_promotion_ready", False)
+                else "alert"
+                if debt_state in {"evidence_unavailable", "paused_drawdown", "debt_worsening"}
+                else "watch"
+            )
+            print(
+                "[paper-debt] "
+                f"level={debt_level} "
+                f"age={age_text(profit.get('timestamp_utc'))} "
+                f"state={debt_state} "
+                f"baseline={as_num(paper_debt.get('baseline_debt_amount'))} "
+                f"remaining={as_num(paper_debt.get('remaining_debt_amount'))} "
+                f"progress={as_num(paper_debt.get('recovery_progress_norm'))} "
+                f"candidate={compact(attribution.get('candidate_id'), 40)} "
+                f"samples={attribution.get('sample_count', '')} "
+                f"days={attribution.get('observed_days', '')} "
+                f"attributed_pnl={as_num(attribution.get('total_candidate_attributed_pnl'))} "
+                f"velocity={as_num(velocity.get('actual_daily_net_improvement'))} "
+                f"entry_size_cap={as_num((paper_debt.get('runtime_enforcement') or {}).get('recovery_entry_size_multiplier_norm'))} "
+                f"paused={as_bool(risk.get('new_entries_paused'))} "
+                f"live_proof={as_bool(paper_debt.get('live_promotion_ready'))} "
+                f"live_execution=false"
+            )
     hardening = load_json(health / "profitability_hardening_latest.json")
     if hardening:
         valuation = hardening.get("derivative_valuation") if isinstance(hardening.get("derivative_valuation"), dict) else {}

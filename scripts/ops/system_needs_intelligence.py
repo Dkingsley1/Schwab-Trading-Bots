@@ -22,6 +22,7 @@ DEFAULT_LOG_PATH = PROJECT_ROOT / "governance" / "health" / "system_needs_fix_lo
 LOW_GRADE_VALUES = {"C", "D", "F"}
 LOW_GRADE_AUDIT_EXCLUDED_FILES = {
     "low_grade_finalizer_latest.json",
+    "profitability_self_assessment_latest.json",
     "system_needs_intelligence_latest.json",
 }
 LOW_GRADE_ARTIFACT_ALIASES = {
@@ -691,6 +692,57 @@ def _need_from_raw_profitability_recovery(context: dict[str, Any]) -> list[dict[
     ]
 
 
+def _profitability_self_assessment_context(payload: dict[str, Any]) -> dict[str, Any]:
+    binding = _as_dict(payload.get("candidate_binding"))
+    grades = _as_dict(payload.get("grades"))
+    measurement = _as_dict(payload.get("measurement"))
+    needs = [row for row in _as_list(payload.get("needs")) if isinstance(row, dict)]
+    return {
+        "present": bool(payload),
+        "overall_status": str(payload.get("overall_status") or "missing"),
+        "assessment_status": str(
+            payload.get("assessment_status")
+            or payload.get("overall_status")
+            or "missing"
+        ),
+        "system_statement": str(payload.get("system_statement") or ""),
+        "candidate_id": str(binding.get("candidate_id") or measurement.get("candidate_id") or ""),
+        "candidate_identity_consistent": bool(binding.get("identity_consistent", False)),
+        "candidate_identity_complete": bool(binding.get("identity_complete", False)),
+        "implementation_grade": str(grades.get("implementation_grade") or ""),
+        "implementation_score": _safe_float(grades.get("implementation_score"), 0.0),
+        "economic_evidence_grade": str(grades.get("economic_evidence_grade") or ""),
+        "economic_evidence_score": _safe_float(grades.get("economic_evidence_score"), 0.0),
+        "economic_evidence_ready": bool(grades.get("economic_evidence_ready", False)),
+        "candidate_post_cost_sample_count": _safe_int(measurement.get("candidate_post_cost_sample_count"), 0),
+        "historical_active_book_net_pnl": _safe_float(measurement.get("historical_active_book_net_pnl"), 0.0),
+        "historical_active_book_candidate_grade_eligible": bool(
+            measurement.get("historical_active_book_candidate_grade_eligible", False)
+        ),
+        "needs": needs,
+        "next_safe_action": _as_dict(payload.get("next_safe_action")),
+        "assessment_sha256": str(payload.get("assessment_sha256") or ""),
+    }
+
+
+def _needs_from_profitability_self_assessment(context: dict[str, Any]) -> list[dict[str, Any]]:
+    if not context.get("present", False):
+        return []
+    normalized: list[dict[str, Any]] = []
+    for raw in _as_list(context.get("needs")):
+        if not isinstance(raw, dict):
+            continue
+        row = dict(raw)
+        row.setdefault("source", "profitability_self_assessment")
+        row.setdefault("risk_level", "low")
+        row.setdefault("command", ["./scripts/ops/opsctl.sh", "profitability-self-assessment", "--json"])
+        row.setdefault("expected_impact", "Advances current-candidate profitability evidence without relabeling historical results.")
+        row.setdefault("when_to_stop", "the candidate-bound assessment marks this need complete")
+        row["canonical_candidate_bound_need"] = True
+        normalized.append(row)
+    return normalized
+
+
 def _load_fix_log(path: Path, limit: int = 20) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     try:
@@ -1214,6 +1266,7 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, fix_log_path: Path = DEF
     plumbing = load_json(health / "system_plumbing_control_latest.json")
     paper_profitability = load_json(health / "paper_profitability_control_latest.json")
     paper_runtime_profitability = load_json(health / "paper_runtime_profitability_controls_latest.json")
+    profitability_self_assessment = load_json(health / "profitability_self_assessment_latest.json")
     live_canary_readiness = load_json(health / "live_canary_readiness_contract_latest.json")
     uniform_hardening = load_json(health / "uniform_hardening_contract_latest.json")
     uniform_hardening_enabled = (project_root / "config" / "production_uniform_hardening_v1.json").is_file()
@@ -1223,6 +1276,19 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, fix_log_path: Path = DEF
         paper_runtime_profitability=paper_runtime_profitability,
         live_canary_readiness=live_canary_readiness,
     )
+    profitability_assessment_context = _profitability_self_assessment_context(
+        profitability_self_assessment
+    )
+    if (
+        profitability_assessment_context.get("candidate_id")
+        and profitability_assessment_context.get("candidate_identity_consistent", False)
+    ):
+        raw_profitability_recovery["active"] = False
+        raw_profitability_recovery["historical_context_only"] = True
+        raw_profitability_recovery["superseded_by_candidate_assessment"] = True
+        raw_profitability_recovery["candidate_id"] = str(
+            profitability_assessment_context.get("candidate_id") or ""
+        )
     soak_management = _soak_management_context(project_root, health_fast)
     needs = [
         *_need_from_governor(governor),
@@ -1230,6 +1296,7 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, fix_log_path: Path = DEF
         *_need_from_storage(storage),
         *_need_from_training_runtime(training_runtime),
         *_need_from_low_grade_audit(low_grade_audit),
+        *_needs_from_profitability_self_assessment(profitability_assessment_context),
         *_need_from_raw_profitability_recovery(raw_profitability_recovery),
         *(_need_from_uniform_hardening(uniform_hardening) if uniform_hardening_enabled else []),
         *_need_from_runtime_surfaces(
@@ -1343,6 +1410,7 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, fix_log_path: Path = DEF
             },
             "low_grade_layer_audit": low_grade_audit,
             "raw_profitability_recovery": raw_profitability_recovery,
+            "profitability_self_assessment": profitability_assessment_context,
             "uniform_hardening_contract": {
                 "overall_status": str(uniform_hardening.get("overall_status") or ""),
                 "uniform_floor_ready": bool(uniform_hardening.get("uniform_floor_ready", False)),
@@ -1364,6 +1432,7 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, fix_log_path: Path = DEF
             "include_ready_actions_when_no_blockers_exist": True,
             "include_remaining_low_grade_layers": True,
             "include_raw_profitability_recovery_need": True,
+            "prefer_candidate_bound_profitability_assessment_over_historical_ledger_burn_down": True,
             "include_uniform_hardening_floor_need": True,
             "split_managed_soak_controls_from_actionable_needs": True,
             "fixes_logged_to": str(fix_log_path),

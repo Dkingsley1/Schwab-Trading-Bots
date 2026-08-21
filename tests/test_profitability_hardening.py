@@ -233,6 +233,66 @@ def test_runtime_consensus_fails_closed_without_hierarchy_identity() -> None:
     assert result["hierarchy_identity_required"] is True
 
 
+def test_consensus_allows_capped_candidate_bound_buy_scale() -> None:
+    result = coalesce_paper_intents(
+        [
+            {
+                "bot_id": bot_id,
+                "action": "BUY",
+                "score": 0.75,
+                "threshold": 0.55,
+                "weight": 0.5,
+                "test_accuracy": 0.80,
+                "correlation_cluster_id": cluster,
+                "sub_sleeve_id": cluster,
+                "sleeve_id": "default",
+                "features": {
+                    "paper_profitability_strategy_size_multiplier_norm": 1.10,
+                    "profitability_regime_fit_norm": 1.0,
+                    "execution_fitness_norm": 1.0,
+                },
+            }
+            for bot_id, cluster in (("winner_a", "trend"), ("winner_b", "breadth"))
+        ],
+        max_bot_weight=1.0,
+        minimum_distinct_clusters=2,
+        require_hierarchy_identity=True,
+    )
+
+    assert result["action"] == "BUY"
+    assert result["quantity_multiplier"] == 1.10
+
+
+def test_consensus_never_shrinks_sell_exit_from_entry_scaling() -> None:
+    result = coalesce_paper_intents(
+        [
+            {
+                "bot_id": bot_id,
+                "action": "SELL",
+                "score": 0.25,
+                "threshold": 0.55,
+                "weight": 0.5,
+                "test_accuracy": 0.80,
+                "correlation_cluster_id": cluster,
+                "sub_sleeve_id": cluster,
+                "sleeve_id": "default",
+                "features": {
+                    "paper_profitability_strategy_size_multiplier_norm": 0.0,
+                    "profitability_regime_fit_norm": 1.0,
+                    "execution_fitness_norm": 1.0,
+                },
+            }
+            for bot_id, cluster in (("exit_a", "trend"), ("exit_b", "breadth"))
+        ],
+        max_bot_weight=1.0,
+        minimum_distinct_clusters=2,
+        require_hierarchy_identity=True,
+    )
+
+    assert result["action"] == "SELL"
+    assert result["quantity_multiplier"] == 1.0
+
+
 def test_strict_entry_economics_block_stale_quotes_and_edge_below_costs() -> None:
     verdict = evaluate_profitability_entry(
         profile="intraday_aggressive",

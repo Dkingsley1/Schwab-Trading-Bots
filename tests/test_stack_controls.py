@@ -1205,6 +1205,9 @@ def test_macro_context_sync_does_not_pass_json_to_bls_helper() -> None:
     assert "scripts/ops/runtime_throttle_control.py" in text
     assert "creative-cotenant-guard" in text
     assert "scripts/ops/creative_cotenant_guard.py" in text
+    start_stack_text = _read(PROJECT_ROOT / "scripts" / "ops" / "start_stack.sh")
+    assert "--paper-lane-only" in start_stack_text
+    assert "paper_execution_lane=singleton_verified_after_restart" in start_stack_text
     assert "livefeed-refresh" in text
     assert "live-feed-refresh" in text
     assert "dashboard-refresh" in text
@@ -1387,6 +1390,20 @@ def test_snapshot_debug_reason_argument_is_restart_storm_safe() -> None:
     assert 'row["detail_reason"] = detail_reason' in shadow_loop
 
 
+def test_shadow_decision_flow_persists_one_livefeed_operator_summary() -> None:
+    shadow_loop = _read(PROJECT_ROOT / "scripts" / "run_shadow_training_loop.py")
+
+    assert "institutional_decision_flow_sleeve_playbooks_v4" in shadow_loop
+    assert 'institutional_decision_control.get("operator_summary")' in shadow_loop
+    assert '"operator_summary": institutional_decision_operator_summary' in shadow_loop
+    assert '"institutional_decision_flow_decision_state"' in shadow_loop
+    assert '"institutional_decision_flow_stage_progress"' in shadow_loop
+    assert '"institutional_decision_flow_playbook_sha256"' in shadow_loop
+    assert '"institutional_decision_flow_summary_sha256"' in shadow_loop
+    assert '"institutional_decision_flow_ingestion_route_quality_norm"' in shadow_loop
+    assert '"institutional_decision_flow_ingestion_route_receipt_valid"' in shadow_loop
+
+
 def test_runtime_env_has_keychain_handoff_and_calm_support_defaults() -> None:
     runtime_env = _read(PROJECT_ROOT / "scripts" / "ops" / "load_runtime_env.sh")
 
@@ -1537,6 +1554,42 @@ def test_live_feed_tail_has_memory_aware_heavy_defaults() -> None:
     assert "age_source=" in text
     assert "file_age=" in text
     assert "schema={contract_state}" in text
+    assert "decision_disposition" in text
+    assert "decision_blocking_stage" in text
+    assert "disposition={disposition}" in text
+    assert "blocking_stage={blocking_stage}" in text
+    assert "flow={flow_disposition}" in text
+    assert "flow_class={flow_classification}" in text
+    assert "flow_stage={flow_stage}" in text
+    assert "flow_state={flow_decision_state}" in text
+    assert "flow_current={flow_current_stage}" in text
+    assert "flow_progress={flow_progress_text}" in text
+    assert "flow_blocker={flow_blocking_reason}" in text
+    assert "flow_regime={flow_regime_state}" in text
+    assert "flow_edge_state={flow_edge_state}" in text
+    assert "flow_transition={flow_transition}" in text
+    assert "flow_paper_gate={flow_paper_gate}" in text
+    assert "flow_live_gate={flow_live_gate}" in text
+    assert "flow_playbook={flow_playbook}" in text
+    assert "flow_receipt={flow_summary_receipt}" in text
+    assert "flow_data_status={flow_data_status}" in text
+    assert "flow_data_state={flow_data_state}" in text
+    assert "flow_data_quality={flow_data_quality}" in text
+    assert "flow_data_paper={flow_data_paper_coverage}" in text
+    assert "flow_data_live={flow_data_live_coverage}" in text
+    assert "flow_data_receipt={flow_data_receipt}" in text
+    assert "*_equities_schwab/decision_*.jsonl" in text
+    assert "*_crypto_coinbase/decision_*.jsonl" in text
+    assert 'source in {"schwab_futures", "futures"}' in text
+    assert 'source in {"coinbase_futures", "futures"}' in text
+    assert "flow_summary_receipt and flow_playbook" in text
+    assert "flow_contract_priority" in text
+    assert "flow_utility={flow_utility}" in text
+    assert "flow_qty_cap={flow_quantity_multiplier}" in text
+    assert "flow_evidence={flow_evaluation_id}" in text
+    assert "flow_family={flow_family}" in text
+    assert "flow_policy={flow_policy}" in text
+    assert "flow_execution_eligible=" in text
     assert "[decision-route] level=watch status=degraded" in text
     assert 'explicit_level = token_value(lower, "level")' in text
     assert 'failed=[^[:space:]][^[:space:]]*' in text

@@ -436,6 +436,22 @@ if [[ "$ORCHESTRATOR_MODE" == "watchdog" ]]; then
   fi
 
   OPS_WATCHDOG_REFRESH_REPORTS=0 "$PY" "$PROJECT_ROOT/scripts/ops/process_watchdog.py" --json >/dev/null 2>&1 || true
+  if [[ "$FORCE_RESTART" == "1" ]]; then
+    if ! wait_for_process_stable \
+      "scripts/run_all_sleeves.py" \
+      "${ALL_SLEEVES_START_TIMEOUT_SECONDS:-60}" \
+      "${ALL_SLEEVES_START_STABLE_SECONDS:-5}"; then
+      echo "all_sleeves=missing_after_restart"
+      exit 1
+    fi
+    if wait_for_process_match "scripts/run_execution_lane.py --mode paper" "${PAPER_EXECUTION_LANE_START_TIMEOUT_SECONDS:-45}"; then
+      "$PY" "$PROJECT_ROOT/scripts/ops/creative_cotenant_guard.py" apply --paper-lane-only --json >/dev/null
+      echo "paper_execution_lane=singleton_verified_after_restart"
+    else
+      echo "paper_execution_lane=missing_after_restart"
+      exit 1
+    fi
+  fi
   if ! restore_unattended_support_services; then
     echo "stack_start_status=failed_to_restore_unattended_supervisors"
     exit 1
@@ -501,6 +517,16 @@ else
   tail -n 80 "$WATCHDOG_HANDOFF_LOG" || true
   tail -n 80 "logs/watchdog_all_sleeves.log" || true
   exit 1
+fi
+
+if [[ "$FORCE_RESTART" == "1" ]]; then
+  if wait_for_process_match "scripts/run_execution_lane.py --mode paper" "${PAPER_EXECUTION_LANE_START_TIMEOUT_SECONDS:-45}"; then
+    "$PY" "$PROJECT_ROOT/scripts/ops/creative_cotenant_guard.py" apply --paper-lane-only --json >/dev/null
+    echo "paper_execution_lane=singleton_verified_after_restart"
+  else
+    echo "paper_execution_lane=missing_after_restart"
+    exit 1
+  fi
 fi
 
 if [[ "$WITH_COINBASE" == "1" ]]; then

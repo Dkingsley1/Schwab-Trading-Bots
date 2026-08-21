@@ -1,6 +1,8 @@
 import sqlite3
 from pathlib import Path
 
+import pytest
+
 from core.live_order_ledger import LiveOrderLedger
 from scripts.ops import live_order_ledger_control as control
 
@@ -116,6 +118,53 @@ def test_broker_updates_reconcile_partial_fill_and_terminal_fill(tmp_path: Path)
     assert filled["state"] == "filled"
     assert ledger.unresolved() == []
     assert ledger.verify_event_chain()["ok"] is True
+
+
+def test_repeated_partial_fill_is_a_monotonic_material_update(tmp_path: Path) -> None:
+    ledger = LiveOrderLedger(tmp_path / "orders.sqlite3")
+    _reserve(ledger)
+    ledger.mark_submitting("decision-1")
+    ledger.mark_submit_result(intent_id="decision-1", acknowledged=True, broker_order_id="broker-1")
+    ledger.record_broker_update(
+        broker_order_id="broker-1",
+        broker_status="PARTIALLY_FILLED",
+        filled_quantity=2.0,
+        average_fill_price=100.0,
+    )
+    updated = ledger.record_broker_update(
+        broker_order_id="broker-1",
+        broker_status="PARTIALLY_FILLED",
+        filled_quantity=7.0,
+        average_fill_price=100.1,
+    )
+
+    assert updated["state"] == "partially_filled"
+    assert updated["filled_quantity"] == 7.0
+    assert ledger.verify_integrity()["ok"] is True
+
+
+def test_fill_regression_overfill_and_broker_identity_mutation_fail_immediately(tmp_path: Path) -> None:
+    ledger = LiveOrderLedger(tmp_path / "orders.sqlite3")
+    _reserve(ledger)
+    ledger.mark_submitting("decision-1")
+    ledger.mark_submit_result(intent_id="decision-1", acknowledged=True, broker_order_id="broker-1")
+    ledger.record_broker_update(
+        broker_order_id="broker-1",
+        broker_status="PARTIALLY_FILLED",
+        filled_quantity=4.0,
+        average_fill_price=100.0,
+    )
+
+    with pytest.raises(ValueError, match="cannot_decrease"):
+        ledger.transition(intent_id="decision-1", to_state="partially_filled", filled_quantity=3.0)
+    with pytest.raises(ValueError, match="cannot_exceed"):
+        ledger.transition(intent_id="decision-1", to_state="filled", filled_quantity=11.0)
+    with pytest.raises(ValueError, match="immutable"):
+        ledger.transition(
+            intent_id="decision-1",
+            to_state="partially_filled",
+            broker_order_id="different-broker-id",
+        )
 
 
 def test_ambiguous_cancel_requires_broker_reconciliation(tmp_path: Path) -> None:

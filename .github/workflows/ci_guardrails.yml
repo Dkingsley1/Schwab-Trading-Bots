@@ -165,6 +165,29 @@ jobs:
           python -m json.tool config/live_canary_micro_policy_v1.json >/dev/null
           python -m json.tool config/symbol_lifecycle_v1.json >/dev/null
           python -m json.tool config/sleeve_strategy_expansion.json >/dev/null
+          python -m json.tool config/authoritative_systems_v1.json >/dev/null
+          python -m json.tool config/broker_capability_contracts_v1.json >/dev/null
+          python -m py_compile core/authoritative_systems.py
+          python -m py_compile core/brokers/capability_contract.py
+          python -m py_compile core/strategy_validity.py
+          python -m py_compile core/event_time_control.py
+          python -m py_compile core/causal_attribution.py
+          python -m py_compile core/paper_live_equivalence.py
+          python -m py_compile core/execution_scenarios.py
+          python -m py_compile scripts/ops/authoritative_systems_control.py
+
+      - name: Authoritative systems and execution semantics floor
+        run: |
+          python scripts/ops/authoritative_systems_control.py --out-file /tmp/authoritative_systems_control_latest.json --json >/dev/null
+          python -m pytest -q \
+            tests/test_authoritative_systems.py \
+            tests/test_broker_capability_contract.py \
+            tests/test_strategy_validity.py \
+            tests/test_event_time_control.py \
+            tests/test_causal_attribution.py \
+            tests/test_paper_live_equivalence.py \
+            tests/test_execution_scenarios.py \
+            tests/test_live_order_ledger.py
 
       - name: Hierarchical bot organization structural floor
         run: |

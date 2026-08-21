@@ -433,6 +433,83 @@ def test_post_cost_expectancy_requires_positive_confidence_bound() -> None:
     assert expectancy["status"] == "positive_with_95pct_confidence"
 
 
+def test_post_cost_expectancy_reports_candidate_payoff_asymmetry() -> None:
+    rows = [
+        {
+            "timestamp_utc": "2026-03-31T20:00:00+00:00",
+            "paper_pnl_schema_version": 2,
+            "post_cost_pnl_delta": 4.0,
+            "post_cost_return_bps": 40.0,
+        },
+        {
+            "timestamp_utc": "2026-03-31T20:01:00+00:00",
+            "paper_pnl_schema_version": 2,
+            "post_cost_pnl_delta": -2.0,
+            "post_cost_return_bps": -20.0,
+        },
+    ]
+
+    expectancy = report._post_cost_expectancy(rows)
+
+    assert expectancy["payoff_asymmetry"] == {
+        "available": True,
+        "positive_sample_count": 1,
+        "negative_sample_count": 1,
+        "average_positive_post_cost_pnl_delta": 4.0,
+        "average_negative_post_cost_pnl_delta_abs": 2.0,
+        "average_win_to_average_loss_ratio": 2.0,
+        "profit_factor": 2.0,
+        "policy": "payoff asymmetry is measured only from candidate-bound post-cost wins and losses; independent-sample sufficiency remains a separate live gate",
+    }
+
+
+def test_candidate_post_cost_daily_series_keeps_profiles_and_days_separate() -> None:
+    rows = [
+        {
+            "timestamp_utc": "2026-03-31T20:00:00+00:00",
+            "paper_pnl_schema_version": 2,
+            "post_cost_pnl_delta": 1.0,
+            "post_cost_return_bps": 10.0,
+            "symbol": "SPY",
+            "strategy": "alpha",
+            "metadata": {"source_profile": "default"},
+        },
+        {
+            "timestamp_utc": "2026-03-31T21:00:00+00:00",
+            "paper_pnl_schema_version": 2,
+            "post_cost_pnl_delta": -0.25,
+            "post_cost_return_bps": -2.5,
+            "symbol": "QQQ",
+            "strategy": "beta",
+            "metadata": {"source_profile": "default"},
+        },
+        {
+            "timestamp_utc": "2026-04-01T14:00:00+00:00",
+            "paper_pnl_schema_version": 2,
+            "post_cost_pnl_delta": 2.0,
+            "post_cost_return_bps": 20.0,
+            "symbol": "SCHD",
+            "strategy": "income",
+            "metadata": {"source_profile": "dividend"},
+        },
+    ]
+
+    series = report._candidate_post_cost_daily_series(rows)
+
+    assert series["default"] == [
+        {
+            "day_utc": "20260331",
+            "sample_count": 2,
+            "post_cost_pnl_delta_total": 0.75,
+            "post_cost_return_bps_total": 7.5,
+            "mean_post_cost_return_bps": 3.75,
+            "unique_symbol_count": 2,
+            "unique_strategy_count": 2,
+        }
+    ]
+    assert series["dividend"][0]["day_utc"] == "20260401"
+
+
 def test_paper_performance_report_includes_win_rate_by_non_flat_strategy(tmp_path, monkeypatch) -> None:
     project_root = tmp_path / "project"
     log_dir = project_root / "exports" / "paper_broker_bridge" / "paper"

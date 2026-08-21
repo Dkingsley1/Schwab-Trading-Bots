@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import gzip
 import json
 import sys
 from datetime import datetime, timezone
@@ -47,11 +48,54 @@ def _safe_float(raw: Any, default: float = 0.0) -> float:
         return float(default)
 
 
+def _aligned_candidate_period_returns(
+    raw_series: Any,
+    *,
+    minimum_periods: int = 8,
+) -> tuple[dict[str, list[float]], list[str]]:
+    if not isinstance(raw_series, dict):
+        return {}, []
+    by_profile: dict[str, dict[str, float]] = {}
+    for raw_profile, rows in raw_series.items():
+        profile = str(raw_profile or "").strip().lower()
+        if not profile or not isinstance(rows, list):
+            continue
+        daily: dict[str, float] = {}
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            day = str(row.get("day_utc") or "").strip()
+            if not day:
+                continue
+            daily[day] = _safe_float(
+                row.get("post_cost_return_bps_total"),
+                0.0,
+            )
+        if len(daily) >= max(int(minimum_periods), 4):
+            by_profile[profile] = daily
+    if len(by_profile) < 2:
+        return {}, []
+    common_days = sorted(
+        set.intersection(*(set(values) for values in by_profile.values()))
+    )
+    if len(common_days) < max(int(minimum_periods), 4):
+        return {}, common_days
+    return {
+        profile: [daily[day] for day in common_days]
+        for profile, daily in sorted(by_profile.items())
+    }, common_days
+
+
 def _experiment_ledger_ids(path: Path) -> set[str]:
     if not path.is_file():
         return set()
     out: set[str] = set()
-    with path.open("r", encoding="utf-8", errors="replace") as handle:
+    handle = (
+        gzip.open(path, "rt", encoding="utf-8", errors="replace")
+        if path.suffix == ".gz"
+        else path.open("r", encoding="utf-8", errors="replace")
+    )
+    with handle:
         for line_number, raw in enumerate(handle, start=1):
             try:
                 row = json.loads(raw)
@@ -116,8 +160,17 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
         and str(row.get("bot_role") or "").strip() in strategy_roles
         and str(row.get("bot_id") or "").strip()
     }
-    experiment_ledger_path = project_root / "governance" / "research" / "experiment_ledger.jsonl"
-    experiment_ledger_ids = _experiment_ledger_ids(experiment_ledger_path)
+    experiment_ledger_paths = [
+        project_root / "governance" / "research" / "experiment_ledger.jsonl",
+        project_root / "governance" / "experiments" / "immutable_experiment_ledger.jsonl",
+        project_root / "governance" / "experiments" / "immutable_experiment_ledger.jsonl.gz",
+    ]
+    experiment_ledger_ids_by_path = {
+        str(path): _experiment_ledger_ids(path)
+        for path in experiment_ledger_paths
+        if path.is_file()
+    }
+    experiment_ledger_ids = set().union(*experiment_ledger_ids_by_path.values()) if experiment_ledger_ids_by_path else set()
     family_size = max(derived_family_size, len(registry_hypothesis_ids), len(experiment_ledger_ids), 0)
     registry_floor_required = bool(lineage_policy.get("require_complete_registry_floor", True))
     lineage_complete = bool(
@@ -162,6 +215,30 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
         overall_status = "blocked"
 
     sleeve_rows = paper_performance.get("sleeve_latest") if isinstance(paper_performance.get("sleeve_latest"), list) else []
+    evidence_window = (
+        paper_performance.get("profitability_evidence_window")
+        if isinstance(paper_performance.get("profitability_evidence_window"), dict)
+        else {}
+    )
+    candidate_id = str(evidence_window.get("candidate_id") or "").strip()
+    candidate_binding_required = bool(
+        evidence_window.get("candidate_binding_required", False)
+    )
+    candidate_binding_mismatches = max(
+        _safe_int(
+            evidence_window.get("candidate_binding_mismatch_rows_excluded"),
+            0,
+        ),
+        0,
+    )
+    candidate_bound = bool(
+        not candidate_binding_required
+        or (
+            candidate_id
+            and evidence_window.get("candidate_filter_active", False)
+            and candidate_binding_mismatches == 0
+        )
+    )
     sleeve_p_values: dict[str, float] = {}
     for row in sleeve_rows:
         if not isinstance(row, dict):
@@ -177,21 +254,32 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
         except Exception:
             continue
     actual_fdr = benjamini_hochberg(sleeve_p_values, alpha=base_alpha)
-    daily_series = paper_performance.get("sleeve_daily_series") if isinstance(paper_performance.get("sleeve_daily_series"), dict) else {}
-    strategy_period_returns: dict[str, list[float]] = {}
-    for profile, rows in daily_series.items():
-        if not isinstance(rows, list):
-            continue
-        values = [
-            _safe_float(row.get("change_vs_previous_day"), 0.0)
-            for row in rows
-            if isinstance(row, dict)
-        ]
-        if values:
-            strategy_period_returns[str(profile)] = values
+    common_candidate_days: list[str] = []
+    if candidate_binding_required:
+        strategy_period_returns, common_candidate_days = (
+            _aligned_candidate_period_returns(
+                paper_performance.get("candidate_post_cost_daily_series")
+            )
+        )
+        pbo_series_scope = "candidate_forward_profile_daily_post_cost_returns"
+    else:
+        daily_series = paper_performance.get("sleeve_daily_series") if isinstance(paper_performance.get("sleeve_daily_series"), dict) else {}
+        strategy_period_returns = {}
+        for profile, rows in daily_series.items():
+            if not isinstance(rows, list):
+                continue
+            values = [
+                _safe_float(row.get("change_vs_previous_day"), 0.0)
+                for row in rows
+                if isinstance(row, dict)
+            ]
+            if values:
+                strategy_period_returns[str(profile)] = values
+        pbo_series_scope = "legacy_lifetime_sleeve_daily_returns"
     pbo = probability_of_backtest_overfitting(strategy_period_returns)
     statistical_evidence_ready = bool(
         lineage_complete
+        and candidate_bound
         and
         actual_fdr.get("hypothesis_count", 0) >= 2
         and actual_fdr.get("passing_hypotheses")
@@ -199,6 +287,8 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
         and pbo.get("passes", False)
     )
     statistical_blockers: list[str] = []
+    if not candidate_bound:
+        statistical_blockers.append("candidate_binding_not_ready")
     if not lineage_complete:
         statistical_blockers.append("complete_experiment_lineage_pending")
     if actual_fdr.get("hypothesis_count", 0) < 2:
@@ -212,7 +302,7 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
 
     payload = {
         "timestamp_utc": now.isoformat(),
-        "schema_version": 2,
+        "schema_version": 3,
         "ok": ok,
         "overall_status": overall_status,
         "contract_present": contract_present,
@@ -227,6 +317,10 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
             "derived_research_family_size": derived_family_size,
             "registry_strategy_hypothesis_count": len(registry_hypothesis_ids),
             "experiment_ledger_hypothesis_count": len(experiment_ledger_ids),
+            "experiment_ledger_counts_by_path": {
+                path: len(ids)
+                for path, ids in sorted(experiment_ledger_ids_by_path.items())
+            },
             "conservative_family_size": family_size,
         },
         "experiment_lineage": {
@@ -235,7 +329,8 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
             "strategy_roles": sorted(strategy_roles),
             "registry_hypothesis_count": len(registry_hypothesis_ids),
             "experiment_ledger_hypothesis_count": len(experiment_ledger_ids),
-            "experiment_ledger_path": str(experiment_ledger_path),
+            "experiment_ledger_paths": sorted(experiment_ledger_ids_by_path),
+            "compressed_immutable_ledger_supported": True,
             "policy": "the statistical family is never smaller than the complete registered strategy or immutable experiment lineage; deleted, excluded, and failed strategies remain in the family",
         },
         "hypotheses": hypotheses,
@@ -244,6 +339,22 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
         "baseline_metrics": ablation_block.get("baseline") if isinstance(ablation_block.get("baseline"), dict) else {},
         "delta_metrics": ablation.get("delta") if isinstance(ablation.get("delta"), dict) else {},
         "failed_checks": failed_checks,
+        "candidate_binding": {
+            "candidate_id": candidate_id,
+            "generation": _safe_int(
+                evidence_window.get("candidate_generation"),
+                0,
+            ),
+            "cutoff_utc": str(evidence_window.get("candidate_cutoff_utc") or ""),
+            "evidence_through_utc": str(
+                evidence_window.get("evidence_through_utc") or ""
+            ),
+            "required": candidate_binding_required,
+            "bound": candidate_bound,
+            "mismatch_rows_excluded": candidate_binding_mismatches,
+            "pbo_series_scope": pbo_series_scope,
+            "pbo_common_period_days": common_candidate_days,
+        },
         "actual_statistical_correction": actual_fdr,
         "deflated_sharpe_available_by_sleeve": {
             str(row.get("profile") or ""): (
@@ -260,6 +371,7 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
         "grading_contract": {
             "ok_measures_structural_research_control": True,
             "statistical_evidence_ready_requires_actual_p_values_and_pbo": True,
+            "candidate_bound_pbo_periods_required": True,
             "declared_correction_method_is_not_profitability_evidence": True,
             "all_registered_strategy_hypotheses_count_toward_selection_bias": True,
             "discarded_experiments_cannot_disappear_from_the_family_size": True,
@@ -273,7 +385,7 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
             "counterfactual_replay": str(health_root / "counterfactual_replay_latest.json"),
             "promotion_readiness": str(walk_root / "promotion_readiness_latest.json"),
             "master_bot_registry": str(project_root / "master_bot_registry.json"),
-            "experiment_ledger": str(experiment_ledger_path),
+            "experiment_ledgers": sorted(experiment_ledger_ids_by_path),
         },
     }
     return payload

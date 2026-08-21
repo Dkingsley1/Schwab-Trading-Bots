@@ -621,7 +621,23 @@ def coalesce_paper_intents(
         base_weight = max(_float(row.get("weight"), 0.0), 0.01)
         accuracy = _clamp01(row.get("test_accuracy", 0.5))
         features = row.get("features") if isinstance(row.get("features"), Mapping) else {}
-        strategy_size = _clamp01(features.get("paper_profitability_strategy_size_multiplier_norm", 1.0))
+        strategy_size = (
+            1.0
+            if action == "SELL"
+            else min(
+                max(
+                    _float(
+                        features.get(
+                            "paper_profitability_strategy_size_multiplier_norm",
+                            1.0,
+                        ),
+                        1.0,
+                    ),
+                    0.0,
+                ),
+                1.10,
+            )
+        )
         regime_fit = _clamp01(features.get("profitability_regime_fit_norm", 1.0))
         execution_quality = _clamp01(
             features.get(
@@ -778,15 +794,33 @@ def coalesce_paper_intents(
     score_distance = min(max(0.055 + 0.30 * net_vote_ratio, 0.055), 0.45)
     score = 0.5 + direction * score_distance if direction else 0.5
     weighted_size = sum(
-        _clamp01(
-            (row.get("features") or {}).get("paper_profitability_strategy_size_multiplier_norm", 1.0)
-            if isinstance(row.get("features"), Mapping)
-            else 1.0
+        (
+            1.0
+            if action == "SELL"
+            else min(
+                max(
+                    _float(
+                        (row.get("features") or {}).get(
+                            "paper_profitability_strategy_size_multiplier_norm",
+                            1.0,
+                        )
+                        if isinstance(row.get("features"), Mapping)
+                        else 1.0,
+                        1.0,
+                    ),
+                    0.0,
+                ),
+                1.10,
+            )
         )
         * _float(row.get("effective_weight"))
         for row in eligible
     ) / total_weight
-    quantity_multiplier = _clamp01(weighted_size * (0.55 + 0.45 * consensus_ratio)) if action != "HOLD" else 0.0
+    quantity_multiplier = (
+        min(max(weighted_size * (0.55 + 0.45 * consensus_ratio), 0.0), 1.10)
+        if action != "HOLD"
+        else 0.0
+    )
     reason = (
         "portfolio_consensus"
         if action != "HOLD"

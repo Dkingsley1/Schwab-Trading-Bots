@@ -19,8 +19,8 @@ else:
 
 DEFAULT_OUT_PATH = PROJECT_ROOT / "governance" / "health" / "sleeve_ingestion_production_control_latest.json"
 DEFAULT_OVERRIDE_PATH = PROJECT_ROOT / "config" / ".env.sleeve_ingestion_production_override"
-SCHEMA_VERSION = 1
-CONTROL_VERSION = "sleeve_ingestion_production_control_v1"
+SCHEMA_VERSION = 2
+CONTROL_VERSION = "sleeve_ingestion_production_control_v2"
 ARTIFACT_SPECS: dict[str, tuple[str, float]] = {
     "observation_rollup": ("governance/health/data_collection_observation_rollup_latest.json", 240.0),
     "paper_standard": ("governance/health/paper_live_data_standard_latest.json", 240.0),
@@ -28,6 +28,10 @@ ARTIFACT_SPECS: dict[str, tuple[str, float]] = {
     "ingestion_queue": ("governance/health/ingestion_priority_queue_latest.json", 240.0),
     "storage_autopilot": ("governance/health/storage_backpressure_autopilot_latest.json", 240.0),
     "sleeve_coverage": ("governance/health/sleeve_strategy_coverage_latest.json", 240.0),
+    "collector_capabilities": (
+        "governance/health/collector_capability_control_latest.json",
+        30.0,
+    ),
 }
 
 
@@ -227,6 +231,61 @@ def _coverage_contract(coverage: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _routing_contract(capabilities: dict[str, Any]) -> dict[str, Any]:
+    summary = _as_dict(capabilities.get("summary"))
+    routing = _as_dict(capabilities.get("ingestion_routing_contract"))
+    authority = _as_dict(capabilities.get("ingestion_authority_contract"))
+    assignment_count = _safe_int(summary.get("assignment_count"), 0)
+    bot_binding_count = _safe_int(summary.get("bot_binding_count"), 0)
+    runtime_route_count = _safe_int(routing.get("runtime_route_count"), 0)
+    family_count = _safe_int(routing.get("decision_family_count"), 0)
+    transport = _as_dict(routing.get("transport_contract"))
+    return {
+        "status": str(capabilities.get("overall_status") or "missing"),
+        "structural_ready": bool(capabilities.get("ok", False)),
+        "paper_soak_ready": bool(capabilities.get("paper_soak_ready", False)),
+        "live_promotion_ready": bool(capabilities.get("live_promotion_ready", False)),
+        "policy_id": str(routing.get("policy_id") or ""),
+        "policy_receipt_sha256": str(routing.get("policy_receipt_sha256") or ""),
+        "routing_artifact_receipt_sha256": str(
+            routing.get("routing_artifact_receipt_sha256")
+            or capabilities.get("routing_receipt_sha256")
+            or ""
+        ),
+        "decision_policy_id": str(routing.get("decision_policy_id") or ""),
+        "decision_stage": str(routing.get("decision_stage") or ""),
+        "decision_family_count": family_count,
+        "assignment_count": assignment_count,
+        "bot_binding_count": bot_binding_count,
+        "all_bots_route_bound": bool(
+            assignment_count > 0 and bot_binding_count == assignment_count
+        ),
+        "runtime_route_count": runtime_route_count,
+        "runtime_paper_ready_route_count": _safe_int(
+            routing.get("runtime_paper_ready_route_count"), 0
+        ),
+        "runtime_live_ready_route_count": _safe_int(
+            routing.get("runtime_live_ready_route_count"), 0
+        ),
+        "average_profile_route_quality": round(
+            _safe_float(routing.get("average_profile_route_quality"), 0.0), 6
+        ),
+        "route_authority_safe": bool(
+            authority and not any(bool(value) for value in authority.values())
+        ),
+        "transport_contract_complete": bool(
+            transport and all(value is True for value in transport.values())
+        ),
+        "transport_contract": transport,
+        "coverage_debt_blocks_global_collection": bool(
+            routing.get("paper_data_debt_blocks_global_collection", True)
+        ),
+        "coverage_debt_blocks_live_promotion": bool(
+            routing.get("live_data_debt_blocks_candidate_promotion", True)
+        ),
+    }
+
+
 def _ingestion_mode(backlog: dict[str, Any], collection: dict[str, Any], paper: dict[str, Any]) -> tuple[str, float, str]:
     if not paper.get("live_execution_locked", False):
         return "blocked_live_execution_boundary", 0.0, "live execution boundary is not locked"
@@ -244,6 +303,7 @@ def _ingestion_mode(backlog: dict[str, Any], collection: dict[str, Any], paper: 
 def _env_values(payload: dict[str, Any]) -> dict[str, str]:
     mode = _as_dict(payload.get("ingestion_mode_contract"))
     data_tiers = _as_dict(payload.get("data_tier_contract"))
+    routing = _as_dict(payload.get("decision_aligned_routing_contract"))
     raw_ratio = mode.get("max_active_ratio")
     active_ratio = _safe_float(raw_ratio, 0.16) if raw_ratio is not None else 0.16
     active_ratio_text = f"{active_ratio:g}"
@@ -258,6 +318,15 @@ def _env_values(payload: dict[str, Any]) -> dict[str, str]:
         "SLEEVE_INGESTION_LANE_ROUTING_REQUIRED": "1",
         "SLEEVE_INGESTION_MANIFEST_FIRST": "1",
         "SLEEVE_INGESTION_PAYLOAD_DIGEST_REQUIRED": "1",
+        "SLEEVE_INGESTION_SOURCE_TIMESTAMP_REQUIRED": "1",
+        "SLEEVE_INGESTION_ROUTE_RECEIPT_REQUIRED": "1",
+        "SLEEVE_INGESTION_ROUTE_ENFORCEMENT": "1",
+        "SLEEVE_INGESTION_ROUTE_MAX_AGE_MINUTES": "30",
+        "SLEEVE_INGESTION_ROUTING_POLICY_ID": str(routing.get("policy_id") or ""),
+        "SLEEVE_INGESTION_ROUTING_RECEIPT": str(
+            routing.get("routing_artifact_receipt_sha256") or ""
+        ),
+        "SLEEVE_INGESTION_ROUTE_SCORE_FLOOR": "0.70",
         "SLEEVE_INGESTION_CORE_PRIORITY": str(data_tiers.get("core_priority") or "1"),
         "SLEEVE_INGESTION_DEFERRED_BUDGET": str(data_tiers.get("deferred_budget") or "0"),
         "SLEEVE_INGESTION_COLD_BUDGET": str(data_tiers.get("cold_budget") or "0"),
@@ -292,6 +361,7 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, apply: bool = False, ove
     queue = _queue_contract(artifacts["ingestion_queue"])
     backlog = _backlog_contract(artifacts["storage_autopilot"])
     coverage = _coverage_contract(artifacts["sleeve_coverage"])
+    routing = _routing_contract(artifacts["collector_capabilities"])
     freshness = _source_freshness_contract(project_root, artifacts)
     mode_name, max_active_ratio, mode_reason = _ingestion_mode(backlog, collection, paper)
     pressure_limited = bool(backlog.get("active", False) or max_active_ratio < 0.70)
@@ -314,6 +384,24 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, apply: bool = False, ove
         "live_money_blocked_while_backlog_hot": bool(not backlog.get("active", False) or backlog.get("live_money_blocked", False)),
         "sleeve_coverage_ready": bool(coverage.get("coverage_ready", False)),
         "source_artifacts_fresh": bool(freshness.get("all_required_fresh", False)),
+        "decision_aligned_ingestion_routing": bool(
+            routing.get("policy_id") == "sleeve_ingestion_routing_v2"
+            and routing.get("decision_stage") == "02_data_qualification"
+            and int(routing.get("decision_family_count", 0) or 0) >= 15
+        ),
+        "all_bots_route_bound": bool(routing.get("all_bots_route_bound", False)),
+        "runtime_sleeve_routes_defined": bool(
+            int(routing.get("runtime_route_count", 0) or 0) > 0
+        ),
+        "routing_receipt_present": bool(
+            routing.get("routing_artifact_receipt_sha256")
+        ),
+        "ingestion_route_authority_safe": bool(
+            routing.get("route_authority_safe", False)
+        ),
+        "transport_contract_complete": bool(
+            routing.get("transport_contract_complete", False)
+        ),
         "event_envelope_required": True,
         "idempotency_required": True,
         "schema_version_required": True,
@@ -341,6 +429,14 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, apply: bool = False, ove
         score -= 8.0
     if not freshness.get("all_required_fresh", False):
         score -= min(24.0, 6.0 * len(_as_list(freshness.get("stale_or_missing"))))
+    if not routing.get("structural_ready", False):
+        score -= 16.0
+    if not routing.get("all_bots_route_bound", False):
+        score -= 12.0
+    if not routing.get("route_authority_safe", False):
+        score -= 40.0
+    if not routing.get("transport_contract_complete", False):
+        score -= 10.0
     score = round(max(min(score, 100.0), 0.0), 2)
     grade = _grade(score)
     state = "production_ready" if not missing else "production_attention_required"
@@ -380,6 +476,9 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, apply: bool = False, ove
                 "ingestion_lane",
                 "source_contract",
                 "payload_digest",
+                "source_timestamp_utc",
+                "ingestion_route_profile_id",
+                "ingestion_route_receipt_sha256",
             ],
             "dedupe_policy": "idempotency_key must include bot_id, sleeve_profile, symbol, event_type, and source timestamp bucket",
             "payload_policy": "manifest-first payload references or digests are preferred while storage pressure is active",
@@ -397,12 +496,17 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, apply: bool = False, ove
         "ingestion_queue_contract": queue,
         "backlog_contract": backlog,
         "sleeve_coverage_contract": coverage,
+        "decision_aligned_routing_contract": routing,
         "source_freshness_contract": freshness,
         "control_env_recommendations": {},
         "regression_guards": [
             "all non-deleted sleeves must collect before paper/live-data claims are ready",
             "zero-observation sleeves route to targeted repair before broad expansion",
             "every sleeve event requires schema, idempotency, lane, and payload digest fields",
+            "every decision-bound event carries the exact route profile and signed route receipt used by data qualification",
+            "decision-family routing replaces broad scope-only subscriptions and caps optional data fanout",
+            "primary and failover providers are ranked by authority, proof, freshness, quality, coverage, error budget, and payload integrity",
+            "route coverage debt can force a sleeve to collect-only but cannot stop unrelated healthy paper collection",
             "hot-core backlog forces manifest-first low duty-cycle ingestion",
             "sleeve strategy coverage artifact must be loaded and fresh before sleeve ingestion can go production-ready",
             "managed deferred backlog can be paper-safe but remains live-money blocking",
@@ -413,6 +517,8 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, apply: bool = False, ove
                 "keep sleeve ingestion production control loaded through runtime env",
                 "refresh sleeve-strategy-coverage before claiming sleeve ingestion is production-ready" if not coverage.get("coverage_ready", False) else "",
                 "refresh stale or missing sleeve ingestion source artifacts before widening collection" if not freshness.get("all_required_fresh", False) else "",
+                "refresh collector capability routing before trusting decision-bound route receipts" if not routing.get("structural_ready", False) else "",
+                "repair exact sleeve route coverage rather than widening every bot subscription" if int(routing.get("runtime_paper_ready_route_count", 0) or 0) < int(routing.get("runtime_route_count", 0) or 0) else "",
                 "keep all sleeves manifest-first and idempotent while storage pressure is active" if pressure_limited else "",
                 "repair zero-observation sleeves before adding more ingestion breadth" if not collection.get("coverage_ready", False) else "",
                 "let storage_backpressure_autopilot own deferred backlog while sleeves continue hot-path paper evidence" if backlog.get("active", False) else "",

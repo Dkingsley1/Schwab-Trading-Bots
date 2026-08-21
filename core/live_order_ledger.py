@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
@@ -260,16 +261,68 @@ class LiveOrderLedger:
                 conn.rollback()
                 raise KeyError(f"unknown intent_id: {key}")
             current = str(row["state"])
-            if target == current:
-                conn.rollback()
-                return self._row_dict(row)
-            if target not in ALLOWED_TRANSITIONS.get(current, set()):
+            if target != current and target not in ALLOWED_TRANSITIONS.get(current, set()):
                 conn.rollback()
                 raise ValueError(f"illegal order transition: {current}->{target}")
             now = _utc_now()
-            broker_id = str(broker_order_id or row["broker_order_id"] or "").strip()
-            filled = float(row["filled_quantity"] if filled_quantity is None else max(float(filled_quantity), 0.0))
-            average = float(row["average_fill_price"] if average_fill_price is None else max(float(average_fill_price), 0.0))
+            existing_broker_id = str(row["broker_order_id"] or "").strip()
+            incoming_broker_id = str(broker_order_id or "").strip()
+            if existing_broker_id and incoming_broker_id and incoming_broker_id != existing_broker_id:
+                conn.rollback()
+                raise ValueError("broker_order_id_is_immutable")
+            broker_id = incoming_broker_id or existing_broker_id
+            existing_filled = float(row["filled_quantity"] or 0.0)
+            existing_average = float(row["average_fill_price"] or 0.0)
+            filled = existing_filled if filled_quantity is None else float(filled_quantity)
+            average = existing_average if average_fill_price is None else float(average_fill_price)
+            requested = float(row["requested_quantity"] or 0.0)
+            if not math.isfinite(filled) or filled < 0.0:
+                conn.rollback()
+                raise ValueError("filled_quantity_must_be_finite_and_nonnegative")
+            if not math.isfinite(average) or average < 0.0:
+                conn.rollback()
+                raise ValueError("average_fill_price_must_be_finite_and_nonnegative")
+            if filled + 1e-9 < existing_filled:
+                conn.rollback()
+                raise ValueError("filled_quantity_cannot_decrease")
+            if requested > 0.0 and filled > requested + 1e-9:
+                conn.rollback()
+                raise ValueError("filled_quantity_cannot_exceed_requested_quantity")
+            broker_active_states = {
+                "acknowledged",
+                "open",
+                "partially_filled",
+                "filled",
+                "cancel_pending",
+                "cancel_unknown",
+                "canceled",
+                "expired",
+            }
+            if target in broker_active_states and not broker_id:
+                conn.rollback()
+                raise ValueError(f"broker_order_id_required_for_state:{target}")
+            if target == "partially_filled" and (
+                filled <= 0.0 or (requested > 0.0 and filled >= requested - 1e-9)
+            ):
+                conn.rollback()
+                raise ValueError("partial_fill_quantity_must_be_between_zero_and_requested")
+            if target == "filled" and requested > 0.0 and abs(filled - requested) > 1e-9:
+                conn.rollback()
+                raise ValueError("filled_state_requires_requested_quantity")
+            error_text = str(last_error or "")
+            material_changed = bool(
+                target != current
+                or broker_id != existing_broker_id
+                or abs(filled - existing_filled) > 1e-12
+                or abs(average - existing_average) > 1e-12
+                or error_text != str(row["last_error"] or "")
+            )
+            if target == current and not material_changed:
+                conn.rollback()
+                return self._row_dict(row)
+            if current in TERMINAL_STATES and material_changed:
+                conn.rollback()
+                raise ValueError(f"terminal_order_state_is_immutable:{current}")
             conn.execute(
                 """
                 UPDATE order_intents
@@ -277,7 +330,7 @@ class LiveOrderLedger:
                     average_fill_price = ?, updated_at_utc = ?, last_error = ?
                 WHERE intent_id = ?
                 """,
-                (target, broker_id, filled, average, now, str(last_error or ""), key),
+                (target, broker_id, filled, average, now, error_text, key),
             )
             self._append_event(
                 conn,
@@ -286,10 +339,11 @@ class LiveOrderLedger:
                 to_state=target,
                 details={
                     **(details or {}),
+                    "event_kind": "state_transition" if target != current else "material_update",
                     "broker_order_id": broker_id,
                     "filled_quantity": filled,
                     "average_fill_price": average,
-                    "last_error": str(last_error or ""),
+                    "last_error": error_text,
                 },
                 timestamp_utc=now,
             )
@@ -328,8 +382,8 @@ class LiveOrderLedger:
         *,
         broker_order_id: str,
         broker_status: Any,
-        filled_quantity: float = 0.0,
-        average_fill_price: float = 0.0,
+        filled_quantity: float | None = None,
+        average_fill_price: float | None = None,
     ) -> dict[str, Any]:
         broker_id = str(broker_order_id or "").strip()
         if not broker_id:
@@ -338,9 +392,17 @@ class LiveOrderLedger:
             row = conn.execute("SELECT * FROM order_intents WHERE broker_order_id = ?", (broker_id,)).fetchone()
         if row is None:
             raise KeyError(f"unknown broker_order_id: {broker_id}")
+        existing_filled = float(row["filled_quantity"] or 0.0)
+        existing_average = float(row["average_fill_price"] or 0.0)
+        reported_filled = existing_filled if filled_quantity is None else float(filled_quantity)
+        reported_average = existing_average if average_fill_price is None else float(average_fill_price)
+        if reported_filled <= 0.0 and existing_filled > 0.0:
+            reported_filled = existing_filled
+        if reported_average <= 0.0 and existing_average > 0.0:
+            reported_average = existing_average
         target = normalize_broker_state(
             broker_status,
-            filled_quantity=max(float(filled_quantity or 0.0), 0.0),
+            filled_quantity=max(reported_filled, 0.0),
             requested_quantity=max(float(row["requested_quantity"] or 0.0), 0.0),
         )
         current = str(row["state"])
@@ -350,8 +412,8 @@ class LiveOrderLedger:
             intent_id=str(row["intent_id"]),
             to_state=target,
             broker_order_id=broker_id,
-            filled_quantity=filled_quantity,
-            average_fill_price=average_fill_price,
+            filled_quantity=reported_filled,
+            average_fill_price=reported_average,
             details={"broker_status": str(broker_status or "")},
         )
 
