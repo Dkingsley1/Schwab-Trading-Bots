@@ -54,6 +54,11 @@ from decision_context_mesh import (
     PUBLIC_FINANCIAL_CONTEXT_FEATURE_KEYS,
     decision_context_mesh_ready,
 )
+from research_context_expansion import (
+    COLLECTOR_IDS as RESEARCH_CONTEXT_COLLECTOR_IDS,
+    RUNTIME_RESEARCH_CONTEXT_FEATURE_KEYS,
+    research_context_ready,
+)
 
 try:
     from derivatives_features import summarize_calendar_payload
@@ -372,7 +377,7 @@ _RUNTIME_SCHWAB_EDUCATION_KEYS = {
     "schwab_education_symbol_stream_share_norm",
 }
 
-_RUNTIME_GAP_FILL_KEYS = set(BREADTH_FEATURE_KEYS) | set(BOND_REFERENCE_FEATURE_KEYS) | set(CREDIT_CONTEXT_FEATURE_KEYS) | set(NEWS_STRUCTURED_FEATURE_KEYS) | _RUNTIME_NEWS_EVENT_KEYS | _RUNTIME_CALENDAR_EVENT_KEYS | _RUNTIME_MARKET_MICRO_KEYS | _RUNTIME_SEC_EDGAR_KEYS | _RUNTIME_EXTENDED_QUANT_KEYS | _RUNTIME_CENTRAL_BANK_LIQUIDITY_KEYS | _RUNTIME_GLOBAL_CENTRAL_BANK_KEYS | _RUNTIME_CENTRAL_BANK_CROSS_SOURCE_KEYS | _RUNTIME_DECISION_CONTEXT_MESH_KEYS | _RUNTIME_TASTYTRADE_KEYS | _RUNTIME_CRYPTO_MARKET_KEYS | _RUNTIME_MARKET_CRYPTO_CORRELATION_KEYS | _RUNTIME_FX_MARKET_KEYS | _RUNTIME_DIVIDEND_DRIP_KEYS | _RUNTIME_SCHWAB_EDUCATION_KEYS | _RUNTIME_QUANT_MODEL_KEYS
+_RUNTIME_GAP_FILL_KEYS = set(BREADTH_FEATURE_KEYS) | set(BOND_REFERENCE_FEATURE_KEYS) | set(CREDIT_CONTEXT_FEATURE_KEYS) | set(NEWS_STRUCTURED_FEATURE_KEYS) | _RUNTIME_NEWS_EVENT_KEYS | _RUNTIME_CALENDAR_EVENT_KEYS | _RUNTIME_MARKET_MICRO_KEYS | _RUNTIME_SEC_EDGAR_KEYS | _RUNTIME_EXTENDED_QUANT_KEYS | _RUNTIME_CENTRAL_BANK_LIQUIDITY_KEYS | _RUNTIME_GLOBAL_CENTRAL_BANK_KEYS | _RUNTIME_CENTRAL_BANK_CROSS_SOURCE_KEYS | _RUNTIME_DECISION_CONTEXT_MESH_KEYS | _RUNTIME_TASTYTRADE_KEYS | _RUNTIME_CRYPTO_MARKET_KEYS | _RUNTIME_MARKET_CRYPTO_CORRELATION_KEYS | _RUNTIME_FX_MARKET_KEYS | _RUNTIME_DIVIDEND_DRIP_KEYS | _RUNTIME_SCHWAB_EDUCATION_KEYS | _RUNTIME_QUANT_MODEL_KEYS | set(RUNTIME_RESEARCH_CONTEXT_FEATURE_KEYS)
 
 
 def _safe_float(value: Any, default: float = 0.0) -> float:
@@ -827,6 +832,10 @@ def _load_runtime_gap_fill_context(project_root: Path) -> Dict[str, Any]:
     fx_market_context = load_latest_external_context(project_root, "fx_market_context")
     dividend_drip_state = load_latest_external_context(project_root, "dividend_drip_state")
     quant_model_control = load_latest_external_context(project_root, "quant_model_control")
+    research_contexts = [
+        load_latest_external_context(project_root, collector_id)
+        for collector_id in RESEARCH_CONTEXT_COLLECTOR_IDS
+    ]
 
     te_derived = tradingeconomics.get("derived") if isinstance(tradingeconomics.get("derived"), Mapping) else {}
     official_derived = official_macro.get("derived") if isinstance(official_macro.get("derived"), Mapping) else {}
@@ -973,6 +982,12 @@ def _load_runtime_gap_fill_context(project_root: Path) -> Dict[str, Any]:
     external_global_features.update(_feature_subset(fx_market_global, _RUNTIME_FX_MARKET_KEYS))
     external_global_features.update(_feature_subset(dividend_drip_global, _RUNTIME_DIVIDEND_DRIP_KEYS))
     external_global_features.update(_feature_subset(quant_model_global, _RUNTIME_QUANT_MODEL_KEYS))
+    for collector_id, research_context in zip(RESEARCH_CONTEXT_COLLECTOR_IDS, research_contexts):
+        if not research_context_ready(research_context, collector_id):
+            continue
+        research_derived = research_context.get("derived") if isinstance(research_context.get("derived"), Mapping) else {}
+        research_global = research_derived.get("global_features") if isinstance(research_derived.get("global_features"), Mapping) else {}
+        external_global_features.update(_feature_subset(research_global, RUNTIME_RESEARCH_CONTEXT_FEATURE_KEYS))
     external_symbol_features = _symbol_feature_subset(sec_symbol, _RUNTIME_SEC_EDGAR_KEYS)
     if central_bank_cross_source_context_ready(central_bank_cross_source):
         for symbol, subset in _symbol_feature_subset(
@@ -1018,6 +1033,14 @@ def _load_runtime_gap_fill_context(project_root: Path) -> Dict[str, Any]:
     for symbol, subset in _symbol_feature_subset(quant_model_symbol, _RUNTIME_QUANT_MODEL_KEYS).items():
         current = external_symbol_features.setdefault(symbol, {})
         current.update(subset)
+    for collector_id, research_context in zip(RESEARCH_CONTEXT_COLLECTOR_IDS, research_contexts):
+        if not research_context_ready(research_context, collector_id):
+            continue
+        research_derived = research_context.get("derived") if isinstance(research_context.get("derived"), Mapping) else {}
+        research_symbol = research_derived.get("symbol_features") if isinstance(research_derived.get("symbol_features"), Mapping) else {}
+        for symbol, subset in _symbol_feature_subset(research_symbol, RUNTIME_RESEARCH_CONTEXT_FEATURE_KEYS).items():
+            current = external_symbol_features.setdefault(symbol, {})
+            current.update(subset)
 
     return {
         "calendar_features": calendar_features,

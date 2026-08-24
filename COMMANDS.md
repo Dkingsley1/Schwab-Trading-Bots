@@ -4,7 +4,7 @@ Use these exact commands as the current source of truth.
 
 This file is generated from the curated operator inventory in `scripts/ops/commands_hygiene_bot.py`.
 Rebuild it with `./scripts/ops/opsctl.sh commands-hygiene --apply` after changing that inventory.
-Command contract hash: `64f307f08d681dcecaa26dd71fe0bf2396e1393bcdb95beac9d3066a04978db2`.
+Command contract hash: `6185102788bd6a3c8be4eb6d79a3563127738e0c6353636536468fe1735bc91e`.
 Command contract artifact: `governance/health/commands_contract_latest.json`.
 
 This file is intentionally trimmed down with Most Used pinned first and the remaining sections alphabetized by section and command title:
@@ -23,7 +23,7 @@ Fast search tokens: `start` `stop` `paper` `profitability` `soak` `halt` `auth` 
 
 Useful compound searches: `paper profitability`, `global halt`, `token refresh`, `livefeed heavy`, `storage prune`, `soak readiness`.
 
-Search coverage: `215` generated command entries from the current command contract.
+Search coverage: `216` generated command entries from the current command contract.
 
 <datalist id="command-search-index-options">
   <option value="Keep the Mac awake (Most Used)"></option>
@@ -84,6 +84,7 @@ Search coverage: `215` generated command entries from the current command contra
   <option value="Official public financial context sync (Data Context Syncs)"></option>
   <option value="Options flow context sync (Data Context Syncs)"></option>
   <option value="Public macro and micro source inventory (Data Context Syncs)"></option>
+  <option value="Refresh the eight bounded research-context collectors (Data Context Syncs)"></option>
   <option value="Source verification (Data Context Syncs)"></option>
   <option value="Stock / crypto correlation sync (Data Context Syncs)"></option>
   <option value="Install the SpaceX/SPCX IPO downside watcher (Event Watches)"></option>
@@ -244,7 +245,7 @@ Search coverage: `215` generated command entries from the current command contra
 </datalist>
 
 <details>
-<summary>Generated command search index (215 commands; rebuilt by commands-hygiene)</summary>
+<summary>Generated command search index (216 commands; rebuilt by commands-hygiene)</summary>
 
 Each row is generated from `governance/health/commands_contract_latest.json`, so added, removed, renamed, or cleaned-up commands change this index automatically.
 
@@ -306,6 +307,7 @@ Each row is generated from `governance/health/commands_contract_latest.json`, so
 - search-entry:d1cffaaf0230b4139fa71221b2a9e357d3177b5e78f6452eff266a532db13575 section:`Data Context Syncs` section_key:`data-context-syncs` title:Official public financial context sync title_key:`official-public-financial-context-sync` opsctl:`public-financial-sync` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
 - search-entry:6a1e634c03d65dc842403cab6a10ed7f390b177974b51bde06fa2baa41dd2806 section:`Data Context Syncs` section_key:`data-context-syncs` title:Options flow context sync title_key:`options-flow-context-sync` opsctl:`options-flow-sync` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
 - search-entry:67901f6b681c56720c488ba0f8ea4128ea416a16ecc0bb1f478a4fae204b16be section:`Data Context Syncs` section_key:`data-context-syncs` title:Public macro and micro source inventory title_key:`public-macro-and-micro-source-inventory` opsctl:`economic-source-inventory` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
+- search-entry:ba0ece7e69f07025c1d80eaa142f39acb8e30c46c19b7daf4ee132ff601783d8 section:`Data Context Syncs` section_key:`data-context-syncs` title:Refresh the eight bounded research-context collectors title_key:`refresh-the-eight-bounded-research-context-collectors` opsctl:`research-context-sync` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
 - search-entry:e09ffc26df0422653438ce9314334305bc0ce171383e70cebd71948b54ca3ecc section:`Data Context Syncs` section_key:`data-context-syncs` title:Source verification title_key:`source-verification` opsctl:`source-verification` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
 - search-entry:45ef884dfcd2650aa72b2c1187d0a69c7ec30b42e1e5567eeeab2b1b454d6dea section:`Data Context Syncs` section_key:`data-context-syncs` title:Stock / crypto correlation sync title_key:`stock-crypto-correlation-sync` opsctl:`market-correlation-sync` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
 - search-entry:9021aedf14582e34e52c383973a4edbb1a55ee89133b24627b0c2a6fffe36607 section:`Event Watches` section_key:`event-watches` title:Install the SpaceX/SPCX IPO downside watcher title_key:`install-the-spacex-spcx-ipo-downside-watcher` opsctl:`spacex-ipo-watch-install` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
@@ -957,6 +959,16 @@ cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
 
 Validates and lists all direct and grouped public economic sources, their physical producers, capabilities, decision-plane routes, and decision-family routes.
 Source count is inventory evidence only and does not raise alpha, profitability, readiness, or promotion grades.
+
+### Refresh the eight bounded research-context collectors
+```bash
+cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
+./scripts/ops/opsctl.sh research-context-sync --all --json
+```
+
+Materializes cross-asset breadth, tape liquidity, options surface, futures curve, earnings, portfolio risk, FINRA fixed-income, and BIS global-liquidity context through one bounded process.
+BIS is public and credential-free. FINRA requires an optional public OAuth bearer in `FINRA_API_ACCESS_TOKEN`; when absent, that one collector records credential debt without making an unauthorized request or blocking paper trading.
+Every capability needs its own proof receipt. Missing dimensions remain unavailable, and these collectors have no action, sizing, order, registry-mutation, or promotion authority.
 
 ### Source verification
 ```bash
@@ -1967,7 +1979,7 @@ cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
 ./scripts/ops/opsctl.sh readiness-evidence-refresh --profile dashboard --apply --json
 ```
 
-The fifteen-stage accrual profile maintains organic collection every 15 minutes. The hourly production profile keeps all ten pillar owners, risk inputs, recovery proof, immutable evidence, and derived readiness controls current. The dashboard profile refreshes the bounded hot-state surface. All profiles are serialized, independently cooled down, market-data/paper-only, and have no training-launch or live-order authority.
+The bounded accrual profile maintains organic collection every 15 minutes. The hourly production profile keeps all ten pillar owners, risk inputs, recovery proof, immutable evidence, and derived readiness controls current. The dashboard profile refreshes the bounded hot-state surface. All profiles are serialized, independently cooled down, market-data/paper-only, and have no training-launch or live-order authority.
 
 ### Refresh runtime dashboard contracts
 ```bash

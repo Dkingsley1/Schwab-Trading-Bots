@@ -16,6 +16,7 @@ def test_refresh_profiles_are_bounded_and_keep_required_ordering() -> None:
         "point_in_time_event_store",
         "snapshot_coverage",
         "feature_store_manifest",
+        "research_context_expansion",
         "collector_contracts",
         "source_verification",
         "capability_materialization",
@@ -34,7 +35,8 @@ def test_refresh_profiles_are_bounded_and_keep_required_ordering() -> None:
     assert dashboard.index("market_replay_fill_capture") < dashboard.index("independent_fill_acquisition")
     assert dashboard.index("runtime_training_snapshot") < dashboard.index("feature_store_manifest")
     assert dashboard.index("snapshot_coverage") < dashboard.index("feature_store_manifest")
-    assert dashboard.index("feature_store_manifest") < dashboard.index("collector_contracts")
+    assert dashboard.index("feature_store_manifest") < dashboard.index("research_context_expansion")
+    assert dashboard.index("research_context_expansion") < dashboard.index("collector_contracts")
     assert dashboard.index("collector_contracts") < dashboard.index("source_verification")
     assert dashboard.index("source_verification") < dashboard.index("capability_materialization")
     assert dashboard.index("capability_materialization") < dashboard.index("collector_capability_control")
@@ -189,6 +191,9 @@ def test_accrual_collectors_are_bounded_and_evidence_only() -> None:
     assert set(steps["feature_store_manifest"]["allowed_returncodes"]) == {0, 2}
     assert set(steps["snapshot_coverage"]["allowed_returncodes"]) == {0, 2}
     assert set(steps["paper_execution_calibration"]["allowed_returncodes"]) == {0, 2}
+    assert steps["research_context_expansion"]["args"] == ["--all", "--json"]
+    assert set(steps["research_context_expansion"]["allowed_returncodes"]) == {0, 2}
+    assert "research_context_expansion" in steps["collector_contracts"]["depends_on"]
     assert "--include-data-plane" in steps["collector_contracts"]["args"]
 
 

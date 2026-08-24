@@ -1943,7 +1943,7 @@ def _commands_inventory(project_root: Path) -> list[dict[str, Any]]:
                     "./scripts/ops/opsctl.sh readiness-evidence-refresh --profile dashboard --apply --json",
                 ],
                 notes=[
-                    "The fifteen-stage accrual profile maintains organic collection every 15 minutes. The hourly production profile keeps all ten pillar owners, risk inputs, recovery proof, immutable evidence, and derived readiness controls current. The dashboard profile refreshes the bounded hot-state surface. All profiles are serialized, independently cooled down, market-data/paper-only, and have no training-launch or live-order authority.",
+                    "The bounded accrual profile maintains organic collection every 15 minutes. The hourly production profile keeps all ten pillar owners, risk inputs, recovery proof, immutable evidence, and derived readiness controls current. The dashboard profile refreshes the bounded hot-state surface. All profiles are serialized, independently cooled down, market-data/paper-only, and have no training-launch or live-order authority.",
                 ],
             ),
             _command_entry(
@@ -2434,6 +2434,16 @@ def _commands_inventory(project_root: Path) -> list[dict[str, Any]]:
                 notes=[
                     "Validates and lists all direct and grouped public economic sources, their physical producers, capabilities, decision-plane routes, and decision-family routes.",
                     "Source count is inventory evidence only and does not raise alpha, profitability, readiness, or promotion grades.",
+                ],
+            ),
+            _command_entry(
+                project_root,
+                "Refresh the eight bounded research-context collectors",
+                ["./scripts/ops/opsctl.sh research-context-sync --all --json"],
+                notes=[
+                    "Materializes cross-asset breadth, tape liquidity, options surface, futures curve, earnings, portfolio risk, FINRA fixed-income, and BIS global-liquidity context through one bounded process.",
+                    "BIS is public and credential-free. FINRA requires an optional public OAuth bearer in `FINRA_API_ACCESS_TOKEN`; when absent, that one collector records credential debt without making an unauthorized request or blocking paper trading.",
+                    "Every capability needs its own proof receipt. Missing dimensions remain unavailable, and these collectors have no action, sizing, order, registry-mutation, or promotion authority.",
                 ],
             ),
             _command_entry(

@@ -2601,6 +2601,230 @@
       },
       "fallback_policy": "serve_last_good_only_within_freshness_contract",
       "artifact_path": "governance/health/incident_closeout_latest.json"
+    },
+    {
+      "producer_id": "cross_asset_breadth_context",
+      "producer_kind": "collector",
+      "source_kind": "internal_derived",
+      "cadence": "intraday",
+      "resource_class": "warm",
+      "max_age_minutes": 180,
+      "capabilities": [
+        "cross_asset_correlation",
+        "cross_asset_dispersion",
+        "market_breadth",
+        "risk_on_off_state",
+        "factor_leadership",
+        "sector_rotation",
+        "cross_asset_dislocation"
+      ],
+      "capability_evidence_contract": {
+        "mode": "capability_rows",
+        "path": "capabilities",
+        "id_field": "capability_id",
+        "usable_field": "usable",
+        "receipt_field": "proof_receipt_sha256",
+        "require_receipt": true,
+        "required_equals": {"ok": true}
+      },
+      "cache_contract": {"mode": "shared_snapshot", "deduplicate_by": ["producer_id", "payload_sha256", "capability_id"]},
+      "fallback_policy": "serve_last_good_only_within_freshness_contract",
+      "collector_name": "cross_asset_breadth_context"
+    },
+    {
+      "producer_id": "tape_liquidity_context",
+      "producer_kind": "collector",
+      "source_kind": "internal_derived",
+      "cadence": "intraday",
+      "resource_class": "warm",
+      "max_age_minutes": 120,
+      "capabilities": [
+        "bid_ask_spread",
+        "consolidated_tape_quality",
+        "quote_age",
+        "realized_volatility",
+        "vwap_state",
+        "liquidity_regime"
+      ],
+      "capability_evidence_contract": {
+        "mode": "capability_rows",
+        "path": "capabilities",
+        "id_field": "capability_id",
+        "usable_field": "usable",
+        "receipt_field": "proof_receipt_sha256",
+        "require_receipt": true,
+        "required_equals": {"ok": true}
+      },
+      "cache_contract": {"mode": "shared_snapshot", "deduplicate_by": ["producer_id", "payload_sha256", "capability_id"]},
+      "fallback_policy": "serve_last_good_only_within_freshness_contract",
+      "collector_name": "tape_liquidity_context"
+    },
+    {
+      "producer_id": "options_greeks_surface_context",
+      "producer_kind": "collector",
+      "source_kind": "broker_native",
+      "cadence": "intraday",
+      "resource_class": "warm",
+      "max_age_minutes": 240,
+      "capabilities": [
+        "options_chain",
+        "implied_volatility_surface",
+        "volatility_skew",
+        "volatility_term_structure",
+        "option_greeks",
+        "option_open_interest",
+        "realized_volatility",
+        "volatility_risk_premium"
+      ],
+      "capability_evidence_contract": {
+        "mode": "capability_rows",
+        "path": "capabilities",
+        "id_field": "capability_id",
+        "usable_field": "usable",
+        "receipt_field": "proof_receipt_sha256",
+        "require_receipt": true,
+        "required_equals": {"ok": true}
+      },
+      "cache_contract": {"mode": "shared_snapshot", "deduplicate_by": ["producer_id", "payload_sha256", "capability_id"]},
+      "fallback_policy": "serve_last_good_only_within_freshness_contract",
+      "collector_name": "options_greeks_surface_context"
+    },
+    {
+      "producer_id": "futures_curve_context",
+      "producer_kind": "collector",
+      "source_kind": "broker_native",
+      "cadence": "intraday",
+      "resource_class": "warm",
+      "max_age_minutes": 240,
+      "capabilities": [
+        "futures_term_structure",
+        "futures_basis",
+        "roll_yield",
+        "futures_open_interest",
+        "futures_volume_migration",
+        "expiry_state",
+        "carry_state",
+        "calendar_spreads",
+        "spot_futures_dislocation"
+      ],
+      "capability_evidence_contract": {
+        "mode": "capability_rows",
+        "path": "capabilities",
+        "id_field": "capability_id",
+        "usable_field": "usable",
+        "receipt_field": "proof_receipt_sha256",
+        "require_receipt": true,
+        "required_equals": {"ok": true}
+      },
+      "cache_contract": {"mode": "shared_snapshot", "deduplicate_by": ["producer_id", "payload_sha256", "capability_id"]},
+      "fallback_policy": "serve_last_good_only_within_freshness_contract",
+      "collector_name": "futures_curve_context"
+    },
+    {
+      "producer_id": "earnings_event_context",
+      "producer_kind": "collector",
+      "source_kind": "official_public_mesh",
+      "cadence": "daily",
+      "resource_class": "warm",
+      "max_age_minutes": 2880,
+      "capabilities": [
+        "earnings_calendar",
+        "reported_earnings",
+        "company_guidance",
+        "estimate_revisions",
+        "estimate_dispersion"
+      ],
+      "capability_evidence_contract": {
+        "mode": "capability_rows",
+        "path": "capabilities",
+        "id_field": "capability_id",
+        "usable_field": "usable",
+        "receipt_field": "proof_receipt_sha256",
+        "require_receipt": true,
+        "required_equals": {"ok": true}
+      },
+      "cache_contract": {"mode": "shared_snapshot", "deduplicate_by": ["producer_id", "payload_sha256", "capability_id"]},
+      "fallback_policy": "serve_last_good_only_within_freshness_contract",
+      "collector_name": "earnings_event_context"
+    },
+    {
+      "producer_id": "portfolio_factor_risk_context",
+      "producer_kind": "collector",
+      "source_kind": "broker_native",
+      "cadence": "intraday",
+      "resource_class": "warm",
+      "max_age_minutes": 120,
+      "capabilities": [
+        "portfolio_exposure",
+        "concentration_risk",
+        "portfolio_beta",
+        "factor_exposure",
+        "correlation_risk",
+        "portfolio_liquidity"
+      ],
+      "capability_evidence_contract": {
+        "mode": "capability_rows",
+        "path": "capabilities",
+        "id_field": "capability_id",
+        "usable_field": "usable",
+        "receipt_field": "proof_receipt_sha256",
+        "require_receipt": true,
+        "required_equals": {"ok": true}
+      },
+      "cache_contract": {"mode": "shared_snapshot", "deduplicate_by": ["producer_id", "payload_sha256", "capability_id"]},
+      "fallback_policy": "serve_last_good_only_within_freshness_contract",
+      "collector_name": "portfolio_factor_risk_context"
+    },
+    {
+      "producer_id": "fixed_income_trace_context",
+      "producer_kind": "collector",
+      "source_kind": "official",
+      "cadence": "daily",
+      "resource_class": "warm",
+      "max_age_minutes": 4320,
+      "capabilities": [
+        "market_breadth",
+        "turnover",
+        "liquidity_regime",
+        "rates_credit_regime"
+      ],
+      "capability_evidence_contract": {
+        "mode": "capability_rows",
+        "path": "capabilities",
+        "id_field": "capability_id",
+        "usable_field": "usable",
+        "receipt_field": "proof_receipt_sha256",
+        "require_receipt": true,
+        "required_equals": {"ok": true}
+      },
+      "cache_contract": {"mode": "shared_snapshot", "deduplicate_by": ["producer_id", "payload_sha256", "capability_id"]},
+      "fallback_policy": "serve_last_good_only_within_freshness_contract",
+      "collector_name": "fixed_income_trace_context"
+    },
+    {
+      "producer_id": "bis_global_liquidity_context",
+      "producer_kind": "collector",
+      "source_kind": "official",
+      "cadence": "daily",
+      "resource_class": "cold",
+      "max_age_minutes": 10080,
+      "capabilities": [
+        "global_liquidity_regime",
+        "cross_border_capital_flows",
+        "bank_credit_conditions"
+      ],
+      "capability_evidence_contract": {
+        "mode": "capability_rows",
+        "path": "capabilities",
+        "id_field": "capability_id",
+        "usable_field": "usable",
+        "receipt_field": "proof_receipt_sha256",
+        "require_receipt": true,
+        "required_equals": {"ok": true}
+      },
+      "cache_contract": {"mode": "shared_snapshot", "deduplicate_by": ["producer_id", "payload_sha256", "capability_id"]},
+      "fallback_policy": "serve_last_good_only_within_freshness_contract",
+      "collector_name": "bis_global_liquidity_context"
     }
   ],
   "scope_required_capabilities": {

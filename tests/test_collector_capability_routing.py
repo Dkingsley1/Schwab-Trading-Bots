@@ -10,6 +10,7 @@ from core.collector_capability_routing import (
     validate_catalog,
     validate_ingestion_routing_policy,
 )
+from core.research_context_expansion import COLLECTOR_IDS as RESEARCH_CONTEXT_COLLECTOR_IDS
 from scripts.collector_contracts import COLLECTOR_SPECS
 from scripts.ops.collector_capability_control import build_payload
 from scripts.run_all_sleeves import SPECIALIZED_SLEEVE_PROFILES
@@ -172,6 +173,18 @@ def test_route_context_collectors_publish_owned_repair_commands() -> None:
     ]
     assert contracts["tradingeconomics_guest"]["data_plane_key"] == "economic_context"
     assert contracts["options_flow_context"]["data_plane_key"] == "options_derivatives_context"
+    assert len(COLLECTOR_SPECS) == 34
+    assert set(RESEARCH_CONTEXT_COLLECTOR_IDS).issubset(contracts)
+    assert all(
+        contracts[collector_id]["owner_command"] == [
+            "./scripts/ops/opsctl.sh",
+            "research-context-sync",
+            "--collector",
+            collector_id,
+            "--json",
+        ]
+        for collector_id in RESEARCH_CONTEXT_COLLECTOR_IDS
+    )
     assert all(row.get("collector_class") for row in COLLECTOR_SPECS)
     assert all(row.get("data_plane_key") for row in COLLECTOR_SPECS)
     assert all(row.get("owner_command") for row in COLLECTOR_SPECS)

@@ -13,9 +13,9 @@ def test_economic_source_registry_is_valid_and_expands_grouped_sources() -> None
     inventory = build_economic_source_inventory(registry)
 
     assert validation["ok"] is True
-    assert validation["direct_source_count"] == 33
+    assert validation["direct_source_count"] == 35
     assert validation["expanded_group_member_count"] == 32
-    assert inventory["summary"]["total_routed_source_count"] == 65
+    assert inventory["summary"]["total_routed_source_count"] == 67
     assert inventory["summary"]["new_direct_source_ids"] == [
         "fdic_bank_financials",
         "nyfed_primary_dealer_statistics",
@@ -43,6 +43,25 @@ def test_new_sources_have_explicit_producer_capability_plane_and_family_routes()
     assert fdic["producer_id"] == "public_financial_context"
     assert fdic["capability_ids"] == ["bank_credit_conditions"]
     assert {"funding_stress", "credit_curve"} <= set(fdic["decision_plane_ids"])
+
+    finra = sources["finra_fixed_income_trace"]
+    assert finra["producer_id"] == "fixed_income_trace_context"
+    assert set(finra["capability_ids"]) == {
+        "market_breadth",
+        "turnover",
+        "liquidity_regime",
+        "rates_credit_regime",
+    }
+    assert {"credit_curve", "capacity_market_impact"} <= set(finra["decision_plane_ids"])
+
+    bis = sources["bis_global_liquidity_indicators"]
+    assert bis["producer_id"] == "bis_global_liquidity_context"
+    assert set(bis["capability_ids"]) == {
+        "global_liquidity_regime",
+        "cross_border_capital_flows",
+        "bank_credit_conditions",
+    }
+    assert {"cross_border_capital", "funding_stress", "credit_curve"} <= set(bis["decision_plane_ids"])
 
     assert all(row["required_for_collection_or_paper"] is False for row in inventory["sources"])
     assert all(row.get("decision_family_ids") for row in inventory["sources"])

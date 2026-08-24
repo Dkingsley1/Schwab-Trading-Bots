@@ -16,6 +16,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from scripts import ops_data_plane  # noqa: E402
+from core.research_context_expansion import COLLECTOR_DEFINITIONS  # noqa: E402
 
 HEALTH_ROOT = PROJECT_ROOT / "governance" / "health"
 EXTERNAL_CONTEXT_ROOT = PROJECT_ROOT / "exports" / "external_context"
@@ -358,7 +359,31 @@ ORGANIC_EVIDENCE_COLLECTOR_SPECS = [
     },
 ]
 
-COLLECTOR_SPECS += ORGANIC_EVIDENCE_COLLECTOR_SPECS
+RESEARCH_CONTEXT_COLLECTOR_SPECS = [
+    {
+        "name": str(definition["collector_id"]),
+        "health_path": HEALTH_ROOT / f"{definition['collector_id']}_latest.json",
+        "payload_path": EXTERNAL_CONTEXT_ROOT / f"{definition['collector_id']}_latest.json",
+        "freshness_minutes": int(definition["max_age_minutes"]),
+        "required": False,
+        "safe_to_degrade": True,
+        "collector_class": "source_context",
+        "data_plane_key": str(definition["collector_id"]),
+        "evidence_domains": ["source_verification", "training_models", "profitability_research", "risk_controls"],
+        "owner_command": [
+            "./scripts/ops/opsctl.sh",
+            "research-context-sync",
+            "--collector",
+            str(definition["collector_id"]),
+            "--json",
+        ],
+        # Capability rows, not collector presence, earn coverage in the router.
+        "organic_required": False,
+    }
+    for definition in COLLECTOR_DEFINITIONS
+]
+
+COLLECTOR_SPECS += ORGANIC_EVIDENCE_COLLECTOR_SPECS + RESEARCH_CONTEXT_COLLECTOR_SPECS
 
 _PAYLOAD_META_KEYS = {
     "timestamp_utc",
@@ -890,7 +915,9 @@ def main() -> int:
     )
     collector_names = [str(row.get("name") or "") for row in rows]
     configured_expansion_names = {
-        str(spec.get("name") or "") for spec in ORGANIC_EVIDENCE_COLLECTOR_SPECS if str(spec.get("name") or "")
+        str(spec.get("name") or "")
+        for spec in ORGANIC_EVIDENCE_COLLECTOR_SPECS + RESEARCH_CONTEXT_COLLECTOR_SPECS
+        if str(spec.get("name") or "")
     }
     configured_added_count = sum(1 for name in collector_names if name in configured_expansion_names)
     duplicate_names = sorted({name for name in collector_names if collector_names.count(name) > 1})
@@ -926,10 +953,14 @@ def main() -> int:
             "policy": "100 requires every organically scored collector to publish fresh source-backed evidence and meet its real sample target",
         },
         "collector_expansion_contract": {
-            "version": "organic_collector_expansion_v1",
-            "requested_added_collectors": len(ORGANIC_EVIDENCE_COLLECTOR_SPECS),
-            "configured_added_collectors": len(ORGANIC_EVIDENCE_COLLECTOR_SPECS),
+            "version": "organic_collector_expansion_v2",
+            "requested_added_collectors": len(configured_expansion_names),
+            "configured_added_collectors": len(configured_expansion_names),
             "baseline_requested_organic_collectors": 9,
+            "research_context_added_collectors": len(RESEARCH_CONTEXT_COLLECTOR_SPECS),
+            "research_context_collector_ids": [
+                str(spec.get("name") or "") for spec in RESEARCH_CONTEXT_COLLECTOR_SPECS
+            ],
             "decision_critical_source_context_collectors": sum(
                 1
                 for spec in ORGANIC_EVIDENCE_COLLECTOR_SPECS

@@ -972,6 +972,9 @@ case "$cmd" in
       --outer-timeout-seconds "${MARKET_MICRO_OUTER_TIMEOUT_SECONDS:-90}" \
       "${mm_args[@]}"
     ;;
+  research-context-sync|research-context-expansion|context-expansion-sync)
+    exec "$PY" "$PROJECT_ROOT/scripts/collect_research_context_expansion.py" "$@"
+    ;;
   sec-edgar-sync)
     exec "$PY" "$PROJECT_ROOT/scripts/collect_sec_edgar_context.py" "$@"
     ;;
@@ -3173,6 +3176,7 @@ opsctl commands:
   crypto-market-sync [--symbols CSV] [--timeout N] [--json]
   free-equity-reference-sync|equity-reference-sync|stock-reference-sync [--symbols CSV] [--max-symbols N] [--timeout N] [--max-runtime-seconds N] [--json]
   market-correlation-sync [--lookback-days N] [--bucket-seconds N] [--min-points N] [--timeout-seconds N] [--json]
+  research-context-sync (--all | --collector NAME) [--force] [--offline] [--json]
   fx-market-sync [--timeout N] [--json]
   dividend-drip-sync [--lookback-days N] [--recent-window-days N] [--json]
   showcase-refresh
