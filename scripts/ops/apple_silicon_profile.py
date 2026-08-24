@@ -7,14 +7,26 @@ import os
 import platform
 import shlex
 import subprocess
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from core.cpu_workload_policy import (
+    cpu_environment_contract,
+    load_cpu_workload_policy,
+    resource_partition,
+)
+
+
 DEFAULT_OVERRIDE = PROJECT_ROOT / "config" / ".env.apple_silicon_override"
 DEFAULT_OUT = PROJECT_ROOT / "governance" / "health" / "apple_silicon_profile_latest.json"
+CPU_WORKLOAD_POLICY = load_cpu_workload_policy()
 
 PROFILE_PRESETS: Dict[str, Dict[str, str]] = {
     "air_safe": {
@@ -294,9 +306,15 @@ def _performance_core_contract(hardware: Dict[str, Any], tier: str) -> Dict[str,
         else:
             performance_core_count = min(total_core_hint, 4)
         efficiency_core_count = max(total_core_hint - performance_core_count, 0)
-    primary_budget = max(performance_core_count or min(total_core_hint, 4), 1)
+    detected_performance_cores = max(performance_core_count or min(total_core_hint, 4), 1)
+    partition = resource_partition(
+        CPU_WORKLOAD_POLICY,
+        performance_core_count=detected_performance_cores,
+        efficiency_core_count=efficiency_core_count,
+    )
+    primary_budget = int(partition["critical_shared_performance_workers"])
     async_workers = _positive_int(profile.get("ASYNC_PIPELINE_WORKERS"), min(primary_budget, 4))
-    support_spillover_workers = min(max(efficiency_core_count, 0), 2)
+    support_spillover_workers = int(partition["efficiency_service_workers"])
     return {
         "policy": "performance_core_primary" if is_apple_silicon else "portable_scheduler_default",
         "hard_affinity_supported": False,
@@ -308,7 +326,8 @@ def _performance_core_contract(hardware: Dict[str, Any], tier: str) -> Dict[str,
         "primary_performance_core_budget": primary_budget,
         "efficiency_spillover_core_budget": efficiency_core_count,
         "support_spillover_workers": support_spillover_workers,
-        "foreground_app_reserve": 1,
+        "foreground_app_reserve": int(partition["foreground_performance_core_reserve"]),
+        "critical_efficiency_spillover_allowed": bool(partition["critical_efficiency_spillover_allowed"]),
         "worker_budget_contract": {
             "system_primary_workers": primary_budget,
             "default_async_pipeline_workers": async_workers,
@@ -326,7 +345,13 @@ def _core_allocation_env(hardware: Dict[str, Any], tier: str) -> Dict[str, str]:
     primary_budget = _positive_int(contract.get("primary_performance_core_budget"), 1)
     efficiency_budget = _positive_int(contract.get("efficiency_spillover_core_budget"), 0)
     support_workers = _positive_int(contract.get("support_spillover_workers"), 0)
+    workload_env = cpu_environment_contract(
+        CPU_WORKLOAD_POLICY,
+        performance_core_count=_positive_int(contract.get("primary_performance_core_count"), primary_budget),
+        efficiency_core_count=efficiency_budget,
+    )
     return {
+        **workload_env,
         "BOT_CPU_ALLOCATION_POLICY": str(contract.get("policy") or "performance_core_primary"),
         "BOT_CPU_HARD_AFFINITY_SUPPORTED": "0",
         "BOT_CPU_QOS_POLICY": "performance_core_primary_no_background_writer",
@@ -351,11 +376,15 @@ def _core_allocation_env(hardware: Dict[str, Any], tier: str) -> Dict[str, str]:
         "SLEEVE_WORKERS_FX": str(max(min(support_workers, 2), 1)),
         "SLEEVE_NICE_BASELINE": "0",
         "SLEEVE_NICE_AGGRESSIVE": "0",
-        "SLEEVE_NICE_SPECIALIZED": "6",
-        "SLEEVE_NICE_DIVIDEND": "8",
-        "SLEEVE_NICE_DIVIDEND_CAPTURE": "8",
-        "SLEEVE_NICE_BOND": "8",
-        "SLEEVE_NICE_FX": "8",
+        "SLEEVE_NICE_SPECIALIZED": "12",
+        "SLEEVE_NICE_DIVIDEND": "4",
+        "SLEEVE_NICE_DIVIDEND_CAPTURE": "4",
+        "SLEEVE_NICE_BOND": "4",
+        "SLEEVE_NICE_FX": "4",
+        "PAPER_EXECUTION_RUNTIME_NICE": "0",
+        "PAPER_SHADOW_RUNTIME_NICE": "0",
+        "RUNTIME_RESEARCH_TRAINING_NICE": "15",
+        "RUNTIME_THROTTLE_RESEARCH_NICE": "15",
     }
 
 
@@ -424,6 +453,12 @@ def build_payload(*, action: str, tier: str, hardware: Dict[str, Any], override_
         "unified_memory_telemetry": unified_memory,
         "creative_audio_contract": _creative_audio_contract(tier),
         "performance_core_contract": performance_core_contract,
+        "cpu_workload_contract": {
+            "policy_id": str(CPU_WORKLOAD_POLICY.get("policy_id") or "cpu_workload_policy_v1"),
+            "policy_locked": bool(CPU_WORKLOAD_POLICY.get("policy_locked", False)),
+            "workload_classes": CPU_WORKLOAD_POLICY.get("workload_classes", {}),
+            "authority": CPU_WORKLOAD_POLICY.get("authority", {}),
+        },
         "notes": notes,
     }
 
