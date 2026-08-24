@@ -795,6 +795,32 @@ def test_architecture_hardening_isolates_optional_provider_source_debt(tmp_path:
     assert "macro_crossstack" in contract["managed_verification_debt"]
 
 
+def test_architecture_hardening_manages_optional_provider_cooldown_when_required_mesh_is_ready(tmp_path: Path) -> None:
+    _seed_ready_project(tmp_path)
+    health = tmp_path / "governance" / "health"
+    _write_json(
+        health / "provider_mesh_latest.json",
+        {
+            "overall_status": "ready",
+            "summary": {"required_contract_ok": 6, "required_collectors": 6},
+            "required_failures": [],
+            "soft_failures": ["extended_quant_context"],
+            "cooldowns": [{"kind": "auth", "symbol": "EURUSD", "active": True}],
+        },
+    )
+
+    payload = src.build_payload(tmp_path)
+    provider = payload["sections"]["provider_source_mesh"]
+    contract = provider["evidence"]["source_mesh_debt_contract"]
+
+    assert payload["overall_status"] == "ready"
+    assert provider["overall_status"] == "ready"
+    assert provider["watch_items"] == []
+    assert contract["active"] is True
+    assert contract["required_provider_ready"] is True
+    assert contract["optional_provider_cooldown_managed"] is True
+
+
 def test_architecture_hardening_treats_collection_maturity_as_watch_under_guarded_paper(tmp_path: Path) -> None:
     _seed_ready_project(tmp_path)
     health = tmp_path / "governance" / "health"

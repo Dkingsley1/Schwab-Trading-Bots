@@ -1304,6 +1304,12 @@ def _provider_source_mesh(ctx: dict[str, dict[str, Any]]) -> dict[str, Any]:
     )
     required_provider_ready = bool(required_total > 0 and required_ok >= required_total and not required_failures)
     optional_provider_debt = bool(provider and provider_status in {"degraded", "needs_work"} and required_provider_ready)
+    optional_provider_cooldown_managed = bool(
+        cooldown_count > 0
+        and required_provider_ready
+        and provider_status in {"ready", "ok"}
+        and not required_failures
+    )
     optional_source_debt_isolated = bool(
         source
         and source_status in {"degraded", "needs_work", "thin", "watch", "advisory"}
@@ -1311,9 +1317,10 @@ def _provider_source_mesh(ctx: dict[str, dict[str, Any]]) -> dict[str, Any]:
         and bool(autorefresh_contract.get("enabled", False))
     )
     source_mesh_debt_contract = {
-        "active": bool(optional_provider_debt or optional_source_debt_isolated),
+        "active": bool(optional_provider_debt or optional_provider_cooldown_managed or optional_source_debt_isolated),
         "required_provider_ready": required_provider_ready,
         "optional_provider_debt": optional_provider_debt,
+        "optional_provider_cooldown_managed": optional_provider_cooldown_managed,
         "optional_source_debt_isolated": optional_source_debt_isolated,
         "critical_source_debt": critical_source_debt,
         "managed_verification_debt": managed_verification_debt,
@@ -1348,7 +1355,7 @@ def _provider_source_mesh(ctx: dict[str, dict[str, Any]]) -> dict[str, Any]:
         findings.append("required_provider_contract_incomplete")
     if required_failures:
         findings.append("required_provider_failures_present")
-    if cooldown_count > 0:
+    if cooldown_count > 0 and not optional_provider_cooldown_managed:
         watch_items.append("provider_cooldowns_present")
     if source and source_status in {"blocked", "critical"}:
         findings.append(f"source_verification_status={source_status}")
