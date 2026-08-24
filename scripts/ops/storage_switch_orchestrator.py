@@ -10,25 +10,36 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-
 if __package__ in {None, ""}:
     PROJECT_ROOT = Path(__file__).resolve().parents[2]
     if str(PROJECT_ROOT) not in sys.path:
         sys.path.insert(0, str(PROJECT_ROOT))
-    from core.runtime_maintenance import maintenance_hold_snapshot
+    from core.runtime_maintenance import (
+        MAINTENANCE_HOLD_TOKEN_ENV,
+        engage_maintenance_hold,
+        maintenance_hold_snapshot,
+        release_maintenance_hold,
+    )
     from core.runtime_python import resolve_runtime_python
     from core.storage_mounts import resolve_external_storage
     from scripts.ops import writer_cycle_coordinator as writer_src
 else:
     PROJECT_ROOT = Path(__file__).resolve().parents[2]
-    from core.runtime_maintenance import maintenance_hold_snapshot
+    from core.runtime_maintenance import (
+        MAINTENANCE_HOLD_TOKEN_ENV,
+        engage_maintenance_hold,
+        maintenance_hold_snapshot,
+        release_maintenance_hold,
+    )
     from core.runtime_python import resolve_runtime_python
     from core.storage_mounts import resolve_external_storage
     from scripts.ops import writer_cycle_coordinator as writer_src
 
 
 PY = resolve_runtime_python(PROJECT_ROOT)
-DEFAULT_OUT_PATH = PROJECT_ROOT / "governance" / "health" / "storage_switch_orchestrator_latest.json"
+DEFAULT_OUT_PATH = (
+    PROJECT_ROOT / "governance" / "health" / "storage_switch_orchestrator_latest.json"
+)
 DEFAULT_OVERRIDE_PATH = PROJECT_ROOT / "config" / ".env.storage_override"
 
 
@@ -42,7 +53,9 @@ def _write_json(path: Path, payload: dict[str, Any]) -> None:
 
 
 def _parse_json_output(text: str) -> dict[str, Any]:
-    for line in reversed([raw.strip() for raw in str(text or "").splitlines() if raw.strip()]):
+    for line in reversed(
+        [raw.strip() for raw in str(text or "").splitlines() if raw.strip()]
+    ):
         try:
             payload = json.loads(line)
         except Exception:
@@ -79,13 +92,23 @@ def _run_command(
         rc = int(proc.returncode)
         timed_out = False
     except subprocess.TimeoutExpired as exc:
-        stdout = exc.stdout.decode("utf-8", errors="ignore") if isinstance(exc.stdout, bytes) else str(exc.stdout or "")
-        stderr = exc.stderr.decode("utf-8", errors="ignore") if isinstance(exc.stderr, bytes) else str(exc.stderr or "")
+        stdout = (
+            exc.stdout.decode("utf-8", errors="ignore")
+            if isinstance(exc.stdout, bytes)
+            else str(exc.stdout or "")
+        )
+        stderr = (
+            exc.stderr.decode("utf-8", errors="ignore")
+            if isinstance(exc.stderr, bytes)
+            else str(exc.stderr or "")
+        )
         rc = 124
         timed_out = True
 
     payload = _parse_json_output(stdout)
-    duration_ms = round((datetime.now(timezone.utc) - started).total_seconds() * 1000.0, 3)
+    duration_ms = round(
+        (datetime.now(timezone.utc) - started).total_seconds() * 1000.0, 3
+    )
     return {
         "cmd": list(cmd),
         "rc": rc,
@@ -151,7 +174,7 @@ def _write_storage_override(mode: str, override_path: Path) -> dict[str, Any]:
     }
 
 
-def build_payload(
+def _build_payload_under_hold(
     project_root: Path = PROJECT_ROOT,
     *,
     target_mode: str,
@@ -170,24 +193,14 @@ def build_payload(
     if eject and target_mode != "local":
         raise ValueError("eject is only supported when target_mode=local")
 
-    maintenance_hold = maintenance_hold_snapshot(project_root)
-    if bool(maintenance_hold.get("active", False)):
-        return {
-            "timestamp_utc": _utc_now(),
-            "schema_version": 1,
-            "ok": False,
-            "overall_status": "blocked_runtime_maintenance_hold",
-            "target_mode": target_mode,
-            "route_mutation_performed": False,
-            "runtime_maintenance_hold": maintenance_hold,
-        }
-
     resolved_mount_root = (
         Path(os.getenv("BOT_LOGS_EXTERNAL_MOUNT", "/Volumes/BOT_LOGS")).expanduser()
         if target_mode == "local"
         else resolve_external_storage().mount_root
     )
-    mount_root = str(mount_root or resolved_mount_root).strip() or str(resolved_mount_root)
+    mount_root = str(mount_root or resolved_mount_root).strip() or str(
+        resolved_mount_root
+    )
     opsctl = project_root / "scripts" / "ops" / "opsctl.sh"
     health_root = project_root / "governance" / "health"
     should_stop = bool(restart or quiesce_only)
@@ -213,10 +226,16 @@ def build_payload(
             poll_seconds=float(poll_seconds),
             wait_timeout_seconds=float(wait_timeout_seconds),
         )
-        writer_after_wait = wait_for_writer.get("final_state") if isinstance(wait_for_writer.get("final_state"), dict) else writer_before
+        writer_after_wait = (
+            wait_for_writer.get("final_state")
+            if isinstance(wait_for_writer.get("final_state"), dict)
+            else writer_before
+        )
 
     writer_still_active = bool(writer_after_wait.get("active", False))
-    if writer_still_active or (should_stop and not bool(wait_for_writer.get("completed", False))):
+    if writer_still_active or (
+        should_stop and not bool(wait_for_writer.get("completed", False))
+    ):
         return {
             "timestamp_utc": _utc_now(),
             "schema_version": 1,
@@ -236,10 +255,40 @@ def build_payload(
             "out_file": str(health_root / "storage_switch_orchestrator_latest.json"),
         }
 
+    pre_failback_reconciliation: dict[str, Any] = {}
+    if target_mode == "external":
+        reconcile_before = _run_command(
+            [
+                str(PY),
+                str(
+                    project_root
+                    / "scripts"
+                    / "ops"
+                    / "storage_split_brain_reconciler.py"
+                ),
+                "--apply",
+                "--archive-external-conflict-sidecars",
+                "--repair-router-log-conflicts",
+                "--json",
+            ],
+            cwd=project_root,
+            timeout_sec=240,
+        )
+        steps["pre_failback_reconciliation"] = _step_record(reconcile_before)
+        pre_failback_reconciliation = (
+            reconcile_before.get("payload")
+            if isinstance(reconcile_before.get("payload"), dict)
+            else {}
+        )
+
     override_result = _write_storage_override(target_mode, override_path)
     prefer_external = "1" if target_mode == "external" else "0"
     failback = _run_command(
-        [str(PY), str(project_root / "scripts" / "ops" / "storage_failback_sync.py"), "--json"],
+        [
+            str(PY),
+            str(project_root / "scripts" / "ops" / "storage_failback_sync.py"),
+            "--json",
+        ],
         cwd=project_root,
         timeout_sec=240,
         env_overrides={
@@ -248,13 +297,26 @@ def build_payload(
         },
     )
     steps["storage_failback_sync"] = _step_record(failback)
-    failback_payload = failback.get("payload") if isinstance(failback.get("payload"), dict) else {}
-    applied_mode = str(failback_payload.get("certified_mode") or failback_payload.get("mode") or "")
+    failback_payload = (
+        failback.get("payload") if isinstance(failback.get("payload"), dict) else {}
+    )
+    applied_mode = str(
+        failback_payload.get("certified_mode") or failback_payload.get("mode") or ""
+    )
     achieved_target_mode = _mode_matches_target(applied_mode, target_mode)
 
     if target_mode == "external":
         reconcile = _run_command(
-            [str(PY), str(project_root / "scripts" / "ops" / "storage_split_brain_reconciler.py"), "--json"],
+            [
+                str(PY),
+                str(
+                    project_root
+                    / "scripts"
+                    / "ops"
+                    / "storage_split_brain_reconciler.py"
+                ),
+                "--json",
+            ],
             cwd=project_root,
             timeout_sec=180,
         )
@@ -268,7 +330,11 @@ def build_payload(
         )
         steps["feed_refresh"] = _step_record(refresh)
         watchdog = _run_command(
-            [str(PY), str(project_root / "scripts" / "ops" / "process_watchdog.py"), "--json"],
+            [
+                str(PY),
+                str(project_root / "scripts" / "ops" / "process_watchdog.py"),
+                "--json",
+            ],
             cwd=project_root,
             timeout_sec=180,
             env_overrides={"OPS_WATCHDOG_REFRESH_REPORTS": "0"},
@@ -277,7 +343,12 @@ def build_payload(
         transition = _run_command(
             [
                 str(PY),
-                str(project_root / "scripts" / "ops" / "storage_transition_coordinator.py"),
+                str(
+                    project_root
+                    / "scripts"
+                    / "ops"
+                    / "storage_transition_coordinator.py"
+                ),
                 "--transition-mode",
                 target_mode,
                 "--apply",
@@ -290,7 +361,11 @@ def build_payload(
 
     disk_eject_attempted = False
     disk_eject_completed = False
-    if eject and achieved_target_mode and not bool(wait_for_writer.get("timed_out", False)):
+    if (
+        eject
+        and achieved_target_mode
+        and not bool(wait_for_writer.get("timed_out", False))
+    ):
         disk_eject_attempted = True
         eject_result = _run_command(
             ["diskutil", "eject", mount_root],
@@ -301,13 +376,19 @@ def build_payload(
         disk_eject_completed = steps["disk_eject"]["status"] == "ok"
 
     writer_after = writer_src.writer_state_snapshot(project_root)
-    step_statuses = [str(row.get("status") or "") for row in steps.values() if isinstance(row, dict)]
+    step_statuses = [
+        str(row.get("status") or "") for row in steps.values() if isinstance(row, dict)
+    ]
     hard_fail = any(status in {"error", "timed_out"} for status in step_statuses)
 
     if quiesce_only and achieved_target_mode and not hard_fail:
         overall_status = "quiesced_switched"
         ok = True
-    elif achieved_target_mode and not hard_fail and (not eject or disk_eject_completed or not disk_eject_attempted):
+    elif (
+        achieved_target_mode
+        and not hard_fail
+        and (not eject or disk_eject_completed or not disk_eject_attempted)
+    ):
         overall_status = "switched"
         ok = True
     elif achieved_target_mode and not hard_fail and eject and not disk_eject_attempted:
@@ -340,6 +421,19 @@ def build_payload(
         "applied_mode": applied_mode,
         "active_root": str(failback_payload.get("active_root") or ""),
         "steps": steps,
+        "pre_failback_reconciliation": {
+            "required": target_mode == "external",
+            "summary": (
+                pre_failback_reconciliation.get("summary")
+                if isinstance(pre_failback_reconciliation.get("summary"), dict)
+                else {}
+            ),
+            "repair": (
+                pre_failback_reconciliation.get("repair")
+                if isinstance(pre_failback_reconciliation.get("repair"), dict)
+                else {}
+            ),
+        },
         "storage_failback_sync": failback_payload,
         "disk_eject_attempted": disk_eject_attempted,
         "disk_eject_completed": disk_eject_completed,
@@ -348,13 +442,107 @@ def build_payload(
     return payload
 
 
+def _public_hold_snapshot(snapshot: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "path": str(snapshot.get("path") or ""),
+        "active": bool(snapshot.get("active", False)),
+        "valid": bool(snapshot.get("valid", False)),
+        "reason": str(snapshot.get("reason") or ""),
+        "owner": str(snapshot.get("owner") or ""),
+        "engaged_at_utc": str(snapshot.get("engaged_at_utc") or ""),
+        "expires_at_utc": str(snapshot.get("expires_at_utc") or ""),
+    }
+
+
+def build_payload(
+    project_root: Path = PROJECT_ROOT,
+    *,
+    target_mode: str,
+    restart: bool,
+    eject: bool,
+    quiesce_only: bool = False,
+    override_path: Path = DEFAULT_OVERRIDE_PATH,
+    mount_root: str = "",
+    poll_seconds: float = 2.0,
+    wait_timeout_seconds: float = 120.0,
+) -> dict[str, Any]:
+    existing_hold = maintenance_hold_snapshot(project_root)
+    if bool(existing_hold.get("active", False)):
+        return {
+            "timestamp_utc": _utc_now(),
+            "schema_version": 1,
+            "ok": False,
+            "overall_status": "blocked_runtime_maintenance_hold",
+            "target_mode": str(target_mode or ""),
+            "route_mutation_performed": False,
+            "runtime_maintenance_hold": {
+                "owned_by_orchestrator": False,
+                "engaged": _public_hold_snapshot(existing_hold),
+            },
+        }
+
+    engaged_hold = engage_maintenance_hold(
+        project_root,
+        reason="storage_route_transition",
+        owner="storage_switch_orchestrator",
+        ttl_seconds=60 * 60,
+    )
+    token = str(engaged_hold.get("token") or "")
+    previous_token = os.environ.get(MAINTENANCE_HOLD_TOKEN_ENV)
+    if token:
+        os.environ[MAINTENANCE_HOLD_TOKEN_ENV] = token
+
+    released_hold: dict[str, Any] = {}
+    try:
+        payload = _build_payload_under_hold(
+            project_root,
+            target_mode=target_mode,
+            restart=restart,
+            eject=eject,
+            quiesce_only=quiesce_only,
+            override_path=override_path,
+            mount_root=mount_root,
+            poll_seconds=poll_seconds,
+            wait_timeout_seconds=wait_timeout_seconds,
+        )
+    finally:
+        released_hold = release_maintenance_hold(
+            project_root,
+            expected_token=token,
+        )
+        if previous_token is None:
+            os.environ.pop(MAINTENANCE_HOLD_TOKEN_ENV, None)
+        else:
+            os.environ[MAINTENANCE_HOLD_TOKEN_ENV] = previous_token
+
+    release_ok = bool(released_hold.get("released", False)) and not bool(
+        released_hold.get("active", False)
+    )
+    payload["runtime_maintenance_hold"] = {
+        "owned_by_orchestrator": True,
+        "engaged": _public_hold_snapshot(engaged_hold),
+        "released": _public_hold_snapshot(released_hold),
+        "release_ok": release_ok,
+        "watchdog_restarts_blocked_during_transition": True,
+        "authorized_children_receive_hold_token": bool(token),
+    }
+    if not release_ok:
+        payload["ok"] = False
+        payload["overall_status"] = "maintenance_hold_release_failed"
+    return payload
+
+
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Coordinate BOT_LOGS storage switching by quiescing the stack before failback and restart.")
+    parser = argparse.ArgumentParser(
+        description="Coordinate BOT_LOGS storage switching by quiescing the stack before failback and restart."
+    )
     parser.add_argument("--project-root", default=str(PROJECT_ROOT))
     parser.add_argument("--target-mode", choices=("local", "external"), required=True)
     parser.add_argument("--out-file", default=str(DEFAULT_OUT_PATH))
     parser.add_argument("--override-file", default=str(DEFAULT_OVERRIDE_PATH))
-    parser.add_argument("--mount-root", default=str(resolve_external_storage().mount_root))
+    parser.add_argument(
+        "--mount-root", default=str(resolve_external_storage().mount_root)
+    )
     parser.add_argument("--no-restart", action="store_true")
     parser.add_argument("--quiesce-only", action="store_true")
     parser.add_argument("--eject", action="store_true")

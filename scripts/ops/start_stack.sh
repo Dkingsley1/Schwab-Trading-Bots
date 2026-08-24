@@ -10,6 +10,8 @@ GLOBAL_HALT_FLAG="$HEALTH_DIR/GLOBAL_TRADING_HALT.flag"
 RUNTIME_MAINTENANCE_HOLD_FLAG="$HEALTH_DIR/RUNTIME_MAINTENANCE_HOLD.flag"
 PAPER_TRADE_LOCK_FILE="$HEALTH_DIR/PAPER_TRADE_LOCK.flag"
 STACK_STOPPED_FLAG="$HEALTH_DIR/STACK_STOPPED.flag"
+STACK_RESTART_FENCE_SCRIPT="$PROJECT_ROOT/scripts/ops/stack_restart_fence.py"
+PROCESS_MATCH_SCRIPT="$PROJECT_ROOT/scripts/ops/runtime_process_match.py"
 
 FORCE_RESTART=0
 WITH_COINBASE=1
@@ -22,6 +24,10 @@ PROFILE="${BOT_RUNTIME_PROFILE:-}"
 ORCHESTRATOR_MODE="${STACK_ORCHESTRATOR_MODE:-watchdog}"
 DRY_RUN=0
 SHADOW_WATCHDOG_PAUSED_FOR_RESTART=0
+OPS_WATCHDOG_PAUSED_FOR_RESTART=0
+FAILOVER_WATCHDOG_PAUSED_FOR_RESTART=0
+STACK_RESTART_FENCE_HELD=0
+STACK_RESTART_FENCE_TOKEN=""
 
 load_stack_runtime_env() {
   if [[ -f "$PROJECT_ROOT/scripts/ops/load_runtime_env.sh" ]]; then
@@ -117,7 +123,7 @@ wait_for_process_match() {
   local poll_seconds="${3:-1}"
   local started_at="$SECONDS"
   while (( SECONDS - started_at < timeout_seconds )); do
-    if ps -axo command | grep -F "$match" | grep -v grep >/dev/null 2>&1; then
+    if "$PY" "$PROCESS_MATCH_SCRIPT" --match "$match" >/dev/null 2>&1; then
       return 0
     fi
     sleep "$poll_seconds"
@@ -131,7 +137,7 @@ wait_for_process_absent() {
   local poll_seconds="${3:-1}"
   local started_at="$SECONDS"
   while (( SECONDS - started_at < timeout_seconds )); do
-    if ! ps -axo command | grep -F "$match" | grep -v grep >/dev/null 2>&1; then
+    if ! "$PY" "$PROCESS_MATCH_SCRIPT" --match "$match" >/dev/null 2>&1; then
       return 0
     fi
     sleep "$poll_seconds"
@@ -146,7 +152,7 @@ wait_for_process_stable() {
   local started_at="$SECONDS"
   local stable_since=-1
   while (( SECONDS - started_at < timeout_seconds )); do
-    if ps -axo command | grep -F "$match" | grep -v grep >/dev/null 2>&1; then
+    if "$PY" "$PROCESS_MATCH_SCRIPT" --match "$match" >/dev/null 2>&1; then
       if (( stable_since < 0 )); then
         stable_since="$SECONDS"
       fi
@@ -159,6 +165,10 @@ wait_for_process_stable() {
     sleep 1
   done
   return 1
+}
+
+first_process_pid() {
+  "$PY" "$PROCESS_MATCH_SCRIPT" --match "$1" --first-pid 2>/dev/null || true
 }
 
 recover_launchd_label() {
@@ -216,6 +226,84 @@ pause_shadow_watchdog_for_restart() {
   return 1
 }
 
+pause_process_watchdog_for_restart() {
+  local label="com.dankingsley.ops.watchdog"
+  local plist="$HOME/Library/LaunchAgents/${label}.plist"
+  local domain="gui/$(id -u)"
+
+  if [[ -f "$plist" ]]; then
+    launchctl bootout "$domain" "$plist" >/dev/null 2>&1 || true
+  fi
+  pkill -f "scripts/ops/process_watchdog.py" >/dev/null 2>&1 || true
+  if wait_for_process_absent "scripts/ops/process_watchdog.py" "${OPS_WATCHDOG_STOP_TIMEOUT_SECONDS:-20}"; then
+    echo "process_watchdog=paused_for_restart"
+    return 0
+  fi
+  echo "process_watchdog=failed_to_pause_before_restart"
+  return 1
+}
+
+pause_failover_watchdog_for_restart() {
+  local label="com.dankingsley.failover_hot_standby"
+  local plist="$HOME/Library/LaunchAgents/${label}.plist"
+  local domain="gui/$(id -u)"
+
+  if [[ -f "$plist" ]]; then
+    launchctl bootout "$domain" "$plist" >/dev/null 2>&1 || true
+  fi
+  pkill -f "scripts/failover_hot_standby.py" >/dev/null 2>&1 || true
+  if wait_for_process_absent "scripts/failover_hot_standby.py" "${FAILOVER_WATCHDOG_STOP_TIMEOUT_SECONDS:-20}"; then
+    echo "failover_watchdog=paused_for_restart"
+    return 0
+  fi
+  echo "failover_watchdog=failed_to_pause_before_restart"
+  return 1
+}
+
+resume_process_watchdog_after_restart() {
+  if [[ "$OPS_WATCHDOG_PAUSED_FOR_RESTART" != "1" ]]; then
+    return 0
+  fi
+
+  local label="com.dankingsley.ops.watchdog"
+  local plist="$HOME/Library/LaunchAgents/${label}.plist"
+  local domain="gui/$(id -u)"
+  launchctl enable "$domain/$label" >/dev/null 2>&1 || true
+  if ! launchctl print "$domain/$label" >/dev/null 2>&1 && [[ -f "$plist" ]]; then
+    launchctl bootstrap "$domain" "$plist" >/dev/null 2>&1 || true
+  fi
+  launchctl kickstart "$domain/$label" >/dev/null 2>&1 || true
+  if launchctl print "$domain/$label" >/dev/null 2>&1; then
+    OPS_WATCHDOG_PAUSED_FOR_RESTART=0
+    echo "process_watchdog=resumed_after_restart"
+    return 0
+  fi
+  echo "process_watchdog=failed_to_resume_after_restart"
+  return 1
+}
+
+resume_failover_watchdog_after_restart() {
+  if [[ "$FAILOVER_WATCHDOG_PAUSED_FOR_RESTART" != "1" ]]; then
+    return 0
+  fi
+
+  local label="com.dankingsley.failover_hot_standby"
+  local plist="$HOME/Library/LaunchAgents/${label}.plist"
+  local domain="gui/$(id -u)"
+  launchctl enable "$domain/$label" >/dev/null 2>&1 || true
+  if ! launchctl print "$domain/$label" >/dev/null 2>&1 && [[ -f "$plist" ]]; then
+    launchctl bootstrap "$domain" "$plist" >/dev/null 2>&1 || true
+  fi
+  launchctl kickstart "$domain/$label" >/dev/null 2>&1 || true
+  if wait_for_process_match "scripts/failover_hot_standby.py" "${FAILOVER_WATCHDOG_START_TIMEOUT_SECONDS:-30}"; then
+    FAILOVER_WATCHDOG_PAUSED_FOR_RESTART=0
+    echo "failover_watchdog=resumed_after_restart"
+    return 0
+  fi
+  echo "failover_watchdog=failed_to_resume_after_restart"
+  return 1
+}
+
 resume_shadow_watchdog_after_restart() {
   if [[ "$SHADOW_WATCHDOG_PAUSED_FOR_RESTART" != "1" ]]; then
     return 0
@@ -243,10 +331,59 @@ resume_shadow_watchdog_after_restart() {
   return 1
 }
 
+engage_stack_restart_window() {
+  local payload
+  if ! payload="$("$PY" "$STACK_RESTART_FENCE_SCRIPT" \
+      --engage \
+      --owner start_stack \
+      --owner-pid "$$" \
+      --ttl-seconds "${STACK_RESTART_FENCE_TTL_SECONDS:-900}" \
+      --json)"; then
+    echo "stack_restart_fence=failed_to_engage"
+    [[ -n "$payload" ]] && echo "$payload"
+    return 1
+  fi
+  STACK_RESTART_FENCE_TOKEN="$(printf '%s' "$payload" | "$PY" -c 'import json,sys; print(str(json.load(sys.stdin).get("token") or ""))')"
+  if [[ -z "$STACK_RESTART_FENCE_TOKEN" ]]; then
+    echo "stack_restart_fence=missing_token"
+    return 1
+  fi
+  export STACK_RESTART_FENCE_TOKEN
+  STACK_RESTART_FENCE_HELD=1
+  echo "stack_restart_fence=engaged owner_pid=$$"
+}
+
+release_stack_restart_window() {
+  if [[ "$STACK_RESTART_FENCE_HELD" != "1" ]]; then
+    return 0
+  fi
+  if "$PY" "$STACK_RESTART_FENCE_SCRIPT" \
+      --release \
+      --expected-token "$STACK_RESTART_FENCE_TOKEN" \
+      --json >/dev/null; then
+    STACK_RESTART_FENCE_HELD=0
+    STACK_RESTART_FENCE_TOKEN=""
+    unset STACK_RESTART_FENCE_TOKEN
+    echo "stack_restart_fence=released"
+    return 0
+  fi
+  echo "stack_restart_fence=failed_to_release"
+  return 1
+}
+
 restart_exit_cleanup() {
   local rc=$?
   if [[ "$SHADOW_WATCHDOG_PAUSED_FOR_RESTART" == "1" ]]; then
     resume_shadow_watchdog_after_restart || true
+  fi
+  if [[ "$OPS_WATCHDOG_PAUSED_FOR_RESTART" == "1" ]]; then
+    resume_process_watchdog_after_restart || true
+  fi
+  if [[ "$FAILOVER_WATCHDOG_PAUSED_FOR_RESTART" == "1" ]]; then
+    resume_failover_watchdog_after_restart || true
+  fi
+  if [[ "$STACK_RESTART_FENCE_HELD" == "1" ]]; then
+    release_stack_restart_window || true
   fi
   return "$rc"
 }
@@ -298,6 +435,13 @@ if [[ "$DRY_RUN" == "1" ]]; then
   exit 0
 fi
 
+if [[ "$FORCE_RESTART" == "1" ]]; then
+  if ! engage_stack_restart_window; then
+    echo "stack_start_status=blocked_by_concurrent_restart"
+    exit 3
+  fi
+fi
+
 if [[ -f "$STACK_STOPPED_FLAG" && "${BOT_OPS_DATA_PLANE_STARTUP_COMPACTION:-1}" != "0" ]]; then
   "$PY" "$PROJECT_ROOT/scripts/ops/ops_data_plane_compactor.py" --apply --json >/dev/null
 fi
@@ -323,11 +467,70 @@ if [[ "${PAPER_400_RAMP_AUTO_APPLY:-1}" != "0" && -f "$PROJECT_ROOT/scripts/ops/
 fi
 
 coinbase_spot_process_lines() {
-  ps -axo pid,command | grep -F "scripts/run_shadow_training_loop.py --broker coinbase" | grep -v " --profile crypto_futures" | grep -v grep || true
+  ps -axo pid,command \
+    | grep -F "scripts/run_shadow_training_loop.py" \
+    | grep -F -- "--broker coinbase" \
+    | grep -v " --profile crypto_futures" \
+    | grep -v grep || true
 }
 
 coinbase_spot_running() {
   coinbase_spot_process_lines | grep -q .
+}
+
+coinbase_futures_process_lines() {
+  local futures_profile="${COINBASE_FUTURES_PROFILE:-crypto_futures}"
+  ps -axo pid,command \
+    | grep -F "scripts/run_shadow_training_loop.py" \
+    | grep -F -- "--broker coinbase" \
+    | grep -F -- "--profile $futures_profile" \
+    | grep -v grep || true
+}
+
+coinbase_futures_running() {
+  coinbase_futures_process_lines | grep -q .
+}
+
+wait_for_coinbase_spot_stable() {
+  local timeout_seconds="${1:-45}"
+  local stable_seconds="${2:-5}"
+  local started_at="$SECONDS"
+  local stable_since=-1
+  while (( SECONDS - started_at < timeout_seconds )); do
+    if coinbase_spot_running; then
+      if (( stable_since < 0 )); then
+        stable_since="$SECONDS"
+      fi
+      if (( SECONDS - stable_since >= stable_seconds )); then
+        return 0
+      fi
+    else
+      stable_since=-1
+    fi
+    sleep 1
+  done
+  return 1
+}
+
+wait_for_coinbase_futures_stable() {
+  local timeout_seconds="${1:-60}"
+  local stable_seconds="${2:-5}"
+  local started_at="$SECONDS"
+  local stable_since=-1
+  while (( SECONDS - started_at < timeout_seconds )); do
+    if coinbase_futures_running; then
+      if (( stable_since < 0 )); then
+        stable_since="$SECONDS"
+      fi
+      if (( SECONDS - stable_since >= stable_seconds )); then
+        return 0
+      fi
+    else
+      stable_since=-1
+    fi
+    sleep 1
+  done
+  return 1
 }
 
 kill_coinbase_spot_loops() {
@@ -340,10 +543,28 @@ kill_coinbase_spot_loops() {
   fi
 }
 
+kill_coinbase_futures_loops() {
+  local pids
+  pids="$(coinbase_futures_process_lines | awk '{print $1}')"
+  if [[ -n "${pids//[[:space:]]/}" ]]; then
+    while IFS= read -r pid; do
+      [[ -n "$pid" ]] && kill "$pid" >/dev/null 2>&1 || true
+    done <<< "$pids"
+  fi
+}
+
 echo "runtime_profile=$PROFILE"
 echo "orchestrator_mode=$ORCHESTRATOR_MODE"
 
 if [[ "$FORCE_RESTART" == "1" ]]; then
+  if ! pause_failover_watchdog_for_restart; then
+    exit 1
+  fi
+  FAILOVER_WATCHDOG_PAUSED_FOR_RESTART=1
+  if ! pause_process_watchdog_for_restart; then
+    exit 1
+  fi
+  OPS_WATCHDOG_PAUSED_FOR_RESTART=1
   if ! pause_shadow_watchdog_for_restart; then
     exit 1
   fi
@@ -359,7 +580,7 @@ if [[ "$FORCE_RESTART" == "1" ]]; then
   pkill -f "scripts/run_.*_shadow.py" || true
   pkill -f "scripts/run_shadow_training_loop.py --broker schwab" || true
   kill_coinbase_spot_loops
-  pkill -f "scripts/run_shadow_training_loop.py --broker coinbase --profile crypto_futures" || true
+  kill_coinbase_futures_loops
   if ! wait_for_process_absent "scripts/run_all_sleeves.py" "${ALL_SLEEVES_STOP_TIMEOUT_SECONDS:-45}"; then
     echo "all_sleeves=failed_to_stop_before_restart"
     exit 1
@@ -374,7 +595,7 @@ PREFLIGHT_ARGS=(--broker "${DATA_BROKER:-schwab}" --json)
 if [[ "$SIMULATE" == "1" ]]; then
   PREFLIGHT_ARGS+=(--simulate)
 fi
-if ps -axo command | grep -F "scripts/run_all_sleeves.py" | grep -v grep >/dev/null 2>&1; then
+if "$PY" "$PROCESS_MATCH_SCRIPT" --match "scripts/run_all_sleeves.py" >/dev/null 2>&1; then
   # An idempotent start audits the managed stack in place; its single healthy
   # child launchers are expected and must not be killed as pre-start debris.
   PREFLIGHT_ARGS+=(--allow-running)
@@ -405,14 +626,14 @@ if [[ "$ORCHESTRATOR_MODE" == "watchdog" ]]; then
   WD_PLIST="$HOME/Library/LaunchAgents/com.dankingsley.shadow_watchdog.plist"
   if [[ "$FORCE_RESTART" == "1" ]]; then
     if resume_shadow_watchdog_after_restart; then
-      WD_PID="$(ps -axo pid,command | grep -F "$WD_MATCH" | grep -v grep | awk 'NR==1{print $1}')"
+      WD_PID="$(first_process_pid "$WD_MATCH")"
       echo "shadow_watchdog=reloaded pid=$WD_PID"
     else
       echo "shadow_watchdog=failed_to_restart"
       exit 1
     fi
-  elif ps -axo command | grep -F "$WD_MATCH" | grep -v grep >/dev/null 2>&1; then
-    WD_PID="$(ps -axo pid,command | grep -F "$WD_MATCH" | grep -v grep | awk 'NR==1{print $1}')"
+  elif "$PY" "$PROCESS_MATCH_SCRIPT" --match "$WD_MATCH" >/dev/null 2>&1; then
+    WD_PID="$(first_process_pid "$WD_MATCH")"
     echo "shadow_watchdog=already_running pid=$WD_PID"
   else
     if [[ -x "$PROJECT_ROOT/scripts/install_shadow_watchdog_launchd.sh" ]]; then
@@ -427,7 +648,7 @@ if [[ "$ORCHESTRATOR_MODE" == "watchdog" ]]; then
     fi
 
     if wait_for_process_match "$WD_MATCH" "${SHADOW_WATCHDOG_START_TIMEOUT_SECONDS:-45}"; then
-      WD_PID="$(ps -axo pid,command | grep -F "$WD_MATCH" | grep -v grep | awk 'NR==1{print $1}')"
+      WD_PID="$(first_process_pid "$WD_MATCH")"
       echo "shadow_watchdog=started pid=$WD_PID"
     else
       echo "shadow_watchdog=failed_to_start"
@@ -435,7 +656,6 @@ if [[ "$ORCHESTRATOR_MODE" == "watchdog" ]]; then
     fi
   fi
 
-  OPS_WATCHDOG_REFRESH_REPORTS=0 "$PY" "$PROJECT_ROOT/scripts/ops/process_watchdog.py" --json >/dev/null 2>&1 || true
   if [[ "$FORCE_RESTART" == "1" ]]; then
     if ! wait_for_process_stable \
       "scripts/run_all_sleeves.py" \
@@ -451,7 +671,30 @@ if [[ "$ORCHESTRATOR_MODE" == "watchdog" ]]; then
       echo "paper_execution_lane=missing_after_restart"
       exit 1
     fi
+    if [[ "$WITH_COINBASE" == "1" ]]; then
+      if ! wait_for_coinbase_spot_stable "${COINBASE_START_TIMEOUT_SECONDS:-60}" "${COINBASE_START_STABLE_SECONDS:-5}"; then
+        echo "coinbase_loop=missing_after_restart"
+        exit 1
+      fi
+      if ! wait_for_coinbase_futures_stable "${COINBASE_START_TIMEOUT_SECONDS:-60}" "${COINBASE_START_STABLE_SECONDS:-5}"; then
+        echo "coinbase_futures_loop=missing_after_restart"
+        exit 1
+      fi
+    fi
+    if ! release_stack_restart_window; then
+      echo "stack_start_status=failed_to_release_restart_fence"
+      exit 1
+    fi
+    if ! resume_process_watchdog_after_restart; then
+      echo "stack_start_status=failed_to_restore_process_watchdog"
+      exit 1
+    fi
+    if ! resume_failover_watchdog_after_restart; then
+      echo "stack_start_status=failed_to_restore_failover_watchdog"
+      exit 1
+    fi
   fi
+  OPS_WATCHDOG_REFRESH_REPORTS=0 "$PY" "$PROJECT_ROOT/scripts/ops/process_watchdog.py" --json >/dev/null 2>&1 || true
   if ! restore_unattended_support_services; then
     echo "stack_start_status=failed_to_restore_unattended_supervisors"
     exit 1
@@ -509,7 +752,7 @@ if wait_for_process_stable \
   "scripts/run_all_sleeves.py" \
   "${ALL_SLEEVES_START_TIMEOUT_SECONDS:-60}" \
   "${ALL_SLEEVES_START_STABLE_SECONDS:-5}"; then
-  ALL_SLEEVES_RUNNING_PID="$(ps -axo pid,command | grep -F "scripts/run_all_sleeves.py" | grep -v grep | awk 'NR==1{print $1}')"
+  ALL_SLEEVES_RUNNING_PID="$(first_process_pid "scripts/run_all_sleeves.py")"
   echo "all_sleeves=started pid=$ALL_SLEEVES_RUNNING_PID"
   echo "all_sleeves_log=logs/watchdog_all_sleeves.log"
 else
@@ -530,8 +773,7 @@ if [[ "$FORCE_RESTART" == "1" ]]; then
 fi
 
 if [[ "$WITH_COINBASE" == "1" ]]; then
-  if ! wait_for_process_stable \
-    "scripts/run_shadow_training_loop.py --broker coinbase --symbols" \
+  if ! wait_for_coinbase_spot_stable \
     "${COINBASE_START_TIMEOUT_SECONDS:-60}" \
     "${COINBASE_START_STABLE_SECONDS:-5}"; then
     echo "coinbase_loop=failed_to_start owner=process_watchdog log=$WATCHDOG_HANDOFF_LOG"
@@ -543,21 +785,35 @@ if [[ "$WITH_COINBASE" == "1" ]]; then
   echo "coinbase_log=logs/watchdog_coinbase_loop.log"
   echo "coinbase_mode simulate=$COINBASE_SIMULATE paper=$COINBASE_PAPER"
 
-  if ! wait_for_process_stable \
-    "scripts/run_shadow_training_loop.py --broker coinbase --profile crypto_futures" \
+  if ! wait_for_coinbase_futures_stable \
     "${COINBASE_START_TIMEOUT_SECONDS:-60}" \
     "${COINBASE_START_STABLE_SECONDS:-5}"; then
     echo "coinbase_futures_loop=failed_to_start owner=process_watchdog log=$WATCHDOG_HANDOFF_LOG"
     tail -n 80 "logs/watchdog_coinbase_futures_loop.log" || true
     exit 1
   fi
-  COINBASE_FUTURES_RUNNING_PID="$(ps -axo pid,command | grep -F "scripts/run_shadow_training_loop.py --broker coinbase --profile crypto_futures" | grep -v grep | awk 'NR==1{print $1}')"
+  COINBASE_FUTURES_RUNNING_PID="$(coinbase_futures_process_lines | awk 'NR==1{print $1}')"
   echo "coinbase_futures_loop=started pid=$COINBASE_FUTURES_RUNNING_PID"
   echo "coinbase_futures_log=logs/watchdog_coinbase_futures_loop.log"
 fi
 
 if ! resume_shadow_watchdog_after_restart; then
   echo "stack_start_status=failed_to_restore_shadow_watchdog"
+  exit 1
+fi
+
+if ! release_stack_restart_window; then
+  echo "stack_start_status=failed_to_release_restart_fence"
+  exit 1
+fi
+
+if ! resume_process_watchdog_after_restart; then
+  echo "stack_start_status=failed_to_restore_process_watchdog"
+  exit 1
+fi
+
+if ! resume_failover_watchdog_after_restart; then
+  echo "stack_start_status=failed_to_restore_failover_watchdog"
   exit 1
 fi
 

@@ -1028,6 +1028,7 @@ def test_candidate_forward_accounting_requires_current_candidate_identity(tmp_pa
     log_path.parent.mkdir(parents=True, exist_ok=True)
 
     def row(timestamp: str, candidate_id: str, pnl: float) -> dict:
+        generation = 54 if candidate_id == "candidate-current" else 53
         return {
             "timestamp_utc": timestamp,
             "symbol": "SPY",
@@ -1042,6 +1043,7 @@ def test_candidate_forward_accounting_requires_current_candidate_identity(tmp_pa
             "metadata": {
                 "source_profile": "default",
                 "production_candidate_id": candidate_id,
+                "production_candidate_generation": generation,
             },
         }
 
@@ -1066,3 +1068,16 @@ def test_candidate_forward_accounting_requires_current_candidate_identity(tmp_pa
     assert views["candidate_forward_flow"]["candidate_ids"] == ["candidate-current"]
     assert views["candidate_forward_flow"]["candidate_binding_mismatch_rows_excluded"] == 1
     assert payload["post_cost_expectancy"]["sample_count"] == 1
+    developmental = payload["developmental_generation_flows"]
+    assert developmental["candidate_bound_sample_count"] == 3
+    assert developmental["unbound_schema_v2_sample_count"] == 0
+    assert developmental["metadata_conflict_count"] == 0
+    flows = {
+        row["candidate_id"]: row for row in developmental["generation_flows"]
+    }
+    assert flows["candidate-current"]["candidate_generation"] == 54
+    assert flows["candidate-current"]["sample_count"] == 2
+    assert flows["candidate-current"]["post_cost_pnl_delta_total"] == -2.0
+    assert flows["candidate-current"]["promotion_grade_eligible_from_this_view"] is False
+    assert flows["candidate-old"]["candidate_generation"] == 53
+    assert flows["candidate-old"]["sample_count"] == 1

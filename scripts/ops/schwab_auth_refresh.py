@@ -19,6 +19,7 @@ from scripts.brokers.schwab.common import (
     token_needs_refresh as common_token_needs_refresh,
     token_status as common_token_status,
 )
+from core.broker_auth_epoch import token_epoch
 
 DEFAULT_TOKEN_PATH = PROJECT_ROOT / "token.json"
 DEFAULT_OUT_PATH = PROJECT_ROOT / "governance" / "health" / "schwab_auth_refresh_latest.json"
@@ -261,13 +262,10 @@ def main() -> int:
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args()
 
-    api_key = os.getenv("SCHWAB_API_KEY", "").strip()
-    app_secret = os.getenv("SCHWAB_SECRET", "").strip()
-    callback_url = (
-        os.getenv("SCHWAB_CALLBACK_URL", "").strip()
-        or os.getenv("SCHWAB_REDIRECT", "").strip()
-        or "https://127.0.0.1:8182"
-    )
+    credentials = schwab_credentials_from_env()
+    api_key = credentials.api_key
+    app_secret = credentials.app_secret
+    callback_url = credentials.callback_url
     token_path = Path(args.token_path).expanduser().resolve()
     out_path = Path(args.out_file).expanduser().resolve()
 
@@ -280,6 +278,7 @@ def main() -> int:
         "interactive": True,
         "token_before": before,
         "token_after": {},
+        "auth_epoch": token_epoch(token_path),
         "callback_url": callback_url,
         "requested_browser": requested_browser or None,
         "requested_browser_resolved": _normalize_browser_app_name(requested_browser),
@@ -313,6 +312,7 @@ def main() -> int:
         payload["skipped"] = True
         payload["reason"] = "token_already_ready"
         payload["token_after"] = before
+        payload["auth_epoch"] = token_epoch(token_path)
         payload["refresh_needed_after"] = False
         payload["refresh_reason_after"] = refresh_reason_before
         payload["post_refresh_cascade"] = {
@@ -330,6 +330,7 @@ def main() -> int:
     if not credentials_ready(schwab_credentials_from_env()):
         payload["reason"] = "missing_credentials"
         payload["token_after"] = before
+        payload["auth_epoch"] = token_epoch(token_path)
         _write_json(out_path, payload)
         if args.json:
             print(json.dumps(payload, indent=2, ensure_ascii=True))
@@ -340,6 +341,7 @@ def main() -> int:
     if args.no_browser:
         payload["reason"] = "browser_disabled_token_refresh_required"
         payload["token_after"] = before
+        payload["auth_epoch"] = token_epoch(token_path)
         payload["refresh_needed_after"] = bool(refresh_needed_before)
         payload["refresh_reason_after"] = refresh_reason_before
         _write_json(out_path, payload)
@@ -393,6 +395,7 @@ def main() -> int:
         payload["reason"] = f"auth_error:{type(exc).__name__}:{exc}"
 
     payload["token_after"] = _token_status(token_path)
+    payload["auth_epoch"] = token_epoch(token_path)
     refresh_needed_after, refresh_reason_after = _token_needs_refresh(
         payload["token_after"],
         min_expires_seconds=max(float(args.min_expires_seconds), 0.0),

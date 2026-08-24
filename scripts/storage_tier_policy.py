@@ -11,9 +11,15 @@ from pathlib import Path
 from typing import Any
 
 SCRIPT_DIR = Path(__file__).resolve().parent
-if str(SCRIPT_DIR) not in sys.path:
-    sys.path.insert(0, str(SCRIPT_DIR))
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+for import_root in (SCRIPT_DIR, PROJECT_ROOT):
+    if str(import_root) not in sys.path:
+        sys.path.insert(0, str(import_root))
 
+from core.tiered_ingestion_lifecycle import (
+    load_lifecycle_policy,
+    plan_tiered_ingestion_lifecycle,
+)
 from link_jsonl_to_sql import (
     _ingestion_lane_label,
     _storage_temperature_label,
@@ -22,7 +28,6 @@ from link_jsonl_to_sql import (
 )
 
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_SCAN_ROOTS = (
     "decisions",
     "decision_explanations",
@@ -46,6 +51,7 @@ DEFAULT_STORAGE_SUFFIXES = {
     ".txt",
 }
 DEFAULT_OFFLOAD_MANIFEST_PATH = PROJECT_ROOT / "governance" / "health" / "storage_tier_offload_manifest_latest.json"
+DEFAULT_LIFECYCLE_POLICY_PATH = PROJECT_ROOT / "config" / "tiered_ingestion_lifecycle_v1.json"
 GIB = 1024**3
 
 
@@ -660,10 +666,11 @@ def main() -> int:
     parser.add_argument("--top-n", type=int, default=12)
     parser.add_argument("--hot-budget-gb", type=float, default=25.0)
     parser.add_argument("--cold-candidate-min-mb", type=float, default=128.0)
-    parser.add_argument("--offload-manifest-file", default=str(DEFAULT_OFFLOAD_MANIFEST_PATH))
+    parser.add_argument("--offload-manifest-file", default="")
     parser.add_argument("--offload-manifest-max-files", type=int, default=5000)
     parser.add_argument("--offload-manifest-max-gb", type=float, default=512.0)
     parser.add_argument("--offload-manifest-min-mb", type=float, default=128.0)
+    parser.add_argument("--lifecycle-policy-file", default=str(DEFAULT_LIFECYCLE_POLICY_PATH))
     parser.add_argument("--no-write-offload-manifest", action="store_true")
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args()
@@ -795,7 +802,11 @@ def main() -> int:
             "archive governance telemetry on an async cadence rather than keeping nearline event history on the same device as live writes"
         )
 
-    manifest_path = Path(args.offload_manifest_file).expanduser()
+    manifest_path = (
+        Path(args.offload_manifest_file).expanduser()
+        if str(args.offload_manifest_file or "").strip()
+        else project_root / "governance" / "health" / DEFAULT_OFFLOAD_MANIFEST_PATH.name
+    )
     if not manifest_path.is_absolute():
         manifest_path = project_root / manifest_path
     offload_contract, offload_manifest = _build_offload_manifest_contract(
@@ -811,9 +822,27 @@ def main() -> int:
         manifest_path.parent.mkdir(parents=True, exist_ok=True)
         manifest_path.write_text(json.dumps(offload_manifest, ensure_ascii=True, indent=2), encoding="utf-8")
 
+    lifecycle_policy_path = Path(args.lifecycle_policy_file).expanduser()
+    if not lifecycle_policy_path.is_absolute():
+        lifecycle_policy_path = project_root / lifecycle_policy_path
+    lifecycle_policy = load_lifecycle_policy(lifecycle_policy_path)
+    try:
+        statvfs = os.statvfs(project_root)
+        available_hot_bytes = int(statvfs.f_bavail * statvfs.f_frsize)
+    except OSError:
+        available_hot_bytes = 0
+    lifecycle_contract = plan_tiered_ingestion_lifecycle(
+        offload_manifest["entries"],
+        policy=lifecycle_policy,
+        available_hot_bytes=available_hot_bytes,
+        hot_path_over_budget_bytes=hot_path_over_budget_bytes,
+    )
+    if lifecycle_contract["work_state"] != "steady":
+        recommended_actions.append(str(lifecycle_contract["intake_directive"]))
+
     payload = {
         "timestamp_utc": now_utc.isoformat(),
-        "schema_version": 2,
+        "schema_version": 3,
         "overall_status": overall_status,
         "file_count": len(files),
         "by_temperature": by_temperature,
@@ -836,10 +865,15 @@ def main() -> int:
             "hot_path_over_budget_bytes": int(hot_path_over_budget_bytes),
             "raw_hot_path_over_budget_bytes": int(raw_hot_path_over_budget_bytes),
             "async_offload_candidate_bytes": int(async_offload_bytes),
+            "available_hot_bytes": int(available_hot_bytes),
         },
         "hot_path_budget_contract": budget_contract,
         "manifest_backed_offload_contract": offload_contract,
         "offload_manifest_summary": offload_manifest["summary"],
+        "tiered_ingestion_lifecycle": {
+            **lifecycle_contract,
+            "policy_path": str(lifecycle_policy_path),
+        },
         "upgrade_plan": {
             "storage_split_target": "keep decisions and active SQL state on the hot path while explanations, telemetry, and artifact blobs drain asynchronously",
             "deep_cold_target": "stale-stage archives stay manifest-indexed as deep-cold evidence so retention-locked files stop acting like hot-path storage debt",

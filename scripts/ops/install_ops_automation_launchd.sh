@@ -177,6 +177,7 @@ cat > "$WATCHDOG_PLIST" <<PLIST
   <key>Label</key><string>com.dankingsley.ops.watchdog</string>
   <key>ProgramArguments</key><array><string>$PY</string><string>$PROJECT_ROOT/scripts/ops/process_watchdog.py</string></array>
   <key>WorkingDirectory</key><string>$PROJECT_ROOT</string>
+  <key>Nice</key><integer>0</integer>
   <key>RunAtLoad</key><true/>
   <key>StartInterval</key><integer>$WATCHDOG_INTERVAL</integer>
   <key>StandardOutPath</key><string>$LOG_DIR/ops_watchdog.out.log</string>

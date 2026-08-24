@@ -37,7 +37,9 @@ def _use_local_execution_lane_root(monkeypatch):
     monkeypatch.delenv("EXECUTION_LANE_ROOT", raising=False)
 
 
-def test_default_queue_db_path_prefers_local_fallback(tmp_path: Path, monkeypatch) -> None:
+def test_default_queue_db_path_prefers_local_fallback(
+    tmp_path: Path, monkeypatch
+) -> None:
     monkeypatch.delenv("BOT_CHANNEL_QUEUE_DB", raising=False)
     monkeypatch.setenv("BOT_CHANNEL_QUEUE_PREFER_LOCAL", "1")
 
@@ -47,12 +49,107 @@ def test_default_queue_db_path_prefers_local_fallback(tmp_path: Path, monkeypatc
 
 
 def test_execution_lane_health_update_cadence_is_bounded() -> None:
-    assert execution_lane_runner._lane_health_update_due(0.0, 60.0, now_monotonic=100.0) is True
-    assert execution_lane_runner._lane_health_update_due(100.0, 60.0, now_monotonic=159.9) is False
-    assert execution_lane_runner._lane_health_update_due(100.0, 60.0, now_monotonic=160.0) is True
+    assert (
+        execution_lane_runner._lane_health_update_due(0.0, 60.0, now_monotonic=100.0)
+        is True
+    )
+    assert (
+        execution_lane_runner._lane_health_update_due(100.0, 60.0, now_monotonic=159.9)
+        is False
+    )
+    assert (
+        execution_lane_runner._lane_health_update_due(100.0, 60.0, now_monotonic=160.0)
+        is True
+    )
 
 
-def test_default_queue_db_path_prefers_routed_storage_when_external_is_preferred(tmp_path: Path, monkeypatch) -> None:
+def _lane_message(*, created_at: str, payload_timestamp: str = "") -> ChannelMessage:
+    return ChannelMessage(
+        id=1,
+        channel=EXECUTION_PROMOTED_CHANNEL,
+        message_id="live-intent-1",
+        parent_message_id="",
+        run_id="run-1",
+        iter_id="iter-1",
+        source_path="pytest",
+        payload={"timestamp_utc": payload_timestamp} if payload_timestamp else {},
+        created_at=created_at,
+    )
+
+
+def test_live_execution_intent_without_timestamp_fails_closed() -> None:
+    stale, age_seconds, max_age_seconds, reason = (
+        execution_lane_runner._stale_intent_detail(
+            "live",
+            _lane_message(created_at=""),
+        )
+    )
+
+    assert stale is True
+    assert age_seconds is None
+    assert max_age_seconds == 60.0
+    assert reason == "live_intent_created_at_missing"
+
+
+def test_live_execution_intent_with_future_timestamp_fails_closed(monkeypatch) -> None:
+    monkeypatch.setenv("EXECUTION_LANE_LIVE_MAX_FUTURE_SKEW_SECONDS", "2")
+    future = (datetime.now(timezone.utc) + timedelta(seconds=30)).isoformat()
+
+    stale, age_seconds, _max_age_seconds, reason = (
+        execution_lane_runner._stale_intent_detail(
+            "live",
+            _lane_message(created_at=future),
+        )
+    )
+
+    assert stale is True
+    assert age_seconds is not None and age_seconds < -2.0
+    assert reason == "live_intent_created_at_in_future"
+
+
+def test_paper_execution_retains_missing_timestamp_compatibility() -> None:
+    stale, age_seconds, _max_age_seconds, reason = (
+        execution_lane_runner._stale_intent_detail(
+            "paper",
+            _lane_message(created_at=""),
+        )
+    )
+
+    assert stale is False
+    assert age_seconds is None
+    assert reason == "created_at_missing_paper_compatible"
+
+
+def test_paper_execution_priority_does_not_crash_without_taskpolicy(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        execution_lane_runner, "_paper_execution_target_nice", lambda: 0
+    )
+    monkeypatch.setattr(execution_lane_runner.os, "nice", lambda _delta: 0)
+    monkeypatch.setattr(execution_lane_runner, "taskpolicy_executable", lambda: "")
+    monkeypatch.setattr(execution_lane_runner.sys, "platform", "darwin")
+    monkeypatch.setattr(
+        execution_lane_runner,
+        "_control_env_value",
+        lambda name, default="": (
+            "1"
+            if name
+            in {"BOT_CPU_WORKLOAD_POLICY_LOCKED", "BOT_CPU_TASKPOLICY_SELF_HEAL"}
+            else default
+        ),
+    )
+
+    result = execution_lane_runner._apply_paper_execution_nice()
+
+    assert result["managed_restart_required"] is False
+    assert result["taskpolicy_ok"] is None
+    assert result["taskpolicy_reason"] == "taskpolicy_unavailable"
+
+
+def test_default_queue_db_path_prefers_routed_storage_when_external_is_preferred(
+    tmp_path: Path, monkeypatch
+) -> None:
     monkeypatch.delenv("BOT_CHANNEL_QUEUE_DB", raising=False)
     monkeypatch.delenv("BOT_CHANNEL_QUEUE_PREFER_LOCAL", raising=False)
     monkeypatch.setenv("BOT_LOGS_PREFER_EXTERNAL", "1")
@@ -62,14 +159,18 @@ def test_default_queue_db_path_prefers_routed_storage_when_external_is_preferred
     )
 
 
-def test_default_queue_db_path_respects_explicit_override(tmp_path: Path, monkeypatch) -> None:
+def test_default_queue_db_path_respects_explicit_override(
+    tmp_path: Path, monkeypatch
+) -> None:
     override = tmp_path / "custom" / "queue.sqlite3"
     monkeypatch.setenv("BOT_CHANNEL_QUEUE_DB", str(override))
 
     assert default_queue_db_path(tmp_path) == str(override)
 
 
-def test_channel_queue_schema_check_skips_locked_existing_db(tmp_path: Path, monkeypatch) -> None:
+def test_channel_queue_schema_check_skips_locked_existing_db(
+    tmp_path: Path, monkeypatch
+) -> None:
     queue_path = tmp_path / "data" / "bot_channel_queue.sqlite3"
     queue_path.parent.mkdir(parents=True, exist_ok=True)
     queue_path.write_text("placeholder", encoding="utf-8")
@@ -81,14 +182,18 @@ def test_channel_queue_schema_check_skips_locked_existing_db(tmp_path: Path, mon
         def close(self) -> None:
             return None
 
-    monkeypatch.setattr(sqlite3, "connect", lambda *_args, **_kwargs: _LockedSchemaConnection())
+    monkeypatch.setattr(
+        sqlite3, "connect", lambda *_args, **_kwargs: _LockedSchemaConnection()
+    )
 
     queue = ChannelQueue(queue_path)
 
     assert queue.db_path == queue_path
 
 
-def test_channel_queue_connect_tolerates_locked_wal_pragma(tmp_path: Path, monkeypatch) -> None:
+def test_channel_queue_connect_tolerates_locked_wal_pragma(
+    tmp_path: Path, monkeypatch
+) -> None:
     queue_path = tmp_path / "data" / "bot_channel_queue.sqlite3"
     queue_path.parent.mkdir(parents=True, exist_ok=True)
     queue_path.write_text("placeholder", encoding="utf-8")
@@ -158,7 +263,9 @@ def test_channel_queue_stale_prefix_stops_before_fresh_intent(tmp_path: Path) ->
     assert prefix["stopped_at_fresh"] is True
 
 
-def test_channel_queue_quarantines_corrupt_db_and_recreates_schema(tmp_path: Path) -> None:
+def test_channel_queue_quarantines_corrupt_db_and_recreates_schema(
+    tmp_path: Path,
+) -> None:
     queue_path = tmp_path / "data" / "bot_channel_queue.sqlite3"
     queue_path.parent.mkdir(parents=True, exist_ok=True)
     queue_path.write_bytes(b"not a sqlite database")
@@ -170,18 +277,27 @@ def test_channel_queue_quarantines_corrupt_db_and_recreates_schema(tmp_path: Pat
         payload={"message_id": "intent-corrupt-repair", "symbol": "BTC-USD"},
         message_id="intent-corrupt-repair",
     )
-    messages = queue.read_from_cursor(consumer="pytest_corrupt_repair", channel=EXECUTION_INTENT_CHANNEL, limit=10)
+    messages = queue.read_from_cursor(
+        consumer="pytest_corrupt_repair", channel=EXECUTION_INTENT_CHANNEL, limit=10
+    )
 
     assert message_id == "intent-corrupt-repair"
     assert len(messages) == 1
     assert messages[0].payload["symbol"] == "BTC-USD"
     assert queue.last_repair["active"] is True
-    assert any(row["original_path"] == str(queue_path) for row in queue.last_repair["moved"])
+    assert any(
+        row["original_path"] == str(queue_path) for row in queue.last_repair["moved"]
+    )
     assert list(queue_path.parent.glob("bot_channel_queue.sqlite3.corrupt-*"))
-    assert list(queue_path.parent.glob("bot_channel_queue.sqlite3-wal.corrupt-*")) or not Path(f"{queue_path}-wal").exists()
+    assert (
+        list(queue_path.parent.glob("bot_channel_queue.sqlite3-wal.corrupt-*"))
+        or not Path(f"{queue_path}-wal").exists()
+    )
 
 
-def test_channel_queue_repairs_symlinked_external_target_without_replacing_link(tmp_path: Path) -> None:
+def test_channel_queue_repairs_symlinked_external_target_without_replacing_link(
+    tmp_path: Path,
+) -> None:
     repo_data = tmp_path / "repo" / "data"
     external_data = tmp_path / "external" / "data"
     repo_data.mkdir(parents=True, exist_ok=True)
@@ -202,7 +318,12 @@ def test_channel_queue_repairs_symlinked_external_target_without_replacing_link(
     assert link.resolve(strict=False) == target.resolve(strict=False)
     assert list(external_data.glob("bot_channel_queue.sqlite3.corrupt-*"))
     assert any(row["via_symlink"] is True for row in queue.last_repair["moved"])
-    assert queue.pending_count(consumer="pytest_symlink_repair", channel=EXECUTION_INTENT_CHANNEL) == 1
+    assert (
+        queue.pending_count(
+            consumer="pytest_symlink_repair", channel=EXECUTION_INTENT_CHANNEL
+        )
+        == 1
+    )
 
 
 def _write_json(path: Path, payload: dict) -> None:
@@ -211,10 +332,14 @@ def _write_json(path: Path, payload: dict) -> None:
 
 
 def _seed_gates(project_root: Path, *, promote_ok: bool, quality_ok: bool) -> None:
-    role_contract_source = Path(__file__).resolve().parents[1] / "config" / "system_role_contracts_v1.json"
+    role_contract_source = (
+        Path(__file__).resolve().parents[1] / "config" / "system_role_contracts_v1.json"
+    )
     role_contract_target = project_root / "config" / "system_role_contracts_v1.json"
     role_contract_target.parent.mkdir(parents=True, exist_ok=True)
-    role_contract_target.write_text(role_contract_source.read_text(encoding="utf-8"), encoding="utf-8")
+    role_contract_target.write_text(
+        role_contract_source.read_text(encoding="utf-8"), encoding="utf-8"
+    )
     _write_json(
         project_root / "governance" / "walk_forward" / "promotion_gate_latest.json",
         {
@@ -224,7 +349,10 @@ def _seed_gates(project_root: Path, *, promote_ok: bool, quality_ok: bool) -> No
         },
     )
     _write_json(
-        project_root / "governance" / "walk_forward" / "lane_promotion_gate_latest.json",
+        project_root
+        / "governance"
+        / "walk_forward"
+        / "lane_promotion_gate_latest.json",
         {
             "promote_ok": True,
             "coverage_ok": True,
@@ -420,7 +548,9 @@ def test_publish_execution_intent_enqueues_channel_message(tmp_path: Path) -> No
     )
 
     queue = ChannelQueue(default_queue_db_path(tmp_path))
-    messages = queue.read_from_cursor(consumer="pytest", channel=EXECUTION_INTENT_CHANNEL, limit=10)
+    messages = queue.read_from_cursor(
+        consumer="pytest", channel=EXECUTION_INTENT_CHANNEL, limit=10
+    )
 
     assert row["message_id"]
     assert len(messages) == 1
@@ -429,12 +559,19 @@ def test_publish_execution_intent_enqueues_channel_message(tmp_path: Path) -> No
     assert messages[0].payload["features"] == {"last_price": 500.0, "spread_bps": 2.0}
     assert messages[0].payload["execution_transport"]["compacted"] is True
     assert set(messages[0].payload["features"]) <= EXECUTION_TRANSPORT_FEATURE_KEYS
-    intent_path = tmp_path / "governance" / "execution_lanes" / f"execution_intents_{datetime.now(timezone.utc):%Y%m%d}.jsonl"
+    intent_path = (
+        tmp_path
+        / "governance"
+        / "execution_lanes"
+        / f"execution_intents_{datetime.now(timezone.utc):%Y%m%d}.jsonl"
+    )
     persisted = json.loads(intent_path.read_text(encoding="utf-8").splitlines()[-1])
     assert "training_only_feature" not in persisted["features"]
 
 
-def test_publish_execution_intent_retries_locked_queue(monkeypatch, tmp_path: Path) -> None:
+def test_publish_execution_intent_retries_locked_queue(
+    monkeypatch, tmp_path: Path
+) -> None:
     attempts = {"count": 0}
     original_enqueue = ChannelQueue.enqueue
 
@@ -458,7 +595,9 @@ def test_publish_execution_intent_retries_locked_queue(monkeypatch, tmp_path: Pa
     )
 
     queue = ChannelQueue(default_queue_db_path(tmp_path))
-    messages = queue.read_from_cursor(consumer="pytest_retry", channel=EXECUTION_INTENT_CHANNEL, limit=10)
+    messages = queue.read_from_cursor(
+        consumer="pytest_retry", channel=EXECUTION_INTENT_CHANNEL, limit=10
+    )
 
     assert attempts["count"] == 3
     assert row["message_id"]
@@ -526,20 +665,39 @@ def test_direct_live_execution_fails_closed_without_sleeve_policy_receipt(
 
     assert out["result"]["result_status"] == "LIVE_DECISION_FLOW_BLOCKED"
     assert out["result"]["decision_flow_guard"]["allow_execute"] is False
-    assert "decision_flow_metadata_missing" in out["result"][
-        "decision_flow_guard"
-    ]["reasons"]
+    assert (
+        "decision_flow_metadata_missing"
+        in out["result"]["decision_flow_guard"]["reasons"]
+    )
 
 
-def test_process_execution_intent_paper_emits_result_and_promoted_message(tmp_path: Path) -> None:
+def test_process_execution_intent_paper_emits_result_and_promoted_message(
+    tmp_path: Path,
+) -> None:
     _seed_gates(tmp_path, promote_ok=True, quality_ok=True)
     _write_json(
-        tmp_path / "governance" / "allocator" / "portfolio_allocator_service_latest.json",
-        {"ok": True, "approved_intents": [{"symbol": "SPY", "side": "BUY", "approved_qty": 1.0}]},
+        tmp_path
+        / "governance"
+        / "allocator"
+        / "portfolio_allocator_service_latest.json",
+        {
+            "ok": True,
+            "approved_intents": [{"symbol": "SPY", "side": "BUY", "approved_qty": 1.0}],
+        },
     )
     _write_json(
         tmp_path / "governance" / "risk" / "risk_service_boundary_latest.json",
-        {"ok": True, "pre_trade_decisions": [{"symbol": "SPY", "requested_action": "BUY", "approved_action": "BUY", "risk_limit_ok": True}]},
+        {
+            "ok": True,
+            "pre_trade_decisions": [
+                {
+                    "symbol": "SPY",
+                    "requested_action": "BUY",
+                    "approved_action": "BUY",
+                    "risk_limit_ok": True,
+                }
+            ],
+        },
     )
     _write_json(
         tmp_path / "master_bot_registry.json",
@@ -548,7 +706,9 @@ def test_process_execution_intent_paper_emits_result_and_promoted_message(tmp_pa
         },
     )
 
-    trader = BaseTrader("dummy_key", "dummy_secret", "https://127.0.0.1:8182", mode="paper")
+    trader = BaseTrader(
+        "dummy_key", "dummy_secret", "https://127.0.0.1:8182", mode="paper"
+    )
     trader.project_root = str(tmp_path)
     trader.set_mode("paper")
     configure_trader_for_lane(trader, "paper")
@@ -591,9 +751,15 @@ def test_process_execution_intent_paper_emits_result_and_promoted_message(tmp_pa
     )
 
     queue = ChannelQueue(default_queue_db_path(tmp_path))
-    result_rows = queue.read_from_cursor(consumer="pytest_results", channel=EXECUTION_RESULT_CHANNEL, limit=10)
-    promotion_rows = queue.read_from_cursor(consumer="pytest_promotions", channel=EXECUTION_PROMOTION_CHANNEL, limit=10)
-    promoted_rows = queue.read_from_cursor(consumer="pytest_live", channel=EXECUTION_PROMOTED_CHANNEL, limit=10)
+    result_rows = queue.read_from_cursor(
+        consumer="pytest_results", channel=EXECUTION_RESULT_CHANNEL, limit=10
+    )
+    promotion_rows = queue.read_from_cursor(
+        consumer="pytest_promotions", channel=EXECUTION_PROMOTION_CHANNEL, limit=10
+    )
+    promoted_rows = queue.read_from_cursor(
+        consumer="pytest_live", channel=EXECUTION_PROMOTED_CHANNEL, limit=10
+    )
 
     assert out["result"]["result_status"] == "PAPER_EXECUTED"
     assert len(result_rows) == 1
@@ -603,20 +769,42 @@ def test_process_execution_intent_paper_emits_result_and_promoted_message(tmp_pa
     assert promoted_rows[0].payload["target_mode"] == "live"
 
 
-def test_process_execution_intent_blocks_promotion_on_stale_realism_fill(tmp_path: Path, monkeypatch) -> None:
+def test_process_execution_intent_blocks_promotion_on_stale_realism_fill(
+    tmp_path: Path, monkeypatch
+) -> None:
     monkeypatch.setenv("PAPER_REALISM_MIN_PROMOTION_SCORE", "65")
     _seed_gates(tmp_path, promote_ok=True, quality_ok=True)
     _write_json(
-        tmp_path / "governance" / "allocator" / "portfolio_allocator_service_latest.json",
-        {"ok": True, "approved_intents": [{"symbol": "NVDA", "side": "SELL_TO_OPEN", "approved_qty": 10.0}]},
+        tmp_path
+        / "governance"
+        / "allocator"
+        / "portfolio_allocator_service_latest.json",
+        {
+            "ok": True,
+            "approved_intents": [
+                {"symbol": "NVDA", "side": "SELL_TO_OPEN", "approved_qty": 10.0}
+            ],
+        },
     )
     _write_json(
         tmp_path / "governance" / "risk" / "risk_service_boundary_latest.json",
-        {"ok": True, "pre_trade_decisions": [{"symbol": "NVDA", "requested_action": "SELL_TO_OPEN", "approved_action": "SELL_TO_OPEN", "risk_limit_ok": True}]},
+        {
+            "ok": True,
+            "pre_trade_decisions": [
+                {
+                    "symbol": "NVDA",
+                    "requested_action": "SELL_TO_OPEN",
+                    "approved_action": "SELL_TO_OPEN",
+                    "risk_limit_ok": True,
+                }
+            ],
+        },
     )
     _write_json(tmp_path / "master_bot_registry.json", {"sub_bots": []})
 
-    trader = BaseTrader("dummy_key", "dummy_secret", "https://127.0.0.1:8182", mode="paper")
+    trader = BaseTrader(
+        "dummy_key", "dummy_secret", "https://127.0.0.1:8182", mode="paper"
+    )
     trader.project_root = str(tmp_path)
     trader.set_mode("paper")
     configure_trader_for_lane(trader, "paper")
@@ -669,27 +857,50 @@ def test_process_execution_intent_blocks_promotion_on_stale_realism_fill(tmp_pat
     )
 
     queue = ChannelQueue(default_queue_db_path(tmp_path))
-    promoted_rows = queue.read_from_cursor(consumer="pytest_live_stale", channel=EXECUTION_PROMOTED_CHANNEL, limit=10)
+    promoted_rows = queue.read_from_cursor(
+        consumer="pytest_live_stale", channel=EXECUTION_PROMOTED_CHANNEL, limit=10
+    )
 
     result = out["result"]["result"]
     assert out["result"]["result_status"] == "PAPER_PROFITABILITY_GUARD_BLOCKED"
     assert "paper_order" not in result
     assert result["live_guard_decision"]["gate"] == "paper_profitability_entry_policy"
-    assert result["live_guard_decision"]["reason"] == "paper_profitability_entry_policy_block"
+    assert (
+        result["live_guard_decision"]["reason"]
+        == "paper_profitability_entry_policy_block"
+    )
     assert out["promotion"]["promotion"]["promote_ok"] is False
     assert len(promoted_rows) == 0
 
 
-def test_paper_standard_gateway_blocks_collection_only_intent(tmp_path: Path, monkeypatch) -> None:
+def test_paper_standard_gateway_blocks_collection_only_intent(
+    tmp_path: Path, monkeypatch
+) -> None:
     monkeypatch.setenv("PAPER_LIVE_DATA_STANDARD_ENABLED", "1")
     _seed_gates(tmp_path, promote_ok=True, quality_ok=True)
     _write_json(
-        tmp_path / "governance" / "allocator" / "portfolio_allocator_service_latest.json",
-        {"ok": True, "approved_intents": [{"symbol": "SPY", "side": "BUY", "approved_qty": 1.0}]},
+        tmp_path
+        / "governance"
+        / "allocator"
+        / "portfolio_allocator_service_latest.json",
+        {
+            "ok": True,
+            "approved_intents": [{"symbol": "SPY", "side": "BUY", "approved_qty": 1.0}],
+        },
     )
     _write_json(
         tmp_path / "governance" / "risk" / "risk_service_boundary_latest.json",
-        {"ok": True, "pre_trade_decisions": [{"symbol": "SPY", "requested_action": "BUY", "approved_action": "BUY", "risk_limit_ok": True}]},
+        {
+            "ok": True,
+            "pre_trade_decisions": [
+                {
+                    "symbol": "SPY",
+                    "requested_action": "BUY",
+                    "approved_action": "BUY",
+                    "risk_limit_ok": True,
+                }
+            ],
+        },
     )
     _write_json(
         tmp_path / "master_bot_registry.json",
@@ -708,7 +919,9 @@ def test_paper_standard_gateway_blocks_collection_only_intent(tmp_path: Path, mo
         },
     )
 
-    trader = BaseTrader("dummy_key", "dummy_secret", "https://127.0.0.1:8182", mode="paper")
+    trader = BaseTrader(
+        "dummy_key", "dummy_secret", "https://127.0.0.1:8182", mode="paper"
+    )
     trader.project_root = str(tmp_path)
     trader.set_mode("paper")
     configure_trader_for_lane(trader, "paper")
@@ -742,13 +955,19 @@ def test_paper_standard_gateway_blocks_collection_only_intent(tmp_path: Path, mo
         message=message,
     )
 
-    gateway = evaluate_paper_standard_gateway(project_root=str(tmp_path), intent=message.payload)
+    gateway = evaluate_paper_standard_gateway(
+        project_root=str(tmp_path), intent=message.payload
+    )
     assert gateway["allow_execute"] is False
     assert out["result"]["result_status"] == "PAPER_STANDARD_BLOCKED"
-    assert out["result"]["paper_standard_gateway"]["reasons"] == ["paper_standard_bot_not_in_explicit_paper_cohort"]
+    assert out["result"]["paper_standard_gateway"]["reasons"] == [
+        "paper_standard_bot_not_in_explicit_paper_cohort"
+    ]
 
 
-def test_paper_standard_gateway_allows_explicit_paper_bot(tmp_path: Path, monkeypatch) -> None:
+def test_paper_standard_gateway_allows_explicit_paper_bot(
+    tmp_path: Path, monkeypatch
+) -> None:
     monkeypatch.setenv("PAPER_LIVE_DATA_STANDARD_ENABLED", "1")
     _write_json(
         tmp_path / "master_bot_registry.json",
@@ -784,12 +1003,26 @@ def test_paper_standard_gateway_allows_explicit_paper_bot(tmp_path: Path, monkey
     assert gateway["paper_standard_cohort"] == "legacy_bootstrap"
 
 
-def test_paper_standard_gateway_uses_only_hash_bound_candidate_overlay(tmp_path: Path, monkeypatch) -> None:
+def test_paper_standard_gateway_uses_only_hash_bound_candidate_overlay(
+    tmp_path: Path, monkeypatch
+) -> None:
     monkeypatch.setenv("PAPER_LIVE_DATA_STANDARD_ENABLED", "1")
     source_path = tmp_path / "master_bot_registry.json"
-    candidate_path = tmp_path / "governance" / "health" / "paper_live_data_standard_registry_candidate_latest.json"
-    guard_path = tmp_path / "governance" / "health" / "paper_live_data_standard_source_write_guard_latest.json"
-    health_path = tmp_path / "governance" / "health" / "paper_live_data_standard_latest.json"
+    candidate_path = (
+        tmp_path
+        / "governance"
+        / "health"
+        / "paper_live_data_standard_registry_candidate_latest.json"
+    )
+    guard_path = (
+        tmp_path
+        / "governance"
+        / "health"
+        / "paper_live_data_standard_source_write_guard_latest.json"
+    )
+    health_path = (
+        tmp_path / "governance" / "health" / "paper_live_data_standard_latest.json"
+    )
     source = {
         "summary": {},
         "sub_bots": [
@@ -835,14 +1068,20 @@ def test_paper_standard_gateway_uses_only_hash_bound_candidate_overlay(tmp_path:
     assert allowed["allow_execute"] is True
     assert allowed["registry_provenance"]["source"] == "hash_bound_candidate_overlay"
 
-    candidate_path.write_text(candidate_path.read_text(encoding="utf-8") + "\n", encoding="utf-8")
+    candidate_path.write_text(
+        candidate_path.read_text(encoding="utf-8") + "\n", encoding="utf-8"
+    )
     blocked = evaluate_paper_standard_gateway(project_root=str(tmp_path), intent=intent)
     assert blocked["allow_execute"] is False
     assert blocked["registry_provenance"]["candidate_overlay_valid"] is False
-    assert "candidate_registry_hash_mismatch" in blocked["registry_provenance"]["reasons"]
+    assert (
+        "candidate_registry_hash_mismatch" in blocked["registry_provenance"]["reasons"]
+    )
 
 
-def test_paper_standard_gateway_does_not_authorize_virtual_name_patterns(tmp_path: Path, monkeypatch) -> None:
+def test_paper_standard_gateway_does_not_authorize_virtual_name_patterns(
+    tmp_path: Path, monkeypatch
+) -> None:
     monkeypatch.setenv("PAPER_LIVE_DATA_STANDARD_ENABLED", "1")
     _write_json(tmp_path / "master_bot_registry.json", {"sub_bots": []})
 
@@ -856,7 +1095,9 @@ def test_paper_standard_gateway_does_not_authorize_virtual_name_patterns(tmp_pat
     assert gateway["reasons"] == ["paper_standard_bot_missing_from_registry"]
 
 
-def test_paper_standard_gateway_validates_consensus_constituents(tmp_path: Path, monkeypatch) -> None:
+def test_paper_standard_gateway_validates_consensus_constituents(
+    tmp_path: Path, monkeypatch
+) -> None:
     monkeypatch.setenv("PAPER_LIVE_DATA_STANDARD_ENABLED", "1")
     _write_json(
         tmp_path / "master_bot_registry.json",
@@ -912,12 +1153,16 @@ def test_paper_standard_gateway_validates_consensus_constituents(tmp_path: Path,
         "metadata": _paper_consensus_metadata(["eligible_bot", "eligible_bot_b"]),
     }
 
-    allowed = evaluate_paper_standard_gateway(project_root=str(tmp_path), intent=base_intent)
+    allowed = evaluate_paper_standard_gateway(
+        project_root=str(tmp_path), intent=base_intent
+    )
     blocked = evaluate_paper_standard_gateway(
         project_root=str(tmp_path),
         intent={
             **base_intent,
-            "metadata": _paper_consensus_metadata(["eligible_bot", "collection_only_bot"]),
+            "metadata": _paper_consensus_metadata(
+                ["eligible_bot", "collection_only_bot"]
+            ),
         },
     )
 
@@ -951,7 +1196,9 @@ def test_paper_standard_gateway_fails_closed_on_incomplete_consensus_identity(
     assert "paper_standard_consensus_authority_version_mismatch" in gateway["reasons"]
 
 
-def test_paper_standard_gateway_binds_consensus_to_current_candidate(tmp_path: Path, monkeypatch) -> None:
+def test_paper_standard_gateway_binds_consensus_to_current_candidate(
+    tmp_path: Path, monkeypatch
+) -> None:
     monkeypatch.setenv("PAPER_LIVE_DATA_STANDARD_ENABLED", "1")
     rows = []
     for bot_id in ("eligible_a", "eligible_b"):
@@ -978,7 +1225,10 @@ def test_paper_standard_gateway_binds_consensus_to_current_candidate(tmp_path: P
 
     missing = evaluate_paper_standard_gateway(
         project_root=str(tmp_path),
-        intent={"strategy": "paper_portfolio_consensus::baseline::core", "metadata": metadata},
+        intent={
+            "strategy": "paper_portfolio_consensus::baseline::core",
+            "metadata": metadata,
+        },
     )
     matched = evaluate_paper_standard_gateway(
         project_root=str(tmp_path),
@@ -993,11 +1243,16 @@ def test_paper_standard_gateway_binds_consensus_to_current_candidate(tmp_path: P
     assert matched["allow_execute"] is True
 
 
-def test_update_lane_health_marks_stale_consumer_with_backlog(tmp_path: Path, monkeypatch) -> None:
+def test_update_lane_health_marks_stale_consumer_with_backlog(
+    tmp_path: Path, monkeypatch
+) -> None:
     queue = ChannelQueue(default_queue_db_path(tmp_path))
     queue.enqueue(
         channel=EXECUTION_INTENT_CHANNEL,
-        payload={"message_id": "intent-1", "timestamp_utc": "2026-03-31T20:00:00+00:00"},
+        payload={
+            "message_id": "intent-1",
+            "timestamp_utc": "2026-03-31T20:00:00+00:00",
+        },
         message_id="intent-1",
     )
     with queue._connect() as conn:
@@ -1006,7 +1261,13 @@ def test_update_lane_health_marks_stale_consumer_with_backlog(tmp_path: Path, mo
             INSERT INTO channel_consumer_state (consumer, channel, last_id, last_message_id, updated_at)
             VALUES (?, ?, ?, ?, ?)
             """,
-            ("execution_lane_paper", EXECUTION_INTENT_CHANNEL, 0, "", "2026-03-31T20:00:00+00:00"),
+            (
+                "execution_lane_paper",
+                EXECUTION_INTENT_CHANNEL,
+                0,
+                "",
+                "2026-03-31T20:00:00+00:00",
+            ),
         )
         conn.commit()
 
@@ -1019,18 +1280,27 @@ def test_update_lane_health_marks_stale_consumer_with_backlog(tmp_path: Path, mo
         queue_channel=EXECUTION_INTENT_CHANNEL,
     )
 
-    payload = json.loads((tmp_path / "governance" / "health" / "execution_lane_paper_latest.json").read_text(encoding="utf-8"))
+    payload = json.loads(
+        (
+            tmp_path / "governance" / "health" / "execution_lane_paper_latest.json"
+        ).read_text(encoding="utf-8")
+    )
     assert payload["stale"] is True
     assert payload["pending_rows"] == 1
     assert payload["queue_oldest_age_seconds"] is not None
     assert payload["consumer_idle_seconds"] is not None
 
 
-def test_update_lane_health_does_not_mark_stale_when_consumer_is_caught_up(tmp_path: Path, monkeypatch) -> None:
+def test_update_lane_health_does_not_mark_stale_when_consumer_is_caught_up(
+    tmp_path: Path, monkeypatch
+) -> None:
     queue = ChannelQueue(default_queue_db_path(tmp_path))
     queue.enqueue(
         channel=EXECUTION_INTENT_CHANNEL,
-        payload={"message_id": "intent-1", "timestamp_utc": "2026-03-31T20:00:00+00:00"},
+        payload={
+            "message_id": "intent-1",
+            "timestamp_utc": "2026-03-31T20:00:00+00:00",
+        },
         message_id="intent-1",
     )
     queue.ack_through(
@@ -1046,7 +1316,11 @@ def test_update_lane_health_does_not_mark_stale_when_consumer_is_caught_up(tmp_p
             SET updated_at=?
             WHERE consumer=? AND channel=?
             """,
-            ("2026-03-31T20:00:00+00:00", "execution_lane_paper", EXECUTION_INTENT_CHANNEL),
+            (
+                "2026-03-31T20:00:00+00:00",
+                "execution_lane_paper",
+                EXECUTION_INTENT_CHANNEL,
+            ),
         )
         conn.commit()
 
@@ -1059,16 +1333,25 @@ def test_update_lane_health_does_not_mark_stale_when_consumer_is_caught_up(tmp_p
         queue_channel=EXECUTION_INTENT_CHANNEL,
     )
 
-    payload = json.loads((tmp_path / "governance" / "health" / "execution_lane_paper_latest.json").read_text(encoding="utf-8"))
+    payload = json.loads(
+        (
+            tmp_path / "governance" / "health" / "execution_lane_paper_latest.json"
+        ).read_text(encoding="utf-8")
+    )
     assert payload["pending_rows"] == 0
     assert payload["stale"] is False
 
 
-def test_update_lane_health_allows_active_backlog_grace_before_marking_stale(tmp_path: Path, monkeypatch) -> None:
+def test_update_lane_health_allows_active_backlog_grace_before_marking_stale(
+    tmp_path: Path, monkeypatch
+) -> None:
     queue = ChannelQueue(default_queue_db_path(tmp_path))
     queue.enqueue(
         channel=EXECUTION_INTENT_CHANNEL,
-        payload={"message_id": "intent-1", "timestamp_utc": "2099-03-31T20:00:00+00:00"},
+        payload={
+            "message_id": "intent-1",
+            "timestamp_utc": "2099-03-31T20:00:00+00:00",
+        },
         message_id="intent-1",
     )
     with queue._connect() as conn:
@@ -1077,7 +1360,13 @@ def test_update_lane_health_allows_active_backlog_grace_before_marking_stale(tmp
             INSERT INTO channel_consumer_state (consumer, channel, last_id, last_message_id, updated_at)
             VALUES (?, ?, ?, ?, ?)
             """,
-            ("execution_lane_paper", EXECUTION_INTENT_CHANNEL, 0, "", "2099-03-31T19:59:00+00:00"),
+            (
+                "execution_lane_paper",
+                EXECUTION_INTENT_CHANNEL,
+                0,
+                "",
+                "2099-03-31T19:59:00+00:00",
+            ),
         )
         conn.commit()
 
@@ -1090,13 +1379,19 @@ def test_update_lane_health_allows_active_backlog_grace_before_marking_stale(tmp
         queue_channel=EXECUTION_INTENT_CHANNEL,
     )
 
-    payload = json.loads((tmp_path / "governance" / "health" / "execution_lane_paper_latest.json").read_text(encoding="utf-8"))
+    payload = json.loads(
+        (
+            tmp_path / "governance" / "health" / "execution_lane_paper_latest.json"
+        ).read_text(encoding="utf-8")
+    )
     assert payload["pending_rows"] == 1
     assert payload["stale"] is False
     assert payload["stale_grace_seconds"] >= 60
 
 
-def test_update_lane_health_writes_heartbeat_when_queue_stats_fail(tmp_path: Path, monkeypatch) -> None:
+def test_update_lane_health_writes_heartbeat_when_queue_stats_fail(
+    tmp_path: Path, monkeypatch
+) -> None:
     class _BrokenQueue:
         def __init__(self, *_args, **_kwargs):
             raise RuntimeError("queue unavailable")
@@ -1113,7 +1408,11 @@ def test_update_lane_health_writes_heartbeat_when_queue_stats_fail(tmp_path: Pat
         auth_error="paper_execution_paused_for_runtime_pressure",
     )
 
-    payload = json.loads((tmp_path / "governance" / "health" / "execution_lane_paper_latest.json").read_text(encoding="utf-8"))
+    payload = json.loads(
+        (
+            tmp_path / "governance" / "health" / "execution_lane_paper_latest.json"
+        ).read_text(encoding="utf-8")
+    )
     assert payload["queue_stats_available"] is False
     assert payload["queue_stats_status"] == "error"
     assert payload["queue_stats_error_type"] == "RuntimeError"
@@ -1122,7 +1421,9 @@ def test_update_lane_health_writes_heartbeat_when_queue_stats_fail(tmp_path: Pat
     assert payload["auth_error"] == "paper_execution_paused_for_runtime_pressure"
 
 
-def test_update_lane_health_skips_queue_stats_by_default(tmp_path: Path, monkeypatch) -> None:
+def test_update_lane_health_skips_queue_stats_by_default(
+    tmp_path: Path, monkeypatch
+) -> None:
     monkeypatch.delenv("EXECUTION_LANE_HEALTH_QUEUE_STATS_ENABLED", raising=False)
 
     update_lane_health(
@@ -1132,19 +1433,30 @@ def test_update_lane_health_skips_queue_stats_by_default(tmp_path: Path, monkeyp
         queue_channel=EXECUTION_INTENT_CHANNEL,
     )
 
-    payload = json.loads((tmp_path / "governance" / "health" / "execution_lane_paper_latest.json").read_text(encoding="utf-8"))
+    payload = json.loads(
+        (
+            tmp_path / "governance" / "health" / "execution_lane_paper_latest.json"
+        ).read_text(encoding="utf-8")
+    )
     assert payload["queue_stats_available"] is False
     assert payload["queue_stats_status"] == "skipped"
-    assert payload["queue_stats_skip_reason"] == "disabled_for_nonblocking_execution_lane_heartbeat"
+    assert (
+        payload["queue_stats_skip_reason"]
+        == "disabled_for_nonblocking_execution_lane_heartbeat"
+    )
     assert payload["pending_rows_unknown"] is True
     assert payload["stale"] is False
 
 
-def test_update_lane_health_reports_stale_skip_only_result_activity(tmp_path: Path, monkeypatch) -> None:
+def test_update_lane_health_reports_stale_skip_only_result_activity(
+    tmp_path: Path, monkeypatch
+) -> None:
     monkeypatch.setenv("BOT_LOGS_PREFER_EXTERNAL", "0")
     monkeypatch.setenv("EXECUTION_LANE_HEALTH_RESULT_FRESH_SECONDS", "900")
     day = datetime.now(timezone.utc).strftime("%Y%m%d")
-    result_path = tmp_path / "governance" / "execution_lanes" / f"execution_results_{day}.jsonl"
+    result_path = (
+        tmp_path / "governance" / "execution_lanes" / f"execution_results_{day}.jsonl"
+    )
     result_path.parent.mkdir(parents=True, exist_ok=True)
     result_path.write_text(
         json.dumps(
@@ -1166,23 +1478,33 @@ def test_update_lane_health_reports_stale_skip_only_result_activity(tmp_path: Pa
         queue_channel=EXECUTION_INTENT_CHANNEL,
     )
 
-    payload = json.loads((tmp_path / "governance" / "health" / "execution_lane_paper_latest.json").read_text(encoding="utf-8"))
+    payload = json.loads(
+        (
+            tmp_path / "governance" / "health" / "execution_lane_paper_latest.json"
+        ).read_text(encoding="utf-8")
+    )
     assert payload["result_activity_status"] == "stale_skip_only"
     assert payload["stale_skip_only_result_activity"] is True
     assert payload["fresh_paper_executed"] is False
     assert payload["execution_result_evidence"]["stale_skip_rows"] == 1
 
 
-def test_update_lane_health_keeps_old_stale_skip_audit_non_active(tmp_path: Path, monkeypatch) -> None:
+def test_update_lane_health_keeps_old_stale_skip_audit_non_active(
+    tmp_path: Path, monkeypatch
+) -> None:
     monkeypatch.setenv("BOT_LOGS_PREFER_EXTERNAL", "0")
     monkeypatch.setenv("EXECUTION_LANE_HEALTH_RESULT_FRESH_SECONDS", "900")
     day = datetime.now(timezone.utc).strftime("%Y%m%d")
-    result_path = tmp_path / "governance" / "execution_lanes" / f"execution_results_{day}.jsonl"
+    result_path = (
+        tmp_path / "governance" / "execution_lanes" / f"execution_results_{day}.jsonl"
+    )
     result_path.parent.mkdir(parents=True, exist_ok=True)
     result_path.write_text(
         json.dumps(
             {
-                "timestamp_utc": (datetime.now(timezone.utc) - timedelta(seconds=1200)).isoformat(),
+                "timestamp_utc": (
+                    datetime.now(timezone.utc) - timedelta(seconds=1200)
+                ).isoformat(),
                 "mode": "paper",
                 "result_status": "STALE_INTENT_SKIPPED",
                 "result": {"reason": "stale_execution_intent"},
@@ -1199,7 +1521,11 @@ def test_update_lane_health_keeps_old_stale_skip_audit_non_active(tmp_path: Path
         queue_channel=EXECUTION_INTENT_CHANNEL,
     )
 
-    payload = json.loads((tmp_path / "governance" / "health" / "execution_lane_paper_latest.json").read_text(encoding="utf-8"))
+    payload = json.loads(
+        (
+            tmp_path / "governance" / "health" / "execution_lane_paper_latest.json"
+        ).read_text(encoding="utf-8")
+    )
     assert payload["result_activity_status"] == "old_stale_skip_audit_only"
     assert payload["stale_skip_only_result_activity"] is False
     assert payload["execution_result_evidence"]["historical_stale_skip_only"] is True

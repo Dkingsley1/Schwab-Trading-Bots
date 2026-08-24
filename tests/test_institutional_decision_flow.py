@@ -56,6 +56,16 @@ def _decision_row(**overrides: object) -> dict[str, object]:
             "live_required_capability_coverage_ratio": 0.8,
             "independent_failover_coverage_ratio": 0.75,
             "selected_producer_count": 4,
+            "economic_context_contract_id": "sleeve_economic_context_v1",
+            "economic_context_coverage_ratio": 1.0,
+            "economic_context_average_route_score": 0.92,
+            "economic_context_source_count": 3,
+            "economic_context_source_ids": [
+                "bls_census",
+                "official_macro_context",
+                "bond_reference_context",
+            ],
+            "economic_context_ready": True,
             "paper_decision_data_ready": True,
             "live_decision_data_ready": False,
             "artifact_age_minutes": 0.5,
@@ -153,6 +163,8 @@ def test_qualified_shadow_candidate_never_receives_order_authority() -> None:
     assert result["decision_trace"]["stage_progress"]["live"]["complete"] is True
     assert result["decision_trace"]["data_route"]["paper_ready"] is True
     assert result["decision_trace"]["data_route"]["quality_norm"] == 0.94
+    assert result["decision_trace"]["data_route"]["research_data_metadata_only"] is True
+    assert result["decision_trace"]["data_route"]["research_data_execution_authority"] is False
     assert len(result["ingestion_route"]["decision_route_receipt_sha256"]) == 64
     assert result["authority"] == {
         "changes_active_action": False,
@@ -300,6 +312,10 @@ def test_active_control_caps_missing_edge_to_bounded_paper_probe() -> None:
     assert summary["ingestion_paper_coverage_norm"] == 1.0
     assert summary["ingestion_live_coverage_norm"] == 0.8
     assert summary["ingestion_selected_producer_count"] == 4
+    assert summary["economic_context_coverage_norm"] == 1.0
+    assert summary["economic_context_route_quality_norm"] == 0.92
+    assert summary["economic_context_source_count"] == 3
+    assert summary["economic_context_ready"] is True
     assert summary["ingestion_route_receipt_valid"] is True
     assert len(summary["ingestion_route_summary_receipt_sha256"]) == 64
 

@@ -60,6 +60,26 @@ def _artifact_config(project_root: Path) -> Dict[str, Dict[str, Any]]:
             "max_age_minutes": 240.0,
             "required": True,
         },
+        "all_sleeves_launcher": {
+            "paths": [project_root / "governance" / "health" / "all_sleeves_launcher_latest.json"],
+            "max_age_minutes": 2.0,
+            "required": False,
+        },
+        "paper_400_ramp": {
+            "paths": [project_root / "governance" / "health" / "paper_400_ramp_latest.json"],
+            "max_age_minutes": 15.0,
+            "required": False,
+        },
+        "unattended_soak_readiness": {
+            "paths": [project_root / "governance" / "health" / "unattended_soak_readiness_latest.json"],
+            "max_age_minutes": 15.0,
+            "required": False,
+        },
+        "data_collection_observation_rollup": {
+            "paths": [project_root / "governance" / "health" / "data_collection_observation_rollup_latest.json"],
+            "max_age_minutes": 60.0,
+            "required": False,
+        },
         "global_killswitch": {
             "paths": [project_root / "governance" / "health" / "global_killswitch_latest.json"],
             "max_age_minutes": 15.0,
@@ -620,6 +640,38 @@ def _artifact_summary(name: str, payload: Dict[str, Any]) -> Dict[str, Any]:
             "data_quality_score": float(payload.get("data_quality_score", 0.0) or 0.0),
             "hard_gate_triggered": bool(payload.get("hard_gate_triggered", False)),
             "inputs": payload.get("inputs") if isinstance(payload.get("inputs"), dict) else {},
+        }
+    if name == "all_sleeves_launcher":
+        readiness = payload.get("launcher_readiness_contract") if isinstance(payload.get("launcher_readiness_contract"), dict) else {}
+        return {
+            "overall_status": str(payload.get("overall_status") or ""),
+            "expected_job_count": int(payload.get("expected_job_count", 0) or 0),
+            "running_job_count": int(payload.get("running_job_count", 0) or 0),
+            "collection_fanout_ready": bool(readiness.get("collection_fanout_ready", False)),
+            "paper_execution_ready": bool(readiness.get("paper_execution_ready", False)),
+            "readiness_status": str(readiness.get("readiness_status") or ""),
+            "execution_attention": readiness.get("execution_attention") if isinstance(readiness.get("execution_attention"), list) else [],
+            "broker_auth_epoch": payload.get("broker_auth_epoch") if isinstance(payload.get("broker_auth_epoch"), dict) else {},
+        }
+    if name == "paper_400_ramp":
+        return {
+            "overall_status": str(payload.get("overall_status") or payload.get("status") or ""),
+            "armed": bool(payload.get("armed", False)),
+            "blocked_reasons": payload.get("blocked_reasons") if isinstance(payload.get("blocked_reasons"), list) else [],
+        }
+    if name == "unattended_soak_readiness":
+        return {
+            "overall_status": str(payload.get("overall_status") or payload.get("status") or ""),
+            "ok": bool(payload.get("ok", False)),
+            "grade": str(payload.get("grade") or ""),
+        }
+    if name == "data_collection_observation_rollup":
+        return {
+            "overall_status": str(payload.get("overall_status") or ""),
+            "collector_count": int(payload.get("collector_count", 0) or 0),
+            "total_observations": int(payload.get("total_observations", 0) or 0),
+            "collection_coverage_score": float(payload.get("collection_coverage_score", 0.0) or 0.0),
+            "data_quality_score": float(payload.get("data_quality_score", 0.0) or 0.0),
         }
     if name == "global_killswitch":
         reasons = payload.get("reasons") if isinstance(payload.get("reasons"), list) else []
@@ -1457,6 +1509,7 @@ _DEGRADED_ATTENTION = {
     "storage_split_brain_needs_review",
     "master_grandmaster_evidence_v2_not_ok",
     "bot_profitability_scalability_control_not_ok",
+    "safety_evidence_snapshot_skew",
 }
 
 _ATTENTION_OWNER_ACTIONS: dict[str, dict[str, Any]] = {
@@ -2571,6 +2624,39 @@ def build_dashboard(project_root: Path = PROJECT_ROOT) -> Dict[str, Any]:
     if artifacts.get("health_gates", {}).get("summary", {}).get("hard_gate_triggered"):
         attention.append("health_gates_hard_gate_triggered")
         severity = max(severity, 2)
+    launcher_summary = artifacts.get("all_sleeves_launcher", {}).get("summary", {})
+    if (
+        artifacts.get("all_sleeves_launcher", {}).get("exists")
+        and not artifacts.get("all_sleeves_launcher", {}).get("stale")
+        and bool(launcher_summary.get("collection_fanout_ready", False))
+        and not bool(launcher_summary.get("paper_execution_ready", False))
+    ):
+        attention.append("paper_execution_safety_guard_active")
+        severity = max(severity, 1)
+
+    safety_snapshot_names = (
+        "health_gates",
+        "paper_400_ramp",
+        "unattended_soak_readiness",
+        "all_sleeves_launcher",
+    )
+    safety_snapshot_times = [
+        _parse_iso_utc(artifacts.get(name, {}).get("timestamp_utc"))
+        for name in safety_snapshot_names
+        if artifacts.get(name, {}).get("exists")
+    ]
+    safety_snapshot_times = [item for item in safety_snapshot_times if item is not None]
+    safety_snapshot_skew_seconds = (
+        max((max(safety_snapshot_times) - min(safety_snapshot_times)).total_seconds(), 0.0)
+        if len(safety_snapshot_times) >= 2
+        else 0.0
+    )
+    safety_snapshot_consistent = bool(
+        len(safety_snapshot_times) < 2 or safety_snapshot_skew_seconds <= 900.0
+    )
+    if not safety_snapshot_consistent:
+        attention.append("safety_evidence_snapshot_skew")
+        severity = max(severity, 2)
     daily_verify_payload = _load_json(Path(str(artifacts.get("daily_auto_verify", {}).get("path", "") or "")))
     unresolved_daily_verify, resolved_daily_verify = _resolved_daily_auto_verify_failures(daily_verify_payload, artifacts)
     if artifacts.get("daily_auto_verify", {}).get("exists"):
@@ -2786,6 +2872,7 @@ def build_dashboard(project_root: Path = PROJECT_ROOT) -> Dict[str, Any]:
         3: "critical",
     }
     health_summary = artifacts.get("health_gates", {}).get("summary", {})
+    collection_summary = artifacts.get("data_collection_observation_rollup", {}).get("summary", {})
     runtime_summary = artifacts.get("runtime_access_mode", {}).get("summary", {})
     apple_summary = artifacts.get("apple_silicon_profile", {}).get("summary", {})
     memory_summary = artifacts.get("memory_efficiency_control", {}).get("summary", {})
@@ -2846,6 +2933,29 @@ def build_dashboard(project_root: Path = PROJECT_ROOT) -> Dict[str, Any]:
             "soak_management_context": soak_management_context,
         },
         "data_quality_score": float(health_summary.get("data_quality_score", 0.0) or 0.0),
+        "data_quality_dimensions": {
+            "decision_freshness_quality_score": float(health_summary.get("data_quality_score", 0.0) or 0.0),
+            "collector_coverage_quality_score": float(collection_summary.get("collection_coverage_score", 0.0) or 0.0),
+            "collector_observation_quality_score": float(collection_summary.get("data_quality_score", 0.0) or 0.0),
+            "collector_count": int(collection_summary.get("collector_count", 0) or 0),
+            "total_observations": int(collection_summary.get("total_observations", 0) or 0),
+            "policy": "decision freshness and historical collector coverage are separate metrics and may not overwrite each other",
+        },
+        "safety_evidence_snapshot": {
+            "consistent": safety_snapshot_consistent,
+            "maximum_skew_seconds": 900.0,
+            "observed_skew_seconds": round(float(safety_snapshot_skew_seconds), 3),
+            "source_count": len(safety_snapshot_times),
+            "sources": list(safety_snapshot_names),
+        },
+        "execution_runtime": {
+            "collection_fanout_ready": bool(launcher_summary.get("collection_fanout_ready", False)),
+            "paper_execution_ready": bool(launcher_summary.get("paper_execution_ready", False)),
+            "launcher_status": str(launcher_summary.get("overall_status") or "unknown"),
+            "launcher_readiness_status": str(launcher_summary.get("readiness_status") or "unknown"),
+            "execution_attention": launcher_summary.get("execution_attention") if isinstance(launcher_summary.get("execution_attention"), list) else [],
+            "broker_auth_epoch": launcher_summary.get("broker_auth_epoch") if isinstance(launcher_summary.get("broker_auth_epoch"), dict) else {},
+        },
         "health_gate_triggered": bool(health_summary.get("hard_gate_triggered", False)),
         "global_kill_triggered": bool(killswitch_summary.get("halt", False)),
         "gates": {

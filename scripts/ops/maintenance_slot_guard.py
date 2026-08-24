@@ -122,6 +122,35 @@ def _remove_lock(path: Path) -> None:
         pass
 
 
+def _pid_is_running(pid: int) -> bool:
+    if int(pid) <= 0:
+        return False
+    try:
+        os.kill(int(pid), 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except Exception:
+        return False
+
+
+def _reap_abandoned_lock(path: Path, *, stale_seconds: float, owner_grace_seconds: float = 5.0) -> bool:
+    age = _lock_age_seconds(path)
+    if age is None:
+        return False
+    owner = _read_json(path / "owner.json") if path.is_dir() else {}
+    owner_pid = _safe_int(owner.get("pid"), 0)
+    owner_dead = owner_pid > 0 and not _pid_is_running(owner_pid)
+    owner_missing_after_grace = owner_pid <= 0 and age > max(float(owner_grace_seconds), 0.0)
+    expired = age > max(float(stale_seconds), 60.0)
+    if not (owner_dead or owner_missing_after_grace or expired):
+        return False
+    _remove_lock(path)
+    return not path.exists()
+
+
 def _state_path(slot: str) -> Path:
     return STATE_ROOT / f"{slot}.json"
 
@@ -319,9 +348,7 @@ def _begin(args: argparse.Namespace) -> int:
     stale_seconds = max(float(args.stale_seconds), 60.0)
 
     for lock_path in (bundle_lock, slot_lock):
-        age = _lock_age_seconds(lock_path)
-        if age is not None and age > stale_seconds:
-            _remove_lock(lock_path)
+        _reap_abandoned_lock(lock_path, stale_seconds=stale_seconds)
 
     pressure_blocked, pressure = _host_pressure(
         float(args.max_load_ratio),

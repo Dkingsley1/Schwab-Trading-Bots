@@ -1,11 +1,11 @@
 import argparse
 import json
 import os
+import subprocess
 import sys
 import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
@@ -42,7 +42,16 @@ CONTROL_ENV_KEYS = {
 _CONTROL_ENV_VALUES: dict[str, str] = {}
 
 from core.base_trader import BaseTrader
-from core.brokers import BrokerRuntimeConfig, available_broker_names, normalize_broker_name
+from core.cpu_workload_policy import (
+    load_cpu_workload_policy,
+    nice_target_for_class,
+    taskpolicy_executable,
+)
+from core.brokers import (
+    BrokerRuntimeConfig,
+    available_broker_names,
+    normalize_broker_name,
+)
 from core.channel_queue import ChannelQueue
 from core.system_role_contracts import evaluate_component_action
 from core.execution_lane_pipeline import (
@@ -56,9 +65,16 @@ from core.execution_lane_pipeline import (
     update_lane_health,
 )
 
+CPU_WORKLOAD_POLICY = load_cpu_workload_policy()
+
 
 def _env_flag(name: str, default: str = "0") -> bool:
-    return _control_env_value(name, default).strip().lower() in {"1", "true", "yes", "on"}
+    return _control_env_value(name, default).strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
 
 
 def _clean_env_value(raw: str) -> str:
@@ -154,22 +170,57 @@ def _message_created_at(message: object) -> datetime | None:
 
 def _intent_max_age_seconds(mode: str) -> float:
     if str(mode or "").strip().lower() == "paper":
-        return _env_float("EXECUTION_LANE_PAPER_MAX_INTENT_AGE_SECONDS", 900.0, minimum=0.0)
+        return _env_float(
+            "EXECUTION_LANE_PAPER_MAX_INTENT_AGE_SECONDS", 900.0, minimum=0.0
+        )
     return _env_float("EXECUTION_LANE_LIVE_MAX_INTENT_AGE_SECONDS", 60.0, minimum=0.0)
 
 
-def _stale_intent_detail(mode: str, message: object) -> tuple[bool, float | None, float]:
+def _stale_intent_detail(
+    mode: str, message: object
+) -> tuple[bool, float | None, float, str]:
+    normalized_mode = str(mode or "").strip().lower()
     max_age_seconds = _intent_max_age_seconds(mode)
     if max_age_seconds <= 0.0:
-        return False, None, max_age_seconds
+        return False, None, max_age_seconds, "freshness_check_disabled"
     created_at = _message_created_at(message)
     if created_at is None:
-        return False, None, max_age_seconds
-    age_seconds = max((datetime.now(timezone.utc) - created_at).total_seconds(), 0.0)
-    return age_seconds > max_age_seconds, round(age_seconds, 3), max_age_seconds
+        return (
+            normalized_mode == "live",
+            None,
+            max_age_seconds,
+            (
+                "live_intent_created_at_missing"
+                if normalized_mode == "live"
+                else "created_at_missing_paper_compatible"
+            ),
+        )
+    signed_age_seconds = (datetime.now(timezone.utc) - created_at).total_seconds()
+    max_future_skew = _env_float(
+        "EXECUTION_LANE_LIVE_MAX_FUTURE_SKEW_SECONDS",
+        2.0,
+        minimum=0.0,
+    )
+    if normalized_mode == "live" and signed_age_seconds < -max_future_skew:
+        return (
+            True,
+            round(signed_age_seconds, 3),
+            max_age_seconds,
+            "live_intent_created_at_in_future",
+        )
+    age_seconds = max(signed_age_seconds, 0.0)
+    stale = age_seconds > max_age_seconds
+    return (
+        stale,
+        round(age_seconds, 3),
+        max_age_seconds,
+        "live_intent_expired" if stale else "fresh",
+    )
 
 
-def _cooldown_sleep_seconds(*, batch_sleep_seconds: float, messages_read: int, batch_limit: int) -> float:
+def _cooldown_sleep_seconds(
+    *, batch_sleep_seconds: float, messages_read: int, batch_limit: int
+) -> float:
     sleep_seconds = max(float(batch_sleep_seconds), 0.0)
     load_cap = _env_float("EXECUTION_LANE_HOST_LOAD_SOFT_CAP", 0.0, minimum=0.0)
     if load_cap > 0.0:
@@ -192,7 +243,10 @@ def _cooldown_sleep_seconds(*, batch_sleep_seconds: float, messages_read: int, b
 
 def _write_json(path: Path, payload: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload, ensure_ascii=True, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    path.write_text(
+        json.dumps(payload, ensure_ascii=True, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
 
 
 def _append_jsonl(path: Path, payload: dict) -> None:
@@ -207,10 +261,13 @@ def _emit_stale_skip_batch(
     messages: list,
     max_age_seconds: float,
     queue_db_override: str,
+    freshness_failures: list[str] | None = None,
 ) -> None:
     if not messages:
         return
-    created_values = [str(getattr(message, "created_at", "") or "") for message in messages]
+    created_values = [
+        str(getattr(message, "created_at", "") or "") for message in messages
+    ]
     row = _stale_skip_audit_row(
         mode=mode,
         channel=str(getattr(messages[0], "channel", "") or ""),
@@ -224,6 +281,7 @@ def _emit_stale_skip_batch(
         newest_created_at=max((value for value in created_values if value), default=""),
         max_age_seconds=max_age_seconds,
         drain_mode="batch",
+        freshness_failures=freshness_failures,
     )
     _publish_stale_skip_audit(row, queue_db_override=queue_db_override)
 
@@ -242,6 +300,7 @@ def _stale_skip_audit_row(
     newest_created_at: str,
     max_age_seconds: float,
     drain_mode: str,
+    freshness_failures: list[str] | None = None,
 ) -> dict:
     return {
         "timestamp_utc": datetime.now(timezone.utc).isoformat(),
@@ -259,14 +318,24 @@ def _stale_skip_audit_row(
         "newest_created_at": str(newest_created_at or ""),
         "max_age_seconds": float(max_age_seconds),
         "drain_mode": str(drain_mode or "batch"),
+        "freshness_failures": sorted(
+            {str(item) for item in (freshness_failures or []) if str(item)}
+        ),
         "trading_accuracy_policy": "stale paper intents are not executed as current fills",
     }
 
 
 def _publish_stale_skip_audit(row: dict, *, queue_db_override: str) -> None:
     day = datetime.now(timezone.utc).strftime("%Y%m%d")
-    events_path = PROJECT_ROOT / "governance" / "events" / f"execution_lane_stale_skips_{day}.jsonl"
-    latest_path = PROJECT_ROOT / "governance" / "health" / "execution_lane_stale_skip_latest.json"
+    events_path = (
+        PROJECT_ROOT
+        / "governance"
+        / "events"
+        / f"execution_lane_stale_skips_{day}.jsonl"
+    )
+    latest_path = (
+        PROJECT_ROOT / "governance" / "health" / "execution_lane_stale_skip_latest.json"
+    )
     _append_jsonl(events_path, row)
     _write_json(latest_path, row)
 
@@ -299,7 +368,9 @@ def _stale_fast_drain_enabled() -> bool:
 
 
 def _stale_fast_drain_limit(default_limit: int) -> int:
-    configured = _env_int("EXECUTION_LANE_STALE_FAST_DRAIN_LIMIT", max(int(default_limit), 5000))
+    configured = _env_int(
+        "EXECUTION_LANE_STALE_FAST_DRAIN_LIMIT", max(int(default_limit), 5000)
+    )
     return max(configured, max(int(default_limit), 1))
 
 
@@ -364,21 +435,76 @@ def _paper_execution_target_nice() -> int | None:
     if not raw:
         return None
     try:
-        return max(min(int(raw), 20), 0)
+        requested = max(min(int(raw), 20), 0)
     except ValueError:
         return None
+    if _control_env_value("BOT_CPU_WORKLOAD_POLICY_LOCKED", "0").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }:
+        return nice_target_for_class(CPU_WORKLOAD_POLICY, "paper_execution", requested)
+    return requested
 
 
-def _apply_paper_execution_nice() -> None:
+def _apply_paper_execution_nice() -> dict[str, object]:
     target = _paper_execution_target_nice()
     if target is None:
-        return
+        return {"applied": False, "reason": "no_target"}
     try:
         current = int(os.nice(0))
         if target > current:
             os.nice(min(target - current, 20))
-    except Exception:
-        return
+        observed = int(os.nice(0))
+    except Exception as exc:
+        return {
+            "applied": False,
+            "reason": f"nice_failed:{exc.__class__.__name__}",
+            "target_nice": target,
+        }
+    locked = _control_env_value(
+        "BOT_CPU_WORKLOAD_POLICY_LOCKED", "0"
+    ).strip().lower() in {"1", "true", "yes", "on"}
+    taskpolicy_ok: bool | None = None
+    taskpolicy_reason = "not_requested"
+    if (
+        locked
+        and sys.platform == "darwin"
+        and _control_env_value("BOT_CPU_TASKPOLICY_SELF_HEAL", "1").strip().lower()
+        in {"1", "true", "yes", "on"}
+    ):
+        taskpolicy_path = taskpolicy_executable()
+        if not taskpolicy_path:
+            taskpolicy_reason = "taskpolicy_unavailable"
+        else:
+            try:
+                proc = subprocess.run(
+                    [taskpolicy_path, "-B", "-p", str(os.getpid())],
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+            except OSError as exc:
+                taskpolicy_ok = False
+                taskpolicy_reason = f"taskpolicy_failed:{exc.__class__.__name__}"
+            else:
+                taskpolicy_ok = proc.returncode == 0
+                taskpolicy_reason = (
+                    "darwin_background_removed"
+                    if taskpolicy_ok
+                    else "taskpolicy_nonzero"
+                )
+    return {
+        "applied": observed != current,
+        "current_nice": current,
+        "target_nice": target,
+        "observed_nice": observed,
+        "managed_restart_required": bool(locked and observed > target),
+        "hard_affinity_claimed": False,
+        "taskpolicy_ok": taskpolicy_ok,
+        "taskpolicy_reason": taskpolicy_reason,
+    }
 
 
 def _paper_trade_lock_enabled() -> bool:
@@ -388,12 +514,18 @@ def _paper_trade_lock_enabled() -> bool:
 
 
 def _live_execution_enabled() -> bool:
-    return _env_flag("TOP_BOT_ENABLE_LIVE_EXECUTION", "0") or _env_flag("EXECUTION_LANE_LIVE_ENABLED", "0")
+    return _env_flag("TOP_BOT_ENABLE_LIVE_EXECUTION", "0") or _env_flag(
+        "EXECUTION_LANE_LIVE_ENABLED", "0"
+    )
 
 
 def _paper_execution_paused_for_runtime() -> bool:
     _load_control_env()
-    consumer_enabled = _control_env_value("PAPER_EXECUTION_QUEUE_CONSUMER_ENABLED", "1").strip().lower()
+    consumer_enabled = (
+        _control_env_value("PAPER_EXECUTION_QUEUE_CONSUMER_ENABLED", "1")
+        .strip()
+        .lower()
+    )
     return (
         _env_flag("PAPER_EXECUTION_RUNTIME_PAUSED_FOR_PRESSURE", "0")
         or _env_flag("PAPER_EXECUTION_RUNTIME_PAUSED_FOR_LOCAL_STORAGE", "0")
@@ -422,19 +554,46 @@ def _channel_for_mode(mode: str) -> str:
 def main() -> int:
     _load_control_env()
     broker_runtime = BrokerRuntimeConfig.from_env()
-    parser = argparse.ArgumentParser(description="Run standalone paper/live execution lane consumer.")
+    parser = argparse.ArgumentParser(
+        description="Run standalone paper/live execution lane consumer."
+    )
     parser.add_argument("--mode", choices=("paper", "live"), required=True)
     parser.add_argument("--broker", default="", choices=list(available_broker_names()))
-    parser.add_argument("--once", action="store_true", help="Process one batch and exit.")
-    parser.add_argument("--drain-stale-only", action="store_true", help="Only bulk-ack stale paper intents at the queue head, then exit.")
-    parser.add_argument("--stale-drain-passes", type=int, default=_stale_fast_drain_passes(1))
-    parser.add_argument("--limit", type=int, default=_env_int("EXECUTION_LANE_BATCH_LIMIT", 200))
-    parser.add_argument("--poll-seconds", type=float, default=_env_float("EXECUTION_LANE_POLL_SECONDS", 2.0))
-    parser.add_argument("--batch-sleep-seconds", type=float, default=_env_float("EXECUTION_LANE_BATCH_SLEEP_SECONDS", 0.0, minimum=0.0))
+    parser.add_argument(
+        "--once", action="store_true", help="Process one batch and exit."
+    )
+    parser.add_argument(
+        "--drain-stale-only",
+        action="store_true",
+        help="Only bulk-ack stale paper intents at the queue head, then exit.",
+    )
+    parser.add_argument(
+        "--stale-drain-passes", type=int, default=_stale_fast_drain_passes(1)
+    )
+    parser.add_argument(
+        "--limit", type=int, default=_env_int("EXECUTION_LANE_BATCH_LIMIT", 200)
+    )
+    parser.add_argument(
+        "--poll-seconds",
+        type=float,
+        default=_env_float("EXECUTION_LANE_POLL_SECONDS", 2.0),
+    )
+    parser.add_argument(
+        "--batch-sleep-seconds",
+        type=float,
+        default=_env_float("EXECUTION_LANE_BATCH_SLEEP_SECONDS", 0.0, minimum=0.0),
+    )
     parser.add_argument("--queue-db", default=os.getenv("BOT_CHANNEL_QUEUE_DB", ""))
     args = parser.parse_args()
     if args.mode == "paper":
-        _apply_paper_execution_nice()
+        cpu_result = _apply_paper_execution_nice()
+        print(
+            "[RuntimeCPU] class=paper_execution "
+            f"current={cpu_result.get('current_nice', '')} "
+            f"target={cpu_result.get('target_nice', '')} "
+            f"restart_required={int(bool(cpu_result.get('managed_restart_required', False)))} "
+            "hard_affinity=0"
+        )
     broker = normalize_broker_name(
         args.broker
         or (
@@ -504,11 +663,21 @@ def main() -> int:
         return 3
 
     role_contract_path = PROJECT_ROOT / "config" / "system_role_contracts_v1.json"
-    paper_runtime_pause_active = bool(args.mode == "paper" and _paper_execution_paused_for_runtime())
+    paper_runtime_pause_active = bool(
+        args.mode == "paper" and _paper_execution_paused_for_runtime()
+    )
     if role_contract_path.is_file() and not paper_runtime_pause_active:
-        component_id = "paper_execution_gateway" if args.mode == "paper" else "live_execution_gateway"
+        component_id = (
+            "paper_execution_gateway"
+            if args.mode == "paper"
+            else "live_execution_gateway"
+        )
         action = "paper_submit" if args.mode == "paper" else "live_submit"
-        state_domain = "paper_order_submission" if args.mode == "paper" else "live_order_submission"
+        state_domain = (
+            "paper_order_submission"
+            if args.mode == "paper"
+            else "live_order_submission"
+        )
         authority = evaluate_component_action(
             PROJECT_ROOT,
             component_id=component_id,
@@ -534,9 +703,25 @@ def main() -> int:
     processed_total = 0
     skipped_stale_total = 0
     last_paper_reconcile_heartbeat = 0.0
-    heartbeat_interval = max(float(_control_env_value("PAPER_RECONCILIATION_HEARTBEAT_SECONDS", "180") or 180.0), 30.0)
+    last_live_order_reconcile_heartbeat = 0.0
+    heartbeat_interval = max(
+        float(
+            _control_env_value("PAPER_RECONCILIATION_HEARTBEAT_SECONDS", "180") or 180.0
+        ),
+        30.0,
+    )
+    live_order_reconcile_interval = max(
+        float(
+            _control_env_value("LIVE_ORDER_RECONCILIATION_HEARTBEAT_SECONDS", "5")
+            or 5.0
+        ),
+        1.0,
+    )
     last_lane_health_update = 0.0
-    lane_health_interval = max(float(_control_env_value("EXECUTION_LANE_HEALTH_UPDATE_SECONDS", "60") or 60.0), 10.0)
+    lane_health_interval = max(
+        float(_control_env_value("EXECUTION_LANE_HEALTH_UPDATE_SECONDS", "60") or 60.0),
+        10.0,
+    )
     trader: BaseTrader | None = None
     auth_ok = True
     auth_error = ""
@@ -546,7 +731,9 @@ def main() -> int:
         print(f"[ExecutionLane] paper paused: {pause_reason}")
         trader, auth_ok, auth_error = _build_trader(args.mode, broker)
         while _paper_execution_paused_for_runtime():
-            if trader is not None and _env_flag("PAPER_RECONCILIATION_HEARTBEAT_WHEN_PAUSED", "1"):
+            if trader is not None and _env_flag(
+                "PAPER_RECONCILIATION_HEARTBEAT_WHEN_PAUSED", "1"
+            ):
                 last_paper_reconcile_heartbeat = emit_paper_reconciliation_heartbeat(
                     project_root=str(PROJECT_ROOT),
                     trader=trader,
@@ -562,7 +749,9 @@ def main() -> int:
                     queue_channel=channel,
                     queue_db_override=args.queue_db,
                     auth_ok=bool(auth_ok),
-                    auth_error=pause_reason if auth_ok else (auth_error or pause_reason),
+                    auth_error=(
+                        pause_reason if auth_ok else (auth_error or pause_reason)
+                    ),
                 )
                 last_lane_health_update = time.monotonic()
             if args.once:
@@ -584,6 +773,39 @@ def main() -> int:
         )
         return 2
 
+    if args.mode == "live":
+        while True:
+            live_reconciliation = trader.reconcile_durable_live_orders(
+                interrupted_stale_seconds=max(
+                    _env_float(
+                        "LIVE_ORDER_INTERRUPTED_STALE_SECONDS", 5.0, minimum=0.0
+                    ),
+                    0.0,
+                )
+            )
+            last_live_order_reconcile_heartbeat = time.monotonic()
+            if bool(live_reconciliation.get("ok", False)):
+                auth_error = ""
+                break
+            reconciliation_error = "live_order_reconciliation_blocked:" + ",".join(
+                str(item)
+                for item in live_reconciliation.get("blockers", [])[:5]
+                if str(item)
+            )
+            update_lane_health(
+                project_root=str(PROJECT_ROOT),
+                mode=args.mode,
+                processed_count=processed_total,
+                queue_channel=channel,
+                queue_db_override=args.queue_db,
+                auth_ok=auth_ok,
+                auth_error=reconciliation_error,
+            )
+            print(f"[ExecutionLane] live reconcile blocked: {reconciliation_error}")
+            if args.once:
+                return 7
+            time.sleep(max(float(args.poll_seconds), live_order_reconcile_interval))
+
     update_lane_health(
         project_root=str(PROJECT_ROOT),
         mode=args.mode,
@@ -596,6 +818,44 @@ def main() -> int:
     last_lane_health_update = time.monotonic()
     while True:
         _load_control_env()
+        if (
+            args.mode == "live"
+            and (time.monotonic() - last_live_order_reconcile_heartbeat)
+            >= live_order_reconcile_interval
+        ):
+            live_reconciliation = trader.reconcile_durable_live_orders(
+                interrupted_stale_seconds=max(
+                    _env_float(
+                        "LIVE_ORDER_INTERRUPTED_STALE_SECONDS", 5.0, minimum=0.0
+                    ),
+                    0.0,
+                )
+            )
+            last_live_order_reconcile_heartbeat = time.monotonic()
+            if not bool(live_reconciliation.get("ok", False)):
+                reconciliation_error = "live_order_reconciliation_blocked:" + ",".join(
+                    str(item)
+                    for item in live_reconciliation.get("blockers", [])[:5]
+                    if str(item)
+                )
+                update_lane_health(
+                    project_root=str(PROJECT_ROOT),
+                    mode=args.mode,
+                    processed_count=processed_total,
+                    queue_channel=channel,
+                    queue_db_override=args.queue_db,
+                    auth_ok=auth_ok,
+                    auth_error=reconciliation_error,
+                )
+                if args.once:
+                    return 7
+                time.sleep(
+                    max(
+                        _env_float("EXECUTION_LANE_POLL_SECONDS", args.poll_seconds),
+                        1.0,
+                    )
+                )
+                continue
         if args.mode == "paper" and _paper_execution_paused_for_runtime():
             if _lane_health_update_due(last_lane_health_update, lane_health_interval):
                 update_lane_health(
@@ -610,13 +870,19 @@ def main() -> int:
                 last_lane_health_update = time.monotonic()
             if args.once:
                 return 5
-            time.sleep(max(_env_float("EXECUTION_LANE_POLL_SECONDS", args.poll_seconds), 5.0))
+            time.sleep(
+                max(_env_float("EXECUTION_LANE_POLL_SECONDS", args.poll_seconds), 5.0)
+            )
             continue
 
         batch_limit = _env_int("EXECUTION_LANE_BATCH_LIMIT", args.limit)
         poll_seconds = _env_float("EXECUTION_LANE_POLL_SECONDS", args.poll_seconds)
-        batch_sleep_seconds = _env_float("EXECUTION_LANE_BATCH_SLEEP_SECONDS", args.batch_sleep_seconds, minimum=0.0)
-        message_sleep_seconds = _env_float("EXECUTION_LANE_MESSAGE_SLEEP_SECONDS", 0.0, minimum=0.0)
+        batch_sleep_seconds = _env_float(
+            "EXECUTION_LANE_BATCH_SLEEP_SECONDS", args.batch_sleep_seconds, minimum=0.0
+        )
+        message_sleep_seconds = _env_float(
+            "EXECUTION_LANE_MESSAGE_SLEEP_SECONDS", 0.0, minimum=0.0
+        )
         fast_drained = _drain_stale_prefix(
             queue=queue,
             consumer=consumer,
@@ -627,7 +893,9 @@ def main() -> int:
         )
         if fast_drained > 0:
             skipped_stale_total += int(fast_drained)
-            if args.once or _lane_health_update_due(last_lane_health_update, lane_health_interval):
+            if args.once or _lane_health_update_due(
+                last_lane_health_update, lane_health_interval
+            ):
                 update_lane_health(
                     project_root=str(PROJECT_ROOT),
                     mode=args.mode,
@@ -641,7 +909,9 @@ def main() -> int:
             if args.once:
                 return 0
 
-        messages = queue.read_from_cursor(consumer=consumer, channel=channel, limit=batch_limit)
+        messages = queue.read_from_cursor(
+            consumer=consumer, channel=channel, limit=batch_limit
+        )
         if not messages:
             if args.mode == "paper":
                 last_paper_reconcile_heartbeat = emit_paper_reconciliation_heartbeat(
@@ -651,7 +921,9 @@ def main() -> int:
                     min_interval_seconds=heartbeat_interval,
                     reason="execution_lane_idle",
                 )
-            if args.once or _lane_health_update_due(last_lane_health_update, lane_health_interval):
+            if args.once or _lane_health_update_due(
+                last_lane_health_update, lane_health_interval
+            ):
                 update_lane_health(
                     project_root=str(PROJECT_ROOT),
                     mode=args.mode,
@@ -668,15 +940,21 @@ def main() -> int:
             continue
 
         stale_messages = []
+        stale_freshness_failures: set[str] = set()
         stale_max_age_seconds = _intent_max_age_seconds(args.mode)
         for message in messages:
-            stale, _age_seconds, max_age_seconds = _stale_intent_detail(args.mode, message)
+            stale, _age_seconds, max_age_seconds, freshness_failure = (
+                _stale_intent_detail(args.mode, message)
+            )
             if stale:
                 stale_messages.append(message)
+                stale_freshness_failures.add(freshness_failure)
                 stale_max_age_seconds = max_age_seconds
                 continue
             now_mono = time.monotonic()
-            if _lane_health_update_due(last_lane_health_update, lane_health_interval, now_monotonic=now_mono):
+            if _lane_health_update_due(
+                last_lane_health_update, lane_health_interval, now_monotonic=now_mono
+            ):
                 update_lane_health(
                     project_root=str(PROJECT_ROOT),
                     mode=args.mode,
@@ -698,7 +976,9 @@ def main() -> int:
             if message_sleep_seconds > 0.0:
                 time.sleep(message_sleep_seconds)
             now_mono = time.monotonic()
-            if _lane_health_update_due(last_lane_health_update, lane_health_interval, now_monotonic=now_mono):
+            if _lane_health_update_due(
+                last_lane_health_update, lane_health_interval, now_monotonic=now_mono
+            ):
                 update_lane_health(
                     project_root=str(PROJECT_ROOT),
                     mode=args.mode,
@@ -716,6 +996,7 @@ def main() -> int:
                 messages=stale_messages,
                 max_age_seconds=stale_max_age_seconds,
                 queue_db_override=args.queue_db,
+                freshness_failures=sorted(stale_freshness_failures),
             )
             skipped_stale_total += len(stale_messages)
 
@@ -728,7 +1009,9 @@ def main() -> int:
                 min_interval_seconds=heartbeat_interval,
                 reason="execution_lane_batch",
             )
-        if args.once or _lane_health_update_due(last_lane_health_update, lane_health_interval):
+        if args.once or _lane_health_update_due(
+            last_lane_health_update, lane_health_interval
+        ):
             update_lane_health(
                 project_root=str(PROJECT_ROOT),
                 mode=args.mode,

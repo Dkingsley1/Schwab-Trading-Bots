@@ -21,6 +21,8 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from core.runtime_python import resolve_runtime_python
 from core.runtime_maintenance import maintenance_hold_snapshot
+from core.brokers.schwab_credentials import resolve_schwab_credentials, schwab_credentials_ready
+from core.stack_restart_coordination import stack_restart_fence_snapshot
 from core.storage_mounts import find_target_external_volume, resolve_external_storage
 from core.system_role_contracts import (
     RoleAuthorityError,
@@ -161,9 +163,25 @@ def _safety_pause_state() -> Dict[str, Any]:
     global_halt_active = GLOBAL_HALT_FLAG.exists()
     maintenance_hold = maintenance_hold_snapshot(PROJECT_ROOT)
     maintenance_hold_active = bool(maintenance_hold.get('active', False))
+    restart_fence = stack_restart_fence_snapshot(PROJECT_ROOT)
+    restart_token = str(os.getenv('STACK_RESTART_FENCE_TOKEN', '') or '').strip()
+    restart_fence_authorized = bool(
+        restart_fence.get('active', False)
+        and restart_token
+        and restart_token == str(restart_fence.get('token') or '')
+    )
+    restart_fence_blocks = bool(restart_fence.get('active', False) and not restart_fence_authorized)
+    public_restart_fence = {
+        key: value
+        for key, value in restart_fence.items()
+        if key not in {'token', 'payload'}
+    }
+    public_restart_fence['authorized_caller'] = restart_fence_authorized
     pause_reason = ''
     if maintenance_hold_active:
         pause_reason = 'runtime_maintenance_hold_active'
+    elif restart_fence_blocks:
+        pause_reason = 'stack_restart_in_progress'
     elif operator_stop_active:
         pause_reason = 'operator_stop_active'
     elif global_halt_active:
@@ -178,8 +196,38 @@ def _safety_pause_state() -> Dict[str, Any]:
         'global_halt_active': bool(global_halt_active),
         'runtime_maintenance_hold_active': maintenance_hold_active,
         'runtime_maintenance_hold': maintenance_hold,
-        'active': bool(maintenance_hold_active or operator_stop_active or global_halt_active),
+        'stack_restart_in_progress': restart_fence_blocks,
+        'stack_restart_fence': public_restart_fence,
+        'active': bool(maintenance_hold_active or restart_fence_blocks or operator_stop_active or global_halt_active),
         'reason': pause_reason,
+    }
+
+
+def _launcher_priority_state(target: Dict[str, Any]) -> Dict[str, Any]:
+    required_raw = target.get('required_launcher_max_nice')
+    if required_raw is None:
+        return {'required': False, 'compliant': True, 'reason': 'no_launcher_priority_contract'}
+    required_max_nice = _safe_int(required_raw, 0)
+    try:
+        current_nice = int(os.getpriority(os.PRIO_PROCESS, 0))
+    except (AttributeError, OSError):
+        try:
+            current_nice = int(os.nice(0))
+        except OSError as exc:
+            return {
+                'required': True,
+                'compliant': False,
+                'required_max_nice': required_max_nice,
+                'current_nice': None,
+                'reason': f'launcher_priority_probe_failed:{type(exc).__name__}:{exc}',
+            }
+    compliant = bool(current_nice <= required_max_nice)
+    return {
+        'required': True,
+        'compliant': compliant,
+        'required_max_nice': required_max_nice,
+        'current_nice': current_nice,
+        'reason': 'launcher_priority_compliant' if compliant else 'launcher_priority_noncompliant',
     }
 
 
@@ -273,6 +321,36 @@ def _live_data_excludes(simulate: bool, extra: List[str] | None = None) -> List[
     return excludes
 
 
+def _command_matches_pattern(command: str, pattern: str) -> bool:
+    command_text = str(command or '').strip()
+    pattern_text = str(pattern or '').strip()
+    if not command_text or not pattern_text:
+        return False
+    if pattern_text in command_text:
+        return True
+
+    try:
+        command_tokens = shlex.split(command_text)
+        pattern_tokens = shlex.split(pattern_text)
+    except ValueError:
+        command_tokens = command_text.split()
+        pattern_tokens = pattern_text.split()
+    if not command_tokens or not pattern_tokens:
+        return False
+
+    command_index = 0
+    for expected in pattern_tokens:
+        expected_is_path = '/' in expected
+        while command_index < len(command_tokens):
+            actual = command_tokens[command_index]
+            command_index += 1
+            if actual == expected or (expected_is_path and actual.endswith(expected)):
+                break
+        else:
+            return False
+    return True
+
+
 def _proc_running(pattern: str, exclude_patterns: List[str] | None = None) -> int:
     p = subprocess.run(['ps', '-axo', 'stat=,command='], capture_output=True, text=True, check=False)
     out = p.stdout or ''
@@ -288,7 +366,7 @@ def _proc_running(pattern: str, exclude_patterns: List[str] | None = None) -> in
         stat, command = parts
         if stat.startswith('T'):
             continue
-        if pattern in command and not any(marker in command for marker in excludes):
+        if _command_matches_pattern(command, pattern) and not any(marker in command for marker in excludes):
             running += 1
     return running
 
@@ -306,7 +384,7 @@ def _matching_pids(pattern: str, exclude_patterns: List[str] | None = None) -> L
         if len(parts) != 2:
             continue
         pid_raw, command = parts
-        if pattern not in command or any(marker in command for marker in excludes):
+        if not _command_matches_pattern(command, pattern) or any(marker in command for marker in excludes):
             continue
         try:
             pid = int(pid_raw)
@@ -531,7 +609,7 @@ def _proc_elapsed_seconds(pattern: str, exclude_patterns: List[str] | None = Non
         if len(parts) != 2:
             continue
         etime_raw, cmd = parts
-        if pattern not in cmd or any(marker in cmd for marker in excludes):
+        if not _command_matches_pattern(cmd, pattern) or any(marker in cmd for marker in excludes):
             continue
         elapsed = _parse_ps_etime_seconds(etime_raw)
         if elapsed is not None:
@@ -756,6 +834,12 @@ def _all_sleeves_launcher_artifact_health(
         if isinstance(payload.get('launcher_readiness_contract'), dict)
         else {}
     )
+    paper_execution_ready = bool(
+        readiness_contract.get("paper_execution_ready", True)
+    )
+    collection_fanout_ready = bool(
+        readiness_contract.get("collection_fanout_ready", running > 0)
+    )
     problem_default = (
         _safe_int(repair_packet.get('problem_job_count'), 0)
         if repair_packet
@@ -781,6 +865,8 @@ def _all_sleeves_launcher_artifact_health(
     ok = bool(fresh and (complete or stable_non_running) and phase == 'running' and overall_status in {'ready', 'guarded_ready'})
     if ok and complete:
         reason = 'fresh_launcher_artifact_certifies_full_fanout'
+    elif ok and not paper_execution_ready:
+        reason = 'fresh_launcher_artifact_certifies_guarded_collection_fanout'
     elif ok:
         reason = 'fresh_launcher_artifact_certifies_stable_fanout'
     else:
@@ -812,6 +898,14 @@ def _all_sleeves_launcher_artifact_health(
         'clean_exited_job_count': int(clean_exited),
         'problem_job_count': int(problem),
         'exact_need_count': len(exact_needs),
+        'collection_fanout_ready': collection_fanout_ready,
+        'paper_execution_ready': paper_execution_ready,
+        'execution_guarded': bool(collection_fanout_ready and not paper_execution_ready),
+        'execution_attention': (
+            readiness_contract.get('execution_attention')
+            if isinstance(readiness_contract.get('execution_attention'), list)
+            else []
+        ),
         'policy': 'fresh_all_sleeves_launcher_artifact_can_certify_child_fanout_when_wrapper_is_absent',
     }
 
@@ -1944,9 +2038,7 @@ def _all_sleeves_start_ready(broker: str, simulate: bool) -> Tuple[bool, str]:
         return False, 'missing_symbol_env:' + ','.join(missing)
 
     if broker == 'schwab' and (not simulate):
-        key = os.getenv('SCHWAB_API_KEY', '').strip()
-        secret = os.getenv('SCHWAB_SECRET', '').strip()
-        if _placeholder_or_empty(key) or _placeholder_or_empty(secret):
+        if not schwab_credentials_ready(resolve_schwab_credentials()):
             return False, 'missing_schwab_credentials'
 
     if operator_reason != 'operator_mode_allows_core_sleeve_restart':
@@ -1990,6 +2082,7 @@ def _build_all_sleeves_target(heartbeat_max_age_seconds: int) -> Dict[str, Any]:
 
     return {
         'name': 'all_sleeves',
+        'required_launcher_max_nice': 0,
         'pattern': 'scripts/run_all_sleeves.py',
         'alt_patterns': [
             'scripts/run_parallel_shadows.py',
@@ -2067,6 +2160,7 @@ def _build_execution_lane_target(mode: str, *, heartbeat_max_age_seconds: int) -
     )
     return {
         'name': f'execution_lane_{safe_mode}',
+        'required_launcher_max_nice': 0,
         'pattern': f'scripts/run_execution_lane.py --mode {safe_mode}',
         'alt_patterns': [],
         'cmd': [
@@ -2594,6 +2688,8 @@ def main() -> int:
         coinbase_cmd: List[str] = [
             str(PY),
             str(PROJECT_ROOT / 'scripts' / 'run_shadow_training_loop.py'),
+            '--runtime-cpu-class',
+            'market_decision',
             '--broker',
             'coinbase',
             '--symbols',
@@ -2609,6 +2705,7 @@ def main() -> int:
         targets.append(
             {
                 'name': 'coinbase_loop',
+                'required_launcher_max_nice': 4,
                 'pattern': 'scripts/run_shadow_training_loop.py --broker coinbase',
                 'exclude_patterns': _live_data_excludes(coinbase_simulate, ['--profile crypto_futures']),
                 'cmd': coinbase_cmd,
@@ -2632,6 +2729,8 @@ def main() -> int:
         coinbase_futures_cmd: List[str] = [
             str(PY),
             str(PROJECT_ROOT / 'scripts' / 'run_shadow_training_loop.py'),
+            '--runtime-cpu-class',
+            'market_decision',
             '--broker',
             'coinbase',
             '--profile',
@@ -2653,6 +2752,7 @@ def main() -> int:
         targets.append(
             {
                 'name': 'coinbase_futures_loop',
+                'required_launcher_max_nice': 4,
                 'pattern': f'scripts/run_shadow_training_loop.py --broker coinbase --profile {futures_profile}',
                 'exclude_patterns': _live_data_excludes(coinbase_futures_simulate),
                 'cmd': coinbase_futures_cmd,
@@ -2863,6 +2963,17 @@ def main() -> int:
                 continue
 
         if process_live and heartbeat_ok:
+            status.append(row)
+            continue
+
+        launcher_priority = _launcher_priority_state(t)
+        row['launcher_priority'] = launcher_priority
+        if bool(launcher_priority.get('required', False)) and not bool(launcher_priority.get('compliant', False)):
+            row['restart_skipped'] = 'launcher_priority_noncompliant'
+            row['reason'] = (
+                f"launcher_nice={launcher_priority.get('current_nice')} exceeds "
+                f"max_nice={launcher_priority.get('required_max_nice')}"
+            )
             status.append(row)
             continue
 

@@ -11,7 +11,11 @@ def _trace() -> dict:
             "action": "BUY",
             "quantity": 2.0,
             "features": {"expected_edge_bps": 9.0},
-            "metadata": {"source_broker": "schwab"},
+            "metadata": {
+                "source_broker": "schwab",
+                "production_candidate_id": "pc-test-g1",
+                "production_candidate_generation": 1,
+            },
         },
         result={
             "status": "PAPER_EXECUTED",
@@ -43,6 +47,9 @@ def test_trace_has_all_eight_hash_linked_stages_and_nonfabricated_attribution() 
     assert trace["attribution"]["values"]["realized_net_bps"] is None
     assert "realized_net_bps" in trace["attribution"]["missing_fields"]
     assert trace["attribution"]["no_fabricated_defaults"] is True
+    assert trace["attribution"]["candidate_binding"]["candidate_id"] == "pc-test-g1"
+    assert trace["attribution"]["net_edge_contract"]["estimable"] is False
+    assert trace["attribution"]["alpha_decomposition"]["realized_net_bps"] is None
 
 
 def test_trace_tampering_is_detected() -> None:

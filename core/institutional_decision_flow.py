@@ -949,7 +949,7 @@ def _normalized_action(value: Any) -> str:
 def _bounded_ingestion_route(value: Any) -> dict[str, Any]:
     route = _mapping(value)
     material = {
-        "contract_version": "decision_ingestion_route_v1",
+        "contract_version": "decision_ingestion_route_v2",
         "status": str(route.get("status") or "unavailable"),
         "route_state": str(route.get("route_state") or "unavailable"),
         "runtime_profile": str(route.get("runtime_profile") or ""),
@@ -978,6 +978,56 @@ def _bounded_ingestion_route(value: Any) -> dict[str, Any]:
         "selected_producer_count": max(
             int(_number(route.get("selected_producer_count"))), 0
         ),
+        "economic_context_contract_id": str(
+            route.get("economic_context_contract_id") or ""
+        ),
+        "economic_context_coverage_norm": round(
+            _number(route.get("economic_context_coverage_ratio")), 6
+        ),
+        "economic_context_route_quality_norm": round(
+            _number(route.get("economic_context_average_route_score")), 6
+        ),
+        "economic_context_source_count": max(
+            int(_number(route.get("economic_context_source_count"))), 0
+        ),
+        "economic_context_source_ids": [
+            str(item)
+            for item in (route.get("economic_context_source_ids") or [])[:12]
+            if str(item)
+        ],
+        "economic_context_ready": bool(
+            route.get("economic_context_ready", False)
+        ),
+        "economic_context_advisory_only": True,
+        "research_data_contract_id": str(
+            route.get("research_data_contract_id") or ""
+        ),
+        "research_data_product_ids": [
+            str(item)
+            for item in (route.get("research_data_product_ids") or [])[:12]
+            if str(item)
+        ],
+        "research_data_product_count": max(
+            int(_number(route.get("research_data_product_count"))), 0
+        ),
+        "research_data_catalog_receipt_sha256": str(
+            route.get("research_data_catalog_receipt_sha256") or ""
+        ),
+        "research_data_metadata_only": True,
+        "research_data_execution_authority": False,
+        "institutional_extension_policy_id": str(
+            route.get("institutional_extension_policy_id") or ""
+        ),
+        "institutional_extension_control_ids": [
+            str(item)
+            for item in (route.get("institutional_extension_control_ids") or [])[:8]
+            if str(item)
+        ],
+        "institutional_extension_receipt_sha256": str(
+            route.get("institutional_extension_receipt_sha256") or ""
+        ),
+        "institutional_extension_metadata_only": True,
+        "institutional_extension_execution_authority": False,
         "paper_decision_data_ready": bool(
             route.get("paper_decision_data_ready", False)
         ),
@@ -994,6 +1044,13 @@ def _bounded_ingestion_route(value: Any) -> dict[str, Any]:
         "missing_live_required_capability_ids": [
             str(item)
             for item in (route.get("missing_required_capability_ids") or [])[:8]
+            if str(item)
+        ],
+        "missing_economic_context_capability_ids": [
+            str(item)
+            for item in (
+                route.get("missing_economic_context_capability_ids") or []
+            )[:8]
             if str(item)
         ],
         "artifact_age_minutes": (
@@ -1122,6 +1179,40 @@ def build_decision_operator_summary(
         ),
         "ingestion_selected_producer_count": max(
             int(_number(ingestion_route.get("selected_producer_count"))), 0
+        ),
+        "economic_context_coverage_norm": round(
+            _number(ingestion_route.get("economic_context_coverage_norm")), 6
+        ),
+        "economic_context_route_quality_norm": round(
+            _number(
+                ingestion_route.get("economic_context_route_quality_norm")
+            ),
+            6,
+        ),
+        "economic_context_source_count": max(
+            int(_number(ingestion_route.get("economic_context_source_count"))),
+            0,
+        ),
+        "economic_context_source_ids": list(
+            ingestion_route.get("economic_context_source_ids") or []
+        ),
+        "economic_context_ready": bool(
+            ingestion_route.get("economic_context_ready", False)
+        ),
+        "research_data_product_count": max(
+            int(_number(ingestion_route.get("research_data_product_count"))), 0
+        ),
+        "research_data_product_ids": list(
+            ingestion_route.get("research_data_product_ids") or []
+        ),
+        "research_data_catalog_receipt_sha256": str(
+            ingestion_route.get("research_data_catalog_receipt_sha256") or ""
+        ),
+        "institutional_extension_control_ids": list(
+            ingestion_route.get("institutional_extension_control_ids") or []
+        ),
+        "institutional_extension_receipt_sha256": str(
+            ingestion_route.get("institutional_extension_receipt_sha256") or ""
         ),
         "ingestion_route_receipt_valid": bool(
             ingestion_route.get("receipt_valid", False)
@@ -2610,6 +2701,53 @@ def _build_decision_trace(
             "live_ready": bool(
                 ingestion_route.get("live_decision_data_ready", False)
             ),
+            "economic_context_coverage_norm": round(
+                _number(
+                    ingestion_route.get("economic_context_coverage_norm")
+                ),
+                6,
+            ),
+            "economic_context_quality_norm": round(
+                _number(
+                    ingestion_route.get(
+                        "economic_context_route_quality_norm"
+                    )
+                ),
+                6,
+            ),
+            "economic_context_source_count": max(
+                int(
+                    _number(
+                        ingestion_route.get("economic_context_source_count")
+                    )
+                ),
+                0,
+            ),
+            "economic_context_ready": bool(
+                ingestion_route.get("economic_context_ready", False)
+            ),
+            "research_data_contract_id": str(
+                ingestion_route.get("research_data_contract_id") or ""
+            ),
+            "research_data_product_ids": list(
+                ingestion_route.get("research_data_product_ids") or []
+            ),
+            "research_data_catalog_receipt_sha256": str(
+                ingestion_route.get("research_data_catalog_receipt_sha256") or ""
+            ),
+            "research_data_metadata_only": True,
+            "research_data_execution_authority": False,
+            "institutional_extension_policy_id": str(
+                ingestion_route.get("institutional_extension_policy_id") or ""
+            ),
+            "institutional_extension_control_ids": list(
+                ingestion_route.get("institutional_extension_control_ids") or []
+            ),
+            "institutional_extension_receipt_sha256": str(
+                ingestion_route.get("institutional_extension_receipt_sha256") or ""
+            ),
+            "institutional_extension_metadata_only": True,
+            "institutional_extension_execution_authority": False,
             "receipt_valid": bool(ingestion_route.get("receipt_valid", False)),
             "receipt_sha256": str(
                 ingestion_route.get("decision_route_receipt_sha256") or ""

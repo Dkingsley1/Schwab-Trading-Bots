@@ -1019,6 +1019,8 @@ def main(default_profile: str | None = None) -> int:
     cmd = [
         str(VENV_PY),
         str(SHADOW_LOOP),
+        "--runtime-cpu-class",
+        "data_collection",
         "--broker",
         args.broker,
         "--profile",

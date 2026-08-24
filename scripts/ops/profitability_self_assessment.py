@@ -15,13 +15,16 @@ if __package__ in {None, ""}:
     if str(PROJECT_ROOT) not in sys.path:
         sys.path.insert(0, str(PROJECT_ROOT))
     from scripts.ops.long_runtime_common import load_json, parse_iso_utc, write_payload
+    from scripts.ops.production_excellence_control import verify_candidate_event_chain
 else:
     from .long_runtime_common import PROJECT_ROOT, load_json, parse_iso_utc, write_payload
+    from .production_excellence_control import verify_candidate_event_chain
 
 
 DEFAULT_CONFIG_PATH = PROJECT_ROOT / "config" / "profitability_self_assessment_v1.json"
 DEFAULT_OUT_PATH = PROJECT_ROOT / "governance" / "health" / "profitability_self_assessment_latest.json"
 DEFAULT_MARKDOWN_PATH = PROJECT_ROOT / "exports" / "reports" / "operator" / "profitability_self_assessment_latest.md"
+DEFAULT_CANDIDATE_EVENT_PATH = PROJECT_ROOT / "governance" / "evidence" / "production_candidate_events.jsonl"
 
 SOURCE_PATHS = {
     "production_candidate": "governance/runtime/production_candidate_state.json",
@@ -38,6 +41,7 @@ SOURCE_PATHS = {
     "decision_policy": "config/institutional_decision_flow_v1.json",
     "profitability_policy": "config/profitability_evidence_firewall_v1.json",
     "broker_capabilities": "config/broker_capability_contracts_v1.json",
+    "collector_capabilities": "governance/health/collector_capability_control_latest.json",
 }
 
 
@@ -140,8 +144,9 @@ def _candidate_binding(sources: dict[str, dict[str, Any]]) -> dict[str, Any]:
     candidate_id = str(candidate.get("candidate_id") or "").strip()
     generation = _safe_int(candidate.get("generation"), 0)
     rows: list[dict[str, Any]] = []
-    mismatches: list[str] = []
     required = {"paper_performance", "paper_execution_calibration", "paper_profitability"}
+    mismatches: list[str] = []
+    optional_mismatches: list[str] = []
     missing_required: list[str] = []
     for name in ("paper_performance", "paper_execution_calibration", "calibration_overrides", "paper_profitability"):
         declared = _source_candidate_id(name, sources[name])
@@ -149,7 +154,10 @@ def _candidate_binding(sources: dict[str, dict[str, Any]]) -> dict[str, Any]:
             missing_required.append(name)
         matches = bool(candidate_id and declared and declared == candidate_id)
         if declared and candidate_id and not matches:
-            mismatches.append(name)
+            if name in required:
+                mismatches.append(name)
+            else:
+                optional_mismatches.append(name)
         rows.append(
             {
                 "source": name,
@@ -169,6 +177,8 @@ def _candidate_binding(sources: dict[str, dict[str, Any]]) -> dict[str, Any]:
         "identity_consistent": identity_consistent,
         "identity_complete": identity_complete,
         "mismatch_sources": mismatches,
+        "optional_mismatch_sources": optional_mismatches,
+        "optional_mismatch_policy": "stale optional inputs are ignored and reported without blocking required-source identity",
         "missing_required_bindings": missing_required,
         "source_bindings": rows,
         "policy": "current-candidate economic evidence is accepted only when every required source declares the same candidate identity",
@@ -242,6 +252,366 @@ def _need(
         "candidate_semantics_change": False,
         "soak_effect": "preserve cumulative soak history and current candidate window; never relabel historical evidence",
         "live_execution_allowed": False,
+    }
+
+
+def _read_candidate_events(path: Path) -> list[dict[str, Any]]:
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except (OSError, UnicodeError):
+        return []
+    rows: list[dict[str, Any]] = []
+    for line in lines:
+        try:
+            row = json.loads(line)
+        except (TypeError, ValueError):
+            continue
+        if not isinstance(row, dict):
+            continue
+        if parse_iso_utc(row.get("timestamp_utc")) is None:
+            continue
+        rows.append(row)
+    return sorted(
+        rows,
+        key=lambda row: parse_iso_utc(row.get("timestamp_utc"))
+        or datetime.min.replace(tzinfo=timezone.utc),
+    )
+
+
+def _developmental_action(
+    action_id: str,
+    *,
+    owner: str,
+    command: list[str],
+    trigger: str,
+    auto_apply_allowed: bool,
+    risk_level: str = "low",
+) -> dict[str, Any]:
+    return {
+        "action_id": action_id,
+        "owner": owner,
+        "command": command,
+        "trigger": trigger,
+        "risk_level": risk_level,
+        "auto_apply_allowed": bool(auto_apply_allowed),
+        "paper_only": True,
+        "candidate_semantics_change": False,
+        "force_trade_allowed": False,
+        "loss_recovery_size_increase_allowed": False,
+        "direct_threshold_loosen_allowed": False,
+        "live_execution_allowed": False,
+        "promotion_authority": False,
+    }
+
+
+def _developmental_soak_learning(
+    project_root: Path,
+    *,
+    policy: dict[str, Any],
+    performance: dict[str, Any],
+    current_candidate_id: str,
+    current_generation: int,
+    current_candidate_samples: int,
+    minimum_candidate_samples: int,
+    missing_market_types: list[str],
+    replay_tradeability_ready: bool,
+    weak_control_count: int,
+    now: datetime,
+) -> dict[str, Any]:
+    soak_policy = _as_dict(policy.get("soak_contract"))
+    enabled = bool(soak_policy.get("developmental_change_learning_enabled", False))
+    event_relative = str(
+        soak_policy.get("candidate_event_log_path")
+        or "governance/evidence/production_candidate_events.jsonl"
+    )
+    event_path = Path(event_relative)
+    if not event_path.is_absolute():
+        event_path = project_root / event_path
+    chain = verify_candidate_event_chain(event_path)
+    chain_valid = bool(chain.get("ok", False) and _safe_int(chain.get("event_count"), 0) > 0)
+    events = _read_candidate_events(event_path) if chain_valid else []
+    generation_events = [
+        row
+        for row in events
+        if str(row.get("event_type") or "")
+        in {"candidate_change_accepted", "candidate_chain_recovery_anchor"}
+    ]
+    event_by_candidate = {
+        str(row.get("candidate_id") or "").strip(): (index, row)
+        for index, row in enumerate(generation_events)
+        if str(row.get("candidate_id") or "").strip()
+    }
+    flow_contract = _as_dict(performance.get("developmental_generation_flows"))
+    raw_flows = [
+        row
+        for row in _as_list(flow_contract.get("generation_flows"))
+        if isinstance(row, dict)
+    ]
+    flow_by_candidate = {
+        str(row.get("candidate_id") or "").strip(): row
+        for row in raw_flows
+        if str(row.get("candidate_id") or "").strip()
+    }
+    minimum_days = max(
+        _safe_int(soak_policy.get("minimum_developmental_observed_days"), 2),
+        1,
+    )
+    minimum_samples = max(
+        _safe_int(
+            soak_policy.get("minimum_developmental_post_cost_samples"),
+            minimum_candidate_samples,
+        ),
+        1,
+    )
+
+    rows: list[dict[str, Any]] = []
+    attributable_count = 0
+    mature_count = 0
+    observed_positive_count = 0
+    observed_negative_count = 0
+    observed_flat_count = 0
+    for index, event in enumerate(generation_events):
+        candidate_id = str(event.get("candidate_id") or "").strip()
+        generation = _safe_int(event.get("generation"), 0)
+        accepted_at = parse_iso_utc(event.get("timestamp_utc"))
+        next_accepted_at = (
+            parse_iso_utc(generation_events[index + 1].get("timestamp_utc"))
+            if index + 1 < len(generation_events)
+            else None
+        )
+        flow = _as_dict(flow_by_candidate.get(candidate_id))
+        sample_count = _safe_int(flow.get("sample_count"), 0)
+        observed_days = _safe_int(flow.get("observed_days"), 0)
+        pnl_delta = _safe_float(flow.get("post_cost_pnl_delta_total"), 0.0)
+        first_observation = parse_iso_utc(flow.get("first_observation_utc"))
+        last_observation = parse_iso_utc(flow.get("last_observation_utc"))
+        generation_matches = bool(
+            generation > 0
+            and _safe_int(flow.get("candidate_generation"), 0) == generation
+            and bool(flow.get("candidate_generation_consistent", False))
+        )
+        temporal_binding_valid = bool(
+            accepted_at is not None
+            and first_observation is not None
+            and last_observation is not None
+            and first_observation >= accepted_at
+            and last_observation >= first_observation
+            and (next_accepted_at is None or last_observation < next_accepted_at)
+        )
+        attributable = bool(
+            enabled
+            and chain_valid
+            and sample_count > 0
+            and generation_matches
+            and temporal_binding_valid
+            and flow.get("developmental_attribution_eligible", False)
+        )
+        mature = bool(
+            attributable
+            and sample_count >= minimum_samples
+            and observed_days >= minimum_days
+        )
+        if not flow:
+            status = "collecting_no_identity_bound_outcomes"
+        elif not generation_matches:
+            status = "rejected_generation_identity_conflict"
+        elif not temporal_binding_valid:
+            status = "rejected_outside_accepted_generation_window"
+        elif not mature:
+            status = "collecting_developmental_evidence"
+        elif pnl_delta > 0.0:
+            status = "observed_positive_post_cost_delta"
+        elif pnl_delta < 0.0:
+            status = "observed_negative_post_cost_delta"
+        else:
+            status = "observed_flat_post_cost_delta"
+        if attributable:
+            attributable_count += 1
+        if mature:
+            mature_count += 1
+            if pnl_delta > 0.0:
+                observed_positive_count += 1
+            elif pnl_delta < 0.0:
+                observed_negative_count += 1
+            else:
+                observed_flat_count += 1
+        rows.append(
+            {
+                "candidate_id": candidate_id,
+                "generation": generation,
+                "current_candidate": bool(candidate_id == current_candidate_id),
+                "event_type": str(event.get("event_type") or ""),
+                "accepted_at_utc": accepted_at.isoformat() if accepted_at else "",
+                "ended_at_utc": next_accepted_at.isoformat() if next_accepted_at else now.isoformat(),
+                "changed_scopes": [
+                    str(item) for item in _as_list(event.get("changed_scopes"))
+                ],
+                "change_reason": str(event.get("change_reason") or ""),
+                "sample_count": sample_count,
+                "observed_days": observed_days,
+                "post_cost_pnl_delta": round(pnl_delta, 6),
+                "generation_identity_matches": generation_matches,
+                "temporal_binding_valid": temporal_binding_valid,
+                "developmental_attribution_eligible": attributable,
+                "developmental_evidence_mature": mature,
+                "developmental_status": status,
+                "association_is_causal_proof": False,
+                "counts_toward_current_candidate_economic_grade": False,
+                "counts_toward_clean_720_hour_promotion_window": False,
+                "live_promotion_authority": False,
+            }
+        )
+
+    unmatched_flows: list[dict[str, Any]] = []
+    for candidate_id, flow in sorted(flow_by_candidate.items()):
+        if candidate_id in event_by_candidate:
+            continue
+        unmatched_flows.append(
+            {
+                "candidate_id": candidate_id,
+                "candidate_generation": _safe_int(flow.get("candidate_generation"), 0),
+                "sample_count": _safe_int(flow.get("sample_count"), 0),
+                "reason": "candidate_missing_from_verified_event_chain",
+                "developmental_attribution_eligible": False,
+                "live_promotion_authority": False,
+            }
+        )
+
+    allowed_actions = {
+        str(item)
+        for item in _as_list(soak_policy.get("bounded_paper_actions"))
+        if str(item)
+    }
+    actions: list[dict[str, Any]] = []
+
+    def add_action(action: dict[str, Any]) -> None:
+        if action["action_id"] in allowed_actions:
+            actions.append(action)
+
+    if current_candidate_samples < minimum_candidate_samples:
+        add_action(
+            _developmental_action(
+                "collect_current_candidate_post_cost_outcomes",
+                owner="paper_performance_refresh",
+                command=["./scripts/ops/opsctl.sh", "paper-performance", "--week-days", "7", "--json"],
+                trigger="current candidate has insufficient identity-bound post-cost outcomes",
+                auto_apply_allowed=True,
+            )
+        )
+    if not replay_tradeability_ready or current_candidate_samples < minimum_candidate_samples or observed_negative_count:
+        add_action(
+            _developmental_action(
+                "refresh_candidate_counterfactual_replay",
+                owner="counterfactual_replay",
+                command=["./scripts/ops/opsctl.sh", "counterfactual-replay", "--json"],
+                trigger="candidate evidence is incomplete or a mature accepted generation has a negative observed delta",
+                auto_apply_allowed=True,
+            )
+        )
+    if missing_market_types:
+        add_action(
+            _developmental_action(
+                "acquire_candidate_independent_fills",
+                owner="independent_fill_evidence_acquisition",
+                command=["./scripts/ops/opsctl.sh", "independent-fill-acquisition", "--apply", "--json"],
+                trigger=f"independent fill evidence is incomplete for {','.join(missing_market_types)}",
+                auto_apply_allowed=True,
+                risk_level="medium",
+            )
+        )
+    if observed_negative_count or weak_control_count > 0:
+        add_action(
+            _developmental_action(
+                "maintain_candidate_bound_weak_sleeve_containment",
+                owner="paper_profitability_control",
+                command=["./scripts/ops/opsctl.sh", "paper-profitability-control", "--apply", "--json"],
+                trigger="negative developmental outcomes or weak strategy controls remain",
+                auto_apply_allowed=True,
+                risk_level="medium",
+            )
+        )
+    if observed_negative_count:
+        add_action(
+            _developmental_action(
+                "prioritize_loss_and_missed_opportunity_labels",
+                owner="training_data_intake_labeling",
+                command=["./scripts/ops/opsctl.sh", "training-data-intake", "--apply", "--focus-limit", "160", "--json"],
+                trigger="mature accepted generations contain negative post-cost developmental outcomes",
+                auto_apply_allowed=True,
+                risk_level="medium",
+            )
+        )
+    if enabled and not chain_valid:
+        actions.insert(
+            0,
+            _developmental_action(
+                "repair_candidate_event_chain",
+                owner="production_excellence_control",
+                command=["./scripts/ops/opsctl.sh", "production-excellence", "--json"],
+                trigger="candidate generation event chain is missing or invalid",
+                auto_apply_allowed=False,
+                risk_level="high",
+            ),
+        )
+
+    current_row = next(
+        (row for row in reversed(rows) if row.get("candidate_id") == current_candidate_id),
+        {},
+    )
+    return {
+        "enabled": enabled,
+        "status": (
+            "disabled"
+            if not enabled
+            else "blocked"
+            if not chain_valid
+            else "ready"
+            if attributable_count > 0
+            else "collecting"
+        ),
+        "candidate_event_chain": {
+            "valid": chain_valid,
+            "event_count": _safe_int(chain.get("event_count"), 0),
+            "chain_head": str(chain.get("chain_head") or ""),
+            "errors": [str(item) for item in _as_list(chain.get("errors"))],
+            "path": str(event_path),
+        },
+        "current_candidate_id": current_candidate_id,
+        "current_generation": current_generation,
+        "accepted_generation_count": len(generation_events),
+        "attributable_generation_count": attributable_count,
+        "mature_developmental_generation_count": mature_count,
+        "observed_positive_delta_generation_count": observed_positive_count,
+        "observed_negative_delta_generation_count": observed_negative_count,
+        "observed_flat_delta_generation_count": observed_flat_count,
+        "unbound_schema_v2_sample_count": _safe_int(
+            flow_contract.get("unbound_schema_v2_sample_count"), 0
+        ),
+        "metadata_conflict_count": _safe_int(
+            flow_contract.get("metadata_conflict_count"), 0
+        ),
+        "unmatched_generation_flows": unmatched_flows,
+        "generation_rows": rows,
+        "current_generation_row": current_row,
+        "bounded_paper_action_plan": actions,
+        "automatic_action_count": sum(
+            1 for row in actions if row.get("auto_apply_allowed", False)
+        ),
+        "policy": {
+            "accepted_generations_feed_developmental_learning": enabled,
+            "identity_and_time_binding_required": True,
+            "association_is_not_causation": True,
+            "mixed_or_unbound_history_is_diagnostic_only": True,
+            "historical_generations_grade_current_candidate": False,
+            "historical_generations_earn_clean_720_hour_credit": False,
+            "clean_720_hour_live_promotion_gate_unchanged": True,
+            "current_candidate_economic_firewall_unchanged": True,
+            "profitability_guaranteed": False,
+            "force_trades": False,
+            "loss_recovery_size_increase_allowed": False,
+            "direct_threshold_loosen_allowed": False,
+            "live_execution_allowed": False,
+        },
     }
 
 
@@ -515,6 +885,72 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, config_path: Path | None
     economic_score = _safe_float(firewall.get("economic_evidence_score"), 0.0)
     economic_grade = str(firewall.get("economic_evidence_grade") or _grade(economic_score)).upper()
     economic_ready = bool(firewall.get("economic_evidence_ready", False))
+    collector_capabilities = sources["collector_capabilities"]
+    economic_context = _as_dict(collector_capabilities.get("economic_context_contract"))
+    economic_context_policy = _as_dict(economic_context.get("policy"))
+    economic_family_count = _safe_int(economic_context.get("family_count"), 0)
+    economic_configured_families = _safe_int(economic_context.get("configured_family_count"), 0)
+    economic_ready_families = _safe_int(economic_context.get("ready_family_count"), 0)
+    economic_runtime_routes = _safe_int(economic_context.get("runtime_route_count"), 0)
+    economic_ready_runtime_routes = _safe_int(economic_context.get("runtime_ready_route_count"), 0)
+    economic_source_count = _safe_int(economic_context.get("selected_source_count"), 0)
+    minimum_economic_sources = max(
+        _safe_int(economic_context_policy.get("minimum_distinct_selected_sources"), 2),
+        2,
+    )
+    economic_context_checks = {
+        "artifact_fresh": bool(receipts["collector_capabilities"].get("fresh", False)),
+        "contract_present": bool(str(economic_context_policy.get("contract_id") or "")),
+        "all_families_configured": bool(
+            economic_family_count > 0 and economic_configured_families == economic_family_count
+        ),
+        "all_families_ready": bool(
+            economic_family_count > 0 and economic_ready_families == economic_family_count
+        ),
+        "all_runtime_routes_ready": bool(
+            economic_runtime_routes > 0 and economic_ready_runtime_routes == economic_runtime_routes
+        ),
+        "source_pool_ready": economic_source_count >= minimum_economic_sources,
+        "receipt_present": bool(str(economic_context.get("contract_receipt_sha256") or "")),
+        "authority_safe": bool(
+            economic_context.get("context_changes_strategy_signal") is False
+            and economic_context.get("paper_execution_authority") is False
+            and economic_context.get("live_execution_authority") is False
+            and economic_context.get("automatic_promotion_authority") is False
+            and economic_context.get("economic_profitability_grade_authority") is False
+        ),
+    }
+    economic_context_ready = all(economic_context_checks.values())
+    economic_context_score = round(
+        100.0 * sum(1 for ready in economic_context_checks.values() if ready) / len(economic_context_checks),
+        3,
+    )
+    tier_counts = _as_dict(scaling.get("tier_counts"))
+    weak_control_count = max(
+        _safe_int(scaling.get("blocked_control_count"), 0),
+        _safe_int(tier_counts.get("quarantine"), 0),
+    )
+    missing_market_types = [
+        market for market, row in market_requirements.items() if not row["ready"]
+    ]
+    developmental_learning = _developmental_soak_learning(
+        project_root,
+        policy=policy,
+        performance=performance,
+        current_candidate_id=candidate_id,
+        current_generation=_safe_int(binding.get("generation"), 0),
+        current_candidate_samples=candidate_samples,
+        minimum_candidate_samples=minimum_candidate_samples,
+        missing_market_types=missing_market_types,
+        replay_tradeability_ready=replay_tradeability_ready,
+        weak_control_count=weak_control_count,
+        now=now,
+    )
+    developmental_action_ids = {
+        str(row.get("action_id") or "")
+        for row in _as_list(developmental_learning.get("bounded_paper_action_plan"))
+        if isinstance(row, dict)
+    }
 
     needs: list[dict[str, Any]] = []
     if not binding.get("identity_consistent", False) or not binding.get("identity_complete", False):
@@ -557,7 +993,6 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, config_path: Path | None
                 candidate_id=candidate_id,
             )
         )
-    missing_market_types = [market for market, row in market_requirements.items() if not row["ready"]]
     if missing_market_types:
         needs.append(
             _need(
@@ -597,6 +1032,19 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, config_path: Path | None
                 candidate_id=candidate_id,
             )
         )
+    if not economic_context_ready:
+        needs.append(
+            _need(
+                "sleeve_economic_context_incomplete",
+                exact_file="governance/health/collector_capability_control_latest.json",
+                exact_shard="economic_context_contract",
+                command=["./scripts/ops/opsctl.sh", "collector-capability-control", "--json"],
+                expected_impact="Restores fresh, receipt-bound economic context for every decision family without changing trade authority or profitability evidence.",
+                when_to_stop="all decision families and runtime routes have complete economic context with at least two distinct sources and a safe authority contract",
+                classification="repair",
+                candidate_id=candidate_id,
+            )
+        )
     if qualified_sleeves < minimum_profitable_sleeves:
         needs.append(
             _need(
@@ -610,6 +1058,53 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, config_path: Path | None
                 candidate_id=candidate_id,
             )
         )
+    if (
+        developmental_learning.get("enabled", False)
+        and not _as_dict(developmental_learning.get("candidate_event_chain")).get("valid", False)
+    ):
+        needs.append(
+            _need(
+                "developmental_candidate_event_chain_unavailable",
+                exact_file="governance/evidence/production_candidate_events.jsonl",
+                exact_shard="candidate_event_chain",
+                command=["./scripts/ops/opsctl.sh", "production-excellence", "--json"],
+                expected_impact="Restores verified candidate-generation boundaries before historical outcomes are associated with accepted soak changes.",
+                when_to_stop="the candidate event chain is valid and its identity-bound generation windows can be joined without conflicts",
+                classification="repair",
+                candidate_id=candidate_id,
+                risk_level="high",
+            )
+        )
+    if "maintain_candidate_bound_weak_sleeve_containment" in developmental_action_ids:
+        needs.append(
+            _need(
+                "developmental_weak_sleeve_containment_active",
+                exact_file="governance/health/paper_profitability_control_latest.json",
+                exact_shard="sleeve_strategy_profitability_scaling_contract",
+                command=["./scripts/ops/opsctl.sh", "paper-profitability-control", "--apply", "--json"],
+                expected_impact="Keeps weak candidate-bound sleeve and strategy entries quarantined or deweighted while preserving full-size exits and continued collection.",
+                when_to_stop="negative developmental cohorts clear their configured evidence gates and weak controls no longer require quarantine or probation",
+                classification="tune",
+                candidate_id=candidate_id,
+                auto_apply_allowed=True,
+                risk_level="medium",
+            )
+        )
+    if "prioritize_loss_and_missed_opportunity_labels" in developmental_action_ids:
+        needs.append(
+            _need(
+                "developmental_loss_label_priority_active",
+                exact_file="governance/health/training_data_intake_expansion_latest.json",
+                exact_shard="paper_loss_hard_negative_ingress",
+                command=["./scripts/ops/opsctl.sh", "training-data-intake", "--apply", "--focus-limit", "160", "--json"],
+                expected_impact="Routes mature negative accepted-generation outcomes into hard-negative and missed-opportunity labeling without changing current trade authority.",
+                when_to_stop="the prioritized negative cohorts have point-in-time labels and a candidate-bound replay receipt",
+                classification="train",
+                candidate_id=candidate_id,
+                auto_apply_allowed=True,
+                risk_level="medium",
+            )
+        )
 
     if not candidate_id:
         statement = "The system cannot attribute profitability because no accepted production candidate is present."
@@ -618,7 +1113,8 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, config_path: Path | None
     elif candidate_samples <= 0:
         statement = (
             f"Candidate {candidate_id} is guarded for paper collection, but it has no current-candidate schema-v2 "
-            "post-cost outcomes yet; profitability cannot be estimated from the historical ledger."
+            "post-cost outcomes yet, so live-grade profitability cannot be estimated. Earlier accepted generations "
+            "remain available for verified developmental attribution and bounded paper-only remediation."
         )
     elif not economic_ready:
         statement = (
@@ -649,7 +1145,7 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, config_path: Path | None
     }
     payload = {
         "timestamp_utc": now.isoformat(),
-        "schema_version": 1,
+        "schema_version": 2,
         "policy_id": str(policy.get("policy_id") or "candidate_bound_profitability_self_assessment_v1"),
         "overall_status": overall_status,
         "assessment_status": "ready" if assessment_ready else "blocked",
@@ -678,10 +1174,36 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, config_path: Path | None
             "economic_evidence_ready": economic_ready,
             "economic_evidence_ready_controls": _safe_int(firewall.get("evidence_ready_control_count"), 0),
             "economic_evidence_control_count": _safe_int(firewall.get("control_count"), 0),
+            "economic_context_source_grade": _grade(
+                economic_context_score,
+                complete=economic_context_ready,
+            ),
+            "economic_context_source_score": economic_context_score,
+            "economic_context_source_ready": economic_context_ready,
+            "economic_context_ready_families": economic_ready_families,
+            "economic_context_family_count": economic_family_count,
+            "economic_context_ready_runtime_routes": economic_ready_runtime_routes,
+            "economic_context_runtime_route_count": economic_runtime_routes,
+            "economic_context_selected_source_count": economic_source_count,
             "evidence_ready_lanes": evidence_ready_count,
             "evidence_lane_count": len(lanes),
-            "grade_separation_policy": "implementation completeness never upgrades the economic profitability grade",
+            "grade_separation_policy": "implementation and source-context completeness never upgrade the economic profitability grade",
         },
+        "economic_context_sources": {
+            "contract_id": str(economic_context_policy.get("contract_id") or ""),
+            "contract_receipt_sha256": str(economic_context.get("contract_receipt_sha256") or ""),
+            "selected_source_ids": sorted(
+                str(source_id)
+                for source_id in _as_list(economic_context.get("selected_source_ids"))
+                if str(source_id)
+            ),
+            "minimum_distinct_selected_sources": minimum_economic_sources,
+            "checks": economic_context_checks,
+            "context_only": True,
+            "profitability_grade_authority": False,
+            "live_execution_authority": False,
+        },
+        "developmental_soak_learning": developmental_learning,
         "eight_lane_program": lanes,
         "needs": needs,
         "next_safe_action": needs[0] if needs else {},
@@ -701,7 +1223,14 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, config_path: Path | None
         "claims": {
             "profitability_guaranteed": False,
             "positive_expectancy_established": economic_ready,
+            "economic_context_available": economic_context_ready,
+            "economic_context_is_profitability_evidence": False,
             "historical_loss_is_current_candidate_evidence": False,
+            "accepted_generation_history_informs_developmental_actions": bool(
+                developmental_learning.get("enabled", False)
+            ),
+            "accepted_generation_history_is_live_promotion_evidence": False,
+            "developmental_association_is_causal_proof": False,
             "safe_to_loosen_thresholds_without_replay": False,
             "safe_to_scale_without_evidence": False,
             "automatic_allocation_allowed": False,
@@ -717,6 +1246,12 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, config_path: Path | None
             "cumulative_soak_history_preserved": True,
             "full_soak_clock_reset_requested": False,
             "historical_pnl_preserved_but_not_regraded": True,
+            "accepted_generation_outcomes_feed_developmental_learning": bool(
+                developmental_learning.get("enabled", False)
+            ),
+            "developmental_learning_is_identity_and_time_bound": True,
+            "historical_generation_outcomes_grant_promotion": False,
+            "clean_720_hour_live_promotion_gate_unchanged": True,
             "live_execution_allowed": False,
             "grant_promotion": False,
         },
@@ -730,16 +1265,27 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, config_path: Path | None
 def render_markdown(payload: dict[str, Any]) -> str:
     grades = _as_dict(payload.get("grades"))
     measurement = _as_dict(payload.get("measurement"))
+    developmental = _as_dict(payload.get("developmental_soak_learning"))
     lines = [
         "# Profitability Self Assessment",
         "",
         f"- Candidate: `{measurement.get('candidate_id') or 'none'}`",
         f"- Implementation: `{grades.get('implementation_grade')}` ({grades.get('implementation_score')}%)",
         f"- Economic evidence: `{grades.get('economic_evidence_grade')}` ({grades.get('economic_evidence_score')}%)",
+        f"- Economic source context: `{grades.get('economic_context_source_grade')}` ({grades.get('economic_context_source_score')}%)",
         f"- Candidate post-cost samples: `{measurement.get('candidate_post_cost_sample_count')}/{measurement.get('candidate_post_cost_minimum_samples')}`",
         f"- Live execution authority: `{_as_dict(payload.get('claims')).get('live_execution_authority')}`",
         "",
         str(payload.get("system_statement") or ""),
+        "",
+        "## Developmental Soak Learning",
+        "",
+        f"- Status: `{developmental.get('status') or 'missing'}`",
+        f"- Verified accepted generations: `{developmental.get('accepted_generation_count', 0)}`",
+        f"- Generations with attributable outcomes: `{developmental.get('attributable_generation_count', 0)}`",
+        f"- Mature developmental generations: `{developmental.get('mature_developmental_generation_count', 0)}`",
+        f"- Bounded paper actions: `{len(_as_list(developmental.get('bounded_paper_action_plan')))}`",
+        "- Historical generations earn current economic-grade or clean 720-hour credit: `False`",
         "",
         "## Eight-Lane Program",
         "",
@@ -787,6 +1333,7 @@ def main() -> int:
             f"candidate={_as_dict(payload.get('measurement')).get('candidate_id') or 'none'} "
             f"implementation={grades.get('implementation_grade')} "
             f"economic={grades.get('economic_evidence_grade')} "
+            f"economic_sources={grades.get('economic_context_source_grade')} "
             f"needs={len(_as_list(payload.get('needs')))}"
         )
     return 0 if payload.get("ok", False) else 2

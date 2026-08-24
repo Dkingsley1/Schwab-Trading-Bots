@@ -264,6 +264,10 @@ def test_commands_hygiene_bot_authors_commands_surface_and_runbook(tmp_path: Pat
     assert "### Build the twenty-control investor readiness packet" in commands_text
     assert "./scripts/ops/opsctl.sh investor-readiness --json" in commands_text
     assert "### Review institutional capability and evidence gaps" in commands_text
+    assert "### Review the canonical research data platform" in commands_text
+    assert "./scripts/ops/opsctl.sh research-data-platform --json" in commands_text
+    assert "./scripts/ops/opsctl.sh institutional-research-extensions --json" in commands_text
+    assert "### Validate the 39 authoritative production references and 18 controls" in commands_text
     assert "./scripts/ops/opsctl.sh institutional-capability-control --json" in commands_text
     assert "### Freeze or accept a production candidate" in commands_text
     assert "### Verify the durable live-order ledger" in commands_text

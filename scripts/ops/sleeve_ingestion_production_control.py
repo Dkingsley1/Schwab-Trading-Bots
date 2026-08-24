@@ -235,6 +235,7 @@ def _routing_contract(capabilities: dict[str, Any]) -> dict[str, Any]:
     summary = _as_dict(capabilities.get("summary"))
     routing = _as_dict(capabilities.get("ingestion_routing_contract"))
     authority = _as_dict(capabilities.get("ingestion_authority_contract"))
+    economic = _as_dict(capabilities.get("economic_context_contract"))
     assignment_count = _safe_int(summary.get("assignment_count"), 0)
     bot_binding_count = _safe_int(summary.get("bot_binding_count"), 0)
     runtime_route_count = _safe_int(routing.get("runtime_route_count"), 0)
@@ -266,6 +267,51 @@ def _routing_contract(capabilities: dict[str, Any]) -> dict[str, Any]:
         ),
         "runtime_live_ready_route_count": _safe_int(
             routing.get("runtime_live_ready_route_count"), 0
+        ),
+        "economic_context_contract_id": str(
+            _as_dict(economic.get("policy")).get("contract_id")
+            or routing.get("economic_context_contract_id")
+            or ""
+        ),
+        "economic_context_contract_receipt_sha256": str(
+            economic.get("contract_receipt_sha256")
+            or routing.get("economic_context_contract_receipt_sha256")
+            or ""
+        ),
+        "economic_context_family_count": _safe_int(
+            economic.get("family_count"),
+            _safe_int(routing.get("economic_context_family_count"), 0),
+        ),
+        "economic_context_configured_family_count": _safe_int(
+            economic.get("configured_family_count"),
+            _safe_int(
+                routing.get("economic_context_configured_family_count"), 0
+            ),
+        ),
+        "economic_context_ready_family_count": _safe_int(
+            economic.get("ready_family_count"),
+            _safe_int(routing.get("economic_context_ready_family_count"), 0),
+        ),
+        "runtime_economic_context_ready_route_count": _safe_int(
+            economic.get("runtime_ready_route_count"),
+            _safe_int(
+                routing.get("runtime_economic_context_ready_route_count"), 0
+            ),
+        ),
+        "economic_context_selected_source_count": _safe_int(
+            economic.get("selected_source_count"),
+            _safe_int(routing.get("economic_context_selected_source_count"), 0),
+        ),
+        "economic_context_family_rollups": list(
+            economic.get("family_rollups") or []
+        ),
+        "economic_context_authority_safe": bool(
+            economic
+            and economic.get("context_changes_strategy_signal") is False
+            and economic.get("paper_execution_authority") is False
+            and economic.get("live_execution_authority") is False
+            and economic.get("automatic_promotion_authority") is False
+            and economic.get("economic_profitability_grade_authority") is False
         ),
         "average_profile_route_quality": round(
             _safe_float(routing.get("average_profile_route_quality"), 0.0), 6
@@ -327,6 +373,15 @@ def _env_values(payload: dict[str, Any]) -> dict[str, str]:
             routing.get("routing_artifact_receipt_sha256") or ""
         ),
         "SLEEVE_INGESTION_ROUTE_SCORE_FLOOR": "0.70",
+        "SLEEVE_ECONOMIC_CONTEXT_REQUIRED": "1",
+        "SLEEVE_ECONOMIC_CONTEXT_CONTRACT_ID": str(
+            routing.get("economic_context_contract_id") or ""
+        ),
+        "SLEEVE_ECONOMIC_CONTEXT_RECEIPT": str(
+            routing.get("economic_context_contract_receipt_sha256") or ""
+        ),
+        "SLEEVE_ECONOMIC_CONTEXT_MIN_SOURCES": "2",
+        "SLEEVE_ECONOMIC_CONTEXT_ADVISORY_ONLY": "1",
         "SLEEVE_INGESTION_CORE_PRIORITY": str(data_tiers.get("core_priority") or "1"),
         "SLEEVE_INGESTION_DEFERRED_BUDGET": str(data_tiers.get("deferred_budget") or "0"),
         "SLEEVE_INGESTION_COLD_BUDGET": str(data_tiers.get("cold_budget") or "0"),
@@ -402,6 +457,24 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, apply: bool = False, ove
         "transport_contract_complete": bool(
             routing.get("transport_contract_complete", False)
         ),
+        "economic_context_family_contract_complete": bool(
+            int(routing.get("economic_context_family_count", 0) or 0) >= 15
+            and int(
+                routing.get("economic_context_configured_family_count", 0)
+                or 0
+            )
+            == int(routing.get("economic_context_family_count", 0) or 0)
+        ),
+        "economic_context_receipt_present": bool(
+            routing.get("economic_context_contract_receipt_sha256")
+        ),
+        "economic_context_source_pool_available": bool(
+            int(routing.get("economic_context_selected_source_count", 0) or 0)
+            >= 2
+        ),
+        "economic_context_authority_safe": bool(
+            routing.get("economic_context_authority_safe", False)
+        ),
         "event_envelope_required": True,
         "idempotency_required": True,
         "schema_version_required": True,
@@ -437,6 +510,16 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, apply: bool = False, ove
         score -= 40.0
     if not routing.get("transport_contract_complete", False):
         score -= 10.0
+    if int(routing.get("economic_context_configured_family_count", 0) or 0) < int(
+        routing.get("economic_context_family_count", 0) or 0
+    ):
+        score -= 12.0
+    if not routing.get("economic_context_contract_receipt_sha256"):
+        score -= 8.0
+    if int(routing.get("economic_context_selected_source_count", 0) or 0) < 2:
+        score -= 8.0
+    if not routing.get("economic_context_authority_safe", False):
+        score -= 40.0
     score = round(max(min(score, 100.0), 0.0), 2)
     grade = _grade(score)
     state = "production_ready" if not missing else "production_attention_required"
@@ -506,6 +589,8 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, apply: bool = False, ove
             "every decision-bound event carries the exact route profile and signed route receipt used by data qualification",
             "decision-family routing replaces broad scope-only subscriptions and caps optional data fanout",
             "primary and failover providers are ranked by authority, proof, freshness, quality, coverage, error budget, and payload integrity",
+            "every decision family owns an explicit economic capability set backed by shared source snapshots and signed route receipts",
+            "economic context remains advisory, cannot place orders, and cannot upgrade the post-cost profitability evidence grade",
             "route coverage debt can force a sleeve to collect-only but cannot stop unrelated healthy paper collection",
             "hot-core backlog forces manifest-first low duty-cycle ingestion",
             "sleeve strategy coverage artifact must be loaded and fresh before sleeve ingestion can go production-ready",
@@ -518,6 +603,7 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, apply: bool = False, ove
                 "refresh sleeve-strategy-coverage before claiming sleeve ingestion is production-ready" if not coverage.get("coverage_ready", False) else "",
                 "refresh stale or missing sleeve ingestion source artifacts before widening collection" if not freshness.get("all_required_fresh", False) else "",
                 "refresh collector capability routing before trusting decision-bound route receipts" if not routing.get("structural_ready", False) else "",
+                "repair the exact family economic source route without widening per-bot fetch fanout" if int(routing.get("economic_context_ready_family_count", 0) or 0) < int(routing.get("economic_context_family_count", 0) or 0) else "",
                 "repair exact sleeve route coverage rather than widening every bot subscription" if int(routing.get("runtime_paper_ready_route_count", 0) or 0) < int(routing.get("runtime_route_count", 0) or 0) else "",
                 "keep all sleeves manifest-first and idempotent while storage pressure is active" if pressure_limited else "",
                 "repair zero-observation sleeves before adding more ingestion breadth" if not collection.get("coverage_ready", False) else "",

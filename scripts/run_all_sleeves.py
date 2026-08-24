@@ -21,8 +21,15 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from core.runtime_maintenance import maintenance_hold_snapshot
 from core.runtime_python import resolve_runtime_python
+from core.broker_auth_epoch import token_epoch
+from core.cpu_workload_policy import (
+    load_cpu_workload_policy,
+    nice_target_for_class,
+    runtime_priority_decision,
+)
 
 VENV_PY = resolve_runtime_python(PROJECT_ROOT)
+CPU_WORKLOAD_POLICY = load_cpu_workload_policy()
 PARALLEL_SHADOWS = PROJECT_ROOT / "scripts" / "run_parallel_shadows.py"
 DIVIDEND_SHADOW = PROJECT_ROOT / "scripts" / "run_dividend_shadow.py"
 DIVIDEND_CAPTURE_SHADOW = PROJECT_ROOT / "scripts" / "run_dividend_capture_shadow.py"
@@ -221,6 +228,7 @@ class JobSpec:
     heartbeat_startup_grace_seconds: int = 0
     max_runtime_seconds: int = 0
     code_watch_paths: tuple[Path, ...] = ()
+    auth_watch_paths: tuple[Path, ...] = ()
 
 
 def _env_flag(name: str, default: str = "0") -> bool:
@@ -282,17 +290,61 @@ def _nice_prefix_for_target(target_nice: int, parent_nice: int | None = None) ->
     return ["nice", "-n", str(_relative_nice_increment_for_target(target_nice, parent_nice))]
 
 
+def _parent_priority_snapshot(parent_nice: int | None = None) -> dict[str, Any]:
+    current = _current_nice_value() if parent_nice is None else int(parent_nice)
+    return runtime_priority_decision(
+        CPU_WORKLOAD_POLICY,
+        workload_class="paper_execution",
+        requested_nice=0,
+        current_nice=current,
+    )
+
+
 def _paper_executor_target_nice(default_nice: int) -> int:
     raw = (
         os.getenv("PAPER_EXECUTION_RUNTIME_NICE", "").strip()
         or os.getenv("PAPER_SHADOW_RUNTIME_NICE", "").strip()
     )
     if not raw:
-        return max(min(int(default_nice), 20), 0)
+        requested = max(min(int(default_nice), 20), 0)
+    else:
+        try:
+            requested = max(min(int(raw), 20), 0)
+        except ValueError:
+            requested = max(min(int(default_nice), 20), 0)
+    if _env_flag("BOT_CPU_WORKLOAD_POLICY_LOCKED", "0"):
+        return nice_target_for_class(CPU_WORKLOAD_POLICY, "paper_execution", requested)
+    return requested
+
+
+def _cpu_locked_target_nice(workload_class: str, requested: int) -> int:
+    bounded = max(min(int(requested), 20), 0)
+    if not _env_flag("BOT_CPU_WORKLOAD_POLICY_LOCKED", "0"):
+        return bounded
     try:
-        return max(min(int(raw), 20), 0)
-    except ValueError:
-        return max(min(int(default_nice), 20), 0)
+        return nice_target_for_class(CPU_WORKLOAD_POLICY, workload_class, bounded)
+    except Exception:
+        return bounded
+
+
+def _apply_cpu_workload_policy_to_args(args: argparse.Namespace) -> list[str]:
+    assignments = (
+        ("nice_baseline", "market_decision"),
+        ("nice_dividend", "market_decision"),
+        ("nice_dividend_capture", "market_decision"),
+        ("nice_bond", "market_decision"),
+        ("nice_fx", "market_decision"),
+        ("nice_specialized", "data_collection"),
+        ("nice_aggressive", "market_decision"),
+    )
+    changes: list[str] = []
+    for attribute, workload_class in assignments:
+        previous = int(getattr(args, attribute))
+        target = _cpu_locked_target_nice(workload_class, previous)
+        setattr(args, attribute, target)
+        if previous != target:
+            changes.append(f"{attribute}:{previous}->{target}")
+    return changes
 
 
 def _paper_trade_lock_enabled() -> bool:
@@ -562,6 +614,13 @@ def _job_recycle_due(
     max_runtime = max(int(spec.max_runtime_seconds or 0), 0)
     if max_runtime > 0 and (now_epoch - started) >= float(max_runtime):
         return True, f"max_runtime_seconds={max_runtime}"
+    for path in spec.auth_watch_paths:
+        try:
+            mtime = float(path.stat().st_mtime)
+        except Exception:
+            continue
+        if mtime > started:
+            return True, f"auth_epoch_changed:{path.name}"
     for path in spec.code_watch_paths:
         try:
             mtime = float(path.stat().st_mtime)
@@ -669,6 +728,24 @@ def _launcher_readiness_contract(
         for row in jobs
         if int(row.get("restart_count_last_hour", 0) or 0) >= 3
     ]
+    execution_rows = [
+        row for row in jobs if _launcher_job_class(str(row.get("name") or "")) == "execution_lane"
+    ]
+    execution_policy_parked = [row for row in execution_rows if bool(row.get("policy_parked", False))]
+    execution_lane_ready = bool(not execution_rows or all(row.get("state") == "running" for row in execution_rows))
+    collection_rows = [
+        row for row in jobs if _launcher_job_class(str(row.get("name") or "")).endswith("collection")
+    ]
+    collection_fanout_ready = bool(
+        collection_rows
+        and all(
+            row.get("state") == "running"
+            or bool(row.get("policy_parked", False))
+            or bool(row.get("clean_exited", False))
+            for row in collection_rows
+        )
+    )
+
     score = 100.0
     score -= min(float(len(problem_jobs)) * 18.0, 54.0)
     score -= min(float(len(core_problem_jobs)) * 18.0, 36.0)
@@ -678,6 +755,8 @@ def _launcher_readiness_contract(
         score -= 6.0
     if overall_status == "blocked":
         score -= 20.0
+    if execution_policy_parked:
+        score -= 8.0
     score = round(max(score, 0.0), 1)
 
     if phase == "starting":
@@ -686,6 +765,8 @@ def _launcher_readiness_contract(
         readiness_status = "repair_core_first"
     elif problem_jobs or repair_active:
         readiness_status = "repair_optional_first"
+    elif execution_policy_parked:
+        readiness_status = "guarded_execution_blocked"
     elif policy_parked_jobs or clean_exited_jobs:
         readiness_status = "stable_with_parked_lanes"
     else:
@@ -745,6 +826,17 @@ def _launcher_readiness_contract(
         "live_execution_allowed": False,
         "readiness_status": readiness_status,
         "readiness_score": score,
+        "collection_fanout_ready": collection_fanout_ready,
+        "paper_execution_ready": execution_lane_ready,
+        "execution_policy_parked_count": len(execution_policy_parked),
+        "execution_attention": [
+            {
+                "target": str(row.get("name") or ""),
+                "state": "safety_policy_parked",
+                "action": "wait_for_fresh_authoritative_evidence_then_resume_automatically",
+            }
+            for row in execution_policy_parked
+        ],
         "can_expand_collection_sleeves": can_expand or max_new_collect_only_sleeves > 0,
         "max_new_collect_only_sleeves": int(max_new_collect_only_sleeves),
         "class_counts": class_counts,
@@ -766,7 +858,8 @@ def _launcher_readiness_contract(
             "new sleeves are collection-only by default",
             "live execution remains disabled by this launcher contract",
             "core collection and paper executor stability come before optional sleeve widening",
-            "policy-parked and clean-exited lanes are not treated as outages",
+            "policy-parked and clean-exited lanes are not treated as process outages",
+            "a policy-parked execution lane remains visible as guarded rather than fully ready",
             "restart pressure reduces expansion slots before it becomes a storm",
         ],
         "recommended_commands": [
@@ -799,6 +892,8 @@ def _launcher_health_payload(
     missing_count = 0
 
     for name, spec in specs.items():
+        restarts = restart_history.setdefault(name, [])
+        recent_restart_count = _recent_restart_count(restarts, now=now)
         proc = procs.get(name)
         code: int | None = None
         pid = 0
@@ -816,6 +911,8 @@ def _launcher_health_payload(
             if code is None:
                 running_count += 1
                 state = "running"
+            elif name in parked_jobs:
+                state = "policy_parked"
             else:
                 exited_count += 1
                 state = "exited"
@@ -828,7 +925,7 @@ def _launcher_health_payload(
                 "pid": pid,
                 "exit_code": code,
                 "uptime_seconds": round(max(now - started, 0.0), 3) if started > 0 else 0.0,
-                "restart_count_last_hour": len(restart_history.get(name, [])),
+                "restart_count_last_hour": recent_restart_count,
                 "quarantined": name in quarantined_jobs,
                 "policy_parked": name in parked_jobs,
                 "clean_exited": name in clean_jobs,
@@ -857,7 +954,11 @@ def _launcher_health_payload(
     elif running_count >= expected_count and exited_count == 0 and missing_count == 0 and quarantined_count == 0:
         overall_status = "ready"
     elif all_non_running_stable:
-        overall_status = "ready"
+        execution_parked = any(
+            name in parked_jobs and _launcher_job_class(name) == "execution_lane"
+            for name in specs
+        )
+        overall_status = "guarded_ready" if execution_parked else "ready"
     elif running_count > 0:
         overall_status = "degraded"
     else:
@@ -936,6 +1037,7 @@ def _launcher_health_payload(
 
     return {
         "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+        "broker_auth_epoch": token_epoch(PROJECT_ROOT / "token.json"),
         "overall_status": overall_status,
         "phase": phase,
         "note": note,
@@ -1020,10 +1122,13 @@ def _install_signal_handlers() -> None:
 
 def _within_restart_budget(restarts: list[float], max_restarts_per_hour: int, *, now: float | None = None) -> bool:
     now = time.time() if now is None else float(now)
-    one_hour_ago = now - 3600
-    while restarts and restarts[0] < one_hour_ago:
-        restarts.pop(0)
-    return len(restarts) < max_restarts_per_hour
+    return _recent_restart_count(restarts, now=now) < max_restarts_per_hour
+
+
+def _recent_restart_count(restarts: list[float], *, now: float) -> int:
+    one_hour_ago = float(now) - 3600
+    restarts[:] = [timestamp for timestamp in restarts if timestamp >= one_hour_ago]
+    return len(restarts)
 
 
 def _quarantine_timestamp_epoch(row: dict[str, object]) -> float:
@@ -1062,7 +1167,7 @@ def _quarantine_release_state(
     }
 
 
-def _read_one_numbers(path: Path) -> dict:
+def _read_one_numbers(path: Path, *, auth_token_path: Path | None = None) -> dict:
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
         if not isinstance(payload, dict):
@@ -1072,6 +1177,8 @@ def _read_one_numbers(path: Path) -> dict:
             }
         payload["_breaker_source_present"] = True
         payload["_breaker_source_age_seconds"] = max(time.time() - path.stat().st_mtime, 0.0)
+        if auth_token_path is not None:
+            payload["_broker_auth_epoch"] = token_epoch(auth_token_path)
         return payload
     except Exception:
         return {
@@ -1127,6 +1234,20 @@ def _breaker_metrics_actionable(
     if measurement_age is not None and max_age_seconds > 0 and measurement_age > max_age_seconds:
         return False, "measurement_stale"
 
+    auth_epoch = metrics.get("_broker_auth_epoch")
+    if isinstance(auth_epoch, dict) and bool(auth_epoch.get("present", False)):
+        measurement_raw = metrics.get("data_quality_session_local_timestamp")
+        measurement_epoch = None
+        if measurement_raw:
+            measurement_age_for_epoch = _iso_age_seconds(measurement_raw, now_epoch=now_epoch)
+            if measurement_age_for_epoch is not None:
+                measurement_epoch = float(now_epoch if now_epoch is not None else time.time()) - measurement_age_for_epoch
+        token_mtime = _safe_float(auth_epoch.get("mtime_epoch"), 0.0)
+        if measurement_epoch is None:
+            return False, "measurement_timestamp_missing_for_auth_epoch"
+        if token_mtime > 0.0 and measurement_epoch + 2.0 < token_mtime:
+            return False, "measurement_predates_auth_epoch"
+
     session_aware = _boolish(metrics.get("data_quality_session_aware"), False)
     session_open = _boolish(metrics.get("data_quality_session_open"), True)
     if str(getattr(args, "broker", "")).strip().lower() == "schwab" and session_aware and not session_open:
@@ -1139,12 +1260,23 @@ def _breaker_policy_parked_jobs(
     group_disabled_until: dict[str, float],
     *,
     now: float,
+    latched_groups: set[str] | None = None,
 ) -> set[str]:
+    latched = set(latched_groups or set())
     return {
         name
         for name, spec in specs.items()
-        if float(group_disabled_until.get(spec.breaker_group, 0.0) or 0.0) > float(now)
+        if spec.breaker_group in latched
+        or float(group_disabled_until.get(spec.breaker_group, 0.0) or 0.0) > float(now)
     }
+
+
+def _job_uses_schwab_auth(spec: JobSpec, *, default_broker: str) -> bool:
+    try:
+        broker_index = spec.cmd.index("--broker")
+        return str(spec.cmd[broker_index + 1]).strip().lower() == "schwab"
+    except (ValueError, IndexError):
+        return str(default_broker or "").strip().lower() == "schwab"
 
 
 def _breaker_reasons(metrics: dict, args, *, runtime_seconds: float = 0.0) -> tuple[list[str], str]:
@@ -1393,6 +1525,9 @@ def main() -> int:
     )
 
     args = parser.parse_args()
+    cpu_policy_changes = _apply_cpu_workload_policy_to_args(args)
+    if cpu_policy_changes:
+        print(f"[CPUWorkloadPolicy] locked changes={','.join(cpu_policy_changes)} hard_affinity=0")
     maintenance_hold = maintenance_hold_snapshot(PROJECT_ROOT)
     if bool(maintenance_hold.get("active", False)):
         print(
@@ -1488,9 +1623,12 @@ def main() -> int:
     specs: dict[str, JobSpec] = {}
 
     parent_nice = _current_nice_value()
+    parent_priority = _parent_priority_snapshot(parent_nice)
     print(
         "[SleevePriority] "
         f"parent_nice={parent_nice} "
+        f"priority_compliant={int(bool(parent_priority['priority_compliant']))} "
+        f"managed_restart_required={int(bool(parent_priority['managed_restart_required']))} "
         f"baseline_target={args.nice_baseline} "
         f"specialized_target={args.nice_specialized} "
         f"aggressive_target={args.nice_aggressive}"
@@ -1680,12 +1818,18 @@ def main() -> int:
             ),
         )
 
+    auth_token_path = PROJECT_ROOT / "token.json"
+    for spec in specs.values():
+        if _job_uses_schwab_auth(spec, default_broker=args.broker):
+            spec.auth_watch_paths = (auth_token_path,)
+
     procs: dict[str, subprocess.Popen] = {}
     proc_started_at: dict[str, float] = {}
     restart_history: dict[str, list[float]] = {name: [] for name in specs}
     quarantined_jobs: dict[str, dict[str, object]] = {}
     clean_exited_at: dict[str, float] = {}
     breaker_streaks: dict[str, int] = {EXECUTION_BREAKER_GROUP: 0}
+    breaker_latched_groups: set[str] = set()
     group_disabled_until: dict[str, float] = {
         COLLECTION_BREAKER_GROUP: 0.0,
         EXECUTION_BREAKER_GROUP: 0.0,
@@ -1769,12 +1913,16 @@ def main() -> int:
                 if _job_parked_by_fanout_policy(name, fanout_policy)
             }
             policy_parked_jobs.update(
-                _breaker_policy_parked_jobs(specs, group_disabled_until, now=now)
+                _breaker_policy_parked_jobs(
+                    specs,
+                    group_disabled_until,
+                    now=now,
+                    latched_groups=breaker_latched_groups,
+                )
             )
             if "paper_executor" in specs and not _paper_execution_consumer_enabled():
                 policy_parked_jobs.add("paper_executor")
-            if not policy_parked_jobs:
-                parked_jobs_reported.clear()
+            parked_jobs_reported.intersection_update(policy_parked_jobs)
 
             if _global_trading_halt_enabled():
                 print("GLOBAL_TRADING_HALT=1 detected; stopping all sleeves.")
@@ -1860,7 +2008,10 @@ def main() -> int:
                         f"remaining_s={int(max(args.breaker_startup_grace_seconds - runtime_seconds, 0))}"
                     )
                 else:
-                    metrics = _read_one_numbers(breaker_path)
+                    metrics = _read_one_numbers(
+                        breaker_path,
+                        auth_token_path=(auth_token_path if args.broker == "schwab" else None),
+                    )
                     actionable, metric_reason = _breaker_metrics_actionable(metrics, args, now_epoch=now)
                     reasons, _domain = _breaker_reasons(metrics, args, runtime_seconds=runtime_seconds)
                     breaker_group = EXECUTION_BREAKER_GROUP
@@ -1876,8 +2027,22 @@ def main() -> int:
                     else:
                         breaker_streaks[breaker_group] = 0
 
+                    if (
+                        breaker_group in breaker_latched_groups
+                        and actionable
+                        and not reasons
+                        and now >= float(group_disabled_until.get(breaker_group, 0.0) or 0.0)
+                    ):
+                        breaker_latched_groups.discard(breaker_group)
+                        group_disabled_until[breaker_group] = 0.0
+                        print(
+                            f"[CircuitBreaker] RECOVERED group={breaker_group} "
+                            "reason=fresh_authoritative_metrics_clear executor_auto_resume=1"
+                        )
+
                     if breaker_streaks[breaker_group] >= max(args.breaker_consecutive_breaches, 1):
                         group_disabled_until[breaker_group] = now + max(args.breaker_cooldown_seconds, 30)
+                        breaker_latched_groups.add(breaker_group)
                         breaker_streaks[breaker_group] = 0
                         print(
                             f"[CircuitBreaker] TRIPPED group={breaker_group} "
@@ -2034,10 +2199,14 @@ def main() -> int:
                     )
                     continue
 
-                print(f"[{name}] exited code={code}")
                 if name in policy_parked_jobs:
                     if name not in parked_jobs_reported:
-                        print(f"[{name}] restart_parked reason=process_fanout_guard_active")
+                        park_reason = (
+                            "safety_circuit_breaker_latched"
+                            if specs[name].breaker_group in breaker_latched_groups
+                            else "runtime_policy_guard_active"
+                        )
+                        print(f"[{name}] exited code={code} restart_parked reason={park_reason}")
                         parked_jobs_reported.add(name)
                     _write_launcher_health(
                         _launcher_health_payload(
@@ -2054,6 +2223,7 @@ def main() -> int:
                         )
                     )
                     continue
+                print(f"[{name}] exited code={code}")
                 if code == 0:
                     clean_exited_at[name] = time.time()
                     print(

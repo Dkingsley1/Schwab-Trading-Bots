@@ -275,6 +275,19 @@ def test_parse_news_links_from_html_extracts_treasury_press_release_rows():
     assert rows[0]["importance"] == "High"
 
 
+def test_parse_news_links_from_html_accepts_minified_unquoted_treasury_links():
+    html = """
+    <div><h3 class=featured-stories__headline><a href=/news/press-releases/sb0607/ hreflang=en>
+    Treasury Announces Increased Sizes of Nominal Long-End Liquidity Support Buybacks
+    </a></h3></div>
+    <a href=/news/press-releases/?page=2>Next page</a>
+    """
+    rows = _parse_news_links_from_html(html, "treasury", "https://home.treasury.gov/news/press-releases")
+    assert len(rows) == 1
+    assert rows[0]["url"] == "https://home.treasury.gov/news/press-releases/sb0607/"
+    assert rows[0]["source"] == "U.S. Treasury"
+
+
 def test_cached_federal_reserve_calendar_rows_reuses_recent_rows(tmp_path):
     payload_path = tmp_path / "official_macro_context_latest.json"
     payload_path.write_text(

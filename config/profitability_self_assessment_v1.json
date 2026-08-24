@@ -1,6 +1,6 @@
 {
-  "schema_version": 1,
-  "policy_id": "candidate_bound_profitability_self_assessment_v1",
+  "schema_version": 2,
+  "policy_id": "candidate_bound_profitability_self_assessment_v2",
   "source_freshness_hours": {
     "production_candidate": 720,
     "paper_performance": 2,
@@ -15,7 +15,8 @@
     "risk_service": 4,
     "decision_policy": 8760,
     "profitability_policy": 8760,
-    "broker_capabilities": 8760
+    "broker_capabilities": 8760,
+    "collector_capabilities": 0.5
   },
   "confidence_and_abstention": {
     "direct_loosen_allowed": false,
@@ -81,6 +82,26 @@
     "cumulative_history_preserved": true,
     "full_clock_reset_requested": false,
     "candidate_semantic_changes_require_new_clean_segment": true,
-    "historical_pnl_is_not_current_candidate_evidence": true
+    "historical_pnl_is_not_current_candidate_evidence": true,
+    "developmental_change_learning_enabled": true,
+    "candidate_event_log_path": "governance/evidence/production_candidate_events.jsonl",
+    "accepted_generations_are_developmental_evidence": true,
+    "identity_and_time_binding_required": true,
+    "mixed_generation_or_unbound_history_is_diagnostic_only": true,
+    "minimum_developmental_post_cost_samples": 30,
+    "minimum_developmental_observed_days": 2,
+    "clean_720_hour_live_promotion_gate_unchanged": true,
+    "bounded_paper_actions": [
+      "collect_current_candidate_post_cost_outcomes",
+      "refresh_candidate_counterfactual_replay",
+      "acquire_candidate_independent_fills",
+      "maintain_candidate_bound_weak_sleeve_containment",
+      "prioritize_loss_and_missed_opportunity_labels"
+    ],
+    "force_trades": false,
+    "loss_recovery_size_increase_allowed": false,
+    "direct_threshold_loosen_allowed": false,
+    "live_execution_allowed": false,
+    "grant_promotion": false
   }
 }

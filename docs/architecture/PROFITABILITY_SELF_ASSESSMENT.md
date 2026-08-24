@@ -9,6 +9,8 @@ The profitability self-assessment gives the runtime one canonical answer to two 
 
 Those grades are deliberately independent. An `A+` implementation grade cannot raise an economic evidence grade, authorize allocation, or unlock live execution.
 
+The assessment also reports an `economic_context_source_grade` from the signed sleeve-routing contract. That grade answers whether every decision family and runtime route has fresh, point-in-time economic context from a sufficiently diverse source pool. It is operational input coverage, not post-cost profitability evidence, and therefore has no authority to raise `economic_evidence_grade`, allocate capital, or enable execution.
+
 ## Eight-Lane Contract
 
 The assessment covers:
@@ -30,12 +32,19 @@ The current production-candidate identity must match every required source. Sour
 
 Historical paper inventory and losses remain visible for risk management and exit decisions. They do not grade a newly accepted candidate. Current-candidate profitability begins with candidate-bound schema-v2 post-cost outcomes and cannot be inferred from the historical ledger.
 
+Accepted soak generations are not discarded. The paper-performance owner groups identity-stamped schema-v2 outcomes by production candidate. The assessor then joins each group to the tamper-evident candidate event chain and requires the recorded generation and observation timestamps to fit entirely inside that accepted generation's window. Valid associations feed a developmental ledger that records the change reason, affected scopes, samples, observed days, and post-cost delta. Unbound rows, mixed generations, forged chains, generation mismatches, and outcomes outside the accepted window remain visible but cannot be attributed.
+
+Developmental attribution is evidence for what to investigate next, not proof that a code change caused an outcome. It may route bounded paper-only collection, counterfactual replay, independent-fill acquisition, weak-sleeve containment, and loss or missed-opportunity labeling to their existing owners. It cannot force a trade, martingale, average down, raise size to recover a loss, loosen an acceptance threshold without replay, allocate capital, rewrite history, promote a candidate, or enable live execution.
+
 ## Status Semantics
 
 - `assessment_status=ready`: the assessor has complete, consistent candidate identity and can publish truth.
 - `overall_status=collecting`: the assessor is healthy, but economic evidence is incomplete.
 - `overall_status=ready`: the configured economic evidence firewall is ready; this still does not grant live authority.
 - `overall_status=blocked`: candidate identity is missing or inconsistent, so affected evidence is rejected.
+- `developmental_soak_learning.status=ready`: at least one accepted generation has identity- and time-bound post-cost outcomes available for developmental comparison.
+- `developmental_soak_learning.status=collecting`: the generation chain is valid, but bound outcomes are still accruing.
+- `developmental_soak_learning.status=blocked`: the event chain is unavailable or invalid, so generation attribution fails closed without blocking ordinary paper collection.
 
 ## Commands And Outputs
 
@@ -58,3 +67,5 @@ The system-needs intelligence, self-model, runtime artifact refresh graph, and l
 ## Soak Policy
 
 Applying paper-only tightening preserves cumulative segmented soak history and does not request a full soak-clock reset. A semantic candidate change starts or continues a separately attributable clean candidate window; historical evidence is retained but never relabeled as evidence for the new candidate.
+
+The cumulative soak and clean promotion clock remain separate. Every verified accepted generation can contribute to developmental learning, while only the current unchanged candidate can accrue the clean 720 hours and current-candidate economic evidence required by the live-promotion contracts.

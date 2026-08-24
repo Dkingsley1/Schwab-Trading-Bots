@@ -33,12 +33,14 @@ SLOW_SOURCE_RETRY_MIN_SECONDS = {
     "global_central_bank_context": 1800,
     "central_bank_cross_source_context": 900,
     "decision_context_mesh": 900,
+    "public_financial_context": 1800,
 }
 HEAVY_REFRESH_MARKERS = {
     "schwab-symbol-news-sync",
     "ticker-news-sync",
     "sec-edgar-sync",
     "extended-quant-sync",
+    "public-financial-sync",
 }
 COMMAND_TIMEOUT_CAPS = {
     "macro-crosscheck": 60,
@@ -46,6 +48,7 @@ COMMAND_TIMEOUT_CAPS = {
     "ticker-news-sync": 240,
     "sec-edgar-sync": 180,
     "extended-quant-sync": 180,
+    "public-financial-sync": 240,
 }
 MACRO_CROSSCHECK_STALE_DEPENDENCIES = {"public_macro_feeds", "market_micro_context"}
 COMMAND_MARKER_SOURCE_IDS = {
@@ -58,6 +61,7 @@ COMMAND_MARKER_SOURCE_IDS = {
     "ticker-news-sync": "ticker_news_context",
     "sec-edgar-sync": "sec_edgar_context",
     "extended-quant-sync": "extended_quant_context",
+    "public-financial-sync": "public_financial_context",
     "public-policy-sync": "public_policy_context",
     "global-central-bank-sync": "global_central_bank_context",
     "central-bank-context-sync": "central_bank_cross_source_context",

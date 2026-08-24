@@ -51,6 +51,7 @@ from global_central_bank_context import (
 )
 from decision_context_mesh import (
     DECISION_CONTEXT_MESH_FEATURE_KEYS,
+    PUBLIC_FINANCIAL_CONTEXT_FEATURE_KEYS,
     decision_context_mesh_ready,
 )
 
@@ -234,7 +235,9 @@ _RUNTIME_EXTENDED_QUANT_KEYS = {
 _RUNTIME_CENTRAL_BANK_LIQUIDITY_KEYS = set(CENTRAL_BANK_LIQUIDITY_FEATURE_KEYS)
 _RUNTIME_GLOBAL_CENTRAL_BANK_KEYS = set(GLOBAL_CENTRAL_BANK_FEATURE_KEYS)
 _RUNTIME_CENTRAL_BANK_CROSS_SOURCE_KEYS = set(CENTRAL_BANK_CROSS_SOURCE_FEATURE_KEYS)
-_RUNTIME_DECISION_CONTEXT_MESH_KEYS = set(DECISION_CONTEXT_MESH_FEATURE_KEYS)
+_RUNTIME_DECISION_CONTEXT_MESH_KEYS = set(DECISION_CONTEXT_MESH_FEATURE_KEYS) | set(
+    PUBLIC_FINANCIAL_CONTEXT_FEATURE_KEYS
+)
 
 _RUNTIME_TASTYTRADE_KEYS = {
     "tasty_iv_rank_norm",
@@ -829,6 +832,7 @@ def _load_runtime_gap_fill_context(project_root: Path) -> Dict[str, Any]:
     official_derived = official_macro.get("derived") if isinstance(official_macro.get("derived"), Mapping) else {}
     central_bank_cross_derived = central_bank_cross_source.get("derived") if isinstance(central_bank_cross_source.get("derived"), Mapping) else {}
     decision_context_mesh_derived = decision_context_mesh.get("derived") if isinstance(decision_context_mesh.get("derived"), Mapping) else {}
+    decision_context_mesh_routing = decision_context_mesh.get("routing") if isinstance(decision_context_mesh.get("routing"), Mapping) else {}
     schwab_derived = schwab_education.get("derived") if isinstance(schwab_education.get("derived"), Mapping) else {}
     sec_derived = sec_edgar.get("derived") if isinstance(sec_edgar.get("derived"), Mapping) else {}
     extended_derived = extended_quant.get("derived") if isinstance(extended_quant.get("derived"), Mapping) else {}
@@ -1025,6 +1029,11 @@ def _load_runtime_gap_fill_context(project_root: Path) -> Dict[str, Any]:
         "market_micro_features": market_micro_features,
         "external_global_features": external_global_features,
         "external_symbol_features": external_symbol_features,
+        "external_feature_routes": (
+            dict(decision_context_mesh_routing.get("classified_public_financial_routes"))
+            if isinstance(decision_context_mesh_routing.get("classified_public_financial_routes"), Mapping)
+            else {}
+        ),
     }
 
 
@@ -1049,13 +1058,28 @@ def _enrich_runtime_observation(
     market_micro_features = gap_fill_context.get("market_micro_features") if isinstance(gap_fill_context.get("market_micro_features"), Mapping) else {}
     external_global_features = gap_fill_context.get("external_global_features") if isinstance(gap_fill_context.get("external_global_features"), Mapping) else {}
     external_symbol_features = gap_fill_context.get("external_symbol_features") if isinstance(gap_fill_context.get("external_symbol_features"), Mapping) else {}
+    external_feature_routes = gap_fill_context.get("external_feature_routes") if isinstance(gap_fill_context.get("external_feature_routes"), Mapping) else {}
+    decision_family_id = str(
+        obs.get("institutional_decision_flow_policy_family_id")
+        or obs.get("decision_policy_family_id")
+        or obs.get("policy_family_id")
+        or ""
+    )
+
+    def feature_allowed(key: str) -> bool:
+        if key not in PUBLIC_FINANCIAL_CONTEXT_FEATURE_KEYS:
+            return True
+        route = external_feature_routes.get(key) if isinstance(external_feature_routes.get(key), Mapping) else {}
+        allowed_families = {str(value) for value in route.get("decision_family_ids", []) if str(value)}
+        return bool(decision_family_id and decision_family_id in allowed_families)
 
     for key, value in calendar_features.items():
         _set_missing_feature(features, str(key), value)
     symbol = str(obs.get("symbol") or "").strip().upper()
     symbol_feature_map = external_symbol_features.get(symbol) if isinstance(external_symbol_features.get(symbol), Mapping) else {}
     for key, value in symbol_feature_map.items():
-        _set_missing_feature(features, str(key), value)
+        if feature_allowed(str(key)):
+            _set_missing_feature(features, str(key), value)
     for key, value in news_features.items():
         _set_missing_feature(features, str(key), value)
     for key, value in live_macro_calendar.items():
@@ -1067,7 +1091,8 @@ def _enrich_runtime_observation(
     for key, value in market_micro_features.items():
         _set_missing_feature(features, str(key), value)
     for key, value in external_global_features.items():
-        _set_missing_feature(features, str(key), value)
+        if feature_allowed(str(key)):
+            _set_missing_feature(features, str(key), value)
 
     bond_features = summarize_bond_reference_context(
         symbol=symbol,

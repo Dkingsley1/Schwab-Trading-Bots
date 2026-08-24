@@ -247,6 +247,46 @@ def test_creative_pause_guard_suppresses_shadow_restart_for_music(tmp_path, monk
     assert reason == "creative_audio_pause_guard_active"
 
 
+def test_normal_computer_use_does_not_block_canonical_parent_recovery(monkeypatch) -> None:
+    from scripts import shadow_watchdog
+
+    monkeypatch.setattr(shadow_watchdog, "_process_fanout_guard_active", lambda: False)
+    monkeypatch.setattr(shadow_watchdog, "_operator_mode_guard_active", lambda: True)
+    monkeypatch.setattr(shadow_watchdog, "_computer_task_guard_active", lambda: True)
+    monkeypatch.setattr(shadow_watchdog, "_creative_pause_guard_active", lambda: True)
+    monkeypatch.setattr(shadow_watchdog, "_paper_crypto_feed_pressure_guard_active", lambda: False)
+    target = Target(
+        name="schwab_parallel",
+        match="scripts/run_all_sleeves.py",
+        start_cmd=["/repo/.venv/bin/python", "/repo/scripts/run_all_sleeves.py"],
+    )
+
+    active, reason = _restart_guard_active_for_target(target)
+
+    assert active is False
+    assert reason == ""
+
+
+def test_resource_fanout_pressure_still_blocks_canonical_parent_recovery(monkeypatch) -> None:
+    from scripts import shadow_watchdog
+
+    monkeypatch.setattr(shadow_watchdog, "_process_fanout_guard_active", lambda: True)
+    monkeypatch.setattr(shadow_watchdog, "_operator_mode_guard_active", lambda: False)
+    monkeypatch.setattr(shadow_watchdog, "_computer_task_guard_active", lambda: False)
+    monkeypatch.setattr(shadow_watchdog, "_creative_pause_guard_active", lambda: False)
+    monkeypatch.setattr(shadow_watchdog, "_paper_crypto_feed_pressure_guard_active", lambda: False)
+    target = Target(
+        name="schwab_parallel",
+        match="scripts/run_all_sleeves.py",
+        start_cmd=["/repo/.venv/bin/python", "/repo/scripts/run_all_sleeves.py"],
+    )
+
+    active, reason = _restart_guard_active_for_target(target)
+
+    assert active is True
+    assert reason == "process_fanout_operator_or_computer_task_guard_active"
+
+
 def test_runtime_pressure_guard_suppresses_coinbase_restart(tmp_path, monkeypatch) -> None:
     from scripts import shadow_watchdog
 

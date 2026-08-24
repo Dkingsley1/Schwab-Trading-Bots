@@ -30,6 +30,8 @@ jobs:
             scripts/walk_forward_promotion_gate.py \
             scripts/run_master_bot.py \
             scripts/run_execution_lane.py \
+            scripts/run_all_sleeves.py \
+            scripts/run_shadow_training_loop.py \
             scripts/shadow_watchdog.py \
             scripts/weekly_retrain.py \
             scripts/daily_auto_verify.py \
@@ -80,6 +82,7 @@ jobs:
             core/live_canary_allowlist.py \
             core/live_execution_controls.py \
             core/execution_lane_pipeline.py \
+            core/cpu_workload_policy.py \
             core/system_role_contracts.py \
             core/bot_profitability_scalability.py \
             core/master_grandmaster_evidence.py \
@@ -88,6 +91,7 @@ jobs:
             scripts/ops/profitability_evidence_firewall.py \
             scripts/ops/runtime_artifact_refresh.py \
             scripts/ops/runtime_throttle_control.py \
+            scripts/ops/apple_silicon_profile.py \
             scripts/ops/soak_reliability_sentinel.py \
             scripts/ops/soak_self_healing_control.py \
             scripts/ops/storage_disaster_recovery.py \
@@ -166,6 +170,8 @@ jobs:
           python -m json.tool config/symbol_lifecycle_v1.json >/dev/null
           python -m json.tool config/sleeve_strategy_expansion.json >/dev/null
           python -m json.tool config/authoritative_systems_v1.json >/dev/null
+          python -m json.tool config/tiered_ingestion_lifecycle_v1.json >/dev/null
+          python -m json.tool config/cpu_workload_policy_v1.json >/dev/null
           python -m json.tool config/broker_capability_contracts_v1.json >/dev/null
           python -m py_compile core/authoritative_systems.py
           python -m py_compile core/brokers/capability_contract.py
@@ -174,6 +180,20 @@ jobs:
           python -m py_compile core/causal_attribution.py
           python -m py_compile core/paper_live_equivalence.py
           python -m py_compile core/execution_scenarios.py
+          python -m py_compile core/exchange_sequence_control.py
+          python -m py_compile core/archive_snapshot_control.py
+          python -m py_compile core/formal_safety_invariants.py
+          python -m py_compile core/build_provenance.py
+          python -m py_compile core/trade_lifecycle.py
+          python -m py_compile core/independent_risk_oracle.py
+          python -m py_compile core/portfolio_advisory.py
+          python -m py_compile core/data_quality_checkpoints.py
+          python -m py_compile core/tiered_ingestion_lifecycle.py
+          python -m py_compile core/cpu_workload_policy.py
+          python -m py_compile scripts/ops/apple_silicon_profile.py
+          python -m py_compile scripts/run_all_sleeves.py
+          python -m py_compile scripts/run_shadow_training_loop.py
+          python -m py_compile scripts/storage_tier_policy.py
           python -m py_compile scripts/ops/authoritative_systems_control.py
 
       - name: Authoritative systems and execution semantics floor
@@ -187,7 +207,18 @@ jobs:
             tests/test_causal_attribution.py \
             tests/test_paper_live_equivalence.py \
             tests/test_execution_scenarios.py \
-            tests/test_live_order_ledger.py
+            tests/test_live_order_ledger.py \
+            tests/test_exchange_sequence_control.py \
+            tests/test_archive_snapshot_control.py \
+            tests/test_formal_safety_invariants.py \
+            tests/test_build_provenance.py \
+            tests/test_trade_lifecycle.py \
+            tests/test_independent_risk_oracle.py \
+            tests/test_portfolio_advisory.py \
+            tests/test_data_quality_checkpoints.py \
+            tests/test_tiered_ingestion_lifecycle.py \
+            tests/test_cpu_workload_policy.py \
+            tests/test_apple_silicon_profile.py
 
       - name: Hierarchical bot organization structural floor
         run: |

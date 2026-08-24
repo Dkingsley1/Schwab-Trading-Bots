@@ -270,6 +270,7 @@ def test_repository_candidate_scopes_cover_collectors_and_profitability_evidence
 
     data_files = set(control._scope_files(project_root, scope_globs["data"]))
     execution_files = set(control._scope_files(project_root, scope_globs["execution"]))
+    operations_files = set(control._scope_files(project_root, scope_globs["operations"]))
     promotion_files = set(control._scope_files(project_root, scope_globs["promotion"]))
 
     assert project_root / "scripts" / "collect_public_policy_context.py" in data_files
@@ -285,3 +286,9 @@ def test_repository_candidate_scopes_cover_collectors_and_profitability_evidence
     assert project_root / "scripts" / "ops" / "profitability_benchmark_hurdle.py" in promotion_files
     assert project_root / "core" / "profitability_statistics.py" in promotion_files
     assert project_root / "config" / "profitability_evidence_firewall_v1.json" in promotion_files
+    assert project_root / "scripts" / "shadow_watchdog.py" in operations_files
+    assert project_root / "scripts" / "failover_hot_standby.py" in operations_files
+    assert project_root / "scripts" / "resource_guard.py" in operations_files
+    assert project_root / "scripts" / "nightly_resilience_check.py" in operations_files
+    assert project_root / "scripts" / "session_ready_check.py" in operations_files
+    assert project_root / "scripts" / "pager_alert_router.py" in operations_files

@@ -96,15 +96,17 @@ def test_launcher_health_counts_unspawned_policy_parked_executor_as_stable() -> 
     paper_job = next(row for row in payload["jobs"] if row["name"] == "paper_executor")
     contract = payload["launcher_readiness_contract"]
 
-    assert payload["overall_status"] == "ready"
+    assert payload["overall_status"] == "guarded_ready"
     assert payload["expected_job_count"] == 2
     assert payload["running_job_count"] == 1
     assert payload["missing_job_count"] == 0
     assert payload["policy_parked_job_count"] == 1
     assert paper_job["state"] == "policy_parked"
     assert paper_job["policy_parked"] is True
-    assert contract["readiness_status"] == "stable_with_parked_lanes"
+    assert contract["readiness_status"] == "guarded_execution_blocked"
     assert contract["class_counts"]["execution_lane"]["stable_non_running"] == 1
+    assert contract["collection_fanout_ready"] is True
+    assert contract["paper_execution_ready"] is False
 
 
 def test_launcher_health_ready_when_all_lanes_are_stably_non_running() -> None:
@@ -128,14 +130,33 @@ def test_launcher_health_ready_when_all_lanes_are_stably_non_running() -> None:
 
     contract = payload["launcher_readiness_contract"]
 
-    assert payload["overall_status"] == "ready"
+    assert payload["overall_status"] == "guarded_ready"
     assert payload["running_job_count"] == 0
     assert payload["policy_parked_job_count"] == 1
     assert payload["clean_exited_job_count"] == 2
     assert payload["repair_packet"]["status"] == "clear"
-    assert contract["readiness_status"] == "stable_with_parked_lanes"
+    assert contract["readiness_status"] == "guarded_execution_blocked"
     assert contract["class_counts"]["core_collection"]["stable_non_running"] == 2
     assert contract["class_counts"]["execution_lane"]["stable_non_running"] == 1
+
+
+def test_launcher_health_prunes_expired_restart_pressure() -> None:
+    now = src.time.time()
+    restart_history = {"baseline_parallel": [now - 7_200, now - 120]}
+
+    payload = src._launcher_health_payload(
+        specs={"baseline_parallel": _spec("baseline_parallel")},
+        procs={"baseline_parallel": DummyProc(101, None)},  # type: ignore[arg-type]
+        proc_started_at={"baseline_parallel": now - 300},
+        restart_history=restart_history,
+        quarantined_jobs={},
+        launcher_started_at=now - 300,
+        phase="running",
+    )
+
+    assert payload["jobs"][0]["restart_count_last_hour"] == 1
+    assert restart_history["baseline_parallel"] == [now - 120]
+    assert payload["launcher_readiness_contract"]["restart_pressure_job_count"] == 0
 
 
 def test_quarantine_release_waits_for_cooldown_and_restart_budget() -> None:

@@ -195,9 +195,12 @@ def refresh(*, quiet_auth: bool, rebuild_derived: bool) -> dict[str, Any]:
     broker_truth_ok = bool(broker_truth_state.get("ok", False)) if broker_truth_state else bool(fetched.get("ok", False))
     broker_truth_v2 = broker_truth_state.get("broker_truth_reconcile_v2") if isinstance(broker_truth_state.get("broker_truth_reconcile_v2"), dict) else {}
     summary_ok = bool(fetched.get("ok", False)) and broker_truth_ok
+    provider_failure = bool(fetched.get("provider_failure", False))
+    provider_failure_class = str(fetched.get("provider_failure_class") or "")
     summary = {
         "timestamp_utc": datetime.now(timezone.utc).isoformat(),
         "ok": summary_ok,
+        "overall_status": "ready" if summary_ok else "external_blocked" if provider_failure else "blocked",
         "operation": fetched.get("operation", "get_accounts_snapshot"),
         "account_snapshot_mode": str(payload.get("account_snapshot_mode") or fetched.get("account_snapshot_mode") or ""),
         "account_count": int(payload.get("account_count", fetched.get("account_count", 0)) or 0),
@@ -219,6 +222,15 @@ def refresh(*, quiet_auth: bool, rebuild_derived: bool) -> dict[str, Any]:
         "broker_truth_v2_grade": str(broker_truth_v2.get("truth_grade") or ""),
         "derived": derived,
         "error": str(fetched.get("error") or ""),
+        "status_code": int(fetched.get("status_code", 0) or 0),
+        "provider_failure": provider_failure,
+        "provider_failure_class": provider_failure_class,
+        "failure_owner": "external_provider_schwab" if provider_failure else "local_or_operator",
+        "operator_action_required": bool(
+            not provider_failure
+            and provider_failure_class in {"broker_auth_rejected", "no_connected_accounts"}
+        ),
+        "retryable": bool(fetched.get("retryable", False)),
         "notes": [
             "Order execution is forced off for this refresh.",
             "Raw account numbers are not emitted in this summary.",

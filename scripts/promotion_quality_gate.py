@@ -502,7 +502,7 @@ def main() -> int:
     parser.add_argument("--paper-execution-truth-layer-file", default=str(PROJECT_ROOT / "governance" / "health" / "paper_execution_truth_layer_latest.json"))
     parser.add_argument("--paper-execution-calibration-file", default=str(PROJECT_ROOT / "governance" / "health" / "paper_execution_calibration_latest.json"))
     parser.add_argument("--promotion-packet-file", default=str(PROJECT_ROOT / "governance" / "champion_challenger" / "promotion_packet_latest.json"))
-    parser.add_argument("--snapshot-coverage-file", default=str(PROJECT_ROOT / "governance" / "health" / "snapshot_coverage_latest.json"))
+    parser.add_argument("--snapshot-coverage-file", default=str(PROJECT_ROOT / "governance" / "health" / "snapshot_coverage_training_latest.json"))
     parser.add_argument("--data-source-divergence-file", default=str(PROJECT_ROOT / "governance" / "health" / "data_source_divergence_latest.json"))
     parser.add_argument("--artifact-freshness-file", default=str(PROJECT_ROOT / "governance" / "health" / "artifact_freshness_slo_latest.json"))
     parser.add_argument("--nightly-resilience-file", default=str(PROJECT_ROOT / "governance" / "health" / "nightly_resilience_latest.json"))

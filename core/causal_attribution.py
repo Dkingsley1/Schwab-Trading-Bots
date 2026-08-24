@@ -5,6 +5,7 @@ import json
 import math
 from typing import Any, Mapping, Sequence
 
+from core.alpha_evidence_contract import build_net_edge_contract
 
 TRACE_SCHEMA_VERSION = 1
 STAGE_ORDER = (
@@ -146,6 +147,20 @@ def build_attribution(
         and realized_net_bps is not None
     ):
         residual_bps = realized_net_bps - (realized_gross_bps - modeled_cost_bps)
+    net_edge = build_net_edge_contract(intent)
+    common_alpha_bps = _first_number(
+        sources, ("common_alpha_bps", "shared_context_alpha_bps")
+    )
+    residual_alpha_bps = _first_number(
+        sources, ("residual_alpha_bps", "sleeve_residual_alpha_bps")
+    )
+    portfolio_overlay_bps = _first_number(
+        sources, ("portfolio_overlay_bps", "allocation_overlay_bps")
+    )
+    forecast_error_bps = None
+    expected_conservative_net_bps = net_edge.get("conservative_net_edge_bps")
+    if realized_net_bps is not None and expected_conservative_net_bps is not None:
+        forecast_error_bps = realized_net_bps - float(expected_conservative_net_bps)
     values = {
         "expected_edge_bps": expected_edge_bps,
         "realized_gross_bps": realized_gross_bps,
@@ -156,6 +171,29 @@ def build_attribution(
         "realized_net_bps": realized_net_bps,
         "attribution_residual_bps": residual_bps,
     }
+    alpha_decomposition = {
+        "common_context_alpha_bps": common_alpha_bps,
+        "sleeve_residual_alpha_bps": residual_alpha_bps,
+        "portfolio_overlay_bps": portfolio_overlay_bps,
+        "expected_conservative_net_edge_bps": expected_conservative_net_bps,
+        "realized_gross_bps": realized_gross_bps,
+        "realized_execution_cost_bps": modeled_cost_bps,
+        "realized_net_bps": realized_net_bps,
+        "forecast_error_bps": forecast_error_bps,
+    }
+    candidate_binding = _mapping(intent.get("candidate_binding"))
+    if not candidate_binding:
+        candidate_binding = {
+            "candidate_id": str(
+                metadata.get("production_candidate_id")
+                or metadata.get("candidate_id")
+                or ""
+            ),
+            "generation": metadata.get("production_candidate_generation"),
+            "candidate_scope_cutoff_utc": metadata.get(
+                "production_candidate_scope_started_utc"
+            ),
+        }
     return {
         "schema_version": 1,
         "symbol": str(intent.get("symbol") or "").upper(),
@@ -166,6 +204,9 @@ def build_attribution(
         ),
         "risk_allow_execute": _mapping(gateway).get("allow_execute"),
         "risk_reasons": list(_mapping(gateway).get("reasons") or []),
+        "candidate_binding": candidate_binding,
+        "net_edge_contract": net_edge,
+        "alpha_decomposition": alpha_decomposition,
         "values": values,
         "observed_fields": sorted(
             key for key, value in values.items() if value is not None
@@ -194,6 +235,13 @@ def build_execution_trace(
             "source_profile": metadata.get("source_profile"),
             "transport_receipt_sha256": metadata.get("transport_receipt_sha256"),
             "source_receipt_sha256": metadata.get("source_receipt_sha256"),
+            "production_candidate_id": metadata.get("production_candidate_id"),
+            "production_candidate_generation": metadata.get(
+                "production_candidate_generation"
+            ),
+            "production_candidate_receipt_sha256": metadata.get(
+                "production_candidate_receipt_sha256"
+            ),
         },
         "feature": {
             "feature_count": len(features),
@@ -218,11 +266,15 @@ def build_execution_trace(
                 "paper_realism_status"
             ),
         },
-        "cost": attribution["values"],
+        "cost": {
+            **attribution["values"],
+            "net_edge_contract": attribution["net_edge_contract"],
+        },
         "outcome": {
             "result_status": result.get("status"),
             "filled_quantity": attribution.get("filled_quantity"),
             "realized_net_bps": attribution["values"].get("realized_net_bps"),
+            "alpha_decomposition": attribution["alpha_decomposition"],
         },
     }
     stages: list[dict[str, Any]] = []

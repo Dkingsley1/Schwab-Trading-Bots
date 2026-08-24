@@ -338,9 +338,11 @@ def test_runtime_artifact_refresh_training_scope_is_dependency_closed(tmp_path: 
     names = [str(row["name"]) for row in selected]
 
     assert names == [
+        "paper_replay_training",
         "replay_hash_registry_final",
         "golden_replay_regression_final",
         "runtime_training_snapshot_verified",
+        "snapshot_coverage_training_verified",
         "point_in_time_event_store_verified",
         "feature_store_manifest_verified",
         "training_label_audit_verified",
@@ -515,6 +517,27 @@ def test_runtime_artifact_refresh_manages_live_production_readiness_during_green
     assert status == "managed_paper_soak"
 
 
+def test_runtime_artifact_refresh_manages_alpha_evidence_collection_during_green_paper_soak() -> None:
+    status = runtime_artifact_refresh._step_status(
+        {
+            "rc": 0,
+            "payload": {
+                "ok": True,
+                "overall_status": "collecting_candidate_alpha_evidence",
+                "grades": {
+                    "implementation_grade": "A+",
+                    "economic_evidence_grade": "F",
+                },
+                "live_execution_authority": False,
+            },
+        },
+        name="alpha_generation_control",
+        paper_soak_ready=True,
+    )
+
+    assert status == "managed_paper_soak"
+
+
 def test_runtime_artifact_refresh_profitability_scope_includes_every_epoch_input(tmp_path: Path) -> None:
     selected = runtime_artifact_refresh._select_scope_specs(
         runtime_artifact_refresh._step_specs(tmp_path),
@@ -527,6 +550,7 @@ def test_runtime_artifact_refresh_profitability_scope_includes_every_epoch_input
     assert "profitability_hardening_control" in names
     assert "profitability_evidence_firewall" in names
     assert "profitability_self_assessment" in names
+    assert "alpha_generation_control" in names
     assert "paper_live_data_standard" in names
     assert "control_surface_ownership" in names
     assert "system_role_contract" in names
@@ -534,6 +558,10 @@ def test_runtime_artifact_refresh_profitability_scope_includes_every_epoch_input
     assert set(firewall["depends_on"]) <= names
     assessment = next(row for row in selected if row["name"] == "profitability_self_assessment")
     assert set(assessment["depends_on"]) <= names
+    alpha = next(row for row in selected if row["name"] == "alpha_generation_control")
+    assert set(alpha["depends_on"]) <= names
+    assert "profitability_self_assessment" in alpha["depends_on"]
+    assert "multiple_testing_guard_verified" in alpha["depends_on"]
     freshness = next(row for row in selected if row["name"] == "artifact_freshness_slo_post_master")
     assert "control_surface_ownership" in freshness["depends_on"]
     assert "system_role_contract" in freshness["depends_on"]
@@ -571,6 +599,55 @@ def test_runtime_artifact_refresh_requires_secondary_outputs_from_same_producer_
     assert payload["overall_status"] == "ready"
     assert payload["steps"][0]["artifact_refreshed_this_cycle"] is True
     assert all(payload["steps"][0]["artifact_path_freshness"].values())
+
+
+def test_runtime_artifact_refresh_accepts_fresh_markdown_secondary_output(tmp_path: Path) -> None:
+    primary_path = tmp_path / "governance" / "health" / "primary_latest.json"
+    markdown_path = tmp_path / "exports" / "primary_latest.md"
+    specs = [
+        {
+            "name": "multi_format_output",
+            "payload_path": primary_path,
+            "additional_payload_paths": [markdown_path],
+            "cmd": ["multi-format"],
+        }
+    ]
+
+    def runner(spec: dict, project_root: Path) -> dict:
+        payload = {"ok": True, "overall_status": "ready", "generation": "fresh"}
+        _write_json(primary_path, payload)
+        markdown_path.parent.mkdir(parents=True, exist_ok=True)
+        markdown_path.write_text("# Fresh report\n", encoding="utf-8")
+        return {
+            "cmd": list(spec["cmd"]),
+            "rc": 0,
+            "payload": payload,
+            "stdout_tail": "",
+            "stderr_tail": "",
+            "duration_ms": 1.0,
+        }
+
+    payload = runtime_artifact_refresh.build_payload(tmp_path, specs=specs, runner=runner)
+
+    assert payload["overall_status"] == "ready"
+    assert payload["steps"][0]["artifact_refreshed_this_cycle"] is True
+    assert markdown_path.read_text(encoding="utf-8") == "# Fresh report\n"
+
+
+def test_runtime_artifact_refresh_preserves_markdown_format_for_failure_envelope(tmp_path: Path) -> None:
+    markdown_path = tmp_path / "exports" / "stale_latest.md"
+    envelope = {
+        "timestamp_utc": "2026-08-21T12:00:00+00:00",
+        "overall_status": "blocked",
+        "producer": "report_producer",
+        "artifact_path": str(markdown_path),
+    }
+
+    written_path = runtime_artifact_refresh._write_refresh_failure_envelope(markdown_path, envelope)
+
+    assert written_path == markdown_path
+    assert runtime_artifact_refresh._artifact_present(markdown_path) is True
+    assert markdown_path.read_text(encoding="utf-8").startswith("# Artifact Refresh Failure\n")
 
 
 def test_runtime_artifact_refresh_treats_managed_production_locks_as_ready(tmp_path: Path) -> None:
@@ -938,6 +1015,8 @@ def test_runtime_artifact_refresh_step_specs_include_training_storage_and_harden
     assert "paper_profitability_control" in names
     assert names.index("paper_performance") < names.index("paper_profitability_control")
     assert "paper_replay_drill" in names
+    assert "paper_replay_training" in names
+    assert "snapshot_coverage_training_verified" in names
     assert "paper_execution_truth" in names
     assert "retrain_schema_compatibility" in names
     assert "promotion_packet_builder" in names
@@ -970,7 +1049,15 @@ def test_runtime_artifact_refresh_step_specs_include_training_storage_and_harden
     assert "profitability_self_assessment" in names
     assert "institutional_capability_control" in names
     assert "authoritative_systems_control" in names
+    assert "research_data_platform_control" in names
+    assert "institutional_research_extensions_control" in names
     assert "paper_live_equivalence" in names
+    self_model_post_evidence = next(
+        row for row in specs if row["name"] == "system_self_model_post_evidence_verified"
+    )
+    assert "authoritative_systems_control" in self_model_post_evidence["depends_on"]
+    assert "research_data_platform_control" in self_model_post_evidence["depends_on"]
+    assert "institutional_research_extensions_control" in self_model_post_evidence["depends_on"]
     assert names.index("paper_performance_verified") < names.index(
         "sleeve_strategy_specialization_verified"
     )

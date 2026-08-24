@@ -523,6 +523,48 @@ def test_all_sleeves_launcher_artifact_health_certifies_policy_parked_fanout(tmp
     assert health["problem_job_count"] == 0
 
 
+def test_all_sleeves_launcher_artifact_distinguishes_guarded_execution(tmp_path: Path) -> None:
+    launcher = tmp_path / "all_sleeves_launcher_latest.json"
+    launcher.write_text(
+        json.dumps(
+            {
+                "timestamp_utc": datetime.fromtimestamp(100.0, timezone.utc).isoformat(),
+                "overall_status": "guarded_ready",
+                "phase": "running",
+                "expected_job_count": 6,
+                "running_job_count": 5,
+                "missing_job_count": 0,
+                "exited_job_count": 1,
+                "policy_parked_job_count": 1,
+                "repair_packet": {"problem_job_count": 0},
+                "launcher_readiness_contract": {
+                    "collection_fanout_ready": True,
+                    "paper_execution_ready": False,
+                    "execution_attention": ["paper_executor_safety_parked"],
+                    "exact_needs": [],
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    health = pw._all_sleeves_launcher_artifact_health(
+        {
+            "launcher_health_path": str(launcher),
+            "heartbeat_max_age_seconds": 360,
+            "child_fanout_grace_seconds": 180,
+        },
+        now_epoch=120.0,
+    )
+
+    assert health["ok"] is True
+    assert health["reason"] == "fresh_launcher_artifact_certifies_guarded_collection_fanout"
+    assert health["collection_fanout_ready"] is True
+    assert health["paper_execution_ready"] is False
+    assert health["execution_guarded"] is True
+    assert health["execution_attention"] == ["paper_executor_safety_parked"]
+
+
 def test_all_sleeves_launcher_artifact_uses_repair_packet_problem_count(tmp_path: Path) -> None:
     launcher = tmp_path / "all_sleeves_launcher_latest.json"
     launcher.write_text(

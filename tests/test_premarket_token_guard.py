@@ -5,6 +5,7 @@ import time
 from pathlib import Path
 from unittest import mock
 
+from core.brokers.models import BrokerCredentials
 from scripts.ops import premarket_token_guard as ptg
 
 
@@ -268,6 +269,52 @@ def test_direct_refresh_token_grant_extends_and_writes_atomically(monkeypatch, t
     refreshed = json.loads(token_path.read_text(encoding="utf-8"))
     assert refreshed["token"]["access_token"] == "new-access"
     assert refreshed["token"]["refresh_token"] == "refresh-token"
+
+
+def test_direct_refresh_token_grant_uses_central_keychain_credentials(monkeypatch, tmp_path: Path) -> None:
+    token_path = tmp_path / "token.json"
+    token_path.write_text(
+        json.dumps(
+            {
+                "creation_timestamp": int(time.time()) - 100,
+                "token": {
+                    "access_token": "old-access",
+                    "refresh_token": "refresh-token",
+                    "expires_at": time.time() + 120,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.delenv("SCHWAB_API_KEY", raising=False)
+    monkeypatch.delenv("SCHWAB_SECRET", raising=False)
+    monkeypatch.setattr(
+        ptg,
+        "schwab_credentials_from_env",
+        lambda: BrokerCredentials("keychain-key", "keychain-secret", "https://127.0.0.1:8182"),
+    )
+    captured: dict[str, object] = {}
+
+    class FakeOAuth2Client:
+        def __init__(self, api_key, *, client_secret, **kwargs) -> None:
+            captured["api_key"] = api_key
+            captured["app_secret"] = client_secret
+
+        def refresh_token(self, *_args, **_kwargs):
+            return {
+                "access_token": "new-access",
+                "refresh_token": "refresh-token",
+                "expires_at": time.time() + 1800,
+            }
+
+    import authlib.integrations.httpx_client as httpx_client
+
+    monkeypatch.setattr(httpx_client, "OAuth2Client", FakeOAuth2Client)
+
+    result = ptg._direct_refresh_token_grant(token_path, min_extension_seconds=300.0)
+
+    assert result["ok"] is True
+    assert captured == {"api_key": "keychain-key", "app_secret": "keychain-secret"}
 
 
 def test_token_warning_level_scales_with_age() -> None:

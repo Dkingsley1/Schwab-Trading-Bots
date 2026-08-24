@@ -252,3 +252,43 @@ def test_build_manifest_exposes_seed_ready_when_snapshot_contract_is_strong_but_
     assert payload["strict_status"] == "degraded"
     assert payload["point_in_time_contract"]["seed_ready"] is True
     assert payload["label_contract"]["seed_ready"] is True
+
+
+def test_build_manifest_prefers_training_horizon_snapshot_coverage(tmp_path: Path) -> None:
+    fresh_ts = datetime.now(timezone.utc).isoformat()
+    _write_json(
+        tmp_path / "governance" / "health" / "runtime_training_snapshot_latest.json",
+        {
+            "timestamp_utc": fresh_ts,
+            "row_count": 10,
+            "sequence_count": 2,
+            "rows_path": str(tmp_path / "exports" / "training" / "runtime.jsonl"),
+            "rows_sha256": "rows-hash",
+            "coverage": {"top_modes": [{"mode": "paper", "row_count": 10}]},
+        },
+    )
+    _write_json(
+        tmp_path / "governance" / "feature_versions" / "latest.json",
+        {"file_hashes": {"runtime": "hash"}},
+    )
+    _write_json(
+        tmp_path / "governance" / "health" / "snapshot_coverage_latest.json",
+        {"coverage_ratio": 0.1, "min_coverage_ratio": 0.75, "window_hours": 2},
+    )
+    training_path = tmp_path / "governance" / "health" / "snapshot_coverage_training_latest.json"
+    _write_json(
+        training_path,
+        {
+            "coverage_ratio": 1.0,
+            "min_coverage_ratio": 0.75,
+            "window_hours": 24,
+            "rows_with_snapshot_id": 10,
+            "unique_snapshot_ids": 10,
+        },
+    )
+
+    payload = src.build_manifest(tmp_path)
+
+    assert payload["ok"] is True
+    assert payload["point_in_time_contract"]["snapshot_coverage_window_hours"] == 24
+    assert payload["point_in_time_contract"]["snapshot_coverage_source"] == str(training_path)

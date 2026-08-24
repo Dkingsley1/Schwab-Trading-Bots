@@ -211,6 +211,17 @@ def test_run_all_sleeves_child_nice_does_not_try_to_lift_above_parent() -> None:
     assert run_all_sleeves._nice_prefix_for_target(4, parent_nice=5) == ["nice", "-n", "0"]
 
 
+def test_run_all_sleeves_reports_parent_priority_restart_debt() -> None:
+    degraded = run_all_sleeves._parent_priority_snapshot(parent_nice=5)
+    compliant = run_all_sleeves._parent_priority_snapshot(parent_nice=0)
+
+    assert degraded["target_nice"] == 0
+    assert degraded["managed_restart_required"] is True
+    assert degraded["hard_affinity_claimed"] is False
+    assert compliant["priority_compliant"] is True
+    assert compliant["managed_restart_required"] is False
+
+
 def test_run_all_sleeves_paper_executor_uses_runtime_nice(monkeypatch) -> None:
     monkeypatch.setenv("PAPER_EXECUTION_RUNTIME_NICE", "18")
 
@@ -943,6 +954,8 @@ def test_archive_automation_has_no_protected_volume_escape_hatch_or_default() ->
 def test_start_stack_certifies_all_sleeves_restart_handoff() -> None:
     text = _read(PROJECT_ROOT / "scripts" / "ops" / "start_stack.sh")
 
+    assert "runtime_process_match.py" in text
+    assert '"$PY" "$PROCESS_MATCH_SCRIPT" --match "$match"' in text
     assert "wait_for_process_absent" in text
     assert "ALL_SLEEVES_STOP_TIMEOUT_SECONDS" in text
     assert "wait_for_process_stable" in text
@@ -951,6 +964,13 @@ def test_start_stack_certifies_all_sleeves_restart_handoff() -> None:
     assert "all_sleeves=failed_to_stop_before_restart" in text
     assert "all_sleeves=failed_to_start" in text
     assert "all_sleeves=started pid=" in text
+
+
+def test_start_stack_does_not_treat_supervisor_launcher_arguments_as_live_workers() -> None:
+    text = _read(PROJECT_ROOT / "scripts" / "ops" / "start_stack.sh")
+
+    assert 'grep -F "scripts/run_all_sleeves.py"' not in text
+    assert 'first_process_pid "scripts/run_all_sleeves.py"' in text
 
 
 def test_start_stack_pauses_watchdog_before_force_restart_drain() -> None:
@@ -970,6 +990,29 @@ def test_start_stack_pauses_watchdog_before_force_restart_drain() -> None:
     assert "restart_exit_cleanup" in text
 
 
+def test_force_restart_fence_precedes_supervisor_pause_and_releases_after_settlement() -> None:
+    text = _read(PROJECT_ROOT / "scripts" / "ops" / "start_stack.sh")
+
+    engage = "if ! engage_stack_restart_window; then"
+    pause = "if ! pause_process_watchdog_for_restart; then"
+    stable = 'coinbase_futures_loop=missing_after_restart'
+    release = "if ! release_stack_restart_window; then"
+    resume_process = "if ! resume_process_watchdog_after_restart; then"
+    assert text.index(engage) < text.index(pause)
+    assert text.index(stable) < text.index(release) < text.index(resume_process)
+    assert "STACK_RESTART_FENCE_TOKEN" in text
+
+
+def test_critical_watchdog_launchagents_pin_default_nice() -> None:
+    shadow = _read(PROJECT_ROOT / "scripts" / "install_shadow_watchdog_launchd.sh")
+    ops = _read(PROJECT_ROOT / "scripts" / "ops" / "install_ops_automation_launchd.sh")
+
+    assert "<key>Nice</key>" in shadow
+    assert "<integer>0</integer>" in shadow
+    watchdog_block = ops[ops.index('cat > "$WATCHDOG_PLIST"'):ops.index('cat > "$REPORT_PLIST"')]
+    assert "<key>Nice</key><integer>0</integer>" in watchdog_block
+
+
 def test_start_stack_resumes_shadow_watchdog_after_all_sleeves_are_stable() -> None:
     text = _read(PROJECT_ROOT / "scripts" / "ops" / "start_stack.sh")
 
@@ -977,6 +1020,31 @@ def test_start_stack_resumes_shadow_watchdog_after_all_sleeves_are_stable() -> N
     resume_call = "if ! resume_shadow_watchdog_after_restart; then"
     support_restore = "if ! restore_unattended_support_services; then"
     assert text.index(stable_marker) < text.rindex(resume_call) < text.rindex(support_restore)
+
+
+def test_force_restart_serializes_hot_standby_with_primary_supervisors() -> None:
+    text = _read(PROJECT_ROOT / "scripts" / "ops" / "start_stack.sh")
+
+    pause_failover = "if ! pause_failover_watchdog_for_restart; then"
+    pause_process = "if ! pause_process_watchdog_for_restart; then"
+    pause_shadow = "if ! pause_shadow_watchdog_for_restart; then"
+    resume_failover = "if ! resume_failover_watchdog_after_restart; then"
+
+    assert pause_failover in text
+    assert text.index(pause_failover) < text.index(pause_process) < text.index(pause_shadow)
+    assert "FAILOVER_WATCHDOG_PAUSED_FOR_RESTART=1" in text
+    assert resume_failover in text
+
+
+def test_shadow_watchdog_requires_real_all_sleeves_parent_by_default() -> None:
+    runner = _read(PROJECT_ROOT / "scripts" / "ops" / "run_shadow_watchdog_launchd.sh")
+    installer = _read(PROJECT_ROOT / "scripts" / "install_shadow_watchdog_launchd.sh")
+
+    contract = 'SHADOW_WATCHDOG_ALLOW_SCHWAB_STANDBY_HEARTBEATS:-0'
+    assert contract in runner
+    assert contract in installer
+    assert 'SHADOW_WATCHDOG_ALLOW_SCHWAB_STANDBY_HEARTBEATS:-1' not in runner
+    assert 'SHADOW_WATCHDOG_ALLOW_SCHWAB_STANDBY_HEARTBEATS:-1' not in installer
 
 
 def test_start_stack_uses_process_watchdog_as_single_worker_owner() -> None:
@@ -999,7 +1067,8 @@ def test_start_stack_preflight_is_idempotent_for_running_managed_stack() -> None
 
     allow_running = 'PREFLIGHT_ARGS+=(--allow-running)'
     kill_duplicates = 'PREFLIGHT_ARGS+=(--apply-kill-duplicates)'
-    assert 'grep -F "scripts/run_all_sleeves.py"' in text
+    assert '--match "scripts/run_all_sleeves.py"' in text
+    assert 'grep -F "scripts/run_all_sleeves.py"' not in text
     assert allow_running in text
     assert kill_duplicates in text
     assert text.index(allow_running) < text.index(kill_duplicates)

@@ -472,6 +472,30 @@ def test_build_source_verification_payload_classifies_sources(tmp_path: Path) ->
         },
     )
     _write_json(
+        tmp_path / "governance" / "health" / "public_financial_context_sync_latest.json",
+        {
+            "timestamp_utc": fresh_ts,
+            "ok": True,
+            "overall_status": "ready",
+            "source_count": 5,
+            "ok_source_count": 5,
+            "capability_count": 13,
+            "ready_capability_count": 13,
+            "taxonomy_validation": {
+                "ok": True,
+                "classified_global_feature_count": 19,
+                "classified_symbol_feature_count": 9,
+                "unclassified_global_feature_keys": [],
+                "unclassified_symbol_feature_keys": [],
+                "unclassified_feature_policy": "quarantine_from_bot_context",
+            },
+            "optional_failure_is_soak_blocking": False,
+            "paper_execution_authority": False,
+            "live_execution_authority": False,
+            "automatic_promotion_authority": False,
+        },
+    )
+    _write_json(
         tmp_path / "governance" / "health" / "schwab_symbol_news_latest.json",
         {
             "timestamp_utc": fresh_ts,
@@ -517,7 +541,7 @@ def test_build_source_verification_payload_classifies_sources(tmp_path: Path) ->
 
     counts = payload["overall"]["counts"]
     assert counts["cross_verified"] == 6
-    assert counts["single_source_verified"] == 14
+    assert counts["single_source_verified"] == 15
     assert counts["single_source_unverified"] == 0
     assert payload["overall"]["all_verified"] is True
 
@@ -544,6 +568,10 @@ def test_build_source_verification_payload_classifies_sources(tmp_path: Path) ->
     assert rows["ticker_news_context"]["verification_status"] == "single_source_verified"
     assert rows["public_policy_context"]["verification_status"] == "single_source_verified"
     assert rows["public_policy_context"]["evidence"]["world_bank_value_count"] == 25
+    assert rows["public_financial_context"]["verification_status"] == "single_source_verified"
+    assert rows["public_financial_context"]["evidence"]["total_sources"] == 5
+    assert rows["public_financial_context"]["evidence"]["capability_count"] == 13
+    assert rows["public_financial_context"]["evidence"]["taxonomy_ok"] is True
     assert rows["fed_2026_supervisory_stress_scenario"]["verification_status"] == "single_source_verified"
     assert rows["fed_2026_supervisory_stress_scenario"]["evidence"]["internal_feature_count"] >= 3
     assert rows["fed_2026_supervisory_stress_scenario"]["evidence"]["stress_module_count"] == 10
@@ -613,7 +641,7 @@ def test_build_source_verification_payload_marks_stale_sources_unverified(tmp_pa
     payload = svr.build_source_verification_payload(tmp_path)
 
     assert payload["overall"]["all_verified"] is False
-    assert payload["overall"]["counts"]["single_source_unverified"] == 20
+    assert payload["overall"]["counts"]["single_source_unverified"] == 21
     assert payload["source_runtime_contract"]["decision_critical_sources_ready"] is False
     assert "market_quote_profiles" in payload["source_runtime_contract"]["decision_critical_blockers"]
     assert "schwab_education_context" in payload["source_runtime_contract"]["optional_enrichment_debt"]

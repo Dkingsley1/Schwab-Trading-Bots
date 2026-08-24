@@ -1972,6 +1972,58 @@ def test_health_gates_falls_back_to_legacy_combined_blocked_rate(tmp_path: Path,
     assert payload["inputs"]["blocked_rate"] == 0.41
 
 
+def test_health_gates_keeps_recovered_historical_stale_windows_advisory(
+    tmp_path: Path, monkeypatch
+) -> None:
+    now = datetime.now(timezone.utc)
+    health_root = tmp_path / "governance" / "health"
+    sql_root = tmp_path / "exports" / "sql_reports"
+    _write_json(
+        health_root / "one_numbers_latest.json",
+        {
+            "generated_utc": now.isoformat(),
+            "combined_blocked_rate": "0.010000",
+            "decision_stale_windows_4h": "3",
+            "decision_last_age_sec": "15",
+            "watchdog_restarts": "0",
+        },
+    )
+    _write_json(
+        sql_root / "daily_runtime_summary_latest.json",
+        {"timestamp_utc": now.isoformat(), "watchdog": {"restarts": 0}},
+    )
+    _write_json(
+        health_root / "jsonl_sql_ingestion_health_trading_latest.json",
+        {
+            "timestamp_utc": now.isoformat(),
+            "sqlite": {"pending_lines": 0, "oldest_uningested_age_seconds": 0.0, "invalid": 0},
+        },
+    )
+    _write_json(
+        health_root / "ingestion_backpressure_latest.json",
+        {"timestamp_utc": now.isoformat(), "pending_lines": 0, "overload": False},
+    )
+
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "health_gates.py",
+            "--project-root",
+            str(tmp_path),
+            "--current-decision-max-age-seconds",
+            "120",
+        ],
+    )
+    rc = health_gates.main()
+
+    payload = json.loads((health_root / "health_gates_latest.json").read_text(encoding="utf-8"))
+    assert rc == 0
+    assert payload["hard_gates"]["stale_windows"] is False
+    assert payload["inputs"]["stale_window_debt_recovered"] is True
+    assert "retain_historical_stale_windows_as_advisory_evidence" in payload["recommendations"]
+
+
 def test_health_gates_fail_on_priority_shard_latency_and_storage(tmp_path: Path, monkeypatch) -> None:
     now = datetime.now(timezone.utc)
     health_root = tmp_path / "governance" / "health"

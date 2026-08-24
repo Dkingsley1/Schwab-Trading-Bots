@@ -5,6 +5,44 @@ from pathlib import Path
 from scripts.ops import live_feed_status_contract as contract
 
 
+def test_institutional_research_extension_row_keeps_evidence_debt_advisory() -> None:
+    row = contract._institutional_research_extensions_row(
+        {
+            "institutional_research_extensions": {
+                "present": True,
+                "fresh": True,
+                "age_seconds": 10.0,
+                "payload": {
+                    "overall_status": "ready_with_evidence_debt",
+                    "implementation_grade": "A+",
+                    "implementation_ready_count": 8,
+                    "implementation_control_count": 8,
+                    "evidence_ready_count": 1,
+                    "evidence_control_count": 8,
+                    "firm_influences": {
+                        "reference_count": 10,
+                        "organization_count": 8,
+                    },
+                    "candidate_binding": {"candidate_id": "pc-test", "bound": True},
+                    "paper_soak_ready": True,
+                    "paper_impact": "none",
+                    "reset_soak_clock": False,
+                    "live_promotion_ready": False,
+                    "live_execution_authority": False,
+                },
+            }
+        }
+    )
+
+    assert row["status"] == "ready_with_evidence_debt"
+    assert row["implementation_grade"] == "A+"
+    assert row["evidence_ready"] == 1
+    assert row["paper_soak_ready"] is True
+    assert row["soak_reset"] is False
+    assert row["live_authority"] is False
+    assert row["action"] == "none"
+
+
 def test_profitability_assessment_row_keeps_history_separate_from_candidate() -> None:
     row = contract._profitability_assessment_row(
         {
@@ -34,6 +72,16 @@ def test_profitability_assessment_row_keeps_history_separate_from_candidate() ->
                     "historical_active_book_net_pnl": -100.0,
                     "historical_active_book_candidate_grade_eligible": False,
                 },
+                "developmental_soak_learning": {
+                    "status": "ready",
+                    "accepted_generation_count": 12,
+                    "attributable_generation_count": 4,
+                    "mature_developmental_generation_count": 2,
+                    "observed_negative_delta_generation_count": 1,
+                    "bounded_paper_action_plan": [
+                        {"action_id": "refresh_candidate_counterfactual_replay"}
+                    ],
+                },
                 "next_safe_action": {"blocker": "candidate_post_cost_observations_collecting"},
             },
         }
@@ -44,6 +92,10 @@ def test_profitability_assessment_row_keeps_history_separate_from_candidate() ->
     assert row["implementation_grade"] == "A+"
     assert row["economic_grade"] == "F"
     assert row["historical_grades_candidate"] is False
+    assert row["developmental_status"] == "ready"
+    assert row["attributed_generations"] == 4
+    assert row["historical_generation_live_credit"] is False
+    assert row["clean_720_hour_gate_unchanged"] is True
     assert row["live_execution"] is False
 
 
@@ -404,6 +456,18 @@ def test_livefeed_surfaces_configured_collector_capability_contract(tmp_path: Pa
                     "dead_letter_after_retry_exhaustion": True,
                 },
             },
+            "economic_context_contract": {
+                "policy": {"contract_id": "sleeve_economic_context_v1"},
+                "family_count": 15,
+                "configured_family_count": 15,
+                "ready_family_count": 15,
+                "runtime_route_count": 104,
+                "runtime_ready_route_count": 104,
+                "selected_source_count": 9,
+                "economic_profitability_grade_authority": False,
+                "live_execution_authority": False,
+                "contract_receipt_sha256": "b" * 64,
+            },
             "current_collector_mapping": {"complete": True},
             "coverage_debt": {"gap_count": 118},
             "structural_blockers": [],
@@ -423,11 +487,84 @@ def test_livefeed_surfaces_configured_collector_capability_contract(tmp_path: Pa
     assert row["runtime_routes"] == 104
     assert row["runtime_paper_ready_routes"] == 91
     assert row["transport_contract_complete"] is True
+    assert row["economic_context_ready"] is True
+    assert row["economic_ready_families"] == row["economic_family_count"] == 15
+    assert row["economic_runtime_ready_routes"] == row["economic_runtime_routes"] == 104
+    assert row["economic_source_count"] == 9
+    assert row["economic_context_advisory_only"] is True
     lines = "\n".join(contract.format_status_lines(payload))
     assert "[collector-capabilities]" in lines
     assert "routing_policy=sleeve_ingestion_routing_v2" in lines
     assert "paper_routes=91/104" in lines
     assert "live_routes=18/104" in lines
+    assert "econ_families=15/15" in lines
+    assert "econ_routes=104/104" in lines
+    assert "econ_sources=9" in lines
+
+
+def test_livefeed_separates_economic_sources_from_profitability_evidence(tmp_path: Path) -> None:
+    health = _ready_fixture(tmp_path)
+    _write(
+        tmp_path / "config" / "profitability_self_assessment_v1.json",
+        {"schema_version": 1},
+    )
+    _write(
+        health / "profitability_self_assessment_latest.json",
+        {
+            "timestamp_utc": STAMP,
+            "assessment_status": "ready",
+            "candidate_binding": {
+                "candidate_id": "candidate-1",
+                "identity_consistent": True,
+            },
+            "measurement": {
+                "candidate_post_cost_sample_count": 0,
+                "candidate_post_cost_minimum_samples": 30,
+            },
+            "grades": {
+                "implementation_grade": "A+",
+                "implementation_score": 100.0,
+                "economic_evidence_grade": "F",
+                "economic_evidence_score": 22.727,
+                "economic_evidence_ready": False,
+                "economic_context_source_grade": "A+",
+                "economic_context_source_score": 100.0,
+                "economic_context_source_ready": True,
+                "economic_context_ready_families": 15,
+                "economic_context_family_count": 15,
+                "economic_context_ready_runtime_routes": 104,
+                "economic_context_runtime_route_count": 104,
+                "economic_context_selected_source_count": 9,
+            },
+            "next_safe_action": {"blocker": "candidate_post_cost_observations_collecting"},
+            "developmental_soak_learning": {
+                "status": "collecting",
+                "accepted_generation_count": 98,
+                "attributable_generation_count": 0,
+                "mature_developmental_generation_count": 0,
+                "observed_negative_delta_generation_count": 0,
+                "bounded_paper_action_plan": [
+                    {"action_id": "collect_current_candidate_post_cost_outcomes"}
+                ],
+            },
+        },
+    )
+
+    payload = contract.build_status_snapshot(tmp_path, now=NOW)
+    row = payload["rows"]["profitability_assessment"]
+
+    assert row["economic_grade"] == "F"
+    assert row["economic_source_grade"] == "A+"
+    assert row["economic_source_ready"] is True
+    lines = "\n".join(contract.format_status_lines(payload))
+    assert "economic=F" in lines
+    assert "econ_sources_grade=A+" in lines
+    assert "econ_source_families=15/15" in lines
+    assert "econ_source_routes=104/104" in lines
+    assert "dev_learning=collecting" in lines
+    assert "dev_generations=0/98" in lines
+    assert "historical_live_credit=false" in lines
+    assert "clean_720h_unchanged=true" in lines
 
 
 def test_livefeed_surfaces_direct_capability_materialization_proofs(tmp_path: Path) -> None:

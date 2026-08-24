@@ -696,6 +696,7 @@ def _profitability_self_assessment_context(payload: dict[str, Any]) -> dict[str,
     binding = _as_dict(payload.get("candidate_binding"))
     grades = _as_dict(payload.get("grades"))
     measurement = _as_dict(payload.get("measurement"))
+    developmental = _as_dict(payload.get("developmental_soak_learning"))
     needs = [row for row in _as_list(payload.get("needs")) if isinstance(row, dict)]
     return {
         "present": bool(payload),
@@ -719,6 +720,25 @@ def _profitability_self_assessment_context(payload: dict[str, Any]) -> dict[str,
         "historical_active_book_candidate_grade_eligible": bool(
             measurement.get("historical_active_book_candidate_grade_eligible", False)
         ),
+        "developmental_learning_status": str(
+            developmental.get("status") or "missing"
+        ),
+        "accepted_generation_count": _safe_int(
+            developmental.get("accepted_generation_count"), 0
+        ),
+        "attributable_generation_count": _safe_int(
+            developmental.get("attributable_generation_count"), 0
+        ),
+        "mature_developmental_generation_count": _safe_int(
+            developmental.get("mature_developmental_generation_count"), 0
+        ),
+        "bounded_paper_action_plan": [
+            row
+            for row in _as_list(developmental.get("bounded_paper_action_plan"))
+            if isinstance(row, dict)
+        ],
+        "historical_generations_grade_current_candidate": False,
+        "clean_720_hour_live_promotion_gate_unchanged": True,
         "needs": needs,
         "next_safe_action": _as_dict(payload.get("next_safe_action")),
         "assessment_sha256": str(payload.get("assessment_sha256") or ""),

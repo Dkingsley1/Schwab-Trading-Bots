@@ -12,6 +12,157 @@ def _write_json(path: Path, payload: dict) -> None:
     path.write_text(json.dumps(payload, ensure_ascii=True, indent=2), encoding="utf-8")
 
 
+def test_authoritative_systems_awareness_keeps_external_debt_advisory() -> None:
+    awareness = src._authoritative_systems_awareness(
+        {
+            "ok": True,
+            "overall_status": "ready",
+            "grade": "A+",
+            "reference_count": 29,
+            "reference_target": 29,
+            "ready_control_count": 17,
+            "control_count": 17,
+            "control_target": 17,
+            "external_evidence": {
+                "ready_count": 0,
+                "item_count": 2,
+                "items": {
+                    "signed_trusted_builder_attestation": False,
+                    "signed_independent_risk_oracle_observation": False,
+                },
+                "paper_impact": "none",
+            },
+            "live_execution_authority": False,
+        }
+    )
+
+    assert awareness["status"] == "advisory"
+    assert awareness["structural_grade"] == "A+"
+    assert awareness["external_evidence_ready_count"] == 0
+    assert awareness["paper_impact"] == "none"
+    assert awareness["live_execution_authority"] is False
+
+
+def test_research_data_platform_awareness_keeps_evidence_debt_advisory() -> None:
+    awareness = src._research_data_platform_awareness(
+        {
+            "ok": True,
+            "overall_status": "ready_with_evidence_debt",
+            "implementation_grade": "A+",
+            "implementation_ready_count": 10,
+            "implementation_control_count": 10,
+            "evidence_ready_count": 2,
+            "evidence_control_count": 10,
+            "evidence_controls": {
+                "feed_service_levels": {"ready": True},
+                "source_value_accounting": {"ready": False},
+            },
+            "catalog": {
+                "ready_product_count": 8,
+                "data_product_count": 10,
+                "decision_family_count": 15,
+            },
+            "source_value": {"qualified_count": 0, "source_count": 20},
+            "candidate_binding": {"candidate_id": "pc-test", "bound": True},
+            "paper_soak_ready": True,
+            "paper_impact": "none",
+            "live_promotion_ready": False,
+            "live_execution_authority": False,
+        }
+    )
+
+    assert awareness["status"] == "advisory"
+    assert awareness["implementation_grade"] == "A+"
+    assert awareness["evidence_ready_count"] == 2
+    assert awareness["paper_soak_ready"] is True
+    assert awareness["paper_impact"] == "none"
+    assert awareness["live_promotion_ready"] is False
+    assert awareness["live_execution_authority"] is False
+
+
+def test_institutional_research_extensions_awareness_keeps_evidence_debt_advisory() -> None:
+    awareness = src._institutional_research_extensions_awareness(
+        {
+            "ok": True,
+            "overall_status": "ready_with_evidence_debt",
+            "implementation_grade": "A+",
+            "implementation_ready_count": 8,
+            "implementation_control_count": 8,
+            "evidence_ready_count": 1,
+            "evidence_control_count": 8,
+            "evidence_controls": {
+                "material_strategy_change_governance": {"ready": True},
+                "cross_engine_valuation_reconciliation": {"ready": False},
+            },
+            "firm_influences": {"reference_count": 10, "organization_count": 8},
+            "candidate_binding": {"candidate_id": "pc-test", "bound": True},
+            "paper_soak_ready": True,
+            "paper_impact": "none",
+            "reset_soak_clock": False,
+            "live_promotion_ready": False,
+            "live_execution_authority": False,
+        }
+    )
+
+    assert awareness["status"] == "advisory"
+    assert awareness["implementation_grade"] == "A+"
+    assert awareness["evidence_ready_count"] == 1
+    assert awareness["firm_reference_count"] == 10
+    assert awareness["paper_soak_ready"] is True
+    assert awareness["reset_soak_clock"] is False
+    assert awareness["live_execution_authority"] is False
+
+
+def test_alpha_generation_awareness_keeps_evidence_debt_advisory_and_live_locked() -> None:
+    awareness = src._alpha_generation_awareness(
+        {
+            "ok": True,
+            "candidate_binding": {"candidate_id": "pc-test"},
+            "grades": {
+                "implementation_grade": "A+",
+                "implementation_score": 100.0,
+                "economic_evidence_grade": "F",
+                "economic_evidence_score": 10.0,
+                "economic_evidence_ready": False,
+                "economic_evidence_ready_controls": 1,
+                "economic_evidence_control_count": 10,
+            },
+            "cross_sleeve_alpha": {
+                "qualified_sleeve_count": 0,
+                "selected_sleeves": [],
+                "cash_weight": 1.0,
+            },
+            "strategy_expansion_freeze": {"active": True},
+        }
+    )
+
+    assert awareness["status"] == "advisory"
+    assert awareness["cash_weight"] == 1.0
+    assert awareness["expansion_frozen"] is True
+    assert awareness["automatic_allocation_allowed"] is False
+    assert awareness["live_execution_authority"] is False
+
+
+def test_alpha_surface_marks_candidate_evidence_collection_advisory() -> None:
+    status, metadata = src._normalize_guarded_paper_surface(
+        "alpha_generation_control",
+        "collecting_candidate_alpha_evidence",
+        {
+            "ok": True,
+            "grades": {
+                "implementation_grade": "A+",
+                "economic_evidence_grade": "F",
+            },
+            "live_execution_authority": False,
+        },
+        {"enabled": False},
+    )
+
+    assert status == "advisory"
+    assert metadata["raw_status"] == "collecting_candidate_alpha_evidence"
+    assert metadata["managed_control_state"] == "candidate_bound_economic_evidence_is_collecting"
+
+
 def test_master_infra_self_audit_cycle_is_advisory_only_for_green_paper_soak() -> None:
     context = {
         "enabled": True,

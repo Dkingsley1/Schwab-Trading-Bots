@@ -52,6 +52,7 @@ SOURCE_CRITICALITY = {
     "central_bank_liquidity_context": "decision_critical",
     "global_central_bank_context": "decision_context",
     "central_bank_cross_source_context": "decision_context",
+    "public_financial_context": "decision_context",
     "decision_context_mesh": "decision_context",
     "market_micro_context": "decision_critical",
     "sec_edgar_context": "decision_context",
@@ -316,6 +317,7 @@ def _refresh_command_for_source(project_root: Path, source_id: str) -> list[str]
         "central_bank_liquidity_context": [opsctl, "macro-context-sync", "--json"],
         "global_central_bank_context": [opsctl, "global-central-bank-sync", "--json"],
         "central_bank_cross_source_context": [opsctl, "central-bank-context-sync", "--json"],
+        "public_financial_context": [opsctl, "public-financial-sync", "--json"],
         "decision_context_mesh": [opsctl, "decision-context-sync", "--json"],
         "schwab_education_context": [opsctl, "schwab-education-sync", "--json"],
         "schwab_symbol_news": [opsctl, "schwab-symbol-news-sync", "--max-runtime-seconds", "180", "--json"],
@@ -1050,6 +1052,67 @@ def _central_bank_cross_source_row(project_root: Path, now: datetime) -> dict[st
     )
 
 
+def _public_financial_context_row(health_dir: Path, now: datetime) -> dict[str, Any]:
+    path = health_dir / "public_financial_context_sync_latest.json"
+    payload = _read_json(path)
+    ts = _parse_ts(payload.get("timestamp_utc"))
+    fresh = _is_fresh(ts, now, 48.0)
+    source_count = int(payload.get("source_count", 0) or 0)
+    ok_source_count = int(payload.get("ok_source_count", 0) or 0)
+    capability_count = int(payload.get("capability_count", 0) or 0)
+    ready_capability_count = int(payload.get("ready_capability_count", 0) or 0)
+    taxonomy = payload.get("taxonomy_validation") if isinstance(payload.get("taxonomy_validation"), dict) else {}
+    unclassified_global = list(taxonomy.get("unclassified_global_feature_keys") or [])
+    unclassified_symbol = list(taxonomy.get("unclassified_symbol_feature_keys") or [])
+    taxonomy_ok = bool(taxonomy.get("ok", False)) and not unclassified_global and not unclassified_symbol
+    source_contract_ready = source_count >= 5 and ok_source_count == source_count
+    capability_contract_ready = capability_count >= 13 and ready_capability_count == capability_count
+    authority_safe = bool(
+        payload.get("paper_execution_authority") is False
+        and payload.get("live_execution_authority") is False
+        and payload.get("automatic_promotion_authority") is False
+    )
+    notes: list[str] = []
+    if not fresh:
+        notes.append("stale_artifact")
+    if not source_contract_ready:
+        notes.append(f"partial_sources={ok_source_count}/{source_count}")
+    if not capability_contract_ready:
+        notes.append(f"capability_proofs_incomplete={ready_capability_count}/{capability_count}")
+    if not taxonomy_ok:
+        notes.append(f"unclassified_features={len(unclassified_global) + len(unclassified_symbol)}")
+    if not authority_safe:
+        notes.append("authority_contract_unsafe")
+    ok = bool(payload.get("ok", False)) and fresh and source_contract_ready and capability_contract_ready and taxonomy_ok and authority_safe
+    return _row(
+        source_id="public_financial_context",
+        title="Classified Official Public Financial Context",
+        category="official_public_financial_context",
+        verification_status=STATUS_SINGLE_VERIFIED if ok else STATUS_SINGLE_UNVERIFIED,
+        verification_mode="official_multi_source_field_proofs_and_taxonomy_contract",
+        artifact_path=path,
+        artifact_timestamp=ts,
+        age_hours=_age_hours(ts, now),
+        fresh=fresh,
+        ok=ok,
+        notes=notes,
+        evidence={
+            "ok_sources": ok_source_count,
+            "total_sources": source_count,
+            "ready_capability_count": ready_capability_count,
+            "capability_count": capability_count,
+            "taxonomy_ok": taxonomy_ok,
+            "classified_global_feature_count": int(taxonomy.get("classified_global_feature_count", 0) or 0),
+            "classified_symbol_feature_count": int(taxonomy.get("classified_symbol_feature_count", 0) or 0),
+            "unclassified_global_feature_keys": unclassified_global,
+            "unclassified_symbol_feature_keys": unclassified_symbol,
+            "unclassified_feature_policy": str(taxonomy.get("unclassified_feature_policy") or ""),
+            "optional_failure_is_soak_blocking": bool(payload.get("optional_failure_is_soak_blocking", True)),
+            "authority_safe": authority_safe,
+        },
+    )
+
+
 def _decision_context_mesh_row(project_root: Path, now: datetime) -> dict[str, Any]:
     path = project_root / "exports" / "external_context" / "decision_context_mesh_latest.json"
     payload = _read_json(path)
@@ -1681,6 +1744,7 @@ def build_source_verification_payload(project_root: Path = PROJECT_ROOT) -> dict
         _central_bank_liquidity_row(project_root, now),
         _global_central_bank_row(project_root, now),
         _central_bank_cross_source_row(project_root, now),
+        _public_financial_context_row(health_dir, now),
         _decision_context_mesh_row(project_root, now),
         _schwab_education_row(health_dir, now),
         _schwab_symbol_news_row(health_dir, now),

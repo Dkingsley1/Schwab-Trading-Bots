@@ -1,5 +1,8 @@
 #!/bin/zsh
 set -euo pipefail
+# zsh otherwise adds +5 nice to every detached job. Runtime workload policy,
+# not shell job-control defaults, owns process priority in this control plane.
+unsetopt BG_NICE 2>/dev/null || true
 
 PROJECT_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 source "$PROJECT_ROOT/scripts/ops/runtime_python.sh"
@@ -71,6 +74,102 @@ OPERATOR_STOP_FLAG="$HEALTH_DIR/OPERATOR_STOP.flag"
 GLOBAL_HALT_FLAG="$HEALTH_DIR/GLOBAL_TRADING_HALT.flag"
 RUNTIME_MAINTENANCE_HOLD_FLAG="$HEALTH_DIR/RUNTIME_MAINTENANCE_HOLD.flag"
 PAPER_TRADE_LOCK_FILE="$PROJECT_ROOT/governance/health/PAPER_TRADE_LOCK.flag"
+RUNTIME_PROCESS_MATCHER="$PROJECT_ROOT/scripts/ops/runtime_process_match.py"
+STACK_RESTART_FENCE="$PROJECT_ROOT/scripts/ops/stack_restart_fence.py"
+COMPONENT_RESTART_FENCE_TOKEN=""
+
+runtime_process_pids() {
+  local pattern="$1"
+  "$PY" "$RUNTIME_PROCESS_MATCHER" --match "$pattern" --pids 2>/dev/null || true
+}
+
+runtime_process_running() {
+  local pattern="$1"
+  "$PY" "$RUNTIME_PROCESS_MATCHER" --match "$pattern" >/dev/null 2>&1
+}
+
+wait_runtime_process_stable() {
+  local pattern="$1"
+  local timeout_seconds="${2:-20}"
+  local stable_seconds="${3:-5}"
+  local deadline=$(( $(date +%s) + timeout_seconds ))
+  local stable_since=0
+  local now=0
+  while (( $(date +%s) <= deadline )); do
+    now="$(date +%s)"
+    if runtime_process_running "$pattern"; then
+      if (( stable_since == 0 )); then
+        stable_since="$now"
+      fi
+      if (( now - stable_since >= stable_seconds )); then
+        return 0
+      fi
+    else
+      stable_since=0
+    fi
+    sleep 1
+  done
+  return 1
+}
+
+wait_process_predicate_stable() {
+  local predicate="$1"
+  local timeout_seconds="${2:-20}"
+  local stable_seconds="${3:-5}"
+  local deadline=$(( $(date +%s) + timeout_seconds ))
+  local stable_since=0
+  local now=0
+  while (( $(date +%s) <= deadline )); do
+    now="$(date +%s)"
+    if "$predicate"; then
+      if (( stable_since == 0 )); then
+        stable_since="$now"
+      fi
+      if (( now - stable_since >= stable_seconds )); then
+        return 0
+      fi
+    else
+      stable_since=0
+    fi
+    sleep 1
+  done
+  return 1
+}
+
+release_component_restart_fence() {
+  if [[ -n "$COMPONENT_RESTART_FENCE_TOKEN" ]]; then
+    "$PY" "$STACK_RESTART_FENCE" --release \
+      --expected-token "$COMPONENT_RESTART_FENCE_TOKEN" --json >/dev/null 2>&1 || true
+    COMPONENT_RESTART_FENCE_TOKEN=""
+  fi
+}
+
+engage_component_restart_fence() {
+  local component="$1"
+  local payload
+  payload="$("$PY" "$STACK_RESTART_FENCE" --engage \
+    --owner "opsctl:${component}" --owner-pid "$$" --ttl-seconds 180 --json)" || return 1
+  COMPONENT_RESTART_FENCE_TOKEN="$(printf '%s' "$payload" | "$PY" -c 'import json,sys; print(json.load(sys.stdin).get("token", ""))')"
+  [[ -n "$COMPONENT_RESTART_FENCE_TOKEN" ]] || return 1
+  trap release_component_restart_fence EXIT HUP INT TERM
+}
+
+terminate_runtime_processes() {
+  local pattern="$1"
+  local pids
+  pids="$(runtime_process_pids "$pattern")"
+  if [[ -z "${pids//[[:space:]]/}" ]]; then
+    return 0
+  fi
+  while IFS= read -r pid; do
+    [[ -n "$pid" ]] && kill -CONT "$pid" >/dev/null 2>&1 || true
+    [[ -n "$pid" ]] && kill "$pid" >/dev/null 2>&1 || true
+  done <<< "$pids"
+  sleep 1
+  while IFS= read -r pid; do
+    [[ -n "$pid" ]] && kill -0 "$pid" >/dev/null 2>&1 && kill -KILL "$pid" >/dev/null 2>&1 || true
+  done <<< "$pids"
+}
 
 flag_summary() {
   local path="$1"
@@ -389,7 +488,8 @@ start_schwab_live_loops() {
 
 coinbase_spot_process_lines() {
   ps -axo pid,stat,command | awk '
-    index($0, "scripts/run_shadow_training_loop.py --broker coinbase") > 0 &&
+    index($0, "scripts/run_shadow_training_loop.py") > 0 &&
+    index($0, "--broker coinbase") > 0 &&
     index($0, " --profile crypto_futures") == 0 &&
     index($0, "awk ") == 0 {
       print
@@ -421,9 +521,8 @@ kill_coinbase_spot_loops() {
 }
 
 kill_coinbase_futures_loops() {
-  local futures_profile="${COINBASE_FUTURES_PROFILE:-crypto_futures}"
   local pids
-  pids="$(ps -axo pid,command | awk -v pattern="scripts/run_shadow_training_loop.py --broker coinbase --profile $futures_profile" 'index($0, pattern) > 0 && index($0, "awk ") == 0 { print $1 }')"
+  pids="$(coinbase_futures_process_lines | awk '{print $1}')"
   if [[ -n "${pids//[[:space:]]/}" ]]; then
     while IFS= read -r pid; do
       [[ -n "$pid" ]] && kill -CONT "$pid" >/dev/null 2>&1 || true
@@ -438,8 +537,11 @@ kill_coinbase_futures_loops() {
 
 coinbase_futures_process_lines() {
   local futures_profile="${COINBASE_FUTURES_PROFILE:-crypto_futures}"
-  ps -axo pid,stat,command | awk -v pattern="scripts/run_shadow_training_loop.py --broker coinbase --profile $futures_profile" '
-    index($0, pattern) > 0 && index($0, "awk ") == 0 {
+  ps -axo pid,stat,command | awk -v profile_arg="--profile $futures_profile" '
+    index($0, "scripts/run_shadow_training_loop.py") > 0 &&
+    index($0, "--broker coinbase") > 0 &&
+    index($0, profile_arg) > 0 &&
+    index($0, "awk ") == 0 {
       print
     }
   ' || true
@@ -876,6 +978,12 @@ case "$cmd" in
   extended-quant-sync)
     exec "$PY" "$PROJECT_ROOT/scripts/collect_extended_quant_context.py" "$@"
     ;;
+  public-financial-sync|official-financial-context-sync)
+    exec "$PY" "$PROJECT_ROOT/scripts/collect_public_financial_context.py" "$@"
+    ;;
+  economic-source-inventory|economic-source-registry|macro-micro-source-inventory)
+    exec "$PY" "$PROJECT_ROOT/scripts/ops/economic_source_inventory.py" "$@"
+    ;;
   public-policy-sync|sovereign-liquidity-sync|free-public-context-sync)
     exec "$PY" "$PROJECT_ROOT/scripts/collect_public_policy_context.py" "$@"
     ;;
@@ -1126,6 +1234,12 @@ case "$cmd" in
     ;;
   authoritative-systems|authoritative-systems-control|production-reference-control)
     exec "$PY" "$PROJECT_ROOT/scripts/ops/authoritative_systems_control.py" "$@"
+    ;;
+  research-data-platform|research-data-contract|data-product-catalog)
+    exec "$PY" "$PROJECT_ROOT/scripts/ops/research_data_platform_control.py" "$@"
+    ;;
+  institutional-research-extensions|institutional-research-os|quant-firm-influences)
+    exec "$PY" "$PROJECT_ROOT/scripts/ops/institutional_research_extensions_control.py" "$@"
     ;;
   strategy-validity|point-in-time-validity|lookahead-recursive-guard)
     exec "$PY" "$PROJECT_ROOT/scripts/strategy_validity_control.py" "$@"
@@ -1534,6 +1648,9 @@ case "$cmd" in
   live-order-ledger|live-order-ledger-control|order-intent-ledger)
     exec "$PY" "$PROJECT_ROOT/scripts/ops/live_order_ledger_control.py" "$@"
     ;;
+  live-execution-rehearsal|live-path-rehearsal|validate-live-path)
+    exec "$PY" "$PROJECT_ROOT/scripts/ops/live_execution_rehearsal_control.py" "$@"
+    ;;
   live-transition-integrity|paper-live-transition|transition-integrity)
     exec "$PY" "$PROJECT_ROOT/scripts/ops/live_transition_integrity_control.py" "$@"
     ;;
@@ -1545,6 +1662,18 @@ case "$cmd" in
     ;;
   profitability-self-assessment|profitability-self-model|profitability-tuning-plan|what-needs-tuning)
     exec "$PY" "$PROJECT_ROOT/scripts/ops/profitability_self_assessment.py" "$@"
+    ;;
+  alpha-generation-control|alpha-generation|alpha-evidence-loop|cross-sleeve-alpha)
+    exec "$PY" "$PROJECT_ROOT/scripts/ops/alpha_generation_control.py" "$@"
+    ;;
+  alpha-concepts|alpha-concept-report|alpha-research-map|alpha-measurement-lab)
+    exec "$PY" "$PROJECT_ROOT/scripts/ops/alpha_concept_report.py" "$@"
+    ;;
+  sleeve-alpha-toolbox|alpha-toolbox|sleeve-alpha-routing)
+    exec "$PY" "$PROJECT_ROOT/scripts/ops/sleeve_alpha_toolbox_control.py" "$@"
+    ;;
+  generation-behavior-attribution|generation-attribution|soak-generation-comparison)
+    exec "$PY" "$PROJECT_ROOT/scripts/ops/generation_behavior_attribution.py" "$@"
     ;;
   continuous-soak-integrity|soak-integrity|soak-capacity)
     exec "$PY" "$PROJECT_ROOT/scripts/ops/continuous_soak_integrity_control.py" "$@"
@@ -2100,12 +2229,13 @@ case "$cmd" in
     done
 
     if [[ "$FORCE_RESTART" == "1" ]]; then
-      pkill -f "scripts/run_shadow_training_loop.py --broker schwab --profile $FUTURES_PROFILE" || true
-      sleep 1
+      engage_component_restart_fence "schwab_futures"
+      terminate_runtime_processes "scripts/run_shadow_training_loop.py --broker schwab --profile $FUTURES_PROFILE"
+      "$PY" "$PROJECT_ROOT/scripts/ops/lock_watchdog.py" --apply --json >/dev/null 2>&1 || true
     fi
 
-    if ps -axo command | grep -F "scripts/run_shadow_training_loop.py --broker schwab --profile $FUTURES_PROFILE" | grep -v grep >/dev/null 2>&1; then
-      PID="$(ps -axo pid,command | grep -F "scripts/run_shadow_training_loop.py --broker schwab --profile $FUTURES_PROFILE" | grep -v grep | awk 'NR==1{print $1}')"
+    if runtime_process_running "scripts/run_shadow_training_loop.py --broker schwab --profile $FUTURES_PROFILE"; then
+      PID="$($PY "$RUNTIME_PROCESS_MATCHER" --match "scripts/run_shadow_training_loop.py --broker schwab --profile $FUTURES_PROFILE" --first-pid)"
       LATEST_LOG="$(latest_path_for_pattern "$PROJECT_ROOT/logs/schwab_futures_live_*.log")"
       echo "schwab_futures_loop already running pid=$PID profile=$FUTURES_PROFILE"
       [[ -n "$LATEST_LOG" ]] && echo "$LATEST_LOG"
@@ -2117,6 +2247,7 @@ case "$cmd" in
     LOG="$PROJECT_ROOT/logs/schwab_futures_live_$(date -u +%Y%m%d_%H%M%S).log"
     SCHWAB_CMD=(
       "$PY" "$PROJECT_ROOT/scripts/run_shadow_training_loop.py"
+      --runtime-cpu-class market_decision
       --broker schwab
       --profile "$FUTURES_PROFILE"
       --domain equities
@@ -2132,13 +2263,13 @@ case "$cmd" in
     if [[ "$PAPER_MODE" == "1" ]]; then
       paper_trade_lock_env
       echo "schwab_futures_paper=enabled profile=$FUTURES_PROFILE top_n=$PAPER_TOP_N min_acc=$PAPER_MIN_ACC profiles=$PAPER_PROFILES"
-      SHADOW_PROFILE="$FUTURES_PROFILE"       SHADOW_DOMAIN=equities       LOG_SUB_BOT_DECISIONS="${LOG_SUB_BOT_DECISIONS:-1}"       LOG_MASTER_VARIANT_DECISIONS="${LOG_MASTER_VARIANT_DECISIONS:-1}"       LOG_GRAND_MASTER_DECISIONS="${LOG_GRAND_MASTER_DECISIONS:-1}"       LOG_OPTIONS_MASTER_DECISIONS="${LOG_OPTIONS_MASTER_DECISIONS:-1}"       TOP_BOT_PAPER_TRADING_ENABLED=1       TOP_BOT_PAPER_TRADING_TOP_N="$PAPER_TOP_N"       TOP_BOT_PAPER_TRADING_MIN_ACC="$PAPER_MIN_ACC"       TOP_BOT_PAPER_TRADING_PROFILES="$PAPER_PROFILES"       PAPER_BROKER_BRIDGE_ENABLED="${PAPER_BROKER_BRIDGE_ENABLED:-1}"       PAPER_BROKER_BRIDGE_MODE="${PAPER_BROKER_BRIDGE_MODE:-jsonl}"       nohup "${SCHWAB_CMD[@]}" > "$LOG" 2>&1 & disown
+      SHADOW_PROFILE="$FUTURES_PROFILE"       SHADOW_DOMAIN=equities       LOG_SUB_BOT_DECISIONS="${LOG_SUB_BOT_DECISIONS:-1}"       LOG_MASTER_VARIANT_DECISIONS="${LOG_MASTER_VARIANT_DECISIONS:-1}"       LOG_GRAND_MASTER_DECISIONS="${LOG_GRAND_MASTER_DECISIONS:-1}"       LOG_OPTIONS_MASTER_DECISIONS="${LOG_OPTIONS_MASTER_DECISIONS:-1}"       TOP_BOT_PAPER_TRADING_ENABLED=1       TOP_BOT_PAPER_TRADING_TOP_N="$PAPER_TOP_N"       TOP_BOT_PAPER_TRADING_MIN_ACC="$PAPER_MIN_ACC"       TOP_BOT_PAPER_TRADING_PROFILES="$PAPER_PROFILES"       PAPER_BROKER_BRIDGE_ENABLED="${PAPER_BROKER_BRIDGE_ENABLED:-1}"       PAPER_BROKER_BRIDGE_MODE="${PAPER_BROKER_BRIDGE_MODE:-jsonl}"       PYTHONUNBUFFERED=1       nohup "${SCHWAB_CMD[@]}" > "$LOG" 2>&1 & disown
     else
-      SHADOW_PROFILE="$FUTURES_PROFILE"       SHADOW_DOMAIN=equities       LOG_SUB_BOT_DECISIONS="${LOG_SUB_BOT_DECISIONS:-1}"       LOG_MASTER_VARIANT_DECISIONS="${LOG_MASTER_VARIANT_DECISIONS:-1}"       LOG_GRAND_MASTER_DECISIONS="${LOG_GRAND_MASTER_DECISIONS:-1}"       LOG_OPTIONS_MASTER_DECISIONS="${LOG_OPTIONS_MASTER_DECISIONS:-1}"       nohup "${SCHWAB_CMD[@]}" > "$LOG" 2>&1 & disown
+      SHADOW_PROFILE="$FUTURES_PROFILE"       SHADOW_DOMAIN=equities       LOG_SUB_BOT_DECISIONS="${LOG_SUB_BOT_DECISIONS:-1}"       LOG_MASTER_VARIANT_DECISIONS="${LOG_MASTER_VARIANT_DECISIONS:-1}"       LOG_GRAND_MASTER_DECISIONS="${LOG_GRAND_MASTER_DECISIONS:-1}"       LOG_OPTIONS_MASTER_DECISIONS="${LOG_OPTIONS_MASTER_DECISIONS:-1}"       PYTHONUNBUFFERED=1       nohup "${SCHWAB_CMD[@]}" > "$LOG" 2>&1 & disown
     fi
 
-    sleep 2
-    if ps -axo command | grep -F "scripts/run_shadow_training_loop.py --broker schwab --profile $FUTURES_PROFILE" | grep -v grep >/dev/null 2>&1; then
+    if wait_runtime_process_stable "scripts/run_shadow_training_loop.py --broker schwab --profile $FUTURES_PROFILE" 20 5; then
+      release_component_restart_fence
       echo "$LOG"
       echo "schwab_futures_loop_started profile=$FUTURES_PROFILE simulate=$SCHWAB_SIMULATE paper_mode=$PAPER_MODE"
       OPS_WATCHDOG_REFRESH_REPORTS=0 "$PY" "$PROJECT_ROOT/scripts/ops/process_watchdog.py" --json >/dev/null 2>&1 || true
@@ -2150,7 +2281,7 @@ case "$cmd" in
     ;;
   schwab-futures-stop)
     FUTURES_PROFILE="${SCHWAB_FUTURES_PROFILE:-schwab_futures}"
-    pkill -f "scripts/run_shadow_training_loop.py --broker schwab --profile $FUTURES_PROFILE" || true
+    terminate_runtime_processes "scripts/run_shadow_training_loop.py --broker schwab --profile $FUTURES_PROFILE"
     echo "schwab futures loop stopped profile=$FUTURES_PROFILE"
     ;;
   coinbase-start)
@@ -2182,8 +2313,9 @@ case "$cmd" in
     fi
 
     if [[ "$FORCE_RESTART" == "1" ]]; then
+      engage_component_restart_fence "coinbase_spot"
       kill_coinbase_spot_loops
-      sleep 1
+      "$PY" "$PROJECT_ROOT/scripts/ops/lock_watchdog.py" --apply --json >/dev/null 2>&1 || true
     fi
 
     if coinbase_spot_running; then
@@ -2199,6 +2331,7 @@ case "$cmd" in
     LOG="$PROJECT_ROOT/logs/coinbase_live_$(date -u +%Y%m%d_%H%M%S).log"
     COINBASE_CMD=(
       "$PY" "$PROJECT_ROOT/scripts/run_shadow_training_loop.py"
+      --runtime-cpu-class market_decision
       --broker coinbase
       --symbols "${COINBASE_WATCH_SYMBOLS:-BTC-USD,ETH-USD,SOL-USD,AVAX-USD,LTC-USD,LINK-USD,DOGE-USD}"
       --context-symbols "${COINBASE_CONTEXT_SYMBOLS:-BTC-USD,ETH-USD,SOL-USD,AVAX-USD,LTC-USD,LINK-USD,DOGE-USD}"
@@ -2217,8 +2350,8 @@ case "$cmd" in
       PAPER_MIRROR_ALL_ACTIVE_SUB_BOTS="${PAPER_MIRROR_ALL_ACTIVE_SUB_BOTS:-0}"       ADAPTIVE_INTERVAL_ENABLED="${COINBASE_ADAPTIVE_INTERVAL_ENABLED:-1}"       PYTHONUNBUFFERED=1       nohup "${COINBASE_CMD[@]}" > "$LOG" 2>&1 & disown
     fi
 
-    sleep 2
-    if coinbase_spot_running; then
+    if wait_process_predicate_stable coinbase_spot_running 20 5; then
+      release_component_restart_fence
       echo "$LOG"
       echo "coinbase_loop_started simulate=$COINBASE_SIMULATE paper_mode=$PAPER_MODE"
       OPS_WATCHDOG_REFRESH_REPORTS=0 "$PY" "$PROJECT_ROOT/scripts/ops/process_watchdog.py" --require-coinbase --json >/dev/null 2>&1 || true
@@ -2258,8 +2391,9 @@ case "$cmd" in
     fi
 
     if [[ "$FORCE_RESTART" == "1" ]]; then
-      pkill -f "scripts/run_shadow_training_loop.py --broker coinbase --profile $FUTURES_PROFILE" || true
-      sleep 1
+      engage_component_restart_fence "coinbase_futures"
+      kill_coinbase_futures_loops
+      "$PY" "$PROJECT_ROOT/scripts/ops/lock_watchdog.py" --apply --json >/dev/null 2>&1 || true
     fi
 
     if coinbase_futures_running; then
@@ -2275,6 +2409,7 @@ case "$cmd" in
     LOG="$PROJECT_ROOT/logs/coinbase_futures_live_$(date -u +%Y%m%d_%H%M%S).log"
     COINBASE_CMD=(
       "$PY" "$PROJECT_ROOT/scripts/run_shadow_training_loop.py"
+      --runtime-cpu-class market_decision
       --broker coinbase
       --profile "$FUTURES_PROFILE"
       --domain crypto
@@ -2295,8 +2430,8 @@ case "$cmd" in
       SHADOW_PROFILE="$FUTURES_PROFILE"       SHADOW_DOMAIN=crypto       SHADOW_THRESHOLD_SHIFT="${COINBASE_FUTURES_THRESHOLD_SHIFT:-0.02}"       SIZING_MAX_NOTIONAL_PCT="${COINBASE_FUTURES_MAX_NOTIONAL_PCT:-0.03}"       PORTFOLIO_BASE_BUDGET="${COINBASE_FUTURES_BASE_BUDGET:-0.50}"       CROSS_SYMBOL_MAX_LONG="${COINBASE_FUTURES_MAX_LONG:-4}"       CROSS_SYMBOL_MAX_SHORT="${COINBASE_FUTURES_MAX_SHORT:-4}"       RISK_MAX_DAILY_LOSS_PROXY="${COINBASE_FUTURES_MAX_DAILY_LOSS_PROXY:-0.03}"       LOG_SUB_BOT_DECISIONS="${LOG_SUB_BOT_DECISIONS:-1}"       LOG_MASTER_VARIANT_DECISIONS="${LOG_MASTER_VARIANT_DECISIONS:-1}"       LOG_GRAND_MASTER_DECISIONS="${LOG_GRAND_MASTER_DECISIONS:-1}"       LOG_OPTIONS_MASTER_DECISIONS="${LOG_OPTIONS_MASTER_DECISIONS:-1}"       PAPER_MIRROR_ALL_ACTIVE_SUB_BOTS="${PAPER_MIRROR_ALL_ACTIVE_SUB_BOTS:-0}"       ADAPTIVE_INTERVAL_ENABLED="${COINBASE_FUTURES_ADAPTIVE_INTERVAL_ENABLED:-${COINBASE_ADAPTIVE_INTERVAL_ENABLED:-1}}"       PYTHONUNBUFFERED=1       nohup "${COINBASE_CMD[@]}" > "$LOG" 2>&1 & disown
     fi
 
-    sleep 2
-    if coinbase_futures_running; then
+    if wait_process_predicate_stable coinbase_futures_running 20 5; then
+      release_component_restart_fence
       echo "$LOG"
       echo "coinbase_futures_loop_started profile=$FUTURES_PROFILE simulate=$COINBASE_SIMULATE paper_mode=$PAPER_MODE"
       OPS_WATCHDOG_REFRESH_REPORTS=0 "$PY" "$PROJECT_ROOT/scripts/ops/process_watchdog.py" --require-coinbase-futures --json >/dev/null 2>&1 || true
@@ -2315,7 +2450,7 @@ case "$cmd" in
     ;;
   coinbase-futures-stop)
     FUTURES_PROFILE="${COINBASE_FUTURES_PROFILE:-crypto_futures}"
-    pkill -f "scripts/run_shadow_training_loop.py --broker coinbase --profile $FUTURES_PROFILE" || true
+    kill_coinbase_futures_loops
     echo "coinbase futures loop stopped profile=$FUTURES_PROFILE"
     ;;
   fx-start)
@@ -3026,6 +3161,8 @@ opsctl commands:
   ticker-news-sync|news-mesh-sync|symbol-news-mesh [--symbols CSV] [--max-symbols N] [--limit-per-symbol N] [--max-runtime-seconds N] [--include-optional-global-feeds] [--json]
   sec-edgar-sync [--symbols CSV] [--timeout N] [--pause-seconds N] [--max-runtime-seconds N] [--json]
   extended-quant-sync [--symbols CSV] [--timeout N] [--json]
+  public-financial-sync|official-financial-context-sync [--symbols CSV] [--max-symbols N] [--timeout N] [--json]
+  economic-source-inventory|economic-source-registry|macro-micro-source-inventory [--list] [--json]
   public-policy-sync|sovereign-liquidity-sync [--countries CSV] [--timeout N] [--json]
   quant-model-control [--no-render-pdf] [--json]
   pricing-grad [--spot N --strike N --expiry-days N --volatility N] [--json]
@@ -3079,10 +3216,15 @@ opsctl commands:
   multiple-testing|multiple-testing-guard [--json]
   institutional-capability-control|institutional-capabilities|institutional-gap-control [--json]
   authoritative-systems|production-reference-control [--json]
+  research-data-platform|research-data-contract|data-product-catalog [--json]
+  institutional-research-extensions|institutional-research-os|quant-firm-influences [--json]
   strategy-validity|point-in-time-validity [--json]
   paper-live-equivalence|execution-equivalence [--json]
   execution-scenarios|execution-fault-scenarios [--json]
   quantitative-challengers|quant-challengers [--json]
+  alpha-concepts|alpha-concept-report|alpha-research-map [--json]
+  sleeve-alpha-toolbox|alpha-toolbox|sleeve-alpha-routing [--json]
+  generation-behavior-attribution|generation-attribution|soak-generation-comparison [--from-generation N] [--to-generation N] [--last-days N] [--no-legacy-window-association] [--json]
   sleeve-strategy-specialization|strategy-specialization|strategy-contracts [--json]
   strategy-library|strategy-scorecard [--sleeve ID] [--good|--bad] [--verdict NAME] [--tier NAME] [--regime-relevance NAME] [--limit N] [--json]
   strategy-families|strategy-family-catalog [--sleeve ID] [--objective NAME] [--family TEXT] [--limit N] [--json]
@@ -3214,10 +3356,15 @@ opsctl commands:
   production-excellence|ten-pillar-readiness [--apply] [--initialize-candidate | --accept-candidate-change | --recover-candidate-event-chain --change-reason TEXT] [--json]
   production-resilience|resilience-1-10 [--json]
   live-order-ledger|order-intent-ledger [--ledger PATH] [--resolve-intent ID --resolution STATE --evidence TEXT] [--json]
+  live-execution-rehearsal|validate-live-path [--json]
   live-transition-integrity|paper-live-transition [--json]
   live-transition-chaos|transition-chaos [--json]
   profitability-evidence-firewall|profitability-firewall [--json]
   profitability-self-assessment|profitability-self-model|what-needs-tuning [--json]
+  alpha-generation-control|alpha-generation|cross-sleeve-alpha [--json]
+  alpha-concepts|alpha-concept-report|alpha-research-map [--json]
+  sleeve-alpha-toolbox|alpha-toolbox|sleeve-alpha-routing [--json]
+  generation-behavior-attribution|generation-attribution|soak-generation-comparison [--from-generation N] [--to-generation N] [--last-days N] [--no-legacy-window-association] [--json]
   profitability-independent-validator|independent-profit-validator [--json]
   profitability-holdout-vault|holdout-vault [--seal-dataset PATH] [--record-evaluation-access --evidence TEXT] [--json]
   profitability-benchmark-capture|benchmark-capture [--apply] [--json]

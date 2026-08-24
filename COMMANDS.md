@@ -4,7 +4,7 @@ Use these exact commands as the current source of truth.
 
 This file is generated from the curated operator inventory in `scripts/ops/commands_hygiene_bot.py`.
 Rebuild it with `./scripts/ops/opsctl.sh commands-hygiene --apply` after changing that inventory.
-Command contract hash: `4bedbc3d9da99ba362a5cb5628df730f8339cdc8bc944f19488a0afc63d53b59`.
+Command contract hash: `64f307f08d681dcecaa26dd71fe0bf2396e1393bcdb95beac9d3066a04978db2`.
 Command contract artifact: `governance/health/commands_contract_latest.json`.
 
 This file is intentionally trimmed down with Most Used pinned first and the remaining sections alphabetized by section and command title:
@@ -23,7 +23,7 @@ Fast search tokens: `start` `stop` `paper` `profitability` `soak` `halt` `auth` 
 
 Useful compound searches: `paper profitability`, `global halt`, `token refresh`, `livefeed heavy`, `storage prune`, `soak readiness`.
 
-Search coverage: `206` generated command entries from the current command contract.
+Search coverage: `215` generated command entries from the current command contract.
 
 <datalist id="command-search-index-options">
   <option value="Keep the Mac awake (Most Used)"></option>
@@ -81,7 +81,9 @@ Search coverage: `206` generated command entries from the current command contra
   <option value="FX market context sync (Data Context Syncs)"></option>
   <option value="Global central-bank policy and assets sync (Data Context Syncs)"></option>
   <option value="Macro context sync (Data Context Syncs)"></option>
+  <option value="Official public financial context sync (Data Context Syncs)"></option>
   <option value="Options flow context sync (Data Context Syncs)"></option>
+  <option value="Public macro and micro source inventory (Data Context Syncs)"></option>
   <option value="Source verification (Data Context Syncs)"></option>
   <option value="Stock / crypto correlation sync (Data Context Syncs)"></option>
   <option value="Install the SpaceX/SPCX IPO downside watcher (Event Watches)"></option>
@@ -102,21 +104,27 @@ Search coverage: `206` generated command entries from the current command contra
   <option value="Browse the consolidated strategy-family catalog (Paper Trading)"></option>
   <option value="Capture the candidate-bound passive benchmark close (Paper Trading)"></option>
   <option value="Check paper runtime regression guard (Paper Trading)"></option>
+  <option value="Compare cumulative soak behavior between candidate generations (Paper Trading)"></option>
   <option value="Compare paper and live-shadow intent semantics (Paper Trading)"></option>
   <option value="Compare paper returns with cash and passive benchmarks (Paper Trading)"></option>
   <option value="Reconcile candidate paper PnL with the independent accountant (Paper Trading)"></option>
   <option value="Replay decision thresholds and exit choices (Paper Trading)"></option>
+  <option value="Review alpha tools and evidence gaps for every sleeve (Paper Trading)"></option>
+  <option value="Review candidate alpha and cross-sleeve ownership (Paper Trading)"></option>
   <option value="Review candidate-bound quantitative challengers (Paper Trading)"></option>
   <option value="Review guarded 400 bot paper ramp (Paper Trading)"></option>
   <option value="Review institutional capability and evidence gaps (Paper Trading)"></option>
   <option value="Review profitability decay containment (Paper Trading)"></option>
   <option value="Review sleeve strategy contracts and lifecycle evidence (Paper Trading)"></option>
+  <option value="Review the alpha concept map and sixteen measurement engines (Paper Trading)"></option>
+  <option value="Review the canonical research data platform (Paper Trading)"></option>
   <option value="Review the complete experiment-family correction (Paper Trading)"></option>
+  <option value="Review the eight institutional research extensions (Paper Trading)"></option>
   <option value="Review the eight profitability hardening controls (Paper Trading)"></option>
   <option value="Review the locked profitability holdout vault (Paper Trading)"></option>
   <option value="Review the strict profitability evidence firewall (Paper Trading)"></option>
   <option value="Search the 12,000-strategy sleeve library and scorecards (Paper Trading)"></option>
-  <option value="Validate the 20 authoritative production references and eight controls (Paper Trading)"></option>
+  <option value="Validate the 39 authoritative production references and 18 controls (Paper Trading)"></option>
   <option value="Active bot stack PDF (Reports And PDFs)"></option>
   <option value="Incident report (Reports And PDFs)"></option>
   <option value="Incident review packet PDF (Reports And PDFs)"></option>
@@ -195,6 +203,7 @@ Search coverage: `206` generated command entries from the current command contra
   <option value="Refresh readiness evidence without the full dashboard (Status And Health)"></option>
   <option value="Refresh runtime dashboard contracts (Status And Health)"></option>
   <option value="Refresh source-backed capability proofs (Status And Health)"></option>
+  <option value="Rehearse the sealed live-execution path (Status And Health)"></option>
   <option value="Repair safe cross-system drift surfaces (Status And Health)"></option>
   <option value="Replay hash registry guard (Status And Health)"></option>
   <option value="Reporter quality infrabot (Status And Health)"></option>
@@ -235,7 +244,7 @@ Search coverage: `206` generated command entries from the current command contra
 </datalist>
 
 <details>
-<summary>Generated command search index (206 commands; rebuilt by commands-hygiene)</summary>
+<summary>Generated command search index (215 commands; rebuilt by commands-hygiene)</summary>
 
 Each row is generated from `governance/health/commands_contract_latest.json`, so added, removed, renamed, or cleaned-up commands change this index automatically.
 
@@ -294,7 +303,9 @@ Each row is generated from `governance/health/commands_contract_latest.json`, so
 - search-entry:28c8adf1bfbdc184f8a3246d69b035dadc8369dfe2e2719e349b5176b4b4bbe2 section:`Data Context Syncs` section_key:`data-context-syncs` title:FX market context sync title_key:`fx-market-context-sync` opsctl:`fx-market-sync` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
 - search-entry:508dc78794d6d7933ffc333505b4a8a31d17717e6af19ead88b54115515edb6a section:`Data Context Syncs` section_key:`data-context-syncs` title:Global central-bank policy and assets sync title_key:`global-central-bank-policy-and-assets-sync` opsctl:`global-central-bank-sync` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
 - search-entry:6d9912b0ea8130ddc98949a5b244a8b8e0be487b47c2e883ab942619eb2370ce section:`Data Context Syncs` section_key:`data-context-syncs` title:Macro context sync title_key:`macro-context-sync` opsctl:`macro-context-sync` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
+- search-entry:d1cffaaf0230b4139fa71221b2a9e357d3177b5e78f6452eff266a532db13575 section:`Data Context Syncs` section_key:`data-context-syncs` title:Official public financial context sync title_key:`official-public-financial-context-sync` opsctl:`public-financial-sync` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
 - search-entry:6a1e634c03d65dc842403cab6a10ed7f390b177974b51bde06fa2baa41dd2806 section:`Data Context Syncs` section_key:`data-context-syncs` title:Options flow context sync title_key:`options-flow-context-sync` opsctl:`options-flow-sync` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
+- search-entry:67901f6b681c56720c488ba0f8ea4128ea416a16ecc0bb1f478a4fae204b16be section:`Data Context Syncs` section_key:`data-context-syncs` title:Public macro and micro source inventory title_key:`public-macro-and-micro-source-inventory` opsctl:`economic-source-inventory` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
 - search-entry:e09ffc26df0422653438ce9314334305bc0ce171383e70cebd71948b54ca3ecc section:`Data Context Syncs` section_key:`data-context-syncs` title:Source verification title_key:`source-verification` opsctl:`source-verification` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
 - search-entry:45ef884dfcd2650aa72b2c1187d0a69c7ec30b42e1e5567eeeab2b1b454d6dea section:`Data Context Syncs` section_key:`data-context-syncs` title:Stock / crypto correlation sync title_key:`stock-crypto-correlation-sync` opsctl:`market-correlation-sync` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
 - search-entry:9021aedf14582e34e52c383973a4edbb1a55ee89133b24627b0c2a6fffe36607 section:`Event Watches` section_key:`event-watches` title:Install the SpaceX/SPCX IPO downside watcher title_key:`install-the-spacex-spcx-ipo-downside-watcher` opsctl:`spacex-ipo-watch-install` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
@@ -315,21 +326,27 @@ Each row is generated from `governance/health/commands_contract_latest.json`, so
 - search-entry:43e19290e702eacb40810357c57deb26c895b87b131803b018a319cf5e74d1e1 section:`Paper Trading` section_key:`paper-trading` title:Browse the consolidated strategy-family catalog title_key:`browse-the-consolidated-strategy-family-catalog` opsctl:`strategy-families` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
 - search-entry:f4fe212d880497b3770039e61039546204d5a2a53be96978bfdce1508d20c38e section:`Paper Trading` section_key:`paper-trading` title:Capture the candidate-bound passive benchmark close title_key:`capture-the-candidate-bound-passive-benchmark-close` opsctl:`profitability-benchmark-capture` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
 - search-entry:855de17b5155c31be434930260497ef55cb0c98e91e63ce5db85fb5cd9447a93 section:`Paper Trading` section_key:`paper-trading` title:Check paper runtime regression guard title_key:`check-paper-runtime-regression-guard` opsctl:`runtime-paper-regression-guard` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
+- search-entry:78b2600d3df4fab9119fe430cda0ec25b373d9f537c8802410be3d1821da5063 section:`Paper Trading` section_key:`paper-trading` title:Compare cumulative soak behavior between candidate generations title_key:`compare-cumulative-soak-behavior-between-candidate-generations` opsctl:`generation-behavior-attribution` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
 - search-entry:31fce79f3d5ba24eb1e1056701e7672f23878ee8c4982d4dbc90199fb6ca27f8 section:`Paper Trading` section_key:`paper-trading` title:Compare paper and live-shadow intent semantics title_key:`compare-paper-and-live-shadow-intent-semantics` opsctl:`paper-live-equivalence` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
 - search-entry:72fed3d4094f44fee7237e80c82d664883cc74f88738e29b3d4341eb89541e0b section:`Paper Trading` section_key:`paper-trading` title:Compare paper returns with cash and passive benchmarks title_key:`compare-paper-returns-with-cash-and-passive-benchmarks` opsctl:`profitability-benchmark-hurdle` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
 - search-entry:24670c3c6ef025bda032494b532e2a6b166cea232b249b2435950303cf6b528c section:`Paper Trading` section_key:`paper-trading` title:Reconcile candidate paper PnL with the independent accountant title_key:`reconcile-candidate-paper-pnl-with-the-independent-accountant` opsctl:`profitability-independent-validator` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
 - search-entry:ffa43c898fb750613349114a09771f05994e097931e55e2300019ed9e9c05569 section:`Paper Trading` section_key:`paper-trading` title:Replay decision thresholds and exit choices title_key:`replay-decision-thresholds-and-exit-choices` opsctl:`counterfactual-replay` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
+- search-entry:accef28c92a7c13c3ea03157576a508ecb7fb41f8ebf3578443f31ee7c8709be section:`Paper Trading` section_key:`paper-trading` title:Review alpha tools and evidence gaps for every sleeve title_key:`review-alpha-tools-and-evidence-gaps-for-every-sleeve` opsctl:`sleeve-alpha-toolbox` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
+- search-entry:52b8d7769382b2f02321867c999b68435b32e0a5134000f595436b635b48cef2 section:`Paper Trading` section_key:`paper-trading` title:Review candidate alpha and cross-sleeve ownership title_key:`review-candidate-alpha-and-cross-sleeve-ownership` opsctl:`alpha-generation-control` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
 - search-entry:1a5fbcd27dec36ea982f77000e1526774e6f2e4249bbfe9295f201cb495b1736 section:`Paper Trading` section_key:`paper-trading` title:Review candidate-bound quantitative challengers title_key:`review-candidate-bound-quantitative-challengers` opsctl:`quantitative-challengers` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
 - search-entry:227f99d286741989a6dfd2d8961bb05917451c76c731cfae15bb8de007f58291 section:`Paper Trading` section_key:`paper-trading` title:Review guarded 400 bot paper ramp title_key:`review-guarded-400-bot-paper-ramp` opsctl:`paper-400-ramp` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
 - search-entry:c2f750f7f4d1ef690e6546d03a2f4f6c9e4db7bd9d0b3347ebd756c465954abb section:`Paper Trading` section_key:`paper-trading` title:Review institutional capability and evidence gaps title_key:`review-institutional-capability-and-evidence-gaps` opsctl:`institutional-capability-control` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
 - search-entry:c5bb4a0d0e095d9059a68480f8eed21f83b61e9190ab4b04ec85ecb85ec24b40 section:`Paper Trading` section_key:`paper-trading` title:Review profitability decay containment title_key:`review-profitability-decay-containment` opsctl:`decay-monitor` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
 - search-entry:43b4f072792653022f8838c6689e6a5c0ce36ac4dafc14faf357390d940452e1 section:`Paper Trading` section_key:`paper-trading` title:Review sleeve strategy contracts and lifecycle evidence title_key:`review-sleeve-strategy-contracts-and-lifecycle-evidence` opsctl:`sleeve-strategy-specialization` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
+- search-entry:8e4999a8c0e1d9a741f2a29b182cc62cd6023563bbe12fb550c1c28dee3aebbe section:`Paper Trading` section_key:`paper-trading` title:Review the alpha concept map and sixteen measurement engines title_key:`review-the-alpha-concept-map-and-sixteen-measurement-engines` opsctl:`alpha-concepts` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
+- search-entry:488c2ad6bd3d6af9031b1fa7e1d2ab303aa8e15c5b9fa5920d9242c08577ab05 section:`Paper Trading` section_key:`paper-trading` title:Review the canonical research data platform title_key:`review-the-canonical-research-data-platform` opsctl:`research-data-platform` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
 - search-entry:2f645f321f37f05c393f302641994eaaeb39bc248f11eaaf71fd14e398a5e865 section:`Paper Trading` section_key:`paper-trading` title:Review the complete experiment-family correction title_key:`review-the-complete-experiment-family-correction` opsctl:`multiple-testing` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
+- search-entry:c0d0b9712a1d3778a7d2f4f8bf22f6db24bcd6e18f9a76ef6da462579b0e6431 section:`Paper Trading` section_key:`paper-trading` title:Review the eight institutional research extensions title_key:`review-the-eight-institutional-research-extensions` opsctl:`institutional-research-extensions` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
 - search-entry:ee559c21f69068d5854f7b320f2c8cd89b075cfa46cf308809c2b9d2da6b0322 section:`Paper Trading` section_key:`paper-trading` title:Review the eight profitability hardening controls title_key:`review-the-eight-profitability-hardening-controls` opsctl:`profitability-hardening` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
 - search-entry:75a649865cad971ee8aea162ff2406bc8b51429362260074c94c2a7361cc62c6 section:`Paper Trading` section_key:`paper-trading` title:Review the locked profitability holdout vault title_key:`review-the-locked-profitability-holdout-vault` opsctl:`profitability-holdout-vault` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
 - search-entry:8bb5e5024f934aff91e23ae490dbf6890cda9ef5f456080b4900cecfcc3a6655 section:`Paper Trading` section_key:`paper-trading` title:Review the strict profitability evidence firewall title_key:`review-the-strict-profitability-evidence-firewall` opsctl:`profitability-evidence-firewall` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
 - search-entry:5b8d9f321786b3fc059e4291a3c70d6fbbc9e3a9519bc0d9b4d6af4016fe1493 section:`Paper Trading` section_key:`paper-trading` title:Search the 12,000-strategy sleeve library and scorecards title_key:`search-the-12-000-strategy-sleeve-library-and-scorecards` opsctl:`strategy-library` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
-- search-entry:bf3c3b78c2bcf7e0e9d49de06c673676358d5b8c2be58fe1af97d4e264fe344e section:`Paper Trading` section_key:`paper-trading` title:Validate the 20 authoritative production references and eight controls title_key:`validate-the-20-authoritative-production-references-and-eight-controls` opsctl:`authoritative-systems` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
+- search-entry:88c2309c0307dc3b29c01ca5fc6eef2ac1327687fccd92504e5c86ec0296ddb9 section:`Paper Trading` section_key:`paper-trading` title:Validate the 39 authoritative production references and 18 controls title_key:`validate-the-39-authoritative-production-references-and-18-controls` opsctl:`authoritative-systems` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
 - search-entry:2b10c3089dd25a74e4e533fd26fec2ddb81e4ce00103187eee31f8cfb4a9ddc2 section:`Reports And PDFs` section_key:`reports-and-pdfs` title:Active bot stack PDF title_key:`active-bot-stack-pdf` opsctl:`none` scripts:`scripts/ops/open_report_artifact.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
 - search-entry:8035aac80e3951d9e6f39db691cc8327ed5b733d7bc1033dffb2cf3b74505b54 section:`Reports And PDFs` section_key:`reports-and-pdfs` title:Incident report title_key:`incident-report` opsctl:`none` scripts:`scripts/ops/open_report_artifact.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
 - search-entry:2064b1c296e1fcaedee03dced4c4660a6fca0671880e51dbbad7622fcb3887c4 section:`Reports And PDFs` section_key:`reports-and-pdfs` title:Incident review packet PDF title_key:`incident-review-packet-pdf` opsctl:`none` scripts:`scripts/ops/open_report_artifact.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
@@ -408,6 +425,7 @@ Each row is generated from `governance/health/commands_contract_latest.json`, so
 - search-entry:537290298c6b1eb60a77be007c54847030efc21151fc09d6f64bd82dbaa9a516 section:`Status And Health` section_key:`status-and-health` title:Refresh readiness evidence without the full dashboard title_key:`refresh-readiness-evidence-without-the-full-dashboard` opsctl:`readiness-evidence-refresh` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
 - search-entry:5c42cde9787324dfb1206f08bba236c4f22ec3331b467e7b3f8cc25f5445a72d section:`Status And Health` section_key:`status-and-health` title:Refresh runtime dashboard contracts title_key:`refresh-runtime-dashboard-contracts` opsctl:`dashboard-refresh` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
 - search-entry:36e9560d6a52bc737d00023af33cecb8c45a473a03d29cec30e040e6c08d3b3e section:`Status And Health` section_key:`status-and-health` title:Refresh source-backed capability proofs title_key:`refresh-source-backed-capability-proofs` opsctl:`capability-materialization` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
+- search-entry:d33a24e9bbe25513a8cc09e9eb6fddb450bfb07708aabedc21fc6257c8d520a1 section:`Status And Health` section_key:`status-and-health` title:Rehearse the sealed live-execution path title_key:`rehearse-the-sealed-live-execution-path` opsctl:`live-execution-rehearsal` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
 - search-entry:9af5977e0643081899f53d7a99dc149d1e2953fa8400df3d62272e2ad979cb76 section:`Status And Health` section_key:`status-and-health` title:Repair safe cross-system drift surfaces title_key:`repair-safe-cross-system-drift-surfaces` opsctl:`system-drift-autopilot` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
 - search-entry:b68225df4373e5ada1af692b9823d7aef7c489c9c6549e42e80dd9eca2c15c4f section:`Status And Health` section_key:`status-and-health` title:Replay hash registry guard title_key:`replay-hash-registry-guard` opsctl:`replay-hash-registry` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
 - search-entry:bbdaeb098be7903b2af2e606229145d9c1ce937bbaef0d84edcdb06e6918f3bd section:`Status And Health` section_key:`status-and-health` title:Reporter quality infrabot title_key:`reporter-quality-infrabot` opsctl:`report-quality-guard` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
@@ -914,6 +932,15 @@ cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
 ./scripts/ops/opsctl.sh macro-context-sync --json
 ```
 
+### Official public financial context sync
+```bash
+cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
+./scripts/ops/opsctl.sh public-financial-sync --json
+```
+
+Collects SEC issuer facts, OFR financial stress, FDIC failure and quarterly bank-financial evidence, Federal Register financial-policy activity, ECB euro funding context, and New York Fed primary-dealer statistics.
+Features are classified and routed by decision plane and family. The weekly and quarterly additions are supplemental, cannot authorize orders or promotion, and are omitted rather than zero-filled when unavailable.
+
 ### Options flow context sync
 ```bash
 cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
@@ -921,6 +948,15 @@ cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
 ```
 
 `options-flow-sync` is the canonical command. `tastytrade-sync` remains a legacy alias for backward compatibility.
+
+### Public macro and micro source inventory
+```bash
+cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
+./scripts/ops/opsctl.sh economic-source-inventory --list
+```
+
+Validates and lists all direct and grouped public economic sources, their physical producers, capabilities, decision-plane routes, and decision-family routes.
+Source count is inventory evidence only and does not raise alpha, profitability, readiness, or promotion grades.
 
 ### Source verification
 ```bash
@@ -1094,6 +1130,15 @@ cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
 
 Verifies runtime throttle, resource guard, paper-ramp, support niceness, and paper execution pause contracts after a ramp or degradation fix.
 
+### Compare cumulative soak behavior between candidate generations
+```bash
+cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
+./scripts/ops/opsctl.sh generation-behavior-attribution --from-generation 65 --to-generation 99 --last-days 21 --json
+```
+
+Compares candidate-stamped behavior and post-cost generation flows while preserving the cumulative segmented soak context.
+Legacy unstamped rows are labeled as descriptive time-window associations only; the report is not causal proof, current-candidate promotion credit, a profitability guarantee, or order authority.
+
 ### Compare paper and live-shadow intent semantics
 ```bash
 cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
@@ -1125,6 +1170,24 @@ cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
 ```
 
 Tests threshold, tradeability, conflict, and exit alternatives before any future loosening or size increase.
+
+### Review alpha tools and evidence gaps for every sleeve
+```bash
+cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
+./scripts/ops/opsctl.sh sleeve-alpha-toolbox --json
+```
+
+Resolves every declared sleeve to an explicit policy family and routes each required evidence axis to deterministic candidate-bound diagnostics.
+Full route coverage is structural only; current-candidate post-cost evidence must pass organically, and the toolbox has no action, sizing, paper-order, promotion, allocation, or live authority.
+
+### Review candidate alpha and cross-sleeve ownership
+```bash
+cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
+./scripts/ops/opsctl.sh alpha-generation-control --json
+```
+
+Separates 10/10 alpha-control implementation from organic post-cost evidence, then decomposes common versus residual sleeve alpha.
+Shared regime, liquidity, macro, factor, risk, and cost context cannot duplicate trade ownership; incomplete evidence returns cash, freezes new strategy offspring, and grants no allocation or live authority.
 
 ### Review candidate-bound quantitative challengers
 ```bash
@@ -1169,6 +1232,24 @@ cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
 Materializes complete objective-aware contracts for every active runtime and collection strategy, then joins only candidate-bound post-cost evidence.
 Broad master decisions stay attributed to an ensemble identity; hedge, cash, and control sleeves use portfolio-appropriate objectives and the report has no action, sizing, allocation, promotion, or live-order authority.
 
+### Review the alpha concept map and sixteen measurement engines
+```bash
+cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
+./scripts/ops/opsctl.sh alpha-concepts --json
+```
+
+Reports 128 canonical concepts across 16 families and runs sixteen candidate-bound measurement engines outside the market hot path.
+Implementation, catalog routing, candidate evidence, and economic support are separate grades; missing evidence becomes a collection priority and never grants action, sizing, allocation, label, promotion, paper-order, or live authority.
+
+### Review the canonical research data platform
+```bash
+cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
+./scripts/ops/opsctl.sh research-data-platform --json
+```
+
+Checks the ten catalog, entitlement, point-in-time, bitemporal, alpha-lifecycle, source-value, portfolio, simulation, feed-SLO, and reproducibility contracts used by every decision family.
+Structural readiness stays separate from candidate-bound evidence and grants no signal, sizing, promotion, paper-order, or live-order authority.
+
 ### Review the complete experiment-family correction
 ```bash
 cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
@@ -1176,6 +1257,15 @@ cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
 ```
 
 Counts active, excluded, failed, and retired strategy experiments so profitability evidence cannot omit unsuccessful trials from multiple-testing correction.
+
+### Review the eight institutional research extensions
+```bash
+cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
+./scripts/ops/opsctl.sh institutional-research-extensions --json
+```
+
+Checks factor benchmarks, pipeline incident ownership, material-change governance, candidate risk schedules, execution speed-cost frontiers, checkpointable research DAGs, versioned datasets, and cross-engine valuations.
+The public Point72/Cubist, AQR, Man AHL, Two Sigma, D. E. Shaw, and GS Quant material is design provenance only; structural A+ remains separate from earned candidate evidence, licensing, profitability, promotion, and order authority.
 
 ### Review the eight profitability hardening controls
 ```bash
@@ -1211,14 +1301,14 @@ cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
 Refreshes the deterministic library, then shows hot or cold tier, current-regime relevance, evidence maturity, and honest quality verdicts.
 Use `--good`, `--bad`, `--verdict NAME`, `--tier cold_research`, or `--json`; unknown evidence is never mislabeled bad and the query has no execution authority.
 
-### Validate the 20 authoritative production references and eight controls
+### Validate the 39 authoritative production references and 18 controls
 ```bash
 cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
 ./scripts/ops/opsctl.sh authoritative-systems --json
 ```
 
-Runs broker conformance, order-state invariants, point-in-time validity, event-time watermarks, causal attribution, paper/live equivalence, execution fault scenarios, and trace-chain checks.
-The A+ grade is limited to local structural implementation; it is not profitability evidence and grants no live execution authority.
+Runs the original execution and evidence checks plus exchange sequencing, atomic archive snapshots, formal specifications, build provenance, canonical trade lifecycle, independent risk-oracle reconciliation, constrained portfolio advice, declarative data-quality checkpoints, and the eight institutional research extensions.
+The A+ grade is limited to local structural implementation; external observations remain separate, it is not profitability evidence, and it grants no live execution authority.
 
 ## Reports And PDFs
 
@@ -1895,6 +1985,15 @@ cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
 
 Materializes exchange calendars, point-in-time session state, the versioned derivative contract master, and versioned stress scenarios into four direct content-addressed proof receipts.
 Run this before collector capability routing; it cannot fetch external data, change decisions, place orders, mutate the registry, or promote a bot.
+
+### Rehearse the sealed live-execution path
+```bash
+cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
+./scripts/ops/opsctl.sh live-execution-rehearsal --json
+```
+
+Runs 14 structural controls and ten negative-path probes without a broker client, network access, paper-order authority, or live-order authority.
+The rehearsal validates sealed candidate, account, snapshot, policy, quote, intent, and broker-request parity. An A+ implementation result is not live-release or profitability evidence.
 
 ### Repair safe cross-system drift surfaces
 ```bash

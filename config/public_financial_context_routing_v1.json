@@ -1,0 +1,224 @@
+{
+  "schema_version": 1,
+  "policy_id": "public_financial_context_routing_v1",
+  "purpose": "Classify official public financial evidence and route it only to relevant paper-decision and training consumers.",
+  "authority": {
+    "classification_and_context_only": true,
+    "can_change_action": false,
+    "can_change_quantity": false,
+    "can_allocate_capital": false,
+    "can_promote_live": false,
+    "can_submit_order": false
+  },
+  "classification_dimensions": [
+    "evidence_class",
+    "entity_scope",
+    "geographic_scope",
+    "market_domain",
+    "cadence",
+    "latency_class",
+    "semantic_direction",
+    "decision_family",
+    "decision_plane",
+    "authority_class"
+  ],
+  "source_routes": {
+    "sec_companyfacts": {
+      "evidence_class": "issuer_fundamental",
+      "entity_scope": "issuer_symbol",
+      "geographic_scope": ["US_issuer", "foreign_private_issuer_when_sec_reported"],
+      "market_domains": ["equity", "income", "fundamental", "credit"],
+      "cadence": "filing_driven",
+      "latency_class": "slow",
+      "authority_class": "paper_training_context"
+    },
+    "ofr_financial_stress_index": {
+      "evidence_class": "systemic_financial_conditions",
+      "entity_scope": "global_system",
+      "geographic_scope": ["United_States", "other_advanced_economies", "emerging_markets"],
+      "market_domains": ["credit", "funding", "equity", "safe_assets", "volatility"],
+      "cadence": "daily_with_two_business_day_lag",
+      "latency_class": "daily_lagged",
+      "authority_class": "paper_training_context"
+    },
+    "fdic_bank_failures": {
+      "evidence_class": "banking_failure_event",
+      "entity_scope": "banking_system_and_failed_institution",
+      "geographic_scope": ["United_States"],
+      "market_domains": ["banking", "credit", "funding", "systemic_risk"],
+      "cadence": "event_driven",
+      "latency_class": "event_lagged",
+      "authority_class": "paper_training_context"
+    },
+    "federal_register_financial_rules": {
+      "evidence_class": "regulatory_policy_event",
+      "entity_scope": "agency_market_and_rule",
+      "geographic_scope": ["United_States"],
+      "market_domains": ["securities", "derivatives", "banking", "treasury", "digital_assets"],
+      "cadence": "business_daily",
+      "latency_class": "daily",
+      "authority_class": "informational_policy_context_not_legal_truth"
+    },
+    "ecb_estr": {
+      "evidence_class": "central_bank_money_market",
+      "entity_scope": "euro_area_funding_system",
+      "geographic_scope": ["Euro_area"],
+      "market_domains": ["funding", "rates", "fx", "cross_border"],
+      "cadence": "business_daily",
+      "latency_class": "daily",
+      "authority_class": "paper_training_context"
+    },
+    "nyfed_primary_dealer_statistics": {
+      "evidence_class": "dealer_balance_sheet_and_funding",
+      "entity_scope": "primary_dealer_aggregate",
+      "geographic_scope": ["United_States"],
+      "market_domains": ["treasury", "repo", "funding", "credit", "collateral"],
+      "cadence": "weekly_with_reporting_lag",
+      "latency_class": "weekly_lagged",
+      "authority_class": "paper_training_context"
+    },
+    "fdic_bank_financials": {
+      "evidence_class": "banking_balance_sheet_aggregate",
+      "entity_scope": "fdic_insured_banking_system",
+      "geographic_scope": ["United_States"],
+      "market_domains": ["banking", "credit", "funding", "lending"],
+      "cadence": "quarterly",
+      "latency_class": "quarterly_lagged",
+      "authority_class": "paper_training_context"
+    }
+  },
+  "capability_routes": {
+    "financial_statements": {
+      "source_ids": ["sec_companyfacts"],
+      "catalog_plane_ids": ["company_fundamentals"],
+      "decision_family_ids": ["long_horizon_income", "balanced_directional", "event_driven", "research_models", "swing_directional"]
+    },
+    "quality_ratios": {
+      "source_ids": ["sec_companyfacts"],
+      "catalog_plane_ids": ["company_fundamentals"],
+      "decision_family_ids": ["long_horizon_income", "balanced_directional", "research_models", "swing_directional"]
+    },
+    "operating_profitability": {
+      "source_ids": ["sec_companyfacts"],
+      "catalog_plane_ids": ["company_fundamentals"],
+      "decision_family_ids": ["long_horizon_income", "balanced_directional", "research_models", "swing_directional"]
+    },
+    "cash_flow_quality": {
+      "source_ids": ["sec_companyfacts"],
+      "catalog_plane_ids": ["company_fundamentals"],
+      "decision_family_ids": ["long_horizon_income", "balanced_directional", "research_models", "structured_credit"]
+    },
+    "leverage_state": {
+      "source_ids": ["sec_companyfacts"],
+      "catalog_plane_ids": ["company_fundamentals"],
+      "decision_family_ids": ["long_horizon_income", "balanced_directional", "research_models", "structured_credit", "tail_hedge"]
+    },
+    "distress_indicators": {
+      "source_ids": ["sec_companyfacts"],
+      "catalog_plane_ids": ["company_fundamentals"],
+      "decision_family_ids": ["event_driven", "research_models", "structured_credit", "tail_hedge"]
+    },
+    "funding_stress": {
+      "source_ids": ["ofr_financial_stress_index", "ecb_estr"],
+      "catalog_plane_ids": ["rates_credit_funding"],
+      "decision_family_ids": ["macro_rates_fx", "structured_credit", "tail_hedge", "relative_value", "liquidity_microstructure", "volatility_derivatives"]
+    },
+    "default_risk": {
+      "source_ids": ["ofr_financial_stress_index", "fdic_bank_failures"],
+      "catalog_plane_ids": ["rates_credit_funding"],
+      "decision_family_ids": ["structured_credit", "tail_hedge", "long_horizon_income", "research_models"]
+    },
+    "rates_credit_regime": {
+      "source_ids": ["ofr_financial_stress_index", "ecb_estr"],
+      "catalog_plane_ids": ["rates_credit_funding", "regime_state"],
+      "decision_family_ids": ["macro_rates_fx", "structured_credit", "relative_value", "tail_hedge", "long_horizon_income"]
+    },
+    "risk_on_off_state": {
+      "source_ids": ["ofr_financial_stress_index"],
+      "catalog_plane_ids": ["regime_state"],
+      "decision_family_ids": ["balanced_directional", "macro_rates_fx", "tail_hedge", "swing_directional", "digital_asset_basis"]
+    },
+    "volatility_regime": {
+      "source_ids": ["ofr_financial_stress_index"],
+      "catalog_plane_ids": ["regime_state", "options_derivatives"],
+      "decision_family_ids": ["volatility_derivatives", "tail_hedge", "liquidity_microstructure", "balanced_directional"]
+    },
+    "regulatory_policy": {
+      "source_ids": ["federal_register_financial_rules"],
+      "catalog_plane_ids": ["monetary_fiscal_policy"],
+      "decision_family_ids": ["event_driven", "macro_rates_fx", "structured_credit", "digital_asset_basis", "research_models"]
+    },
+    "policy_news": {
+      "source_ids": ["federal_register_financial_rules"],
+      "catalog_plane_ids": ["news_events"],
+      "decision_family_ids": ["event_driven", "macro_rates_fx", "structured_credit", "digital_asset_basis", "research_models"]
+    },
+    "dealer_balance_sheet": {
+      "source_ids": ["nyfed_primary_dealer_statistics"],
+      "catalog_plane_ids": ["rates_credit_funding", "ownership_positioning"],
+      "decision_family_ids": ["macro_rates_fx", "relative_value", "structured_credit", "tail_hedge", "liquidity_microstructure", "research_models"]
+    },
+    "repo_conditions": {
+      "source_ids": ["nyfed_primary_dealer_statistics"],
+      "catalog_plane_ids": ["rates_credit_funding"],
+      "decision_family_ids": ["macro_rates_fx", "relative_value", "structured_credit", "tail_hedge", "liquidity_microstructure"]
+    },
+    "collateral_settlement_stress": {
+      "source_ids": ["nyfed_primary_dealer_statistics"],
+      "catalog_plane_ids": ["rates_credit_funding"],
+      "decision_family_ids": ["macro_rates_fx", "structured_credit", "tail_hedge", "liquidity_microstructure", "volatility_derivatives"]
+    },
+    "bank_credit_conditions": {
+      "source_ids": ["fdic_bank_financials"],
+      "catalog_plane_ids": ["rates_credit_funding"],
+      "decision_family_ids": ["structured_credit", "tail_hedge", "long_horizon_income", "balanced_directional", "research_models"]
+    }
+  },
+  "feature_routes": {
+    "public_financial_context_available_norm": {"scope": "global", "source_id": "public_financial_context", "evidence_class": "data_quality", "semantic_direction": "higher_is_more_available", "decision_plane_ids": [], "decision_family_ids": ["infrastructure_control", "research_models"]},
+    "public_financial_source_coverage_norm": {"scope": "global", "source_id": "public_financial_context", "evidence_class": "data_quality", "semantic_direction": "higher_is_more_complete", "decision_plane_ids": [], "decision_family_ids": ["infrastructure_control", "research_models"]},
+    "public_financial_supplemental_coverage_norm": {"scope": "global", "source_id": "public_financial_context", "evidence_class": "data_quality", "semantic_direction": "higher_is_more_supplemental_context_available", "decision_plane_ids": [], "decision_family_ids": ["infrastructure_control", "research_models"]},
+    "ofr_financial_stress_norm": {"scope": "global", "source_id": "ofr_financial_stress_index", "evidence_class": "systemic_financial_conditions", "semantic_direction": "higher_is_more_stress", "decision_plane_ids": ["funding_stress", "credit_curve"], "decision_family_ids": ["macro_rates_fx", "structured_credit", "tail_hedge", "balanced_directional"]},
+    "ofr_credit_stress_norm": {"scope": "global", "source_id": "ofr_financial_stress_index", "evidence_class": "credit_conditions", "semantic_direction": "higher_is_more_stress", "decision_plane_ids": ["credit_curve"], "decision_family_ids": ["structured_credit", "tail_hedge", "long_horizon_income"]},
+    "ofr_funding_stress_norm": {"scope": "global", "source_id": "ofr_financial_stress_index", "evidence_class": "funding_conditions", "semantic_direction": "higher_is_more_stress", "decision_plane_ids": ["funding_stress"], "decision_family_ids": ["macro_rates_fx", "structured_credit", "relative_value", "liquidity_microstructure"]},
+    "ofr_safe_asset_stress_norm": {"scope": "global", "source_id": "ofr_financial_stress_index", "evidence_class": "safe_asset_demand", "semantic_direction": "higher_is_more_stress", "decision_plane_ids": ["funding_stress", "credit_curve"], "decision_family_ids": ["macro_rates_fx", "tail_hedge", "structured_credit"]},
+    "ofr_volatility_stress_norm": {"scope": "global", "source_id": "ofr_financial_stress_index", "evidence_class": "volatility_conditions", "semantic_direction": "higher_is_more_stress", "decision_plane_ids": ["volatility_surface"], "decision_family_ids": ["volatility_derivatives", "tail_hedge", "liquidity_microstructure"]},
+    "ofr_equity_valuation_stress_norm": {"scope": "global", "source_id": "ofr_financial_stress_index", "evidence_class": "equity_valuation_conditions", "semantic_direction": "higher_is_more_stress", "decision_plane_ids": ["funding_stress"], "decision_family_ids": ["balanced_directional", "swing_directional", "tail_hedge"]},
+    "fdic_failure_12m_norm": {"scope": "global", "source_id": "fdic_bank_failures", "evidence_class": "banking_failure_event", "semantic_direction": "higher_is_more_stress", "decision_plane_ids": ["credit_curve", "market_calendar"], "decision_family_ids": ["structured_credit", "tail_hedge", "event_driven"]},
+    "fdic_failure_assets_12m_norm": {"scope": "global", "source_id": "fdic_bank_failures", "evidence_class": "banking_failure_severity", "semantic_direction": "higher_is_more_stress", "decision_plane_ids": ["credit_curve"], "decision_family_ids": ["structured_credit", "tail_hedge", "event_driven"]},
+    "federal_register_financial_activity_norm": {"scope": "global", "source_id": "federal_register_financial_rules", "evidence_class": "regulatory_policy_event", "semantic_direction": "higher_is_more_activity", "decision_plane_ids": ["market_calendar"], "decision_family_ids": ["event_driven", "macro_rates_fx", "structured_credit", "digital_asset_basis"]},
+    "federal_register_high_impact_norm": {"scope": "global", "source_id": "federal_register_financial_rules", "evidence_class": "regulatory_policy_event", "semantic_direction": "higher_is_more_event_risk", "decision_plane_ids": ["market_calendar"], "decision_family_ids": ["event_driven", "macro_rates_fx", "structured_credit", "digital_asset_basis"]},
+    "ecb_estr_funding_pressure_norm": {"scope": "global", "source_id": "ecb_estr", "evidence_class": "central_bank_money_market", "semantic_direction": "higher_is_more_pressure", "decision_plane_ids": ["funding_stress", "cross_border_capital"], "decision_family_ids": ["macro_rates_fx", "structured_credit", "relative_value"]},
+    "ecb_estr_rate_norm": {"scope": "global", "source_id": "ecb_estr", "evidence_class": "central_bank_money_market", "semantic_direction": "level_not_directional", "decision_plane_ids": ["funding_stress", "cross_border_capital"], "decision_family_ids": ["macro_rates_fx", "structured_credit", "relative_value"]},
+    "ecb_estr_change_5d_norm": {"scope": "global", "source_id": "ecb_estr", "evidence_class": "central_bank_money_market", "semantic_direction": "above_half_is_rate_increase", "decision_plane_ids": ["funding_stress", "cross_border_capital"], "decision_family_ids": ["macro_rates_fx", "structured_credit", "relative_value"]},
+    "companyfacts_coverage_norm": {"scope": "global", "source_id": "sec_companyfacts", "evidence_class": "data_quality", "semantic_direction": "higher_is_more_complete", "decision_plane_ids": [], "decision_family_ids": ["long_horizon_income", "research_models", "infrastructure_control"]},
+    "companyfacts_operating_profitability_norm": {"scope": "global", "source_id": "sec_companyfacts", "evidence_class": "issuer_fundamental", "semantic_direction": "higher_is_stronger", "decision_plane_ids": [], "decision_family_ids": ["long_horizon_income", "balanced_directional", "research_models"]},
+    "companyfacts_cash_flow_quality_norm": {"scope": "global", "source_id": "sec_companyfacts", "evidence_class": "issuer_fundamental", "semantic_direction": "higher_is_stronger", "decision_plane_ids": [], "decision_family_ids": ["long_horizon_income", "structured_credit", "research_models"]},
+    "companyfacts_distress_norm": {"scope": "global", "source_id": "sec_companyfacts", "evidence_class": "issuer_distress", "semantic_direction": "higher_is_more_stress", "decision_plane_ids": [], "decision_family_ids": ["structured_credit", "tail_hedge", "event_driven", "research_models"]},
+    "fundamental_financial_statement_coverage_norm": {"scope": "symbol", "source_id": "sec_companyfacts", "evidence_class": "data_quality", "semantic_direction": "higher_is_more_complete", "decision_plane_ids": [], "decision_family_ids": ["long_horizon_income", "balanced_directional", "research_models"]},
+    "fundamental_quality_norm": {"scope": "symbol", "source_id": "sec_companyfacts", "evidence_class": "issuer_fundamental", "semantic_direction": "higher_is_stronger", "decision_plane_ids": [], "decision_family_ids": ["long_horizon_income", "balanced_directional", "research_models"]},
+    "fundamental_operating_profitability_norm": {"scope": "symbol", "source_id": "sec_companyfacts", "evidence_class": "issuer_fundamental", "semantic_direction": "higher_is_stronger", "decision_plane_ids": [], "decision_family_ids": ["long_horizon_income", "balanced_directional", "research_models"]},
+    "fundamental_cash_flow_quality_norm": {"scope": "symbol", "source_id": "sec_companyfacts", "evidence_class": "issuer_fundamental", "semantic_direction": "higher_is_stronger", "decision_plane_ids": [], "decision_family_ids": ["long_horizon_income", "structured_credit", "research_models"]},
+    "fundamental_leverage_norm": {"scope": "symbol", "source_id": "sec_companyfacts", "evidence_class": "issuer_leverage", "semantic_direction": "higher_is_more_stress", "decision_plane_ids": [], "decision_family_ids": ["structured_credit", "tail_hedge", "long_horizon_income"]},
+    "fundamental_distress_norm": {"scope": "symbol", "source_id": "sec_companyfacts", "evidence_class": "issuer_distress", "semantic_direction": "higher_is_more_stress", "decision_plane_ids": [], "decision_family_ids": ["structured_credit", "tail_hedge", "event_driven"]},
+    "fundamental_current_ratio_norm": {"scope": "symbol", "source_id": "sec_companyfacts", "evidence_class": "issuer_liquidity", "semantic_direction": "higher_is_more_liquid", "decision_plane_ids": [], "decision_family_ids": ["long_horizon_income", "structured_credit", "research_models"]},
+    "fundamental_cash_to_assets_norm": {"scope": "symbol", "source_id": "sec_companyfacts", "evidence_class": "issuer_liquidity", "semantic_direction": "higher_is_more_liquid", "decision_plane_ids": [], "decision_family_ids": ["long_horizon_income", "structured_credit", "research_models"]},
+    "fundamental_free_cash_flow_positive_norm": {"scope": "symbol", "source_id": "sec_companyfacts", "evidence_class": "issuer_cash_flow", "semantic_direction": "one_is_positive", "decision_plane_ids": [], "decision_family_ids": ["long_horizon_income", "balanced_directional", "research_models"]},
+    "nyfed_dealer_repo_imbalance_norm": {"scope": "global", "source_id": "nyfed_primary_dealer_statistics", "evidence_class": "repo_funding_balance", "semantic_direction": "above_half_is_more_repo_than_reverse_repo", "decision_plane_ids": ["funding_stress", "positioning_crowding"], "decision_family_ids": ["macro_rates_fx", "relative_value", "structured_credit", "liquidity_microstructure", "tail_hedge"]},
+    "nyfed_dealer_financing_fails_pressure_norm": {"scope": "global", "source_id": "nyfed_primary_dealer_statistics", "evidence_class": "collateral_settlement_stress", "semantic_direction": "higher_is_more_stress", "decision_plane_ids": ["funding_stress", "securities_lending"], "decision_family_ids": ["macro_rates_fx", "structured_credit", "tail_hedge", "liquidity_microstructure", "volatility_derivatives"]},
+    "nyfed_dealer_treasury_inventory_pressure_norm": {"scope": "global", "source_id": "nyfed_primary_dealer_statistics", "evidence_class": "dealer_balance_sheet", "semantic_direction": "higher_is_more_inventory_pressure", "decision_plane_ids": ["funding_stress", "positioning_crowding", "credit_curve"], "decision_family_ids": ["macro_rates_fx", "relative_value", "structured_credit", "tail_hedge", "liquidity_microstructure"]},
+    "nyfed_dealer_corporate_inventory_pressure_norm": {"scope": "global", "source_id": "nyfed_primary_dealer_statistics", "evidence_class": "dealer_credit_inventory", "semantic_direction": "higher_is_more_inventory_pressure", "decision_plane_ids": ["positioning_crowding", "credit_curve"], "decision_family_ids": ["relative_value", "structured_credit", "tail_hedge", "liquidity_microstructure"]},
+    "fdic_bank_noncurrent_loan_pressure_norm": {"scope": "global", "source_id": "fdic_bank_financials", "evidence_class": "bank_credit_quality", "semantic_direction": "higher_is_more_stress", "decision_plane_ids": ["credit_curve", "funding_stress"], "decision_family_ids": ["structured_credit", "tail_hedge", "long_horizon_income", "balanced_directional"]},
+    "fdic_bank_deposit_funding_norm": {"scope": "global", "source_id": "fdic_bank_financials", "evidence_class": "bank_funding_structure", "semantic_direction": "higher_is_more_deposit_funded", "decision_plane_ids": ["funding_stress", "credit_curve"], "decision_family_ids": ["structured_credit", "tail_hedge", "long_horizon_income", "macro_rates_fx"]},
+    "fdic_bank_lending_intensity_norm": {"scope": "global", "source_id": "fdic_bank_financials", "evidence_class": "bank_lending_conditions", "semantic_direction": "level_not_directional", "decision_plane_ids": ["credit_curve"], "decision_family_ids": ["structured_credit", "long_horizon_income", "balanced_directional", "research_models"]},
+    "fdic_bank_asset_growth_yoy_norm": {"scope": "global", "source_id": "fdic_bank_financials", "evidence_class": "bank_balance_sheet_growth", "semantic_direction": "above_half_is_expansion", "decision_plane_ids": ["credit_curve", "funding_stress"], "decision_family_ids": ["structured_credit", "long_horizon_income", "balanced_directional", "macro_rates_fx", "research_models"]}
+  },
+  "routing_contract": {
+    "unclassified_feature_policy": "quarantine_from_bot_context",
+    "missing_feature_policy": "omit_not_zero_fill",
+    "future_observation_policy": "reject",
+    "cross_family_broadcast_allowed": false,
+    "context_can_authorize_order": false,
+    "context_can_promote_live": false
+  }
+}

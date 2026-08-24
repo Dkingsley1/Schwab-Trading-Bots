@@ -123,9 +123,28 @@
       ]
     }
   },
+  "economic_context_contract": {
+    "contract_id": "sleeve_economic_context_v1",
+    "required_for_every_decision_family": true,
+    "minimum_capabilities_per_family": 2,
+    "minimum_distinct_selected_sources": 2,
+    "minimum_source_coverage_ratio": 1.0,
+    "minimum_route_score": 0.62,
+    "preferred_source_kinds": ["official", "official_derived", "official_public_mesh", "broker_native"],
+    "point_in_time_lineage_required": true,
+    "source_failure_isolated": true,
+    "shared_snapshot_required": true,
+    "no_per_bot_fetch_fanout": true,
+    "context_only_no_execution_authority": true,
+    "missing_context_blocks_global_collection": false,
+    "missing_context_blocks_paper_execution": false,
+    "missing_context_blocks_live_promotion_when_candidate_required": true,
+    "profitability_evidence_separation_required": true
+  },
   "family_routes": {
     "balanced_directional": {
       "base_profiles": ["market_signal", "execution_truth"],
+      "economic_context_capability_ids": ["growth_indicators", "inflation_indicators", "central_bank_decisions", "risk_on_off_state"],
       "paper_required_capability_ids": ["adjusted_prices", "risk_on_off_state"],
       "required_capability_ids": ["adjusted_prices", "risk_on_off_state"],
       "optional_plane_ids": ["company_fundamentals", "cross_asset_state", "news_events", "profitability_evidence"],
@@ -138,6 +157,7 @@
     },
     "long_horizon_income": {
       "base_profiles": ["market_signal", "execution_truth"],
+      "economic_context_capability_ids": ["growth_indicators", "inflation_indicators", "treasury_yield_curve", "central_bank_decisions", "global_liquidity_regime"],
       "paper_required_capability_ids": ["adjusted_prices", "dividend_events", "drip_state"],
       "required_capability_ids": ["adjusted_prices", "financial_statements", "quality_ratios", "operating_profitability", "cash_flow_quality", "dividend_events", "drip_state"],
       "optional_plane_ids": ["company_fundamentals", "corporate_actions", "ownership_positioning", "rates_credit_funding", "profitability_evidence"],
@@ -150,6 +170,7 @@
     },
     "intraday_momentum": {
       "base_profiles": ["market_signal", "execution_truth"],
+      "economic_context_capability_ids": ["economic_event_calendar", "central_bank_decisions", "funding_stress", "risk_on_off_state"],
       "paper_required_capability_ids": ["quote_age", "liquidity_regime", "execution_slippage", "fill_latency"],
       "required_capability_ids": ["nbbo_quotes", "bid_ask_spread", "quote_age", "liquidity_regime", "vwap_state", "execution_slippage", "fill_latency"],
       "optional_plane_ids": ["liquidity_microstructure", "order_fill_truth", "execution_quality", "cross_asset_state", "news_events"],
@@ -162,6 +183,7 @@
     },
     "swing_directional": {
       "base_profiles": ["market_signal", "execution_truth"],
+      "economic_context_capability_ids": ["growth_indicators", "inflation_indicators", "economic_event_calendar", "risk_on_off_state"],
       "paper_required_capability_ids": ["adjusted_prices", "risk_on_off_state", "symbol_news"],
       "required_capability_ids": ["adjusted_prices", "market_breadth", "risk_on_off_state", "sector_rotation", "symbol_news"],
       "optional_plane_ids": ["cross_asset_state", "news_events", "ownership_positioning", "company_fundamentals", "profitability_evidence"],
@@ -174,6 +196,7 @@
     },
     "relative_value": {
       "base_profiles": ["market_signal", "execution_truth"],
+      "economic_context_capability_ids": ["cross_asset_correlation", "treasury_yield_curve", "fx_spot", "global_liquidity_regime"],
       "paper_required_capability_ids": ["cross_asset_correlation"],
       "required_capability_ids": ["cross_asset_correlation", "cross_asset_dispersion", "cross_asset_dislocation", "bid_ask_spread", "correlation_risk"],
       "optional_plane_ids": ["cross_asset_state", "liquidity_microstructure", "futures_forwards", "fx_commodities", "options_volatility", "profitability_evidence"],
@@ -186,6 +209,7 @@
     },
     "volatility_derivatives": {
       "base_profiles": ["market_signal", "execution_truth"],
+      "economic_context_capability_ids": ["central_bank_decisions", "inflation_indicators", "funding_stress", "global_liquidity_regime"],
       "paper_required_capability_ids": ["options_chain", "implied_volatility_surface", "volatility_skew", "volatility_term_structure"],
       "required_capability_ids": ["options_chain", "implied_volatility_surface", "volatility_skew", "volatility_term_structure", "option_greeks", "realized_volatility", "bid_ask_spread"],
       "optional_plane_ids": ["options_volatility", "liquidity_microstructure", "order_fill_truth", "execution_quality", "portfolio_risk"],
@@ -198,6 +222,7 @@
     },
     "liquidity_microstructure": {
       "base_profiles": ["market_signal", "execution_truth"],
+      "economic_context_capability_ids": ["funding_stress", "repo_conditions", "economic_event_calendar", "central_bank_decisions"],
       "paper_required_capability_ids": ["queue_state", "market_impact", "adverse_selection_risk", "quote_age", "fill_latency"],
       "required_capability_ids": ["order_book_depth", "order_book_imbalance", "queue_state", "market_impact", "adverse_selection_risk", "quote_age", "venue_quality", "fill_latency"],
       "optional_plane_ids": ["liquidity_microstructure", "order_fill_truth", "execution_quality", "portfolio_risk"],
@@ -210,6 +235,7 @@
     },
     "macro_rates_fx": {
       "base_profiles": ["market_signal", "execution_truth"],
+      "economic_context_capability_ids": ["growth_indicators", "inflation_indicators", "central_bank_decisions", "central_bank_balance_sheets", "global_liquidity_regime", "treasury_yield_curve", "rates_credit_regime", "fx_spot"],
       "paper_required_capability_ids": ["growth_indicators", "inflation_indicators", "central_bank_decisions", "central_bank_balance_sheets", "global_liquidity_regime", "treasury_yield_curve", "rates_credit_regime", "fx_spot"],
       "required_capability_ids": ["growth_indicators", "inflation_indicators", "central_bank_decisions", "central_bank_balance_sheets", "global_liquidity_regime", "treasury_yield_curve", "rates_credit_regime", "fx_spot"],
       "optional_plane_ids": ["growth_inflation", "monetary_fiscal_policy", "rates_credit_funding", "fx_commodities", "cross_asset_state", "news_events"],
@@ -222,6 +248,7 @@
     },
     "event_driven": {
       "base_profiles": ["market_signal", "execution_truth"],
+      "economic_context_capability_ids": ["economic_event_calendar", "central_bank_decisions", "growth_indicators", "inflation_indicators", "government_debt_issuance"],
       "paper_required_capability_ids": ["economic_event_calendar", "symbol_news", "news_novelty", "gap_state", "quote_age"],
       "required_capability_ids": ["economic_event_calendar", "symbol_news", "news_novelty", "earnings_calendar", "earnings_surprise", "gap_state", "quote_age"],
       "optional_plane_ids": ["news_events", "earnings_expectations", "corporate_actions", "liquidity_microstructure", "execution_quality"],
@@ -234,6 +261,7 @@
     },
     "commodity_inflation": {
       "base_profiles": ["market_signal", "execution_truth"],
+      "economic_context_capability_ids": ["inflation_indicators", "energy_markets", "commodity_inventories", "dollar_regime", "global_liquidity_regime"],
       "paper_required_capability_ids": ["inflation_indicators", "commodity_inventories", "dollar_regime", "global_liquidity_regime"],
       "required_capability_ids": ["inflation_indicators", "commodity_curves", "commodity_inventories", "dollar_regime", "futures_term_structure", "roll_yield", "global_liquidity_regime"],
       "optional_plane_ids": ["growth_inflation", "monetary_fiscal_policy", "fx_commodities", "futures_forwards", "cross_asset_state"],
@@ -246,6 +274,7 @@
     },
     "digital_asset_basis": {
       "base_profiles": ["market_signal", "execution_truth"],
+      "economic_context_capability_ids": ["global_liquidity_regime", "dollar_regime", "risk_on_off_state", "central_bank_decisions", "funding_stress"],
       "paper_required_capability_ids": ["crypto_spot", "crypto_correlation", "liquidity_regime", "broker_connectivity"],
       "required_capability_ids": ["crypto_spot", "crypto_correlation", "futures_basis", "spot_futures_dislocation", "bid_ask_spread", "liquidity_regime", "broker_connectivity"],
       "optional_plane_ids": ["fx_commodities", "futures_forwards", "cross_asset_state", "liquidity_microstructure", "news_events", "execution_quality"],
@@ -258,6 +287,7 @@
     },
     "tail_hedge": {
       "base_profiles": ["market_signal", "execution_truth"],
+      "economic_context_capability_ids": ["funding_stress", "global_liquidity_regime", "central_bank_decisions", "inflation_indicators", "credit_spreads"],
       "paper_required_capability_ids": ["volatility_regime", "stress_scenarios", "risk_of_ruin", "portfolio_exposure", "drawdown_state", "options_chain"],
       "required_capability_ids": ["volatility_regime", "stress_scenarios", "risk_of_ruin", "portfolio_exposure", "drawdown_state", "options_chain", "bid_ask_spread"],
       "optional_plane_ids": ["options_volatility", "portfolio_risk", "cross_asset_state", "liquidity_microstructure", "research_evidence"],
@@ -270,6 +300,7 @@
     },
     "structured_credit": {
       "base_profiles": ["research"],
+      "economic_context_capability_ids": ["credit_spreads", "funding_stress", "central_bank_balance_sheets", "treasury_yield_curve", "government_debt_issuance"],
       "paper_required_capability_ids": ["derivatives_contract_master", "credit_spreads", "funding_stress", "stress_scenarios", "deterministic_replay", "reproducibility_receipts"],
       "required_capability_ids": ["derivatives_contract_master", "credit_spreads", "default_risk", "funding_stress", "stress_scenarios", "deterministic_replay", "reproducibility_receipts"],
       "optional_plane_ids": ["rates_credit_funding", "futures_forwards", "portfolio_risk", "research_evidence", "profitability_evidence"],
@@ -282,6 +313,7 @@
     },
     "research_models": {
       "base_profiles": ["research"],
+      "economic_context_capability_ids": ["growth_indicators", "inflation_indicators", "central_bank_decisions", "treasury_yield_curve", "risk_on_off_state", "economic_event_calendar"],
       "paper_required_capability_ids": ["locked_holdouts", "walk_forward_tests", "multiple_testing_control", "edge_decay_analysis", "reproducibility_receipts"],
       "required_capability_ids": ["locked_holdouts", "walk_forward_tests", "multiple_testing_control", "edge_decay_analysis", "reproducibility_receipts"],
       "optional_plane_ids": ["point_in_time_training", "research_evidence", "profitability_evidence", "data_governance"],
@@ -294,6 +326,7 @@
     },
     "infrastructure_control": {
       "base_profiles": ["operational_control"],
+      "economic_context_capability_ids": ["economic_event_calendar", "central_bank_decisions", "global_liquidity_regime"],
       "paper_required_capability_ids": ["provider_quota_health", "schedule_health", "auth_lease_health", "alert_delivery", "incident_recovery"],
       "required_capability_ids": ["provider_quota_health", "schedule_health", "auth_lease_health", "alert_delivery", "incident_recovery"],
       "optional_plane_ids": ["data_governance", "operational_health", "research_evidence"],

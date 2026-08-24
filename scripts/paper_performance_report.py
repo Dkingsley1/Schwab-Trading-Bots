@@ -1044,6 +1044,99 @@ def _post_cost_flow_view(rows: Iterable[dict[str, Any]], *, scope: str) -> dict[
     }
 
 
+def _production_candidate_identity(row: dict[str, Any]) -> tuple[str, int]:
+    metadata = row.get("metadata") if isinstance(row.get("metadata"), dict) else {}
+    candidate_id = str(metadata.get("production_candidate_id") or "").strip()
+    try:
+        generation = int(metadata.get("production_candidate_generation", 0) or 0)
+    except (TypeError, ValueError):
+        generation = 0
+    return candidate_id, generation
+
+
+def _developmental_generation_flow_ledger(
+    rows: Iterable[dict[str, Any]],
+    *,
+    current_candidate_id: str,
+) -> dict[str, Any]:
+    grouped: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    unbound_sample_count = 0
+    for row in rows:
+        if not isinstance(row, dict) or _pnl_schema_version(row) < 2:
+            continue
+        if "post_cost_pnl_delta" not in row:
+            continue
+        candidate_id, _ = _production_candidate_identity(row)
+        if not candidate_id:
+            unbound_sample_count += 1
+            continue
+        grouped[candidate_id].append(row)
+
+    generation_flows: list[dict[str, Any]] = []
+    metadata_conflict_count = 0
+    candidate_bound_sample_count = 0
+    for candidate_id, candidate_rows in sorted(grouped.items()):
+        generations = {
+            generation
+            for _, generation in (
+                _production_candidate_identity(row) for row in candidate_rows
+            )
+            if generation > 0
+        }
+        generation = next(iter(generations)) if len(generations) == 1 else 0
+        generation_consistent = bool(
+            len(generations) == 1
+            and all(
+                _production_candidate_identity(row)[1] == generation
+                for row in candidate_rows
+            )
+        )
+        if not generation_consistent:
+            metadata_conflict_count += 1
+        flow = _post_cost_flow_view(
+            candidate_rows,
+            scope=f"accepted_generation:{candidate_id}",
+        )
+        candidate_bound_sample_count += int(flow.get("sample_count", 0) or 0)
+        generation_flows.append(
+            {
+                **flow,
+                "candidate_id": candidate_id,
+                "candidate_generation": generation,
+                "candidate_generation_consistent": generation_consistent,
+                "current_candidate": bool(
+                    current_candidate_id and candidate_id == current_candidate_id
+                ),
+                "profile_count": len({_profile_of(row) for row in candidate_rows}),
+                "strategy_count": len({_strategy_of(row) for row in candidate_rows}),
+                "symbol_count": len(
+                    {
+                        str(row.get("symbol") or "").strip().upper()
+                        for row in candidate_rows
+                        if str(row.get("symbol") or "").strip()
+                    }
+                ),
+                "developmental_attribution_eligible": generation_consistent,
+                "promotion_grade_eligible_from_this_view": False,
+            }
+        )
+
+    return {
+        "schema_version": 1,
+        "generation_flows": generation_flows,
+        "generation_flow_count": len(generation_flows),
+        "candidate_bound_sample_count": candidate_bound_sample_count,
+        "unbound_schema_v2_sample_count": unbound_sample_count,
+        "metadata_conflict_count": metadata_conflict_count,
+        "historical_generation_flow_is_developmental_only": True,
+        "current_candidate_promotion_uses_candidate_forward_flow": True,
+        "policy": (
+            "identity-stamped post-cost rows remain grouped by accepted candidate generation for "
+            "developmental comparison; this ledger cannot grade promotion or establish causation"
+        ),
+    }
+
+
 def _candidate_post_cost_daily_series(
     rows: Iterable[dict[str, Any]],
 ) -> dict[str, list[dict[str, Any]]]:
@@ -2081,6 +2174,10 @@ def build_paper_performance_report(project_root: Path, *, day: str, week_days: i
     active_book_net = sum(
         _safe_float(row.get("ending_net_pnl_total"), 0.0) for row in active_book_rows
     )
+    developmental_generation_flows = _developmental_generation_flow_ledger(
+        lifetime_post_cost_rows,
+        current_candidate_id=current_candidate_id,
+    )
 
     return {
         "timestamp_utc": _utc_now().isoformat(),
@@ -2121,6 +2218,7 @@ def build_paper_performance_report(project_root: Path, *, day: str, week_days: i
         "candidate_strategy_post_cost_daily_series": (
             _candidate_strategy_post_cost_daily_series(all_post_cost_rows)
         ),
+        "developmental_generation_flows": developmental_generation_flows,
         "strategy_latest": _strategy_post_cost_latest(all_post_cost_rows),
         "accounting_views": {
             "lifetime_flow": _post_cost_flow_view(

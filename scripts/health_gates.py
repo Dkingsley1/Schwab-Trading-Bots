@@ -378,6 +378,11 @@ def main() -> int:
     parser = argparse.ArgumentParser(description='Compute single health score and hard gate flags.')
     parser.add_argument('--project-root', default=str(PROJECT_ROOT))
     parser.add_argument('--stale-window-limit', type=int, default=int(os.getenv('HEALTH_GATE_STALE_WINDOW_LIMIT', '0')))
+    parser.add_argument(
+        '--current-decision-max-age-seconds',
+        type=float,
+        default=float(os.getenv('HEALTH_GATE_CURRENT_DECISION_MAX_AGE_SECONDS', '300')),
+    )
     parser.add_argument('--blocked-rate-limit', type=float, default=float(os.getenv('HEALTH_GATE_BLOCKED_RATE_LIMIT', '0.30')))
     parser.add_argument('--watchdog-restarts-limit', type=int, default=int(os.getenv('HEALTH_GATE_WATCHDOG_RESTARTS_LIMIT', '3')))
     parser.add_argument('--ingestion-pending-lines-limit', type=int, default=int(os.getenv('HEALTH_GATE_INGEST_PENDING_LINES_LIMIT', '20000')))
@@ -529,6 +534,30 @@ def main() -> int:
         risk_blocked_rate = float(risk_blocked_raw or 0.0)
     blocked_rate = _effective_blocked_rate(data_blocked_rate, risk_blocked_rate)
     stale_windows = int(one_numbers.get('decision_stale_windows_4h', 0) or one_numbers.get('decision_stale_windows', 0) or 0)
+    one_numbers_generated_at = _parse_iso_utc(
+        one_numbers.get('generated_utc')
+        or one_numbers.get('timestamp_utc')
+        or one_numbers.get('as_of_utc')
+    )
+    one_numbers_age_seconds = (
+        max((datetime.now(timezone.utc) - one_numbers_generated_at).total_seconds(), 0.0)
+        if one_numbers_generated_at is not None
+        else None
+    )
+    decision_last_age_at_report = _to_float(one_numbers.get('decision_last_age_sec'), -1.0)
+    current_decision_age_seconds = (
+        float(one_numbers_age_seconds) + decision_last_age_at_report
+        if one_numbers_age_seconds is not None and decision_last_age_at_report >= 0.0
+        else None
+    )
+    current_decision_max_age_seconds = max(float(args.current_decision_max_age_seconds), 1.0)
+    stale_window_debt_recovered = bool(
+        stale_windows > args.stale_window_limit
+        and one_numbers_age_seconds is not None
+        and one_numbers_age_seconds <= current_decision_max_age_seconds
+        and current_decision_age_seconds is not None
+        and current_decision_age_seconds <= current_decision_max_age_seconds
+    )
     watchdog_restarts = int((daily_summary.get('watchdog', {}) or {}).get('restarts', one_numbers.get('watchdog_restarts', 0) or 0))
 
     sqlite_ingest = ingestion_health.get('sqlite', {}) if isinstance(ingestion_health.get('sqlite', {}), dict) else {}
@@ -579,7 +608,7 @@ def main() -> int:
         default=0.0,
     )
 
-    gate_stale = stale_windows > args.stale_window_limit
+    gate_stale = stale_windows > args.stale_window_limit and not stale_window_debt_recovered
     gate_blocked = blocked_rate > args.blocked_rate_limit
     gate_restarts = watchdog_restarts > args.watchdog_restarts_limit
 
@@ -669,6 +698,8 @@ def main() -> int:
         priority_shard_storage_failures=priority_shard_storage_failures,
         collector_required_failures=collector_required_failures,
     )
+    if stale_window_debt_recovered:
+        recommendations.append('retain_historical_stale_windows_as_advisory_evidence')
 
     payload = {
         'timestamp_utc': datetime.now(timezone.utc).isoformat(),
@@ -689,6 +720,10 @@ def main() -> int:
             'risk_blocked_rate': risk_blocked_rate,
             'blocked_rate_risk_weight': 0.25,
             'stale_windows': stale_windows,
+            'one_numbers_age_seconds': round(one_numbers_age_seconds, 3) if one_numbers_age_seconds is not None else None,
+            'decision_last_age_at_report_seconds': round(decision_last_age_at_report, 3) if decision_last_age_at_report >= 0 else None,
+            'current_decision_age_seconds': round(current_decision_age_seconds, 3) if current_decision_age_seconds is not None else None,
+            'stale_window_debt_recovered': stale_window_debt_recovered,
             'watchdog_restarts': watchdog_restarts,
             'ingest_pending_lines': ingest_pending_lines,
             'ingest_oldest_uningested_age_seconds': ingest_oldest_age_s,
@@ -745,6 +780,7 @@ def main() -> int:
         },
         'thresholds': {
             'stale_window_limit': int(args.stale_window_limit),
+            'current_decision_max_age_seconds': current_decision_max_age_seconds,
             'blocked_rate_limit': float(args.blocked_rate_limit),
             'watchdog_restarts_limit': int(args.watchdog_restarts_limit),
             'ingestion_pending_lines_limit': int(args.ingestion_pending_lines_limit),

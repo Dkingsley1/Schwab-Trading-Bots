@@ -129,18 +129,27 @@ def _configure_cold_archive_env(env: dict[str, str], *, apply: bool) -> dict[str
     env["BOT_NEVER_TOUCH_VIDEO"] = "1"
     env["BOT_PROTECTED_VOLUME_DENYLIST"] = "/Volumes/VIDEO"
     configured = str(env.get("BOT_SECOND_COLD_ROOT") or "").strip()
+    requested_path = configured
     auto_selected = False
+    deferred_local = False
     if configured:
         target = Path(configured).expanduser()
         if _protected_storage_path(target):
             env.pop("BOT_SECOND_COLD_ROOT", None)
             configured = ""
             target = Path(".")
+        elif _path_under(target, Path("/Volumes")) and not (target.exists() or target.parent.exists()):
+            target = PROJECT_ROOT / "local_fallback_storage" / "cold_archive_deferred"
+            env["BOT_SECOND_COLD_ROOT"] = str(target)
+            configured = str(target)
+            auto_selected = True
+            deferred_local = True
     else:
         target = Path(".")
     if not configured:
+        external_root = str(env.get("BOT_LOGS_EXTERNAL_PROJECT_ROOT") or "").strip()
         active_root = str(
-            env.get("BOT_LOGS_EXTERNAL_PROJECT_ROOT")
+            external_root
             or env.get("BOT_LOGS_ACTIVE_ROOT")
             or ""
         ).strip()
@@ -153,7 +162,16 @@ def _configure_cold_archive_env(env: dict[str, str], *, apply: bool) -> dict[str
                 "protected_volume_denied": True,
                 "reason": "non_protected_second_cold_root_not_configured",
             }
-        target = Path(active_root).expanduser() / "cold_archive"
+        active_path = Path(active_root).expanduser()
+        external_parent_available = bool(
+            external_root
+            and (active_path.exists() or active_path.parent.exists())
+        )
+        if external_parent_available and not _protected_storage_path(active_path):
+            target = active_path / "cold_archive"
+        else:
+            target = PROJECT_ROOT / "local_fallback_storage" / "cold_archive_deferred"
+            deferred_local = True
         env["BOT_SECOND_COLD_ROOT"] = str(target)
         auto_selected = True
 
@@ -168,11 +186,16 @@ def _configure_cold_archive_env(env: dict[str, str], *, apply: bool) -> dict[str
     return {
         "configured": True,
         "path": str(target),
+        "requested_path": requested_path,
         "auto_selected": auto_selected,
         "created": created,
         "create_error": create_error,
         "protected_volume_denied": False,
-        "scope": "non_protected_cold_target",
+        "scope": "local_deferred_cold_queue" if deferred_local else "non_protected_cold_target",
+        "route_state": "deferred_until_external_returns" if deferred_local else "external_cold_ready",
+        "redundancy_ready": not deferred_local,
+        "hot_path_blocked": False,
+        "auto_failback_enabled": True,
     }
 
 
@@ -1101,6 +1124,29 @@ def build_payload(
         respect_cooldowns=False,
     )
     production_refresh_payloads["paper_replay_drill"] = _as_dict(paper_replay_row.get("parsed")) or load_json(health_root / "paper_replay_drill_latest.json")
+    paper_replay_training_row = _run_step(
+        steps,
+        name="paper_replay_training_refresh",
+        cmd=_cmd(
+            py,
+            project_root / "scripts" / "paper_replay_drill.py",
+            "--hours",
+            "336",
+            "--out-file",
+            health_root / "paper_replay_training_latest.json",
+            "--json",
+        ),
+        project_root=project_root,
+        timeout_sec=max(int(step_timeout_sec), 120),
+        env=env,
+        state=state,
+        cooldown_seconds=0,
+        respect_cooldowns=False,
+    )
+    production_refresh_payloads["paper_replay_training"] = (
+        _as_dict(paper_replay_training_row.get("parsed"))
+        or load_json(health_root / "paper_replay_training_latest.json")
+    )
     paper_truth_row = _run_step(
         steps,
         name="paper_execution_truth_production_refresh",

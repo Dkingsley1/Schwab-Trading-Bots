@@ -117,15 +117,42 @@
   },
   "quantitative_evidence_contract": {
     "axes": {
-      "selection_bias_control": {"floor": 0.80, "critical": false},
-      "independent_samples": {"floor": 0.70, "critical": false},
-      "uncertainty_calibration": {"floor": 0.70, "critical": false},
-      "signal_decay_fit": {"floor": 0.65, "critical": false},
-      "payoff_asymmetry": {"floor": 0.60, "critical": false},
-      "capacity_headroom": {"floor": 0.70, "critical": true},
-      "crowding_residual": {"floor": 0.65, "critical": false},
-      "tail_survival": {"floor": 0.80, "critical": true},
-      "regime_stability": {"floor": 0.65, "critical": false}
+      "selection_bias_control": {
+        "floor": 0.80,
+        "critical": false
+      },
+      "independent_samples": {
+        "floor": 0.70,
+        "critical": false
+      },
+      "uncertainty_calibration": {
+        "floor": 0.70,
+        "critical": false
+      },
+      "signal_decay_fit": {
+        "floor": 0.65,
+        "critical": false
+      },
+      "payoff_asymmetry": {
+        "floor": 0.60,
+        "critical": false
+      },
+      "capacity_headroom": {
+        "floor": 0.70,
+        "critical": true
+      },
+      "crowding_residual": {
+        "floor": 0.65,
+        "critical": false
+      },
+      "tail_survival": {
+        "floor": 0.80,
+        "critical": true
+      },
+      "regime_stability": {
+        "floor": 0.65,
+        "critical": false
+      }
     },
     "paper_missing_evidence_is_visible_not_fabricated": true,
     "paper_explicit_adverse_evidence_downsizes_only": true,
@@ -149,8 +176,23 @@
       "capacity_method": "impact_curve_lane_budget_and_concentration",
       "validation_method": "purged_out_of_sample_clustered_bootstrap",
       "shorting_policy": "position_aware_long_or_short",
-      "allowed_position_transitions": ["enter_long", "add_long", "reduce_or_exit_long", "enter_short", "add_short", "cover_short", "abstain"],
-      "required_quantitative_evidence": ["selection_bias_control", "independent_samples", "uncertainty_calibration", "capacity_headroom", "tail_survival", "regime_stability"]
+      "allowed_position_transitions": [
+        "enter_long",
+        "add_long",
+        "reduce_or_exit_long",
+        "enter_short",
+        "add_short",
+        "cover_short",
+        "abstain"
+      ],
+      "required_quantitative_evidence": [
+        "selection_bias_control",
+        "independent_samples",
+        "uncertainty_calibration",
+        "capacity_headroom",
+        "tail_survival",
+        "regime_stability"
+      ]
     },
     "long_horizon_income": {
       "decision_horizon": "weeks_to_years",
@@ -165,8 +207,21 @@
       "capacity_method": "impact_curve_liquidity_and_portfolio_overlap",
       "validation_method": "walk_forward_regime_stratified_income_outcomes",
       "shorting_policy": "long_only_position_aware",
-      "allowed_position_transitions": ["enter_long", "add_long", "reduce_or_exit_long", "abstain"],
-      "required_quantitative_evidence": ["selection_bias_control", "independent_samples", "uncertainty_calibration", "payoff_asymmetry", "crowding_residual", "tail_survival", "regime_stability"]
+      "allowed_position_transitions": [
+        "enter_long",
+        "add_long",
+        "reduce_or_exit_long",
+        "abstain"
+      ],
+      "required_quantitative_evidence": [
+        "selection_bias_control",
+        "independent_samples",
+        "uncertainty_calibration",
+        "payoff_asymmetry",
+        "crowding_residual",
+        "tail_survival",
+        "regime_stability"
+      ]
     },
     "intraday_momentum": {
       "decision_horizon": "seconds_to_hours",
@@ -181,8 +236,24 @@
       "capacity_method": "displayed_depth_participation_and_impact_curve",
       "validation_method": "purged_event_time_walk_forward_with_clustered_sessions",
       "shorting_policy": "position_aware_two_sided",
-      "allowed_position_transitions": ["enter_long", "add_long", "reduce_or_exit_long", "enter_short", "add_short", "cover_short", "abstain"],
-      "required_quantitative_evidence": ["independent_samples", "uncertainty_calibration", "signal_decay_fit", "capacity_headroom", "crowding_residual", "tail_survival", "regime_stability"]
+      "allowed_position_transitions": [
+        "enter_long",
+        "add_long",
+        "reduce_or_exit_long",
+        "enter_short",
+        "add_short",
+        "cover_short",
+        "abstain"
+      ],
+      "required_quantitative_evidence": [
+        "independent_samples",
+        "uncertainty_calibration",
+        "signal_decay_fit",
+        "capacity_headroom",
+        "crowding_residual",
+        "tail_survival",
+        "regime_stability"
+      ]
     },
     "swing_directional": {
       "decision_horizon": "days_to_weeks",
@@ -197,8 +268,25 @@
       "capacity_method": "impact_curve_liquidity_and_concentration",
       "validation_method": "purged_walk_forward_regime_and_symbol_clusters",
       "shorting_policy": "position_aware_two_sided",
-      "allowed_position_transitions": ["enter_long", "add_long", "reduce_or_exit_long", "enter_short", "add_short", "cover_short", "abstain"],
-      "required_quantitative_evidence": ["selection_bias_control", "independent_samples", "uncertainty_calibration", "signal_decay_fit", "payoff_asymmetry", "capacity_headroom", "tail_survival", "regime_stability"]
+      "allowed_position_transitions": [
+        "enter_long",
+        "add_long",
+        "reduce_or_exit_long",
+        "enter_short",
+        "add_short",
+        "cover_short",
+        "abstain"
+      ],
+      "required_quantitative_evidence": [
+        "selection_bias_control",
+        "independent_samples",
+        "uncertainty_calibration",
+        "signal_decay_fit",
+        "payoff_asymmetry",
+        "capacity_headroom",
+        "tail_survival",
+        "regime_stability"
+      ]
     },
     "relative_value": {
       "decision_horizon": "minutes_to_weeks",
@@ -213,8 +301,25 @@
       "capacity_method": "weakest_leg_depth_cross_impact_and_borrow_capacity",
       "validation_method": "purged_pair_walk_forward_with_multiple_testing_control",
       "shorting_policy": "paired_position_aware_shorting_only",
-      "allowed_position_transitions": ["enter_long", "add_long", "reduce_or_exit_long", "enter_short", "add_short", "cover_short", "abstain"],
-      "required_quantitative_evidence": ["selection_bias_control", "independent_samples", "uncertainty_calibration", "signal_decay_fit", "capacity_headroom", "crowding_residual", "tail_survival", "regime_stability"]
+      "allowed_position_transitions": [
+        "enter_long",
+        "add_long",
+        "reduce_or_exit_long",
+        "enter_short",
+        "add_short",
+        "cover_short",
+        "abstain"
+      ],
+      "required_quantitative_evidence": [
+        "selection_bias_control",
+        "independent_samples",
+        "uncertainty_calibration",
+        "signal_decay_fit",
+        "capacity_headroom",
+        "crowding_residual",
+        "tail_survival",
+        "regime_stability"
+      ]
     },
     "volatility_derivatives": {
       "decision_horizon": "hours_to_months",
@@ -229,8 +334,24 @@
       "capacity_method": "contract_depth_open_interest_hedge_liquidity_and_margin",
       "validation_method": "walk_forward_surface_regime_and_payoff_scenario_validation",
       "shorting_policy": "defined_risk_or_fully_hedged_short_exposure",
-      "allowed_position_transitions": ["enter_long", "add_long", "reduce_or_exit_long", "enter_short", "add_short", "cover_short", "abstain"],
-      "required_quantitative_evidence": ["selection_bias_control", "independent_samples", "uncertainty_calibration", "payoff_asymmetry", "capacity_headroom", "tail_survival", "regime_stability"]
+      "allowed_position_transitions": [
+        "enter_long",
+        "add_long",
+        "reduce_or_exit_long",
+        "enter_short",
+        "add_short",
+        "cover_short",
+        "abstain"
+      ],
+      "required_quantitative_evidence": [
+        "selection_bias_control",
+        "independent_samples",
+        "uncertainty_calibration",
+        "payoff_asymmetry",
+        "capacity_headroom",
+        "tail_survival",
+        "regime_stability"
+      ]
     },
     "liquidity_microstructure": {
       "decision_horizon": "milliseconds_to_minutes",
@@ -245,8 +366,24 @@
       "capacity_method": "queue_depth_participation_cross_impact_and_inventory_limits",
       "validation_method": "event_time_replay_with_latency_and_fill_calibration",
       "shorting_policy": "inventory_bounded_position_aware_two_sided",
-      "allowed_position_transitions": ["enter_long", "add_long", "reduce_or_exit_long", "enter_short", "add_short", "cover_short", "abstain"],
-      "required_quantitative_evidence": ["independent_samples", "uncertainty_calibration", "signal_decay_fit", "capacity_headroom", "crowding_residual", "tail_survival", "regime_stability"]
+      "allowed_position_transitions": [
+        "enter_long",
+        "add_long",
+        "reduce_or_exit_long",
+        "enter_short",
+        "add_short",
+        "cover_short",
+        "abstain"
+      ],
+      "required_quantitative_evidence": [
+        "independent_samples",
+        "uncertainty_calibration",
+        "signal_decay_fit",
+        "capacity_headroom",
+        "crowding_residual",
+        "tail_survival",
+        "regime_stability"
+      ]
     },
     "macro_rates_fx": {
       "decision_horizon": "days_to_months",
@@ -261,8 +398,24 @@
       "capacity_method": "market_depth_roll_liquidity_and_cross_asset_concentration",
       "validation_method": "vintage_point_in_time_walk_forward_across_policy_regimes",
       "shorting_policy": "instrument_and_account_permission_aware_two_sided",
-      "allowed_position_transitions": ["enter_long", "add_long", "reduce_or_exit_long", "enter_short", "add_short", "cover_short", "abstain"],
-      "required_quantitative_evidence": ["selection_bias_control", "independent_samples", "uncertainty_calibration", "payoff_asymmetry", "capacity_headroom", "tail_survival", "regime_stability"]
+      "allowed_position_transitions": [
+        "enter_long",
+        "add_long",
+        "reduce_or_exit_long",
+        "enter_short",
+        "add_short",
+        "cover_short",
+        "abstain"
+      ],
+      "required_quantitative_evidence": [
+        "selection_bias_control",
+        "independent_samples",
+        "uncertainty_calibration",
+        "payoff_asymmetry",
+        "capacity_headroom",
+        "tail_survival",
+        "regime_stability"
+      ]
     },
     "event_driven": {
       "decision_horizon": "minutes_to_days",
@@ -277,8 +430,25 @@
       "capacity_method": "event_depth_participation_gap_stress_and_crowding",
       "validation_method": "point_in_time_event_cohorts_with_embargo_and_multiple_testing_control",
       "shorting_policy": "borrow_and_gap_risk_aware_two_sided",
-      "allowed_position_transitions": ["enter_long", "add_long", "reduce_or_exit_long", "enter_short", "add_short", "cover_short", "abstain"],
-      "required_quantitative_evidence": ["selection_bias_control", "independent_samples", "uncertainty_calibration", "signal_decay_fit", "payoff_asymmetry", "capacity_headroom", "tail_survival", "regime_stability"]
+      "allowed_position_transitions": [
+        "enter_long",
+        "add_long",
+        "reduce_or_exit_long",
+        "enter_short",
+        "add_short",
+        "cover_short",
+        "abstain"
+      ],
+      "required_quantitative_evidence": [
+        "selection_bias_control",
+        "independent_samples",
+        "uncertainty_calibration",
+        "signal_decay_fit",
+        "payoff_asymmetry",
+        "capacity_headroom",
+        "tail_survival",
+        "regime_stability"
+      ]
     },
     "commodity_inflation": {
       "decision_horizon": "days_to_months",
@@ -293,8 +463,24 @@
       "capacity_method": "contract_depth_roll_window_and_cross_impact",
       "validation_method": "seasonality_aware_point_in_time_walk_forward",
       "shorting_policy": "instrument_and_account_permission_aware_two_sided",
-      "allowed_position_transitions": ["enter_long", "add_long", "reduce_or_exit_long", "enter_short", "add_short", "cover_short", "abstain"],
-      "required_quantitative_evidence": ["selection_bias_control", "independent_samples", "uncertainty_calibration", "capacity_headroom", "crowding_residual", "tail_survival", "regime_stability"]
+      "allowed_position_transitions": [
+        "enter_long",
+        "add_long",
+        "reduce_or_exit_long",
+        "enter_short",
+        "add_short",
+        "cover_short",
+        "abstain"
+      ],
+      "required_quantitative_evidence": [
+        "selection_bias_control",
+        "independent_samples",
+        "uncertainty_calibration",
+        "capacity_headroom",
+        "crowding_residual",
+        "tail_survival",
+        "regime_stability"
+      ]
     },
     "digital_asset_basis": {
       "decision_horizon": "minutes_to_weeks",
@@ -309,8 +495,25 @@
       "capacity_method": "weakest_venue_depth_collateral_and_liquidation_headroom",
       "validation_method": "continuous_market_walk_forward_by_venue_and_liquidity_regime",
       "shorting_policy": "hedged_basis_legs_only_with_venue_permissions",
-      "allowed_position_transitions": ["enter_long", "add_long", "reduce_or_exit_long", "enter_short", "add_short", "cover_short", "abstain"],
-      "required_quantitative_evidence": ["selection_bias_control", "independent_samples", "uncertainty_calibration", "signal_decay_fit", "capacity_headroom", "crowding_residual", "tail_survival", "regime_stability"]
+      "allowed_position_transitions": [
+        "enter_long",
+        "add_long",
+        "reduce_or_exit_long",
+        "enter_short",
+        "add_short",
+        "cover_short",
+        "abstain"
+      ],
+      "required_quantitative_evidence": [
+        "selection_bias_control",
+        "independent_samples",
+        "uncertainty_calibration",
+        "signal_decay_fit",
+        "capacity_headroom",
+        "crowding_residual",
+        "tail_survival",
+        "regime_stability"
+      ]
     },
     "tail_hedge": {
       "decision_horizon": "days_to_months",
@@ -325,8 +528,24 @@
       "capacity_method": "stress_liquidity_open_interest_and_premium_budget",
       "validation_method": "historical_and_synthetic_crisis_replay_with_pathwise_survival",
       "shorting_policy": "hedge_mandate_only_defined_loss_preferred",
-      "allowed_position_transitions": ["enter_long", "add_long", "reduce_or_exit_long", "enter_short", "add_short", "cover_short", "abstain"],
-      "required_quantitative_evidence": ["selection_bias_control", "independent_samples", "uncertainty_calibration", "payoff_asymmetry", "capacity_headroom", "tail_survival", "regime_stability"]
+      "allowed_position_transitions": [
+        "enter_long",
+        "add_long",
+        "reduce_or_exit_long",
+        "enter_short",
+        "add_short",
+        "cover_short",
+        "abstain"
+      ],
+      "required_quantitative_evidence": [
+        "selection_bias_control",
+        "independent_samples",
+        "uncertainty_calibration",
+        "payoff_asymmetry",
+        "capacity_headroom",
+        "tail_survival",
+        "regime_stability"
+      ]
     },
     "structured_credit": {
       "decision_horizon": "months_to_years",
@@ -341,8 +560,18 @@
       "capacity_method": "dealer_depth_issue_size_collateral_and_unwind_capacity",
       "validation_method": "vintage_waterfall_stress_and_out_of_sample_default_cohorts",
       "shorting_policy": "disabled_for_direct_execution",
-      "allowed_position_transitions": ["abstain"],
-      "required_quantitative_evidence": ["selection_bias_control", "independent_samples", "uncertainty_calibration", "payoff_asymmetry", "capacity_headroom", "tail_survival", "regime_stability"]
+      "allowed_position_transitions": [
+        "abstain"
+      ],
+      "required_quantitative_evidence": [
+        "selection_bias_control",
+        "independent_samples",
+        "uncertainty_calibration",
+        "payoff_asymmetry",
+        "capacity_headroom",
+        "tail_survival",
+        "regime_stability"
+      ]
     },
     "research_models": {
       "decision_horizon": "research_dependent",
@@ -357,8 +586,19 @@
       "capacity_method": "impact_curve_required_before_execution_promotion",
       "validation_method": "purged_embargoed_walk_forward_replication_and_false_discovery_control",
       "shorting_policy": "disabled_for_direct_execution",
-      "allowed_position_transitions": ["abstain"],
-      "required_quantitative_evidence": ["selection_bias_control", "independent_samples", "uncertainty_calibration", "signal_decay_fit", "payoff_asymmetry", "capacity_headroom", "tail_survival", "regime_stability"]
+      "allowed_position_transitions": [
+        "abstain"
+      ],
+      "required_quantitative_evidence": [
+        "selection_bias_control",
+        "independent_samples",
+        "uncertainty_calibration",
+        "signal_decay_fit",
+        "payoff_asymmetry",
+        "capacity_headroom",
+        "tail_survival",
+        "regime_stability"
+      ]
     },
     "infrastructure_control": {
       "decision_horizon": "continuous_runtime",
@@ -373,8 +613,16 @@
       "capacity_method": "runtime_pressure_backlog_and_storage_headroom",
       "validation_method": "fault_injection_recovery_replay_and_regression_guards",
       "shorting_policy": "disabled_for_direct_execution",
-      "allowed_position_transitions": ["abstain"],
-      "required_quantitative_evidence": ["independent_samples", "uncertainty_calibration", "capacity_headroom", "tail_survival", "regime_stability"]
+      "allowed_position_transitions": [
+        "abstain"
+      ],
+      "required_quantitative_evidence": [
+        "independent_samples",
+        "uncertainty_calibration",
+        "capacity_headroom",
+        "tail_survival",
+        "regime_stability"
+      ]
     }
   },
   "profile_strategy_overrides": {
@@ -462,6 +710,16 @@
   "profile_policy_map": {
     "default": "balanced_directional",
     "baseline": "balanced_directional",
+    "equity_core": "balanced_directional",
+    "position_lifecycle": "balanced_directional",
+    "alternative_data_ingestion": "research_models",
+    "crowd_physics_games": "research_models",
+    "cross_sleeve_evidence_court": "infrastructure_control",
+    "execution_quality": "infrastructure_control",
+    "day_trading": "intraday_momentum",
+    "schwab_futures": "intraday_momentum",
+    "sector_master": "swing_directional",
+    "tail_dependency_risk": "tail_hedge",
     "conservative": "balanced_directional",
     "aggressive": "swing_directional",
     "intraday_aggressive": "intraday_momentum",

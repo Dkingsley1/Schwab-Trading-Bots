@@ -5,10 +5,10 @@ from pathlib import Path
 from typing import Any, Mapping
 from urllib.parse import urlparse
 
-
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_CONFIG = PROJECT_ROOT / "config" / "authoritative_systems_v1.json"
-EXPECTED_REFERENCE_COUNT = 20
+EXPECTED_REFERENCE_COUNT = 39
+EXPECTED_CONTROL_COUNT = 18
 
 
 def _mapping(value: Any) -> dict[str, Any]:
@@ -37,8 +37,11 @@ def validate_registry(
         errors.append("schema_version_must_be_1")
     if len(references) != EXPECTED_REFERENCE_COUNT:
         errors.append(f"reference_count_must_equal_{EXPECTED_REFERENCE_COUNT}")
-    if len(set(required)) != 8 or len(required) != 8:
-        errors.append("required_control_count_must_equal_8")
+    if (
+        len(set(required)) != EXPECTED_CONTROL_COUNT
+        or len(required) != EXPECTED_CONTROL_COUNT
+    ):
+        errors.append(f"required_control_count_must_equal_{EXPECTED_CONTROL_COUNT}")
     if set(required) != set(controls):
         errors.append("control_registry_does_not_match_required_control_ids")
     if authority.get("influence_only") is not True:
@@ -100,6 +103,11 @@ def validate_registry(
         "paper_live_equivalence_requires_observed_pairs",
         "profitability_requires_candidate_bound_forward_post_cost_evidence",
         "live_execution_remains_independently_gated",
+        "synthetic_probe_is_not_external_evidence",
+        "unsigned_local_provenance_is_not_trusted_attestation",
+        "advisory_allocation_has_no_order_authority",
+        "public_firm_influence_is_not_proprietary_replication",
+        "institutional_extension_structure_is_not_candidate_evidence",
     )
     for key in required_semantics:
         if semantics.get(key) is not True:

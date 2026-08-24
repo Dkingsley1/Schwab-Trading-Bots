@@ -453,6 +453,44 @@ def test_cold_archive_configuration_fails_closed_without_safe_fallback() -> None
     assert "BOT_SECOND_COLD_ROOT" not in env
 
 
+def test_cold_archive_configuration_defers_locally_when_external_root_is_offline(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(src, "PROJECT_ROOT", tmp_path)
+    unavailable_external = tmp_path / "offline-volume" / "schwab_trading_bot"
+    env = {"BOT_LOGS_EXTERNAL_PROJECT_ROOT": str(unavailable_external)}
+
+    payload = src._configure_cold_archive_env(env, apply=False)
+
+    expected = tmp_path / "local_fallback_storage" / "cold_archive_deferred"
+    assert payload["configured"] is True
+    assert payload["path"] == str(expected)
+    assert payload["route_state"] == "deferred_until_external_returns"
+    assert payload["redundancy_ready"] is False
+    assert payload["hot_path_blocked"] is False
+    assert payload["auto_failback_enabled"] is True
+    assert env["BOT_SECOND_COLD_ROOT"] == str(expected)
+
+
+def test_cold_archive_configuration_defers_explicit_unmounted_external_target(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(src, "PROJECT_ROOT", tmp_path)
+    requested = "/Volumes/OFFLINE_TEST_VOLUME/schwab_trading_bot/cold_archive"
+    env = {"BOT_SECOND_COLD_ROOT": requested}
+
+    payload = src._configure_cold_archive_env(env, apply=False)
+
+    expected = tmp_path / "local_fallback_storage" / "cold_archive_deferred"
+    assert payload["requested_path"] == requested
+    assert payload["path"] == str(expected)
+    assert payload["route_state"] == "deferred_until_external_returns"
+    assert payload["redundancy_ready"] is False
+    assert env["BOT_SECOND_COLD_ROOT"] == str(expected)
+
+
 def test_stale_profitability_runtime_controls_are_refreshed_and_rechecked(tmp_path: Path, monkeypatch) -> None:
     _write_daily(tmp_path, ok=True, failed_checks=[])
     calls: list[str] = []

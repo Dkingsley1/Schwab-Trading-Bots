@@ -183,7 +183,8 @@ def _infer_asset_class(out: Dict[str, Any], *, broker: str, provider: str, path_
         return "futures"
     if "schwab_futures" in haystack or "_futures" in haystack:
         return "futures"
-    if "crypto" in haystack or broker == "coinbase" or symbol.endswith(("-USD", "-USDT", "-USDC", "-BTC", "-ETH")):
+    if (
+        "crypto" in haystack or broker == "coinbase" or symbol.endswith(("-USD", "-USDT", "-USDC", "-BTC", "-ETH"))):
         return "crypto"
     if "option" in haystack or (" C00" in symbol or " P00" in symbol):
         return "options"
@@ -230,7 +231,8 @@ def _source_quality(label_seed: str) -> tuple[str, float]:
     seed = _clean_label(label_seed)
     if "schwab_crypto_bridge" in seed:
         return "broker_bridge", 0.80
-    if seed in {"schwab", "schwab_equities", "schwab_futures", "schwab_options"} or seed.startswith("schwab_"):
+    if seed in {"schwab", "schwab_equities", "schwab_futures", "schwab_options",
+    } or seed.startswith("schwab_"):
         return "broker_native", 0.95
     if seed in {"coinbase", "coinbase_crypto"} or seed.startswith("coinbase_"):
         return "exchange_native", 0.92
@@ -383,6 +385,7 @@ def enrich_log_row(
     include_schema: bool = True,
     path_hint: str = "",
     channel: str = "",
+    project_root: str = "",
 ) -> Dict[str, Any]:
     out = dict(row or {})
     normalized_channel = _clean_label(channel or out.get("channel"))
@@ -405,6 +408,20 @@ def enrich_log_row(
 
     _enrich_data_route(out, path_hint=path_hint, channel=channel)
     _ensure_message_contract(out)
+    if project_root:
+        try:
+            from core.alpha_evidence_contract import enrich_alpha_evidence
+
+            out = enrich_alpha_evidence(
+                out,
+                project_root=project_root,
+                channel=channel,
+                path_hint=path_hint,
+            )
+        except Exception:
+            # Evidence enrichment must never interrupt the canonical writer.
+            # Missing alpha provenance remains visible to downstream gates.
+            pass
     return out
 
 
@@ -519,7 +536,8 @@ def _dynamic_runtime_control(project_root: str, name: str, default: str) -> str:
 
 
 def _low_signal_thinning_enabled() -> bool:
-    return os.getenv("LOW_SIGNAL_LOG_THINNING_ENABLED", "1").strip().lower() in {"1", "true", "yes", "on"}
+    return os.getenv("LOW_SIGNAL_LOG_THINNING_ENABLED", "1").strip().lower() in {"1", "true", "yes", "on",
+    }
 
 
 def _low_signal_decision_window_seconds() -> float:
@@ -531,11 +549,13 @@ def _low_signal_execution_guard_window_seconds() -> float:
 
 
 def _risk_attribution_low_signal_window_seconds() -> float:
-    return max(float(os.getenv("RISK_ATTRIBUTION_LOW_SIGNAL_WINDOW_SECONDS", "900") or 900.0), 1.0)
+    return max(float(os.getenv("RISK_ATTRIBUTION_LOW_SIGNAL_WINDOW_SECONDS", "900") or 900.0), 1.0,
+    )
 
 
 def _risk_attribution_reused_window_seconds() -> float:
-    return max(float(os.getenv("RISK_ATTRIBUTION_REUSED_WINDOW_SECONDS", "3600") or 3600.0), 1.0)
+    return max(float(os.getenv("RISK_ATTRIBUTION_REUSED_WINDOW_SECONDS", "3600") or 3600.0), 1.0,
+    )
 
 
 def _risk_attribution_epsilon() -> float:
@@ -616,14 +636,18 @@ def _should_emit_signal_generation_event(
     emitted_bad_count: int = 0,
     project_root: str = "",
 ) -> bool:
-    metadata = payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {}
+    metadata = (
+        payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {}
+    )
     layer = str(metadata.get("layer") or payload.get("layer") or "").strip().lower()
     status = str(payload.get("status") or "").strip().upper()
     is_execution_outcome = status in {"PAPER_EXECUTED", "LIVE_EXECUTED"}
     is_sub_bot = "sub_bot" in layer
     if is_sub_bot and not is_execution_outcome:
         window = _signal_generation_sub_bot_window_seconds(project_root)
-    elif classification == "bad_signal" and _signal_generation_bad_signal_thinning_enabled(project_root):
+    elif (
+        classification == "bad_signal" and _signal_generation_bad_signal_thinning_enabled(project_root)
+    ):
         window = _signal_generation_bad_signal_window_seconds(project_root)
     elif not is_execution_outcome:
         window = _signal_generation_derived_window_seconds(project_root)
@@ -631,7 +655,9 @@ def _should_emit_signal_generation_event(
         return True
 
     batch_cap = _signal_generation_bad_signal_batch_cap(project_root)
-    if classification == "bad_signal" and batch_cap > 0 and int(emitted_bad_count) >= batch_cap:
+    if (
+        classification == "bad_signal" and batch_cap > 0 and int(emitted_bad_count) >= batch_cap
+    ):
         return False
     now_ts = time.time()
     symbol = str(payload.get("symbol") or "UNKNOWN").strip()
@@ -642,7 +668,9 @@ def _should_emit_signal_generation_event(
         if sample_modulus > 1:
             sample_bucket = int(now_ts // max(window, 1.0))
             sample_seed = f"{strategy}:{sample_bucket}".encode("utf-8")
-            if int(hashlib.sha256(sample_seed).hexdigest()[:16], 16) % sample_modulus != 0:
+            if (
+                int(hashlib.sha256(sample_seed).hexdigest()[:16], 16) % sample_modulus != 0
+            ):
                 return False
     scope_symbol = "*" if is_sub_bot else symbol
     signature = f"signal_generation:{classification}:{reason}:{scope_symbol}:{action}:{strategy}:{status}:{layer}"
@@ -759,15 +787,20 @@ def _low_signal_signature(path: str, payload: Dict[str, Any]) -> tuple[str, floa
         )
         return signature, window
 
-    if "/decision_explanations/" in norm_path and status in {"DATA_ONLY_BLOCKED", "SHADOW_ONLY", "PAPER_GUARD_BLOCKED"}:
-        safety = payload.get("safety") if isinstance(payload.get("safety"), dict) else {}
+    if "/decision_explanations/" in norm_path and status in {"DATA_ONLY_BLOCKED", "SHADOW_ONLY", "PAPER_GUARD_BLOCKED",
+    }:
+        safety = (
+            payload.get("safety") if isinstance(payload.get("safety"), dict) else {}
+        )
         observe_only = _as_bool(safety.get("market_data_only")) and (not _as_bool(safety.get("execution_enabled")))
         if status == "DATA_ONLY_BLOCKED" and (not observe_only):
             return None
         symbol = str(payload.get("symbol") or "UNKNOWN").strip()
         action = str(payload.get("action") or "UNKNOWN").strip()
         strategy = str(payload.get("strategy") or "UNKNOWN").strip()
-        reasons = payload.get("reasons") if isinstance(payload.get("reasons"), list) else []
+        reasons = (
+            payload.get("reasons") if isinstance(payload.get("reasons"), list) else []
+        )
         reason = str(reasons[0] or "").strip() if reasons else ""
         signature = f"decision:{status}:{symbol}:{action}:{strategy}:{reason}"
         return signature, _low_signal_decision_window_seconds()
@@ -779,13 +812,17 @@ def _low_signal_signature(path: str, payload: Dict[str, Any]) -> tuple[str, floa
         guard_status = str(payload.get("status") or "").strip().lower()
         if guard_status not in {"blocked", "skip", "skipped"}:
             return None
-        details = payload.get("details") if isinstance(payload.get("details"), dict) else {}
+        details = (
+            payload.get("details") if isinstance(payload.get("details"), dict) else {}
+        )
         symbol = str(details.get("symbol") or payload.get("symbol") or "UNKNOWN").strip()
         action = str(details.get("action") or payload.get("action") or "UNKNOWN").strip()
         reason = str(payload.get("reason") or details.get("reason") or "").strip()
         gate = str(details.get("gate") or "").strip()
         mode = str(payload.get("mode") or "").strip()
-        signature = f"execution_guard:{guard_status}:{mode}:{symbol}:{action}:{reason}:{gate}"
+        signature = (
+            f"execution_guard:{guard_status}:{mode}:{symbol}:{action}:{reason}:{gate}"
+        )
         return signature, _low_signal_execution_guard_window_seconds()
 
     return None
@@ -797,13 +834,15 @@ def _thin_low_signal_payloads(path: str, payloads: Sequence[Dict[str, Any]]) -> 
         return rows
 
     now = time.time()
-    retention_window = max(
+    retention_window = (
+        max(
         _low_signal_decision_window_seconds(),
         _low_signal_execution_guard_window_seconds(),
         _risk_attribution_low_signal_window_seconds(),
         _risk_attribution_reused_window_seconds(),
         300.0,
     ) * 2.0
+    )
     kept: List[Dict[str, Any]] = []
     norm_path = os.path.abspath(path)
 
@@ -823,7 +862,9 @@ def _thin_low_signal_payloads(path: str, payloads: Sequence[Dict[str, Any]]) -> 
             last_seen = _LOW_SIGNAL_RECENT.get(cache_key)
             if last_seen is not None and (now - last_seen) < window_seconds:
                 if signature.startswith("risk_attribution:"):
-                    _LOW_SIGNAL_SUPPRESSED[cache_key] = int(_LOW_SIGNAL_SUPPRESSED.get(cache_key, 0)) + 1
+                    _LOW_SIGNAL_SUPPRESSED[cache_key] = (
+                        int(_LOW_SIGNAL_SUPPRESSED.get(cache_key, 0)) + 1
+                    )
                 continue
             _LOW_SIGNAL_RECENT[cache_key] = now
             if signature.startswith("risk_attribution:"):
@@ -879,7 +920,9 @@ def _signal_generation_events(
     if not project_root or not payloads:
         return
     norm_path = str(target_path or "").replace("\\", "/")
-    if "decision_explanations/" not in norm_path and "/decisions/" not in norm_path and "trade_decisions_" not in norm_path:
+    if (
+        "decision_explanations/" not in norm_path and "/decisions/" not in norm_path and "trade_decisions_" not in norm_path
+    ):
         return
 
     day = datetime.now(timezone.utc).strftime("%Y%m%d")
@@ -889,7 +932,9 @@ def _signal_generation_events(
     for payload in payloads:
         status = str(payload.get("status") or "").strip().upper()
         action = str(payload.get("action") or "").strip().upper()
-        if status and status not in SIGNAL_GENERATION_STATUSES and action not in {"BUY", "SELL", "HOLD"}:
+        if (
+            status and status not in SIGNAL_GENERATION_STATUSES and action not in {"BUY", "SELL", "HOLD"}
+        ):
             continue
         classification, reason = _signal_generation_classification(payload)
         if not _should_emit_signal_generation_event(
@@ -928,7 +973,8 @@ def _signal_generation_events(
             row["run_id"] = corr["run_id"]
         if corr.get("iter_id"):
             row["iter_id"] = corr["iter_id"]
-        lines.append(json.dumps(enrich_log_row(row), ensure_ascii=True) + "\n")
+        lines.append(json.dumps(enrich_log_row(row, project_root=project_root), ensure_ascii=True,
+            ) + "\n")
     _write_lines(out_path, lines)
 
 
@@ -966,7 +1012,9 @@ def safe_append_jsonl_batch(
     project_root: str = "",
     source: str = "",
 ) -> int:
-    payloads = [enrich_log_row(dict(r or {}), path_hint=path) for r in rows]
+    payloads = [enrich_log_row(dict(r or {}), path_hint=path,
+            project_root=project_root,
+        ) for r in rows]
     if not payloads:
         return 0
 
@@ -1006,7 +1054,9 @@ def _queue_publish(
         return
 
     try:
-        from core.channel_queue import ChannelQueue, default_queue_db_path, queue_enabled
+        from core.channel_queue import (
+            ChannelQueue, default_queue_db_path, queue_enabled,
+        )
 
         if not queue_enabled():
             return
@@ -1077,7 +1127,8 @@ def _schema_violation_log(
 def _schema_strict_enabled(explicit: Optional[bool]) -> bool:
     if explicit is not None:
         return bool(explicit)
-    return os.getenv("CHANNEL_SCHEMA_STRICT", "0").strip().lower() in {"1", "true", "yes", "on"}
+    return os.getenv("CHANNEL_SCHEMA_STRICT", "0").strip().lower() in {"1", "true", "yes", "on",
+    }
 
 
 def safe_append_channel_batch(
@@ -1105,7 +1156,9 @@ def safe_append_channel_batch(
     for raw in raw_payloads:
         if ch and ("channel" not in raw):
             raw["channel"] = ch
-        payload = enrich_log_row(raw, path_hint=path, channel=ch)
+        payload = enrich_log_row(raw, path_hint=path, channel=ch,
+            project_root=project_root,
+        )
         errors = _schema_errors(payload, schema=sch)
         if errors:
             _schema_violation_log(
@@ -1253,7 +1306,8 @@ def safe_write_json_atomic(
                 "payload_sha256": sha256_json_obj(payload),
                 "target": str(target),
             }
-            marker_path.write_text(json.dumps(marker_payload, ensure_ascii=True, indent=2), encoding="utf-8")
+            marker_path.write_text(json.dumps(marker_payload, ensure_ascii=True, indent=2), encoding="utf-8",
+            )
         return True
     except Exception as exc:
         _emit_write_failure_event(

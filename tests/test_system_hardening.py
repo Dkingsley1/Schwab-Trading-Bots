@@ -218,8 +218,10 @@ def test_storage_tier_policy_summarizes_hot_and_warm_files(tmp_path, monkeypatch
     monkeypatch.setattr(sys, "argv", ["storage_tier_policy.py", "--project-root", str(tmp_path)])
     rc = storage_tier_policy.main()
     payload = json.loads((tmp_path / "governance" / "health" / "storage_tier_policy_latest.json").read_text(encoding="utf-8"))
+    offload_manifest = tmp_path / "governance" / "health" / "storage_tier_offload_manifest_latest.json"
 
     assert rc == 0
+    assert offload_manifest.exists()
     assert payload["by_temperature"]["hot"]["files"] == 1
     assert payload["by_temperature"]["warm"]["files"] == 1
     assert payload["by_economic_value"]["critical"]["files"] == 1

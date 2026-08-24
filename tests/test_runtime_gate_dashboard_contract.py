@@ -1,5 +1,6 @@
 import importlib.util
 import json
+from datetime import datetime, timezone
 from pathlib import Path
 
 
@@ -172,3 +173,43 @@ def test_runtime_gate_dashboard_manages_bounded_transient_backlog_attention(tmp_
         {"enabled": True},
     )
     assert reason == "external_backlog_handoff_managed_while_ingestion_soak_is_green"
+
+
+def test_runtime_gate_dashboard_surfaces_guarded_paper_execution_separately_from_collection(tmp_path):
+    health = tmp_path / "governance" / "health"
+    timestamp = datetime.now(timezone.utc).isoformat()
+    _write_json(
+        health / "all_sleeves_launcher_latest.json",
+        {
+            "timestamp_utc": timestamp,
+            "overall_status": "guarded_ready",
+            "expected_job_count": 6,
+            "running_job_count": 5,
+            "launcher_readiness_contract": {
+                "collection_fanout_ready": True,
+                "paper_execution_ready": False,
+                "readiness_status": "guarded_execution_blocked",
+                "execution_attention": ["paper_executor_safety_parked"],
+            },
+        },
+    )
+    _write_json(
+        health / "data_collection_observation_rollup_latest.json",
+        {
+            "timestamp_utc": timestamp,
+            "overall_status": "ready",
+            "collector_count": 42,
+            "total_observations": 12345,
+            "collection_coverage_score": 98.5,
+            "data_quality_score": 99.0,
+        },
+    )
+
+    payload = runtime_gate_dashboard.build_dashboard(tmp_path)
+
+    assert "paper_execution_safety_guard_active" in payload["overall"]["attention"]
+    assert payload["execution_runtime"]["collection_fanout_ready"] is True
+    assert payload["execution_runtime"]["paper_execution_ready"] is False
+    assert payload["data_quality_dimensions"]["collector_count"] == 42
+    assert payload["data_quality_dimensions"]["total_observations"] == 12345
+    assert payload["data_quality_dimensions"]["collector_coverage_quality_score"] == 98.5

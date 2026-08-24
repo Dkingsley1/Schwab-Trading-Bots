@@ -106,6 +106,8 @@ def test_execution_lane_loads_runtime_control_env(tmp_path: Path, monkeypatch) -
     assert run_execution_lane._env_float("EXECUTION_LANE_PAPER_MAX_INTENT_AGE_SECONDS", 0.0, minimum=0.0) == 900.0
     assert run_execution_lane._env_float("EXECUTION_LANE_POLL_SECONDS", 2.0) == 4.0
     assert run_execution_lane._paper_execution_target_nice() == 20
+    monkeypatch.setenv("BOT_CPU_WORKLOAD_POLICY_LOCKED", "1")
+    assert run_execution_lane._paper_execution_target_nice() == 0
     assert "IGNORED_KEY" not in os.environ
 
 

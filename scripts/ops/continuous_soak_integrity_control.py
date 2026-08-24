@@ -13,12 +13,28 @@ if __package__ in {None, ""}:
     PROJECT_ROOT = Path(__file__).resolve().parents[2]
     if str(PROJECT_ROOT) not in sys.path:
         sys.path.insert(0, str(PROJECT_ROOT))
-    from scripts.ops.long_runtime_common import iso_now, load_json, parse_iso_utc, write_payload
+    from scripts.ops.long_runtime_common import (
+        iso_now,
+        load_json,
+        parse_iso_utc,
+        write_payload,
+    )
 else:
-    from .long_runtime_common import PROJECT_ROOT, iso_now, load_json, parse_iso_utc, write_payload
+    from .long_runtime_common import (
+        PROJECT_ROOT,
+        iso_now,
+        load_json,
+        parse_iso_utc,
+        write_payload,
+    )
 
 
-DEFAULT_OUT_PATH = PROJECT_ROOT / "governance" / "health" / "continuous_soak_integrity_control_latest.json"
+DEFAULT_OUT_PATH = (
+    PROJECT_ROOT
+    / "governance"
+    / "health"
+    / "continuous_soak_integrity_control_latest.json"
+)
 DEFAULT_MAINTENANCE_DIR = PROJECT_ROOT / "governance" / "maintenance_events"
 
 
@@ -67,7 +83,12 @@ def _artifact_ready(payload: dict[str, Any], *, grades: set[str] | None = None) 
     }
     if grades is None:
         return bool(payload.get("ok", status_ready) and status_ready)
-    grade = str(payload.get("overall_grade") or payload.get("grade") or "").strip().upper().replace("A++", "A+")
+    grade = (
+        str(payload.get("overall_grade") or payload.get("grade") or "")
+        .strip()
+        .upper()
+        .replace("A++", "A+")
+    )
     return bool(status_ready and grade in grades)
 
 
@@ -93,9 +114,16 @@ def _read_candidate_events(path: Path) -> list[dict[str, Any]]:
             row = json.loads(line)
         except (TypeError, ValueError):
             continue
-        if isinstance(row, dict) and parse_iso_utc(row.get("timestamp_utc")) is not None:
+        if (
+            isinstance(row, dict)
+            and parse_iso_utc(row.get("timestamp_utc")) is not None
+        ):
             rows.append(row)
-    return sorted(rows, key=lambda row: parse_iso_utc(row.get("timestamp_utc")) or datetime.min.replace(tzinfo=timezone.utc))
+    return sorted(
+        rows,
+        key=lambda row: parse_iso_utc(row.get("timestamp_utc"))
+        or datetime.min.replace(tzinfo=timezone.utc),
+    )
 
 
 def _planned_maintenance_windows(
@@ -117,19 +145,25 @@ def _planned_maintenance_windows(
             continue
         if _status(payload.get("status")) != "completed":
             continue
-        if bool(accounting.get("counts_as_system_degradation", payload.get("counts_as_system_degradation", True))):
+        if bool(
+            accounting.get(
+                "counts_as_system_degradation",
+                payload.get("counts_as_system_degradation", True),
+            )
+        ):
             continue
-        if bool(accounting.get("counts_as_trading_system_failure", payload.get("counts_as_trading_system_failure", True))):
+        if bool(
+            accounting.get(
+                "counts_as_trading_system_failure",
+                payload.get("counts_as_trading_system_failure", True),
+            )
+        ):
             continue
         offline = _as_dict(payload.get("actual_offline_window"))
         start = parse_iso_utc(
-            offline.get("offline_start_utc")
-            or offline.get("start_utc")
+            offline.get("offline_start_utc") or offline.get("start_utc")
         )
-        end = parse_iso_utc(
-            offline.get("offline_end_utc")
-            or offline.get("end_utc")
-        )
+        end = parse_iso_utc(offline.get("offline_end_utc") or offline.get("end_utc"))
         if start is None or end is None or end <= start or start >= current_time:
             continue
         end = min(end, current_time)
@@ -147,7 +181,9 @@ def _planned_maintenance_windows(
             "resets_candidate_clock": False,
             "earns_active_runtime_credit": False,
         }
-    return sorted(windows.values(), key=lambda row: str(row.get("offline_start_utc") or ""))
+    return sorted(
+        windows.values(), key=lambda row: str(row.get("offline_start_utc") or "")
+    )
 
 
 def _maintenance_overlap_hours(
@@ -210,10 +246,14 @@ def _historical_soak_evidence(
                     "generation": active_generation,
                     "started_utc": cursor.isoformat(),
                     "ended_utc": timestamp.isoformat(),
-                    "elapsed_hours": round(max((timestamp - cursor).total_seconds() / 3600.0, 0.0), 6),
+                    "elapsed_hours": round(
+                        max((timestamp - cursor).total_seconds() / 3600.0, 0.0), 6
+                    ),
                     "ended_by_event_type": str(event.get("event_type") or ""),
                     "ended_by_change_reason": str(event.get("change_reason") or ""),
-                    "ended_by_changed_scopes": [str(item) for item in _as_list(event.get("changed_scopes"))],
+                    "ended_by_changed_scopes": [
+                        str(item) for item in _as_list(event.get("changed_scopes"))
+                    ],
                 }
             )
         cursor = max(cursor, timestamp)
@@ -228,7 +268,9 @@ def _historical_soak_evidence(
             "generation": active_generation,
             "started_utc": cursor.isoformat(),
             "ended_utc": current_time.isoformat(),
-            "elapsed_hours": round(max((current_time - cursor).total_seconds() / 3600.0, 0.0), 6),
+            "elapsed_hours": round(
+                max((current_time - cursor).total_seconds() / 3600.0, 0.0), 6
+            ),
             "ended_by_event_type": "",
             "ended_by_change_reason": "",
             "ended_by_changed_scopes": [],
@@ -249,12 +291,27 @@ def _historical_soak_evidence(
         "initial_candidate_started_utc": initialized.isoformat(),
         "historical_segmented_wall_clock_hours": round(historical_hours, 6),
         "historical_segmented_wall_clock_days": round(historical_hours / 24.0, 6),
-        "wall_clock_hours_before_latest_full_system_window": round(pre_latest_reset_hours, 6),
+        "wall_clock_hours_before_latest_full_system_window": round(
+            pre_latest_reset_hours, 6
+        ),
         "candidate_event_count": len(valid_events),
-        "accepted_change_count": sum(1 for _, row in valid_events if row.get("event_type") == "candidate_change_accepted"),
-        "chain_recovery_count": sum(1 for _, row in valid_events if row.get("event_type") == "candidate_chain_recovery_anchor"),
+        "accepted_change_count": sum(
+            1
+            for _, row in valid_events
+            if row.get("event_type") == "candidate_change_accepted"
+        ),
+        "chain_recovery_count": sum(
+            1
+            for _, row in valid_events
+            if row.get("event_type") == "candidate_chain_recovery_anchor"
+        ),
         "segment_count": len(segments),
-        "longest_segment_hours": round(max((float(row.get("elapsed_hours", 0.0)) for row in segments), default=0.0), 6),
+        "longest_segment_hours": round(
+            max(
+                (float(row.get("elapsed_hours", 0.0)) for row in segments), default=0.0
+            ),
+            6,
+        ),
         "scope_window_elapsed_hours": scope_elapsed_hours,
         "recent_segments": segments[-12:],
         "older_segment_count": max(len(segments) - 12, 0),
@@ -266,7 +323,9 @@ def _historical_soak_evidence(
     }
 
 
-def build_payload(project_root: Path = PROJECT_ROOT, *, now: datetime | None = None) -> dict[str, Any]:
+def build_payload(
+    project_root: Path = PROJECT_ROOT, *, now: datetime | None = None
+) -> dict[str, Any]:
     current_time = now or datetime.now(timezone.utc)
     health = project_root / "governance" / "health"
     unattended = load_json(health / "unattended_soak_readiness_latest.json")
@@ -278,35 +337,152 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, now: datetime | None = N
     production = load_json(health / "production_excellence_control_latest.json")
     paper_regression = load_json(health / "runtime_paper_regression_guard_latest.json")
     paper_truth = load_json(health / "paper_execution_truth_layer_latest.json")
-    candidate_state = load_json(project_root / "governance" / "runtime" / "production_candidate_state.json")
+    profitability_assessment = load_json(
+        health / "profitability_self_assessment_latest.json"
+    )
+    profitability_policy = load_json(
+        project_root / "config" / "profitability_self_assessment_v1.json"
+    )
+    generation_attribution = load_json(
+        project_root
+        / "governance"
+        / "research"
+        / "generation_behavior_attribution_latest.json"
+    )
+    candidate_state = load_json(
+        project_root / "governance" / "runtime" / "production_candidate_state.json"
+    )
     candidate = _as_dict(production.get("candidate"))
     chain = _as_dict(candidate.get("event_chain"))
     storage_soak = _as_dict(storage.get("continuous_run_soak_contract"))
     production_source = (
-        (project_root / "scripts" / "ops" / "production_excellence_control.py").read_text(encoding="utf-8")
-        if (project_root / "scripts" / "ops" / "production_excellence_control.py").is_file()
+        (
+            project_root / "scripts" / "ops" / "production_excellence_control.py"
+        ).read_text(encoding="utf-8")
+        if (
+            project_root / "scripts" / "ops" / "production_excellence_control.py"
+        ).is_file()
         else ""
     )
     source_refresh_source = (
-        (project_root / "scripts" / "ops" / "source_verification_autorefresh.py").read_text(encoding="utf-8")
-        if (project_root / "scripts" / "ops" / "source_verification_autorefresh.py").is_file()
+        (
+            project_root / "scripts" / "ops" / "source_verification_autorefresh.py"
+        ).read_text(encoding="utf-8")
+        if (
+            project_root / "scripts" / "ops" / "source_verification_autorefresh.py"
+        ).is_file()
         else ""
     )
+    profitability_source = (
+        (
+            project_root / "scripts" / "ops" / "profitability_self_assessment.py"
+        ).read_text(encoding="utf-8")
+        if (
+            project_root / "scripts" / "ops" / "profitability_self_assessment.py"
+        ).is_file()
+        else ""
+    )
+    generation_attribution_source = (
+        (
+            project_root / "scripts" / "ops" / "generation_behavior_attribution.py"
+        ).read_text(encoding="utf-8")
+        if (
+            project_root / "scripts" / "ops" / "generation_behavior_attribution.py"
+        ).is_file()
+        else ""
+    )
+    developmental_policy = _as_dict(profitability_policy.get("soak_contract"))
+    developmental_learning_implemented = bool(
+        developmental_policy.get("developmental_change_learning_enabled", False)
+        and developmental_policy.get(
+            "clean_720_hour_live_promotion_gate_unchanged", False
+        )
+        and "_developmental_soak_learning" in profitability_source
+        and "counts_toward_clean_720_hour_promotion_window" in profitability_source
+    )
+    generation_attribution_implemented = bool(
+        "verify_candidate_event_chain" in generation_attribution_source
+        and "legacy_window_association_never_promotion_grade"
+        in generation_attribution_source
+        and "association_is_causation" in generation_attribution_source
+        and "main_soak_active_runtime_evidence_hours" in generation_attribution_source
+    )
     controls = [
-        ("01_candidate_hash_chain", "Candidate fingerprints and events are hash-chained", "verify_candidate_event_chain" in production_source),
-        ("02_explicit_chain_recovery", "Event-log recovery is explicit and resets every window", "candidate_chain_recovery_anchor" in production_source and "all_evidence_windows_reset" in production_source),
-        ("03_drift_resets_scope_clock", "Accepted drift resets every affected evidence scope", "scope_windows_started_utc" in production_source and "changed_scopes" in production_source),
-        ("04_full_720_hour_contract", "A clean completion requires the full 720 hours", "required_hours" in production_source and "thirty_day_window" in production_source),
-        ("05_unattended_runtime_gate", "Runtime health gates paper soak independently of elapsed time", (project_root / "scripts" / "ops" / "unattended_soak_readiness.py").is_file()),
-        ("06_storage_memory_pressure_self_heal", "Storage and memory pressure retain explicit self-healing gates", (project_root / "scripts" / "ops" / "storage_backpressure_autopilot.py").is_file() and (project_root / "scripts" / "ops" / "memory_pressure_intelligence.py").is_file()),
-        ("07_source_retry_survives_restart", "Source refresh retry, quarantine, and fairness survive restarts", "source_verification_retry_state.json" in source_refresh_source and "starvation_override" in source_refresh_source),
-        ("08_regression_and_incident_evidence", "Regression and incident evidence remain separate from soak credit", (project_root / "scripts" / "ops" / "grade_regression_guard.py").is_file() and (project_root / "scripts" / "ops" / "incident_timeline.py").is_file()),
+        (
+            "01_candidate_hash_chain",
+            "Candidate fingerprints and events are hash-chained",
+            "verify_candidate_event_chain" in production_source,
+        ),
+        (
+            "02_explicit_chain_recovery",
+            "Event-log recovery is explicit and resets every window",
+            "candidate_chain_recovery_anchor" in production_source
+            and "all_evidence_windows_reset" in production_source,
+        ),
+        (
+            "03_drift_resets_scope_clock",
+            "Accepted drift resets every affected evidence scope",
+            "scope_windows_started_utc" in production_source
+            and "changed_scopes" in production_source,
+        ),
+        (
+            "04_full_720_hour_contract",
+            "A clean completion requires the full 720 hours",
+            "required_hours" in production_source
+            and "thirty_day_window" in production_source,
+        ),
+        (
+            "05_unattended_runtime_gate",
+            "Runtime health gates paper soak independently of elapsed time",
+            (
+                project_root / "scripts" / "ops" / "unattended_soak_readiness.py"
+            ).is_file(),
+        ),
+        (
+            "06_storage_memory_pressure_self_heal",
+            "Storage and memory pressure retain explicit self-healing gates",
+            (
+                project_root / "scripts" / "ops" / "storage_backpressure_autopilot.py"
+            ).is_file()
+            and (
+                project_root / "scripts" / "ops" / "memory_pressure_intelligence.py"
+            ).is_file(),
+        ),
+        (
+            "07_source_retry_survives_restart",
+            "Source refresh retry, quarantine, and fairness survive restarts",
+            "source_verification_retry_state.json" in source_refresh_source
+            and "starvation_override" in source_refresh_source,
+        ),
+        (
+            "08_regression_and_incident_evidence",
+            "Regression and incident evidence remain separate from soak credit",
+            (project_root / "scripts" / "ops" / "grade_regression_guard.py").is_file()
+            and (project_root / "scripts" / "ops" / "incident_timeline.py").is_file(),
+        ),
+        (
+            "09_generation_aware_developmental_learning",
+            "Accepted generations feed identity-bound developmental profitability learning without earning live-promotion credit",
+            developmental_learning_implemented,
+        ),
+        (
+            "10_generation_behavior_attribution",
+            "Cumulative soak generations support candidate-bound behavior comparison with explicit legacy and causal limits",
+            generation_attribution_implemented,
+        ),
     ]
     control_rows = [
-        {"control_id": control_id, "title": title, "implemented": implemented, "status": "ready" if implemented else "blocked"}
+        {
+            "control_id": control_id,
+            "title": title,
+            "implemented": implemented,
+            "status": "ready" if implemented else "blocked",
+        }
         for control_id, title, implemented in controls
     ]
-    storage_ready = bool(storage_soak.get("soak_ready", storage_soak.get("ready", False)))
+    storage_ready = bool(
+        storage_soak.get("soak_ready", storage_soak.get("ready", False))
+    )
     candidate_ready = bool(
         candidate.get("candidate_ready", False)
         and not candidate.get("candidate_drift", True)
@@ -315,12 +491,20 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, now: datetime | None = N
     )
     runtime_checks = {
         "candidate_chain_current": candidate_ready,
-        "unattended_runtime_A_plus": _artifact_ready(unattended, grades={"A+"}) and bool(unattended.get("safe_to_leave_unattended", False)),
-        "storage_30_day_capacity": storage_ready and float(storage_soak.get("horizon_days", 0.0) or 0.0) >= 30.0,
+        "unattended_runtime_A_plus": _artifact_ready(unattended, grades={"A+"})
+        and bool(unattended.get("safe_to_leave_unattended", False)),
+        "storage_30_day_capacity": storage_ready
+        and float(storage_soak.get("horizon_days", 0.0) or 0.0) >= 30.0,
         "memory_control_ready": _artifact_ready(memory),
-        "process_restart_storm_clear": not _as_list(process.get("restart_storms")) and _status(process.get("overall_status")) in {"ready", "stable", "healthy"},
-        "runtime_pressure_managed": _status(throttle.get("overall_status")) in {"ready", "advisory"} and _status(throttle.get("memory_pressure_level")) in {"normal", "low", ""},
-        "source_hardening_A_plus": str(source.get("source_control_grade") or "").strip().upper() in {"A+", "A++"},
+        "process_restart_storm_clear": not _as_list(process.get("restart_storms"))
+        and _status(process.get("overall_status")) in {"ready", "stable", "healthy"},
+        "runtime_pressure_managed": _status(throttle.get("overall_status"))
+        in {"ready", "advisory"}
+        and _status(throttle.get("memory_pressure_level")) in {"normal", "low", ""},
+        "source_hardening_A_plus": str(source.get("source_control_grade") or "")
+        .strip()
+        .upper()
+        in {"A+", "A++"},
         "paper_runtime_regression_clear": bool(
             paper_regression.get("ok", False)
             and _status(paper_regression.get("overall_status")) == "ready"
@@ -329,7 +513,10 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, now: datetime | None = N
         "paper_truth_reconciled_A_plus": bool(
             paper_truth.get("ok", False)
             and paper_truth.get("a_plus_ready", False)
-            and str(paper_truth.get("grade") or paper_truth.get("overall_grade") or "").strip().upper() in {"A+", "A++"}
+            and str(paper_truth.get("grade") or paper_truth.get("overall_grade") or "")
+            .strip()
+            .upper()
+            in {"A+", "A++"}
             and not paper_truth.get("blocked_gates")
         ),
     }
@@ -342,7 +529,9 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, now: datetime | None = N
     parsed_starts = list(parsed_scope_starts.values())
     clean_start = max(parsed_starts) if parsed_starts else None
     observed_window_elapsed_hours = (
-        max((current_time - clean_start).total_seconds() / 3600.0, 0.0) if clean_start else 0.0
+        max((current_time - clean_start).total_seconds() / 3600.0, 0.0)
+        if clean_start
+        else 0.0
     )
     planned_maintenance_windows = _planned_maintenance_windows(
         project_root,
@@ -357,8 +546,12 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, now: datetime | None = N
         observed_window_elapsed_hours - clean_maintenance_excluded_hours,
         0.0,
     )
-    credited_clean_window_elapsed_hours = active_clean_window_elapsed_hours if candidate_ready else 0.0
-    elapsed_complete = bool(candidate_ready and credited_clean_window_elapsed_hours >= 720.0)
+    credited_clean_window_elapsed_hours = (
+        active_clean_window_elapsed_hours if candidate_ready else 0.0
+    )
+    elapsed_complete = bool(
+        candidate_ready and credited_clean_window_elapsed_hours >= 720.0
+    )
     implemented_count = sum(1 for row in control_rows if row["implemented"])
     runtime_ready_count = sum(1 for value in runtime_checks.values() if value)
     control_ready = implemented_count == len(control_rows)
@@ -366,7 +559,9 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, now: datetime | None = N
     control_score = 100.0 * implemented_count / max(len(control_rows), 1)
     runtime_score = 100.0 * runtime_ready_count / max(len(runtime_checks), 1)
     elapsed_score = min(100.0 * credited_clean_window_elapsed_hours / 720.0, 100.0)
-    raw_event_path = str(chain.get("path") or "governance/evidence/production_candidate_events.jsonl")
+    raw_event_path = str(
+        chain.get("path") or "governance/evidence/production_candidate_events.jsonl"
+    )
     event_path = Path(raw_event_path)
     if not event_path.is_absolute():
         event_path = project_root / event_path
@@ -395,9 +590,80 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, now: datetime | None = N
         main_soak_elapsed_hours - main_maintenance_excluded_hours,
         0.0,
     )
+    developmental_learning = _as_dict(
+        profitability_assessment.get("developmental_soak_learning")
+    )
+    developmental_learning_contract = {
+        "implemented": developmental_learning_implemented,
+        "status": str(
+            developmental_learning.get("status")
+            or ("collecting" if developmental_learning_implemented else "blocked")
+        ),
+        "accepted_generation_count": int(
+            _as_float(
+                developmental_learning.get(
+                    "accepted_generation_count",
+                    historical_soak.get("accepted_change_count", 0),
+                )
+            )
+        ),
+        "attributable_generation_count": int(
+            _as_float(developmental_learning.get("attributable_generation_count", 0))
+        ),
+        "mature_developmental_generation_count": int(
+            _as_float(
+                developmental_learning.get("mature_developmental_generation_count", 0)
+            )
+        ),
+        "bounded_paper_action_count": len(
+            _as_list(developmental_learning.get("bounded_paper_action_plan"))
+        ),
+        "accepted_generations_feed_developmental_learning": developmental_learning_implemented,
+        "historical_generations_grade_current_candidate": False,
+        "historical_generations_earn_clean_720_hour_credit": False,
+        "clean_720_hour_live_promotion_gate_unchanged": True,
+        "profitability_guaranteed": False,
+        "live_execution_authority": False,
+        "source_path": str(health / "profitability_self_assessment_latest.json"),
+    }
+    attribution_comparison = _as_dict(generation_attribution.get("comparison"))
+    generation_attribution_contract = {
+        "implemented": generation_attribution_implemented,
+        "artifact_status": str(
+            generation_attribution.get("overall_status") or "missing"
+        ),
+        "from_generation": int(
+            _as_float(attribution_comparison.get("from_generation"), 0)
+        ),
+        "to_generation": int(_as_float(attribution_comparison.get("to_generation"), 0)),
+        "behavior_comparison_ready": bool(
+            attribution_comparison.get("behavior_comparison_ready", False)
+        ),
+        "identity_bound_behavior_comparison_ready": bool(
+            attribution_comparison.get(
+                "identity_bound_behavior_comparison_ready", False
+            )
+        ),
+        "legacy_window_association_involved": bool(
+            attribution_comparison.get("legacy_window_association_involved", False)
+        ),
+        "economic_comparison_ready": bool(
+            attribution_comparison.get("economic_comparison_ready", False)
+        ),
+        "association_is_causal_proof": False,
+        "historical_generations_grade_current_candidate": False,
+        "historical_generations_earn_clean_720_hour_credit": False,
+        "live_execution_authority": False,
+        "source_path": str(
+            project_root
+            / "governance"
+            / "research"
+            / "generation_behavior_attribution_latest.json"
+        ),
+    }
     return {
         "timestamp_utc": iso_now(),
-        "schema_version": 1,
+        "schema_version": 2,
         "ok": control_ready,
         "overall_status": "ready" if capacity_ready else "needs_attention",
         "control_grade": _grade(control_score, complete=control_ready),
@@ -412,14 +678,20 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, now: datetime | None = N
         "main_soak_counting_mode": "cumulative_segmented_candidate_wall_clock",
         "main_soak_includes_pre_reset_time": True,
         "main_soak_count_is_promotion_credit": False,
-        "main_soak_active_runtime_evidence_hours": round(main_soak_active_runtime_evidence_hours, 6),
-        "main_soak_planned_maintenance_excluded_hours": round(main_maintenance_excluded_hours, 6),
+        "main_soak_active_runtime_evidence_hours": round(
+            main_soak_active_runtime_evidence_hours, 6
+        ),
+        "main_soak_planned_maintenance_excluded_hours": round(
+            main_maintenance_excluded_hours, 6
+        ),
         "elapsed_evidence_grade": _grade(elapsed_score, complete=elapsed_complete),
         "elapsed_evidence_score": round(elapsed_score, 3),
         "clean_window_started_utc": clean_start.isoformat() if clean_start else "",
         "clean_window_elapsed_hours": round(credited_clean_window_elapsed_hours, 6),
         "observed_window_elapsed_hours": round(observed_window_elapsed_hours, 6),
-        "clean_window_planned_maintenance_excluded_hours": round(clean_maintenance_excluded_hours, 6),
+        "clean_window_planned_maintenance_excluded_hours": round(
+            clean_maintenance_excluded_hours, 6
+        ),
         "planned_maintenance": {
             "event_count": len(planned_maintenance_windows),
             "events": planned_maintenance_windows,
@@ -431,11 +703,16 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, now: datetime | None = N
             "policy": "planned host maintenance preserves prior soak history and candidate continuity but does not earn active-runtime evidence while the system is offline",
         },
         "historical_soak_evidence": historical_soak,
-        "candidate_drift_invalidates_elapsed_credit": bool(clean_start and not candidate_ready),
+        "developmental_profitability_learning": developmental_learning_contract,
+        "generation_behavior_attribution": generation_attribution_contract,
+        "candidate_drift_invalidates_elapsed_credit": bool(
+            clean_start and not candidate_ready
+        ),
         "clean_720_hours_complete": elapsed_complete,
         "controls": control_rows,
         "runtime_checks": runtime_checks,
-        "blockers": [key for key, value in runtime_checks.items() if not value] + [row["control_id"] for row in control_rows if not row["implemented"]],
+        "blockers": [key for key, value in runtime_checks.items() if not value]
+        + [row["control_id"] for row in control_rows if not row["implemented"]],
         "grading_contract": {
             "control_A_plus_is_hardening_only": True,
             "operational_A_plus_means_capacity_to_run_unattended": True,
@@ -450,19 +727,29 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, now: datetime | None = N
             "pre_reset_time_is_included_in_main_soak_count": True,
             "main_soak_count_and_clean_promotion_clock_are_separate": True,
             "historical_segmented_time_does_not_replace_clean_candidate_credit": True,
+            "accepted_changes_feed_developmental_profitability_learning": developmental_learning_implemented,
+            "developmental_learning_requires_identity_and_time_binding": developmental_learning_implemented,
+            "developmental_generation_history_does_not_grade_current_candidate": True,
+            "developmental_generation_history_does_not_earn_live_promotion_credit": True,
+            "generation_behavior_comparison_is_associational_not_causal": True,
+            "legacy_window_association_never_grades_current_candidate": True,
             "no_grade_authorizes_live_money": True,
         },
     }
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Evaluate continuous-soak hardening, capacity, and elapsed evidence separately.")
+    parser = argparse.ArgumentParser(
+        description="Evaluate continuous-soak hardening, capacity, and elapsed evidence separately."
+    )
     parser.add_argument("--project-root", type=Path, default=PROJECT_ROOT)
     parser.add_argument("--out-file", type=Path, default=DEFAULT_OUT_PATH)
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args()
     project_root = args.project_root.resolve()
-    out_path = args.out_file if args.out_file.is_absolute() else project_root / args.out_file
+    out_path = (
+        args.out_file if args.out_file.is_absolute() else project_root / args.out_file
+    )
     payload = build_payload(project_root)
     write_payload(out_path, payload)
     if args.json:

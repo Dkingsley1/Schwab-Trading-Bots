@@ -16,15 +16,37 @@ if __package__ in {None, ""}:
     if str(PROJECT_ROOT) not in sys.path:
         sys.path.insert(0, str(PROJECT_ROOT))
     from scripts.ops.artifact_generation_lock import paper_profitability_generation_lock
-    from scripts.ops.long_runtime_common import load_json, parse_iso_utc, payload_age_minutes, write_payload
+    from scripts.ops.long_runtime_common import (
+        load_json,
+        parse_iso_utc,
+        payload_age_minutes,
+        write_payload,
+    )
 else:
     from .artifact_generation_lock import paper_profitability_generation_lock
-    from .long_runtime_common import PROJECT_ROOT, load_json, parse_iso_utc, payload_age_minutes, write_payload
+    from .long_runtime_common import (
+        PROJECT_ROOT,
+        load_json,
+        parse_iso_utc,
+        payload_age_minutes,
+        write_payload,
+    )
 
 
 DEFAULT_CONFIG_PATH = PROJECT_ROOT / "config" / "production_excellence_v1.json"
-DEFAULT_OUT_PATH = PROJECT_ROOT / "governance" / "health" / "production_excellence_control_latest.json"
-BAD_STATUSES = {"blocked", "critical", "degraded", "error", "failed", "missing", "not_ready", "stale"}
+DEFAULT_OUT_PATH = (
+    PROJECT_ROOT / "governance" / "health" / "production_excellence_control_latest.json"
+)
+BAD_STATUSES = {
+    "blocked",
+    "critical",
+    "degraded",
+    "error",
+    "failed",
+    "missing",
+    "not_ready",
+    "stale",
+}
 GRADE_RANK = {"F": 0, "D": 1, "C": 2, "B": 3, "A": 4, "A+": 5}
 
 
@@ -64,7 +86,9 @@ def _grade_at_least(raw: Any, floor: str) -> bool:
 
 
 def _canonical_hash(payload: dict[str, Any]) -> str:
-    encoded = json.dumps(payload, ensure_ascii=True, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    encoded = json.dumps(
+        payload, ensure_ascii=True, sort_keys=True, separators=(",", ":")
+    ).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()
 
 
@@ -101,6 +125,16 @@ def _scope_files(project_root: Path, patterns: Iterable[Any]) -> list[Path]:
             if path.is_file() or path.is_symlink():
                 paths.add(path)
     return sorted(paths, key=lambda item: str(item.relative_to(project_root)))
+
+
+def candidate_scope_files(
+    project_root: Path, config: dict[str, Any]
+) -> dict[str, list[Path]]:
+    scopes = _as_dict(_as_dict(config.get("candidate")).get("scope_globs"))
+    return {
+        str(scope): _scope_files(project_root, _as_list(patterns))
+        for scope, patterns in sorted(scopes.items())
+    }
 
 
 def _hash_scope(project_root: Path, paths: list[Path]) -> str:
@@ -163,18 +197,26 @@ def _candidate_file_content(project_root: Path, path: Path) -> bytes:
     normalized = dict(registry)
     normalized.pop("updated_at_utc", None)
     normalized.pop("summary", None)
-    rows = normalized.get("sub_bots") if isinstance(normalized.get("sub_bots"), list) else []
+    rows = (
+        normalized.get("sub_bots")
+        if isinstance(normalized.get("sub_bots"), list)
+        else []
+    )
     normalized["sub_bots"] = [
-        {
-            key: value
-            for key, value in row.items()
-            if key not in REGISTRY_RUNTIME_OBSERVATION_KEYS
-        }
-        if isinstance(row, dict)
-        else row
+        (
+            {
+                key: value
+                for key, value in row.items()
+                if key not in REGISTRY_RUNTIME_OBSERVATION_KEYS
+            }
+            if isinstance(row, dict)
+            else row
+        )
         for row in rows
     ]
-    return json.dumps(normalized, ensure_ascii=True, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return json.dumps(
+        normalized, ensure_ascii=True, sort_keys=True, separators=(",", ":")
+    ).encode("utf-8")
 
 
 def _profitability_grade_labels_honest(control_payload: dict[str, Any]) -> bool:
@@ -188,7 +230,9 @@ def _profitability_grade_labels_honest(control_payload: dict[str, Any]) -> bool:
     return f"{controlled_grade} controlled" in display and f"{raw_grade} raw" in display
 
 
-def _profitability_source_matches(performance: dict[str, Any], control_payload: dict[str, Any]) -> bool:
+def _profitability_source_matches(
+    performance: dict[str, Any], control_payload: dict[str, Any]
+) -> bool:
     source = _as_dict(control_payload.get("paper_performance_input_contract"))
     path = Path(str(performance.get("path") or ""))
     expected_hash = str(source.get("sha256") or "")
@@ -200,12 +244,12 @@ def _profitability_source_matches(performance: dict[str, Any], control_payload: 
     )
 
 
-def candidate_fingerprints(project_root: Path, config: dict[str, Any]) -> dict[str, Any]:
-    scopes = _as_dict(_as_dict(config.get("candidate")).get("scope_globs"))
+def candidate_fingerprints(
+    project_root: Path, config: dict[str, Any]
+) -> dict[str, Any]:
     rows: dict[str, dict[str, Any]] = {}
-    for scope, patterns in sorted(scopes.items()):
-        files = _scope_files(project_root, _as_list(patterns))
-        rows[str(scope)] = {
+    for scope, files in candidate_scope_files(project_root, config).items():
+        rows[scope] = {
             "sha256": _hash_scope(project_root, files),
             "file_count": len(files),
         }
@@ -290,14 +334,23 @@ def _quarantine_candidate_event_log(path: Path, *, now: datetime) -> str:
 
 
 def _profitability_baseline(project_root: Path) -> dict[str, Any]:
-    payload = load_json(project_root / "governance" / "health" / "paper_profitability_control_latest.json")
+    payload = load_json(
+        project_root
+        / "governance"
+        / "health"
+        / "paper_profitability_control_latest.json"
+    )
     summary = _as_dict(payload.get("paper_summary"))
     return {
         "artifact_timestamp_utc": payload.get("timestamp_utc", ""),
         "historical_raw_grade": payload.get("raw_profitability_grade", ""),
         "historical_net_pnl": _safe_float(summary.get("ending_net_pnl_total"), 0.0),
-        "historical_realized_pnl": _safe_float(summary.get("ending_realized_pnl_total"), 0.0),
-        "historical_unrealized_pnl": _safe_float(summary.get("ending_unrealized_pnl_total"), 0.0),
+        "historical_realized_pnl": _safe_float(
+            summary.get("ending_realized_pnl_total"), 0.0
+        ),
+        "historical_unrealized_pnl": _safe_float(
+            summary.get("ending_unrealized_pnl_total"), 0.0
+        ),
         "policy": "preserve_historical_ledger_and_measure_post_candidate_results_separately",
     }
 
@@ -307,11 +360,13 @@ def _candidate_paths(project_root: Path, config: dict[str, Any]) -> tuple[Path, 
     return (
         _project_path(
             project_root,
-            candidate.get("state_path") or "governance/runtime/production_candidate_state.json",
+            candidate.get("state_path")
+            or "governance/runtime/production_candidate_state.json",
         ),
         _project_path(
             project_root,
-            candidate.get("event_log_path") or "governance/evidence/production_candidate_events.jsonl",
+            candidate.get("event_log_path")
+            or "governance/evidence/production_candidate_events.jsonl",
         ),
     )
 
@@ -349,23 +404,32 @@ def manage_candidate(
     operation_error = ""
     quarantined_event_log = ""
 
-    mutation_count = sum(bool(value) for value in (initialize, accept_change, recover_event_chain))
+    mutation_count = sum(
+        bool(value) for value in (initialize, accept_change, recover_event_chain)
+    )
     if mutation_count > 1:
         operation_error = "candidate_mutation_flags_are_mutually_exclusive"
     elif initialize:
         operation = "initialize"
         if state:
             operation_error = "candidate_already_initialized"
-        elif not chain_before.get("ok", False) or _safe_int(chain_before.get("event_count"), 0) > 0:
+        elif (
+            not chain_before.get("ok", False)
+            or _safe_int(chain_before.get("event_count"), 0) > 0
+        ):
             operation_error = "candidate_event_log_not_empty_or_invalid"
     elif accept_change:
         operation = "accept_change"
-        minimum_reason = _safe_int(_as_dict(config.get("candidate")).get("minimum_change_reason_chars"), 12)
+        minimum_reason = _safe_int(
+            _as_dict(config.get("candidate")).get("minimum_change_reason_chars"), 12
+        )
         if not state:
             operation_error = "candidate_not_initialized"
         elif not chain_before.get("ok", False):
             operation_error = "candidate_event_chain_invalid"
-        elif str(chain_before.get("chain_head") or "") != str(state.get("event_chain_head") or ""):
+        elif str(chain_before.get("chain_head") or "") != str(
+            state.get("event_chain_head") or ""
+        ):
             operation_error = "candidate_state_event_chain_head_mismatch"
         elif not changed_before:
             operation_error = "no_candidate_drift_to_accept"
@@ -373,8 +437,12 @@ def manage_candidate(
             operation_error = f"change_reason_shorter_than_{minimum_reason}_characters"
     elif recover_event_chain:
         operation = "recover_event_chain"
-        minimum_reason = _safe_int(_as_dict(config.get("candidate")).get("minimum_change_reason_chars"), 12)
-        head_mismatch = str(chain_before.get("chain_head") or "") != str(state.get("event_chain_head") or "")
+        minimum_reason = _safe_int(
+            _as_dict(config.get("candidate")).get("minimum_change_reason_chars"), 12
+        )
+        head_mismatch = str(chain_before.get("chain_head") or "") != str(
+            state.get("event_chain_head") or ""
+        )
         if not state:
             operation_error = "candidate_not_initialized"
         elif bool(chain_before.get("ok", False)) and not head_mismatch:
@@ -382,15 +450,22 @@ def manage_candidate(
         elif len(str(change_reason or "").strip()) < minimum_reason:
             operation_error = f"change_reason_shorter_than_{minimum_reason}_characters"
 
-    if operation in {"initialize", "accept_change", "recover_event_chain"} and not operation_error:
+    if (
+        operation in {"initialize", "accept_change", "recover_event_chain"}
+        and not operation_error
+    ):
         recovering = operation == "recover_event_chain"
         prior_log_sha256 = _file_sha256(event_path)
         prior_log_size = event_path.stat().st_size if event_path.is_file() else 0
         prior_state_head = str(state.get("event_chain_head") or "") if state else ""
         if recovering:
-            quarantined_event_log = _quarantine_candidate_event_log(event_path, now=current_time)
+            quarantined_event_log = _quarantine_candidate_event_log(
+                event_path, now=current_time
+            )
         previous_head = "" if recovering else str(chain_before.get("chain_head") or "")
-        previous_windows = _as_dict(state.get("scope_windows_started_utc")) if state else {}
+        previous_windows = (
+            _as_dict(state.get("scope_windows_started_utc")) if state else {}
+        )
         changed = (
             sorted(_as_dict(current.get("scopes")).keys())
             if operation in {"initialize", "recover_event_chain"}
@@ -399,24 +474,34 @@ def manage_candidate(
         windows = dict(previous_windows)
         for scope in changed:
             windows[scope] = now_text
-        generation = 1 if operation == "initialize" else _safe_int(state.get("generation"), 1) + 1
-        candidate_id = f"pc-{str(current.get('overall_sha256') or '')[:12]}-g{generation}"
+        generation = (
+            1
+            if operation == "initialize"
+            else _safe_int(state.get("generation"), 1) + 1
+        )
+        candidate_id = (
+            f"pc-{str(current.get('overall_sha256') or '')[:12]}-g{generation}"
+        )
         event_unsigned = {
             "schema_version": 1,
             "timestamp_utc": now_text,
             "event_type": (
                 "candidate_initialized"
                 if operation == "initialize"
-                else "candidate_chain_recovery_anchor"
-                if recovering
-                else "candidate_change_accepted"
+                else (
+                    "candidate_chain_recovery_anchor"
+                    if recovering
+                    else "candidate_change_accepted"
+                )
             ),
             "candidate_id": candidate_id,
             "generation": generation,
             "git_head": _git_head(project_root),
             "overall_sha256": current.get("overall_sha256"),
             "changed_scopes": changed,
-            "change_reason": str(change_reason or "initial production-excellence candidate freeze").strip(),
+            "change_reason": str(
+                change_reason or "initial production-excellence candidate freeze"
+            ).strip(),
             "previous_event_hash": previous_head,
         }
         if recovering:
@@ -433,13 +518,19 @@ def manage_candidate(
             "schema_version": 1,
             "candidate_id": candidate_id,
             "generation": generation,
-            "initialized_at_utc": state.get("initialized_at_utc", now_text) if state else now_text,
+            "initialized_at_utc": (
+                state.get("initialized_at_utc", now_text) if state else now_text
+            ),
             "accepted_at_utc": now_text,
             "accepted_git_head": event_unsigned["git_head"],
             "overall_sha256": current.get("overall_sha256"),
             "scope_fingerprints": current.get("scopes", {}),
             "scope_windows_started_utc": windows,
-            "profitability_baseline": state.get("profitability_baseline") if state else _profitability_baseline(project_root),
+            "profitability_baseline": (
+                state.get("profitability_baseline")
+                if state
+                else _profitability_baseline(project_root)
+            ),
             "last_change": {
                 "timestamp_utc": now_text,
                 "changed_scopes": changed,
@@ -469,7 +560,9 @@ def manage_candidate(
     }
 
 
-def _artifact(project_root: Path, raw_path: Any, max_age_hours: float, now: datetime) -> dict[str, Any]:
+def _artifact(
+    project_root: Path, raw_path: Any, max_age_hours: float, now: datetime
+) -> dict[str, Any]:
     path = _project_path(project_root, raw_path)
     payload = load_json(path)
     age = payload_age_minutes(payload, path, now=now) if payload else None
@@ -480,11 +573,14 @@ def _artifact(project_root: Path, raw_path: Any, max_age_hours: float, now: date
         "present": bool(payload),
         "age_minutes": round(float(age), 4) if age is not None else None,
         "fresh": fresh,
-        "status": _status(payload.get("overall_status") or payload.get("status")) or "missing",
+        "status": _status(payload.get("overall_status") or payload.get("status"))
+        or "missing",
     }
 
 
-def _check(check_id: str, title: str, passed: bool, *, evidence: Any = None, action: str = "") -> dict[str, Any]:
+def _check(
+    check_id: str, title: str, passed: bool, *, evidence: Any = None, action: str = ""
+) -> dict[str, Any]:
     return {
         "check_id": check_id,
         "title": title,
@@ -523,9 +619,15 @@ def _pillar(pillar_id: str, title: str, checks: list[dict[str, Any]]) -> dict[st
         "grade": _score_grade(score, all_passed),
         "passed_check_count": passed,
         "check_count": total,
-        "failed_checks": [str(row.get("check_id")) for row in checks if not row.get("passed", False)],
+        "failed_checks": [
+            str(row.get("check_id")) for row in checks if not row.get("passed", False)
+        ],
         "checks": checks,
-        "next_actions": [str(row.get("action")) for row in checks if not row.get("passed", False) and row.get("action")],
+        "next_actions": [
+            str(row.get("action"))
+            for row in checks
+            if not row.get("passed", False) and row.get("action")
+        ],
     }
 
 
@@ -537,7 +639,9 @@ def _window_start(state: dict[str, Any], scopes: Iterable[Any]) -> datetime | No
 
 
 def _window_age_hours(start: datetime | None, now: datetime) -> float:
-    return max((now - start).total_seconds() / 3600.0, 0.0) if start is not None else 0.0
+    return (
+        max((now - start).total_seconds() / 3600.0, 0.0) if start is not None else 0.0
+    )
 
 
 def _find_domain(payload: dict[str, Any], name: str) -> dict[str, Any]:
@@ -562,7 +666,9 @@ def _drill_rows(payload: dict[str, Any]) -> dict[str, dict[str, Any]]:
     }
 
 
-def _profitable_sleeves(performance: dict[str, Any]) -> tuple[list[dict[str, Any]], float | None]:
+def _profitable_sleeves(
+    performance: dict[str, Any],
+) -> tuple[list[dict[str, Any]], float | None]:
     rows: list[dict[str, Any]] = []
     for sleeve in _as_list(performance.get("sleeve_latest")):
         if not isinstance(sleeve, dict):
@@ -576,11 +682,18 @@ def _profitable_sleeves(performance: dict[str, Any]) -> tuple[list[dict[str, Any
             )
         )
         if positive_confident and total > 0.0:
-            rows.append({"profile": sleeve.get("profile"), "total_post_cost_pnl_delta": total})
-    positive_total = sum(_safe_float(row.get("total_post_cost_pnl_delta"), 0.0) for row in rows)
+            rows.append(
+                {"profile": sleeve.get("profile"), "total_post_cost_pnl_delta": total}
+            )
+    positive_total = sum(
+        _safe_float(row.get("total_post_cost_pnl_delta"), 0.0) for row in rows
+    )
     concentration = None
     if positive_total > 0.0 and rows:
-        concentration = max(_safe_float(row.get("total_post_cost_pnl_delta"), 0.0) for row in rows) / positive_total
+        concentration = (
+            max(_safe_float(row.get("total_post_cost_pnl_delta"), 0.0) for row in rows)
+            / positive_total
+        )
     return rows, concentration
 
 
@@ -595,7 +708,9 @@ def build_payload(
     now: datetime | None = None,
 ) -> dict[str, Any]:
     current_time = now or datetime.now(timezone.utc)
-    effective_config_path = config_path or project_root / "config" / DEFAULT_CONFIG_PATH.name
+    effective_config_path = (
+        config_path or project_root / "config" / DEFAULT_CONFIG_PATH.name
+    )
     if not effective_config_path.is_absolute():
         effective_config_path = project_root / effective_config_path
     config = load_json(effective_config_path)
@@ -616,7 +731,8 @@ def build_payload(
         and not candidate.get("candidate_drift", False)
         and chain.get("ok", False)
         and _safe_int(chain.get("event_count"), 0) >= 1
-        and str(chain.get("chain_head") or "") == str(state.get("event_chain_head") or "")
+        and str(chain.get("chain_head") or "")
+        == str(state.get("event_chain_head") or "")
         and not candidate.get("operation_error")
     )
 
@@ -624,16 +740,57 @@ def build_payload(
         "p01_frozen_candidate",
         "Frozen Production Candidate",
         [
-            _check("candidate_initialized", "Candidate state exists", bool(state), evidence=candidate.get("state_path"), action="initialize the production candidate with an explicit freeze command"),
-            _check("candidate_has_no_drift", "Candidate fingerprint has no unaccepted drift", bool(state) and not candidate.get("candidate_drift", False), evidence=candidate.get("changed_scopes", []), action="review the changed scopes and explicitly accept the change with a reason"),
-            _check("candidate_event_chain_valid", "Candidate events form a valid hash chain", bool(chain.get("ok", False)) and _safe_int(chain.get("event_count"), 0) >= 1, evidence=chain, action="restore the candidate event log from verified evidence and investigate tampering or corruption"),
-            _check("candidate_chain_head_matches_state", "State references the verified event-chain head", bool(state) and str(chain.get("chain_head") or "") == str(state.get("event_chain_head") or ""), evidence={"state": state.get("event_chain_head"), "log": chain.get("chain_head")}, action="reconcile candidate state to the verified event chain before continuing"),
-            _check("candidate_fingerprint_nonempty", "Candidate fingerprint covers source files", _safe_int(_as_dict(candidate.get("current")).get("file_count"), 0) > 0, evidence=_as_dict(candidate.get("current")), action="repair production-excellence scope globs so critical source files are fingerprinted"),
+            _check(
+                "candidate_initialized",
+                "Candidate state exists",
+                bool(state),
+                evidence=candidate.get("state_path"),
+                action="initialize the production candidate with an explicit freeze command",
+            ),
+            _check(
+                "candidate_has_no_drift",
+                "Candidate fingerprint has no unaccepted drift",
+                bool(state) and not candidate.get("candidate_drift", False),
+                evidence=candidate.get("changed_scopes", []),
+                action="review the changed scopes and explicitly accept the change with a reason",
+            ),
+            _check(
+                "candidate_event_chain_valid",
+                "Candidate events form a valid hash chain",
+                bool(chain.get("ok", False))
+                and _safe_int(chain.get("event_count"), 0) >= 1,
+                evidence=chain,
+                action="restore the candidate event log from verified evidence and investigate tampering or corruption",
+            ),
+            _check(
+                "candidate_chain_head_matches_state",
+                "State references the verified event-chain head",
+                bool(state)
+                and str(chain.get("chain_head") or "")
+                == str(state.get("event_chain_head") or ""),
+                evidence={
+                    "state": state.get("event_chain_head"),
+                    "log": chain.get("chain_head"),
+                },
+                action="reconcile candidate state to the verified event chain before continuing",
+            ),
+            _check(
+                "candidate_fingerprint_nonempty",
+                "Candidate fingerprint covers source files",
+                _safe_int(_as_dict(candidate.get("current")).get("file_count"), 0) > 0,
+                evidence=_as_dict(candidate.get("current")),
+                action="repair production-excellence scope globs so critical source files are fingerprinted",
+            ),
         ],
     )
 
     soak_policy = _as_dict(config.get("soak"))
-    soak = _artifact(project_root, soak_policy.get("artifact"), _safe_float(soak_policy.get("max_artifact_age_hours"), 2.0), current_time)
+    soak = _artifact(
+        project_root,
+        soak_policy.get("artifact"),
+        _safe_float(soak_policy.get("max_artifact_age_hours"), 2.0),
+        current_time,
+    )
     soak_payload = _as_dict(soak.get("payload"))
     soak_start = _window_start(state, _as_list(candidate_policy.get("soak_scopes")))
     soak_age = _window_age_hours(soak_start, current_time)
@@ -643,21 +800,88 @@ def build_payload(
         "p02_clean_30_day_soak",
         "Clean 30-Day Soak",
         [
-            _check("soak_candidate_frozen", "Soak runs against an unchanged candidate", candidate_ready, evidence={"candidate_id": state.get("candidate_id"), "changed_scopes": candidate.get("changed_scopes", [])}, action="freeze or reconcile the candidate before counting soak time"),
-            _check("soak_artifact_fresh", "Soak evidence is fresh", bool(soak.get("fresh", False)), evidence={k: soak.get(k) for k in ("path", "age_minutes", "status")}, action="refresh unattended-soak readiness from authoritative runtime evidence"),
-            _check("soak_runtime_ready", "Unattended paper runtime is A+ and safe", bool(soak_payload.get("ok", False) and soak_payload.get("safe_to_leave_unattended", False) and _status(soak_payload.get("overall_status")) == "ready" and _grade(soak_payload.get("overall_grade")) == "A+"), evidence={"status": soak_payload.get("overall_status"), "grade": soak_payload.get("overall_grade"), "blockers": soak_payload.get("blockers", [])}, action="clear true unattended-soak blockers while keeping live execution locked"),
-            _check("seven_day_checkpoint", "Candidate has seven clean days", bool(candidate_ready and soak_age >= checkpoint), evidence={"window_start_utc": soak_start.isoformat() if soak_start else "", "age_hours": round(soak_age, 4), "required_hours": checkpoint}, action="continue the unchanged soak through the seven-day checkpoint"),
-            _check("thirty_day_window", "Candidate has 720 clean hours", bool(candidate_ready and soak_age >= required_soak), evidence={"window_start_utc": soak_start.isoformat() if soak_start else "", "age_hours": round(soak_age, 4), "required_hours": required_soak}, action="continue the unchanged candidate until the full 30-day window is complete"),
-            _check("soak_has_no_blockers", "Soak has no unresolved blockers", not _as_list(soak_payload.get("blockers")), evidence=soak_payload.get("blockers", []), action="resolve and record every soak blocker before the clean window can count"),
+            _check(
+                "soak_candidate_frozen",
+                "Soak runs against an unchanged candidate",
+                candidate_ready,
+                evidence={
+                    "candidate_id": state.get("candidate_id"),
+                    "changed_scopes": candidate.get("changed_scopes", []),
+                },
+                action="freeze or reconcile the candidate before counting soak time",
+            ),
+            _check(
+                "soak_artifact_fresh",
+                "Soak evidence is fresh",
+                bool(soak.get("fresh", False)),
+                evidence={k: soak.get(k) for k in ("path", "age_minutes", "status")},
+                action="refresh unattended-soak readiness from authoritative runtime evidence",
+            ),
+            _check(
+                "soak_runtime_ready",
+                "Unattended paper runtime is A+ and safe",
+                bool(
+                    soak_payload.get("ok", False)
+                    and soak_payload.get("safe_to_leave_unattended", False)
+                    and _status(soak_payload.get("overall_status")) == "ready"
+                    and _grade(soak_payload.get("overall_grade")) == "A+"
+                ),
+                evidence={
+                    "status": soak_payload.get("overall_status"),
+                    "grade": soak_payload.get("overall_grade"),
+                    "blockers": soak_payload.get("blockers", []),
+                },
+                action="clear true unattended-soak blockers while keeping live execution locked",
+            ),
+            _check(
+                "seven_day_checkpoint",
+                "Candidate has seven clean days",
+                bool(candidate_ready and soak_age >= checkpoint),
+                evidence={
+                    "window_start_utc": soak_start.isoformat() if soak_start else "",
+                    "age_hours": round(soak_age, 4),
+                    "required_hours": checkpoint,
+                },
+                action="continue the unchanged soak through the seven-day checkpoint",
+            ),
+            _check(
+                "thirty_day_window",
+                "Candidate has 720 clean hours",
+                bool(candidate_ready and soak_age >= required_soak),
+                evidence={
+                    "window_start_utc": soak_start.isoformat() if soak_start else "",
+                    "age_hours": round(soak_age, 4),
+                    "required_hours": required_soak,
+                },
+                action="continue the unchanged candidate until the full 30-day window is complete",
+            ),
+            _check(
+                "soak_has_no_blockers",
+                "Soak has no unresolved blockers",
+                not _as_list(soak_payload.get("blockers")),
+                evidence=soak_payload.get("blockers", []),
+                action="resolve and record every soak blocker before the clean window can count",
+            ),
         ],
     )
 
     recovery_policy = _as_dict(config.get("recovery"))
-    recovery = _artifact(project_root, recovery_policy.get("artifact"), _safe_float(recovery_policy.get("max_artifact_age_hours"), 24.0), current_time)
+    recovery = _artifact(
+        project_root,
+        recovery_policy.get("artifact"),
+        _safe_float(recovery_policy.get("max_artifact_age_hours"), 24.0),
+        current_time,
+    )
     recovery_payload = _as_dict(recovery.get("payload"))
     drill_index = _drill_rows(recovery_payload)
     recovery_checks = [
-        _check("recovery_artifact_fresh", "Recovery drill evidence is fresh", bool(recovery.get("fresh", False)), evidence={k: recovery.get(k) for k in ("path", "age_minutes", "status")}, action="refresh the chaos-drill coordinator"),
+        _check(
+            "recovery_artifact_fresh",
+            "Recovery drill evidence is fresh",
+            bool(recovery.get("fresh", False)),
+            evidence={k: recovery.get(k) for k in ("path", "age_minutes", "status")},
+            action="refresh the chaos-drill coordinator",
+        ),
     ]
     for drill_name in _as_list(recovery_policy.get("required_drills")):
         name = str(drill_name)
@@ -669,7 +893,8 @@ def build_payload(
             and row.get("containment_verified", False)
             and row.get("no_duplicate_orders", False)
             and not row.get("overdue", True)
-            and _safe_float(row.get("recovery_seconds"), 10**9) <= _safe_float(recovery_policy.get("max_recovery_seconds"), 300.0)
+            and _safe_float(row.get("recovery_seconds"), 10**9)
+            <= _safe_float(recovery_policy.get("max_recovery_seconds"), 300.0)
         )
         recovery_checks.append(
             _check(
@@ -680,15 +905,42 @@ def build_payload(
                 action=f"run and record the isolated {name} drill with containment, recovery time, and duplicate-order proof",
             )
         )
-    pillar_3 = _pillar("p03_infrastructure_recovery", "Infrastructure Recovery Proof", recovery_checks)
+    pillar_3 = _pillar(
+        "p03_infrastructure_recovery", "Infrastructure Recovery Proof", recovery_checks
+    )
 
     live_policy = _as_dict(config.get("live_execution"))
     max_live_age = _safe_float(live_policy.get("max_artifact_age_hours"), 12.0)
-    live_money = _artifact(project_root, "governance/health/live_money_readiness_contract_latest.json", max_live_age, current_time)
-    live_smoke = _artifact(project_root, "governance/health/live_readiness_smoke_latest.json", max_live_age, current_time)
-    live_canary = _artifact(project_root, "governance/health/live_canary_control_latest.json", max_live_age, current_time)
-    order_ledger_control = _artifact(project_root, "governance/health/live_order_ledger_control_latest.json", max_live_age, current_time)
-    production = _artifact(project_root, "governance/health/production_readiness_control_latest.json", max_live_age, current_time)
+    live_money = _artifact(
+        project_root,
+        "governance/health/live_money_readiness_contract_latest.json",
+        max_live_age,
+        current_time,
+    )
+    live_smoke = _artifact(
+        project_root,
+        "governance/health/live_readiness_smoke_latest.json",
+        max_live_age,
+        current_time,
+    )
+    live_canary = _artifact(
+        project_root,
+        "governance/health/live_canary_control_latest.json",
+        max_live_age,
+        current_time,
+    )
+    order_ledger_control = _artifact(
+        project_root,
+        "governance/health/live_order_ledger_control_latest.json",
+        max_live_age,
+        current_time,
+    )
+    production = _artifact(
+        project_root,
+        "governance/health/production_readiness_control_latest.json",
+        max_live_age,
+        current_time,
+    )
     live_money_payload = _as_dict(live_money.get("payload"))
     live_smoke_payload = _as_dict(live_smoke.get("payload"))
     live_canary_payload = _as_dict(live_canary.get("payload"))
@@ -696,11 +948,22 @@ def build_payload(
     production_payload = _as_dict(production.get("payload"))
     risk_section = _find_section(live_money_payload, "risk_controls")
     firewall_domain = _find_domain(production_payload, "live_execution_risk_firewall")
-    readiness_config = load_json(project_root / "config" / "production_readiness_control_v1.json")
+    readiness_config = load_json(
+        project_root / "config" / "production_readiness_control_v1.json"
+    )
     firewall_policy = _as_dict(readiness_config.get("live_execution_risk_firewall"))
-    required_sources = [_project_path(project_root, path) for path in _as_list(live_policy.get("required_source_paths"))]
-    allowed_assets = {str(item).upper() for item in _as_list(firewall_policy.get("allowed_asset_types"))}
-    allowed_instructions = {str(item).upper() for item in _as_list(firewall_policy.get("allowed_instructions"))}
+    required_sources = [
+        _project_path(project_root, path)
+        for path in _as_list(live_policy.get("required_source_paths"))
+    ]
+    allowed_assets = {
+        str(item).upper()
+        for item in _as_list(firewall_policy.get("allowed_asset_types"))
+    }
+    allowed_instructions = {
+        str(item).upper()
+        for item in _as_list(firewall_policy.get("allowed_instructions"))
+    }
     live_locked = bool(
         not live_canary_payload.get("supervised_canary_ready", False)
         and live_canary_payload.get("live_lane_should_be_read_only", False)
@@ -709,21 +972,127 @@ def build_payload(
         "p04_live_execution_engineering",
         "Live Execution Engineering",
         [
-            _check("live_sources_present", "Durable execution-control sources exist", all(path.exists() for path in required_sources), evidence=[str(path) for path in required_sources], action="restore the firewall, durable order ledger, and broker execution integration"),
-            _check("durable_order_ledger_ready", "Durable order-intent ledger is fresh and reconciled", bool(order_ledger_control.get("fresh", False) and order_ledger_payload.get("ok", False) and _safe_int(order_ledger_payload.get("submit_unknown_count"), 0) == 0), evidence={"age_minutes": order_ledger_control.get("age_minutes"), "status": order_ledger_payload.get("overall_status"), "blockers": order_ledger_payload.get("blockers", [])}, action="refresh and reconcile the durable live-order ledger"),
-            _check("risk_controls_A_ready", "Pre-trade risk controls are fresh and A-grade", bool(live_money.get("fresh", False) and risk_section.get("ready", False) and _grade_at_least(risk_section.get("grade"), "A")), evidence=risk_section, action="refresh and prove the risk-service boundary, limits, and kill switches"),
-            _check("live_readiness_smoke", "Validate-only live wiring passes", bool(live_smoke.get("fresh", False) and _status(live_smoke_payload.get("overall_status")) == "ready" and _safe_float(live_smoke_payload.get("readiness_score"), 0.0) >= 100.0), evidence={"status": live_smoke_payload.get("overall_status"), "score": live_smoke_payload.get("readiness_score"), "hard_blocks": live_smoke_payload.get("hard_blocks", [])}, action="repair the validate-only broker and execution smoke path"),
-            _check("production_firewall_guarded", "Production order firewall is fail-closed", bool(production.get("fresh", False) and firewall_domain.get("ok", False) and _status(firewall_domain.get("status")) == "ready_guarded"), evidence=firewall_domain, action="refresh production readiness and restore the guarded firewall"),
-            _check("microscopic_notional_cap", "Firewall uses the microscopic order cap", 0.0 < _safe_float(firewall_policy.get("max_single_order_notional"), 0.0) <= _safe_float(live_policy.get("max_single_order_notional"), 100.0), evidence=firewall_policy.get("max_single_order_notional"), action="reduce the initial live order-notional cap to the production-excellence ceiling"),
-            _check("microscopic_daily_loss_cap", "Firewall uses the microscopic daily loss cap", 0.0 < _safe_float(firewall_policy.get("max_daily_loss"), 0.0) <= _safe_float(live_policy.get("max_daily_loss"), 25.0), evidence=firewall_policy.get("max_daily_loss"), action="reduce the initial live daily-loss cap to the production-excellence ceiling"),
-            _check("cash_equity_only", "Initial canary permits cash equities only", allowed_assets == {str(item).upper() for item in _as_list(live_policy.get("allowed_asset_types"))}, evidence=sorted(allowed_assets), action="restrict initial live orders to the configured cash-equity asset set"),
-            _check("long_only_instructions", "Initial canary permits BUY and SELL only", allowed_instructions == {str(item).upper() for item in _as_list(live_policy.get("allowed_instructions"))}, evidence=sorted(allowed_instructions), action="block short, option, futures, roll, and leveraged instructions from the first canary"),
-            _check("live_read_only_lock", "Live submit remains read-only until promotion", live_locked, evidence={"mode": live_canary_payload.get("recommended_mode"), "blocking_reasons": live_canary_payload.get("blocking_reasons", [])}, action="restore the read-only live lane until every promotion gate is complete"),
+            _check(
+                "live_sources_present",
+                "Durable execution-control sources exist",
+                all(path.exists() for path in required_sources),
+                evidence=[str(path) for path in required_sources],
+                action="restore the firewall, durable order ledger, and broker execution integration",
+            ),
+            _check(
+                "durable_order_ledger_ready",
+                "Durable order-intent ledger is fresh and reconciled",
+                bool(
+                    order_ledger_control.get("fresh", False)
+                    and order_ledger_payload.get("ok", False)
+                    and _safe_int(order_ledger_payload.get("submit_unknown_count"), 0)
+                    == 0
+                ),
+                evidence={
+                    "age_minutes": order_ledger_control.get("age_minutes"),
+                    "status": order_ledger_payload.get("overall_status"),
+                    "blockers": order_ledger_payload.get("blockers", []),
+                },
+                action="refresh and reconcile the durable live-order ledger",
+            ),
+            _check(
+                "risk_controls_A_ready",
+                "Pre-trade risk controls are fresh and A-grade",
+                bool(
+                    live_money.get("fresh", False)
+                    and risk_section.get("ready", False)
+                    and _grade_at_least(risk_section.get("grade"), "A")
+                ),
+                evidence=risk_section,
+                action="refresh and prove the risk-service boundary, limits, and kill switches",
+            ),
+            _check(
+                "live_readiness_smoke",
+                "Validate-only live wiring passes",
+                bool(
+                    live_smoke.get("fresh", False)
+                    and _status(live_smoke_payload.get("overall_status")) == "ready"
+                    and _safe_float(live_smoke_payload.get("readiness_score"), 0.0)
+                    >= 100.0
+                ),
+                evidence={
+                    "status": live_smoke_payload.get("overall_status"),
+                    "score": live_smoke_payload.get("readiness_score"),
+                    "hard_blocks": live_smoke_payload.get("hard_blocks", []),
+                },
+                action="repair the validate-only broker and execution smoke path",
+            ),
+            _check(
+                "production_firewall_guarded",
+                "Production order firewall is fail-closed",
+                bool(
+                    production.get("fresh", False)
+                    and firewall_domain.get("ok", False)
+                    and _status(firewall_domain.get("status")) == "ready_guarded"
+                ),
+                evidence=firewall_domain,
+                action="refresh production readiness and restore the guarded firewall",
+            ),
+            _check(
+                "microscopic_notional_cap",
+                "Firewall uses the microscopic order cap",
+                0.0
+                < _safe_float(firewall_policy.get("max_single_order_notional"), 0.0)
+                <= _safe_float(live_policy.get("max_single_order_notional"), 100.0),
+                evidence=firewall_policy.get("max_single_order_notional"),
+                action="reduce the initial live order-notional cap to the production-excellence ceiling",
+            ),
+            _check(
+                "microscopic_daily_loss_cap",
+                "Firewall uses the microscopic daily loss cap",
+                0.0
+                < _safe_float(firewall_policy.get("max_daily_loss"), 0.0)
+                <= _safe_float(live_policy.get("max_daily_loss"), 25.0),
+                evidence=firewall_policy.get("max_daily_loss"),
+                action="reduce the initial live daily-loss cap to the production-excellence ceiling",
+            ),
+            _check(
+                "cash_equity_only",
+                "Initial canary permits cash equities only",
+                allowed_assets
+                == {
+                    str(item).upper()
+                    for item in _as_list(live_policy.get("allowed_asset_types"))
+                },
+                evidence=sorted(allowed_assets),
+                action="restrict initial live orders to the configured cash-equity asset set",
+            ),
+            _check(
+                "long_only_instructions",
+                "Initial canary permits BUY and SELL only",
+                allowed_instructions
+                == {
+                    str(item).upper()
+                    for item in _as_list(live_policy.get("allowed_instructions"))
+                },
+                evidence=sorted(allowed_instructions),
+                action="block short, option, futures, roll, and leveraged instructions from the first canary",
+            ),
+            _check(
+                "live_read_only_lock",
+                "Live submit remains read-only until promotion",
+                live_locked,
+                evidence={
+                    "mode": live_canary_payload.get("recommended_mode"),
+                    "blocking_reasons": live_canary_payload.get("blocking_reasons", []),
+                },
+                action="restore the read-only live lane until every promotion gate is complete",
+            ),
         ],
     )
 
     fill_policy = _as_dict(config.get("fill_evidence"))
-    fill = _artifact(project_root, fill_policy.get("artifact"), _safe_float(fill_policy.get("max_artifact_age_hours"), 12.0), current_time)
+    fill = _artifact(
+        project_root,
+        fill_policy.get("artifact"),
+        _safe_float(fill_policy.get("max_artifact_age_hours"), 12.0),
+        current_time,
+    )
     fill_payload = _as_dict(fill.get("payload"))
     fill_window = _as_dict(fill_payload.get("calibration_window"))
     fill_cutoff = parse_iso_utc(fill_window.get("cutoff_utc"))
@@ -733,56 +1102,223 @@ def build_payload(
         "p05_independent_fill_evidence",
         "Independent Fill Evidence",
         [
-            _check("fill_artifact_fresh", "Fill-calibration evidence is fresh", bool(fill.get("fresh", False)), evidence={k: fill.get(k) for k in ("path", "age_minutes", "status")}, action="refresh paper execution calibration"),
-            _check("fill_window_matches_candidate", "Calibration excludes pre-candidate evidence", bool(fill_required_start and fill_cutoff and fill_cutoff >= fill_required_start), evidence={"candidate_window_start_utc": fill_required_start.isoformat() if fill_required_start else "", "calibration_cutoff_utc": fill_cutoff.isoformat() if fill_cutoff else ""}, action="refresh calibration after the candidate freeze so old fill samples are excluded"),
-            _check("independent_fill_minimum", "Independent fills meet the calibration minimum", independent_samples >= _safe_int(fill_policy.get("minimum_independent_samples"), 30), evidence=independent_samples, action="continue collecting broker-paper or explicit market-replay fill observations"),
-            _check("independent_fill_promotion_strength", "Independent fills meet the stronger promotion sample floor", independent_samples >= _safe_int(fill_policy.get("minimum_promotion_samples"), 100), evidence=independent_samples, action="continue independent fill collection beyond the basic calibration minimum"),
-            _check("independent_evidence_ready", "Calibration marks independent evidence ready", bool(fill_payload.get("independent_evidence_ready", False)), evidence=fill_payload.get("failed_checks", []), action="resolve fill-model bias, MAE, p95, or sample-quality failures"),
-            _check("model_fills_not_substituted", "Model-derived fills do not count as independent samples", independent_samples >= 0 and _safe_int(fill_payload.get("samples"), independent_samples) == independent_samples, evidence={"independent_samples": independent_samples, "model_derived_samples": fill_payload.get("model_derived_samples", 0), "reported_samples": fill_payload.get("samples")}, action="separate model-derived diagnostics from independent calibration evidence"),
+            _check(
+                "fill_artifact_fresh",
+                "Fill-calibration evidence is fresh",
+                bool(fill.get("fresh", False)),
+                evidence={k: fill.get(k) for k in ("path", "age_minutes", "status")},
+                action="refresh paper execution calibration",
+            ),
+            _check(
+                "fill_window_matches_candidate",
+                "Calibration excludes pre-candidate evidence",
+                bool(
+                    fill_required_start
+                    and fill_cutoff
+                    and fill_cutoff >= fill_required_start
+                ),
+                evidence={
+                    "candidate_window_start_utc": (
+                        fill_required_start.isoformat() if fill_required_start else ""
+                    ),
+                    "calibration_cutoff_utc": (
+                        fill_cutoff.isoformat() if fill_cutoff else ""
+                    ),
+                },
+                action="refresh calibration after the candidate freeze so old fill samples are excluded",
+            ),
+            _check(
+                "independent_fill_minimum",
+                "Independent fills meet the calibration minimum",
+                independent_samples
+                >= _safe_int(fill_policy.get("minimum_independent_samples"), 30),
+                evidence=independent_samples,
+                action="continue collecting broker-paper or explicit market-replay fill observations",
+            ),
+            _check(
+                "independent_fill_promotion_strength",
+                "Independent fills meet the stronger promotion sample floor",
+                independent_samples
+                >= _safe_int(fill_policy.get("minimum_promotion_samples"), 100),
+                evidence=independent_samples,
+                action="continue independent fill collection beyond the basic calibration minimum",
+            ),
+            _check(
+                "independent_evidence_ready",
+                "Calibration marks independent evidence ready",
+                bool(fill_payload.get("independent_evidence_ready", False)),
+                evidence=fill_payload.get("failed_checks", []),
+                action="resolve fill-model bias, MAE, p95, or sample-quality failures",
+            ),
+            _check(
+                "model_fills_not_substituted",
+                "Model-derived fills do not count as independent samples",
+                independent_samples >= 0
+                and _safe_int(fill_payload.get("samples"), independent_samples)
+                == independent_samples,
+                evidence={
+                    "independent_samples": independent_samples,
+                    "model_derived_samples": fill_payload.get(
+                        "model_derived_samples", 0
+                    ),
+                    "reported_samples": fill_payload.get("samples"),
+                },
+                action="separate model-derived diagnostics from independent calibration evidence",
+            ),
         ],
     )
 
     promotion_policy = _as_dict(config.get("promotion"))
-    promotion = _artifact(project_root, promotion_policy.get("artifact"), _safe_float(promotion_policy.get("max_artifact_age_hours"), 24.0), current_time)
-    packet = _artifact(project_root, promotion_policy.get("packet_artifact"), _safe_float(promotion_policy.get("max_artifact_age_hours"), 24.0), current_time)
+    promotion = _artifact(
+        project_root,
+        promotion_policy.get("artifact"),
+        _safe_float(promotion_policy.get("max_artifact_age_hours"), 24.0),
+        current_time,
+    )
+    packet = _artifact(
+        project_root,
+        promotion_policy.get("packet_artifact"),
+        _safe_float(promotion_policy.get("max_artifact_age_hours"), 24.0),
+        current_time,
+    )
     promotion_payload = _as_dict(promotion.get("payload"))
     packet_payload = _as_dict(packet.get("payload"))
     promotion_details = _as_dict(promotion_payload.get("details"))
     promotion_summary = _as_dict(promotion_details.get("promotion"))
-    candidate_ids = [str(item) for item in _as_list(promotion_details.get("promotion_candidate_ids")) if str(item)]
+    candidate_ids = [
+        str(item)
+        for item in _as_list(promotion_details.get("promotion_candidate_ids"))
+        if str(item)
+    ]
     pillar_6 = _pillar(
         "p06_real_promotion_candidates",
         "Real Promotion Candidates",
         [
-            _check("promotion_artifacts_fresh", "Promotion gate and packet are fresh", bool(promotion.get("fresh", False) and packet.get("fresh", False)), evidence={"gate_age_minutes": promotion.get("age_minutes"), "packet_age_minutes": packet.get("age_minutes")}, action="refresh the promotion pipeline and packet builder"),
-            _check("considered_bot_floor", "At least four bots are independently considered", _safe_int(promotion_summary.get("considered_bots"), 0) >= _safe_int(promotion_policy.get("minimum_considered_bots"), 4), evidence=promotion_summary, action="produce enough qualified, independently evaluated bots for a real cohort"),
-            _check("candidate_bot_floor", "At least four promotion candidates qualify", len(candidate_ids) >= _safe_int(promotion_policy.get("minimum_candidate_bots"), 4), evidence=candidate_ids, action="keep weak bots collect-only and graduate at least four evidence-backed candidates"),
-            _check("promotion_quality_ready", "Promotion quality gate passes", bool(promotion_payload.get("ok", False) and not _as_list(promotion_payload.get("failed_checks"))), evidence=promotion_payload.get("failed_checks", []), action="clear replay, leakage, graduation, admission, and paper-evidence blockers"),
-            _check("promotion_packet_ready", "Promotion packet is complete and reviewable", bool(packet_payload.get("ok", False) and packet_payload.get("packet_complete", packet_payload.get("ready_for_committee", False))), evidence={"ok": packet_payload.get("ok"), "packet_complete": packet_payload.get("packet_complete"), "ready_for_committee": packet_payload.get("ready_for_committee")}, action="build a complete, hash-backed promotion packet for the qualified cohort"),
-            _check("leak_overfit_replay_ready", "Leakage, overfit, replay, and schema gates pass", all(bool(promotion_details.get(key, False)) for key in ("leak_overfit_ok", "replay_ok", "golden_replay_regression_ok", "retrain_schema_compatibility_ok")), evidence={key: promotion_details.get(key) for key in ("leak_overfit_ok", "replay_ok", "golden_replay_regression_ok", "retrain_schema_compatibility_ok")}, action="repair any leakage, replay, schema, or overfit evidence failure"),
+            _check(
+                "promotion_artifacts_fresh",
+                "Promotion gate and packet are fresh",
+                bool(promotion.get("fresh", False) and packet.get("fresh", False)),
+                evidence={
+                    "gate_age_minutes": promotion.get("age_minutes"),
+                    "packet_age_minutes": packet.get("age_minutes"),
+                },
+                action="refresh the promotion pipeline and packet builder",
+            ),
+            _check(
+                "considered_bot_floor",
+                "At least four bots are independently considered",
+                _safe_int(promotion_summary.get("considered_bots"), 0)
+                >= _safe_int(promotion_policy.get("minimum_considered_bots"), 4),
+                evidence=promotion_summary,
+                action="produce enough qualified, independently evaluated bots for a real cohort",
+            ),
+            _check(
+                "candidate_bot_floor",
+                "At least four promotion candidates qualify",
+                len(candidate_ids)
+                >= _safe_int(promotion_policy.get("minimum_candidate_bots"), 4),
+                evidence=candidate_ids,
+                action="keep weak bots collect-only and graduate at least four evidence-backed candidates",
+            ),
+            _check(
+                "promotion_quality_ready",
+                "Promotion quality gate passes",
+                bool(
+                    promotion_payload.get("ok", False)
+                    and not _as_list(promotion_payload.get("failed_checks"))
+                ),
+                evidence=promotion_payload.get("failed_checks", []),
+                action="clear replay, leakage, graduation, admission, and paper-evidence blockers",
+            ),
+            _check(
+                "promotion_packet_ready",
+                "Promotion packet is complete and reviewable",
+                bool(
+                    packet_payload.get("ok", False)
+                    and packet_payload.get(
+                        "packet_complete",
+                        packet_payload.get("ready_for_committee", False),
+                    )
+                ),
+                evidence={
+                    "ok": packet_payload.get("ok"),
+                    "packet_complete": packet_payload.get("packet_complete"),
+                    "ready_for_committee": packet_payload.get("ready_for_committee"),
+                },
+                action="build a complete, hash-backed promotion packet for the qualified cohort",
+            ),
+            _check(
+                "leak_overfit_replay_ready",
+                "Leakage, overfit, replay, and schema gates pass",
+                all(
+                    bool(promotion_details.get(key, False))
+                    for key in (
+                        "leak_overfit_ok",
+                        "replay_ok",
+                        "golden_replay_regression_ok",
+                        "retrain_schema_compatibility_ok",
+                    )
+                ),
+                evidence={
+                    key: promotion_details.get(key)
+                    for key in (
+                        "leak_overfit_ok",
+                        "replay_ok",
+                        "golden_replay_regression_ok",
+                        "retrain_schema_compatibility_ok",
+                    )
+                },
+                action="repair any leakage, replay, schema, or overfit evidence failure",
+            ),
         ],
     )
 
     profit_policy = _as_dict(config.get("profitability"))
-    performance = _artifact(project_root, profit_policy.get("performance_artifact"), _safe_float(profit_policy.get("max_artifact_age_hours"), 12.0), current_time)
-    profit_control = _artifact(project_root, profit_policy.get("control_artifact"), _safe_float(profit_policy.get("max_artifact_age_hours"), 12.0), current_time)
+    performance = _artifact(
+        project_root,
+        profit_policy.get("performance_artifact"),
+        _safe_float(profit_policy.get("max_artifact_age_hours"), 12.0),
+        current_time,
+    )
+    profit_control = _artifact(
+        project_root,
+        profit_policy.get("control_artifact"),
+        _safe_float(profit_policy.get("max_artifact_age_hours"), 12.0),
+        current_time,
+    )
     performance_payload = _as_dict(performance.get("payload"))
     control_payload = _as_dict(profit_control.get("payload"))
     expectancy = _as_dict(performance_payload.get("post_cost_expectancy"))
-    profitable_sleeves, positive_concentration = _profitable_sleeves(performance_payload)
-    profit_start = _window_start(state, _as_list(candidate_policy.get("profitability_scopes")))
+    profitable_sleeves, positive_concentration = _profitable_sleeves(
+        performance_payload
+    )
+    profit_start = _window_start(
+        state, _as_list(candidate_policy.get("profitability_scopes"))
+    )
     first_profit_sample = parse_iso_utc(expectancy.get("first_sample_timestamp_utc"))
     baseline = _as_dict(state.get("profitability_baseline"))
     current_summary = _as_dict(control_payload.get("paper_summary"))
-    forward_raw_delta = _safe_float(current_summary.get("ending_net_pnl_total"), 0.0) - _safe_float(baseline.get("historical_net_pnl"), 0.0)
-    drawdown = _safe_float(expectancy.get("max_cumulative_drawdown_post_cost_pnl"), float("inf"))
+    forward_raw_delta = _safe_float(
+        current_summary.get("ending_net_pnl_total"), 0.0
+    ) - _safe_float(baseline.get("historical_net_pnl"), 0.0)
+    drawdown = _safe_float(
+        expectancy.get("max_cumulative_drawdown_post_cost_pnl"), float("inf")
+    )
     post_cost_total = _safe_float(expectancy.get("total_post_cost_pnl_delta"), 0.0)
-    drawdown_ratio = drawdown / post_cost_total if post_cost_total > 0.0 and drawdown != float("inf") else None
+    drawdown_ratio = (
+        drawdown / post_cost_total
+        if post_cost_total > 0.0 and drawdown != float("inf")
+        else None
+    )
     raw_grade = _grade(control_payload.get("raw_profitability_grade"))
     controlled_grade = _grade(control_payload.get("controlled_profitability_grade"))
     grade_separated = _profitability_grade_labels_honest(control_payload)
-    profitability_source_current = _profitability_source_matches(performance, control_payload)
-    profitability_firewall_path = str(profit_policy.get("evidence_firewall_artifact") or "").strip()
+    profitability_source_current = _profitability_source_matches(
+        performance, control_payload
+    )
+    profitability_firewall_path = str(
+        profit_policy.get("evidence_firewall_artifact") or ""
+    ).strip()
     profitability_firewall_required = bool(profitability_firewall_path)
     profitability_firewall = (
         _artifact(
@@ -799,63 +1335,361 @@ def build_payload(
         "p07_profitability_evidence",
         "Post-Cost Profitability Evidence",
         [
-            _check("profit_artifacts_fresh", "Profitability evidence is fresh", bool(performance.get("fresh", False) and profit_control.get("fresh", False)), evidence={"performance_age_minutes": performance.get("age_minutes"), "control_age_minutes": profit_control.get("age_minutes")}, action="refresh paper performance and profitability control from current trade deltas"),
-            _check("profit_control_matches_performance", "Profitability control is hash-bound to current performance", profitability_source_current, evidence=_as_dict(control_payload.get("paper_performance_input_contract")), action="refresh paper performance immediately before profitability control"),
-            _check("profit_window_matches_candidate", "Post-cost samples belong to the frozen candidate", bool(profit_start and first_profit_sample and first_profit_sample >= profit_start), evidence={"candidate_window_start_utc": profit_start.isoformat() if profit_start else "", "first_sample_timestamp_utc": first_profit_sample.isoformat() if first_profit_sample else ""}, action="exclude pre-candidate trade deltas from the forward profitability cohort"),
-            _check("post_cost_sample_floor", "Post-cost sample floor is met", _safe_int(expectancy.get("sample_count"), 0) >= _safe_int(profit_policy.get("minimum_post_cost_samples"), 100), evidence=expectancy.get("sample_count", 0), action="continue collecting schema-v2 post-cost trade deltas"),
-            _check("positive_post_cost_lcb", "The clustered and block-bootstrap 95% lower confidence bound is positive", bool(expectancy.get("positive_clustered_lower_confidence_bound_95", expectancy.get("positive_lower_confidence_bound_95", False))), evidence=expectancy, action="do not promote until post-cost expectancy is positive across independent days with clustered confidence"),
-            _check("positive_forward_pnl", "Forward cohort P&L is positive", post_cost_total > 0.0 and forward_raw_delta > 0.0, evidence={"post_cost_pnl_delta": post_cost_total, "forward_raw_ledger_delta": round(forward_raw_delta, 6), "historical_raw_ledger_preserved": baseline}, action="allow the frozen cohort to earn positive raw and post-cost results without rewriting history"),
-            _check("profitable_sleeve_diversity", "At least three sleeves have positive confident expectancy", len(profitable_sleeves) >= _safe_int(profit_policy.get("minimum_profitable_sleeves"), 3), evidence=profitable_sleeves, action="promote only after profitability is distributed across multiple qualified sleeves"),
-            _check("profit_concentration_bounded", "No sleeve dominates positive P&L", positive_concentration is not None and positive_concentration <= _safe_float(profit_policy.get("maximum_single_sleeve_positive_pnl_share"), 0.5), evidence=positive_concentration, action="reduce dependence on a single sleeve or isolated winning trade"),
-            _check("drawdown_bounded", "Post-cost gain exceeds maximum cumulative drawdown", drawdown_ratio is not None and drawdown_ratio <= 1.0, evidence={"max_cumulative_drawdown": None if drawdown == float("inf") else drawdown, "drawdown_to_profit_ratio": drawdown_ratio}, action="collect drawdown evidence and keep risk-adjusted losses within the cohort's earned profit"),
-            _check("profitability_evidence_firewall", "All baseline and future-profitability hardening controls and their current economic evidence pass", bool(not profitability_firewall_required or (profitability_firewall.get("fresh", False) and _grade(profitability_firewall_payload.get("control_grade")) == "A+" and profitability_firewall_payload.get("promotion_evidence_ready", False))), evidence={"required": profitability_firewall_required, "fresh": profitability_firewall.get("fresh", False), "control_grade": profitability_firewall_payload.get("control_grade"), "economic_evidence_grade": profitability_firewall_payload.get("economic_evidence_grade"), "hardening_control_grade": profitability_firewall_payload.get("hardening_control_grade"), "hardening_economic_evidence_grade": profitability_firewall_payload.get("hardening_economic_evidence_grade"), "blockers": profitability_firewall_payload.get("blockers", [])}, action="refresh and clear the baseline plus ten-control future-profitability firewall without relabeling weak raw outcomes"),
-            _check("raw_controlled_grades_separate", "Raw results remain separate from controlled safety", grade_separated, evidence={"raw_grade": raw_grade, "controlled_grade": controlled_grade, "display": control_payload.get("profitability_display_grade")}, action="restore explicit raw-versus-controlled profitability labeling"),
+            _check(
+                "profit_artifacts_fresh",
+                "Profitability evidence is fresh",
+                bool(
+                    performance.get("fresh", False)
+                    and profit_control.get("fresh", False)
+                ),
+                evidence={
+                    "performance_age_minutes": performance.get("age_minutes"),
+                    "control_age_minutes": profit_control.get("age_minutes"),
+                },
+                action="refresh paper performance and profitability control from current trade deltas",
+            ),
+            _check(
+                "profit_control_matches_performance",
+                "Profitability control is hash-bound to current performance",
+                profitability_source_current,
+                evidence=_as_dict(
+                    control_payload.get("paper_performance_input_contract")
+                ),
+                action="refresh paper performance immediately before profitability control",
+            ),
+            _check(
+                "profit_window_matches_candidate",
+                "Post-cost samples belong to the frozen candidate",
+                bool(
+                    profit_start
+                    and first_profit_sample
+                    and first_profit_sample >= profit_start
+                ),
+                evidence={
+                    "candidate_window_start_utc": (
+                        profit_start.isoformat() if profit_start else ""
+                    ),
+                    "first_sample_timestamp_utc": (
+                        first_profit_sample.isoformat() if first_profit_sample else ""
+                    ),
+                },
+                action="exclude pre-candidate trade deltas from the forward profitability cohort",
+            ),
+            _check(
+                "post_cost_sample_floor",
+                "Post-cost sample floor is met",
+                _safe_int(expectancy.get("sample_count"), 0)
+                >= _safe_int(profit_policy.get("minimum_post_cost_samples"), 100),
+                evidence=expectancy.get("sample_count", 0),
+                action="continue collecting schema-v2 post-cost trade deltas",
+            ),
+            _check(
+                "positive_post_cost_lcb",
+                "The clustered and block-bootstrap 95% lower confidence bound is positive",
+                bool(
+                    expectancy.get(
+                        "positive_clustered_lower_confidence_bound_95",
+                        expectancy.get("positive_lower_confidence_bound_95", False),
+                    )
+                ),
+                evidence=expectancy,
+                action="do not promote until post-cost expectancy is positive across independent days with clustered confidence",
+            ),
+            _check(
+                "positive_forward_pnl",
+                "Forward cohort P&L is positive",
+                post_cost_total > 0.0 and forward_raw_delta > 0.0,
+                evidence={
+                    "post_cost_pnl_delta": post_cost_total,
+                    "forward_raw_ledger_delta": round(forward_raw_delta, 6),
+                    "historical_raw_ledger_preserved": baseline,
+                },
+                action="allow the frozen cohort to earn positive raw and post-cost results without rewriting history",
+            ),
+            _check(
+                "profitable_sleeve_diversity",
+                "At least three sleeves have positive confident expectancy",
+                len(profitable_sleeves)
+                >= _safe_int(profit_policy.get("minimum_profitable_sleeves"), 3),
+                evidence=profitable_sleeves,
+                action="promote only after profitability is distributed across multiple qualified sleeves",
+            ),
+            _check(
+                "profit_concentration_bounded",
+                "No sleeve dominates positive P&L",
+                positive_concentration is not None
+                and positive_concentration
+                <= _safe_float(
+                    profit_policy.get("maximum_single_sleeve_positive_pnl_share"), 0.5
+                ),
+                evidence=positive_concentration,
+                action="reduce dependence on a single sleeve or isolated winning trade",
+            ),
+            _check(
+                "drawdown_bounded",
+                "Post-cost gain exceeds maximum cumulative drawdown",
+                drawdown_ratio is not None and drawdown_ratio <= 1.0,
+                evidence={
+                    "max_cumulative_drawdown": (
+                        None if drawdown == float("inf") else drawdown
+                    ),
+                    "drawdown_to_profit_ratio": drawdown_ratio,
+                },
+                action="collect drawdown evidence and keep risk-adjusted losses within the cohort's earned profit",
+            ),
+            _check(
+                "profitability_evidence_firewall",
+                "All baseline and future-profitability hardening controls and their current economic evidence pass",
+                bool(
+                    not profitability_firewall_required
+                    or (
+                        profitability_firewall.get("fresh", False)
+                        and _grade(profitability_firewall_payload.get("control_grade"))
+                        == "A+"
+                        and profitability_firewall_payload.get(
+                            "promotion_evidence_ready", False
+                        )
+                    )
+                ),
+                evidence={
+                    "required": profitability_firewall_required,
+                    "fresh": profitability_firewall.get("fresh", False),
+                    "control_grade": profitability_firewall_payload.get(
+                        "control_grade"
+                    ),
+                    "economic_evidence_grade": profitability_firewall_payload.get(
+                        "economic_evidence_grade"
+                    ),
+                    "hardening_control_grade": profitability_firewall_payload.get(
+                        "hardening_control_grade"
+                    ),
+                    "hardening_economic_evidence_grade": profitability_firewall_payload.get(
+                        "hardening_economic_evidence_grade"
+                    ),
+                    "blockers": profitability_firewall_payload.get("blockers", []),
+                },
+                action="refresh and clear the baseline plus ten-control future-profitability firewall without relabeling weak raw outcomes",
+            ),
+            _check(
+                "raw_controlled_grades_separate",
+                "Raw results remain separate from controlled safety",
+                grade_separated,
+                evidence={
+                    "raw_grade": raw_grade,
+                    "controlled_grade": controlled_grade,
+                    "display": control_payload.get("profitability_display_grade"),
+                },
+                action="restore explicit raw-versus-controlled profitability labeling",
+            ),
         ],
     )
 
     canary_policy = _as_dict(config.get("canary"))
-    canary_control = _artifact(project_root, canary_policy.get("control_artifact"), max_live_age, current_time)
-    canary_rollout = _artifact(project_root, canary_policy.get("rollout_artifact"), max_live_age, current_time)
+    canary_control = _artifact(
+        project_root, canary_policy.get("control_artifact"), max_live_age, current_time
+    )
+    canary_rollout = _artifact(
+        project_root, canary_policy.get("rollout_artifact"), max_live_age, current_time
+    )
     canary_control_payload = _as_dict(canary_control.get("payload"))
     rollout_payload = _as_dict(canary_rollout.get("payload"))
-    effective_weight = max(_safe_float(canary_control_payload.get("target_canary_weight"), 0.0), _safe_float(canary_control_payload.get("applied_canary_weight"), 0.0))
-    canary_envelope_safe = bool(allowed_assets == {"EQUITY"} and allowed_instructions == {"BUY", "SELL"})
+    effective_weight = max(
+        _safe_float(canary_control_payload.get("target_canary_weight"), 0.0),
+        _safe_float(canary_control_payload.get("applied_canary_weight"), 0.0),
+    )
+    canary_envelope_safe = bool(
+        allowed_assets == {"EQUITY"} and allowed_instructions == {"BUY", "SELL"}
+    )
     pillar_8 = _pillar(
         "p08_controlled_canary_graduation",
         "Controlled Canary Graduation",
         [
-            _check("canary_artifacts_fresh", "Canary control and rollout evidence are fresh", bool(canary_control.get("fresh", False) and canary_rollout.get("fresh", False)), evidence={"control_age_minutes": canary_control.get("age_minutes"), "rollout_age_minutes": canary_rollout.get("age_minutes")}, action="refresh canary rollout and live canary control"),
-            _check("canary_baseline_samples", "Baseline cohort has sufficient samples", _safe_int(rollout_payload.get("baseline_samples"), 0) >= _safe_int(canary_policy.get("minimum_baseline_samples"), 400), evidence=rollout_payload.get("baseline_samples", 0), action="continue baseline paper collection"),
-            _check("canary_candidate_samples", "Canary cohort has sufficient samples", _safe_int(rollout_payload.get("canary_samples"), 0) >= _safe_int(canary_policy.get("minimum_canary_samples"), 400), evidence=rollout_payload.get("canary_samples", 0), action="continue candidate paper-canary collection"),
-            _check("canary_edge_ready", "Canary beats its baseline and is eligible", bool(rollout_payload.get("eligible", False) and rollout_payload.get("promote_canary", False)), evidence={"eligible": rollout_payload.get("eligible"), "promote_canary": rollout_payload.get("promote_canary"), "edge_delta": rollout_payload.get("edge_delta")}, action="keep the canary in paper until it beats the baseline with enough samples"),
-            _check("microscopic_canary_weight", "Initial canary weight is at most 1%", 0.0 < effective_weight <= _safe_float(canary_policy.get("max_initial_weight"), 0.01), evidence=effective_weight, action="cap the first live canary at or below 1%"),
-            _check("unleveraged_equity_envelope", "Initial canary is long-only cash equity", canary_envelope_safe, evidence={"allowed_asset_types": sorted(allowed_assets), "allowed_instructions": sorted(allowed_instructions)}, action="remove leverage, options, futures, and short-sale authority from the initial canary"),
-            _check("promotion_packet_required", "Canary depends on a complete promotion packet", bool(packet_payload.get("ok", False)), evidence={"packet_ok": packet_payload.get("ok"), "packet_complete": packet_payload.get("packet_complete")}, action="complete and review the promotion packet before live canary consideration"),
-            _check("read_only_until_release", "Canary remains read-only before explicit release", bool(canary_control_payload.get("live_lane_should_be_read_only", False)), evidence=canary_control_payload.get("blocking_reasons", []), action="restore the read-only release boundary"),
+            _check(
+                "canary_artifacts_fresh",
+                "Canary control and rollout evidence are fresh",
+                bool(
+                    canary_control.get("fresh", False)
+                    and canary_rollout.get("fresh", False)
+                ),
+                evidence={
+                    "control_age_minutes": canary_control.get("age_minutes"),
+                    "rollout_age_minutes": canary_rollout.get("age_minutes"),
+                },
+                action="refresh canary rollout and live canary control",
+            ),
+            _check(
+                "canary_baseline_samples",
+                "Baseline cohort has sufficient samples",
+                _safe_int(rollout_payload.get("baseline_samples"), 0)
+                >= _safe_int(canary_policy.get("minimum_baseline_samples"), 400),
+                evidence=rollout_payload.get("baseline_samples", 0),
+                action="continue baseline paper collection",
+            ),
+            _check(
+                "canary_candidate_samples",
+                "Canary cohort has sufficient samples",
+                _safe_int(rollout_payload.get("canary_samples"), 0)
+                >= _safe_int(canary_policy.get("minimum_canary_samples"), 400),
+                evidence=rollout_payload.get("canary_samples", 0),
+                action="continue candidate paper-canary collection",
+            ),
+            _check(
+                "canary_edge_ready",
+                "Canary beats its baseline and is eligible",
+                bool(
+                    rollout_payload.get("eligible", False)
+                    and rollout_payload.get("promote_canary", False)
+                ),
+                evidence={
+                    "eligible": rollout_payload.get("eligible"),
+                    "promote_canary": rollout_payload.get("promote_canary"),
+                    "edge_delta": rollout_payload.get("edge_delta"),
+                },
+                action="keep the canary in paper until it beats the baseline with enough samples",
+            ),
+            _check(
+                "microscopic_canary_weight",
+                "Initial canary weight is at most 1%",
+                0.0
+                < effective_weight
+                <= _safe_float(canary_policy.get("max_initial_weight"), 0.01),
+                evidence=effective_weight,
+                action="cap the first live canary at or below 1%",
+            ),
+            _check(
+                "unleveraged_equity_envelope",
+                "Initial canary is long-only cash equity",
+                canary_envelope_safe,
+                evidence={
+                    "allowed_asset_types": sorted(allowed_assets),
+                    "allowed_instructions": sorted(allowed_instructions),
+                },
+                action="remove leverage, options, futures, and short-sale authority from the initial canary",
+            ),
+            _check(
+                "promotion_packet_required",
+                "Canary depends on a complete promotion packet",
+                bool(packet_payload.get("ok", False)),
+                evidence={
+                    "packet_ok": packet_payload.get("ok"),
+                    "packet_complete": packet_payload.get("packet_complete"),
+                },
+                action="complete and review the promotion packet before live canary consideration",
+            ),
+            _check(
+                "read_only_until_release",
+                "Canary remains read-only before explicit release",
+                bool(
+                    canary_control_payload.get("live_lane_should_be_read_only", False)
+                ),
+                evidence=canary_control_payload.get("blocking_reasons", []),
+                action="restore the read-only release boundary",
+            ),
         ],
     )
 
     grading_policy = _as_dict(config.get("grading_integrity"))
-    content_store = _artifact(project_root, "governance/content_store/latest.json", _safe_float(grading_policy.get("max_artifact_age_hours"), 12.0), current_time)
-    source_verification = _artifact(project_root, "governance/health/source_verification_latest.json", _safe_float(grading_policy.get("max_artifact_age_hours"), 12.0), current_time)
+    content_store = _artifact(
+        project_root,
+        "governance/content_store/latest.json",
+        _safe_float(grading_policy.get("max_artifact_age_hours"), 12.0),
+        current_time,
+    )
+    source_verification = _artifact(
+        project_root,
+        "governance/health/source_verification_latest.json",
+        _safe_float(grading_policy.get("max_artifact_age_hours"), 12.0),
+        current_time,
+    )
     content_payload = _as_dict(content_store.get("payload"))
     source_payload = _as_dict(source_verification.get("payload"))
     pillar_9 = _pillar(
         "p09_grading_integrity",
         "Non-Gameable Grading",
         [
-            _check("a_plus_requires_all_checks", "A+ requires every check to pass", bool(grading_policy.get("a_plus_requires_all_checks", False)), evidence=grading_policy, action="restore fail-closed A+ grading policy"),
-            _check("missing_evidence_scores_zero", "Missing evidence scores zero", _safe_int(grading_policy.get("missing_evidence_score"), -1) == 0, evidence=grading_policy.get("missing_evidence_score"), action="set missing evidence to a zero score"),
-            _check("candidate_chain_tamper_evident", "Candidate evidence is hash-chained", bool(chain.get("ok", False) and _safe_int(chain.get("event_count"), 0) >= 1), evidence=chain, action="repair the tamper-evident candidate event chain"),
-            _check("raw_controlled_labels_honest", "Raw and controlled profitability labels are separate", grade_separated, evidence={"raw_grade": raw_grade, "controlled_grade": controlled_grade, "display": control_payload.get("profitability_display_grade")}, action="do not allow controlled safety grades to overwrite raw financial results"),
-            _check("profitability_source_hash_current", "Profitability grade uses the current performance source", profitability_source_current, evidence=_as_dict(control_payload.get("paper_performance_input_contract")), action="derive profitability from the exact current paper-performance hash"),
-            _check("content_store_fresh_and_clean", "Immutable content-store evidence is fresh and clean", bool(content_store.get("fresh", False) and content_payload.get("ok", False) and _safe_int(content_payload.get("unsafe_skipped_blob_count"), 0) == 0), evidence={"age_minutes": content_store.get("age_minutes"), "ok": content_payload.get("ok"), "unsafe_skipped_blob_count": content_payload.get("unsafe_skipped_blob_count")}, action="refresh and verify the content-addressed evidence store"),
-            _check("source_verification_ready", "Source provenance is verified", bool(source_verification.get("fresh", False) and source_payload.get("ok", False) and _status(source_payload.get("overall_status")) == "ready"), evidence={"status": source_payload.get("overall_status"), "unverified_sources": source_payload.get("unverified_sources", [])}, action="verify or quarantine every unverified decision input source"),
+            _check(
+                "a_plus_requires_all_checks",
+                "A+ requires every check to pass",
+                bool(grading_policy.get("a_plus_requires_all_checks", False)),
+                evidence=grading_policy,
+                action="restore fail-closed A+ grading policy",
+            ),
+            _check(
+                "missing_evidence_scores_zero",
+                "Missing evidence scores zero",
+                _safe_int(grading_policy.get("missing_evidence_score"), -1) == 0,
+                evidence=grading_policy.get("missing_evidence_score"),
+                action="set missing evidence to a zero score",
+            ),
+            _check(
+                "candidate_chain_tamper_evident",
+                "Candidate evidence is hash-chained",
+                bool(
+                    chain.get("ok", False)
+                    and _safe_int(chain.get("event_count"), 0) >= 1
+                ),
+                evidence=chain,
+                action="repair the tamper-evident candidate event chain",
+            ),
+            _check(
+                "raw_controlled_labels_honest",
+                "Raw and controlled profitability labels are separate",
+                grade_separated,
+                evidence={
+                    "raw_grade": raw_grade,
+                    "controlled_grade": controlled_grade,
+                    "display": control_payload.get("profitability_display_grade"),
+                },
+                action="do not allow controlled safety grades to overwrite raw financial results",
+            ),
+            _check(
+                "profitability_source_hash_current",
+                "Profitability grade uses the current performance source",
+                profitability_source_current,
+                evidence=_as_dict(
+                    control_payload.get("paper_performance_input_contract")
+                ),
+                action="derive profitability from the exact current paper-performance hash",
+            ),
+            _check(
+                "content_store_fresh_and_clean",
+                "Immutable content-store evidence is fresh and clean",
+                bool(
+                    content_store.get("fresh", False)
+                    and content_payload.get("ok", False)
+                    and _safe_int(content_payload.get("unsafe_skipped_blob_count"), 0)
+                    == 0
+                ),
+                evidence={
+                    "age_minutes": content_store.get("age_minutes"),
+                    "ok": content_payload.get("ok"),
+                    "unsafe_skipped_blob_count": content_payload.get(
+                        "unsafe_skipped_blob_count"
+                    ),
+                },
+                action="refresh and verify the content-addressed evidence store",
+            ),
+            _check(
+                "source_verification_ready",
+                "Source provenance is verified",
+                bool(
+                    source_verification.get("fresh", False)
+                    and source_payload.get("ok", False)
+                    and _status(source_payload.get("overall_status")) == "ready"
+                ),
+                evidence={
+                    "status": source_payload.get("overall_status"),
+                    "unverified_sources": source_payload.get("unverified_sources", []),
+                },
+                action="verify or quarantine every unverified decision input source",
+            ),
         ],
     )
 
     institutional = _as_dict(config.get("institutional_operations"))
-    institutional_max_age = _safe_float(institutional.get("max_artifact_age_hours"), 36.0)
+    institutional_max_age = _safe_float(
+        institutional.get("max_artifact_age_hours"), 36.0
+    )
     institutional_specs = [
         ("production_readiness", institutional.get("production_readiness_artifact")),
         ("security", institutional.get("security_artifact")),
@@ -863,35 +1697,92 @@ def build_payload(
         ("backup_restore", institutional.get("backup_restore_artifact")),
         ("blackstart", institutional.get("blackstart_artifact")),
     ]
-    institutional_rows = {name: _artifact(project_root, path, institutional_max_age, current_time) for name, path in institutional_specs}
+    institutional_rows = {
+        name: _artifact(project_root, path, institutional_max_age, current_time)
+        for name, path in institutional_specs
+    }
     institutional_checks: list[dict[str, Any]] = []
     for name, row in institutional_rows.items():
         payload = _as_dict(row.get("payload"))
         if name == "production_readiness":
-            passed = bool(row.get("fresh", False) and payload.get("live_money_production_bar_ready", False) and payload.get("live_money_canary_consideration_ready", False))
+            passed = bool(
+                row.get("fresh", False)
+                and payload.get("live_money_production_bar_ready", False)
+                and payload.get("live_money_canary_consideration_ready", False)
+            )
         elif name == "blackstart":
-            passed = bool(row.get("fresh", False) and payload.get("ok", False) and payload.get("production_grade_ready", False))
+            passed = bool(
+                row.get("fresh", False)
+                and payload.get("ok", False)
+                and payload.get("production_grade_ready", False)
+            )
         else:
-            passed = bool(row.get("fresh", False) and payload.get("ok", False) and _status(payload.get("overall_status") or payload.get("status")) not in BAD_STATUSES)
+            passed = bool(
+                row.get("fresh", False)
+                and payload.get("ok", False)
+                and _status(payload.get("overall_status") or payload.get("status"))
+                not in BAD_STATUSES
+            )
         institutional_checks.append(
             _check(
                 f"{name}_ready",
                 f"{name.replace('_', ' ').title()} is fresh and ready",
                 passed,
-                evidence={"path": row.get("path"), "age_minutes": row.get("age_minutes"), "status": row.get("status"), "ok": payload.get("ok")},
+                evidence={
+                    "path": row.get("path"),
+                    "age_minutes": row.get("age_minutes"),
+                    "status": row.get("status"),
+                    "ok": payload.get("ok"),
+                },
                 action=f"refresh and prove the {name.replace('_', ' ')} operating control",
             )
         )
-    rollback_manifest = project_root / "governance" / "rollback" / "production_rollback_manifest_latest.json"
-    institutional_checks.append(_check("rollback_manifest_present", "A rollback manifest is available", bool(load_json(rollback_manifest)), evidence=str(rollback_manifest), action="build and verify the production rollback manifest"))
-    pillar_10 = _pillar("p10_institutional_operations", "Institutional Operating Proof", institutional_checks)
+    rollback_manifest = (
+        project_root
+        / "governance"
+        / "rollback"
+        / "production_rollback_manifest_latest.json"
+    )
+    institutional_checks.append(
+        _check(
+            "rollback_manifest_present",
+            "A rollback manifest is available",
+            bool(load_json(rollback_manifest)),
+            evidence=str(rollback_manifest),
+            action="build and verify the production rollback manifest",
+        )
+    )
+    pillar_10 = _pillar(
+        "p10_institutional_operations",
+        "Institutional Operating Proof",
+        institutional_checks,
+    )
 
-    pillars = [pillar_1, pillar_2, pillar_3, pillar_4, pillar_5, pillar_6, pillar_7, pillar_8, pillar_9, pillar_10]
+    pillars = [
+        pillar_1,
+        pillar_2,
+        pillar_3,
+        pillar_4,
+        pillar_5,
+        pillar_6,
+        pillar_7,
+        pillar_8,
+        pillar_9,
+        pillar_10,
+    ]
     ready_count = sum(1 for pillar in pillars if pillar.get("ready", False))
     all_ready = ready_count == len(pillars)
-    average_score = round(sum(_safe_float(pillar.get("score"), 0.0) for pillar in pillars) / max(len(pillars), 1), 2)
+    average_score = round(
+        sum(_safe_float(pillar.get("score"), 0.0) for pillar in pillars)
+        / max(len(pillars), 1),
+        2,
+    )
     overall_grade = "A+" if all_ready else _score_grade(average_score, False)
-    blockers = [str(pillar.get("pillar_id")) for pillar in pillars if not pillar.get("ready", False)]
+    blockers = [
+        str(pillar.get("pillar_id"))
+        for pillar in pillars
+        if not pillar.get("ready", False)
+    ]
     next_actions: list[str] = []
     for pillar in pillars:
         for action in _as_list(pillar.get("next_actions")):
@@ -901,7 +1792,9 @@ def build_payload(
     return {
         "schema_version": 1,
         "timestamp_utc": current_time.isoformat(),
-        "policy_id": str(config.get("policy_id") or "production_excellence_10_pillar_v1"),
+        "policy_id": str(
+            config.get("policy_id") or "production_excellence_10_pillar_v1"
+        ),
         "source": "production_excellence_control",
         "ok": all_ready,
         "overall_status": "ready" if all_ready else "blocked",
@@ -942,28 +1835,63 @@ def build_payload(
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Evaluate the ten-pillar production-excellence contract.")
+    parser = argparse.ArgumentParser(
+        description="Evaluate the ten-pillar production-excellence contract."
+    )
     parser.add_argument("--project-root", type=Path, default=PROJECT_ROOT)
     parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG_PATH)
     parser.add_argument("--out", type=Path, default=DEFAULT_OUT_PATH)
-    parser.add_argument("--apply", action="store_true", help="Write the latest health artifact.")
-    parser.add_argument("--initialize-candidate", action="store_true", help="Freeze the first versioned production candidate.")
-    parser.add_argument("--accept-candidate-change", action="store_true", help="Accept detected source drift and selectively reset affected evidence windows.")
-    parser.add_argument("--recover-candidate-event-chain", action="store_true", help="Create an audited recovery anchor and reset every evidence window after event-log loss or corruption.")
+    parser.add_argument(
+        "--apply", action="store_true", help="Write the latest health artifact."
+    )
+    parser.add_argument(
+        "--initialize-candidate",
+        action="store_true",
+        help="Freeze the first versioned production candidate.",
+    )
+    parser.add_argument(
+        "--accept-candidate-change",
+        action="store_true",
+        help="Accept detected source drift and selectively reset affected evidence windows.",
+    )
+    parser.add_argument(
+        "--recover-candidate-event-chain",
+        action="store_true",
+        help="Create an audited recovery anchor and reset every evidence window after event-log loss or corruption.",
+    )
     parser.add_argument("--change-reason", default="")
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args(argv)
-    if (args.initialize_candidate or args.accept_candidate_change or args.recover_candidate_event_chain) and not args.apply:
+    if (
+        args.initialize_candidate
+        or args.accept_candidate_change
+        or args.recover_candidate_event_chain
+    ) and not args.apply:
         parser.error("candidate mutations require --apply")
-    if sum(bool(value) for value in (args.initialize_candidate, args.accept_candidate_change, args.recover_candidate_event_chain)) > 1:
+    if (
+        sum(
+            bool(value)
+            for value in (
+                args.initialize_candidate,
+                args.accept_candidate_change,
+                args.recover_candidate_event_chain,
+            )
+        )
+        > 1
+    ):
         parser.error("candidate mutation flags are mutually exclusive")
 
     project_root = args.project_root.resolve()
-    config_path = args.config if args.config.is_absolute() else project_root / args.config
+    config_path = (
+        args.config if args.config.is_absolute() else project_root / args.config
+    )
     out_path = args.out if args.out.is_absolute() else project_root / args.out
     with paper_profitability_generation_lock(
         project_root,
-        timeout_seconds=float(os.getenv("PAPER_PROFITABILITY_GENERATION_LOCK_TIMEOUT_SECONDS", "120") or 120.0),
+        timeout_seconds=float(
+            os.getenv("PAPER_PROFITABILITY_GENERATION_LOCK_TIMEOUT_SECONDS", "120")
+            or 120.0
+        ),
     ):
         payload = build_payload(
             project_root,

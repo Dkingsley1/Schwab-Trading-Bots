@@ -10,6 +10,15 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable, Mapping
 
+from core.institutional_research_extensions import (
+    decision_extension_metadata,
+)
+from core.institutional_research_extensions import (
+    load_policy as load_institutional_extension_policy,
+)
+from core.research_data_platform import ResearchDataCatalog
+from core.research_data_platform import load_policy as load_research_data_policy
+
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_INGESTION_ROUTING_POLICY_PATH = (
@@ -17,6 +26,12 @@ DEFAULT_INGESTION_ROUTING_POLICY_PATH = (
 )
 DEFAULT_DECISION_POLICY_PATH = (
     PROJECT_ROOT / "config" / "institutional_decision_flow_v1.json"
+)
+DEFAULT_RESEARCH_DATA_POLICY_PATH = (
+    PROJECT_ROOT / "config" / "research_data_platform_v1.json"
+)
+DEFAULT_INSTITUTIONAL_EXTENSION_POLICY_PATH = (
+    PROJECT_ROOT / "config" / "institutional_research_extensions_v1.json"
 )
 
 EXPECTED_SAFETY_FLAGS = (
@@ -50,6 +65,20 @@ EXPECTED_INGESTION_SAFETY_FLAGS = (
     "live_execution_authority",
     "automatic_promotion_authority",
     "profitability_guaranteed",
+)
+EXPECTED_ECONOMIC_CONTEXT_TRUE_FLAGS = (
+    "required_for_every_decision_family",
+    "point_in_time_lineage_required",
+    "source_failure_isolated",
+    "shared_snapshot_required",
+    "no_per_bot_fetch_fanout",
+    "context_only_no_execution_authority",
+    "missing_context_blocks_live_promotion_when_candidate_required",
+    "profitability_evidence_separation_required",
+)
+EXPECTED_ECONOMIC_CONTEXT_FALSE_FLAGS = (
+    "missing_context_blocks_global_collection",
+    "missing_context_blocks_paper_execution",
 )
 
 
@@ -90,6 +119,104 @@ def _ordered_unique(values: Iterable[Any]) -> list[str]:
 def canonical_hash(value: Any) -> str:
     raw = json.dumps(value, ensure_ascii=True, sort_keys=True, separators=(",", ":")).encode("utf-8")
     return hashlib.sha256(raw).hexdigest()
+
+
+def research_data_route_metadata(
+    *,
+    decision_family_id: str,
+    source_ids: Iterable[Any],
+    policy_path: Path | str = DEFAULT_RESEARCH_DATA_POLICY_PATH,
+) -> dict[str, Any]:
+    """Bind route sources to catalog products without changing route authority."""
+
+    try:
+        policy = load_research_data_policy(policy_path)
+        catalog = ResearchDataCatalog(policy)
+    except (OSError, TypeError, ValueError):
+        return {
+            "status": "unavailable",
+            "contract_id": "",
+            "product_ids": [],
+            "product_count": 0,
+            "catalog_receipt_sha256": "",
+            "metadata_only": True,
+            "execution_authority": False,
+        }
+    normalized_sources = _ordered_unique(source_ids)[:24]
+    source_set = set(normalized_sources)
+    mandatory = {
+        "point_in_time_feature_store_v1",
+        "candidate_outcome_evidence_v2",
+    }
+    products = catalog.query_catalog(decision_family_id=decision_family_id)
+    selected = [
+        row
+        for row in products
+        if str(row.get("dataset_id") or "") in mandatory
+        or source_set.intersection(
+            str(value) for value in row.get("source_ids") or []
+        )
+    ]
+    product_ids = sorted(
+        str(row.get("dataset_id") or "") for row in selected if row.get("dataset_id")
+    )
+    material = {
+        "policy_id": str(policy.get("policy_id") or ""),
+        "contract_id": str(
+            _as_dict(policy.get("query_contract")).get("contract_id") or ""
+        ),
+        "decision_family_id": str(decision_family_id or ""),
+        "source_ids": normalized_sources,
+        "product_ids": product_ids,
+        "product_receipts": {
+            product_id: canonical_hash(catalog.dataset(product_id))
+            for product_id in product_ids
+        },
+    }
+    return {
+        "status": "ready" if product_ids else "unmapped",
+        "contract_id": material["contract_id"],
+        "product_ids": product_ids,
+        "product_count": len(product_ids),
+        "catalog_receipt_sha256": canonical_hash(material),
+        "metadata_only": True,
+        "existing_route_authority_unchanged": True,
+        "entitlement_enforcement_required_for_new_consumers": True,
+        "execution_authority": False,
+    }
+
+
+def institutional_extension_route_metadata(
+    *,
+    decision_family_id: str,
+    policy_path: Path | str = DEFAULT_INSTITUTIONAL_EXTENSION_POLICY_PATH,
+) -> dict[str, Any]:
+    """Attach receipted control metadata without changing route behavior."""
+
+    try:
+        policy = load_institutional_extension_policy(policy_path)
+        return {
+            "status": "ready",
+            **decision_extension_metadata(
+                decision_family_id=decision_family_id,
+                policy=policy,
+            ),
+        }
+    except (OSError, TypeError, ValueError, json.JSONDecodeError):
+        return {
+            "status": "unavailable",
+            "policy_id": "",
+            "decision_family_id": str(decision_family_id or ""),
+            "control_ids": [],
+            "factor_benchmark_ids": [],
+            "risk_schedule_id": "",
+            "execution_frontier_id": "",
+            "research_dag_id": "",
+            "receipt_sha256": "",
+            "metadata_only": True,
+            "existing_route_authority_unchanged": True,
+            "execution_authority": False,
+        }
 
 
 def _load_mapping(path: Path) -> dict[str, Any]:
@@ -188,6 +315,29 @@ def validate_ingestion_routing_policy(
         if not 0.0 <= value <= 1.0:
             errors.append(f"ingestion_routing_{key}_invalid")
 
+    economic_context = _as_dict(policy.get("economic_context_contract"))
+    if str(economic_context.get("contract_id") or "") != "sleeve_economic_context_v1":
+        errors.append("ingestion_routing_economic_context_contract_id_invalid")
+    minimum_economic_capabilities = _safe_int(
+        economic_context.get("minimum_capabilities_per_family"), 0
+    )
+    if minimum_economic_capabilities < 2:
+        errors.append("ingestion_routing_economic_context_minimum_capabilities_invalid")
+    if _safe_int(economic_context.get("minimum_distinct_selected_sources"), 0) < 2:
+        errors.append("ingestion_routing_economic_context_minimum_sources_invalid")
+    for key in ("minimum_source_coverage_ratio", "minimum_route_score"):
+        value = _safe_float(economic_context.get(key), -1.0)
+        if not 0.0 <= value <= 1.0:
+            errors.append(f"ingestion_routing_economic_context_{key}_invalid")
+    if not _ordered_unique(_as_list(economic_context.get("preferred_source_kinds"))):
+        errors.append("ingestion_routing_economic_context_source_kinds_missing")
+    for key in EXPECTED_ECONOMIC_CONTEXT_TRUE_FLAGS:
+        if economic_context.get(key) is not True:
+            errors.append(f"ingestion_routing_economic_context_{key}_must_be_true")
+    for key in EXPECTED_ECONOMIC_CONTEXT_FALSE_FLAGS:
+        if economic_context.get(key) is not False:
+            errors.append(f"ingestion_routing_economic_context_{key}_must_be_false")
+
     base_profiles = _as_dict(policy.get("base_profiles"))
     for profile_id, raw_profile in base_profiles.items():
         unknown = sorted(
@@ -213,6 +363,18 @@ def validate_ingestion_routing_policy(
         )
         if unknown_caps:
             errors.append(f"ingestion_routing_family_unknown_capability:{family_id}")
+        economic_caps = _ordered_unique(
+            _as_list(route.get("economic_context_capability_ids"))
+        )
+        if len(economic_caps) < minimum_economic_capabilities:
+            errors.append(
+                f"ingestion_routing_family_economic_context_incomplete:{family_id}"
+            )
+        unknown_economic_caps = sorted(set(economic_caps) - capability_set)
+        if unknown_economic_caps:
+            errors.append(
+                f"ingestion_routing_family_unknown_economic_capability:{family_id}"
+            )
         paper_caps = set(
             _ordered_unique(_as_list(route.get("paper_required_capability_ids")))
         )
@@ -556,6 +718,10 @@ def _producer_rows(
             "source_coverage_ratio": 0.0,
             "error_budget_remaining": 0.0,
             "payload_integrity_ready": False,
+            "serving_last_good": False,
+            "last_good_artifact_path": "",
+            "last_good_age_minutes": None,
+            "live_promotion_eligible": True,
             "failure_domain": str(
                 producer.get("failure_domain")
                 or producer.get("collector_name")
@@ -641,6 +807,49 @@ def _producer_rows(
             published_status = str(
                 payload_mapping.get("overall_status") or payload_mapping.get("status") or ""
             )
+            current_published_ok = payload_mapping.get("ok") if "ok" in payload_mapping else None
+            current_published_status = published_status or ("ready" if payload else "missing")
+            serving_last_good = False
+            last_good_relative_path = str(producer.get("last_good_artifact_path") or "").strip()
+            last_good_age: float | None = None
+            fallback_policy = str(producer.get("fallback_policy") or "").strip().lower()
+            if (
+                last_good_relative_path
+                and fallback_policy.startswith("serve_last_good")
+                and len(usable_capabilities) < len(capabilities)
+            ):
+                last_good_path = project_root / last_good_relative_path
+                try:
+                    last_good_payload: Any = json.loads(last_good_path.read_text(encoding="utf-8"))
+                except (OSError, ValueError, TypeError):
+                    last_good_payload = {}
+                last_good_mapping = last_good_payload if isinstance(last_good_payload, Mapping) else {}
+                last_good_timestamp = (
+                    _payload_timestamp(last_good_mapping, last_good_path)
+                    if last_good_payload
+                    else None
+                )
+                last_good_age = (
+                    max((now - last_good_timestamp).total_seconds() / 60.0, 0.0)
+                    if last_good_timestamp is not None
+                    else None
+                )
+                last_good_fresh = bool(
+                    last_good_age is not None
+                    and last_good_age <= _safe_float(producer.get("max_age_minutes"), 0.0)
+                )
+                fallback_capabilities, fallback_proofs = _evaluate_capability_proofs(
+                    producer,
+                    last_good_payload,
+                    producer_usable=bool(last_good_payload and last_good_fresh),
+                )
+                if len(fallback_capabilities) > len(usable_capabilities):
+                    serving_last_good = True
+                    fresh = last_good_fresh
+                    artifact_usable = True
+                    usable_capabilities = fallback_capabilities
+                    capability_proofs = fallback_proofs
+                    published_status = "last_good_fallback"
             row.update(
                 {
                     "artifact_path": relative_path,
@@ -649,9 +858,19 @@ def _producer_rows(
                     "usable": artifact_usable,
                     "usable_capabilities": usable_capabilities,
                     "capability_proofs": capability_proofs,
-                    "published_ok": payload_mapping.get("ok") if "ok" in payload_mapping else None,
+                    "published_ok": True if serving_last_good else current_published_ok,
                     "published_status": published_status or ("ready" if payload else "missing"),
-                    "age_minutes": round(age, 3) if age is not None else None,
+                    "current_published_ok": current_published_ok,
+                    "current_published_status": current_published_status,
+                    "age_minutes": round(last_good_age if serving_last_good else age, 3)
+                    if (last_good_age if serving_last_good else age) is not None
+                    else None,
+                    "serving_last_good": serving_last_good,
+                    "last_good_artifact_path": last_good_relative_path,
+                    "last_good_age_minutes": round(last_good_age, 3)
+                    if last_good_age is not None
+                    else None,
+                    "live_promotion_eligible": not serving_last_good,
                     "collector_quality_score": 1.0 if artifact_usable else 0.0,
                     "source_coverage_ratio": 1.0 if artifact_usable else 0.0,
                     "error_budget_remaining": 1.0 if artifact_usable else 0.0,
@@ -714,6 +933,16 @@ def _profile_spec(
     scope = str(assignment.get("regime_scope") or "market_signal")
     role = str(assignment.get("role_id") or "signal")
     text = _assignment_text(assignment)
+    economic_context_contract = _as_dict(
+        ingestion_policy.get("economic_context_contract")
+    )
+    economic_context_capability_ids = [
+        item
+        for item in _ordered_unique(
+            _as_list(route.get("economic_context_capability_ids"))
+        )
+        if item in capability_set
+    ]
 
     required: list[str] = []
     paper_required: list[str] = []
@@ -766,7 +995,7 @@ def _profile_spec(
             paper_required.extend(token_required)
     matched_plane_ids = _ordered_unique(matched_plane_ids + token_matched_plane_ids)
 
-    optional: list[str] = []
+    optional: list[str] = list(economic_context_capability_ids)
     for plane_id in matched_plane_ids:
         optional.extend(_ordered_unique(_as_list(_as_dict(planes_by_id.get(plane_id)).get("capabilities"))))
 
@@ -802,6 +1031,10 @@ def _profile_spec(
         "live_independent_failover_required": bool(
             route.get("live_independent_failover_required", False)
         ),
+        "economic_context_contract_id": str(
+            economic_context_contract.get("contract_id") or ""
+        ),
+        "economic_context_capability_ids": economic_context_capability_ids,
         "paper_required_capability_ids": paper_required,
         "required_capability_ids": required,
         "optional_capability_ids": optional,
@@ -871,6 +1104,35 @@ def _producer_route_score(
     return round(max(0.0, min(1.0, score)), 6), components
 
 
+def _capability_delivery_row(
+    capability_id: str,
+    resolution_by_capability: Mapping[str, Mapping[str, Any]],
+) -> dict[str, Any]:
+    resolution = _as_dict(resolution_by_capability.get(capability_id))
+    return {
+        "capability_id": capability_id,
+        "selected_producer_id": str(
+            resolution.get("selected_producer_id") or ""
+        ),
+        "selected_source_kind": str(
+            resolution.get("selected_source_kind") or ""
+        ),
+        "route_score": _safe_float(
+            resolution.get("selected_route_score"), 0.0
+        ),
+        "selected_failure_domain": str(
+            resolution.get("selected_failure_domain") or ""
+        ),
+        "independent_failover_producer_ids": list(
+            resolution.get("independent_failover_producer_ids") or []
+        ),
+        "route_receipt_sha256": str(
+            resolution.get("route_receipt_sha256") or ""
+        ),
+        "ready": bool(resolution.get("selected_producer_id")),
+    }
+
+
 def _profile_delivery_routes(
     profiles: Mapping[str, Mapping[str, Any]],
     capability_resolutions: Iterable[Mapping[str, Any]],
@@ -891,6 +1153,27 @@ def _profile_delivery_routes(
         _safe_int(quality.get("minimum_independent_live_failovers"), 1),
         0,
     )
+    economic_context_contract = _as_dict(
+        ingestion_policy.get("economic_context_contract")
+    )
+    economic_coverage_floor = _safe_float(
+        economic_context_contract.get("minimum_source_coverage_ratio"), 1.0
+    )
+    economic_route_floor = _safe_float(
+        economic_context_contract.get("minimum_route_score"), 0.62
+    )
+    economic_minimum_sources = max(
+        _safe_int(
+            economic_context_contract.get("minimum_distinct_selected_sources"),
+            2,
+        ),
+        1,
+    )
+    economic_preferred_source_kinds = set(
+        _ordered_unique(
+            _as_list(economic_context_contract.get("preferred_source_kinds"))
+        )
+    )
     rows: list[dict[str, Any]] = []
     for profile_id, raw_profile in sorted(profiles.items()):
         profile = _as_dict(raw_profile)
@@ -900,35 +1183,70 @@ def _profile_delivery_routes(
         paper_required_ids = _ordered_unique(
             _as_list(profile.get("paper_required_capability_ids"))
         )
-        delivery_rows: list[dict[str, Any]] = []
-        for capability_id in required_ids:
-            resolution = _as_dict(resolution_by_capability.get(capability_id))
-            delivery_rows.append(
-                {
-                    "capability_id": capability_id,
-                    "selected_producer_id": str(
-                        resolution.get("selected_producer_id") or ""
-                    ),
-                    "selected_source_kind": str(
-                        resolution.get("selected_source_kind") or ""
-                    ),
-                    "route_score": _safe_float(
-                        resolution.get("selected_route_score"), 0.0
-                    ),
-                    "selected_failure_domain": str(
-                        resolution.get("selected_failure_domain") or ""
-                    ),
-                    "independent_failover_producer_ids": list(
-                        resolution.get("independent_failover_producer_ids") or []
-                    ),
-                    "ready": bool(resolution.get("selected_producer_id")),
-                }
-            )
+        economic_context_ids = _ordered_unique(
+            _as_list(profile.get("economic_context_capability_ids"))
+        )
+        delivery_rows = [
+            _capability_delivery_row(capability_id, resolution_by_capability)
+            for capability_id in required_ids
+        ]
+        economic_context_rows = [
+            _capability_delivery_row(capability_id, resolution_by_capability)
+            for capability_id in economic_context_ids
+        ]
         usable_rows = [row for row in delivery_rows if row["ready"]]
         paper_rows = [
             row for row in delivery_rows if row["capability_id"] in paper_required_ids
         ]
         usable_paper_rows = [row for row in paper_rows if row["ready"]]
+        usable_economic_rows = [
+            row for row in economic_context_rows if row["ready"]
+        ]
+        economic_route_scores = [
+            float(row["route_score"]) for row in usable_economic_rows
+        ]
+        economic_source_ids = sorted(
+            {
+                str(row.get("selected_producer_id") or "")
+                for row in usable_economic_rows
+                if str(row.get("selected_producer_id") or "")
+            }
+        )
+        economic_source_kinds = sorted(
+            {
+                str(row.get("selected_source_kind") or "")
+                for row in usable_economic_rows
+                if str(row.get("selected_source_kind") or "")
+            }
+        )
+        economic_preferred_source_ids = sorted(
+            {
+                str(row.get("selected_producer_id") or "")
+                for row in usable_economic_rows
+                if str(row.get("selected_source_kind") or "")
+                in economic_preferred_source_kinds
+                and str(row.get("selected_producer_id") or "")
+            }
+        )
+        economic_coverage_ratio = (
+            len(usable_economic_rows) / len(economic_context_ids)
+            if economic_context_ids
+            else 0.0
+        )
+        economic_minimum_route_score = (
+            min(economic_route_scores) if economic_route_scores else 0.0
+        )
+        economic_average_route_score = (
+            sum(economic_route_scores) / len(economic_route_scores)
+            if economic_route_scores
+            else 0.0
+        )
+        economic_context_ready = bool(
+            economic_context_ids
+            and economic_coverage_ratio >= economic_coverage_floor
+            and economic_minimum_route_score >= economic_route_floor
+            and len(economic_source_ids) >= economic_minimum_sources
+        )
         live_route_scores = [float(row["route_score"]) for row in usable_rows]
         paper_route_scores = [
             float(row["route_score"]) for row in usable_paper_rows
@@ -972,6 +1290,7 @@ def _profile_delivery_routes(
         )
         live_ready = bool(
             paper_ready
+            and economic_context_ready
             and coverage_ratio >= coverage_floor
             and live_minimum_route_score >= live_floor
             and (
@@ -988,6 +1307,16 @@ def _profile_delivery_routes(
             for row in paper_rows
             if row["ready"] and float(row["route_score"]) < paper_floor
         ]
+        missing_economic_ids = [
+            row["capability_id"]
+            for row in economic_context_rows
+            if not row["ready"]
+        ]
+        below_economic_score_ids = [
+            row["capability_id"]
+            for row in economic_context_rows
+            if row["ready"] and float(row["route_score"]) < economic_route_floor
+        ]
         route_material = {
             "profile_id": profile_id,
             "decision_policy_family_id": str(
@@ -995,6 +1324,11 @@ def _profile_delivery_routes(
             ),
             "ingestion_lane": str(profile.get("ingestion_lane") or "core"),
             "cadence": str(profile.get("cadence") or "intraday"),
+            "economic_context_contract_id": str(
+                profile.get("economic_context_contract_id") or ""
+            ),
+            "economic_context_capability_ids": economic_context_ids,
+            "economic_context_routes": economic_context_rows,
             "paper_required_capability_ids": paper_required_ids,
             "required_capability_ids": required_ids,
             "delivery_routes": delivery_rows,
@@ -1023,6 +1357,36 @@ def _profile_delivery_routes(
                 "paper_average_route_score": round(
                     paper_average_route_score, 6
                 ),
+                "economic_context_capability_count": len(economic_context_ids),
+                "usable_economic_context_capability_count": len(
+                    usable_economic_rows
+                ),
+                "economic_context_coverage_ratio": round(
+                    economic_coverage_ratio, 6
+                ),
+                "economic_context_minimum_route_score": round(
+                    economic_minimum_route_score, 6
+                ),
+                "economic_context_average_route_score": round(
+                    economic_average_route_score, 6
+                ),
+                "economic_context_source_count": len(economic_source_ids),
+                "economic_context_source_ids": economic_source_ids,
+                "economic_context_source_kinds": economic_source_kinds,
+                "economic_context_preferred_source_count": len(
+                    economic_preferred_source_ids
+                ),
+                "economic_context_preferred_source_ids": (
+                    economic_preferred_source_ids
+                ),
+                "economic_context_ready": economic_context_ready,
+                "missing_economic_context_capability_ids": (
+                    missing_economic_ids
+                ),
+                "below_economic_context_score_capability_ids": (
+                    below_economic_score_ids
+                ),
+                "economic_context_advisory_only": True,
                 "live_minimum_route_score": round(
                     live_minimum_route_score, 6
                 ),
@@ -1130,6 +1494,12 @@ def build_capability_routing(
             "degradation_policy": spec["degradation_policy"],
             "live_independent_failover_required": spec[
                 "live_independent_failover_required"
+            ],
+            "economic_context_contract_id": spec[
+                "economic_context_contract_id"
+            ],
+            "economic_context_capability_ids": spec[
+                "economic_context_capability_ids"
             ],
             "paper_required_capability_ids": spec[
                 "paper_required_capability_ids"
@@ -1415,6 +1785,30 @@ def build_capability_routing(
                 "average_route_score": _safe_float(
                     delivery.get("average_route_score"), 0.0
                 ),
+                "economic_context_contract_id": str(
+                    delivery.get("economic_context_contract_id") or ""
+                ),
+                "economic_context_capability_count": _safe_int(
+                    delivery.get("economic_context_capability_count"), 0
+                ),
+                "economic_context_coverage_ratio": _safe_float(
+                    delivery.get("economic_context_coverage_ratio"), 0.0
+                ),
+                "economic_context_average_route_score": _safe_float(
+                    delivery.get("economic_context_average_route_score"), 0.0
+                ),
+                "economic_context_source_count": _safe_int(
+                    delivery.get("economic_context_source_count"), 0
+                ),
+                "economic_context_source_ids": list(
+                    delivery.get("economic_context_source_ids") or []
+                ),
+                "economic_context_ready": bool(
+                    delivery.get("economic_context_ready", False)
+                ),
+                "missing_economic_context_capability_ids": list(
+                    delivery.get("missing_economic_context_capability_ids") or []
+                ),
                 "paper_decision_data_ready": bool(
                     delivery.get("paper_decision_data_ready", False)
                 ),
@@ -1426,6 +1820,116 @@ def build_capability_routing(
                 ),
             }
         )
+
+    economic_policy_contract = deepcopy(
+        _as_dict(active_ingestion_policy.get("economic_context_contract"))
+    )
+    economic_family_rollups: list[dict[str, Any]] = []
+    for family_id, raw_family_route in sorted(
+        _as_dict(active_ingestion_policy.get("family_routes")).items()
+    ):
+        configured_ids = _ordered_unique(
+            _as_list(
+                _as_dict(raw_family_route).get(
+                    "economic_context_capability_ids"
+                )
+            )
+        )
+        family_delivery_rows = [
+            row
+            for row in profile_delivery_routes
+            if str(row.get("decision_policy_family_id") or "") == family_id
+        ]
+        selected_source_ids = sorted(
+            {
+                str(source_id)
+                for row in family_delivery_rows
+                for source_id in _as_list(row.get("economic_context_source_ids"))
+                if str(source_id)
+            }
+        )
+        missing_ids = sorted(
+            {
+                str(capability_id)
+                for row in family_delivery_rows
+                for capability_id in _as_list(
+                    row.get("missing_economic_context_capability_ids")
+                )
+                if str(capability_id)
+            }
+        )
+        family_coverage = min(
+            (
+                _safe_float(row.get("economic_context_coverage_ratio"), 0.0)
+                for row in family_delivery_rows
+            ),
+            default=0.0,
+        )
+        family_quality = min(
+            (
+                _safe_float(
+                    row.get("economic_context_average_route_score"), 0.0
+                )
+                for row in family_delivery_rows
+            ),
+            default=0.0,
+        )
+        economic_family_rollups.append(
+            {
+                "decision_policy_family_id": family_id,
+                "profile_count": len(family_delivery_rows),
+                "economic_context_capability_ids": configured_ids,
+                "economic_context_capability_count": len(configured_ids),
+                "selected_source_ids": selected_source_ids,
+                "selected_source_count": len(selected_source_ids),
+                "coverage_ratio": round(family_coverage, 6),
+                "average_route_score_floor": round(family_quality, 6),
+                "missing_capability_ids": missing_ids,
+                "ready": bool(
+                    family_delivery_rows
+                    and all(
+                        bool(row.get("economic_context_ready", False))
+                        for row in family_delivery_rows
+                    )
+                ),
+            }
+        )
+    economic_selected_source_ids = sorted(
+        {
+            str(source_id)
+            for row in economic_family_rollups
+            for source_id in _as_list(row.get("selected_source_ids"))
+            if str(source_id)
+        }
+    )
+    economic_runtime_ready_count = sum(
+        1 for row in runtime_sleeve_routes if row.get("economic_context_ready")
+    )
+    economic_context_route_contract = {
+        "policy": economic_policy_contract,
+        "family_count": len(economic_family_rollups),
+        "configured_family_count": sum(
+            1
+            for row in economic_family_rollups
+            if _safe_int(row.get("economic_context_capability_count"), 0) > 0
+        ),
+        "ready_family_count": sum(
+            1 for row in economic_family_rollups if row.get("ready")
+        ),
+        "runtime_route_count": len(runtime_sleeve_routes),
+        "runtime_ready_route_count": economic_runtime_ready_count,
+        "selected_source_count": len(economic_selected_source_ids),
+        "selected_source_ids": economic_selected_source_ids,
+        "family_rollups": economic_family_rollups,
+        "context_changes_strategy_signal": False,
+        "paper_execution_authority": False,
+        "live_execution_authority": False,
+        "automatic_promotion_authority": False,
+        "economic_profitability_grade_authority": False,
+    }
+    economic_context_route_contract["contract_receipt_sha256"] = canonical_hash(
+        economic_context_route_contract
+    )
     unsupported_required = sorted(required_capabilities - producer_supported)
     unavailable_required = sorted(
         capability for capability in required_capabilities & producer_supported if capability not in producer_usable
@@ -1573,6 +2077,28 @@ def build_capability_routing(
         for row in runtime_sleeve_routes
     ):
         structural_blockers.append("ingestion_router_runtime_binding_receipt_missing")
+    expected_economic_family_count = len(
+        _as_dict(active_ingestion_policy.get("family_routes"))
+    )
+    if _safe_int(
+        economic_context_route_contract.get("configured_family_count"), 0
+    ) != expected_economic_family_count:
+        structural_blockers.append(
+            "ingestion_router_economic_context_family_binding_incomplete"
+        )
+    if any(
+        _safe_int(row.get("economic_context_capability_count"), 0) <= 0
+        for row in runtime_sleeve_routes
+    ):
+        structural_blockers.append(
+            "ingestion_router_runtime_economic_context_binding_incomplete"
+        )
+    if not str(
+        economic_context_route_contract.get("contract_receipt_sha256") or ""
+    ):
+        structural_blockers.append(
+            "ingestion_router_economic_context_receipt_missing"
+        )
     authority = {key: False for key in EXPECTED_SAFETY_FLAGS}
     if any(authority.values()):
         structural_blockers.append("capability_router_authority_contract_unsafe")
@@ -1680,6 +2206,7 @@ def build_capability_routing(
         "runtime_context_profiles": sorted(
             context_profiles.values(), key=lambda row: row["runtime_context_profile_id"]
         ),
+        "economic_context_contract": economic_context_route_contract,
         "bot_bindings": bindings,
         "capability_resolutions": capability_resolutions,
         "authority_contract": authority,
@@ -1726,6 +2253,7 @@ def build_capability_routing(
             "profile_delivery_routes": profile_delivery_routes,
             "runtime_sleeve_routes": runtime_sleeve_routes,
             "runtime_context_profiles": routing_payload["runtime_context_profiles"],
+            "economic_context_contract": economic_context_route_contract,
             "bot_bindings": bindings,
             "capability_resolutions": capability_resolutions,
         }
@@ -1777,6 +2305,23 @@ def build_capability_routing(
             "runtime_sleeve_route_count": len(runtime_sleeve_routes),
             "runtime_paper_ready_route_count": runtime_paper_ready_count,
             "runtime_live_ready_route_count": runtime_live_ready_count,
+            "economic_context_family_count": _safe_int(
+                economic_context_route_contract.get("family_count"), 0
+            ),
+            "economic_context_configured_family_count": _safe_int(
+                economic_context_route_contract.get("configured_family_count"),
+                0,
+            ),
+            "economic_context_ready_family_count": _safe_int(
+                economic_context_route_contract.get("ready_family_count"), 0
+            ),
+            "runtime_economic_context_ready_route_count": (
+                economic_runtime_ready_count
+            ),
+            "economic_context_selected_source_count": _safe_int(
+                economic_context_route_contract.get("selected_source_count"),
+                0,
+            ),
             "average_profile_route_quality": round(
                 average_profile_route_quality, 6
             ),
@@ -1847,6 +2392,34 @@ def build_capability_routing(
             "runtime_route_count": len(runtime_sleeve_routes),
             "runtime_paper_ready_route_count": runtime_paper_ready_count,
             "runtime_live_ready_route_count": runtime_live_ready_count,
+            "economic_context_contract_id": str(
+                economic_policy_contract.get("contract_id") or ""
+            ),
+            "economic_context_contract_receipt_sha256": str(
+                economic_context_route_contract.get(
+                    "contract_receipt_sha256"
+                )
+                or ""
+            ),
+            "economic_context_family_count": _safe_int(
+                economic_context_route_contract.get("family_count"), 0
+            ),
+            "economic_context_configured_family_count": _safe_int(
+                economic_context_route_contract.get("configured_family_count"),
+                0,
+            ),
+            "economic_context_ready_family_count": _safe_int(
+                economic_context_route_contract.get("ready_family_count"), 0
+            ),
+            "runtime_economic_context_ready_route_count": (
+                economic_runtime_ready_count
+            ),
+            "economic_context_selected_source_count": _safe_int(
+                economic_context_route_contract.get("selected_source_count"),
+                0,
+            ),
+            "economic_context_missing_does_not_block_guarded_paper": True,
+            "economic_context_cannot_grade_profitability": True,
             "average_profile_route_quality": round(
                 average_profile_route_quality, 6
             ),
@@ -1860,6 +2433,9 @@ def build_capability_routing(
                 "routing_receipt_sha256"
             ],
         },
+        "economic_context_contract": deepcopy(
+            economic_context_route_contract
+        ),
         "coverage_debt": {
             "managed": True,
             "blocks_guarded_paper_soak": False,
@@ -1958,6 +2534,20 @@ def resolve_runtime_ingestion_route(
             "runtime_profile": profile_name,
             "paper_decision_data_ready": False,
             "live_decision_data_ready": False,
+            "economic_context_ready": False,
+            "economic_context_source_count": 0,
+            "economic_context_source_ids": [],
+            "research_data_contract_id": "",
+            "research_data_product_ids": [],
+            "research_data_product_count": 0,
+            "research_data_catalog_receipt_sha256": "",
+            "research_data_metadata_only": True,
+            "research_data_execution_authority": False,
+            "institutional_extension_policy_id": "",
+            "institutional_extension_control_ids": [],
+            "institutional_extension_receipt_sha256": "",
+            "institutional_extension_metadata_only": True,
+            "institutional_extension_execution_authority": False,
             "receipt_valid": False,
             "cause": "runtime_ingestion_route_missing",
             "authority_contract": {
@@ -1995,6 +2585,15 @@ def resolve_runtime_ingestion_route(
         ),
         "ingestion_lane": str(delivery.get("ingestion_lane") or "core"),
         "cadence": str(delivery.get("cadence") or "intraday"),
+        "economic_context_contract_id": str(
+            delivery.get("economic_context_contract_id") or ""
+        ),
+        "economic_context_capability_ids": list(
+            delivery.get("economic_context_capability_ids") or []
+        ),
+        "economic_context_routes": list(
+            delivery.get("economic_context_routes") or []
+        ),
         "paper_required_capability_ids": list(
             delivery.get("paper_required_capability_ids") or []
         ),
@@ -2037,9 +2636,25 @@ def resolve_runtime_ingestion_route(
         cause = "none" if status == "ready" else "required_route_evidence_incomplete"
     selected_producers = {
         str(_as_dict(row).get("selected_producer_id") or "")
-        for row in _as_list(delivery.get("delivery_routes"))
+        for row in (
+            _as_list(delivery.get("delivery_routes"))
+            + _as_list(delivery.get("economic_context_routes"))
+        )
         if str(_as_dict(row).get("selected_producer_id") or "")
     }
+    route_source_ids = _ordered_unique(
+        [
+            *list(delivery.get("economic_context_source_ids") or []),
+            *sorted(selected_producers),
+        ]
+    )
+    research_data = research_data_route_metadata(
+        decision_family_id=str(route.get("decision_policy_family_id") or ""),
+        source_ids=route_source_ids,
+    )
+    institutional_extensions = institutional_extension_route_metadata(
+        decision_family_id=str(route.get("decision_policy_family_id") or ""),
+    )
     summary_material = {
         "routing_receipt_sha256": str(
             routing_payload.get("routing_receipt_sha256") or ""
@@ -2059,6 +2674,24 @@ def resolve_runtime_ingestion_route(
         ),
         "minimum_route_score": _safe_float(
             delivery.get("minimum_route_score"), 0.0
+        ),
+        "economic_context_coverage_ratio": _safe_float(
+            delivery.get("economic_context_coverage_ratio"), 0.0
+        ),
+        "economic_context_average_route_score": _safe_float(
+            delivery.get("economic_context_average_route_score"), 0.0
+        ),
+        "economic_context_source_ids": list(
+            delivery.get("economic_context_source_ids") or []
+        ),
+        "economic_context_ready": bool(
+            delivery.get("economic_context_ready", False)
+        ),
+        "research_data_catalog_receipt_sha256": str(
+            research_data.get("catalog_receipt_sha256") or ""
+        ),
+        "institutional_extension_receipt_sha256": str(
+            institutional_extensions.get("receipt_sha256") or ""
         ),
     }
     return {
@@ -2106,6 +2739,77 @@ def resolve_runtime_ingestion_route(
             delivery.get("independent_failover_coverage_ratio"), 0.0
         ),
         "selected_producer_count": len(selected_producers),
+        "economic_context_contract_id": str(
+            delivery.get("economic_context_contract_id") or ""
+        ),
+        "economic_context_capability_count": _safe_int(
+            delivery.get("economic_context_capability_count"), 0
+        ),
+        "usable_economic_context_capability_count": _safe_int(
+            delivery.get("usable_economic_context_capability_count"), 0
+        ),
+        "economic_context_coverage_ratio": _safe_float(
+            delivery.get("economic_context_coverage_ratio"), 0.0
+        ),
+        "economic_context_minimum_route_score": _safe_float(
+            delivery.get("economic_context_minimum_route_score"), 0.0
+        ),
+        "economic_context_average_route_score": _safe_float(
+            delivery.get("economic_context_average_route_score"), 0.0
+        ),
+        "economic_context_source_count": _safe_int(
+            delivery.get("economic_context_source_count"), 0
+        ),
+        "economic_context_source_ids": list(
+            delivery.get("economic_context_source_ids") or []
+        ),
+        "economic_context_source_kinds": list(
+            delivery.get("economic_context_source_kinds") or []
+        ),
+        "economic_context_ready": bool(
+            delivery.get("economic_context_ready", False)
+            and fresh
+            and receipt_valid
+        ),
+        "economic_context_advisory_only": True,
+        "research_data_contract_id": str(
+            research_data.get("contract_id") or ""
+        ),
+        "research_data_product_ids": list(
+            research_data.get("product_ids") or []
+        ),
+        "research_data_product_count": _safe_int(
+            research_data.get("product_count"), 0
+        ),
+        "research_data_catalog_receipt_sha256": str(
+            research_data.get("catalog_receipt_sha256") or ""
+        ),
+        "research_data_metadata_only": True,
+        "research_data_execution_authority": False,
+        "institutional_extension_policy_id": str(
+            institutional_extensions.get("policy_id") or ""
+        ),
+        "institutional_extension_control_ids": list(
+            institutional_extensions.get("control_ids") or []
+        ),
+        "institutional_extension_factor_benchmark_ids": list(
+            institutional_extensions.get("factor_benchmark_ids") or []
+        ),
+        "institutional_extension_risk_schedule_id": str(
+            institutional_extensions.get("risk_schedule_id") or ""
+        ),
+        "institutional_extension_execution_frontier_id": str(
+            institutional_extensions.get("execution_frontier_id") or ""
+        ),
+        "institutional_extension_research_dag_id": str(
+            institutional_extensions.get("research_dag_id") or ""
+        ),
+        "institutional_extension_receipt_sha256": str(
+            institutional_extensions.get("receipt_sha256") or ""
+        ),
+        "institutional_extension_metadata_only": True,
+        "institutional_extension_existing_route_authority_unchanged": True,
+        "institutional_extension_execution_authority": False,
         "paper_decision_data_ready": bool(
             delivery.get("paper_decision_data_ready", False)
             and fresh
@@ -2124,6 +2828,12 @@ def resolve_runtime_ingestion_route(
         ),
         "below_paper_score_capability_ids": list(
             delivery.get("below_paper_score_capability_ids") or []
+        ),
+        "missing_economic_context_capability_ids": list(
+            delivery.get("missing_economic_context_capability_ids") or []
+        ),
+        "below_economic_context_score_capability_ids": list(
+            delivery.get("below_economic_context_score_capability_ids") or []
         ),
         "degradation_policy": str(
             delivery.get("degradation_policy") or "collect_only"

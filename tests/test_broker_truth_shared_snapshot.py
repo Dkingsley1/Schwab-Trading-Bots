@@ -50,6 +50,106 @@ class _SnapshotTrader:
         return []
 
 
+def test_shared_snapshot_preserves_last_good_across_failed_refresh(tmp_path) -> None:
+    success = {
+        "ok": True,
+        "account_count": 1,
+        "payload": {"accounts": [{"securitiesAccount": {"positions": []}}]},
+    }
+    failure = {
+        "ok": False,
+        "error": "account_discovery_provider_unavailable",
+        "status_code": 500,
+        "provider_failure": True,
+        "provider_failure_class": "provider_unavailable",
+    }
+
+    assert loop._write_broker_truth_shared_snapshot(
+        project_root=str(tmp_path), broker="schwab", fetched=success
+    )
+    assert loop._write_broker_truth_shared_snapshot(
+        project_root=str(tmp_path), broker="schwab", fetched=failure
+    )
+
+    latest = json.loads(
+        loop._broker_truth_shared_snapshot_cache_path(str(tmp_path), "schwab").read_text(
+            encoding="utf-8"
+        )
+    )
+    last_good = json.loads(
+        loop._broker_truth_shared_snapshot_last_good_path(str(tmp_path), "schwab").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert latest["fetched"]["ok"] is False
+    assert last_good["fetched"]["ok"] is True
+    assert last_good["fetched"]["account_count"] == 1
+
+
+def test_shared_snapshot_serves_bounded_last_good_only_in_collection_mode(
+    tmp_path, monkeypatch
+) -> None:
+    monkeypatch.setattr(loop, "PROJECT_ROOT", str(tmp_path))
+    monkeypatch.setenv("MARKET_DATA_ONLY", "1")
+    monkeypatch.setenv("ALLOW_ORDER_EXECUTION", "0")
+    success = {
+        "ok": True,
+        "account_count": 1,
+        "payload": {"accounts": [{"securitiesAccount": {"positions": []}}]},
+    }
+    failure = {
+        "ok": False,
+        "error": "account_discovery_provider_unavailable",
+        "status_code": 500,
+        "provider_failure": True,
+        "provider_failure_class": "provider_unavailable",
+    }
+    loop._write_broker_truth_shared_snapshot(
+        project_root=str(tmp_path), broker="schwab", fetched=success
+    )
+    loop._write_broker_truth_shared_snapshot(
+        project_root=str(tmp_path), broker="schwab", fetched=failure
+    )
+
+    fetched = loop._shared_broker_truth_accounts_payload(
+        trader=_FailingTrader(), broker="schwab"
+    )
+
+    assert fetched["ok"] is True
+    assert fetched["_shared_snapshot_stale_fallback"] is True
+    assert fetched["_shared_snapshot_current_failure"] == "account_discovery_provider_unavailable"
+    assert fetched["provider_failure"] is True
+    assert fetched["soft_failure"] is True
+
+
+def test_shared_snapshot_never_serves_last_good_to_live_execution(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(loop, "PROJECT_ROOT", str(tmp_path))
+    monkeypatch.setenv("MARKET_DATA_ONLY", "0")
+    monkeypatch.setenv("ALLOW_ORDER_EXECUTION", "1")
+    loop._write_broker_truth_shared_snapshot(
+        project_root=str(tmp_path),
+        broker="schwab",
+        fetched={"ok": True, "account_count": 1, "payload": {"accounts": []}},
+    )
+    loop._write_broker_truth_shared_snapshot(
+        project_root=str(tmp_path),
+        broker="schwab",
+        fetched={
+            "ok": False,
+            "error": "account_discovery_provider_unavailable",
+            "status_code": 500,
+            "provider_failure": True,
+        },
+    )
+
+    fetched = loop._shared_broker_truth_accounts_payload(
+        trader=_FailingTrader(), broker="schwab"
+    )
+
+    assert fetched["ok"] is False
+    assert fetched.get("_shared_snapshot_stale_fallback") is not True
+
+
 def test_shared_broker_truth_snapshot_reuses_recent_cached_payload(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(loop, "PROJECT_ROOT", str(tmp_path))
     cache_path = loop._broker_truth_shared_snapshot_cache_path(str(tmp_path), "schwab")

@@ -507,8 +507,12 @@
         "credit_ratings",
         "funding_stress",
         "repo_conditions",
+        "dealer_balance_sheet",
+        "collateral_settlement_stress",
+        "bank_credit_conditions",
         "debt_issuance",
         "treasury_auction_calendar",
+        "treasury_auction_demand",
         "rates_credit_regime"
       ]
     },
@@ -1349,6 +1353,7 @@
         "short_volume_activity",
         "trading_halts",
         "treasury_auction_calendar",
+        "treasury_auction_demand",
         "liquidity_regime",
         "block_activity",
         "auction_prints",
@@ -1357,6 +1362,13 @@
         "adverse_selection_risk"
       ],
       "capability_proofs": {
+        "treasury_auction_demand": {
+          "mode": "all",
+          "paths": [
+            "derived.global_features.treasury_auction_demand_norm"
+          ],
+          "proof_family": "official_treasury_auction_field"
+        },
         "auction_prints": {
           "mode": "all",
           "paths": [
@@ -1465,6 +1477,58 @@
       },
       "fallback_policy": "serve_last_good_only_within_freshness_contract",
       "collector_name": "extended_quant_context"
+    },
+    {
+      "producer_id": "public_financial_context",
+      "producer_kind": "collector",
+      "source_kind": "official_public_mesh",
+      "cadence": "daily",
+      "resource_class": "warm",
+      "max_age_minutes": 2880,
+      "capabilities": [
+        "financial_statements",
+        "quality_ratios",
+        "operating_profitability",
+        "cash_flow_quality",
+        "leverage_state",
+        "distress_indicators",
+        "funding_stress",
+        "default_risk",
+        "rates_credit_regime",
+        "risk_on_off_state",
+        "volatility_regime",
+        "regulatory_policy",
+        "policy_news",
+        "dealer_balance_sheet",
+        "repo_conditions",
+        "collateral_settlement_stress",
+        "bank_credit_conditions"
+      ],
+      "capability_proofs": {
+        "financial_statements": {"mode": "all", "paths": ["capability_readiness.financial_statements"], "equals": {"capability_readiness.financial_statements": true}, "proof_family": "official_public_field_level_proof"},
+        "quality_ratios": {"mode": "all", "paths": ["capability_readiness.quality_ratios"], "equals": {"capability_readiness.quality_ratios": true}, "proof_family": "official_public_field_level_proof"},
+        "operating_profitability": {"mode": "all", "paths": ["capability_readiness.operating_profitability"], "equals": {"capability_readiness.operating_profitability": true}, "proof_family": "official_public_field_level_proof"},
+        "cash_flow_quality": {"mode": "all", "paths": ["capability_readiness.cash_flow_quality"], "equals": {"capability_readiness.cash_flow_quality": true}, "proof_family": "official_public_field_level_proof"},
+        "leverage_state": {"mode": "all", "paths": ["capability_readiness.leverage_state"], "equals": {"capability_readiness.leverage_state": true}, "proof_family": "official_public_field_level_proof"},
+        "distress_indicators": {"mode": "all", "paths": ["capability_readiness.distress_indicators"], "equals": {"capability_readiness.distress_indicators": true}, "proof_family": "official_public_field_level_proof"},
+        "funding_stress": {"mode": "all", "paths": ["capability_readiness.funding_stress"], "equals": {"capability_readiness.funding_stress": true}, "proof_family": "official_public_field_level_proof"},
+        "default_risk": {"mode": "all", "paths": ["capability_readiness.default_risk"], "equals": {"capability_readiness.default_risk": true}, "proof_family": "official_public_field_level_proof"},
+        "rates_credit_regime": {"mode": "all", "paths": ["capability_readiness.rates_credit_regime"], "equals": {"capability_readiness.rates_credit_regime": true}, "proof_family": "official_public_field_level_proof"},
+        "risk_on_off_state": {"mode": "all", "paths": ["capability_readiness.risk_on_off_state"], "equals": {"capability_readiness.risk_on_off_state": true}, "proof_family": "official_public_field_level_proof"},
+        "volatility_regime": {"mode": "all", "paths": ["capability_readiness.volatility_regime"], "equals": {"capability_readiness.volatility_regime": true}, "proof_family": "official_public_field_level_proof"},
+        "regulatory_policy": {"mode": "all", "paths": ["capability_readiness.regulatory_policy"], "equals": {"capability_readiness.regulatory_policy": true}, "proof_family": "official_public_field_level_proof"},
+        "policy_news": {"mode": "all", "paths": ["capability_readiness.policy_news"], "equals": {"capability_readiness.policy_news": true}, "proof_family": "official_public_field_level_proof"},
+        "dealer_balance_sheet": {"mode": "all", "paths": ["capability_readiness.dealer_balance_sheet"], "equals": {"capability_readiness.dealer_balance_sheet": true}, "proof_family": "official_public_field_level_proof"},
+        "repo_conditions": {"mode": "all", "paths": ["capability_readiness.repo_conditions"], "equals": {"capability_readiness.repo_conditions": true}, "proof_family": "official_public_field_level_proof"},
+        "collateral_settlement_stress": {"mode": "all", "paths": ["capability_readiness.collateral_settlement_stress"], "equals": {"capability_readiness.collateral_settlement_stress": true}, "proof_family": "official_public_field_level_proof"},
+        "bank_credit_conditions": {"mode": "all", "paths": ["capability_readiness.bank_credit_conditions"], "equals": {"capability_readiness.bank_credit_conditions": true}, "proof_family": "official_public_field_level_proof"}
+      },
+      "cache_contract": {
+        "mode": "shared_snapshot",
+        "deduplicate_by": ["producer_id", "payload_sha256", "capability_id"]
+      },
+      "fallback_policy": "serve_last_good_only_within_freshness_contract",
+      "collector_name": "public_financial_context"
     },
     {
       "producer_id": "options_flow_context",
@@ -2180,7 +2244,8 @@
         ]
       },
       "fallback_policy": "serve_last_good_only_within_freshness_contract",
-      "artifact_path": "governance/health/broker_truth_shared_snapshot_schwab_latest.json"
+      "artifact_path": "governance/health/broker_truth_shared_snapshot_schwab_latest.json",
+      "last_good_artifact_path": "governance/health/broker_truth_shared_snapshot_schwab_last_good.json"
     },
     {
       "producer_id": "live_order_ledger_control",

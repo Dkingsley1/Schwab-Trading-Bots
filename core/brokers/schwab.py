@@ -2,11 +2,13 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
+import os
 from typing import Any, Dict, List, Optional
 import warnings
 
 from core.brokers.base import BrokerAdapter, BrokerCallSpec
-from core.brokers.models import BrokerAuthRequest, BrokerCapabilities
+from core.brokers.models import BrokerAuthRequest, BrokerCapabilities, BrokerCredentials
+from core.brokers.schwab_credentials import resolve_schwab_credentials
 
 
 @contextmanager
@@ -80,9 +82,12 @@ class SchwabBrokerAdapter(BrokerAdapter):
     account_reference_auto_discover_env_var = "SCHWAB_ACCOUNT_HASH_AUTO_DISCOVER"
     options_chain_strike_count_env_var = "SCHWAB_OPTIONS_CHAIN_STRIKE_COUNT"
 
+    def load_credentials_from_env(self) -> BrokerCredentials:
+        return resolve_schwab_credentials()
+
     def authenticate(self, auth_request: BrokerAuthRequest) -> Any:
         easy_client = _schwab_easy_client()
-        return easy_client(
+        client = easy_client(
             api_key=auth_request.credentials.api_key,
             app_secret=auth_request.credentials.app_secret,
             callback_url=auth_request.credentials.callback_url,
@@ -92,6 +97,17 @@ class SchwabBrokerAdapter(BrokerAdapter):
             interactive=auth_request.interactive,
             requested_browser=auth_request.requested_browser,
         )
+        try:
+            request_timeout = min(
+                max(float(os.getenv("SCHWAB_API_TIMEOUT_SECONDS", "20") or 20.0), 2.0),
+                120.0,
+            )
+        except (TypeError, ValueError):
+            request_timeout = 20.0
+        set_timeout = getattr(client, "set_timeout", None)
+        if callable(set_timeout):
+            set_timeout(request_timeout)
+        return client
 
     def account_numbers_candidates(self) -> List[BrokerCallSpec]:
         return [("get_account_numbers", tuple(), {})]

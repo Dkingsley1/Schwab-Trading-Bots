@@ -2,7 +2,13 @@ import json
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from core.live_execution_controls import LiveExecutionGuard, LiveRiskConfig, production_order_firewall_check
+from core.live_execution_controls import (
+    LiveExecutionGuard,
+    LiveRiskConfig,
+    production_order_firewall_check,
+)
+from core.live_execution_envelope import build_live_execution_envelope, file_sha256
+from core.order_intent import build_order_intent_evidence
 
 
 def _cfg(**overrides):
@@ -29,7 +35,9 @@ def _cfg(**overrides):
     return base
 
 
-def _write_firewall_fixture(project_root: Path, *, excellence_ready: bool, symbols: list[str]) -> dict:
+def _write_firewall_fixture(
+    project_root: Path, *, excellence_ready: bool, symbols: list[str]
+) -> dict:
     now = datetime.now(timezone.utc)
     config = {
         "live_execution_risk_firewall": {
@@ -40,6 +48,9 @@ def _write_firewall_fixture(project_root: Path, *, excellence_ready: bool, symbo
             "required_safety_flags": [],
             "max_order_quantity": 5,
             "max_single_order_notional": 100,
+            "max_quote_age_seconds": 15.0,
+            "max_spread_bps": 75.0,
+            "max_future_clock_skew_seconds": 2.0,
             "allowed_asset_types": ["EQUITY"],
             "allowed_instructions": ["BUY", "SELL"],
             "canary_allowlist_path": "governance/runtime/live_canary_allowlist.json",
@@ -47,6 +58,7 @@ def _write_firewall_fixture(project_root: Path, *, excellence_ready: bool, symbo
             "production_candidate_state_path": "governance/runtime/production_candidate_state.json",
             "symbol_lifecycle_path": "config/symbol_lifecycle_v1.json",
             "require_pinned_account_reference": False,
+            "require_sealed_live_execution_envelope": False,
             "production_excellence_artifact": "governance/health/production_excellence_control_latest.json",
             "require_production_excellence_for_live_submit": True,
         }
@@ -55,10 +67,17 @@ def _write_firewall_fixture(project_root: Path, *, excellence_ready: bool, symbo
     config_path.parent.mkdir(parents=True, exist_ok=True)
     config_path.write_text(json.dumps(config), encoding="utf-8")
     candidate_id = "pc-test-candidate"
-    candidate = project_root / "governance" / "runtime" / "production_candidate_state.json"
+    candidate = (
+        project_root / "governance" / "runtime" / "production_candidate_state.json"
+    )
     candidate.parent.mkdir(parents=True, exist_ok=True)
     candidate.write_text(
-        json.dumps({"candidate_id": candidate_id, "accepted_at_utc": (now - timedelta(minutes=2)).isoformat()}),
+        json.dumps(
+            {
+                "candidate_id": candidate_id,
+                "accepted_at_utc": (now - timedelta(minutes=2)).isoformat(),
+            }
+        ),
         encoding="utf-8",
     )
     plan = project_root / "config" / "live_canary_micro_policy_v1.json"
@@ -79,7 +98,9 @@ def _write_firewall_fixture(project_root: Path, *, excellence_ready: bool, symbo
         encoding="utf-8",
     )
     lifecycle = project_root / "config" / "symbol_lifecycle_v1.json"
-    lifecycle.write_text(json.dumps({"renamed_symbols": {"SPLG": "SPYM"}}), encoding="utf-8")
+    lifecycle.write_text(
+        json.dumps({"renamed_symbols": {"SPLG": "SPYM"}}), encoding="utf-8"
+    )
     allowlist = project_root / "governance" / "runtime" / "live_canary_allowlist.json"
     allowlist.parent.mkdir(parents=True, exist_ok=True)
     allowlist.write_text(
@@ -96,7 +117,12 @@ def _write_firewall_fixture(project_root: Path, *, excellence_ready: bool, symbo
         ),
         encoding="utf-8",
     )
-    excellence = project_root / "governance" / "health" / "production_excellence_control_latest.json"
+    excellence = (
+        project_root
+        / "governance"
+        / "health"
+        / "production_excellence_control_latest.json"
+    )
     excellence.parent.mkdir(parents=True, exist_ok=True)
     excellence.write_text(
         json.dumps(
@@ -120,7 +146,9 @@ def _write_firewall_fixture(project_root: Path, *, excellence_ready: bool, symbo
 
 
 def test_production_firewall_requires_ten_pillar_evidence(tmp_path: Path) -> None:
-    order_spec = _write_firewall_fixture(tmp_path, excellence_ready=False, symbols=["AAPL"])
+    order_spec = _write_firewall_fixture(
+        tmp_path, excellence_ready=False, symbols=["AAPL"]
+    )
 
     decision = production_order_firewall_check(
         project_root=tmp_path,
@@ -136,11 +164,17 @@ def test_production_firewall_requires_ten_pillar_evidence(tmp_path: Path) -> Non
     assert "production_excellence_not_ready" in decision.details["blockers"]
 
 
-def test_production_firewall_fails_closed_when_required_role_contract_is_missing(tmp_path: Path) -> None:
-    order_spec = _write_firewall_fixture(tmp_path, excellence_ready=True, symbols=["AAPL"])
+def test_production_firewall_fails_closed_when_required_role_contract_is_missing(
+    tmp_path: Path,
+) -> None:
+    order_spec = _write_firewall_fixture(
+        tmp_path, excellence_ready=True, symbols=["AAPL"]
+    )
     config_path = tmp_path / "config" / "production_readiness_control_v1.json"
     config = json.loads(config_path.read_text(encoding="utf-8"))
-    config["live_execution_risk_firewall"]["require_system_role_contract_for_live_submit"] = True
+    config["live_execution_risk_firewall"][
+        "require_system_role_contract_for_live_submit"
+    ] = True
     config_path.write_text(json.dumps(config), encoding="utf-8")
 
     decision = production_order_firewall_check(
@@ -157,8 +191,12 @@ def test_production_firewall_fails_closed_when_required_role_contract_is_missing
     assert decision.details["system_role_contract_decision"]["ok"] is False
 
 
-def test_production_firewall_allows_only_qualified_canary_entries(tmp_path: Path) -> None:
-    order_spec = _write_firewall_fixture(tmp_path, excellence_ready=True, symbols=["AAPL"])
+def test_production_firewall_allows_only_qualified_canary_entries(
+    tmp_path: Path,
+) -> None:
+    order_spec = _write_firewall_fixture(
+        tmp_path, excellence_ready=True, symbols=["AAPL"]
+    )
 
     allowed = production_order_firewall_check(
         project_root=tmp_path,
@@ -184,8 +222,96 @@ def test_production_firewall_allows_only_qualified_canary_entries(tmp_path: Path
     assert blocked.reason == "symbol_not_in_live_canary_allowlist"
 
 
+def test_production_firewall_requires_and_accepts_valid_sealed_envelope(
+    tmp_path: Path,
+) -> None:
+    order_spec = _write_firewall_fixture(
+        tmp_path, excellence_ready=True, symbols=["AAPL"]
+    )
+    config_path = tmp_path / "config" / "production_readiness_control_v1.json"
+    config = json.loads(config_path.read_text(encoding="utf-8"))
+    config["live_execution_risk_firewall"][
+        "require_sealed_live_execution_envelope"
+    ] = True
+    config_path.write_text(json.dumps(config), encoding="utf-8")
+    now = datetime.now(timezone.utc)
+    intent = build_order_intent_evidence(
+        decision_id="sealed-firewall-test",
+        symbol="AAPL",
+        action="BUY",
+        quantity=1.0,
+        strategy="canary",
+        asset_type="EQUITY",
+        limit_price=10.0,
+        quote_snapshot={
+            "timestamp_utc": now.isoformat(),
+            "last_price": 10.0,
+            "bid_price": 9.99,
+            "ask_price": 10.01,
+            "spread_bps": 20.0,
+        },
+        risk_decision={"ok": True, "gate": "pre_trade", "reason": "ok", "details": {}},
+    )
+    request = {
+        "symbol": "AAPL",
+        "action": "BUY",
+        "quantity": 1.0,
+        "asset_type": "EQUITY",
+        "limit_price": 10.0,
+        "account_reference": "redacted-test-hash",
+        "order_spec": order_spec,
+    }
+    envelope = build_live_execution_envelope(
+        intent_evidence=intent,
+        order_request=request,
+        candidate_id="pc-test-candidate",
+        broker="schwab",
+        account_reference="redacted-test-hash",
+        account_snapshot_evidence={
+            "broker_position_snapshot_sha256": "a" * 64,
+            "broker_position_snapshot_captured_at_utc": now.isoformat(),
+        },
+        policy_sha256=file_sha256(config_path),
+        created_at_utc=now,
+    )
+    env = {
+        "ALLOW_ORDER_EXECUTION": "1",
+        "MARKET_DATA_ONLY": "0",
+        "SCHWAB_ACCOUNT_HASH": "redacted-test-hash",
+        "SCHWAB_ACCOUNT_HASH_AUTO_DISCOVER": "0",
+    }
+
+    allowed = production_order_firewall_check(
+        project_root=tmp_path,
+        symbol="AAPL",
+        action="BUY",
+        quantity=1.0,
+        order_spec=order_spec,
+        intent_evidence=intent,
+        live_execution_envelope=envelope,
+        env=env,
+    )
+    blocked = production_order_firewall_check(
+        project_root=tmp_path,
+        symbol="AAPL",
+        action="BUY",
+        quantity=1.0,
+        order_spec=order_spec,
+        intent_evidence=intent,
+        live_execution_envelope={},
+        env=env,
+    )
+
+    assert allowed.ok is True
+    assert allowed.details["live_execution_envelope_verification"]["ok"] is True
+    assert blocked.ok is False
+    assert "live_execution_envelope_schema_invalid" in blocked.details["blockers"]
+
+
 def test_production_firewall_rejects_order_leg_symbol_mismatch(tmp_path: Path) -> None:
-    order_spec = _write_firewall_fixture(tmp_path, excellence_ready=True, symbols=["AAPL"])
+    order_spec = _write_firewall_fixture(
+        tmp_path, excellence_ready=True, symbols=["AAPL"]
+    )
     order_spec["orderLegCollection"][0]["instrument"]["symbol"] = "MSFT"
 
     decision = production_order_firewall_check(
@@ -201,8 +327,12 @@ def test_production_firewall_rejects_order_leg_symbol_mismatch(tmp_path: Path) -
     assert "order_symbol_mismatch" in decision.details["blockers"]
 
 
-def test_production_firewall_requires_reference_price_for_market_entry(tmp_path: Path) -> None:
-    order_spec = _write_firewall_fixture(tmp_path, excellence_ready=True, symbols=["AAPL"])
+def test_production_firewall_requires_reference_price_for_market_entry(
+    tmp_path: Path,
+) -> None:
+    order_spec = _write_firewall_fixture(
+        tmp_path, excellence_ready=True, symbols=["AAPL"]
+    )
     order_spec.pop("price")
 
     decision = production_order_firewall_check(
@@ -218,13 +348,19 @@ def test_production_firewall_requires_reference_price_for_market_entry(tmp_path:
     assert "reference_price_required_for_notional_cap" in decision.details["blockers"]
 
 
-def test_production_firewall_requires_transition_integrity_when_enabled(tmp_path: Path) -> None:
-    order_spec = _write_firewall_fixture(tmp_path, excellence_ready=True, symbols=["AAPL"])
+def test_production_firewall_requires_transition_integrity_when_enabled(
+    tmp_path: Path,
+) -> None:
+    order_spec = _write_firewall_fixture(
+        tmp_path, excellence_ready=True, symbols=["AAPL"]
+    )
     config_path = tmp_path / "config" / "production_readiness_control_v1.json"
     config = json.loads(config_path.read_text(encoding="utf-8"))
     policy = config["live_execution_risk_firewall"]
     policy["require_live_transition_integrity_for_live_submit"] = True
-    policy["live_transition_integrity_artifact"] = "governance/health/live_transition.json"
+    policy["live_transition_integrity_artifact"] = (
+        "governance/health/live_transition.json"
+    )
     config_path.write_text(json.dumps(config), encoding="utf-8")
     transition_path = tmp_path / "governance" / "health" / "live_transition.json"
     transition_path.write_text(
@@ -259,7 +395,9 @@ def test_production_firewall_requires_transition_integrity_when_enabled(tmp_path
 
 
 def test_production_firewall_rejects_stale_candidate_allowlist(tmp_path: Path) -> None:
-    order_spec = _write_firewall_fixture(tmp_path, excellence_ready=True, symbols=["AAPL"])
+    order_spec = _write_firewall_fixture(
+        tmp_path, excellence_ready=True, symbols=["AAPL"]
+    )
     allowlist_path = tmp_path / "governance" / "runtime" / "live_canary_allowlist.json"
     allowlist = json.loads(allowlist_path.read_text(encoding="utf-8"))
     allowlist["candidate_id"] = "pc-old-candidate"
@@ -279,7 +417,9 @@ def test_production_firewall_rejects_stale_candidate_allowlist(tmp_path: Path) -
 
 
 def test_production_firewall_requires_pinned_account_reference(tmp_path: Path) -> None:
-    order_spec = _write_firewall_fixture(tmp_path, excellence_ready=True, symbols=["AAPL"])
+    order_spec = _write_firewall_fixture(
+        tmp_path, excellence_ready=True, symbols=["AAPL"]
+    )
     config_path = tmp_path / "config" / "production_readiness_control_v1.json"
     config = json.loads(config_path.read_text(encoding="utf-8"))
     config["live_execution_risk_firewall"]["require_pinned_account_reference"] = True
@@ -291,7 +431,11 @@ def test_production_firewall_requires_pinned_account_reference(tmp_path: Path) -
         action="BUY",
         quantity=1.0,
         order_spec=order_spec,
-        env={"ALLOW_ORDER_EXECUTION": "1", "MARKET_DATA_ONLY": "0", "SCHWAB_ACCOUNT_HASH_AUTO_DISCOVER": "1"},
+        env={
+            "ALLOW_ORDER_EXECUTION": "1",
+            "MARKET_DATA_ONLY": "0",
+            "SCHWAB_ACCOUNT_HASH_AUTO_DISCOVER": "1",
+        },
     )
     allowed = production_order_firewall_check(
         project_root=tmp_path,
@@ -312,7 +456,9 @@ def test_production_firewall_requires_pinned_account_reference(tmp_path: Path) -
     assert allowed.ok is True
 
 
-def test_live_risk_config_cannot_exceed_micro_canary_policy(tmp_path: Path, monkeypatch) -> None:
+def test_live_risk_config_cannot_exceed_micro_canary_policy(
+    tmp_path: Path, monkeypatch
+) -> None:
     _write_firewall_fixture(tmp_path, excellence_ready=True, symbols=["AAPL"])
     monkeypatch.setenv("LIVE_MAX_POSITION_QTY_PER_SYMBOL", "250")
     monkeypatch.setenv("LIVE_MAX_ORDER_NOTIONAL", "25000")
@@ -383,7 +529,9 @@ def test_corrupt_persistent_risk_state_fails_closed(tmp_path: Path) -> None:
 
 def test_position_limit_blocks_projected_qty():
     guard = LiveExecutionGuard(_cfg(max_position_qty_per_symbol=5.0))
-    guard.record_fill(symbol="AAPL", action="BUY", quantity=5.0, fill_price=100.0, now_ts=1000.0)
+    guard.record_fill(
+        symbol="AAPL", action="BUY", quantity=5.0, fill_price=100.0, now_ts=1000.0
+    )
 
     decision = guard.pre_trade_check(
         symbol="AAPL",
@@ -414,7 +562,9 @@ def test_daily_loss_cap_blocks_new_trade():
 
 
 def test_trade_throttle_symbol_blocks_fast_reentry():
-    guard = LiveExecutionGuard(_cfg(trade_min_interval_seconds=10.0, trade_min_interval_global_seconds=0.0))
+    guard = LiveExecutionGuard(
+        _cfg(trade_min_interval_seconds=10.0, trade_min_interval_global_seconds=0.0)
+    )
 
     first = guard.pre_trade_check(
         symbol="NVDA",
@@ -450,7 +600,9 @@ def test_api_failure_guard_trips_circuit_breaker():
 
 
 def test_open_order_limits_enforced():
-    guard = LiveExecutionGuard(_cfg(max_open_orders_total=2, max_open_orders_per_symbol=1))
+    guard = LiveExecutionGuard(
+        _cfg(max_open_orders_total=2, max_open_orders_per_symbol=1)
+    )
 
     guard.register_open_order(order_id="1", symbol="AAPL", action="BUY", quantity=1.0)
 
@@ -493,7 +645,13 @@ def test_set_local_position_is_used_by_pre_trade_check():
 
 
 def test_slippage_limit_blocks_adverse_buy_price():
-    guard = LiveExecutionGuard(_cfg(max_slippage_bps=20.0, trade_min_interval_seconds=0.0, trade_min_interval_global_seconds=0.0))
+    guard = LiveExecutionGuard(
+        _cfg(
+            max_slippage_bps=20.0,
+            trade_min_interval_seconds=0.0,
+            trade_min_interval_global_seconds=0.0,
+        )
+    )
 
     decision = guard.pre_trade_check(
         symbol="AAPL",
@@ -510,7 +668,13 @@ def test_slippage_limit_blocks_adverse_buy_price():
 
 
 def test_slippage_limit_allows_favorable_sell_price():
-    guard = LiveExecutionGuard(_cfg(max_slippage_bps=20.0, trade_min_interval_seconds=0.0, trade_min_interval_global_seconds=0.0))
+    guard = LiveExecutionGuard(
+        _cfg(
+            max_slippage_bps=20.0,
+            trade_min_interval_seconds=0.0,
+            trade_min_interval_global_seconds=0.0,
+        )
+    )
     guard.set_local_position(symbol="AAPL", quantity=1.0, avg_price=99.0)
 
     decision = guard.pre_trade_check(
@@ -609,7 +773,6 @@ def test_reconcile_order_lifecycle_detects_mismatch_and_position_break():
     assert out["missing_local"] == ["o2"]
     assert out["position_checks"]
     assert out["position_checks"][0]["ok"] is False
-
 
 
 def test_reconcile_broker_position_marks_manual_adjustment_window():

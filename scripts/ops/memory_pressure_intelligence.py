@@ -1061,11 +1061,21 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
     needs = _what_do_you_need(snapshot, classification, gate, observer)
     managed_controls = _managed_controls(snapshot, classification, gate)
     overall = "ready" if not needs and classification["status"] == "clear" else "advisory"
+    pressure_level = str(snapshot.get("pressure_level") or "normal").strip().lower()
+    pressure_kind = str(snapshot.get("pressure_kind") or "none").strip().lower()
+    operational_ok = bool(
+        str(classification.get("status") or "") in {"clear", "foreground_headroom"}
+        and pressure_level == "normal"
+        and pressure_kind in {"", "none", "normal"}
+        and _safe_float(snapshot.get("pages_throttled"), 0.0) <= 0.0
+    )
     return {
         "timestamp_utc": timestamp,
         "schema_version": 1,
         "ok": overall == "ready",
         "overall_status": overall,
+        "operational_ok": operational_ok,
+        "operational_status": "ready" if operational_ok else "guarded",
         "mode": "memory_pressure_intelligence",
         "snapshot": snapshot,
         "multitasking_headroom": multitasking,
@@ -1097,6 +1107,8 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
             "feeds_autonomic_resource_governor": True,
             "feeds_system_needs_intelligence": True,
             "protects_foreground_apps": True,
+            "capacity_advisories_do_not_masquerade_as_runtime_failures": True,
+            "operational_ready_requires_normal_vm_pressure_and_zero_throttled_pages": True,
             "never_touch_protected_volumes": ["/Volumes/VIDEO"],
         },
     }

@@ -77,6 +77,30 @@ Paper and live consume the same route definition but have different evidence flo
 
 Profiles are canonicalized and content addressed. Identical subscriptions share one profile. Physical producers remain independently scheduled by their existing owners, publish shared snapshots, and use their own freshness, fallback, cache, and failure-isolation contracts.
 
+### Sleeve Economic Context
+
+`sleeve_economic_context_v1` gives every decision family an explicit economic context route. The router selects the highest-quality currently usable producer for each capability, publishes independent failovers where available, and binds the source IDs, quality, coverage, and capability receipts into the profile and decision receipts. The source snapshots remain shared, so this adds context without creating per-bot network fetches.
+
+| Decision family | Economic context |
+| --- | --- |
+| Balanced directional | Growth, inflation, central-bank decisions, risk-on/off state |
+| Long-horizon income | Growth, inflation, Treasury curve, central-bank decisions, global liquidity |
+| Intraday momentum | Economic calendar, central-bank decisions, funding stress, risk-on/off state |
+| Swing directional | Growth, inflation, economic calendar, risk-on/off state |
+| Relative value | Cross-asset correlation, Treasury curve, FX spot, global liquidity |
+| Volatility derivatives | Central-bank decisions, inflation, funding stress, global liquidity |
+| Liquidity microstructure | Funding stress, repo conditions, economic calendar, central-bank decisions |
+| Macro, rates, and FX | Growth, inflation, central banks, liquidity, Treasury curve, rates/credit, FX |
+| Event driven | Economic calendar, central banks, growth, inflation, government debt issuance |
+| Commodity and inflation | Inflation, energy, inventories, dollar regime, global liquidity |
+| Digital-asset basis | Global liquidity, dollar regime, risk-on/off state, central banks, funding stress |
+| Tail hedge | Funding stress, global liquidity, central banks, inflation, credit spreads |
+| Structured credit | Credit spreads, funding stress, central-bank balance sheets, Treasury curve, debt issuance |
+| Research models | Growth, inflation, central banks, Treasury curve, risk-on/off state, economic calendar |
+| Infrastructure control | Economic calendar, central-bank decisions, global liquidity |
+
+Economic context is advisory at the routing boundary. It cannot change a signal by itself, place an order, promote a candidate, or upgrade the economic profitability grade. The profitability grade still requires candidate-bound post-cost outcomes; source coverage is reported separately so implementation completeness cannot be mistaken for demonstrated alpha.
+
 Producer health alone is not sufficient for capabilities that declare a field-level proof. The router verifies exact payload paths or a capability-specific direct receipt, scores eligible producers using authority, collector quality, freshness, proof, source coverage, error budget, and payload integrity, then publishes the selected producer and independent failure-domain failovers. Every bot binding, delivery route, runtime binding, and bounded decision-route summary is receipt-bound.
 
 The shared transport contract applies to synchronous and bounded asynchronous collection. It enforces response-size limits, transient-only retries, `Retry-After`, URL query redaction, payload digests, watermarks, dead letters, request IDs, route IDs, capability IDs, and signed transport receipts. The async facade reuses this canonical implementation under a concurrency semaphore so the two paths cannot drift.

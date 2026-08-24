@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib
+import hashlib
 import json
 import sys
 from pathlib import Path
@@ -20,6 +21,29 @@ indicator_bot_common = importlib.import_module("core.indicator_bot_common")
 def _write_json(path: Path, payload: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, ensure_ascii=True, indent=2), encoding="utf-8")
+
+
+def _write_candidate_event_chain(path: Path, events: list[dict]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    previous_hash = ""
+    rows: list[str] = []
+    for event in events:
+        row = {
+            "schema_version": 1,
+            "previous_event_hash": previous_hash,
+            **event,
+        }
+        encoded = json.dumps(
+            row,
+            ensure_ascii=True,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        event_hash = hashlib.sha256(encoded).hexdigest()
+        row["event_hash"] = event_hash
+        rows.append(json.dumps(row, ensure_ascii=True, sort_keys=True))
+        previous_hash = event_hash
+    path.write_text("\n".join(rows) + "\n", encoding="utf-8")
 
 
 def _seed_candidate_assessment(project_root: Path, *, performance_candidate: str = "candidate-1") -> None:
@@ -154,6 +178,35 @@ def _seed_candidate_assessment(project_root: Path, *, performance_candidate: str
         },
     )
     _write_json(
+        health / "collector_capability_control_latest.json",
+        {
+            "economic_context_contract": {
+                "policy": {
+                    "contract_id": "sleeve_economic_context_v1",
+                    "minimum_distinct_selected_sources": 2,
+                },
+                "family_count": 15,
+                "configured_family_count": 15,
+                "ready_family_count": 15,
+                "runtime_route_count": 104,
+                "runtime_ready_route_count": 104,
+                "selected_source_count": 4,
+                "selected_source_ids": [
+                    "official_macro_context",
+                    "central_bank_cross_source_context",
+                    "bond_reference_context",
+                    "macro_cross_asset_context",
+                ],
+                "context_changes_strategy_signal": False,
+                "paper_execution_authority": False,
+                "live_execution_authority": False,
+                "automatic_promotion_authority": False,
+                "economic_profitability_grade_authority": False,
+                "contract_receipt_sha256": "economic-context-receipt",
+            },
+        },
+    )
+    _write_json(
         health / "counterfactual_replay_latest.json",
         {"top_candidates": [{"tradeability_floor": 0.6, "max_conflict_norm": 0.5}]},
     )
@@ -209,6 +262,11 @@ def test_assessment_separates_historical_debt_from_current_candidate(tmp_path: P
     assert payload["assessment_status"] == "ready"
     assert payload["grades"]["implementation_grade"] == "A+"
     assert payload["grades"]["economic_evidence_grade"] == "F"
+    assert payload["grades"]["economic_context_source_grade"] == "A+"
+    assert payload["grades"]["economic_context_source_ready"] is True
+    assert payload["grades"]["economic_context_ready_families"] == 15
+    assert payload["grades"]["economic_context_ready_runtime_routes"] == 104
+    assert payload["claims"]["economic_context_is_profitability_evidence"] is False
     assert payload["measurement"]["candidate_post_cost_sample_count"] == 0
     assert payload["measurement"]["historical_active_book_net_pnl"] == -100.0
     assert payload["measurement"]["historical_active_book_candidate_grade_eligible"] is False
@@ -220,6 +278,207 @@ def test_assessment_separates_historical_debt_from_current_candidate(tmp_path: P
     }
 
 
+def test_assessment_uses_verified_generations_for_bounded_developmental_actions(
+    tmp_path: Path,
+) -> None:
+    _seed_candidate_assessment(tmp_path)
+    config_path = tmp_path / "config" / "profitability_self_assessment_v1.json"
+    config = json.loads(config_path.read_text(encoding="utf-8"))
+    config["soak_contract"] = {
+        "developmental_change_learning_enabled": True,
+        "candidate_event_log_path": "governance/evidence/production_candidate_events.jsonl",
+        "minimum_developmental_post_cost_samples": 30,
+        "minimum_developmental_observed_days": 2,
+        "clean_720_hour_live_promotion_gate_unchanged": True,
+        "bounded_paper_actions": [
+            "collect_current_candidate_post_cost_outcomes",
+            "refresh_candidate_counterfactual_replay",
+            "acquire_candidate_independent_fills",
+            "maintain_candidate_bound_weak_sleeve_containment",
+            "prioritize_loss_and_missed_opportunity_labels",
+        ],
+    }
+    _write_json(config_path, config)
+    candidate_path = (
+        tmp_path / "governance" / "runtime" / "production_candidate_state.json"
+    )
+    candidate = json.loads(candidate_path.read_text(encoding="utf-8"))
+    candidate["generation"] = 3
+    candidate["accepted_at_utc"] = "2026-08-21T12:00:00+00:00"
+    _write_json(candidate_path, candidate)
+    _write_candidate_event_chain(
+        tmp_path / "governance" / "evidence" / "production_candidate_events.jsonl",
+        [
+            {
+                "event_type": "candidate_change_accepted",
+                "candidate_id": "candidate-old-positive",
+                "generation": 1,
+                "timestamp_utc": "2026-08-18T12:00:00+00:00",
+                "changed_scopes": ["strategy"],
+                "change_reason": "accepted positive developmental cohort",
+            },
+            {
+                "event_type": "candidate_change_accepted",
+                "candidate_id": "candidate-old-negative",
+                "generation": 2,
+                "timestamp_utc": "2026-08-20T00:00:00+00:00",
+                "changed_scopes": ["strategy", "execution"],
+                "change_reason": "accepted negative developmental cohort",
+            },
+            {
+                "event_type": "candidate_change_accepted",
+                "candidate_id": "candidate-1",
+                "generation": 3,
+                "timestamp_utc": "2026-08-21T12:00:00+00:00",
+                "changed_scopes": ["operations"],
+                "change_reason": "current candidate",
+            },
+        ],
+    )
+    performance_path = (
+        tmp_path / "governance" / "health" / "paper_performance_latest.json"
+    )
+    performance = json.loads(performance_path.read_text(encoding="utf-8"))
+    performance["developmental_generation_flows"] = {
+        "generation_flows": [
+            {
+                "candidate_id": "candidate-old-positive",
+                "candidate_generation": 1,
+                "candidate_generation_consistent": True,
+                "developmental_attribution_eligible": True,
+                "sample_count": 45,
+                "observed_days": 2,
+                "first_observation_utc": "2026-08-18T13:00:00+00:00",
+                "last_observation_utc": "2026-08-19T20:00:00+00:00",
+                "post_cost_pnl_delta_total": 8.5,
+            },
+            {
+                "candidate_id": "candidate-old-negative",
+                "candidate_generation": 2,
+                "candidate_generation_consistent": True,
+                "developmental_attribution_eligible": True,
+                "sample_count": 38,
+                "observed_days": 2,
+                "first_observation_utc": "2026-08-20T01:00:00+00:00",
+                "last_observation_utc": "2026-08-21T11:00:00+00:00",
+                "post_cost_pnl_delta_total": -4.25,
+            },
+            {
+                "candidate_id": "candidate-not-in-chain",
+                "candidate_generation": 99,
+                "candidate_generation_consistent": True,
+                "developmental_attribution_eligible": True,
+                "sample_count": 100,
+                "observed_days": 4,
+                "first_observation_utc": "2026-08-17T01:00:00+00:00",
+                "last_observation_utc": "2026-08-17T20:00:00+00:00",
+                "post_cost_pnl_delta_total": 100.0,
+            },
+        ],
+        "unbound_schema_v2_sample_count": 7,
+        "metadata_conflict_count": 0,
+    }
+    _write_json(performance_path, performance)
+
+    payload = assessment.build_payload(tmp_path)
+    learning = payload["developmental_soak_learning"]
+
+    assert learning["status"] == "ready"
+    assert learning["candidate_event_chain"]["valid"] is True
+    assert learning["accepted_generation_count"] == 3
+    assert learning["attributable_generation_count"] == 2
+    assert learning["mature_developmental_generation_count"] == 2
+    assert learning["observed_positive_delta_generation_count"] == 1
+    assert learning["observed_negative_delta_generation_count"] == 1
+    assert learning["unbound_schema_v2_sample_count"] == 7
+    assert learning["unmatched_generation_flows"][0]["candidate_id"] == "candidate-not-in-chain"
+    assert learning["policy"]["historical_generations_grade_current_candidate"] is False
+    assert learning["policy"]["clean_720_hour_live_promotion_gate_unchanged"] is True
+    action_ids = {
+        row["action_id"] for row in learning["bounded_paper_action_plan"]
+    }
+    assert "collect_current_candidate_post_cost_outcomes" in action_ids
+    assert "refresh_candidate_counterfactual_replay" in action_ids
+    assert "maintain_candidate_bound_weak_sleeve_containment" in action_ids
+    assert "prioritize_loss_and_missed_opportunity_labels" in action_ids
+    assert all(row["paper_only"] for row in learning["bounded_paper_action_plan"])
+    assert all(
+        row["force_trade_allowed"] is False
+        and row["loss_recovery_size_increase_allowed"] is False
+        and row["direct_threshold_loosen_allowed"] is False
+        and row["live_execution_allowed"] is False
+        and row["promotion_authority"] is False
+        for row in learning["bounded_paper_action_plan"]
+    )
+    assert payload["claims"]["accepted_generation_history_is_live_promotion_evidence"] is False
+    assert payload["control_contract"]["clean_720_hour_live_promotion_gate_unchanged"] is True
+
+
+def test_developmental_attribution_rejects_outcomes_after_generation_ended(
+    tmp_path: Path,
+) -> None:
+    _write_candidate_event_chain(
+        tmp_path / "governance" / "evidence" / "production_candidate_events.jsonl",
+        [
+            {
+                "event_type": "candidate_change_accepted",
+                "candidate_id": "candidate-1",
+                "generation": 1,
+                "timestamp_utc": "2026-08-18T12:00:00+00:00",
+            },
+            {
+                "event_type": "candidate_change_accepted",
+                "candidate_id": "candidate-2",
+                "generation": 2,
+                "timestamp_utc": "2026-08-20T12:00:00+00:00",
+            },
+        ],
+    )
+    learning = assessment._developmental_soak_learning(
+        tmp_path,
+        policy={
+            "soak_contract": {
+                "developmental_change_learning_enabled": True,
+                "minimum_developmental_post_cost_samples": 1,
+                "minimum_developmental_observed_days": 1,
+                "bounded_paper_actions": [],
+            }
+        },
+        performance={
+            "developmental_generation_flows": {
+                "generation_flows": [
+                    {
+                        "candidate_id": "candidate-1",
+                        "candidate_generation": 1,
+                        "candidate_generation_consistent": True,
+                        "developmental_attribution_eligible": True,
+                        "sample_count": 10,
+                        "observed_days": 1,
+                        "first_observation_utc": "2026-08-18T13:00:00+00:00",
+                        "last_observation_utc": "2026-08-20T13:00:00+00:00",
+                        "post_cost_pnl_delta_total": 5.0,
+                    }
+                ]
+            }
+        },
+        current_candidate_id="candidate-2",
+        current_generation=2,
+        current_candidate_samples=0,
+        minimum_candidate_samples=30,
+        missing_market_types=[],
+        replay_tradeability_ready=True,
+        weak_control_count=0,
+        now=assessment.parse_iso_utc("2026-08-21T12:00:00+00:00"),
+    )
+
+    first = learning["generation_rows"][0]
+    assert first["temporal_binding_valid"] is False
+    assert first["developmental_attribution_eligible"] is False
+    assert first["developmental_status"] == "rejected_outside_accepted_generation_window"
+    assert learning["attributable_generation_count"] == 0
+    assert learning["observed_positive_delta_generation_count"] == 0
+
+
 def test_assessment_fails_closed_on_cross_candidate_performance(tmp_path: Path) -> None:
     _seed_candidate_assessment(tmp_path, performance_candidate="candidate-old")
 
@@ -229,6 +488,32 @@ def test_assessment_fails_closed_on_cross_candidate_performance(tmp_path: Path) 
     assert payload["candidate_binding"]["identity_consistent"] is False
     assert payload["candidate_binding"]["mismatch_sources"] == ["paper_performance"]
     assert payload["needs"][0]["blocker"] == "candidate_identity_binding_incomplete"
+
+
+def test_stale_optional_override_is_reported_and_ignored_after_candidate_change(
+    tmp_path: Path,
+) -> None:
+    _seed_candidate_assessment(tmp_path)
+    override_path = (
+        tmp_path
+        / "governance"
+        / "health"
+        / "calibration_abstention_overrides_latest.json"
+    )
+    override = json.loads(override_path.read_text(encoding="utf-8"))
+    override["candidate_binding"]["candidate_id"] = "candidate-old"
+    override["candidate_binding"]["valid_candidate_id"] = "candidate-old"
+    _write_json(override_path, override)
+
+    payload = assessment.build_payload(tmp_path)
+
+    assert payload["overall_status"] == "collecting"
+    assert payload["candidate_binding"]["identity_consistent"] is True
+    assert payload["candidate_binding"]["identity_complete"] is True
+    assert payload["candidate_binding"]["mismatch_sources"] == []
+    assert payload["candidate_binding"]["optional_mismatch_sources"] == [
+        "calibration_overrides"
+    ]
 
 
 def test_candidate_bound_override_is_ignored_after_candidate_changes(tmp_path: Path) -> None:
@@ -328,8 +613,17 @@ def test_self_model_consumes_candidate_profitability_statement(tmp_path: Path) -
                 "economic_evidence_ready": False,
             },
             "measurement": {"candidate_post_cost_sample_count": 0},
+            "developmental_soak_learning": {
+                "status": "ready",
+                "accepted_generation_count": 12,
+                "attributable_generation_count": 4,
+                "mature_developmental_generation_count": 2,
+                "observed_negative_delta_generation_count": 1,
+                "bounded_paper_action_plan": [{"action_id": "refresh_candidate_counterfactual_replay"}],
+            },
             "claims": {
                 "historical_loss_is_current_candidate_evidence": False,
+                "accepted_generation_history_informs_developmental_actions": True,
                 "live_execution_authority": False,
             },
             "needs": [{"blocker": "candidate_post_cost_observations_collecting"}],
@@ -344,4 +638,9 @@ def test_self_model_consumes_candidate_profitability_statement(tmp_path: Path) -
     assert domain["candidate_evidence_status"] == "collecting"
     assert domain["candidate_id"] == "candidate-1"
     assert domain["economic_evidence_grade"] == "F"
+    assert domain["developmental_learning_status"] == "ready"
+    assert domain["attributable_generation_count"] == 4
+    assert domain["accepted_generation_history_informs_developmental_actions"] is True
+    assert domain["accepted_generation_history_is_live_promotion_evidence"] is False
     assert "candidate profitability candidate-1" in payload["self_summary"]
+    assert "developmental_generations=4/12" in payload["self_summary"]

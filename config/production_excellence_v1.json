@@ -50,6 +50,7 @@
       ],
       "data": [
         "core/*data*.py",
+        "core/collector_capability_routing.py",
         "scripts/*ingestion*.py",
         "scripts/*provider*.py",
         "scripts/*storage*.py",
@@ -60,7 +61,8 @@
         "config/sleeve_strategy_expansion.json",
         "config/symbol_lifecycle_v1.json",
         "config/*provider*.json",
-        "config/*storage*.json"
+        "config/*storage*.json",
+        "config/collector_capability_catalog_v1.json"
       ],
       "promotion": [
         "scripts/*promotion*.py",
@@ -84,8 +86,16 @@
       "operations": [
         ".github/workflows/*.yml",
         ".githooks/*",
+        "README.md",
+        "COMMANDS.md",
         "scripts/**/*.sh",
         "scripts/ops/**/*.py",
+        "scripts/*watchdog*.py",
+        "scripts/*failover*.py",
+        "scripts/*resilience*.py",
+        "scripts/*guard*.py",
+        "scripts/session_ready_check.py",
+        "scripts/pager_alert_router.py",
         "config/production*.json",
         "config/system_role_contracts_v1.json",
         "config/deployment_profiles.json"

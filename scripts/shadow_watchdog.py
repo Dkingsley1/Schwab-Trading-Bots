@@ -184,6 +184,15 @@ def _target_suppressed_by_fanout_guard(target: Target) -> bool:
     return "scripts/run_all_sleeves.py" in command or "scripts/run_parallel_aggressive_modes.py" in command
 
 
+def _canonical_all_sleeves_parent(target: Target) -> bool:
+    command = _format_start_cmd(target.start_cmd)
+    return bool(
+        target.name in {"schwab_parallel", "all_sleeves"}
+        or target.match == "scripts/run_all_sleeves.py"
+        or "scripts/run_all_sleeves.py" in command
+    )
+
+
 def _target_suppressed_by_creative_guard(target: Target) -> bool:
     command = _format_start_cmd(target.start_cmd)
     haystack = f"{target.name} {target.match} {command}"
@@ -208,6 +217,7 @@ def _target_suppressed_by_creative_guard(target: Target) -> bool:
 
 def _restart_guard_active_for_target(target: Target) -> tuple[bool, str]:
     command = _format_start_cmd(target.start_cmd)
+    canonical_parent = _canonical_all_sleeves_parent(target)
     if _paper_crypto_feed_pressure_guard_active() and (
         target.name in {"coinbase", "coinbase_futures"}
         or "coinbase-start" in command
@@ -215,9 +225,19 @@ def _restart_guard_active_for_target(target: Target) -> tuple[bool, str]:
         or "scripts/run_shadow_training_loop.py --broker coinbase" in command
     ):
         return True, "paper_crypto_feed_pressure_guard_active"
-    if (_process_fanout_guard_active() or _operator_mode_guard_active() or _computer_task_guard_active()) and _target_suppressed_by_fanout_guard(target):
+    if _process_fanout_guard_active() and _target_suppressed_by_fanout_guard(target):
         return True, "process_fanout_operator_or_computer_task_guard_active"
-    if _creative_pause_guard_active() and _target_suppressed_by_creative_guard(target):
+    if (
+        (_operator_mode_guard_active() or _computer_task_guard_active())
+        and not canonical_parent
+        and _target_suppressed_by_fanout_guard(target)
+    ):
+        return True, "process_fanout_operator_or_computer_task_guard_active"
+    if (
+        _creative_pause_guard_active()
+        and not canonical_parent
+        and _target_suppressed_by_creative_guard(target)
+    ):
         return True, "creative_audio_pause_guard_active"
     return False, ""
 
@@ -711,6 +731,7 @@ def _build_default_aggressive_modes_cmd(simulate: bool) -> str:
 def _build_default_coinbase_cmd() -> str:
     return (
         f"{VENV_PY} {SHADOW_LOOP_SCRIPT} "
+        "--runtime-cpu-class market_decision "
         "--broker coinbase "
         "--symbols BTC-USD,ETH-USD,SOL-USD,AVAX-USD,LTC-USD,LINK-USD,DOGE-USD "
         "--interval-seconds 60"
@@ -720,6 +741,7 @@ def _build_default_coinbase_cmd() -> str:
 def _build_default_coinbase_futures_cmd() -> str:
     return (
         f"{VENV_PY} {SHADOW_LOOP_SCRIPT} "
+        "--runtime-cpu-class market_decision "
         "--broker coinbase "
         "--profile crypto_futures "
         "--domain crypto "
@@ -732,6 +754,7 @@ def _build_default_coinbase_futures_cmd() -> str:
 def _build_default_schwab_futures_cmd() -> str:
     return (
         f"{VENV_PY} {SHADOW_LOOP_SCRIPT} "
+        "--runtime-cpu-class market_decision "
         "--broker schwab "
         "--profile schwab_futures "
         "--domain equities "

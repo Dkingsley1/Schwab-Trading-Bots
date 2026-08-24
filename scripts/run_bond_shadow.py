@@ -82,6 +82,8 @@ def main() -> int:
     cmd = [
         str(VENV_PY),
         str(SHADOW_LOOP),
+        '--runtime-cpu-class',
+        'market_decision',
         '--broker',
         args.broker,
         '--symbols',

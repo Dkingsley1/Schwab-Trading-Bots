@@ -120,3 +120,33 @@ def test_failover_hot_standby_suppresses_standby_when_live_parent_is_active() ->
     assert event["standby_skip_reason"] == "live_parent_alive"
     assert event["standby_ok"] is False
     assert start_attempts == []
+
+
+def test_failover_hot_standby_suppresses_standby_during_stack_restart() -> None:
+    module = _load_module(PROJECT_ROOT / "scripts" / "failover_hot_standby.py")
+    start_attempts: list[str] = []
+
+    event = module._build_failover_event(
+        primary_alive=False,
+        live_parent_alive=False,
+        heartbeat_age_sec=999.0,
+        max_heartbeat_age_sec=150.0,
+        swap_pause={"active": False},
+        standby_cmd="scripts/ops/opsctl.sh feed-refresh --source schwab --paper",
+        allow_simulate=False,
+        restart_fence={
+            "active": True,
+            "reason": "stack_restart_in_progress",
+            "owner_pid": 123,
+            "token": "must-not-leak",
+            "payload": {"token": "must-not-leak"},
+        },
+        start_cmd=start_attempts.append,
+    )
+
+    assert event["action"] == "standby_start_skipped_stack_restart"
+    assert event["standby_skip_reason"] == "stack_restart_in_progress"
+    assert event["stack_restart_in_progress"] is True
+    assert "token" not in event["stack_restart_fence"]
+    assert "payload" not in event["stack_restart_fence"]
+    assert start_attempts == []

@@ -67,6 +67,7 @@ if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
 from core.base_trader import BaseTrader
+from core.broker_auth_epoch import token_epoch, token_epoch_changed
 from core.brokers import BrokerRuntimeConfig, available_broker_names_for_role, normalize_broker_name
 from core.execution_simulator import simulate_execution
 from core.risk_engine import apply_risk_limits
@@ -83,9 +84,17 @@ from core.institutional_decision_flow import (
     build_candidate_bound_quantitative_evidence,
     evaluate_decision as evaluate_institutional_decision,
     load_policy as load_institutional_decision_flow_policy,
+    resolve_sleeve_policy,
 )
 from core.collector_capability_routing import resolve_runtime_ingestion_route
 from core.runtime_override_precedence import merge_runtime_override_layers
+from core.cpu_workload_policy import (
+    CPUWorkloadPolicyError,
+    load_cpu_workload_policy,
+    resolve_shadow_workload_class,
+    runtime_priority_decision,
+    taskpolicy_executable,
+)
 from core.sleeve_strategy_specialization import attach_strategy_specialization
 from core.execution_queue import ExecutionQueue, OrderRequest
 from core.execution_lane_pipeline import publish_execution_intent
@@ -125,6 +134,7 @@ from core.global_central_bank_context import (
 )
 from core.decision_context_mesh import (
     DECISION_CONTEXT_MESH_FEATURE_KEYS,
+    PUBLIC_FINANCIAL_CONTEXT_FEATURE_KEYS,
     decision_context_mesh_ready,
 )
 from core.market_context_features import (
@@ -443,6 +453,7 @@ _EXTERNAL_CONTEXT_FEATURE_KEYS = list(
         + list(GLOBAL_CENTRAL_BANK_FEATURE_KEYS)
         + list(CENTRAL_BANK_CROSS_SOURCE_FEATURE_KEYS)
         + list(DECISION_CONTEXT_MESH_FEATURE_KEYS)
+        + list(PUBLIC_FINANCIAL_CONTEXT_FEATURE_KEYS)
     )
 )
 
@@ -4283,7 +4294,12 @@ def _merge_external_context_calendar_features(base: Dict[str, float], snapshot: 
     return _merge_calendar_feature_map(dict(base), calendar_features)
 
 
-def _external_context_feature_set(snapshot: Dict[str, Any], *, symbol: str) -> Dict[str, float]:
+def _external_context_feature_set(
+    snapshot: Dict[str, Any],
+    *,
+    symbol: str,
+    decision_family_id: str = "",
+) -> Dict[str, float]:
     out: Dict[str, float] = {}
     if not isinstance(snapshot, dict):
         return out
@@ -4297,6 +4313,12 @@ def _external_context_feature_set(snapshot: Dict[str, Any], *, symbol: str) -> D
     global_central_bank_ready = global_central_bank_context_ready(snapshot)
     cross_source_ready = central_bank_cross_source_context_ready(snapshot)
     context_mesh_ready = decision_context_mesh_ready(snapshot)
+    routing = snapshot.get("routing") if isinstance(snapshot.get("routing"), dict) else {}
+    classified_routes = (
+        routing.get("classified_public_financial_routes")
+        if isinstance(routing.get("classified_public_financial_routes"), dict)
+        else {}
+    )
     for key in _EXTERNAL_CONTEXT_FEATURE_KEYS:
         if key in CENTRAL_BANK_LIQUIDITY_FEATURE_KEYS and not central_bank_ready:
             continue
@@ -4306,6 +4328,15 @@ def _external_context_feature_set(snapshot: Dict[str, Any], *, symbol: str) -> D
             continue
         if key in DECISION_CONTEXT_MESH_FEATURE_KEYS and not context_mesh_ready:
             continue
+        if key in PUBLIC_FINANCIAL_CONTEXT_FEATURE_KEYS:
+            if not context_mesh_ready:
+                continue
+            route = classified_routes.get(key) if isinstance(classified_routes.get(key), dict) else {}
+            allowed_families = {
+                str(value) for value in route.get("decision_family_ids", []) if str(value)
+            }
+            if not decision_family_id or decision_family_id not in allowed_families:
+                continue
         if key in symbol_row:
             out[key] = _hint_float(symbol_row.get(key), 0.0)
         elif key in global_features:
@@ -15497,17 +15528,20 @@ def _broker_truth_shared_snapshot_cache_path(project_root: str, broker: str) -> 
     return Path(project_root) / "governance" / "health" / f"broker_truth_shared_snapshot_{broker}_latest.json"
 
 
+def _broker_truth_shared_snapshot_last_good_path(project_root: str, broker: str) -> Path:
+    return Path(project_root) / "governance" / "health" / f"broker_truth_shared_snapshot_{broker}_last_good.json"
+
+
 def _broker_truth_shared_snapshot_lock_path(project_root: str, broker: str) -> Path:
     return Path(project_root) / "governance" / "health" / f"broker_truth_shared_snapshot_{broker}.lock"
 
 
-def _load_broker_truth_shared_snapshot(
+def _load_broker_truth_shared_snapshot_path(
     *,
-    project_root: str,
+    cache_path: Path,
     broker: str,
     max_age_seconds: float,
 ) -> Optional[Dict[str, Any]]:
-    cache_path = _broker_truth_shared_snapshot_cache_path(project_root, broker)
     cache_payload = _load_json_dict(cache_path)
     if not cache_payload:
         return None
@@ -15529,6 +15563,32 @@ def _load_broker_truth_shared_snapshot(
     return out
 
 
+def _load_broker_truth_shared_snapshot(
+    *,
+    project_root: str,
+    broker: str,
+    max_age_seconds: float,
+) -> Optional[Dict[str, Any]]:
+    return _load_broker_truth_shared_snapshot_path(
+        cache_path=_broker_truth_shared_snapshot_cache_path(project_root, broker),
+        broker=broker,
+        max_age_seconds=max_age_seconds,
+    )
+
+
+def _load_broker_truth_shared_snapshot_last_good(
+    *,
+    project_root: str,
+    broker: str,
+    max_age_seconds: float,
+) -> Optional[Dict[str, Any]]:
+    return _load_broker_truth_shared_snapshot_path(
+        cache_path=_broker_truth_shared_snapshot_last_good_path(project_root, broker),
+        broker=broker,
+        max_age_seconds=max_age_seconds,
+    )
+
+
 def _write_broker_truth_shared_snapshot(
     *,
     project_root: str,
@@ -15536,18 +15596,27 @@ def _write_broker_truth_shared_snapshot(
     fetched: Dict[str, Any],
 ) -> bool:
     cache_path = _broker_truth_shared_snapshot_cache_path(project_root, broker)
-    return bool(
+    payload = {
+        "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+        "broker": str(broker).strip().lower(),
+        "owner_pid": int(os.getpid()),
+        "fetched": dict(fetched or {}),
+    }
+    latest_ok = bool(
         safe_write_json_atomic(
         str(cache_path),
-        {
-            "timestamp_utc": datetime.now(timezone.utc).isoformat(),
-            "broker": str(broker).strip().lower(),
-            "owner_pid": int(os.getpid()),
-            "fetched": dict(fetched or {}),
-        },
+        payload,
         project_root=project_root,
         source="run_shadow_training_loop.broker_truth_shared_snapshot",
     ))
+    if bool(fetched.get("ok", False)) and not bool(fetched.get("_shared_snapshot_stale_fallback", False)):
+        safe_write_json_atomic(
+            str(_broker_truth_shared_snapshot_last_good_path(project_root, broker)),
+            payload,
+            project_root=project_root,
+            source="run_shadow_training_loop.broker_truth_shared_snapshot_last_good",
+        )
+    return latest_ok
 
 
 def _shared_broker_truth_accounts_payload(
@@ -15573,6 +15642,33 @@ def _shared_broker_truth_accounts_payload(
         cache_max_age_seconds,
     )
 
+    def _last_good_fallback(last: Dict[str, Any], *, attempts: int) -> Optional[Dict[str, Any]]:
+        collection_only = (
+            str(os.getenv("MARKET_DATA_ONLY", "1") or "1").strip().lower()
+            in {"1", "true", "yes", "on"}
+            or str(os.getenv("ALLOW_ORDER_EXECUTION", "0") or "0").strip().lower()
+            not in {"1", "true", "yes", "on"}
+        )
+        if not collection_only:
+            return None
+        stale = _load_broker_truth_shared_snapshot_last_good(
+            project_root=PROJECT_ROOT,
+            broker=broker,
+            max_age_seconds=stale_fallback_max_age_seconds,
+        )
+        if stale is None or not bool(stale.get("ok", False)):
+            return None
+        stale = dict(stale)
+        stale["_shared_snapshot_stale_fallback"] = True
+        stale["_shared_snapshot_fetch_attempts"] = int(attempts)
+        stale["_shared_snapshot_current_failure"] = str(last.get("error") or "snapshot_refresh_failed")
+        stale["_shared_snapshot_current_status_code"] = int(last.get("status_code", 0) or 0)
+        stale["soft_failure"] = True
+        stale["provider_failure"] = bool(last.get("provider_failure", False))
+        stale["provider_failure_class"] = str(last.get("provider_failure_class") or "")
+        stale["error"] = str(last.get("error") or "stale_snapshot_fallback")
+        return stale
+
     def _fetch_with_retries() -> Dict[str, Any]:
         last: Dict[str, Any] = {}
         for attempt in range(fetch_retries):
@@ -15584,17 +15680,8 @@ def _shared_broker_truth_accounts_payload(
             last = fetched
             if attempt + 1 < fetch_retries:
                 time.sleep(retry_delay_seconds)
-        stale = _load_broker_truth_shared_snapshot(
-            project_root=PROJECT_ROOT,
-            broker=broker,
-            max_age_seconds=stale_fallback_max_age_seconds,
-        )
-        if stale is not None and bool(stale.get("ok", False)):
-            stale = dict(stale)
-            stale["_shared_snapshot_stale_fallback"] = True
-            stale["_shared_snapshot_fetch_attempts"] = int(fetch_retries)
-            stale["soft_failure"] = True
-            stale["error"] = str(last.get("error") or "stale_snapshot_fallback")
+        stale = _last_good_fallback(last, attempts=fetch_retries)
+        if stale is not None:
             return stale
         return last
 
@@ -15604,7 +15691,10 @@ def _shared_broker_truth_accounts_payload(
         max_age_seconds=cache_max_age_seconds,
     )
     if cached is not None:
-        return cached
+        if bool(cached.get("ok", False)):
+            return cached
+        stale = _last_good_fallback(cached, attempts=0)
+        return stale if stale is not None else cached
 
     lock_path = _broker_truth_shared_snapshot_lock_path(PROJECT_ROOT, broker)
     lock_path.parent.mkdir(parents=True, exist_ok=True)
@@ -15624,7 +15714,10 @@ def _shared_broker_truth_accounts_payload(
                     max_age_seconds=cache_max_age_seconds,
                 )
                 if cached is not None:
-                    return cached
+                    if bool(cached.get("ok", False)):
+                        return cached
+                    stale = _last_good_fallback(cached, attempts=0)
+                    return stale if stale is not None else cached
                 if time.time() >= deadline:
                     break
                 time.sleep(0.05)
@@ -15637,7 +15730,10 @@ def _shared_broker_truth_accounts_payload(
                     max_age_seconds=cache_max_age_seconds,
                 )
                 if cached is not None:
-                    return cached
+                    if bool(cached.get("ok", False)):
+                        return cached
+                    stale = _last_good_fallback(cached, attempts=0)
+                    return stale if stale is not None else cached
                 fetched = _fetch_with_retries()
                 write_ok = _write_broker_truth_shared_snapshot(
                     project_root=PROJECT_ROOT,
@@ -16038,6 +16134,127 @@ def _apply_runtime_research_self_nice() -> Dict[str, Any]:
     except Exception:
         new_nice = target
     return {"applied": True, "reason": "runtime_research_nice_applied", "previous_nice": current, "target_nice": target, "current_nice": new_nice}
+
+
+def _runtime_cpu_requested_nice(workload_class: str, profile: str, current_nice: int) -> int:
+    name = str(workload_class or "").strip().lower()
+    profile_name = str(profile or "").strip().lower()
+    if name == "live_execution":
+        return int(os.getenv("BOT_CPU_LIVE_EXECUTION_MAX_NICE", "0") or 0)
+    if name == "paper_execution":
+        return int(os.getenv("BOT_CPU_PAPER_EXECUTION_MAX_NICE", "0") or 0)
+    if name == "market_decision":
+        profile_targets = {
+            "dividend": "SLEEVE_NICE_DIVIDEND",
+            "dividend_capture": "SLEEVE_NICE_DIVIDEND_CAPTURE",
+            "bond": "SLEEVE_NICE_BOND",
+            "fx": "SLEEVE_NICE_FX",
+            "aggressive": "SLEEVE_NICE_AGGRESSIVE",
+            "intraday_aggressive": "SLEEVE_NICE_AGGRESSIVE",
+            "swing_aggressive": "SLEEVE_NICE_AGGRESSIVE",
+        }
+        env_name = profile_targets.get(profile_name)
+        if env_name:
+            return int(os.getenv(env_name, "4") or 4)
+        return min(current_nice, int(os.getenv("BOT_CPU_MARKET_DECISION_MAX_NICE", "4") or 4))
+    if name == "data_collection":
+        return int(os.getenv("SLEEVE_NICE_SPECIALIZED", os.getenv("BOT_CPU_DATA_COLLECTION_MIN_NICE", "12")) or 12)
+    if name == "research_training":
+        raw = (
+            _dynamic_storage_value("RUNTIME_RESEARCH_TRAINING_NICE", "")
+            or _dynamic_storage_value("RUNTIME_THROTTLE_RESEARCH_NICE", "")
+            or os.getenv("BOT_CPU_RESEARCH_TRAINING_MIN_NICE", "15")
+        )
+        return int(float(raw or 15))
+    if name == "storage_maintenance":
+        return int(os.getenv("BOT_CPU_STORAGE_MAINTENANCE_MIN_NICE", "15") or 15)
+    return current_nice
+
+
+def _remove_darwin_background_for_self(enabled: bool) -> Dict[str, Any]:
+    if not enabled:
+        return {"attempted": False, "ok": True, "reason": "workload_class_does_not_request_foreground_policy"}
+    if sys.platform != "darwin":
+        return {"attempted": False, "ok": True, "reason": "not_darwin"}
+    if os.getenv("BOT_CPU_TASKPOLICY_SELF_HEAL", "1").strip().lower() not in {"1", "true", "yes", "on"}:
+        return {"attempted": False, "ok": True, "reason": "taskpolicy_self_heal_disabled"}
+    taskpolicy_path = taskpolicy_executable()
+    if not taskpolicy_path:
+        return {"attempted": False, "ok": False, "reason": "taskpolicy_unavailable"}
+    try:
+        proc = subprocess.run(
+            [taskpolicy_path, "-B", "-p", str(os.getpid())],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except Exception as exc:
+        return {"attempted": True, "ok": False, "reason": f"taskpolicy_failed:{exc.__class__.__name__}"}
+    return {
+        "attempted": True,
+        "ok": proc.returncode == 0,
+        "reason": "darwin_background_removed" if proc.returncode == 0 else "taskpolicy_nonzero",
+        "returncode": int(proc.returncode),
+    }
+
+
+def _apply_runtime_cpu_policy(*, explicit: str = "", profile: str = "", lifecycle_state: str = "") -> Dict[str, Any]:
+    try:
+        policy = load_cpu_workload_policy()
+        workload_class = resolve_shadow_workload_class(
+            policy,
+            explicit=explicit,
+            profile=profile,
+            lifecycle_state=lifecycle_state,
+            environment=os.environ,
+        )
+    except CPUWorkloadPolicyError as exc:
+        return {"applied": False, "reason": str(exc), "policy_locked": False}
+    try:
+        current = int(os.nice(0))
+        requested = _runtime_cpu_requested_nice(workload_class, profile, current)
+    except Exception as exc:
+        return {
+            "applied": False,
+            "reason": f"runtime_cpu_target_failed:{exc.__class__.__name__}",
+            "workload_class": workload_class,
+            "policy_locked": True,
+        }
+    decision = runtime_priority_decision(
+        policy,
+        workload_class=workload_class,
+        requested_nice=requested,
+        current_nice=current,
+    )
+    delta = int(decision.get("self_deprioritize_delta", 0) or 0)
+    applied = False
+    if delta > 0:
+        try:
+            os.nice(delta)
+            applied = True
+        except Exception as exc:
+            decision["apply_error"] = f"set_nice_failed:{exc.__class__.__name__}"
+    try:
+        observed = int(os.nice(0))
+    except Exception:
+        observed = current + (delta if applied else 0)
+    foreground = _remove_darwin_background_for_self(bool(decision.get("remove_darwin_background", False)))
+    decision.update(
+        {
+            "applied": applied,
+            "policy_locked": True,
+            "observed_nice": observed,
+            "darwin_background_control": foreground,
+            "reason": (
+                "managed_restart_required_to_raise_priority"
+                if bool(decision.get("managed_restart_required", False))
+                else "runtime_cpu_floor_applied"
+                if applied
+                else "runtime_cpu_priority_compliant"
+            ),
+        }
+    )
+    return decision
 
 
 _HOT_CHANNEL_PRIMARY_TARGETS = {"runtime", "api", "loop_state", "gate", "ingress"}
@@ -16886,6 +17103,8 @@ def run_loop(
             print("Trade behavior bias enabled but no model found; running without behavior prior.")
 
     client = None
+    active_auth_epoch: Dict[str, Any] = {"present": False, "id": "not_required"}
+    auth_rebind_retry_after_ts = 0.0
     if not simulate:
         if broker == "coinbase":
             client = CoinbaseMarketDataClient(timeout_seconds=float(os.getenv("COINBASE_TIMEOUT_SECONDS", "8")))
@@ -16923,6 +17142,7 @@ def run_loop(
                     },
                 )
                 print(f"Shadow loop connected to {trader.broker_display_name} market data.")
+                active_auth_epoch = token_epoch(Path(trader.token_path))
             except Exception as exc:
                 latency_ms = (time.perf_counter() - auth_started) * 1000.0
                 err = f"{type(exc).__name__}:{exc}"
@@ -17258,6 +17478,15 @@ def run_loop(
         return out
 
     current_profile = (_shadow_profile_name() or "default").strip().lower()
+    try:
+        _, current_policy_receipt = resolve_sleeve_policy(
+            current_profile,
+            INSTITUTIONAL_DECISION_FLOW_POLICY,
+            domain=_shadow_domain_name(broker=broker),
+        )
+        current_decision_family_id = str(current_policy_receipt.get("policy_family_id") or "")
+    except (KeyError, TypeError, ValueError):
+        current_decision_family_id = ""
     paper_mirror_enabled = os.getenv("TOP_BOT_PAPER_TRADING_ENABLED", "0").strip() == "1"
     paper_mirror_top_n = max(
         int(_paper_mirror_env_value_for_broker(broker, current_profile, "TOP_N", "2")),
@@ -17857,6 +18086,104 @@ def run_loop(
             )
             print("GLOBAL_TRADING_HALT=1 detected; stopping shadow loop.")
             return
+
+        if broker == "schwab" and not simulate:
+            observed_auth_epoch = token_epoch(Path(trader.token_path))
+            if token_epoch_changed(active_auth_epoch, observed_auth_epoch):
+                now_auth = time.time()
+                if now_auth < auth_rebind_retry_after_ts:
+                    remaining = max(int(auth_rebind_retry_after_ts - now_auth), 1)
+                    _set_loop_state(
+                        "paused_auth_epoch_rebind",
+                        reason="auth_epoch_rebind_cooldown",
+                        remaining_seconds=remaining,
+                    )
+                    time.sleep(min(remaining, max(effective_interval_seconds, 5)))
+                    continue
+                auth_started = time.perf_counter()
+                try:
+                    refreshed_trader = BaseTrader.from_env(
+                        mode="shadow",
+                        broker=broker,
+                        role="market_data",
+                        runtime_config=broker_runtime,
+                    )
+                    refreshed_trader.token_path = trader.token_path
+                    refreshed_client = refreshed_trader.authenticate()
+                except Exception as exc:
+                    latency_ms = (time.perf_counter() - auth_started) * 1000.0
+                    auth_rebind_retry_after_ts = time.time() + max(
+                        int(os.getenv("SCHWAB_AUTH_EPOCH_REBIND_RETRY_SECONDS", "60") or 60),
+                        15,
+                    )
+                    err = f"{type(exc).__name__}:{exc}"
+                    _log_api_call(
+                        project_root=PROJECT_ROOT,
+                        broker=broker,
+                        symbol="*",
+                        endpoint="schwab.auth_epoch_rebind",
+                        status="error",
+                        latency_ms=latency_ms,
+                        error=err,
+                    )
+                    _append_jsonl(
+                        _event_bus_path(PROJECT_ROOT),
+                        {
+                            "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+                            "event": "api_auth_epoch_rebind_error",
+                            "broker": broker,
+                            "latency_ms": round(latency_ms, 3),
+                            "error_class": type(exc).__name__,
+                        },
+                    )
+                    _set_loop_state(
+                        "paused_auth_epoch_rebind",
+                        reason="auth_epoch_rebind_failed",
+                        error_class=type(exc).__name__,
+                    )
+                    print(
+                        "[SchwabAuthEpoch] rebind_failed "
+                        f"error_class={type(exc).__name__} retry_after_s="
+                        f"{max(int(auth_rebind_retry_after_ts - time.time()), 1)}"
+                    )
+                    time.sleep(min(max(effective_interval_seconds, 5), 60))
+                    continue
+                else:
+                    latency_ms = (time.perf_counter() - auth_started) * 1000.0
+                    trader = refreshed_trader
+                    client = refreshed_client
+                    active_auth_epoch = token_epoch(Path(trader.token_path))
+                    auth_rebind_retry_after_ts = 0.0
+                    state_cache = StateCache(
+                        default_ttl_seconds=float(os.getenv("RUNTIME_CACHE_TTL_SECONDS", "2.0"))
+                    )
+                    circuit_breaker = CircuitBreaker(
+                        fail_limit=int(os.getenv("RUNTIME_CIRCUIT_FAIL_LIMIT", "5")),
+                        cooldown_seconds=int(os.getenv("RUNTIME_CIRCUIT_COOLDOWN_SECONDS", "120")),
+                    )
+                    market_data_provider_cooldown_until_ts = 0.0
+                    _log_api_call(
+                        project_root=PROJECT_ROOT,
+                        broker=broker,
+                        symbol="*",
+                        endpoint="schwab.auth_epoch_rebind",
+                        status="ok",
+                        latency_ms=latency_ms,
+                    )
+                    _append_jsonl(
+                        _event_bus_path(PROJECT_ROOT),
+                        {
+                            "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+                            "event": "api_auth_epoch_rebind_success",
+                            "broker": broker,
+                            "auth_epoch_id": str(active_auth_epoch.get("id") or ""),
+                            "latency_ms": round(latency_ms, 3),
+                        },
+                    )
+                    print(
+                        "[SchwabAuthEpoch] rebound_client=1 "
+                        f"epoch={active_auth_epoch.get('id')} latency_ms={latency_ms:.1f}"
+                    )
 
         loop_started_at = time.time()
         iter_count += 1
@@ -19260,7 +19587,11 @@ def run_loop(
                 _external_context_feature_set(central_bank_cross_source_snapshot, symbol=symbol)
             )
             external_context_features.update(
-                _external_context_feature_set(decision_context_mesh_snapshot, symbol=symbol)
+                _external_context_feature_set(
+                    decision_context_mesh_snapshot,
+                    symbol=symbol,
+                    decision_family_id=current_decision_family_id,
+                )
             )
             external_context_features.update(_external_context_feature_set(tradingeconomics_snapshot, symbol=symbol))
             external_context_features.update(_external_context_feature_set(sec_edgar_snapshot, symbol=symbol))
@@ -22755,6 +23086,11 @@ def main() -> None:
         help="Optional shadow profile tag (e.g. aggressive, crypto_futures).",
     )
     parser.add_argument(
+        "--runtime-cpu-class",
+        default=os.getenv("BOT_RUNTIME_CPU_CLASS", "").strip().lower(),
+        help="Explicit CPU workload class for runtime priority policy.",
+    )
+    parser.add_argument(
         "--domain",
         default=os.getenv("SHADOW_DOMAIN", "").strip().lower(),
         help="Optional shadow domain override (equities|crypto).",
@@ -22821,14 +23157,20 @@ def main() -> None:
             f"reason={maintenance_hold.get('reason', 'runtime_maintenance')}"
         )
         return
-    nice_result = _apply_runtime_research_self_nice()
-    if bool(nice_result.get("applied", False)):
-        print(
-            "[RuntimeNice] "
-            f"previous={nice_result.get('previous_nice')} "
-            f"target={nice_result.get('target_nice')} "
-            f"current={nice_result.get('current_nice')}"
-        )
+    cpu_result = _apply_runtime_cpu_policy(
+        explicit=args.runtime_cpu_class,
+        profile=args.profile,
+        lifecycle_state=os.getenv("SLEEVE_LIFECYCLE_STATE", ""),
+    )
+    print(
+        "[RuntimeCPU] "
+        f"class={cpu_result.get('workload_class', 'unknown')} "
+        f"current={cpu_result.get('current_nice', '')} "
+        f"target={cpu_result.get('target_nice', '')} "
+        f"observed={cpu_result.get('observed_nice', '')} "
+        f"restart_required={int(bool(cpu_result.get('managed_restart_required', False)))} "
+        "hard_affinity=0"
+    )
 
     profile_override = (args.profile or "").strip().lower()
     if profile_override:
