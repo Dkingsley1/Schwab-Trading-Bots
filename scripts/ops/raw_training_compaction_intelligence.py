@@ -20,6 +20,7 @@ DEFAULT_SOURCE_QUEUE_PATH = PROJECT_ROOT / "governance" / "training" / "raw_trai
 DEFAULT_ELIGIBLE_QUEUE_PATH = PROJECT_ROOT / "governance" / "training" / "raw_training_eligible_source_queue_latest.jsonl"
 DEFAULT_HISTORY_DIR = PROJECT_ROOT / "governance" / "training" / "raw_training_compaction_history"
 DEFAULT_BOT_LOGS_ROOT = Path(os.environ.get("BOT_LOGS_ROOT", "/Volumes/BOT_LOGS/schwab_trading_bot"))
+LOCAL_FALLBACK_DIR_NAME = "local_fallback_storage"
 DEFAULT_MATERIAL_COMPACTION_GB = 1.0
 PROTECTED_VOLUME_PREFIXES = ("/Volumes/VIDEO",)
 EXCLUDED_DIR_NAMES = {
@@ -173,6 +174,16 @@ def _is_live_local_fallback_artifact(path: Path) -> bool:
     return "reconciliation_debt" in parts or "reconciliation_debt" in text
 
 
+def _is_archived_fallback_evidence(path: Path, scan_root: Path) -> bool:
+    """Identify fallback evidence already preserved beneath the scanned storage root."""
+    try:
+        relative = path.relative_to(scan_root)
+    except ValueError:
+        return False
+    parts = tuple(part.lower() for part in relative.parts)
+    return bool(parts and parts[0] == LOCAL_FALLBACK_DIR_NAME)
+
+
 def _date_token_matches_current_day(path: Path, today: str) -> bool:
     dashed = f"{today[:4]}-{today[4:6]}-{today[6:]}"
     text = str(path)
@@ -253,14 +264,15 @@ def _raw_training_sibling(path: Path) -> Path:
     return path.with_name(path.name + ".raw-training.gz")
 
 
-def _classify_row(path: Path, *, now_ts: float, today: str, min_age_hours: float, sample_bytes: int) -> dict[str, Any]:
+def _classify_row(path: Path, *, scan_root: Path, now_ts: float, today: str, min_age_hours: float, sample_bytes: int) -> dict[str, Any]:
     stat = path.stat()
     size_bytes = int(stat.st_size)
     age_seconds = max(0.0, now_ts - float(stat.st_mtime))
     age_hours = age_seconds / 3600.0
     current_day = _date_token_matches_current_day(path, today) or age_hours < min(6.0, min_age_hours)
     active_latest_artifact = path.name.lower().endswith("_latest.jsonl")
-    local_fallback = _is_live_local_fallback_artifact(path)
+    archived_fallback_evidence = _is_archived_fallback_evidence(path, scan_root)
+    local_fallback = bool(_is_live_local_fallback_artifact(path) and not archived_fallback_evidence)
     protected = _is_under_protected_volume(path)
     training_candidate = bool(_contains_hint(path, TRAINING_PATH_HINTS) or size_bytes > 0)
     sibling = _compressed_sibling(path)
@@ -315,6 +327,7 @@ def _classify_row(path: Path, *, now_ts: float, today: str, min_age_hours: float
         "compression_candidate": bool(compression_candidate),
         "already_compressed_sibling": bool(already_compressed_sibling),
         "local_fallback_reconciliation_required": bool(local_fallback),
+        "archived_fallback_evidence": bool(archived_fallback_evidence),
         "protected_volume": bool(protected),
         "clear_action": clear_action,
         "queue_blockers": queue_blockers,
@@ -647,6 +660,7 @@ def _summary(rows: list[dict[str, Any]], selected: list[dict[str, Any]], apply_r
     current_day_rows = [row for row in rows if row.get("current_day_protected")]
     active_latest_rows = [row for row in rows if row.get("active_latest_artifact_protected")]
     local_fallback_rows = [row for row in rows if row.get("local_fallback_reconciliation_required")]
+    archived_fallback_rows = [row for row in rows if row.get("archived_fallback_evidence")]
     protected_rows = [row for row in rows if row.get("protected_volume")]
     cleared_bytes = sum(_safe_int(record.get("estimated_raw_bytes_cleared"), 0) for record in apply_records if record.get("status") == "ok")
     failed_apply_count = sum(1 for record in apply_records if record.get("status") == "failed")
@@ -663,6 +677,7 @@ def _summary(rows: list[dict[str, Any]], selected: list[dict[str, Any]], apply_r
         "current_day_protected_count": len(current_day_rows),
         "active_latest_artifact_protected_count": len(active_latest_rows),
         "local_fallback_reconciliation_count": len(local_fallback_rows),
+        "archived_fallback_evidence_count": len(archived_fallback_rows),
         "protected_volume_count": len(protected_rows),
         "selected_compaction_count": len(selected),
         "selected_compaction_gb": round(sum(_safe_int(row.get("size_bytes"), 0) for row in selected) / (1024**3), 6),
@@ -739,7 +754,7 @@ def _build_rows(scan_roots: list[Path], *, min_age_hours: float, sample_bytes: i
                 continue
             seen.add(key)
             try:
-                rows.append(_classify_row(path, now_ts=now_ts, today=today, min_age_hours=min_age_hours, sample_bytes=sample_bytes))
+                rows.append(_classify_row(path, scan_root=root, now_ts=now_ts, today=today, min_age_hours=min_age_hours, sample_bytes=sample_bytes))
             except (OSError, PermissionError):
                 continue
     rows.sort(key=lambda row: (_safe_int(row.get("size_bytes"), 0), _safe_float(row.get("age_hours"), 0.0)), reverse=True)
@@ -813,6 +828,7 @@ def build_report(args: argparse.Namespace) -> dict[str, Any]:
             "manifest_only_queue_does_not_copy_raw_payload",
             "current_day_sources_protected",
             "local_fallback_sources_require_reconciliation",
+            "externally_archived_fallback_evidence_is_not_live_reconciliation_debt",
             "protected_volume_VIDEO_never_touched",
             "raw_evidence_preserved_as_gzip_before_raw_removal",
         ],

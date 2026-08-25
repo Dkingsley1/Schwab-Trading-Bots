@@ -64,6 +64,22 @@ def test_queue_all_raw_sources_but_only_eligible_old_sources_compact(tmp_path: P
     assert payload["overall_grade"] == "A+"
 
 
+def test_external_fallback_archive_is_evidence_not_live_reconciliation_debt(tmp_path: Path) -> None:
+    root = tmp_path / "bot_logs"
+    archived = root / "local_fallback_storage" / "governance" / "shadow_dividend_equities" / "shadow_pnl_attribution_20260801.jsonl"
+    _write_old_jsonl(archived)
+
+    payload = raw_compaction.build_report(_args(tmp_path, root))
+
+    assert payload["raw_summary"]["local_fallback_reconciliation_count"] == 0
+    assert payload["raw_summary"]["archived_fallback_evidence_count"] == 1
+    assert payload["raw_summary"]["eligible_training_source_count"] == 1
+    assert payload["raw_summary"]["compression_candidate_count"] == 1
+    row = payload["top_training_sources"][0]
+    assert row["archived_fallback_evidence"] is True
+    assert row["local_fallback_reconciliation_required"] is False
+
+
 def test_material_unapplied_compaction_debt_still_degrades(monkeypatch) -> None:
     monkeypatch.setenv("BOT_RAW_TRAINING_MATERIAL_COMPACTION_GB", "1.0")
     score, status, blockers, _actions = raw_compaction._score_report(
