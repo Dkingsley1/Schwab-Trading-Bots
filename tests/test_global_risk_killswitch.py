@@ -1,6 +1,7 @@
 import json
 import subprocess
 import sys
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 
@@ -14,6 +15,36 @@ from scripts import global_risk_killswitch as kill_src
 def _write_json(path: Path, payload: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, ensure_ascii=True, indent=2), encoding="utf-8")
+
+
+def test_snapshot_relative_age_preserves_zero_age() -> None:
+    age = kill_src._snapshot_relative_age_seconds(
+        {
+            "generated_utc": datetime.now(timezone.utc).isoformat(),
+            "decision_last_age_sec": 0,
+        },
+        "decision_last_age_sec",
+    )
+
+    assert age is not None
+    assert 0.0 <= age < 5.0
+
+
+def test_raw_stream_ages_crosses_utc_midnight(tmp_path: Path) -> None:
+    now = datetime(2026, 8, 25, 0, 1, tzinfo=timezone.utc)
+    prior = now - timedelta(seconds=90)
+    prior_day = prior.strftime("%Y%m%d")
+    decision = tmp_path / "decision_explanations" / "shadow_default" / f"decision_explanations_{prior_day}.jsonl"
+    governance = tmp_path / "governance" / "shadow_default" / f"master_control_{prior_day}.jsonl"
+    decision.parent.mkdir(parents=True, exist_ok=True)
+    governance.parent.mkdir(parents=True, exist_ok=True)
+    decision.write_text(json.dumps({"timestamp_utc": prior.isoformat()}) + "\n", encoding="utf-8")
+    governance.write_text(json.dumps({"timestamp_utc": prior.isoformat()}) + "\n", encoding="utf-8")
+
+    decision_age, governance_age = kill_src._raw_stream_ages(tmp_path, now_utc=now)
+
+    assert decision_age == 90.0
+    assert governance_age == 90.0
 
 
 def test_global_risk_killswitch_blocks_auto_clear_when_runtime_is_stressed(tmp_path: Path, monkeypatch) -> None:
@@ -574,3 +605,128 @@ def test_global_risk_killswitch_bounds_clear_blocker_refresh(monkeypatch, tmp_pa
             "stderr_tail": "timeout",
         }
     ]
+
+
+def _write_fresh_stale_window_fixture(health: Path, *, decision_age: int = 15) -> None:
+    _write_json(
+        health / "one_numbers_latest.json",
+        {
+            "generated_utc": datetime.now(timezone.utc).isoformat(),
+            "combined_blocked_rate": 0.0,
+            "combined_pnl_proxy": 0.0,
+            "decision_stale_windows_4h": 9,
+            "decision_last_age_sec": decision_age,
+            "governance_last_age_sec": 20,
+            "data_quality_decision_stale_grace_seconds": 120,
+            "data_quality_governance_stale_grace_seconds": 180,
+            "watchdog_restarts": 0,
+        },
+    )
+    _write_json(
+        health / "health_gates_latest.json",
+        {"hard_gate_triggered": True, "hard_gates": {"stale_windows": True}},
+    )
+    _write_json(health / "auth_lease_manager_latest.json", {"lease_state": "healthy"})
+    _write_json(
+        health / "data_plane_recovery_controller_latest.json",
+        {"write_failure_count": 0, "account_snapshot_failure_count": 0, "queue_depth": 0},
+    )
+    _write_json(health / "process_watchdog_latest.json", {"restart_storms": []})
+    _write_json(
+        health / "live_runtime_separation_control_latest.json",
+        {"clearance_plan": {"clearance_state": "ready"}},
+    )
+
+
+def test_global_risk_killswitch_keeps_recovered_historical_stale_windows_advisory(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    project_root = tmp_path / "project"
+    health = project_root / "governance" / "health"
+    halt_flag = health / "GLOBAL_TRADING_HALT.flag"
+    halt_flag.parent.mkdir(parents=True, exist_ok=True)
+    halt_flag.write_text(json.dumps({"reason": "historical_stale_windows"}), encoding="utf-8")
+    _write_fresh_stale_window_fixture(health)
+    one_numbers = json.loads((health / "one_numbers_latest.json").read_text(encoding="utf-8"))
+    one_numbers["generated_utc"] = (datetime.now(timezone.utc) - timedelta(minutes=20)).isoformat()
+    _write_json(health / "one_numbers_latest.json", one_numbers)
+    now = datetime.now(timezone.utc)
+    day = now.strftime("%Y%m%d")
+    decision_dir = project_root / "decision_explanations" / "shadow_default"
+    governance_dir = project_root / "governance" / "shadow_default"
+    decision_dir.mkdir(parents=True, exist_ok=True)
+    governance_dir.mkdir(parents=True, exist_ok=True)
+    (decision_dir / f"decision_explanations_{day}.jsonl").write_text(
+        json.dumps({"timestamp_utc": now.isoformat(), "action": "HOLD"}) + "\n",
+        encoding="utf-8",
+    )
+    (governance_dir / f"master_control_{day}.jsonl").write_text(
+        json.dumps({"timestamp_utc": now.isoformat(), "master_action": "HOLD"}) + "\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setenv("ALLOW_ORDER_EXECUTION", "0")
+    monkeypatch.setenv("MARKET_DATA_ONLY", "1")
+    monkeypatch.setattr(kill_src, "PROJECT_ROOT", project_root)
+    monkeypatch.setattr(sys, "argv", ["global_risk_killswitch.py", "--auto-clear"])
+
+    rc = kill_src.main()
+    payload = json.loads((health / "global_killswitch_latest.json").read_text(encoding="utf-8"))
+
+    assert rc == 0
+    assert payload["action"] == "halt_cleared"
+    assert payload["halt_required"] is False
+    assert payload["critical_hard_gate_names"] == []
+    assert payload["stale_hard_gate_names"] == []
+    assert payload["metrics"]["recovered_historical_stale_windows"] is True
+    assert payload["metrics"]["decision_freshness_source"] == "raw_jsonl_tail"
+    assert payload["metrics"]["governance_freshness_source"] == "raw_jsonl_tail"
+    assert payload["advisory_evidence"] == ["recovered_historical_stale_windows"]
+    assert payload["sleeve_throttle_recommended"] is False
+    assert not halt_flag.exists()
+
+
+def test_global_risk_killswitch_keeps_stale_windows_hard_for_live_execution(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    project_root = tmp_path / "project"
+    health = project_root / "governance" / "health"
+    _write_fresh_stale_window_fixture(health)
+
+    monkeypatch.setenv("ALLOW_ORDER_EXECUTION", "1")
+    monkeypatch.setenv("MARKET_DATA_ONLY", "0")
+    monkeypatch.setattr(kill_src, "PROJECT_ROOT", project_root)
+    monkeypatch.setattr(sys, "argv", ["global_risk_killswitch.py", "--status-only"])
+
+    rc = kill_src.main()
+    payload = json.loads((health / "global_killswitch_latest.json").read_text(encoding="utf-8"))
+
+    assert rc == 2
+    assert payload["action"] == "halt_would_set"
+    assert payload["halt_required"] is True
+    assert payload["critical_hard_gate_names"] == ["stale_windows"]
+    assert payload["metrics"]["recovered_historical_stale_windows"] is False
+
+
+def test_global_risk_killswitch_keeps_current_staleness_hard_in_paper_mode(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    project_root = tmp_path / "project"
+    health = project_root / "governance" / "health"
+    _write_fresh_stale_window_fixture(health, decision_age=901)
+
+    monkeypatch.setenv("ALLOW_ORDER_EXECUTION", "0")
+    monkeypatch.setenv("MARKET_DATA_ONLY", "1")
+    monkeypatch.setattr(kill_src, "PROJECT_ROOT", project_root)
+    monkeypatch.setattr(sys, "argv", ["global_risk_killswitch.py", "--status-only"])
+
+    rc = kill_src.main()
+    payload = json.loads((health / "global_killswitch_latest.json").read_text(encoding="utf-8"))
+
+    assert rc == 2
+    assert payload["action"] == "halt_would_set"
+    assert payload["halt_required"] is True
+    assert payload["metrics"]["recovered_historical_stale_windows"] is False

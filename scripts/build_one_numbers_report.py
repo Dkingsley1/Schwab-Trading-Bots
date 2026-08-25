@@ -9,7 +9,7 @@ import sqlite3
 import zipfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Iterable
 from xml.sax.saxutils import escape
 from zoneinfo import ZoneInfo
 
@@ -527,7 +527,6 @@ def _write_one_numbers_xlsx(path: Path, rows: list[tuple[str, str]]) -> None:
         "All Time": "All Time",
         "Detailed Metrics": "Detailed Metrics",
     }
-    current_section = ""
     first_section = True
     for metric, value in rows:
         metric_str = str(metric)
@@ -535,13 +534,11 @@ def _write_one_numbers_xlsx(path: Path, rows: list[tuple[str, str]]) -> None:
         if metric_str.startswith("report_section_"):
             section_title = section_name_map.get(value_str, value_str)
             if section_title == "Report Metadata":
-                current_section = section_title
                 continue
             if not first_section:
                 logical_rows.append(("", "", 0))
             logical_rows.append((section_title, "", 1))
             first_section = False
-            current_section = section_title
             continue
         if metric_str in {"day_utc", "generated_utc", "requested_day", "resolved_day", "day_fallback_applied", "db_path"}:
             continue
@@ -931,6 +928,151 @@ def _count_raw_jsonl_rows(paths: list[Path]) -> int:
     for path in paths:
         total += sum(1 for _row in _iter_raw_jsonl_rows(path))
     return total
+
+
+def _timestamp_age_seconds(ts_raw: object, *, now_utc: datetime) -> int:
+    if not ts_raw:
+        return 10**9
+    try:
+        timestamp = datetime.fromisoformat(str(ts_raw).replace("Z", "+00:00")).astimezone(timezone.utc)
+    except Exception:
+        return 10**9
+    return max(int((now_utc - timestamp).total_seconds()), 0)
+
+
+def _logical_raw_jsonl_paths(project_root: Path, day: str, bucket: str) -> list[Path]:
+    # A raw file and its compressed sibling represent the same logical stream.
+    logical_paths: dict[str, Path] = {}
+    for path in _raw_jsonl_paths(project_root, day, bucket):
+        key = str(path)[:-3] if path.name.endswith(".gz") else str(path)
+        current = logical_paths.get(key)
+        if current is None or (current.name.endswith(".gz") and not path.name.endswith(".gz")):
+            logical_paths[key] = path
+    return sorted(logical_paths.values())
+
+
+def _iter_raw_jsonl_tail_rows(path: Path, *, max_bytes: int = 2 * 1024 * 1024):
+    if path.name.endswith(".gz"):
+        yield from _iter_raw_jsonl_rows(path)
+        return
+    try:
+        with path.open("rb") as handle:
+            size = handle.seek(0, 2)
+            start = max(size - max(int(max_bytes), 1), 0)
+            handle.seek(start)
+            if start > 0:
+                handle.readline()
+            for raw_line in handle:
+                try:
+                    row = json.loads(raw_line.decode("utf-8"))
+                except Exception:
+                    continue
+                if isinstance(row, dict):
+                    yield row
+    except Exception:
+        return
+
+
+def _raw_decision_freshness_snapshot(
+    project_root: Path,
+    day: str,
+    *,
+    cutoff_utc: datetime | None = None,
+) -> dict[str, object]:
+    sampled_row_count = 0
+    timestamps: list[tuple[str]] = []
+    latest_timestamp = ""
+    latest_dt: datetime | None = None
+    logical_paths = _logical_raw_jsonl_paths(project_root, day, "decision")
+    for path in logical_paths:
+        for row in _iter_raw_jsonl_tail_rows(path):
+            sampled_row_count += 1
+            raw_timestamp = str(row.get("timestamp_utc") or "").strip()
+            if not raw_timestamp:
+                continue
+            try:
+                parsed = datetime.fromisoformat(raw_timestamp.replace("Z", "+00:00")).astimezone(timezone.utc)
+            except Exception:
+                continue
+            if latest_dt is None or parsed > latest_dt:
+                latest_dt = parsed
+                latest_timestamp = raw_timestamp
+            if cutoff_utc is None or parsed >= cutoff_utc:
+                timestamps.append((raw_timestamp,))
+    return {
+        "row_count": sampled_row_count,
+        "timestamps": timestamps,
+        "latest_timestamp": latest_timestamp,
+        "source_file_count": len(logical_paths),
+    }
+
+
+def _raw_governance_snapshot(
+    project_root: Path,
+    day: str,
+    *,
+    cutoff_utc: datetime | None = None,
+) -> dict[str, object]:
+    row_count = 0
+    timestamps: list[tuple[str]] = []
+    latest_timestamp = ""
+    latest_dt: datetime | None = None
+    logical_paths = _logical_raw_jsonl_paths(project_root, day, "governance")
+    for path in logical_paths:
+        for row in _iter_raw_jsonl_rows(path):
+            row_count += 1
+            raw_timestamp = str(row.get("timestamp_utc") or "").strip()
+            if not raw_timestamp:
+                continue
+            try:
+                parsed = datetime.fromisoformat(raw_timestamp.replace("Z", "+00:00")).astimezone(timezone.utc)
+            except Exception:
+                continue
+            if latest_dt is None or parsed > latest_dt:
+                latest_dt = parsed
+                latest_timestamp = raw_timestamp
+            if cutoff_utc is None or parsed >= cutoff_utc:
+                timestamps.append((raw_timestamp,))
+    return {
+        "row_count": row_count,
+        "timestamps": timestamps,
+        "latest_timestamp": latest_timestamp,
+        "source_file_count": len(logical_paths),
+    }
+
+
+def _prefer_raw_freshness_snapshot(
+    *,
+    sqlite_row_count: int,
+    sqlite_latest_timestamp: object,
+    raw_snapshot: dict[str, object],
+    now_utc: datetime,
+    freshness_grace_seconds: int,
+) -> bool:
+    if _safe_int(raw_snapshot.get("row_count"), 0) <= 0:
+        return False
+    if sqlite_row_count <= 0:
+        return True
+    sqlite_age = _timestamp_age_seconds(sqlite_latest_timestamp, now_utc=now_utc)
+    raw_age = _timestamp_age_seconds(raw_snapshot.get("latest_timestamp"), now_utc=now_utc)
+    return sqlite_age > max(int(freshness_grace_seconds), 0) and raw_age < sqlite_age
+
+
+def _prefer_raw_governance_snapshot(
+    *,
+    sqlite_row_count: int,
+    sqlite_latest_timestamp: object,
+    raw_snapshot: dict[str, object],
+    now_utc: datetime,
+    freshness_grace_seconds: int,
+) -> bool:
+    return _prefer_raw_freshness_snapshot(
+        sqlite_row_count=sqlite_row_count,
+        sqlite_latest_timestamp=sqlite_latest_timestamp,
+        raw_snapshot=raw_snapshot,
+        now_utc=now_utc,
+        freshness_grace_seconds=freshness_grace_seconds,
+    )
 
 
 def _requested_source_day_history_entry(
@@ -2437,23 +2579,6 @@ def _trade_decision_summary_payload_from_sqlite(
     no_sql_write: bool,
 ) -> tuple[dict[str, object], list[tuple[str, str]]]:
     now_utc = datetime.now(timezone.utc)
-    status_expr = "COALESCE(json_extract(payload_json, '$.status'), json_extract(payload_json, '$.decision'), 'UNKNOWN')"
-    bucket_case = """
-    CASE
-      WHEN LOWER(COALESCE(source_rel, '')) LIKE '%futures%'
-        OR LOWER(COALESCE(json_extract(payload_json, '$.mode'), '')) LIKE '%futures%'
-        OR COALESCE(json_extract(payload_json, '$.symbol'), '') LIKE '/%'
-        OR UPPER(COALESCE(json_extract(payload_json, '$.symbol'), '')) LIKE '%=F'
-        OR UPPER(COALESCE(json_extract(payload_json, '$.symbol'), '')) LIKE '%1!'
-      THEN 'futures'
-      WHEN UPPER(COALESCE(json_extract(payload_json, '$.symbol'), '')) LIKE '%-USD'
-        OR UPPER(COALESCE(json_extract(payload_json, '$.symbol'), '')) LIKE '%-USDC'
-        OR UPPER(COALESCE(json_extract(payload_json, '$.symbol'), '')) LIKE '%-USDT'
-      THEN 'crypto'
-      ELSE 'stocks'
-    END
-    """
-
     def _source_filter(sources: list[str], pattern: str) -> tuple[str, tuple[str, ...]]:
         exact = tuple(sorted({str(source) for source in sources if str(source).strip()}))
         if exact:
@@ -2982,18 +3107,6 @@ def main() -> int:
     crypto_top = _bucket_top_symbols("crypto")
     futures_top = _bucket_top_symbols("futures")
 
-    # Governance action mix
-    gov_action_rows = _qall(
-        conn,
-        """
-        SELECT COALESCE(json_extract(payload_json, '$.master_action'), 'UNKNOWN') AS action, COUNT(*)
-        FROM jsonl_records
-        WHERE source_rel LIKE ?
-        GROUP BY action
-        """,
-        (governance_like,),
-    )
-    gov_actions = {str(k): _safe_int(v) for k, v in gov_action_rows}
     options_style_rows = _qall(
         conn,
         """
@@ -3185,7 +3298,8 @@ def main() -> int:
         return (b - s) / denom
 
     # Stale windows in the last 4h for decisions/governance
-    cutoff_4h = _session_aligned_recent_cutoff(now_utc).isoformat()
+    cutoff_4h_utc = _session_aligned_recent_cutoff(now_utc)
+    cutoff_4h = cutoff_4h_utc.isoformat()
     decision_ts_rows = _qall(
         conn,
         """
@@ -3197,6 +3311,35 @@ def main() -> int:
         """,
         (decision_like, cutoff_4h),
     )
+    sqlite_last_decision_ts = _q1(
+        conn,
+        """
+        SELECT MAX(COALESCE(json_extract(payload_json, '$.timestamp_utc'), ''))
+        FROM jsonl_records
+        WHERE source_rel LIKE ?
+        """,
+        (decision_like,),
+    )
+    overlay_policy = _data_quality_session_policy(now_utc)
+    decision_truth_source = "sqlite_primary"
+    raw_decision_sampled_rows = 0
+    raw_decision_source_files = 0
+    raw_decision_latest_timestamp = ""
+    if _timestamp_age_seconds(sqlite_last_decision_ts, now_utc=now_utc) > int(overlay_policy["decision_grace_seconds"]):
+        raw_decision = _raw_decision_freshness_snapshot(PROJECT_ROOT, day, cutoff_utc=cutoff_4h_utc)
+        raw_decision_sampled_rows = _safe_int(raw_decision.get("row_count"), 0)
+        raw_decision_source_files = _safe_int(raw_decision.get("source_file_count"), 0)
+        raw_decision_latest_timestamp = str(raw_decision.get("latest_timestamp") or "")
+        if _prefer_raw_freshness_snapshot(
+            sqlite_row_count=decision_total_rows,
+            sqlite_latest_timestamp=sqlite_last_decision_ts,
+            raw_snapshot=raw_decision,
+            now_utc=now_utc,
+            freshness_grace_seconds=int(overlay_policy["decision_grace_seconds"]),
+        ):
+            decision_source_files = max(decision_source_files, raw_decision_source_files)
+            decision_ts_rows = list(raw_decision.get("timestamps") or [])
+            decision_truth_source = "raw_jsonl_overlay"
     governance_ts_rows = _qall(
         conn,
         """
@@ -3208,6 +3351,37 @@ def main() -> int:
         """,
         (governance_like, cutoff_4h),
     )
+    sqlite_last_governance_ts = _q1(
+        conn,
+        """
+        SELECT MAX(COALESCE(json_extract(payload_json, '$.timestamp_utc'), ''))
+        FROM jsonl_records
+        WHERE source_rel LIKE ?
+        """,
+        (governance_like,),
+    )
+    governance_truth_source = "sqlite_primary"
+    raw_governance_row_count = 0
+    raw_governance_source_files = 0
+    raw_governance_latest_timestamp = ""
+    if governance_total_rows <= 0 or _timestamp_age_seconds(sqlite_last_governance_ts, now_utc=now_utc) > int(
+        overlay_policy["governance_grace_seconds"]
+    ):
+        raw_governance = _raw_governance_snapshot(PROJECT_ROOT, day, cutoff_utc=cutoff_4h_utc)
+        raw_governance_row_count = _safe_int(raw_governance.get("row_count"), 0)
+        raw_governance_source_files = _safe_int(raw_governance.get("source_file_count"), 0)
+        raw_governance_latest_timestamp = str(raw_governance.get("latest_timestamp") or "")
+        if _prefer_raw_governance_snapshot(
+            sqlite_row_count=governance_total_rows,
+            sqlite_latest_timestamp=sqlite_last_governance_ts,
+            raw_snapshot=raw_governance,
+            now_utc=now_utc,
+            freshness_grace_seconds=int(overlay_policy["governance_grace_seconds"]),
+        ):
+            governance_total_rows = max(governance_total_rows, raw_governance_row_count)
+            governance_source_files = max(governance_source_files, raw_governance_source_files)
+            governance_ts_rows = list(raw_governance.get("timestamps") or [])
+            governance_truth_source = "raw_jsonl_overlay"
     decision_stale_windows = _stale_windows(decision_ts_rows, args.stale_seconds)
     governance_stale_windows = _stale_windows(governance_ts_rows, args.stale_seconds)
 
@@ -3412,23 +3586,15 @@ def main() -> int:
     model_drift_reason = str(drift_snapshot["model_drift_reason"])
 
     # Freshness ages
-    last_decision_ts = _q1(
-        conn,
-        """
-        SELECT MAX(COALESCE(json_extract(payload_json, '$.timestamp_utc'), ''))
-        FROM jsonl_records
-        WHERE source_rel LIKE ?
-        """,
-        (decision_like,),
+    last_decision_ts = (
+        raw_decision_latest_timestamp
+        if decision_truth_source == "raw_jsonl_overlay"
+        else sqlite_last_decision_ts
     )
-    last_governance_ts = _q1(
-        conn,
-        """
-        SELECT MAX(COALESCE(json_extract(payload_json, '$.timestamp_utc'), ''))
-        FROM jsonl_records
-        WHERE source_rel LIKE ?
-        """,
-        (governance_like,),
+    last_governance_ts = (
+        raw_governance_latest_timestamp
+        if governance_truth_source == "raw_jsonl_overlay"
+        else sqlite_last_governance_ts
     )
 
     def _age_seconds(ts_raw) -> int:
@@ -3658,6 +3824,12 @@ def main() -> int:
         ("linked_source_files_total", str(linked_source_files_total)),
         ("decision_source_files", str(decision_source_files)),
         ("governance_source_files", str(governance_source_files)),
+        ("decision_truth_source", decision_truth_source),
+        ("raw_decision_sampled_rows", str(raw_decision_sampled_rows)),
+        ("raw_decision_source_files", str(raw_decision_source_files)),
+        ("governance_truth_source", governance_truth_source),
+        ("raw_governance_row_count", str(raw_governance_row_count)),
+        ("raw_governance_source_files", str(raw_governance_source_files)),
         ("combined_action_buy", str(action_counts.get("BUY", 0))),
         ("combined_action_sell", str(action_counts.get("SELL", 0))),
         ("combined_action_hold", str(action_counts.get("HOLD", 0))),

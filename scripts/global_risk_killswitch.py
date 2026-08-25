@@ -11,6 +11,8 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+CURRENT_RAW_STREAM_MAX_AGE_SECONDS = 15 * 60
+
 from core.halt_flags import write_halt_flag_atomic
 
 PY = Path(sys.executable or "python")
@@ -66,6 +68,62 @@ def _truthy_env(name: str, default: str = "0") -> bool:
 
 def _execution_expected() -> bool:
     return _truthy_env("ALLOW_ORDER_EXECUTION", "0") and not _truthy_env("MARKET_DATA_ONLY", "1")
+
+
+def _snapshot_relative_age_seconds(payload: dict[str, Any], age_key: str) -> float | None:
+    raw_age = payload.get(age_key)
+    if raw_age is None or str(raw_age).strip() == "":
+        return None
+    try:
+        age_at_report = float(raw_age)
+    except (TypeError, ValueError):
+        return None
+    if age_at_report < 0.0:
+        return None
+
+    generated_raw = payload.get("generated_utc") or payload.get("timestamp_utc") or payload.get("as_of_utc")
+    try:
+        generated_at = datetime.fromisoformat(str(generated_raw).replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return None
+    if generated_at.tzinfo is None:
+        generated_at = generated_at.replace(tzinfo=timezone.utc)
+    report_age = max((datetime.now(timezone.utc) - generated_at.astimezone(timezone.utc)).total_seconds(), 0.0)
+    return round(age_at_report + report_age, 3)
+
+
+def _raw_stream_ages(project_root: Path, *, now_utc: datetime) -> tuple[float | None, float | None]:
+    try:
+        from scripts import build_one_numbers_report as one_numbers_report
+
+        requested_day = now_utc.strftime("%Y%m%d")
+        decision_days = [
+            day
+            for day in one_numbers_report._raw_jsonl_days(project_root, "decision")
+            if day <= requested_day
+        ]
+        governance_days = [
+            day
+            for day in one_numbers_report._raw_jsonl_days(project_root, "governance")
+            if day <= requested_day
+        ]
+        decision_day = max(decision_days, default=requested_day)
+        governance_day = max(governance_days, default=requested_day)
+        decision = one_numbers_report._raw_decision_freshness_snapshot(project_root, decision_day)
+        governance = one_numbers_report._raw_governance_snapshot(project_root, governance_day)
+        decision_age = one_numbers_report._timestamp_age_seconds(
+            decision.get("latest_timestamp"), now_utc=now_utc
+        )
+        governance_age = one_numbers_report._timestamp_age_seconds(
+            governance.get("latest_timestamp"), now_utc=now_utc
+        )
+    except Exception:
+        return None, None
+    missing_age = 10 ** 9
+    return (
+        None if decision_age >= missing_age else float(decision_age),
+        None if governance_age >= missing_age else float(governance_age),
+    )
 
 
 def _current_backpressure_is_clear(payload: dict[str, Any]) -> bool:
@@ -198,6 +256,7 @@ def _classify_hard_gates(
     backpressure: dict[str, Any],
     *,
     execution_expected: bool = False,
+    recovered_historical_stale_windows: bool = False,
 ) -> tuple[list[str], list[str], list[str]]:
     critical: list[str] = []
     degraded: list[str] = []
@@ -212,7 +271,9 @@ def _classify_hard_gates(
         if gate.strip()
     }
     for gate in hard_gate_names:
-        if gate == "ingestion_backpressure_overload" and backpressure_clear:
+        if gate == "stale_windows" and recovered_historical_stale_windows:
+            continue
+        elif gate == "ingestion_backpressure_overload" and backpressure_clear:
             stale.append(gate)
         elif gate == "ingestion_backpressure_overload" and backpressure_ratio >= severe_backpressure_ratio:
             critical.append(gate)
@@ -431,13 +492,62 @@ def main() -> int:
     pnl_proxy = float(one.get('combined_pnl_proxy', one.get('crypto_pnl_proxy', 0.0) or 0.0) or 0.0)
     stale = int(one.get('decision_stale_windows_4h', one.get('decision_stale_windows', 0) or 0) or 0)
     restarts = int(one.get('watchdog_restarts', 0) or 0)
+    current_decision_age_seconds = _snapshot_relative_age_seconds(one, "decision_last_age_sec")
+    current_governance_age_seconds = _snapshot_relative_age_seconds(one, "governance_last_age_sec")
+    decision_stale_grace_seconds = max(
+        float(one.get("data_quality_decision_stale_grace_seconds", 120.0) or 120.0),
+        1.0,
+    )
+    governance_stale_grace_seconds = max(
+        float(one.get("data_quality_governance_stale_grace_seconds", 180.0) or 180.0),
+        1.0,
+    )
+    current_stream_max_age_seconds = max(
+        float(
+            os.getenv(
+                "GLOBAL_KILL_CURRENT_STREAM_MAX_AGE_SECONDS",
+                str(CURRENT_RAW_STREAM_MAX_AGE_SECONDS),
+            )
+            or CURRENT_RAW_STREAM_MAX_AGE_SECONDS
+        ),
+        1.0,
+    )
+    decision_freshness_limit_seconds = max(decision_stale_grace_seconds, current_stream_max_age_seconds)
+    governance_freshness_limit_seconds = max(governance_stale_grace_seconds, current_stream_max_age_seconds)
+    decision_freshness_source = "one_numbers_snapshot"
+    governance_freshness_source = "one_numbers_snapshot"
+    if stale > args.max_stale_windows and not execution_expected and (
+        current_decision_age_seconds is None
+        or current_decision_age_seconds > decision_freshness_limit_seconds
+        or current_governance_age_seconds is None
+        or current_governance_age_seconds > governance_freshness_limit_seconds
+    ):
+        raw_decision_age, raw_governance_age = _raw_stream_ages(PROJECT_ROOT, now_utc=datetime.now(timezone.utc))
+        if raw_decision_age is not None and (
+            current_decision_age_seconds is None or raw_decision_age < current_decision_age_seconds
+        ):
+            current_decision_age_seconds = raw_decision_age
+            decision_freshness_source = "raw_jsonl_tail"
+        if raw_governance_age is not None and (
+            current_governance_age_seconds is None or raw_governance_age < current_governance_age_seconds
+        ):
+            current_governance_age_seconds = raw_governance_age
+            governance_freshness_source = "raw_jsonl_tail"
+    recovered_historical_stale_windows = bool(
+        stale > args.max_stale_windows
+        and not execution_expected
+        and current_decision_age_seconds is not None
+        and current_decision_age_seconds <= decision_freshness_limit_seconds
+        and current_governance_age_seconds is not None
+        and current_governance_age_seconds <= governance_freshness_limit_seconds
+    )
 
     reasons = []
     if blocked_rate > args.max_blocked_rate:
         reasons.append(f'blocked_rate>{args.max_blocked_rate}')
     if abs(pnl_proxy) > args.max_abs_pnl_proxy:
         reasons.append(f'abs_pnl_proxy>{args.max_abs_pnl_proxy}')
-    if stale > args.max_stale_windows:
+    if stale > args.max_stale_windows and not recovered_historical_stale_windows:
         reasons.append(f'stale_windows>{args.max_stale_windows}')
     if restarts > args.max_watchdog_restarts:
         reasons.append(f'watchdog_restarts>{args.max_watchdog_restarts}')
@@ -445,6 +555,7 @@ def main() -> int:
         hard_gate_names,
         backpressure,
         execution_expected=execution_expected,
+        recovered_historical_stale_windows=recovered_historical_stale_windows,
     )
     if bool(health.get('hard_gate_triggered', False)) and critical_hard_gates:
         reasons.append('health_hard_gate_triggered')
@@ -585,6 +696,13 @@ def main() -> int:
         'critical_hard_gate_names': critical_hard_gates,
         'degraded_hard_gate_names': degraded_hard_gates,
         'stale_hard_gate_names': stale_hard_gates,
+        'advisory_evidence': [
+            evidence
+            for evidence in [
+                'recovered_historical_stale_windows' if recovered_historical_stale_windows else '',
+            ]
+            if evidence
+        ],
         'degraded_clear_blockers': degraded_clear_blockers,
         'halt_pressure': {
             'required': halt_required,
@@ -628,6 +746,17 @@ def main() -> int:
             'blocked_rate': blocked_rate,
             'pnl_proxy': pnl_proxy,
             'stale_windows': stale,
+            'current_decision_age_seconds': current_decision_age_seconds,
+            'current_governance_age_seconds': current_governance_age_seconds,
+            'decision_stale_grace_seconds': decision_stale_grace_seconds,
+            'governance_stale_grace_seconds': governance_stale_grace_seconds,
+            'current_stream_max_age_seconds': current_stream_max_age_seconds,
+            'decision_freshness_limit_seconds': decision_freshness_limit_seconds,
+            'governance_freshness_limit_seconds': governance_freshness_limit_seconds,
+            'decision_freshness_source': decision_freshness_source,
+            'governance_freshness_source': governance_freshness_source,
+            'recovered_historical_stale_windows': recovered_historical_stale_windows,
+            'historical_stale_window_policy': 'advisory_only_after_current_freshness_recovers_while_live_execution_is_disabled',
             'watchdog_restarts': restarts,
             'restart_storms': restart_storms,
             'restart_storm_recovered': restart_storm_recovered,
@@ -654,6 +783,7 @@ def main() -> int:
                 'keep GLOBAL_TRADING_HALT engaged until write-path recovery pressure is clear' if write_failures > 0 else '',
                 'keep live execution read-only until account snapshot recovery pressure is clear' if snapshot_failures > 0 and execution_expected else '',
                 'run expansion pressure in degraded/throttled collection mode while recoverable health gates clear' if degraded_hard_gates or stale_hard_gates or degraded_clear_blockers else '',
+                'retain recovered historical stale windows as soak evidence without blocking current paper operation' if recovered_historical_stale_windows else '',
                 'reduce sleeve fanout or collector cadence until expansion pressure score falls below 0.35' if expansion_pressure_score >= 0.35 and not reasons else '',
                 'run quant-model-control and memory-efficiency before clearing if quant resource pressure is elevated' if quant_resource_pressure >= 0.80 else '',
                 'allow halt clear while recovered restart storms settle; keep watching process heartbeats' if restart_storms > 0 and restart_storm_recovered else '',

@@ -1981,12 +1981,26 @@ def test_health_gates_keeps_recovered_historical_stale_windows_advisory(
     _write_json(
         health_root / "one_numbers_latest.json",
         {
-            "generated_utc": now.isoformat(),
+            "generated_utc": (now - timedelta(minutes=10)).isoformat(),
             "combined_blocked_rate": "0.010000",
             "decision_stale_windows_4h": "3",
             "decision_last_age_sec": "15",
+            "governance_last_age_sec": "20",
             "watchdog_restarts": "0",
         },
+    )
+    decision_dir = tmp_path / "decision_explanations" / "shadow_default"
+    governance_dir = tmp_path / "governance" / "shadow_default"
+    decision_dir.mkdir(parents=True, exist_ok=True)
+    governance_dir.mkdir(parents=True, exist_ok=True)
+    day = now.strftime("%Y%m%d")
+    (decision_dir / f"decision_explanations_{day}.jsonl").write_text(
+        json.dumps({"timestamp_utc": now.isoformat(), "action": "HOLD"}) + "\n",
+        encoding="utf-8",
+    )
+    (governance_dir / f"master_control_{day}.jsonl").write_text(
+        json.dumps({"timestamp_utc": now.isoformat(), "master_action": "HOLD"}) + "\n",
+        encoding="utf-8",
     )
     _write_json(
         sql_root / "daily_runtime_summary_latest.json",
@@ -2021,7 +2035,28 @@ def test_health_gates_keeps_recovered_historical_stale_windows_advisory(
     assert rc == 0
     assert payload["hard_gates"]["stale_windows"] is False
     assert payload["inputs"]["stale_window_debt_recovered"] is True
+    assert payload["inputs"]["score_stale_windows"] == 0
+    assert payload["data_quality_score"] > 99.0
+    assert payload["inputs"]["decision_freshness_source"] == "raw_jsonl_tail"
+    assert payload["inputs"]["governance_freshness_source"] == "raw_jsonl_tail"
     assert "retain_historical_stale_windows_as_advisory_evidence" in payload["recommendations"]
+
+
+def test_health_gate_raw_stream_ages_cross_utc_midnight(tmp_path: Path) -> None:
+    now = datetime(2026, 8, 25, 0, 1, tzinfo=timezone.utc)
+    prior = now - timedelta(seconds=90)
+    prior_day = prior.strftime("%Y%m%d")
+    decision = tmp_path / "decision_explanations" / "shadow_default" / f"decision_explanations_{prior_day}.jsonl"
+    governance = tmp_path / "governance" / "shadow_default" / f"master_control_{prior_day}.jsonl"
+    decision.parent.mkdir(parents=True, exist_ok=True)
+    governance.parent.mkdir(parents=True, exist_ok=True)
+    decision.write_text(json.dumps({"timestamp_utc": prior.isoformat()}) + "\n", encoding="utf-8")
+    governance.write_text(json.dumps({"timestamp_utc": prior.isoformat()}) + "\n", encoding="utf-8")
+
+    decision_age, governance_age = health_gates._raw_stream_ages(tmp_path, now_utc=now)
+
+    assert decision_age == 90.0
+    assert governance_age == 90.0
 
 
 def test_health_gates_fail_on_priority_shard_latency_and_storage(tmp_path: Path, monkeypatch) -> None:

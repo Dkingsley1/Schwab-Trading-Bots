@@ -2099,6 +2099,7 @@ def _build_all_sleeves_target(heartbeat_max_age_seconds: int) -> Dict[str, Any]:
             'scripts/run_fx_shadow.py',
             'scripts/run_parallel_aggressive_modes.py',
             'scripts/run_specialized_sleeve_shadow.py',
+            'scripts/run_execution_lane.py --mode paper',
             'scripts/run_shadow_training_loop.py --broker schwab',
         ],
         'orphan_cleanup_grace_seconds': float(os.getenv('OPS_WATCHDOG_ALL_SLEEVES_ORPHAN_CLEANUP_GRACE_SECONDS', '3') or 3),

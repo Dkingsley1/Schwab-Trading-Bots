@@ -101,7 +101,7 @@ def test_latched_breaker_keeps_execution_job_parked_after_timer() -> None:
     assert parked == {"paper_executor"}
 
 
-def test_auth_token_update_recycles_long_running_schwab_job(tmp_path: Path) -> None:
+def test_auth_token_update_uses_in_process_rebind_without_launcher_recycle(tmp_path: Path) -> None:
     token_path = tmp_path / "token.json"
     token_path.write_text("{}", encoding="utf-8")
     os.utime(token_path, (500.0, 500.0))
@@ -115,8 +115,9 @@ def test_auth_token_update_recycles_long_running_schwab_job(tmp_path: Path) -> N
 
     recycle, reason = launcher._job_recycle_due(spec, started_at=400.0, now_ts=600.0)
 
-    assert recycle is True
-    assert reason == "auth_epoch_changed:token.json"
+    assert spec.auth_change_mode == "in_process_rebind"
+    assert recycle is False
+    assert reason == ""
 
 
 def test_schwab_adapter_applies_bounded_http_timeout(monkeypatch) -> None:

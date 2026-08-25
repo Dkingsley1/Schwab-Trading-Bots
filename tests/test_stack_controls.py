@@ -439,6 +439,42 @@ def test_run_all_sleeves_recycles_execution_lane_on_code_change(tmp_path) -> Non
     assert reason == "code_changed:base_trader.py"
 
 
+def test_run_all_sleeves_keeps_workers_running_during_routine_auth_rotation(tmp_path) -> None:
+    token_path = tmp_path / "token.json"
+    token_path.write_text('{"token": {"expires_at": 200}}', encoding="utf-8")
+    token_path.touch()
+    spec = run_all_sleeves.JobSpec(
+        "baseline_parallel",
+        [],
+        {},
+        breaker_group="collection",
+        auth_watch_paths=(token_path,),
+    )
+
+    recycle, reason = run_all_sleeves._job_recycle_due(spec, started_at=1.0, now_ts=120.0)
+
+    assert recycle is False
+    assert reason == ""
+
+
+def test_run_all_sleeves_supports_explicit_legacy_auth_restart(tmp_path) -> None:
+    token_path = tmp_path / "token.json"
+    token_path.write_text('{"token": {"expires_at": 200}}', encoding="utf-8")
+    spec = run_all_sleeves.JobSpec(
+        "legacy_executor",
+        [],
+        {},
+        breaker_group="execution",
+        auth_watch_paths=(token_path,),
+        auth_change_mode="launcher_restart",
+    )
+
+    recycle, reason = run_all_sleeves._job_recycle_due(spec, started_at=1.0, now_ts=120.0)
+
+    assert recycle is True
+    assert reason == "auth_epoch_changed:token.json"
+
+
 def test_run_all_sleeves_recycles_execution_lane_on_max_runtime() -> None:
     spec = run_all_sleeves.JobSpec(
         "paper_executor",
@@ -634,6 +670,52 @@ def test_run_all_sleeves_process_fanout_policy_parks_optional_sleeves(monkeypatc
     assert run_all_sleeves._job_parked_by_fanout_policy("aggressive_modes", policy) is True
     assert run_all_sleeves._job_parked_by_fanout_policy("dividend_capture", policy) is True
     assert run_all_sleeves._job_parked_by_fanout_policy("baseline_parallel", policy) is False
+
+
+def test_run_all_sleeves_fanout_preview_preserves_requested_topology() -> None:
+    args = argparse.Namespace(
+        with_specialized_sleeves=True,
+        with_aggressive_modes=True,
+        with_dividend_capture=True,
+    )
+    policy = {
+        "active": True,
+        "specialized_enabled": False,
+        "specialized_allowlist_bypass_enabled": False,
+        "aggressive_enabled": False,
+        "dividend_capture_enabled": False,
+    }
+
+    changes = run_all_sleeves._preview_process_fanout_policy_changes(args, policy)
+
+    assert changes == ["specialized_sleeves", "aggressive_modes", "dividend_capture"]
+    assert args.with_specialized_sleeves is True
+    assert args.with_aggressive_modes is True
+    assert args.with_dividend_capture is True
+
+
+def test_run_all_sleeves_releases_requested_jobs_after_fanout_hold() -> None:
+    specs = {
+        "baseline_parallel": run_all_sleeves.JobSpec("baseline_parallel", [], {}, breaker_group="collection"),
+        "dividend_capture": run_all_sleeves.JobSpec("dividend_capture", [], {}, breaker_group="collection"),
+        "aggressive_modes": run_all_sleeves.JobSpec("aggressive_modes", [], {}, breaker_group="collection"),
+    }
+    active_policy = {
+        "active": True,
+        "aggressive_enabled": False,
+        "dividend_capture_enabled": False,
+    }
+
+    parked = run_all_sleeves._fanout_policy_parked_jobs(specs, active_policy)
+    released = run_all_sleeves._newly_unparked_job_names(
+        specs,
+        {"baseline_parallel": object()},
+        {},
+        set(),
+    )
+
+    assert parked == {"dividend_capture", "aggressive_modes"}
+    assert released == ["dividend_capture", "aggressive_modes"]
 
 
 def test_run_all_sleeves_cpu_pressure_guard_narrows_specialized_to_paper_allowlist(monkeypatch, tmp_path: Path) -> None:

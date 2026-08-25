@@ -392,6 +392,7 @@ def test_all_sleeves_target_has_child_fanout_floor(monkeypatch) -> None:
     assert any("process_watchdog.py" in " ".join(command) for command in target["repair_commands"])
     assert "scripts/run_shadow_training_loop.py --broker schwab" in target["alt_patterns"]
     assert "scripts/run_shadow_training_loop.py --broker schwab" in target["orphan_cleanup_patterns"]
+    assert "scripts/run_execution_lane.py --mode paper" in target["orphan_cleanup_patterns"]
     assert target["restart_storm_settle_seconds"] == 180
     assert target["restart_storm_min_healthy_seconds"] == 90
 

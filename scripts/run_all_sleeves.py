@@ -232,6 +232,7 @@ class JobSpec:
     max_runtime_seconds: int = 0
     code_watch_paths: tuple[Path, ...] = ()
     auth_watch_paths: tuple[Path, ...] = ()
+    auth_change_mode: str = "in_process_rebind"
 
 
 def _env_flag(name: str, default: str = "0") -> bool:
@@ -570,6 +571,30 @@ def _apply_process_fanout_policy_to_args(args: argparse.Namespace, policy: dict[
     return changes
 
 
+def _preview_process_fanout_policy_changes(args: argparse.Namespace, policy: dict[str, Any]) -> list[str]:
+    preview_args = argparse.Namespace(**vars(args))
+    return _apply_process_fanout_policy_to_args(preview_args, policy)
+
+
+def _fanout_policy_parked_jobs(specs: dict[str, JobSpec], policy: dict[str, Any]) -> set[str]:
+    return {name for name in specs if _job_parked_by_fanout_policy(name, policy)}
+
+
+def _newly_unparked_job_names(
+    specs: dict[str, JobSpec],
+    procs: dict[str, subprocess.Popen],
+    quarantined_jobs: dict[str, dict[str, object]],
+    policy_parked_jobs: set[str],
+) -> list[str]:
+    return [
+        name
+        for name in specs
+        if name not in procs
+        and name not in quarantined_jobs
+        and name not in policy_parked_jobs
+    ]
+
+
 def _job_heartbeat_stale(
     spec: JobSpec,
     *,
@@ -617,13 +642,14 @@ def _job_recycle_due(
     max_runtime = max(int(spec.max_runtime_seconds or 0), 0)
     if max_runtime > 0 and (now_epoch - started) >= float(max_runtime):
         return True, f"max_runtime_seconds={max_runtime}"
-    for path in spec.auth_watch_paths:
-        try:
-            mtime = float(path.stat().st_mtime)
-        except Exception:
-            continue
-        if mtime > started:
-            return True, f"auth_epoch_changed:{path.name}"
+    if spec.auth_change_mode == "launcher_restart":
+        for path in spec.auth_watch_paths:
+            try:
+                mtime = float(path.stat().st_mtime)
+            except Exception:
+                continue
+            if mtime > started:
+                return True, f"auth_epoch_changed:{path.name}"
     for path in spec.code_watch_paths:
         try:
             mtime = float(path.stat().st_mtime)
@@ -1540,7 +1566,7 @@ def main() -> int:
         _emit_incident_snapshot("runtime_maintenance_hold_refusal", str(maintenance_hold.get("reason") or "startup"))
         return 75
     startup_fanout_policy = _process_fanout_policy()
-    fanout_policy_changes = _apply_process_fanout_policy_to_args(args, startup_fanout_policy)
+    fanout_policy_changes = _preview_process_fanout_policy_changes(args, startup_fanout_policy)
     if fanout_policy_changes:
         print(
             "[ProcessFanoutPolicy] startup_policy "
@@ -1761,7 +1787,7 @@ def main() -> int:
         env["ASYNC_PIPELINE_WORKERS"] = str(max(args.workers_aggressive, 1))
         specs["aggressive_modes"] = JobSpec("aggressive_modes", aggressive_cmd, env, breaker_group=COLLECTION_BREAKER_GROUP)
 
-    startup_policy_parked_jobs: set[str] = set()
+    startup_policy_parked_jobs = _fanout_policy_parked_jobs(specs, startup_fanout_policy)
     if args.with_paper_executor:
         paper_executor_nice = _paper_executor_target_nice(args.nice_baseline)
         paper_exec_cmd = [
@@ -1910,11 +1936,7 @@ def main() -> int:
         while True:
             now = time.time()
             fanout_policy = _process_fanout_policy()
-            policy_parked_jobs = {
-                name
-                for name in specs
-                if _job_parked_by_fanout_policy(name, fanout_policy)
-            }
+            policy_parked_jobs = _fanout_policy_parked_jobs(specs, fanout_policy)
             policy_parked_jobs.update(
                 _breaker_policy_parked_jobs(
                     specs,
@@ -2058,6 +2080,25 @@ def main() -> int:
                                 continue
                             if proc.poll() is None:
                                 _terminate_process_group(proc)
+
+            for name in _newly_unparked_job_names(specs, procs, quarantined_jobs, policy_parked_jobs):
+                procs[name] = _spawn(specs[name])
+                proc_started_at[name] = time.time()
+                print(f"[{name}] policy_released started=1")
+                _write_launcher_health(
+                    _launcher_health_payload(
+                        specs=specs,
+                        procs=procs,
+                        proc_started_at=proc_started_at,
+                        restart_history=restart_history,
+                        quarantined_jobs=quarantined_jobs,
+                        launcher_started_at=launcher_started_at,
+                        phase="running",
+                        note=f"policy_released_{name}",
+                        policy_parked_jobs=policy_parked_jobs,
+                        clean_exited_jobs=set(clean_exited_at),
+                    )
+                )
 
             for name, proc in list(procs.items()):
                 if name in quarantined_jobs:

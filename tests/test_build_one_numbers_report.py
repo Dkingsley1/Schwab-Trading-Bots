@@ -124,6 +124,109 @@ def test_resolve_sqlite_state_prefers_shard_progress_over_legacy(tmp_path, monke
     assert sqlite_state[rel]["last_line"] == 25
 
 
+def test_raw_governance_snapshot_wins_when_sqlite_overlay_is_missing(tmp_path: Path) -> None:
+    governance_dir = tmp_path / "governance" / "shadow_default"
+    governance_dir.mkdir(parents=True)
+    raw_path = governance_dir / "master_control_20260331.jsonl"
+    raw_path.write_text(
+        "\n".join(
+            [
+                json.dumps({"timestamp_utc": "2026-03-31T15:00:00+00:00", "master_action": "HOLD"}),
+                json.dumps({"timestamp_utc": "2026-03-31T15:01:00+00:00", "master_action": "BUY"}),
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    now_utc = datetime.fromisoformat("2026-03-31T15:02:00+00:00")
+
+    snapshot = one_numbers._raw_governance_snapshot(
+        tmp_path,
+        "20260331",
+        cutoff_utc=datetime.fromisoformat("2026-03-31T14:00:00+00:00"),
+    )
+
+    assert snapshot["row_count"] == 2
+    assert snapshot["source_file_count"] == 1
+    assert snapshot["latest_timestamp"] == "2026-03-31T15:01:00+00:00"
+    assert one_numbers._prefer_raw_governance_snapshot(
+        sqlite_row_count=0,
+        sqlite_latest_timestamp="",
+        raw_snapshot=snapshot,
+        now_utc=now_utc,
+        freshness_grace_seconds=180,
+    )
+
+
+def test_raw_governance_snapshot_does_not_replace_fresher_sqlite_truth(tmp_path: Path) -> None:
+    governance_dir = tmp_path / "governance" / "shadow_default"
+    governance_dir.mkdir(parents=True)
+    (governance_dir / "master_control_20260331.jsonl").write_text(
+        json.dumps({"timestamp_utc": "2026-03-31T15:00:00+00:00", "master_action": "HOLD"}) + "\n",
+        encoding="utf-8",
+    )
+    now_utc = datetime.fromisoformat("2026-03-31T15:02:00+00:00")
+    snapshot = one_numbers._raw_governance_snapshot(tmp_path, "20260331")
+
+    assert not one_numbers._prefer_raw_governance_snapshot(
+        sqlite_row_count=3,
+        sqlite_latest_timestamp="2026-03-31T15:01:30+00:00",
+        raw_snapshot=snapshot,
+        now_utc=now_utc,
+        freshness_grace_seconds=180,
+    )
+
+
+def test_raw_decision_freshness_can_lead_a_stale_sqlite_merge(tmp_path: Path) -> None:
+    decision_dir = tmp_path / "decision_explanations" / "shadow_default"
+    decision_dir.mkdir(parents=True)
+    (decision_dir / "decision_explanations_20260331.jsonl").write_text(
+        "\n".join(
+            [
+                json.dumps({"timestamp_utc": "2026-03-31T15:00:00+00:00", "action": "HOLD"}),
+                json.dumps({"timestamp_utc": "2026-03-31T15:02:00+00:00", "action": "BUY"}),
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    now_utc = datetime.fromisoformat("2026-03-31T15:03:00+00:00")
+
+    snapshot = one_numbers._raw_decision_freshness_snapshot(
+        tmp_path,
+        "20260331",
+        cutoff_utc=datetime.fromisoformat("2026-03-31T14:00:00+00:00"),
+    )
+
+    assert snapshot["row_count"] == 2
+    assert snapshot["source_file_count"] == 1
+    assert snapshot["latest_timestamp"] == "2026-03-31T15:02:00+00:00"
+    assert one_numbers._prefer_raw_freshness_snapshot(
+        sqlite_row_count=20,
+        sqlite_latest_timestamp="2026-03-31T14:55:00+00:00",
+        raw_snapshot=snapshot,
+        now_utc=now_utc,
+        freshness_grace_seconds=180,
+    )
+
+
+def test_raw_snapshot_deduplicates_hot_and_compressed_siblings(tmp_path: Path) -> None:
+    decision_dir = tmp_path / "decision_explanations" / "shadow_default"
+    decision_dir.mkdir(parents=True)
+    raw_path = decision_dir / "decision_explanations_20260331.jsonl"
+    raw_path.write_text(
+        json.dumps({"timestamp_utc": "2026-03-31T15:02:00+00:00", "action": "HOLD"}) + "\n",
+        encoding="utf-8",
+    )
+    raw_path.with_suffix(".jsonl.gz").write_bytes(b"compressed sibling must not be double-counted")
+
+    snapshot = one_numbers._raw_decision_freshness_snapshot(tmp_path, "20260331")
+
+    assert snapshot["row_count"] == 1
+    assert snapshot["source_file_count"] == 1
+    assert snapshot["latest_timestamp"] == "2026-03-31T15:02:00+00:00"
+
+
 def test_default_db_path_uses_local_fallback_for_broken_routed_symlink(tmp_path: Path, monkeypatch) -> None:
     routed_db = tmp_path / "data" / "jsonl_link.sqlite3"
     missing_external_db = tmp_path / "missing_bot_logs" / "data" / "jsonl_link.sqlite3"

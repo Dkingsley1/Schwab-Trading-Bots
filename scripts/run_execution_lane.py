@@ -1,4 +1,5 @@
 import argparse
+import fcntl
 import json
 import os
 import subprocess
@@ -11,6 +12,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 PAPER_TRADE_LOCK_PATH = PROJECT_ROOT / "governance" / "health" / "PAPER_TRADE_LOCK.flag"
+EXECUTION_LANE_LOCK_ROOT = PROJECT_ROOT / "governance" / "locks"
 CONTROL_ENV_FILES = (
     PROJECT_ROOT / "config" / ".env.runtime_resource_guard_override",
     PROJECT_ROOT / "config" / ".env.paper_400_ramp_override",
@@ -109,6 +111,35 @@ def _control_env_value(name: str, default: str = "") -> str:
     if name in _CONTROL_ENV_VALUES:
         return _CONTROL_ENV_VALUES[name]
     return os.getenv(name, default)
+
+
+def _acquire_execution_lane_lock(mode: str):
+    lock_root = Path(os.getenv("EXECUTION_LANE_LOCK_ROOT", str(EXECUTION_LANE_LOCK_ROOT))).expanduser()
+    lock_root.mkdir(parents=True, exist_ok=True)
+    lock_path = lock_root / f"execution_lane_{mode}.lock"
+    handle = lock_path.open("a+", encoding="utf-8")
+    waiting_reported = False
+    while True:
+        try:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            break
+        except BlockingIOError:
+            if not waiting_reported:
+                print(
+                    f"[ExecutionLaneLock] standby mode={mode} "
+                    f"lock_path={lock_path} reason=active_consumer_exists"
+                )
+                waiting_reported = True
+            time.sleep(2.0)
+    handle.seek(0)
+    handle.truncate()
+    handle.write(
+        f"pid={os.getpid()} mode={mode} "
+        f"started_utc={datetime.now(timezone.utc).isoformat()}\n"
+    )
+    handle.flush()
+    print(f"[ExecutionLaneLock] acquired mode={mode} lock_path={lock_path} pid={os.getpid()}")
+    return handle
 
 
 def _env_int(name: str, default: int, *, minimum: int = 1) -> int:
@@ -585,6 +616,7 @@ def main() -> int:
     )
     parser.add_argument("--queue-db", default=os.getenv("BOT_CHANNEL_QUEUE_DB", ""))
     args = parser.parse_args()
+    _execution_lane_lock = _acquire_execution_lane_lock(args.mode)
     if args.mode == "paper":
         cpu_result = _apply_paper_execution_nice()
         print(
