@@ -10,7 +10,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
 
-from core.runtime_maintenance import maintenance_hold_snapshot
+from core.runtime_maintenance import (
+    maintenance_hold_snapshot,
+    maintenance_hold_token_authorized,
+)
 from core.storage_mounts import resolve_external_storage_paths
 
 DEFAULT_EXTERNAL_MOUNT = "/Volumes/BOT_LOGS"
@@ -642,9 +645,10 @@ def route_runtime_storage(
 ) -> StorageRoutingResult:
     root = Path(project_root).resolve()
     maintenance_hold = maintenance_hold_snapshot(root)
-    if bool(maintenance_hold.get("active", False)) and not _env_flag(
-        "BOT_STORAGE_ROUTE_ALLOW_DURING_MAINTENANCE",
-        "0",
+    if (
+        bool(maintenance_hold.get("active", False))
+        and not maintenance_hold_token_authorized(maintenance_hold)
+        and not _env_flag("BOT_STORAGE_ROUTE_ALLOW_DURING_MAINTENANCE", "0")
     ):
         raise RuntimeError("runtime_maintenance_hold_blocks_storage_route_mutation")
     local_root = Path(

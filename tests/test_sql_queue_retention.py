@@ -1,3 +1,5 @@
+import sqlite3
+
 from scripts import sql_queue_retention as src
 
 
@@ -25,3 +27,19 @@ def test_queue_retention_explicit_hours_take_precedence() -> None:
 
     assert hours == 0.25
     assert mode == "explicit_hours"
+
+
+def test_full_vacuum_enables_future_incremental_reclamation(tmp_path) -> None:
+    db_path = tmp_path / "queue.sqlite3"
+    conn = sqlite3.connect(db_path)
+    try:
+        conn.execute("CREATE TABLE rows(value TEXT)")
+        conn.executemany("INSERT INTO rows(value) VALUES (?)", [("x" * 1000,)] * 1000)
+        conn.commit()
+        assert int(conn.execute("PRAGMA auto_vacuum").fetchone()[0]) == 0
+
+        src._full_vacuum_with_incremental_mode(conn)
+
+        assert int(conn.execute("PRAGMA auto_vacuum").fetchone()[0]) == 2
+    finally:
+        conn.close()

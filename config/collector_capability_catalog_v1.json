@@ -2939,6 +2939,118 @@
       "ingestion_backlog"
     ]
   },
+  "capability_gap_resolution_policy": {
+    "unsupported_default": {
+      "resolution_class": "source_admission_required",
+      "organically_clearable": false,
+      "external_source_required": true,
+      "external_entitlement_required": false,
+      "automatic_repair_eligible": false,
+      "source_requirement": "verified point-in-time source with provenance, freshness, shared-cache, and failure-isolation contracts",
+      "clear_condition": "human-approved producer admission plus fresh capability-specific proof"
+    },
+    "unavailable_default": {
+      "resolution_class": "existing_producer_proof_debt",
+      "organically_clearable": true,
+      "external_source_required": false,
+      "external_entitlement_required": false,
+      "automatic_repair_eligible": true,
+      "source_requirement": "existing configured producer",
+      "clear_condition": "fresh capability-specific proof from the configured producer"
+    },
+    "overrides": {
+      "order_book_depth": {
+        "resolution_class": "licensed_market_depth_entitlement",
+        "organically_clearable": false,
+        "external_source_required": true,
+        "external_entitlement_required": true,
+        "automatic_repair_eligible": false,
+        "source_requirement": "exchange depth or broker depth feed with point-in-time sequence provenance",
+        "clear_condition": "licensed depth source admitted and direct depth observations proven fresh"
+      },
+      "order_book_imbalance": {
+        "resolution_class": "derived_from_licensed_market_depth",
+        "organically_clearable": false,
+        "external_source_required": true,
+        "external_entitlement_required": true,
+        "automatic_repair_eligible": false,
+        "source_requirement": "the same admitted depth feed used for order_book_depth",
+        "clear_condition": "depth source admitted and imbalance derived from sequenced bid and ask levels"
+      },
+      "nbbo_quotes": {
+        "resolution_class": "consolidated_quote_entitlement",
+        "organically_clearable": false,
+        "external_source_required": true,
+        "external_entitlement_required": true,
+        "automatic_repair_eligible": false,
+        "source_requirement": "consolidated SIP NBBO or broker feed explicitly entitled as NBBO",
+        "clear_condition": "entitled NBBO source admitted with exchange and quote timestamps"
+      },
+      "venue_quality": {
+        "resolution_class": "independent_execution_venue_evidence",
+        "organically_clearable": true,
+        "external_source_required": true,
+        "external_entitlement_required": false,
+        "automatic_repair_eligible": false,
+        "source_requirement": "broker-paper or replay receipts containing venue identifiers and execution benchmarks",
+        "clear_condition": "admitted producer publishes enough venue-tagged independent execution observations"
+      },
+      "commodity_curves": {
+        "resolution_class": "official_exchange_curve_source_admission",
+        "organically_clearable": false,
+        "external_source_required": true,
+        "external_entitlement_required": false,
+        "automatic_repair_eligible": false,
+        "source_requirement": "official exchange settlement curve or licensed contract-chain observations",
+        "clear_condition": "source admitted with contract, expiry, settlement, and observation timestamps"
+      },
+      "earnings_surprise": {
+        "resolution_class": "point_in_time_consensus_entitlement",
+        "organically_clearable": false,
+        "external_source_required": true,
+        "external_entitlement_required": true,
+        "automatic_repair_eligible": false,
+        "source_requirement": "reported earnings aligned to immutable point-in-time consensus estimates",
+        "clear_condition": "licensed consensus history admitted and joined to reported earnings without lookahead"
+      },
+      "correlation_risk": {
+        "resolution_class": "organic_synchronized_return_history",
+        "organically_clearable": true,
+        "external_source_required": false,
+        "external_entitlement_required": false,
+        "automatic_repair_eligible": true,
+        "source_requirement": "existing account positions plus synchronized held-symbol and benchmark returns",
+        "clear_condition": "at least two held-symbol correlation pairs pass the direct proof contract"
+      },
+      "futures_term_structure": {
+        "resolution_class": "organic_direct_contract_curve_evidence",
+        "organically_clearable": true,
+        "external_source_required": false,
+        "external_entitlement_required": false,
+        "automatic_repair_eligible": true,
+        "source_requirement": "existing broker futures route with multiple dated contracts",
+        "clear_condition": "nonzero direct term-structure fields are observed for at least one futures root"
+      },
+      "futures_basis": {
+        "resolution_class": "organic_direct_basis_evidence",
+        "organically_clearable": true,
+        "external_source_required": false,
+        "external_entitlement_required": false,
+        "automatic_repair_eligible": true,
+        "source_requirement": "existing broker futures and synchronized spot or index anchors",
+        "clear_condition": "nonzero direct futures basis field is observed and receipted"
+      },
+      "roll_yield": {
+        "resolution_class": "organic_direct_curve_roll_evidence",
+        "organically_clearable": true,
+        "external_source_required": false,
+        "external_entitlement_required": false,
+        "automatic_repair_eligible": true,
+        "source_requirement": "existing broker futures route with adjacent expiries",
+        "clear_condition": "nonzero roll-yield field derived from direct adjacent-contract observations"
+      }
+    }
+  },
   "routing_policy": {
     "profile_mode": "content_addressed_shared_subscription_profiles",
     "fail_closed_on_invalid_catalog": true,

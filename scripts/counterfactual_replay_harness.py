@@ -16,6 +16,7 @@ from typing import Any
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_OUT_PATH = PROJECT_ROOT / "governance" / "health" / "counterfactual_replay_latest.json"
 DEFAULT_STATE_PATH = PROJECT_ROOT / "governance" / "health" / "counterfactual_replay_state.json"
+DEFAULT_CANDIDATE_PATH = PROJECT_ROOT / "governance" / "runtime" / "production_candidate_state.json"
 SOURCE_FINGERPRINT_WINDOW_BYTES = 4096
 
 
@@ -317,6 +318,7 @@ def _runtime_to_state(
     *,
     source_files: dict[str, dict[str, Any]],
     processing_mode: str,
+    candidate_binding: dict[str, Any],
 ) -> dict[str, Any]:
     rows = [dict(row) for row in (runtime.get("rolling_rows") or []) if isinstance(row, dict)]
     return {
@@ -324,13 +326,22 @@ def _runtime_to_state(
         "max_rows": int(runtime.get("max_rows", 0) or 0),
         "latest_ts": str(runtime.get("latest_ts") or ""),
         "processing_mode": str(processing_mode or "rebuild"),
+        "candidate_binding": dict(candidate_binding),
         "source_files": source_files,
         "rolling_rows": rows[-int(max(runtime.get("max_rows", 1) or 1, 1)) :],
     }
 
 
-def _can_incrementally_reuse(state: dict[str, Any], current_paths: list[Path], *, max_rows: int) -> bool:
+def _can_incrementally_reuse(
+    state: dict[str, Any],
+    current_paths: list[Path],
+    *,
+    max_rows: int,
+    candidate_binding: dict[str, Any],
+) -> bool:
     if int(state.get("max_rows", 0) or 0) != int(max(max_rows, 1)):
+        return False
+    if state.get("candidate_binding") != candidate_binding:
         return False
     tracked = state.get("source_files") if isinstance(state.get("source_files"), dict) else {}
     tracked_paths = {str(path) for path in tracked.keys()}
@@ -428,6 +439,115 @@ def _safe_float(raw: Any, default: float = 0.0) -> float:
         return float(raw)
     except Exception:
         return float(default)
+
+
+def _parse_timestamp(raw: Any) -> datetime | None:
+    text = str(raw or "").strip()
+    if not text:
+        return None
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _candidate_binding(project_root: Path) -> dict[str, Any]:
+    path = project_root / "governance" / "runtime" / DEFAULT_CANDIDATE_PATH.name
+    payload = _load_json(path)
+    if not payload:
+        return {
+            "required": False,
+            "valid": True,
+            "candidate_id": "",
+            "generation": 0,
+            "cutoff_utc": "",
+            "state_receipt_sha256": "",
+            "source_path": str(path),
+            "scope": "unbound_development_diagnostic",
+        }
+    candidate_id = str(payload.get("candidate_id") or "").strip()
+    generation = int(_safe_float(payload.get("generation"), 0.0))
+    cutoff = str(
+        (payload.get("scope_windows_started_utc") or {}).get("execution")
+        if isinstance(payload.get("scope_windows_started_utc"), dict)
+        else ""
+    ).strip() or str(payload.get("accepted_at_utc") or "").strip()
+    valid = bool(candidate_id and generation > 0 and _parse_timestamp(cutoff))
+    return {
+        "required": True,
+        "valid": valid,
+        "candidate_id": candidate_id,
+        "generation": generation,
+        "cutoff_utc": cutoff,
+        "state_receipt_sha256": str(payload.get("overall_sha256") or ""),
+        "source_path": str(path),
+        "scope": "current_candidate_only",
+    }
+
+
+def _row_candidate_identity(row: dict[str, Any]) -> tuple[str, int]:
+    metadata = row.get("metadata") if isinstance(row.get("metadata"), dict) else {}
+    candidate_id = str(
+        row.get("production_candidate_id")
+        or row.get("candidate_id")
+        or metadata.get("production_candidate_id")
+        or metadata.get("candidate_id")
+        or ""
+    ).strip()
+    generation = int(
+        _safe_float(
+            row.get("production_candidate_generation")
+            or row.get("candidate_generation")
+            or metadata.get("production_candidate_generation")
+            or metadata.get("candidate_generation"),
+            0.0,
+        )
+    )
+    return candidate_id, generation
+
+
+def _filter_candidate_rows(
+    rows: list[dict[str, Any]],
+    candidate_binding: dict[str, Any],
+) -> tuple[list[dict[str, Any]], dict[str, int]]:
+    counts = {
+        "input_rows": len(rows),
+        "eligible_rows": 0,
+        "before_cutoff_rows": 0,
+        "identity_missing_rows": 0,
+        "identity_mismatch_rows": 0,
+        "timestamp_missing_rows": 0,
+    }
+    if not candidate_binding.get("required"):
+        counts["eligible_rows"] = len(rows)
+        return rows, counts
+    if not candidate_binding.get("valid"):
+        return [], counts
+    cutoff = _parse_timestamp(candidate_binding.get("cutoff_utc"))
+    expected_id = str(candidate_binding.get("candidate_id") or "")
+    expected_generation = int(candidate_binding.get("generation") or 0)
+    eligible: list[dict[str, Any]] = []
+    for row in rows:
+        observed_at = _parse_timestamp(row.get("timestamp_utc"))
+        if observed_at is None:
+            counts["timestamp_missing_rows"] += 1
+            continue
+        if cutoff is not None and observed_at < cutoff:
+            counts["before_cutoff_rows"] += 1
+            continue
+        candidate_id, generation = _row_candidate_identity(row)
+        if not candidate_id or generation <= 0:
+            counts["identity_missing_rows"] += 1
+            continue
+        if candidate_id != expected_id or generation != expected_generation:
+            counts["identity_mismatch_rows"] += 1
+            continue
+        eligible.append(row)
+    counts["eligible_rows"] = len(eligible)
+    return eligible, counts
 
 
 def _row_identity(row: dict[str, Any]) -> str:
@@ -538,10 +658,16 @@ def build_counterfactual_report(
     )
     current_paths = _glob_source_paths(project_root)
     state = _load_json(state_path)
+    candidate_binding = _candidate_binding(project_root)
 
     processing_mode = "rebuild"
     file_scan_counts = {"full_files": 0, "incremental_files": 0, "reused_files": 0}
-    if _can_incrementally_reuse(state, current_paths, max_rows=max_rows):
+    if _can_incrementally_reuse(
+        state,
+        current_paths,
+        max_rows=max_rows,
+        candidate_binding=candidate_binding,
+    ):
         runtime = _state_to_runtime(state, max_rows=max_rows)
         tracked = state.get("source_files") if isinstance(state.get("source_files"), dict) else {}
         processing_mode = "incremental"
@@ -570,12 +696,21 @@ def build_counterfactual_report(
         )
 
     raw_rows = [dict(row) for row in (runtime.get("rolling_rows") or []) if isinstance(row, dict)]
-    rows, duplicate_rows_dropped = _dedupe_runtime_rows(raw_rows)
+    deduped_rows, duplicate_rows_dropped = _dedupe_runtime_rows(raw_rows)
+    rows, candidate_filter = _filter_candidate_rows(
+        deduped_rows,
+        candidate_binding,
+    )
     runtime["rolling_rows"] = rows[-int(max(max_rows, 1)) :]
     rows = [dict(row) for row in runtime["rolling_rows"]]
     _write_json(
         state_path,
-        _runtime_to_state(runtime, source_files=next_source_files, processing_mode=processing_mode),
+        _runtime_to_state(
+            runtime,
+            source_files=next_source_files,
+            processing_mode=processing_mode,
+            candidate_binding=candidate_binding,
+        ),
     )
 
     candidates = _candidate_rows()
@@ -635,9 +770,25 @@ def build_counterfactual_report(
             top_candidates.append({"profile": profile, **values[0]})
     top_candidates.sort(key=lambda row: (float(row.get("aggregate_net_pnl_total", 0.0) or 0.0), row.get("profile", "")), reverse=True)
 
+    status = (
+        "blocked_candidate_binding_invalid"
+        if candidate_binding.get("required") and not candidate_binding.get("valid")
+        else (
+            "waiting_for_candidate_rows"
+            if candidate_binding.get("required") and not rows
+            else "ready"
+        )
+    )
     return {
         "timestamp_utc": _utc_now(),
-        "ok": True,
+        "ok": status != "blocked_candidate_binding_invalid",
+        "overall_status": status,
+        "candidate_binding": {
+            **candidate_binding,
+            **candidate_filter,
+            "exact_identity_required": bool(candidate_binding.get("required")),
+            "cross_candidate_pooling_allowed": False,
+        },
         "profiles_reviewed": sorted(profile_scores.keys()),
         "candidate_count": int(sum(len(rows) for rows in profile_scores.values())),
         "top_candidates": top_candidates[:12],
@@ -657,6 +808,13 @@ def build_counterfactual_report(
             ],
             "decision_filter_mode": "action_aware_margin",
             "pnl_attribution_policy": "post_cost_event_delta_first",
+        },
+        "authority_contract": {
+            "diagnostic_only": True,
+            "changes_runtime_thresholds": False,
+            "paper_execution_authority": False,
+            "live_execution_authority": False,
+            "automatic_promotion_authority": False,
         },
     }
 

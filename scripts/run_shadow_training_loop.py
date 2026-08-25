@@ -159,7 +159,10 @@ from core.market_context_features import (
     summarize_structured_news_items,
 )
 from core.runtime_python import resolve_runtime_python, resolve_training_python
-from core.runtime_maintenance import maintenance_hold_snapshot
+from core.runtime_maintenance import (
+    maintenance_hold_blocks_runtime_start,
+    maintenance_hold_snapshot,
+)
 from core.runtime_layers import (
     BackpressureController,
     CanaryRollout,
@@ -23151,7 +23154,7 @@ def main() -> None:
     )
     args = parser.parse_args()
     maintenance_hold = maintenance_hold_snapshot(PROJECT_ROOT_PATH)
-    if bool(maintenance_hold.get("active", False)):
+    if maintenance_hold_blocks_runtime_start(maintenance_hold):
         print(
             "RUNTIME_MAINTENANCE_HOLD=1 set; refusing to start shadow loop. "
             f"reason={maintenance_hold.get('reason', 'runtime_maintenance')}"

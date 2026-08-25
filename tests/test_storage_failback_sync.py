@@ -5,6 +5,9 @@ import os
 import sys
 from pathlib import Path
 
+from core.channel_queue import ChannelQueue
+from core.runtime_maintenance import MAINTENANCE_HOLD_TOKEN_ENV
+
 
 ROOT = Path('/Users/dankingsley/PycharmProjects/schwab_trading_bot')
 SCRIPTS_DIR = ROOT / 'scripts'
@@ -28,6 +31,92 @@ data_retention_policy = _load_module(
     'data_retention_policy_for_storage_sync_test',
     ROOT / 'scripts' / 'data_retention_policy.py',
 )
+
+
+def test_channel_queue_handoff_requires_registered_consumers_to_be_fully_acked(tmp_path):
+    queue_path = tmp_path / 'bot_channel_queue.sqlite3'
+    queue = ChannelQueue(queue_path)
+    queue.enqueue(channel='execution_intent', payload={'symbol': 'SPY'})
+    messages = queue.read_from_cursor(
+        consumer='execution_lane_paper',
+        channel='execution_intent',
+    )
+    queue.ack_messages(
+        consumer='execution_lane_paper',
+        channel='execution_intent',
+        messages=messages,
+    )
+
+    drained = storage_failback_sync._channel_queue_handoff_snapshot(queue_path)
+
+    assert drained['schema_ready'] is True
+    assert drained['registered_consumer_count'] == 1
+    assert drained['pending_registered_consumer_rows'] is False
+    assert drained['fully_acked_registered_consumers'] is True
+
+    queue.enqueue(channel='execution_intent', payload={'symbol': 'QQQ'})
+    pending = storage_failback_sync._channel_queue_handoff_snapshot(queue_path)
+    assert pending['pending_registered_consumer_rows'] is True
+    assert pending['fully_acked_registered_consumers'] is False
+
+
+def test_build_sqlite_skip_report_accepts_drained_larger_queue_standby(monkeypatch, tmp_path):
+    project_root = tmp_path / 'project'
+    local_root = project_root / 'local_fallback_storage'
+    external_root = tmp_path / 'external'
+    repo_data = project_root / 'data'
+    local_data = local_root / 'data'
+    external_data = external_root / 'data'
+    repo_data.mkdir(parents=True)
+    local_data.mkdir(parents=True)
+    external_data.mkdir(parents=True)
+
+    local_queue_path = local_data / 'bot_channel_queue.sqlite3'
+    external_queue_path = external_data / 'bot_channel_queue.sqlite3'
+    local_queue = ChannelQueue(local_queue_path)
+    external_queue = ChannelQueue(external_queue_path)
+    del external_queue
+    local_queue.enqueue(
+        channel='execution_intent',
+        payload={'symbol': 'SPY', 'evidence': 'x' * 200000},
+    )
+    messages = local_queue.read_from_cursor(
+        consumer='execution_lane_paper',
+        channel='execution_intent',
+    )
+    local_queue.ack_messages(
+        consumer='execution_lane_paper',
+        channel='execution_intent',
+        messages=messages,
+    )
+    local_queue.enqueue(
+        channel='execution_result',
+        payload={'symbol': 'SPY', 'evidence': 'x' * 200000},
+    )
+
+    for name in ('jsonl_link.sqlite3', 'snapshot_context.sqlite3'):
+        (local_data / name).write_text('local', encoding='utf-8')
+        (external_data / name).write_text('external-ready', encoding='utf-8')
+        (repo_data / name).symlink_to(external_data / name)
+    (repo_data / 'bot_channel_queue.sqlite3').symlink_to(external_queue_path)
+
+    monkeypatch.setenv('BOT_LOGS_LOCAL_FALLBACK_ROOT', str(local_root))
+    monkeypatch.setenv('BOT_LOGS_PREFER_EXTERNAL', '1')
+    monkeypatch.setenv('BOT_CHANNEL_QUEUE_DB', str(repo_data / 'bot_channel_queue.sqlite3'))
+
+    payload = storage_failback_sync._build_sqlite_skip_report(
+        project_root,
+        external_root,
+        mode='external',
+        active_root=external_root,
+    )
+
+    by_rel = {row['relative_path']: row for row in payload['entries']}
+    queue_row = by_rel['data/bot_channel_queue.sqlite3']
+    assert queue_row['local']['size_bytes'] > queue_row['external']['size_bytes']
+    assert queue_row['route_verification']['state'] == 'active_external_queue_fully_acked_standby'
+    assert payload['route_verification']['verification_state'] == 'ready'
+    assert payload['route_verification']['mismatches'] == []
 
 
 def test_maybe_autoprune_external_low_space(monkeypatch, tmp_path):
@@ -141,6 +230,34 @@ def test_preserve_verified_local_route_intent_yields_to_explicit_switch(monkeypa
     assert payload["explicit_route_switch"] is True
     assert payload["override_repaired"] is False
     assert not (project_root / "config" / ".env.storage_override").exists()
+
+
+def test_matching_maintenance_token_authorizes_storage_failback(monkeypatch):
+    snapshot = {
+        "active": True,
+        "valid": True,
+        "token": "storage-transition-token",
+    }
+    monkeypatch.setenv(
+        MAINTENANCE_HOLD_TOKEN_ENV,
+        "storage-transition-token",
+    )
+
+    assert storage_failback_sync._maintenance_hold_blocks_route_mutation(snapshot) is False
+
+
+def test_wrong_maintenance_token_keeps_storage_failback_blocked(monkeypatch):
+    snapshot = {
+        "active": True,
+        "valid": True,
+        "token": "storage-transition-token",
+    }
+    monkeypatch.setenv(
+        MAINTENANCE_HOLD_TOKEN_ENV,
+        "wrong-token",
+    )
+
+    assert storage_failback_sync._maintenance_hold_blocks_route_mutation(snapshot) is True
 
 
 def test_lock_busy_payload_preserves_last_completed_route(tmp_path):

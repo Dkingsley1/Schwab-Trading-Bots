@@ -4,6 +4,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from core.collector_capability_routing import (
+    _gap_resolution_contract,
     _producer_rows,
     build_capability_routing,
     resolve_runtime_ingestion_route,
@@ -125,6 +126,19 @@ def test_repository_catalog_is_complete_and_execution_free() -> None:
     assert len(catalog["planes"]) == 25
     assert capability_count >= 250
     assert set(catalog["safety_contract"].values()) == {False}
+    gap_overrides = catalog["capability_gap_resolution_policy"]["overrides"]
+    assert {
+        "order_book_depth",
+        "order_book_imbalance",
+        "nbbo_quotes",
+        "venue_quality",
+        "commodity_curves",
+        "earnings_surprise",
+        "correlation_risk",
+        "futures_term_structure",
+        "futures_basis",
+        "roll_yield",
+    }.issubset(gap_overrides)
 
 
 def test_every_decision_family_has_explicit_economic_context() -> None:
@@ -212,6 +226,16 @@ def test_router_shares_profiles_and_reports_unsupported_coverage(tmp_path: Path)
     assert health["summary"]["subscription_profile_count"] == 1
     assert health["coverage_debt"]["gap_count"] > 0
     assert health["coverage_debt"]["blocks_guarded_paper_soak"] is False
+    gap_rows = {
+        row["capability_id"]: row for row in health["coverage_debt"]["rows"]
+    }
+    assert gap_rows["order_book_depth"]["external_entitlement_required"] is True
+    correlation_resolution = _gap_resolution_contract(
+        catalog, "correlation_risk", "unavailable"
+    )
+    assert correlation_resolution["organically_clearable"] is True
+    assert correlation_resolution["automatic_repair_eligible"] is True
+    assert health["coverage_debt"]["external_entitlement_gap_count"] >= 1
     assert routing["bot_bindings"][0]["profile_id"] == routing["bot_bindings"][1]["profile_id"]
     assert set(routing["authority_contract"].values()) == {False}
     assert routing["cache_contract"]["router_launches_physical_collectors"] is False

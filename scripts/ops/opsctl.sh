@@ -234,7 +234,7 @@ abort_loop_refresh_if_safety_flags_active() {
   fi
 
   if [[ -f "$RUNTIME_MAINTENANCE_HOLD_FLAG" ]]; then
-    if "$PY" "$PROJECT_ROOT/scripts/ops/runtime_maintenance_hold.py" --json | "$PY" -c 'import json,sys; raise SystemExit(0 if json.load(sys.stdin).get("active") else 1)'; then
+    if "$PY" "$PROJECT_ROOT/scripts/ops/runtime_maintenance_hold.py" --json | "$PY" -c 'import json,sys; p=json.load(sys.stdin); raise SystemExit(0 if p.get("active") and not p.get("token_authorized") else 1)'; then
       blocked=1
       echo "${action_name}_blocked=runtime_maintenance_hold" >&2
       echo "runtime_maintenance_hold_flag=$RUNTIME_MAINTENANCE_HOLD_FLAG" >&2

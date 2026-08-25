@@ -30,7 +30,12 @@ DEFAULT_TARGET_FREE_GB = 125.0
 DEFAULT_MIN_AGE_HOURS = 12.0
 DEFAULT_PREFIX_VERIFY_BYTES = 65536
 DEFAULT_FALLBACK_QUARANTINE_ROOT = PROJECT_ROOT / "local_fallback_storage" / "quarantine" / "bot_logs_cleanup"
-DEFAULT_INTERNAL_QUARANTINE_MIN_FREE_GB = float(os.getenv("BOT_LOGS_CLEANUP_INTERNAL_QUARANTINE_MIN_FREE_GB", "25"))
+DEFAULT_INTERNAL_QUARANTINE_MIN_FREE_GB = float(
+    os.getenv(
+        "BOT_LOGS_CLEANUP_INTERNAL_QUARANTINE_MIN_FREE_GB",
+        os.getenv("BOT_LOCAL_STORAGE_TARGET_FREE_GB", str(DEFAULT_TARGET_FREE_GB)),
+    )
+)
 DEFAULT_CORRUPT_SQLITE_QUARANTINE_MIN_AGE_HOURS = float(
     os.getenv("BOT_LOGS_CLEANUP_CORRUPT_SQLITE_MIN_AGE_HOURS", "24")
 )
@@ -98,6 +103,31 @@ def _file_size(path: Path) -> int:
         return int(path.stat().st_size)
     except Exception:
         return 0
+
+
+def _file_allocated_size(path: Path) -> int:
+    try:
+        stat = path.stat()
+    except Exception:
+        return 0
+    logical_size = max(int(stat.st_size), 0)
+    blocks = getattr(stat, "st_blocks", None)
+    if blocks is None:
+        return logical_size
+    return min(logical_size, max(int(blocks), 0) * 512)
+
+
+def _file_identity(path: Path) -> dict[str, int]:
+    try:
+        stat = path.stat()
+    except Exception:
+        return {}
+    return {
+        "inode": int(stat.st_ino),
+        "size_bytes": int(stat.st_size),
+        "allocated_bytes": _file_allocated_size(path),
+        "mtime_ns": int(stat.st_mtime_ns),
+    }
 
 
 def _file_age_hours(path: Path, *, now: datetime | None = None) -> float:
@@ -239,6 +269,7 @@ def _scan_duplicate_jsonl_gzip(
             blocked_reasons.append(str(verification.get("state") or "verification_failed"))
         raw_size = _file_size(raw_path)
         gz_size = _file_size(gz_path)
+        raw_allocated_size = _file_allocated_size(raw_path)
         rows.append(
             {
                 "tier": 1,
@@ -248,8 +279,9 @@ def _scan_duplicate_jsonl_gzip(
                 "path": str(raw_path),
                 "compressed_path": str(gz_path),
                 "size_bytes": int(raw_size),
+                "allocated_bytes": int(raw_allocated_size),
                 "compressed_size_bytes": int(gz_size),
-                "reclaimable_bytes": int(raw_size),
+                "reclaimable_bytes": int(raw_allocated_size),
                 "age_hours": round(age_hours, 3),
                 "current_day": bool(current_day),
                 "eligible": bool(eligible),
@@ -299,6 +331,8 @@ def _scan_stale_stage(root: Path, *, now: datetime | None = None) -> list[dict[s
         min_age = _value_window_hours(value)
         eligible = age_hours >= min_age
         blocked = [] if eligible else [f"value_window_not_met:{value}"]
+        size_bytes = _file_size(path)
+        allocated_bytes = _file_allocated_size(path)
         rows.append(
             {
                 "tier": 2,
@@ -307,8 +341,9 @@ def _scan_stale_stage(root: Path, *, now: datetime | None = None) -> list[dict[s
                 "economic_value": value,
                 "relative_path": _relative(path, root),
                 "path": str(path),
-                "size_bytes": _file_size(path),
-                "reclaimable_bytes": _file_size(path),
+                "size_bytes": int(size_bytes),
+                "allocated_bytes": int(allocated_bytes),
+                "reclaimable_bytes": int(allocated_bytes),
                 "age_hours": round(age_hours, 3),
                 "min_age_hours": min_age,
                 "eligible": bool(eligible),
@@ -354,6 +389,7 @@ def _scan_external_local_fallback_copies(
         if not path.is_file() or ".local_fallback" not in path.name:
             continue
         size_bytes = _file_size(path)
+        allocated_bytes = _file_allocated_size(path)
         rel_path = _relative(path, root)
         canonical_name = _local_fallback_canonical_name(path.name)
         canonical_rel = str(Path(rel_path).with_name(canonical_name))
@@ -396,7 +432,8 @@ def _scan_external_local_fallback_copies(
                 "local_preservation_exists": bool(local_preservation_path.exists()),
                 "external_canonical_exists": bool(external_canonical_path.exists()),
                 "size_bytes": int(size_bytes),
-                "reclaimable_bytes": int(size_bytes),
+                "allocated_bytes": int(allocated_bytes),
+                "reclaimable_bytes": int(allocated_bytes),
                 "quarantine_disk": quarantine_disk,
                 "min_quarantine_free_gb": round(float(min_quarantine_free_gb), 3),
                 "age_hours": round(age_hours, 3),
@@ -445,6 +482,7 @@ def _scan_stateful_corrupt_quarantine(
         if ".sqlite" not in lower_name and ".db" not in lower_name:
             continue
         size_bytes = _file_size(path)
+        allocated_bytes = _file_allocated_size(path)
         rel_path = _relative(path, root)
         canonical_name = path.name.split(".corrupt-", 1)[0]
         active_sibling = path.with_name(canonical_name)
@@ -489,7 +527,8 @@ def _scan_stateful_corrupt_quarantine(
                 "active_sibling_path": str(active_sibling),
                 "active_sibling_exists": bool(active_sibling.exists() and not active_sibling.is_symlink()),
                 "size_bytes": int(size_bytes),
-                "reclaimable_bytes": int(size_bytes),
+                "allocated_bytes": int(allocated_bytes),
+                "reclaimable_bytes": int(allocated_bytes),
                 "quarantine_disk": quarantine_disk,
                 "min_quarantine_free_gb": round(float(min_quarantine_free_gb), 3),
                 "age_hours": round(age_hours, 3),
@@ -526,8 +565,14 @@ def _select_candidates(
     eligible.sort(
         key=lambda row: (
             _safe_int(row.get("tier"), 99),
+            0 if str(row.get("action") or "delete") == "delete" else 1,
             _safe_int(row.get("risk_score"), 99),
-            -_safe_int(row.get("reclaimable_bytes"), 0),
+            0 if _safe_int(row.get("reclaimable_bytes"), 0) >= needed else 1,
+            (
+                _safe_int(row.get("reclaimable_bytes"), 0)
+                if _safe_int(row.get("reclaimable_bytes"), 0) >= needed
+                else -_safe_int(row.get("reclaimable_bytes"), 0)
+            ),
             str(row.get("relative_path") or ""),
         )
     )
@@ -546,7 +591,8 @@ def _select_candidates(
             min_quarantine_free_bytes = int(max(_safe_float(row.get("min_quarantine_free_gb"), 0.0), 0.0) * (1024**3))
             quarantine_budget = max(quarantine_free_bytes - min_quarantine_free_bytes, 0)
             already_selected = int(quarantine_selected_by_disk.get(disk_key, 0))
-            if quarantine_budget and already_selected + reclaimable > quarantine_budget:
+            destination_bytes = _safe_int(row.get("size_bytes"), reclaimable)
+            if already_selected + destination_bytes > quarantine_budget:
                 continue
         if max_bytes and selected_bytes + reclaimable > max_bytes and selected:
             continue
@@ -557,7 +603,9 @@ def _select_candidates(
         if str(row.get("action") or "") == "quarantine":
             quarantine_disk = row.get("quarantine_disk") if isinstance(row.get("quarantine_disk"), dict) else {}
             disk_key = str(quarantine_disk.get("path") or row.get("destination_path") or "local_quarantine")
-            quarantine_selected_by_disk[disk_key] = int(quarantine_selected_by_disk.get(disk_key, 0)) + reclaimable
+            quarantine_selected_by_disk[disk_key] = int(quarantine_selected_by_disk.get(disk_key, 0)) + _safe_int(
+                row.get("size_bytes"), reclaimable
+            )
         if int(free_bytes) + selected_bytes >= int(target_free_bytes):
             break
         if max_bytes and selected_bytes >= max_bytes:
@@ -582,13 +630,19 @@ def _apply_selected(rows: list[dict[str, Any]]) -> dict[str, Any]:
     offloaded_files = 0
     offloaded_bytes = 0
     errors: list[dict[str, str]] = []
+    skipped_rows: list[dict[str, str]] = []
     deleted_rows: list[dict[str, Any]] = []
     offloaded_rows: list[dict[str, Any]] = []
     for row in rows:
         path = Path(str(row.get("path") or "")).expanduser()
         if not path.exists() or not path.is_file():
             continue
-        size_bytes = _file_size(path)
+        expected_identity = row.get("source_identity") if isinstance(row.get("source_identity"), dict) else {}
+        current_identity = _file_identity(path)
+        if expected_identity and current_identity != expected_identity:
+            skipped_rows.append({"path": str(path), "reason": "source_changed_since_scan"})
+            continue
+        size_bytes = _safe_int(row.get("reclaimable_bytes"), _file_allocated_size(path))
         action = str(row.get("action") or "delete")
         if action == "quarantine":
             destination = _unique_destination(Path(str(row.get("destination_path") or "")).expanduser())
@@ -636,8 +690,42 @@ def _apply_selected(rows: list[dict[str, Any]]) -> dict[str, Any]:
         "reclaimed_bytes": int(reclaimed_bytes),
         "reclaimed_gb": _gb(reclaimed_bytes),
         "errors": errors,
+        "skipped_files": len(skipped_rows),
+        "skipped_rows": skipped_rows[:50],
         "deleted_rows": deleted_rows[:50],
         "offloaded_rows": offloaded_rows[:50],
+    }
+
+
+def _merge_apply_results(results: list[dict[str, Any]]) -> dict[str, Any]:
+    merged = {
+        "deleted_files": 0,
+        "deleted_bytes": 0,
+        "offloaded_files": 0,
+        "offloaded_bytes": 0,
+        "errors": [],
+        "skipped_files": 0,
+        "skipped_rows": [],
+        "deleted_rows": [],
+        "offloaded_rows": [],
+    }
+    for result in results:
+        for key in ("deleted_files", "deleted_bytes", "offloaded_files", "offloaded_bytes", "skipped_files"):
+            merged[key] += _safe_int(result.get(key), 0)
+        for key in ("errors", "skipped_rows", "deleted_rows", "offloaded_rows"):
+            values = result.get(key) if isinstance(result.get(key), list) else []
+            merged[key].extend(values)
+    estimated_reclaimed_bytes = int(merged["deleted_bytes"] + merged["offloaded_bytes"])
+    return {
+        **merged,
+        "deleted_gb": _gb(merged["deleted_bytes"]),
+        "offloaded_gb": _gb(merged["offloaded_bytes"]),
+        "reclaimed_bytes": estimated_reclaimed_bytes,
+        "reclaimed_gb": _gb(estimated_reclaimed_bytes),
+        "errors": merged["errors"][:50],
+        "skipped_rows": merged["skipped_rows"][:50],
+        "deleted_rows": merged["deleted_rows"][:50],
+        "offloaded_rows": merged["offloaded_rows"][:50],
     }
 
 
@@ -742,6 +830,14 @@ def build_payload(
         else {}
     )
     all_candidates = duplicate_rows + fallback_rows + corrupt_rows + stale_rows
+    for row in all_candidates:
+        path = Path(str(row.get("path") or "")).expanduser()
+        identity = _file_identity(path)
+        row["source_identity"] = identity
+        if identity:
+            row["size_bytes"] = int(identity["size_bytes"])
+            row["allocated_bytes"] = int(identity["allocated_bytes"])
+            row["reclaimable_bytes"] = int(identity["allocated_bytes"])
     selected = _select_candidates(
         all_candidates,
         free_bytes=free_bytes,
@@ -764,14 +860,54 @@ def build_payload(
         "reclaimed_bytes": 0,
         "reclaimed_gb": 0.0,
         "errors": [],
+        "skipped_files": 0,
+        "skipped_rows": [],
         "deleted_rows": [],
         "offloaded_rows": [],
     }
     if apply and selected:
-        apply_result = {"applied": True, **_apply_selected(selected)}
-        disk_after = _disk_snapshot(external_root)
+        selected_paths: set[str] = set()
+        apply_rounds: list[dict[str, Any]] = []
+        selected_round = list(selected)
+        estimated_attempted_bytes = 0
+        while selected_round:
+            apply_rounds.append(_apply_selected(selected_round))
+            for row in selected_round:
+                selected_paths.add(str(row.get("path") or ""))
+                estimated_attempted_bytes += _safe_int(row.get("reclaimable_bytes"), 0)
+            disk_after = _disk_snapshot(external_root)
+            actual_free_bytes = _safe_int(disk_after.get("free_bytes"), free_bytes)
+            if actual_free_bytes >= target_free_bytes or estimated_attempted_bytes >= max_delete_bytes:
+                break
+            remaining_delete_candidates = [
+                row
+                for row in all_candidates
+                if str(row.get("path") or "") not in selected_paths
+                and str(row.get("action") or "delete") == "delete"
+            ]
+            remaining_budget = max(max_delete_bytes - estimated_attempted_bytes, 0)
+            if not remaining_delete_candidates or remaining_budget <= 0:
+                break
+            selected_round = _select_candidates(
+                remaining_delete_candidates,
+                free_bytes=actual_free_bytes,
+                target_free_bytes=target_free_bytes,
+                max_tier=max(int(max_tier), 1),
+                max_delete_bytes=remaining_budget,
+            )
+            selected.extend(selected_round)
+        apply_result = {"applied": True, **_merge_apply_results(apply_rounds)}
+        actual_reclaimed_bytes = max(_safe_int(disk_after.get("free_bytes"), free_bytes) - free_bytes, 0)
+        apply_result["actual_reclaimed_bytes"] = int(actual_reclaimed_bytes)
+        apply_result["actual_reclaimed_gb"] = _gb(actual_reclaimed_bytes)
+        apply_result["apply_rounds"] = len(apply_rounds)
+        selected_bytes = sum(_safe_int(row.get("reclaimable_bytes"), 0) for row in selected)
+        projected_free_bytes = int(free_bytes + selected_bytes)
     elif apply:
         apply_result["applied"] = True
+        apply_result["actual_reclaimed_bytes"] = 0
+        apply_result["actual_reclaimed_gb"] = 0.0
+        apply_result["apply_rounds"] = 0
 
     actual_free_bytes = _safe_int(disk_after.get("free_bytes"), projected_free_bytes if not apply else free_bytes)
     comparison_free_bytes = actual_free_bytes if apply else projected_free_bytes
@@ -796,7 +932,7 @@ def build_payload(
         "max_tier": int(max_tier),
         "guardrails": {
             "tier_1": "delete raw .jsonl only when a matching .jsonl.gz sibling exists and the prefix matches",
-            "tier_2": "offload external .local_fallback* conflict copies and old corrupt SQLite quarantine copies to local quarantine only when internal quarantine headroom is safe; then delete stale-stage files only after value-based age windows pass",
+            "tier_2": "delete value-expired stale-stage files first; offload external .local_fallback* conflict copies and old corrupt SQLite quarantine copies only when the unattended local reserve remains intact",
             "tier_3": "recommend SQL compaction or offload; do not delete stateful SQLite files here",
             "fallback_quarantine_root": str(fallback_quarantine_root),
             "internal_quarantine_min_free_gb": round(float(DEFAULT_INTERNAL_QUARANTINE_MIN_FREE_GB), 3),

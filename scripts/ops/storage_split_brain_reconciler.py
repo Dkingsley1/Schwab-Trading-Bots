@@ -161,11 +161,28 @@ def _strip_conflict_suffix(path: Path) -> Path:
 def _iter_conflict_files(external_root: Path) -> list[Path]:
     if not external_root.exists():
         return []
+
+    excluded_prefixes = {
+        ("cold_archive", "storage_split_brain"),
+        ("quarantine", "storage_split_brain"),
+    }
+
+    def excluded(path: Path) -> bool:
+        try:
+            parts = path.relative_to(external_root).parts
+        except ValueError:
+            return True
+        return any(parts[: len(prefix)] == prefix for prefix in excluded_prefixes)
+
     matches: list[Path] = []
-    for root, _, files in os.walk(external_root):
+    for root, dirs, files in os.walk(external_root):
+        root_path = Path(root)
+        dirs[:] = [name for name in dirs if not excluded(root_path / name)]
+        if excluded(root_path):
+            continue
         for fname in files:
             if ".local_fallback" in fname:
-                matches.append(Path(root) / fname)
+                matches.append(root_path / fname)
     return sorted(matches)
 
 

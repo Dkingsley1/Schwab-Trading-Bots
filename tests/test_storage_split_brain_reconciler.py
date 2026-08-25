@@ -84,6 +84,32 @@ def test_storage_split_brain_reconciler_fast_path_skips_full_tree_scan_when_mani
     assert payload["summary"]["reported_split_brain_conflicts"] == 0
 
 
+def test_conflict_scan_excludes_its_own_archives(tmp_path: Path) -> None:
+    external_root = tmp_path / "external"
+    live_sidecar = external_root / "logs" / "watchdog.log.local_fallback"
+    archived_sidecar = (
+        external_root
+        / "cold_archive"
+        / "storage_split_brain"
+        / "receipt"
+        / "external_sidecars"
+        / "logs"
+        / "watchdog.log.local_fallback"
+    )
+    quarantined_sidecar = (
+        external_root
+        / "quarantine"
+        / "storage_split_brain"
+        / "receipt"
+        / "watchdog.log.local_fallback"
+    )
+    for path in (live_sidecar, archived_sidecar, quarantined_sidecar):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("evidence\n", encoding="utf-8")
+
+    assert src._iter_conflict_files(external_root) == [live_sidecar]
+
+
 def test_storage_split_brain_reconciler_suppresses_stale_reported_conflicts_after_clean_scan(
     tmp_path: Path, monkeypatch
 ) -> None:

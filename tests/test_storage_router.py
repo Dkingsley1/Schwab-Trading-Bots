@@ -12,6 +12,10 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from core import storage_router
+from core.runtime_maintenance import (
+    MAINTENANCE_HOLD_TOKEN_ENV,
+    engage_maintenance_hold,
+)
 
 
 class StorageRouterTests(unittest.TestCase):
@@ -47,6 +51,37 @@ class StorageRouterTests(unittest.TestCase):
                 self._restore_env(previous)
 
             self.assertFalse((root / 'logs').exists())
+
+    def test_matching_maintenance_token_authorizes_route_mutation(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td) / 'repo'
+            root.mkdir()
+            hold_path = root / 'maintenance.flag'
+            local_root = root / 'local_fallback_storage'
+            (local_root / 'logs').mkdir(parents=True)
+            previous = self._set_env(
+                {
+                    'RUNTIME_MAINTENANCE_HOLD_PATH': str(hold_path),
+                    'BOT_LOGS_PREFER_EXTERNAL': '0',
+                    'BOT_LOGS_LOCAL_FALLBACK_ROOT': str(local_root),
+                }
+            )
+            try:
+                engaged = engage_maintenance_hold(
+                    root,
+                    reason='storage_route_transition',
+                    owner='storage_switch_orchestrator',
+                    ttl_seconds=600,
+                )
+                os.environ[MAINTENANCE_HOLD_TOKEN_ENV] = engaged['token']
+
+                result = storage_router.route_runtime_storage(root, link_dirs=('logs',))
+            finally:
+                self._restore_env(previous)
+                os.environ.pop(MAINTENANCE_HOLD_TOKEN_ENV, None)
+
+            self.assertEqual(result.mode, 'local_fallback')
+            self.assertTrue((root / 'logs').is_symlink())
 
     def test_pinned_local_hot_storage_never_probes_external_root(self) -> None:
         with tempfile.TemporaryDirectory() as td:

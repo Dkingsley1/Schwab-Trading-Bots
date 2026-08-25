@@ -19,7 +19,10 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from core.runtime_maintenance import maintenance_hold_snapshot
+from core.runtime_maintenance import (
+    maintenance_hold_blocks_runtime_start,
+    maintenance_hold_snapshot,
+)
 from core.runtime_python import resolve_runtime_python
 from core.broker_auth_epoch import token_epoch
 from core.cpu_workload_policy import (
@@ -1529,7 +1532,7 @@ def main() -> int:
     if cpu_policy_changes:
         print(f"[CPUWorkloadPolicy] locked changes={','.join(cpu_policy_changes)} hard_affinity=0")
     maintenance_hold = maintenance_hold_snapshot(PROJECT_ROOT)
-    if bool(maintenance_hold.get("active", False)):
+    if maintenance_hold_blocks_runtime_start(maintenance_hold):
         print(
             "RUNTIME_MAINTENANCE_HOLD=1 set; refusing to start all sleeves. "
             f"reason={maintenance_hold.get('reason', 'runtime_maintenance')}"

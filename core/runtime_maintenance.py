@@ -97,6 +97,16 @@ def maintenance_hold_token_authorized(snapshot: dict[str, Any], *, token: str = 
     )
 
 
+def maintenance_hold_blocks_runtime_start(
+    snapshot: dict[str, Any], *, token: str = ""
+) -> bool:
+    """Block runtime starts unless the active hold explicitly authorizes this process."""
+    return bool(snapshot.get("active", False)) and not maintenance_hold_token_authorized(
+        snapshot,
+        token=token,
+    )
+
+
 def engage_maintenance_hold(
     project_root: str | Path,
     *,

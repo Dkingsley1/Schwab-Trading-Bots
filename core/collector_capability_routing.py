@@ -567,6 +567,54 @@ def flatten_capabilities(catalog: Mapping[str, Any]) -> tuple[list[str], dict[st
     return capability_ids, capability_planes
 
 
+def _gap_resolution_contract(
+    catalog: Mapping[str, Any],
+    capability_id: str,
+    producer_status: str,
+) -> dict[str, Any]:
+    policy = _as_dict(catalog.get("capability_gap_resolution_policy"))
+    default_key = (
+        "unavailable_default"
+        if producer_status == "unavailable"
+        else "unsupported_default"
+    )
+    resolution = {
+        **_as_dict(policy.get(default_key)),
+        **_as_dict(_as_dict(policy.get("overrides")).get(capability_id)),
+    }
+    return {
+        "resolution_class": str(
+            resolution.get("resolution_class")
+            or (
+                "existing_producer_proof_debt"
+                if producer_status == "unavailable"
+                else "source_admission_required"
+            )
+        ),
+        "organically_clearable": bool(
+            resolution.get("organically_clearable", producer_status == "unavailable")
+        ),
+        "external_source_required": bool(
+            resolution.get("external_source_required", producer_status == "unsupported")
+        ),
+        "external_entitlement_required": bool(
+            resolution.get("external_entitlement_required", False)
+        ),
+        "automatic_repair_eligible": bool(
+            resolution.get("automatic_repair_eligible", producer_status == "unavailable")
+        ),
+        "source_requirement": str(resolution.get("source_requirement") or ""),
+        "clear_condition": str(
+            resolution.get("clear_condition")
+            or (
+                "fresh capability-specific proof from the configured producer"
+                if producer_status == "unavailable"
+                else "admit a point-in-time source-backed producer after human review"
+            )
+        ),
+    }
+
+
 def validate_catalog(catalog: Mapping[str, Any]) -> list[str]:
     errors: list[str] = []
     contract = _as_dict(catalog.get("catalog_contract"))
@@ -648,6 +696,21 @@ def validate_catalog(catalog: Mapping[str, Any]) -> list[str]:
             unknown = sorted(set(_ordered_unique(_as_list(raw_values))) - capability_set)
             if unknown:
                 errors.append(f"capability_catalog_unknown_{mapping_key}:{key}")
+    gap_policy = _as_dict(catalog.get("capability_gap_resolution_policy"))
+    gap_overrides = _as_dict(gap_policy.get("overrides"))
+    unknown_gap_overrides = sorted(set(gap_overrides) - capability_set)
+    if unknown_gap_overrides:
+        errors.append("capability_gap_resolution_unknown_capability")
+    for default_key in ("unsupported_default", "unavailable_default"):
+        default = _as_dict(gap_policy.get(default_key))
+        if not default or not str(default.get("resolution_class") or ""):
+            errors.append(f"capability_gap_resolution_{default_key}_missing")
+    for capability_id, raw_resolution in gap_overrides.items():
+        resolution = _as_dict(raw_resolution)
+        if not str(resolution.get("resolution_class") or ""):
+            errors.append(f"capability_gap_resolution_class_missing:{capability_id}")
+        if not str(resolution.get("clear_condition") or ""):
+            errors.append(f"capability_gap_resolution_clear_condition_missing:{capability_id}")
     for plane in planes:
         plane_id = str(plane.get("plane_id") or "")
         routing = _as_dict(plane.get("routing"))
@@ -1951,6 +2014,11 @@ def build_capability_routing(
         optional_count = optional_subscription_count[capability_id]
         plane = _as_dict(capability_planes.get(capability_id))
         configured_producers = producer_by_capability.get(capability_id, [])
+        resolution = _gap_resolution_contract(
+            catalog,
+            capability_id,
+            producer_status,
+        )
         gap_rows.append(
             {
                 "capability_id": capability_id,
@@ -1975,6 +2043,7 @@ def build_capability_routing(
                     if producer_status == "unsupported"
                     else "fresh_capability_specific_proof"
                 ),
+                **resolution,
             }
         )
     gap_rows.sort(
@@ -2445,6 +2514,18 @@ def build_capability_routing(
             "unsupported_gap_count": len(unsupported_required) + len(unsupported_optional),
             "unavailable_gap_count": len(unavailable_required) + len(unavailable_optional),
             "gap_count": len(gap_rows),
+            "organically_clearable_gap_count": sum(
+                1 for row in gap_rows if row.get("organically_clearable")
+            ),
+            "external_source_gap_count": sum(
+                1 for row in gap_rows if row.get("external_source_required")
+            ),
+            "external_entitlement_gap_count": sum(
+                1 for row in gap_rows if row.get("external_entitlement_required")
+            ),
+            "automatic_repair_eligible_gap_count": sum(
+                1 for row in gap_rows if row.get("automatic_repair_eligible")
+            ),
             "rows": gap_rows[:max_gap_rows],
             "plane_rollups": plane_gap_rollups,
             "next_admission_candidates": next_admission_candidates,

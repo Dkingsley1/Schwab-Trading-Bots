@@ -2,6 +2,7 @@ import argparse
 import fcntl
 import json
 import os
+import sqlite3
 import subprocess
 import sys
 from datetime import datetime, timezone
@@ -13,7 +14,10 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from core.channel_queue import default_queue_db_path
-from core.runtime_maintenance import maintenance_hold_snapshot
+from core.runtime_maintenance import (
+    maintenance_hold_snapshot,
+    maintenance_hold_token_authorized,
+)
 from core.storage_mounts import find_target_external_volume, resolve_external_storage
 from scripts.ops.support_maintenance_gate import frozen_health_payload, support_maintenance_freeze_contract
 
@@ -27,6 +31,12 @@ TRACKED_SQLITE_ROUTES = (
     "data/bot_channel_queue.sqlite3",
     "data/snapshot_context.sqlite3",
 )
+
+
+def _maintenance_hold_blocks_route_mutation(snapshot: dict[str, Any]) -> bool:
+    return bool(snapshot.get("active", False)) and not maintenance_hold_token_authorized(
+        snapshot
+    )
 
 
 def _path_is_within(path: Path, root: Path) -> bool:
@@ -414,6 +424,74 @@ def _sqlite_sidecars(path: Path) -> list[str]:
     return out
 
 
+def _channel_queue_handoff_snapshot(path: Path) -> dict[str, object]:
+    """Prove whether every registered consumer drained this inactive queue copy."""
+    payload: dict[str, object] = {
+        "path": str(path),
+        "schema_ready": False,
+        "stable_standby": False,
+        "registered_consumer_count": 0,
+        "pending_registered_consumer_rows": False,
+        "fully_acked_registered_consumers": False,
+        "reason": "queue_missing",
+    }
+    if not path.exists():
+        return payload
+    sidecars = _sqlite_sidecars(path)
+    payload["sidecars"] = sidecars
+    if sidecars:
+        payload["reason"] = "standby_sidecars_present"
+        return payload
+
+    try:
+        uri = f"{path.resolve().as_uri()}?mode=ro&immutable=1"
+        conn = sqlite3.connect(uri, uri=True, timeout=5.0)
+        try:
+            tables = {
+                str(row[0] or "")
+                for row in conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table' "
+                    "AND name IN ('channel_messages','channel_consumer_state')"
+                ).fetchall()
+            }
+            schema_ready = tables >= {"channel_messages", "channel_consumer_state"}
+            payload["schema_ready"] = schema_ready
+            payload["stable_standby"] = True
+            if not schema_ready:
+                payload["reason"] = "queue_schema_missing"
+                return payload
+            consumer_row = conn.execute(
+                "SELECT COUNT(*), COALESCE(MAX(last_id), 0), COALESCE(MAX(updated_at), '') "
+                "FROM channel_consumer_state"
+            ).fetchone()
+            consumer_count = int(consumer_row[0] if consumer_row else 0)
+            pending_row = conn.execute(
+                "SELECT 1 FROM channel_consumer_state c "
+                "JOIN channel_messages m ON m.channel=c.channel AND m.id>c.last_id "
+                "LIMIT 1"
+            ).fetchone()
+            payload["registered_consumer_count"] = consumer_count
+            payload["max_acknowledged_id"] = int(consumer_row[1] if consumer_row else 0)
+            payload["latest_consumer_update_utc"] = str(consumer_row[2] if consumer_row else "")
+            payload["pending_registered_consumer_rows"] = pending_row is not None
+            payload["fully_acked_registered_consumers"] = bool(
+                consumer_count > 0 and pending_row is None
+            )
+            payload["reason"] = (
+                "registered_consumer_channels_fully_acked"
+                if payload["fully_acked_registered_consumers"]
+                else "registered_consumer_backlog_present"
+                if pending_row is not None
+                else "registered_consumer_evidence_missing"
+            )
+        finally:
+            conn.close()
+    except Exception as exc:
+        payload["reason"] = "queue_read_failed"
+        payload["error"] = f"{type(exc).__name__}:{exc}"
+    return payload
+
+
 def _default_local_queue_db(project_root: Path, local_root: Path) -> Path:
     del local_root
     return Path(default_queue_db_path(project_root)).expanduser()
@@ -565,6 +643,17 @@ def _build_sqlite_skip_report(
             active_path = str(local_path)
             active_local_count += 1
 
+        queue_handoff_evidence: dict[str, object] = {}
+        if rel == "data/bot_channel_queue.sqlite3" and local_exists and external_exists:
+            queue_handoff_evidence = {
+                "local_standby": _channel_queue_handoff_snapshot(local_path),
+                "active_external": _channel_queue_handoff_snapshot(external_path),
+                "policy": (
+                    "a smaller active queue is ready only when both schemas are valid and every "
+                    "registered consumer channel in the inactive standby is fully acknowledged"
+                ),
+            }
+
         verification_state = "missing_external_copy"
         verification_reason = "The external route does not currently have a verified SQLite copy for this tracked path."
         if classification == "active_local_route" and local_bytes > 0:
@@ -586,6 +675,26 @@ def _build_sqlite_skip_report(
             if not local_exists or external_bytes >= local_bytes:
                 verification_state = "verified"
                 verification_reason = "The active external route carries a present SQLite copy that is at least as large as the retained local copy."
+                external_ready_count += 1
+                verified_count += 1
+            elif (
+                rel == "data/bot_channel_queue.sqlite3"
+                and bool(
+                    (queue_handoff_evidence.get("active_external") or {}).get(
+                        "schema_ready", False
+                    )
+                )
+                and bool(
+                    (queue_handoff_evidence.get("local_standby") or {}).get(
+                        "fully_acked_registered_consumers", False
+                    )
+                )
+            ):
+                verification_state = "active_external_queue_fully_acked_standby"
+                verification_reason = (
+                    "The active external queue has a valid schema and every registered consumer "
+                    "channel in the larger inactive standby is fully acknowledged."
+                )
                 external_ready_count += 1
                 verified_count += 1
             elif (
@@ -650,6 +759,7 @@ def _build_sqlite_skip_report(
                     **external_meta,
                     "sidecars": external_sidecars,
                 },
+                "queue_handoff_evidence": queue_handoff_evidence,
                 "external_at_least_as_large": bool(external_exists and local_exists and external_bytes >= local_bytes),
             }
         )
@@ -772,7 +882,7 @@ def main() -> int:
 
     maintenance_hold = maintenance_hold_snapshot(PROJECT_ROOT)
     local_route_intent = _preserve_verified_local_route_intent(PROJECT_ROOT)
-    if bool(maintenance_hold.get("active", False)):
+    if _maintenance_hold_blocks_route_mutation(maintenance_hold):
         payload = {
             "timestamp_utc": datetime.now(timezone.utc).isoformat(),
             "ok": True,
@@ -832,7 +942,7 @@ def main() -> int:
 
         maintenance_hold = maintenance_hold_snapshot(PROJECT_ROOT)
         local_route_intent = _preserve_verified_local_route_intent(PROJECT_ROOT)
-        if bool(maintenance_hold.get("active", False)):
+        if _maintenance_hold_blocks_route_mutation(maintenance_hold):
             payload = {
                 "timestamp_utc": datetime.now(timezone.utc).isoformat(),
                 "ok": True,

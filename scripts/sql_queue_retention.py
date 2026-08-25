@@ -44,6 +44,12 @@ def _db_size_gb(path: Path) -> float:
         return 0.0
 
 
+def _full_vacuum_with_incremental_mode(conn: sqlite3.Connection) -> None:
+    """Rebuild once and make future bounded incremental vacuums effective."""
+    conn.execute("PRAGMA auto_vacuum=INCREMENTAL")
+    conn.execute("VACUUM")
+
+
 def _effective_acked_retention_hours(
     *,
     db_size_gb: float,
@@ -197,7 +203,11 @@ def main() -> int:
 
     conn = _connect(db_path)
     conn.row_factory = sqlite3.Row
+    auto_vacuum_before = 0
+    auto_vacuum_after = 0
     try:
+        auto_vacuum_row = conn.execute("PRAGMA auto_vacuum").fetchone()
+        auto_vacuum_before = int(auto_vacuum_row[0] if auto_vacuum_row else 0)
         if not _table_exists(conn, "channel_messages") or not _table_exists(conn, "channel_consumer_state"):
             print("sql_queue_retention_skip table_missing=channel_messages_or_channel_consumer_state")
             return 0
@@ -288,9 +298,11 @@ def main() -> int:
             conn.commit()
 
         if args.vacuum and deleted_rows_total > 0 and not args.dry_run:
-            conn.execute("VACUUM")
+            _full_vacuum_with_incremental_mode(conn)
         elif deleted_rows_total > 0 and not args.dry_run and int(args.incremental_vacuum_pages) > 0:
             conn.execute(f"PRAGMA incremental_vacuum({max(int(args.incremental_vacuum_pages), 1)})")
+        auto_vacuum_row = conn.execute("PRAGMA auto_vacuum").fetchone()
+        auto_vacuum_after = int(auto_vacuum_row[0] if auto_vacuum_row else 0)
     finally:
         conn.close()
 
@@ -317,6 +329,15 @@ def main() -> int:
         "dry_run": bool(args.dry_run),
         "vacuum": bool(args.vacuum and not args.dry_run and deleted_rows_total > 0),
         "incremental_vacuum_pages": int(args.incremental_vacuum_pages),
+        "auto_vacuum_before": int(auto_vacuum_before),
+        "auto_vacuum_after": int(auto_vacuum_after),
+        "future_incremental_vacuum_ready": int(auto_vacuum_after) == 2,
+        "full_vacuum_recommended": bool(
+            deleted_rows_total > 0
+            and not args.dry_run
+            and not args.vacuum
+            and int(auto_vacuum_after) != 2
+        ),
         "deleted_acked_rows": int(deleted_acked_rows),
         "deleted_orphan_rows": int(deleted_orphan_rows),
         "deleted_consumer_state_rows": int(deleted_consumer_state_rows),
