@@ -4,7 +4,7 @@ Use these exact commands as the current source of truth.
 
 This file is generated from the curated operator inventory in `scripts/ops/commands_hygiene_bot.py`.
 Rebuild it with `./scripts/ops/opsctl.sh commands-hygiene --apply` after changing that inventory.
-Command contract hash: `6185102788bd6a3c8be4eb6d79a3563127738e0c6353636536468fe1735bc91e`.
+Command contract hash: `75d36cfe829388dd3f947c58601cf7c15967bfa77db92bcad44b365a6b801b8b`.
 Command contract artifact: `governance/health/commands_contract_latest.json`.
 
 This file is intentionally trimmed down with Most Used pinned first and the remaining sections alphabetized by section and command title:
@@ -23,7 +23,7 @@ Fast search tokens: `start` `stop` `paper` `profitability` `soak` `halt` `auth` 
 
 Useful compound searches: `paper profitability`, `global halt`, `token refresh`, `livefeed heavy`, `storage prune`, `soak readiness`.
 
-Search coverage: `216` generated command entries from the current command contract.
+Search coverage: `217` generated command entries from the current command contract.
 
 <datalist id="command-search-index-options">
   <option value="Keep the Mac awake (Most Used)"></option>
@@ -124,6 +124,7 @@ Search coverage: `216` generated command entries from the current command contra
   <option value="Review the eight profitability hardening controls (Paper Trading)"></option>
   <option value="Review the locked profitability holdout vault (Paper Trading)"></option>
   <option value="Review the strict profitability evidence firewall (Paper Trading)"></option>
+  <option value="Run historical profitability crisis drills (Paper Trading)"></option>
   <option value="Search the 12,000-strategy sleeve library and scorecards (Paper Trading)"></option>
   <option value="Validate the 39 authoritative production references and 18 controls (Paper Trading)"></option>
   <option value="Active bot stack PDF (Reports And PDFs)"></option>
@@ -245,7 +246,7 @@ Search coverage: `216` generated command entries from the current command contra
 </datalist>
 
 <details>
-<summary>Generated command search index (216 commands; rebuilt by commands-hygiene)</summary>
+<summary>Generated command search index (217 commands; rebuilt by commands-hygiene)</summary>
 
 Each row is generated from `governance/health/commands_contract_latest.json`, so added, removed, renamed, or cleaned-up commands change this index automatically.
 
@@ -347,6 +348,7 @@ Each row is generated from `governance/health/commands_contract_latest.json`, so
 - search-entry:ee559c21f69068d5854f7b320f2c8cd89b075cfa46cf308809c2b9d2da6b0322 section:`Paper Trading` section_key:`paper-trading` title:Review the eight profitability hardening controls title_key:`review-the-eight-profitability-hardening-controls` opsctl:`profitability-hardening` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
 - search-entry:75a649865cad971ee8aea162ff2406bc8b51429362260074c94c2a7361cc62c6 section:`Paper Trading` section_key:`paper-trading` title:Review the locked profitability holdout vault title_key:`review-the-locked-profitability-holdout-vault` opsctl:`profitability-holdout-vault` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
 - search-entry:8bb5e5024f934aff91e23ae490dbf6890cda9ef5f456080b4900cecfcc3a6655 section:`Paper Trading` section_key:`paper-trading` title:Review the strict profitability evidence firewall title_key:`review-the-strict-profitability-evidence-firewall` opsctl:`profitability-evidence-firewall` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
+- search-entry:aa04b860e9d335477c2d034e8e41d717e1f03354138e4db32e16e9e43cb06a13 section:`Paper Trading` section_key:`paper-trading` title:Run historical profitability crisis drills title_key:`run-historical-profitability-crisis-drills` opsctl:`profitability-crisis-drill` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
 - search-entry:5b8d9f321786b3fc059e4291a3c70d6fbbc9e3a9519bc0d9b4d6af4016fe1493 section:`Paper Trading` section_key:`paper-trading` title:Search the 12,000-strategy sleeve library and scorecards title_key:`search-the-12-000-strategy-sleeve-library-and-scorecards` opsctl:`strategy-library` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
 - search-entry:88c2309c0307dc3b29c01ca5fc6eef2ac1327687fccd92504e5c86ec0296ddb9 section:`Paper Trading` section_key:`paper-trading` title:Validate the 39 authoritative production references and 18 controls title_key:`validate-the-39-authoritative-production-references-and-18-controls` opsctl:`authoritative-systems` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
 - search-entry:2b10c3089dd25a74e4e533fd26fec2ddb81e4ce00103187eee31f8cfb4a9ddc2 section:`Reports And PDFs` section_key:`reports-and-pdfs` title:Active bot stack PDF title_key:`active-bot-stack-pdf` opsctl:`none` scripts:`scripts/ops/open_report_artifact.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
@@ -1303,6 +1305,15 @@ cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
 ```
 
 Keeps structural control grades separate from candidate-bound economic proof and blocks promotion until every baseline and future-profitability hardener has current evidence.
+
+### Run historical profitability crisis drills
+```bash
+cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
+./scripts/ops/opsctl.sh profitability-crisis-drill --json
+```
+
+Runs deterministic paper-only collapse and recovery diagnostics for the 2008 global financial crisis, the 2020 pandemic liquidity break, and the 2023 regional-bank failures.
+The drill checks stressed fills, severe-phase abstention, reduce-only exits, and recovery re-entry. Its A+ is a control grade, not organic profitability, promotion, or live-release evidence.
 
 ### Search the 12,000-strategy sleeve library and scorecards
 ```bash

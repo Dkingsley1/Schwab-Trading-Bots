@@ -1363,6 +1363,15 @@ def _commands_inventory(project_root: Path) -> list[dict[str, Any]]:
             ),
             _command_entry(
                 project_root,
+                "Run historical profitability crisis drills",
+                ["./scripts/ops/opsctl.sh profitability-crisis-drill --json"],
+                notes=[
+                    "Runs deterministic paper-only collapse and recovery diagnostics for the 2008 global financial crisis, the 2020 pandemic liquidity break, and the 2023 regional-bank failures.",
+                    "The drill checks stressed fills, severe-phase abstention, reduce-only exits, and recovery re-entry. Its A+ is a control grade, not organic profitability, promotion, or live-release evidence.",
+                ],
+            ),
+            _command_entry(
+                project_root,
                 "Capture the candidate-bound passive benchmark close",
                 [
                     "./scripts/ops/opsctl.sh profitability-benchmark-capture --apply --json"

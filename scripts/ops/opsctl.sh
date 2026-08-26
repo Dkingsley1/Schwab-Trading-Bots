@@ -1945,6 +1945,9 @@ case "$cmd" in
   execution-lab)
     exec "$PY" "$PROJECT_ROOT/scripts/execution_lab.py" "$@"
     ;;
+  profitability-crisis-drill|financial-collapse-drill|crisis-profitability-drill)
+    exec "$PY" "$PROJECT_ROOT/scripts/ops/profitability_crisis_drill.py" "$@"
+    ;;
   operator-cockpit|cockpit)
     exec "$PY" "$PROJECT_ROOT/scripts/ops/operator_cockpit.py" "$@"
     ;;
@@ -3470,6 +3473,7 @@ opsctl commands:
   portfolio-capacity-curves [--json]
   risk-service [--json]
   execution-lab [--json]
+  profitability-crisis-drill|financial-collapse-drill [--scenario ID] [--json]
   operator-cockpit [--json]
   daily-verify-remediation [--apply] [--json]
   memory-efficiency [status|apply] [--json]
