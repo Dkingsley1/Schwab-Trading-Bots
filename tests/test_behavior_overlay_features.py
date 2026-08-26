@@ -97,6 +97,34 @@ def test_path_dependent_labels_capture_excursions_and_no_trade_baseline() -> Non
     assert hold["no_trade_counterfactual_outcome"] == "hold_missed_large_move"
 
 
+def test_multi_horizon_counterfactuals_compare_buy_sell_and_hold_after_costs() -> None:
+    outcomes = behavior_ds._counterfactual_action_outcomes(
+        raw_returns={300: 0.002, 3600: -0.003, 86400: 0.01},
+        observed_action="HOLD",
+        round_trip_cost_bps=10.0,
+    )
+
+    assert list(outcomes) == ["5m", "1h", "1d"]
+    assert outcomes["5m"]["best_action_post_cost"] == "BUY"
+    assert outcomes["5m"]["buy_post_cost_return"] == 0.001
+    assert outcomes["1h"]["best_action_post_cost"] == "SELL"
+    assert outcomes["1h"]["sell_post_cost_return"] == 0.002
+    assert outcomes["1d"]["observed_action_post_cost_return"] == 0.0
+    assert outcomes["1d"]["observed_action_regret"] == 0.009
+
+
+def test_counterfactual_horizon_parser_ignores_bad_values_and_falls_back() -> None:
+    assert behavior_ds._parse_counterfactual_horizons("300,bad,3600,-2,inf") == [
+        300,
+        3600,
+    ]
+    assert behavior_ds._parse_counterfactual_horizons("bad,inf") == [
+        300,
+        3600,
+        86400,
+    ]
+
+
 def test_external_context_sparse_merge_preserves_central_bank_features() -> None:
     central_features = {key: 0.5 for key in loop.CENTRAL_BANK_LIQUIDITY_FEATURE_KEYS}
     central_features.update(

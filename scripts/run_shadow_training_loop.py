@@ -625,6 +625,8 @@ def _publish_execution_lane_intent(
 
     md = dict(metadata or {})
     md.setdefault("source_broker", str(broker or "").strip().lower())
+    if str(target_mode or "paper").strip().lower() == "paper":
+        md["staged_promotion_cohort_enforced"] = True
     candidate_context = _production_candidate_context(PROJECT_ROOT)
     for key, value in candidate_context.items():
         md.setdefault(key, value)
@@ -706,7 +708,7 @@ def _execute_paper_mirror_consensus(
 
     segment_key = str(segment or "core").strip().lower() or "core"
     profile_key = str(profile or "default").strip().lower() or "default"
-    strategy = f"paper_portfolio_consensus::{profile_key}::{segment_key}"
+    strategy = "paper_portfolio_consensus"
     features = dict(shared_features or {})
     features.update(_derive_execution_realism_features(features))
     features.update(_derive_consensus_entry_economics(consensus, features))
@@ -782,6 +784,7 @@ def _execute_paper_mirror_consensus(
         "entry_policy": entry_policy,
         "execution_style": str((entry_policy.get("execution_plan") or {}).get("style") or "marketable_limit"),
         "market_orders_allowed": False,
+        "staged_promotion_cohort_enforced": True,
     }
     valuation = resolve_contract_valuation(symbol, metadata)
     resolved_asset_type = str(valuation.get("asset_type") or "SPOT").upper()
@@ -4906,11 +4909,20 @@ def _market_snapshot_from_twelve_data(symbol: str) -> Dict[str, float]:
     except Exception:
         pass
 
-    default_spread_bps = max(float(os.getenv("FX_TWELVE_DATA_DEFAULT_SPREAD_BPS", "6") or "6"), 0.0)
-    bid_size = max(float(os.getenv("FX_TWELVE_DATA_DEFAULT_BID_SIZE", "1000") or "1000"), 1.0)
-    ask_size = max(float(os.getenv("FX_TWELVE_DATA_DEFAULT_ASK_SIZE", "1000") or "1000"), 1.0)
+    default_spread_bps = max(
+        float(os.getenv("FX_TWELVE_DATA_DEFAULT_SPREAD_BPS", "6") or "6"), 0.0
+    )
+    bid_size = max(
+        float(os.getenv("FX_TWELVE_DATA_DEFAULT_BID_SIZE", "1000") or "1000"), 1.0
+    )
+    ask_size = max(
+        float(os.getenv("FX_TWELVE_DATA_DEFAULT_ASK_SIZE", "1000") or "1000"), 1.0
+    )
+    half_spread_fraction = default_spread_bps / 20000.0
     snapshot = {
         "last_price": float(last_price),
+        "bid_price": float(last_price * (1.0 - half_spread_fraction)),
+        "ask_price": float(last_price * (1.0 + half_spread_fraction)),
         "prev_close": float(prev_close),
         "pct_from_close": float(pct_from_close),
         "vol_30m": float(vol_30m),
@@ -5105,6 +5117,8 @@ def _market_snapshot_from_schwab(client: Any, symbol: str) -> Dict[str, float]:
 
     out = {
         "last_price": last_price,
+        "bid_price": float(bid),
+        "ask_price": float(ask),
         "prev_close": prev_close,
         "pct_from_close": pct_from_close,
         "vol_30m": vol_30m,
@@ -5262,6 +5276,8 @@ def _market_snapshot_from_broker_quote(trader: BaseTrader, symbol: str) -> Dict[
 
     return {
         "last_price": float(last_price),
+        "bid_price": float(bid),
+        "ask_price": float(ask),
         "prev_close": float(prev_close),
         "pct_from_close": float(pct_from_close),
         "vol_30m": 0.0,
@@ -5290,6 +5306,8 @@ def _market_snapshot_simulated(last_price: float) -> Dict[str, float]:
     range_pos = min(max(0.5 + 10.0 * drift, 0.0), 1.0)
     out = {
         "last_price": new_price,
+        "bid_price": new_price * (1.0 - 4.0 / 10000.0),
+        "ask_price": new_price * (1.0 + 4.0 / 10000.0),
         "prev_close": prev_close,
         "pct_from_close": pct_from_close,
         "vol_30m": vol_30m,
@@ -22132,19 +22150,46 @@ def run_loop(
                     )
 
             ret_1m = float(symbol_return_1m)
+            quote_timestamp = float(mkt.get("snapshot_ts_utc", 0.0) or 0.0)
+            quote_age_ms = (
+                max((time.time() - quote_timestamp) * 1000.0, 0.0)
+                if quote_timestamp > 0.0
+                else float(shared_features.get("quote_age_ms", 0.0) or 0.0)
+            )
+            session_features = _runtime_market_session_features(broker)
             exec_sim = simulate_execution(
                 action=gm_action,
                 last_price=float(mkt.get("last_price", 0.0) or 0.0),
                 return_1m=ret_1m,
                 spread_bps=float(shared_features.get("spread_bps", 8.0) or 8.0),
-                volatility_1m=float(shared_features.get("volatility_1m", shared_features.get("vol", 0.0)) or 0.0),
-                latency_ms=float(shared_features.get("market_data_latency_ms", 0.0) or os.getenv("EXEC_SIM_LATENCY_MS", "120")),
+                volatility_1m=float(
+                    shared_features.get(
+                        "volatility_1m", shared_features.get("vol", 0.0)
+                    )
+                    or 0.0
+                ),
+                latency_ms=float(
+                    shared_features.get("market_data_latency_ms", 0.0)
+                    or os.getenv("EXEC_SIM_LATENCY_MS", "120")
+                ),
+                bid_price=float(
+                    mkt.get("bid_price", shared_features.get("bid_price", 0.0)) or 0.0
+                ),
+                ask_price=float(
+                    mkt.get("ask_price", shared_features.get("ask_price", 0.0)) or 0.0
+                ),
                 bid_size=float(shared_features.get("bid_size", 1000.0) or 1000.0),
                 ask_size=float(shared_features.get("ask_size", 1000.0) or 1000.0),
                 order_size=dispatch_qty if dispatch_qty > 0 else 1.0,
                 broker=broker,
                 market_kind=("crypto" if broker == "coinbase" else "equities"),
                 symbol=symbol,
+                session=str(
+                    shared_features.get("market_session")
+                    or session_features.get("market_session")
+                    or "regular"
+                ),
+                quote_age_ms=quote_age_ms,
             )
             expected_fill_delta_bps = 0.0
             live_last_price = float(mkt.get("last_price", 0.0) or 0.0)
@@ -22163,6 +22208,14 @@ def run_loop(
                 "lag_cancel_probability": float(exec_sim.cancel_probability),
                 "lag_execution_venue": str(exec_sim.venue),
                 "lag_expected_fill_delta_bps": float(expected_fill_delta_bps),
+                "lag_touch_price": float(exec_sim.touch_price),
+                "lag_quoted_spread_bps": float(exec_sim.quoted_spread_bps),
+                "lag_beyond_touch_cost_bps": float(exec_sim.beyond_touch_cost_bps),
+                "lag_total_cost_bps": float(exec_sim.total_cost_bps),
+                "lag_quote_age_ms": float(quote_age_ms),
+                "lag_quote_observed_norm": (
+                    1.0 if exec_sim.quote_source_mode == "observed_bid_ask" else 0.0
+                ),
                 "lag_adjusted_return_1m": float(exec_sim.adjusted_return_1m),
                 "lag_trade_action_norm": (
                     1.0 if gm_action == "BUY" else (-1.0 if gm_action == "SELL" else 0.0)
@@ -22227,6 +22280,12 @@ def run_loop(
                         "slippage_bps": exec_sim.slippage_bps,
                         "latency_ms": exec_sim.latency_ms,
                         "expected_fill_price": exec_sim.expected_fill_price,
+                        "touch_price": exec_sim.touch_price,
+                        "quoted_spread_bps": exec_sim.quoted_spread_bps,
+                        "beyond_touch_cost_bps": exec_sim.beyond_touch_cost_bps,
+                        "total_cost_bps": exec_sim.total_cost_bps,
+                        "quote_source_mode": exec_sim.quote_source_mode,
+                        "quote_age_ms": quote_age_ms,
                         "fee_bps": exec_sim.fee_bps,
                         "borrow_fee_bps": exec_sim.borrow_fee_bps,
                         "venue_rule_penalty_bps": exec_sim.venue_rule_penalty_bps,
@@ -22579,8 +22638,25 @@ def run_loop(
                 "execution_guard": execution_guard_meta,
                 "portfolio_risk_engine": portfolio_risk_meta,
                 "long_term_turnover_policy": long_term_turnover_meta,
-                "lane_allocator": {"lane": runtime_lane, "lane_budget_mult": lane_budget_mult, "lane_base_budget": lane_base_budget},
-                "execution_sim": {"slippage_bps": exec_sim.slippage_bps, "latency_ms": exec_sim.latency_ms, "expected_fill_price": exec_sim.expected_fill_price, "impact_bps": exec_sim.impact_bps, "fee_bps": exec_sim.fee_bps},
+                "lane_allocator": {
+                    "lane": runtime_lane,
+                    "lane_budget_mult": lane_budget_mult,
+                    "lane_base_budget": lane_base_budget,
+                },
+                "execution_sim": {
+                    "slippage_bps": exec_sim.slippage_bps,
+                    "latency_ms": exec_sim.latency_ms,
+                    "expected_fill_price": exec_sim.expected_fill_price,
+                    "touch_price": exec_sim.touch_price,
+                    "quoted_spread_bps": exec_sim.quoted_spread_bps,
+                    "beyond_touch_cost_bps": exec_sim.beyond_touch_cost_bps,
+                    "total_cost_bps": exec_sim.total_cost_bps,
+                    "quote_source_mode": exec_sim.quote_source_mode,
+                    "quote_crossed_or_locked": exec_sim.quote_crossed_or_locked,
+                    "quote_age_ms": quote_age_ms,
+                    "impact_bps": exec_sim.impact_bps,
+                    "fee_bps": exec_sim.fee_bps,
+                },
                 "feature_freshness": {
                     "enabled": feature_freshness_enabled,
                     "ok": freshness_ok,

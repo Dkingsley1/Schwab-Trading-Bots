@@ -1250,6 +1250,7 @@ def attach_strategy_specialization(
         "raw_strategy": _normalize(raw_strategy) or "default",
         "selected_strategy_id": str(contract.get("strategy_id") or ""),
         "selected_strategy_name": str(contract.get("strategy_name") or ""),
+        "sleeve_id": str(contract.get("sleeve_id") or ""),
         "source_kind": str(contract.get("source_kind") or ""),
         "objective_class": str(contract.get("objective_class") or ""),
         "objective_scorecard": deepcopy(_mapping(contract.get("objective_scorecard"))),

@@ -995,7 +995,113 @@ def _candidate_profitability_cutoff(project_root: Path) -> datetime | None:
     return _candidate_profitability_context(project_root).get("cutoff_utc")
 
 
-def _post_cost_flow_view(rows: Iterable[dict[str, Any]], *, scope: str) -> dict[str, Any]:
+def _promotion_cohort_context(project_root: Path) -> dict[str, Any]:
+    policy_path = project_root / "config" / "profitability_self_assessment_v1.json"
+    try:
+        payload = json.loads(policy_path.read_text(encoding="utf-8"))
+    except Exception:
+        payload = {}
+    policy = payload.get("promotion_cohort") if isinstance(payload, dict) else {}
+    policy = policy if isinstance(policy, dict) else {}
+    enabled = bool(policy.get("enabled", False))
+    try:
+        active_stage_number = int(policy.get("active_stage", 0) or 0)
+    except (TypeError, ValueError):
+        active_stage_number = 0
+    stages = [row for row in (policy.get("stages") or []) if isinstance(row, dict)]
+    active_stages = [
+        row
+        for row in stages
+        if int(_safe_float(row.get("stage"), 0.0)) == active_stage_number
+    ]
+    blockers: list[str] = []
+    if enabled and not str(policy.get("cohort_id") or "").strip():
+        blockers.append("cohort_id_missing")
+    if enabled and not str(policy.get("profile") or "").strip():
+        blockers.append("profile_missing")
+    if enabled and len(active_stages) != 1:
+        blockers.append("exactly_one_active_stage_required")
+    active_stage = dict(active_stages[0]) if len(active_stages) == 1 else {}
+    if enabled and not str(active_stage.get("symbol") or "").strip():
+        blockers.append("active_stage_symbol_missing")
+    if enabled and not str(active_stage.get("strategy_id") or "").strip():
+        blockers.append("active_stage_strategy_missing")
+    if enabled and int(_safe_float(policy.get("maximum_active_stages"), 0.0)) != 1:
+        blockers.append("maximum_active_stages_must_equal_one")
+    if enabled and int(_safe_float(policy.get("maximum_active_strategies"), 0.0)) != 1:
+        blockers.append("maximum_active_strategies_must_equal_one")
+    if enabled and int(_safe_float(policy.get("maximum_symbols_per_stage"), 0.0)) != 1:
+        blockers.append("maximum_symbols_per_stage_must_equal_one")
+    if enabled and bool(policy.get("live_execution_allowed", True)):
+        blockers.append("live_execution_must_remain_disabled")
+    if enabled and bool(policy.get("automatic_stage_advancement_allowed", True)):
+        blockers.append("automatic_stage_advancement_must_remain_disabled")
+    return {
+        "configured": enabled,
+        "valid": bool(enabled and not blockers),
+        "policy_path": str(policy_path),
+        "cohort_id": str(policy.get("cohort_id") or ""),
+        "profile": str(policy.get("profile") or "").strip().lower(),
+        "sleeve_id": str(policy.get("sleeve_id") or "").strip().lower(),
+        "active_stage": active_stage_number,
+        "active_symbol": str(active_stage.get("symbol") or "").strip().upper(),
+        "active_strategy_id": str(active_stage.get("strategy_id") or "").strip(),
+        "stage_count": len(stages),
+        "blockers": blockers,
+        "broad_fleet_mode": str(policy.get("broad_fleet_mode") or ""),
+        "non_cohort_candidate_rows": str(policy.get("non_cohort_candidate_rows") or ""),
+        "stage_advancement": str(policy.get("stage_advancement") or ""),
+        "automatic_stage_advancement_allowed": bool(
+            policy.get("automatic_stage_advancement_allowed", False)
+        ),
+        "live_execution_allowed": bool(policy.get("live_execution_allowed", False)),
+    }
+
+
+def _promotion_cohort_row_eligibility(
+    row: dict[str, Any], cohort: dict[str, Any]
+) -> tuple[bool, str]:
+    if not cohort.get("configured", False):
+        return True, "cohort_not_configured"
+    if not cohort.get("valid", False):
+        return False, "promotion_cohort_policy_invalid"
+    if _profile_of(row) != str(cohort.get("profile") or ""):
+        return False, "profile_outside_promotion_cohort"
+    symbol = str(row.get("symbol") or "").strip().upper()
+    if symbol != str(cohort.get("active_symbol") or ""):
+        return False, "symbol_outside_active_stage"
+    strategy_id = _strategy_of(row)
+    if strategy_id != str(cohort.get("active_strategy_id") or ""):
+        return False, "strategy_outside_active_stage"
+    sleeve_id = ""
+    metadata = row.get("metadata") if isinstance(row.get("metadata"), dict) else {}
+    specialization = (
+        metadata.get("strategy_specialization")
+        if isinstance(metadata.get("strategy_specialization"), dict)
+        else {}
+    )
+    contract = (
+        metadata.get("strategy_contract")
+        if isinstance(metadata.get("strategy_contract"), dict)
+        else {}
+    )
+    sleeve_id = (
+        str(specialization.get("sleeve_id") or contract.get("sleeve_id") or "")
+        .strip()
+        .lower()
+    )
+    if not sleeve_id and strategy_id.startswith("sleeve::"):
+        parts = strategy_id.split("::")
+        sleeve_id = parts[1].strip().lower() if len(parts) > 1 else ""
+    required_sleeve = str(cohort.get("sleeve_id") or "")
+    if required_sleeve and sleeve_id != required_sleeve:
+        return False, "sleeve_identity_mismatch"
+    return True, "active_promotion_stage_match"
+
+
+def _post_cost_flow_view(
+    rows: Iterable[dict[str, Any]], *, scope: str
+) -> dict[str, Any]:
     values: list[dict[str, Any]] = []
     for row in rows:
         if not isinstance(row, dict) or _pnl_schema_version(row) < 2:
@@ -1033,6 +1139,7 @@ def _post_cost_flow_view(rows: Iterable[dict[str, Any]], *, scope: str) -> dict[
         "scope": scope,
         "schema_version": 2,
         "sample_count": len(values),
+        "row_count": len(values),
         "observed_days": len({value.date().isoformat() for value in observed}),
         "first_observation_utc": min(observed).isoformat() if observed else "",
         "last_observation_utc": max(observed).isoformat() if observed else "",
@@ -1368,6 +1475,15 @@ def _post_cost_expectancy(
             "promotion_evidence_sufficient": False,
             "positive_clustered_lower_confidence_bound_95": False,
             "promotion_blockers": ["no_post_cost_observations"],
+            "expected_value_decomposition": {
+                "available": False,
+                "win_probability": None,
+                "average_win": None,
+                "loss_probability": None,
+                "average_loss_abs": None,
+                "expected_value": None,
+                "mean_identity_error": None,
+            },
             "payoff_asymmetry": {
                 "available": False,
                 "positive_sample_count": 0,
@@ -1379,10 +1495,39 @@ def _post_cost_expectancy(
 
     pnl_values = [item[0] for item in samples]
     return_values = [item[1] for item in samples]
+    positive_pnl_values = [value for value in pnl_values if value > 0.0]
+    negative_pnl_values = [value for value in pnl_values if value < 0.0]
+    positive_return_values = [value for value in return_values if value > 0.0]
+    negative_return_values = [value for value in return_values if value < 0.0]
     mean_pnl = _mean(pnl_values)
     mean_return = _mean(return_values)
-    pnl_se = _sample_stddev(pnl_values) / math.sqrt(sample_count) if sample_count > 1 else 0.0
-    return_se = _sample_stddev(return_values) / math.sqrt(sample_count) if sample_count > 1 else 0.0
+    win_probability = len(positive_pnl_values) / sample_count
+    loss_probability = len(negative_pnl_values) / sample_count
+    average_win = _mean(positive_pnl_values) if positive_pnl_values else 0.0
+    average_loss_abs = abs(_mean(negative_pnl_values)) if negative_pnl_values else 0.0
+    expected_value = win_probability * average_win - loss_probability * average_loss_abs
+    return_win_probability = len(positive_return_values) / sample_count
+    return_loss_probability = len(negative_return_values) / sample_count
+    average_win_return_bps = (
+        _mean(positive_return_values) if positive_return_values else 0.0
+    )
+    average_loss_return_bps_abs = (
+        abs(_mean(negative_return_values)) if negative_return_values else 0.0
+    )
+    expected_return_bps = (
+        return_win_probability * average_win_return_bps
+        - return_loss_probability * average_loss_return_bps_abs
+    )
+    pnl_se = (
+        _sample_stddev(pnl_values) / math.sqrt(sample_count)
+        if sample_count > 1
+        else 0.0
+    )
+    return_se = (
+        _sample_stddev(return_values) / math.sqrt(sample_count)
+        if sample_count > 1
+        else 0.0
+    )
     pnl_lcb = mean_pnl - (1.96 * pnl_se)
     return_lcb = mean_return - (1.96 * return_se)
     evidence_sufficient = sample_count >= required
@@ -1443,7 +1588,34 @@ def _post_cost_expectancy(
         "first_sample_timestamp_utc": min(timestamps).isoformat().replace("+00:00", "Z") if timestamps else "",
         "last_sample_timestamp_utc": max(timestamps).isoformat().replace("+00:00", "Z") if timestamps else "",
         "positive_sample_count": int(sum(1 for value in pnl_values if value > 0.0)),
-        "positive_sample_rate": round(float(sum(1 for value in pnl_values if value > 0.0) / sample_count), 6),
+        "positive_sample_rate": round(
+            float(sum(1 for value in pnl_values if value > 0.0) / sample_count), 6
+        ),
+        "expected_value_decomposition": {
+            "available": True,
+            "win_probability": round(float(win_probability), 8),
+            "average_win": round(float(average_win), 8),
+            "loss_probability": round(float(loss_probability), 8),
+            "average_loss_abs": round(float(average_loss_abs), 8),
+            "flat_probability": round(
+                float(1.0 - win_probability - loss_probability), 8
+            ),
+            "expected_value": round(float(expected_value), 8),
+            "observed_mean": round(float(mean_pnl), 8),
+            "mean_identity_error": round(float(mean_pnl - expected_value), 12),
+            "return_bps": {
+                "win_probability": round(float(return_win_probability), 8),
+                "average_win": round(float(average_win_return_bps), 8),
+                "loss_probability": round(float(return_loss_probability), 8),
+                "average_loss_abs": round(float(average_loss_return_bps_abs), 8),
+                "expected_value": round(float(expected_return_bps), 8),
+                "observed_mean": round(float(mean_return), 8),
+                "mean_identity_error": round(
+                    float(mean_return - expected_return_bps), 12
+                ),
+            },
+            "formula": "p_win*average_win - p_loss*average_loss_abs",
+        },
         "payoff_asymmetry": {
             "available": bool(
                 any(value > 0.0 for value in pnl_values)
@@ -2010,11 +2182,14 @@ def build_paper_performance_report(project_root: Path, *, day: str, week_days: i
     stats_by_day: dict[str, dict[str, Any]] = defaultdict(_empty_stats)
     post_cost_rows_by_profile: dict[str, list[dict[str, Any]]] = defaultdict(list)
     all_post_cost_rows: list[dict[str, Any]] = []
+    candidate_research_post_cost_rows: list[dict[str, Any]] = []
     lifetime_post_cost_rows: list[dict[str, Any]] = []
     current_day_post_cost_rows: list[dict[str, Any]] = []
     candidate_context = _candidate_profitability_context(project_root)
     profitability_cutoff = candidate_context.get("cutoff_utc")
     current_candidate_id = str(candidate_context.get("candidate_id") or "").strip()
+    promotion_cohort = _promotion_cohort_context(project_root)
+    promotion_cohort_exclusions: Counter[str] = Counter()
     candidate_binding_mismatch_rows = 0
     deduplication: dict[str, int] = {
         "calibration_source_files_excluded": int(calibration_source_files_excluded),
@@ -2052,8 +2227,15 @@ def build_paper_performance_report(project_root: Path, *, day: str, week_days: i
                 else True
             )
             if timestamp_eligible and candidate_id_eligible:
-                post_cost_rows_by_profile[profile].append(row)
-                all_post_cost_rows.append(row)
+                candidate_research_post_cost_rows.append(row)
+                cohort_eligible, cohort_reason = _promotion_cohort_row_eligibility(
+                    row, promotion_cohort
+                )
+                if cohort_eligible:
+                    post_cost_rows_by_profile[profile].append(row)
+                    all_post_cost_rows.append(row)
+                else:
+                    promotion_cohort_exclusions[cohort_reason] += 1
             elif timestamp_eligible and current_candidate_id:
                 candidate_binding_mismatch_rows += 1
         current = latest_by_day_profile[dkey][profile].get(strategy)
@@ -2218,8 +2400,34 @@ def build_paper_performance_report(project_root: Path, *, day: str, week_days: i
         "candidate_strategy_post_cost_daily_series": (
             _candidate_strategy_post_cost_daily_series(all_post_cost_rows)
         ),
+        "candidate_research_post_cost_daily_series": (
+            _candidate_post_cost_daily_series(candidate_research_post_cost_rows)
+        ),
+        "candidate_research_strategy_post_cost_daily_series": (
+            _candidate_strategy_post_cost_daily_series(
+                candidate_research_post_cost_rows
+            )
+        ),
         "developmental_generation_flows": developmental_generation_flows,
         "strategy_latest": _strategy_post_cost_latest(all_post_cost_rows),
+        "candidate_research_strategy_latest": _strategy_post_cost_latest(
+            candidate_research_post_cost_rows
+        ),
+        "promotion_cohort": {
+            **promotion_cohort,
+            "candidate_bound_research_sample_count": len(
+                candidate_research_post_cost_rows
+            ),
+            "promotion_grade_sample_count": len(all_post_cost_rows),
+            "diagnostic_only_sample_count": (
+                len(candidate_research_post_cost_rows) - len(all_post_cost_rows)
+            ),
+            "exclusion_reasons": dict(sorted(promotion_cohort_exclusions.items())),
+            "promotion_grade_scope": "one_active_stage_one_strategy_one_symbol",
+            "broad_collection_continues": True,
+            "automatic_promotion_authority": False,
+            "live_execution_authority": False,
+        },
         "accounting_views": {
             "lifetime_flow": _post_cost_flow_view(
                 lifetime_post_cost_rows,
@@ -2243,7 +2451,31 @@ def build_paper_performance_report(project_root: Path, *, day: str, week_days: i
                     candidate_context.get("state_receipt_sha256") or ""
                 ),
                 "candidate_binding_required": bool(current_candidate_id),
-                "candidate_binding_mismatch_rows_excluded": int(candidate_binding_mismatch_rows),
+                "candidate_binding_mismatch_rows_excluded": int(
+                    candidate_binding_mismatch_rows
+                ),
+                "promotion_cohort_id": str(promotion_cohort.get("cohort_id") or ""),
+                "promotion_stage": int(promotion_cohort.get("active_stage", 0) or 0),
+                "promotion_symbol": str(promotion_cohort.get("active_symbol") or ""),
+                "promotion_strategy_id": str(
+                    promotion_cohort.get("active_strategy_id") or ""
+                ),
+                "promotion_cohort_valid": bool(promotion_cohort.get("valid", False)),
+                "non_cohort_rows_excluded": int(
+                    sum(promotion_cohort_exclusions.values())
+                ),
+            },
+            "candidate_research_forward_flow": {
+                **_post_cost_flow_view(
+                    candidate_research_post_cost_rows,
+                    scope=f"candidate_research_forward:{candidate_context.get('candidate_id') or 'unknown'}",
+                ),
+                "candidate_id": str(candidate_context.get("candidate_id") or ""),
+                "candidate_generation": int(
+                    candidate_context.get("generation", 0) or 0
+                ),
+                "promotion_grade_eligible": False,
+                "policy": "all candidate-bound rows remain visible for research, but only the active staged cohort may grade promotion",
             },
             "active_book_snapshot": {
                 "scope": "lifetime_active_paper_inventory",
@@ -2261,9 +2493,19 @@ def build_paper_performance_report(project_root: Path, *, day: str, week_days: i
             "evidence_through_utc": evidence_through.isoformat(),
             "candidate_filter_active": profitability_cutoff is not None,
             "candidate_binding_required": bool(current_candidate_id),
-            "candidate_binding_mismatch_rows_excluded": int(candidate_binding_mismatch_rows),
+            "candidate_binding_mismatch_rows_excluded": int(
+                candidate_binding_mismatch_rows
+            ),
+            "promotion_cohort_filter_active": bool(
+                promotion_cohort.get("configured", False)
+            ),
+            "promotion_cohort_valid": bool(promotion_cohort.get("valid", False)),
+            "promotion_cohort_id": str(promotion_cohort.get("cohort_id") or ""),
+            "promotion_stage": int(promotion_cohort.get("active_stage", 0) or 0),
+            "promotion_grade_sample_count": len(all_post_cost_rows),
+            "candidate_research_sample_count": len(candidate_research_post_cost_rows),
             "snapshot_watermark_active": True,
-            "policy": "post-cost promotion evidence excludes samples before the latest affected candidate scope window and defers rows after the published scan watermark",
+            "policy": "post-cost promotion evidence excludes samples before the latest affected candidate scope window, requires exact active cohort identity, and defers rows after the published scan watermark",
         },
     }
 

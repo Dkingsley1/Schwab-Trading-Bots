@@ -719,6 +719,8 @@ class LiveExecutionGuard:
         spread_bps: float = 8.0,
         volatility_1m: float = 0.0,
         latency_ms: float = 120.0,
+        bid_price: float = 0.0,
+        ask_price: float = 0.0,
         bid_size: float = 1000.0,
         ask_size: float = 1000.0,
         broker: str = "",
@@ -953,6 +955,8 @@ class LiveExecutionGuard:
                 spread_bps=max(float(spread_bps or 0.0), 0.0),
                 volatility_1m=max(float(volatility_1m or 0.0), 0.0),
                 latency_ms=max(float(latency_ms or 0.0), 0.0),
+                bid_price=max(float(bid_price or 0.0), 0.0),
+                ask_price=max(float(ask_price or 0.0), 0.0),
                 bid_size=max(float(bid_size or 0.0), 0.0),
                 ask_size=max(float(ask_size or 0.0), 0.0),
                 order_size=qty,
@@ -970,7 +974,9 @@ class LiveExecutionGuard:
                 open_interest=max(float(open_interest or 0.0), 0.0),
             )
             reasons: list[str] = []
-            if str(sim.paper_execution_status) == "stale_quote_rejected":
+            if str(sim.paper_execution_status) == "crossed_or_locked_quote_rejected":
+                reasons.append("simulated_crossed_or_locked_quote_rejected")
+            elif str(sim.paper_execution_status) == "stale_quote_rejected":
                 reasons.append("simulated_stale_quote_rejected")
             elif str(sim.paper_execution_status) == "rejected":
                 reasons.append("simulated_order_rejected")
@@ -1016,6 +1022,13 @@ class LiveExecutionGuard:
                         ),
                         "expected_fill_price": float(sim.expected_fill_price),
                         "slippage_bps": round(float(sim.slippage_bps), 6),
+                        "touch_price": round(float(sim.touch_price), 8),
+                        "quoted_spread_bps": round(float(sim.quoted_spread_bps), 6),
+                        "beyond_touch_cost_bps": round(
+                            float(sim.beyond_touch_cost_bps), 6
+                        ),
+                        "quote_source_mode": str(sim.quote_source_mode),
+                        "quote_crossed_or_locked": bool(sim.quote_crossed_or_locked),
                         "thresholds": {
                             "min_execution_realism_score": float(
                                 self.config.min_execution_realism_score
@@ -1057,9 +1070,11 @@ class LiveExecutionGuard:
         spread_bps: float = 8.0,
         volatility_1m: float = 0.0,
         latency_ms: float = 120.0,
+        bid_price: float = 0.0,
+        ask_price: float = 0.0,
         bid_size: float = 1000.0,
         ask_size: float = 1000.0,
-    ) -> Dict[str, float]:
+    ) -> Dict[str, Any]:
         sim = simulate_execution(
             action=str(action or "HOLD").strip().upper(),
             last_price=max(float(reference_price or 0.0), 0.0),
@@ -1067,6 +1082,8 @@ class LiveExecutionGuard:
             spread_bps=max(float(spread_bps or 0.0), 0.0),
             volatility_1m=max(float(volatility_1m or 0.0), 0.0),
             latency_ms=max(float(latency_ms or 0.0), 0.0),
+            bid_price=max(float(bid_price or 0.0), 0.0),
+            ask_price=max(float(ask_price or 0.0), 0.0),
             bid_size=max(float(bid_size or 0.0), 0.0),
             ask_size=max(float(ask_size or 0.0), 0.0),
             order_size=max(float(quantity or 0.0), 0.0),
@@ -1074,6 +1091,12 @@ class LiveExecutionGuard:
         return {
             "expected_fill_price": float(sim.expected_fill_price),
             "expected_slippage_bps": float(sim.slippage_bps),
+            "touch_price": float(sim.touch_price),
+            "quoted_spread_bps": float(sim.quoted_spread_bps),
+            "beyond_touch_cost_bps": float(sim.beyond_touch_cost_bps),
+            "total_cost_bps": float(sim.total_cost_bps),
+            "quote_source_mode": str(sim.quote_source_mode),
+            "quote_crossed_or_locked": bool(sim.quote_crossed_or_locked),
             "impact_bps": float(sim.impact_bps),
             "latency_ms": float(sim.latency_ms),
             "partial_fill_ratio": float(sim.partial_fill_ratio),

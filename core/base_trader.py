@@ -56,7 +56,9 @@ from core.path_registry import (
     live_softguard_path,
 )
 from core.profitability_hardening import (
+    evaluate_staged_promotion_cohort,
     evaluate_profitability_entry,
+    load_staged_promotion_cohort,
     position_valuation_compatible,
     resolve_contract_valuation,
 )
@@ -6105,6 +6107,47 @@ class BaseTrader:
                 },
             }
 
+        promotion_cohort_guard: Dict[str, Any] = {
+            "required": False,
+            "allowed": True,
+            "disposition": "not_required",
+            "reasons": [],
+        }
+        if self.mode == "paper" and self._is_trade_action(action):
+            configured_promotion_cohort = load_staged_promotion_cohort(
+                self.project_root
+            )
+            specialization = (
+                md.get("strategy_specialization")
+                if isinstance(md.get("strategy_specialization"), dict)
+                else {}
+            )
+            exposure_change = self._paper_exposure_change_details(
+                symbol=symbol,
+                action=action,
+                quantity=quantity,
+                metadata=md,
+            )
+            promotion_cohort_guard = evaluate_staged_promotion_cohort(
+                project_root=self.project_root,
+                enforcement_required=bool(
+                    configured_promotion_cohort.get("policy_present", False)
+                    or configured_promotion_cohort.get("configured", False)
+                    or md.get("staged_promotion_cohort_enforced", False)
+                ),
+                profile=(
+                    md.get("source_profile")
+                    or md.get("profile")
+                    or self._metadata_sleeve_profile(md)
+                ),
+                sleeve_id=specialization.get("sleeve_id"),
+                symbol=symbol,
+                strategy_id=strategy_id_from_metadata(md, strategy),
+                action=action,
+                exposure_change=exposure_change,
+            )
+            md["staged_promotion_cohort"] = promotion_cohort_guard
+
         decision_entry = self.decision_logger.log_decision(
             symbol=symbol,
             action=action,
@@ -6236,6 +6279,47 @@ class BaseTrader:
             }
 
             if self._is_trade_action(action):
+                if not bool(promotion_cohort_guard.get("allowed", True)):
+                    status = "PAPER_PROMOTION_COHORT_BLOCKED"
+                    guard_payload = {
+                        "gate": "staged_promotion_cohort",
+                        "reason": "paper_entry_outside_active_promotion_stage",
+                        "details": promotion_cohort_guard,
+                    }
+                    self._log_live_guard_event(
+                        event="pre_trade_check",
+                        status="blocked",
+                        reason=guard_payload["reason"],
+                        details={
+                            "symbol": str(symbol).upper(),
+                            "action": str(action).upper(),
+                            "quantity": float(quantity),
+                            **guard_payload,
+                        },
+                    )
+                    result = {
+                        "status": status,
+                        "mode": self.mode,
+                        "decision": decision_entry,
+                        "promotion_cohort_guard": promotion_cohort_guard,
+                        "live_guard_decision": guard_payload,
+                        "order_intent_evidence": intent_evidence_for(
+                            {
+                                "ok": False,
+                                "gate": guard_payload["gate"],
+                                "reason": guard_payload["reason"],
+                                "details": promotion_cohort_guard,
+                            }
+                        ),
+                        "live_guard": self.live_guard.snapshot(),
+                    }
+                    self._emit_decision_explanation(
+                        status=status,
+                        decision_entry=decision_entry,
+                        safety=safety,
+                    )
+                    return result
+
                 blocked, reason, details = self._paper_profitability_new_entry_blocked(
                     symbol=symbol,
                     action=action,

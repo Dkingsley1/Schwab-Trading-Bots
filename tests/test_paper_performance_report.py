@@ -461,6 +461,73 @@ def test_post_cost_expectancy_reports_candidate_payoff_asymmetry() -> None:
         "profit_factor": 2.0,
         "policy": "payoff asymmetry is measured only from candidate-bound post-cost wins and losses; independent-sample sufficiency remains a separate live gate",
     }
+    decomposition = expectancy["expected_value_decomposition"]
+    assert decomposition["win_probability"] == 0.5
+    assert decomposition["average_win"] == 4.0
+    assert decomposition["loss_probability"] == 0.5
+    assert decomposition["average_loss_abs"] == 2.0
+    assert decomposition["expected_value"] == 1.0
+    assert decomposition["observed_mean"] == 1.0
+    assert decomposition["mean_identity_error"] == 0.0
+
+
+def test_promotion_cohort_accepts_only_exact_active_stage_identity(
+    tmp_path: Path,
+) -> None:
+    config_dir = tmp_path / "config"
+    config_dir.mkdir(parents=True)
+    (config_dir / "profitability_self_assessment_v1.json").write_text(
+        json.dumps(
+            {
+                "promotion_cohort": {
+                    "enabled": True,
+                    "cohort_id": "dividend-test",
+                    "profile": "dividend",
+                    "sleeve_id": "dividend_income",
+                    "active_stage": 1,
+                    "maximum_active_stages": 1,
+                    "maximum_active_strategies": 1,
+                    "maximum_symbols_per_stage": 1,
+                    "stages": [
+                        {
+                            "stage": 1,
+                            "symbol": "SCHD",
+                            "strategy_id": "sleeve::dividend_income::quality_dividend::v1",
+                        },
+                        {
+                            "stage": 2,
+                            "symbol": "SPYD",
+                            "strategy_id": "sleeve::dividend_income::dividend_growth::v1",
+                        },
+                    ],
+                    "live_execution_allowed": False,
+                    "automatic_stage_advancement_allowed": False,
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    cohort = report._promotion_cohort_context(tmp_path)
+    matching = {
+        "symbol": "SCHD",
+        "strategy": "fallback",
+        "metadata": {
+            "source_profile": "dividend",
+            "strategy_specialization": {
+                "sleeve_id": "dividend_income",
+                "selected_strategy_id": "sleeve::dividend_income::quality_dividend::v1",
+            },
+        },
+    }
+
+    assert cohort["valid"] is True
+    assert report._promotion_cohort_row_eligibility(matching, cohort) == (
+        True,
+        "active_promotion_stage_match",
+    )
+    assert report._promotion_cohort_row_eligibility(
+        {**matching, "symbol": "SPYD"}, cohort
+    ) == (False, "symbol_outside_active_stage")
 
 
 def test_candidate_post_cost_daily_series_keeps_profiles_and_days_separate() -> None:

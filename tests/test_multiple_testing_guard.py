@@ -251,3 +251,37 @@ def test_multiple_testing_guard_counts_compressed_immutable_experiment_history(
     assert payload["family_size_components"]["experiment_ledger_hypothesis_count"] == 12
     assert payload["experiment_lineage"]["compressed_immutable_ledger_supported"] is True
     assert str(ledger_path) in payload["experiment_lineage"]["experiment_ledger_paths"]
+
+
+def test_purged_walk_forward_uses_chronological_gaps_and_oos_returns() -> None:
+    series = {
+        "sleeve::dividend_income::quality_dividend::v1": [
+            {
+                "day_utc": f"202609{day:02d}",
+                "post_cost_return_bps_total": 2.0,
+            }
+            for day in range(1, 41)
+        ]
+    }
+    policy = {
+        "enabled": True,
+        "fold_count": 5,
+        "purge_periods": 1,
+        "embargo_periods": 1,
+        "minimum_train_periods": 12,
+        "minimum_test_periods": 3,
+        "minimum_total_periods": 30,
+        "minimum_completed_folds": 3,
+        "minimum_positive_fold_rate": 0.6,
+    }
+
+    payload = src._purged_walk_forward_evaluation(series, policy)
+
+    assert payload["implementation_ready"] is True
+    assert payload["evidence_ready"] is True
+    strategy = payload["strategies"][0]
+    assert strategy["completed_fold_count"] == 5
+    assert strategy["positive_fold_rate"] == 1.0
+    assert strategy["oos_mean_return_bps"] == 2.0
+    assert all(fold["purge_periods"] == 1 for fold in strategy["folds"])
+    assert all(fold["embargo_periods"] == 1 for fold in strategy["folds"])

@@ -10,6 +10,7 @@ from core.profitability_hardening import (
     evaluate_paper_execution_authority,
     evaluate_profitability_entry,
     evaluate_retirement_evidence,
+    evaluate_staged_promotion_cohort,
     position_valuation_compatible,
     post_cost_adjusted_forward_return,
     resolve_contract_valuation,
@@ -22,7 +23,86 @@ def _write_json(path: Path, payload: dict) -> None:
     path.write_text(json.dumps(payload), encoding="utf-8")
 
 
-def test_contract_valuation_resolves_known_derivatives_and_rejects_unknown_future() -> None:
+def _write_staged_cohort_policy(tmp_path: Path) -> None:
+    _write_json(
+        tmp_path / "config" / "profitability_self_assessment_v1.json",
+        {
+            "promotion_cohort": {
+                "enabled": True,
+                "cohort_id": "dividend_liquid_etf_candidate_v1",
+                "profile": "dividend",
+                "sleeve_id": "dividend_income",
+                "direction_policy": "long_only",
+                "active_stage": 1,
+                "maximum_active_stages": 1,
+                "maximum_active_strategies": 1,
+                "maximum_symbols_per_stage": 1,
+                "stages": [
+                    {
+                        "stage": 1,
+                        "symbol": "SCHD",
+                        "strategy_id": (
+                            "sleeve::dividend_income::portfolio_consensus::v1"
+                        ),
+                    }
+                ],
+                "live_execution_allowed": False,
+                "automatic_stage_advancement_allowed": False,
+            }
+        },
+    )
+
+
+def test_staged_promotion_cohort_allows_only_active_entry_and_reduce_only_exits(
+    tmp_path: Path,
+) -> None:
+    _write_staged_cohort_policy(tmp_path)
+    matching = evaluate_staged_promotion_cohort(
+        project_root=tmp_path,
+        enforcement_required=True,
+        profile="dividend",
+        sleeve_id="dividend_income",
+        symbol="SCHD",
+        strategy_id="sleeve::dividend_income::portfolio_consensus::v1",
+        action="BUY",
+        exposure_change={"increases_exposure": True},
+    )
+    unrelated = evaluate_staged_promotion_cohort(
+        project_root=tmp_path,
+        enforcement_required=True,
+        profile="equity_core",
+        sleeve_id="equity_core",
+        symbol="SPY",
+        strategy_id="sleeve::equity_core::portfolio_consensus::v1",
+        action="BUY",
+        exposure_change={"increases_exposure": True},
+    )
+    historical_exit = evaluate_staged_promotion_cohort(
+        project_root=tmp_path,
+        enforcement_required=True,
+        profile="equity_core",
+        sleeve_id="equity_core",
+        symbol="SPY",
+        strategy_id="sleeve::equity_core::portfolio_consensus::v1",
+        action="SELL",
+        exposure_change={
+            "increases_exposure": False,
+            "reduces_or_closes": True,
+            "crosses_through_flat": False,
+        },
+    )
+
+    assert matching["allowed"] is True
+    assert matching["disposition"] == "active_promotion_stage_entry"
+    assert unrelated["allowed"] is False
+    assert "outside_active_promotion_profile" in unrelated["reasons"]
+    assert historical_exit["allowed"] is True
+    assert historical_exit["disposition"] == "historical_position_reduce_only_exit"
+
+
+def test_contract_valuation_resolves_known_derivatives_and_rejects_unknown_future() -> (
+    None
+):
     future = resolve_contract_valuation("/ES")
     option = resolve_contract_valuation("AAPL260918C00200000")
     unknown = resolve_contract_valuation("/UNKNOWN")

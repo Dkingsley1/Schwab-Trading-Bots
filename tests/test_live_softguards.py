@@ -88,6 +88,34 @@ def _write_paper_profitability_control(
     _reset_paper_profitability_guard_cache()
 
 
+def _write_staged_promotion_cohort(tmp_path: Path) -> None:
+    policy = {
+        "promotion_cohort": {
+            "enabled": True,
+            "cohort_id": "dividend_liquid_etf_candidate_v1",
+            "profile": "dividend",
+            "sleeve_id": "dividend_income",
+            "direction_policy": "long_only",
+            "active_stage": 1,
+            "maximum_active_stages": 1,
+            "maximum_active_strategies": 1,
+            "maximum_symbols_per_stage": 1,
+            "stages": [
+                {
+                    "stage": 1,
+                    "symbol": "SCHD",
+                    "strategy_id": ("sleeve::dividend_income::portfolio_consensus::v1"),
+                }
+            ],
+            "live_execution_allowed": False,
+            "automatic_stage_advancement_allowed": False,
+        }
+    }
+    path = tmp_path / "config" / "profitability_self_assessment_v1.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(policy), encoding="utf-8")
+
+
 def test_execute_decision_can_skip_explanations_via_storage_override(
     tmp_path: Path, monkeypatch
 ) -> None:
@@ -1098,6 +1126,103 @@ def test_paper_execute_uses_guard_and_fill_modeling(tmp_path: Path, monkeypatch)
     assert abs(paper["realized_slippage_bps"] - paper["expected_slippage_bps"]) < 1e-6
     assert paper["regime"] == "trend"
     assert paper["regime_source"] == "derived_feature_axes"
+
+
+def test_paper_execution_staged_cohort_blocks_entries_but_keeps_exits_open(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setenv("ALLOW_ORDER_EXECUTION", "1")
+    monkeypatch.setenv("MARKET_DATA_ONLY", "0")
+    monkeypatch.setenv("LIVE_TRADE_GLOBAL_MIN_INTERVAL_SECONDS", "0")
+    monkeypatch.setenv("LIVE_TRADE_MIN_INTERVAL_SECONDS", "0")
+    _write_staged_promotion_cohort(tmp_path)
+
+    trader = _mk_trader("paper")
+    trader.project_root = str(tmp_path)
+    trader.set_mode("paper")
+    trader.execution_enabled = True
+    trader.market_data_only = False
+    features = {
+        "last_price": 100.0,
+        "spread_bps": 2.0,
+        "market_micro_tradeability_score_norm": 0.95,
+        "execution_fitness_norm": 0.95,
+        "core_cross_asset_confirmation_norm": 0.90,
+        "day_regime_trend_norm": 0.80,
+        "day_regime_chop_norm": 0.10,
+        "core_portfolio_overlap_pressure_norm": 0.10,
+        "news_source_quality_norm": 0.95,
+    }
+    active = trader.execute_decision(
+        symbol="SCHD",
+        action="BUY",
+        quantity=1.0,
+        model_score=0.65,
+        threshold=0.55,
+        features=features,
+        gates={"model_gate": True, "market_data_ok": True},
+        reasons=["unit_test_active_stage"],
+        strategy="paper_portfolio_consensus",
+        metadata={
+            "source_profile": "dividend",
+            "staged_promotion_cohort_enforced": True,
+        },
+    )
+    assert active["status"] == "PAPER_EXECUTED"
+    assert (
+        active["decision"]["metadata"]["strategy_specialization"][
+            "selected_strategy_id"
+        ]
+        == "sleeve::dividend_income::portfolio_consensus::v1"
+    )
+
+    blocked = trader.execute_decision(
+        symbol="SPY",
+        action="BUY",
+        quantity=1.0,
+        model_score=0.65,
+        threshold=0.55,
+        features=features,
+        gates={"model_gate": True, "market_data_ok": True},
+        reasons=["unit_test"],
+        strategy="paper_portfolio_consensus",
+        metadata={
+            "source_profile": "equity_core",
+        },
+    )
+    assert blocked["status"] == "PAPER_PROMOTION_COHORT_BLOCKED"
+    assert blocked["promotion_cohort_guard"]["required"] is True
+
+    trader._paper_positions["SPY"] = {
+        "qty": 1.0,
+        "avg_price": 99.0,
+        "mark_price": 100.0,
+        "contract_multiplier": 1.0,
+    }
+    trader._paper_profile_positions["equity_core"] = {
+        "SPY": dict(trader._paper_positions["SPY"])
+    }
+    trader.live_guard.set_local_position(symbol="SPY", quantity=1.0, avg_price=99.0)
+    reduced = trader.execute_decision(
+        symbol="SPY",
+        action="SELL",
+        quantity=1.0,
+        model_score=0.65,
+        threshold=0.55,
+        features=features,
+        gates={"model_gate": True, "market_data_ok": True},
+        reasons=["unit_test_reduce_only"],
+        strategy="paper_portfolio_consensus",
+        metadata={
+            "source_profile": "equity_core",
+            "staged_promotion_cohort_enforced": True,
+        },
+    )
+    assert reduced["status"] == "PAPER_EXECUTED", reduced
+    assert (
+        reduced["decision"]["metadata"]["staged_promotion_cohort"]["disposition"]
+        == "historical_position_reduce_only_exit"
+    )
 
 
 def test_paper_profitability_guard_blocks_weak_profile_new_buy_entries(

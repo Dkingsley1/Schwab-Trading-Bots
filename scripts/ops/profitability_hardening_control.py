@@ -18,7 +18,11 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from core.accountability import safe_write_json_atomic
-from core.profitability_hardening import POLICY_VERSION, evaluate_retirement_evidence
+from core.profitability_hardening import (
+    POLICY_VERSION,
+    evaluate_retirement_evidence,
+    load_staged_promotion_cohort,
+)
 
 
 DEFAULT_OUT = PROJECT_ROOT / "governance" / "health" / "profitability_hardening_latest.json"
@@ -312,13 +316,41 @@ def build_payload(
         isinstance(forward_cfg.get("path_dependent_labels"), dict)
         and forward_cfg.get("path_dependent_labels", {}).get("enabled", False)
     )
-    path_labels_materialized = bool(dataset_contract.get("path_dependent_labels_enabled", False))
-    paper_standard = _load_json(project_root / "governance" / "health" / "paper_live_data_standard_latest.json")
+    path_labels_materialized = bool(
+        dataset_contract.get("path_dependent_labels_enabled", False)
+    )
+    evidence_firewall_policy = _load_json(
+        project_root / "config" / "profitability_evidence_firewall_v1.json"
+    )
+    required_counterfactual_outputs = {
+        str(item or "").strip()
+        for item in evidence_firewall_policy.get("counterfactual_labels", [])
+        if str(item or "").strip().startswith("counterfactual_")
+    }
+    materialized_path_outputs = {
+        str(item or "").strip()
+        for item in dataset_contract.get("path_dependent_outputs", [])
+        if str(item or "").strip()
+    }
+    materialized_horizons = {
+        str(item or "").strip()
+        for item in dataset_contract.get("counterfactual_action_horizons", [])
+        if str(item or "").strip()
+    }
+    multi_horizon_counterfactual_materialized = bool(
+        required_counterfactual_outputs
+        and required_counterfactual_outputs.issubset(materialized_path_outputs)
+        and {"5m", "1h", "1d"}.issubset(materialized_horizons)
+    )
+    paper_standard = _load_json(
+        project_root / "governance" / "health" / "paper_live_data_standard_latest.json"
+    )
     safety_contract = (
         paper_standard.get("safety_contract")
         if isinstance(paper_standard.get("safety_contract"), dict)
         else {}
     )
+    staged_cohort = load_staged_promotion_cohort(project_root)
     paper_authority_implemented = bool(
         safety_contract.get("paper_execution_authority_version") == "paper_execution_authority_v2"
         and str(safety_contract.get("paper_mirror_all_active_sub_bots") or "") == "0"
@@ -328,7 +360,13 @@ def build_payload(
     accounting_views = performance.get("accounting_views") if isinstance(performance.get("accounting_views"), dict) else {}
     accounting_implemented = all(
         key in accounting_views
-        for key in ("lifetime_flow", "current_day_flow", "candidate_forward_flow", "active_book_snapshot")
+        for key in (
+            "lifetime_flow",
+            "current_day_flow",
+            "candidate_research_forward_flow",
+            "candidate_forward_flow",
+            "active_book_snapshot",
+        )
     )
     base_trader_source = ""
     shadow_loop_source = ""
@@ -348,6 +386,11 @@ def build_payload(
     entry_economics_implemented = bool(
         "paper_consensus_conservative_prior_v1" in shadow_loop_source
         and "profitability_strict_evidence_required" in shadow_loop_source
+    )
+    staged_cohort_implemented = bool(
+        staged_cohort.get("valid", False)
+        and "PAPER_PROMOTION_COHORT_BLOCKED" in base_trader_source
+        and "staged_promotion_cohort_enforced" in shadow_loop_source
     )
 
     valuation_status = "ready"
@@ -379,8 +422,12 @@ def build_payload(
         {
             "id": 9,
             "name": "explicit_bounded_paper_execution_authority",
-            "status": "ready" if paper_authority_implemented else "armed",
-            "enforced": paper_authority_implemented,
+            "status": (
+                "ready"
+                if paper_authority_implemented and staged_cohort_implemented
+                else "armed"
+            ),
+            "enforced": paper_authority_implemented and staged_cohort_implemented,
         },
         {
             "id": 10,
@@ -397,7 +444,12 @@ def build_payload(
         {
             "id": 12,
             "name": "path_dependent_and_no_trade_training_labels",
-            "status": "ready" if path_labels_materialized else "armed" if path_labels_configured else "blocked",
+            "status": (
+                "ready"
+                if path_labels_materialized
+                and multi_horizon_counterfactual_materialized
+                else "armed" if path_labels_configured else "blocked"
+            ),
             "enforced": path_labels_configured,
         },
         {
@@ -458,11 +510,18 @@ def build_payload(
             "dataset_contract": dataset_contract,
         },
         "execution_authority": {
-            "status": "ready" if paper_authority_implemented else "armed",
-            "implemented": paper_authority_implemented,
+            "status": (
+                "ready"
+                if paper_authority_implemented and staged_cohort_implemented
+                else "armed"
+            ),
+            "implemented": paper_authority_implemented and staged_cohort_implemented,
             "candidate_bound_rows": candidate_bound_rows,
             "authority_v2_rows": authority_v2_rows,
             "safety_contract": safety_contract,
+            "staged_promotion_cohort": staged_cohort,
+            "out_of_cohort_entries_fail_closed": staged_cohort_implemented,
+            "historical_reduce_only_exits_remain_open": staged_cohort_implemented,
         },
         "hierarchical_execution": {
             "implemented": hierarchy_implemented,
@@ -478,6 +537,14 @@ def build_payload(
         "path_dependent_training": {
             "configured": path_labels_configured,
             "dataset_materialized": path_labels_materialized,
+            "required_counterfactual_outputs": sorted(required_counterfactual_outputs),
+            "materialized_counterfactual_outputs": sorted(
+                required_counterfactual_outputs.intersection(materialized_path_outputs)
+            ),
+            "materialized_counterfactual_horizons": sorted(materialized_horizons),
+            "multi_horizon_counterfactual_materialized": (
+                multi_horizon_counterfactual_materialized
+            ),
             "dataset_contract": dataset_contract,
         },
         "turnover_guard": {
@@ -507,6 +574,8 @@ def build_payload(
             "market_orders_allowed": False,
             "retirement_requires_post_cost_evidence": True,
             "paper_execution_requires_explicit_authority": True,
+            "paper_entries_require_active_staged_promotion_identity": True,
+            "historical_noncohort_positions_may_reduce_or_close_only": True,
             "missing_hierarchy_identity_abstains": True,
             "paper_turnover_guard_persists_across_restart": True,
             "lifetime_current_and_candidate_accounting_are_separate": True,

@@ -86,6 +86,158 @@ def _aligned_candidate_period_returns(
     }, common_days
 
 
+def _purged_walk_forward_evaluation(
+    raw_series: Any,
+    policy: dict[str, Any],
+) -> dict[str, Any]:
+    enabled = bool(policy.get("enabled", False))
+    fold_count = max(_safe_int(policy.get("fold_count"), 5), 1)
+    purge_periods = max(_safe_int(policy.get("purge_periods"), 1), 0)
+    embargo_periods = max(_safe_int(policy.get("embargo_periods"), 1), 0)
+    minimum_train = max(_safe_int(policy.get("minimum_train_periods"), 12), 2)
+    minimum_test = max(_safe_int(policy.get("minimum_test_periods"), 3), 1)
+    minimum_total = max(
+        _safe_int(policy.get("minimum_total_periods"), 30),
+        minimum_train + purge_periods + minimum_test,
+    )
+    minimum_folds = max(_safe_int(policy.get("minimum_completed_folds"), 3), 1)
+    minimum_positive_fold_rate = min(
+        max(_safe_float(policy.get("minimum_positive_fold_rate"), 0.6), 0.0),
+        1.0,
+    )
+    implementation_ready = bool(
+        enabled
+        and fold_count >= minimum_folds
+        and purge_periods >= 1
+        and embargo_periods >= 1
+        and minimum_total > minimum_train
+    )
+    strategy_rows: list[dict[str, Any]] = []
+    if isinstance(raw_series, dict):
+        for strategy_id, raw_rows in sorted(raw_series.items()):
+            if not isinstance(raw_rows, list):
+                continue
+            daily = sorted(
+                (
+                    str(row.get("day_utc") or "").strip(),
+                    _safe_float(row.get("post_cost_return_bps_total"), 0.0),
+                )
+                for row in raw_rows
+                if isinstance(row, dict) and str(row.get("day_utc") or "").strip()
+            )
+            deduped = {day: value for day, value in daily}
+            observations = sorted(deduped.items())
+            folds: list[dict[str, Any]] = []
+            cursor = minimum_train + purge_periods
+            while (
+                cursor + minimum_test <= len(observations) and len(folds) < fold_count
+            ):
+                train_end = cursor - purge_periods
+                test_start = cursor
+                test_end = min(test_start + minimum_test, len(observations))
+                train = observations[:train_end]
+                test = observations[test_start:test_end]
+                if len(train) < minimum_train or len(test) < minimum_test:
+                    break
+                train_values = [value for _day, value in train]
+                test_values = [value for _day, value in test]
+                folds.append(
+                    {
+                        "fold": len(folds) + 1,
+                        "train_period_count": len(train_values),
+                        "test_period_count": len(test_values),
+                        "purge_periods": purge_periods,
+                        "embargo_periods": embargo_periods,
+                        "train_end_day": train[-1][0],
+                        "test_start_day": test[0][0],
+                        "test_end_day": test[-1][0],
+                        "train_mean_return_bps": round(
+                            sum(train_values) / len(train_values), 8
+                        ),
+                        "test_mean_return_bps": round(
+                            sum(test_values) / len(test_values), 8
+                        ),
+                        "test_positive": sum(test_values) > 0.0,
+                    }
+                )
+                cursor = test_end + embargo_periods
+            test_values_all = [
+                value
+                for fold in folds
+                for _day, value in observations[
+                    next(
+                        index
+                        for index, (day, _value) in enumerate(observations)
+                        if day == fold["test_start_day"]
+                    ) : next(
+                        index
+                        for index, (day, _value) in enumerate(observations)
+                        if day == fold["test_end_day"]
+                    )
+                    + 1
+                ]
+            ]
+            positive_fold_rate = (
+                sum(1 for fold in folds if fold["test_positive"]) / len(folds)
+                if folds
+                else 0.0
+            )
+            oos_mean = (
+                sum(test_values_all) / len(test_values_all) if test_values_all else 0.0
+            )
+            evidence_available = bool(
+                len(observations) >= minimum_total and len(folds) >= minimum_folds
+            )
+            passes = bool(
+                evidence_available
+                and oos_mean > 0.0
+                and positive_fold_rate >= minimum_positive_fold_rate
+            )
+            strategy_rows.append(
+                {
+                    "strategy_id": str(strategy_id),
+                    "period_count": len(observations),
+                    "completed_fold_count": len(folds),
+                    "evidence_available": evidence_available,
+                    "oos_mean_return_bps": round(oos_mean, 8),
+                    "positive_fold_rate": round(positive_fold_rate, 8),
+                    "passes": passes,
+                    "folds": folds,
+                }
+            )
+    evaluated = [row for row in strategy_rows if row["evidence_available"]]
+    passing = [row for row in evaluated if row["passes"]]
+    evidence_ready = bool(
+        implementation_ready and evaluated and len(passing) == len(evaluated)
+    )
+    blockers: list[str] = []
+    if not implementation_ready:
+        blockers.append("purged_walk_forward_policy_invalid")
+    if not evaluated:
+        blockers.append("minimum_purged_oos_periods_pending")
+    elif len(passing) != len(evaluated):
+        blockers.append("purged_oos_expectancy_not_positive")
+    return {
+        "implementation_ready": implementation_ready,
+        "evidence_ready": evidence_ready,
+        "evaluated_strategy_count": len(evaluated),
+        "passing_strategy_count": len(passing),
+        "strategies": strategy_rows,
+        "thresholds": {
+            "fold_count": fold_count,
+            "purge_periods": purge_periods,
+            "embargo_periods": embargo_periods,
+            "minimum_train_periods": minimum_train,
+            "minimum_test_periods": minimum_test,
+            "minimum_total_periods": minimum_total,
+            "minimum_completed_folds": minimum_folds,
+            "minimum_positive_fold_rate": minimum_positive_fold_rate,
+        },
+        "blockers": blockers,
+        "policy": "chronological test folds are separated from training by purge gaps and from subsequent folds by embargo gaps; only out-of-sample post-cost returns count",
+    }
+
+
 def _experiment_ledger_ids(path: Path) -> set[str]:
     if not path.is_file():
         return set()
@@ -126,7 +278,22 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
     promotion_readiness = _load_json(walk_root / "promotion_readiness_latest.json")
     paper_performance = _load_json(health_root / "paper_performance_latest.json")
     registry = _load_json(project_root / "master_bot_registry.json")
-    hardening_config = _load_json(project_root / "config" / "profitability_evidence_firewall_v1.json")
+    hardening_config = _load_json(
+        project_root / "config" / "profitability_evidence_firewall_v1.json"
+    )
+    self_assessment = _load_json(
+        project_root / "config" / "profitability_self_assessment_v1.json"
+    )
+    validation_protocol = (
+        self_assessment.get("validation_protocol")
+        if isinstance(self_assessment.get("validation_protocol"), dict)
+        else {}
+    )
+    purged_policy = (
+        validation_protocol.get("purged_walk_forward")
+        if isinstance(validation_protocol.get("purged_walk_forward"), dict)
+        else {}
+    )
 
     ablation_block = ablation.get("ablation") if isinstance(ablation.get("ablation"), dict) else {}
     strict_checks = ablation.get("strict_checks") if isinstance(ablation.get("strict_checks"), dict) else {}
@@ -277,6 +444,10 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
                 strategy_period_returns[str(profile)] = values
         pbo_series_scope = "legacy_lifetime_sleeve_daily_returns"
     pbo = probability_of_backtest_overfitting(strategy_period_returns)
+    purged_walk_forward = _purged_walk_forward_evaluation(
+        paper_performance.get("candidate_strategy_post_cost_daily_series"),
+        purged_policy,
+    )
     statistical_evidence_ready = bool(
         lineage_complete
         and candidate_bound
@@ -285,6 +456,7 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
         and actual_fdr.get("passing_hypotheses")
         and pbo.get("available", False)
         and pbo.get("passes", False)
+        and purged_walk_forward.get("evidence_ready", False)
     )
     statistical_blockers: list[str] = []
     if not candidate_bound:
@@ -299,10 +471,13 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
         statistical_blockers.extend(str(item) for item in pbo.get("blockers", []) if str(item))
     elif not pbo.get("passes", False):
         statistical_blockers.append("probability_of_backtest_overfitting_above_ceiling")
+    statistical_blockers.extend(
+        str(item) for item in purged_walk_forward.get("blockers", []) if str(item)
+    )
 
     payload = {
         "timestamp_utc": now.isoformat(),
-        "schema_version": 3,
+        "schema_version": 4,
         "ok": ok,
         "overall_status": overall_status,
         "contract_present": contract_present,
@@ -366,12 +541,14 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
             if isinstance(row, dict) and str(row.get("profile") or "").strip()
         },
         "probability_of_backtest_overfitting": pbo,
+        "purged_walk_forward": purged_walk_forward,
         "statistical_evidence_ready": statistical_evidence_ready,
         "statistical_evidence_blockers": statistical_blockers,
         "grading_contract": {
             "ok_measures_structural_research_control": True,
             "statistical_evidence_ready_requires_actual_p_values_and_pbo": True,
             "candidate_bound_pbo_periods_required": True,
+            "purged_and_embargoed_oos_folds_required": True,
             "declared_correction_method_is_not_profitability_evidence": True,
             "all_registered_strategy_hypotheses_count_toward_selection_bias": True,
             "discarded_experiments_cannot_disappear_from_the_family_size": True,
@@ -385,6 +562,9 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
             "counterfactual_replay": str(health_root / "counterfactual_replay_latest.json"),
             "promotion_readiness": str(walk_root / "promotion_readiness_latest.json"),
             "master_bot_registry": str(project_root / "master_bot_registry.json"),
+            "validation_protocol": str(
+                project_root / "config" / "profitability_self_assessment_v1.json"
+            ),
             "experiment_ledgers": sorted(experiment_ledger_ids_by_path),
         },
     }

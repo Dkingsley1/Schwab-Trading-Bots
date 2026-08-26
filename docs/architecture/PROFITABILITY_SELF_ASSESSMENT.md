@@ -32,6 +32,23 @@ The current production-candidate identity must match every required source. Sour
 
 Historical paper inventory and losses remain visible for risk management and exit decisions. They do not grade a newly accepted candidate. Current-candidate profitability begins with candidate-bound schema-v2 post-cost outcomes and cannot be inferred from the historical ledger.
 
+Candidate-bound rows have two explicit forward views. `candidate_research_forward_flow` retains every identity-matched candidate row for diagnosis and training research. `candidate_forward_flow` admits only the exact active promotion stage and is the only forward flow that may grade promotion. Neither view rewrites or attempts to recover the historical paper balance.
+
+## Staged Promotion Protocol
+
+The active paper-promotion cohort is intentionally narrow and fail-closed:
+
+1. One accepted production candidate is sealed at a time.
+2. Paper fills begin at an observed bid or ask when a valid two-sided quote exists; derived touch is diagnostic fallback only, and quoted spread is reported separately from beyond-touch costs.
+3. One sleeve, one liquid ETF, and one strategy are active per stage. The current first stage is `dividend / SCHD / sleeve::dividend_income::portfolio_consensus::v1`.
+4. The broad fleet continues collection and shadow decisions. Out-of-cohort paper entries are blocked at the final trader boundary, while existing positions may reduce or close without crossing through flat.
+5. Candidate expectancy is measured after spread, slippage, fees, financing, and dividend carry and must beat modeled cash, `SGOV`, and the point-in-time passive benchmark.
+6. Out-of-sample evidence uses chronological purged walk-forward folds with embargo plus the existing FDR, deflated-Sharpe, PBO, holdout, and lineage controls.
+7. Every eligible observation records post-cost `BUY`, `SELL`, and `HOLD` counterfactuals at `5m`, `1h`, and `1d`; malformed horizon configuration falls back to those conservative defaults.
+8. Stage advancement is manual and requires all candidate-bound evidence gates. It cannot enable live execution or advance automatically.
+
+The current stage uses the honest synthetic `portfolio_consensus` strategy identity because the order is produced by a bounded consensus. A named catalog strategy is not credited unless that exact strategy produces the action.
+
 Accepted soak generations are not discarded. The paper-performance owner groups identity-stamped schema-v2 outcomes by production candidate. The assessor then joins each group to the tamper-evident candidate event chain and requires the recorded generation and observation timestamps to fit entirely inside that accepted generation's window. Valid associations feed a developmental ledger that records the change reason, affected scopes, samples, observed days, and post-cost delta. Unbound rows, mixed generations, forged chains, generation mismatches, and outcomes outside the accepted window remain visible but cannot be attributed.
 
 Developmental attribution is evidence for what to investigate next, not proof that a code change caused an outcome. It may route bounded paper-only collection, counterfactual replay, independent-fill acquisition, weak-sleeve containment, and loss or missed-opportunity labeling to their existing owners. It cannot force a trade, martingale, average down, raise size to recover a loss, loosen an acceptance threshold without replay, allocate capital, rewrite history, promote a candidate, or enable live execution.

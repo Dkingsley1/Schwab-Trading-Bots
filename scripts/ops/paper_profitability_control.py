@@ -119,6 +119,10 @@ WEAK_SLEEVE_RECURRENCE_REQUIRED_LABELS = [
     "mfe_bucket",
     "exit_timing_bucket",
     "post_entry_regime_bucket",
+    "counterfactual_action_outcomes",
+    "counterfactual_5m_outcome",
+    "counterfactual_1h_outcome",
+    "counterfactual_1d_outcome",
 ]
 
 WEAK_SLEEVE_RECURRENCE_FAMILY_REQUIREMENTS = {
